@@ -175,11 +175,33 @@ func splitSQLStatements(sqlText string) []string {
 	}
 
 	var out []string
-	for _, part := range strings.Split(strings.Join(cleaned, "\n"), ";") {
-		stmt := strings.TrimSpace(part)
-		if stmt != "" {
-			out = append(out, stmt)
+	var current strings.Builder
+	inSingleQuote := false
+	escaped := false
+	for _, r := range strings.Join(cleaned, "\n") {
+		current.WriteRune(r)
+		if escaped {
+			escaped = false
+			continue
 		}
+		if r == '\\' && inSingleQuote {
+			escaped = true
+			continue
+		}
+		if r == '\'' {
+			inSingleQuote = !inSingleQuote
+			continue
+		}
+		if r == ';' && !inSingleQuote {
+			stmt := strings.TrimSpace(strings.TrimSuffix(current.String(), ";"))
+			if stmt != "" {
+				out = append(out, stmt)
+			}
+			current.Reset()
+		}
+	}
+	if stmt := strings.TrimSpace(current.String()); stmt != "" {
+		out = append(out, stmt)
 	}
 	return out
 }

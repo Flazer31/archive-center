@@ -168,6 +168,27 @@ CREATE TABLE IF NOT EXISTS chat_logs (
 	}
 }
 
+func TestSplitSQLStatementsKeepsSemicolonsInsideQuotedStrings(t *testing.T) {
+	sqlText := `
+CREATE TABLE example (
+    id BIGINT PRIMARY KEY
+) ENGINE=InnoDB COMMENT='one; two';
+CREATE TABLE next_table (
+    id BIGINT PRIMARY KEY
+) ENGINE=InnoDB;
+`
+	stmts := splitSQLStatements(sqlText)
+	if len(stmts) != 2 {
+		t.Fatalf("statement count = %d, want 2: %#v", len(stmts), stmts)
+	}
+	if !strings.Contains(stmts[0], "COMMENT='one; two'") {
+		t.Fatalf("first statement lost quoted semicolon: %q", stmts[0])
+	}
+	if !strings.Contains(stmts[1], "next_table") {
+		t.Fatalf("second statement = %q", stmts[1])
+	}
+}
+
 func TestSplitSQLStatementsStripsUTF8BOMBeforeComment(t *testing.T) {
 	sqlText := "\ufeff-- comment with UTF-8 BOM\r\nSET NAMES utf8mb4;\r\n"
 	stmts := splitSQLStatements(sqlText)

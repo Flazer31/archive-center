@@ -896,7 +896,7 @@ CREATE TABLE IF NOT EXISTS status_current_values (
     INDEX idx_status_current_key (chat_session_id, status_key(120), owner_scope),
     CONSTRAINT fk_status_current_registry FOREIGN KEY (registry_id) REFERENCES status_schema_registry(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  COMMENT='Canonical current status values. Requires registry definition and evidence; history/effects are separate lanes.';
+  COMMENT='Canonical current status values. Requires registry definition and evidence. History/effects are separate lanes.';
 
 
 -- ---------------------------------------------------------------------------
