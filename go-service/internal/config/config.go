@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -163,6 +164,15 @@ type Config struct {
 	// CriticLedgerEnabled allows the ledger to be wired into live Critic calls.
 	// It stays false by default; 2.1-7 live wiring requires explicit opt-in.
 	CriticLedgerEnabled bool
+
+	// Update settings power the GitHub Releases update check/download flow.
+	// The updater only stages verified packages; applying and rollback are
+	// intentionally handled by a later helper process.
+	UpdateEnabled          bool
+	UpdateGitHubRepo       string
+	UpdateChannel          string
+	UpdateStagingDir       string
+	UpdateMaxDownloadBytes int64
 }
 
 // ReadinessConfig describes the state of external dependencies for readiness checks.
@@ -221,6 +231,11 @@ func Default() Config {
 		PrunePolicy:                "soft",
 		CriticLedgerPreviewEnabled: true,
 		CriticLedgerEnabled:        false,
+		UpdateEnabled:              true,
+		UpdateGitHubRepo:           "Flazer31/archive-center",
+		UpdateChannel:              "stable",
+		UpdateStagingDir:           ".updates",
+		UpdateMaxDownloadBytes:     1024 * 1024 * 1024,
 	}
 }
 
@@ -347,6 +362,23 @@ func Load() Config {
 	}
 	if os.Getenv("AC_CRITIC_LEDGER_ENABLED") == "true" {
 		cfg.CriticLedgerEnabled = true
+	}
+	if v := strings.TrimSpace(os.Getenv("AC_UPDATE_ENABLED")); v != "" {
+		cfg.UpdateEnabled = strings.EqualFold(v, "true")
+	}
+	if v := strings.TrimSpace(os.Getenv("AC_UPDATE_GITHUB_REPO")); v != "" {
+		cfg.UpdateGitHubRepo = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AC_UPDATE_CHANNEL")); v != "" {
+		cfg.UpdateChannel = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AC_UPDATE_STAGING_DIR")); v != "" {
+		cfg.UpdateStagingDir = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AC_UPDATE_MAX_DOWNLOAD_MB")); v != "" {
+		if mb, err := strconv.ParseInt(v, 10, 64); err == nil && mb > 0 {
+			cfg.UpdateMaxDownloadBytes = mb * 1024 * 1024
+		}
 	}
 
 	if v := os.Getenv("AC_BEARER_TOKEN"); v != "" {

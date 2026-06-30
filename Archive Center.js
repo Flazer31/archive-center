@@ -262,6 +262,7 @@
       "settings.section.common.desc": "2.3 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
+      "settings.section.update": "업데이트",
       "settings.section.pluginMainLlm": "출판사 LLM (1차 편집)",
       "settings.section.pluginMainLlm.notConnected": "",
       "settings.section.pluginMainLlm.desc": "출판사 LLM(감독관/편집자) 기본값이며 입력 개선과 감독관 호출에 함께 사용됩니다.\n\n저장 시 backend/.env 및 런타임 설정과 동기화됩니다.",
@@ -441,6 +442,8 @@
       "settings.btn.testPublisherCall": "📝 출판사 LLM 테스트",
       "settings.btn.testCriticCall": "✍ 평론가 LLM 테스트",
       "settings.btn.testTableReadCall": "🎭 대본 리딩 LLM 테스트",
+      "settings.btn.updateCheck": "업데이트 확인",
+      "settings.btn.updateDownload": "업데이트 다운로드",
       "tableRead.llmTest.missing": "대본 리딩 LLM API Key / Endpoint / Model이 비어 있습니다.",
       "tableRead.llmTest.loading": "대본 리딩 LLM 호출 테스트 중",
       "tableRead.llmTest.ok": "대본 리딩 호출 성공",
@@ -1252,6 +1255,7 @@
       "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.3 default mode.",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
+      "settings.section.update": "Update",
       "settings.section.pluginMainLlm": "Publisher LLM (Editor First-pass)",
       "settings.section.pluginMainLlm.notConnected": "",
       "settings.section.pluginMainLlm.desc": "Default settings for Publisher LLM (Supervisor/Editor).\n\nUsed by input-improvement first pass and supervisor calls.\n\nSaved values sync to backend/.env and runtime settings.",
@@ -1605,6 +1609,8 @@
       "settings.btn.testPublisherCall": "📝 Publisher LLM Test",
       "settings.btn.testCriticCall": "✍ Critic LLM Test",
       "settings.btn.testTableReadCall": "🎭 Table Read LLM Test",
+      "settings.btn.updateCheck": "Check Update",
+      "settings.btn.updateDownload": "Download Update",
       "tableRead.llmTest.missing": "Table Read API Key / Endpoint / Model is empty.",
       "tableRead.llmTest.loading": "Testing Table Read LLM call",
       "tableRead.llmTest.ok": "Table Read call succeeded",
@@ -2242,6 +2248,7 @@
       "settings.section.common.desc": "2.3既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
+      "settings.section.update": "アップデート",
       "settings.section.pluginMainLlm": "出版社 LLM（一次編集）",
       "settings.section.pluginMainLlm.notConnected": "",
       "settings.section.pluginMainLlm.desc": "出版社 LLM（監督官/編集者）の既定値です。\n\n入力改善 first-pass と監督官呼び出しに使用されます。\n\n保存時に backend/.env とランタイム設定へ同期されます。",
@@ -2566,6 +2573,8 @@
       "settings.btn.testPublisherCall": "📝 出版社 LLM テスト",
       "settings.btn.testCriticCall": "✍ クリティック LLM テスト",
       "settings.btn.testTableReadCall": "🎭 読み合わせ LLM テスト",
+      "settings.btn.updateCheck": "アップデート確認",
+      "settings.btn.updateDownload": "アップデート取得",
       "tableRead.llmTest.missing": "読み合わせ LLM の API Key / Endpoint / Model が空です。",
       "tableRead.llmTest.loading": "読み合わせ LLM 呼び出しをテスト中",
       "tableRead.llmTest.ok": "読み合わせ呼び出し成功",
@@ -11494,6 +11503,79 @@
     }
     debugLog(`bridgeFetchWithRetry: all ${retries} attempts failed for ${path}`);
     return null;
+  }
+
+  const archiveUpdateState = {
+    lastCheck: null,
+    lastDownload: null,
+  };
+
+  function formatArchiveUpdateResult(data, mode) {
+    if (!data) {
+      return '<div class="mo-status mo-status-fail">Update failed: '
+        + escapeAttr(formatBridgeFailureForDisplay(mode === "download" ? "/update/download" : "/update/check", "no response"))
+        + '</div>';
+    }
+    if (mode === "download") {
+      const ok = String(data.status || "") === "ok";
+      const lines = [
+        "status: " + (ok ? "downloaded and verified" : String(data.status || "unknown")),
+        "version: " + String(data.latest_version || ""),
+        "asset: " + String(data.asset_name || ""),
+        "bytes: " + String(data.bytes || 0),
+        "sha256: " + String(data.sha256 || ""),
+        "staged: " + String(data.staged_path || ""),
+        "apply: " + (data.apply_supported ? "supported" : "manual package apply required"),
+      ];
+      return '<div class="mo-status ' + (ok ? "mo-status-ok" : "mo-status-fail") + '">'
+        + lines.map((line) => escapeAttr(line)).join('<br>')
+        + '</div>';
+    }
+    const selected = data.selected_asset || {};
+    const updateAvailable = !!data.update_available;
+    const lines = [
+      "current: " + String(data.current_version || VERSION),
+      "latest: " + String(data.latest_version || ""),
+      "update: " + (updateAvailable ? "available" : "not needed"),
+      "platform: " + String(data.platform || "backend-detected"),
+      "asset: " + String(selected.name || data.compatible_asset_note || "none"),
+      "sha256: " + String(selected.sha256 || data.sha256_source || "missing"),
+      "download: " + (data.download_supported ? "supported" : "not available"),
+      "apply: " + (data.apply_supported ? "supported" : "manual package apply required"),
+    ];
+    return '<div class="mo-status ' + (updateAvailable ? "mo-status-ok" : "mo-status-wait") + '">'
+      + lines.map((line) => escapeAttr(line)).join('<br>')
+      + '</div>';
+  }
+
+  async function checkArchiveCenterUpdate() {
+    const params = new URLSearchParams();
+    params.set("current_version", VERSION);
+    const data = await bridgeFetch("/update/check?" + params.toString(), {
+      method: "GET",
+      timeoutMs: getRequestTimeoutSettingMs(),
+    });
+    archiveUpdateState.lastCheck = data || null;
+    return data;
+  }
+
+  async function downloadArchiveCenterUpdate() {
+    let check = archiveUpdateState.lastCheck;
+    if (!check || !check.selected_asset || !check.download_supported) {
+      check = await checkArchiveCenterUpdate();
+    }
+    const body = { current_version: VERSION };
+    if (check && check.selected_asset) {
+      body.asset_name = String(check.selected_asset.name || "");
+      body.expected_sha256 = String(check.selected_asset.sha256 || "");
+    }
+    const data = await bridgeFetch("/update/download", {
+      method: "POST",
+      body,
+      timeoutMs: getRequestTimeoutSettingMs(),
+    });
+    archiveUpdateState.lastDownload = data || null;
+    return data;
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -47659,6 +47741,13 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <button class="mo-btn mo-btn-warn" id="mo-test-call-critic">${t('settings.btn.testCriticCall')}</button>
         </div>
       </div>
+      <div>
+        <div class="mo-section">${t('settings.section.update')}</div>
+        <div class="mo-inline-actions">
+          <button class="mo-btn mo-btn-info" id="mo-update-check">${t('settings.btn.updateCheck')}</button>
+          <button class="mo-btn mo-btn-success" id="mo-update-download">${t('settings.btn.updateDownload')}</button>
+        </div>
+      </div>
     </div>
     <div id="mo-test-result"></div>
 
@@ -49308,6 +49397,42 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           resultEl.innerHTML = '<div class="mo-status mo-status-fail">' + t('test.error') + ': ' + escapeAttr(err.message) + '</div>';
         }
       });
+
+      const updateCheckBtn = $("mo-update-check");
+      if (updateCheckBtn) {
+        updateCheckBtn.addEventListener("click", async () => {
+          const resultEl = $("mo-test-result");
+          if (!resultEl) return;
+          updateCheckBtn.disabled = true;
+          resultEl.innerHTML = '<div class="mo-status mo-status-wait">Checking GitHub release...</div>';
+          try {
+            const data = await withUiBridgeSettings(() => checkArchiveCenterUpdate());
+            resultEl.innerHTML = formatArchiveUpdateResult(data, "check");
+          } catch (err) {
+            resultEl.innerHTML = '<div class="mo-status mo-status-fail">Update check failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
+          } finally {
+            updateCheckBtn.disabled = false;
+          }
+        });
+      }
+
+      const updateDownloadBtn = $("mo-update-download");
+      if (updateDownloadBtn) {
+        updateDownloadBtn.addEventListener("click", async () => {
+          const resultEl = $("mo-test-result");
+          if (!resultEl) return;
+          updateDownloadBtn.disabled = true;
+          resultEl.innerHTML = '<div class="mo-status mo-status-wait">Downloading update package through backend...</div>';
+          try {
+            const data = await withUiBridgeSettings(() => downloadArchiveCenterUpdate());
+            resultEl.innerHTML = formatArchiveUpdateResult(data, "download");
+          } catch (err) {
+            resultEl.innerHTML = '<div class="mo-status mo-status-fail">Update download failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
+          } finally {
+            updateDownloadBtn.disabled = false;
+          }
+        });
+      }
 
       document.querySelectorAll("[data-critic-ledger-probe]").forEach((btn) => {
         btn.addEventListener("click", async (event) => {

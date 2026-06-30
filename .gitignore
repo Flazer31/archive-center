@@ -18,6 +18,7 @@
 .gocache/
 .runtime/
 .runtime-cache/
+.updates/
 go-service/*.exe
 go-service/*.dll
 go-service/*.so
