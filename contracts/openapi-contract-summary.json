@@ -1,0 +1,1749 @@
+{
+  "path_count": 117,
+  "operation_count": 130,
+  "schema_component_count": 62,
+  "method_counts": {
+    "post": 45,
+    "patch": 17,
+    "get": 59,
+    "delete": 8,
+    "put": 1
+  },
+  "status_counts": {
+    "200": 130,
+    "422": 119
+  },
+  "request_body_count": 60,
+  "routes_with_request_body": [
+    "POST /proxy/plugin-main",
+    "POST /config/update",
+    "PATCH /narrative-control/{chat_session_id}/director-patch",
+    "POST /maintenance-pass/{chat_session_id}",
+    "POST /maintenance/enqueue",
+    "POST /turns",
+    "POST /turns/repair-replay",
+    "POST /effective-inputs",
+    "POST /search",
+    "POST /retrieval-index/runtime-config",
+    "POST /chroma-shadow/backfill-dry-run",
+    "POST /chroma-shadow/backfill-batch",
+    "POST /chroma-shadow/reembed-audit",
+    "POST /chroma-shadow/health-probe",
+    "POST /chroma-shadow/fallback-runbook",
+    "POST /chroma-shadow/rebuild-drill",
+    "POST /chroma-shadow/adoption-gate",
+    "POST /chroma-shadow/release-hygiene",
+    "POST /chroma-shadow/visibility-guard",
+    "POST /intent-routing/runtime-config",
+    "POST /critic/test",
+    "POST /turns/complete",
+    "POST /kg/recall",
+    "POST /supervisor",
+    "PUT /prompts/{prompt_name}",
+    "PATCH /explorer/memories/{memory_id}",
+    "PATCH /explorer/kg_triples/{triple_id}",
+    "PATCH /explorer/direct-evidence/{record_id}/review",
+    "PATCH /explorer/direct-evidence/{record_id}/revalidate",
+    "PATCH /explorer/direct-evidence/{record_id}/tombstone",
+    "PATCH /explorer/direct-evidence/{record_id}/supersede",
+    "POST /explorer/memories/regenerate",
+    "POST /admin/reindex",
+    "POST /admin/rescan",
+    "POST /admin/session-migrate",
+    "POST /import/hypamemory",
+    "POST /feedback",
+    "POST /episodes/generate",
+    "POST /chapters/generate",
+    "POST /arcs/generate",
+    "POST /sagas/generate",
+    "POST /chapters/dry-run",
+    "POST /chapters/search",
+    "POST /episodes/search",
+    "PATCH /episodes/{episode_id}",
+    "POST /episodes/regenerate",
+    "POST /episodes/merge",
+    "PATCH /storylines/{storyline_id}",
+    "PATCH /storylines/{storyline_id}/trust",
+    "POST /storylines/sync",
+    "PATCH /characters/{chat_session_id}/{character_name}",
+    "PATCH /characters/{chat_session_id}/{character_name}/speech",
+    "PATCH /session/{chat_session_id}/active-scope",
+    "POST /world-rules/sync",
+    "PATCH /world-rules/{rule_id}",
+    "PATCH /world-rules/{rule_id}/trust",
+    "PATCH /pending-threads/{hook_id}",
+    "PATCH /pending-threads/{hook_id}/trust",
+    "POST /complete-turn",
+    "POST /prepare-turn"
+  ],
+  "routes_without_response_schema": [],
+  "duplicate_operation_ids": [],
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/proxy/plugin-main",
+      "operation_id": "proxy_plugin_main_proxy_plugin_main_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ProxyPluginMainRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/config/update",
+      "operation_id": "config_update_config_update_post",
+      "tags": [],
+      "request_schema_refs": [
+        "inline:application/json"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/narrative-control/{chat_session_id}/director-patch",
+      "operation_id": "patch_director_state_narrative_control__chat_session_id__director_patch_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/DirectorPatchRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance-pass/{chat_session_id}",
+      "operation_id": "run_maintenance_pass_maintenance_pass__chat_session_id__post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/MaintenancePassRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/enqueue",
+      "operation_id": "enqueue_maintenance_job_maintenance_enqueue_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/MaintenanceEnqueueRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/MaintenanceEnqueueResponse",
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/queue-status",
+      "operation_id": "get_maintenance_queue_status_maintenance_queue_status_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/long-session-health/{session_id}",
+      "operation_id": "get_long_session_health_long_session_health__session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "operation_id": "health_health_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "POST",
+      "path": "/turns",
+      "operation_id": "save_turn_turns_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/SaveTurnRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/turns/repair-replay",
+      "operation_id": "repair_turn_replay_turns_repair_replay_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChatLogRepairReplayRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/effective-inputs",
+      "operation_id": "save_effective_input_effective_inputs_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/SaveEffectiveInputRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/rollback/{turn_index}",
+      "operation_id": "rollback_rollback__turn_index__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/search",
+      "operation_id": "search_search_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/SearchRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/retrieval-index/runtime-config",
+      "operation_id": "get_retrieval_index_runtime_config_retrieval_index_runtime_config_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "POST",
+      "path": "/retrieval-index/runtime-config",
+      "operation_id": "update_retrieval_index_runtime_config_retrieval_index_runtime_config_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/RetrievalIndexRuntimeConfigRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/chroma-shadow/preflight",
+      "operation_id": "get_chroma_shadow_preflight_chroma_shadow_preflight_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/bootstrap",
+      "operation_id": "post_chroma_shadow_bootstrap_chroma_shadow_bootstrap_post",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/backfill-dry-run",
+      "operation_id": "post_chroma_shadow_backfill_dry_run_chroma_shadow_backfill_dry_run_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowBackfillDryRunRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/backfill-batch",
+      "operation_id": "post_chroma_shadow_backfill_batch_chroma_shadow_backfill_batch_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowBackfillBatchRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/reembed-audit",
+      "operation_id": "post_chroma_shadow_reembed_audit_chroma_shadow_reembed_audit_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowReembedAuditRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/health-probe",
+      "operation_id": "post_chroma_shadow_health_probe_chroma_shadow_health_probe_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowHealthProbeRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/fallback-runbook",
+      "operation_id": "post_chroma_shadow_fallback_runbook_chroma_shadow_fallback_runbook_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowFallbackRunbookRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/rebuild-drill",
+      "operation_id": "post_chroma_shadow_rebuild_drill_chroma_shadow_rebuild_drill_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowRebuildDrillRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/adoption-gate",
+      "operation_id": "post_chroma_shadow_adoption_gate_chroma_shadow_adoption_gate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowAdoptionGateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/release-hygiene",
+      "operation_id": "post_chroma_shadow_release_hygiene_chroma_shadow_release_hygiene_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowReleaseHygieneRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/visibility-guard",
+      "operation_id": "post_chroma_shadow_visibility_guard_chroma_shadow_visibility_guard_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowVisibilityGuardRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/intent-routing/runtime-config",
+      "operation_id": "get_intent_routing_runtime_config_api_intent_routing_runtime_config_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "POST",
+      "path": "/intent-routing/runtime-config",
+      "operation_id": "update_intent_routing_runtime_config_intent_routing_runtime_config_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/IntentRoutingRuntimeConfigRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/retrieval-index/{chat_session_id}",
+      "operation_id": "get_retrieval_index_snapshot_retrieval_index__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/retrieval-index/{chat_session_id}/source-row",
+      "operation_id": "get_retrieval_index_source_row_retrieval_index__chat_session_id__source_row_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/critic/test",
+      "operation_id": "critic_test_critic_test_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/CriticTestRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/turns/complete",
+      "operation_id": "complete_turn_turns_complete_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/CompleteTurnRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/kg/recall",
+      "operation_id": "kg_recall_kg_recall_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/KGRecallRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/kg/recall",
+      "operation_id": "kg_recall_legacy_get_kg_recall_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/supervisor",
+      "operation_id": "supervisor_directive_supervisor_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/SupervisorRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/wakeup",
+      "operation_id": "wakeup_wakeup_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "GET",
+      "path": "/prompts",
+      "operation_id": "prompt_list_prompts_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "GET",
+      "path": "/prompts/{prompt_name}",
+      "operation_id": "prompt_get_prompts__prompt_name__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PUT",
+      "path": "/prompts/{prompt_name}",
+      "operation_id": "prompt_update_prompts__prompt_name__put",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PromptUpdateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/stats",
+      "operation_id": "db_stats_stats_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "GET",
+      "path": "/sessions",
+      "operation_id": "list_sessions_sessions_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/chat_logs",
+      "operation_id": "explorer_chat_logs_explorer_chat_logs_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/memories",
+      "operation_id": "explorer_memories_explorer_memories_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/direct-evidence",
+      "operation_id": "explorer_direct_evidence_explorer_direct_evidence_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/kg_triples",
+      "operation_id": "explorer_kg_triples_explorer_kg_triples_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/chapter_summaries",
+      "operation_id": "explorer_chapter_summaries_explorer_chapter_summaries_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/memories/{memory_id}",
+      "operation_id": "patch_memory_explorer_memories__memory_id__patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchMemoryRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/explorer/memories/{memory_id}",
+      "operation_id": "delete_memory_explorer_memories__memory_id__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/kg_triples/{triple_id}",
+      "operation_id": "patch_kg_triple_explorer_kg_triples__triple_id__patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchKGTripleRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/explorer/kg_triples/{triple_id}",
+      "operation_id": "delete_kg_triple_explorer_kg_triples__triple_id__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/review",
+      "operation_id": "patch_direct_evidence_review_explorer_direct_evidence__record_id__review_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchDirectEvidenceReviewRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/revalidate",
+      "operation_id": "patch_direct_evidence_revalidate_explorer_direct_evidence__record_id__revalidate_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/DirectEvidenceRevalidateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/tombstone",
+      "operation_id": "patch_direct_evidence_tombstone_explorer_direct_evidence__record_id__tombstone_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchDirectEvidenceTombstoneRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/supersede",
+      "operation_id": "patch_direct_evidence_supersede_explorer_direct_evidence__record_id__supersede_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchDirectEvidenceSupersedeRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/explorer/memories/regenerate",
+      "operation_id": "regenerate_memory_explorer_memories_regenerate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "inline:application/json"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/explorer/memories/{memory_id}/delete",
+      "operation_id": "delete_memory_via_post_explorer_memories__memory_id__delete_post",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/explorer/kg_triples/{triple_id}/delete",
+      "operation_id": "delete_kg_triple_via_post_explorer_kg_triples__triple_id__delete_post",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{chat_session_id}/export",
+      "operation_id": "export_session_sessions__chat_session_id__export_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{chat_session_id}/guidance-snapshot",
+      "operation_id": "get_guidance_snapshot_sessions__chat_session_id__guidance_snapshot_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{chat_session_id}/step7-health",
+      "operation_id": "get_step7_health_sessions__chat_session_id__step7_health_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/admin/reindex",
+      "operation_id": "admin_reindex_admin_reindex_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ReindexRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/admin/rescan",
+      "operation_id": "admin_rescan_admin_rescan_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/RescanRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/admin/session-migrate",
+      "operation_id": "admin_session_migrate_admin_session_migrate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/SessionMigrateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/import/hypamemory",
+      "operation_id": "import_hypamemory_import_hypamemory_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/HypaImportRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/audit",
+      "operation_id": "get_audit_logs_audit_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/feedback",
+      "operation_id": "post_feedback_feedback_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/FeedbackRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/feedback/latest",
+      "operation_id": "get_feedback_latest_feedback_latest_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/compare",
+      "operation_id": "compare_sessions_sessions_compare_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/active-states/{chat_session_id}",
+      "operation_id": "get_active_states_active_states__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/canonical-state-layer/{chat_session_id}",
+      "operation_id": "get_canonical_state_layer_canonical_state_layer__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/episodes/{chat_session_id}",
+      "operation_id": "get_episodes_episodes__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/generate",
+      "operation_id": "generate_episode_episodes_generate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeGenerateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chapters/generate",
+      "operation_id": "generate_chapter_chapters_generate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChapterGenerateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/arcs/generate",
+      "operation_id": "generate_arc_arcs_generate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ArcGenerateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/sagas/generate",
+      "operation_id": "generate_saga_sagas_generate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/SagaGenerateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chapters/dry-run",
+      "operation_id": "chapter_generation_dry_run_chapters_dry_run_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChapterDryRunRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/chapters/search",
+      "operation_id": "search_chapters_chapters_search_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ChapterSearchRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/search",
+      "operation_id": "search_episodes_episodes_search_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeSearchRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/episodes/detail/{episode_id}",
+      "operation_id": "get_episode_detail_episodes_detail__episode_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/episodes/{episode_id}",
+      "operation_id": "patch_episode_episodes__episode_id__patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchEpisodeRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/episodes/{episode_id}",
+      "operation_id": "delete_episode_episodes__episode_id__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/regenerate",
+      "operation_id": "regenerate_episode_episodes_regenerate_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeGenerateRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/merge",
+      "operation_id": "merge_episodes_endpoint_episodes_merge_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeMergeRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/storylines/{chat_session_id}",
+      "operation_id": "get_storylines_storylines__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/storylines/{storyline_id}",
+      "operation_id": "patch_storyline_storylines__storyline_id__patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchStorylineRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/storylines/{storyline_id}",
+      "operation_id": "delete_storyline_storylines__storyline_id__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/storylines/{storyline_id}/trust",
+      "operation_id": "patch_storyline_trust_storylines__storyline_id__trust_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/TrustControlRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/storylines/sync",
+      "operation_id": "sync_storylines_storylines_sync_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/StorylineSyncRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/characters/{chat_session_id}",
+      "operation_id": "get_characters_characters__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/characters/{chat_session_id}/{character_name}",
+      "operation_id": "get_character_detail_characters__chat_session_id___character_name__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/characters/{chat_session_id}/{character_name}",
+      "operation_id": "patch_character_characters__chat_session_id___character_name__patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchCharacterRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/characters/{chat_session_id}/{character_name}",
+      "operation_id": "delete_character_characters__chat_session_id___character_name__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/characters/{chat_session_id}/{character_name}/events",
+      "operation_id": "get_character_events_characters__chat_session_id___character_name__events_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/characters/{chat_session_id}/{character_name}/speech",
+      "operation_id": "patch_character_speech_characters__chat_session_id___character_name__speech_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchSpeechStyleRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/session/{chat_session_id}/active-scope",
+      "operation_id": "get_active_scope_session__chat_session_id__active_scope_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/session/{chat_session_id}/active-scope",
+      "operation_id": "set_active_scope_session__chat_session_id__active_scope_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/ActiveScopeRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/world-rules/{chat_session_id}",
+      "operation_id": "get_world_rules_world_rules__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/world-rules/{chat_session_id}/inherited",
+      "operation_id": "get_inherited_world_rules_world_rules__chat_session_id__inherited_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/world-rules/sync",
+      "operation_id": "sync_world_rules_world_rules_sync_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/WorldRuleSyncRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/world-rules/{rule_id}",
+      "operation_id": "patch_world_rule_world_rules__rule_id__patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchWorldRuleRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/world-rules/{rule_id}",
+      "operation_id": "delete_world_rule_world_rules__rule_id__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/world-rules/{rule_id}/trust",
+      "operation_id": "patch_world_rule_trust_world_rules__rule_id__trust_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/TrustControlRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/continuity-pack/{chat_session_id}",
+      "operation_id": "get_continuity_pack_continuity_pack__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/pending-threads/{chat_session_id}",
+      "operation_id": "get_pending_threads_pending_threads__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/pending-threads/{hook_id}",
+      "operation_id": "patch_continuity_hook_pending_threads__hook_id__patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PatchPendingThreadRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "DELETE",
+      "path": "/pending-threads/{hook_id}",
+      "operation_id": "delete_continuity_hook_pending_threads__hook_id__delete",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "PATCH",
+      "path": "/pending-threads/{hook_id}/trust",
+      "operation_id": "patch_continuity_hook_trust_pending_threads__hook_id__trust_patch",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/TrustControlRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/session-state/{chat_session_id}",
+      "operation_id": "get_session_state_session_state__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1c/{chat_session_id}",
+      "operation_id": "get_lc1c_memory_footprint_metrics_lc1c__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1d/{chat_session_id}",
+      "operation_id": "get_lc1d_integrity_replay_metrics_lc1d__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1e/{chat_session_id}",
+      "operation_id": "get_lc1e_context_budget_comparison_metrics_lc1e__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1f/{chat_session_id}",
+      "operation_id": "get_lc1f_non_regression_check_metrics_lc1f__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1g/{chat_session_id}",
+      "operation_id": "get_lc1g_accuracy_replay_metrics_lc1g__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1h/{chat_session_id}",
+      "operation_id": "get_lc1h_forgetting_hallucination_replay_metrics_lc1h__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1i/{chat_session_id}",
+      "operation_id": "get_lc1i_ablation_compare_metrics_lc1i__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1j/{chat_session_id}",
+      "operation_id": "get_lc1j_imported_idea_gate_metrics_lc1j__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1k/{chat_session_id}",
+      "operation_id": "get_lc1k_priority_budget_hybrid_replay_metrics_lc1k__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1l/{chat_session_id}",
+      "operation_id": "get_lc1l_imported_idea_contract_gate_metrics_lc1l__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1m/{chat_session_id}",
+      "operation_id": "get_lc1m_single_call_vs_split_comparison_metrics_lc1m__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1n/{chat_session_id}",
+      "operation_id": "get_lc1n_rebuild_backfill_rehearsal_metrics_lc1n__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1o/{chat_session_id}",
+      "operation_id": "get_lc1o_deterministic_preview_ledger_lightweight_validation_metrics_lc1o__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1p/{chat_session_id}",
+      "operation_id": "get_lc1p_evaluation_split_summary_metrics_lc1p__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1q/{chat_session_id}",
+      "operation_id": "get_lc1q_freshness_lag_summary_metrics_lc1q__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1r/regression-corpus",
+      "operation_id": "get_lc1r_regression_corpus_manifest_metrics_lc1r_regression_corpus_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1s/step17-bundle-closure",
+      "operation_id": "get_lc1s_step17_bundle_closure_metrics_lc1s_step17_bundle_closure_get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [],
+      "has_response_schema": false
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/tm1d/{chat_session_id}",
+      "operation_id": "get_tm1d_truth_maintenance_audit_replay_metrics_tm1d__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/momentum-packet/{chat_session_id}",
+      "operation_id": "get_momentum_packet_momentum_packet__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "GET",
+      "path": "/narrative-control/{chat_session_id}",
+      "operation_id": "get_narrative_control_narrative_control__chat_session_id__get",
+      "tags": [],
+      "request_schema_refs": [],
+      "has_request_body": false,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/complete-turn",
+      "operation_id": "complete_turn_m4_complete_turn_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/M4CompleteTurnRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/M4CompleteTurnResponse",
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    },
+    {
+      "method": "POST",
+      "path": "/prepare-turn",
+      "operation_id": "prepare_turn_prepare_turn_post",
+      "tags": [],
+      "request_schema_refs": [
+        "#/components/schemas/PrepareTurnRequest"
+      ],
+      "has_request_body": true,
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ],
+      "has_response_schema": true
+    }
+  ],
+  "openapi_warnings": [
+    {
+      "category": "UserWarning",
+      "message": "Duplicate Operation ID get_retrieval_index_runtime_config_retrieval_index_runtime_config_get for function get_retrieval_index_runtime_config at M:\\risulongmemory\\Archive Center Beta 0.8(fix)\\backend\\main.py"
+    }
+  ]
+}

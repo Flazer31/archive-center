@@ -1,0 +1,4420 @@
+{
+  "openapi_version": "3.1.0",
+  "info": {
+    "title": "RisuAI Memory Backend",
+    "version": "0.1.0"
+  },
+  "schema_component_count": 62,
+  "schemas": {
+    "ActiveScopeRequest": {
+      "properties": {
+        "active_scope": {
+          "type": "string",
+          "title": "Active Scope"
+        },
+        "scope_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Scope Name"
+        }
+      },
+      "type": "object",
+      "required": [
+        "active_scope"
+      ],
+      "title": "ActiveScopeRequest",
+      "description": "I-4c: ?몄뀡 ?쒖꽦 scope ?ㅼ젙 ?붿껌 怨꾩빟."
+    },
+    "ArcGenerateRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "from_turn": {
+          "type": "integer",
+          "title": "From Turn",
+          "default": 0
+        },
+        "to_turn": {
+          "type": "integer",
+          "title": "To Turn",
+          "default": 0
+        },
+        "force": {
+          "type": "boolean",
+          "title": "Force",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "ArcGenerateRequest"
+    },
+    "ChapterDryRunRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index",
+          "default": 0
+        },
+        "interval": {
+          "type": "integer",
+          "title": "Interval",
+          "default": 60
+        },
+        "force": {
+          "type": "boolean",
+          "title": "Force",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "ChapterDryRunRequest"
+    },
+    "ChapterGenerateRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "from_turn": {
+          "type": "integer",
+          "title": "From Turn",
+          "default": 0
+        },
+        "to_turn": {
+          "type": "integer",
+          "title": "To Turn",
+          "default": 0
+        },
+        "force": {
+          "type": "boolean",
+          "title": "Force",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "ChapterGenerateRequest"
+    },
+    "ChapterSearchRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "query": {
+          "type": "string",
+          "title": "Query",
+          "default": ""
+        },
+        "top_k": {
+          "type": "integer",
+          "title": "Top K",
+          "default": 3
+        }
+      },
+      "type": "object",
+      "title": "ChapterSearchRequest"
+    },
+    "ChatLogRepairEntryRequest": {
+      "properties": {
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index"
+        },
+        "user_content": {
+          "type": "string",
+          "title": "User Content",
+          "default": ""
+        },
+        "assistant_content": {
+          "type": "string",
+          "title": "Assistant Content",
+          "default": ""
+        },
+        "created_at": {
+          "type": "string",
+          "title": "Created At",
+          "default": ""
+        },
+        "source": {
+          "type": "string",
+          "title": "Source",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "required": [
+        "turn_index"
+      ],
+      "title": "ChatLogRepairEntryRequest"
+    },
+    "ChatLogRepairReplayRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/components/schemas/ChatLogRepairEntryRequest"
+          },
+          "type": "array",
+          "title": "Entries"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "title": "Dry Run",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "ChatLogRepairReplayRequest"
+    },
+    "ChromaShadowAdoptionGateRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "operator_evidence": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Operator Evidence"
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowAdoptionGateRequest"
+    },
+    "ChromaShadowBackfillBatchRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "batch_size_per_tier": {
+          "type": "integer",
+          "title": "Batch Size Per Tier",
+          "default": 25
+        },
+        "checkpoint": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Checkpoint"
+        },
+        "retry_rows": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array",
+          "title": "Retry Rows"
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowBackfillBatchRequest"
+    },
+    "ChromaShadowBackfillDryRunRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "sample_limit_per_tier": {
+          "type": "integer",
+          "title": "Sample Limit Per Tier",
+          "default": 2
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowBackfillDryRunRequest"
+    },
+    "ChromaShadowFallbackRunbookRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowFallbackRunbookRequest"
+    },
+    "ChromaShadowHealthProbeRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowHealthProbeRequest"
+    },
+    "ChromaShadowRebuildDrillRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "batch_size_per_tier": {
+          "type": "integer",
+          "title": "Batch Size Per Tier",
+          "default": 25
+        },
+        "checkpoint": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Checkpoint"
+        },
+        "retry_rows": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array",
+          "title": "Retry Rows"
+        },
+        "execute_rebuild_then_rollback": {
+          "type": "boolean",
+          "title": "Execute Rebuild Then Rollback",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowRebuildDrillRequest"
+    },
+    "ChromaShadowReembedAuditRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "queue_limit_per_tier": {
+          "type": "integer",
+          "title": "Queue Limit Per Tier",
+          "default": 25
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowReembedAuditRequest"
+    },
+    "ChromaShadowReleaseHygieneRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "adoption_operator_evidence": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Adoption Operator Evidence"
+        },
+        "release_evidence": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Release Evidence"
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowReleaseHygieneRequest"
+    },
+    "ChromaShadowVisibilityGuardRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "sample_limit": {
+          "type": "integer",
+          "title": "Sample Limit",
+          "default": 20
+        }
+      },
+      "type": "object",
+      "title": "ChromaShadowVisibilityGuardRequest"
+    },
+    "CompleteTurnRequest": {
+      "properties": {
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index"
+        },
+        "turn_content": {
+          "type": "string",
+          "title": "Turn Content"
+        },
+        "context": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array",
+          "title": "Context"
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "output_language_override": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output Language Override"
+        }
+      },
+      "type": "object",
+      "required": [
+        "turn_index",
+        "turn_content"
+      ],
+      "title": "CompleteTurnRequest"
+    },
+    "CriticTestRequest": {
+      "properties": {
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index"
+        },
+        "turn_content": {
+          "type": "string",
+          "title": "Turn Content"
+        },
+        "context": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array",
+          "title": "Context"
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "output_language_override": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output Language Override"
+        }
+      },
+      "type": "object",
+      "required": [
+        "turn_index",
+        "turn_content"
+      ],
+      "title": "CriticTestRequest"
+    },
+    "DirectEvidenceRevalidateRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "review_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Review Note"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "DirectEvidenceRevalidateRequest"
+    },
+    "DirectorPatchRequest": {
+      "properties": {
+        "scene_mandate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Scene Mandate"
+        },
+        "required_outcomes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Required Outcomes"
+        },
+        "forbidden_moves": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Forbidden Moves"
+        },
+        "pressure_level": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pressure Level"
+        },
+        "execution_checklist": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Execution Checklist"
+        },
+        "persona_guardrails": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Persona Guardrails"
+        },
+        "world_guardrails": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "World Guardrails"
+        }
+      },
+      "type": "object",
+      "title": "DirectorPatchRequest",
+      "description": "director state ?섎룞 ?⑥튂 ?붿껌.\n吏?뺥븯吏 ?딆? ?꾨뱶??蹂寃쏀븯吏 ?딅뒗??(partial update)."
+    },
+    "EpisodeGenerateRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "from_turn": {
+          "type": "integer",
+          "title": "From Turn",
+          "default": 0
+        },
+        "to_turn": {
+          "type": "integer",
+          "title": "To Turn",
+          "default": 0
+        },
+        "force": {
+          "type": "boolean",
+          "title": "Force",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "EpisodeGenerateRequest"
+    },
+    "EpisodeMergeRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "episode_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "title": "Episode Ids"
+        },
+        "force": {
+          "type": "boolean",
+          "title": "Force",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "EpisodeMergeRequest"
+    },
+    "EpisodeSearchRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "query": {
+          "type": "string",
+          "title": "Query",
+          "default": ""
+        },
+        "top_k": {
+          "type": "integer",
+          "title": "Top K",
+          "default": 3
+        }
+      },
+      "type": "object",
+      "title": "EpisodeSearchRequest"
+    },
+    "FeedbackRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "target_type": {
+          "type": "string",
+          "title": "Target Type"
+        },
+        "target_id": {
+          "type": "integer",
+          "title": "Target Id"
+        },
+        "feedback_value": {
+          "type": "string",
+          "title": "Feedback Value"
+        },
+        "feedback_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Feedback Note"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id",
+        "target_type",
+        "target_id",
+        "feedback_value"
+      ],
+      "title": "FeedbackRequest"
+    },
+    "HTTPValidationError": {
+      "properties": {
+        "detail": {
+          "items": {
+            "$ref": "#/components/schemas/ValidationError"
+          },
+          "type": "array",
+          "title": "Detail"
+        }
+      },
+      "type": "object",
+      "title": "HTTPValidationError"
+    },
+    "HypaImportRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "summaries": {
+          "items": {
+            "$ref": "#/components/schemas/HypaImportSummary"
+          },
+          "type": "array",
+          "title": "Summaries"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id",
+        "summaries"
+      ],
+      "title": "HypaImportRequest"
+    },
+    "HypaImportSummary": {
+      "properties": {
+        "text": {
+          "type": "string",
+          "title": "Text"
+        },
+        "is_important": {
+          "type": "boolean",
+          "title": "Is Important",
+          "default": false
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Tags"
+        },
+        "category": {
+          "type": "string",
+          "title": "Category",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "title": "HypaImportSummary"
+    },
+    "IntentRoutingRuntimeConfigRequest": {
+      "properties": {
+        "mode": {
+          "type": "string",
+          "title": "Mode",
+          "default": "single_query_shared"
+        }
+      },
+      "type": "object",
+      "title": "IntentRoutingRuntimeConfigRequest"
+    },
+    "KGRecallRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "entities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Entities"
+        },
+        "limit": {
+          "type": "integer",
+          "title": "Limit",
+          "default": 20
+        },
+        "current_turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Turn"
+        }
+      },
+      "type": "object",
+      "title": "KGRecallRequest"
+    },
+    "M4CompleteTurnRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index"
+        },
+        "user_input": {
+          "type": "string",
+          "title": "User Input",
+          "default": ""
+        },
+        "assistant_content": {
+          "type": "string",
+          "title": "Assistant Content",
+          "default": ""
+        },
+        "context_messages": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array",
+          "title": "Context Messages"
+        },
+        "improvement_trace": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Improvement Trace"
+        },
+        "output_language_override": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Output Language Override"
+        },
+        "request_type": {
+          "type": "string",
+          "title": "Request Type",
+          "default": "model"
+        },
+        "client_meta": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Client Meta"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id",
+        "turn_index"
+      ],
+      "title": "M4CompleteTurnRequest"
+    },
+    "M4CompleteTurnResponse": {
+      "properties": {
+        "status": {
+          "type": "string",
+          "title": "Status",
+          "default": "ok"
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index",
+          "default": 0
+        },
+        "generated_at": {
+          "type": "string",
+          "title": "Generated At",
+          "default": ""
+        },
+        "save_ok": {
+          "type": "boolean",
+          "title": "Save Ok",
+          "default": false
+        },
+        "save_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Save Error"
+        },
+        "critic_triggered": {
+          "type": "boolean",
+          "title": "Critic Triggered",
+          "default": false
+        },
+        "critic_result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Critic Result"
+        },
+        "episode_result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Episode Result"
+        },
+        "chapter_result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Chapter Result"
+        },
+        "summary_fallback": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Summary Fallback"
+        },
+        "maintenance_enqueued": {
+          "type": "boolean",
+          "title": "Maintenance Enqueued",
+          "default": false
+        },
+        "fail_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Fail Reasons"
+        },
+        "trace_handoff": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trace Handoff"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Warnings"
+        }
+      },
+      "type": "object",
+      "title": "M4CompleteTurnResponse"
+    },
+    "MaintenanceEnqueueRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index",
+          "default": -1
+        },
+        "shadow_only": {
+          "type": "boolean",
+          "title": "Shadow Only",
+          "default": true
+        },
+        "assistant_response": {
+          "type": "string",
+          "title": "Assistant Response",
+          "default": ""
+        },
+        "recent_responses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Recent Responses"
+        },
+        "supervisor_result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Supervisor Result"
+        },
+        "summary_refresh": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Summary Refresh"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "MaintenanceEnqueueRequest",
+      "description": "Request body for POST /maintenance/enqueue."
+    },
+    "MaintenanceEnqueueResponse": {
+      "properties": {
+        "status": {
+          "type": "string",
+          "title": "Status"
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index"
+        },
+        "queue_depth": {
+          "type": "integer",
+          "title": "Queue Depth",
+          "default": 0
+        }
+      },
+      "type": "object",
+      "required": [
+        "status",
+        "chat_session_id",
+        "turn_index"
+      ],
+      "title": "MaintenanceEnqueueResponse",
+      "description": "Response body for POST /maintenance/enqueue."
+    },
+    "MaintenancePassRequest": {
+      "properties": {
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index",
+          "default": -1
+        },
+        "shadow_only": {
+          "type": "boolean",
+          "title": "Shadow Only",
+          "default": true
+        },
+        "assistant_response": {
+          "type": "string",
+          "title": "Assistant Response",
+          "default": ""
+        },
+        "recent_responses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "title": "Recent Responses"
+        },
+        "supervisor_result": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Supervisor Result"
+        }
+      },
+      "type": "object",
+      "title": "MaintenancePassRequest",
+      "description": "Request body for POST /maintenance-pass/{session_id}.\n\nRequest contract for the maintenance-pass endpoint; result and drift-signal\ncontracts live alongside it in this module."
+    },
+    "PatchCharacterRequest": {
+      "properties": {
+        "appearance_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Appearance Json"
+        },
+        "personality_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Personality Json"
+        },
+        "status_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status Json"
+        },
+        "relationships_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Relationships Json"
+        },
+        "speech_style_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Speech Style Json"
+        }
+      },
+      "type": "object",
+      "title": "PatchCharacterRequest"
+    },
+    "PatchDirectEvidenceReviewRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "capture_verification": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Capture Verification"
+        },
+        "repair_needed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Repair Needed"
+        },
+        "archive_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Archive State"
+        },
+        "committed_gate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Committed Gate"
+        },
+        "review_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Review Note"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "PatchDirectEvidenceReviewRequest"
+    },
+    "PatchDirectEvidenceSupersedeRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "superseded_by_id": {
+          "type": "integer",
+          "title": "Superseded By Id"
+        },
+        "review_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Review Note"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id",
+        "superseded_by_id"
+      ],
+      "title": "PatchDirectEvidenceSupersedeRequest"
+    },
+    "PatchDirectEvidenceTombstoneRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "tombstoned": {
+          "type": "boolean",
+          "title": "Tombstoned",
+          "default": true
+        },
+        "review_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Review Note"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "PatchDirectEvidenceTombstoneRequest"
+    },
+    "PatchEpisodeRequest": {
+      "properties": {
+        "summary_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Summary Text"
+        },
+        "from_turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "From Turn"
+        },
+        "to_turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "To Turn"
+        },
+        "key_entities": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Key Entities"
+        },
+        "key_events": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Key Events"
+        },
+        "relationship_changes_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Relationship Changes Json"
+        },
+        "open_loops_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Open Loops Json"
+        }
+      },
+      "type": "object",
+      "title": "PatchEpisodeRequest"
+    },
+    "PatchKGTripleRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Subject"
+        },
+        "predicate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Predicate"
+        },
+        "object": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Object"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Valid From"
+        },
+        "valid_to": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Valid To"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "PatchKGTripleRequest"
+    },
+    "PatchMemoryRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "summary_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Summary Json"
+        },
+        "importance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Importance"
+        },
+        "archive_wing": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Archive Wing"
+        },
+        "archive_room": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Archive Room"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "PatchMemoryRequest"
+    },
+    "PatchPendingThreadRequest": {
+      "properties": {
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        },
+        "thread_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Thread Type"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Title"
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Owner"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Confidence"
+        },
+        "details_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Details Json"
+        },
+        "resolution_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resolution Note"
+        }
+      },
+      "type": "object",
+      "title": "PatchPendingThreadRequest"
+    },
+    "PatchSpeechStyleRequest": {
+      "properties": {
+        "default_tone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default Tone"
+        },
+        "honorific_style": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Honorific Style"
+        },
+        "speech_notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Speech Notes"
+        }
+      },
+      "type": "object",
+      "title": "PatchSpeechStyleRequest",
+      "description": "E-3: 罹먮┃??留먰닾 ?꾩슜 ?섏젙 紐⑤뜽."
+    },
+    "PatchStorylineRequest": {
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Name"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        },
+        "entities_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Entities Json"
+        },
+        "current_context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Current Context"
+        },
+        "key_points_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Key Points Json"
+        },
+        "ongoing_tensions_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ongoing Tensions Json"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Confidence"
+        },
+        "evidence_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Evidence Count"
+        },
+        "last_evidence_turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Evidence Turn"
+        },
+        "first_turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "First Turn"
+        },
+        "last_turn": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Turn"
+        }
+      },
+      "type": "object",
+      "title": "PatchStorylineRequest"
+    },
+    "PatchWorldRuleRequest": {
+      "properties": {
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Scope"
+        },
+        "scope_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Scope Name"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Category"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Key"
+        },
+        "value_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value Json"
+        },
+        "genre": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Genre"
+        }
+      },
+      "type": "object",
+      "title": "PatchWorldRuleRequest"
+    },
+    "PrepareTurnRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "request_type": {
+          "type": "string",
+          "title": "Request Type",
+          "default": "model"
+        },
+        "raw_user_input": {
+          "type": "string",
+          "title": "Raw User Input",
+          "default": ""
+        },
+        "messages": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array",
+          "title": "Messages"
+        },
+        "continuity_trigger_mode": {
+          "type": "string",
+          "title": "Continuity Trigger Mode",
+          "default": "none"
+        },
+        "continuity_query": {
+          "type": "string",
+          "title": "Continuity Query",
+          "default": ""
+        },
+        "turn_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turn Index"
+        },
+        "settings": {
+          "$ref": "#/components/schemas/PrepareTurnSettings"
+        },
+        "client_meta": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Client Meta"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "PrepareTurnRequest"
+    },
+    "PrepareTurnSettings": {
+      "properties": {
+        "guide_mode": {
+          "type": "string",
+          "title": "Guide Mode",
+          "default": "off"
+        },
+        "narrative_stance": {
+          "type": "string",
+          "title": "Narrative Stance",
+          "default": "balanced"
+        },
+        "apply_mode": {
+          "type": "string",
+          "title": "Apply Mode",
+          "default": "shadow"
+        },
+        "takeover_mode": {
+          "type": "string",
+          "title": "Takeover Mode",
+          "default": "off"
+        },
+        "injection_enabled": {
+          "type": "boolean",
+          "title": "Injection Enabled",
+          "default": true
+        },
+        "input_context_enabled": {
+          "type": "boolean",
+          "title": "Input Context Enabled",
+          "default": true
+        },
+        "max_injection_chars": {
+          "type": "integer",
+          "title": "Max Injection Chars",
+          "default": 3000
+        },
+        "max_input_context_chars": {
+          "type": "integer",
+          "title": "Max Input Context Chars",
+          "default": 800
+        },
+        "episode_interval_turns": {
+          "type": "integer",
+          "title": "Episode Interval Turns",
+          "default": 10
+        },
+        "supervisor_enabled": {
+          "type": "boolean",
+          "title": "Supervisor Enabled",
+          "default": true
+        },
+        "top_k": {
+          "type": "integer",
+          "title": "Top K",
+          "default": 5
+        }
+      },
+      "type": "object",
+      "title": "PrepareTurnSettings"
+    },
+    "PromptUpdateRequest": {
+      "properties": {
+        "content": {
+          "type": "string",
+          "title": "Content",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "title": "PromptUpdateRequest"
+    },
+    "ProxyPluginMainRequest": {
+      "properties": {
+        "messages": {
+          "items": {},
+          "type": "array",
+          "title": "Messages"
+        },
+        "model": {
+          "type": "string",
+          "title": "Model",
+          "default": ""
+        },
+        "max_tokens": {
+          "type": "integer",
+          "title": "Max Tokens",
+          "default": 1024
+        },
+        "temperature": {
+          "type": "number",
+          "title": "Temperature",
+          "default": 0.7
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Completion Tokens"
+        },
+        "reasoning_preset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reasoning Preset"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reasoning Effort"
+        },
+        "reasoning_budget_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reasoning Budget Tokens"
+        },
+        "budget_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Budget Tokens"
+        },
+        "glm_thinking_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Glm Thinking Type"
+        },
+        "endpoint": {
+          "type": "string",
+          "title": "Endpoint",
+          "default": ""
+        },
+        "api_key": {
+          "type": "string",
+          "title": "Api Key",
+          "default": ""
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timeout Ms"
+        }
+      },
+      "type": "object",
+      "required": [
+        "messages"
+      ],
+      "title": "ProxyPluginMainRequest"
+    },
+    "ReindexRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "force": {
+          "type": "boolean",
+          "title": "Force",
+          "default": false
+        },
+        "batch_size": {
+          "type": "integer",
+          "title": "Batch Size",
+          "default": 20
+        },
+        "max_items": {
+          "type": "integer",
+          "title": "Max Items",
+          "default": 200
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "ReindexRequest"
+    },
+    "RescanRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "max_items": {
+          "type": "integer",
+          "title": "Max Items",
+          "default": 50
+        },
+        "turn_indices": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "title": "Turn Indices"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id"
+      ],
+      "title": "RescanRequest"
+    },
+    "RetrievalIndexRuntimeConfigRequest": {
+      "properties": {
+        "mode": {
+          "type": "string",
+          "title": "Mode",
+          "default": "shadow"
+        }
+      },
+      "type": "object",
+      "title": "RetrievalIndexRuntimeConfigRequest"
+    },
+    "SagaGenerateRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "from_turn": {
+          "type": "integer",
+          "title": "From Turn",
+          "default": 0
+        },
+        "to_turn": {
+          "type": "integer",
+          "title": "To Turn",
+          "default": 0
+        },
+        "force": {
+          "type": "boolean",
+          "title": "Force",
+          "default": false
+        }
+      },
+      "type": "object",
+      "title": "SagaGenerateRequest"
+    },
+    "SaveEffectiveInputRequest": {
+      "properties": {
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index"
+        },
+        "effective_input": {
+          "type": "string",
+          "title": "Effective Input",
+          "default": ""
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "required": [
+        "turn_index"
+      ],
+      "title": "SaveEffectiveInputRequest"
+    },
+    "SaveTurnRequest": {
+      "properties": {
+        "turn_index": {
+          "type": "integer",
+          "title": "Turn Index"
+        },
+        "user_content": {
+          "type": "string",
+          "title": "User Content",
+          "default": ""
+        },
+        "assistant_content": {
+          "type": "string",
+          "title": "Assistant Content",
+          "default": ""
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "required": [
+        "turn_index"
+      ],
+      "title": "SaveTurnRequest"
+    },
+    "SearchRequest": {
+      "properties": {
+        "user_input": {
+          "type": "string",
+          "title": "User Input"
+        },
+        "wing": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Wing"
+        },
+        "top_k": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Top K"
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        }
+      },
+      "type": "object",
+      "required": [
+        "user_input"
+      ],
+      "title": "SearchRequest"
+    },
+    "SessionMigrateRequest": {
+      "properties": {
+        "source_session_id": {
+          "type": "string",
+          "title": "Source Session Id"
+        },
+        "target_session_id": {
+          "type": "string",
+          "title": "Target Session Id"
+        },
+        "dry_run": {
+          "type": "boolean",
+          "title": "Dry Run",
+          "default": false
+        },
+        "gate_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gate Status"
+        },
+        "gate_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gate Reason"
+        },
+        "gate_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gate Confidence"
+        },
+        "gate_reads": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Gate Reads"
+        }
+      },
+      "type": "object",
+      "required": [
+        "source_session_id",
+        "target_session_id"
+      ],
+      "title": "SessionMigrateRequest"
+    },
+    "StorylineSyncRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "supervisor_result": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Supervisor Result"
+        },
+        "mode": {
+          "type": "string",
+          "title": "Mode",
+          "default": "dry_run"
+        },
+        "turn_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turn Index"
+        }
+      },
+      "type": "object",
+      "title": "StorylineSyncRequest"
+    },
+    "SupervisorRequest": {
+      "properties": {
+        "context_messages": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array",
+          "title": "Context Messages"
+        },
+        "wake_up_context": {
+          "type": "string",
+          "title": "Wake Up Context",
+          "default": ""
+        },
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id",
+          "default": ""
+        },
+        "guide_mode": {
+          "type": "string",
+          "title": "Guide Mode",
+          "default": "off"
+        },
+        "guide_suffix": {
+          "type": "string",
+          "title": "Guide Suffix",
+          "default": ""
+        },
+        "narrative_stance": {
+          "type": "string",
+          "title": "Narrative Stance",
+          "default": "balanced"
+        },
+        "narrative_stance_suffix": {
+          "type": "string",
+          "title": "Narrative Stance Suffix",
+          "default": ""
+        },
+        "narrative_stance_bounds": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Narrative Stance Bounds"
+        },
+        "momentum_packet": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Momentum Packet"
+        },
+        "persistent_guidance": {
+          "type": "string",
+          "title": "Persistent Guidance",
+          "default": ""
+        },
+        "auto_advance_trigger": {
+          "type": "string",
+          "title": "Auto Advance Trigger",
+          "default": "none"
+        }
+      },
+      "type": "object",
+      "title": "SupervisorRequest"
+    },
+    "TrustControlRequest": {
+      "properties": {
+        "pinned": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pinned"
+        },
+        "suppressed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Suppressed"
+        },
+        "user_corrected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "User Corrected"
+        }
+      },
+      "type": "object",
+      "title": "TrustControlRequest",
+      "description": "PATCH /{model}/{id}/trust 怨듯넻 ?붿껌 怨꾩빟.\n\n???꾨뱶 紐⑤몢 ?좏깮????蹂寃쏀븷 ?꾨뱶留?蹂대궡硫??쒕떎.\npinned=True  ??injection budget 寃쎌웳 ???곗꽑 ?좎?\nsuppressed=True ??injection?먯꽌 ?꾩쟾 ?쒖쇅\nuser_corrected=True ??AI ?먮룞 ?㏃벐湲?李⑤떒 (?ъ슜??吏곸젒 ?섏젙 ?쒖떆)"
+    },
+    "ValidationError": {
+      "properties": {
+        "loc": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "type": "array",
+          "title": "Location"
+        },
+        "msg": {
+          "type": "string",
+          "title": "Message"
+        },
+        "type": {
+          "type": "string",
+          "title": "Error Type"
+        },
+        "input": {
+          "title": "Input"
+        },
+        "ctx": {
+          "type": "object",
+          "title": "Context"
+        }
+      },
+      "type": "object",
+      "required": [
+        "loc",
+        "msg",
+        "type"
+      ],
+      "title": "ValidationError"
+    },
+    "WorldRuleSyncRequest": {
+      "properties": {
+        "chat_session_id": {
+          "type": "string",
+          "title": "Chat Session Id"
+        },
+        "supervisor_response": {
+          "additionalProperties": true,
+          "type": "object",
+          "title": "Supervisor Response"
+        },
+        "turn_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turn Index"
+        },
+        "mode": {
+          "type": "string",
+          "title": "Mode",
+          "default": "apply"
+        }
+      },
+      "type": "object",
+      "required": [
+        "chat_session_id",
+        "supervisor_response"
+      ],
+      "title": "WorldRuleSyncRequest",
+      "description": "supervisor ?묐떟 ?먮낯??諛쏆븘 section_world ?뚯떛 + UPSERT."
+    }
+  },
+  "schema_usage": {
+    "ProxyPluginMainRequest": {
+      "used_in": [
+        "POST /proxy/plugin-main"
+      ]
+    },
+    "HTTPValidationError": {
+      "used_in": [
+        "POST /proxy/plugin-main",
+        "POST /config/update",
+        "PATCH /narrative-control/{chat_session_id}/director-patch",
+        "POST /maintenance-pass/{chat_session_id}",
+        "POST /maintenance/enqueue",
+        "GET /maintenance/queue-status",
+        "GET /long-session-health/{session_id}",
+        "POST /turns",
+        "POST /turns/repair-replay",
+        "POST /effective-inputs",
+        "DELETE /rollback/{turn_index}",
+        "POST /search",
+        "POST /retrieval-index/runtime-config",
+        "POST /chroma-shadow/backfill-dry-run",
+        "POST /chroma-shadow/backfill-batch",
+        "POST /chroma-shadow/reembed-audit",
+        "POST /chroma-shadow/health-probe",
+        "POST /chroma-shadow/fallback-runbook",
+        "POST /chroma-shadow/rebuild-drill",
+        "POST /chroma-shadow/adoption-gate",
+        "POST /chroma-shadow/release-hygiene",
+        "POST /chroma-shadow/visibility-guard",
+        "POST /intent-routing/runtime-config",
+        "GET /retrieval-index/{chat_session_id}",
+        "GET /retrieval-index/{chat_session_id}/source-row",
+        "POST /critic/test",
+        "POST /turns/complete",
+        "POST /kg/recall",
+        "GET /kg/recall",
+        "POST /supervisor",
+        "GET /prompts/{prompt_name}",
+        "PUT /prompts/{prompt_name}",
+        "GET /explorer/chat_logs",
+        "GET /explorer/memories",
+        "GET /explorer/direct-evidence",
+        "GET /explorer/kg_triples",
+        "GET /explorer/chapter_summaries",
+        "PATCH /explorer/memories/{memory_id}",
+        "DELETE /explorer/memories/{memory_id}",
+        "PATCH /explorer/kg_triples/{triple_id}",
+        "DELETE /explorer/kg_triples/{triple_id}",
+        "PATCH /explorer/direct-evidence/{record_id}/review",
+        "PATCH /explorer/direct-evidence/{record_id}/revalidate",
+        "PATCH /explorer/direct-evidence/{record_id}/tombstone",
+        "PATCH /explorer/direct-evidence/{record_id}/supersede",
+        "POST /explorer/memories/regenerate",
+        "POST /explorer/memories/{memory_id}/delete",
+        "POST /explorer/kg_triples/{triple_id}/delete",
+        "GET /sessions/{chat_session_id}/export",
+        "GET /sessions/{chat_session_id}/guidance-snapshot",
+        "GET /sessions/{chat_session_id}/step7-health",
+        "POST /admin/reindex",
+        "POST /admin/rescan",
+        "POST /admin/session-migrate",
+        "POST /import/hypamemory",
+        "GET /audit",
+        "POST /feedback",
+        "GET /feedback/latest",
+        "GET /sessions/compare",
+        "GET /active-states/{chat_session_id}",
+        "GET /canonical-state-layer/{chat_session_id}",
+        "GET /episodes/{chat_session_id}",
+        "POST /episodes/generate",
+        "POST /chapters/generate",
+        "POST /arcs/generate",
+        "POST /sagas/generate",
+        "POST /chapters/dry-run",
+        "POST /chapters/search",
+        "POST /episodes/search",
+        "GET /episodes/detail/{episode_id}",
+        "PATCH /episodes/{episode_id}",
+        "DELETE /episodes/{episode_id}",
+        "POST /episodes/regenerate",
+        "POST /episodes/merge",
+        "GET /storylines/{chat_session_id}",
+        "PATCH /storylines/{storyline_id}",
+        "DELETE /storylines/{storyline_id}",
+        "PATCH /storylines/{storyline_id}/trust",
+        "POST /storylines/sync",
+        "GET /characters/{chat_session_id}",
+        "GET /characters/{chat_session_id}/{character_name}",
+        "PATCH /characters/{chat_session_id}/{character_name}",
+        "DELETE /characters/{chat_session_id}/{character_name}",
+        "GET /characters/{chat_session_id}/{character_name}/events",
+        "PATCH /characters/{chat_session_id}/{character_name}/speech",
+        "GET /session/{chat_session_id}/active-scope",
+        "PATCH /session/{chat_session_id}/active-scope",
+        "GET /world-rules/{chat_session_id}",
+        "GET /world-rules/{chat_session_id}/inherited",
+        "POST /world-rules/sync",
+        "PATCH /world-rules/{rule_id}",
+        "DELETE /world-rules/{rule_id}",
+        "PATCH /world-rules/{rule_id}/trust",
+        "GET /continuity-pack/{chat_session_id}",
+        "GET /pending-threads/{chat_session_id}",
+        "PATCH /pending-threads/{hook_id}",
+        "DELETE /pending-threads/{hook_id}",
+        "PATCH /pending-threads/{hook_id}/trust",
+        "GET /session-state/{chat_session_id}",
+        "GET /metrics/lc1c/{chat_session_id}",
+        "GET /metrics/lc1d/{chat_session_id}",
+        "GET /metrics/lc1e/{chat_session_id}",
+        "GET /metrics/lc1f/{chat_session_id}",
+        "GET /metrics/lc1g/{chat_session_id}",
+        "GET /metrics/lc1h/{chat_session_id}",
+        "GET /metrics/lc1i/{chat_session_id}",
+        "GET /metrics/lc1j/{chat_session_id}",
+        "GET /metrics/lc1k/{chat_session_id}",
+        "GET /metrics/lc1l/{chat_session_id}",
+        "GET /metrics/lc1m/{chat_session_id}",
+        "GET /metrics/lc1n/{chat_session_id}",
+        "GET /metrics/lc1o/{chat_session_id}",
+        "GET /metrics/lc1p/{chat_session_id}",
+        "GET /metrics/lc1q/{chat_session_id}",
+        "GET /metrics/tm1d/{chat_session_id}",
+        "GET /momentum-packet/{chat_session_id}",
+        "GET /narrative-control/{chat_session_id}",
+        "POST /complete-turn",
+        "POST /prepare-turn"
+      ]
+    },
+    "DirectorPatchRequest": {
+      "used_in": [
+        "PATCH /narrative-control/{chat_session_id}/director-patch"
+      ]
+    },
+    "MaintenancePassRequest": {
+      "used_in": [
+        "POST /maintenance-pass/{chat_session_id}"
+      ]
+    },
+    "MaintenanceEnqueueRequest": {
+      "used_in": [
+        "POST /maintenance/enqueue"
+      ]
+    },
+    "MaintenanceEnqueueResponse": {
+      "used_in": [
+        "POST /maintenance/enqueue"
+      ]
+    },
+    "SaveTurnRequest": {
+      "used_in": [
+        "POST /turns"
+      ]
+    },
+    "ChatLogRepairReplayRequest": {
+      "used_in": [
+        "POST /turns/repair-replay"
+      ]
+    },
+    "SaveEffectiveInputRequest": {
+      "used_in": [
+        "POST /effective-inputs"
+      ]
+    },
+    "SearchRequest": {
+      "used_in": [
+        "POST /search"
+      ]
+    },
+    "RetrievalIndexRuntimeConfigRequest": {
+      "used_in": [
+        "POST /retrieval-index/runtime-config"
+      ]
+    },
+    "ChromaShadowBackfillDryRunRequest": {
+      "used_in": [
+        "POST /chroma-shadow/backfill-dry-run"
+      ]
+    },
+    "ChromaShadowBackfillBatchRequest": {
+      "used_in": [
+        "POST /chroma-shadow/backfill-batch"
+      ]
+    },
+    "ChromaShadowReembedAuditRequest": {
+      "used_in": [
+        "POST /chroma-shadow/reembed-audit"
+      ]
+    },
+    "ChromaShadowHealthProbeRequest": {
+      "used_in": [
+        "POST /chroma-shadow/health-probe"
+      ]
+    },
+    "ChromaShadowFallbackRunbookRequest": {
+      "used_in": [
+        "POST /chroma-shadow/fallback-runbook"
+      ]
+    },
+    "ChromaShadowRebuildDrillRequest": {
+      "used_in": [
+        "POST /chroma-shadow/rebuild-drill"
+      ]
+    },
+    "ChromaShadowAdoptionGateRequest": {
+      "used_in": [
+        "POST /chroma-shadow/adoption-gate"
+      ]
+    },
+    "ChromaShadowReleaseHygieneRequest": {
+      "used_in": [
+        "POST /chroma-shadow/release-hygiene"
+      ]
+    },
+    "ChromaShadowVisibilityGuardRequest": {
+      "used_in": [
+        "POST /chroma-shadow/visibility-guard"
+      ]
+    },
+    "IntentRoutingRuntimeConfigRequest": {
+      "used_in": [
+        "POST /intent-routing/runtime-config"
+      ]
+    },
+    "CriticTestRequest": {
+      "used_in": [
+        "POST /critic/test"
+      ]
+    },
+    "CompleteTurnRequest": {
+      "used_in": [
+        "POST /turns/complete"
+      ]
+    },
+    "KGRecallRequest": {
+      "used_in": [
+        "POST /kg/recall"
+      ]
+    },
+    "SupervisorRequest": {
+      "used_in": [
+        "POST /supervisor"
+      ]
+    },
+    "PromptUpdateRequest": {
+      "used_in": [
+        "PUT /prompts/{prompt_name}"
+      ]
+    },
+    "PatchMemoryRequest": {
+      "used_in": [
+        "PATCH /explorer/memories/{memory_id}"
+      ]
+    },
+    "PatchKGTripleRequest": {
+      "used_in": [
+        "PATCH /explorer/kg_triples/{triple_id}"
+      ]
+    },
+    "PatchDirectEvidenceReviewRequest": {
+      "used_in": [
+        "PATCH /explorer/direct-evidence/{record_id}/review"
+      ]
+    },
+    "DirectEvidenceRevalidateRequest": {
+      "used_in": [
+        "PATCH /explorer/direct-evidence/{record_id}/revalidate"
+      ]
+    },
+    "PatchDirectEvidenceTombstoneRequest": {
+      "used_in": [
+        "PATCH /explorer/direct-evidence/{record_id}/tombstone"
+      ]
+    },
+    "PatchDirectEvidenceSupersedeRequest": {
+      "used_in": [
+        "PATCH /explorer/direct-evidence/{record_id}/supersede"
+      ]
+    },
+    "ReindexRequest": {
+      "used_in": [
+        "POST /admin/reindex"
+      ]
+    },
+    "RescanRequest": {
+      "used_in": [
+        "POST /admin/rescan"
+      ]
+    },
+    "SessionMigrateRequest": {
+      "used_in": [
+        "POST /admin/session-migrate"
+      ]
+    },
+    "HypaImportRequest": {
+      "used_in": [
+        "POST /import/hypamemory"
+      ]
+    },
+    "FeedbackRequest": {
+      "used_in": [
+        "POST /feedback"
+      ]
+    },
+    "EpisodeGenerateRequest": {
+      "used_in": [
+        "POST /episodes/generate",
+        "POST /episodes/regenerate"
+      ]
+    },
+    "ChapterGenerateRequest": {
+      "used_in": [
+        "POST /chapters/generate"
+      ]
+    },
+    "ArcGenerateRequest": {
+      "used_in": [
+        "POST /arcs/generate"
+      ]
+    },
+    "SagaGenerateRequest": {
+      "used_in": [
+        "POST /sagas/generate"
+      ]
+    },
+    "ChapterDryRunRequest": {
+      "used_in": [
+        "POST /chapters/dry-run"
+      ]
+    },
+    "ChapterSearchRequest": {
+      "used_in": [
+        "POST /chapters/search"
+      ]
+    },
+    "EpisodeSearchRequest": {
+      "used_in": [
+        "POST /episodes/search"
+      ]
+    },
+    "PatchEpisodeRequest": {
+      "used_in": [
+        "PATCH /episodes/{episode_id}"
+      ]
+    },
+    "EpisodeMergeRequest": {
+      "used_in": [
+        "POST /episodes/merge"
+      ]
+    },
+    "PatchStorylineRequest": {
+      "used_in": [
+        "PATCH /storylines/{storyline_id}"
+      ]
+    },
+    "TrustControlRequest": {
+      "used_in": [
+        "PATCH /storylines/{storyline_id}/trust",
+        "PATCH /world-rules/{rule_id}/trust",
+        "PATCH /pending-threads/{hook_id}/trust"
+      ]
+    },
+    "StorylineSyncRequest": {
+      "used_in": [
+        "POST /storylines/sync"
+      ]
+    },
+    "PatchCharacterRequest": {
+      "used_in": [
+        "PATCH /characters/{chat_session_id}/{character_name}"
+      ]
+    },
+    "PatchSpeechStyleRequest": {
+      "used_in": [
+        "PATCH /characters/{chat_session_id}/{character_name}/speech"
+      ]
+    },
+    "ActiveScopeRequest": {
+      "used_in": [
+        "PATCH /session/{chat_session_id}/active-scope"
+      ]
+    },
+    "WorldRuleSyncRequest": {
+      "used_in": [
+        "POST /world-rules/sync"
+      ]
+    },
+    "PatchWorldRuleRequest": {
+      "used_in": [
+        "PATCH /world-rules/{rule_id}"
+      ]
+    },
+    "PatchPendingThreadRequest": {
+      "used_in": [
+        "PATCH /pending-threads/{hook_id}"
+      ]
+    },
+    "M4CompleteTurnRequest": {
+      "used_in": [
+        "POST /complete-turn"
+      ]
+    },
+    "M4CompleteTurnResponse": {
+      "used_in": [
+        "POST /complete-turn"
+      ]
+    },
+    "PrepareTurnRequest": {
+      "used_in": [
+        "POST /prepare-turn"
+      ]
+    }
+  },
+  "route_schema_refs": [
+    {
+      "method": "POST",
+      "path": "/proxy/plugin-main",
+      "operation_id": "proxy_plugin_main_proxy_plugin_main_post",
+      "request_schema_refs": [
+        "#/components/schemas/ProxyPluginMainRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/config/update",
+      "operation_id": "config_update_config_update_post",
+      "request_schema_refs": [
+        "inline:application/json"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/narrative-control/{chat_session_id}/director-patch",
+      "operation_id": "patch_director_state_narrative_control__chat_session_id__director_patch_patch",
+      "request_schema_refs": [
+        "#/components/schemas/DirectorPatchRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance-pass/{chat_session_id}",
+      "operation_id": "run_maintenance_pass_maintenance_pass__chat_session_id__post",
+      "request_schema_refs": [
+        "#/components/schemas/MaintenancePassRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/enqueue",
+      "operation_id": "enqueue_maintenance_job_maintenance_enqueue_post",
+      "request_schema_refs": [
+        "#/components/schemas/MaintenanceEnqueueRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/MaintenanceEnqueueResponse",
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/queue-status",
+      "operation_id": "get_maintenance_queue_status_maintenance_queue_status_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/long-session-health/{session_id}",
+      "operation_id": "get_long_session_health_long_session_health__session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "operation_id": "health_health_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "POST",
+      "path": "/turns",
+      "operation_id": "save_turn_turns_post",
+      "request_schema_refs": [
+        "#/components/schemas/SaveTurnRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/turns/repair-replay",
+      "operation_id": "repair_turn_replay_turns_repair_replay_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChatLogRepairReplayRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/effective-inputs",
+      "operation_id": "save_effective_input_effective_inputs_post",
+      "request_schema_refs": [
+        "#/components/schemas/SaveEffectiveInputRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/rollback/{turn_index}",
+      "operation_id": "rollback_rollback__turn_index__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/search",
+      "operation_id": "search_search_post",
+      "request_schema_refs": [
+        "#/components/schemas/SearchRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/retrieval-index/runtime-config",
+      "operation_id": "get_retrieval_index_runtime_config_retrieval_index_runtime_config_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "POST",
+      "path": "/retrieval-index/runtime-config",
+      "operation_id": "update_retrieval_index_runtime_config_retrieval_index_runtime_config_post",
+      "request_schema_refs": [
+        "#/components/schemas/RetrievalIndexRuntimeConfigRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/chroma-shadow/preflight",
+      "operation_id": "get_chroma_shadow_preflight_chroma_shadow_preflight_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/bootstrap",
+      "operation_id": "post_chroma_shadow_bootstrap_chroma_shadow_bootstrap_post",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/backfill-dry-run",
+      "operation_id": "post_chroma_shadow_backfill_dry_run_chroma_shadow_backfill_dry_run_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowBackfillDryRunRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/backfill-batch",
+      "operation_id": "post_chroma_shadow_backfill_batch_chroma_shadow_backfill_batch_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowBackfillBatchRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/reembed-audit",
+      "operation_id": "post_chroma_shadow_reembed_audit_chroma_shadow_reembed_audit_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowReembedAuditRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/health-probe",
+      "operation_id": "post_chroma_shadow_health_probe_chroma_shadow_health_probe_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowHealthProbeRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/fallback-runbook",
+      "operation_id": "post_chroma_shadow_fallback_runbook_chroma_shadow_fallback_runbook_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowFallbackRunbookRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/rebuild-drill",
+      "operation_id": "post_chroma_shadow_rebuild_drill_chroma_shadow_rebuild_drill_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowRebuildDrillRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/adoption-gate",
+      "operation_id": "post_chroma_shadow_adoption_gate_chroma_shadow_adoption_gate_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowAdoptionGateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/release-hygiene",
+      "operation_id": "post_chroma_shadow_release_hygiene_chroma_shadow_release_hygiene_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowReleaseHygieneRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chroma-shadow/visibility-guard",
+      "operation_id": "post_chroma_shadow_visibility_guard_chroma_shadow_visibility_guard_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChromaShadowVisibilityGuardRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/intent-routing/runtime-config",
+      "operation_id": "get_intent_routing_runtime_config_api_intent_routing_runtime_config_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "POST",
+      "path": "/intent-routing/runtime-config",
+      "operation_id": "update_intent_routing_runtime_config_intent_routing_runtime_config_post",
+      "request_schema_refs": [
+        "#/components/schemas/IntentRoutingRuntimeConfigRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/retrieval-index/{chat_session_id}",
+      "operation_id": "get_retrieval_index_snapshot_retrieval_index__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/retrieval-index/{chat_session_id}/source-row",
+      "operation_id": "get_retrieval_index_source_row_retrieval_index__chat_session_id__source_row_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/critic/test",
+      "operation_id": "critic_test_critic_test_post",
+      "request_schema_refs": [
+        "#/components/schemas/CriticTestRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/turns/complete",
+      "operation_id": "complete_turn_turns_complete_post",
+      "request_schema_refs": [
+        "#/components/schemas/CompleteTurnRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/kg/recall",
+      "operation_id": "kg_recall_kg_recall_post",
+      "request_schema_refs": [
+        "#/components/schemas/KGRecallRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/kg/recall",
+      "operation_id": "kg_recall_legacy_get_kg_recall_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/supervisor",
+      "operation_id": "supervisor_directive_supervisor_post",
+      "request_schema_refs": [
+        "#/components/schemas/SupervisorRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/wakeup",
+      "operation_id": "wakeup_wakeup_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "GET",
+      "path": "/prompts",
+      "operation_id": "prompt_list_prompts_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "GET",
+      "path": "/prompts/{prompt_name}",
+      "operation_id": "prompt_get_prompts__prompt_name__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/prompts/{prompt_name}",
+      "operation_id": "prompt_update_prompts__prompt_name__put",
+      "request_schema_refs": [
+        "#/components/schemas/PromptUpdateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/stats",
+      "operation_id": "db_stats_stats_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "GET",
+      "path": "/sessions",
+      "operation_id": "list_sessions_sessions_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/chat_logs",
+      "operation_id": "explorer_chat_logs_explorer_chat_logs_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/memories",
+      "operation_id": "explorer_memories_explorer_memories_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/direct-evidence",
+      "operation_id": "explorer_direct_evidence_explorer_direct_evidence_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/kg_triples",
+      "operation_id": "explorer_kg_triples_explorer_kg_triples_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/explorer/chapter_summaries",
+      "operation_id": "explorer_chapter_summaries_explorer_chapter_summaries_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/memories/{memory_id}",
+      "operation_id": "patch_memory_explorer_memories__memory_id__patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchMemoryRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/explorer/memories/{memory_id}",
+      "operation_id": "delete_memory_explorer_memories__memory_id__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/kg_triples/{triple_id}",
+      "operation_id": "patch_kg_triple_explorer_kg_triples__triple_id__patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchKGTripleRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/explorer/kg_triples/{triple_id}",
+      "operation_id": "delete_kg_triple_explorer_kg_triples__triple_id__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/review",
+      "operation_id": "patch_direct_evidence_review_explorer_direct_evidence__record_id__review_patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchDirectEvidenceReviewRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/revalidate",
+      "operation_id": "patch_direct_evidence_revalidate_explorer_direct_evidence__record_id__revalidate_patch",
+      "request_schema_refs": [
+        "#/components/schemas/DirectEvidenceRevalidateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/tombstone",
+      "operation_id": "patch_direct_evidence_tombstone_explorer_direct_evidence__record_id__tombstone_patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchDirectEvidenceTombstoneRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/explorer/direct-evidence/{record_id}/supersede",
+      "operation_id": "patch_direct_evidence_supersede_explorer_direct_evidence__record_id__supersede_patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchDirectEvidenceSupersedeRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/explorer/memories/regenerate",
+      "operation_id": "regenerate_memory_explorer_memories_regenerate_post",
+      "request_schema_refs": [
+        "inline:application/json"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/explorer/memories/{memory_id}/delete",
+      "operation_id": "delete_memory_via_post_explorer_memories__memory_id__delete_post",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/explorer/kg_triples/{triple_id}/delete",
+      "operation_id": "delete_kg_triple_via_post_explorer_kg_triples__triple_id__delete_post",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{chat_session_id}/export",
+      "operation_id": "export_session_sessions__chat_session_id__export_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{chat_session_id}/guidance-snapshot",
+      "operation_id": "get_guidance_snapshot_sessions__chat_session_id__guidance_snapshot_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/{chat_session_id}/step7-health",
+      "operation_id": "get_step7_health_sessions__chat_session_id__step7_health_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/admin/reindex",
+      "operation_id": "admin_reindex_admin_reindex_post",
+      "request_schema_refs": [
+        "#/components/schemas/ReindexRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/admin/rescan",
+      "operation_id": "admin_rescan_admin_rescan_post",
+      "request_schema_refs": [
+        "#/components/schemas/RescanRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/admin/session-migrate",
+      "operation_id": "admin_session_migrate_admin_session_migrate_post",
+      "request_schema_refs": [
+        "#/components/schemas/SessionMigrateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/import/hypamemory",
+      "operation_id": "import_hypamemory_import_hypamemory_post",
+      "request_schema_refs": [
+        "#/components/schemas/HypaImportRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/audit",
+      "operation_id": "get_audit_logs_audit_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/feedback",
+      "operation_id": "post_feedback_feedback_post",
+      "request_schema_refs": [
+        "#/components/schemas/FeedbackRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/feedback/latest",
+      "operation_id": "get_feedback_latest_feedback_latest_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/sessions/compare",
+      "operation_id": "compare_sessions_sessions_compare_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/active-states/{chat_session_id}",
+      "operation_id": "get_active_states_active_states__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/canonical-state-layer/{chat_session_id}",
+      "operation_id": "get_canonical_state_layer_canonical_state_layer__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/episodes/{chat_session_id}",
+      "operation_id": "get_episodes_episodes__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/generate",
+      "operation_id": "generate_episode_episodes_generate_post",
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeGenerateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chapters/generate",
+      "operation_id": "generate_chapter_chapters_generate_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChapterGenerateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/arcs/generate",
+      "operation_id": "generate_arc_arcs_generate_post",
+      "request_schema_refs": [
+        "#/components/schemas/ArcGenerateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/sagas/generate",
+      "operation_id": "generate_saga_sagas_generate_post",
+      "request_schema_refs": [
+        "#/components/schemas/SagaGenerateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chapters/dry-run",
+      "operation_id": "chapter_generation_dry_run_chapters_dry_run_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChapterDryRunRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/chapters/search",
+      "operation_id": "search_chapters_chapters_search_post",
+      "request_schema_refs": [
+        "#/components/schemas/ChapterSearchRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/search",
+      "operation_id": "search_episodes_episodes_search_post",
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeSearchRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/episodes/detail/{episode_id}",
+      "operation_id": "get_episode_detail_episodes_detail__episode_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/episodes/{episode_id}",
+      "operation_id": "patch_episode_episodes__episode_id__patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchEpisodeRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/episodes/{episode_id}",
+      "operation_id": "delete_episode_episodes__episode_id__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/regenerate",
+      "operation_id": "regenerate_episode_episodes_regenerate_post",
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeGenerateRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/episodes/merge",
+      "operation_id": "merge_episodes_endpoint_episodes_merge_post",
+      "request_schema_refs": [
+        "#/components/schemas/EpisodeMergeRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/storylines/{chat_session_id}",
+      "operation_id": "get_storylines_storylines__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/storylines/{storyline_id}",
+      "operation_id": "patch_storyline_storylines__storyline_id__patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchStorylineRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/storylines/{storyline_id}",
+      "operation_id": "delete_storyline_storylines__storyline_id__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/storylines/{storyline_id}/trust",
+      "operation_id": "patch_storyline_trust_storylines__storyline_id__trust_patch",
+      "request_schema_refs": [
+        "#/components/schemas/TrustControlRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/storylines/sync",
+      "operation_id": "sync_storylines_storylines_sync_post",
+      "request_schema_refs": [
+        "#/components/schemas/StorylineSyncRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/characters/{chat_session_id}",
+      "operation_id": "get_characters_characters__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/characters/{chat_session_id}/{character_name}",
+      "operation_id": "get_character_detail_characters__chat_session_id___character_name__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/characters/{chat_session_id}/{character_name}",
+      "operation_id": "patch_character_characters__chat_session_id___character_name__patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchCharacterRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/characters/{chat_session_id}/{character_name}",
+      "operation_id": "delete_character_characters__chat_session_id___character_name__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/characters/{chat_session_id}/{character_name}/events",
+      "operation_id": "get_character_events_characters__chat_session_id___character_name__events_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/characters/{chat_session_id}/{character_name}/speech",
+      "operation_id": "patch_character_speech_characters__chat_session_id___character_name__speech_patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchSpeechStyleRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/session/{chat_session_id}/active-scope",
+      "operation_id": "get_active_scope_session__chat_session_id__active_scope_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/session/{chat_session_id}/active-scope",
+      "operation_id": "set_active_scope_session__chat_session_id__active_scope_patch",
+      "request_schema_refs": [
+        "#/components/schemas/ActiveScopeRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/world-rules/{chat_session_id}",
+      "operation_id": "get_world_rules_world_rules__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/world-rules/{chat_session_id}/inherited",
+      "operation_id": "get_inherited_world_rules_world_rules__chat_session_id__inherited_get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/world-rules/sync",
+      "operation_id": "sync_world_rules_world_rules_sync_post",
+      "request_schema_refs": [
+        "#/components/schemas/WorldRuleSyncRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/world-rules/{rule_id}",
+      "operation_id": "patch_world_rule_world_rules__rule_id__patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchWorldRuleRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/world-rules/{rule_id}",
+      "operation_id": "delete_world_rule_world_rules__rule_id__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/world-rules/{rule_id}/trust",
+      "operation_id": "patch_world_rule_trust_world_rules__rule_id__trust_patch",
+      "request_schema_refs": [
+        "#/components/schemas/TrustControlRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/continuity-pack/{chat_session_id}",
+      "operation_id": "get_continuity_pack_continuity_pack__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/pending-threads/{chat_session_id}",
+      "operation_id": "get_pending_threads_pending_threads__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/pending-threads/{hook_id}",
+      "operation_id": "patch_continuity_hook_pending_threads__hook_id__patch",
+      "request_schema_refs": [
+        "#/components/schemas/PatchPendingThreadRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/pending-threads/{hook_id}",
+      "operation_id": "delete_continuity_hook_pending_threads__hook_id__delete",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/pending-threads/{hook_id}/trust",
+      "operation_id": "patch_continuity_hook_trust_pending_threads__hook_id__trust_patch",
+      "request_schema_refs": [
+        "#/components/schemas/TrustControlRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/session-state/{chat_session_id}",
+      "operation_id": "get_session_state_session_state__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1c/{chat_session_id}",
+      "operation_id": "get_lc1c_memory_footprint_metrics_lc1c__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1d/{chat_session_id}",
+      "operation_id": "get_lc1d_integrity_replay_metrics_lc1d__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1e/{chat_session_id}",
+      "operation_id": "get_lc1e_context_budget_comparison_metrics_lc1e__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1f/{chat_session_id}",
+      "operation_id": "get_lc1f_non_regression_check_metrics_lc1f__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1g/{chat_session_id}",
+      "operation_id": "get_lc1g_accuracy_replay_metrics_lc1g__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1h/{chat_session_id}",
+      "operation_id": "get_lc1h_forgetting_hallucination_replay_metrics_lc1h__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1i/{chat_session_id}",
+      "operation_id": "get_lc1i_ablation_compare_metrics_lc1i__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1j/{chat_session_id}",
+      "operation_id": "get_lc1j_imported_idea_gate_metrics_lc1j__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1k/{chat_session_id}",
+      "operation_id": "get_lc1k_priority_budget_hybrid_replay_metrics_lc1k__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1l/{chat_session_id}",
+      "operation_id": "get_lc1l_imported_idea_contract_gate_metrics_lc1l__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1m/{chat_session_id}",
+      "operation_id": "get_lc1m_single_call_vs_split_comparison_metrics_lc1m__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1n/{chat_session_id}",
+      "operation_id": "get_lc1n_rebuild_backfill_rehearsal_metrics_lc1n__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1o/{chat_session_id}",
+      "operation_id": "get_lc1o_deterministic_preview_ledger_lightweight_validation_metrics_lc1o__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1p/{chat_session_id}",
+      "operation_id": "get_lc1p_evaluation_split_summary_metrics_lc1p__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1q/{chat_session_id}",
+      "operation_id": "get_lc1q_freshness_lag_summary_metrics_lc1q__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1r/regression-corpus",
+      "operation_id": "get_lc1r_regression_corpus_manifest_metrics_lc1r_regression_corpus_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/lc1s/step17-bundle-closure",
+      "operation_id": "get_lc1s_step17_bundle_closure_metrics_lc1s_step17_bundle_closure_get",
+      "request_schema_refs": [],
+      "response_schema_refs": []
+    },
+    {
+      "method": "GET",
+      "path": "/metrics/tm1d/{chat_session_id}",
+      "operation_id": "get_tm1d_truth_maintenance_audit_replay_metrics_tm1d__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/momentum-packet/{chat_session_id}",
+      "operation_id": "get_momentum_packet_momentum_packet__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/narrative-control/{chat_session_id}",
+      "operation_id": "get_narrative_control_narrative_control__chat_session_id__get",
+      "request_schema_refs": [],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/complete-turn",
+      "operation_id": "complete_turn_m4_complete_turn_post",
+      "request_schema_refs": [
+        "#/components/schemas/M4CompleteTurnRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/M4CompleteTurnResponse",
+        "#/components/schemas/HTTPValidationError"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/prepare-turn",
+      "operation_id": "prepare_turn_prepare_turn_post",
+      "request_schema_refs": [
+        "#/components/schemas/PrepareTurnRequest"
+      ],
+      "response_schema_refs": [
+        "#/components/schemas/HTTPValidationError"
+      ]
+    }
+  ],
+  "openapi_warnings": [
+    {
+      "category": "UserWarning",
+      "message": "Duplicate Operation ID get_retrieval_index_runtime_config_retrieval_index_runtime_config_get for function get_retrieval_index_runtime_config at M:\\risulongmemory\\Archive Center Beta 0.8(fix)\\backend\\main.py"
+    }
+  ],
+  "go_struct_mapping_blockers": {
+    "counts": {
+      "anyOf": 102,
+      "oneOf": 0,
+      "allOf": 0,
+      "additionalProperties": 30,
+      "arrays_without_items": 0,
+      "nullable_without_type": 0,
+      "object_without_properties": 1
+    },
+    "details": {
+      "anyOf": [
+        "ActiveScopeRequest.properties.scope_name",
+        "CompleteTurnRequest.properties.output_language_override",
+        "CriticTestRequest.properties.output_language_override",
+        "DirectEvidenceRevalidateRequest.properties.review_note",
+        "DirectorPatchRequest.properties.scene_mandate",
+        "DirectorPatchRequest.properties.required_outcomes",
+        "DirectorPatchRequest.properties.forbidden_moves",
+        "DirectorPatchRequest.properties.pressure_level",
+        "DirectorPatchRequest.properties.execution_checklist",
+        "DirectorPatchRequest.properties.persona_guardrails",
+        "DirectorPatchRequest.properties.world_guardrails",
+        "FeedbackRequest.properties.feedback_note",
+        "KGRecallRequest.properties.current_turn",
+        "M4CompleteTurnRequest.properties.improvement_trace",
+        "M4CompleteTurnRequest.properties.output_language_override",
+        "M4CompleteTurnResponse.properties.save_error",
+        "M4CompleteTurnResponse.properties.critic_result",
+        "M4CompleteTurnResponse.properties.episode_result",
+        "M4CompleteTurnResponse.properties.chapter_result",
+        "M4CompleteTurnResponse.properties.summary_fallback",
+        "M4CompleteTurnResponse.properties.trace_handoff",
+        "MaintenanceEnqueueRequest.properties.supervisor_result",
+        "MaintenanceEnqueueRequest.properties.summary_refresh",
+        "MaintenancePassRequest.properties.supervisor_result",
+        "PatchCharacterRequest.properties.appearance_json",
+        "PatchCharacterRequest.properties.personality_json",
+        "PatchCharacterRequest.properties.status_json",
+        "PatchCharacterRequest.properties.relationships_json",
+        "PatchCharacterRequest.properties.speech_style_json",
+        "PatchDirectEvidenceReviewRequest.properties.capture_verification",
+        "PatchDirectEvidenceReviewRequest.properties.repair_needed",
+        "PatchDirectEvidenceReviewRequest.properties.archive_state",
+        "PatchDirectEvidenceReviewRequest.properties.committed_gate",
+        "PatchDirectEvidenceReviewRequest.properties.review_note",
+        "PatchDirectEvidenceSupersedeRequest.properties.review_note",
+        "PatchDirectEvidenceTombstoneRequest.properties.review_note",
+        "PatchEpisodeRequest.properties.summary_text",
+        "PatchEpisodeRequest.properties.from_turn",
+        "PatchEpisodeRequest.properties.to_turn",
+        "PatchEpisodeRequest.properties.key_entities",
+        "PatchEpisodeRequest.properties.key_events",
+        "PatchEpisodeRequest.properties.relationship_changes_json",
+        "PatchEpisodeRequest.properties.open_loops_json",
+        "PatchKGTripleRequest.properties.subject",
+        "PatchKGTripleRequest.properties.predicate",
+        "PatchKGTripleRequest.properties.object",
+        "PatchKGTripleRequest.properties.valid_from",
+        "PatchKGTripleRequest.properties.valid_to",
+        "PatchMemoryRequest.properties.summary_json",
+        "PatchMemoryRequest.properties.importance",
+        "PatchMemoryRequest.properties.archive_wing",
+        "PatchMemoryRequest.properties.archive_room",
+        "PatchPendingThreadRequest.properties.status",
+        "PatchPendingThreadRequest.properties.thread_type",
+        "PatchPendingThreadRequest.properties.title",
+        "PatchPendingThreadRequest.properties.owner",
+        "PatchPendingThreadRequest.properties.target",
+        "PatchPendingThreadRequest.properties.confidence",
+        "PatchPendingThreadRequest.properties.details_json",
+        "PatchPendingThreadRequest.properties.resolution_note",
+        "PatchSpeechStyleRequest.properties.default_tone",
+        "PatchSpeechStyleRequest.properties.honorific_style",
+        "PatchSpeechStyleRequest.properties.speech_notes",
+        "PatchStorylineRequest.properties.name",
+        "PatchStorylineRequest.properties.status",
+        "PatchStorylineRequest.properties.entities_json",
+        "PatchStorylineRequest.properties.current_context",
+        "PatchStorylineRequest.properties.key_points_json",
+        "PatchStorylineRequest.properties.ongoing_tensions_json",
+        "PatchStorylineRequest.properties.confidence",
+        "PatchStorylineRequest.properties.evidence_count",
+        "PatchStorylineRequest.properties.last_evidence_turn",
+        "PatchStorylineRequest.properties.first_turn",
+        "PatchStorylineRequest.properties.last_turn",
+        "PatchWorldRuleRequest.properties.scope",
+        "PatchWorldRuleRequest.properties.scope_name",
+        "PatchWorldRuleRequest.properties.category",
+        "PatchWorldRuleRequest.properties.key",
+        "PatchWorldRuleRequest.properties.value_json",
+        "PatchWorldRuleRequest.properties.genre",
+        "PrepareTurnRequest.properties.turn_index",
+        "ProxyPluginMainRequest.properties.provider",
+        "ProxyPluginMainRequest.properties.max_completion_tokens",
+        "ProxyPluginMainRequest.properties.reasoning_preset",
+        "ProxyPluginMainRequest.properties.reasoning_effort",
+        "ProxyPluginMainRequest.properties.reasoning_budget_tokens",
+        "ProxyPluginMainRequest.properties.budget_tokens",
+        "ProxyPluginMainRequest.properties.glm_thinking_type",
+        "ProxyPluginMainRequest.properties.timeout_ms",
+        "SearchRequest.properties.wing",
+        "SearchRequest.properties.top_k",
+        "SessionMigrateRequest.properties.gate_status",
+        "SessionMigrateRequest.properties.gate_reason",
+        "SessionMigrateRequest.properties.gate_confidence",
+        "SessionMigrateRequest.properties.gate_reads",
+        "StorylineSyncRequest.properties.turn_index",
+        "SupervisorRequest.properties.momentum_packet",
+        "TrustControlRequest.properties.pinned",
+        "TrustControlRequest.properties.suppressed",
+        "TrustControlRequest.properties.user_corrected",
+        "ValidationError.properties.loc.items",
+        "WorldRuleSyncRequest.properties.turn_index"
+      ],
+      "oneOf": [],
+      "allOf": [],
+      "additionalProperties": [
+        "ChromaShadowAdoptionGateRequest.properties.operator_evidence",
+        "ChromaShadowBackfillBatchRequest.properties.checkpoint",
+        "ChromaShadowBackfillBatchRequest.properties.retry_rows.items",
+        "ChromaShadowRebuildDrillRequest.properties.checkpoint",
+        "ChromaShadowRebuildDrillRequest.properties.retry_rows.items",
+        "ChromaShadowReleaseHygieneRequest.properties.adoption_operator_evidence",
+        "ChromaShadowReleaseHygieneRequest.properties.release_evidence",
+        "CompleteTurnRequest.properties.context.items",
+        "CompleteTurnRequest.properties.output_language_override.anyOf[0]",
+        "CriticTestRequest.properties.context.items",
+        "CriticTestRequest.properties.output_language_override.anyOf[0]",
+        "M4CompleteTurnRequest.properties.context_messages.items",
+        "M4CompleteTurnRequest.properties.improvement_trace.anyOf[0]",
+        "M4CompleteTurnRequest.properties.output_language_override.anyOf[0]",
+        "M4CompleteTurnRequest.properties.client_meta",
+        "M4CompleteTurnResponse.properties.critic_result.anyOf[0]",
+        "M4CompleteTurnResponse.properties.episode_result.anyOf[0]",
+        "M4CompleteTurnResponse.properties.chapter_result.anyOf[0]",
+        "M4CompleteTurnResponse.properties.summary_fallback.anyOf[0]",
+        "M4CompleteTurnResponse.properties.trace_handoff.anyOf[0]",
+        "MaintenanceEnqueueRequest.properties.supervisor_result.anyOf[0]",
+        "MaintenanceEnqueueRequest.properties.summary_refresh.anyOf[0]",
+        "MaintenancePassRequest.properties.supervisor_result.anyOf[0]",
+        "PrepareTurnRequest.properties.messages.items",
+        "PrepareTurnRequest.properties.client_meta",
+        "StorylineSyncRequest.properties.supervisor_result",
+        "SupervisorRequest.properties.context_messages.items",
+        "SupervisorRequest.properties.narrative_stance_bounds",
+        "SupervisorRequest.properties.momentum_packet.anyOf[0]",
+        "WorldRuleSyncRequest.properties.supervisor_response"
+      ],
+      "arrays_without_items": [],
+      "nullable_without_type": [],
+      "object_without_properties": [
+        "ValidationError.properties.ctx"
+      ]
+    }
+  }
+}

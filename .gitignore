@@ -1,0 +1,74 @@
+# Archive Center 2.0 workspace ignores
+# These protect against accidental commit of runtime artifacts.
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!**/.env*.example
+
+# Databases and SQLite
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+
+# Go build cache and artifacts
+.gocache/
+.runtime/
+.runtime-cache/
+go-service/*.exe
+go-service/*.dll
+go-service/*.so
+go-service/*.dylib
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+
+# Logs and temp
+*.log
+*.tmp
+temp/
+tmp/
+tmp_*.py
+repair*.py
+repair*.txt
+patch_*.py
+debug*.py
+debug*.txt
+check_*.py
+!tools/check_*.py
+find_*.py
+
+# ChromaDB / vector persist dirs
+.chroma_shadow/
+chroma_data/
+
+# Historical/future-only Milvus artifacts must not ship unless a later
+# explicit post-checklist decision reopens that vector lane.
+milvus_data/
+milvus.db
+
+# Backup and release artifacts
+backup/
+release/
+deploy/
+_dist/
+_dist-*/
+_runtime-*/
+_live-test-pack/
+_2.3_build_paths.json
+_rc7_build_paths.json
+Archive Center.js.codex-backup-*
+Risu Output Quality Layer 2.5.js
+*.bak
+*.backup
+
+# OS files
+.DS_Store
+Thumbs.db

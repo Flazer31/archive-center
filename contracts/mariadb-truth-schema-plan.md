@@ -1,0 +1,349 @@
+# MariaDB Truth Schema Plan ? Archive Center 2.0 R0
+
+> Status: **R0 design contract**  
+> Live MariaDB migration is **explicitly banned** in R0/R1. This document freezes the canonical truth table design based on 0.8 SQLite schema analysis.
+
+---
+
+## 1. 0.8 SQLite Schema Analysis
+
+### 1.1 DB Files
+| File | Size | Schema | Notes |
+|------|------|--------|-------|
+| `memory.db` | ~1 MB | 23 tables | Primary runtime DB |
+| `bundle_validation.db` | ~400 KB | 23 tables | Identical schema ? bundle validation clone |
+| `.chroma_shadow/chroma.sqlite3` | ~168 KB | Chroma internal | Vector store; out of scope for MariaDB truth |
+
+### 1.2 Table Inventory (memory.db)
+
+| # | Table | Category | Key Fields | Write Pattern |
+|---|-------|----------|------------|---------------|
+| 1 | `chat_logs` | **Canonical truth** | `chat_session_id`, `turn_index`, `role`, `content` | Append-only per turn |
+| 2 | `effective_input_logs` | **Canonical truth** | `chat_session_id`, `turn_index`, `effective_input` | Append-only per turn |
+| 3 | `memories` | **Canonical truth** | `chat_session_id`, `turn_index`, `summary_json`, `embedding`, `importance` | Insert per turn; no update |
+| 4 | `direct_evidence_records` | **Canonical truth** | `chat_session_id`, `evidence_kind`, `evidence_text`, `source_turn_start/end`, `archive_state` | Insert + state transition (archive_state) |
+| 5 | `kg_triples` | **Canonical truth** | `chat_session_id`, `subject`, `predicate`, `object`, `valid_from`, `valid_to` | Insert + soft-delete (valid_to) |
+| 6 | `audit_logs` | **Canonical truth** | `event_type`, `chat_session_id`, `target_type`, `target_id`, `details_json` | Append-only |
+| 7 | `critic_feedback` | **Canonical truth** | `chat_session_id`, `target_type`, `target_id`, `feedback_value` | Append-only |
+| 8 | `character_events` | **Canonical truth** | `chat_session_id`, `character_name`, `event_type`, `turn_index`, `details_json` | Append-only |
+| 9 | `active_states` | Derived | `chat_session_id`, `state_type`, `content`, `turn_index` | Insert per turn; historical |
+| 10 | `canonical_state_layers` | Derived | `chat_session_id`, `layer_type`, `content`, `turn_index`, `confidence` | Insert per turn; historical |
+| 11 | `character_states` | Derived | `chat_session_id`, `character_name`, `appearance_json`, `personality_json`, ... | Upsert (latest snapshot) |
+| 12 | `world_rules` | Derived | `chat_session_id`, `scope`, `category`, `key`, `value_json` | Upsert + trust controls |
+| 13 | `storylines` | Derived | `chat_session_id`, `name`, `status`, `entities_json`, `confidence` | Upsert + trust controls |
+| 14 | `pending_threads` | Derived | `chat_session_id`, `thread_type`, `title`, `status`, `owner`, `target` | Upsert + trust controls |
+| 15 | `session_active_scopes` | Derived | `chat_session_id`, `active_scope`, `scope_name` | Single-row upsert per session |
+| 16 | `guidance_plan_states` | Derived | `chat_session_id`, `story_plan_json`, `director_json`, `state_status`, `last_turn` | Single-row upsert per session |
+| 17 | `guidance_compact_records` | Derived | `chat_session_id`, `record_type`, `title`, `compact_summary`, `origin_type`, `origin_id` | Insert on compaction |
+| 18 | `maintenance_pass_states` | Derived | `chat_session_id`, `turn_index`, `status`, `shadow_only`, `observations_json` | Insert per pass |
+| 19 | `episode_summaries` | Summary | `chat_session_id`, `from_turn`, `to_turn`, `summary_text`, `embedding_vector` | Insert on generation |
+| 20 | `chapter_summaries` | Summary | `chat_session_id`, `from_turn`, `to_turn`, `chapter_title`, `summary_text`, `embedding_vector` | Insert on generation |
+| 21 | `arc_summaries` | Summary | `chat_session_id`, `from_turn`, `to_turn`, `arc_name`, `arc_status`, `embedding_vector` | Insert on generation |
+| 22 | `saga_digests` | Summary | `chat_session_id`, `from_turn`, `to_turn`, `era_label`, `saga_summary`, `embedding_vector` | Insert on generation |
+
+### 1.3 Write Pattern Classification
+- **Append-only**: Rows are never updated; history is complete. (`chat_logs`, `effective_input_logs`, `memories`, `audit_logs`, `critic_feedback`, `character_events`, `episode/chapter/arc/saga_summaries`, `active_states`, `canonical_state_layers`, `guidance_compact_records`, `maintenance_pass_states`)
+- **Upsert (latest snapshot)**: One row per session/entity; updated in place. (`character_states`, `world_rules`, `storylines`, `pending_threads`, `session_active_scopes`, `guidance_plan_states`)
+- **Soft-delete**: Rows are logically deleted by setting a tombstone/valid_to field. (`kg_triples` via `valid_to`, `direct_evidence_records` via `archive_state`/`tombstoned`)
+
+---
+
+## 2. Canonical Truth Table Candidates
+
+### 2.1 Definition
+A **canonical truth table** is one whose rows are:
+1. **Immutable once committed** (no in-place update), AND
+2. **Required for downstream derived tables to reconstruct state**, AND
+3. **Sourced directly from the user turn or critic pipeline** (not generated by summarization or heuristic).
+
+### 2.2 Canonical Truth Tables
+
+| Table | MariaDB Table Name | Rationale | Immutable Key |
+|-------|-------------------|-----------|---------------|
+| `chat_logs` | `chat_logs` | Every turn starts here. All downstream summaries derive from this. | `(chat_session_id, turn_index, role)` |
+| `effective_input_logs` | `effective_input_logs` | User intent after preprocessing. Informs memory and evidence. | `(chat_session_id, turn_index)` |
+| `memories` | `memories` | Core retrieval index. Rebuildable from chat logs + critic, but treated as truth for search. | `(chat_session_id, turn_index, id)` |
+| `direct_evidence_records` | `direct_evidence_records` | Verified facts. State transitions are part of audit, not in-place mutations. | `id` (state transitions are new audit rows) |
+| `kg_triples` | `kg_triples` | Knowledge graph edges. `valid_to` is soft-delete, not update. | `(chat_session_id, subject, predicate, object, valid_from)` |
+| `audit_logs` | `audit_logs` | Audit trail. Append-only by definition. | `id` |
+| `critic_feedback` | `critic_feedback` | Human/operator feedback on truth. Append-only. | `id` |
+| `character_events` | `character_events` | Character change events. Append-only. | `id` |
+
+### 2.3 Derived / Non-Canonical Tables
+
+| Table | MariaDB Table Name | Rationale |
+|-------|-------------------|-----------|
+| `active_states` | `active_states` | Heuristic snapshot per turn; rebuildable from canonical tables. |
+| `canonical_state_layers` | `canonical_state_layers` | Promoted active_states; still derived. |
+| `character_states` | `character_states` | Latest snapshot; rebuildable from character_events. |
+| `world_rules` | `world_rules` | Registry + trust controls; rebuildable from evidence + critic. |
+| `storylines` | `storylines` | Registry + trust controls; rebuildable from evidence + critic. |
+| `pending_threads` | `pending_threads` | Registry + trust controls; rebuildable from evidence + critic. |
+| `session_active_scopes` | `session_active_scopes` | Single-row session cache; ephemeral. |
+| `guidance_plan_states` | `guidance_plan_states` | Single-row session cache; rebuildable from derived tables. |
+| `guidance_compact_records` | `guidance_compact_records` | Compaction history; derived from guidance_plan_states. |
+| `maintenance_pass_states` | `maintenance_pass_states` | Pass observations; derived from guidance_plan_states. |
+| `episode_summaries` | `episode_summaries` | LLM-generated summary; fully rebuildable from chat_logs. |
+| `chapter_summaries` | `chapter_summaries` | LLM-generated summary; fully rebuildable from chat_logs. |
+| `arc_summaries` | `arc_summaries` | LLM-generated summary; fully rebuildable from chat_logs. |
+| `saga_digests` | `saga_digests` | LLM-generated summary; fully rebuildable from chat_logs. |
+
+---
+
+## 3. MariaDB Schema Design
+
+### 3.1 Engine & Charset
+- **Engine**: `InnoDB` (transactional, row-level locking, foreign key support).
+- **Charset**: `utf8mb4` (full Unicode, including emoji and CJK).
+- **Collation**: `utf8mb4_unicode_ci` (case-insensitive for general text; `utf8mb4_bin` for identifier keys if needed).
+
+### 3.2 Common Columns
+All tables share these conventions:
+- `id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL`
+- `updated_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NULL` (only for upsert tables)
+- JSON columns use `JSON` type (MariaDB 10.6+).
+- Text columns over 64 KB use `LONGTEXT`.
+
+### 3.3 Primary Key Strategy
+
+| Pattern | PK | Notes |
+|---------|----|-------|
+| Surrogate | `id BIGINT UNSIGNED AUTO_INCREMENT` | All tables have `id` as logical PK. |
+| Natural composite | `(chat_session_id, turn_index, role)` | Unique constraint for chat_logs; not PK to avoid wide PK in InnoDB. |
+| Session-scoped | `(chat_session_id, ...)` | Index prefix for all session-scoped tables. |
+
+### 3.4 Index Design
+
+#### chat_logs
+```sql
+CREATE TABLE chat_logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  chat_session_id VARCHAR(255) NOT NULL,
+  turn_index INT NOT NULL,
+  role VARCHAR(50) NOT NULL,
+  content LONGTEXT NOT NULL,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  INDEX idx_session_turn (chat_session_id, turn_index),
+  INDEX idx_session_role (chat_session_id, role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### effective_input_logs
+```sql
+CREATE TABLE effective_input_logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  chat_session_id VARCHAR(255) NOT NULL,
+  turn_index INT NOT NULL,
+  effective_input LONGTEXT NOT NULL,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  UNIQUE INDEX uk_session_turn (chat_session_id, turn_index),
+  INDEX idx_session (chat_session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### memories
+```sql
+CREATE TABLE memories (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  chat_session_id VARCHAR(255) NOT NULL,
+  turn_index INT NOT NULL,
+  summary_json JSON,
+  embedding JSON,           -- float array serialized as JSON
+  embedding_model VARCHAR(255),
+  importance FLOAT,
+  emotional_boost FLOAT,
+  evidence JSON,
+  emotional_intensity FLOAT,
+  narrative_significance FLOAT,
+  place_wing VARCHAR(255),
+  place_room VARCHAR(255),
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  INDEX idx_session_turn (chat_session_id, turn_index),
+  INDEX idx_importance (chat_session_id, importance),
+  INDEX idx_wing_room (chat_session_id, place_wing, place_room)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### direct_evidence_records
+```sql
+CREATE TABLE direct_evidence_records (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  chat_session_id VARCHAR(255) NOT NULL,
+  evidence_kind VARCHAR(100) NOT NULL DEFAULT 'fact_event',
+  evidence_text LONGTEXT NOT NULL,
+  source_turn_start INT NOT NULL,
+  source_turn_end INT NOT NULL,
+  turn_anchor INT,
+  source_message_ids_json JSON,
+  source_hash VARCHAR(255),
+  archive_state VARCHAR(50) NOT NULL DEFAULT 'pending_capture',
+  capture_stage VARCHAR(50) NOT NULL DEFAULT 'critic_extract',
+  capture_verification VARCHAR(50) NOT NULL DEFAULT 'pending',
+  committed_gate VARCHAR(50),
+  lineage_json JSON,
+  repair_needed BOOLEAN NOT NULL DEFAULT FALSE,
+  tombstoned BOOLEAN NOT NULL DEFAULT FALSE,
+  superseded_by_id BIGINT UNSIGNED,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  INDEX idx_session_state (chat_session_id, archive_state),
+  INDEX idx_session_kind (chat_session_id, evidence_kind),
+  INDEX idx_source_turn (chat_session_id, source_turn_start, source_turn_end)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### kg_triples
+```sql
+CREATE TABLE kg_triples (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  chat_session_id VARCHAR(255) NOT NULL,
+  subject VARCHAR(255) NOT NULL,
+  predicate VARCHAR(255) NOT NULL,
+  object VARCHAR(255) NOT NULL,
+  valid_from INT,
+  valid_to INT,
+  source_turn INT,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  INDEX idx_session_spo (chat_session_id, subject, predicate, object),
+  INDEX idx_valid (chat_session_id, valid_from, valid_to)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### audit_logs
+```sql
+CREATE TABLE audit_logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  event_type VARCHAR(100) NOT NULL,
+  chat_session_id VARCHAR(255),
+  target_type VARCHAR(100),
+  target_id BIGINT UNSIGNED,
+  summary TEXT,
+  details_json JSON,
+  source VARCHAR(50) DEFAULT 'api',
+  INDEX idx_created (created_at),
+  INDEX idx_event (event_type, created_at),
+  INDEX idx_session_event (chat_session_id, event_type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### critic_feedback
+```sql
+CREATE TABLE critic_feedback (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  chat_session_id VARCHAR(255) NOT NULL,
+  target_type VARCHAR(50) NOT NULL,
+  target_id BIGINT UNSIGNED NOT NULL,
+  feedback_value VARCHAR(20) NOT NULL,
+  feedback_note TEXT,
+  source VARCHAR(50) DEFAULT 'manual_ui',
+  INDEX idx_session_target (chat_session_id, target_type, target_id),
+  INDEX idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+#### character_events
+```sql
+CREATE TABLE character_events (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  chat_session_id VARCHAR(255) NOT NULL,
+  character_name VARCHAR(255) NOT NULL,
+  turn_index INT,
+  event_type VARCHAR(100) NOT NULL,
+  details_json JSON,
+  created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+  INDEX idx_session_char (chat_session_id, character_name),
+  INDEX idx_session_turn (chat_session_id, turn_index)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+---
+
+## 4. Migration Order
+
+### 4.1 Phase 1: Canonical Truth (R0 ? schema freeze)
+1. `chat_logs`
+2. `effective_input_logs`
+3. `memories`
+4. `direct_evidence_records`
+5. `kg_triples`
+6. `audit_logs`
+7. `critic_feedback`
+8. `character_events`
+
+### 4.2 Phase 2: Derived Tables (R1 ? read shadow)
+9. `active_states`
+10. `canonical_state_layers`
+11. `character_states`
+12. `world_rules`
+13. `storylines`
+14. `pending_threads`
+15. `session_active_scopes`
+16. `guidance_plan_states`
+17. `guidance_compact_records`
+18. `maintenance_pass_states`
+
+### 4.3 Phase 3: Summary Tables (R2 ? live generation)
+19. `episode_summaries`
+20. `chapter_summaries`
+21. `arc_summaries`
+22. `saga_digests`
+
+---
+
+## 5. Audit / Replay Scope
+
+### 5.1 Full Replay (from canonical truth)
+Given `chat_logs` + `effective_input_logs` + `memories` + `direct_evidence_records` + `kg_triples` + `character_events`, the system can replay:
+- Any turn's exact conversation state.
+- Any turn's memory injection candidate set.
+- Any turn's evidence and knowledge graph state.
+- Character progression timeline.
+
+### 5.2 Partial Replay (from derived tables)
+Given `active_states` + `canonical_state_layers` + `character_states` + `world_rules` + `storylines` + `pending_threads`, the system can replay:
+- Supervisor decision context at a given turn.
+- Guidance plan state at a given turn.
+- World rule registry at a given turn.
+
+**Note**: Derived tables are **rebuildable** from canonical truth + pipeline config. They are not required for legal/financial-grade audit.
+
+### 5.3 Audit Trail Requirements
+- `audit_logs` records every write to canonical truth tables.
+- `audit_logs.target_type` + `audit_logs.target_id` references the affected row.
+- `audit_logs.details_json` contains the before/after diff (or full row snapshot for append-only tables).
+- `audit_logs.source` distinguishes `api`, `manual_ui`, `auto_rollback`, `batch`.
+
+---
+
+## 6. Go DTO / SQL Mapping Notes
+
+- All `id` fields map to `int64` in Go (not `uint64` to avoid unsigned arithmetic issues in JSON).
+- `JSON` columns map to `map[string]any` or `[]any` in Go; empty values are `nil` (not `"{}"`).
+- `DATETIME(3)` maps to `time.Time` in Go; use `time.Now().UTC()` for writes.
+- `BOOLEAN` maps to `bool` in Go; default false is explicit zero value.
+- `FLOAT` maps to `float64` in Go.
+- `VARCHAR(255)` session IDs are case-sensitive; store as-is.
+
+---
+
+## 7. Verification Checklist
+
+Before any MariaDB migration is approved:
+
+- [ ] All 8 canonical truth tables are created with `InnoDB` + `utf8mb4`.
+- [ ] All 8 canonical truth tables have `id` as `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`.
+- [ ] All JSON columns use MariaDB `JSON` type (not `TEXT`).
+- [ ] `chat_logs` has unique constraint on `(chat_session_id, turn_index, role)` or equivalent.
+- [ ] `audit_logs` has index on `(event_type, created_at)`.
+- [ ] `memories` has index on `(chat_session_id, importance)` for retrieval ranking.
+- [ ] `direct_evidence_records` has index on `(chat_session_id, archive_state)`.
+- [ ] `kg_triples` has index on `(chat_session_id, subject, predicate, object)`.
+- [ ] No foreign key constraints are defined in R0 (soft references via `target_id` + `target_type`).
+- [ ] H-4e release hygiene scan passes (no `.env` or secrets in migration files).
+
+---
+
+*Contract version: R0-2026-05-21*  
+*Reference: `Archive Center Beta 0.8(fix)/memory.db`, `backend/models.py`*

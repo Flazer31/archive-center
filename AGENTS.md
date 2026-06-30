@@ -1,0 +1,24 @@
+# Archive Center 2.0 Codex Rules
+
+- Active 2.0 workspace: `M:\risulongmemory\Archive Center 2.0`.
+- Reference baseline: `M:\risulongmemory\Archive Center Beta 0.8(fix)` is read-only unless the user explicitly asks for compatibility patches there.
+- Hard write boundary: 2.0 migration implementation writes go only to `Archive Center 2.0` and `_archive\future-reference` progress/context docs. Do not create, delete, or edit files under `Archive Center Beta 0.8(fix)` for 2.0 migration work.
+- "Python reference extraction", "main.py split", "backend decomposition", and similar wording mean 2.0-side migration artifacts or Go shadow implementation based on read-only inspection of 0.8. They do not permit direct 0.8 Python edits.
+- If a 2.0 task appears to require editing 0.8, stop and ask first. Do not infer approval from the progress item wording.
+- Do not copy `.env`, vault keys, SQLite DB files, Chroma persist directories, caches, logs, backups, release packages, or deployment folders into this workspace.
+- Keep `Archive Center 1.0`, backup folders, and deploy/release folders untouched.
+- Treat `Archive Center.js` as a RisuAI host adapter, not as the target of a language rewrite.
+- For 2.0 migration work, do not modify `Archive Center Beta 0.8(fix)\Archive Center.js` unless the user explicitly requests a compatibility patch. RisuAI recognizes the JavaScript adapter; Go-primary is backend-only.
+- The migration target is feature parity with the completed 0.8(fix) backend behavior, not a reduced rewrite or a new product surface.
+- 2.0 implementation target is backend substrate migration:
+  - Go-primary backend service.
+  - MariaDB canonical truth store.
+  - ChromaDB-compatible vector retrieval lane by default.
+  - Milvus Lite is named only as an optional/experimental vector backend and must not be treated as the default remigration target unless the user explicitly reopens it.
+- Use R0/R1/R2/R3 vocabulary:
+  - R0: contracts, inventories, benchmarks, scaffolding.
+  - R1: shadow write/read/compare.
+  - R2: live cutover.
+  - R3: old path retirement.
+- Do not call a track green from documents or scaffolding alone.
+- Code implementation should be delegated to `@kimi_coder`; localized patches may use `@glm_subcoder`; final review/risk validation should use `@deepseek_validator` when available.
