@@ -139,6 +139,59 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	}
 }
 
+func TestUpdateCheckMatchesDottedGitHubAssetNameAndSpacedSHAName(t *testing.T) {
+	zipBytes := []byte("archive-center-2.3-linux-arm64-package")
+	sum := sha256.Sum256(zipBytes)
+	sha := hex.EncodeToString(sum[:])
+	restore := updateHTTPClient
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
+			return textResponse(http.StatusOK, `{
+				"tag_name":"v2.3.0-rc2",
+				"name":"Archive Center 2.3 RC2",
+				"assets":[
+					{"name":"Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip","browser_download_url":"https://example.test/linux-arm64.zip","size":33},
+					{"name":"SHA256SUMS-2.3.txt","browser_download_url":"https://example.test/sums.txt","size":90}
+				]
+			}`)
+		case "https://example.test/sums.txt":
+			return textResponse(http.StatusOK, sha+"  Archive Center 2.3 Linux arm64 Auto Install Package.zip\n")
+		default:
+			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+	defer func() { updateHTTPClient = restore }()
+
+	cfg := config.Default()
+	cfg.BuildVersion = "2.2.0"
+	srv := NewServer(cfg)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/update/check?platform=linux-arm64", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	asset, ok := resp["selected_asset"].(map[string]any)
+	if !ok {
+		t.Fatalf("selected_asset missing: %+v", resp)
+	}
+	if asset["name"] != "Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip" || asset["sha256"] != sha {
+		t.Fatalf("selected_asset = %+v, want dotted linux arm64 asset with spaced SHA lookup", asset)
+	}
+	if resp["download_supported"] != true {
+		t.Fatalf("download_supported unexpected: %+v", resp)
+	}
+}
+
 func textResponse(status int, text string) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: status,

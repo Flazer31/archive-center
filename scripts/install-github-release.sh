@@ -160,12 +160,15 @@ PY
 
 asset_name=$(python3 - "$release_json" "$FILTER" <<'PY'
 import json, sys
+import re
 data=json.load(open(sys.argv[1], encoding="utf-8"))
-needle=sys.argv[2].lower()
+def comparable(value):
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
+needle=comparable(sys.argv[2])
 for asset in data.get("assets", []):
     name=(asset.get("name") or "")
-    low=name.lower()
-    if low.endswith(".zip") and needle in low and "archive center" in low:
+    low=comparable(name)
+    if name.lower().endswith(".zip") and needle in low and "archive center" in low:
         print(name)
         break
 PY
@@ -215,11 +218,15 @@ curl -fsSL -H "User-Agent: Archive-Center-Installer" "$sums_url" -o "$sums_path"
 curl -fL -H "User-Agent: Archive-Center-Installer" "$asset_url" -o "$zip_path"
 
 expected=$(python3 - "$sums_path" "$asset_name" <<'PY'
+import re
 import sys
 sums, want = sys.argv[1], sys.argv[2]
+def comparable(value):
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
+want_cmp = comparable(want)
 for line in open(sums, encoding="utf-8"):
     parts=line.strip().split()
-    if len(parts) >= 2 and parts[1].lstrip("*") == want:
+    if len(parts) >= 2 and comparable(" ".join(parts[1:]).lstrip("*")) == want_cmp:
         print(parts[0].lower())
         break
 PY

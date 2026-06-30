@@ -295,7 +295,7 @@ func selectUpdateAsset(platform string, assets []githubAssetRecord, shaMap map[s
 		return &updateAssetInfo{
 			Name:        asset.Name,
 			Size:        asset.Size,
-			SHA256:      shaMap[asset.Name],
+			SHA256:      lookupSHA256ForAsset(shaMap, asset.Name),
 			DownloadURL: asset.BrowserDownloadURL,
 		}
 	}
@@ -303,23 +303,42 @@ func selectUpdateAsset(platform string, assets []githubAssetRecord, shaMap map[s
 }
 
 func assetMatchesPlatform(name, platform string) bool {
-	n := strings.ToLower(name)
+	comparable := comparableAssetName(name)
 	switch normalizeUpdatePlatform(platform) {
 	case "windows-x64":
-		return strings.Contains(n, "windows") && strings.Contains(n, "package.zip")
+		return strings.Contains(comparable, "windows") && strings.Contains(comparable, "package zip")
 	case "linux-x64":
-		return strings.Contains(n, "linux x64")
+		return strings.Contains(comparable, "linux x64")
 	case "linux-arm64":
-		return strings.Contains(n, "linux arm64")
+		return strings.Contains(comparable, "linux arm64")
 	case "macos-intel":
-		return strings.Contains(n, "macos intel")
+		return strings.Contains(comparable, "macos intel")
 	case "macos-apple-silicon":
-		return strings.Contains(n, "macos apple silicon")
+		return strings.Contains(comparable, "macos apple silicon")
 	case "termux-arm64":
-		return strings.Contains(n, "termux arm64")
+		return strings.Contains(comparable, "termux arm64")
 	default:
 		return false
 	}
+}
+
+func lookupSHA256ForAsset(shaMap map[string]string, assetName string) string {
+	if sha := shaMap[assetName]; sha != "" {
+		return sha
+	}
+	want := comparableAssetName(assetName)
+	for name, sha := range shaMap {
+		if comparableAssetName(name) == want {
+			return sha
+		}
+	}
+	return ""
+}
+
+func comparableAssetName(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	normalized := regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(lower, " ")
+	return strings.Join(strings.Fields(normalized), " ")
 }
 
 func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, latestVersion string, asset updateAssetInfo, expectedSHA256 string) (map[string]any, error) {

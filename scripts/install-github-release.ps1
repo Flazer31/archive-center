@@ -37,12 +37,17 @@ function Get-AssetNeedle([string]$Platform) {
     }
 }
 
+function ConvertTo-ComparableAssetName([string]$Value) {
+    $normalized = ($Value.ToLowerInvariant() -replace '[^a-z0-9]+', ' ').Trim()
+    return (($normalized -split '\s+') -join ' ')
+}
+
 function Find-ReleaseAsset($Release, [string]$Needle) {
-    $needleLower = $Needle.ToLowerInvariant()
+    $needleComparable = ConvertTo-ComparableAssetName $Needle
     foreach ($asset in $Release.assets) {
         $name = [string]$asset.name
-        $lower = $name.ToLowerInvariant()
-        if ($lower.EndsWith(".zip") -and $lower.Contains($needleLower) -and $lower.Contains("archive center")) {
+        $comparable = ConvertTo-ComparableAssetName $name
+        if ($name.ToLowerInvariant().EndsWith(".zip") -and $comparable.Contains($needleComparable) -and $comparable.Contains("archive center")) {
             return $asset
         }
     }
@@ -61,10 +66,14 @@ function Find-SHA256Asset($Release) {
 }
 
 function Get-ExpectedSHA256([string]$SumsPath, [string]$AssetName) {
+    $wantComparable = ConvertTo-ComparableAssetName $AssetName
     foreach ($line in Get-Content -LiteralPath $SumsPath) {
         $parts = $line.Trim() -split "\s+"
-        if ($parts.Count -ge 2 -and $parts[1].TrimStart("*") -eq $AssetName) {
+        if ($parts.Count -ge 2) {
+            $sumName = (($parts | Select-Object -Skip 1) -join " ").TrimStart("*")
+            if ((ConvertTo-ComparableAssetName $sumName) -eq $wantComparable) {
             return $parts[0].ToLowerInvariant()
+            }
         }
     }
     return ""
