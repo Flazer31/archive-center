@@ -1,5 +1,27 @@
 # Archive Center 2.0
 
+## GitHub Install/Update
+
+For normal installs and updates, use the GitHub Release package helpers instead
+of running a raw source checkout as the backend.
+
+POSIX:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/scripts/install-github-release.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/Flazer31/archive-center/main/scripts/install-github-release.ps1 -OutFile install-github-release.ps1
+powershell -ExecutionPolicy Bypass -File .\install-github-release.ps1
+```
+
+Raw `git clone` is a source/operator path. It does not by itself configure
+MariaDB, ChromaDB, package launchers, or live service env. See
+`docs/2.3-github-install-update-contract.md`.
+
 Archive Center 2.0 is a new migration workspace for moving the existing Archive Center backend substrate toward:
 
 - Go-primary backend runtime
