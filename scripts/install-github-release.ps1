@@ -87,6 +87,16 @@ $platform = Get-ArchiveCenterPlatform
 $needle = Get-AssetNeedle $platform
 $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
 $headers = @{ "Accept" = "application/vnd.github+json"; "User-Agent" = "Archive-Center-Installer" }
+$currentPackagePointer = Join-Path $InstallDir "current-package.txt"
+$previousPackageRoot = ""
+if (Test-Path -LiteralPath $currentPackagePointer -PathType Leaf) {
+    $previousPackageRoot = ((Get-Content -LiteralPath $currentPackagePointer -Raw) -as [string]).Trim()
+}
+$persistentDataDir = if ([string]::IsNullOrWhiteSpace($env:ARCHIVE_CENTER_DATA_DIR)) {
+    Join-Path $InstallDir "data"
+} else {
+    $env:ARCHIVE_CENTER_DATA_DIR
+}
 $release = Invoke-RestMethod -Method Get -Uri $apiUrl -Headers $headers
 $asset = Find-ReleaseAsset $release $needle
 if ($null -eq $asset) {
@@ -132,15 +142,32 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Set-Content -LiteralPath (Join-Path $InstallDir "current-package.txt") -Value $packageRoot -Encoding UTF8
+    New-Item -ItemType Directory -Force -Path $persistentDataDir | Out-Null
+    $previousRuntime = if ([string]::IsNullOrWhiteSpace($previousPackageRoot)) { "" } else { Join-Path $previousPackageRoot ".runtime" }
+    if (-not (Test-Path -LiteralPath (Join-Path $persistentDataDir "mariadb-data") -PathType Container) -and
+        -not [string]::IsNullOrWhiteSpace($previousRuntime) -and
+        (Test-Path -LiteralPath (Join-Path $previousRuntime "mariadb-data") -PathType Container)) {
+        Write-Host "Migrating package-local runtime data to persistent data directory:"
+        Write-Host "  From: $previousRuntime"
+        Write-Host "  To:   $persistentDataDir"
+        Get-ChildItem -LiteralPath $previousRuntime -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $persistentDataDir -Recurse -Force
+        }
+        Remove-Item -LiteralPath (Join-Path $persistentDataDir "mysql.sock") -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $persistentDataDir "mariadb.pid") -Force -ErrorAction SilentlyContinue
+    }
+
+    Set-Content -LiteralPath $currentPackagePointer -Value $packageRoot -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $InstallDir "current-version.txt") -Value ([string]$release.tag_name) -Encoding UTF8
 
     Write-Host "Installed Archive Center $($release.tag_name)"
     Write-Host "  Platform: $platform"
     Write-Host "  Package:  $packageRoot"
+    Write-Host "  Data:     $persistentDataDir"
     Write-Host "  Pointer:  $(Join-Path $InstallDir "current-package.txt")"
 
     if ($Start) {
+        $env:ARCHIVE_CENTER_DATA_DIR = $persistentDataDir
         if ($platform -eq "windows-x64") {
             $launcher = Join-Path $packageRoot "01_start_archive_center_windows.bat"
             Start-Process -FilePath $launcher -WorkingDirectory $packageRoot

@@ -86,6 +86,10 @@ safe_link_current() {
 	ln -sfn "$target" "$link"
 }
 
+systemd_env_quote() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--repo)
@@ -139,6 +143,16 @@ PLATFORM=$(detect_platform)
 FILTER=$(asset_filter_for_platform "$PLATFORM")
 API_URL="https://api.github.com/repos/$REPO/releases/$CHANNEL"
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/archive-center-update.XXXXXX")
+PERSISTENT_DATA_DIR="${ARCHIVE_CENTER_DATA_DIR:-$INSTALL_DIR/data}"
+previous_current=""
+if [ -e "$INSTALL_DIR/current" ]; then
+	previous_current=$(python3 - "$INSTALL_DIR/current" <<'PY'
+import os
+import sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)
+fi
 cleanup() {
 	case "$WORK_DIR" in
 		"${TMPDIR:-/tmp}"/archive-center-update.*)
@@ -263,6 +277,15 @@ PY
 )
 [ -n "$package_root" ] || die "extracted package launcher was not found"
 
+mkdir -p "$PERSISTENT_DATA_DIR"
+if [ ! -d "$PERSISTENT_DATA_DIR/mariadb-data" ] && [ -n "$previous_current" ] && [ -d "$previous_current/.runtime/mariadb-data" ]; then
+	printf 'Migrating package-local runtime data to persistent data directory:\n'
+	printf '  From: %s/.runtime\n' "$previous_current"
+	printf '  To:   %s\n' "$PERSISTENT_DATA_DIR"
+	cp -a "$previous_current/.runtime/." "$PERSISTENT_DATA_DIR/"
+	rm -f "$PERSISTENT_DATA_DIR/mysql.sock" "$PERSISTENT_DATA_DIR/mariadb.pid"
+fi
+
 safe_link_current "$package_root" "$INSTALL_DIR/current"
 printf '%s\n' "$release_tag" > "$INSTALL_DIR/current-version.txt"
 
@@ -277,8 +300,9 @@ if [ "$SYSTEMD" = "true" ]; then
 		*) die "--systemd is supported only on Linux" ;;
 	esac
 	[ "$(id -u)" = "0" ] || die "--systemd requires root"
-	sh "$package_root/scripts/start-full-linux.sh" --profile full_local --vector-mode local_native --install-only
+	ARCHIVE_CENTER_DATA_DIR="$PERSISTENT_DATA_DIR" sh "$package_root/scripts/start-full-linux.sh" --profile full_local --vector-mode local_native --install-only
 	unit_path="/etc/systemd/system/$SERVICE_NAME.service"
+	data_dir_escaped=$(systemd_env_quote "$PERSISTENT_DATA_DIR")
 	cat > "$unit_path" <<EOF
 [Unit]
 Description=Archive Center
@@ -290,6 +314,7 @@ Type=simple
 User=$RUN_USER
 Group=$RUN_USER
 WorkingDirectory=$INSTALL_DIR/current
+Environment="ARCHIVE_CENTER_DATA_DIR=$data_dir_escaped"
 ExecStart=/bin/sh $INSTALL_DIR/current/start-archive-center-linux.sh --no-install
 Restart=on-failure
 RestartSec=5
@@ -306,6 +331,7 @@ EOF
 fi
 
 if [ "$START_AFTER" = "true" ]; then
+	export ARCHIVE_CENTER_DATA_DIR="$PERSISTENT_DATA_DIR"
 	case "$PLATFORM" in
 		linux-*) exec sh "$INSTALL_DIR/current/start-archive-center-linux.sh" ;;
 		macos-*) exec sh "$INSTALL_DIR/current/scripts/start-full-macos.sh" ;;
