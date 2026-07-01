@@ -282,6 +282,15 @@ func (r *readOnlyStore) DeleteThemeOffscreenCarries(ctx context.Context, chatSes
 func (r *readOnlyStore) DeleteCaptureVerificationRecords(ctx context.Context, chatSessionID string, fromTurn int) error {
 	return ErrNotEnabled
 }
+func (r *readOnlyStore) DeleteStatusCurrentValues(ctx context.Context, chatSessionID string, fromTurn int) error {
+	return ErrNotEnabled
+}
+func (r *readOnlyStore) DeleteStatusChangeEvents(ctx context.Context, chatSessionID string, fromTurn int) error {
+	return ErrNotEnabled
+}
+func (r *readOnlyStore) DeleteStatusEffects(ctx context.Context, chatSessionID string, fromTurn int) error {
+	return ErrNotEnabled
+}
 func (r *readOnlyStore) DeleteSession(ctx context.Context, chatSessionID string) error {
 	return ErrNotEnabled
 }

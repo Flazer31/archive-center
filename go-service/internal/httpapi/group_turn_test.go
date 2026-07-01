@@ -6943,6 +6943,27 @@ func (r *rollbackRecordingStore) DeleteCaptureVerificationRecords(ctx context.Co
 	r.deletes = append(r.deletes, fmt.Sprintf("capture_verification_records:%s:%d", sid, fromTurn))
 	return nil
 }
+func (r *rollbackRecordingStore) DeleteStatusCurrentValues(ctx context.Context, sid string, fromTurn int) error {
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
+	r.deletes = append(r.deletes, fmt.Sprintf("status_current_values:%s:%d", sid, fromTurn))
+	return nil
+}
+func (r *rollbackRecordingStore) DeleteStatusChangeEvents(ctx context.Context, sid string, fromTurn int) error {
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
+	r.deletes = append(r.deletes, fmt.Sprintf("status_change_events:%s:%d", sid, fromTurn))
+	return nil
+}
+func (r *rollbackRecordingStore) DeleteStatusEffects(ctx context.Context, sid string, fromTurn int) error {
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
+	r.deletes = append(r.deletes, fmt.Sprintf("status_effects:%s:%d", sid, fromTurn))
+	return nil
+}
 func (r *rollbackRecordingStore) DeleteSession(ctx context.Context, sid string) error {
 	if r.deleteErr != nil {
 		return r.deleteErr
@@ -7044,6 +7065,9 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 		"psychology_branches:sess-live:5",
 		"theme_offscreen_carries:sess-live:5",
 		"capture_verification_records:sess-live:5",
+		"status_current_values:sess-live:5",
+		"status_change_events:sess-live:5",
+		"status_effects:sess-live:5",
 	}
 	if len(rec.deletes) != len(wantDeletes) {
 		t.Errorf("delete call count = %d, want %d", len(rec.deletes), len(wantDeletes))
@@ -7056,11 +7080,14 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 			t.Errorf("delete[%d] = %s, want %s", i, rec.deletes[i], want)
 		}
 	}
-	if len(vec.deletedDocumentIDs) != 2 {
-		t.Fatalf("deleted vector ids = %#v, want 2 ids", vec.deletedDocumentIDs)
+	wantVectorIDs := []string{"memory:sess-live:41", "memory:41", "memory:sess-live:42", "memory:42"}
+	if len(vec.deletedDocumentIDs) != len(wantVectorIDs) {
+		t.Fatalf("deleted vector ids = %#v, want %#v", vec.deletedDocumentIDs, wantVectorIDs)
 	}
-	if vec.deletedDocumentIDs[0] != "memory:sess-live:41" || vec.deletedDocumentIDs[1] != "memory:sess-live:42" {
-		t.Fatalf("deleted vector ids = %#v", vec.deletedDocumentIDs)
+	for i, want := range wantVectorIDs {
+		if vec.deletedDocumentIDs[i] != want {
+			t.Fatalf("deleted vector ids = %#v, want %#v", vec.deletedDocumentIDs, wantVectorIDs)
+		}
 	}
 	if len(rec.audits) != 1 {
 		t.Fatalf("audit count = %d, want 1", len(rec.audits))

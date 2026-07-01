@@ -4736,6 +4736,69 @@ func (m *mariadbStore) DeleteCaptureVerificationRecords(ctx context.Context, cha
 	return err
 }
 
+func (m *mariadbStore) DeleteStatusCurrentValues(ctx context.Context, chatSessionID string, fromTurn int) error {
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	_, err := m.db.ExecContext(ctx, `
+		DELETE FROM status_current_values
+		WHERE chat_session_id = ?
+		  AND source_turn >= ?
+	`, chatSessionID, fromTurn)
+	return err
+}
+
+func (m *mariadbStore) DeleteStatusChangeEvents(ctx context.Context, chatSessionID string, fromTurn int) error {
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	_, err := m.db.ExecContext(ctx, `
+		DELETE FROM status_change_events
+		WHERE chat_session_id = ?
+		  AND source_turn >= ?
+	`, chatSessionID, fromTurn)
+	return err
+}
+
+func (m *mariadbStore) DeleteStatusEffects(ctx context.Context, chatSessionID string, fromTurn int) error {
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE status_effects
+		SET effect_state = 'active',
+		    cleared_evidence_json = NULL,
+		    cleared_turn = NULL,
+		    updated_at = CURRENT_TIMESTAMP(3)
+		WHERE chat_session_id = ?
+		  AND cleared_turn >= ?
+	`, chatSessionID, fromTurn); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM status_effects
+		WHERE chat_session_id = ?
+		  AND source_turn >= ?
+	`, chatSessionID, fromTurn); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
 func (m *mariadbStore) CreatePersonaMemoryCapsule(ctx context.Context, capsule *PersonaMemoryCapsule, entries []PersonaMemoryEntry) (*PersonaMemoryCapsule, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err

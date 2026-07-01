@@ -598,6 +598,16 @@ type RollbackStore interface {
 	// DeleteCaptureVerificationRecords removes per-turn capture verification rows from turn_index onward.
 	DeleteCaptureVerificationRecords(ctx context.Context, chatSessionID string, fromTurn int) error
 
+	// DeleteStatusCurrentValues removes current status values sourced from the rollback turn onward.
+	DeleteStatusCurrentValues(ctx context.Context, chatSessionID string, fromTurn int) error
+
+	// DeleteStatusChangeEvents removes status change ledger events sourced from the rollback turn onward.
+	DeleteStatusChangeEvents(ctx context.Context, chatSessionID string, fromTurn int) error
+
+	// DeleteStatusEffects removes effects created from the rollback turn onward and
+	// reopens older effects that were cleared by a rolled-back turn.
+	DeleteStatusEffects(ctx context.Context, chatSessionID string, fromTurn int) error
+
 	// DeleteSession removes all session-scoped rows across all tables.
 	DeleteSession(ctx context.Context, chatSessionID string) error
 }

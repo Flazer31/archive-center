@@ -656,6 +656,15 @@ func (f *fixtureStore) DeleteThemeOffscreenCarries(ctx context.Context, sid stri
 func (f *fixtureStore) DeleteCaptureVerificationRecords(ctx context.Context, sid string, fromTurn int) error {
 	return ErrNotEnabled
 }
+func (f *fixtureStore) DeleteStatusCurrentValues(ctx context.Context, sid string, fromTurn int) error {
+	return ErrNotEnabled
+}
+func (f *fixtureStore) DeleteStatusChangeEvents(ctx context.Context, sid string, fromTurn int) error {
+	return ErrNotEnabled
+}
+func (f *fixtureStore) DeleteStatusEffects(ctx context.Context, sid string, fromTurn int) error {
+	return ErrNotEnabled
+}
 func (f *fixtureStore) DeleteSession(ctx context.Context, sid string) error { return ErrNotEnabled }
 
 func matchesSession(rowSID, filterSID string) bool {

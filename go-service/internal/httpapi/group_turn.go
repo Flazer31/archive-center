@@ -2365,7 +2365,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	deletions := map[string]any{}
 	var delErrs []string
-	vectorIDs, vectorCollectErr := rollbackMemoryVectorIDs(ctx, s.Store, sid, turnIndex)
+	vectorIDs, vectorCollectErr := rollbackVectorDocumentIDs(ctx, s.Store, sid, turnIndex)
 
 	tables := []struct {
 		name string
@@ -2397,6 +2397,9 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		{"psychology_branches", func() error { return rollbackStore.DeletePsychologyBranches(ctx, sid, turnIndex) }},
 		{"theme_offscreen_carries", func() error { return rollbackStore.DeleteThemeOffscreenCarries(ctx, sid, turnIndex) }},
 		{"capture_verification_records", func() error { return rollbackStore.DeleteCaptureVerificationRecords(ctx, sid, turnIndex) }},
+		{"status_current_values", func() error { return rollbackStore.DeleteStatusCurrentValues(ctx, sid, turnIndex) }},
+		{"status_change_events", func() error { return rollbackStore.DeleteStatusChangeEvents(ctx, sid, turnIndex) }},
+		{"status_effects", func() error { return rollbackStore.DeleteStatusEffects(ctx, sid, turnIndex) }},
 	}
 
 	for _, t := range tables {
@@ -2487,33 +2490,131 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func rollbackMemoryVectorIDs(ctx context.Context, st store.Store, sid string, fromTurn int) ([]string, error) {
+func rollbackVectorDocumentIDs(ctx context.Context, st store.Store, sid string, fromTurn int) ([]string, error) {
 	if st == nil {
 		return nil, nil
 	}
-	memories, err := st.ListMemories(ctx, sid, fromTurn, 0)
-	if err != nil {
-		if errors.Is(err, store.ErrNotEnabled) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	ids := make([]string, 0, len(memories))
+	ids := []string{}
 	seen := map[string]bool{}
-	for _, mem := range memories {
-		if mem.ChatSessionID != "" && mem.ChatSessionID != sid {
-			continue
-		}
-		id := memoryVectorDocumentID(sid, mem)
-		if id == "" {
-			continue
-		}
-		if !seen[id] {
+	add := func(candidates ...string) {
+		for _, id := range candidates {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
 			seen[id] = true
 			ids = append(ids, id)
 		}
 	}
+
+	memories, err := st.ListMemories(ctx, sid, fromTurn, 0)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+	} else {
+		for _, mem := range memories {
+			if mem.ChatSessionID != "" && mem.ChatSessionID != sid {
+				continue
+			}
+			if mem.ID > 0 {
+				add(memoryVectorDocumentID(sid, mem), rollbackVectorDocumentAlias("memory", sid, mem.ID), rollbackVectorDocumentLegacyAlias("memory", mem.ID))
+			}
+		}
+	}
+
+	evidence, err := st.ListEvidence(ctx, sid)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+	} else {
+		for _, item := range evidence {
+			if item.ID > 0 && item.SourceTurnEnd >= fromTurn {
+				add(rollbackVectorDocumentAlias("evidence", sid, item.ID), rollbackVectorDocumentLegacyAlias("evidence", item.ID))
+			}
+		}
+	}
+
+	triples, err := st.ListKGTriples(ctx, sid)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+	} else {
+		for _, item := range triples {
+			if item.ID > 0 && (item.SourceTurn >= fromTurn || item.ValidFrom >= fromTurn) {
+				add(rollbackVectorDocumentAlias("kg_triple", sid, item.ID), rollbackVectorDocumentLegacyAlias("kg_triple", item.ID))
+			}
+		}
+	}
+
+	episodes, err := st.ListEpisodeSummaries(ctx, sid, 0, 0, 0)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+	} else {
+		for _, item := range episodes {
+			if item.ID > 0 && (item.ToTurn >= fromTurn || item.FromTurn >= fromTurn) {
+				add(rollbackVectorDocumentAlias("episode", sid, item.ID), rollbackVectorDocumentLegacyAlias("episode", item.ID))
+			}
+		}
+	}
+
+	if chapterStore, ok := st.(store.ChapterSummaryStore); ok {
+		chapters, err := chapterStore.SearchChapterSummaries(ctx, sid, "", 0, 0, 0)
+		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+		for _, item := range chapters {
+			if item.ID > 0 && (item.ToTurn >= fromTurn || item.FromTurn >= fromTurn) {
+				add(rollbackVectorDocumentAlias("chapter", sid, item.ID), rollbackVectorDocumentLegacyAlias("chapter", item.ID))
+			}
+		}
+	}
+
+	if arcStore, ok := st.(store.ArcSummaryStore); ok {
+		arcs, err := arcStore.ListArcSummaries(ctx, sid, "", 0)
+		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+		for _, item := range arcs {
+			if item.ID > 0 && (item.ToTurn >= fromTurn || item.FromTurn >= fromTurn) {
+				add(rollbackVectorDocumentAlias("arc", sid, item.ID), rollbackVectorDocumentLegacyAlias("arc", item.ID))
+			}
+		}
+	}
+
+	if sagaStore, ok := st.(store.SagaDigestStore); ok {
+		sagas, err := sagaStore.ListSagaDigests(ctx, sid, 0)
+		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+		for _, item := range sagas {
+			if item.ID > 0 && (item.ToTurn >= fromTurn || item.FromTurn >= fromTurn) {
+				add(rollbackVectorDocumentAlias("saga", sid, item.ID), rollbackVectorDocumentLegacyAlias("saga", item.ID))
+			}
+		}
+	}
 	return ids, nil
+}
+
+func rollbackVectorDocumentAlias(tier, sid string, rowID int64) string {
+	tier = strings.TrimSpace(tier)
+	sid = strings.TrimSpace(sid)
+	if tier == "" || sid == "" || rowID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s:%s:%d", tier, sid, rowID)
+}
+
+func rollbackVectorDocumentLegacyAlias(tier string, rowID int64) string {
+	tier = strings.TrimSpace(tier)
+	if tier == "" || rowID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", tier, rowID)
 }
 
 func memoryVectorDocumentID(sid string, mem store.Memory) string {

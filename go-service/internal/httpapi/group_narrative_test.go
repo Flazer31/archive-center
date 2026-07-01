@@ -839,6 +839,15 @@ func (f *narrativeFakeStore) DeleteThemeOffscreenCarries(ctx context.Context, si
 func (f *narrativeFakeStore) DeleteCaptureVerificationRecords(ctx context.Context, sid string, fromTurn int) error {
 	return nil
 }
+func (f *narrativeFakeStore) DeleteStatusCurrentValues(ctx context.Context, sid string, fromTurn int) error {
+	return nil
+}
+func (f *narrativeFakeStore) DeleteStatusChangeEvents(ctx context.Context, sid string, fromTurn int) error {
+	return nil
+}
+func (f *narrativeFakeStore) DeleteStatusEffects(ctx context.Context, sid string, fromTurn int) error {
+	return nil
+}
 func (f *narrativeFakeStore) DeleteSession(ctx context.Context, sid string) error {
 	f.deleteSessionCalled = true
 	return f.deleteSessionErr

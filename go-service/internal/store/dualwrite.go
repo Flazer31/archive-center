@@ -1227,6 +1227,21 @@ func (d *dualWriteStore) DeleteCaptureVerificationRecords(ctx context.Context, s
 		return s.DeleteCaptureVerificationRecords(ctx, sid, fromTurn)
 	})
 }
+func (d *dualWriteStore) DeleteStatusCurrentValues(ctx context.Context, sid string, fromTurn int) error {
+	return d.dualWriteRollback("DeleteStatusCurrentValues", func(s RollbackStore) error {
+		return s.DeleteStatusCurrentValues(ctx, sid, fromTurn)
+	})
+}
+func (d *dualWriteStore) DeleteStatusChangeEvents(ctx context.Context, sid string, fromTurn int) error {
+	return d.dualWriteRollback("DeleteStatusChangeEvents", func(s RollbackStore) error {
+		return s.DeleteStatusChangeEvents(ctx, sid, fromTurn)
+	})
+}
+func (d *dualWriteStore) DeleteStatusEffects(ctx context.Context, sid string, fromTurn int) error {
+	return d.dualWriteRollback("DeleteStatusEffects", func(s RollbackStore) error {
+		return s.DeleteStatusEffects(ctx, sid, fromTurn)
+	})
+}
 func (d *dualWriteStore) DeleteSession(ctx context.Context, sid string) error {
 	return d.dualWriteRollback("DeleteSession", func(s RollbackStore) error { return s.DeleteSession(ctx, sid) })
 }

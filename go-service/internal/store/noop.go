@@ -194,6 +194,15 @@ func (n *noopStore) DeleteThemeOffscreenCarries(ctx context.Context, chatSession
 func (n *noopStore) DeleteCaptureVerificationRecords(ctx context.Context, chatSessionID string, fromTurn int) error {
 	return nil
 }
+func (n *noopStore) DeleteStatusCurrentValues(ctx context.Context, chatSessionID string, fromTurn int) error {
+	return nil
+}
+func (n *noopStore) DeleteStatusChangeEvents(ctx context.Context, chatSessionID string, fromTurn int) error {
+	return nil
+}
+func (n *noopStore) DeleteStatusEffects(ctx context.Context, chatSessionID string, fromTurn int) error {
+	return nil
+}
 func (n *noopStore) DeleteSession(ctx context.Context, chatSessionID string) error { return nil }
 
 func (n *noopStore) ListConsequenceRecords(ctx context.Context, chatSessionID string, limit int) ([]ConsequenceRecord, error) {

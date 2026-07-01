@@ -48,6 +48,12 @@ func TestMariaDBRollbackStoreDeleteFromTurn(t *testing.T) {
 	mock.ExpectExec("DELETE FROM psychology_branches").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM theme_offscreen_carries").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM capture_verification_records").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM status_current_values").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM status_change_events").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE status_effects").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM status_effects").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	if err := m.DeleteChatLogs(ctx, sid, fromTurn); err != nil {
 		t.Errorf("DeleteChatLogs: %v", err)
@@ -126,6 +132,15 @@ func TestMariaDBRollbackStoreDeleteFromTurn(t *testing.T) {
 	}
 	if err := m.DeleteCaptureVerificationRecords(ctx, sid, fromTurn); err != nil {
 		t.Errorf("DeleteCaptureVerificationRecords: %v", err)
+	}
+	if err := m.DeleteStatusCurrentValues(ctx, sid, fromTurn); err != nil {
+		t.Errorf("DeleteStatusCurrentValues: %v", err)
+	}
+	if err := m.DeleteStatusChangeEvents(ctx, sid, fromTurn); err != nil {
+		t.Errorf("DeleteStatusChangeEvents: %v", err)
+	}
+	if err := m.DeleteStatusEffects(ctx, sid, fromTurn); err != nil {
+		t.Errorf("DeleteStatusEffects: %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

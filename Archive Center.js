@@ -215,7 +215,8 @@
     // ── Phase 4-D-2: 하드코딩 상수 설정화 ──
     failedQueueMaxSize: 50,          // 실패 큐 최대 크기 (10-200)
     failedQueueMaxAgeDays: 7,        // 실패 큐 항목 최대 보관 일수 (1-30)
-    rollbackIdleWatcherMode: "event", // event / slow / fast_debug / off
+    rollbackIdleWatcherMode: "slow",  // event / slow / fast_debug / off
+    rollbackIdleWatcherModePolicyVersion: "tail_delete_slow_default.v1",
     // ── E-5: Narrative Guide Mode ──
     narrativeGuideMode: "auto",      // auto / off / standard / romantic / action / mature_soft / mature_direct
     narrativeGuideStrength: "weak",  // none / weak / medium / strong
@@ -11076,11 +11077,17 @@
     merged.dbEnabled = true;
     // 저장 무결성 정책: turn 삭제 감지는 비활성화하지 않는다.
     merged.rollbackAutoEnabled = true;
+    if (raw
+        && raw.rollbackIdleWatcherMode === "event"
+        && raw.rollbackIdleWatcherModePolicyVersion !== DEFAULT_SETTINGS.rollbackIdleWatcherModePolicyVersion) {
+      merged.rollbackIdleWatcherMode = DEFAULT_SETTINGS.rollbackIdleWatcherMode;
+    }
     merged.rollbackIdleWatcherMode = sanitizeEnumValue(
       merged.rollbackIdleWatcherMode,
       DEFAULT_SETTINGS.rollbackIdleWatcherMode,
       ROLLBACK_IDLE_WATCHER_MODES,
     );
+    merged.rollbackIdleWatcherModePolicyVersion = DEFAULT_SETTINGS.rollbackIdleWatcherModePolicyVersion;
     // bridgeUrl 방어
     merged.bridgeUrl = sanitizeBridgeUrl(merged.bridgeUrl);
     // 정책: 서사 가이드 모드는 UI 수동 선택 대신 AI 자동 결정으로 고정한다.
@@ -12632,6 +12639,9 @@
         "pending_threads",
         "critic_feedbacks",
         "active_scope_cache",
+        "status_current_values",
+        "status_change_events",
+        "status_effects",
         "guidance_plan_state",
         "guidance_compact_records",
         "maintenance_passes",
@@ -12669,6 +12679,9 @@
         pending_threads: Number(safeResult.deleted_pending_threads || 0),
         critic_feedbacks: Number(safeResult.deleted_feedbacks || 0),
         active_scope_cache: Number(safeResult.deleted_active_scope_cache || 0),
+        status_current_values: Number(safeResult.deleted_status_current_values || 0),
+        status_change_events: Number(safeResult.deleted_status_change_events || 0),
+        status_effects: Number(safeResult.deleted_status_effects || 0),
         guidance_plan_state: guidanceInvalidated ? 1 : 0,
         guidance_compact_records: Number(safeResult.deleted_compact_records || 0),
         maintenance_passes: Number(safeResult.deleted_maintenance_passes || 0),
@@ -14577,6 +14590,48 @@
     return Math.max(maxTimelineTurnIndex(data.items), Number.isFinite(metaTurn) ? Math.floor(metaTurn) : 0);
   }
 
+  function buildLedgerVerifiedTailRollback(sessionId, currentMessages, activeCompletedTurnCount, latestBackendTurn) {
+    try {
+      const sid = String(sessionId || "").trim() || "default";
+      const ledgerState = loadRollbackTurnLedgerOr1f(sid);
+      const entries = ledgerState && Array.isArray(ledgerState.entries) ? ledgerState.entries : [];
+      const currentList = compactSnapshotMessages(currentMessages);
+      if (!ledgerState || entries.length === 0 || currentList.length === 0) return null;
+
+      const completedCount = Math.max(0, Number(activeCompletedTurnCount || 0));
+      const backendLatest = Math.max(0, Number(latestBackendTurn || 0));
+      if (!Number.isFinite(completedCount) || !Number.isFinite(backendLatest) || backendLatest <= completedCount) return null;
+
+      const commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, currentList);
+      if (commonPrefixLen !== currentList.length) return null;
+
+      const removedEntries = entries.slice(commonPrefixLen);
+      const removedAssistantCount = removedEntries.reduce(function(count, entry) {
+        return count + (entry && entry.role === "assistant" ? 1 : 0);
+      }, 0);
+      if (removedAssistantCount <= 0) return null;
+
+      const rollbackFrom = Math.max(1, completedCount + 1);
+      const backendGap = backendLatest - completedCount;
+      return {
+        status: "verified_tail_delete",
+        rollbackFrom,
+        backendGap,
+        ledgerTrackedTurnIndex: Number(ledgerState.trackedTurnIndex || 0),
+        ledgerMessageCount: entries.length,
+        currentMessageCount: currentList.length,
+        commonPrefixLen,
+        removedMessageCount: Math.max(0, entries.length - currentList.length),
+        removedAssistantCount,
+        currentTailHash: computeTailHash(currentList),
+        policyVersion: "or1f.ledger_verified_tail_delete.v1",
+      };
+    } catch (err) {
+      debugLog("buildLedgerVerifiedTailRollback failed:", err && err.message);
+      return null;
+    }
+  }
+
   async function reconcileActiveChatTailDeletionWithBackend(sessionId, activeChat, options = {}) {
     const sid = String(sessionId || "").trim();
     if (!settings.enabled || !settings.dbEnabled || !sid || sid === SESSION_FALLBACK || !activeChat) return false;
@@ -14596,8 +14651,9 @@
       const latestBackendTurn = await fetchBackendLatestTurnIndexForSession(sid);
       if (!(latestBackendTurn > activeCompletedTurnCount)) return false;
       const backendGap = latestBackendTurn - activeCompletedTurnCount;
+      const ledgerTailRollback = buildLedgerVerifiedTailRollback(sid, comparable, activeCompletedTurnCount, latestBackendTurn);
       const recentTrimGuard = getRecentRisuHistoryTrimGuard(sid);
-      if (recentTrimGuard) {
+      if (recentTrimGuard && !ledgerTailRollback) {
         updateRuntimeState("lastAutoRollback", "skipped", {
           detail: "active chat history trim/cut protected; DB rows preserved",
           sessionId: sid,
@@ -14607,7 +14663,7 @@
         });
         return false;
       }
-      if (!options.allowBlindTailRollback) {
+      if (!options.allowBlindTailRollback && !ledgerTailRollback) {
         updateRuntimeState("lastAutoRollback", "skipped", {
           detail: "active chat tail is shorter than backend by " + backendGap + " turns; blind rollback blocked, use explicit Explorer delete to remove DB rows",
           sessionId: sid,
@@ -14618,7 +14674,7 @@
         });
         return false;
       }
-      if (backendGap > ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS) {
+      if (!ledgerTailRollback && backendGap > ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS) {
         updateRuntimeState("lastAutoRollback", "skipped", {
           detail: "active chat shorter than backend by " + backendGap + " turns; blind rollback blocked as possible /cut history trim",
           sessionId: sid,
@@ -14629,12 +14685,15 @@
         return false;
       }
 
-      const rollbackFrom = Math.max(1, activeCompletedTurnCount + 1);
+      const rollbackFrom = ledgerTailRollback
+        ? ledgerTailRollback.rollbackFrom
+        : Math.max(1, activeCompletedTurnCount + 1);
       const duplicateSignature = [
         sid,
-        "active_chat_tail_reconcile",
+        ledgerTailRollback ? "ledger_verified_tail_reconcile" : "active_chat_tail_reconcile",
         activeCompletedTurnCount,
         latestBackendTurn,
+        ledgerTailRollback ? ledgerTailRollback.commonPrefixLen : "",
       ].join("|");
       if (_lastAutoRollbackSignature === duplicateSignature) return false;
 
@@ -14643,6 +14702,7 @@
         backendLatestTurnIndex: latestBackendTurn,
         rollbackToTurn: rollbackFrom,
         reason: options.reason || "runtime_tail_reconcile",
+        tailReconcileVerification: ledgerTailRollback || null,
         duplicateSignature,
       });
     } catch (err) {
