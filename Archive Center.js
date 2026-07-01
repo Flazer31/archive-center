@@ -37,6 +37,9 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.3.0";
+  const BUILD_ID = "2.3.0-rc5-tail-delete-sync.20260701";
+  const BUILD_CHANNEL = "rc5";
+  const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
   const CONTINUITY_IDLE_REENTRY_MS = 30 * 60 * 1000;
@@ -3702,7 +3705,9 @@
   // ──────────────────────────────────────────────────────────────
   const _sessionSnapshots = {};   // { [sessionId]: { msgCount, turnIndex, tailHash, checkedAt } }
   const _rollbackTurnLedgerBySession = new Map();
+  const _rollbackPreviousTurnLedgerBySession = new Map();
   const ROLLBACK_TURN_LEDGER_KEY = `${PLUGIN_ID}_rollbackTurnLedger`;
+  const ROLLBACK_PREVIOUS_TURN_LEDGER_KEY = `${PLUGIN_ID}_rollbackTurnLedgerPrevious`;
   let _lastAutoRollbackSignature = null;  // 중복 rollback 방지용
   let _lastAutoRollbackSkipSignature = null;
   let _rollbackIdleWatcherTimer = null;
@@ -3817,10 +3822,10 @@
   function updateRuntimeState(key, status, extra = {}) {
     try {
       if (runtimeState[key]) {
-        runtimeState[key] = { status, time: new Date().toISOString(), ...extra };
+        runtimeState[key] = { status, time: new Date().toISOString(), buildId: BUILD_ID, ...extra };
       }
       if (status === "error" || status === "fail") {
-        runtimeState.lastError = { key, status, time: new Date().toISOString(), ...extra };
+        runtimeState.lastError = { key, status, time: new Date().toISOString(), buildId: BUILD_ID, ...extra };
       } else if ((status === "ok" || status === "warn" || status === "skipped") && runtimeState.lastError && runtimeState.lastError.key === key) {
         runtimeState.lastError = null;
       }
@@ -8825,8 +8830,11 @@
       delete _sessionSnapshots[sid];
       _sessionTurnIndices.delete(sid);
       _rollbackTurnLedgerBySession.delete(sid || "default");
+      _rollbackPreviousTurnLedgerBySession.delete(sid || "default");
       safeStorageRemove(rollbackTurnLedgerStorageKey(sid));
+      safeStorageRemove(rollbackPreviousTurnLedgerStorageKey(sid));
       persistentDelete(rollbackTurnLedgerStorageKey(sid)).catch(function() {});
+      persistentDelete(rollbackPreviousTurnLedgerStorageKey(sid)).catch(function() {});
       safeStorageRemove(turnCounterStorageKey(sid));
       persistentDelete(turnCounterStorageKey(sid)).catch(function() {});
       removeStartupMessageLedgerForSession(sid).catch(function() {});
@@ -12322,6 +12330,12 @@
       : ROLLBACK_TURN_LEDGER_KEY;
   }
 
+  function rollbackPreviousTurnLedgerStorageKey(sessionId) {
+    return sessionId && sessionId !== "default"
+      ? `${ROLLBACK_PREVIOUS_TURN_LEDGER_KEY}_${sessionId}`
+      : ROLLBACK_PREVIOUS_TURN_LEDGER_KEY;
+  }
+
   function getRollbackDetectionPolicyOr1f() {
     return {
       policyVersion: "or1f.v1",
@@ -12393,6 +12407,17 @@
     try {
       const normalizedSessionId = String(sessionId || "").trim() || "default";
       const safeLedgerState = ledgerState && typeof ledgerState === "object" ? ledgerState : null;
+      const previousLedger = _rollbackTurnLedgerBySession.has(normalizedSessionId)
+        ? _rollbackTurnLedgerBySession.get(normalizedSessionId)
+        : loadRollbackTurnLedgerOr1f(normalizedSessionId);
+      const previousEntries = previousLedger && Array.isArray(previousLedger.entries) ? previousLedger.entries : [];
+      const nextEntries = safeLedgerState && Array.isArray(safeLedgerState.entries) ? safeLedgerState.entries : [];
+      if (previousEntries.length > nextEntries.length && nextEntries.length > 0) {
+        const previousSerialized = JSON.stringify(previousLedger);
+        _rollbackPreviousTurnLedgerBySession.set(normalizedSessionId, previousLedger);
+        safeStorageSet(rollbackPreviousTurnLedgerStorageKey(normalizedSessionId), previousSerialized);
+        persistentSet(rollbackPreviousTurnLedgerStorageKey(normalizedSessionId), previousSerialized).catch(function() {});
+      }
       const serialized = JSON.stringify(safeLedgerState);
       _rollbackTurnLedgerBySession.set(normalizedSessionId, safeLedgerState);
       safeStorageSet(rollbackTurnLedgerStorageKey(normalizedSessionId), serialized);
@@ -12413,6 +12438,23 @@
       const parsed = JSON.parse(raw);
       if (!parsed || !Array.isArray(parsed.entries)) return null;
       _rollbackTurnLedgerBySession.set(normalizedSessionId, parsed);
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function loadRollbackPreviousTurnLedgerOr1f(sessionId) {
+    try {
+      const normalizedSessionId = String(sessionId || "").trim() || "default";
+      if (_rollbackPreviousTurnLedgerBySession.has(normalizedSessionId)) {
+        return _rollbackPreviousTurnLedgerBySession.get(normalizedSessionId) || null;
+      }
+      const raw = safeStorageGet(rollbackPreviousTurnLedgerStorageKey(normalizedSessionId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.entries)) return null;
+      _rollbackPreviousTurnLedgerBySession.set(normalizedSessionId, parsed);
       return parsed;
     } catch {
       return null;
@@ -14431,8 +14473,11 @@
         _lastAutoRollbackSignature = requestSource === "auto" ? sig : null;
         delete _sessionSnapshots[sessionId];
         _rollbackTurnLedgerBySession.delete(sessionId || "default");
+        _rollbackPreviousTurnLedgerBySession.delete(sessionId || "default");
         safeStorageRemove(rollbackTurnLedgerStorageKey(sessionId));
+        safeStorageRemove(rollbackPreviousTurnLedgerStorageKey(sessionId));
         persistentDelete(rollbackTurnLedgerStorageKey(sessionId)).catch(function() {});
+        persistentDelete(rollbackPreviousTurnLedgerStorageKey(sessionId)).catch(function() {});
 
         // turn counter를 rollback 지점으로 되돌림
         const newCounter = Math.max(0, turnIndex - 1);
@@ -14593,39 +14638,53 @@
   function buildLedgerVerifiedTailRollback(sessionId, currentMessages, activeCompletedTurnCount, latestBackendTurn) {
     try {
       const sid = String(sessionId || "").trim() || "default";
-      const ledgerState = loadRollbackTurnLedgerOr1f(sid);
-      const entries = ledgerState && Array.isArray(ledgerState.entries) ? ledgerState.entries : [];
       const currentList = compactSnapshotMessages(currentMessages);
-      if (!ledgerState || entries.length === 0 || currentList.length === 0) return null;
+      if (currentList.length === 0) return null;
 
       const completedCount = Math.max(0, Number(activeCompletedTurnCount || 0));
       const backendLatest = Math.max(0, Number(latestBackendTurn || 0));
       if (!Number.isFinite(completedCount) || !Number.isFinite(backendLatest) || backendLatest <= completedCount) return null;
 
-      const commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, currentList);
-      if (commonPrefixLen !== currentList.length) return null;
+      const candidates = [
+        { source: "current_ledger", ledgerState: loadRollbackTurnLedgerOr1f(sid) },
+        { source: "previous_ledger", ledgerState: loadRollbackPreviousTurnLedgerOr1f(sid) },
+      ].filter(function(candidate) {
+        return candidate && candidate.ledgerState && Array.isArray(candidate.ledgerState.entries);
+      }).sort(function(a, b) {
+        return b.ledgerState.entries.length - a.ledgerState.entries.length;
+      });
 
-      const removedEntries = entries.slice(commonPrefixLen);
-      const removedAssistantCount = removedEntries.reduce(function(count, entry) {
-        return count + (entry && entry.role === "assistant" ? 1 : 0);
-      }, 0);
-      if (removedAssistantCount <= 0) return null;
+      for (const candidate of candidates) {
+        const ledgerState = candidate.ledgerState;
+        const entries = ledgerState && Array.isArray(ledgerState.entries) ? ledgerState.entries : [];
+        if (entries.length <= currentList.length) continue;
+        const commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, currentList);
+        if (commonPrefixLen !== currentList.length) continue;
 
-      const rollbackFrom = Math.max(1, completedCount + 1);
-      const backendGap = backendLatest - completedCount;
-      return {
-        status: "verified_tail_delete",
-        rollbackFrom,
-        backendGap,
-        ledgerTrackedTurnIndex: Number(ledgerState.trackedTurnIndex || 0),
-        ledgerMessageCount: entries.length,
-        currentMessageCount: currentList.length,
-        commonPrefixLen,
-        removedMessageCount: Math.max(0, entries.length - currentList.length),
-        removedAssistantCount,
-        currentTailHash: computeTailHash(currentList),
-        policyVersion: "or1f.ledger_verified_tail_delete.v1",
-      };
+        const removedEntries = entries.slice(commonPrefixLen);
+        const removedAssistantCount = removedEntries.reduce(function(count, entry) {
+          return count + (entry && entry.role === "assistant" ? 1 : 0);
+        }, 0);
+        if (removedAssistantCount <= 0) continue;
+
+        const rollbackFrom = Math.max(1, completedCount + 1);
+        const backendGap = backendLatest - completedCount;
+        return {
+          status: "verified_tail_delete",
+          rollbackFrom,
+          backendGap,
+          ledgerSource: candidate.source,
+          ledgerTrackedTurnIndex: Number(ledgerState.trackedTurnIndex || 0),
+          ledgerMessageCount: entries.length,
+          currentMessageCount: currentList.length,
+          commonPrefixLen,
+          removedMessageCount: Math.max(0, entries.length - currentList.length),
+          removedAssistantCount,
+          currentTailHash: computeTailHash(currentList),
+          policyVersion: "or1f.ledger_verified_tail_delete.v2",
+        };
+      }
+      return null;
     } catch (err) {
       debugLog("buildLedgerVerifiedTailRollback failed:", err && err.message);
       return null;
@@ -14732,6 +14791,11 @@
       const previousWatcherSignature = _rollbackIdleWatcherLastSignatureBySession.get(sessionId || "default");
       if (previousWatcherSignature === watcherSignature) return false;
       _rollbackIdleWatcherLastSignatureBySession.set(sessionId || "default", watcherSignature);
+      const reconciled = await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, {
+        reason: "rollback_idle_watcher_pre_snapshot",
+        force: true,
+      });
+      if (reconciled) return true;
       await checkAndAutoRollback(sessionId, messages);
       await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, { reason: "rollback_idle_watcher" });
       return true;
@@ -48240,6 +48304,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       <div id="mo-debug-enabled-group" style="flex-direction:column;gap:14px;${s.debug ? "display:flex" : "display:none"}">
         <div class="mo-section">${t('settings.label.debug')}</div>
         <div class="mo-dash">
+          <div class="mo-dash-row"><span class="mo-dot mo-dot-ok"></span><span class="mo-dash-label">Plugin Build</span><span class="mo-dash-value">${escapeAttr(BUILD_LABEL)}</span></div>
+          <div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Build Channel</span><span class="mo-dash-value">${escapeAttr(BUILD_CHANNEL)}</span></div>
           ${formatStateRow("Continuity Debug", rs.lastContinuityDebug)}
         </div>
 
