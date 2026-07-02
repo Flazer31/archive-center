@@ -138,6 +138,21 @@ func (s *chromaStore) Upsert(ctx context.Context, sessionID string, docs []Vecto
 			"source_row_id":   doc.SourceRowID,
 			"schema_version":  doc.SchemaVersion,
 		}
+		if strings.TrimSpace(doc.SearchTextPolicy) != "" {
+			meta["search_text_policy"] = strings.TrimSpace(doc.SearchTextPolicy)
+		}
+		if strings.TrimSpace(doc.RawLanguage) != "" {
+			meta["raw_language"] = strings.TrimSpace(doc.RawLanguage)
+		}
+		if strings.TrimSpace(doc.SummaryLanguage) != "" {
+			meta["summary_language"] = strings.TrimSpace(doc.SummaryLanguage)
+		}
+		if strings.TrimSpace(doc.SessionOutputLanguage) != "" {
+			meta["session_output_language"] = strings.TrimSpace(doc.SessionOutputLanguage)
+		}
+		if doc.AliasCount > 0 {
+			meta["alias_count"] = doc.AliasCount
+		}
 		if doc.MigrationID > 0 {
 			meta["migration_id"] = strconv.FormatInt(doc.MigrationID, 10)
 		}
@@ -439,6 +454,11 @@ func vectorDocumentFromChroma(id string, text string, meta map[string]any) Vecto
 		SourceRowID:           stringFromAny(meta["source_row_id"]),
 		SchemaVersion:         stringFromAny(meta["schema_version"]),
 		DocumentText:          text,
+		SearchTextPolicy:      stringFromAny(meta["search_text_policy"]),
+		RawLanguage:           stringFromAny(meta["raw_language"]),
+		SummaryLanguage:       stringFromAny(meta["summary_language"]),
+		SessionOutputLanguage: stringFromAny(meta["session_output_language"]),
+		AliasCount:            intFromAny(meta["alias_count"]),
 		MigrationID:           int64FromAny(meta["migration_id"]),
 		MigratedFromSessionID: stringFromAny(meta["migrated_from_session_id"]),
 	}

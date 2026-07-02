@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.4 RC1
+//@display-name Archive Center 2.4 RC2
 //@author memory-scaffold
 //@api 3.0
-//@version 2.4.0-rc1
+//@version 2.4.0-rc2
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
@@ -36,9 +36,9 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.4.0-rc1";
-  const BUILD_ID = "2.4.0-rc1-language-memory-planner-offload.20260702";
-  const BUILD_CHANNEL = "rc1";
+  const VERSION = "2.4.0-rc2";
+  const BUILD_ID = "2.4.0-rc2-identity-continuity-guard.20260702";
+  const BUILD_CHANNEL = "rc2";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -251,8 +251,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.4 RC1 설정",
-      "settings.section.dashboard": "상태 대시보드",
+      "settings.title": "🗂️ Archive Center 2.4 RC2 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -265,7 +264,7 @@
       "settings.tab.debug": "디버그",
       "settings.section.status": "설정 상태",
       "settings.section.common": "공통 설정",
-      "settings.section.common.desc": "2.4 RC1 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
+      "settings.section.common.desc": "2.4 RC2 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
       "settings.section.update": "업데이트",
@@ -284,8 +283,6 @@
       "settings.label.tableReadReasoningEffort": "대본 리딩 Reasoning Effort",
       "settings.label.tableReadMaxCompletionTokens": "대본 리딩 Max Completion Tokens",
       "settings.section.advanced": "⚙ 고급 설정 (접기/펼치기)",
-      "settings.section.explorer": "DB 탐색",
-      "settings.section.explorer.desc": "세션별로 chat_logs, memories, kg_triples를 확인하고 필요한 항목을 수정하거나 삭제할 수 있습니다.",
       "settings.section.audit": "감사 기록",
       "settings.section.audit.desc": "관리 작업(편집, 삭제, rollback, reindex 등)의 이력을 확인합니다.",
       "settings.section.compare": "세션 비교",
@@ -772,8 +769,6 @@
       "explorer.sessions.loading": "세션 목록 로딩 중...",
       "explorer.sessions.empty": "저장된 세션이 없습니다.",
       "explorer.sessions.activeChatTooltip": "현재 활성 채팅 세션",
-      "explorer.tabs.guideTitle": "서고 항목 안내",
-      "explorer.tabs.guideHint": "각 항목의 역할을 확인한 뒤 탭을 선택해 상세 데이터를 확인하세요.",
       "explorer.tabs.chat_logs.label": "대화 원문",
       "explorer.tabs.chat_logs.desc": "턴별 사용자/어시스턴트 원문 기록입니다.",
       "explorer.tabs.memories.label": "기억 요약",
@@ -1244,8 +1239,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.4 RC1 Settings",
-      "settings.section.dashboard": "Status Dashboard",
+      "settings.title": "🗂️ Archive Center 2.4 RC2 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -1258,7 +1252,7 @@
       "settings.tab.debug": "Debug",
       "settings.section.status": "Settings Status",
       "settings.section.common": "Common Settings",
-      "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC1 default mode.",
+      "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC2 default mode.",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
       "settings.section.update": "Update",
@@ -1277,8 +1271,6 @@
       "settings.label.tableReadReasoningEffort": "Table Read Reasoning Effort",
       "settings.label.tableReadMaxCompletionTokens": "Table Read Max Completion Tokens",
       "settings.section.advanced": "⚙ Advanced Settings (expand/collapse)",
-      "settings.section.explorer": "DB探索",
-      "settings.section.explorer.desc": "Browse chat_logs, memories, and kg_triples by session, and edit or delete selected fields.",
       "settings.section.audit": "監査記録",
       "settings.section.audit.desc": "View history of management operations (edit, delete, rollback, reindex, etc.).",
       "settings.section.compare": "セッション比較",
@@ -1936,8 +1928,6 @@
       "explorer.sessions.loading": "Loading sessions...",
       "explorer.sessions.empty": "No saved sessions.",
       "explorer.sessions.activeChatTooltip": "Currently active chat session",
-      "explorer.tabs.guideTitle": "Archive Section Guide",
-      "explorer.tabs.guideHint": "Check each section's role, then select a tab to inspect detailed data.",
       "explorer.tabs.chat_logs.label": "Chat Logs",
       "explorer.tabs.chat_logs.desc": "Raw turn-by-turn user/assistant conversation history.",
       "explorer.tabs.memories.label": "Memories",
@@ -2237,8 +2227,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.4 RC1 設定",
-      "settings.section.dashboard": "ステータスダッシュボード",
+      "settings.title": "🗂️ Archive Center 2.4 RC2 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -2251,7 +2240,7 @@
       "settings.tab.debug": "デバッグ",
       "settings.section.status": "設定状態",
       "settings.section.common": "共通設定",
-      "settings.section.common.desc": "2.4 RC1既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
+      "settings.section.common.desc": "2.4 RC2既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
       "settings.section.update": "アップデート",
@@ -2270,8 +2259,6 @@
       "settings.label.tableReadReasoningEffort": "読み合わせ Reasoning Effort",
       "settings.label.tableReadMaxCompletionTokens": "読み合わせ Max Completion Tokens",
       "settings.section.advanced": "⚙ 詳細設定 (展開/折りたたみ)",
-      "settings.section.explorer": "DB Explorer",
-      "settings.section.explorer.desc": "セッション単位で chat_logs、memories、kg_triples を確認し、必要な項目を編集または削除できます。",
       "settings.section.audit": "Audit Trail",
       "settings.section.audit.desc": "管理操作（編集、削除、rollback、reindex等）の履歴を確認します。",
       "settings.section.compare": "Session Compare",
@@ -2903,8 +2890,6 @@
       "explorer.sessions.loading": "セッション一覧読み込み中...",
       "explorer.sessions.empty": "保存されたセッションがありません。",
       "explorer.sessions.activeChatTooltip": "現在アクティブなチャットセッション",
-      "explorer.tabs.guideTitle": "書庫セクション案内",
-      "explorer.tabs.guideHint": "各セクションの役割を確認してから、タブで詳細データを確認してください。",
       "explorer.tabs.chat_logs.label": "会話原文",
       "explorer.tabs.chat_logs.desc": "ターンごとのユーザー/アシスタント原文ログです。",
       "explorer.tabs.memories.label": "記憶要約",
@@ -34236,7 +34221,7 @@
 
   // ──────────────────────────────────────────────────────────────
   // [DB EXPLORER — Sprint 2-E: STATE & FETCH]
-  // 읽기 전용 DB 탐색 기능.
+  // 읽기 전용 저장소 조회 기능.
   // session 목록, chat_logs, memories, kg_triples를 조회한다.
   // Sprint 2-F: memories, kg_triples 제한적 수정 기능 추가.
   // Sprint 3-A-1: memories, kg_triples 개별 삭제 기능 추가.
@@ -39306,8 +39291,6 @@
     }).join("");
 
     return '<div class="mo-ex-tab-guide">' +
-      '<div class="mo-ex-tab-guide-title">' + t("explorer.tabs.guideTitle") + '</div>' +
-      '<div class="mo-ex-tab-guide-hint">' + t("explorer.tabs.guideHint") + '</div>' +
       '<div class="mo-ex-tab-guide-grid">' + rows + '</div>' +
     '</div>';
   }
@@ -48147,8 +48130,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     </div>
 
     <div class="mo-tab-panel${_settingsActiveTab === "dashboard" ? " is-active" : ""}" data-tab-panel="dashboard">
-    <!-- ▸ 상태 대시보드 -->
-    <div class="mo-section">${t('settings.section.dashboard')}</div>
+    <!-- dashboard panel -->
     <div class="mo-dash" id="mo-dashboard">
       ${renderDashboardCards(rs, s, dashLabel, guideModeDashboardState, _prepareTurnEverContacted, _failedQueue, runtimeState)}
     </div>
@@ -48166,8 +48148,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
     <div class="mo-tab-panel${_settingsActiveTab === "archive" ? " is-active" : ""}" data-tab-panel="archive">
       <!-- ▸ DB Explorer — Sprint 2-E/F/G -->
-      <div class="mo-section">${t('settings.section.explorer')}</div>
-      <div class="mo-section-desc">${t('settings.section.explorer.desc')}</div>
       <div class="mo-dash" id="mo-explorer-root">
         ${renderExplorerSection()}
       </div>
@@ -50344,7 +50324,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.4 RC1 Release",
+    pre_release_bundle_authority: "Archive Center 2.4 RC2 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",

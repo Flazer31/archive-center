@@ -1638,14 +1638,8 @@ func adminReindexProgress(processed, total, upserted, skipped int, failedIDs, sk
 }
 
 func reindexMemoryDocumentText(mem store.Memory) string {
-	parsed := parseJSONMap(mem.SummaryJSON)
-	for _, key := range []string{"summary", "turn_summary", "text", "content"} {
-		if value := strings.TrimSpace(stringFromAny(parsed[key])); value != "" {
-			return value
-		}
-	}
-	if evidence := strings.TrimSpace(mem.Evidence); evidence != "" {
-		return evidence
+	if searchText := strings.TrimSpace(memorySearchTextFromMemory(mem).Text); searchText != "" {
+		return searchText
 	}
 	return strings.TrimSpace(memorySummaryPreview(mem.SummaryJSON))
 }

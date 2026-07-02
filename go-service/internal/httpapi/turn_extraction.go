@@ -1040,9 +1040,13 @@ func glmThinkingTypeFromReasoning(preset, effort string) string {
 	}
 }
 
-func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig) (map[string]any, map[string]any, error) {
+func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
 	if !cfg.hasConfig() {
 		return nil, nil, errors.New("critic_config_missing")
+	}
+	var languageContext map[string]any
+	if len(languageContextArg) > 0 {
+		languageContext = normalizeCompleteTurnLanguageContext(languageContextArg[0])
 	}
 	systemPrompt, promptSource := readCriticSystemPrompt(s.Cfg.PromptDir)
 	sanitizedUserInput := sanitizeTextForCriticInput(userInput)
@@ -1055,7 +1059,7 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 	safeContextMessages := sanitizeContextMessagesForCriticInput(contextMessages)
 	previewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, safeUserInput, safeAssistantContent)
 	criticArchiveLedgerPromptInput, criticArchiveLedgerTrace := s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, safeAssistantContent, outputLanguageOverride)
-	userPrompt := buildCompleteTurnCriticPrompt(sid, turnIndex, safeUserInput, safeAssistantContent, safeContextMessages, outputLanguageOverride, previewPass, criticArchiveLedgerPromptInput)
+	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, safeUserInput, safeAssistantContent, safeContextMessages, outputLanguageOverride, previewPass, languageContext, criticArchiveLedgerPromptInput)
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 1600
@@ -1099,7 +1103,7 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 			return nil, nil, err
 		}
 		retryPreviewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, retryUserInput, retryAssistantContent)
-		retryPrompt := buildCompleteTurnCriticPrompt(sid, turnIndex, retryUserInput, retryAssistantContent, safeContextMessages, outputLanguageOverride, retryPreviewPass, criticArchiveLedgerPromptInput)
+		retryPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, retryUserInput, retryAssistantContent, safeContextMessages, outputLanguageOverride, retryPreviewPass, languageContext, criticArchiveLedgerPromptInput)
 		retryReq := req
 		retryReq.Messages = []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": retryPrompt}}
 		retryUpstream, _, retryErr := performProxyPluginMain(ctx, retryReq)
@@ -1160,6 +1164,10 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 		"preview_pass": previewPass,
 	}
 	trace["critic_archive_ledger"] = criticArchiveLedgerTrace
+	if len(languageContext) > 0 {
+		trace["language_context"] = languageContext
+		trace["memory_write_contract"] = completeTurnMemoryWriteContract(languageContext)
+	}
 	if len(providerRetryTrace) > 0 {
 		trace["provider_retry"] = providerRetryTrace
 	}
@@ -1188,6 +1196,7 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 		}
 	}
 	normalized = enrichNormalizedCriticExtractionForFocusedRecall(normalized, safeUserInput, safeAssistantContent, turnIndex)
+	normalized = applyLanguageMemoryWriteContract(normalized, languageContext)
 	return normalized, trace, nil
 }
 
@@ -1492,8 +1501,13 @@ func readSupervisorSystemPrompt(configuredDir string) (string, string) {
 }
 
 func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, previewPass map[string]any, archiveLedger ...map[string]any) string {
+	return buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, userInput, assistantContent, contextMessages, outputLanguageOverride, previewPass, nil, archiveLedger...)
+}
+
+func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, previewPass map[string]any, languageContext map[string]any, archiveLedger ...map[string]any) string {
 	ctx, _ := json.Marshal(contextMessages)
 	lang, _ := json.Marshal(outputLanguageOverride)
+	langCtx, _ := json.Marshal(normalizeCompleteTurnLanguageContext(languageContext))
 	preview, _ := json.Marshal(previewPass)
 	var ledgerInput any
 	if len(archiveLedger) > 0 && archiveLedger[0] != nil {
@@ -1504,11 +1518,13 @@ func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, 
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"relationship_memory":{},"state_deltas":{},"character_deltas":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"persona_capsule_candidates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"relationship_memory":{},"state_deltas":{},"character_deltas":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
 		"- evidence_excerpts must be short exact excerpts from the latest user/assistant turn, not the whole turn.",
+		"- Language contract: use Language_Context_JSON as the memory-write contract. Generated summaries and display/support fields should use summary_language/session_output_language when it is known. Raw evidence excerpts must stay exact source text and must not be translated or rewritten.",
+		"- Keep internal enum/category/predicate keys stable. Do not translate system keys per turn just because the output language changes.",
 		"- For ordinary narrative turns with new information, include 1-3 evidence_excerpts that ground the most important user intent and assistant outcome.",
 		"- kg_triples must use real in-story names only. Never use char_*, cid_*, turn_*, user, assistant, system, prompt, or has_turn edges.",
 		"- For ordinary narrative turns with named actors, emit kg_triples for durable relations, assignments, locations, ownership, promises, threats, injuries, permissions, commands, faction links, or plan participation.",
@@ -1541,6 +1557,12 @@ func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, 
 		"- subjective_entity_memories must remain support-only: never use it to overwrite current-world truth, canonical memory, direct evidence, KG triples, character state, or world rules.",
 		"- NPC/private subjective_entity_memories are interpretations, suspicions, misunderstandings, or private bias unless current direct evidence states otherwise; never promote them to objective fact or narrator-revealed truth.",
 		"- Conflict or misunderstanding memories should stay owner-private and may only influence that owner entity's behavior, subtext, hesitation, avoidance, or selective silence until explicit current-session reveal.",
+		"- protected_secrets is for any information that should not become public narration or impossible character knowledge: private affection, guilt, shame, mistakes, lies, fears, debts, hidden plans, hidden identity, hidden role, hidden allegiance, lineage, succession, protected power inheritance, or similar private knowledge.",
+		"- Each protected_secrets item may include secret_kind, owner, subject, summary, sensitivity, evidence_strength, disclosure_policy, knowledge_scope, and evidence_excerpt. Keep the text evidence-bound and do not invent secrets.",
+		"- If a protected secret exists, set secret_guard=true on the matching subjective_entity_memories item and use target_reveal_policy such as owner_private_until_revealed, explicit_reveal_event_required, or user_directed_reveal_only.",
+		"- Stored secret truth is not permission for spontaneous confession, public narration, or unrelated-character discovery. Preserve it as owner-scoped support until current evidence reveals it.",
+		"- character_identity_accuracy is for evidence-bound identity/role/allegiance mappings such as cover identity, disguise, hidden role, hidden allegiance, secret successor, hidden lineage, or protected power inheritance. Include same_entity, surface_identity_name, true_identity_name, identity_kind, reveal_policy, and knowledge_scope when supported.",
+		"- Do not use character-specific hardcoded aliases. Identity/protected-secret candidates must come from the latest turn or safe context evidence only.",
 		"- persona_capsule_candidates is optional and proposal-only. Use it only for protagonist/player subjective recollections that may be carried to another session, loop, regression, reincarnation, isekai, or same-character continuation.",
 		"- persona_capsule_candidates must never be used to write current-world truth, canonical memory, direct evidence, KG triples, character state, or world rules. It is support_only_persona_recollection and requires later user/operator approval.",
 		"- Each persona_capsule_candidates item may include memory_text, source_turn_index, importance_10, emotional_weight, portability, mode, secret_guard, tags, evidence_excerpt, and injection_policy.",
@@ -1575,6 +1597,10 @@ func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, 
 		"<Output_Language_Override_JSON>",
 		string(lang),
 		"</Output_Language_Override_JSON>",
+		"",
+		"<Language_Context_JSON>",
+		string(langCtx),
+		"</Language_Context_JSON>",
 	}, "\n")
 }
 
@@ -1878,7 +1904,14 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["relationship_memory"] = mapFromAny(raw["relationship_memory"])
 	out["state_deltas"] = mapFromAny(raw["state_deltas"])
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
-	out["subjective_entity_memories"] = normalizeSubjectiveEntityMemories(raw["subjective_entity_memories"])
+	protectedSecrets := normalizeProtectedSecrets(raw["protected_secrets"])
+	characterIdentityAccuracy := normalizeCharacterIdentityAccuracy(raw["character_identity_accuracy"])
+	subjectiveMemories := normalizeSubjectiveEntityMemories(raw["subjective_entity_memories"])
+	subjectiveMemories = appendProtectedSecretSubjectiveMemories(subjectiveMemories, protectedSecrets)
+	subjectiveMemories = appendIdentityAccuracySubjectiveMemories(subjectiveMemories, characterIdentityAccuracy)
+	out["protected_secrets"] = protectedSecrets
+	out["character_identity_accuracy"] = characterIdentityAccuracy
+	out["subjective_entity_memories"] = subjectiveMemories
 	out["persona_capsule_candidates"] = normalizePersonaCapsuleCandidates(raw["persona_capsule_candidates"])
 	return out
 }
@@ -2169,6 +2202,520 @@ func normalizeSubjectiveEntityMemories(raw any) []any {
 	return out
 }
 
+func normalizeProtectedSecrets(raw any) []any {
+	out := []any{}
+	for _, item := range sliceFromAny(raw) {
+		secret := mapFromAny(item)
+		kind := normalizeProtectedSecretToken(extractionFirstNonEmpty(
+			stringFromMap(secret, "secret_kind"),
+			stringFromMap(secret, "kind"),
+			stringFromMap(secret, "protected_secret_type"),
+		))
+		owner := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(secret, "owner"),
+			stringFromMap(secret, "owner_entity_name"),
+			stringFromMap(secret, "character_name"),
+			firstStringFromAny(mapFromAny(secret["knowledge_scope"])["known_by"]),
+		))
+		subjects := stringsFromAny(secret["subject"])
+		if len(subjects) == 0 {
+			subject := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(secret, "subject"),
+				stringFromMap(secret, "target"),
+				stringFromMap(secret, "topic"),
+			))
+			if subject != "" {
+				subjects = []string{subject}
+			}
+		}
+		summary := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(secret, "summary"),
+			stringFromMap(secret, "memory_text"),
+			stringFromMap(secret, "secret_summary"),
+			stringFromMap(secret, "text"),
+		))
+		if owner == "" && len(subjects) > 0 {
+			owner = subjects[0]
+		}
+		if summary == "" || owner == "" {
+			continue
+		}
+		knowledgeScope := normalizeProtectedSecretKnowledgeScope(secret["knowledge_scope"], owner)
+		disclosurePolicy := normalizeTargetRevealPolicy(extractionFirstNonEmpty(
+			stringFromMap(secret, "disclosure_policy"),
+			stringFromMap(secret, "target_reveal_policy"),
+			stringFromMap(secret, "reveal_policy"),
+		))
+		if disclosurePolicy == "" || disclosurePolicy == "requires_explicit_attachment" {
+			disclosurePolicy = "owner_private_until_revealed"
+		}
+		out = append(out, map[string]any{
+			"contract_version":         "protected_secret.v1",
+			"secret_kind":              firstNonEmpty(kind, "other"),
+			"owner":                    owner,
+			"subject":                  subjects,
+			"summary":                  summary,
+			"sensitivity":              normalizeProtectedSecretToken(stringFromMap(secret, "sensitivity")),
+			"evidence_strength":        normalizeProtectedSecretToken(stringFromMap(secret, "evidence_strength")),
+			"disclosure_policy":        disclosurePolicy,
+			"knowledge_scope":          knowledgeScope,
+			"evidence_excerpt":         strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(secret, "evidence_excerpt"), stringFromMap(secret, "evidence"))),
+			"raw_evidence_rewritten":   false,
+			"public_narration_allowed": boolFromAny(secret["public_narration_allowed"]),
+		})
+	}
+	return out
+}
+
+func normalizeCharacterIdentityAccuracy(raw any) []any {
+	out := []any{}
+	for _, item := range sliceFromAny(raw) {
+		identity := mapFromAny(item)
+		surface := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "surface_identity_name"),
+			stringFromMap(identity, "public_identity_name"),
+			stringFromMap(identity, "alias_name"),
+		))
+		trueName := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "true_identity_name"),
+			stringFromMap(identity, "canonical_entity_name"),
+			stringFromMap(identity, "real_identity_name"),
+		))
+		owner := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "canonical_entity_name"),
+			trueName,
+			surface,
+		))
+		kind := normalizeProtectedSecretToken(extractionFirstNonEmpty(
+			stringFromMap(identity, "identity_kind"),
+			stringFromMap(identity, "kind"),
+			stringFromMap(identity, "protected_secret_type"),
+		))
+		if owner == "" || (surface == "" && trueName == "" && kind == "") {
+			continue
+		}
+		revealPolicy := normalizeTargetRevealPolicy(extractionFirstNonEmpty(
+			stringFromMap(identity, "reveal_policy"),
+			stringFromMap(identity, "target_reveal_policy"),
+			stringFromMap(identity, "disclosure_policy"),
+		))
+		if revealPolicy == "" || revealPolicy == "requires_explicit_attachment" {
+			revealPolicy = "owner_private_until_revealed"
+		}
+		knowledgeScope := normalizeProtectedSecretKnowledgeScope(identity["knowledge_scope"], owner)
+		out = append(out, map[string]any{
+			"contract_version":       "character_identity_accuracy.v1",
+			"canonical_entity_key":   normalizeCharacterKey(owner),
+			"canonical_entity_name":  owner,
+			"surface_identity_name":  surface,
+			"true_identity_name":     trueName,
+			"aliases":                stringsFromAny(identity["aliases"]),
+			"identity_kind":          firstNonEmpty(kind, "identity"),
+			"same_entity":            boolFromAny(identity["same_entity"]),
+			"public_role":            strings.TrimSpace(stringFromMap(identity, "public_role")),
+			"true_role":              strings.TrimSpace(stringFromMap(identity, "true_role")),
+			"public_allegiance":      strings.TrimSpace(stringFromMap(identity, "public_allegiance")),
+			"true_allegiance":        strings.TrimSpace(stringFromMap(identity, "true_allegiance")),
+			"twist_sensitivity":      normalizeProtectedSecretToken(stringFromMap(identity, "twist_sensitivity")),
+			"reveal_policy":          revealPolicy,
+			"visibility":             extractionFirstNonEmpty(stringFromMap(identity, "visibility"), "internal_support_only"),
+			"knowledge_scope":        knowledgeScope,
+			"source_evidence_turns":  intsFromAny(identity["source_evidence_turns"]),
+			"raw_evidence_rewritten": false,
+		})
+	}
+	return out
+}
+
+type confirmedIdentityAliasMap struct {
+	aliasToCanonical      map[string]string
+	aliasesByCanonicalKey map[string][]string
+	conflictedAliasKeys   map[string]bool
+}
+
+func buildConfirmedIdentityAliasMapFromExtraction(extraction map[string]any) confirmedIdentityAliasMap {
+	out := confirmedIdentityAliasMap{
+		aliasToCanonical:      map[string]string{},
+		aliasesByCanonicalKey: map[string][]string{},
+		conflictedAliasKeys:   map[string]bool{},
+	}
+	addAlias := func(alias, canonical string) {
+		alias = strings.TrimSpace(alias)
+		canonical = strings.TrimSpace(canonical)
+		aliasKey := normalizeCharacterKey(alias)
+		canonicalKey := normalizeCharacterKey(canonical)
+		if aliasKey == "" || canonicalKey == "" || out.conflictedAliasKeys[aliasKey] {
+			return
+		}
+		if existing, ok := out.aliasToCanonical[aliasKey]; ok && normalizeCharacterKey(existing) != canonicalKey {
+			delete(out.aliasToCanonical, aliasKey)
+			out.conflictedAliasKeys[aliasKey] = true
+			return
+		}
+		out.aliasToCanonical[aliasKey] = canonical
+		if aliasKey != canonicalKey {
+			out.aliasesByCanonicalKey[canonicalKey] = appendUniqueIdentityAlias(out.aliasesByCanonicalKey[canonicalKey], alias)
+		}
+	}
+	for _, raw := range sliceFromAny(extraction["character_identity_accuracy"]) {
+		identity := mapFromAny(raw)
+		if !boolFromAny(identity["same_entity"]) {
+			continue
+		}
+		canonical := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "canonical_entity_name"),
+			stringFromMap(identity, "true_identity_name"),
+		))
+		if canonical == "" {
+			continue
+		}
+		addAlias(canonical, canonical)
+		addAlias(stringFromMap(identity, "true_identity_name"), canonical)
+		addAlias(stringFromMap(identity, "surface_identity_name"), canonical)
+		for _, alias := range stringsFromAny(identity["aliases"]) {
+			addAlias(alias, canonical)
+		}
+	}
+	return out
+}
+
+func (m confirmedIdentityAliasMap) empty() bool {
+	return len(m.aliasToCanonical) == 0
+}
+
+func (m confirmedIdentityAliasMap) canonicalizeName(name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(m.aliasToCanonical) == 0 {
+		return name, false
+	}
+	key := normalizeCharacterKey(name)
+	if key == "" || m.conflictedAliasKeys[key] {
+		return name, false
+	}
+	canonical := strings.TrimSpace(m.aliasToCanonical[key])
+	if canonical == "" || normalizeCharacterKey(canonical) == key {
+		return name, false
+	}
+	return canonical, true
+}
+
+func (m confirmedIdentityAliasMap) aliasesForCanonical(canonical string) []string {
+	key := normalizeCharacterKey(canonical)
+	if key == "" {
+		return nil
+	}
+	return append([]string{}, m.aliasesByCanonicalKey[key]...)
+}
+
+func applyConfirmedIdentityAliasCanonicalMerge(extraction map[string]any) (map[string]any, int) {
+	aliases := buildConfirmedIdentityAliasMapFromExtraction(extraction)
+	if aliases.empty() {
+		return extraction, 0
+	}
+	applied := 0
+	canonicalizeField := func(item map[string]any, field string) bool {
+		raw := stringFromMap(item, field)
+		canonical, changed := aliases.canonicalizeName(raw)
+		if !changed {
+			return false
+		}
+		item[field] = canonical
+		applied++
+		return true
+	}
+	addEntityAliases := func(entity map[string]any, rawName, canonical string) {
+		values := stringsFromAny(entity["aliases"])
+		values = appendUniqueIdentityAlias(values, rawName)
+		for _, alias := range aliases.aliasesForCanonical(canonical) {
+			values = appendUniqueIdentityAlias(values, alias)
+		}
+		if len(values) > 0 {
+			entity["aliases"] = values
+		}
+		entity["identity_canonicalized"] = true
+	}
+	entities := mapFromAny(extraction["entities"])
+	if len(entities) > 0 {
+		for _, rawEntity := range sliceFromAny(entities["characters"]) {
+			entity := mapFromAny(rawEntity)
+			rawName := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(entity, "name"), stringFromMap(entity, "label"), stringFromMap(entity, "title")))
+			canonical, changed := aliases.canonicalizeName(rawName)
+			if !changed {
+				continue
+			}
+			entity["name"] = canonical
+			addEntityAliases(entity, rawName, canonical)
+			applied++
+		}
+		extraction["entities"] = entities
+	}
+	for _, raw := range sliceFromAny(extraction["kg_triples"]) {
+		triple := mapFromAny(raw)
+		canonicalizeField(triple, "subject")
+		canonicalizeField(triple, "object")
+	}
+	for _, raw := range sliceFromAny(extraction["character_deltas"]) {
+		delta := mapFromAny(raw)
+		if rawName := stringFromMap(delta, "name"); canonicalizeField(delta, "name") {
+			delta["aliases"] = appendUniqueIdentityAlias(stringsFromAny(delta["aliases"]), rawName)
+		}
+	}
+	for _, raw := range sliceFromAny(extraction["subjective_entity_memories"]) {
+		memory := mapFromAny(raw)
+		rawOwnerName := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(memory, "owner_entity_name"), stringFromMap(memory, "persona_entity_name")))
+		rawOwnerKey := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(memory, "owner_entity_key"), stringFromMap(memory, "persona_entity_key")))
+		canonical, changed := aliases.canonicalizeName(firstNonEmpty(rawOwnerName, rawOwnerKey))
+		if !changed {
+			continue
+		}
+		canonicalKey := normalizeCharacterKey(canonical)
+		memory["owner_entity_name"] = canonical
+		memory["persona_entity_name"] = canonical
+		memory["owner_entity_key"] = canonicalKey
+		memory["persona_entity_key"] = canonicalKey
+		tags := stringsFromAny(memory["tags"])
+		tags = appendUniqueIdentityAlias(tags, "confirmed_identity_alias_canonicalized")
+		if rawOwnerName != "" {
+			tags = appendUniqueIdentityAlias(tags, "raw_owner_entity_name:"+rawOwnerName)
+		}
+		if rawOwnerKey != "" {
+			tags = appendUniqueIdentityAlias(tags, "raw_owner_entity_key:"+rawOwnerKey)
+		}
+		for _, alias := range aliases.aliasesForCanonical(canonical) {
+			tags = appendUniqueIdentityAlias(tags, "owner_entity_alias:"+alias)
+		}
+		memory["tags"] = tags
+		applied++
+	}
+	for _, raw := range sliceFromAny(extraction["protected_secrets"]) {
+		secret := mapFromAny(raw)
+		canonicalizeField(secret, "owner")
+		subjects := stringsFromAny(secret["subject"])
+		for idx, subject := range subjects {
+			if canonical, changed := aliases.canonicalizeName(subject); changed {
+				subjects[idx] = canonical
+				applied++
+			}
+		}
+		if len(subjects) > 0 {
+			secret["subject"] = subjects
+		}
+		scope := mapFromAny(secret["knowledge_scope"])
+		if len(scope) > 0 {
+			for _, key := range []string{"known_by", "unknown_to", "suspected_by", "misinformed_by", "revealed_to"} {
+				values := stringsFromAny(scope[key])
+				changed := false
+				for idx, value := range values {
+					if canonical, ok := aliases.canonicalizeName(value); ok {
+						values[idx] = canonical
+						changed = true
+						applied++
+					}
+				}
+				if changed {
+					scope[key] = values
+				}
+			}
+			secret["knowledge_scope"] = scope
+		}
+	}
+	if applied > 0 {
+		extraction["confirmed_identity_alias_canonical_merge"] = map[string]any{
+			"contract_version": "character_identity_canonical_merge.v1",
+			"applied":          true,
+			"applied_count":    applied,
+			"conflicts":        len(aliases.conflictedAliasKeys),
+		}
+	}
+	return extraction, applied
+}
+
+func appendUniqueIdentityAlias(items []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return items
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), value) {
+			return items
+		}
+	}
+	return append(items, value)
+}
+
+func appendProtectedSecretSubjectiveMemories(existing []any, secrets []any) []any {
+	out := append([]any{}, existing...)
+	for _, raw := range secrets {
+		secret := mapFromAny(raw)
+		owner := strings.TrimSpace(stringFromMap(secret, "owner"))
+		summary := strings.TrimSpace(stringFromMap(secret, "summary"))
+		if owner == "" || summary == "" {
+			continue
+		}
+		out = appendSubjectiveMemoryIfMissing(out, map[string]any{
+			"owner_entity_key":     normalizeCharacterKey(owner),
+			"owner_entity_name":    owner,
+			"owner_entity_role":    "npc",
+			"owner_visibility":     "owner_private",
+			"memory_text":          summary,
+			"importance_10":        protectedSecretImportance(secret),
+			"emotional_weight":     protectedSecretEmotionalWeight(secret),
+			"evidence_excerpt":     strings.TrimSpace(stringFromMap(secret, "evidence_excerpt")),
+			"secret_guard":         true,
+			"target_reveal_policy": normalizeTargetRevealPolicy(stringFromMap(secret, "disclosure_policy")),
+			"tags":                 protectedSecretTags(secret),
+			"portability":          "npc_private_recollection",
+		})
+	}
+	return out
+}
+
+func appendIdentityAccuracySubjectiveMemories(existing []any, identities []any) []any {
+	out := append([]any{}, existing...)
+	for _, raw := range identities {
+		identity := mapFromAny(raw)
+		owner := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "canonical_entity_name"),
+			stringFromMap(identity, "true_identity_name"),
+			stringFromMap(identity, "surface_identity_name"),
+		))
+		if owner == "" {
+			continue
+		}
+		out = appendSubjectiveMemoryIfMissing(out, map[string]any{
+			"owner_entity_key":     normalizeCharacterKey(owner),
+			"owner_entity_name":    owner,
+			"owner_entity_role":    "npc",
+			"owner_visibility":     "owner_private",
+			"memory_text":          protectedIdentityGuardSummary(identity),
+			"importance_10":        8.0,
+			"emotional_weight":     0.7,
+			"secret_guard":         true,
+			"target_reveal_policy": normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy")),
+			"tags":                 protectedIdentityTags(identity),
+			"portability":          "npc_private_recollection",
+		})
+	}
+	return out
+}
+
+func appendSubjectiveMemoryIfMissing(items []any, next map[string]any) []any {
+	owner := strings.ToLower(strings.TrimSpace(stringFromMap(next, "owner_entity_key")))
+	text := strings.ToLower(strings.TrimSpace(stringFromMap(next, "memory_text")))
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		if strings.ToLower(strings.TrimSpace(stringFromMap(item, "owner_entity_key"))) == owner &&
+			strings.ToLower(strings.TrimSpace(stringFromMap(item, "memory_text"))) == text {
+			return items
+		}
+	}
+	return append(items, next)
+}
+
+func normalizeProtectedSecretKnowledgeScope(raw any, owner string) map[string]any {
+	scope := mapFromAny(raw)
+	out := map[string]any{
+		"publicly_revealed":   boolFromAny(scope["publicly_revealed"]),
+		"known_by":            stringsFromAny(scope["known_by"]),
+		"unknown_to":          stringsFromAny(scope["unknown_to"]),
+		"suspected_by":        stringsFromAny(scope["suspected_by"]),
+		"misinformed_by":      stringsFromAny(scope["misinformed_by"]),
+		"revealed_to":         stringsFromAny(scope["revealed_to"]),
+		"reader_visible":      boolFromAny(scope["reader_visible"]),
+		"protagonist_visible": boolFromAny(scope["protagonist_visible"]),
+	}
+	if len(stringsFromAny(out["known_by"])) == 0 && strings.TrimSpace(owner) != "" {
+		out["known_by"] = []string{owner}
+	}
+	return out
+}
+
+func protectedSecretTags(secret map[string]any) []string {
+	tags := []string{"protected_secret", "secret_guard"}
+	if kind := normalizeProtectedSecretToken(stringFromMap(secret, "secret_kind")); kind != "" {
+		tags = append(tags, "protected_secret_kind:"+kind)
+	}
+	if sensitivity := normalizeProtectedSecretToken(stringFromMap(secret, "sensitivity")); sensitivity != "" {
+		tags = append(tags, "sensitivity:"+sensitivity)
+	}
+	if policy := normalizeTargetRevealPolicy(stringFromMap(secret, "disclosure_policy")); policy != "" {
+		tags = append(tags, "target_reveal_policy:"+policy)
+	}
+	return tags
+}
+
+func protectedIdentityTags(identity map[string]any) []string {
+	tags := []string{"protected_secret", "character_identity_accuracy", "secret_guard"}
+	if kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind")); kind != "" {
+		tags = append(tags, "identity_kind:"+kind)
+		tags = append(tags, "protected_secret_kind:"+kind)
+	}
+	if policy := normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy")); policy != "" {
+		tags = append(tags, "target_reveal_policy:"+policy)
+	}
+	return tags
+}
+
+func protectedIdentityGuardSummary(identity map[string]any) string {
+	kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind"))
+	if kind == "" {
+		kind = "identity"
+	}
+	return "Protected identity/role knowledge is present; preserve same-entity continuity internally, but do not reveal, confess, or grant knowledge without current-scene evidence. kind=" + kind
+}
+
+func protectedSecretImportance(secret map[string]any) float64 {
+	switch normalizeProtectedSecretToken(stringFromMap(secret, "sensitivity")) {
+	case "critical":
+		return 9
+	case "high":
+		return 8
+	case "medium":
+		return 6
+	default:
+		return 5
+	}
+}
+
+func protectedSecretEmotionalWeight(secret map[string]any) float64 {
+	switch normalizeProtectedSecretToken(stringFromMap(secret, "sensitivity")) {
+	case "critical":
+		return 0.9
+	case "high":
+		return 0.75
+	case "medium":
+		return 0.55
+	default:
+		return 0.35
+	}
+}
+
+func normalizeProtectedSecretToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "_")
+	value = strings.ReplaceAll(value, "-", "_")
+	return value
+}
+
+func firstStringFromAny(value any) string {
+	values := stringsFromAny(value)
+	if len(values) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
+}
+
+func intsFromAny(value any) []int {
+	out := []int{}
+	for _, item := range sliceFromAny(value) {
+		n := intFromAny(item, 0)
+		if n != 0 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 type subjectiveEntityOwnerCanonical struct {
 	Key       string
 	Name      string
@@ -2431,6 +2978,10 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 		}
 		if boolFromAny(item["secret_guard"]) {
 			ownerTags = append(ownerTags, "secret_guard")
+			ownerTags = append(ownerTags, "protected_secret")
+		}
+		for _, tag := range protectedSecretTagsFromSubjectiveItem(item) {
+			ownerTags = append(ownerTags, tag)
 		}
 		result.trySave("CreateProtagonistEntityMemory(subjective_entity_memories)", func() error {
 			_, err := st.CreateProtagonistEntityMemory(ctx, &store.ProtagonistEntityMemory{
@@ -2457,6 +3008,17 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 			return err
 		}, result, func() { result.SubjectiveEntityMemories++ })
 	}
+}
+
+func protectedSecretTagsFromSubjectiveItem(item map[string]any) []string {
+	out := []string{}
+	if kind := normalizeProtectedSecretToken(extractionFirstNonEmpty(stringFromMap(item, "secret_kind"), stringFromMap(item, "protected_secret_kind"))); kind != "" {
+		out = append(out, "protected_secret_kind:"+kind)
+	}
+	if policy := normalizeTargetRevealPolicy(extractionFirstNonEmpty(stringFromMap(item, "target_reveal_policy"), stringFromMap(item, "disclosure_policy"))); policy != "" {
+		out = append(out, "target_reveal_policy:"+policy)
+	}
+	return out
 }
 
 func subjectiveEntityMemoryAlreadyExists(ctx context.Context, st store.ProtagonistEntityMemoryStore, sid, ownerKey string, sourceTurn int, memoryText string) bool {
@@ -2630,11 +3192,22 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	} else {
 		extraction["turn_summary"] = summary
 	}
+	languageContext := completeTurnLanguageContextFromExtraction(extraction)
+	extraction = applyLanguageMemoryWriteContract(extraction, languageContext)
+	if mergedExtraction, applied := applyConfirmedIdentityAliasCanonicalMerge(extraction); applied > 0 {
+		extraction = mergedExtraction
+		result.Warnings = append(result.Warnings, "confirmed_identity_alias_canonical_merge_applied")
+	}
+	memorySearchText := completeTurnMemorySearchText(summary, extraction, content)
+	searchText := strings.TrimSpace(memorySearchText.Text)
+	if searchText == "" {
+		searchText = summary
+	}
 	embedding := "[]"
 	embeddingModel := "not_configured"
 	var embeddingVector []float32
-	if embCfg.hasConfig() && summary != "" {
-		emb, model, err := callEmbedding(ctx, embCfg, summary)
+	if embCfg.hasConfig() && searchText != "" {
+		emb, model, err := callEmbedding(ctx, embCfg, searchText)
 		if err != nil {
 			result.EmbeddingStatus = "error: " + err.Error()
 			result.Warnings = append(result.Warnings, "embedding_call_failed")
@@ -2688,7 +3261,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 				return s.Store.SaveMemory(ctx, mem)
 			}, &result, func() {
 				result.Memories++
-				s.upsertMemoryVector(ctx, sid, turnIndex, mem, summary, embeddingVector, &result)
+				s.upsertMemoryVector(ctx, sid, turnIndex, mem, searchText, embeddingVector, &result)
 			})
 		}
 	}
@@ -2715,7 +3288,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 			CaptureStage:         "critic_extract",
 			CaptureVerification:  "verified",
 			CommittedGate:        "auto_grounded_excerpt",
-			LineageJSON:          mustCompactJSON(map[string]any{"source": "critic.evidence_excerpts", "excerpt_index": excerptIndex, "auto_verify_policy_version": "p1245.grounded_excerpt.v1"}),
+			LineageJSON:          mustCompactJSON(completeTurnEvidenceLineage("critic.evidence_excerpts", excerptIndex, languageContext)),
 			SourceMessageIDsJSON: mustCompactJSON([]string{fmt.Sprintf("turn:%d", turnIndex)}),
 			CreatedAt:            now,
 		}
@@ -3550,7 +4123,7 @@ func (r *artifactSaveResult) trySave(label string, save func() error, result *ar
 	onOK()
 }
 
-func (s *Server) upsertMemoryVector(ctx context.Context, sid string, turnIndex int, mem *store.Memory, summary string, embedding []float32, result *artifactSaveResult) {
+func (s *Server) upsertMemoryVector(ctx context.Context, sid string, turnIndex int, mem *store.Memory, documentText string, embedding []float32, result *artifactSaveResult) {
 	if result == nil {
 		return
 	}
@@ -3572,15 +4145,32 @@ func (s *Server) upsertMemoryVector(ctx context.Context, sid string, turnIndex i
 	if mem.ID <= 0 {
 		sourceRowID = fmt.Sprintf("turn_%d_memory", turnIndex)
 	}
+	searchBuild := memorySearchTextBuild{}
+	if mem != nil {
+		searchBuild = memorySearchTextFromMemory(*mem)
+	}
+	documentText = strings.TrimSpace(documentText)
+	if documentText == "" {
+		documentText = strings.TrimSpace(searchBuild.Text)
+	}
+	languageMeta := map[string]string{}
+	if mem != nil {
+		languageMeta = memoryVectorLanguageMetadata(*mem)
+	}
 	doc := vector.VectorDocument{
-		ID:            fmt.Sprintf("memory:%s:%s", sid, sourceRowID),
-		Embedding:     embedding,
-		Tier:          "memory",
-		ChatSessionID: sid,
-		SourceTable:   "memories",
-		SourceRowID:   sourceRowID,
-		SchemaVersion: "memory.v1",
-		DocumentText:  summary,
+		ID:                    fmt.Sprintf("memory:%s:%s", sid, sourceRowID),
+		Embedding:             embedding,
+		Tier:                  "memory",
+		ChatSessionID:         sid,
+		SourceTable:           "memories",
+		SourceRowID:           sourceRowID,
+		SchemaVersion:         "memory.v2",
+		DocumentText:          documentText,
+		SearchTextPolicy:      extractionFirstNonEmpty(languageMeta["search_text_policy"], languageMemorySearchPolicy),
+		RawLanguage:           languageMeta["raw_language"],
+		SummaryLanguage:       languageMeta["summary_language"],
+		SessionOutputLanguage: languageMeta["session_output_language"],
+		AliasCount:            searchBuild.AliasCount,
 	}
 	if err := s.Vector.Upsert(ctx, sid, []vector.VectorDocument{doc}); err != nil {
 		result.VectorStatus = "error: " + err.Error()

@@ -7742,6 +7742,52 @@ func selectedStorylineItems(selection storylineSupervisorSelection) []store.Stor
 	return out
 }
 
+func storylineDetailCompareText(value string) string {
+	clean := strings.TrimLeftFunc(strings.TrimSpace(value), func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\r', '\n', '-', 0x2022, 0x26A1:
+			return true
+		default:
+			return false
+		}
+	})
+	return strings.ToLower(strings.Join(strings.Fields(clean), " "))
+}
+
+func isStorylineSelfEchoDetail(item store.Storyline, detail string) bool {
+	key := storylineDetailCompareText(detail)
+	if key == "" {
+		return false
+	}
+	name := strings.TrimSpace(item.Name)
+	context := strings.TrimSpace(item.CurrentContext)
+	refs := []string{name, context}
+	if name != "" && context != "" {
+		refs = append(refs, name+" "+string(rune(0x2014))+" "+context, name+" - "+context)
+	}
+	for _, ref := range refs {
+		if storylineDetailCompareText(ref) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func filterStorylineContextDetails(item store.Storyline, details []string) []string {
+	out := make([]string, 0, len(details))
+	seen := make(map[string]bool, len(details))
+	for _, detail := range details {
+		clean := strings.TrimSpace(detail)
+		key := storylineDetailCompareText(clean)
+		if key == "" || seen[key] || isStorylineSelfEchoDetail(item, clean) {
+			continue
+		}
+		seen[key] = true
+		out = append(out, clean)
+	}
+	return out
+}
+
 func formatStorylinesForSupervisor(selection storylineSupervisorSelection) string {
 	lines := make([]string, 0, len(selection.Selected)+len(selection.Resolved)+2)
 	if len(selection.Selected) > 0 {
@@ -7754,8 +7800,8 @@ func formatStorylinesForSupervisor(selection storylineSupervisorSelection) strin
 			if desc == "" {
 				continue
 			}
-			keyPoints := parseStorylineListJSON(entry.Item.KeyPointsJSON)
-			tensions := parseStorylineListJSON(entry.Item.OngoingTensionsJSON)
+			keyPoints := filterStorylineContextDetails(entry.Item, parseStorylineListJSON(entry.Item.KeyPointsJSON))
+			tensions := filterStorylineContextDetails(entry.Item, parseStorylineListJSON(entry.Item.OngoingTensionsJSON))
 			lines = append(lines, fmt.Sprintf(
 				"- %s (confidence=%.2f, evidence=%d, freshness_gap=%s)",
 				truncateRunes(desc, 180),

@@ -1212,8 +1212,11 @@ func TestPersonaCapsuleLiveSmokeCreateAttachPrepareTurnSupportOnly(t *testing.T)
 		t.Fatalf("decode prepare response: %v", err)
 	}
 	injectionText, _ := prepareResp["injection_text"].(string)
-	if !strings.Contains(injectionText, "[Persona Recollection]") || !strings.Contains(injectionText, "silver locket") {
+	if !strings.Contains(injectionText, "[Persona Recollection]") || !strings.Contains(injectionText, "Protected hint") || !strings.Contains(injectionText, "protected private knowledge is present") {
 		t.Fatalf("prepare-turn did not inject persona recollection: %q", injectionText)
+	}
+	if strings.Contains(injectionText, "silver locket") {
+		t.Fatalf("prepare-turn leaked protected persona recollection content: %q", injectionText)
 	}
 	if !strings.Contains(injectionText, "Secret Guard") || !strings.Contains(injectionText, "protagonist-only private intuition") || !strings.Contains(injectionText, "Never reveal its origin") {
 		t.Fatalf("prepare-turn did not inject persona secret guard: %q", injectionText)
@@ -1313,8 +1316,8 @@ func TestPersonaCapsuleKoreanLoopSecretGuardPrepareTurn(t *testing.T) {
 		"Never reveal its origin",
 		"hesitation, instinct, or careful choice",
 		"Protected hint",
-		"보호된 사적 기억",
-		"은색 로켓",
+		"protected private knowledge is present",
+		"do not reveal content without current evidence",
 	} {
 		if !strings.Contains(injectionText, needle) {
 			t.Fatalf("prepare-turn persona injection missing %q: %q", needle, injectionText)

@@ -2043,7 +2043,7 @@ func TestAdminReindexUpsertsExistingMemoryEmbeddings(t *testing.T) {
 	if doc.ChatSessionID != "sess-reindex-live" || doc.SourceTable != "memories" || doc.SourceRowID != "42" {
 		t.Fatalf("doc provenance mismatch: %#v", doc)
 	}
-	if doc.DocumentText != "Blue lantern oath persists." {
+	if !strings.Contains(doc.DocumentText, "Blue lantern oath persists.") || !strings.Contains(doc.DocumentText, "[Canonical Summary]") {
 		t.Fatalf("doc text = %q", doc.DocumentText)
 	}
 	if len(fake.auditLogs) != 1 || fake.auditLogs[0].EventType != "admin_reindex" {

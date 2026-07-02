@@ -164,6 +164,7 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))
 	extractionCfg := s.completeTurnExtractionConfig(req.ClientMeta)
+	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	llmConfigTrace := completeTurnLLMConfigTrace(extractionCfg)
 	requestedTurnIndex := req.TurnIndex
 	if requestedTurnIndex <= 0 {
@@ -359,7 +360,7 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			} else if shouldSkipDerivedIngestForSourceAwareGuard(userText, assistantText) {
 				failReasons = append(failReasons, "critic_skipped: source_aware_ingest_guard")
 			} else {
-				result, trace, err := s.runCompleteTurnCritic(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic)
+				result, trace, err := s.runCompleteTurnCritic(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic, languageContext)
 				if err != nil {
 					criticFailureReason = "critic_extract_failed: " + err.Error()
 					failReasons = append(failReasons, criticFailureReason)
@@ -661,6 +662,7 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		"store_write_error_details":        storeWriteErrorDetails,
 		"critic_triggered":                 criticTriggered,
 		"critic_result":                    criticResult,
+		"language_context":                 languageContext,
 		"llm_config_trace":                 llmConfigTrace,
 		"derived_artifacts_saved":          derivedArtifactsSaved,
 		"episode_result":                   episodeResult,
@@ -678,6 +680,7 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			"derived_artifacts_saved":                  derivedArtifactsSaved,
 			"critic_trace":                             criticTrace,
 			"critic_pipeline_version":                  completeTurnCriticPipelineVersion,
+			"language_context":                         languageContext,
 			"critic_pipeline_split_enabled":            true,
 			"critic_pipeline_all_in_single_call":       false,
 			"critic_pipeline_extractor_stage":          "complete_turn.configured_critic_extract",
@@ -1144,6 +1147,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	rawUserInput := stringPtrValue(req.RawUserInput, "")
 	turnIndex := intPtrValue(req.TurnIndex, 0)
+	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
+	perspectiveContext := prepareTurnPerspectiveContextFromRequest(req)
 
 	// Read assembly from Store (no writes, no LLM).
 	var memories []store.Memory
@@ -1298,7 +1303,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if !degraded {
 		documents = buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, chatLogs)
 		if injectionEnabled {
-			injectionAssembly = buildPrepareTurnInjectionAssembly(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, maxInjectionChars, rawUserInput, profile, documents, vectorShadow)
+			injectionAssembly = buildPrepareTurnInjectionAssembly(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, maxInjectionChars, rawUserInput, profile, documents, vectorShadow, languageContext, perspectiveContext)
 		}
 	}
 	injectionText := injectionAssembly.Text
@@ -1317,6 +1322,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	continuityTriggerMode := stringPtrValue(req.ContinuityTriggerMode, "none")
 	continuityQuery := stringPtrValue(req.ContinuityQuery, "")
 	requestType := stringPtrValue(req.RequestType, "model")
+	applyMode := stringPtrValue(req.Settings.ApplyMode, "shadow")
 	promptAssembly := buildPromptAssemblyTrace(s.Cfg.PromptDir)
 	evidenceCounts := prepareTurnEvidenceCounts(memories, kgTriples, evidence, chatLogs, resumePack, storylines, worldRules, charStates, pendingThreads, activeStates, canonicalLayers, episodeSums)
 	evidenceCounts["storyline_selected_count"] = len(storylineSelection.Selected)
@@ -1339,6 +1345,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		storylineSelection,
 		degraded,
 		fallbackReason,
+		languageContext,
 	)
 	criticInputPack := buildCriticInputPack(sid, turnIndex, rawUserInput, promptAssembly, evidenceCounts, sectionSummary, degraded)
 	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
@@ -1451,6 +1458,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	combinedProposal := buildCombinedProposal(degraded, microBeatProposal, sceneStepProposal)
 	writebackPreview := buildWritebackPreview(degraded)
 	shadowCompareRecord := buildGenerationPacketShadowCompareRecord(injectionAssembly, inputContextText)
+	inputTransparencyModel := buildPrepareTurnInputTransparencyRenderModel(sid, turnIndex, rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded, fallbackReason, injectionAssembly)
+	effectiveInputPreview := buildPrepareTurnEffectiveInputPreview(sid, turnIndex, rawUserInput, requestType, applyMode, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded, fallbackReason, injectionAssembly)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                                        "ok",
@@ -1465,6 +1474,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"supervisor_input_pack":                         supervisorInputPack,
 		"critic_input_pack":                             criticInputPack,
 		"injection_pack":                                injectionPack,
+		"language_context":                              languageContext,
+		"perspective_context":                           perspectiveContext,
+		"input_transparency_model":                      inputTransparencyModel,
+		"effective_input_preview":                       effectiveInputPreview,
 		"trace_preview":                                 tracePreview,
 		"recall_result":                                 recallResult,
 		"session_state":                                 sessionState,
@@ -2646,6 +2659,21 @@ func vectorDocumentSearchPreview(docs []vector.VectorDocument) []map[string]any 
 			"schema_version":  doc.SchemaVersion,
 			"preview":         truncateTextForShadow(doc.DocumentText, 240),
 		}
+		if strings.TrimSpace(doc.SearchTextPolicy) != "" {
+			item["search_text_policy"] = strings.TrimSpace(doc.SearchTextPolicy)
+		}
+		if strings.TrimSpace(doc.RawLanguage) != "" {
+			item["raw_language"] = strings.TrimSpace(doc.RawLanguage)
+		}
+		if strings.TrimSpace(doc.SummaryLanguage) != "" {
+			item["summary_language"] = strings.TrimSpace(doc.SummaryLanguage)
+		}
+		if strings.TrimSpace(doc.SessionOutputLanguage) != "" {
+			item["session_output_language"] = strings.TrimSpace(doc.SessionOutputLanguage)
+		}
+		if doc.AliasCount > 0 {
+			item["alias_count"] = doc.AliasCount
+		}
 		if doc.MigrationID > 0 {
 			item["migration_id"] = doc.MigrationID
 		}
@@ -2749,7 +2777,7 @@ func prepareTurnSectionSummary(injectionText, inputContextText string, injection
 	}
 }
 
-func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput, guideMode, guideStrength, narrativeStance, autoAdvanceTrigger, continuityQuery string, promptAssembly map[string]any, evidenceCounts map[string]any, sectionSummary []map[string]any, storylineSelection storylineSupervisorSelection, degraded bool, fallbackReason string) map[string]any {
+func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput, guideMode, guideStrength, narrativeStance, autoAdvanceTrigger, continuityQuery string, promptAssembly map[string]any, evidenceCounts map[string]any, sectionSummary []map[string]any, storylineSelection storylineSupervisorSelection, degraded bool, fallbackReason string, languageContext map[string]any) map[string]any {
 	autoAdvanceHint := ""
 	if autoAdvanceTrigger != "" && autoAdvanceTrigger != "none" {
 		autoAdvanceHint = fmt.Sprintf("[Auto Advance]\ntrigger=%s; query=%s", autoAdvanceTrigger, truncateTextForShadow(continuityQuery, 160))
@@ -2763,6 +2791,7 @@ func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput,
 	narrativeStanceSummary := buildNarrativeStanceSummary(narrativeStance, narrativeStanceSuffix, narrativeStanceBounds)
 	storylineSelectionTrace := storylineSelectionSummary(storylineSelection)
 	storylinesContext := formatStorylinesForSupervisor(storylineSelection)
+	plannerLanguageContract := buildPrepareTurnPlannerLanguageContract(languageContext)
 	guidanceParts := []string{
 		"[Go R1 Supervisor Read Shadow]",
 		"mode=read_shadow; would_call_llm=false; would_write=false",
@@ -2793,27 +2822,29 @@ func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput,
 		status = "degraded"
 	}
 	return map[string]any{
-		"status":                   status,
-		"source":                   "go_r1_read_shadow",
-		"chat_session_id":          chatSessionID,
-		"turn_index":               turnIndex,
-		"raw_user_input_chars":     len([]rune(rawUserInput)),
-		"prompt_assembly":          promptAssembly,
-		"prompt_source":            promptAssembly["prompt_source"],
-		"guide_mode":               guideMode,
-		"guide_strength":           guideStrength,
-		"guide_suffix":             guideSuffix,
-		"narrative_stance":         narrativeStance,
-		"narrative_stance_suffix":  narrativeStanceSuffix,
-		"narrative_stance_bounds":  narrativeStanceBounds,
-		"narrative_stance_summary": narrativeStanceSummary,
-		"director_overrides":       directorOverrides,
-		"persistent_guidance":      persistentGuidance,
-		"storyline_selection":      storylineSelectionTrace,
-		"storylines_context":       nilIfEmpty(storylinesContext),
-		"auto_advance_trigger":     autoAdvanceTrigger,
-		"auto_advance_hint":        autoAdvanceHint,
-		"final_guidance_suffix":    finalGuidance,
+		"status":                    status,
+		"source":                    "go_r1_read_shadow",
+		"chat_session_id":           chatSessionID,
+		"turn_index":                turnIndex,
+		"raw_user_input_chars":      len([]rune(rawUserInput)),
+		"prompt_assembly":           promptAssembly,
+		"prompt_source":             promptAssembly["prompt_source"],
+		"guide_mode":                guideMode,
+		"guide_strength":            guideStrength,
+		"guide_suffix":              guideSuffix,
+		"narrative_stance":          narrativeStance,
+		"narrative_stance_suffix":   narrativeStanceSuffix,
+		"narrative_stance_bounds":   narrativeStanceBounds,
+		"narrative_stance_summary":  narrativeStanceSummary,
+		"director_overrides":        directorOverrides,
+		"language_context":          nilIfEmptyMap(languageContext),
+		"planner_language_contract": plannerLanguageContract,
+		"persistent_guidance":       persistentGuidance,
+		"storyline_selection":       storylineSelectionTrace,
+		"storylines_context":        nilIfEmpty(storylinesContext),
+		"auto_advance_trigger":      autoAdvanceTrigger,
+		"auto_advance_hint":         autoAdvanceHint,
+		"final_guidance_suffix":     finalGuidance,
 		"momentum_packet": map[string]any{
 			"packet_status":   status,
 			"evidence_counts": evidenceCounts,
@@ -2830,6 +2861,25 @@ func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput,
 		"fallback_reason": fallbackReason,
 		"would_call_llm":  false,
 		"would_write":     false,
+	}
+}
+
+func buildPrepareTurnPlannerLanguageContract(languageContext map[string]any) map[string]any {
+	target := prepareTurnSessionOutputLanguage(languageContext)
+	status := "unknown"
+	if target != "" && target != "auto" && target != "unknown" {
+		status = "ready"
+	}
+	return map[string]any{
+		"contract_version":              languageMemoryContractVersion,
+		"status":                        status,
+		"planner_support_language":      nilIfEmpty(target),
+		"planner_language_source":       nilIfEmpty(extractionStringFromAny(languageContext["output_language_source"])),
+		"current_user_input_priority":   "highest",
+		"raw_user_input_rewritten":      false,
+		"raw_evidence_rewritten":        false,
+		"generated_support_policy":      "use_session_output_language_when_language_is_known",
+		"trace_labels_language_neutral": true,
 	}
 }
 
@@ -3225,6 +3275,9 @@ type prepareTurnInjectionAssembly struct {
 	Trimmed                  []map[string]any
 	BudgetDecisions          map[string]any
 	Counts                   map[string]any
+	LanguageContext          map[string]any
+	LanguageInjectionTrace   map[string]any
+	PerspectiveContext       map[string]any
 }
 
 func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled, inputContextEnabled, inputContextTruncated bool, assembly prepareTurnInjectionAssembly, temporalSupportPacket map[string]any) map[string]any {
@@ -3284,6 +3337,9 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 		"injection_text":                        nilIfEmpty(assembly.Text),
 		"input_context_text":                    nilIfEmpty(inputContextText),
 		"memory_text":                           nilIfEmpty(assembly.MemoryText),
+		"language_context":                      nilIfEmptyMap(assembly.LanguageContext),
+		"language_injection_trace":              nilIfEmptyMap(assembly.LanguageInjectionTrace),
+		"perspective_context":                   nilIfEmptyMap(assembly.PerspectiveContext),
 		"kg_text":                               nilIfEmpty(assembly.KGText),
 		"fallback_text":                         nilIfEmpty(assembly.FallbackText),
 		"storyline_text":                        nilIfEmpty(assembly.StorylineText),
@@ -3330,6 +3386,155 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 		"would_call_llm":                false,
 		"would_write":                   false,
 	}
+}
+
+func buildPrepareTurnInputTransparencyRenderModel(sid string, turnIndex int, rawUserInput, inputContextText string, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded bool, fallbackReason string, assembly prepareTurnInjectionAssembly) map[string]any {
+	status := prepareTurnRenderModelStatus(degraded, injectionEnabled, inputContextEnabled, assembly.Text, inputContextText)
+	counts := prepareTurnRenderCounts(assembly, inputContextText)
+	blocks := []map[string]any{}
+	appendPrepareTurnRenderBlock(&blocks, "user_input", "User Input", "prepare_turn.raw_user_input", rawUserInput, 1, true, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "input_context", "Input Context", "prepare_turn.input_context_text", inputContextText, boolToInt(strings.TrimSpace(inputContextText) != ""), inputContextEnabled, inputContextTruncated, 0)
+	appendPrepareTurnRenderBlock(&blocks, "related_memories", "Related Memories", "store.memories", assembly.MemoryText, intFromAny(counts["selected_memory_total_count"], intFromAny(counts["memory_count"], 0)), injectionEnabled, false, intFromAny(counts["top_k_memory_target"], 0))
+	appendPrepareTurnRenderBlock(&blocks, "kg_relationships", "KG Relationships", "store.kg_triples", assembly.KGText, intFromAny(counts["kg_bound"], intFromAny(counts["kg_count"], 0)), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "fallback_chat_logs", "Fallback Chat Logs", "store.chat_logs", assembly.FallbackText, intFromAny(counts["fallback_bound"], intFromAny(counts["fallback_count"], 0)), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "episode_summaries", "Episode Summaries", "store.episode_summaries", assembly.EpisodeText, intFromAny(counts["episode_bound"], intFromAny(counts["episode_summary_count"], 0)), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "chapter_recall", "Chapter Recall", "store.chapter_summaries", assembly.ChapterText, boolToInt(strings.TrimSpace(assembly.ChapterText) != ""), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "arc_recall", "Arc Recall", "store.arc_summaries", assembly.ArcText, boolToInt(strings.TrimSpace(assembly.ArcText) != ""), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "saga_recall", "Saga Recall", "store.saga_digests", assembly.SagaText, boolToInt(strings.TrimSpace(assembly.SagaText) != ""), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "storylines", "Ongoing Storylines", "store.storylines", assembly.StorylineText, intFromAny(counts["storyline_count"], 0), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "world_context", "World Context", "store.world_rules", assembly.WorldRulesText, intFromAny(counts["world_rule_count"], 0), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "character_states", "Character States", "store.character_states", assembly.CharacterText, intFromAny(counts["character_state_count"], 0), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "open_threads", "Open Threads", "store.pending_threads", assembly.PendingThreadText, intFromAny(counts["pending_thread_count"], 0), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "canonical_state_layer", "Canonical State Layer", "store.canonical_state_layers", assembly.CanonText, intFromAny(counts["canonical_layer_count"], 0), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "persona_recollection", "Persona Recollection", "store.persona_memory_entries", assembly.PersonaText, intFromAny(counts["persona_recollection_bound"], intFromAny(counts["persona_recollection_count"], 0)), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "character_private_recollection", "Character Private Recollection", "store.protagonist_entity_memories", assembly.CharacterPrivateText, intFromAny(counts["character_private_recollection_bound"], intFromAny(counts["character_private_recollection_count"], 0)), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "latest_direct_evidence", "Latest Direct Evidence", "store.direct_evidence_records", assembly.LatestDirectEvidenceText, boolToInt(strings.TrimSpace(assembly.LatestDirectEvidenceText) != ""), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "recent_raw_turn", "Recent Raw Turn", "store.chat_logs", assembly.RecentRawTurnText, boolToInt(strings.TrimSpace(assembly.RecentRawTurnText) != ""), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "scoped_verbatim_support", "Scoped Verbatim Support", "store.direct_evidence_records", assembly.ScopedVerbatimText, intFromAny(counts["scoped_verbatim_support_count"], 0), injectionEnabled, false, 0)
+	counts["render_block_count"] = len(blocks)
+	counts["render_included_block_count"] = prepareTurnIncludedRenderBlockCount(blocks)
+	return map[string]any{
+		"contract_version":        "input_transparency_render.v1",
+		"status":                  status,
+		"source":                  "prepare_turn_backend_render_model",
+		"session_id":              sid,
+		"turn_index":              turnIndex,
+		"read_only":               true,
+		"write_attempted":         false,
+		"llm_call_attempted":      false,
+		"raw_user_rewritten":      false,
+		"injection_enabled":       injectionEnabled,
+		"input_context_enabled":   inputContextEnabled,
+		"injection_truncated":     assembly.Truncated,
+		"input_context_truncated": inputContextTruncated,
+		"fallback_reason":         nilIfEmpty(fallbackReason),
+		"blocks":                  blocks,
+		"counts":                  counts,
+		"language_context":        nilIfEmptyMap(assembly.LanguageContext),
+		"language_injection_trace": nilIfEmptyMap(
+			assembly.LanguageInjectionTrace,
+		),
+		"perspective_context":   nilIfEmptyMap(assembly.PerspectiveContext),
+		"secret_display_policy": "counts_only_no_secret_text",
+	}
+}
+
+func buildPrepareTurnEffectiveInputPreview(sid string, turnIndex int, rawUserInput, requestType, applyMode, inputContextText string, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded bool, fallbackReason string, assembly prepareTurnInjectionAssembly) map[string]any {
+	status := prepareTurnRenderModelStatus(degraded, injectionEnabled, inputContextEnabled, assembly.Text, inputContextText)
+	finalUserSource := "input_hook"
+	if strings.TrimSpace(requestType) != "" && strings.TrimSpace(requestType) != "model" {
+		finalUserSource = strings.TrimSpace(requestType)
+	}
+	return map[string]any{
+		"contract_version":        "effective_input_preview.v1",
+		"status":                  status,
+		"source":                  "prepare_turn_backend_render_model",
+		"session_id":              sid,
+		"turn_index":              turnIndex,
+		"payload_apply_mode":      strings.TrimSpace(applyMode),
+		"final_user_source":       finalUserSource,
+		"final_user_text":         rawUserInput,
+		"final_user_chars":        len([]rune(rawUserInput)),
+		"auxiliary_context_chars": len([]rune(assembly.Text)),
+		"input_context_chars":     len([]rune(inputContextText)),
+		"injection_applied":       injectionEnabled && strings.TrimSpace(assembly.Text) != "",
+		"input_context_applied":   inputContextEnabled && strings.TrimSpace(inputContextText) != "",
+		"injection_truncated":     assembly.Truncated,
+		"input_context_truncated": inputContextTruncated,
+		"raw_user_rewritten":      false,
+		"read_only":               true,
+		"write_attempted":         false,
+		"llm_call_attempted":      false,
+		"fallback_reason":         nilIfEmpty(fallbackReason),
+		"counts":                  prepareTurnRenderCounts(assembly, inputContextText),
+	}
+}
+
+func prepareTurnRenderModelStatus(degraded, injectionEnabled, inputContextEnabled bool, injectionText, inputContextText string) string {
+	if degraded {
+		return "degraded"
+	}
+	if !injectionEnabled && !inputContextEnabled {
+		return "off"
+	}
+	if strings.TrimSpace(injectionText) == "" && strings.TrimSpace(inputContextText) == "" {
+		return "empty"
+	}
+	return "ready"
+}
+
+func prepareTurnRenderCounts(assembly prepareTurnInjectionAssembly, inputContextText string) map[string]any {
+	counts := map[string]any{}
+	for k, v := range assembly.Counts {
+		counts[k] = v
+	}
+	counts["vector_found"] = intFromAny(counts["vector_memory_hit_count"], 0)
+	counts["vector_hydrated"] = intFromAny(counts["vector_memory_hydrated_count"], 0)
+	counts["vector_selected"] = intFromAny(counts["vector_memory_selected_count"], 0)
+	counts["vector_injected"] = intFromAny(counts["vector_memory_injected_count"], 0)
+	counts["related_memory_count"] = intFromAny(counts["selected_memory_total_count"], intFromAny(counts["memory_count"], 0))
+	if strings.TrimSpace(assembly.MemoryText) == "" {
+		counts["memory_injected"] = 0
+	} else {
+		counts["memory_injected"] = intFromAny(counts["selected_memory_total_count"], intFromAny(counts["memory_count"], 0))
+	}
+	counts["auxiliary_context_chars"] = len([]rune(assembly.Text))
+	counts["input_context_chars"] = len([]rune(inputContextText))
+	counts["injection_truncated"] = assembly.Truncated
+	return counts
+}
+
+func appendPrepareTurnRenderBlock(blocks *[]map[string]any, key, title, source, text string, count int, enabled, truncated bool, budget int) {
+	status := "empty"
+	if !enabled {
+		status = "disabled"
+	} else if strings.TrimSpace(text) != "" {
+		status = "included"
+	}
+	block := map[string]any{
+		"key":       key,
+		"title":     title,
+		"status":    status,
+		"source":    source,
+		"count":     count,
+		"chars":     len([]rune(text)),
+		"truncated": truncated,
+		"text":      nilIfEmpty(text),
+	}
+	if budget > 0 {
+		block["budget"] = budget
+	}
+	*blocks = append(*blocks, block)
+}
+
+func prepareTurnIncludedRenderBlockCount(blocks []map[string]any) int {
+	count := 0
+	for _, block := range blocks {
+		if strings.TrimSpace(extractionStringFromAny(block["status"])) == "included" {
+			count++
+		}
+	}
+	return count
 }
 
 func nilIfEmpty(text string) any {
@@ -3623,8 +3828,195 @@ func clientMetaString(meta map[string]any, key string) string {
 	return s
 }
 
+func prepareTurnPerspectiveContextFromClientMeta(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	for _, nestedKey := range []string{"perspective_context", "viewpoint_context", "pov_context"} {
+		if nested := normalizePrepareTurnPerspectiveContext(mapFromAny(meta[nestedKey])); len(nested) > 0 {
+			if _, ok := nested["source"]; !ok {
+				nested["source"] = nestedKey
+			}
+			return nested
+		}
+	}
+	return normalizePrepareTurnPerspectiveContext(meta)
+}
+
+func prepareTurnPerspectiveContextFromRequest(req dto.PrepareTurnRequest) map[string]any {
+	if ctx := prepareTurnPerspectiveContextFromClientMeta(req.ClientMeta); len(ctx) > 0 {
+		return ctx
+	}
+	sources := []struct {
+		source string
+		text   string
+	}{
+		{source: "raw_user_input", text: stringPtrValue(req.RawUserInput, "")},
+	}
+	for i := len(req.Messages) - 1; i >= 0 && len(sources) < 8; i-- {
+		msg := req.Messages[i]
+		text := strings.TrimSpace(extractionStringFromAny(msg["content"]))
+		if text == "" {
+			continue
+		}
+		role := strings.TrimSpace(extractionStringFromAny(msg["role"]))
+		if role == "" {
+			role = "message"
+		}
+		sources = append(sources, struct {
+			source string
+			text   string
+		}{source: "message." + role, text: text})
+	}
+	for _, source := range sources {
+		if pov := inferPrepareTurnPerspectiveName(source.text); pov != "" {
+			return normalizePrepareTurnPerspectiveContext(map[string]any{
+				"current_pov": pov,
+				"source":      "inferred_" + source.source,
+			})
+		}
+	}
+	return nil
+}
+
+func inferPrepareTurnPerspectiveName(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if pov := inferPrepareTurnPerspectiveNameFromLine(line); pov != "" {
+			return pov
+		}
+	}
+	return ""
+}
+
+func inferPrepareTurnPerspectiveNameFromLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	lower := strings.ToLower(line)
+	for _, marker := range []string{"pov", "point of view", "viewpoint"} {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			after := strings.TrimSpace(line[idx+len(marker):])
+			if after != "" {
+				if candidate := cleanPrepareTurnPerspectiveCandidate(after); candidate != "" {
+					return candidate
+				}
+			}
+			before := strings.TrimSpace(line[:idx])
+			if candidate := cleanPrepareTurnPerspectiveCandidate(before); candidate != "" {
+				return candidate
+			}
+		}
+	}
+	for _, marker := range []string{"시점", "관점", "입장", "視点", "の視点"} {
+		if idx := strings.Index(line, marker); idx >= 0 {
+			before := strings.TrimSpace(line[:idx])
+			if candidate := cleanPrepareTurnPerspectiveCandidate(before); candidate != "" {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+func cleanPrepareTurnPerspectiveCandidate(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, " \t\r\n:：-–—[](){}<>「」『』\"'`")
+	replacers := []string{
+		"hidden spoiler", "", "spoiler", "", "pov", "", "point of view", "", "viewpoint", "",
+		"current", "", "현재", "", "히든 스포일러", "", "스포일러", "", "의", "", "の", "",
+	}
+	lower := strings.ToLower(value)
+	for i := 0; i+1 < len(replacers); i += 2 {
+		prefix := replacers[i]
+		replacement := replacers[i+1]
+		if strings.HasPrefix(lower, prefix) {
+			value = strings.TrimSpace(replacement + strings.TrimSpace(value[len(prefix):]))
+			lower = strings.ToLower(value)
+		}
+	}
+	cutset := []string{"\n", "\r", ".", "。", ",", "，", ";", "；", "|", "/", "\\", " - ", " -- ", " — ", " – "}
+	for _, sep := range cutset {
+		if idx := strings.Index(value, sep); idx >= 0 {
+			value = strings.TrimSpace(value[:idx])
+		}
+	}
+	value = strings.Trim(value, " \t\r\n:：-–—[](){}<>「」『』\"'`")
+	for _, suffix := range []string{"의", "の"} {
+		if strings.HasSuffix(value, suffix) {
+			value = strings.TrimSpace(strings.TrimSuffix(value, suffix))
+		}
+	}
+	if !validPrepareTurnPerspectiveCandidate(value) {
+		return ""
+	}
+	return value
+}
+
+func validPrepareTurnPerspectiveCandidate(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	runeCount := len([]rune(value))
+	if runeCount < 2 || runeCount > 60 {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, blocked := range []string{
+		"freely", "take a moment", "instruction", "instructions", "system", "developer", "assistant", "user",
+		"prompt", "rules", "response", "format", "review", "reasoning", "draft",
+	} {
+		if strings.Contains(lower, blocked) {
+			return false
+		}
+	}
+	if len(strings.Fields(value)) > 5 {
+		return false
+	}
+	return normalizeCharacterKey(value) != ""
+}
+
+func normalizePrepareTurnPerspectiveContext(raw map[string]any) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	pov := strings.TrimSpace(extractionFirstNonEmpty(
+		extractionStringFromAny(raw["current_pov"]),
+		extractionStringFromAny(raw["pov_character"]),
+		extractionStringFromAny(raw["viewpoint_character"]),
+		extractionStringFromAny(raw["narrator_character"]),
+		extractionStringFromAny(raw["speaker_character"]),
+		extractionStringFromAny(raw["current_speaker"]),
+		extractionStringFromAny(raw["speaker"]),
+		extractionStringFromAny(raw["current_character"]),
+		extractionStringFromAny(raw["active_character"]),
+	))
+	if pov == "" {
+		return nil
+	}
+	out := map[string]any{
+		"contract_version": "perspective_context.v1",
+		"current_pov":      truncateRunes(pov, 120),
+		"current_pov_key":  normalizeCharacterKey(pov),
+		"source":           extractionFirstNonEmpty(extractionStringFromAny(raw["source"]), "client_meta"),
+	}
+	if mode := strings.TrimSpace(extractionStringFromAny(raw["mode"])); mode != "" {
+		out["mode"] = truncateRunes(mode, 80)
+	}
+	return out
+}
+
 func buildInjectionText(memories []store.Memory, kgTriples []store.KGTriple, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, topK, maxChars int) (string, bool) {
-	assembly := buildPrepareTurnInjectionAssembly(memories, kgTriples, nil, nil, storylines, worldRules, charStates, pendingThreads, nil, nil, nil, nil, nil, topK, maxChars, "", "default", nil, nil)
+	assembly := buildPrepareTurnInjectionAssembly(memories, kgTriples, nil, nil, storylines, worldRules, charStates, pendingThreads, nil, nil, nil, nil, nil, topK, maxChars, "", "default", nil, nil, nil)
 	return assembly.Text, assembly.Truncated
 }
 
@@ -3664,6 +4056,22 @@ type prepareTurnMemoryLaneSelection struct {
 	VectorScores   map[string]float64
 	RelevantScores map[string]float64
 	Trace          map[string]any
+}
+
+func prepareTurnMemorySelectionQuery(rawUserInput string, chatLogs []store.ChatLog, perspectiveContext map[string]any, topK int) string {
+	parts := []string{}
+	if text := strings.TrimSpace(rawUserInput); text != "" {
+		parts = append(parts, text)
+	}
+	if pov := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"])); pov != "" {
+		parts = append(parts, "current_pov: "+pov)
+	}
+	for _, cl := range selectRecentChatLogsByTurn(chatLogs, prepareTurnRecallLimit(topK)) {
+		if text := strings.TrimSpace(cl.Content); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func selectPrepareTurnMemoryLanes(memories []store.Memory, query string, topK int) prepareTurnMemoryLaneSelection {
@@ -3744,8 +4152,8 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["vector_recall"] = vectorHydration.Trace
 	out.Trace["vector_recall_ready"] = vectorRecallReady
 	out.Trace["vector_recall_attempted"] = vectorRecallAttempted
-	out.Trace["lexical_fill_enabled"] = !(vectorRecallReady || vectorRecallAttempted)
-	if vectorRecallReady || vectorRecallAttempted {
+	out.Trace["lexical_fill_enabled"] = !vectorRecallReady && prepareTurnSelectedMemoryCount(out) < totalLimit
+	if vectorRecallReady {
 		out.Trace["vector_selected"] = len(out.VectorRelevant)
 		out.Trace["recent_selected"] = 0
 		out.Trace["relevant_selected"] = 0
@@ -3771,7 +4179,7 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		key := prepareTurnMemoryLaneKey(item)
 		relevance := 0.0
 		if queryPresent {
-			relevance = simpleTokenSimilarity(query, prepareTurnMemorySummary(item))
+			relevance = simpleTokenSimilarity(query, prepareTurnMemoryRelevanceText(item))
 			if relevance > 0 {
 				relevantCandidates++
 			}
@@ -3873,23 +4281,28 @@ func prepareTurnMemoryLaneCounters(selection prepareTurnMemoryLaneSelection, inj
 		injectedCount = len(selection.VectorRelevant)
 	}
 	return map[string]any{
-		"memory_lane_order":              []string{"vector_relevant", "relevant", "deep", "recent"},
-		"vector_memory_hit_count":        intFromAny(vectorTrace["input_hit_count"], 0),
-		"vector_memory_hydrated_count":   intFromAny(vectorTrace["hydrated_count"], 0),
-		"vector_memory_selected_count":   len(selection.VectorRelevant),
-		"vector_memory_injected_count":   injectedCount,
-		"vector_memory_duplicate_count":  intFromAny(vectorTrace["duplicate_count"], 0),
-		"vector_memory_missing_count":    intFromAny(vectorTrace["missing_count"], 0),
-		"vector_non_memory_hit_count":    intFromAny(vectorTrace["non_memory_count"], 0),
-		"vector_memory_recall_status":    stringFromMap(vectorTrace, "status"),
-		"vector_memory_recall_reason":    stringFromMap(vectorTrace, "reason"),
-		"vector_relevant_memory_count":   len(selection.VectorRelevant),
-		"relevant_memory_count":          len(selection.Relevant),
-		"deep_memory_count":              len(selection.Deep),
-		"recent_memory_count":            len(selection.Recent),
-		"selected_memory_total_count":    prepareTurnSelectedMemoryCount(selection),
-		"selected_memory_total_target":   intFromAny(selection.Trace["top_k_memory_target"], 0),
-		"selected_memory_top_k_contract": stringFromMap(selection.Trace, "top_k_definition"),
+		"memory_lane_order":                             []string{"vector_relevant", "relevant", "deep", "recent"},
+		"vector_memory_hit_count":                       intFromAny(vectorTrace["input_hit_count"], 0),
+		"vector_memory_hydrated_count":                  intFromAny(vectorTrace["hydrated_count"], 0),
+		"vector_memory_selected_count":                  len(selection.VectorRelevant),
+		"vector_memory_injected_count":                  injectedCount,
+		"vector_memory_duplicate_count":                 intFromAny(vectorTrace["duplicate_count"], 0),
+		"vector_memory_missing_count":                   intFromAny(vectorTrace["missing_count"], 0),
+		"vector_non_memory_hit_count":                   intFromAny(vectorTrace["non_memory_count"], 0),
+		"vector_memory_hit_language_context_count":      intFromAny(vectorTrace["hit_language_context_count"], 0),
+		"vector_memory_hit_alias_indexed_count":         intFromAny(vectorTrace["hit_alias_indexed_count"], 0),
+		"vector_memory_hydrated_language_context_count": intFromAny(vectorTrace["hydrated_language_context_count"], 0),
+		"vector_memory_hydrated_alias_ready_count":      intFromAny(vectorTrace["hydrated_alias_ready_count"], 0),
+		"vector_memory_search_text_policy":              stringFromMap(vectorTrace, "search_text_policy"),
+		"vector_memory_recall_status":                   stringFromMap(vectorTrace, "status"),
+		"vector_memory_recall_reason":                   stringFromMap(vectorTrace, "reason"),
+		"vector_relevant_memory_count":                  len(selection.VectorRelevant),
+		"relevant_memory_count":                         len(selection.Relevant),
+		"deep_memory_count":                             len(selection.Deep),
+		"recent_memory_count":                           len(selection.Recent),
+		"selected_memory_total_count":                   prepareTurnSelectedMemoryCount(selection),
+		"selected_memory_total_target":                  intFromAny(selection.Trace["top_k_memory_target"], 0),
+		"selected_memory_top_k_contract":                stringFromMap(selection.Trace, "top_k_definition"),
 	}
 }
 
@@ -3900,6 +4313,54 @@ func mergePrepareTurnMemoryLaneCounters(counts map[string]any, selection prepare
 	for key, value := range prepareTurnMemoryLaneCounters(selection, injected) {
 		counts[key] = value
 	}
+}
+
+func prepareTurnMemoryLaneProtectedCounts(selection prepareTurnMemoryLaneSelection, perspectiveContext map[string]any) map[string]any {
+	counts := map[string]any{
+		"protected_secret_count":          0,
+		"identity_accuracy_count":         0,
+		"protected_memory_guarded_count":  0,
+		"pov_scoped_identity_guard_count": 0,
+		"protected_memory_selected_count": 0,
+	}
+	seen := map[string]bool{}
+	add := func(item store.Memory) {
+		key := prepareTurnMemoryLaneKey(item)
+		if key == "" {
+			key = fmt.Sprintf("turn:%d:%s", item.TurnIndex, item.SummaryJSON)
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		parsed := parseJSONMap(item.SummaryJSON)
+		protectedSecrets := sliceFromAny(parsed["protected_secrets"])
+		identityAccuracy := sliceFromAny(parsed["character_identity_accuracy"])
+		counts["protected_secret_count"] = intFromAny(counts["protected_secret_count"], 0) + len(protectedSecrets)
+		counts["identity_accuracy_count"] = intFromAny(counts["identity_accuracy_count"], 0) + len(identityAccuracy)
+		if len(protectedSecrets) > 0 || len(identityAccuracy) > 0 {
+			counts["protected_memory_selected_count"] = intFromAny(counts["protected_memory_selected_count"], 0) + 1
+		}
+		if guard := prepareTurnProtectedMemoryGuard(item, perspectiveContext); guard.Active {
+			counts["protected_memory_guarded_count"] = intFromAny(counts["protected_memory_guarded_count"], 0) + 1
+			if guard.POVScoped {
+				counts["pov_scoped_identity_guard_count"] = intFromAny(counts["pov_scoped_identity_guard_count"], 0) + 1
+			}
+		}
+	}
+	for _, item := range selection.VectorRelevant {
+		add(item)
+	}
+	for _, item := range selection.Relevant {
+		add(item)
+	}
+	for _, item := range selection.Deep {
+		add(item)
+	}
+	for _, item := range selection.Recent {
+		add(item)
+	}
+	return counts
 }
 
 type prepareTurnVectorMemoryHydration struct {
@@ -3913,14 +4374,19 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 		Items:  []store.Memory{},
 		Scores: map[string]float64{},
 		Trace: map[string]any{
-			"version":          "vdb1.hydrate_memory_hits.v1",
-			"status":           "not_attempted",
-			"truth_boundary":   "vector_hit_is_selector_only_mariadb_memory_is_canonical",
-			"input_hit_count":  0,
-			"hydrated_count":   0,
-			"duplicate_count":  0,
-			"missing_count":    0,
-			"non_memory_count": 0,
+			"version":                         "vdb1.hydrate_memory_hits.v1",
+			"status":                          "not_attempted",
+			"truth_boundary":                  "vector_hit_is_selector_only_mariadb_memory_is_canonical",
+			"input_hit_count":                 0,
+			"hydrated_count":                  0,
+			"duplicate_count":                 0,
+			"missing_count":                   0,
+			"non_memory_count":                0,
+			"search_text_policy":              languageMemorySearchPolicy,
+			"hit_language_context_count":      0,
+			"hit_alias_indexed_count":         0,
+			"hydrated_language_context_count": 0,
+			"hydrated_alias_ready_count":      0,
 		},
 	}
 	limit = prepareTurnRecallLimit(limit)
@@ -3946,6 +4412,26 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 	hits := prepareTurnVectorSearchResultMaps(vectorShadow["search_results"])
 	out.Trace["status"] = "ready"
 	out.Trace["input_hit_count"] = len(hits)
+	hitRawLanguageCounts := map[string]int{}
+	hitSummaryLanguageCounts := map[string]int{}
+	hitSessionLanguageCounts := map[string]int{}
+	for _, hit := range hits {
+		if prepareTurnVectorHitHasLanguageMetadata(hit) {
+			out.Trace["hit_language_context_count"] = intFromAny(out.Trace["hit_language_context_count"], 0) + 1
+		}
+		if intFromAny(hit["alias_count"], 0) > 0 {
+			out.Trace["hit_alias_indexed_count"] = intFromAny(out.Trace["hit_alias_indexed_count"], 0) + 1
+		}
+		incrementLanguageCount(hitRawLanguageCounts, stringFromMap(hit, "raw_language"))
+		incrementLanguageCount(hitSummaryLanguageCounts, stringFromMap(hit, "summary_language"))
+		incrementLanguageCount(hitSessionLanguageCounts, stringFromMap(hit, "session_output_language"))
+	}
+	out.Trace["hit_raw_language_counts"] = hitRawLanguageCounts
+	out.Trace["hit_summary_language_counts"] = hitSummaryLanguageCounts
+	out.Trace["hit_session_output_language_counts"] = hitSessionLanguageCounts
+	hydratedRawLanguageCounts := map[string]int{}
+	hydratedSummaryLanguageCounts := map[string]int{}
+	hydratedSessionLanguageCounts := map[string]int{}
 	for rank, hit := range hits {
 		if len(out.Items) >= limit {
 			break
@@ -3970,15 +4456,48 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 		}
 		seen[id] = true
 		out.Items = append(out.Items, item)
+		languageMeta := memoryVectorLanguageMetadata(item)
+		if prepareTurnMemoryHasLanguageMetadata(languageMeta) {
+			out.Trace["hydrated_language_context_count"] = intFromAny(out.Trace["hydrated_language_context_count"], 0) + 1
+		}
+		incrementLanguageCount(hydratedRawLanguageCounts, languageMeta["raw_language"])
+		incrementLanguageCount(hydratedSummaryLanguageCounts, languageMeta["summary_language"])
+		incrementLanguageCount(hydratedSessionLanguageCounts, languageMeta["session_output_language"])
+		if memorySearchTextFromMemory(item).AliasCount > 0 {
+			out.Trace["hydrated_alias_ready_count"] = intFromAny(out.Trace["hydrated_alias_ready_count"], 0) + 1
+		}
 		key := prepareTurnMemoryLaneKey(item)
 		out.Scores[key] = prepareTurnVectorRankScore(rank)
 	}
 	out.Trace["hydrated_count"] = len(out.Items)
 	out.Trace["selected_count"] = len(out.Items)
+	out.Trace["hydrated_raw_language_counts"] = hydratedRawLanguageCounts
+	out.Trace["hydrated_summary_language_counts"] = hydratedSummaryLanguageCounts
+	out.Trace["hydrated_session_output_language_counts"] = hydratedSessionLanguageCounts
 	if len(out.Items) == 0 {
 		out.Trace["status"] = "empty"
 	}
 	return out
+}
+
+func prepareTurnVectorHitHasLanguageMetadata(hit map[string]any) bool {
+	return strings.TrimSpace(stringFromMap(hit, "raw_language")) != "" ||
+		strings.TrimSpace(stringFromMap(hit, "summary_language")) != "" ||
+		strings.TrimSpace(stringFromMap(hit, "session_output_language")) != ""
+}
+
+func prepareTurnMemoryHasLanguageMetadata(meta map[string]string) bool {
+	return strings.TrimSpace(meta["raw_language"]) != "" ||
+		strings.TrimSpace(meta["summary_language"]) != "" ||
+		strings.TrimSpace(meta["session_output_language"]) != ""
+}
+
+func incrementLanguageCount(counts map[string]int, language string) {
+	language = strings.TrimSpace(language)
+	if language == "" {
+		return
+	}
+	counts[language]++
 }
 
 func prepareTurnVectorHitLooksLikeMemory(hit map[string]any) bool {
@@ -4078,14 +4597,21 @@ func relevantDegradedReason(query string, selected, candidates int) string {
 	return "candidate_limit_zero"
 }
 
-func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection) []string {
+func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, languageContext map[string]any, perspectiveContextArg ...map[string]any) ([]string, map[string]any) {
 	lines := []string{}
+	trace := newPrepareTurnMemoryLanguageTrace(languageContext)
+	perspectiveContext := map[string]any(nil)
+	if len(perspectiveContextArg) > 0 {
+		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
+	}
 	appendLane := func(label string, items []store.Memory) {
 		for _, item := range items {
 			summary := prepareTurnMemorySummary(item)
 			if summary == "" {
 				continue
 			}
+			lineText, lineTrace := prepareTurnMemoryInjectionLineText(item, summary, languageContext, perspectiveContext)
+			updatePrepareTurnMemoryLanguageTrace(trace, lineTrace)
 			meta := []string{label}
 			if item.TurnIndex > 0 {
 				meta = append(meta, fmt.Sprintf("turn %d", item.TurnIndex))
@@ -4103,14 +4629,402 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection) []stri
 			if label == "deep" && item.Importance > 0 {
 				meta = append(meta, fmt.Sprintf("imp %.2f", item.Importance))
 			}
-			lines = append(lines, fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), summary))
+			lines = append(lines, fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), lineText))
 		}
 	}
 	appendLane("vector_relevant", selection.VectorRelevant)
 	appendLane("relevant", selection.Relevant)
 	appendLane("deep", selection.Deep)
 	appendLane("recent", selection.Recent)
-	return lines
+	trace["line_count"] = len(lines)
+	return lines, trace
+}
+
+func newPrepareTurnMemoryLanguageTrace(languageContext map[string]any) map[string]any {
+	return map[string]any{
+		"contract_version":                 languageMemoryContractVersion,
+		"session_output_language":          nilIfEmpty(prepareTurnSessionOutputLanguage(languageContext)),
+		"summary_language_target":          nilIfEmpty(prepareTurnSummaryLanguageTarget(languageContext)),
+		"memory_summary_language_match":    0,
+		"memory_summary_language_mismatch": 0,
+		"memory_language_unknown":          0,
+		"raw_evidence_attached_count":      0,
+		"raw_evidence_preserved":           true,
+		"raw_user_input_rewritten":         false,
+	}
+}
+
+func updatePrepareTurnMemoryLanguageTrace(trace map[string]any, lineTrace map[string]any) {
+	if trace == nil || lineTrace == nil {
+		return
+	}
+	if boolFromAny(lineTrace["summary_language_matches_target"]) {
+		trace["memory_summary_language_match"] = intFromAny(trace["memory_summary_language_match"], 0) + 1
+	} else if strings.TrimSpace(extractionStringFromAny(lineTrace["summary_language"])) != "" &&
+		strings.TrimSpace(extractionStringFromAny(lineTrace["summary_language_target"])) != "" {
+		trace["memory_summary_language_mismatch"] = intFromAny(trace["memory_summary_language_mismatch"], 0) + 1
+	} else {
+		trace["memory_language_unknown"] = intFromAny(trace["memory_language_unknown"], 0) + 1
+	}
+	if boolFromAny(lineTrace["raw_evidence_attached"]) {
+		trace["raw_evidence_attached_count"] = intFromAny(trace["raw_evidence_attached_count"], 0) + 1
+	}
+}
+
+func buildPrepareTurnLanguageInjectionTrace(languageContext map[string]any, memoryTrace map[string]any) map[string]any {
+	return map[string]any{
+		"contract_version":            languageMemoryContractVersion,
+		"status":                      prepareTurnLanguageInjectionStatus(languageContext),
+		"session_output_language":     nilIfEmpty(prepareTurnSessionOutputLanguage(languageContext)),
+		"summary_language_target":     nilIfEmpty(prepareTurnSummaryLanguageTarget(languageContext)),
+		"output_language_source":      nilIfEmpty(extractionStringFromAny(languageContext["output_language_source"])),
+		"current_user_input_priority": "highest",
+		"raw_user_input_rewritten":    false,
+		"raw_evidence_rewritten":      false,
+		"related_memory_policy":       "prefer_stored_output_language_summary_preserve_raw_evidence_when_available",
+		"translation_call_attempted":  false,
+		"memory_language_trace":       nilIfEmptyMap(memoryTrace),
+	}
+}
+
+func prepareTurnLanguageInjectionStatus(languageContext map[string]any) string {
+	target := prepareTurnSessionOutputLanguage(languageContext)
+	if target == "" || target == "unknown" || target == "auto" {
+		return "trace_only_unknown_language"
+	}
+	return "ready"
+}
+
+func prepareTurnSessionOutputLanguage(languageContext map[string]any) string {
+	return normalizePrepareTurnLanguageCode(extractionFirstNonEmpty(
+		extractionStringFromAny(languageContext["session_output_language"]),
+		extractionStringFromAny(languageContext["summary_language"]),
+	))
+}
+
+func prepareTurnSummaryLanguageTarget(languageContext map[string]any) string {
+	return normalizePrepareTurnLanguageCode(extractionFirstNonEmpty(
+		extractionStringFromAny(languageContext["summary_language"]),
+		extractionStringFromAny(languageContext["session_output_language"]),
+	))
+}
+
+func normalizePrepareTurnLanguageCode(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "ko", "kr", "kor", "korean":
+		return "ko"
+	case "en", "eng", "english":
+		return "en"
+	case "ja", "jp", "jpn", "japanese":
+		return "ja"
+	case "auto":
+		return "auto"
+	case "unknown":
+		return "unknown"
+	default:
+		return value
+	}
+}
+
+func prepareTurnMemoryInjectionLineText(item store.Memory, summary string, languageContext map[string]any, perspectiveContextArg ...map[string]any) (string, map[string]any) {
+	meta := memoryVectorLanguageMetadata(item)
+	summaryLanguage := normalizePrepareTurnLanguageCode(meta["summary_language"])
+	targetLanguage := prepareTurnSummaryLanguageTarget(languageContext)
+	rawLanguage := normalizePrepareTurnLanguageCode(meta["raw_language"])
+	perspectiveContext := map[string]any(nil)
+	if len(perspectiveContextArg) > 0 {
+		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
+	}
+	if guard := prepareTurnProtectedMemoryGuard(item, perspectiveContext); guard.Active {
+		lineTrace := map[string]any{
+			"summary_language":                nilIfEmpty(summaryLanguage),
+			"summary_language_target":         nilIfEmpty(targetLanguage),
+			"raw_language":                    nilIfEmpty(rawLanguage),
+			"summary_language_matches_target": summaryLanguage != "" && targetLanguage != "" && summaryLanguage == targetLanguage,
+			"raw_evidence_attached":           false,
+			"raw_evidence_preserved":          true,
+			"protected_secret_guarded":        true,
+			"protected_identity_pov_scoped":   guard.POVScoped,
+		}
+		return guard.LineText, lineTrace
+	}
+	parts := []string{summary}
+	rawEvidence := prepareTurnMemoryRawEvidenceLines(item)
+	if len(rawEvidence) > 0 && rawLanguage != "" && summaryLanguage != "" && rawLanguage != summaryLanguage {
+		parts = append(parts, "raw_evidence: "+strings.Join(rawEvidence, " | "))
+	}
+	if summaryLanguage != "" {
+		parts = append(parts, "summary_language="+summaryLanguage)
+	}
+	if rawLanguage != "" {
+		parts = append(parts, "raw_language="+rawLanguage)
+	}
+	lineTrace := map[string]any{
+		"summary_language":                nilIfEmpty(summaryLanguage),
+		"summary_language_target":         nilIfEmpty(targetLanguage),
+		"raw_language":                    nilIfEmpty(rawLanguage),
+		"summary_language_matches_target": summaryLanguage != "" && targetLanguage != "" && summaryLanguage == targetLanguage,
+		"raw_evidence_attached":           len(rawEvidence) > 0 && rawLanguage != "" && summaryLanguage != "" && rawLanguage != summaryLanguage,
+		"raw_evidence_preserved":          true,
+	}
+	return strings.Join(parts, " | "), lineTrace
+}
+
+type prepareTurnProtectedMemoryGuardResult struct {
+	Active    bool
+	LineText  string
+	POVScoped bool
+}
+
+func prepareTurnProtectedMemoryGuard(item store.Memory, perspectiveContextArg ...map[string]any) prepareTurnProtectedMemoryGuardResult {
+	parsed := parseJSONMap(item.SummaryJSON)
+	protectedSecrets := sliceFromAny(parsed["protected_secrets"])
+	identityAccuracy := sliceFromAny(parsed["character_identity_accuracy"])
+	if len(protectedSecrets) == 0 && len(identityAccuracy) == 0 {
+		return prepareTurnProtectedMemoryGuardResult{}
+	}
+	perspectiveContext := map[string]any(nil)
+	if len(perspectiveContextArg) > 0 {
+		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
+	}
+	if line := prepareTurnPOVScopedIdentityGuardLine(identityAccuracy, perspectiveContext); line != "" {
+		return prepareTurnProtectedMemoryGuardResult{
+			Active:    true,
+			LineText:  line,
+			POVScoped: true,
+		}
+	}
+	if line := prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy); line != "" {
+		return prepareTurnProtectedMemoryGuardResult{
+			Active:   true,
+			LineText: line,
+		}
+	}
+	kinds := []string{}
+	policies := []string{}
+	knownByCount := 0
+	suspectedByCount := 0
+	for _, raw := range protectedSecrets {
+		secret := mapFromAny(raw)
+		if !protectedSecretRequiresGuard(secret, "disclosure_policy") {
+			continue
+		}
+		if kind := normalizeProtectedSecretToken(stringFromMap(secret, "secret_kind")); kind != "" {
+			kinds = appendUniqueMemorySearchText(kinds, kind)
+		}
+		if policy := normalizeTargetRevealPolicy(stringFromMap(secret, "disclosure_policy")); policy != "" {
+			policies = appendUniqueMemorySearchText(policies, policy)
+		}
+		scope := mapFromAny(secret["knowledge_scope"])
+		knownByCount += len(stringsFromAny(scope["known_by"]))
+		suspectedByCount += len(stringsFromAny(scope["suspected_by"]))
+	}
+	for _, raw := range identityAccuracy {
+		identity := mapFromAny(raw)
+		if !protectedSecretRequiresGuard(identity, "reveal_policy") {
+			continue
+		}
+		if kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind")); kind != "" {
+			kinds = appendUniqueMemorySearchText(kinds, kind)
+		}
+		if policy := normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy")); policy != "" {
+			policies = appendUniqueMemorySearchText(policies, policy)
+		}
+		scope := mapFromAny(identity["knowledge_scope"])
+		knownByCount += len(stringsFromAny(scope["known_by"]))
+		suspectedByCount += len(stringsFromAny(scope["suspected_by"]))
+	}
+	if len(kinds) == 0 && len(policies) == 0 {
+		return prepareTurnProtectedMemoryGuardResult{}
+	}
+	parts := []string{
+		"Protected continuity guard: protected private knowledge exists.",
+		"Do not reveal, confess, or let unrelated characters discover it without current-scene evidence.",
+	}
+	if len(kinds) > 0 {
+		parts = append(parts, "kind="+strings.Join(kinds, ","))
+	}
+	if len(policies) > 0 {
+		parts = append(parts, "policy="+strings.Join(policies, ","))
+	}
+	if knownByCount > 0 || suspectedByCount > 0 {
+		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", knownByCount, suspectedByCount))
+	}
+	return prepareTurnProtectedMemoryGuardResult{
+		Active:   true,
+		LineText: strings.Join(parts, " | "),
+	}
+}
+
+func prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy []any) string {
+	relations := []string{}
+	kinds := []string{}
+	policies := []string{}
+	knownByCount := 0
+	suspectedByCount := 0
+	for _, raw := range identityAccuracy {
+		identity := mapFromAny(raw)
+		if !protectedSecretRequiresGuard(identity, "reveal_policy") {
+			continue
+		}
+		surface := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "surface_identity_name"),
+			stringFromMap(identity, "public_identity_name"),
+			stringFromMap(identity, "alias_name"),
+		))
+		trueName := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "true_identity_name"),
+			stringFromMap(identity, "canonical_entity_name"),
+			stringFromMap(identity, "real_identity_name"),
+		))
+		if surface == "" || trueName == "" || normalizeCharacterKey(surface) == normalizeCharacterKey(trueName) {
+			continue
+		}
+		if boolFromAny(identity["same_entity"]) {
+			relations = appendUniqueMemorySearchText(relations, fmt.Sprintf("%s and %s refer to the same internal person", surface, trueName))
+		} else {
+			relations = appendUniqueMemorySearchText(relations, fmt.Sprintf("%s is protected identity context for %s", surface, trueName))
+		}
+		if kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind")); kind != "" {
+			kinds = appendUniqueMemorySearchText(kinds, kind)
+		}
+		if policy := normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy")); policy != "" {
+			policies = appendUniqueMemorySearchText(policies, policy)
+		}
+		scope := mapFromAny(identity["knowledge_scope"])
+		knownByCount += len(stringsFromAny(scope["known_by"]))
+		suspectedByCount += len(stringsFromAny(scope["suspected_by"]))
+	}
+	if len(relations) == 0 {
+		return ""
+	}
+	parts := []string{
+		"Protected identity continuity: " + strings.Join(relations, "; ") + ".",
+		"Maintain same-entity continuity internally; do not portray the surface identity and true identity as separate people.",
+		"This is author-side/private support, not public character knowledge; do not reveal, confess, or let unrelated characters discover it without current-scene evidence.",
+	}
+	if len(kinds) > 0 {
+		parts = append(parts, "kind="+strings.Join(kinds, ","))
+	}
+	if len(policies) > 0 {
+		parts = append(parts, "policy="+strings.Join(policies, ","))
+	}
+	if knownByCount > 0 || suspectedByCount > 0 {
+		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", knownByCount, suspectedByCount))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveContext map[string]any) string {
+	povName := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"]))
+	povKey := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov_key"]))
+	if povName == "" && povKey == "" {
+		return ""
+	}
+	for _, raw := range identityAccuracy {
+		identity := mapFromAny(raw)
+		if !protectedSecretRequiresGuard(identity, "reveal_policy") {
+			continue
+		}
+		if !prepareTurnPerspectiveKnowsIdentity(identity, povName, povKey) {
+			continue
+		}
+		surface := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "surface_identity_name"),
+			stringFromMap(identity, "public_identity_name"),
+			stringFromMap(identity, "alias_name"),
+		))
+		trueName := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(identity, "true_identity_name"),
+			stringFromMap(identity, "canonical_entity_name"),
+			stringFromMap(identity, "real_identity_name"),
+		))
+		if surface == "" || trueName == "" || normalizeCharacterKey(surface) == normalizeCharacterKey(trueName) {
+			continue
+		}
+		kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind"))
+		if kind == "" {
+			kind = "identity"
+		}
+		policy := normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy"))
+		parts := []string{
+			fmt.Sprintf("POV-scoped identity continuity: %s is %s's own protected surface identity/persona.", surface, trueName),
+			fmt.Sprintf("For current_pov=%s, treat %s and %s as the same internal person, not two separate characters.", povName, surface, trueName),
+			"Keep this as POV/private knowledge; do not reveal it to characters outside knowledge_scope without current reveal evidence.",
+			"kind=" + kind,
+		}
+		if policy != "" {
+			parts = append(parts, "policy="+policy)
+		}
+		return strings.Join(parts, " | ")
+	}
+	return ""
+}
+
+func prepareTurnPerspectiveKnowsIdentity(identity map[string]any, povName, povKey string) bool {
+	candidates := []string{
+		povName,
+		povKey,
+		stringFromMap(identity, "canonical_entity_name"),
+		stringFromMap(identity, "true_identity_name"),
+		stringFromMap(identity, "surface_identity_name"),
+		stringFromMap(identity, "public_identity_name"),
+		stringFromMap(identity, "alias_name"),
+	}
+	candidates = append(candidates, stringsFromAny(identity["aliases"])...)
+	scope := mapFromAny(identity["knowledge_scope"])
+	candidates = append(candidates, stringsFromAny(scope["known_by"])...)
+	for _, candidate := range candidates {
+		if prepareTurnPerspectiveNameMatches(povName, povKey, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func prepareTurnPerspectiveNameMatches(povName, povKey, candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	candidateKey := normalizeCharacterKey(candidate)
+	if povKey != "" && candidateKey != "" && povKey == candidateKey {
+		return true
+	}
+	return strings.TrimSpace(povName) != "" && strings.EqualFold(strings.TrimSpace(povName), candidate)
+}
+
+func protectedSecretRequiresGuard(item map[string]any, policyKey string) bool {
+	if boolFromAny(item["public_narration_allowed"]) {
+		return false
+	}
+	scope := mapFromAny(item["knowledge_scope"])
+	if boolFromAny(scope["publicly_revealed"]) || boolFromAny(scope["reader_visible"]) || boolFromAny(scope["protagonist_visible"]) {
+		return false
+	}
+	policy := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, policyKey), stringFromMap(item, "target_reveal_policy")))
+	if policy == "" {
+		return true
+	}
+	switch normalizeTargetRevealPolicy(policy) {
+	case "owner_private_until_revealed", "explicit_user_reveal_required", "current_session_confirmation_required", "explicit_reveal_event_required", "user_directed_reveal_only", "requires_explicit_attachment":
+		return true
+	default:
+		return false
+	}
+}
+
+func prepareTurnMemoryRawEvidenceLines(item store.Memory) []string {
+	out := []string{}
+	evidence := parseJSONMap(item.Evidence)
+	for _, value := range memorySearchStringValues(evidence["evidence_excerpts"]) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = appendMemorySearchAlias(out, value)
+		}
+	}
+	return out
 }
 
 func prepareTurnMemoryLaneKey(item store.Memory) string {
@@ -4369,12 +5283,19 @@ func boolToInt(v bool) int {
 	return 0
 }
 
-func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []store.KGTriple, evidence []store.DirectEvidence, chatLogs []store.ChatLog, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, resumePack *store.ResumePack, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories []store.ProtagonistEntityMemory, topK, maxChars int, rawUserInput, profile string, documents []map[string]any, vectorShadow map[string]any) prepareTurnInjectionAssembly {
+func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []store.KGTriple, evidence []store.DirectEvidence, chatLogs []store.ChatLog, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, resumePack *store.ResumePack, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories []store.ProtagonistEntityMemory, topK, maxChars int, rawUserInput, profile string, documents []map[string]any, vectorShadow map[string]any, languageContext map[string]any, perspectiveContextArg ...map[string]any) prepareTurnInjectionAssembly {
 	topK = prepareTurnRecallLimit(topK)
 	maxChars = prepareTurnTextBudget(maxChars)
 	recallLimit := prepareTurnSupportRecallLimit(topK)
+	languageContext = normalizeCompleteTurnLanguageContext(languageContext)
+	perspectiveContext := map[string]any(nil)
+	if len(perspectiveContextArg) > 0 {
+		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
+	}
 
 	out := prepareTurnInjectionAssembly{
+		LanguageContext:    languageContext,
+		PerspectiveContext: perspectiveContext,
 		Counts: map[string]any{
 			"memory_count":                         len(memories),
 			"kg_count":                             len(kgTriples),
@@ -4396,8 +5317,13 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 		},
 	}
 
-	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, rawUserInput, topK, vectorShadow)
-	memoryLines := prepareTurnMemoryLaneLines(memorySelection)
+	memoryQuery := prepareTurnMemorySelectionQuery(rawUserInput, chatLogs, perspectiveContext, topK)
+	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow)
+	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, perspectiveContext)
+	for k, v := range prepareTurnMemoryLaneProtectedCounts(memorySelection, perspectiveContext) {
+		out.Counts[k] = v
+	}
+	out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 
 	kgLines := make([]string, 0, minInt(len(kgTriples), recallLimit))
@@ -4604,6 +5530,12 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	out.Counts["deep_memory_bound"] = len(memorySelection.Deep)
 	out.Counts["memory_recall_lane_policy"] = memorySelection.Trace
 	mergePrepareTurnMemoryLaneCounters(out.Counts, memorySelection, strings.TrimSpace(out.MemoryText) != "")
+	out.Counts["language_aware_injection"] = out.LanguageInjectionTrace
+	if memoryTrace := mapFromAny(out.LanguageInjectionTrace["memory_language_trace"]); len(memoryTrace) > 0 {
+		out.Counts["memory_summary_language_match"] = intFromAny(memoryTrace["memory_summary_language_match"], 0)
+		out.Counts["memory_summary_language_mismatch"] = intFromAny(memoryTrace["memory_summary_language_mismatch"], 0)
+		out.Counts["raw_evidence_attached_count"] = intFromAny(memoryTrace["raw_evidence_attached_count"], 0)
+	}
 	out.Counts["kg_bound"] = len(kgLines)
 	out.Counts["fallback_bound"] = len(fallbackLines)
 	out.Counts["fallback_count"] = len(fallbackLines)
@@ -4868,6 +5800,18 @@ func prepareTurnMemorySummary(m store.Memory) string {
 		summary = strings.TrimSpace(summary + " (" + strings.Join(placeParts, ", ") + ")")
 	}
 	return compactPrepareTurnLine(summary, 220)
+}
+
+func prepareTurnMemoryRelevanceText(m store.Memory) string {
+	searchText := strings.TrimSpace(memorySearchTextFromMemory(m).Text)
+	summary := strings.TrimSpace(prepareTurnMemorySummary(m))
+	if searchText == "" {
+		return summary
+	}
+	if summary == "" || strings.Contains(searchText, summary) {
+		return searchText
+	}
+	return strings.TrimSpace(summary + "\n" + searchText)
 }
 
 func compactPrepareTurnLine(text string, limit int) string {
@@ -5224,11 +6168,8 @@ func personaRecollectionPromptLineText(entry store.PersonaMemoryEntry, perEntryC
 		return ""
 	}
 	if personaRecollectionSecretGuardActive([]store.PersonaMemoryEntry{entry}) {
-		text = personaRecollectionSecretSafeText(text)
-		if text == "" {
-			text = "protected private recollection is present"
-		}
 		prefix := "Protected hint: "
+		text = protectedRecollectionGuardText(entry.TagsJSON, entry.Portability, entry.InjectionPolicy)
 		contentBudget := perEntryChars - len([]rune(prefix))
 		if contentBudget <= 0 {
 			contentBudget = perEntryChars
@@ -5244,11 +6185,8 @@ func characterPrivateRecollectionPromptLineText(entry store.ProtagonistEntityMem
 		return ""
 	}
 	if characterPrivateRecollectionSecretGuardActive([]store.ProtagonistEntityMemory{entry}) {
-		text = personaRecollectionSecretSafeText(text)
-		if text == "" {
-			text = "protected NPC-private recollection is present"
-		}
 		prefix := "Protected NPC-private hint: "
+		text = protectedRecollectionGuardText(entry.TagsJSON, entry.Portability, entry.TargetRevealPolicy)
 		contentBudget := perEntryChars - len([]rune(prefix))
 		if contentBudget <= 0 {
 			contentBudget = perEntryChars
@@ -5261,6 +6199,40 @@ func characterPrivateRecollectionPromptLineText(entry store.ProtagonistEntityMem
 		contentBudget = perEntryChars
 	}
 	return prefix + compactPrepareTurnLine(text, contentBudget)
+}
+
+func protectedRecollectionGuardText(tagsJSON string, policyHints ...string) string {
+	tags := []string{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(tagsJSON)), &tags); err != nil {
+		tags = nil
+	}
+	kinds := []string{}
+	policies := []string{}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if strings.HasPrefix(tag, "protected_secret_kind:") {
+			kinds = appendUniqueMemorySearchText(kinds, strings.TrimSpace(strings.TrimPrefix(tag, "protected_secret_kind:")))
+		}
+		if strings.HasPrefix(tag, "identity_kind:") {
+			kinds = appendUniqueMemorySearchText(kinds, strings.TrimSpace(strings.TrimPrefix(tag, "identity_kind:")))
+		}
+		if strings.HasPrefix(tag, "target_reveal_policy:") {
+			policies = appendUniqueMemorySearchText(policies, strings.TrimSpace(strings.TrimPrefix(tag, "target_reveal_policy:")))
+		}
+	}
+	for _, hint := range policyHints {
+		if policy := normalizeTargetRevealPolicy(hint); policy != "" && policy != "requires_explicit_attachment" {
+			policies = appendUniqueMemorySearchText(policies, policy)
+		}
+	}
+	parts := []string{"protected private knowledge is present; use only as owner subtext, hesitation, avoidance, or careful choice; do not reveal content without current evidence"}
+	if len(kinds) > 0 {
+		parts = append(parts, "kind="+strings.Join(kinds, ","))
+	}
+	if len(policies) > 0 {
+		parts = append(parts, "policy="+strings.Join(policies, ","))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func personaRecollectionSecretSafeText(text string) string {

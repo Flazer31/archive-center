@@ -1605,7 +1605,7 @@ func normalizeSubjectiveEntityVisibilityFilter(raw string) string {
 
 func normalizeTargetRevealPolicy(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "owner_private_until_revealed", "explicit_user_reveal_required", "current_session_confirmation_required":
+	case "owner_private_until_revealed", "explicit_user_reveal_required", "current_session_confirmation_required", "explicit_reveal_event_required", "user_directed_reveal_only":
 		return strings.ToLower(strings.TrimSpace(raw))
 	case "requires_explicit_attachment":
 		return "requires_explicit_attachment"

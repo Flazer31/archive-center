@@ -1867,6 +1867,49 @@ func TestSupervisorStorylineSelectionExposesQualityTrace(t *testing.T) {
 	}
 }
 
+func TestFormatStorylinesForSupervisorSkipsSelfEchoDetails(t *testing.T) {
+	selection := storylineSupervisorSelection{
+		Selected: []storylineSelectionEntry{
+			{
+				Item: store.Storyline{
+					Name:                "루나의 고향 마을 방문 약속",
+					Status:              "active",
+					CurrentContext:      "루나의 고향 마을을 답사 경로에 포함시키기로 함",
+					KeyPointsJSON:       `["루나의 고향 마을 방문 약속","서부 답사 전 루나에게 동선 확인"]`,
+					OngoingTensionsJSON: `["루나의 고향 마을 방문 약속","방문 시점 조율 필요"]`,
+					Confidence:          0.82,
+					EvidenceCount:       3,
+				},
+				Confidence: 0.82,
+			},
+			{
+				Item: store.Storyline{
+					Name:                "점심 약속 (시우-루나)",
+					Status:              "active",
+					KeyPointsJSON:       `["점심 약속 (시우-루나)","약속 장소를 정해야 함"]`,
+					OngoingTensionsJSON: `["약속 장소를 정해야 함"]`,
+					Confidence:          0.7,
+					EvidenceCount:       1,
+				},
+				Confidence: 0.7,
+			},
+		},
+	}
+
+	text := formatStorylinesForSupervisor(selection)
+	if strings.Contains(text, "key_points: 루나의 고향 마을 방문 약속") || strings.Contains(text, "tensions: 루나의 고향 마을 방문 약속") {
+		t.Fatalf("storylines_context repeated title-equivalent detail: %q", text)
+	}
+	if strings.Count(text, "점심 약속 (시우-루나)") != 1 {
+		t.Fatalf("fallback name should appear only as the main storyline line: %q", text)
+	}
+	for _, want := range []string{"서부 답사 전 루나에게 동선 확인", "방문 시점 조율 필요", "약속 장소를 정해야 함"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("storylines_context dropped non-duplicate detail %q: %q", want, text)
+		}
+	}
+}
+
 func TestSupervisorStorylineManualBatchSyncShapeDropsStaleHigh(t *testing.T) {
 	fake := &narrativeFakeStore{
 		storylines: []store.Storyline{

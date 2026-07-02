@@ -4016,8 +4016,11 @@ func TestPrepareTurnPersonaRecollectionSupportLane(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	injectionText, _ := resp["injection_text"].(string)
-	if !strings.Contains(injectionText, "[Persona Recollection]") || !strings.Contains(injectionText, "brass key") {
+	if !strings.Contains(injectionText, "[Persona Recollection]") {
 		t.Fatalf("injection_text missing persona recollection: %q", injectionText)
+	}
+	if strings.Contains(injectionText, "brass key") {
+		t.Fatalf("injection_text leaked protected persona recollection content: %q", injectionText)
 	}
 	if !strings.Contains(injectionText, "Secret Guard") || !strings.Contains(injectionText, "protagonist-only private intuition") || !strings.Contains(injectionText, "Never reveal its origin") {
 		t.Fatalf("injection_text missing persona secret guard: %q", injectionText)
@@ -4432,7 +4435,7 @@ func TestPrepareTurnEpisodeDenseAnchorsSurviveSummaryText(t *testing.T) {
 			CreatedAt:               time.Unix(20, 0),
 		},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "", "wide_context_700k", nil, nil)
+	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "", "wide_context_700k", nil, nil, nil)
 	if !strings.Contains(assembly.EpisodeText, "key_event=Alice opens the sealed gate") {
 		t.Fatalf("episode_text missing key event anchor: %s", assembly.EpisodeText)
 	}
@@ -4655,6 +4658,7 @@ func TestPrepareTurnCharacterBlockIncludesSpeechStyle(t *testing.T) {
 		"default",
 		nil,
 		nil,
+		nil,
 	)
 	if !strings.Contains(assembly.CharacterText, "speech_style") || !strings.Contains(assembly.CharacterText, "dry") || !strings.Contains(assembly.CharacterText, "short replies") {
 		t.Fatalf("character block should include speech style guidance, got %q", assembly.CharacterText)
@@ -4669,7 +4673,8 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 		{
 			ID:          1,
 			TurnIndex:   1,
-			SummaryJSON: `{"turn_summary":"Mina hid the brass key under the old shrine."}`,
+			SummaryJSON: `{"turn_summary":"Mina hid the brass key under the old shrine.","language_context":{"contract_version":"language_memory.v1","session_output_language":"en","raw_user_language":"ko","summary_language":"en","search_text_policy":"summary_plus_raw_plus_aliases"},"entities":[{"name":"Mina","aliases":["미나"]}],"archive_hint":{"wing":"North Wing"}}`,
+			Evidence:    `{"evidence_excerpts":["RAW-KO: Mina hid the brass key."]}`,
 			Importance:  5,
 		},
 		{
@@ -4683,9 +4688,14 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 		"search_result": "ok",
 		"search_results": []map[string]any{
 			{
-				"id":            "memory:sess-vector:1",
-				"source_table":  "memories",
-				"source_row_id": "1",
+				"id":                      "memory:sess-vector:1",
+				"source_table":            "memories",
+				"source_row_id":           "1",
+				"search_text_policy":      "summary_plus_raw_plus_aliases",
+				"raw_language":            "ko",
+				"summary_language":        "en",
+				"session_output_language": "en",
+				"alias_count":             3,
 			},
 		},
 	}
@@ -4703,21 +4713,28 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 	if len(selection.Recent)+len(selection.Relevant)+len(selection.Deep) != 0 {
 		t.Fatalf("vector-selected memory should consume topK slot without duplicate fallback lanes: %#v", selection)
 	}
-	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Where is the key?", "default", nil, vectorShadow)
+	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Where is the key?", "default", nil, vectorShadow, nil)
 	if !strings.Contains(assembly.MemoryText, "[vector_relevant, turn 1") || !strings.Contains(assembly.MemoryText, "Mina hid the brass key") {
 		t.Fatalf("memory_text should expose vector_relevant lane and hydrated memory: %q", assembly.MemoryText)
 	}
 	for key, want := range map[string]int{
-		"vector_memory_hit_count":      1,
-		"vector_memory_hydrated_count": 1,
-		"vector_memory_selected_count": 1,
-		"vector_memory_injected_count": 1,
-		"vector_relevant_memory_count": 1,
-		"selected_memory_total_count":  1,
+		"vector_memory_hit_count":                       1,
+		"vector_memory_hydrated_count":                  1,
+		"vector_memory_selected_count":                  1,
+		"vector_memory_injected_count":                  1,
+		"vector_memory_hit_language_context_count":      1,
+		"vector_memory_hit_alias_indexed_count":         1,
+		"vector_memory_hydrated_language_context_count": 1,
+		"vector_memory_hydrated_alias_ready_count":      1,
+		"vector_relevant_memory_count":                  1,
+		"selected_memory_total_count":                   1,
 	} {
 		if got := intFromAny(assembly.Counts[key], 0); got != want {
 			t.Fatalf("assembly.Counts[%s] = %d, want %d; counts=%#v", key, got, want, assembly.Counts)
 		}
+	}
+	if got := stringFromMap(assembly.Counts, "vector_memory_search_text_policy"); got != "summary_plus_raw_plus_aliases" {
+		t.Fatalf("vector_memory_search_text_policy = %q, counts=%#v", got, assembly.Counts)
 	}
 }
 
@@ -4823,6 +4840,123 @@ func TestStep29RegressionPrepareTurnVectorIsInjectedNotShadowOnly(t *testing.T) 
 	vectorShadow := recall["vector_shadow"].(map[string]any)
 	if vectorShadow["search_result"] != "ok" {
 		t.Fatalf("vector_shadow.search_result = %v, want ok", vectorShadow["search_result"])
+	}
+}
+
+func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnMemories: []store.Memory{
+			{
+				ID:            1,
+				ChatSessionID: "sess-247a-render",
+				TurnIndex:     7,
+				SummaryJSON: `{
+					"turn_summary":"Gloria privately inherited the sealed crest.",
+					"protected_secrets":[{
+						"secret_kind":"power_inheritance",
+						"secret_summary":"Gloria privately inherited the sealed crest.",
+						"disclosure_policy":"owner_private_until_revealed",
+						"knowledge_scope":{"known_by":["Gloria"],"unknown_to":["Siwoo"]}
+					}],
+					"character_identity_accuracy":[{
+						"surface_identity_name":"Lia",
+						"true_identity_name":"Gloria",
+						"canonical_entity_name":"Gloria",
+						"identity_kind":"cover_identity",
+						"same_entity":true,
+						"reveal_policy":"owner_private_until_revealed",
+						"knowledge_scope":{"known_by":["Gloria"],"unknown_to":["Siwoo"]}
+					}]
+				}`,
+				Importance: 0.95,
+			},
+			{ID: 2, ChatSessionID: "sess-247a-render", TurnIndex: 8, SummaryJSON: `{"turn_summary":"Recent unrelated market note."}`, Importance: 0.9},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	cfg.Readiness.ChromaConfigured = true
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.Vector = &fakeVectorStore{
+		healthSnapshot: vector.HealthSnapshot{Status: "ok", TotalCount: 2, ModelReady: true},
+		searchResults: []vector.VectorDocument{
+			{ID: "memory:sess-247a-render:1", Tier: "memory", ChatSessionID: "sess-247a-render", SourceTable: "memories", SourceRowID: "1", DocumentText: "sealed crest protected identity"},
+		},
+	}
+	srv.VectorOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{
+		"chat_session_id":"sess-247a-render",
+		"turn_index":9,
+		"raw_user_input":"Continue the private scene carefully.",
+		"client_meta":{"chroma_query_vector":[0.4,0.2]},
+		"settings":{"apply_mode":"shadow","max_injection_chars":3000,"injection_enabled":true,"input_context_enabled":false,"top_k":1}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	model := mapFromAny(resp["input_transparency_model"])
+	if model["contract_version"] != "input_transparency_render.v1" || model["read_only"] != true || model["llm_call_attempted"] != false {
+		t.Fatalf("input_transparency_model contract mismatch: %#v", model)
+	}
+	if model["secret_display_policy"] != "counts_only_no_secret_text" {
+		t.Fatalf("secret_display_policy = %v", model["secret_display_policy"])
+	}
+	counts := mapFromAny(model["counts"])
+	for key, want := range map[string]int{
+		"vector_found":                   1,
+		"vector_hydrated":                1,
+		"vector_injected":                1,
+		"memory_injected":                1,
+		"protected_secret_count":         1,
+		"identity_accuracy_count":        1,
+		"protected_memory_guarded_count": 1,
+	} {
+		if got := intFromAny(counts[key], 0); got != want {
+			t.Fatalf("input_transparency_model.counts[%s] = %d, want %d; counts=%#v", key, got, want, counts)
+		}
+	}
+	related := map[string]any(nil)
+	for _, raw := range sliceFromAny(model["blocks"]) {
+		block := mapFromAny(raw)
+		if block["key"] == "related_memories" {
+			related = block
+			break
+		}
+	}
+	if related == nil || related["status"] != "included" {
+		t.Fatalf("related_memories block missing or not included: %#v", model["blocks"])
+	}
+	relatedText := extractionStringFromAny(related["text"])
+	if !strings.Contains(relatedText, "Protected identity continuity") || !strings.Contains(relatedText, "kind=cover_identity") {
+		t.Fatalf("related memory block should contain protected guard text, got %q", relatedText)
+	}
+	modelJSON := mustCompactJSON(model)
+	for _, leaked := range []string{"Gloria privately inherited the sealed crest", "secret_summary", "true_identity_name", "surface_identity_name"} {
+		if strings.Contains(modelJSON, leaked) {
+			t.Fatalf("input_transparency_model leaked protected detail %q: %s", leaked, modelJSON)
+		}
+	}
+	preview := mapFromAny(resp["effective_input_preview"])
+	if preview["contract_version"] != "effective_input_preview.v1" || preview["payload_apply_mode"] != "shadow" || preview["raw_user_rewritten"] != false {
+		t.Fatalf("effective_input_preview contract mismatch: %#v", preview)
+	}
+	if intFromAny(preview["auxiliary_context_chars"], 0) <= 0 {
+		t.Fatalf("effective_input_preview auxiliary_context_chars not populated: %#v", preview)
 	}
 }
 
@@ -11244,6 +11378,36 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		}
 	})
 
+	t.Run("critic_prompt_includes_language_memory_contract", func(t *testing.T) {
+		languageContext := map[string]any{
+			"contract_version":        "language_memory.v1",
+			"session_output_language": "en",
+			"output_language_source":  "explicit_override",
+			"raw_user_language":       "ko",
+			"summary_language":        "en",
+			"search_text_policy":      "summary_plus_raw_plus_aliases",
+			"locked_for_turn":         true,
+			"raw_evidence_rewritten":  true,
+		}
+		prompt := buildCompleteTurnCriticPromptWithLanguageContext(
+			"sess-p83-lang", 4,
+			"RAW-KO: Mina found the brass key.",
+			"Mina found the brass key.",
+			nil, nil, nil, languageContext,
+		)
+		for _, needle := range []string{
+			"Language_Context_JSON",
+			"Generated summaries and display/support fields should use summary_language/session_output_language",
+			"Raw evidence excerpts must stay exact source text",
+			"\"session_output_language\":\"en\"",
+			"\"raw_evidence_rewritten\":false",
+		} {
+			if !strings.Contains(prompt, needle) {
+				t.Fatalf("critic prompt missing language contract marker %q: %s", needle, prompt)
+			}
+		}
+	})
+
 	t.Run("non_empty_turn_summary_saves_canonical_memory", func(t *testing.T) {
 		fake := &turnRecordingStore{}
 		srv := NewServer(config.Default())
@@ -11277,6 +11441,291 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		}
 		if result.VectorStatus != "missing_embedding" {
 			t.Fatalf("VectorStatus = %q, want missing_embedding when no embed config", result.VectorStatus)
+		}
+	})
+
+	t.Run("memory_write_contract_persists_language_context_without_rewriting_raw_evidence", func(t *testing.T) {
+		fake := &turnRecordingStore{}
+		srv := NewServer(config.Default())
+		srv.Store = fake
+		extraction := map[string]any{
+			"turn_summary":      "Mina found the brass key.",
+			"importance_score":  7,
+			"evidence_excerpts": []any{"RAW-KO: Mina found the brass key."},
+			"language_context": map[string]any{
+				"contract_version":        "language_memory.v1",
+				"session_output_language": "en",
+				"output_language_source":  "explicit_override",
+				"raw_user_language":       "ko",
+				"summary_language":        "en",
+				"search_text_policy":      "summary_plus_raw_plus_aliases",
+				"locked_for_turn":         true,
+			},
+		}
+		content := "RAW-KO: Mina found the brass key.\nMina found the brass key."
+		result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-p83-lang", 6, extraction, content, completeTurnEmbeddingConfig{}, time.Unix(600, 0))
+		if result.Memories != 1 || result.Evidence != 1 {
+			t.Fatalf("expected memory and evidence saves, got result=%#v", result)
+		}
+		var summary map[string]any
+		if err := json.Unmarshal([]byte(fake.savedMemories[0].SummaryJSON), &summary); err != nil {
+			t.Fatalf("decode SummaryJSON: %v", err)
+		}
+		lang, _ := summary["language_context"].(map[string]any)
+		if lang["session_output_language"] != "en" || lang["raw_user_language"] != "ko" {
+			t.Fatalf("memory language_context = %#v", lang)
+		}
+		contract, _ := summary["memory_write_contract"].(map[string]any)
+		if contract["raw_evidence_rewritten"] != false || contract["summary_language"] != "en" {
+			t.Fatalf("memory write contract = %#v", contract)
+		}
+		ev := fake.savedEvidence[0]
+		if ev.EvidenceText != "RAW-KO: Mina found the brass key." {
+			t.Fatalf("raw evidence was rewritten: %q", ev.EvidenceText)
+		}
+		var lineage map[string]any
+		if err := json.Unmarshal([]byte(ev.LineageJSON), &lineage); err != nil {
+			t.Fatalf("decode LineageJSON: %v", err)
+		}
+		if lineage["lane"] != "raw_evidence" || lineage["raw_evidence_rewritten"] != false {
+			t.Fatalf("evidence lineage missing raw evidence contract: %#v", lineage)
+		}
+	})
+
+	t.Run("chromadb_memory_document_uses_cross_language_search_text", func(t *testing.T) {
+		vec := &turnRecordingVectorStore{}
+		cfg := config.Default()
+		cfg.ChromaEndpoint = "http://chroma.test"
+		srv := NewServer(cfg)
+		srv.Vector = vec
+		extraction := map[string]any{
+			"turn_summary":      "Mina found the brass key.",
+			"importance_score":  7,
+			"evidence_excerpts": []any{"RAW-KO: Mina found the brass key."},
+			"archive_hint": map[string]any{
+				"wing": "North Wing",
+				"room": "Scene Room",
+			},
+			"entities": []any{
+				map[string]any{
+					"name":    "Mina",
+					"aliases": []any{"미나"},
+				},
+				map[string]any{"name": "Rowan"},
+			},
+			"kg_triples": []any{
+				map[string]any{"subject": "Mina", "predicate": "found", "object": "brass key"},
+			},
+			"language_context": map[string]any{
+				"contract_version":        "language_memory.v1",
+				"session_output_language": "en",
+				"output_language_source":  "explicit_override",
+				"raw_user_language":       "ko",
+				"summary_language":        "en",
+				"search_text_policy":      "summary_plus_raw_plus_aliases",
+				"locked_for_turn":         true,
+			},
+		}
+		extraction = applyLanguageMemoryWriteContract(extraction, completeTurnLanguageContextFromExtraction(extraction))
+		mem := &store.Memory{
+			ID:            42,
+			ChatSessionID: "sess-p83-lang-vector",
+			TurnIndex:     6,
+			SummaryJSON:   mustCompactJSON(extraction),
+			Evidence:      mustCompactJSON(map[string]any{"evidence_excerpts": []string{"RAW-KO: Mina found the brass key."}}),
+			PlaceWing:     "North Wing",
+			PlaceRoom:     "Scene Room",
+		}
+		searchText := memorySearchTextFromMemory(*mem)
+		result := artifactSaveResult{VectorStatus: "not_requested"}
+		srv.upsertMemoryVector(context.Background(), "sess-p83-lang-vector", 6, mem, searchText.Text, []float32{0.1, 0.2}, &result)
+		if result.VectorStatus != "ok" || result.VectorsUpserted != 1 {
+			t.Fatalf("vector upsert result = %#v", result)
+		}
+		if len(vec.docs) != 1 {
+			t.Fatalf("expected 1 vector doc, got %d", len(vec.docs))
+		}
+		doc := vec.docs[0]
+		for _, needle := range []string{
+			"[Canonical Summary]\nMina found the brass key.",
+			"[Raw Evidence]\nRAW-KO: Mina found the brass key.",
+			"[Aliases]",
+			"미나",
+			"North Wing",
+			"brass key",
+		} {
+			if !strings.Contains(doc.DocumentText, needle) {
+				t.Fatalf("vector document missing %q: %s", needle, doc.DocumentText)
+			}
+		}
+		if doc.SearchTextPolicy != "summary_plus_raw_plus_aliases" || doc.RawLanguage != "ko" || doc.SummaryLanguage != "en" || doc.SessionOutputLanguage != "en" {
+			t.Fatalf("vector language metadata = %#v", doc)
+		}
+		if doc.AliasCount == 0 {
+			t.Fatalf("expected aliases to be indexed, doc=%#v", doc)
+		}
+		if doc.SchemaVersion != "memory.v2" {
+			t.Fatalf("schema version = %q, want memory.v2", doc.SchemaVersion)
+		}
+	})
+
+	t.Run("prepare_turn_language_aware_injection_uses_output_summary_and_preserves_raw_evidence", func(t *testing.T) {
+		languageContext := map[string]any{
+			"contract_version":        "language_memory.v1",
+			"session_output_language": "en",
+			"output_language_source":  "explicit_override",
+			"raw_user_language":       "ko",
+			"summary_language":        "en",
+			"search_text_policy":      "summary_plus_raw_plus_aliases",
+			"locked_for_turn":         true,
+		}
+		memories := []store.Memory{{
+			ID:          77,
+			TurnIndex:   4,
+			SummaryJSON: `{"turn_summary":"Mina hid the brass key under the old shrine.","language_context":{"contract_version":"language_memory.v1","session_output_language":"en","raw_user_language":"ko","summary_language":"en","search_text_policy":"summary_plus_raw_plus_aliases"}}`,
+			Evidence:    `{"evidence_excerpts":["미나는 오래된 사당 아래에 황동 열쇠를 숨겼다."]}`,
+			Importance:  0.9,
+		}}
+		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Where is the brass key?", "default", nil, nil, languageContext)
+		if !strings.Contains(assembly.MemoryText, "Mina hid the brass key under the old shrine.") {
+			t.Fatalf("memory text missing output-language summary: %q", assembly.MemoryText)
+		}
+		if !strings.Contains(assembly.MemoryText, "raw_evidence: 미나는 오래된 사당 아래에 황동 열쇠를 숨겼다.") {
+			t.Fatalf("memory text missing raw evidence: %q", assembly.MemoryText)
+		}
+		if !strings.Contains(assembly.MemoryText, "summary_language=en") || !strings.Contains(assembly.MemoryText, "raw_language=ko") {
+			t.Fatalf("memory text missing language markers: %q", assembly.MemoryText)
+		}
+		if assembly.LanguageInjectionTrace["status"] != "ready" {
+			t.Fatalf("language injection status = %#v", assembly.LanguageInjectionTrace)
+		}
+		memTrace, _ := assembly.LanguageInjectionTrace["memory_language_trace"].(map[string]any)
+		if intFromAny(memTrace["memory_summary_language_match"], 0) != 1 || intFromAny(memTrace["raw_evidence_attached_count"], 0) != 1 {
+			t.Fatalf("memory language trace = %#v", memTrace)
+		}
+	})
+
+	t.Run("prepare_turn_planner_support_carries_session_output_language_contract", func(t *testing.T) {
+		languageContext := map[string]any{
+			"contract_version":        "language_memory.v1",
+			"session_output_language": "ja",
+			"output_language_source":  "plugin_setting",
+			"raw_user_language":       "ko",
+			"summary_language":        "ja",
+			"locked_for_turn":         true,
+		}
+		pack := buildSupervisorInputPack(
+			"sess-planner-lang",
+			8,
+			"다음 장면으로 이어가줘.",
+			"standard",
+			"weak",
+			"balanced",
+			"none",
+			"",
+			map[string]any{"prompt_source": "test"},
+			map[string]any{"memory_count": 1},
+			nil,
+			storylineSupervisorSelection{},
+			false,
+			"",
+			languageContext,
+		)
+		contract, _ := pack["planner_language_contract"].(map[string]any)
+		if contract["planner_support_language"] != "ja" || contract["current_user_input_priority"] != "highest" {
+			t.Fatalf("planner language contract = %#v", contract)
+		}
+		if contract["raw_user_input_rewritten"] != false || contract["raw_evidence_rewritten"] != false {
+			t.Fatalf("planner contract rewrote raw lanes: %#v", contract)
+		}
+	})
+
+	t.Run("protected_secret_contract_derives_owner_scoped_subjective_memory", func(t *testing.T) {
+		extraction := normalizeCriticExtraction(map[string]any{
+			"turn_summary":     "A private feeling is established.",
+			"importance_score": 6,
+			"protected_secrets": []any{
+				map[string]any{
+					"secret_kind":       "romantic_feeling",
+					"owner":             "Mina",
+					"subject":           []any{"Rowan"},
+					"summary":           "Mina privately likes Rowan but has not revealed it.",
+					"sensitivity":       "medium",
+					"disclosure_policy": "owner_private_until_revealed",
+					"knowledge_scope": map[string]any{
+						"known_by":   []any{"Mina"},
+						"unknown_to": []any{"Rowan"},
+					},
+				},
+			},
+		})
+		secrets := sliceFromAny(extraction["protected_secrets"])
+		if len(secrets) != 1 {
+			t.Fatalf("protected secrets not normalized: %#v", extraction["protected_secrets"])
+		}
+		memories := sliceFromAny(extraction["subjective_entity_memories"])
+		if len(memories) != 1 {
+			t.Fatalf("protected secret should derive one subjective memory, got %#v", memories)
+		}
+		mem := mapFromAny(memories[0])
+		if mem["secret_guard"] != true || mem["owner_visibility"] != "owner_private" || mem["target_reveal_policy"] != "owner_private_until_revealed" {
+			t.Fatalf("derived protected subjective memory is not guarded: %#v", mem)
+		}
+		tags := stringsFromAny(mem["tags"])
+		for _, want := range []string{"protected_secret", "secret_guard", "protected_secret_kind:romantic_feeling"} {
+			if !containsStringFold(tags, want) {
+				t.Fatalf("derived tags missing %q: %#v", want, tags)
+			}
+		}
+	})
+
+	t.Run("protected_secret_memory_injection_masks_secret_content", func(t *testing.T) {
+		memories := []store.Memory{{
+			ID:        88,
+			TurnIndex: 5,
+			SummaryJSON: mustCompactJSON(map[string]any{
+				"turn_summary": "Mina privately likes Rowan but has not revealed it.",
+				"protected_secrets": []any{
+					map[string]any{
+						"secret_kind":       "romantic_feeling",
+						"owner":             "Mina",
+						"summary":           "Mina privately likes Rowan but has not revealed it.",
+						"disclosure_policy": "owner_private_until_revealed",
+						"knowledge_scope": map[string]any{
+							"known_by":   []string{"Mina"},
+							"unknown_to": []string{"Rowan"},
+						},
+					},
+				},
+			}),
+			Importance: 0.9,
+		}}
+		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Mina looks away.", "default", nil, nil, nil)
+		if !strings.Contains(assembly.MemoryText, "Protected continuity guard") {
+			t.Fatalf("protected memory did not produce guard text: %q", assembly.MemoryText)
+		}
+		if strings.Contains(assembly.MemoryText, "privately likes Rowan") {
+			t.Fatalf("protected memory leaked secret content: %q", assembly.MemoryText)
+		}
+		if !strings.Contains(assembly.MemoryText, "kind=romantic_feeling") {
+			t.Fatalf("protected memory guard missing kind: %q", assembly.MemoryText)
+		}
+	})
+
+	t.Run("character_private_recollection_masks_secret_guard_content", func(t *testing.T) {
+		text := characterPrivateRecollectionPromptLineText(store.ProtagonistEntityMemory{
+			OwnerEntityKey:     "mina",
+			OwnerEntityName:    "Mina",
+			MemoryText:         "Mina privately likes Rowan but has not revealed it.",
+			SecretGuard:        true,
+			TargetRevealPolicy: "owner_private_until_revealed",
+			TagsJSON:           `["protected_secret","secret_guard","protected_secret_kind:romantic_feeling"]`,
+		}, 500)
+		if !strings.Contains(text, "protected private knowledge is present") || !strings.Contains(text, "kind=romantic_feeling") {
+			t.Fatalf("private recollection guard text missing: %q", text)
+		}
+		if strings.Contains(text, "privately likes Rowan") {
+			t.Fatalf("private recollection leaked secret text: %q", text)
 		}
 	})
 
@@ -11327,6 +11776,455 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		}
 		if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
 			t.Fatalf("OOC control turn should skip all writes, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+		}
+	})
+}
+
+func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
+	t.Run("language_replay_cases_preserve_raw_evidence_and_output_summary_contract", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			rawLang string
+			outLang string
+		}{
+			{name: "ko_to_ko", rawLang: "ko", outLang: "ko"},
+			{name: "ko_to_en", rawLang: "ko", outLang: "en"},
+			{name: "ko_to_ja", rawLang: "ko", outLang: "ja"},
+			{name: "en_to_ja", rawLang: "en", outLang: "ja"},
+			{name: "mid_session_ja_to_en", rawLang: "ja", outLang: "en"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				languageContext := normalizeCompleteTurnLanguageContext(map[string]any{
+					"contract_version":        "language_memory.v1",
+					"session_output_language": tc.outLang,
+					"output_language_source":  "replay_fixture",
+					"raw_user_language":       tc.rawLang,
+					"summary_language":        tc.outLang,
+					"search_text_policy":      "summary_plus_raw_plus_aliases",
+					"locked_for_turn":         true,
+				})
+				planner := buildPrepareTurnPlannerLanguageContract(languageContext)
+				if planner["planner_support_language"] != tc.outLang || planner["raw_evidence_rewritten"] != false {
+					t.Fatalf("planner language contract mismatch for %s: %#v", tc.name, planner)
+				}
+				rawEvidence := "RAW-" + tc.rawLang + ": sealed-oath evidence remains exact."
+				extraction := applyLanguageMemoryWriteContract(map[string]any{
+					"turn_summary":      "SUMMARY-" + tc.outLang + ": The sealed oath remains active.",
+					"importance_score":  7,
+					"evidence_excerpts": []any{rawEvidence},
+					"language_context":  languageContext,
+				}, languageContext)
+				searchText := completeTurnMemorySearchText("", extraction, rawEvidence+"\nSUMMARY-"+tc.outLang+": The sealed oath remains active.")
+				if !strings.Contains(searchText.Text, "SUMMARY-"+tc.outLang) || !strings.Contains(searchText.Text, rawEvidence) {
+					t.Fatalf("search text missing summary/raw evidence for %s: %s", tc.name, searchText.Text)
+				}
+				if got := extractionStringFromAny(searchText.LanguageContext["session_output_language"]); got != tc.outLang {
+					t.Fatalf("search text language context output=%q, want %q", got, tc.outLang)
+				}
+			})
+		}
+	})
+
+	t.Run("identity_accuracy_aliases_feed_vector_search_and_prompt_preserves_private_same_entity_continuity", func(t *testing.T) {
+		content := "Lia spoke about when she was Gloria."
+		languageContext := normalizeCompleteTurnLanguageContext(map[string]any{
+			"contract_version":        "language_memory.v1",
+			"session_output_language": "en",
+			"raw_user_language":       "en",
+			"summary_language":        "en",
+			"search_text_policy":      "summary_plus_raw_plus_aliases",
+			"locked_for_turn":         true,
+		})
+		extraction := normalizeCriticExtraction(map[string]any{
+			"turn_summary":      "Identity continuity evidence exists.",
+			"importance_score":  9,
+			"evidence_excerpts": []any{content},
+			"language_context":  languageContext,
+			"character_identity_accuracy": []any{
+				map[string]any{
+					"surface_identity_name": "Lia",
+					"true_identity_name":    "Gloria",
+					"canonical_entity_name": "Gloria",
+					"aliases":               []any{"리아", "글로리아"},
+					"identity_kind":         "cover_identity",
+					"same_entity":           true,
+					"public_role":           "maid",
+					"true_role":             "marchioness",
+					"reveal_policy":         "owner_private_until_revealed",
+					"knowledge_scope": map[string]any{
+						"known_by":     []any{"Gloria"},
+						"unknown_to":   []any{"Siwoo"},
+						"suspected_by": []any{"Lucia"},
+					},
+				},
+			},
+		})
+		extraction = applyLanguageMemoryWriteContract(extraction, languageContext)
+		searchText := completeTurnMemorySearchText("", extraction, content)
+		for _, needle := range []string{"Lia", "Gloria", "cover_identity", "maid", "marchioness", "Siwoo", "Lucia"} {
+			if !strings.Contains(searchText.Text, needle) {
+				t.Fatalf("identity replay search text missing alias/scope %q: %s", needle, searchText.Text)
+			}
+		}
+		memories := []store.Memory{
+			{
+				ID:          2405,
+				TurnIndex:   13,
+				SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": "An unrelated harvest meeting happened elsewhere."}),
+				Importance:  1.0,
+			},
+			{
+				ID:          2406,
+				TurnIndex:   12,
+				SummaryJSON: mustCompactJSON(extraction),
+				Evidence:    mustCompactJSON(map[string]any{"evidence_excerpts": []string{content}}),
+				Importance:  0.5,
+			},
+		}
+		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 3000, "Lia enters the room.", "default", nil, nil, languageContext)
+		if !strings.Contains(assembly.MemoryText, "Protected identity continuity") || !strings.Contains(assembly.MemoryText, "kind=cover_identity") {
+			t.Fatalf("identity replay did not inject protected guard: %q", assembly.MemoryText)
+		}
+		for _, needle := range []string{
+			"Lia and Gloria refer to the same internal person",
+			"not portray the surface identity and true identity as separate people",
+			"not public character knowledge",
+		} {
+			if !strings.Contains(assembly.MemoryText, needle) {
+				t.Fatalf("identity replay missing continuity guard %q: %q", needle, assembly.MemoryText)
+			}
+		}
+		if !strings.Contains(assembly.MemoryText, "knowledge_scope=known:1 suspected:1") {
+			t.Fatalf("identity replay missing scoped knowledge counts: %q", assembly.MemoryText)
+		}
+		for _, leaked := range []string{"marchioness", "spoke about when"} {
+			if strings.Contains(assembly.MemoryText, leaked) {
+				t.Fatalf("identity replay leaked protected identity content %q: %q", leaked, assembly.MemoryText)
+			}
+		}
+	})
+
+	t.Run("pov_scoped_identity_replay_treats_cover_identity_as_self_for_knower", func(t *testing.T) {
+		extraction := normalizeCriticExtraction(map[string]any{
+			"turn_summary":     "Gloria uses Lia as a protected cover identity.",
+			"importance_score": 9,
+			"character_identity_accuracy": []any{
+				map[string]any{
+					"surface_identity_name": "Lia",
+					"true_identity_name":    "Gloria",
+					"canonical_entity_name": "Gloria",
+					"identity_kind":         "cover_identity",
+					"same_entity":           true,
+					"public_role":           "maid",
+					"true_role":             "marchioness",
+					"reveal_policy":         "owner_private_until_revealed",
+					"knowledge_scope": map[string]any{
+						"known_by":     []any{"Gloria"},
+						"unknown_to":   []any{"Siwoo"},
+						"suspected_by": []any{"Lucia"},
+					},
+				},
+			},
+		})
+		fake := &turnRecordingStore{
+			returnMemories: []store.Memory{{
+				ID:            2408,
+				ChatSessionID: "sess-pov-identity",
+				TurnIndex:     18,
+				SummaryJSON:   mustCompactJSON(extraction),
+				Importance:    0.9,
+			}},
+		}
+		cfg := config.Default()
+		cfg.StoreMode = config.StoreModeDualShadow
+		srv := NewServer(cfg)
+		srv.Store = fake
+		mux := http.NewServeMux()
+		srv.RegisterRoutes(mux)
+
+		body := `{
+			"chat_session_id":"sess-pov-identity",
+			"turn_index":19,
+			"raw_user_input":"Gloria considers Lia's field report.",
+			"client_meta":{"perspective_context":{"current_pov":"Gloria","source":"hidden_spoiler_pov"}},
+			"settings":{"max_injection_chars":3000,"injection_enabled":true,"input_context_enabled":false,"top_k":1}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		injectionPack := mapFromAny(resp["injection_pack"])
+		memoryText := extractionStringFromAny(injectionPack["memory_text"])
+		for _, needle := range []string{
+			"POV-scoped identity continuity",
+			"Lia is Gloria's own protected surface identity/persona",
+			"treat Lia and Gloria as the same internal person",
+			"not two separate characters",
+			"Keep this as POV/private knowledge",
+		} {
+			if !strings.Contains(memoryText, needle) {
+				t.Fatalf("POV identity replay missing %q: %q", needle, memoryText)
+			}
+		}
+		perspective := mapFromAny(injectionPack["perspective_context"])
+		if perspective["current_pov"] != "Gloria" || perspective["source"] != "hidden_spoiler_pov" {
+			t.Fatalf("perspective context mismatch: %#v", perspective)
+		}
+	})
+
+	t.Run("pov_scoped_identity_replay_infers_hidden_spoiler_pov_from_raw_input", func(t *testing.T) {
+		extraction := normalizeCriticExtraction(map[string]any{
+			"turn_summary":     "Gloria uses Lia as a protected cover identity.",
+			"importance_score": 9,
+			"character_identity_accuracy": []any{
+				map[string]any{
+					"surface_identity_name": "Lia",
+					"true_identity_name":    "Gloria",
+					"canonical_entity_name": "Gloria",
+					"identity_kind":         "cover_identity",
+					"same_entity":           true,
+					"reveal_policy":         "owner_private_until_revealed",
+					"knowledge_scope": map[string]any{
+						"known_by":   []any{"Gloria"},
+						"unknown_to": []any{"Siwoo"},
+					},
+				},
+			},
+		})
+		fake := &turnRecordingStore{
+			returnMemories: []store.Memory{{
+				ID:            2410,
+				ChatSessionID: "sess-pov-infer",
+				TurnIndex:     20,
+				SummaryJSON:   mustCompactJSON(extraction),
+				Importance:    0.9,
+			}},
+		}
+		cfg := config.Default()
+		cfg.StoreMode = config.StoreModeDualShadow
+		srv := NewServer(cfg)
+		srv.Store = fake
+		mux := http.NewServeMux()
+		srv.RegisterRoutes(mux)
+
+		body := `{
+			"chat_session_id":"sess-pov-infer",
+			"turn_index":21,
+			"raw_user_input":"히든 스포일러: 글로리아 시점으로 파웰에게 리아의 현장 보고를 묻는다.",
+			"settings":{"max_injection_chars":3000,"injection_enabled":true,"input_context_enabled":false,"top_k":1}
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		injectionPack := mapFromAny(resp["injection_pack"])
+		memoryText := extractionStringFromAny(injectionPack["memory_text"])
+		for _, needle := range []string{
+			"POV-scoped identity continuity",
+			"current_pov=글로리아",
+			"treat Lia and Gloria as the same internal person",
+		} {
+			if !strings.Contains(memoryText, needle) {
+				t.Fatalf("inferred POV identity replay missing %q: %q", needle, memoryText)
+			}
+		}
+		perspective := mapFromAny(injectionPack["perspective_context"])
+		if perspective["current_pov"] != "글로리아" || !strings.Contains(extractionStringFromAny(perspective["source"]), "inferred_raw_user_input") {
+			t.Fatalf("inferred perspective context mismatch: %#v", perspective)
+		}
+	})
+
+	t.Run("confirmed_identity_alias_canonicalizes_saved_artifacts_without_rewriting_raw_evidence", func(t *testing.T) {
+		fake := &turnRecordingStore{}
+		srv := NewServer(config.Default())
+		srv.Store = fake
+
+		evidence := "Lia wrote the field report while hiding that she was Gloria."
+		content := evidence + " Powell noticed only the careful handwriting."
+		extraction := normalizeCriticExtraction(map[string]any{
+			"turn_summary":      "Lia coordinated the field report under her cover identity.",
+			"importance_score":  9,
+			"evidence_excerpts": []any{evidence},
+			"entities": map[string]any{
+				"characters": []any{
+					map[string]any{"name": "Lia", "entity_type": "character", "description": "maid cover"},
+				},
+			},
+			"kg_triples": []any{
+				map[string]any{"subject": "Lia", "predicate": "submitted_report_to", "object": "Powell"},
+			},
+			"character_deltas": []any{
+				map[string]any{"name": "Lia", "status": map[string]any{"cover_identity": "active"}},
+			},
+			"subjective_entity_memories": []any{
+				map[string]any{
+					"owner_entity_key":     "lia",
+					"owner_entity_name":    "Lia",
+					"owner_entity_role":    "npc",
+					"owner_visibility":     "owner_private",
+					"memory_text":          "Lia worries Powell will see through the maid cover.",
+					"evidence_excerpt":     evidence,
+					"secret_guard":         true,
+					"target_reveal_policy": "owner_private_until_revealed",
+				},
+			},
+			"character_identity_accuracy": []any{
+				map[string]any{
+					"surface_identity_name": "Lia",
+					"true_identity_name":    "Gloria",
+					"canonical_entity_name": "Gloria",
+					"identity_kind":         "cover_identity",
+					"same_entity":           true,
+					"public_role":           "maid",
+					"true_role":             "marchioness",
+					"reveal_policy":         "owner_private_until_revealed",
+					"knowledge_scope": map[string]any{
+						"known_by":   []any{"Gloria"},
+						"unknown_to": []any{"Siwoo", "Powell"},
+					},
+				},
+			},
+		})
+
+		result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-identity-merge", 24, extraction, content, completeTurnEmbeddingConfig{}, time.Unix(2400, 0))
+		if result.Entities != 1 || result.KGTriples != 1 || result.CharacterStates != 1 || result.SubjectiveEntityMemories == 0 {
+			t.Fatalf("expected identity merge to save canonical artifacts, result=%#v", result)
+		}
+		if len(fake.savedEvidence) != 1 || fake.savedEvidence[0].EvidenceText != evidence {
+			t.Fatalf("raw direct evidence was rewritten or skipped: %#v", fake.savedEvidence)
+		}
+		if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "Gloria" {
+			t.Fatalf("entity was not canonicalized to Gloria: %#v", fake.savedEntities)
+		}
+		if !strings.Contains(fake.savedEntities[0].AliasesJSON, "Lia") {
+			t.Fatalf("entity alias did not preserve surface identity: %s", fake.savedEntities[0].AliasesJSON)
+		}
+		if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "Gloria" || fake.savedKGTriples[0].Object != "Powell" {
+			t.Fatalf("KG triple was not canonicalized safely: %#v", fake.savedKGTriples)
+		}
+		if len(fake.savedCharacterStates) != 1 || fake.savedCharacterStates[0].CharacterName != "Gloria" {
+			t.Fatalf("character state was not canonicalized: %#v", fake.savedCharacterStates)
+		}
+		foundCanonicalOwner := false
+		foundRawOwnerTag := false
+		for _, memory := range fake.savedEntityMemories {
+			if memory.OwnerEntityName == "Gloria" && memory.OwnerEntityKey == "gloria" {
+				foundCanonicalOwner = true
+			}
+			if strings.Contains(memory.TagsJSON, "raw_owner_entity_name:Lia") && strings.Contains(memory.TagsJSON, "confirmed_identity_alias_canonicalized") {
+				foundRawOwnerTag = true
+			}
+		}
+		if !foundCanonicalOwner || !foundRawOwnerTag {
+			t.Fatalf("subjective owner canonicalization missing, memories=%#v", fake.savedEntityMemories)
+		}
+		if len(fake.savedMemories) != 1 || !strings.Contains(fake.savedMemories[0].SummaryJSON, "confirmed_identity_alias_canonical_merge") {
+			t.Fatalf("memory summary did not record canonical merge trace: %#v", fake.savedMemories)
+		}
+		if !strings.Contains(fake.savedMemories[0].SummaryJSON, `"surface_identity_name":"Lia"`) {
+			t.Fatalf("surface identity was not retained for protected alias search: %s", fake.savedMemories[0].SummaryJSON)
+		}
+	})
+
+	t.Run("protected_secret_replay_preserves_partial_reveal_scope_without_discovery", func(t *testing.T) {
+		extraction := normalizeCriticExtraction(map[string]any{
+			"turn_summary":     "A protected inheritance secret exists.",
+			"importance_score": 8,
+			"protected_secrets": []any{
+				map[string]any{
+					"secret_kind":       "power_inheritance",
+					"owner":             "Ari",
+					"subject":           []any{"sealed crest"},
+					"summary":           "Ari inherited the sealed crest but has not revealed it.",
+					"sensitivity":       "critical",
+					"disclosure_policy": "explicit_reveal_event_required",
+					"knowledge_scope": map[string]any{
+						"known_by":     []any{"Ari", "Mentor"},
+						"unknown_to":   []any{"Guard"},
+						"suspected_by": []any{"Oracle"},
+					},
+				},
+			},
+		})
+		searchText := completeTurnMemorySearchText("", extraction, "Ari inherited the sealed crest but has not revealed it.")
+		for _, needle := range []string{"Ari", "sealed crest", "power_inheritance", "Mentor", "Guard", "Oracle"} {
+			if !strings.Contains(searchText.Text, needle) {
+				t.Fatalf("protected secret replay search text missing %q: %s", needle, searchText.Text)
+			}
+		}
+		memories := []store.Memory{{
+			ID:          2407,
+			TurnIndex:   14,
+			SummaryJSON: mustCompactJSON(extraction),
+			Importance:  0.9,
+		}}
+		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 3000, "Ari faces the guard.", "default", nil, nil, nil)
+		if !strings.Contains(assembly.MemoryText, "Protected continuity guard") || !strings.Contains(assembly.MemoryText, "kind=power_inheritance") {
+			t.Fatalf("protected secret replay did not inject guard: %q", assembly.MemoryText)
+		}
+		if !strings.Contains(assembly.MemoryText, "knowledge_scope=known:2 suspected:1") {
+			t.Fatalf("protected secret replay missing partial reveal counts: %q", assembly.MemoryText)
+		}
+		for _, leaked := range []string{"sealed crest", "inherited", "Mentor", "Guard", "Oracle"} {
+			if strings.Contains(assembly.MemoryText, leaked) {
+				t.Fatalf("protected secret replay leaked scoped secret content %q: %q", leaked, assembly.MemoryText)
+			}
+		}
+	})
+
+	t.Run("vector_replay_respects_topk_and_does_not_fill_recent_when_hits_exist", func(t *testing.T) {
+		memories := []store.Memory{
+			{ID: 1, TurnIndex: 3, SummaryJSON: `{"turn_summary":"Old semantic gate oath.","language_context":{"session_output_language":"en","raw_user_language":"ko","summary_language":"en","search_text_policy":"summary_plus_raw_plus_aliases"},"entities":[{"name":"Mina","aliases":["Gatekeeper"]}]}`, Importance: 0.4},
+			{ID: 2, TurnIndex: 4, SummaryJSON: `{"turn_summary":"Old semantic shrine oath.","language_context":{"session_output_language":"en","raw_user_language":"ja","summary_language":"en","search_text_policy":"summary_plus_raw_plus_aliases"},"entities":[{"name":"Rowan","aliases":["Shrine witness"]}]}`, Importance: 0.6},
+			{ID: 3, TurnIndex: 30, SummaryJSON: `{"turn_summary":"Recent unrelated dinner detail."}`, Importance: 1},
+		}
+		vectorShadow := map[string]any{
+			"search_result": "ok",
+			"search_results": []map[string]any{
+				{"id": "episode:sess-24:77", "source_table": "episode_summaries", "source_row_id": "77"},
+				{"id": "memory:sess-24:2", "source_table": "memories", "source_row_id": "2", "raw_language": "ja", "summary_language": "en", "session_output_language": "en", "alias_count": 2},
+				{"id": "memory:sess-24:99", "source_table": "memories", "source_row_id": "99"},
+				{"id": "memory:sess-24:1", "source_table": "memories", "source_row_id": "1", "raw_language": "ko", "summary_language": "en", "session_output_language": "en", "alias_count": 2},
+			},
+		}
+		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 2, 3000, "Recall the old oath.", "default", nil, vectorShadow, nil)
+		for _, want := range []string{"[vector_relevant, turn 4", "[vector_relevant, turn 3", "Old semantic shrine oath", "Old semantic gate oath"} {
+			if !strings.Contains(assembly.MemoryText, want) {
+				t.Fatalf("vector replay missing %q: %q", want, assembly.MemoryText)
+			}
+		}
+		if strings.Contains(assembly.MemoryText, "Recent unrelated dinner detail") {
+			t.Fatalf("vector replay filled topK with recent fallback despite vector hits: %q", assembly.MemoryText)
+		}
+		for key, want := range map[string]int{
+			"vector_memory_hit_count":                       4,
+			"vector_memory_hydrated_count":                  2,
+			"vector_memory_selected_count":                  2,
+			"vector_memory_injected_count":                  2,
+			"vector_non_memory_hit_count":                   1,
+			"vector_memory_missing_count":                   1,
+			"vector_memory_hit_language_context_count":      2,
+			"vector_memory_hydrated_language_context_count": 2,
+			"selected_memory_total_count":                   2,
+		} {
+			if got := intFromAny(assembly.Counts[key], 0); got != want {
+				t.Fatalf("vector replay count %s=%d, want %d; counts=%#v", key, got, want, assembly.Counts)
+			}
 		}
 	})
 }

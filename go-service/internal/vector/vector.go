@@ -61,6 +61,11 @@ type VectorDocument struct {
 	SourceRowID           string
 	SchemaVersion         string
 	DocumentText          string
+	SearchTextPolicy      string
+	RawLanguage           string
+	SummaryLanguage       string
+	SessionOutputLanguage string
+	AliasCount            int
 	MigrationID           int64
 	MigratedFromSessionID string
 }

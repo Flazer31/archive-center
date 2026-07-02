@@ -75,7 +75,7 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 			"sources":   []string{"store.storylines"},
 		},
 	}
-	supervisorPack := buildSupervisorInputPack(sid, 0, "", guideMode, "weak", narrativeStance, autoAdvanceTrigger, wakeUpContext, promptTrace, evidenceCounts, sectionSummary, storylineSelection, false, "")
+	supervisorPack := buildSupervisorInputPack(sid, 0, "", guideMode, "weak", narrativeStance, autoAdvanceTrigger, wakeUpContext, promptTrace, evidenceCounts, sectionSummary, storylineSelection, false, "", nil)
 	trace := buildPromptAssemblyTrace(s.Cfg.PromptDir)
 	trace["guide_mode"] = guideMode
 	trace["guide_suffix_present"] = supervisorPack["guide_suffix"] != ""
