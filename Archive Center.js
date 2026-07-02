@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.4 RC2
+//@display-name Archive Center 2.4 RC4
 //@author memory-scaffold
 //@api 3.0
-//@version 2.4.0-rc2
+//@version 2.4.0-rc4
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
@@ -36,9 +36,9 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.4.0-rc2";
-  const BUILD_ID = "2.4.0-rc2-identity-continuity-guard.20260702";
-  const BUILD_CHANNEL = "rc2";
+  const VERSION = "2.4.0-rc4";
+  const BUILD_ID = "2.4.0-rc4-input-capture-ui-trim.20260702";
+  const BUILD_CHANNEL = "rc4";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -251,7 +251,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.4 RC2 설정",
+      "settings.title": "🗂️ Archive Center 2.4 RC4 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -290,7 +290,6 @@
       "settings.section.prompts": "시스템 프롬프트 편집",
       "settings.section.prompts.desc": "supervisor_system.txt와 critic_system.txt를 불러와 수정하고 저장합니다. 저장한 내용은 다음 supervisor/critic 호출부터 즉시 반영됩니다.",
       "tableRead.title": "대본 리딩",
-      "tableRead.desc": "현재 세션의 엔티티별 주관 기억을 불러와, 캐릭터들이 대본을 검토하듯 장면을 읽는 보조 표면입니다. 결과는 support-only이며 DB를 수정하지 않습니다.",
       "tableRead.field.session": "대상 세션",
       "tableRead.field.scene": "장면 메모",
       "tableRead.field.userInput": "다음 입력/질문",
@@ -770,21 +769,13 @@
       "explorer.sessions.empty": "저장된 세션이 없습니다.",
       "explorer.sessions.activeChatTooltip": "현재 활성 채팅 세션",
       "explorer.tabs.chat_logs.label": "대화 원문",
-      "explorer.tabs.chat_logs.desc": "턴별 사용자/어시스턴트 원문 기록입니다.",
       "explorer.tabs.memories.label": "기억 요약",
-      "explorer.tabs.memories.desc": "Critic이 추출한 장기 기억 요약입니다.",
       "explorer.tabs.direct_evidence.label": "직접 근거",
-      "explorer.tabs.direct_evidence.desc": "장기 기억의 직접 근거 조각과 archive_bucket 상태를 확인합니다.",
       "explorer.tabs.kg_triples.label": "관계 지식",
-      "explorer.tabs.kg_triples.desc": "주어-관계-목적어 형태의 구조화 지식입니다.",
       "explorer.tabs.episodes.label": "계층 요약",
-      "explorer.tabs.episodes.desc": "에피소드/챕터/아크/사가 단위의 장기 서사 요약입니다.",
       "explorer.tabs.trust.label": "신뢰 제어",
-      "explorer.tabs.trust.desc": "스토리라인/규칙/훅의 pin·suppress·correct 상태를 조정합니다.",
       "explorer.tabs.world.label": "세계 규칙",
-      "explorer.tabs.world.desc": "root/region/location/faction/system 범위의 세계 규칙을 관리합니다.",
       "explorer.tabs.entities.label": "개체 정보",
-      "explorer.tabs.entities.desc": "인물/장소/물품 상태를 턴 기준으로 확인합니다.",
       "explorer.chatLogs.loading": "로딩 중...",
       "explorer.chatLogs.empty": "대화 원문이 없습니다.",
       "explorer.chatLogs.repairReplayScope": "복구 재실행은 실패 큐에 남은 저장 턴과 로컬 삭제 스냅샷에 남은 원문 대화를 다시 삽입합니다. 파생 기억/직접 근거/KG/상태는 자동 복원되지 않으므로 원문 턴 복구 뒤 재검사를 추가로 실행해야 합니다.",
@@ -1239,7 +1230,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.4 RC2 Settings",
+      "settings.title": "🗂️ Archive Center 2.4 RC4 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -1278,7 +1269,6 @@
       "settings.section.prompts": "System Prompt Editor",
       "settings.section.prompts.desc": "Load, edit, and save supervisor_system.txt and critic_system.txt. Saved text is applied on the next supervisor/critic call.",
       "tableRead.title": "Table Read",
-      "tableRead.desc": "Reads subjective memories per entity and lets the cast pre-review the scene as support-only context. It does not write to the DB.",
       "tableRead.field.session": "Target Session",
       "tableRead.field.scene": "Scene Note",
       "tableRead.field.userInput": "Next Input / Question",
@@ -1929,21 +1919,13 @@
       "explorer.sessions.empty": "No saved sessions.",
       "explorer.sessions.activeChatTooltip": "Currently active chat session",
       "explorer.tabs.chat_logs.label": "Chat Logs",
-      "explorer.tabs.chat_logs.desc": "Raw turn-by-turn user/assistant conversation history.",
       "explorer.tabs.memories.label": "Memories",
-      "explorer.tabs.memories.desc": "Critic-extracted long-term memory summaries.",
       "explorer.tabs.direct_evidence.label": "Direct Evidence",
-      "explorer.tabs.direct_evidence.desc": "Inspect direct evidence fragments and their archive_bucket state.",
       "explorer.tabs.kg_triples.label": "KG Triples",
-      "explorer.tabs.kg_triples.desc": "Structured subject-predicate-object relationship facts.",
       "explorer.tabs.episodes.label": "Hierarchy",
-      "explorer.tabs.episodes.desc": "Long-range narrative summaries: episodes, chapters, arcs, and sagas.",
       "explorer.tabs.trust.label": "Trust",
-      "explorer.tabs.trust.desc": "Pin/suppress/correct controls for storyline, rules, and hooks.",
       "explorer.tabs.world.label": "World",
-      "explorer.tabs.world.desc": "Scope-based world rule management (root/region/location/faction/system).",
       "explorer.tabs.entities.label": "Entities",
-      "explorer.tabs.entities.desc": "Turn-based snapshots of characters, locations, and items.",
       "explorer.chatLogs.loading": "Loading...",
       "explorer.chatLogs.empty": "No chat_logs found.",
       "explorer.chatLogs.repairReplayScope": "Repair Replay re-inserts missing raw turn content from the failed queue and local delete snapshots. It does not automatically rebuild derived Memory/Direct Evidence/KG/state records, so run Rescan after raw turn recovery if you need those restored.",
@@ -2227,7 +2209,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.4 RC2 設定",
+      "settings.title": "🗂️ Archive Center 2.4 RC4 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -2266,7 +2248,6 @@
       "settings.section.prompts": "System Prompt 編集",
       "settings.section.prompts.desc": "supervisor_system.txt と critic_system.txt を読み込み、編集して保存します。保存内容は次の supervisor/critic 呼び出しから反映されます。",
       "tableRead.title": "読み合わせ",
-      "tableRead.desc": "エンティティ別の主観記憶を読み込み、登場人物が台本を確認するように場面を読む support-only の補助画面です。DBは変更しません。",
       "tableRead.field.session": "対象セッション",
       "tableRead.field.scene": "場面メモ",
       "tableRead.field.userInput": "次の入力/質問",
@@ -2891,21 +2872,13 @@
       "explorer.sessions.empty": "保存されたセッションがありません。",
       "explorer.sessions.activeChatTooltip": "現在アクティブなチャットセッション",
       "explorer.tabs.chat_logs.label": "会話原文",
-      "explorer.tabs.chat_logs.desc": "ターンごとのユーザー/アシスタント原文ログです。",
       "explorer.tabs.memories.label": "記憶要約",
-      "explorer.tabs.memories.desc": "Critic が抽出した長期記憶サマリーです。",
       "explorer.tabs.direct_evidence.label": "直接根拠",
-      "explorer.tabs.direct_evidence.desc": "長期記憶の直接根拠断片と archive_bucket 状態を確認します。",
       "explorer.tabs.kg_triples.label": "関係知識",
-      "explorer.tabs.kg_triples.desc": "主語-述語-目的語の構造化知識です。",
       "explorer.tabs.episodes.label": "Hierarchy（階層要約）",
-      "explorer.tabs.episodes.desc": "エピソード/チャプター/アーク/サーガ単位の長期ナラティブ要約です。",
       "explorer.tabs.trust.label": "Trust（信頼制御）",
-      "explorer.tabs.trust.desc": "storyline/rule/hook の pin・suppress・correct を調整します。",
       "explorer.tabs.world.label": "World（世界ルール）",
-      "explorer.tabs.world.desc": "root/region/location/faction/system 範囲の世界ルールを管理します。",
       "explorer.tabs.entities.label": "Entities（エンティティ）",
-      "explorer.tabs.entities.desc": "人物/場所/物品の状態をターン基準で確認します。",
       "explorer.chatLogs.loading": "読み込み中...",
       "explorer.chatLogs.empty": "chat_logsがありません。",
       "explorer.chatLogs.repairReplayScope": "復旧再実行は失敗キューとローカル削除スナップショットに残っている原文ターンを再挿入します。派生記憶/直接根拠/KG/状態は自動復元されないため、必要なら原文ターン復旧後に再検査を実行してください。",
@@ -14704,7 +14677,7 @@
       ].join("|");
       if (_lastAutoRollbackSignature === duplicateSignature) return false;
 
-      return await executeAutoRollback(sid, rollbackFrom, "active_chat_tail_missing_from_runtime", {
+      const rolledBack = await executeAutoRollback(sid, rollbackFrom, "active_chat_tail_missing_from_runtime", {
         activeCompletedTurnCount,
         backendLatestTurnIndex: latestBackendTurn,
         rollbackToTurn: rollbackFrom,
@@ -14712,6 +14685,8 @@
         tailReconcileVerification: ledgerTailRollback || null,
         duplicateSignature,
       });
+      if (rolledBack) updateSessionSnapshot(sid, comparable);
+      return rolledBack;
     } catch (err) {
       debugLog("reconcileActiveChatTailDeletionWithBackend failed:", err && err.message);
       return false;
@@ -22347,10 +22322,6 @@
         }
       }
 
-      const latestPair = pairs[pairs.length - 1];
-      if (latestPair && latestPair.userContent && !shouldSkipUserInputPersistence(latestPair.userContent)) {
-        return String(latestPair.userContent || "");
-      }
       return "";
     } catch (err) {
       debugLog("recoverUserInputFromActiveChatPair failed:", err && err.message);
@@ -23334,7 +23305,7 @@
     };
   }
 
-  async function orchestrateTurnHelpers(userInput, recentContext, continuityInfo, preparedBundle) {
+  async function orchestrateTurnHelpers(userInput, recentContext, continuityInfo, preparedBundle, languageContext) {
     if (!settings.enabled) return null;
     try {
       debugLog("orchestrateTurnHelpers start");
@@ -24266,7 +24237,7 @@
         activeStatesResult,
         episodeRecallResult,
         expandedEntities,
-        turnLanguageContext,
+        languageContext,
         preparedBundle && preparedBundle.inputTransparencyModel,
         preparedBundle && preparedBundle.effectiveInputPreview
       );
@@ -31793,11 +31764,11 @@
     }
     if (rawTail && payloadTail === rawTail) {
       return {
-        allowed: false,
-        contextInjectionAllowed: false,
-        reason: "payload_tail_matches_raw_but_active_tail_mismatch",
+        allowed: true,
+        contextInjectionAllowed: true,
+        reason: "raw_input_tail_match_active_tail_lag",
         requestType,
-        policy: "active_tail_takes_precedence_over_raw_input_cache",
+        policy: "payload_tail_verified_by_input_hook_cache",
         activeTailPreview: truncPreview(activeTail, 120),
         payloadTailPreview: truncPreview(payloadTail, 120),
       };
@@ -32564,7 +32535,7 @@
       // orchestration 실행 — 결과는 캐시에 보관
       // Phase 1-1: continuityInfo가 있으면 orchestrateTurnHelpers에 전달
       try {
-        lastOrchResult = await orchestrateTurnHelpers(userInput, recentContext, continuityInfo, _lastPrepareTurnBundle);
+        lastOrchResult = await orchestrateTurnHelpers(userInput, recentContext, continuityInfo, _lastPrepareTurnBundle, turnLanguageContext);
       } catch (orchErr) {
         _pendingOrchBySession.delete(orchSessionId);
         throw orchErr;
@@ -34647,13 +34618,6 @@
       document.querySelectorAll(".mo-ex-tab").forEach(btn => {
         const active = btn.dataset && btn.dataset.tab === _explorer.activeTab;
         btn.classList.toggle("mo-ex-tab-active", !!active);
-      });
-      document.querySelectorAll(".mo-ex-tab-guide-item").forEach(item => {
-        const label = item.querySelector(".mo-ex-tab-guide-label");
-        const labelText = label ? label.textContent : "";
-        item.classList.toggle("mo-ex-tab-guide-item-active", !!labelText && getExplorerTabItems().some(tab =>
-          tab.key === _explorer.activeTab && tab.label === labelText
-        ));
       });
       const content = document.getElementById("mo-ex-content");
       if (content) content.innerHTML = renderExplorerContent();
@@ -39223,49 +39187,41 @@
       {
         key: "chat_logs",
         label: t("explorer.tabs.chat_logs.label"),
-        desc: t("explorer.tabs.chat_logs.desc"),
         count: _explorer.chatLogs.total,
       },
       {
         key: "memories",
         label: t("explorer.tabs.memories.label"),
-        desc: t("explorer.tabs.memories.desc"),
         count: _explorer.memories.total,
       },
       {
         key: "direct_evidence",
         label: t("explorer.tabs.direct_evidence.label"),
-        desc: t("explorer.tabs.direct_evidence.desc"),
         count: _explorer.directEvidence.total,
       },
       {
         key: "kg_triples",
         label: t("explorer.tabs.kg_triples.label"),
-        desc: t("explorer.tabs.kg_triples.desc"),
         count: _explorer.kgTriples.total,
       },
       {
         key: "episodes",
         label: t("explorer.tabs.episodes.label"),
-        desc: t("explorer.tabs.episodes.desc"),
         count: (_explorer.episodes.total + _explorer.chapters.total + _explorer.arcs.total + _explorer.sagas.total),
       },
       {
         key: "trust",
         label: t("explorer.tabs.trust.label"),
-        desc: t("explorer.tabs.trust.desc"),
         count: trustCount,
       },
       {
         key: "world",
         label: t("explorer.tabs.world.label"),
-        desc: t("explorer.tabs.world.desc"),
         count: worldCount,
       },
       {
         key: "entities",
         label: t("explorer.tabs.entities.label"),
-        desc: t("explorer.tabs.entities.desc"),
         count: (_explorer.entities.characters.length + _explorer.entities.locations.length + _explorer.entities.items.length),
       },
     ];
@@ -39274,25 +39230,10 @@
   function renderExplorerTabs(tabItems) {
     const tabs = Array.isArray(tabItems) ? tabItems : getExplorerTabItems();
     return '<div class="mo-ex-tabs">' + tabs.map(t =>
-      '<button class="mo-ex-tab' + (t.key === _explorer.activeTab ? " mo-ex-tab-active" : "") + '" data-tab="' + t.key + '" title="' + escapeAttr(t.desc || "") + '">' +
+      '<button class="mo-ex-tab' + (t.key === _explorer.activeTab ? " mo-ex-tab-active" : "") + '" data-tab="' + t.key + '">' +
       escapeAttr(t.label) + (t.count > 0 ? ' <span class="mo-ex-tab-count">' + t.count + '</span>' : '') +
       '</button>'
     ).join("") + '</div>';
-  }
-
-  function renderExplorerTabGuide(tabItems) {
-    const tabs = Array.isArray(tabItems) ? tabItems : getExplorerTabItems();
-    const rows = tabs.map(tab => {
-      const activeCls = tab.key === _explorer.activeTab ? " mo-ex-tab-guide-item-active" : "";
-      return '<div class="mo-ex-tab-guide-item' + activeCls + '">' +
-        '<div class="mo-ex-tab-guide-label">' + escapeAttr(tab.label) + '</div>' +
-        '<div class="mo-ex-tab-guide-desc">' + escapeAttr(tab.desc || "") + '</div>' +
-      '</div>';
-    }).join("");
-
-    return '<div class="mo-ex-tab-guide">' +
-      '<div class="mo-ex-tab-guide-grid">' + rows + '</div>' +
-    '</div>';
   }
 
   function formatExplorerNumber(n) {
@@ -40265,7 +40206,6 @@
             '<label><input type="checkbox" class="mo-ed-input" data-field="repair_needed" value="true"' + (String(ef.repair_needed) === "true" ? ' checked' : '') + '> repair_needed</label>' +
             '<label><input type="checkbox" class="mo-ed-input" data-field="tombstoned" value="true"' + (String(ef.tombstoned) === "true" ? ' checked' : '') + '> tombstoned</label>' +
           '</div>' +
-          '<div class="mo-note">' + escapeAttr(t('explorer.tabs.direct_evidence.desc')) + '</div>' +
           '<div class="mo-ed-actions">' +
             '<button class="mo-btn mo-btn-primary mo-ed-save-btn" data-save-type="de" data-save-id="' + item.id + '"' +
               (_explorer.editStatus === "saving" ? ' disabled' : '') + '>' + t('explorer.edit.saveBtn') + '</button>' +
@@ -42034,7 +41974,7 @@
         (_explorer.sessionsError ? '<div class="mo-status mo-status-warn">' + escapeAttr(_explorer.sessionsError) + '</div>' : '') +
         '<div class="mo-ex-sessions-list" id="mo-ex-sessions-list">' + renderExplorerSessionsList() + '</div>' +
       '</div>' +
-      '<div id="mo-ex-tabs-container">' + renderExplorerTabGuide(tabItems) + renderExplorerTabs(tabItems) + '</div>' +
+      '<div id="mo-ex-tabs-container">' + renderExplorerTabs(tabItems) + '</div>' +
       '<div class="mo-ex-content" id="mo-ex-content">' + renderExplorerContent() + '</div>';
   }
 
@@ -43381,14 +43321,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-hierarchy-details{margin-top:6px}
 .mo-ex-detail-row{margin-top:6px}
 .mo-ex-detail-label{display:block;color:#9fb0d0;font-size:10px;font-weight:700;margin-bottom:2px}
-.mo-ex-tab-guide{border:1px dashed #2a2a4a;border-radius:8px;background:#101522;padding:8px 10px;margin:6px 0 4px}
-.mo-ex-tab-guide-title{font-size:11px;color:#d0dcff;font-weight:700}
-.mo-ex-tab-guide-hint{font-size:10px;color:#8ea0c0;margin-top:2px}
-.mo-ex-tab-guide-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;margin-top:8px}
-.mo-ex-tab-guide-item{background:#11182a;border:1px solid #2a3550;border-radius:6px;padding:6px 8px}
-.mo-ex-tab-guide-item-active{border-color:#5b6aa0;background:#16213e}
-.mo-ex-tab-guide-label{font-size:11px;color:#d0d6e8;font-weight:600;line-height:1.35}
-.mo-ex-tab-guide-desc{font-size:10px;color:#8fa0bc;line-height:1.4;margin-top:3px}
 .mo-ent-container{display:flex;flex-direction:column;gap:14px}
 .mo-ent-section{display:flex;flex-direction:column;gap:6px}
 .mo-entity-memory-tools-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:10px 0 12px 0;align-items:stretch}
@@ -45176,8 +45108,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         '<div class="mo-ed-row">' +
           '<label><input type="checkbox" class="mo-ed-input" data-timeline-edit-field="repair_needed" value="true"' + (String(fields.repair_needed) === "true" ? ' checked' : '') + '> repair_needed</label>' +
           '<label><input type="checkbox" class="mo-ed-input" data-timeline-edit-field="tombstoned" value="true"' + (String(fields.tombstoned) === "true" ? ' checked' : '') + '> tombstoned</label>' +
-        '</div>' +
-        '<div class="mo-note">' + escapeAttr(t('explorer.tabs.direct_evidence.desc')) + '</div>';
+        '</div>';
     }
     return '<div class="mo-detail-panel mo-tl-edit-panel">' +
       '<div class="mo-detail-header"><strong>' + escapeAttr(tf("timeline.edit.title", { title })) + '</strong><span class="mo-note">' + escapeAttr(t("timeline.edit.meta")) + '</span></div>' +
@@ -47658,7 +47589,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const statusType = state.status === "ok" ? "ok" : state.status === "running" ? "wait" : state.status === "fail" ? "fail" : "unknown";
     return '<div class="mo-table-read-panel">' +
       '<div class="mo-section">' + escapeAttr(t("tableRead.title")) + '</div>' +
-      '<div class="mo-section-desc">' + escapeAttr(t("tableRead.desc")) + '</div>' +
       '<div class="mo-status mo-status-' + escapeAttr(statusType) + '">' + escapeAttr(state.message || t("tableRead.status.idle")) + '</div>' +
       '<div class="mo-table-read-layout">' +
         '<div class="mo-table-read-left">' +
@@ -50324,7 +50254,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.4 RC2 Release",
+    pre_release_bundle_authority: "Archive Center 2.4 RC4 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",
