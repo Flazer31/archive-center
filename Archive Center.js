@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.4 RC2
+//@display-name Archive Center 2.4 RC3
 //@author memory-scaffold
 //@api 3.0
-//@version 2.4.0-rc2
+//@version 2.4.0-rc3
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
@@ -36,9 +36,9 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.4.0-rc2";
-  const BUILD_ID = "2.4.0-rc2-identity-continuity-guard.20260702";
-  const BUILD_CHANNEL = "rc2";
+  const VERSION = "2.4.0-rc3";
+  const BUILD_ID = "2.4.0-rc3-rollback-ledger-turn-anchor.20260702";
+  const BUILD_CHANNEL = "rc3";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -251,7 +251,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.4 RC2 설정",
+      "settings.title": "🗂️ Archive Center 2.4 RC3 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -264,7 +264,7 @@
       "settings.tab.debug": "디버그",
       "settings.section.status": "설정 상태",
       "settings.section.common": "공통 설정",
-      "settings.section.common.desc": "2.4 RC2 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
+      "settings.section.common.desc": "2.4 RC3 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
       "settings.section.update": "업데이트",
@@ -1239,7 +1239,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.4 RC2 Settings",
+      "settings.title": "🗂️ Archive Center 2.4 RC3 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -1252,7 +1252,7 @@
       "settings.tab.debug": "Debug",
       "settings.section.status": "Settings Status",
       "settings.section.common": "Common Settings",
-      "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC2 default mode.",
+      "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC3 default mode.",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
       "settings.section.update": "Update",
@@ -2227,7 +2227,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.4 RC2 設定",
+      "settings.title": "🗂️ Archive Center 2.4 RC3 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -2240,7 +2240,7 @@
       "settings.tab.debug": "デバッグ",
       "settings.section.status": "設定状態",
       "settings.section.common": "共通設定",
-      "settings.section.common.desc": "2.4 RC2既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
+      "settings.section.common.desc": "2.4 RC3既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
       "settings.section.update": "アップデート",
@@ -12356,32 +12356,61 @@
   function buildRollbackTurnLedgerOr1f(messages, trackedTurnIndex) {
     try {
       const compactMessages = compactSnapshotMessages(messages);
+      const groups = [];
+      let currentGroup = null;
+      compactMessages.forEach(function(message, messageIndex) {
+        const role = message && message.role === "assistant" ? "assistant" : "user";
+        if (role === "user") {
+          currentGroup = {
+            entries: [],
+            assistantCount: 0,
+          };
+          groups.push(currentGroup);
+        } else if (!currentGroup) {
+          currentGroup = {
+            entries: [],
+            assistantCount: 0,
+            leadingAssistant: true,
+          };
+          groups.push(currentGroup);
+        }
+        if (role === "assistant") currentGroup.assistantCount += 1;
+        currentGroup.entries.push({ message, messageIndex, role });
+      });
+      const completedGroupCount = groups.reduce(function(count, group) {
+        return count + (group && group.assistantCount > 0 ? 1 : 0);
+      }, 0);
       const assistantMessageCount = compactMessages.reduce(function(count, item) {
         return count + (item && item.role === "assistant" ? 1 : 0);
       }, 0);
       const resolvedTrackedTurnIndex = typeof trackedTurnIndex === "number" && trackedTurnIndex >= 0
         ? trackedTurnIndex
-        : assistantMessageCount;
-      const completedTurnFloor = Math.max(0, resolvedTrackedTurnIndex - assistantMessageCount);
+        : completedGroupCount;
+      const completedTurnFloor = Math.max(0, resolvedTrackedTurnIndex - completedGroupCount);
       let completedTurnsSeen = 0;
-      const entries = compactMessages.map(function(message, messageIndex) {
-        const role = message && message.role === "assistant" ? "assistant" : "user";
-        if (role === "assistant") completedTurnsSeen += 1;
-        const turnIndex = role === "assistant"
-          ? Math.max(1, completedTurnFloor + completedTurnsSeen)
-          : Math.max(1, completedTurnFloor + completedTurnsSeen + 1);
-        const fingerprint = computeTailHashFromSnapshotMessages([{ role, content: String(message && message.content || "") }]);
-        return {
-          messageIndex,
-          role,
-          turnIndex,
-          fingerprint,
-        };
+      const entries = [];
+      groups.forEach(function(group) {
+        if (!group || !Array.isArray(group.entries)) return;
+        const groupCompleted = group.assistantCount > 0;
+        if (groupCompleted) completedTurnsSeen += 1;
+        const groupTurnIndex = Math.max(1, completedTurnFloor + completedTurnsSeen + (groupCompleted ? 0 : 1));
+        group.entries.forEach(function(entry) {
+          const message = entry.message;
+          const role = entry.role;
+          const fingerprint = computeTailHashFromSnapshotMessages([{ role, content: String(message && message.content || "") }]);
+          entries.push({
+            messageIndex: entry.messageIndex,
+            role,
+            turnIndex: groupTurnIndex,
+            fingerprint,
+          });
+        });
       });
       return {
         policyVersion: "or1f.v1",
         trackedTurnIndex: resolvedTrackedTurnIndex,
         assistantMessageCount,
+        completedGroupCount,
         messageCount: compactMessages.length,
         entries,
       };
@@ -14618,7 +14647,9 @@
       }, 0);
       if (removedAssistantCount <= 0) return null;
 
-      const rollbackFrom = Math.max(1, completedCount + 1);
+      const ledgerAnchorTurnIndex = resolveRollbackTurnAnchorOr1f(ledgerState, commonPrefixLen);
+      if (!Number.isFinite(Number(ledgerAnchorTurnIndex)) || Number(ledgerAnchorTurnIndex) < 1) return null;
+      const rollbackFrom = Math.max(1, Number(ledgerAnchorTurnIndex));
       const backendGap = backendLatest - completedCount;
       return {
         status: "verified_tail_delete",
@@ -14628,6 +14659,7 @@
         ledgerMessageCount: entries.length,
         currentMessageCount: currentList.length,
         commonPrefixLen,
+        ledgerAnchorTurnIndex,
         removedMessageCount: Math.max(0, entries.length - currentList.length),
         removedAssistantCount,
         currentTailHash: computeTailHash(currentList),
@@ -50324,7 +50356,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.4 RC2 Release",
+    pre_release_bundle_authority: "Archive Center 2.4 RC3 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",
