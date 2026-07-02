@@ -294,7 +294,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 
 $PackageKind = $PackageKind.Trim().ToLowerInvariant()
 if ($PackageKind -ne "full") {
-    throw "Unsupported PackageKind: $PackageKind. Archive Center 2.3 builds the standard package only."
+    throw "Unsupported PackageKind: $PackageKind. Archive Center builds the standard package only."
 }
 
 if ([string]::IsNullOrWhiteSpace($PackageName)) {

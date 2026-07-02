@@ -224,7 +224,7 @@ foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }
 
-# 2.3 packaging has one standard package line. Runtime profiles such as
+# Current packaging has one standard package line. Runtime profiles such as
 # core_lite remain available inside it, but separate Lite ZIPs are no longer
 # built.
 $targets = @($targets | Where-Object { ([string]$_.PackageKind).ToLowerInvariant() -eq "full" })
@@ -364,7 +364,7 @@ foreach ($target in $targets) {
             "Built on Windows by cross-compilation.",
             "Real target OS runtime proof is still required.",
             "POSIX MariaDB is installer-managed when not bundled.",
-            "2.3 distribution has one standard package line; core_lite and vector_external remain runtime profile options, not separate package artifacts.",
+            "This distribution has one standard package line; core_lite and vector_external remain runtime profile options, not separate package artifacts.",
             "Termux proot/local ChromaDB is full_local/local_proot by default for the standard package."
         )
     }

@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.3
+//@display-name Archive Center 2.4 RC1
 //@author memory-scaffold
 //@api 3.0
-//@version 2.3.0
+//@version 2.4.0-rc1
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
@@ -36,9 +36,9 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.3.0";
-  const BUILD_ID = "2.3.0-rc5-tail-delete-sync.20260701";
-  const BUILD_CHANNEL = "rc5";
+  const VERSION = "2.4.0-rc1";
+  const BUILD_ID = "2.4.0-rc1-language-memory-planner-offload.20260702";
+  const BUILD_CHANNEL = "rc1";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -89,6 +89,8 @@
     // J-3a: Plugin Main apply mode 허용값
   const PLUGIN_MAIN_APPLY_MODES = Object.freeze(["off", "shadow", "reviewed_apply"]);
   const UI_LANGUAGE_OPTIONS = Object.freeze(["ko", "en", "ja"]);
+  const LANGUAGE_MEMORY_CONTRACT_VERSION = "language_memory.v1";
+  const LANGUAGE_MEMORY_SEARCH_TEXT_POLICY = "summary_plus_raw_plus_aliases";
   const UI_DETAIL_MODE_OPTIONS = Object.freeze(["full", "reduced_info", "status_only"]);
   const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "vertex", "copilot", "ollama", "custom"]);
   const EMBEDDING_PROVIDER_OPTIONS = Object.freeze(["openai", "gemini", "vertex", "voyageai", "ollama", "custom"]);
@@ -249,7 +251,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.3 설정",
+      "settings.title": "🗂️ Archive Center 2.4 RC1 설정",
       "settings.section.dashboard": "상태 대시보드",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
@@ -263,7 +265,7 @@
       "settings.tab.debug": "디버그",
       "settings.section.status": "설정 상태",
       "settings.section.common": "공통 설정",
-      "settings.section.common.desc": "2.3 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
+      "settings.section.common.desc": "2.4 RC1 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
       "settings.section.update": "업데이트",
@@ -1242,7 +1244,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.3 Settings",
+      "settings.title": "🗂️ Archive Center 2.4 RC1 Settings",
       "settings.section.dashboard": "Status Dashboard",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
@@ -1256,7 +1258,7 @@
       "settings.tab.debug": "Debug",
       "settings.section.status": "Settings Status",
       "settings.section.common": "Common Settings",
-      "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.3 default mode.",
+      "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC1 default mode.",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
       "settings.section.update": "Update",
@@ -2235,7 +2237,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.3 設定",
+      "settings.title": "🗂️ Archive Center 2.4 RC1 設定",
       "settings.section.dashboard": "ステータスダッシュボード",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
@@ -2249,7 +2251,7 @@
       "settings.tab.debug": "デバッグ",
       "settings.section.status": "設定状態",
       "settings.section.common": "共通設定",
-      "settings.section.common.desc": "2.3既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
+      "settings.section.common.desc": "2.4 RC1既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
       "settings.section.update": "アップデート",
@@ -4308,6 +4310,8 @@
         recallResult: !!bundle.recallResult,
         supervisorInputPack: !!bundle.supervisorInputPack,
         injectionPack: !!bundle.injectionPack,
+        inputTransparencyModel: !!bundle.inputTransparencyModel,
+        effectiveInputPreview: !!bundle.effectiveInputPreview,
         tracePreview: {
           reads_ok: Number(tracePreview.reads_ok || 0),
           reads_total: Number(tracePreview.reads_total || 0),
@@ -5083,6 +5087,8 @@
         "recall_result",
         "supervisor_input_pack",
         "injection_pack",
+        "input_transparency_model",
+        "effective_input_preview",
         "writeback_preview",
         "trace_preview",
       ],
@@ -5144,6 +5150,8 @@
       recallResult: "recall_result",
       supervisorInputPack: "supervisor_input_pack",
       injectionPack: "injection_pack",
+      inputTransparencyModel: "input_transparency_model",
+      effectiveInputPreview: "effective_input_preview",
       writebackPreview: "writeback_preview",
       tracePreview: "trace_preview",
     };
@@ -11677,7 +11685,7 @@
     return data;
   }
 
-  async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type) {
+  async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext) {
     try {
       const resolvedGuideMode = resolveNarrativeGuideMode(
         settings.narrativeGuideMode,
@@ -11714,6 +11722,13 @@
         },
       };
       body.client_meta = body.client_meta || {};
+      const normalizedLanguageContext = normalizeLanguageContextTrace(languageContext);
+      if (normalizedLanguageContext) {
+        body.client_meta.language_context = normalizedLanguageContext;
+        if (normalizedLanguageContext.output_language_override) {
+          body.output_language_override = normalizedLanguageContext.output_language_override;
+        }
+      }
       body.client_meta.embedding = {
         api_key: String(settings.embeddingApiKey || "").trim(),
         endpoint: String(settings.embeddingEndpoint || "").trim(),
@@ -11781,6 +11796,8 @@
           // memory_text / kg_text / episode_text / fallback_text (조건부)
           // + Plugin Main 계약 placeholder: effective_user_input / apply_verdict (M-3b에서 채워짐)
           injectionPack:      result.injection_pack       || null,
+          inputTransparencyModel: result.input_transparency_model || null,
+          effectiveInputPreview:  result.effective_input_preview  || null,
           // M-2d: writeback_preview + trace_preview (H-4 non-debug groundwork)
           writebackPreview:   result.writeback_preview    || null,
           tracePreview:       result.trace_preview        || null,
@@ -11836,7 +11853,9 @@
       request_type: p.request_type || "model",
       // complete_turn_raw_recovery_v1: keep raw turn text locally while
       // avoiding API key persistence in pluginStorage.
-      client_meta: {},
+      client_meta: (p.client_meta && p.client_meta.language_context)
+        ? { language_context: normalizeLanguageContextTrace(p.client_meta.language_context) || p.client_meta.language_context }
+        : {},
     };
   }
 
@@ -14934,6 +14953,7 @@
       save: { status: "pending" },
       complete: { status: "pending" },
       critic: { memoryAttempted: false, memorySaved: false, kgAttempted: false, kgSaved: false, detail: "" },
+      languageContext: null,
       momentum: { status: "pending", applied: false, packetStatus: null },
       // Sprint 2-D: Input Transparency 데이터
       _inputTransparency: null,
@@ -15599,6 +15619,12 @@
       lines.push(t('dash.transparency.protection.baseRules') + ": " + t('dash.transparency.protection.alwaysIncluded'));
       lines.push("Reliability Guard: " + t('dash.transparency.protection.judgedAtInjection'));
 
+      const languageContextText = formatLanguageContextBlock(it.languageContext);
+      if (languageContextText) {
+        lines.push("\nLanguage Context");
+        lines.push(languageContextText);
+      }
+
       // 1. User Input
       lines.push("\n━━ User Input ━━");
       lines.push(it.userInput || t('common.none'));
@@ -15768,16 +15794,22 @@
   }
 
   /** orchestration 중간 결과로부터 _inputTransparency 객체를 생성 */
-  function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities) {
+  function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview) {
     try {
       const isContinuity = !!(continuityInfo && continuityInfo.query);
       const retrievedMemories = extractMemoryItems(searchResult, 10);
       const memoryLaneCounts = buildMemoryLaneCounts(searchResult);
+      const backendRenderModel = isBackendInputTransparencyModel(backendInputTransparencyModel) ? backendInputTransparencyModel : null;
+      const effectiveInputPreview = isBackendEffectiveInputPreview(backendEffectiveInputPreview) ? backendEffectiveInputPreview : null;
       const it = {
         userInput: truncPreview(userInput, 1000) || (isContinuity ? t('dash.transparency.continuity.fallbackLabel') : t('common.none')),
         recentContext: extractContextPreview(recentContext, 5),
         retrievedMemories,
         memoryLaneCounts,
+        languageContext: normalizeLanguageContextTrace(languageContext || (backendRenderModel && backendRenderModel.language_context)),
+        backendRenderModel,
+        backendEffectiveInputPreview: effectiveInputPreview,
+        backendRenderAdopted: !!backendRenderModel,
         hybridRetrieval: buildHybridRetrievalInspection(retrievedMemories, 3),
         fallbackChatLogs: extractFallbackItems(searchResult, 5),
         wakeUpContext: truncPreview(wakeUpContext, 1000),
@@ -15912,6 +15944,11 @@
         rows.push(r("Delivery Gate", "skipped", (dg.code || "llm_gate_warn") + " · " + (dg.reason || "degraded")));
       }
       if (tr.userInputPreview) rows.push(r("User Input", "ok", truncPreview(tr.userInputPreview, 60)));
+      if (tr.languageContext) {
+        const languageDetail = formatLanguageContextInline(tr.languageContext);
+        const languageStatus = (tr.languageContext.session_output_language === "auto" || tr.languageContext.session_output_language === "unknown") ? "skipped" : "ok";
+        if (languageDetail) rows.push(r("Language", languageStatus, languageDetail));
+      }
       if (tr.sanitization && Array.isArray(tr.sanitization.stages) && tr.sanitization.stages.length > 0) {
         const changedCount = tr.sanitization.stages.filter(function(stage) { return stage && stage.changed; }).length;
         const removedChars = tr.sanitization.stages.reduce(function(total, stage) {
@@ -16525,6 +16562,7 @@
         // Phase 1-1: continuity debug
         if (rp.currentTurnUserInput) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Current Turn Input</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.currentTurnUserInput, 400)) + '</div></div>');
         if (rp.currentTurnUserInputSource) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Current Turn Source</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.currentTurnUserInputSource, 200)) + '</div></div>');
+        if (rp.languageContractRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Language Contract Trace</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.languageContractRaw, 900)) + '</div></div>');
         if (rp.continuityInfoRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Continuity Info</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.continuityInfoRaw, 400)) + '</div></div>');
         if (rp.continuityQuery) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Continuity Query</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.continuityQuery, 400)) + '</div></div>');
         if (rp.continuitySource) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Continuity Source</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.continuitySource, 400)) + '</div></div>');
@@ -16598,12 +16636,138 @@
       const auxText = (it.injection && typeof it.injection.auxiliaryPreview === "string")
         ? it.injection.auxiliaryPreview.trim()
         : "";
+      const backendText = composeEffectiveInputFromBackendRenderModel(it.backendRenderModel);
       const hasInputCtxInAux = !!(inputCtxText && auxText && auxText.includes(inputCtxText));
 
       if (inputCtxText && !hasInputCtxInAux) blocks.push("━━ Input Context ━━\n" + inputCtxText);
       if (auxText) blocks.push(auxText);
 
-      return blocks.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+      return (blocks.join("\n\n") || backendText).replace(/\n{3,}/g, "\n\n").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function isBackendInputTransparencyModel(model) {
+    return !!(
+      model &&
+      typeof model === "object" &&
+      model.contract_version === "input_transparency_render.v1" &&
+      Array.isArray(model.blocks)
+    );
+  }
+
+  function isBackendEffectiveInputPreview(preview) {
+    return !!(
+      preview &&
+      typeof preview === "object" &&
+      preview.contract_version === "effective_input_preview.v1"
+    );
+  }
+
+  function composeEffectiveInputFromBackendRenderModel(model) {
+    try {
+      if (!isBackendInputTransparencyModel(model)) return "";
+      return model.blocks
+        .filter(function(block) {
+          if (!block || typeof block !== "object") return false;
+          if (String(block.key || "") === "user_input") return false;
+          if (String(block.status || "") !== "included") return false;
+          return typeof block.text === "string" && block.text.trim();
+        })
+        .map(function(block) { return String(block.text || "").trim(); })
+        .filter(Boolean)
+        .join("\n\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function renderBackendRenderCountsSummary(counts) {
+    try {
+      if (!counts || typeof counts !== "object") return "";
+      const rows = [];
+      const vectorText = "found:" + Number(counts.vector_found || 0)
+        + " / hydrated:" + Number(counts.vector_hydrated || 0)
+        + " / selected:" + Number(counts.vector_selected || 0)
+        + " / injected:" + Number(counts.vector_injected || 0);
+      rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">vector</span><span class="mo-it-dir-val">' + escapeAttr(vectorText) + '</span></div>');
+      rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">memory</span><span class="mo-it-dir-val">' + escapeAttr("related:" + Number(counts.related_memory_count || 0) + " / injected:" + Number(counts.memory_injected || 0)) + '</span></div>');
+      rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">protected</span><span class="mo-it-dir-val">' + escapeAttr("secret:" + Number(counts.protected_secret_count || 0) + " / identity:" + Number(counts.identity_accuracy_count || 0) + " / guarded:" + Number(counts.protected_memory_guarded_count || 0)) + '</span></div>');
+      rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">chars</span><span class="mo-it-dir-val">' + escapeAttr("aux:" + Number(counts.auxiliary_context_chars || 0) + " / input_context:" + Number(counts.input_context_chars || 0)) + '</span></div>');
+      return rows.join("");
+    } catch {
+      return "";
+    }
+  }
+
+  function renderBackendEffectiveInputPreviewBlock(it) {
+    try {
+      const preview = it && isBackendEffectiveInputPreview(it.backendEffectiveInputPreview) ? it.backendEffectiveInputPreview : null;
+      if (!preview) return "";
+      let html = "";
+      html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(preview.status || "unknown")) + '</span></div>';
+      html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">apply</span><span class="mo-it-dir-val">' + escapeAttr(String(preview.payload_apply_mode || "shadow")) + '</span></div>';
+      html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">final user source</span><span class="mo-it-dir-val">' + escapeAttr(String(preview.final_user_source || "input_hook")) + '</span></div>';
+      html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">chars</span><span class="mo-it-dir-val">' + escapeAttr("user:" + Number(preview.final_user_chars || 0) + " / aux:" + Number(preview.auxiliary_context_chars || 0) + " / input_context:" + Number(preview.input_context_chars || 0)) + '</span></div>';
+      html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">raw user rewritten</span><span class="mo-it-dir-val">' + escapeAttr(preview.raw_user_rewritten ? "yes" : "no") + '</span></div>';
+      return renderItBlockRaw("Backend Effective Input Preview", html, false);
+    } catch {
+      return "";
+    }
+  }
+
+  function renderBackendInputTransparencyModel(it) {
+    try {
+      const model = it && isBackendInputTransparencyModel(it.backendRenderModel) ? it.backendRenderModel : null;
+      if (!model) return "";
+      const parts = [];
+      const counts = model.counts && typeof model.counts === "object" ? model.counts : {};
+      let header = "";
+      header += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(model.status || "unknown")) + '</span></div>';
+      header += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">source</span><span class="mo-it-dir-val">' + escapeAttr(String(model.source || "prepare_turn_backend_render_model")) + '</span></div>';
+      header += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">policy</span><span class="mo-it-dir-val">' + escapeAttr(String(model.secret_display_policy || "counts_only_no_secret_text")) + '</span></div>';
+      header += renderBackendRenderCountsSummary(counts);
+      parts.push(renderItBlockRaw("Backend Input Transparency Render Model", header, false));
+      model.blocks.forEach(function(block, index) {
+        if (!block || typeof block !== "object") return;
+        const title = String(block.title || block.key || ("block " + (index + 1)));
+        const key = String(block.key || "");
+        const status = String(block.status || "empty");
+        const count = Number(block.count || 0);
+        const chars = Number(block.chars || 0);
+        const text = typeof block.text === "string" ? block.text : "";
+        let meta = '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(status + " / count:" + count + " / chars:" + chars) + '</span></div>';
+        if (block.source) {
+          meta += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">source</span><span class="mo-it-dir-val">' + escapeAttr(String(block.source)) + '</span></div>';
+        }
+        if (text) {
+          meta += '<div class="mo-it-content" style="margin-top:6px">' + escapeAttr(text) + '</div>';
+        }
+        parts.push(renderItBlockRaw(String(index + 1) + ". " + title + (key ? " [" + key + "]" : ""), meta, status !== "included" || text.length > 1200));
+      });
+      return parts.join("");
+    } catch {
+      return "";
+    }
+  }
+
+  function renderLocalPayloadApplicationTrace(it) {
+    try {
+      const inj = it && it.injection && typeof it.injection === "object" ? it.injection : null;
+      if (!inj) return "";
+      const rows = [];
+      rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">injection</span><span class="mo-it-dir-val">' + escapeAttr((inj.applied ? "applied" : "skipped") + " / source:" + (inj.injectionTextSource || "local")) + '</span></div>');
+      rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">budget</span><span class="mo-it-dir-val">' + escapeAttr(String(inj.totalChars || 0) + " / " + String(inj.budgetLimit || 0) + " chars") + '</span></div>');
+      if (inj.inputContext) {
+        rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">input context</span><span class="mo-it-dir-val">' + escapeAttr((inj.inputContext.applied ? "applied" : "skipped") + " / " + String(inj.inputContext.chars || 0) + " chars") + '</span></div>');
+      }
+      if (inj.auxiliaryPlacement) {
+        rows.push('<div class="mo-it-dir-row"><span class="mo-it-dir-key">placement</span><span class="mo-it-dir-val">' + escapeAttr(formatAuxiliaryPlacementTrace(inj.auxiliaryPlacement)) + '</span></div>');
+      }
+      return renderItBlockRaw("Local Payload Application", rows.join(""), false);
     } catch {
       return "";
     }
@@ -16724,12 +16888,17 @@
       const imp = tr.inputImprovement && typeof tr.inputImprovement === "object" ? tr.inputImprovement : null;
       const improvedInputText = imp && typeof imp.finalInput === "string" ? imp.finalInput.trim() : "";
       const fp = tr.finalPayloadParity || (tr._inputTransparency && tr._inputTransparency.finalPayloadParity) || null;
+      const languageContextText = formatLanguageContextBlock(tr._inputTransparency.languageContext);
+      const backendPreviewBlock = renderBackendEffectiveInputPreviewBlock(tr._inputTransparency);
 
-      if (!finalInput && !improvedInputText && !fp) {
+      if (!finalInput && !improvedInputText && !fp && !languageContextText && !backendPreviewBlock) {
         return '<div class="mo-note">' + t('dash.preview.notApplied') + '</div>';
       }
 
       const parts = [];
+      if (backendPreviewBlock) {
+        parts.push(backendPreviewBlock);
+      }
       if (fp && typeof fp === "object") {
         const statusClass = fp.status === "ready" ? "mo-it-dir-val" : "mo-it-dir-val mo-warn";
         let fpHtml = '';
@@ -16741,6 +16910,9 @@
           fpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">final user</span><span class="mo-it-dir-val">' + escapeAttr(fp.finalUserInputPreview) + '</span></div>';
         }
         parts.push(renderItBlockRaw("SEQ-02 / RMG-22 Final Payload Parity", fpHtml, false));
+      }
+      if (languageContextText) {
+        parts.push(renderItBlock("Language Context (trace only)", languageContextText, false));
       }
       if (improvedInputText) {
         parts.push(renderItBlock("Improved User Input", improvedInputText, false));
@@ -17010,12 +17182,32 @@
       const it = tr._inputTransparency;
       const sess = tr.chatSessionId || "unknown";
       const parts = [];
+      const backendRenderHtml = renderBackendInputTransparencyModel(it);
+      if (backendRenderHtml) {
+        parts.push(backendRenderHtml);
+        const localPayloadHtml = renderLocalPayloadApplicationTrace(it);
+        if (localPayloadHtml) parts.push(localPayloadHtml);
+        return parts.join("");
+      }
 
       // Session info header
       parts.push('<div class="mo-it-header">Turn #' + escapeAttr(String(tr.turnIndex || "?")) + ' · Session: ' + escapeAttr(truncPreview(sess, 30)) + '</div>');
 
       // 1. Raw User Input
       parts.push(renderItBlock("1. User Input", it.userInput || t('common.none'), false));
+      if (it.languageContext) {
+        const languageHtml = formatLanguageContextBlock(it.languageContext)
+          .split("\n")
+          .filter(Boolean)
+          .map(function(line) {
+            const idx = line.indexOf(":");
+            const key = idx >= 0 ? line.slice(0, idx) : "language";
+            const val = idx >= 0 ? line.slice(idx + 1).trim() : line;
+            return '<div class="mo-it-dir-row"><span class="mo-it-dir-key">' + escapeAttr(key) + '</span><span class="mo-it-dir-val">' + escapeAttr(val) + '</span></div>';
+          })
+          .join("");
+        parts.push(renderItBlockRaw("1-0. Language Context", languageHtml, false));
+      }
 
       if (it.sanitization && Array.isArray(it.sanitization.stages) && it.sanitization.stages.length > 0) {
         const sanHtml = it.sanitization.stages.map(function(stage) {
@@ -22385,6 +22577,153 @@
     }
   }
 
+  function normalizeLanguageCodeForTrace(value, fallback) {
+    try {
+      var raw = value && typeof value === "object" ? (value.code || value.language || value.lang || value.locale || "") : value;
+      var text = String(raw == null ? "" : raw).trim().toLowerCase().replace(/_/g, "-");
+      if (!text) return fallback || "";
+      if (text === "ko" || text === "kor" || text === "korean" || text.indexOf("ko-") === 0) return "ko";
+      if (text === "en" || text === "eng" || text === "english" || text.indexOf("en-") === 0) return "en";
+      if (text === "ja" || text === "jp" || text === "jpn" || text === "japanese" || text.indexOf("ja-") === 0 || text.indexOf("jp-") === 0) return "ja";
+      if (text === "auto" || text === "unknown" || text === "mixed") return text;
+      return fallback || "";
+    } catch { return fallback || ""; }
+  }
+
+  function detectTextLanguageForTrace(text) {
+    try {
+      var str = String(text || "");
+      if (!str.trim()) return "unknown";
+      var hangul = 0, kana = 0, latin = 0, cjk = 0;
+      for (var i = 0; i < str.length; i++) {
+        var cp = str.codePointAt(i);
+        if (cp > 0xffff) i++;
+        if ((cp >= 0xac00 && cp <= 0xd7af) || (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f)) hangul++;
+        else if ((cp >= 0x3040 && cp <= 0x30ff) || (cp >= 0x31f0 && cp <= 0x31ff) || (cp >= 0xff66 && cp <= 0xff9f)) kana++;
+        else if (cp >= 0x4e00 && cp <= 0x9fff) cjk++;
+        else if ((cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122)) latin++;
+      }
+      if (hangul && kana) return "mixed";
+      if (hangul) return "ko";
+      if (kana) return "ja";
+      if (latin && cjk) return "mixed";
+      if (latin) return "en";
+      return "unknown";
+    } catch { return "unknown"; }
+  }
+
+  function detectRecentAssistantOutputLanguage(messages) {
+    try {
+      if (!Array.isArray(messages)) return "";
+      for (var i = messages.length - 1; i >= 0; i--) {
+        var parsed = getPayloadMessageRoleAndText(messages[i] || {});
+        var lang = String(parsed.role || "") === "assistant" ? detectTextLanguageForTrace(parsed.text || "") : "";
+        if (lang === "ko" || lang === "en" || lang === "ja") return lang;
+      }
+    } catch {}
+    return "";
+  }
+
+  function buildLanguageFallbackChain(usedSource, values) {
+    return ["explicit_override", "plugin_setting", "recent_assistant", "ui_language", "auto_unknown"].map(function(source) {
+      return { source, value: values[source] || null, used: source === usedSource };
+    });
+  }
+
+  async function buildLanguageContextTrace(options) {
+    try {
+      var opts = options && typeof options === "object" ? options : {};
+      var explicitOverride = Object.prototype.hasOwnProperty.call(opts, "outputLanguageOverride") ? opts.outputLanguageOverride : await resolveRuntimeOutputLanguageOverride();
+      var explicitCode = normalizeLanguageCodeForTrace(explicitOverride, "");
+      if (explicitCode === "auto" || explicitCode === "unknown") explicitCode = "";
+      var values = {
+        explicit_override: explicitCode || "",
+        plugin_setting: "",
+        recent_assistant: detectRecentAssistantOutputLanguage(opts.messages || []),
+        ui_language: normalizeLanguageCodeForTrace(settings.uiLanguage, "unknown"),
+      };
+      if (values.ui_language === "auto") values.ui_language = "unknown";
+      var source = values.explicit_override ? "explicit_override" : values.plugin_setting ? "plugin_setting" : values.recent_assistant ? "recent_assistant" : (values.ui_language !== "unknown" ? "ui_language" : "auto_unknown");
+      var selected = source === "auto_unknown" ? "auto" : values[source];
+      var confidence = source === "explicit_override" ? 1 : source === "plugin_setting" ? 0.9 : source === "recent_assistant" ? 0.75 : source === "ui_language" ? 0.35 : 0;
+      return {
+        contract_version: LANGUAGE_MEMORY_CONTRACT_VERSION,
+        session_output_language: selected,
+        output_language_source: source,
+        ui_language: values.ui_language || "unknown",
+        raw_user_language: detectTextLanguageForTrace(opts.userInput || ""),
+        assistant_output_language: detectTextLanguageForTrace(opts.assistantContent || ""),
+        summary_language: (selected === "ko" || selected === "en" || selected === "ja") ? selected : "auto",
+        search_text_policy: LANGUAGE_MEMORY_SEARCH_TEXT_POLICY,
+        locked_for_turn: true,
+        confidence: Number(confidence.toFixed(2)),
+        fallback_chain: buildLanguageFallbackChain(source, values),
+        violations: [],
+        raw_evidence_rewritten: false,
+        output_language_override: explicitOverride || null,
+        trace_stage: opts.stage || "turn",
+      };
+    } catch {
+      return normalizeLanguageContextTrace({ violations: ["language_context_build_failed"] });
+    }
+  }
+
+  function normalizeLanguageContextTrace(ctx) {
+    try {
+      if (!ctx || typeof ctx !== "object") return null;
+      var sessionLanguage = normalizeLanguageCodeForTrace(ctx.session_output_language, "auto") || "auto";
+      return {
+        contract_version: String(ctx.contract_version || LANGUAGE_MEMORY_CONTRACT_VERSION),
+        session_output_language: sessionLanguage,
+        output_language_source: String(ctx.output_language_source || "auto_unknown"),
+        ui_language: normalizeLanguageCodeForTrace(ctx.ui_language, "unknown") || "unknown",
+        raw_user_language: normalizeLanguageCodeForTrace(ctx.raw_user_language, String(ctx.raw_user_language || "unknown")) || "unknown",
+        assistant_output_language: normalizeLanguageCodeForTrace(ctx.assistant_output_language, String(ctx.assistant_output_language || "unknown")) || "unknown",
+        summary_language: normalizeLanguageCodeForTrace(ctx.summary_language, sessionLanguage) || sessionLanguage,
+        search_text_policy: String(ctx.search_text_policy || LANGUAGE_MEMORY_SEARCH_TEXT_POLICY),
+        locked_for_turn: ctx.locked_for_turn !== false,
+        confidence: Number.isFinite(Number(ctx.confidence)) ? Number(ctx.confidence) : 0,
+        fallback_chain: Array.isArray(ctx.fallback_chain) ? ctx.fallback_chain.slice(0, 8) : [],
+        violations: Array.isArray(ctx.violations) ? ctx.violations.slice(0, 8) : [],
+        raw_evidence_rewritten: ctx.raw_evidence_rewritten === true,
+        output_language_override: ctx.output_language_override || null,
+        trace_stage: String(ctx.trace_stage || "turn"),
+      };
+    } catch { return null; }
+  }
+
+  function formatLanguageContextInline(ctx) {
+    var lc = normalizeLanguageContextTrace(ctx);
+    return lc ? "session:" + lc.session_output_language + " / source:" + lc.output_language_source + " / raw user:" + lc.raw_user_language + " / summary:" + lc.summary_language : "";
+  }
+
+  function formatLanguageContextBlock(ctx) {
+    var lc = normalizeLanguageContextTrace(ctx);
+    return lc ? [
+      "session_output_language: " + lc.session_output_language,
+      "output_language_source: " + lc.output_language_source,
+      "raw_user_language: " + lc.raw_user_language,
+      "assistant_output_language: " + lc.assistant_output_language,
+      "summary_language: " + lc.summary_language,
+      "search_text_policy: " + lc.search_text_policy,
+      "raw_evidence_rewrite: " + (lc.raw_evidence_rewritten ? "yes" : "no"),
+    ].join("\n") : "";
+  }
+
+  function attachLanguageContextTrace(trace, languageContext) {
+    try {
+      var lc = normalizeLanguageContextTrace(languageContext);
+      if (!trace || !lc) return null;
+      trace.languageContext = lc;
+      if (trace._inputTransparency && typeof trace._inputTransparency === "object") trace._inputTransparency.languageContext = lc;
+      if (settings.debug) {
+        trace._rawPreviews = trace._rawPreviews || {};
+        trace._rawPreviews.languageContractRaw = truncPreview(JSON.stringify(lc), 900);
+      }
+      return lc;
+    } catch { return null; }
+  }
+
   async function saveTurnToBackend(turnIndex, userContent, assistantContent, chatSessionId) {
     if (!settings.enabled || !settings.dbEnabled) return;
     const rawSessionId = chatSessionId || await getCurrentChatSessionId();
@@ -22499,6 +22838,13 @@
   async function buildCompleteTurnRequestBody(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace) {
     try {
       const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride();
+      const languageContext = await buildLanguageContextTrace({
+        userInput,
+        assistantContent,
+        messages: contextMessages,
+        outputLanguageOverride,
+        stage: "complete_turn",
+      });
       const effectiveCritic = resolveEffectiveCriticConfig(settings);
       const mainProvider = getPluginMainProviderSetting(settings.pluginMainProvider);
       const criticProvider = getSubLlmProviderSetting(settings.subLlmProvider || mainProvider);
@@ -22515,9 +22861,10 @@
         assistant_content: String(assistantContent || ""),
         context_messages: Array.isArray(contextMessages) ? contextMessages : [],
         improvement_trace: improvementTrace || null,
-        output_language_override: outputLanguageOverride || null,
+        output_language_override: (languageContext && languageContext.output_language_override) || outputLanguageOverride || null,
         request_type: "model",
         client_meta: {
+          language_context: normalizeLanguageContextTrace(languageContext),
           episode_interval_turns: settings.episodeIntervalTurns || DEFAULT_SETTINGS.episodeIntervalTurns,
           long_session_refresh_enabled: true,
           chapter_auto_enabled: true,
@@ -22582,6 +22929,9 @@
       }
       if (meta.table_read_output_polish && typeof meta.table_read_output_polish === "object") {
         safeClientMeta.table_read_output_polish = Object.assign({}, meta.table_read_output_polish);
+      }
+      if (meta.language_context && typeof meta.language_context === "object") {
+        safeClientMeta.language_context = normalizeLanguageContextTrace(meta.language_context) || Object.assign({}, meta.language_context);
       }
       return {
         chat_session_id: String(body.chat_session_id || ""),
@@ -23919,7 +24269,22 @@
       // Phase 1-1: continuity 정보도 전달
       // Phase 1-3: KG recall 정보도 전달
       // Phase 2-3: active states 정보도 전달
-      trace._inputTransparency = buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities);
+      trace._inputTransparency = buildInputTransparency(
+        userInput,
+        recentContext,
+        searchResult,
+        wakeUpContext,
+        supervisorResult,
+        continuityInfo,
+        kgRecallResult,
+        extractedEntities,
+        activeStatesResult,
+        episodeRecallResult,
+        expandedEntities,
+        turnLanguageContext,
+        preparedBundle && preparedBundle.inputTransparencyModel,
+        preparedBundle && preparedBundle.effectiveInputPreview
+      );
       _effectiveInputAwaitingNewTurn = false;
 
       // E-6: Activity Snapshot 빌드
@@ -24093,6 +24458,47 @@
    * E-1e: Storyline 블록을 사람이 읽기 쉬운 텍스트로 변환.
    * fetchStorylines 결과를 받아 active 스토리라인 위주로 포맷.
    */
+  function normalizeStorylineDetailCompareText(value) {
+    return String(value || "")
+      .replace(/^[\s•\-⚡]+/, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function isStorylineSelfEchoDetail(detail, storyline) {
+    const key = normalizeStorylineDetailCompareText(detail);
+    if (!key || !storyline) return false;
+    const name = String(storyline.name || "").trim();
+    const context = String(storyline.current_context || "").trim();
+    const refs = [name, context];
+    if (name && context) refs.push(name + " — " + context);
+    return refs.some(function(ref) {
+      return normalizeStorylineDetailCompareText(ref) === key;
+    });
+  }
+
+  function appendStorylineDetailLine(lines, prefix, detail, storyline, seen) {
+    const clean = String(detail || "").trim();
+    if (!clean || isStorylineSelfEchoDetail(clean, storyline)) return;
+    const key = normalizeStorylineDetailCompareText(clean);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    lines.push(prefix + clean);
+  }
+
+  function appendStorylineDetailLines(lines, prefix, details, storyline, seen, limit) {
+    if (!Array.isArray(details) || details.length === 0) return;
+    const cap = Math.max(0, Number(limit || 0));
+    var added = 0;
+    for (var i = 0; i < details.length; i++) {
+      if (cap > 0 && added >= cap) break;
+      const before = lines.length;
+      appendStorylineDetailLine(lines, prefix, details[i], storyline, seen);
+      if (lines.length > before) added++;
+    }
+  }
+
   function formatStorylineBlock(storylineResult) {
     try {
       if (!storylineResult || !Array.isArray(storylineResult.items) || storylineResult.items.length === 0) return "";
@@ -24104,17 +24510,18 @@
         var entry = "• " + s.name;
         if (s.current_context) entry += " — " + s.current_context;
         lines.push(entry);
+        var seenDetails = new Set();
         // key_points 추가 (최대 2개)
         var kp = null;
         try { kp = typeof s.key_points_json === "string" ? JSON.parse(s.key_points_json) : s.key_points_json; } catch {}
         if (Array.isArray(kp) && kp.length > 0) {
-          kp.slice(0, 2).forEach(function(p) { if (p) lines.push("  - " + p); });
+          appendStorylineDetailLines(lines, "  - ", kp, s, seenDetails, 2);
         }
         // ongoing_tensions 추가 (최대 2개)
         var ot = null;
         try { ot = typeof s.ongoing_tensions_json === "string" ? JSON.parse(s.ongoing_tensions_json) : s.ongoing_tensions_json; } catch {}
         if (Array.isArray(ot) && ot.length > 0) {
-          ot.slice(0, 2).forEach(function(t) { if (t) lines.push("  ⚡ " + t); });
+          appendStorylineDetailLines(lines, "  ⚡ ", ot, s, seenDetails, 2);
         }
       }
       return lines.join("\n");
@@ -32069,6 +32476,12 @@
         }
       }
 
+      const turnLanguageContext = await buildLanguageContextTrace({
+        userInput,
+        messages,
+        stage: "beforeRequest",
+      });
+
       let continuityInfo = await resolveContinuityTriggerInfo(userInput, messages, orchSessionId, {
         metaOnlyInput: !!userInputInfo.metaOnly,
       });
@@ -32086,7 +32499,7 @@
       // backend off / timeout 시 fail-open으로 진행.
       if (isSaveType(type)) {
         try {
-          const ptResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type);
+          const ptResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext);
           if (ptResult) {
             _lastPrepareTurnSource = ptResult.source || "backend-off";
             // fallback_reason: "" (완전 성공) 이 falsy 처리되지 않도록 ?? 방어
@@ -32103,7 +32516,7 @@
               // M-2d: trace_preview H-4 groundwork — debug 없이도 basic 상태 노출
               tracePreview: (b && b.tracePreview) || null,
             });
-            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.continuityPack || b.recallResult || b.supervisorInputPack || b.injectionPack || b.tracePreview)) ? b : null;
+            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.continuityPack || b.recallResult || b.supervisorInputPack || b.injectionPack || b.inputTransparencyModel || b.effectiveInputPreview || b.tracePreview)) ? b : null;
           } else {
             _lastPrepareTurnSource = "backend-off";
             _lastPrepareTurnFallbackReason = "backend_off";
@@ -32179,6 +32592,7 @@
         const orchFailTrace = newTurnTrace();
         orchFailTrace.chatSessionId = orchSessionId;
         orchFailTrace.userInputPreview = "(orchestration failed)";
+        attachLanguageContextTrace(orchFailTrace, turnLanguageContext);
         applyOrchestrationFallbackTraceOr1b(orchFailTrace, emptyFallbackRoute);
         applyOrchestrationDirtySignalTraceOr1c(orchFailTrace, orchestrationDirtySignals);
         const orchFailDirtyMatrixState = buildOrchestrationDirtyMatrixStateOr1h(orchSessionId, {
@@ -32231,6 +32645,7 @@
         lastOrchResult._chatSessionId = orchSessionId;
         lastOrchResult._runtimeTokenInfo = runtimeTokenInfo || { currentChatTokens: null, source: "none" };
         if (lastOrchResult._trace) {
+          attachLanguageContextTrace(lastOrchResult._trace, turnLanguageContext);
           applyOrchestrationFallbackTraceOr1b(lastOrchResult._trace, skipFallbackRoute);
           applyOrchestrationDirtySignalTraceOr1c(lastOrchResult._trace, orchestrationDirtySignals);
           const skipDirtyMatrixState = buildOrchestrationDirtyMatrixStateOr1h(orchSessionId, {
@@ -32290,6 +32705,7 @@
         lastOrchResult._trace.contextSize = recentContext.length;
         debugLog("orchestration skipped → minimal trace created (input source:", userInputInfo.source, ")");
       }
+      attachLanguageContextTrace(lastOrchResult._trace, turnLanguageContext);
       applyOrchestrationFallbackTraceOr1b(lastOrchResult._trace, resolveOrchestrationFallbackRouteOr1b("direct_result"));
       applyOrchestrationDirtySignalTraceOr1c(lastOrchResult._trace, orchestrationDirtySignals);
       const lastOrchDirtyMatrixState = buildOrchestrationDirtyMatrixStateOr1h(orchSessionId, {
@@ -49928,7 +50344,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.3 Release",
+    pre_release_bundle_authority: "Archive Center 2.4 RC1 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",
