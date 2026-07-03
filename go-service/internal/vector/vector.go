@@ -45,6 +45,12 @@ type DocumentDeleter interface {
 	DeleteDocuments(ctx context.Context, ids []string) error
 }
 
+// DocumentLister is an optional diagnostic extension for full vector integrity
+// audits. It returns stored vector metadata without changing runtime recall.
+type DocumentLister interface {
+	ListDocuments(ctx context.Context, sessionID string) ([]VectorDocument, error)
+}
+
 // CollectionResetter is an explicit operator/debug-only extension for clearing
 // all vector documents while preserving service configuration.
 type CollectionResetter interface {

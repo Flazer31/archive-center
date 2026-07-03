@@ -207,6 +207,40 @@ func (s *chromaStore) DeleteDocuments(ctx context.Context, ids []string) error {
 	return err
 }
 
+func (s *chromaStore) ListDocuments(ctx context.Context, sessionID string) ([]VectorDocument, error) {
+	ref, err := s.ensureCollection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{
+		"include": []string{"metadatas", "documents"},
+	}
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		body["where"] = map[string]any{"chat_session_id": sessionID}
+	}
+	var out struct {
+		IDs       []string         `json:"ids"`
+		Documents []string         `json:"documents"`
+		Metadatas []map[string]any `json:"metadatas"`
+	}
+	if _, err := s.doJSON(ctx, http.MethodPost, s.collectionOperationPath(ref, "get"), body, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	docs := make([]VectorDocument, 0, len(out.IDs))
+	for i, id := range out.IDs {
+		meta := map[string]any{}
+		if i < len(out.Metadatas) && out.Metadatas[i] != nil {
+			meta = out.Metadatas[i]
+		}
+		text := ""
+		if i < len(out.Documents) {
+			text = out.Documents[i]
+		}
+		docs = append(docs, vectorDocumentFromChroma(id, text, meta))
+	}
+	return docs, nil
+}
+
 func (s *chromaStore) ResetAll(ctx context.Context) error {
 	s.mu.Lock()
 	ref := strings.TrimSpace(s.collectionRef)

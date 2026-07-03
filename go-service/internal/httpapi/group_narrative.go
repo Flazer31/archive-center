@@ -6250,7 +6250,16 @@ func (s *Server) handleWorldRuleDelete(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deleted_id": ruleID})
+	sid := strings.TrimSpace(r.URL.Query().Get("chat_session_id"))
+	vectorCleanup := map[string]any{"attempted": false, "ok": true, "skipped_reason": "chat_session_id_not_provided"}
+	if sid != "" {
+		vectorCleanup = s.deleteDerivedArtifactVectorDocuments(r.Context(), sid, "world_rule", ruleID)
+	}
+	status := "ok"
+	if ok, _ := vectorCleanup["ok"].(bool); !ok {
+		status = "partial_error"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": status, "deleted_id": ruleID, "vector_cleanup": vectorCleanup})
 }
 
 func buildWorldRuleSyncCandidates(sid string, turnIndex int, supervisor map[string]any) []store.WorldRule {

@@ -64,6 +64,9 @@ type artifactSaveResult struct {
 	Entities                 int
 	TrustStates              int
 	VectorsUpserted          int
+	VectorsMemoryUpserted    int
+	VectorsEvidenceUpserted  int
+	VectorsWorldRuleUpserted int
 	EmbeddingStatus          string
 	VectorStatus             string
 	Attempted                int
@@ -3300,6 +3303,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		}, &result, func() {
 			result.Evidence++
 			existingEvidence = append(existingEvidence, *ev)
+			s.upsertDerivedArtifactVector(ctx, sid, turnIndex, "evidence", "direct_evidence_records", ev.ID, "direct_evidence.v1", directEvidenceVectorDocumentText(*ev), embCfg, &result)
 		})
 	}
 
@@ -3348,7 +3352,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		})
 	}
 
-	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, now, &result, existingCanonicalLayers, cost)
+	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, embCfg, now, &result, existingCanonicalLayers, cost)
 	finalizeCanonicalStateWriteCost(cost)
 	if cost.StateWriteCount > 0 {
 		result.CanonicalStateWriteCost = cost
@@ -3695,7 +3699,7 @@ func (s *Server) saveSupersessionResolutionBestEffort(ctx context.Context, decis
 	}, result, func() {})
 }
 
-func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement) {
+func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, embCfg completeTurnEmbeddingConfig, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement) {
 	entities := mapFromAny(extraction["entities"])
 	saveEntityItems := func(items []any, entityType string) {
 		for _, item := range items {
@@ -3994,20 +3998,24 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			if key == "" {
 				continue
 			}
+			wr := &store.WorldRule{
+				ChatSessionID: sid,
+				Scope:         extractionFirstNonEmpty(stringFromMap(rule, "scope"), "session"),
+				ScopeName:     stringFromMap(rule, "scope_name"),
+				Category:      extractionFirstNonEmpty(stringFromMap(rule, "category"), "critic"),
+				Key:           key,
+				ValueJSON:     mustCompactJSON(extractionFirstNonEmpty(stringFromMap(rule, "value"), stringFromMap(rule, "value_json"), mustCompactJSON(rule))),
+				Genre:         stringFromMap(rule, "genre"),
+				SourceTurn:    turnIndex,
+				CreatedAt:     now,
+				UpdatedAt:     now,
+			}
 			result.trySave("SaveWorldRule", func() error {
-				return saver.SaveWorldRule(ctx, &store.WorldRule{
-					ChatSessionID: sid,
-					Scope:         extractionFirstNonEmpty(stringFromMap(rule, "scope"), "session"),
-					ScopeName:     stringFromMap(rule, "scope_name"),
-					Category:      extractionFirstNonEmpty(stringFromMap(rule, "category"), "critic"),
-					Key:           key,
-					ValueJSON:     mustCompactJSON(extractionFirstNonEmpty(stringFromMap(rule, "value"), stringFromMap(rule, "value_json"), mustCompactJSON(rule))),
-					Genre:         stringFromMap(rule, "genre"),
-					SourceTurn:    turnIndex,
-					CreatedAt:     now,
-					UpdatedAt:     now,
-				})
-			}, result, func() { result.WorldRules++ })
+				return saver.SaveWorldRule(ctx, wr)
+			}, result, func() {
+				result.WorldRules++
+				s.upsertDerivedArtifactVector(ctx, sid, turnIndex, "world_rule", "world_rules", wr.ID, "world_rule.v1", worldRuleVectorDocumentText(*wr), embCfg, result)
+			})
 		}
 	}
 	s.saveCriticIngestTrace(ctx, sid, turnIndex, now, result)
@@ -4029,22 +4037,26 @@ func (s *Server) saveCriticIngestTrace(ctx context.Context, sid string, turnInde
 		return
 	}
 	details := map[string]any{
-		"policy_version":             "critic_ingest_trace.v1",
-		"turn_index":                 turnIndex,
-		"memories":                   result.Memories,
-		"direct_evidence":            result.Evidence,
-		"kg_triples":                 result.KGTriples,
-		"persona_capsule_candidates": result.PersonaCapsuleCandidates,
-		"subjective_entity_memories": result.SubjectiveEntityMemories,
-		"character_states":           result.CharacterStates,
-		"pending_threads":            result.PendingThreads,
-		"active_states":              result.ActiveStates,
-		"canonical_layers":           result.CanonicalStateLayers,
-		"skip_reasons":               result.SkipReasons,
-		"warnings":                   result.Warnings,
-		"embedding_status":           result.EmbeddingStatus,
-		"vector_status":              result.VectorStatus,
-		"artifact_save_errors":       result.ErrorDetails,
+		"policy_version":              "critic_ingest_trace.v1",
+		"turn_index":                  turnIndex,
+		"memories":                    result.Memories,
+		"direct_evidence":             result.Evidence,
+		"kg_triples":                  result.KGTriples,
+		"persona_capsule_candidates":  result.PersonaCapsuleCandidates,
+		"subjective_entity_memories":  result.SubjectiveEntityMemories,
+		"character_states":            result.CharacterStates,
+		"pending_threads":             result.PendingThreads,
+		"active_states":               result.ActiveStates,
+		"canonical_layers":            result.CanonicalStateLayers,
+		"skip_reasons":                result.SkipReasons,
+		"warnings":                    result.Warnings,
+		"embedding_status":            result.EmbeddingStatus,
+		"vector_status":               result.VectorStatus,
+		"vectors_upserted":            result.VectorsUpserted,
+		"vectors_memory_upserted":     result.VectorsMemoryUpserted,
+		"vectors_evidence_upserted":   result.VectorsEvidenceUpserted,
+		"vectors_world_rule_upserted": result.VectorsWorldRuleUpserted,
+		"artifact_save_errors":        result.ErrorDetails,
 	}
 	result.trySave("SaveAuditLog(critic_ingest_trace)", func() error {
 		return s.Store.SaveAuditLog(ctx, &store.AuditLog{
@@ -4178,7 +4190,103 @@ func (s *Server) upsertMemoryVector(ctx context.Context, sid string, turnIndex i
 		return
 	}
 	result.VectorsUpserted++
+	result.VectorsMemoryUpserted++
 	result.VectorStatus = "ok"
+}
+
+func (s *Server) upsertDerivedArtifactVector(ctx context.Context, sid string, turnIndex int, tier, sourceTable string, sourceRowID int64, schemaVersion, documentText string, embCfg completeTurnEmbeddingConfig, result *artifactSaveResult) {
+	if result == nil {
+		return
+	}
+	tier = strings.TrimSpace(tier)
+	sourceTable = strings.TrimSpace(sourceTable)
+	documentText = strings.TrimSpace(documentText)
+	if tier == "" || sourceTable == "" || documentText == "" {
+		return
+	}
+	if sourceRowID <= 0 {
+		result.VectorStatus = "missing_source_row_id"
+		result.Warnings = append(result.Warnings, "vector_"+tier+"_source_row_id_missing")
+		return
+	}
+	if !embCfg.hasConfig() {
+		if result.VectorStatus == "not_requested" {
+			result.VectorStatus = "missing_embedding_config"
+		}
+		result.Warnings = append(result.Warnings, "vector_"+tier+"_embedding_config_missing")
+		return
+	}
+	if s.Vector == nil || strings.TrimSpace(s.Cfg.ChromaEndpoint) == "" {
+		result.VectorStatus = "vector_not_configured"
+		return
+	}
+	emb, _, err := callEmbedding(ctx, embCfg, documentText)
+	if err != nil {
+		result.VectorStatus = "error: " + err.Error()
+		result.Warnings = append(result.Warnings, "vector_"+tier+"_embedding_failed")
+		return
+	}
+	embedding := parseFloat32JSONList(emb)
+	if len(embedding) == 0 {
+		result.VectorStatus = "empty_embedding"
+		result.Warnings = append(result.Warnings, "vector_"+tier+"_embedding_empty")
+		return
+	}
+	rowID := strconv.FormatInt(sourceRowID, 10)
+	doc := vector.VectorDocument{
+		ID:               fmt.Sprintf("%s:%s:%s", tier, sid, rowID),
+		Embedding:        embedding,
+		Tier:             tier,
+		ChatSessionID:    sid,
+		SourceTable:      sourceTable,
+		SourceRowID:      rowID,
+		SchemaVersion:    schemaVersion,
+		DocumentText:     documentText,
+		SearchTextPolicy: "derived_artifact_search_text.v1",
+	}
+	if err := s.Vector.Upsert(ctx, sid, []vector.VectorDocument{doc}); err != nil {
+		result.VectorStatus = "error: " + err.Error()
+		result.Warnings = append(result.Warnings, "vector_"+tier+"_upsert_failed")
+		return
+	}
+	result.VectorsUpserted++
+	switch tier {
+	case "evidence":
+		result.VectorsEvidenceUpserted++
+	case "world_rule":
+		result.VectorsWorldRuleUpserted++
+	}
+	result.VectorStatus = "ok"
+}
+
+func directEvidenceVectorDocumentText(ev store.DirectEvidence) string {
+	parts := []string{}
+	if kind := strings.TrimSpace(ev.EvidenceKind); kind != "" {
+		parts = append(parts, "kind: "+kind)
+	}
+	if text := strings.TrimSpace(ev.EvidenceText); text != "" {
+		parts = append(parts, text)
+	}
+	if ev.SourceTurnStart > 0 || ev.SourceTurnEnd > 0 || ev.TurnAnchor > 0 {
+		parts = append(parts, fmt.Sprintf("turns: %d-%d anchor:%d", ev.SourceTurnStart, ev.SourceTurnEnd, ev.TurnAnchor))
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func worldRuleVectorDocumentText(wr store.WorldRule) string {
+	parts := []string{}
+	for _, part := range []string{
+		strings.TrimSpace(wr.Scope),
+		strings.TrimSpace(wr.ScopeName),
+		strings.TrimSpace(wr.Category),
+		strings.TrimSpace(wr.Key),
+		strings.TrimSpace(wr.ValueJSON),
+	} {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func callEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string) (string, string, error) {

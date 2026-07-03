@@ -1,6 +1,6 @@
 # Archive Center 2.4 Direction - Language-Aware Memory + Planner Baseline
 
-Status: 2.4-4 planner + language-aware injection implemented; character identity accuracy/general secret reveal guard added to 2.4 release scope; plugin slimming/offload track recorded
+Status: 2.4 RC6 release candidate prepared; language-aware memory, identity/secret guard, plugin offload, vector integrity, reindex/orphan/dedupe maintenance implemented
 Target: Archive Center 2.4
 
 ## Purpose
@@ -632,6 +632,48 @@ Implemented in this slice:
 - `Archive Center.js` now renders the backend model when present while preserving local fallback for backend-off sessions.
 - Redundant local trace formatting remains only as fail-open fallback and should be deleted gradually after live parity confirms no visibility lane was lost.
 
+### 2.4 RC6 Vector Integrity and Maintenance Completion
+
+This RC closes the remaining 2.4 maintenance gaps found during live testing: old rows not being present in ChromaDB, rollback leaving possible vector orphans, and injection-time duplicate collapse not cleaning duplicate DB rows.
+
+Implemented in this slice:
+
+- `/admin/reindex` now reports and processes eligible existing `direct_evidence_records` and `world_rules` rows in addition to `memories`.
+- Reindex integrity now compares ChromaDB count against the full canonical vector candidate set, not memory rows alone.
+- ChromaDB vector store now supports diagnostic document listing through `DocumentLister`.
+- `/admin/vector-orphan-audit` performs full session document listing and compares ChromaDB documents against MariaDB canonical row references.
+- `/admin/vector-orphan-audit` is audit-only by default. It deletes only when `delete_orphans:true` is explicitly provided and the store is mutation-enabled.
+- Rollback now attaches a full post-rollback orphan audit when the vector store supports document listing; otherwise it keeps the bounded count check.
+- Explorer direct-evidence deletion now attempts to remove matching `evidence:<session>:<id>` vector documents.
+- World-rule deletion now attempts to remove matching `world_rule:<session>:<id>` vector documents when `chat_session_id` is provided.
+- `/admin/dedupe-cleanup` audits duplicate `memories`, `storylines`, and `world_rules` rows.
+- `/admin/dedupe-cleanup` is dry-run by default. It deletes DB rows only when `apply:true` is explicitly provided.
+- Dedupe cleanup removes matching memory/world-rule vector documents for rows it actually deletes.
+- Added regression coverage for derived-artifact reindex candidates, full orphan audit deletion, and dry-run/apply DB dedupe cleanup.
+
+Operator contract:
+
+```text
+POST /admin/reindex
+  dry_run:true  -> inspect memory/evidence/world_rule candidates
+  dry_run:false -> upsert eligible vectors when embedding settings are configured
+
+POST /admin/vector-orphan-audit
+  delete_orphans omitted/false -> full audit only
+  delete_orphans:true          -> delete ChromaDB documents that no longer hydrate to MariaDB canonical rows
+
+POST /admin/dedupe-cleanup
+  apply omitted/false -> report duplicate DB row candidates only
+  apply:true          -> delete duplicate DB rows and matching vectors
+```
+
+Release risks and boundaries:
+
+- These maintenance routes are operator/admin surfaces, not automatic prompt-time cleanup.
+- Existing rows still need an explicit `/admin/reindex` run to populate ChromaDB after upgrading from older 2.4 RCs.
+- Dedupe cleanup intentionally targets exact normalized duplicate anchors. It does not merge near-duplicates or semantic paraphrases.
+- Full orphan audit requires a vector backend that supports document listing. ChromaDB supports it; unsupported stores return an unavailable diagnostic instead of guessing.
+
 ## Release Gate
 
 2.4 should not be released until these checks pass:
@@ -648,9 +690,12 @@ Implemented in this slice:
 - Tail deletion rollback still removes MariaDB rows and matching vectors.
 - No new hardcoded language or topK behavior outside user/settings policy.
 - Plugin slimming inventory completed, with at least one reviewed backend-offload plan or a documented reason to defer code movement.
+- Existing direct-evidence/world-rule rows can be reindexed into ChromaDB through `/admin/reindex`.
+- Full vector orphan audit can compare ChromaDB documents with MariaDB canonical row references.
+- DB duplicate cleanup is available as dry-run-first operator maintenance and does not run implicitly.
 
 ## Next Implementation Candidate
 
-The next real work item should be final 2.4 live replay and release-gate verification.
+The next real work item should be RC6 live replay and release-gate verification before promoting the same code line to final 2.4.
 
-2.4-3 is implemented as backend ChromaDB memory search-text composition, vector metadata, reindex alignment, and vector lane trace visibility. 2.4-4 is implemented as backend prepare-turn language contract propagation into planner support, injection trace, and related-memory language evidence. 2.4-5 has the protected-secret and identity-accuracy guard foundation: extraction contracts, owner-scoped subjective guard memories, masked injection/recollection text, POV-scoped same-entity guidance, and confirmed same-turn canonical merge during artifact save. 2.4-6 adds replay gates for language contracts, protected identity search aliases, masked prompt injection, partial reveal scope, protected power inheritance, vector-first topK behavior, and confirmed identity alias canonicalization of saved artifacts. 2.4-7 now has an offload inventory, backend Input Transparency render model, plugin backend-render adoption, and backend-off local fallback. Before 2.4 release, run live scenario replay and decide whether persistent alias registry/import is required for this release or deferred.
+2.4-3 is implemented as backend ChromaDB memory search-text composition, vector metadata, reindex alignment, and vector lane trace visibility. 2.4-4 is implemented as backend prepare-turn language contract propagation into planner support, injection trace, and related-memory language evidence. 2.4-5 has the protected-secret and identity-accuracy guard foundation: extraction contracts, owner-scoped subjective guard memories, masked injection/recollection text, POV-scoped same-entity guidance, and confirmed same-turn canonical merge during artifact save. 2.4-6 adds replay gates for language contracts, protected identity search aliases, masked prompt injection, partial reveal scope, protected power inheritance, vector-first topK behavior, and confirmed identity alias canonicalization of saved artifacts. 2.4-7 now has an offload inventory, backend Input Transparency render model, plugin backend-render adoption, and backend-off local fallback. RC6 adds derived-artifact reindex, full ChromaDB orphan audit, rollback orphan verification, and explicit DB duplicate cleanup. Before final 2.4 release, run live scenario replay and decide whether persistent alias registry/import is required for this release or deferred.

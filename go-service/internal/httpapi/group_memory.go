@@ -4561,6 +4561,7 @@ func (s *Server) handleDeleteDirectEvidenceMutation(w http.ResponseWriter, r *ht
 		writeInternalError(w, err.Error())
 		return
 	}
+	vectorCleanup := s.deleteDerivedArtifactVectorDocuments(r.Context(), sid, "evidence", recordID)
 	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
 		ChatSessionID: sid,
 		EventType:     "manual_delete",
@@ -4580,13 +4581,18 @@ func (s *Server) handleDeleteDirectEvidenceMutation(w http.ResponseWriter, r *ht
 				"source_turn_end":      evidence.SourceTurnEnd,
 				"created_at":           evidence.CreatedAt,
 			},
-			"changed_at": changedAt,
+			"changed_at":     changedAt,
+			"vector_cleanup": vectorCleanup,
 		}),
 		Source:    "explorer_manual_delete",
 		CreatedAt: changedAt,
 	})
+	status := "ok"
+	if ok, _ := vectorCleanup["ok"].(bool); !ok {
+		status = "partial_error"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           "ok",
+		"status":           status,
 		"source":           s.storeWriteSource(),
 		"mutation_enabled": true,
 		"chat_session_id":  sid,
@@ -4595,6 +4601,7 @@ func (s *Server) handleDeleteDirectEvidenceMutation(w http.ResponseWriter, r *ht
 		"deleted":          true,
 		"changed_at":       changedAt,
 		"audit_written":    true,
+		"vector_cleanup":   vectorCleanup,
 	})
 }
 

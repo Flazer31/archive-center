@@ -987,7 +987,7 @@ func (m *mariadbStore) SaveEvidence(ctx context.Context, e *DirectEvidence) erro
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
-	_, err := m.db.ExecContext(ctx, `
+	res, err := m.db.ExecContext(ctx, `
 		INSERT INTO direct_evidence_records (
 			chat_session_id, evidence_kind, evidence_text, source_turn_start, source_turn_end,
 			turn_anchor, source_message_ids_json, source_hash, archive_state, capture_stage,
@@ -999,6 +999,11 @@ func (m *mariadbStore) SaveEvidence(ctx context.Context, e *DirectEvidence) erro
 		e.TurnAnchor, nullableString(e.SourceMessageIDsJSON), nullableString(e.SourceHash),
 		e.ArchiveState, e.CaptureStage, e.CaptureVerification, nullableString(e.CommittedGate),
 		nullableString(e.LineageJSON), e.RepairNeeded, e.Tombstoned, e.SupersededByID, nonZeroTime(e.CreatedAt))
+	if err == nil {
+		if id, idErr := res.LastInsertId(); idErr == nil && id > 0 {
+			e.ID = id
+		}
+	}
 	return err
 }
 
@@ -2401,9 +2406,16 @@ func (m *mariadbStore) SaveWorldRule(ctx context.Context, w *WorldRule) error {
 		return err
 	}
 	if rows, rowErr := res.RowsAffected(); rowErr == nil && rows > 0 {
+		_ = m.db.QueryRowContext(ctx, `
+			SELECT id
+			FROM world_rules
+			WHERE chat_session_id = ? AND scope = ? AND `+"`key`"+` = ? AND scope_name <=> ?
+			ORDER BY id DESC
+			LIMIT 1
+		`, w.ChatSessionID, scope, w.Key, scopeName).Scan(&w.ID)
 		return nil
 	}
-	_, err = m.db.ExecContext(ctx, `
+	res, err = m.db.ExecContext(ctx, `
 		INSERT INTO world_rules (
 			chat_session_id, scope, scope_name, category, `+"`key`"+`, value_json,
 			genre, source_turn, pinned, suppressed, user_corrected, created_at, updated_at
@@ -2413,6 +2425,11 @@ func (m *mariadbStore) SaveWorldRule(ctx context.Context, w *WorldRule) error {
 		category, w.Key, nullableString(w.ValueJSON),
 		nullableString(w.Genre), w.SourceTurn, w.Pinned, w.Suppressed, w.UserCorrected,
 		nonZeroTime(w.CreatedAt), updatedAt)
+	if err == nil {
+		if id, idErr := res.LastInsertId(); idErr == nil && id > 0 {
+			w.ID = id
+		}
+	}
 	return err
 }
 

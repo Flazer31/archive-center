@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.4 RC4
+//@display-name Archive Center 2.4 RC6
 //@author memory-scaffold
 //@api 3.0
-//@version 2.4.0-rc4
+//@version 2.4.0-rc6
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
@@ -36,9 +36,9 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.4.0-rc4";
-  const BUILD_ID = "2.4.0-rc4-input-capture-ui-trim.20260702";
-  const BUILD_CHANNEL = "rc4";
+  const VERSION = "2.4.0-rc6";
+  const BUILD_ID = "2.4.0-rc6-reindex-orphan-dedupe.20260703";
+  const BUILD_CHANNEL = "rc5";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -251,7 +251,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.4 RC4 설정",
+      "settings.title": "🗂️ Archive Center 2.4 RC6 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -1230,7 +1230,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.4 RC4 Settings",
+      "settings.title": "🗂️ Archive Center 2.4 RC6 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -2209,7 +2209,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.4 RC4 設定",
+      "settings.title": "🗂️ Archive Center 2.4 RC6 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -33876,6 +33876,10 @@
       const persistedTurnIdx = _ctResult && Number.isFinite(Number(_ctResult.turn_index)) && Number(_ctResult.turn_index) > 0
         ? Number(_ctResult.turn_index)
         : turnIdx;
+      const ctPipeline = _ctResult && _ctResult.persistence_pipeline && typeof _ctResult.persistence_pipeline === "object" ? _ctResult.persistence_pipeline : null;
+      const ctRaw = ctPipeline && ctPipeline.raw && typeof ctPipeline.raw === "object" ? ctPipeline.raw : null;
+      const ctDerived = ctPipeline && ctPipeline.derived && typeof ctPipeline.derived === "object" ? ctPipeline.derived : null;
+      const ctVector = ctPipeline && ctPipeline.vector && typeof ctPipeline.vector === "object" ? ctPipeline.vector : null;
       // M-4d: runtimeState 업데이트 — complete-turn 결과 기록
       {
         const ctStatus = _ctResult ? _ctResult.status : "not_called";
@@ -33896,6 +33900,14 @@
           subjectiveEntityMemoriesSaved: _ctResult && typeof _ctResult.subjective_entity_memories_saved === "number" ? _ctResult.subjective_entity_memories_saved : null,
           worldRulesSaved: _ctResult && typeof _ctResult.world_rules_saved === "number" ? _ctResult.world_rules_saved : null,
           derivedArtifactsSaved: _ctResult && typeof _ctResult.derived_artifacts_saved === "number" ? _ctResult.derived_artifacts_saved : null,
+          persistencePipeline: ctPipeline,
+          rawStatus: ctRaw && ctRaw.status ? String(ctRaw.status) : "",
+          derivedStatus: ctDerived && ctDerived.status ? String(ctDerived.status) : "",
+          vectorStatus: ctVector && ctVector.status ? String(ctVector.status) : "",
+          vectorUpserted: ctVector && typeof ctVector.upserted_total === "number" ? ctVector.upserted_total : (_ctResult && typeof _ctResult.vectors_upserted === "number" ? _ctResult.vectors_upserted : null),
+          vectorMemoryUpserted: ctVector && typeof ctVector.memory_upserted === "number" ? ctVector.memory_upserted : (_ctResult && typeof _ctResult.vectors_memory_upserted === "number" ? _ctResult.vectors_memory_upserted : null),
+          vectorEvidenceUpserted: ctVector && typeof ctVector.direct_evidence_upserted === "number" ? ctVector.direct_evidence_upserted : (_ctResult && typeof _ctResult.vectors_evidence_upserted === "number" ? _ctResult.vectors_evidence_upserted : null),
+          vectorWorldRuleUpserted: ctVector && typeof ctVector.world_rule_upserted === "number" ? ctVector.world_rule_upserted : (_ctResult && typeof _ctResult.vectors_world_rule_upserted === "number" ? _ctResult.vectors_world_rule_upserted : null),
         });
       }
       if (_ctOk && _ctResult) {
@@ -33946,6 +33958,14 @@
               subjectiveEntityMemoriesSaved: _ctResult && typeof _ctResult.subjective_entity_memories_saved === "number" ? _ctResult.subjective_entity_memories_saved : null,
               worldRulesSaved: _ctResult && typeof _ctResult.world_rules_saved === "number" ? _ctResult.world_rules_saved : null,
               derivedArtifactsSaved: _ctResult && typeof _ctResult.derived_artifacts_saved === "number" ? _ctResult.derived_artifacts_saved : null,
+              persistencePipeline: ctPipeline,
+              rawStatus: ctRaw && ctRaw.status ? String(ctRaw.status) : "",
+              derivedStatus: ctDerived && ctDerived.status ? String(ctDerived.status) : "",
+              vectorStatus: ctVector && ctVector.status ? String(ctVector.status) : "",
+              vectorUpserted: ctVector && typeof ctVector.upserted_total === "number" ? ctVector.upserted_total : (_ctResult && typeof _ctResult.vectors_upserted === "number" ? _ctResult.vectors_upserted : null),
+              vectorMemoryUpserted: ctVector && typeof ctVector.memory_upserted === "number" ? ctVector.memory_upserted : (_ctResult && typeof _ctResult.vectors_memory_upserted === "number" ? _ctResult.vectors_memory_upserted : null),
+              vectorEvidenceUpserted: ctVector && typeof ctVector.direct_evidence_upserted === "number" ? ctVector.direct_evidence_upserted : (_ctResult && typeof _ctResult.vectors_evidence_upserted === "number" ? _ctResult.vectors_evidence_upserted : null),
+              vectorWorldRuleUpserted: ctVector && typeof ctVector.world_rule_upserted === "number" ? ctVector.world_rule_upserted : (_ctResult && typeof _ctResult.vectors_world_rule_upserted === "number" ? _ctResult.vectors_world_rule_upserted : null),
             });
           }
           debugLog("[M-4c] save via complete-turn OK (turn", turnIdx, ")");
@@ -45310,6 +45330,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       if (ct.subjectiveEntityMemoriesSaved != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">sem:' + ct.subjectiveEntityMemoriesSaved + '</span>');
       if (ct.worldRulesSaved != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">rule:' + ct.worldRulesSaved + '</span>');
       if (ct.derivedArtifactsSaved != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">der:' + ct.derivedArtifactsSaved + '</span>');
+      if (ct.rawStatus) chips.push('<span class="mo-dash-chip mo-dash-chip-num">raw:' + escapeAttr(ct.rawStatus) + '</span>');
+      if (ct.derivedStatus) chips.push('<span class="mo-dash-chip mo-dash-chip-num">derived:' + escapeAttr(ct.derivedStatus) + '</span>');
+      if (ct.vectorUpserted != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">vec:' + ct.vectorUpserted + '</span>');
+      if (ct.vectorMemoryUpserted != null || ct.vectorEvidenceUpserted != null || ct.vectorWorldRuleUpserted != null) {
+        chips.push('<span class="mo-dash-chip mo-dash-chip-num">vecLane m:' + (ct.vectorMemoryUpserted == null ? "?" : ct.vectorMemoryUpserted) + ' e:' + (ct.vectorEvidenceUpserted == null ? "?" : ct.vectorEvidenceUpserted) + ' r:' + (ct.vectorWorldRuleUpserted == null ? "?" : ct.vectorWorldRuleUpserted) + '</span>');
+      }
       var failChips = ct.failReasons && ct.failReasons.length > 0
         ? ct.failReasons.map(function(fr){ return '<span class="mo-dash-chip mo-dash-chip-fail">' + fr + '</span>'; }).join("")
         : "";
@@ -50254,7 +50280,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.4 RC4 Release",
+    pre_release_bundle_authority: "Archive Center 2.4 RC6 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",

@@ -25,6 +25,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /maintenance/enqueue", s.handleMaintenanceEnqueue)
 	mux.HandleFunc("POST /admin/database-reset", s.handleAdminDatabaseReset)
 	mux.HandleFunc("POST /admin/reindex", s.handleAdminReindex)
+	mux.HandleFunc("POST /admin/vector-orphan-audit", s.handleAdminVectorOrphanAudit)
+	mux.HandleFunc("POST /admin/dedupe-cleanup", s.handleAdminDedupeCleanup)
 	mux.HandleFunc("POST /admin/rescan", s.handleAdminRescan)
 	mux.HandleFunc("POST /admin/session-normalize", s.handleAdminSessionNormalize)
 	mux.HandleFunc("GET /admin/jobs", s.handleAdminJobs)
@@ -1121,7 +1123,27 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allMemories := append([]store.Memory(nil), memories...)
-	preIntegrity := s.adminReindexIntegrityReport(r.Context(), sid, allMemories, strings.TrimSpace(cfg.Embedder.Model))
+	evidence, err := s.Store.ListEvidence(r.Context(), sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotEnabled) {
+			evidence = nil
+		} else {
+			writeInternalError(w, err.Error())
+			return
+		}
+	}
+	worldRules, err := s.Store.ListWorldRules(r.Context(), sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotEnabled) {
+			worldRules = nil
+		} else {
+			writeInternalError(w, err.Error())
+			return
+		}
+	}
+	allEvidence := append([]store.DirectEvidence(nil), evidence...)
+	allWorldRules := append([]store.WorldRule(nil), worldRules...)
+	preIntegrity := s.adminReindexIntegrityReport(r.Context(), sid, allMemories, allEvidence, allWorldRules, strings.TrimSpace(cfg.Embedder.Model))
 	if len(memories) > maxItems {
 		memories = memories[:maxItems]
 	}
@@ -1178,6 +1200,13 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	artifactResult := s.adminReindexDerivedArtifacts(r.Context(), sid, cfg, dryRun, maxItems, allEvidence, allWorldRules)
+	if !dryRun {
+		processed += artifactResult.Processed
+		upserted += artifactResult.Upserted
+		skipped += artifactResult.Skipped
+		errorsOut = append(errorsOut, artifactResult.Errors...)
+	}
 	processedBatches := 0
 	if processed > 0 {
 		processedBatches = (processed + batchSize - 1) / batchSize
@@ -1191,7 +1220,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 	integrityReport := preIntegrity
 	var postIntegrity map[string]any
 	if !dryRun {
-		postIntegrity = s.adminReindexIntegrityReport(r.Context(), sid, allMemories, strings.TrimSpace(cfg.Embedder.Model))
+		postIntegrity = s.adminReindexIntegrityReport(r.Context(), sid, allMemories, allEvidence, allWorldRules, strings.TrimSpace(cfg.Embedder.Model))
 		integrityReport = postIntegrity
 	}
 	now := time.Now().UTC()
@@ -1218,6 +1247,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 			"embedding_missing_fields": cfg.Embedder.missingFields(),
 			"failed_ids":               failedIDs,
 			"skipped_ids":              skippedIDs,
+			"derived_artifact_reindex": artifactResult.Summary(),
 			"errors":                   errorsOut,
 			"integrity_report":         integrityReport,
 			"pre_reindex_integrity":    preIntegrity,
@@ -1251,6 +1281,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 		"embedding_missing_fields": cfg.Embedder.missingFields(),
 		"failed_ids":               failedIDs,
 		"skipped_ids":              skippedIDs,
+		"derived_artifact_reindex": artifactResult.Summary(),
 		"errors":                   errorsOut,
 		"integrity_report":         integrityReport,
 		"pre_reindex_integrity":    preIntegrity,
@@ -1263,7 +1294,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 		},
 		"audit_written": true,
 		"changed_at":    now,
-		"note":          "reindex rebuilt vector documents for memories that had an embedding or could be embedded with configured settings",
+		"note":          "reindex rebuilt vector documents for memories and eligible derived artifacts when embedding settings were available",
 	})
 }
 
@@ -1292,7 +1323,25 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 		return nil, err
 	}
 	allMemories := append([]store.Memory(nil), memories...)
-	preIntegrity := s.adminReindexIntegrityReport(ctx, sid, allMemories, strings.TrimSpace(cfg.Embedder.Model))
+	evidence, err := s.Store.ListEvidence(ctx, sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotEnabled) {
+			evidence = nil
+		} else {
+			return nil, err
+		}
+	}
+	worldRules, err := s.Store.ListWorldRules(ctx, sid)
+	if err != nil {
+		if errors.Is(err, store.ErrNotEnabled) {
+			worldRules = nil
+		} else {
+			return nil, err
+		}
+	}
+	allEvidence := append([]store.DirectEvidence(nil), evidence...)
+	allWorldRules := append([]store.WorldRule(nil), worldRules...)
+	preIntegrity := s.adminReindexIntegrityReport(ctx, sid, allMemories, allEvidence, allWorldRules, strings.TrimSpace(cfg.Embedder.Model))
 	if len(memories) > maxItems {
 		memories = memories[:maxItems]
 	}
@@ -1374,6 +1423,13 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 			}
 		}
 	}
+	artifactResult := s.adminReindexDerivedArtifacts(ctx, sid, cfg, dryRun, maxItems, allEvidence, allWorldRules)
+	if !dryRun {
+		processed += artifactResult.Processed
+		upserted += artifactResult.Upserted
+		skipped += artifactResult.Skipped
+		errorsOut = append(errorsOut, artifactResult.Errors...)
+	}
 	processedBatches := 0
 	if processed > 0 {
 		processedBatches = (processed + batchSize - 1) / batchSize
@@ -1387,7 +1443,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 	integrityReport := preIntegrity
 	var postIntegrity map[string]any
 	if !dryRun {
-		postIntegrity = s.adminReindexIntegrityReport(ctx, sid, allMemories, strings.TrimSpace(cfg.Embedder.Model))
+		postIntegrity = s.adminReindexIntegrityReport(ctx, sid, allMemories, allEvidence, allWorldRules, strings.TrimSpace(cfg.Embedder.Model))
 		integrityReport = postIntegrity
 	}
 	now := time.Now().UTC()
@@ -1415,6 +1471,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 			"embedding_missing_fields": cfg.Embedder.missingFields(),
 			"failed_ids":               failedIDs,
 			"skipped_ids":              skippedIDs,
+			"derived_artifact_reindex": artifactResult.Summary(),
 			"errors":                   errorsOut,
 			"integrity_report":         integrityReport,
 			"pre_reindex_integrity":    preIntegrity,
@@ -1448,6 +1505,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 		"embedding_missing_fields": cfg.Embedder.missingFields(),
 		"failed_ids":               failedIDs,
 		"skipped_ids":              skippedIDs,
+		"derived_artifact_reindex": artifactResult.Summary(),
 		"errors":                   errorsOut,
 		"integrity_report":         integrityReport,
 		"pre_reindex_integrity":    preIntegrity,
@@ -1461,7 +1519,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 		"audit_written": true,
 		"changed_at":    now,
 		"background":    true,
-		"note":          "reindex rebuilt vector documents for memories that had an embedding or could be embedded with configured settings",
+		"note":          "reindex rebuilt vector documents for memories and eligible derived artifacts when embedding settings were available",
 	}
 	if progress != nil {
 		progress(map[string]any{
@@ -1483,7 +1541,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 
 const adminReindexIntegrityPolicyVersion = "29-3.v1"
 
-func (s *Server) adminReindexIntegrityReport(ctx context.Context, sid string, memories []store.Memory, expectedEmbeddingModel string) map[string]any {
+func (s *Server) adminReindexIntegrityReport(ctx context.Context, sid string, memories []store.Memory, evidence []store.DirectEvidence, worldRules []store.WorldRule, expectedEmbeddingModel string) map[string]any {
 	expectedEmbeddingModel = strings.TrimSpace(expectedEmbeddingModel)
 	missingEmbeddingIDs := []int64{}
 	modelMismatchIDs := []int64{}
@@ -1504,6 +1562,18 @@ func (s *Server) adminReindexIntegrityReport(ctx context.Context, sid string, me
 			if mem.ID > 0 {
 				modelMismatchIDs = append(modelMismatchIDs, mem.ID)
 			}
+		}
+	}
+	eligibleEvidenceCount := 0
+	for _, item := range evidence {
+		if adminEvidenceVectorEligible(item) {
+			eligibleEvidenceCount++
+		}
+	}
+	eligibleWorldRuleCount := 0
+	for _, item := range worldRules {
+		if adminWorldRuleVectorEligible(item) {
+			eligibleWorldRuleCount++
 		}
 	}
 
@@ -1547,14 +1617,15 @@ func (s *Server) adminReindexIntegrityReport(ctx context.Context, sid string, me
 		}
 	}
 
-	canonicalCount := len(memories)
+	canonicalMemoryCount := len(memories)
+	canonicalVectorCandidateCount := canonicalMemoryCount + eligibleEvidenceCount + eligibleWorldRuleCount
 	missingVectorEstimate := 0
 	extraVectorEstimate := 0
 	if vectorCountKnown {
-		if canonicalCount > vectorCount {
-			missingVectorEstimate = canonicalCount - vectorCount
-		} else if vectorCount > canonicalCount {
-			extraVectorEstimate = vectorCount - canonicalCount
+		if canonicalVectorCandidateCount > vectorCount {
+			missingVectorEstimate = canonicalVectorCandidateCount - vectorCount
+		} else if vectorCount > canonicalVectorCandidateCount {
+			extraVectorEstimate = vectorCount - canonicalVectorCandidateCount
 		}
 	}
 
@@ -1566,11 +1637,14 @@ func (s *Server) adminReindexIntegrityReport(ctx context.Context, sid string, me
 	if vectorCountErr != "" {
 		reasons = append(reasons, "vector_count_error")
 	}
-	if vectorCountKnown && missingVectorEstimate > 0 {
+	if vectorCountKnown && vectorCount < canonicalMemoryCount {
 		reasons = append(reasons, "vector_count_below_canonical_memory_count")
 	}
-	if vectorCountKnown && extraVectorEstimate > 0 {
-		reasons = append(reasons, "vector_count_above_canonical_memory_count")
+	if vectorCountKnown && vectorCount < canonicalVectorCandidateCount {
+		reasons = append(reasons, "vector_count_below_canonical_vector_candidate_count")
+	}
+	if vectorCountKnown && vectorCount > canonicalVectorCandidateCount {
+		reasons = append(reasons, "vector_count_above_canonical_vector_candidate_count")
 	}
 	if len(missingEmbeddingIDs) > 0 {
 		reasons = append(reasons, "memory_rows_missing_embedding")
@@ -1597,14 +1671,17 @@ func (s *Server) adminReindexIntegrityReport(ctx context.Context, sid string, me
 		"policy_version":                     adminReindexIntegrityPolicyVersion,
 		"status":                             status,
 		"chat_session_id":                    sid,
-		"canonical_memory_count":             canonicalCount,
+		"canonical_memory_count":             canonicalMemoryCount,
+		"canonical_evidence_vector_count":    eligibleEvidenceCount,
+		"canonical_world_rule_vector_count":  eligibleWorldRuleCount,
+		"canonical_vector_candidate_count":   canonicalVectorCandidateCount,
 		"vector_configured":                  vectorConfigured,
 		"vector_status":                      vectorStatus,
 		"vector_health":                      vectorHealth,
 		"vector_count":                       vectorCount,
 		"vector_count_known":                 vectorCountKnown,
 		"vector_count_error":                 nilIfEmpty(vectorCountErr),
-		"vector_count_matches_canonical":     vectorCountKnown && vectorCount == canonicalCount,
+		"vector_count_matches_canonical":     vectorCountKnown && vectorCount == canonicalVectorCandidateCount,
 		"missing_vector_count_estimate":      missingVectorEstimate,
 		"extra_vector_count_estimate":        extraVectorEstimate,
 		"missing_embedding_count":            len(missingEmbeddingIDs),

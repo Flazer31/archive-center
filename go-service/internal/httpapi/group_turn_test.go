@@ -60,6 +60,8 @@ type turnRecordingStore struct {
 	savedEntityMemories    []*store.ProtagonistEntityMemory
 	createdPersonaCapsules []*store.PersonaMemoryCapsule
 	createdPersonaEntries  []store.PersonaMemoryEntry
+	deletedStorylineIDs    []int64
+	deletedWorldRuleIDs    []int64
 }
 
 type turnRecordingVectorStore struct {
@@ -81,6 +83,17 @@ func (f *turnRecordingVectorStore) DeleteSession(ctx context.Context, sessionID 
 }
 func (f *turnRecordingVectorStore) DeleteDocuments(ctx context.Context, ids []string) error {
 	f.deletedDocumentIDs = append(f.deletedDocumentIDs, ids...)
+	remove := map[string]bool{}
+	for _, id := range ids {
+		remove[id] = true
+	}
+	out := f.docs[:0]
+	for _, doc := range f.docs {
+		if !remove[doc.ID] {
+			out = append(out, doc)
+		}
+	}
+	f.docs = out
 	return nil
 }
 func (f *turnRecordingVectorStore) Rebuild(ctx context.Context, sessionID string) error { return nil }
@@ -88,7 +101,25 @@ func (f *turnRecordingVectorStore) Health(ctx context.Context) (vector.HealthSna
 	return vector.HealthSnapshot{Status: "ok", Collection: "test"}, nil
 }
 func (f *turnRecordingVectorStore) Count(ctx context.Context, sessionID string) (int, error) {
-	return len(f.docs), nil
+	if sessionID == "" {
+		return len(f.docs), nil
+	}
+	count := 0
+	for _, doc := range f.docs {
+		if doc.ChatSessionID == sessionID {
+			count++
+		}
+	}
+	return count, nil
+}
+func (f *turnRecordingVectorStore) ListDocuments(ctx context.Context, sessionID string) ([]vector.VectorDocument, error) {
+	out := []vector.VectorDocument{}
+	for _, doc := range f.docs {
+		if sessionID == "" || doc.ChatSessionID == sessionID {
+			out = append(out, doc)
+		}
+	}
+	return out, nil
 }
 func (f *turnRecordingVectorStore) Close(ctx context.Context) error { return nil }
 
@@ -114,6 +145,16 @@ func (f *turnRecordingStore) SaveCriticFeedback(ctx context.Context, cf *store.C
 
 func (f *turnRecordingStore) ListMemories(ctx context.Context, sid string, fromTurn, toTurn int) ([]store.Memory, error) {
 	return f.returnMemories, nil
+}
+
+func (f *turnRecordingStore) DeleteMemoryByID(ctx context.Context, sid string, memoryID int64) error {
+	for i := range f.returnMemories {
+		if f.returnMemories[i].ID == memoryID && f.returnMemories[i].ChatSessionID == sid {
+			f.returnMemories = append(f.returnMemories[:i], f.returnMemories[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func (f *turnRecordingStore) UpdateMemoryImportance(ctx context.Context, chatSessionID string, memoryID int64, importance float64) error {
@@ -144,8 +185,30 @@ func (f *turnRecordingStore) ListStorylines(ctx context.Context, sid string) ([]
 	return f.returnStorylines, nil
 }
 
+func (f *turnRecordingStore) DeleteStoryline(ctx context.Context, storylineID int64) error {
+	for i := range f.returnStorylines {
+		if f.returnStorylines[i].ID == storylineID {
+			f.deletedStorylineIDs = append(f.deletedStorylineIDs, storylineID)
+			f.returnStorylines = append(f.returnStorylines[:i], f.returnStorylines[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
 func (f *turnRecordingStore) ListWorldRules(ctx context.Context, sid string) ([]store.WorldRule, error) {
 	return f.returnWorldRules, nil
+}
+
+func (f *turnRecordingStore) DeleteWorldRule(ctx context.Context, ruleID int64) error {
+	for i := range f.returnWorldRules {
+		if f.returnWorldRules[i].ID == ruleID {
+			f.deletedWorldRuleIDs = append(f.deletedWorldRuleIDs, ruleID)
+			f.returnWorldRules = append(f.returnWorldRules[:i], f.returnWorldRules[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func (f *turnRecordingStore) ListCharacterStates(ctx context.Context, sid string) ([]store.CharacterState, error) {
@@ -253,6 +316,9 @@ func (f *turnRecordingStore) SaveMemory(ctx context.Context, m *store.Memory) er
 }
 
 func (f *turnRecordingStore) SaveEvidence(ctx context.Context, e *store.DirectEvidence) error {
+	if e.ID <= 0 {
+		e.ID = int64(len(f.savedEvidence) + 1)
+	}
 	f.savedEvidence = append(f.savedEvidence, e)
 	return nil
 }
@@ -273,6 +339,9 @@ func (f *turnRecordingStore) SaveStoryline(ctx context.Context, s *store.Storyli
 }
 
 func (f *turnRecordingStore) SaveWorldRule(ctx context.Context, w *store.WorldRule) error {
+	if w.ID <= 0 {
+		w.ID = int64(len(f.savedWorldRules) + 1)
+	}
 	f.savedWorldRules = append(f.savedWorldRules, w)
 	return nil
 }
@@ -1338,14 +1407,14 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if sl := fake.savedStorylines[0]; sl.Name != "Alice thanks Bob later" || sl.Status != "active" || !strings.Contains(sl.KeyPointsJSON, "Alice thanks Bob later") || !strings.Contains(sl.OngoingTensionsJSON, "promise") {
 		t.Fatalf("expected normalized storyline fields, got %#v", sl)
 	}
-	if len(vec.docs) != 1 {
-		t.Fatalf("expected one vector upsert, got %#v", vec.docs)
+	if len(vec.docs) != 3 {
+		t.Fatalf("expected memory/evidence/world-rule vector upserts, got %#v", vec.docs)
 	}
 	if vec.docs[0].Tier != "memory" || vec.docs[0].ChatSessionID != "sess-live" || len(vec.docs[0].Embedding) != 3 {
 		t.Fatalf("unexpected vector doc: %#v", vec.docs[0])
 	}
 	trace := resp["trace_handoff"].(map[string]any)
-	if trace["vector_status"] != "ok" || resp["vectors_upserted"] != float64(1) {
+	if trace["vector_status"] != "ok" || resp["vectors_upserted"] != float64(3) || resp["vectors_evidence_upserted"] != float64(1) || resp["vectors_world_rule_upserted"] != float64(1) {
 		t.Fatalf("vector status/count mismatch: trace=%+v resp=%+v", trace, resp)
 	}
 	if resp["maintenance_enqueued"] != true {
@@ -2806,8 +2875,8 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 	if fake.savedMemories[0].TurnIndex != -42 || fake.savedEvidence[0].SourceTurnStart != -42 || fake.savedKGTriples[0].SourceTurn != -42 {
 		t.Fatalf("expected HypaMemory import artifacts to use negative import turn index, memory=%d evidence=%d kg=%d", fake.savedMemories[0].TurnIndex, fake.savedEvidence[0].SourceTurnStart, fake.savedKGTriples[0].SourceTurn)
 	}
-	if len(vec.docs) != 1 {
-		t.Fatalf("expected one vector upsert for imported memory, got %d", len(vec.docs))
+	if len(vec.docs) != 2 {
+		t.Fatalf("expected memory and evidence vector upserts for imported memory, got %d", len(vec.docs))
 	}
 	if !hasAuditEvent(fake.savedAuditLogs, "hypamemory_import") {
 		t.Fatalf("expected hypamemory_import audit log, got %#v", fake.savedAuditLogs)
@@ -3154,7 +3223,7 @@ func TestCompleteTurnEmbeddingProviderFailureReportsWarning(t *testing.T) {
 		t.Fatalf("expected critic artifacts but no vector upsert, got %+v", resp)
 	}
 	trace, _ := resp["trace_handoff"].(map[string]any)
-	if !strings.Contains(fmt.Sprint(trace["embedding_status"]), "error:") || trace["vector_status"] != "missing_embedding" {
+	if !strings.Contains(fmt.Sprint(trace["embedding_status"]), "error:") || !strings.Contains(fmt.Sprint(trace["vector_status"]), "error:") {
 		t.Fatalf("embedding/vector failure was not visible in trace: %+v", trace)
 	}
 	warnings, _ := resp["warnings"].([]any)
@@ -7536,8 +7605,8 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 	if len(fake.savedStorylines) != 1 {
 		t.Fatalf("expected one storyline, got %d", len(fake.savedStorylines))
 	}
-	if len(vec.docs) != 1 {
-		t.Fatalf("expected one vector upsert, got %d", len(vec.docs))
+	if len(vec.docs) != 3 {
+		t.Fatalf("expected memory/evidence/world-rule vector upserts, got %d", len(vec.docs))
 	}
 }
 
@@ -12187,6 +12256,69 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 		}
 	})
 
+	t.Run("vector_artifact_hits_hydrate_and_report_evidence_world_rule_counters", func(t *testing.T) {
+		evidence := []store.DirectEvidence{
+			{ID: 101, ChatSessionID: "sess-artifact-vector", EvidenceText: "Lia and Gloria are the same person under a cover identity.", TurnAnchor: 7, SourceTurnStart: 7, SourceTurnEnd: 7},
+			{ID: 102, ChatSessionID: "sess-artifact-vector", EvidenceText: "This stale evidence is tombstoned.", TurnAnchor: 6, SourceTurnStart: 6, SourceTurnEnd: 6, Tombstoned: true},
+		}
+		worldRules := []store.WorldRule{
+			{ID: 201, ChatSessionID: "sess-artifact-vector", Scope: "session", Category: "identity", Key: "cover_identity_same_entity", ValueJSON: `"Lia and Gloria must be resolved as one internal person."`, SourceTurn: 7},
+			{ID: 202, ChatSessionID: "sess-artifact-vector", Scope: "session", Category: "identity", Key: "suppressed_rule", ValueJSON: `"hidden"`, SourceTurn: 7, Suppressed: true},
+		}
+		vectorShadow := map[string]any{
+			"search_result": "ok",
+			"search_results": []map[string]any{
+				{"id": "evidence:sess-artifact-vector:101", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "101"},
+				{"id": "world_rule:sess-artifact-vector:201", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "201"},
+				{"id": "evidence:sess-artifact-vector:102", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "102"},
+				{"id": "world_rule:sess-artifact-vector:202", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "202"},
+			},
+		}
+		assembly := buildPrepareTurnInjectionAssembly(nil, nil, evidence, nil, nil, worldRules, nil, nil, nil, nil, nil, nil, nil, 4, 4000, "Gloria thinks about Lia.", "default", nil, vectorShadow, nil, map[string]any{"current_pov": "Gloria"})
+		if !strings.Contains(assembly.DirectEvidenceText, "Lia and Gloria are the same person") {
+			t.Fatalf("direct evidence vector hit was not injected: %q", assembly.DirectEvidenceText)
+		}
+		if !strings.Contains(assembly.WorldRulesText, "cover_identity_same_entity") {
+			t.Fatalf("world rule vector hit was not prioritized/injected: %q", assembly.WorldRulesText)
+		}
+		counts := prepareTurnRenderCounts(assembly, "")
+		if got := intFromAny(counts["vector_found"], 0); got != 4 {
+			t.Fatalf("vector_found=%d, want 4 raw artifact hits", got)
+		}
+		if got := intFromAny(counts["vector_hydrated"], 0); got != 2 {
+			t.Fatalf("vector_hydrated=%d, want 2", got)
+		}
+		if got := intFromAny(counts["vector_scope_filtered_count"], 0); got != 2 {
+			t.Fatalf("vector_scope_filtered_count=%d, want 2", got)
+		}
+		if got := intFromAny(counts["vector_injected"], 0); got < 2 {
+			t.Fatalf("vector_injected=%d, want at least 2: %#v", got, counts)
+		}
+	})
+
+	t.Run("identity_guard_mentions_alias_merge_for_pov_cover_identity", func(t *testing.T) {
+		identityAccuracy := []any{map[string]any{
+			"surface_identity_name": "Lia",
+			"true_identity_name":    "Gloria",
+			"canonical_entity_name": "Gloria",
+			"identity_kind":         "cover_identity",
+			"same_entity":           true,
+			"reveal_policy":         "owner_private_until_revealed",
+			"knowledge_scope": map[string]any{
+				"known_by":   []any{"Gloria"},
+				"unknown_to": []any{"Siwoo"},
+			},
+		}}
+		globalLine := prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy)
+		if !strings.Contains(globalLine, "keep aliases merged in entity resolution") {
+			t.Fatalf("global identity guard missing alias merge instruction: %q", globalLine)
+		}
+		povLine := prepareTurnPOVScopedIdentityGuardLine(identityAccuracy, map[string]any{"current_pov": "Gloria"})
+		if !strings.Contains(povLine, "self/cover-role continuity") {
+			t.Fatalf("POV identity guard missing cover-role continuity instruction: %q", povLine)
+		}
+	})
+
 	t.Run("vector_replay_respects_topk_and_does_not_fill_recent_when_hits_exist", func(t *testing.T) {
 		memories := []store.Memory{
 			{ID: 1, TurnIndex: 3, SummaryJSON: `{"turn_summary":"Old semantic gate oath.","language_context":{"session_output_language":"en","raw_user_language":"ko","summary_language":"en","search_text_policy":"summary_plus_raw_plus_aliases"},"entities":[{"name":"Mina","aliases":["Gatekeeper"]}]}`, Importance: 0.4},
@@ -12212,7 +12344,7 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 			t.Fatalf("vector replay filled topK with recent fallback despite vector hits: %q", assembly.MemoryText)
 		}
 		for key, want := range map[string]int{
-			"vector_memory_hit_count":                       4,
+			"vector_memory_hit_count":                       3,
 			"vector_memory_hydrated_count":                  2,
 			"vector_memory_selected_count":                  2,
 			"vector_memory_injected_count":                  2,

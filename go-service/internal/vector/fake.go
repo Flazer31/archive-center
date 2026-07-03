@@ -14,6 +14,7 @@ type fakeVectorStore struct {
 	upsertCalled    bool
 	upsertSessionID string
 	upsertDocCount  int
+	docs            []VectorDocument
 
 	deleteCalled    bool
 	deleteSessionID string
@@ -47,17 +48,42 @@ func (f *fakeVectorStore) Upsert(ctx context.Context, sessionID string, docs []V
 	f.upsertCalled = true
 	f.upsertSessionID = sessionID
 	f.upsertDocCount = len(docs)
+	for _, doc := range docs {
+		cp := doc
+		if cp.ChatSessionID == "" {
+			cp.ChatSessionID = sessionID
+		}
+		f.docs = append(f.docs, cp)
+	}
 	return nil
 }
 
 func (f *fakeVectorStore) DeleteSession(ctx context.Context, sessionID string) error {
 	f.deleteCalled = true
 	f.deleteSessionID = sessionID
+	out := f.docs[:0]
+	for _, doc := range f.docs {
+		if doc.ChatSessionID != sessionID {
+			out = append(out, doc)
+		}
+	}
+	f.docs = out
 	return nil
 }
 
 func (f *fakeVectorStore) DeleteDocuments(ctx context.Context, ids []string) error {
 	f.deleteDocumentIDs = append(f.deleteDocumentIDs, ids...)
+	remove := map[string]bool{}
+	for _, id := range ids {
+		remove[id] = true
+	}
+	out := f.docs[:0]
+	for _, doc := range f.docs {
+		if !remove[doc.ID] {
+			out = append(out, doc)
+		}
+	}
+	f.docs = out
 	return nil
 }
 
@@ -87,7 +113,26 @@ func (f *fakeVectorStore) Health(ctx context.Context) (HealthSnapshot, error) {
 func (f *fakeVectorStore) Count(ctx context.Context, sessionID string) (int, error) {
 	f.countCalled = true
 	f.countSessionID = sessionID
-	return 0, nil
+	if sessionID == "" {
+		return len(f.docs), nil
+	}
+	count := 0
+	for _, doc := range f.docs {
+		if doc.ChatSessionID == sessionID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeVectorStore) ListDocuments(ctx context.Context, sessionID string) ([]VectorDocument, error) {
+	out := []VectorDocument{}
+	for _, doc := range f.docs {
+		if sessionID == "" || doc.ChatSessionID == sessionID {
+			out = append(out, doc)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeVectorStore) Close(ctx context.Context) error { return nil }

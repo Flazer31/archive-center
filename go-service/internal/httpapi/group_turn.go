@@ -401,6 +401,9 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 	entitiesSaved := 0
 	trustStatesSaved := 0
 	vectorsUpserted := 0
+	vectorsMemoryUpserted := 0
+	vectorsEvidenceUpserted := 0
+	vectorsWorldRuleUpserted := 0
 	storeWriteAttempted := 0
 	storeWriteErrors := 0
 	storeWriteErrorDetails := []string{}
@@ -560,6 +563,9 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			entitiesSaved += artifactResult.Entities
 			trustStatesSaved += artifactResult.TrustStates
 			vectorsUpserted += artifactResult.VectorsUpserted
+			vectorsMemoryUpserted += artifactResult.VectorsMemoryUpserted
+			vectorsEvidenceUpserted += artifactResult.VectorsEvidenceUpserted
+			vectorsWorldRuleUpserted += artifactResult.VectorsWorldRuleUpserted
 			storeWriteAttempted += artifactResult.Attempted
 			storeWriteErrors += artifactResult.Errors
 			storeWriteErrorDetails = append(storeWriteErrorDetails, artifactResult.ErrorDetails...)
@@ -629,6 +635,49 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + trustStatesSaved
+	rawStatus := "skipped"
+	if chatLogsSaved > 0 || effectiveInputSaved > 0 {
+		rawStatus = "ok"
+	} else if storeWriteErrors > 0 {
+		rawStatus = "error"
+	}
+	derivedStatus := "skipped"
+	if derivedArtifactsSaved > 0 {
+		derivedStatus = "ok"
+	} else if criticTriggered && derivedArtifactsSaved == 0 {
+		derivedStatus = "empty"
+	}
+	vectorPipelineStatus := vectorStatus
+	if vectorPipelineStatus == "" {
+		vectorPipelineStatus = "not_requested"
+	}
+	persistencePipeline := map[string]any{
+		"contract_version": "complete_turn.persistence_pipeline.v1",
+		"raw": map[string]any{
+			"status":                rawStatus,
+			"chat_logs_saved":       chatLogsSaved,
+			"effective_input_saved": effectiveInputSaved,
+		},
+		"derived": map[string]any{
+			"status":                           derivedStatus,
+			"artifacts_saved":                  derivedArtifactsSaved,
+			"memories_saved":                   memoriesSaved,
+			"direct_evidence_saved":            evidenceSaved,
+			"kg_triples_saved":                 kgTriplesSaved,
+			"world_rules_saved":                worldRulesSaved,
+			"subjective_entity_memories_saved": subjectiveEntityMemoriesSaved,
+			"character_states_saved":           characterStatesSaved,
+			"canonical_state_layers_saved":     canonicalStateLayersSaved,
+		},
+		"vector": map[string]any{
+			"status":                   vectorPipelineStatus,
+			"embedding_status":         embeddingStatus,
+			"upserted_total":           vectorsUpserted,
+			"memory_upserted":          vectorsMemoryUpserted,
+			"direct_evidence_upserted": vectorsEvidenceUpserted,
+			"world_rule_upserted":      vectorsWorldRuleUpserted,
+		},
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                           "ok",
@@ -653,6 +702,9 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		"entities_saved":                   entitiesSaved,
 		"trust_states_saved":               trustStatesSaved,
 		"vectors_upserted":                 vectorsUpserted,
+		"vectors_memory_upserted":          vectorsMemoryUpserted,
+		"vectors_evidence_upserted":        vectorsEvidenceUpserted,
+		"vectors_world_rule_upserted":      vectorsWorldRuleUpserted,
 		"chat_logs_saved":                  chatLogsSaved,
 		"effective_input_saved":            effectiveInputSaved,
 		"audit_saved":                      auditSaved,
@@ -668,6 +720,7 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		"episode_result":                   episodeResult,
 		"chapter_result":                   nil,
 		"hierarchy_promotion_result":       hierarchyPromotionResult,
+		"persistence_pipeline":             persistencePipeline,
 		"maintenance_enqueued":             maintenanceHandoff.Enqueued,
 		"fail_reasons":                     failReasons,
 		"trace_handoff": map[string]any{
@@ -719,6 +772,7 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			"hierarchy_promotion":                      hierarchyPromotionResult,
 			"embedding_status":                         embeddingStatus,
 			"vector_status":                            vectorStatus,
+			"persistence_pipeline":                     persistencePipeline,
 			"note":                                     "complete-turn owns save, critic extraction, maintenance handoff, and JS adapter handoff; no fake memory/evidence/KG placeholders are written",
 		},
 		"writeback_plan": writebackPlan,
@@ -2379,6 +2433,13 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	deletions := map[string]any{}
 	var delErrs []string
 	vectorIDs, vectorCollectErr := rollbackVectorDocumentIDs(ctx, s.Store, sid, turnIndex)
+	vectorCountBefore := -1
+	vectorCountAfter := -1
+	if s.Vector != nil {
+		if count, err := s.Vector.Count(ctx, sid); err == nil {
+			vectorCountBefore = count
+		}
+	}
 
 	tables := []struct {
 		name string
@@ -2444,6 +2505,33 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		deletions["vectors"] = map[string]any{"ok": true, "attempted": false, "deleted_ids": 0, "warning": "vector store does not support document delete"}
 	}
+	if s.Vector != nil {
+		if count, err := s.Vector.Count(ctx, sid); err == nil {
+			vectorCountAfter = count
+		}
+	}
+	vectorOrphanCheck := map[string]any{
+		"status":                 "bounded",
+		"policy":                 "known_doc_ids_deleted_then_session_vector_count_checked",
+		"known_delete_id_count":  len(vectorIDs),
+		"session_count_before":   nilIfNegative(vectorCountBefore),
+		"session_count_after":    nilIfNegative(vectorCountAfter),
+		"full_listing_available": false,
+	}
+	if s.Vector != nil {
+		fullAudit := s.adminVectorOrphanAudit(ctx, sid, false)
+		if available, _ := fullAudit["full_listing_available"].(bool); available {
+			fullAudit["status"] = "full"
+			fullAudit["policy"] = "post_rollback_full_chromadb_listing_compared_with_mariadb_canonical_rows"
+			fullAudit["known_delete_id_count"] = len(vectorIDs)
+			fullAudit["session_count_before"] = nilIfNegative(vectorCountBefore)
+			fullAudit["session_count_after"] = nilIfNegative(vectorCountAfter)
+			vectorOrphanCheck = fullAudit
+		} else {
+			vectorOrphanCheck["full_audit"] = fullAudit
+		}
+	}
+	deletions["vector_orphan_check"] = vectorOrphanCheck
 	if err := s.Store.SaveAuditLog(ctx, &store.AuditLog{
 		ChatSessionID: sid,
 		EventType:     "rollback",
@@ -2549,6 +2637,19 @@ func rollbackVectorDocumentIDs(ctx context.Context, st store.Store, sid string, 
 		}
 	}
 
+	worldRules, err := st.ListWorldRules(ctx, sid)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotEnabled) {
+			return nil, err
+		}
+	} else {
+		for _, item := range worldRules {
+			if item.ID > 0 && item.SourceTurn >= fromTurn {
+				add(rollbackVectorDocumentAlias("world_rule", sid, item.ID), rollbackVectorDocumentLegacyAlias("world_rule", item.ID))
+			}
+		}
+	}
+
 	triples, err := st.ListKGTriples(ctx, sid)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotEnabled) {
@@ -2645,6 +2746,13 @@ func memoryVectorDocumentID(sid string, mem store.Memory) string {
 		return ""
 	}
 	return fmt.Sprintf("memory:%s:%s", sid, sourceRowID)
+}
+
+func nilIfNegative(value int) any {
+	if value < 0 {
+		return nil
+	}
+	return value
 }
 
 func vectorDocumentSearchPreview(docs []vector.VectorDocument) []map[string]any {
@@ -3256,6 +3364,7 @@ type prepareTurnInjectionAssembly struct {
 	ChapterText              string
 	MemoryText               string
 	KGText                   string
+	DirectEvidenceText       string
 	FallbackText             string
 	StorylineText            string
 	WorldRulesText           string
@@ -3341,6 +3450,7 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 		"language_injection_trace":              nilIfEmptyMap(assembly.LanguageInjectionTrace),
 		"perspective_context":                   nilIfEmptyMap(assembly.PerspectiveContext),
 		"kg_text":                               nilIfEmpty(assembly.KGText),
+		"direct_evidence_text":                  nilIfEmpty(assembly.DirectEvidenceText),
 		"fallback_text":                         nilIfEmpty(assembly.FallbackText),
 		"storyline_text":                        nilIfEmpty(assembly.StorylineText),
 		"world_rules_text":                      nilIfEmpty(assembly.WorldRulesText),
@@ -3396,6 +3506,7 @@ func buildPrepareTurnInputTransparencyRenderModel(sid string, turnIndex int, raw
 	appendPrepareTurnRenderBlock(&blocks, "input_context", "Input Context", "prepare_turn.input_context_text", inputContextText, boolToInt(strings.TrimSpace(inputContextText) != ""), inputContextEnabled, inputContextTruncated, 0)
 	appendPrepareTurnRenderBlock(&blocks, "related_memories", "Related Memories", "store.memories", assembly.MemoryText, intFromAny(counts["selected_memory_total_count"], intFromAny(counts["memory_count"], 0)), injectionEnabled, false, intFromAny(counts["top_k_memory_target"], 0))
 	appendPrepareTurnRenderBlock(&blocks, "kg_relationships", "KG Relationships", "store.kg_triples", assembly.KGText, intFromAny(counts["kg_bound"], intFromAny(counts["kg_count"], 0)), injectionEnabled, false, 0)
+	appendPrepareTurnRenderBlock(&blocks, "direct_evidence", "Direct Evidence", "store.direct_evidence_records", assembly.DirectEvidenceText, intFromAny(counts["direct_evidence_bound"], intFromAny(counts["vector_evidence_injected_count"], 0)), injectionEnabled, false, 0)
 	appendPrepareTurnRenderBlock(&blocks, "fallback_chat_logs", "Fallback Chat Logs", "store.chat_logs", assembly.FallbackText, intFromAny(counts["fallback_bound"], intFromAny(counts["fallback_count"], 0)), injectionEnabled, false, 0)
 	appendPrepareTurnRenderBlock(&blocks, "episode_summaries", "Episode Summaries", "store.episode_summaries", assembly.EpisodeText, intFromAny(counts["episode_bound"], intFromAny(counts["episode_summary_count"], 0)), injectionEnabled, false, 0)
 	appendPrepareTurnRenderBlock(&blocks, "chapter_recall", "Chapter Recall", "store.chapter_summaries", assembly.ChapterText, boolToInt(strings.TrimSpace(assembly.ChapterText) != ""), injectionEnabled, false, 0)
@@ -3488,10 +3599,10 @@ func prepareTurnRenderCounts(assembly prepareTurnInjectionAssembly, inputContext
 	for k, v := range assembly.Counts {
 		counts[k] = v
 	}
-	counts["vector_found"] = intFromAny(counts["vector_memory_hit_count"], 0)
-	counts["vector_hydrated"] = intFromAny(counts["vector_memory_hydrated_count"], 0)
-	counts["vector_selected"] = intFromAny(counts["vector_memory_selected_count"], 0)
-	counts["vector_injected"] = intFromAny(counts["vector_memory_injected_count"], 0)
+	counts["vector_found"] = intFromAny(counts["vector_hit_count"], intFromAny(counts["vector_memory_hit_count"], 0)+intFromAny(counts["vector_evidence_hit_count"], 0)+intFromAny(counts["vector_world_rule_hit_count"], 0))
+	counts["vector_hydrated"] = intFromAny(counts["vector_hydrated_count"], intFromAny(counts["vector_memory_hydrated_count"], 0)+intFromAny(counts["vector_evidence_hydrated_count"], 0)+intFromAny(counts["vector_world_rule_hydrated_count"], 0))
+	counts["vector_selected"] = intFromAny(counts["vector_selected_count"], intFromAny(counts["vector_memory_selected_count"], 0)+intFromAny(counts["vector_evidence_selected_count"], 0)+intFromAny(counts["vector_world_rule_selected_count"], 0))
+	counts["vector_injected"] = intFromAny(counts["vector_injected_count"], intFromAny(counts["vector_memory_injected_count"], 0)+intFromAny(counts["vector_evidence_injected_count"], 0)+intFromAny(counts["vector_world_rule_injected_count"], 0))
 	counts["related_memory_count"] = intFromAny(counts["selected_memory_total_count"], intFromAny(counts["memory_count"], 0))
 	if strings.TrimSpace(assembly.MemoryText) == "" {
 		counts["memory_injected"] = 0
@@ -4282,7 +4393,7 @@ func prepareTurnMemoryLaneCounters(selection prepareTurnMemoryLaneSelection, inj
 	}
 	return map[string]any{
 		"memory_lane_order":                             []string{"vector_relevant", "relevant", "deep", "recent"},
-		"vector_memory_hit_count":                       intFromAny(vectorTrace["input_hit_count"], 0),
+		"vector_memory_hit_count":                       intFromAny(vectorTrace["memory_hit_count"], maxInt(intFromAny(vectorTrace["input_hit_count"], 0)-intFromAny(vectorTrace["non_memory_count"], 0), 0)),
 		"vector_memory_hydrated_count":                  intFromAny(vectorTrace["hydrated_count"], 0),
 		"vector_memory_selected_count":                  len(selection.VectorRelevant),
 		"vector_memory_injected_count":                  injectedCount,
@@ -4313,6 +4424,106 @@ func mergePrepareTurnMemoryLaneCounters(counts map[string]any, selection prepare
 	for key, value := range prepareTurnMemoryLaneCounters(selection, injected) {
 		counts[key] = value
 	}
+}
+
+func collapsePrepareTurnMemoryLaneSelection(selection prepareTurnMemoryLaneSelection) prepareTurnMemoryLaneSelection {
+	seen := map[string]bool{}
+	collapsed := 0
+	collapseLane := func(items []store.Memory) []store.Memory {
+		out := make([]store.Memory, 0, len(items))
+		for _, item := range items {
+			key := collapseTextKey(prepareTurnMemorySummary(item))
+			if key == "" {
+				key = prepareTurnMemoryLaneKey(item)
+			}
+			if key != "" && seen[key] {
+				collapsed++
+				continue
+			}
+			if key != "" {
+				seen[key] = true
+			}
+			out = append(out, item)
+		}
+		return out
+	}
+	selection.VectorRelevant = collapseLane(selection.VectorRelevant)
+	selection.Relevant = collapseLane(selection.Relevant)
+	selection.Deep = collapseLane(selection.Deep)
+	selection.Recent = collapseLane(selection.Recent)
+	if selection.Trace == nil {
+		selection.Trace = map[string]any{}
+	}
+	selection.Trace["memory_collapsed_count"] = collapsed
+	selection.Trace["selected_total_after_collapse"] = prepareTurnSelectedMemoryCount(selection)
+	return selection
+}
+
+func collapsePrepareTurnStorylines(items []store.Storyline) []store.Storyline {
+	out := make([]store.Storyline, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		key := collapseTextKey(extractionFirstNonEmpty(item.Name, item.CurrentContext))
+		detailKey := collapseTextKey(item.CurrentContext)
+		if key == "" {
+			key = detailKey
+		}
+		if key != "" && seen[key] {
+			continue
+		}
+		if detailKey != "" && seen[detailKey] {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		if detailKey != "" {
+			seen[detailKey] = true
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func mergePrepareTurnWorldRulesForInjection(priority, rest []store.WorldRule) []store.WorldRule {
+	out := make([]store.WorldRule, 0, len(priority)+len(rest))
+	out = append(out, priority...)
+	out = append(out, rest...)
+	return out
+}
+
+func collapsePrepareTurnWorldRules(items []store.WorldRule) []store.WorldRule {
+	out := make([]store.WorldRule, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		if item.Suppressed {
+			continue
+		}
+		key := strings.Join([]string{
+			collapseTextKey(item.Scope),
+			collapseTextKey(item.ScopeName),
+			collapseTextKey(item.Category),
+			collapseTextKey(item.Key),
+			collapseTextKey(item.ValueJSON),
+		}, "|")
+		if strings.Trim(key, "|") == "" {
+			continue
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func collapseTextKey(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func prepareTurnMemoryLaneProtectedCounts(selection prepareTurnMemoryLaneSelection, perspectiveContext map[string]any) map[string]any {
@@ -4369,6 +4580,12 @@ type prepareTurnVectorMemoryHydration struct {
 	Trace  map[string]any
 }
 
+type prepareTurnVectorArtifactHydration struct {
+	Evidence   []store.DirectEvidence
+	WorldRules []store.WorldRule
+	Trace      map[string]any
+}
+
 func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow map[string]any, limit int) prepareTurnVectorMemoryHydration {
 	out := prepareTurnVectorMemoryHydration{
 		Items:  []store.Memory{},
@@ -4378,6 +4595,7 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			"status":                          "not_attempted",
 			"truth_boundary":                  "vector_hit_is_selector_only_mariadb_memory_is_canonical",
 			"input_hit_count":                 0,
+			"memory_hit_count":                0,
 			"hydrated_count":                  0,
 			"duplicate_count":                 0,
 			"missing_count":                   0,
@@ -4440,6 +4658,7 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			out.Trace["non_memory_count"] = intFromAny(out.Trace["non_memory_count"], 0) + 1
 			continue
 		}
+		out.Trace["memory_hit_count"] = intFromAny(out.Trace["memory_hit_count"], 0) + 1
 		id := prepareTurnVectorMemoryRowID(hit)
 		if id <= 0 {
 			out.Trace["missing_count"] = intFromAny(out.Trace["missing_count"], 0) + 1
@@ -4478,6 +4697,167 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 		out.Trace["status"] = "empty"
 	}
 	return out
+}
+
+func prepareTurnHydrateVectorArtifactHits(evidence []store.DirectEvidence, worldRules []store.WorldRule, vectorShadow map[string]any, limit int) prepareTurnVectorArtifactHydration {
+	out := prepareTurnVectorArtifactHydration{
+		Evidence:   []store.DirectEvidence{},
+		WorldRules: []store.WorldRule{},
+		Trace: map[string]any{
+			"version":                   "vdb2.hydrate_artifact_hits.v1",
+			"status":                    "not_attempted",
+			"truth_boundary":            "vector_hit_is_selector_only_mariadb_row_is_canonical",
+			"input_hit_count":           0,
+			"evidence_hit_count":        0,
+			"world_rule_hit_count":      0,
+			"evidence_hydrated_count":   0,
+			"world_rule_hydrated_count": 0,
+			"scope_filtered_count":      0,
+			"missing_count":             0,
+			"duplicate_count":           0,
+		},
+	}
+	limit = prepareTurnRecallLimit(limit)
+	if vectorShadow == nil {
+		out.Trace["reason"] = "vector_shadow_missing"
+		return out
+	}
+	if strings.TrimSpace(stringFromMap(vectorShadow, "search_result")) != "ok" {
+		out.Trace["status"] = "skipped"
+		out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "search_result"))
+		if out.Trace["reason"] == "" {
+			out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "search_skipped_reason"))
+		}
+		return out
+	}
+	evidenceByID := map[int64]store.DirectEvidence{}
+	for _, item := range evidence {
+		if item.ID > 0 {
+			evidenceByID[item.ID] = item
+		}
+	}
+	worldRuleByID := map[int64]store.WorldRule{}
+	for _, item := range worldRules {
+		if item.ID > 0 {
+			worldRuleByID[item.ID] = item
+		}
+	}
+	seenEvidence := map[int64]bool{}
+	seenWorldRule := map[int64]bool{}
+	hits := prepareTurnVectorSearchResultMaps(vectorShadow["search_results"])
+	out.Trace["status"] = "ready"
+	out.Trace["input_hit_count"] = len(hits)
+	for _, hit := range hits {
+		if len(out.Evidence)+len(out.WorldRules) >= limit {
+			break
+		}
+		sourceTable := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "source_table")))
+		tier := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "tier")))
+		id := prepareTurnVectorSourceRowID(hit)
+		switch {
+		case sourceTable == "direct_evidence_records" || tier == "evidence" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(stringFromMap(hit, "id"))), "evidence:"):
+			out.Trace["evidence_hit_count"] = intFromAny(out.Trace["evidence_hit_count"], 0) + 1
+			if id <= 0 {
+				out.Trace["missing_count"] = intFromAny(out.Trace["missing_count"], 0) + 1
+				continue
+			}
+			item, ok := evidenceByID[id]
+			if !ok {
+				out.Trace["missing_count"] = intFromAny(out.Trace["missing_count"], 0) + 1
+				continue
+			}
+			if item.Tombstoned || item.RepairNeeded || item.SupersededByID != 0 {
+				out.Trace["scope_filtered_count"] = intFromAny(out.Trace["scope_filtered_count"], 0) + 1
+				continue
+			}
+			if seenEvidence[id] {
+				out.Trace["duplicate_count"] = intFromAny(out.Trace["duplicate_count"], 0) + 1
+				continue
+			}
+			seenEvidence[id] = true
+			out.Evidence = append(out.Evidence, item)
+		case sourceTable == "world_rules" || tier == "world_rule" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(stringFromMap(hit, "id"))), "world_rule:"):
+			out.Trace["world_rule_hit_count"] = intFromAny(out.Trace["world_rule_hit_count"], 0) + 1
+			if id <= 0 {
+				out.Trace["missing_count"] = intFromAny(out.Trace["missing_count"], 0) + 1
+				continue
+			}
+			item, ok := worldRuleByID[id]
+			if !ok {
+				out.Trace["missing_count"] = intFromAny(out.Trace["missing_count"], 0) + 1
+				continue
+			}
+			if item.Suppressed {
+				out.Trace["scope_filtered_count"] = intFromAny(out.Trace["scope_filtered_count"], 0) + 1
+				continue
+			}
+			if seenWorldRule[id] {
+				out.Trace["duplicate_count"] = intFromAny(out.Trace["duplicate_count"], 0) + 1
+				continue
+			}
+			seenWorldRule[id] = true
+			out.WorldRules = append(out.WorldRules, item)
+		}
+	}
+	out.Trace["evidence_hydrated_count"] = len(out.Evidence)
+	out.Trace["world_rule_hydrated_count"] = len(out.WorldRules)
+	out.Trace["hydrated_count"] = len(out.Evidence) + len(out.WorldRules)
+	if len(out.Evidence)+len(out.WorldRules) == 0 {
+		out.Trace["status"] = "empty"
+	}
+	return out
+}
+
+func prepareTurnVectorSourceRowID(hit map[string]any) int64 {
+	raw := strings.TrimSpace(stringFromMap(hit, "source_row_id"))
+	if raw != "" {
+		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+			return id
+		}
+	}
+	idText := strings.TrimSpace(stringFromMap(hit, "id"))
+	if idText == "" {
+		return 0
+	}
+	parts := strings.Split(idText, ":")
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := strings.TrimSpace(parts[i])
+		if id, err := strconv.ParseInt(part, 10, 64); err == nil && id > 0 {
+			return id
+		}
+	}
+	return 0
+}
+
+func mergePrepareTurnVectorArtifactCounters(counts map[string]any, hydration prepareTurnVectorArtifactHydration, directEvidenceInjected bool, directEvidenceLineCount, worldRuleLineCount int) {
+	if counts == nil {
+		return
+	}
+	trace := hydration.Trace
+	if trace == nil {
+		trace = map[string]any{}
+	}
+	evidenceInjected := 0
+	if directEvidenceInjected {
+		evidenceInjected = directEvidenceLineCount
+	}
+	worldRulesInjected := minInt(len(hydration.WorldRules), worldRuleLineCount)
+	counts["vector_artifact_recall"] = trace
+	counts["vector_evidence_hit_count"] = intFromAny(trace["evidence_hit_count"], 0)
+	counts["vector_evidence_hydrated_count"] = intFromAny(trace["evidence_hydrated_count"], 0)
+	counts["vector_evidence_selected_count"] = len(hydration.Evidence)
+	counts["vector_evidence_injected_count"] = evidenceInjected
+	counts["vector_world_rule_hit_count"] = intFromAny(trace["world_rule_hit_count"], 0)
+	counts["vector_world_rule_hydrated_count"] = intFromAny(trace["world_rule_hydrated_count"], 0)
+	counts["vector_world_rule_selected_count"] = len(hydration.WorldRules)
+	counts["vector_world_rule_injected_count"] = worldRulesInjected
+	counts["vector_scope_filtered_count"] = intFromAny(trace["scope_filtered_count"], 0)
+	counts["vector_missing_count"] = intFromAny(counts["vector_memory_missing_count"], 0) + intFromAny(trace["missing_count"], 0)
+	counts["vector_duplicate_count"] = intFromAny(counts["vector_memory_duplicate_count"], 0) + intFromAny(trace["duplicate_count"], 0)
+	counts["vector_hit_count"] = intFromAny(counts["vector_memory_hit_count"], 0) + intFromAny(trace["evidence_hit_count"], 0) + intFromAny(trace["world_rule_hit_count"], 0)
+	counts["vector_hydrated_count"] = intFromAny(counts["vector_memory_hydrated_count"], 0) + intFromAny(trace["evidence_hydrated_count"], 0) + intFromAny(trace["world_rule_hydrated_count"], 0)
+	counts["vector_selected_count"] = intFromAny(counts["vector_memory_selected_count"], 0) + len(hydration.Evidence) + len(hydration.WorldRules)
+	counts["vector_injected_count"] = intFromAny(counts["vector_memory_injected_count"], 0) + evidenceInjected + worldRulesInjected
 }
 
 func prepareTurnVectorHitHasLanguageMetadata(hit map[string]any) bool {
@@ -4902,6 +5282,7 @@ func prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy []any) str
 	parts := []string{
 		"Protected identity continuity: " + strings.Join(relations, "; ") + ".",
 		"Maintain same-entity continuity internally; do not portray the surface identity and true identity as separate people.",
+		"When same_entity is confirmed, keep aliases merged in entity resolution even when public roles or cover roles differ.",
 		"This is author-side/private support, not public character knowledge; do not reveal, confess, or let unrelated characters discover it without current-scene evidence.",
 	}
 	if len(kinds) > 0 {
@@ -4951,6 +5332,7 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 		parts := []string{
 			fmt.Sprintf("POV-scoped identity continuity: %s is %s's own protected surface identity/persona.", surface, trueName),
 			fmt.Sprintf("For current_pov=%s, treat %s and %s as the same internal person, not two separate characters.", povName, surface, trueName),
+			"If this POV references the surface identity, read it as self/cover-role continuity rather than a separate external character.",
 			"Keep this as POV/private knowledge; do not reveal it to characters outside knowledge_scope without current reveal evidence.",
 			"kind=" + kind,
 		}
@@ -5319,10 +5701,12 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 
 	memoryQuery := prepareTurnMemorySelectionQuery(rawUserInput, chatLogs, perspectiveContext, topK)
 	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow)
+	memorySelection = collapsePrepareTurnMemoryLaneSelection(memorySelection)
 	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, perspectiveContext)
 	for k, v := range prepareTurnMemoryLaneProtectedCounts(memorySelection, perspectiveContext) {
 		out.Counts[k] = v
 	}
+	artifactHydration := prepareTurnHydrateVectorArtifactHits(evidence, worldRules, vectorShadow, recallLimit)
 	out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 
@@ -5338,6 +5722,22 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 		kgLines = append(kgLines, line)
 	}
 	out.KGText = makePrepareTurnSection("[Knowledge Graph]", kgLines)
+
+	directEvidenceLines := make([]string, 0, len(artifactHydration.Evidence))
+	for _, ev := range artifactHydration.Evidence {
+		text := compactPrepareTurnLine(ev.EvidenceText, 320)
+		if text == "" {
+			continue
+		}
+		meta := []string{"vector"}
+		if ev.TurnAnchor > 0 {
+			meta = append(meta, fmt.Sprintf("turn %d", ev.TurnAnchor))
+		} else if ev.SourceTurnEnd > 0 {
+			meta = append(meta, fmt.Sprintf("turn %d", ev.SourceTurnEnd))
+		}
+		directEvidenceLines = append(directEvidenceLines, fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), text))
+	}
+	out.DirectEvidenceText = makePrepareTurnSection("[Direct Evidence]", directEvidenceLines)
 
 	fallbackLines := []string{}
 	if prepareTurnNeedsRawFallback(memorySelection, topK) && len(chatLogs) > 0 {
@@ -5355,8 +5755,9 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	}
 	out.FallbackText = makePrepareTurnSection("[Fallback Recent Chat]", fallbackLines)
 
-	storylineLines := make([]string, 0, minInt(len(storylines), recallLimit))
-	for i, sl := range storylines {
+	storylinesForInjection := collapsePrepareTurnStorylines(storylines)
+	storylineLines := make([]string, 0, minInt(len(storylinesForInjection), recallLimit))
+	for i, sl := range storylinesForInjection {
 		if i >= recallLimit {
 			break
 		}
@@ -5371,8 +5772,9 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	}
 	out.StorylineText = makePrepareTurnSection("[Storylines]", storylineLines)
 
-	worldRuleLines := make([]string, 0, minInt(len(worldRules), recallLimit))
-	for i, wr := range worldRules {
+	worldRulesForInjection := collapsePrepareTurnWorldRules(mergePrepareTurnWorldRulesForInjection(artifactHydration.WorldRules, worldRules))
+	worldRuleLines := make([]string, 0, minInt(len(worldRulesForInjection), recallLimit))
+	for i, wr := range worldRulesForInjection {
 		if i >= recallLimit {
 			break
 		}
@@ -5488,6 +5890,7 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 
 	addPrepareTurnBlock(&out, "memory", "store.memories", out.MemoryText, len(memoryLines), maxChars)
 	addPrepareTurnBlock(&out, "kg", "store.kg_triples", out.KGText, len(kgLines), maxChars)
+	addPrepareTurnBlock(&out, "direct_evidence", "store.direct_evidence_records", out.DirectEvidenceText, len(directEvidenceLines), maxChars)
 	addPrepareTurnBlock(&out, "fallback", "store.chat_logs", out.FallbackText, len(fallbackLines), maxChars)
 	addPrepareTurnBlock(&out, "episode", "store.episode_summaries", out.EpisodeText, len(episodeLines), maxChars)
 	addPrepareTurnBlock(&out, "chapter", "store.chapter_summaries", out.ChapterText, boolToInt(strings.TrimSpace(out.ChapterText) != ""), maxChars)
@@ -5530,6 +5933,7 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	out.Counts["deep_memory_bound"] = len(memorySelection.Deep)
 	out.Counts["memory_recall_lane_policy"] = memorySelection.Trace
 	mergePrepareTurnMemoryLaneCounters(out.Counts, memorySelection, strings.TrimSpace(out.MemoryText) != "")
+	mergePrepareTurnVectorArtifactCounters(out.Counts, artifactHydration, strings.TrimSpace(out.DirectEvidenceText) != "", len(directEvidenceLines), len(worldRuleLines))
 	out.Counts["language_aware_injection"] = out.LanguageInjectionTrace
 	if memoryTrace := mapFromAny(out.LanguageInjectionTrace["memory_language_trace"]); len(memoryTrace) > 0 {
 		out.Counts["memory_summary_language_match"] = intFromAny(memoryTrace["memory_summary_language_match"], 0)
@@ -5537,6 +5941,7 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 		out.Counts["raw_evidence_attached_count"] = intFromAny(memoryTrace["raw_evidence_attached_count"], 0)
 	}
 	out.Counts["kg_bound"] = len(kgLines)
+	out.Counts["direct_evidence_bound"] = len(directEvidenceLines)
 	out.Counts["fallback_bound"] = len(fallbackLines)
 	out.Counts["fallback_count"] = len(fallbackLines)
 	out.Counts["episode_bound"] = len(episodeLines)
@@ -5558,6 +5963,8 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	out.Counts["canonical_state_world_layers_count"] = canonTypeCounts["world_state"]
 	out.Counts["canonical_state_scene_layers_count"] = canonTypeCounts["scene_state"]
 	out.Counts["canonical_state_entity_layers_count"] = canonTypeCounts["entity_state"]
+	out.Counts["storyline_collapsed_count"] = maxInt(len(storylines)-len(storylinesForInjection), 0)
+	out.Counts["world_rule_collapsed_count"] = maxInt(len(worldRules)-len(worldRulesForInjection), 0)
 	out.Counts["block_count"] = len(out.Blocks)
 	out.Counts["total_chars"] = len([]rune(out.Text))
 	out.BudgetDecisions = map[string]any{

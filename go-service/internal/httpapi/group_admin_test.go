@@ -2133,6 +2133,176 @@ func TestAdminReindexIntegrityReportDetectsMissingVectorsAndModelMismatch(t *tes
 	}
 }
 
+func TestAdminReindexDryRunReportsDerivedArtifactVectorCandidates(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBShadow
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	fake := &turnRecordingStore{
+		returnMemories: []store.Memory{
+			{ID: 1, ChatSessionID: "sess-reindex-derived", TurnIndex: 1, SummaryJSON: `{"summary":"Known memory"}`, Embedding: `[0.1]`},
+		},
+		returnEvidence: []store.DirectEvidence{
+			{ID: 10, ChatSessionID: "sess-reindex-derived", EvidenceText: "The cellar key is brass.", SourceTurnEnd: 1},
+		},
+		returnWorldRules: []store.WorldRule{
+			{ID: 20, ChatSessionID: "sess-reindex-derived", Scope: "location", ScopeName: "cellar", Category: "access", Key: "brass_key", ValueJSON: `{"value":"The cellar opens with the brass key."}`, SourceTurn: 1},
+		},
+	}
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	srv.Vector = &turnRecordingVectorStore{docs: []vector.VectorDocument{
+		{ID: "memory:sess-reindex-derived:1", Tier: "memory", ChatSessionID: "sess-reindex-derived", SourceTable: "memories", SourceRowID: "1"},
+	}}
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/reindex", strings.NewReader(`{"chat_session_id":"sess-reindex-derived","dry_run":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	derived, ok := resp["derived_artifact_reindex"].(map[string]any)
+	if !ok {
+		t.Fatalf("derived_artifact_reindex missing: %#v", resp)
+	}
+	candidates, ok := derived["candidates_by_tier"].(map[string]any)
+	if !ok {
+		t.Fatalf("candidates_by_tier missing: %#v", derived)
+	}
+	if candidates["evidence"] != float64(1) || candidates["world_rule"] != float64(1) {
+		t.Fatalf("derived candidates = %#v, want evidence/world_rule 1", candidates)
+	}
+	integrity, ok := resp["integrity_report"].(map[string]any)
+	if !ok {
+		t.Fatalf("integrity_report missing: %#v", resp)
+	}
+	if integrity["canonical_vector_candidate_count"] != float64(3) {
+		t.Fatalf("canonical_vector_candidate_count = %v, want 3; integrity=%#v", integrity["canonical_vector_candidate_count"], integrity)
+	}
+	if integrity["canonical_evidence_vector_count"] != float64(1) || integrity["canonical_world_rule_vector_count"] != float64(1) {
+		t.Fatalf("derived canonical counts missing: %#v", integrity)
+	}
+}
+
+func TestAdminVectorOrphanAuditDeletesFullListingOrphans(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	fake := &turnRecordingStore{
+		returnMemories: []store.Memory{{ID: 1, ChatSessionID: "sess-orphan", TurnIndex: 1, SummaryJSON: `{"summary":"Kept memory"}`}},
+	}
+	vec := &turnRecordingVectorStore{docs: []vector.VectorDocument{
+		{ID: "memory:sess-orphan:1", Tier: "memory", ChatSessionID: "sess-orphan", SourceTable: "memories", SourceRowID: "1"},
+		{ID: "evidence:sess-orphan:999", Tier: "evidence", ChatSessionID: "sess-orphan", SourceTable: "direct_evidence_records", SourceRowID: "999"},
+	}}
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	srv.Vector = vec
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/vector-orphan-audit", strings.NewReader(`{"chat_session_id":"sess-orphan","delete_orphans":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["full_listing_available"] != true || resp["orphan_count"] != float64(1) || resp["deleted_orphan_count"] != float64(1) {
+		t.Fatalf("orphan audit response = %#v", resp)
+	}
+	if len(vec.docs) != 1 || vec.docs[0].ID != "memory:sess-orphan:1" {
+		t.Fatalf("remaining vector docs = %#v", vec.docs)
+	}
+}
+
+func TestAdminDedupeCleanupDryRunAndApply(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	fake := &turnRecordingStore{
+		returnMemories: []store.Memory{
+			{ID: 1, ChatSessionID: "sess-dedupe", TurnIndex: 1, SummaryJSON: `{"summary":"Shared vow persists."}`, Importance: 3},
+			{ID: 2, ChatSessionID: "sess-dedupe", TurnIndex: 2, SummaryJSON: `{"summary":"Shared vow persists."}`, Importance: 5},
+		},
+		returnStorylines: []store.Storyline{
+			{ID: 10, ChatSessionID: "sess-dedupe", Name: "Bridge promise", CurrentContext: "The bridge promise remains open.", LastTurn: 1},
+			{ID: 11, ChatSessionID: "sess-dedupe", Name: "Bridge promise", CurrentContext: "The bridge promise remains open.", LastTurn: 2},
+		},
+		returnWorldRules: []store.WorldRule{
+			{ID: 20, ChatSessionID: "sess-dedupe", Scope: "location", ScopeName: "bridge", Category: "access", Key: "guarded_gate", ValueJSON: `{"value":"The gate is guarded."}`, SourceTurn: 1},
+			{ID: 21, ChatSessionID: "sess-dedupe", Scope: "location", ScopeName: "bridge", Category: "access", Key: "guarded_gate", ValueJSON: `{"value":"The gate is guarded."}`, SourceTurn: 2},
+		},
+	}
+	vec := &turnRecordingVectorStore{docs: []vector.VectorDocument{
+		{ID: "memory:sess-dedupe:1", Tier: "memory", ChatSessionID: "sess-dedupe", SourceTable: "memories", SourceRowID: "1"},
+		{ID: "memory:sess-dedupe:2", Tier: "memory", ChatSessionID: "sess-dedupe", SourceTable: "memories", SourceRowID: "2"},
+		{ID: "world_rule:sess-dedupe:20", Tier: "world_rule", ChatSessionID: "sess-dedupe", SourceTable: "world_rules", SourceRowID: "20"},
+		{ID: "world_rule:sess-dedupe:21", Tier: "world_rule", ChatSessionID: "sess-dedupe", SourceTable: "world_rules", SourceRowID: "21"},
+	}}
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	srv.Vector = vec
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/dedupe-cleanup", strings.NewReader(`{"chat_session_id":"sess-dedupe"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dry-run status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var preview map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	counts, ok := preview["candidate_counts"].(map[string]any)
+	if !ok || counts["memories"] != float64(1) || counts["storylines"] != float64(1) || counts["world_rules"] != float64(1) {
+		t.Fatalf("candidate_counts = %#v", preview["candidate_counts"])
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/dedupe-cleanup", strings.NewReader(`{"chat_session_id":"sess-dedupe","apply":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var applied map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
+		t.Fatalf("decode applied: %v", err)
+	}
+	deleted, ok := applied["deleted_counts"].(map[string]any)
+	if !ok || deleted["memories"] != float64(1) || deleted["storylines"] != float64(1) || deleted["world_rules"] != float64(1) {
+		t.Fatalf("deleted_counts = %#v", applied["deleted_counts"])
+	}
+	if len(fake.returnMemories) != 1 || fake.returnMemories[0].ID != 2 {
+		t.Fatalf("remaining memories = %#v", fake.returnMemories)
+	}
+	if len(fake.returnStorylines) != 1 || fake.returnStorylines[0].ID != 11 {
+		t.Fatalf("remaining storylines = %#v", fake.returnStorylines)
+	}
+	if len(fake.returnWorldRules) != 1 || fake.returnWorldRules[0].ID != 21 {
+		t.Fatalf("remaining world rules = %#v", fake.returnWorldRules)
+	}
+}
+
 func TestAdminReindexBackgroundJobReportsProgress(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBShadow
