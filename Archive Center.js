@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.5 RC1
+//@display-name Archive Center 2.5.0
 //@author memory-scaffold
 //@api 3.0
-//@version 2.5.0-rc1
+//@version 2.5.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,8 +37,8 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.5.0-rc1";
-  const BUILD_ID = "2.5.0-rc1-language-output-parity.20260705";
+  const VERSION = "2.5.0";
+  const BUILD_ID = "2.5.0-js-update-url.20260705";
   const BUILD_CHANNEL = "rc5";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
@@ -252,7 +252,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.5 RC1 설정",
+      "settings.title": "🗂️ Archive Center 2.5.0 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -1231,7 +1231,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.5 RC1 Settings",
+      "settings.title": "🗂️ Archive Center 2.5.0 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -2210,7 +2210,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.5 RC1 設定",
+      "settings.title": "🗂️ Archive Center 2.5.0 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -50899,7 +50899,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.5 RC1 Release",
+    pre_release_bundle_authority: "Archive Center 2.5.0 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",
