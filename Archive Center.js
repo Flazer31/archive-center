@@ -3,6 +3,7 @@
 //@author memory-scaffold
 //@api 3.0
 //@version 2.5.0-rc1
+//@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
