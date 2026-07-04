@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.5 RC2
+//@display-name Archive Center 2.5 RC1
 //@author memory-scaffold
 //@api 3.0
-//@version 2.5.0-rc2
+//@version 2.5.0-rc1
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
@@ -36,8 +36,8 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.5.0-rc2";
-  const BUILD_ID = "2.5.0-rc2-auto-apply-update.20260705";
+  const VERSION = "2.5.0-rc1";
+  const BUILD_ID = "2.5.0-rc1-language-output-parity.20260705";
   const BUILD_CHANNEL = "rc5";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
@@ -251,7 +251,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.5 RC2 설정",
+      "settings.title": "🗂️ Archive Center 2.5 RC1 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -445,7 +445,7 @@
       "settings.btn.testCriticCall": "✍ 평론가 LLM 테스트",
       "settings.btn.testTableReadCall": "🎭 대본 리딩 LLM 테스트",
       "settings.btn.updateCheck": "업데이트 확인",
-      "settings.btn.updateDownload": "업데이트 적용",
+      "settings.btn.updateDownload": "업데이트 다운로드",
       "tableRead.llmTest.missing": "대본 리딩 LLM API Key / Endpoint / Model이 비어 있습니다.",
       "tableRead.llmTest.loading": "대본 리딩 LLM 호출 테스트 중",
       "tableRead.llmTest.ok": "대본 리딩 호출 성공",
@@ -1230,7 +1230,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.5 RC2 Settings",
+      "settings.title": "🗂️ Archive Center 2.5 RC1 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -1598,7 +1598,7 @@
       "settings.btn.testCriticCall": "✍ Critic LLM Test",
       "settings.btn.testTableReadCall": "🎭 Table Read LLM Test",
       "settings.btn.updateCheck": "Check Update",
-      "settings.btn.updateDownload": "Apply Update",
+      "settings.btn.updateDownload": "Download Update",
       "tableRead.llmTest.missing": "Table Read API Key / Endpoint / Model is empty.",
       "tableRead.llmTest.loading": "Testing Table Read LLM call",
       "tableRead.llmTest.ok": "Table Read call succeeded",
@@ -2209,7 +2209,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.5 RC2 設定",
+      "settings.title": "🗂️ Archive Center 2.5 RC1 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -2548,7 +2548,7 @@
       "settings.btn.testCriticCall": "✍ クリティック LLM テスト",
       "settings.btn.testTableReadCall": "🎭 読み合わせ LLM テスト",
       "settings.btn.updateCheck": "アップデート確認",
-      "settings.btn.updateDownload": "アップデート適用",
+      "settings.btn.updateDownload": "アップデート取得",
       "tableRead.llmTest.missing": "読み合わせ LLM の API Key / Endpoint / Model が空です。",
       "tableRead.llmTest.loading": "読み合わせ LLM 呼び出しをテスト中",
       "tableRead.llmTest.ok": "読み合わせ呼び出し成功",
@@ -11637,18 +11637,14 @@
     }
     if (mode === "download") {
       const ok = String(data.status || "") === "ok";
-      const applied = String(data.apply_status || "") === "applied";
       const lines = [
-        "status: " + (applied ? "downloaded, verified, and applied" : (ok ? "downloaded and verified" : String(data.status || "unknown"))),
+        "status: " + (ok ? "downloaded and verified" : String(data.status || "unknown")),
         "version: " + String(data.latest_version || ""),
         "asset: " + String(data.asset_name || ""),
         "bytes: " + String(data.bytes || 0),
         "sha256: " + String(data.sha256 || ""),
         "staged: " + String(data.staged_path || ""),
-        "apply: " + (applied ? "applied" : (data.apply_supported ? "supported" : "manual package apply required")),
-        "package: " + String(data.package_root || ""),
-        "current: " + String(data.current_path || ""),
-        "restart: " + (data.restart_scheduled ? "scheduled" : (data.restart_required ? "required" : "not required")),
+        "apply: " + (data.apply_supported ? "supported" : "manual package apply required"),
       ];
       return '<div class="mo-status ' + (ok ? "mo-status-ok" : "mo-status-fail") + '">'
         + lines.map((line) => escapeAttr(line)).join('<br>')
@@ -11687,7 +11683,7 @@
     if (!check || !check.selected_asset || !check.download_supported) {
       check = await checkArchiveCenterUpdate();
     }
-    const body = { current_version: VERSION, apply: true, restart_service: true };
+    const body = { current_version: VERSION };
     if (check && check.selected_asset) {
       body.asset_name = String(check.selected_asset.name || "");
       body.expected_sha256 = String(check.selected_asset.sha256 || "");
@@ -50902,7 +50898,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.5 RC2 Release",
+    pre_release_bundle_authority: "Archive Center 2.5 RC1 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",
