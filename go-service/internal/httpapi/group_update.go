@@ -1,13 +1,16 @@
 package httpapi
 
 import (
+	"archive/zip"
 	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,9 +18,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var updateHTTPClient = http.DefaultClient
+var updateRestartProcess = func() { os.Exit(2) }
 
 type githubReleaseResponse struct {
 	TagName     string              `json:"tag_name"`
@@ -69,6 +74,8 @@ type updateDownloadRequest struct {
 	Platform       string `json:"platform"`
 	AssetName      string `json:"asset_name"`
 	ExpectedSHA256 string `json:"expected_sha256"`
+	Apply          bool   `json:"apply"`
+	RestartService *bool  `json:"restart_service,omitempty"`
 }
 
 func (s *Server) registerUpdateRoutes(mux *http.ServeMux) {
@@ -114,6 +121,10 @@ func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "update_check_failed", err.Error())
 		return
 	}
+	if req.Apply && !result.UpdateAvailable {
+		writeBadRequest(w, "no newer update is available to apply")
+		return
+	}
 	asset := result.SelectedAsset
 	if strings.TrimSpace(req.AssetName) != "" {
 		asset = nil
@@ -145,6 +156,21 @@ func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "update_download_failed", err.Error())
 		return
+	}
+	staged["apply_supported"] = updateApplySupported(result.Platform)
+	if req.Apply {
+		restartService := true
+		if req.RestartService != nil {
+			restartService = *req.RestartService
+		}
+		applied, err := s.applyStagedUpdateAsset(result.ReleaseTag, result.LatestVersion, staged, restartService)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "update_apply_failed", err.Error())
+			return
+		}
+		for k, v := range applied {
+			staged[k] = v
+		}
 	}
 	writeJSON(w, http.StatusOK, staged)
 }
@@ -178,7 +204,7 @@ func (s *Server) resolveLatestUpdate(ctx context.Context, currentVersion, platfo
 		Platform:           platform,
 		SelectedAsset:      selected,
 		SHA256Source:       shaSource,
-		ApplySupported:     false,
+		ApplySupported:     updateApplySupported(platform),
 		DownloadSupported:  selected != nil && selected.SHA256 != "",
 		ReleaseTag:         release.TagName,
 		ReleaseName:        release.Name,
@@ -419,9 +445,302 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, latestVersion 
 		"sha256":            actual,
 		"staged_path":       target,
 		"apply_supported":   false,
-		"next_step":         "manual_apply_or_future_helper",
+		"next_step":         "apply_available",
 		"staging_directory": targetDir,
 	}, nil
+}
+
+func updateApplySupported(platform string) bool {
+	switch normalizeUpdatePlatform(platform) {
+	case "windows-x64", "linux-x64", "linux-arm64", "macos-intel", "macos-apple-silicon", "termux-arm64":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) applyStagedUpdateAsset(releaseTag, latestVersion string, staged map[string]any, restartService bool) (map[string]any, error) {
+	stagedPath, _ := staged["staged_path"].(string)
+	if strings.TrimSpace(stagedPath) == "" {
+		return nil, fmt.Errorf("staged update path is missing")
+	}
+	stagedAbs, err := filepath.Abs(stagedPath)
+	if err != nil {
+		return nil, err
+	}
+	installRoot, err := inferUpdateInstallRoot(stagedAbs)
+	if err != nil {
+		return nil, err
+	}
+	releasesDir := filepath.Join(installRoot, "releases")
+	versionDir := sanitizePathSegment(strings.TrimSpace(releaseTag))
+	if versionDir == "" {
+		versionDir = "v" + sanitizePathSegment(latestVersion)
+	}
+	if versionDir == "v" {
+		versionDir = "latest"
+	}
+	targetDir := filepath.Join(releasesDir, versionDir)
+	if !pathInside(targetDir, releasesDir) {
+		return nil, fmt.Errorf("refusing to apply update outside releases directory")
+	}
+	tmpDir := targetDir + ".tmp-apply"
+	if err := os.MkdirAll(releasesDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := safeRemoveAll(tmpDir, releasesDir); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := unzipUpdateArchive(stagedAbs, tmpDir); err != nil {
+		_ = safeRemoveAll(tmpDir, releasesDir)
+		return nil, err
+	}
+	tmpPackageRoot, err := findUpdatePackageRoot(tmpDir)
+	if err != nil {
+		_ = safeRemoveAll(tmpDir, releasesDir)
+		return nil, err
+	}
+	if _, err := os.Stat(tmpPackageRoot); err != nil {
+		_ = safeRemoveAll(tmpDir, releasesDir)
+		return nil, err
+	}
+	if err := safeRemoveAll(targetDir, releasesDir); err != nil {
+		_ = safeRemoveAll(tmpDir, releasesDir)
+		return nil, err
+	}
+	if err := os.Rename(tmpDir, targetDir); err != nil {
+		_ = safeRemoveAll(tmpDir, releasesDir)
+		return nil, err
+	}
+	packageRoot, err := findUpdatePackageRoot(targetDir)
+	if err != nil {
+		return nil, err
+	}
+	dataDir := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_DATA_DIR"))
+	if dataDir == "" {
+		dataDir = filepath.Join(installRoot, "data")
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(filepath.Join(dataDir, "mysql.sock"))
+	_ = os.Remove(filepath.Join(dataDir, "mariadb.pid"))
+	currentPath, pointerMode, err := writeUpdateCurrentPointer(installRoot, packageRoot, releaseTag, latestVersion)
+	if err != nil {
+		return nil, err
+	}
+	restartScheduled := false
+	restartMode := "manual_restart_required"
+	nextStep := "manual_restart_required"
+	if restartService && updateAutoRestartSupported() {
+		restartScheduled = true
+		restartMode = "self_exit_for_service_restart"
+		nextStep = "restart_scheduled"
+		go func() {
+			time.Sleep(900 * time.Millisecond)
+			updateRestartProcess()
+		}()
+	} else if restartService {
+		restartMode = "manual_restart_required_not_service_managed"
+	}
+	return map[string]any{
+		"apply_status":         "applied",
+		"apply_supported":      true,
+		"next_step":            nextStep,
+		"install_root":         installRoot,
+		"target_dir":           targetDir,
+		"package_root":         packageRoot,
+		"current_path":         currentPath,
+		"current_pointer_mode": pointerMode,
+		"data_dir":             dataDir,
+		"restart_required":     true,
+		"restart_scheduled":    restartScheduled,
+		"restart_mode":         restartMode,
+	}, nil
+}
+
+func updateAutoRestartSupported() bool {
+	if strings.EqualFold(os.Getenv("AC_UPDATE_ALLOW_SELF_RESTART"), "true") {
+		return true
+	}
+	if runtime.GOOS == "linux" && strings.TrimSpace(os.Getenv("INVOCATION_ID")) != "" {
+		return true
+	}
+	return false
+}
+
+func inferUpdateInstallRoot(stagedPath string) (string, error) {
+	for _, key := range []string{"AC_UPDATE_INSTALL_DIR", "ARCHIVE_CENTER_INSTALL_DIR"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			abs, err := filepath.Abs(value)
+			if err != nil {
+				return "", err
+			}
+			return abs, nil
+		}
+	}
+	candidates := []string{stagedPath}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, cwd)
+	}
+	for _, candidate := range candidates {
+		if root := inferInstallRootFromReleasesPath(candidate); root != "" {
+			return root, nil
+		}
+	}
+	return "", fmt.Errorf("could not infer install root from staged update path")
+}
+
+func inferInstallRootFromReleasesPath(path string) string {
+	dir := filepath.Clean(path)
+	if filepath.Ext(dir) != "" {
+		dir = filepath.Dir(dir)
+	}
+	for {
+		if filepath.Base(dir) == "releases" {
+			return filepath.Dir(dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func unzipUpdateArchive(src, dest string) error {
+	reader, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	destAbs, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
+	for _, file := range reader.File {
+		name := strings.ReplaceAll(file.Name, "\\", "/")
+		name = strings.TrimPrefix(filepath.Clean(name), string(filepath.Separator))
+		if name == "." || name == "" {
+			continue
+		}
+		target := filepath.Join(destAbs, name)
+		if !pathInside(target, destAbs) {
+			return fmt.Errorf("unsafe path in update archive: %s", file.Name)
+		}
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, file.Mode()); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		in, err := file.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, file.Mode())
+		if err != nil {
+			_ = in.Close()
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		closeInErr := in.Close()
+		closeOutErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeInErr != nil {
+			return closeInErr
+		}
+		if closeOutErr != nil {
+			return closeOutErr
+		}
+	}
+	return nil
+}
+
+func findUpdatePackageRoot(root string) (string, error) {
+	needles := map[string]bool{
+		"start-archive-center-linux.sh":       true,
+		"install-and-start-termux.sh":         true,
+		"01_start_archive_center_windows.bat": true,
+		"Start Archive Center macOS.command":  true,
+	}
+	var found string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || found != "" {
+			return err
+		}
+		if entry.IsDir() {
+			rel, relErr := filepath.Rel(root, path)
+			if relErr == nil && rel != "." && strings.Count(rel, string(filepath.Separator)) > 4 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if needles[entry.Name()] {
+			found = filepath.Dir(path)
+			return nil
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if found == "" {
+		return "", fmt.Errorf("update package launcher was not found")
+	}
+	return found, nil
+}
+
+func writeUpdateCurrentPointer(installRoot, packageRoot, releaseTag, latestVersion string) (string, string, error) {
+	versionLabel := strings.TrimSpace(releaseTag)
+	if versionLabel == "" {
+		versionLabel = "v" + strings.TrimSpace(latestVersion)
+	}
+	if versionLabel == "v" {
+		versionLabel = strings.TrimSpace(latestVersion)
+	}
+	if err := os.WriteFile(filepath.Join(installRoot, "current-version.txt"), []byte(versionLabel+"\n"), 0o644); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(filepath.Join(installRoot, "current-package.txt"), []byte(packageRoot+"\n"), 0o644); err != nil {
+		return "", "", err
+	}
+	currentPath := filepath.Join(installRoot, "current")
+	if runtime.GOOS == "windows" {
+		return filepath.Join(installRoot, "current-package.txt"), "file", nil
+	}
+	if info, err := os.Lstat(currentPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 && info.IsDir() {
+			return filepath.Join(installRoot, "current-package.txt"), "file", nil
+		}
+		if err := os.Remove(currentPath); err != nil {
+			return "", "", err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	if err := os.Symlink(packageRoot, currentPath); err != nil {
+		return "", "", err
+	}
+	return currentPath, "symlink", nil
+}
+
+func safeRemoveAll(path, allowedRoot string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if !pathInside(path, allowedRoot) {
+		return fmt.Errorf("refusing to remove path outside update root")
+	}
+	return os.RemoveAll(path)
 }
 
 func isSafeGitHubRepo(repo string) bool {
@@ -478,17 +797,81 @@ func versionFromTag(tag string) string {
 }
 
 func compareVersions(a, b string) int {
-	ap := parseVersionParts(a)
-	bp := parseVersionParts(b)
+	ap := parseComparableVersion(a)
+	bp := parseComparableVersion(b)
 	for i := 0; i < 3; i++ {
-		if ap[i] > bp[i] {
+		if ap.numbers[i] > bp.numbers[i] {
 			return 1
 		}
-		if ap[i] < bp[i] {
+		if ap.numbers[i] < bp.numbers[i] {
 			return -1
 		}
 	}
+	if ap.prerelease == "" && bp.prerelease != "" {
+		return 1
+	}
+	if ap.prerelease != "" && bp.prerelease == "" {
+		return -1
+	}
+	if ap.prereleaseRank > bp.prereleaseRank {
+		return 1
+	}
+	if ap.prereleaseRank < bp.prereleaseRank {
+		return -1
+	}
+	if ap.prereleaseNumber > bp.prereleaseNumber {
+		return 1
+	}
+	if ap.prereleaseNumber < bp.prereleaseNumber {
+		return -1
+	}
+	if ap.prerelease > bp.prerelease {
+		return 1
+	}
+	if ap.prerelease < bp.prerelease {
+		return -1
+	}
 	return 0
+}
+
+type comparableVersion struct {
+	numbers          [3]int
+	prerelease       string
+	prereleaseRank   int
+	prereleaseNumber int
+}
+
+func parseComparableVersion(version string) comparableVersion {
+	clean := versionFromTag(version)
+	if idx := strings.Index(clean, "+"); idx >= 0 {
+		clean = clean[:idx]
+	}
+	base := clean
+	pre := ""
+	if idx := strings.Index(clean, "-"); idx >= 0 {
+		base = clean[:idx]
+		pre = strings.ToLower(strings.TrimSpace(clean[idx+1:]))
+	}
+	out := comparableVersion{numbers: parseVersionParts(base), prerelease: pre}
+	if pre == "" {
+		return out
+	}
+	label := regexp.MustCompile(`[^a-z]+`).ReplaceAllString(pre, "")
+	numText := regexp.MustCompile(`[^0-9]+`).ReplaceAllString(pre, "")
+	if numText != "" {
+		out.prereleaseNumber, _ = strconv.Atoi(numText)
+	}
+	switch label {
+	case "alpha", "a":
+		out.prereleaseRank = 1
+	case "beta", "b":
+		out.prereleaseRank = 2
+	case "rc":
+		out.prereleaseRank = 3
+	default:
+		out.prereleaseRank = 0
+	}
+	return out
 }
 
 func parseVersionParts(version string) [3]int {
