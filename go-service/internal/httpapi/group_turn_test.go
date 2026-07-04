@@ -23,45 +23,48 @@ import (
 // turnRecordingStore implements store.Store and records all save/read calls.
 type turnRecordingStore struct {
 	memoryFakeStore
-	savedChatLogs          []*store.ChatLog
-	savedEffectiveInputs   []*store.EffectiveInput
-	savedAuditLogs         []*store.AuditLog
-	savedCriticFeedback    []*store.CriticFeedback
-	returnMemories         []store.Memory
-	savedMemories          []*store.Memory
-	updatedImportance      map[int64]float64
-	savedEvidence          []*store.DirectEvidence
-	savedKGTriples         []*store.KGTriple
-	savedStorylines        []*store.Storyline
-	savedWorldRules        []*store.WorldRule
-	savedEntities          []*store.Entity
-	savedTrusts            []*store.Trust
-	savedCharacterEvents   []*store.CharacterEvent
-	savedCharacterStates   []*store.CharacterState
-	savedPendingThreads    []*store.PendingThread
-	savedActiveStates      []*store.ActiveState
-	savedCanonicalLayers   []*store.CanonicalStateLayer
-	returnKGTriples        []store.KGTriple
-	returnEvidence         []store.DirectEvidence
-	returnChatLogs         []store.ChatLog
-	returnResumePack       *store.ResumePack
-	returnStorylines       []store.Storyline
-	returnWorldRules       []store.WorldRule
-	returnCharStates       []store.CharacterState
-	returnPendingThreads   []store.PendingThread
-	returnActiveStates     []store.ActiveState
-	returnCanonicalLayers  []store.CanonicalStateLayer
-	returnEpisodeSums      []store.EpisodeSummary
-	returnPersonaEntries   []store.PersonaMemoryEntry
-	returnEntityMemories   []store.ProtagonistEntityMemory
-	lastEpisodeLimit       int
-	lastPersonaLimit       int
-	lastEntityMemoryLimit  int
-	savedEntityMemories    []*store.ProtagonistEntityMemory
-	createdPersonaCapsules []*store.PersonaMemoryCapsule
-	createdPersonaEntries  []store.PersonaMemoryEntry
-	deletedStorylineIDs    []int64
-	deletedWorldRuleIDs    []int64
+	savedChatLogs           []*store.ChatLog
+	savedEffectiveInputs    []*store.EffectiveInput
+	savedAuditLogs          []*store.AuditLog
+	savedCriticFeedback     []*store.CriticFeedback
+	returnMemories          []store.Memory
+	savedMemories           []*store.Memory
+	updatedImportance       map[int64]float64
+	savedEvidence           []*store.DirectEvidence
+	savedKGTriples          []*store.KGTriple
+	savedStorylines         []*store.Storyline
+	savedWorldRules         []*store.WorldRule
+	savedEntities           []*store.Entity
+	savedTrusts             []*store.Trust
+	savedCharacterEvents    []*store.CharacterEvent
+	savedCharacterStates    []*store.CharacterState
+	returnStatusDefinitions []store.StatusSchemaDefinition
+	savedStatusDefinitions  []store.StatusSchemaDefinition
+	savedStatusEffects      []store.StatusEffect
+	savedPendingThreads     []*store.PendingThread
+	savedActiveStates       []*store.ActiveState
+	savedCanonicalLayers    []*store.CanonicalStateLayer
+	returnKGTriples         []store.KGTriple
+	returnEvidence          []store.DirectEvidence
+	returnChatLogs          []store.ChatLog
+	returnResumePack        *store.ResumePack
+	returnStorylines        []store.Storyline
+	returnWorldRules        []store.WorldRule
+	returnCharStates        []store.CharacterState
+	returnPendingThreads    []store.PendingThread
+	returnActiveStates      []store.ActiveState
+	returnCanonicalLayers   []store.CanonicalStateLayer
+	returnEpisodeSums       []store.EpisodeSummary
+	returnPersonaEntries    []store.PersonaMemoryEntry
+	returnEntityMemories    []store.ProtagonistEntityMemory
+	lastEpisodeLimit        int
+	lastPersonaLimit        int
+	lastEntityMemoryLimit   int
+	savedEntityMemories     []*store.ProtagonistEntityMemory
+	createdPersonaCapsules  []*store.PersonaMemoryCapsule
+	createdPersonaEntries   []store.PersonaMemoryEntry
+	deletedStorylineIDs     []int64
+	deletedWorldRuleIDs     []int64
 }
 
 type turnRecordingVectorStore struct {
@@ -359,6 +362,93 @@ func (f *turnRecordingStore) SaveTrust(ctx context.Context, t *store.Trust) erro
 func (f *turnRecordingStore) SaveCharacterState(ctx context.Context, c *store.CharacterState) error {
 	f.savedCharacterStates = append(f.savedCharacterStates, c)
 	return nil
+}
+
+func (f *turnRecordingStore) GetStatusSchemaDefinitionByKey(ctx context.Context, chatSessionID, statusKey, ownerScope string) (store.StatusSchemaDefinition, error) {
+	for _, item := range f.returnStatusDefinitions {
+		if item.ChatSessionID == chatSessionID && item.StatusKey == statusKey && item.OwnerScope == ownerScope && item.RegistryState == "active" {
+			return item, nil
+		}
+	}
+	return store.StatusSchemaDefinition{}, store.ErrNotFound
+}
+
+func (f *turnRecordingStore) ListStatusSchemaDefinitions(ctx context.Context, chatSessionID, registryState string, limit int) ([]store.StatusSchemaDefinition, error) {
+	out := []store.StatusSchemaDefinition{}
+	for _, item := range f.returnStatusDefinitions {
+		if chatSessionID != "" && item.ChatSessionID != chatSessionID {
+			continue
+		}
+		if registryState != "" && item.RegistryState != registryState {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) SaveStatusSchemaDefinitions(ctx context.Context, definitions []store.StatusSchemaDefinition) ([]store.StatusSchemaDefinition, error) {
+	out := make([]store.StatusSchemaDefinition, 0, len(definitions))
+	for _, item := range definitions {
+		if item.ID <= 0 {
+			item.ID = int64(len(f.savedStatusDefinitions) + len(out) + 1)
+		}
+		if item.RegistryState == "" {
+			item.RegistryState = "active"
+		}
+		f.savedStatusDefinitions = append(f.savedStatusDefinitions, item)
+		f.returnStatusDefinitions = append(f.returnStatusDefinitions, item)
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) ListStatusChangeEvents(ctx context.Context, chatSessionID, ownerScope, ownerID, statusKey string, limit int) ([]store.StatusChangeEvent, error) {
+	return nil, nil
+}
+
+func (f *turnRecordingStore) SaveStatusChangeEvent(ctx context.Context, event store.StatusChangeEvent) (store.StatusChangeEvent, error) {
+	return event, nil
+}
+
+func (f *turnRecordingStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]store.StatusEffect, error) {
+	out := []store.StatusEffect{}
+	for _, item := range f.savedStatusEffects {
+		if chatSessionID != "" && item.ChatSessionID != chatSessionID {
+			continue
+		}
+		if ownerScope != "" && item.OwnerScope != ownerScope {
+			continue
+		}
+		if ownerID != "" && item.OwnerID != ownerID {
+			continue
+		}
+		if effectState != "" && item.EffectState != effectState {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) SaveStatusEffect(ctx context.Context, effect store.StatusEffect) (store.StatusEffect, error) {
+	if effect.ID <= 0 {
+		effect.ID = int64(len(f.savedStatusEffects) + 1)
+	}
+	f.savedStatusEffects = append(f.savedStatusEffects, effect)
+	return effect, nil
+}
+
+func (f *turnRecordingStore) UpdateStatusEffectState(ctx context.Context, id int64, effectState, clearedEvidenceJSON string, clearedTurn int) error {
+	for i := range f.savedStatusEffects {
+		if f.savedStatusEffects[i].ID == id {
+			f.savedStatusEffects[i].EffectState = effectState
+			f.savedStatusEffects[i].ClearedEvidenceJSON = clearedEvidenceJSON
+			f.savedStatusEffects[i].ClearedTurn = clearedTurn
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 type relationshipAccumulatingTurnStore struct {
@@ -4072,6 +4162,7 @@ func TestPrepareTurnPersonaRecollectionSupportLane(t *testing.T) {
 	srv.RegisterRoutes(mux)
 
 	body := `{"chat_session_id":"target-loop","turn_index":2,"raw_user_input":"Look around the room.","settings":{"max_injection_chars":1200,"max_input_context_chars":800,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
+	body = `{"chat_session_id":"sess-weak-plan","turn_index":8,"raw_user_input":"continue","client_meta":{"language_context":{"session_output_language":"ko","output_language_source":"plugin_setting"}},"settings":{"max_injection_chars":1600,"max_input_context_chars":900,"injection_enabled":true,"input_context_enabled":true,"top_k":2,"guide_mode":"standard","guide_strength":"weak","narrative_stance":"balanced"}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -11217,6 +11308,128 @@ func TestCompleteTurnWorldStateLowConfidenceBlocked(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnPhysicalConditionSavedWithoutHardcodedDuration(t *testing.T) {
+	fake := &turnRecordingStore{}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	extraction := normalizeCriticExtraction(map[string]any{
+		"turn_summary":      "Mina fell from the stairs and fractured her left arm.",
+		"importance_score":  8,
+		"evidence_excerpts": []any{"Mina fell from the stairs and fractured her left arm."},
+		"entities": map[string]any{
+			"characters": []any{map[string]any{"name": "Mina", "entity_type": "character"}},
+		},
+		"physical_conditions": []any{
+			map[string]any{
+				"owner_entity_key":          "Mina",
+				"condition_label":           "fractured left arm",
+				"effect_kind":               "injury",
+				"severity_text":             "painful and movement-limiting",
+				"body_area":                 "left arm",
+				"duration_policy":           "unknown_until_updated",
+				"age_or_vulnerability_note": "age not specified; do not infer healing speed",
+				"evidence_excerpt":          "Mina fell from the stairs and fractured her left arm.",
+			},
+		},
+	})
+
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-physical-condition", 23, extraction, "Mina fell from the stairs and fractured her left arm.", completeTurnEmbeddingConfig{}, time.Unix(2300, 0))
+	if result.PhysicalConditions != 1 || result.StatusEffects != 1 {
+		t.Fatalf("physical condition counters mismatch: PhysicalConditions=%d StatusEffects=%d errors=%v", result.PhysicalConditions, result.StatusEffects, result.ErrorDetails)
+	}
+	if result.StatusSchemaDefinitions != 1 || len(fake.savedStatusDefinitions) != 1 {
+		t.Fatalf("expected one generic physical_condition schema, result=%d saved=%d", result.StatusSchemaDefinitions, len(fake.savedStatusDefinitions))
+	}
+	definition := fake.savedStatusDefinitions[0]
+	if definition.StatusKey != physicalConditionStatusKey || definition.OwnerScope != "character" || definition.ValueKind != "note" {
+		t.Fatalf("unexpected physical condition definition: %+v", definition)
+	}
+	if !strings.Contains(definition.OptionsJSON, "evidence_bound_no_default_duration") {
+		t.Fatalf("schema options must require evidence-bound duration, got %s", definition.OptionsJSON)
+	}
+	if len(fake.savedStatusEffects) != 1 {
+		t.Fatalf("expected one saved status effect, got %d", len(fake.savedStatusEffects))
+	}
+	effect := fake.savedStatusEffects[0]
+	if effect.OwnerID != "Mina" || effect.StatusKey != physicalConditionStatusKey || effect.EffectKind != "injury" || effect.EffectLabel != "fractured left arm" {
+		t.Fatalf("unexpected saved physical condition effect: %+v", effect)
+	}
+	if !strings.Contains(effect.EvidenceJSON, "Mina fell from the stairs and fractured her left arm.") {
+		t.Fatalf("evidence excerpt missing from status effect: %s", effect.EvidenceJSON)
+	}
+	if !strings.Contains(effect.DurationJSON, "unknown_until_updated") || !strings.Contains(effect.DurationJSON, `"hardcoded_duration":false`) {
+		t.Fatalf("duration should stay unknown until later evidence updates it, got %s", effect.DurationJSON)
+	}
+	lowerDuration := strings.ToLower(effect.DurationJSON)
+	for _, forbidden := range []string{"day", "days", "month", "months", "3", "30"} {
+		if strings.Contains(lowerDuration, forbidden) {
+			t.Fatalf("duration contains hardcoded calendar value %q: %s", forbidden, effect.DurationJSON)
+		}
+	}
+	if !strings.Contains(effect.EffectPayloadJSON, `"numeric_severity_required":false`) {
+		t.Fatalf("payload should not require numeric severity, got %s", effect.EffectPayloadJSON)
+	}
+}
+
+func TestCompleteTurnEntityConditionSavedAndAttachedToEntity(t *testing.T) {
+	fake := &turnRecordingStore{}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	extraction := normalizeCriticExtraction(map[string]any{
+		"turn_summary":      "The sacred sword broke during the duel.",
+		"importance_score":  8,
+		"evidence_excerpts": []any{"The sacred sword broke during the duel."},
+		"entities": map[string]any{
+			"items": []any{map[string]any{"name": "Sacred Sword", "entity_type": "item", "description": "a legendary blade"}},
+		},
+		"entity_conditions": []any{
+			map[string]any{
+				"owner_entity_key":  "Sacred Sword",
+				"owner_entity_type": "item",
+				"condition_label":   "blade broken",
+				"effect_kind":       "debuff",
+				"evidence_excerpt":  "The sacred sword broke during the duel.",
+				"duration_policy":   "unknown_until_updated",
+			},
+		},
+	})
+
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-entity-condition", 24, extraction, "The sacred sword broke during the duel.", completeTurnEmbeddingConfig{}, time.Unix(2400, 0))
+	if result.EntityConditions != 1 || result.StatusEffects != 1 {
+		t.Fatalf("entity condition counters mismatch: EntityConditions=%d StatusEffects=%d errors=%v", result.EntityConditions, result.StatusEffects, result.ErrorDetails)
+	}
+	if result.StatusSchemaDefinitions != 1 || len(fake.savedStatusDefinitions) != 1 {
+		t.Fatalf("expected one generic entity_condition schema, result=%d saved=%d", result.StatusSchemaDefinitions, len(fake.savedStatusDefinitions))
+	}
+	definition := fake.savedStatusDefinitions[0]
+	if definition.StatusKey != entityConditionStatusKey || definition.OwnerScope != "entity" || definition.ValueKind != "note" {
+		t.Fatalf("unexpected entity condition definition: %+v", definition)
+	}
+	if len(fake.savedEntities) != 1 {
+		t.Fatalf("expected one saved item entity, got %d", len(fake.savedEntities))
+	}
+	if !strings.Contains(fake.savedEntities[0].Description, "blade broken") {
+		t.Fatalf("entity description should surface item condition, got %q", fake.savedEntities[0].Description)
+	}
+	if len(fake.savedStatusEffects) != 1 {
+		t.Fatalf("expected one saved status effect, got %d", len(fake.savedStatusEffects))
+	}
+	effect := fake.savedStatusEffects[0]
+	if effect.OwnerScope != "entity" || effect.OwnerID != "Sacred Sword" || effect.StatusKey != entityConditionStatusKey || effect.EffectKind != "debuff" || effect.EffectLabel != "blade broken" {
+		t.Fatalf("unexpected saved entity condition effect: %+v", effect)
+	}
+	if !strings.Contains(effect.EffectPayloadJSON, `"entity_type":"item"`) {
+		t.Fatalf("payload should preserve entity type, got %s", effect.EffectPayloadJSON)
+	}
+	if !strings.Contains(effect.DurationJSON, "unknown_until_updated") || !strings.Contains(effect.DurationJSON, `"hardcoded_duration":false`) {
+		t.Fatalf("duration should stay unknown until later evidence updates it, got %s", effect.DurationJSON)
+	}
+}
+
 // TestPrepareTurnRelationshipAndWorldStateTraceSurface (P486 HS-1i).
 // Prepare-turn traces must expose counts/flags proving relationship/world current state
 // was saved, read, and injected into the canon text.
@@ -11466,7 +11679,8 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		)
 		for _, needle := range []string{
 			"Language_Context_JSON",
-			"Generated summaries and display/support fields should use summary_language/session_output_language",
+			"generated natural-language memory fields must use that language",
+			"Do not default to English just because these instructions are English",
 			"Raw evidence excerpts must stay exact source text",
 			"\"session_output_language\":\"en\"",
 			"\"raw_evidence_rewritten\":false",
@@ -12941,4 +13155,142 @@ func TestSeq123P86TemporalEntityAnchorHardeningMarkers(t *testing.T) {
 			t.Fatalf("unexpected vector live write for placeholder skip test, VectorStatus=%q VectorsUpserted=%d", result.VectorStatus, result.VectorsUpserted)
 		}
 	})
+}
+
+func TestPrepareTurnWeakInputPlannerContract(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-weak-plan", TurnIndex: 7, Role: "user", Content: "Mina asks Rowan what they should do next."},
+			{ID: 2, ChatSessionID: "sess-weak-plan", TurnIndex: 7, Role: "assistant", Content: "Rowan pauses at the shrine gate and waits for Mina's lead."},
+		},
+		returnResumePack: &store.ResumePack{
+			Trigger:       "resume",
+			AssembledText: "Mina and Rowan are paused at the shrine gate.",
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"sess-weak-plan","turn_index":8,"raw_user_input":"계속","client_meta":{"language_context":{"session_output_language":"ko","output_language_source":"plugin_setting"}},"settings":{"max_injection_chars":1600,"max_input_context_chars":900,"injection_enabled":true,"input_context_enabled":true,"top_k":2,"guide_mode":"standard","guide_strength":"weak","narrative_stance":"balanced"}}`
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	planner, ok := resp["weak_input_planner"].(map[string]any)
+	if !ok {
+		t.Fatalf("weak_input_planner missing: %#v", resp["weak_input_planner"])
+	}
+	if planner["contract_version"] != "step25_weak_input_planner.v1" || planner["taxonomy"] != "continuation_trigger" || planner["status"] != "ready" {
+		t.Fatalf("unexpected planner contract: %#v", planner)
+	}
+	if planner["active"] != true || planner["truth_authority"] != false || planner["would_write"] != false || planner["would_call_llm"] != false {
+		t.Fatalf("planner must be active support-only, got %#v", planner)
+	}
+	boundary, ok := planner["initiative_boundary"].(map[string]any)
+	if !ok || intFromAny(boundary["max_new_beats"], -1) != 1 || boolFromAny(boundary["allow_scene_jump"]) {
+		t.Fatalf("planner initiative boundary mismatch: %#v", planner["initiative_boundary"])
+	}
+	brief, ok := planner["acting_brief"].(map[string]any)
+	if !ok || extractionStringFromAny(brief["main_failure_risk"]) != "stall_or_stale_replay" || extractionStringFromAny(brief["reply_strategy"]) == "" {
+		t.Fatalf("planner acting brief mismatch: %#v", planner["acting_brief"])
+	}
+	if len(stringSliceFromAny(planner["selected_anchor_names"])) == 0 {
+		t.Fatalf("expected selected anchor trace, got %#v", planner["selected_anchor_names"])
+	}
+	execContract, ok := resp["planner_execution_contract"].(map[string]any)
+	if !ok {
+		t.Fatalf("planner_execution_contract missing: %#v", resp["planner_execution_contract"])
+	}
+	if execContract["contract_version"] != "step25_planner_execution_contract.v1" || execContract["status"] != "ready" || execContract["truth_authority"] != false {
+		t.Fatalf("unexpected execution contract: %#v", execContract)
+	}
+	sceneMandate, ok := execContract["scene_mandate"].(map[string]any)
+	if !ok || extractionStringFromAny(sceneMandate["value"]) == "" {
+		t.Fatalf("execution contract missing scene mandate: %#v", execContract["scene_mandate"])
+	}
+	requiredOutcome, ok := execContract["required_outcome"].(map[string]any)
+	if !ok || intFromAny(requiredOutcome["count"], 0) <= 0 || len(stringSliceFromAny(requiredOutcome["items"])) == 0 {
+		t.Fatalf("execution contract missing required outcomes: %#v", execContract["required_outcome"])
+	}
+	forbiddenMove, ok := execContract["forbidden_move"].(map[string]any)
+	if !ok || intFromAny(forbiddenMove["count"], 0) <= 0 || len(stringSliceFromAny(forbiddenMove["items"])) == 0 {
+		t.Fatalf("execution contract missing forbidden moves: %#v", execContract["forbidden_move"])
+	}
+	pacing, ok := execContract["pacing_pressure"].(map[string]any)
+	if !ok || intFromAny(pacing["max_new_beats"], -1) != 1 || boolFromAny(pacing["allow_scene_jump"]) {
+		t.Fatalf("execution contract pacing mismatch: %#v", execContract["pacing_pressure"])
+	}
+	consumeRule, ok := execContract["consume_rule"].(map[string]any)
+	if !ok || len(stringSliceFromAny(consumeRule["blocked_usage"])) == 0 {
+		t.Fatalf("execution contract missing consume rule: %#v", execContract["consume_rule"])
+	}
+	progressChoice, ok := resp["progression_choice_ledger"].(map[string]any)
+	if !ok {
+		t.Fatalf("progression_choice_ledger missing: %#v", resp["progression_choice_ledger"])
+	}
+	if progressChoice["contract_version"] != "step25_progression_choice_ledger.v1" || progressChoice["status"] != "ready" || progressChoice["truth_authority"] != false {
+		t.Fatalf("unexpected progression choice ledger: %#v", progressChoice)
+	}
+	if progressChoice["choice"] != "advance" {
+		t.Fatalf("weak input with live anchors should choose bounded advance, got %#v", progressChoice["choice"])
+	}
+	sceneLedger, ok := progressChoice["scene_advancement_ledger"].(map[string]any)
+	if !ok || intFromAny(sceneLedger["selected_anchor_count"], 0) <= 0 {
+		t.Fatalf("progression choice missing scene ledger anchors: %#v", progressChoice["scene_advancement_ledger"])
+	}
+	callbackEval, ok := progressChoice["callback_evaluation"].(map[string]any)
+	if !ok || boolFromAny(callbackEval["stale_revival_suppressed"]) {
+		t.Fatalf("progression callback evaluation mismatch: %#v", progressChoice["callback_evaluation"])
+	}
+	stall, ok := progressChoice["same_incident_stall_detection"].(map[string]any)
+	if !ok || boolFromAny(stall["detected"]) {
+		t.Fatalf("progression same-incident detector should not trip: %#v", progressChoice["same_incident_stall_detection"])
+	}
+	step25Gate, ok := resp["step25_validation_gate"].(map[string]any)
+	if !ok {
+		t.Fatalf("step25_validation_gate missing: %#v", resp["step25_validation_gate"])
+	}
+	if step25Gate["contract_version"] != "step25_validation_gate.v1" || step25Gate["gate_status"] != "pass" || step25Gate["adoption_ready"] != true {
+		t.Fatalf("unexpected Step 25 validation gate: %#v", step25Gate)
+	}
+	if intFromAny(step25Gate["passed_count"], 0) != intFromAny(step25Gate["total_count"], -1) || intFromAny(step25Gate["total_count"], 0) < 8 {
+		t.Fatalf("Step 25 validation gate should pass all checks: %#v", step25Gate)
+	}
+	if blocking := stringSliceFromAny(step25Gate["blocking_check_ids"]); len(blocking) > 0 {
+		t.Fatalf("Step 25 validation gate had blockers: %#v", blocking)
+	}
+	supervisor, ok := resp["supervisor_input_pack"].(map[string]any)
+	if !ok {
+		t.Fatalf("supervisor_input_pack missing")
+	}
+	if _, ok := supervisor["weak_input_planner"].(map[string]any); !ok {
+		t.Fatalf("supervisor pack missing weak planner contract: %#v", supervisor["weak_input_planner"])
+	}
+	if _, ok := supervisor["planner_execution_contract"].(map[string]any); !ok {
+		t.Fatalf("supervisor pack missing planner execution contract: %#v", supervisor["planner_execution_contract"])
+	}
+	if _, ok := supervisor["progression_choice_ledger"].(map[string]any); !ok {
+		t.Fatalf("supervisor pack missing progression choice ledger: %#v", supervisor["progression_choice_ledger"])
+	}
+	if _, ok := supervisor["step25_validation_gate"].(map[string]any); !ok {
+		t.Fatalf("supervisor pack missing Step 25 validation gate: %#v", supervisor["step25_validation_gate"])
+	}
+	guidance := extractionStringFromAny(supervisor["final_guidance_suffix"])
+	if !strings.Contains(guidance, "[Weak Input Planner]") ||
+		!strings.Contains(guidance, "[Planner Execution Contract]") ||
+		!strings.Contains(guidance, "[Progression Choice Ledger]") ||
+		!strings.Contains(guidance, "current_user_input_priority=highest") ||
+		!strings.Contains(guidance, "truth_authority=false") {
+		t.Fatalf("supervisor guidance missing support-only planner contracts: %q", guidance)
+	}
 }

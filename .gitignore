@@ -36,6 +36,7 @@ __pycache__/
 *.tmp
 temp/
 tmp/
+_tmp/
 tmp_*.py
 repair*.py
 repair*.txt
@@ -45,6 +46,10 @@ debug*.txt
 check_*.py
 !tools/check_*.py
 find_*.py
+*_dump*.txt
+_dump_*.txt
+_style_block*.txt
+style_block_dump.txt
 
 # ChromaDB / vector persist dirs
 .chroma_shadow/

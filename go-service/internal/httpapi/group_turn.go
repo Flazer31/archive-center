@@ -395,6 +395,10 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 	storylinesSaved := 0
 	worldRulesSaved := 0
 	characterStatesSaved := 0
+	physicalConditionsSaved := 0
+	entityConditionsSaved := 0
+	statusSchemaDefinitionsSaved := 0
+	statusEffectsSaved := 0
 	pendingThreadsSaved := 0
 	activeStatesSaved := 0
 	canonicalStateLayersSaved := 0
@@ -557,6 +561,10 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			storylinesSaved += artifactResult.Storylines
 			worldRulesSaved += artifactResult.WorldRules
 			characterStatesSaved += artifactResult.CharacterStates
+			physicalConditionsSaved += artifactResult.PhysicalConditions
+			entityConditionsSaved += artifactResult.EntityConditions
+			statusSchemaDefinitionsSaved += artifactResult.StatusSchemaDefinitions
+			statusEffectsSaved += artifactResult.StatusEffects
 			pendingThreadsSaved += artifactResult.PendingThreads
 			activeStatesSaved += artifactResult.ActiveStates
 			canonicalStateLayersSaved += artifactResult.CanonicalStateLayers
@@ -634,11 +642,11 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			warnings = append(warnings, "hierarchy_promotion_failed: "+errText)
 		}
 	}
-	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + trustStatesSaved
+	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + trustStatesSaved
 	rawStatus := "skipped"
 	if chatLogsSaved > 0 || effectiveInputSaved > 0 {
 		rawStatus = "ok"
-	} else if storeWriteErrors > 0 {
+	} else if !saveOK || storeWriteErrors > 0 {
 		rawStatus = "error"
 	}
 	derivedStatus := "skipped"
@@ -646,6 +654,10 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		derivedStatus = "ok"
 	} else if criticTriggered && derivedArtifactsSaved == 0 {
 		derivedStatus = "empty"
+	} else if rawStatus == "ok" && !criticTriggered {
+		derivedStatus = "delayed"
+	} else if rawStatus == "error" {
+		derivedStatus = "not_checked_no_raw"
 	}
 	vectorPipelineStatus := vectorStatus
 	if vectorPipelineStatus == "" {
@@ -667,6 +679,10 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			"world_rules_saved":                worldRulesSaved,
 			"subjective_entity_memories_saved": subjectiveEntityMemoriesSaved,
 			"character_states_saved":           characterStatesSaved,
+			"physical_conditions_saved":        physicalConditionsSaved,
+			"entity_conditions_saved":          entityConditionsSaved,
+			"status_schema_definitions_saved":  statusSchemaDefinitionsSaved,
+			"status_effects_saved":             statusEffectsSaved,
 			"canonical_state_layers_saved":     canonicalStateLayersSaved,
 		},
 		"vector": map[string]any{
@@ -696,6 +712,10 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		"storylines_saved":                 storylinesSaved,
 		"world_rules_saved":                worldRulesSaved,
 		"character_states_saved":           characterStatesSaved,
+		"physical_conditions_saved":        physicalConditionsSaved,
+		"entity_conditions_saved":          entityConditionsSaved,
+		"status_schema_definitions_saved":  statusSchemaDefinitionsSaved,
+		"status_effects_saved":             statusEffectsSaved,
 		"pending_threads_saved":            pendingThreadsSaved,
 		"active_states_saved":              activeStatesSaved,
 		"canonical_state_layers_saved":     canonicalStateLayersSaved,
@@ -751,6 +771,12 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			"canonical_state_promotion_policy_version": "hs1.verified_only.v1",
 			"canonical_state_layers_saved":             canonicalStateLayersSaved,
 			"canonical_state_hard_floor_enabled":       true,
+			"physical_conditions_saved":                physicalConditionsSaved,
+			"entity_conditions_saved":                  entityConditionsSaved,
+			"status_schema_definitions_saved":          statusSchemaDefinitionsSaved,
+			"status_effects_saved":                     statusEffectsSaved,
+			"physical_condition_policy":                "evidence_bound_status_effect_no_default_duration",
+			"entity_condition_policy":                  "evidence_bound_entity_status_effect_no_default_duration",
 			"canonical_state_upsert": map[string]any{
 				"cost_measurement_policy_version": "lc1b.v1",
 				"cost_measurement":                canonicalStateWriteCost,
@@ -1490,6 +1516,51 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	sourceLookupAudit := buildSourceLookupAudit(sid, evidence, memories, kgTriples, chatLogs)
 	runtimeToggle := buildRuntimeToggle(sid, degraded, injectionEnabled, inputContextEnabled, maxInjectionChars, maxInputContextChars)
 	inputAnchorGovernor := buildInputAnchorGovernor(rawUserInput, inputContextText, inputContextTruncated, maxInputContextChars, chatLogs, resumePack, activeStates, canonicalLayers, episodeSums, pendingThreads, storylines)
+	weakInputPlanner := buildWeakInputPlannerContract(rawUserInput, inputAnchorGovernor, languageContext, maxInputContextChars)
+	plannerExecutionContract := buildPlannerExecutionContract(rawUserInput, narrativeStance, guideMode, guideStrength, inputAnchorGovernor, weakInputPlanner, selectedStorylines, pendingThreads, activeStates, canonicalLayers, worldRules, injectionAssembly, languageContext)
+	progressionChoiceLedger := buildProgressionChoiceLedger(sid, turnIndex, rawUserInput, chatLogs, selectedStorylines, pendingThreads, episodeSums, inputAnchorGovernor, weakInputPlanner, plannerExecutionContract, progressionLedger)
+	progressionLedger["progression_choice"] = progressionChoiceLedger
+	step25ValidationGate := buildStep25ValidationGate(rawUserInput, weakInputPlanner, plannerExecutionContract, progressionChoiceLedger)
+	supervisorInputPack["step25_validation_gate"] = step25ValidationGate
+	if guidance := formatWeakInputPlannerGuidance(weakInputPlanner); guidance != "" {
+		supervisorInputPack["weak_input_planner"] = weakInputPlanner
+		if existing, _ := supervisorInputPack["persistent_guidance"].(string); strings.TrimSpace(existing) != "" {
+			supervisorInputPack["persistent_guidance"] = existing + "\n" + guidance
+		} else {
+			supervisorInputPack["persistent_guidance"] = guidance
+		}
+		if existing, _ := supervisorInputPack["final_guidance_suffix"].(string); strings.TrimSpace(existing) != "" {
+			supervisorInputPack["final_guidance_suffix"] = existing + "\n" + guidance
+		} else {
+			supervisorInputPack["final_guidance_suffix"] = guidance
+		}
+	}
+	if guidance := formatPlannerExecutionContractGuidance(plannerExecutionContract); guidance != "" {
+		supervisorInputPack["planner_execution_contract"] = plannerExecutionContract
+		if existing, _ := supervisorInputPack["persistent_guidance"].(string); strings.TrimSpace(existing) != "" {
+			supervisorInputPack["persistent_guidance"] = existing + "\n" + guidance
+		} else {
+			supervisorInputPack["persistent_guidance"] = guidance
+		}
+		if existing, _ := supervisorInputPack["final_guidance_suffix"].(string); strings.TrimSpace(existing) != "" {
+			supervisorInputPack["final_guidance_suffix"] = existing + "\n" + guidance
+		} else {
+			supervisorInputPack["final_guidance_suffix"] = guidance
+		}
+	}
+	if guidance := formatProgressionChoiceGuidance(progressionChoiceLedger); guidance != "" {
+		supervisorInputPack["progression_choice_ledger"] = progressionChoiceLedger
+		if existing, _ := supervisorInputPack["persistent_guidance"].(string); strings.TrimSpace(existing) != "" {
+			supervisorInputPack["persistent_guidance"] = existing + "\n" + guidance
+		} else {
+			supervisorInputPack["persistent_guidance"] = guidance
+		}
+		if existing, _ := supervisorInputPack["final_guidance_suffix"].(string); strings.TrimSpace(existing) != "" {
+			supervisorInputPack["final_guidance_suffix"] = existing + "\n" + guidance
+		} else {
+			supervisorInputPack["final_guidance_suffix"] = guidance
+		}
+	}
 	helperBudgetGovernorTrace := buildHelperBudgetGovernorTrace(injectionAssembly, maxInjectionChars)
 
 	tracePreview := map[string]any{
@@ -1568,6 +1639,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"source_lookup_audit":                           sourceLookupAudit,
 		"runtime_toggle":                                runtimeToggle,
 		"input_anchor_governor":                         inputAnchorGovernor,
+		"weak_input_planner":                            weakInputPlanner,
+		"planner_execution_contract":                    plannerExecutionContract,
+		"progression_choice_ledger":                     progressionChoiceLedger,
+		"step25_validation_gate":                        step25ValidationGate,
 		"helper_budget_governor_trace":                  helperBudgetGovernorTrace,
 		"helper_injection_budget_manager":               buildStep165HelperInjectionBudgetManager(maxInjectionChars, injectionAssembly),
 		"input_context_slot_governor":                   buildStep165InputContextSlotGovernor(maxInputContextChars, inputContextTruncated),
@@ -2988,6 +3063,579 @@ func buildPrepareTurnPlannerLanguageContract(languageContext map[string]any) map
 		"raw_evidence_rewritten":        false,
 		"generated_support_policy":      "use_session_output_language_when_language_is_known",
 		"trace_labels_language_neutral": true,
+	}
+}
+
+func buildWeakInputPlannerContract(rawUserInput string, inputAnchorGovernor map[string]any, languageContext map[string]any, maxInputContextChars int) map[string]any {
+	trimmed := strings.TrimSpace(rawUserInput)
+	lower := strings.ToLower(trimmed)
+	runeCount := len([]rune(trimmed))
+	wordCount := len(strings.Fields(trimmed))
+	continuationPhrases := map[string]bool{
+		"continue": true, "go on": true, "next": true, "more": true, "resume": true, "keep going": true,
+		"계속": true, "계속해": true, "이어서": true, "이어가": true, "다음": true, "다음 장면": true,
+		"응": true, "ㅇㅇ": true, "좋아": true, "그래": true, "좋아 계속": true,
+	}
+	taxonomy := "specific_input"
+	switch {
+	case trimmed == "":
+		taxonomy = "empty_input"
+	case continuationPhrases[lower]:
+		taxonomy = "continuation_trigger"
+	case runeCount <= 12 && wordCount <= 3:
+		taxonomy = "short_ack_or_nudge"
+	case runeCount <= 24:
+		taxonomy = "low_specificity_input"
+	}
+
+	explicitRedirection := false
+	if redirection, ok := inputAnchorGovernor["explicit_user_redirection"].(map[string]any); ok {
+		explicitRedirection = boolFromAny(redirection["detected"])
+	}
+	selectedAnchors := stringSliceFromAny(inputAnchorGovernor["selected_slot_names"])
+	droppedAnchors := stringSliceFromAny(inputAnchorGovernor["dropped_slot_names"])
+	weakActive := taxonomy != "specific_input"
+	if explicitRedirection {
+		weakActive = false
+	}
+	status := "not_applicable"
+	if weakActive {
+		status = "ready"
+	}
+	if explicitRedirection {
+		status = "redirection_user_input_wins"
+	}
+
+	maxNewBeats := 0
+	if weakActive {
+		maxNewBeats = 1
+	}
+	targetLanguage := prepareTurnSessionOutputLanguage(languageContext)
+	return map[string]any{
+		"contract_version":            "step25_weak_input_planner.v1",
+		"status":                      status,
+		"active":                      weakActive,
+		"taxonomy":                    taxonomy,
+		"raw_user_input_chars":        runeCount,
+		"raw_user_input_words":        wordCount,
+		"current_user_input_priority": "highest",
+		"truth_authority":             false,
+		"would_write":                 false,
+		"would_call_llm":              false,
+		"selected_anchor_names":       selectedAnchors,
+		"dropped_anchor_names":        droppedAnchors,
+		"planner_support_language":    nilIfEmpty(targetLanguage),
+		"input_context_budget_chars":  maxInputContextChars,
+		"minimum_mandate": []string{
+			"preserve the latest user input as the only command source",
+			"use recent/previous anchors only as support",
+			"avoid stale arc revival unless current input or fresh evidence aligns",
+		},
+		"acting_brief": map[string]any{
+			"main_failure_risk": "stall_or_stale_replay",
+			"portrayal_goal":    "continue the current scene using verified anchors",
+			"reply_strategy":    "advance at most one reversible causal beat; ask or frame options when the choice is unspecified",
+		},
+		"initiative_boundary": map[string]any{
+			"max_new_beats":                 maxNewBeats,
+			"allow_scene_jump":              false,
+			"may_suggest":                   true,
+			"may_execute_irreversible_step": false,
+			"explicit_redirection_detected": explicitRedirection,
+		},
+		"ambiguity_policy": map[string]any{
+			"preserve_unspecified_choice": true,
+			"do_not_choose_for_user":      true,
+			"degrade_path":                "support_only_anchor_or_no_planner_brief",
+		},
+		"role_lens_contract": map[string]any{
+			"world_lens":               "guard hard setting contradictions only",
+			"plot_lens":                "surface current arc pressure without forcing payoff",
+			"npc_lens":                 "use visible or directly relevant known-state only",
+			"critic_lens":              "flag over-injection, secret leak, stale replay, and user override risk",
+			"raw_memory_dump_allowed":  false,
+			"hidden_knowledge_allowed": false,
+		},
+	}
+}
+
+func formatWeakInputPlannerGuidance(contract map[string]any) string {
+	if contract == nil || !boolFromAny(contract["active"]) {
+		return ""
+	}
+	taxonomy := extractionStringFromAny(contract["taxonomy"])
+	brief, _ := contract["acting_brief"].(map[string]any)
+	boundary, _ := contract["initiative_boundary"].(map[string]any)
+	return strings.Join([]string{
+		"[Weak Input Planner]",
+		"mode=support_only; truth_authority=false; current_user_input_priority=highest",
+		"taxonomy=" + taxonomy,
+		"main_failure_risk=" + extractionStringFromAny(brief["main_failure_risk"]),
+		"portrayal_goal=" + extractionStringFromAny(brief["portrayal_goal"]),
+		"reply_strategy=" + extractionStringFromAny(brief["reply_strategy"]),
+		fmt.Sprintf("initiative=max_new_beats:%d; allow_scene_jump:%v; irreversible_step:false", intFromAny(boundary["max_new_beats"], 0), boolFromAny(boundary["allow_scene_jump"])),
+		"ambiguity=preserve unspecified user choice; do not choose for the user",
+	}, "\n")
+}
+
+func buildPlannerExecutionContract(rawUserInput, narrativeStance, guideMode, guideStrength string, inputAnchorGovernor, weakInputPlanner map[string]any, selectedStorylines []store.Storyline, pendingThreads []store.PendingThread, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, worldRules []store.WorldRule, assembly prepareTurnInjectionAssembly, languageContext map[string]any) map[string]any {
+	stanceBounds := buildNarrativeStanceBounds(narrativeStance)
+	maxNewBeats := intFromAny(stanceBounds["max_new_beats"], 0)
+	allowSceneJump := boolFromAny(stanceBounds["allow_scene_jump"])
+	if weakInputPlanner != nil && boolFromAny(weakInputPlanner["active"]) {
+		if boundary, ok := weakInputPlanner["initiative_boundary"].(map[string]any); ok {
+			weakBeats := intFromAny(boundary["max_new_beats"], maxNewBeats)
+			if weakBeats < maxNewBeats || maxNewBeats <= 0 {
+				maxNewBeats = weakBeats
+			}
+			allowSceneJump = allowSceneJump && boolFromAny(boundary["allow_scene_jump"])
+		}
+	}
+
+	selectedAnchors := stringSliceFromAny(inputAnchorGovernor["selected_slot_names"])
+	droppedAnchors := stringSliceFromAny(inputAnchorGovernor["dropped_slot_names"])
+	activeStorylineNames := []string{}
+	for _, sl := range selectedStorylines {
+		if name := strings.TrimSpace(sl.Name); name != "" {
+			activeStorylineNames = appendUniqueMemorySearchText(activeStorylineNames, name)
+		}
+	}
+	openThreadNames := []string{}
+	for _, th := range pendingThreads {
+		if th.Suppressed {
+			continue
+		}
+		label := strings.TrimSpace(firstNonEmpty(th.Title, th.Description, th.ThreadKey))
+		if label != "" {
+			openThreadNames = appendUniqueMemorySearchText(openThreadNames, label)
+		}
+	}
+
+	protectedCount := intFromAny(assembly.Counts["protected_secret_count"], 0) +
+		intFromAny(assembly.Counts["identity_accuracy_count"], 0) +
+		intFromAny(assembly.Counts["protected_memory_guarded_count"], 0)
+	privateLaneActive := intFromAny(assembly.Counts["character_private_recollection_bound"], intFromAny(assembly.Counts["character_private_recollection_count"], 0)) > 0 ||
+		strings.TrimSpace(assembly.CharacterPrivateText) != ""
+
+	forbiddenMoves := append([]string{}, stringSliceFromAny(stanceBounds["forbidden_moves"])...)
+	forbiddenMoves = appendUniqueMemorySearchText(forbiddenMoves, "do not override or reinterpret the latest user input")
+	forbiddenMoves = appendUniqueMemorySearchText(forbiddenMoves, "do not convert support memories into new canonical facts")
+	if !allowSceneJump {
+		forbiddenMoves = appendUniqueMemorySearchText(forbiddenMoves, "do not hard-cut to a new scene without current-input support")
+	}
+	if weakInputPlanner != nil && boolFromAny(weakInputPlanner["active"]) {
+		forbiddenMoves = appendUniqueMemorySearchText(forbiddenMoves, "do not turn a weak prompt into an irreversible user decision")
+	}
+	if protectedCount > 0 || privateLaneActive {
+		forbiddenMoves = appendUniqueMemorySearchText(forbiddenMoves, "do not reveal protected private knowledge or let unrelated characters discover it without current-scene evidence")
+		forbiddenMoves = appendUniqueMemorySearchText(forbiddenMoves, "do not split confirmed alias or cover-identity continuity into separate people")
+	}
+
+	sceneMandate := "follow the latest user input and keep the current scene causally grounded"
+	if boolFromAny(weakInputPlanner["active"]) {
+		sceneMandate = "continue the current scene from verified anchors while preserving user ambiguity"
+	} else if strings.TrimSpace(rawUserInput) != "" {
+		sceneMandate = "answer the latest user input directly and use support context only as grounding"
+	}
+
+	requiredOutcomes := []string{
+		"latest user input remains the command source",
+		"visible response must stay compatible with direct evidence and canonical state",
+	}
+	if len(activeStorylineNames) > 0 {
+		requiredOutcomes = append(requiredOutcomes, "keep selected active storyline in view: "+strings.Join(limitStringSlice(activeStorylineNames, 2), " / "))
+	}
+	if len(openThreadNames) > 0 {
+		requiredOutcomes = append(requiredOutcomes, "preserve open thread awareness: "+strings.Join(limitStringSlice(openThreadNames, 2), " / "))
+	}
+	if len(selectedAnchors) > 0 {
+		requiredOutcomes = append(requiredOutcomes, "use selected anchors as support only: "+strings.Join(limitStringSlice(selectedAnchors, 3), " / "))
+	}
+
+	pacingLevel := "steady"
+	if maxNewBeats <= 0 {
+		pacingLevel = "hold_or_user_led"
+	} else if normalizeNarrativeStance(narrativeStance) == "proactive" {
+		pacingLevel = "bounded_forward"
+	}
+	targetLanguage := prepareTurnSessionOutputLanguage(languageContext)
+
+	return map[string]any{
+		"contract_version":            "step25_planner_execution_contract.v1",
+		"status":                      "ready",
+		"active":                      true,
+		"current_user_input_priority": "highest",
+		"truth_authority":             false,
+		"would_write":                 false,
+		"would_call_llm":              false,
+		"planner_support_language":    nilIfEmpty(targetLanguage),
+		"scene_mandate": map[string]any{
+			"value":  sceneMandate,
+			"source": "current_input_plus_read_surfaces",
+		},
+		"required_outcome": map[string]any{
+			"items": requiredOutcomes,
+			"count": len(requiredOutcomes),
+		},
+		"forbidden_move": map[string]any{
+			"items":                 limitStringSlice(forbiddenMoves, 8),
+			"count":                 len(forbiddenMoves),
+			"protected_lane_active": protectedCount > 0 || privateLaneActive,
+		},
+		"pacing_pressure": map[string]any{
+			"level":            pacingLevel,
+			"max_new_beats":    maxNewBeats,
+			"allow_scene_jump": allowSceneJump,
+			"guide_mode":       normalizeNarrativeGuideMode(guideMode),
+			"guide_strength":   normalizeNarrativeGuideStrength(guideStrength),
+			"stance":           normalizeNarrativeStance(narrativeStance),
+		},
+		"ending_requirement": map[string]any{
+			"mode":        "soft_landing",
+			"instruction": "end with immediate consequence, reaction, or a reversible next choice; do not force final resolution",
+		},
+		"consume_rule": map[string]any{
+			"allowed_usage":  []string{"next_turn_guidance", "continuity_guard", "pacing_guard", "secret_leak_guard"},
+			"blocked_usage":  []string{"truth_write", "canonical_override", "user_intent_override", "raw_memory_dump", "hidden_knowledge_reveal"},
+			"priority_order": []string{"current_user_input", "explicit_user_correction", "direct_evidence", "canonical_state", "retrieved_support", "planner_execution_contract"},
+		},
+		"read_surface_alignment": map[string]any{
+			"selected_anchor_count":       len(selectedAnchors),
+			"dropped_anchor_count":        len(droppedAnchors),
+			"selected_storyline_count":    len(activeStorylineNames),
+			"pending_thread_count":        len(openThreadNames),
+			"active_state_count":          len(activeStates),
+			"canonical_layer_count":       len(canonicalLayers),
+			"world_rule_count":            len(worldRules),
+			"protected_signal_count":      protectedCount,
+			"private_recollection_active": privateLaneActive,
+		},
+		"facet_audit_repair_ingestion": map[string]any{
+			"status": "no_prior_facet_audit_surface",
+			"rule":   "when prior drift or secret-leak audit exists, consume only as bounded repair hint for the next turn",
+		},
+		"concealment_guard": map[string]any{
+			"active": protectedCount > 0 || privateLaneActive,
+			"rule":   "preserve protected/private knowledge boundaries; do not reveal or externalize without current-scene evidence",
+		},
+		"role_lens_consumption": map[string]any{
+			"world_lens":  "hard setting and rule contradiction guard only",
+			"plot_lens":   "current arc pressure and required outcome hint only",
+			"npc_lens":    "visible or directly relevant known-state boundary only",
+			"critic_lens": "over-injection, secret leak, stale replay, flat interpretation, and user override guard only",
+		},
+	}
+}
+
+func formatPlannerExecutionContractGuidance(contract map[string]any) string {
+	if contract == nil || !boolFromAny(contract["active"]) {
+		return ""
+	}
+	sceneMandate := mapFromAny(contract["scene_mandate"])
+	required := mapFromAny(contract["required_outcome"])
+	forbidden := mapFromAny(contract["forbidden_move"])
+	pacing := mapFromAny(contract["pacing_pressure"])
+	ending := mapFromAny(contract["ending_requirement"])
+	requiredItems := limitStringSlice(stringSliceFromAny(required["items"]), 3)
+	forbiddenItems := limitStringSlice(stringSliceFromAny(forbidden["items"]), 3)
+	return strings.Join([]string{
+		"[Planner Execution Contract]",
+		"mode=support_only; truth_authority=false; current_user_input_priority=highest",
+		"scene_mandate=" + extractionStringFromAny(sceneMandate["value"]),
+		"required_outcome=" + strings.Join(requiredItems, " / "),
+		"forbidden_move=" + strings.Join(forbiddenItems, " / "),
+		fmt.Sprintf("pacing=max_new_beats:%d; allow_scene_jump:%v; level:%s", intFromAny(pacing["max_new_beats"], 0), boolFromAny(pacing["allow_scene_jump"]), extractionStringFromAny(pacing["level"])),
+		"ending_requirement=" + extractionStringFromAny(ending["instruction"]),
+	}, "\n")
+}
+
+func buildProgressionChoiceLedger(sid string, turnIndex int, rawUserInput string, chatLogs []store.ChatLog, storylines []store.Storyline, pendingThreads []store.PendingThread, episodeSums []store.EpisodeSummary, inputAnchorGovernor, weakInputPlanner, plannerExecutionContract, progressionLedger map[string]any) map[string]any {
+	trimmed := strings.TrimSpace(rawUserInput)
+	selectedAnchors := stringSliceFromAny(inputAnchorGovernor["selected_slot_names"])
+	explicitRedirection := false
+	if redirection, ok := inputAnchorGovernor["explicit_user_redirection"].(map[string]any); ok {
+		explicitRedirection = boolFromAny(redirection["detected"])
+	}
+	weakActive := weakInputPlanner != nil && boolFromAny(weakInputPlanner["active"])
+	latestUser := latestUserChatLogContent(chatLogs)
+	sameIncident := trimmed != "" && latestUser != "" && stableKey("turn", trimmed) == stableKey("turn", latestUser)
+	activeStorylineCount := countActiveProgressionStorylines(storylines)
+	activeThreadCount := countOpenProgressionThreads(pendingThreads)
+	hasLiveAnchor := len(selectedAnchors) > 0 || activeStorylineCount > 0 || activeThreadCount > 0
+	hasCallbackAnchor := stringSliceContains(selectedAnchors, "Chapter") || stringSliceContains(selectedAnchors, "Saga") || len(episodeSums) > 0
+	staleDroppedCount := countDroppedOldArcAnchors(inputAnchorGovernor)
+
+	choice := "advance"
+	reasons := []string{"specific_input_or_live_anchor_available"}
+	if trimmed == "" {
+		choice = "hold"
+		reasons = []string{"empty_input_preserve_user_ambiguity"}
+	} else if sameIncident {
+		choice = "hold"
+		reasons = []string{"same_incident_exact_repeat_detected"}
+	} else if explicitRedirection {
+		choice = "new_scene_opportunity"
+		reasons = []string{"explicit_user_redirection_detected"}
+	} else if weakActive && !hasLiveAnchor {
+		choice = "hold"
+		reasons = []string{"weak_input_without_live_anchor"}
+	} else if weakActive {
+		choice = "advance"
+		reasons = []string{"weak_input_bounded_advance_from_live_anchor"}
+	} else if hasCallbackAnchor && (activeStorylineCount > 0 || activeThreadCount > 0) {
+		choice = "callback"
+		reasons = []string{"callback_anchor_aligned_with_active_thread"}
+	} else if staleDroppedCount > 0 && activeStorylineCount == 0 && activeThreadCount == 0 {
+		choice = "hold"
+		reasons = []string{"stale_callback_suppressed_without_current_scene_alignment"}
+	}
+
+	pacing := mapFromAny(plannerExecutionContract["pacing_pressure"])
+	return map[string]any{
+		"contract_version":            "step25_progression_choice_ledger.v1",
+		"status":                      "ready",
+		"chat_session_id":             sid,
+		"turn_index":                  turnIndex,
+		"choice":                      choice,
+		"choice_set":                  []string{"advance", "callback", "new_scene_opportunity", "hold"},
+		"reasons":                     reasons,
+		"current_user_input_priority": "highest",
+		"truth_authority":             false,
+		"would_write":                 false,
+		"would_call_llm":              false,
+		"scene_advancement_ledger": map[string]any{
+			"decision":                  choice,
+			"reason":                    strings.Join(reasons, " / "),
+			"max_new_beats":             intFromAny(pacing["max_new_beats"], 0),
+			"allow_scene_jump":          boolFromAny(pacing["allow_scene_jump"]),
+			"selected_anchor_count":     len(selectedAnchors),
+			"active_storyline_count":    activeStorylineCount,
+			"active_thread_count":       activeThreadCount,
+			"callback_anchor_available": hasCallbackAnchor,
+		},
+		"callback_evaluation": map[string]any{
+			"candidate":                  hasCallbackAnchor,
+			"aligned_with_active_thread": hasCallbackAnchor && (activeStorylineCount > 0 || activeThreadCount > 0),
+			"stale_dropped_count":        staleDroppedCount,
+			"stale_revival_suppressed":   staleDroppedCount > 0 && choice != "callback",
+			"rule":                       "callback is support-only and must align with current scene, active thread, or current input",
+		},
+		"same_incident_stall_detection": map[string]any{
+			"detected":             sameIncident,
+			"mode":                 "exact_normalized_user_input_repeat_only",
+			"current_input_chars":  len([]rune(trimmed)),
+			"latest_user_present":  latestUser != "",
+			"stall_action":         "hold",
+			"false_positive_guard": "no semantic guess; only exact normalized repeat is treated as same incident",
+		},
+		"inspection_replay_surface": map[string]any{
+			"status": "ready",
+			"cases":  []string{"weak_input_bounded_advance", "callback_alignment", "stale_callback_suppression", "same_incident_hold", "explicit_redirection_new_scene"},
+			"source": "prepare_turn_read_only",
+		},
+		"consume_rule": map[string]any{
+			"allowed_usage":  []string{"next_turn_progression_hint", "stall_guard", "callback_alignment_guard"},
+			"blocked_usage":  []string{"truth_write", "canonical_state_change", "forced_scene_jump", "user_intent_override"},
+			"priority_order": []string{"current_user_input", "explicit_user_correction", "planner_execution_contract", "progression_choice_ledger"},
+		},
+		"ledger_alignment": map[string]any{
+			"progression_ledger_status": extractionStringFromAny(progressionLedger["status"]),
+			"last_advanced_turn":        progressionLedger["last_advanced_turn"],
+			"last_validated_turn":       progressionLedger["last_validated_turn"],
+		},
+	}
+}
+
+func latestUserChatLogContent(chatLogs []store.ChatLog) string {
+	latestTurn := -1
+	latestID := int64(-1)
+	latest := ""
+	for _, log := range chatLogs {
+		if !strings.EqualFold(strings.TrimSpace(log.Role), "user") {
+			continue
+		}
+		if log.TurnIndex > latestTurn || (log.TurnIndex == latestTurn && log.ID > latestID) {
+			latestTurn = log.TurnIndex
+			latestID = log.ID
+			latest = strings.TrimSpace(log.Content)
+		}
+	}
+	return latest
+}
+
+func countActiveProgressionStorylines(storylines []store.Storyline) int {
+	count := 0
+	for _, sl := range storylines {
+		if sl.Suppressed {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(sl.Status))
+		if status == "" || status == "active" || status == "open" || status == "escalating" || status == "aftermath" || status == "latent" {
+			count++
+		}
+	}
+	return count
+}
+
+func countOpenProgressionThreads(pendingThreads []store.PendingThread) int {
+	count := 0
+	for _, th := range pendingThreads {
+		if th.Suppressed {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(th.Status))
+		if status == "" || status == "open" || status == "active" || status == "pending" {
+			count++
+		}
+	}
+	return count
+}
+
+func countDroppedOldArcAnchors(inputAnchorGovernor map[string]any) int {
+	count := 0
+	rawTrace, _ := inputAnchorGovernor["old_arc_keep_drop_trace"].([]map[string]any)
+	for _, item := range rawTrace {
+		if extractionStringFromAny(item["decision"]) == "drop" {
+			count++
+		}
+	}
+	return count
+}
+
+func formatProgressionChoiceGuidance(contract map[string]any) string {
+	if contract == nil || extractionStringFromAny(contract["status"]) == "" {
+		return ""
+	}
+	callbackEval := mapFromAny(contract["callback_evaluation"])
+	stall := mapFromAny(contract["same_incident_stall_detection"])
+	ledger := mapFromAny(contract["scene_advancement_ledger"])
+	reasons := stringSliceFromAny(contract["reasons"])
+	return strings.Join([]string{
+		"[Progression Choice Ledger]",
+		"mode=support_only; truth_authority=false; current_user_input_priority=highest",
+		"choice=" + extractionStringFromAny(contract["choice"]),
+		"reason=" + strings.Join(limitStringSlice(reasons, 2), " / "),
+		fmt.Sprintf("ledger=max_new_beats:%d; allow_scene_jump:%v; anchors:%d", intFromAny(ledger["max_new_beats"], 0), boolFromAny(ledger["allow_scene_jump"]), intFromAny(ledger["selected_anchor_count"], 0)),
+		fmt.Sprintf("callback=candidate:%v; aligned:%v; stale_suppressed:%v", boolFromAny(callbackEval["candidate"]), boolFromAny(callbackEval["aligned_with_active_thread"]), boolFromAny(callbackEval["stale_revival_suppressed"])),
+		fmt.Sprintf("same_incident_exact_repeat:%v", boolFromAny(stall["detected"])),
+	}, "\n")
+}
+
+func buildStep25ValidationGate(rawUserInput string, weakInputPlanner, plannerExecutionContract, progressionChoiceLedger map[string]any) map[string]any {
+	type checkDef struct {
+		id     string
+		name   string
+		pass   bool
+		reason string
+	}
+	weakBoundary := mapFromAny(weakInputPlanner["initiative_boundary"])
+	execConsume := mapFromAny(plannerExecutionContract["consume_rule"])
+	roleLens := mapFromAny(plannerExecutionContract["role_lens_consumption"])
+	progressionReplay := mapFromAny(progressionChoiceLedger["inspection_replay_surface"])
+	callbackEval := mapFromAny(progressionChoiceLedger["callback_evaluation"])
+	stall := mapFromAny(progressionChoiceLedger["same_incident_stall_detection"])
+	choice := extractionStringFromAny(progressionChoiceLedger["choice"])
+	allowedChoice := choice == "advance" || choice == "callback" || choice == "new_scene_opportunity" || choice == "hold"
+	replayCases := stringSliceFromAny(progressionReplay["cases"])
+	blockedUsage := stringSliceFromAny(execConsume["blocked_usage"])
+	contractVersionsPresent := extractionStringFromAny(weakInputPlanner["contract_version"]) == "step25_weak_input_planner.v1" &&
+		extractionStringFromAny(plannerExecutionContract["contract_version"]) == "step25_planner_execution_contract.v1" &&
+		extractionStringFromAny(progressionChoiceLedger["contract_version"]) == "step25_progression_choice_ledger.v1"
+
+	checks := []checkDef{
+		{
+			id:     "25-5a",
+			name:   "current input misread replay",
+			pass:   strings.TrimSpace(rawUserInput) != "" && extractionStringFromAny(weakInputPlanner["current_user_input_priority"]) == "highest",
+			reason: "current user input remains the highest-priority command source",
+		},
+		{
+			id:     "25-5b",
+			name:   "weak input progression replay",
+			pass:   weakInputPlanner["truth_authority"] == false && weakInputPlanner["would_write"] == false && intFromAny(weakBoundary["max_new_beats"], 99) <= 1,
+			reason: "weak input planner stays bounded and support-only",
+		},
+		{
+			id:     "25-5c",
+			name:   "planner slot truth boundary",
+			pass:   plannerExecutionContract["truth_authority"] == false && plannerExecutionContract["would_write"] == false && len(blockedUsage) > 0,
+			reason: "execution slots cannot write truth or override user intent",
+		},
+		{
+			id:     "25-5d",
+			name:   "progression choice separation",
+			pass:   allowedChoice && callbackEval["rule"] != nil && stall["false_positive_guard"] != nil,
+			reason: "advance, callback, opening, and hold choices are explicit and inspectable",
+		},
+		{
+			id:     "25-5e",
+			name:   "step-specific replay surface",
+			pass:   extractionStringFromAny(progressionReplay["source"]) == "prepare_turn_read_only" && len(replayCases) >= 4,
+			reason: "Step 25 replay cases are local to this planner/progression gate",
+		},
+		{
+			id:     "25-5f",
+			name:   "schema migration package",
+			pass:   contractVersionsPresent,
+			reason: "all Step 25 contracts expose version stamps for rollback/replay comparison",
+		},
+		{
+			id:     "25-5g",
+			name:   "role-lensed input improvement replay",
+			pass:   roleLens["world_lens"] != nil && roleLens["plot_lens"] != nil && roleLens["npc_lens"] != nil && roleLens["critic_lens"] != nil,
+			reason: "world, plot, NPC, and critic lenses are present as bounded support rules",
+		},
+		{
+			id:     "25-5h",
+			name:   "role-lens failure budget",
+			pass:   stringSliceContains(blockedUsage, "hidden_knowledge_reveal") && stringSliceContains(blockedUsage, "user_intent_override"),
+			reason: "lens failure modes block hidden-knowledge leak and user-intent override",
+		},
+	}
+
+	items := make([]map[string]any, 0, len(checks))
+	blocking := []string{}
+	passed := 0
+	for _, check := range checks {
+		status := "pass"
+		if !check.pass {
+			status = "hold"
+			blocking = append(blocking, check.id)
+		} else {
+			passed++
+		}
+		items = append(items, map[string]any{
+			"id":     check.id,
+			"name":   check.name,
+			"status": status,
+			"reason": check.reason,
+		})
+	}
+	gateStatus := "pass"
+	if len(blocking) > 0 {
+		gateStatus = "hold"
+	}
+	return map[string]any{
+		"contract_version":            "step25_validation_gate.v1",
+		"status":                      "ready",
+		"gate_status":                 gateStatus,
+		"adoption_ready":              len(blocking) == 0,
+		"current_user_input_priority": "highest",
+		"truth_authority":             false,
+		"would_write":                 false,
+		"would_call_llm":              false,
+		"passed_count":                passed,
+		"total_count":                 len(checks),
+		"blocking_check_ids":          blocking,
+		"checks":                      items,
+		"scope":                       "prepare_turn_contract_smoke_gate",
+		"live_replay_note":            "This gate verifies Step 25 contract shape and safety boundaries; separate live user replay can still be run before release packaging.",
+		"release_gate": map[string]any{
+			"status":             gateStatus,
+			"bundle_ready":       len(blocking) == 0,
+			"requires_packaging": false,
+			"step":               "25",
+		},
 	}
 }
 

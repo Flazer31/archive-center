@@ -59,6 +59,10 @@ type artifactSaveResult struct {
 	Storylines               int
 	WorldRules               int
 	CharacterStates          int
+	PhysicalConditions       int
+	EntityConditions         int
+	StatusSchemaDefinitions  int
+	StatusEffects            int
 	PendingThreads           int
 	ActiveStates             int
 	Entities                 int
@@ -1521,12 +1525,12 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"relationship_memory":{},"state_deltas":{},"character_deltas":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
 		"- evidence_excerpts must be short exact excerpts from the latest user/assistant turn, not the whole turn.",
-		"- Language contract: use Language_Context_JSON as the memory-write contract. Generated summaries and display/support fields should use summary_language/session_output_language when it is known. Raw evidence excerpts must stay exact source text and must not be translated or rewritten.",
+		"- Language contract: use Language_Context_JSON as the memory-write contract. If summary_language/session_output_language is ko, en, or ja, generated natural-language memory fields must use that language. Do not default to English just because these instructions are English. Raw evidence excerpts must stay exact source text and must not be translated or rewritten.",
 		"- Keep internal enum/category/predicate keys stable. Do not translate system keys per turn just because the output language changes.",
 		"- For ordinary narrative turns with new information, include 1-3 evidence_excerpts that ground the most important user intent and assistant outcome.",
 		"- kg_triples must use real in-story names only. Never use char_*, cid_*, turn_*, user, assistant, system, prompt, or has_turn edges.",
@@ -1537,6 +1541,14 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
 		"- relationship_memory may include target_name or pair when trust changes. If no target exists, leave it empty.",
 		"- character_deltas should capture named character status, location, emotional posture, relationship changes, injuries, intentions, or role/authority changes seen in the latest turn.",
+		"- physical_conditions is for evidence-bound body/health continuity that can affect roleplay: illness, fever, cold, pregnancy, menstruation, poisoning, fracture, accident/fall injury, body damage, impairment, missing body part, recovery, worsening, or cleared condition.",
+		"- Each physical_conditions item should include owner_entity_name or owner_entity_key, condition_label, effect_kind when obvious (temporary_effect or injury), evidence_excerpt, source_turn_index, and may include severity_text, body_area, onset_story_clock_json, duration_json, expires_at_clock_json, prognosis_text, age_or_vulnerability_note, uncertainty_note, and authority_hint.",
+		"- Do not invent medical calendars, fixed cycles, healing times, or numeric severity values. If duration is not explicit in the latest turn or safe context, use duration_policy=unknown_until_updated and keep prognosis_text/age_or_vulnerability_note descriptive.",
+		"- Do not hardcode rules such as menstruation lasting a fixed number of days or a cold always resolving quickly. Let later evidence update, clear, worsen, or extend the condition.",
+		"- If LUA, a character sheet, or another chat runtime owns exact health/stat values, set authority_hint=external_runtime and record only the narrative evidence; do not override that runtime's numeric state.",
+		"- entity_conditions is for evidence-bound continuity of important non-character entities, especially named items, equipment, locations, or artifacts whose changed state should persist: broken, repaired, sealed, unlocked, activated, depleted, contaminated, lost, inaccessible, transformed, or cleared.",
+		"- Each entity_conditions item should include owner_entity_name or owner_entity_key, owner_entity_type when known, condition_label, evidence_excerpt, source_turn_index, and may include effect_kind, onset_story_clock_json, duration_json, expires_at_clock_json, uncertainty_note, and authority_hint.",
+		"- Do not emit entity_conditions for ordinary props or unchanged descriptions. Use it only when the changed entity state would create a continuity error if forgotten later.",
 		"- world_rules must describe durable world facts, not prompt instructions or style rules. You are responsible for judging them; backend code will not infer rules from keyword lists.",
 		"- Emit world_rules and world_state.rules when the latest turn establishes a durable constraint that should affect future turns: natural/physical laws, magic/technology mechanics, apocalypse survival norms, unspoken social law, institutional policy, school/academy custom, workplace procedure, family/household rule, contract, rank/authority, faction/group norm, location access, schedule/calendar, economy/resource constraint, logistics doctrine, or other world-law equivalent.",
 		"- The category list is non-exhaustive. If the story establishes a stable law of the setting, social order, organization, environment, or genre logic, capture it even when it does not literally use words like rule, law, policy, or protocol.",
@@ -1907,6 +1919,8 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["relationship_memory"] = mapFromAny(raw["relationship_memory"])
 	out["state_deltas"] = mapFromAny(raw["state_deltas"])
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
+	out["physical_conditions"] = sliceFromAny(raw["physical_conditions"])
+	out["entity_conditions"] = sliceFromAny(raw["entity_conditions"])
 	protectedSecrets := normalizeProtectedSecrets(raw["protected_secrets"])
 	characterIdentityAccuracy := normalizeCharacterIdentityAccuracy(raw["character_identity_accuracy"])
 	subjectiveMemories := normalizeSubjectiveEntityMemories(raw["subjective_entity_memories"])
@@ -1976,9 +1990,11 @@ func looksLikeStructuredCriticPayloadText(text string) bool {
 	for _, marker := range []string{
 		"archive_hint",
 		"character_deltas",
+		"entity_conditions",
 		"evidence_excerpts",
 		"kg_triples",
 		"pending_threads",
+		"physical_conditions",
 		"relationship_memory",
 		"state_deltas",
 		"subjective_entity_memories",
@@ -3699,8 +3715,356 @@ func (s *Server) saveSupersessionResolutionBestEffort(ctx context.Context, decis
 	}, result, func() {})
 }
 
+const (
+	physicalConditionIngestContractVersion = "physical_condition_ingest.v1"
+	physicalConditionStatusKey             = "physical_condition"
+	entityConditionIngestContractVersion   = "entity_condition_ingest.v1"
+	entityConditionStatusKey               = "entity_condition"
+)
+
+type conditionEffectLane struct {
+	ExtractionKey     string
+	StatusKey         string
+	SchemaName        string
+	Label             string
+	OwnerScope        string
+	ContractVersion   string
+	SourceLabel       string
+	EntityTypeDefault string
+	CharacterOwner    bool
+	Options           map[string]any
+}
+
+func (s *Server) savePhysicalConditionsFromExtraction(ctx context.Context, sid string, turnIndex int, extraction map[string]any, now time.Time, result *artifactSaveResult) {
+	s.saveConditionEffectsFromExtraction(ctx, sid, turnIndex, extraction, now, result, conditionEffectLane{
+		ExtractionKey:   "physical_conditions",
+		StatusKey:       physicalConditionStatusKey,
+		SchemaName:      "physical_condition_status",
+		Label:           "Physical condition",
+		OwnerScope:      "character",
+		ContractVersion: physicalConditionIngestContractVersion,
+		SourceLabel:     "critic.physical_conditions",
+		CharacterOwner:  true,
+		Options: map[string]any{
+			"condition_lane":                  true,
+			"authority_mode":                  "archive_canonical",
+			"projection_density":              "light",
+			"duration_policy":                 "evidence_bound_no_default_duration",
+			"severity_policy":                 "descriptive_no_numeric_scale",
+			"runtime_status_override_allowed": true,
+		},
+	})
+}
+
+func (s *Server) saveEntityConditionsFromExtraction(ctx context.Context, sid string, turnIndex int, extraction map[string]any, now time.Time, result *artifactSaveResult) {
+	s.saveConditionEffectsFromExtraction(ctx, sid, turnIndex, extraction, now, result, conditionEffectLane{
+		ExtractionKey:     "entity_conditions",
+		StatusKey:         entityConditionStatusKey,
+		SchemaName:        "entity_condition_status",
+		Label:             "Entity condition",
+		OwnerScope:        "entity",
+		ContractVersion:   entityConditionIngestContractVersion,
+		SourceLabel:       "critic.entity_conditions",
+		EntityTypeDefault: "entity",
+		Options: map[string]any{
+			"condition_lane":                  true,
+			"entity_condition_lane":           true,
+			"authority_mode":                  "archive_canonical",
+			"projection_density":              "light",
+			"duration_policy":                 "evidence_bound_no_default_duration",
+			"severity_policy":                 "descriptive_no_numeric_scale",
+			"runtime_status_override_allowed": true,
+		},
+	})
+}
+
+func (s *Server) saveConditionEffectsFromExtraction(ctx context.Context, sid string, turnIndex int, extraction map[string]any, now time.Time, result *artifactSaveResult, lane conditionEffectLane) {
+	if s == nil || s.Store == nil || result == nil {
+		return
+	}
+	conditions := normalizePhysicalConditionItems(extraction[lane.ExtractionKey])
+	if len(conditions) == 0 {
+		return
+	}
+	registry, hasRegistry := s.Store.(store.StatusSchemaRegistryStore)
+	lifecycle, hasLifecycle := s.Store.(store.StatusLifecycleStore)
+	if !hasRegistry || !hasLifecycle {
+		result.addSkipReason(lane.ExtractionKey, "status_schema_lifecycle_store_unavailable", map[string]any{"items": len(conditions)})
+		return
+	}
+	definition, ok := s.ensureConditionStatusDefinition(ctx, sid, now, result, registry, lane.StatusKey, lane.SchemaName, lane.Label, lane.OwnerScope, lane.Options, lane.ExtractionKey)
+	if !ok {
+		return
+	}
+	for _, condition := range conditions {
+		owner := conditionOwnerName(condition)
+		if lane.CharacterOwner {
+			owner = s.canonicalCharacterName(ctx, sid, owner)
+		}
+		if owner == "" || isPlaceholderKGPart(owner) {
+			result.addSkipReason(lane.ExtractionKey, "missing_owner", condition)
+			continue
+		}
+		evidence := physicalConditionEvidence(condition)
+		if evidence == "" {
+			result.addSkipReason(lane.ExtractionKey, "missing_evidence_excerpt", condition)
+			continue
+		}
+		label := conditionLabel(condition)
+		if label == "" {
+			result.addSkipReason(lane.ExtractionKey, "missing_condition_label", condition)
+			continue
+		}
+		effectKind := statusNormalizeEffectKind(stringFromMap(condition, "effect_kind"))
+		if effectKind == "" {
+			effectKind = "temporary_effect"
+		}
+		effectState := statusNormalizeEffectState(extractionFirstNonEmpty(stringFromMap(condition, "effect_state"), "active"))
+		if effectState == "" {
+			effectState = "active"
+		}
+		payload := physicalConditionPayload(condition, turnIndex)
+		payload["contract_version"] = lane.ContractVersion
+		if lane.EntityTypeDefault != "" {
+			payload["entity_type"] = extractionFirstNonEmpty(stringFromMap(condition, "owner_entity_type"), stringFromMap(condition, "entity_type"), lane.EntityTypeDefault)
+		}
+		evidenceJSON := mustCompactJSON(map[string]any{
+			"contract_version": lane.ContractVersion,
+			"source":           lane.SourceLabel,
+			"source_turn":      turnIndex,
+			"evidence_excerpt": evidence,
+			"authority_hint":   stringFromMap(condition, "authority_hint"),
+		})
+		result.trySave("SaveStatusEffect("+lane.StatusKey+")", func() error {
+			_, err := lifecycle.SaveStatusEffect(ctx, store.StatusEffect{
+				ChatSessionID:      sid,
+				RegistryID:         definition.ID,
+				StatusKey:          definition.StatusKey,
+				OwnerScope:         definition.OwnerScope,
+				OwnerID:            owner,
+				EffectKind:         effectKind,
+				EffectLabel:        label,
+				EffectPayloadJSON:  mustCompactJSON(payload),
+				EvidenceJSON:       evidenceJSON,
+				SourceTurn:         turnIndex,
+				StartClockJSON:     physicalConditionStartClockJSON(condition, turnIndex),
+				DurationJSON:       physicalConditionDurationJSON(condition),
+				ExpiresAtClockJSON: physicalConditionExpiresAtClockJSON(condition),
+				EffectState:        effectState,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			})
+			return err
+		}, result, func() {
+			if lane.ExtractionKey == "physical_conditions" {
+				result.PhysicalConditions++
+			}
+			if lane.ExtractionKey == "entity_conditions" {
+				result.EntityConditions++
+			}
+			result.StatusEffects++
+		})
+	}
+}
+
+func (s *Server) ensureConditionStatusDefinition(ctx context.Context, sid string, now time.Time, result *artifactSaveResult, registry store.StatusSchemaRegistryStore, statusKey, schemaName, label, ownerScope string, options map[string]any, skipKey string) (store.StatusSchemaDefinition, bool) {
+	definition, err := registry.GetStatusSchemaDefinitionByKey(ctx, sid, statusKey, ownerScope)
+	if err == nil {
+		return definition, true
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		if result != nil {
+			result.addSkipReason(skipKey, "status_schema_lookup_failed", err.Error())
+		}
+		return store.StatusSchemaDefinition{}, false
+	}
+	definition = store.StatusSchemaDefinition{
+		ChatSessionID: sid,
+		SchemaName:    schemaName,
+		StatusKey:     statusKey,
+		Label:         label,
+		OwnerScope:    ownerScope,
+		ValueKind:     "note",
+		OptionsJSON:   mustCompactJSON(options),
+		RegistryState: "active",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	var saved []store.StatusSchemaDefinition
+	if result == nil {
+		var saveErr error
+		saved, saveErr = registry.SaveStatusSchemaDefinitions(ctx, []store.StatusSchemaDefinition{definition})
+		return firstSavedPhysicalConditionDefinition(definition, saved), saveErr == nil
+	}
+	result.trySave("SaveStatusSchemaDefinitions("+statusKey+")", func() error {
+		var saveErr error
+		saved, saveErr = registry.SaveStatusSchemaDefinitions(ctx, []store.StatusSchemaDefinition{definition})
+		return saveErr
+	}, result, func() { result.StatusSchemaDefinitions++ })
+	if len(saved) == 0 {
+		return store.StatusSchemaDefinition{}, false
+	}
+	return firstSavedPhysicalConditionDefinition(definition, saved), true
+}
+
+func firstSavedPhysicalConditionDefinition(fallback store.StatusSchemaDefinition, saved []store.StatusSchemaDefinition) store.StatusSchemaDefinition {
+	if len(saved) == 0 {
+		return fallback
+	}
+	return saved[0]
+}
+
+func normalizePhysicalConditionItems(raw any) []map[string]any {
+	out := []map[string]any{}
+	for _, item := range sliceFromAny(raw) {
+		m := mapFromAny(item)
+		if len(m) == 0 || !hasMeaningfulPayload(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func physicalConditionEvidence(item map[string]any) string {
+	if text := strings.TrimSpace(extractionFirstNonEmpty(
+		stringFromMap(item, "evidence_excerpt"),
+		stringFromMap(item, "evidence"),
+		stringFromMap(item, "source_excerpt"),
+	)); text != "" {
+		return text
+	}
+	excerpts := stringsFromAny(item["evidence_excerpts"])
+	if len(excerpts) == 0 {
+		return ""
+	}
+	return excerpts[0]
+}
+
+func physicalConditionPayload(item map[string]any, turnIndex int) map[string]any {
+	payload := map[string]any{
+		"contract_version":          physicalConditionIngestContractVersion,
+		"source_turn":               turnIndex,
+		"condition":                 item,
+		"duration_policy":           extractionFirstNonEmpty(stringFromMap(item, "duration_policy"), "unknown_until_updated"),
+		"hardcoded_duration":        false,
+		"numeric_severity_required": false,
+	}
+	if text := strings.TrimSpace(stringFromMap(item, "severity_text")); text != "" {
+		payload["severity_text"] = text
+	}
+	if text := strings.TrimSpace(stringFromMap(item, "age_or_vulnerability_note")); text != "" {
+		payload["age_or_vulnerability_note"] = text
+	}
+	if text := strings.TrimSpace(stringFromMap(item, "uncertainty_note")); text != "" {
+		payload["uncertainty_note"] = text
+	}
+	return payload
+}
+
+func physicalConditionStartClockJSON(item map[string]any, turnIndex int) string {
+	for _, key := range []string{"start_clock_json", "onset_story_clock_json", "story_clock_json"} {
+		if raw := mapFromAny(item[key]); hasMeaningfulPayload(raw) {
+			return mustCompactJSON(raw)
+		}
+	}
+	return mustCompactJSON(map[string]any{
+		"source_turn":      turnIndex,
+		"precision":        "turn",
+		"precision_label":  "turn_anchor",
+		"calendar_unknown": true,
+	})
+}
+
+func physicalConditionDurationJSON(item map[string]any) string {
+	if raw := mapFromAny(item["duration_json"]); hasMeaningfulPayload(raw) {
+		return mustCompactJSON(raw)
+	}
+	if raw := mapFromAny(item["expires_at_clock_json"]); hasMeaningfulPayload(raw) {
+		return ""
+	}
+	return mustCompactJSON(map[string]any{
+		"policy":             "unknown_until_updated",
+		"reason":             "no_explicit_duration_in_evidence",
+		"hardcoded_duration": false,
+	})
+}
+
+func physicalConditionExpiresAtClockJSON(item map[string]any) string {
+	if raw := mapFromAny(item["expires_at_clock_json"]); hasMeaningfulPayload(raw) {
+		return mustCompactJSON(raw)
+	}
+	return ""
+}
+
+func conditionOwnerName(item map[string]any) string {
+	return strings.TrimSpace(extractionFirstNonEmpty(
+		stringFromMap(item, "owner_entity_name"),
+		stringFromMap(item, "owner_entity_key"),
+		stringFromMap(item, "owner_name"),
+		stringFromMap(item, "entity_name"),
+		stringFromMap(item, "character_name"),
+		stringFromMap(item, "subject"),
+		stringFromMap(item, "name"),
+	))
+}
+
+func conditionLabel(item map[string]any) string {
+	return strings.TrimSpace(extractionFirstNonEmpty(
+		stringFromMap(item, "condition_label"),
+		stringFromMap(item, "condition"),
+		stringFromMap(item, "status_label"),
+		stringFromMap(item, "summary"),
+	))
+}
+
+func entityDescriptionWithConditions(base, name, entityType string, physicalConditions, entityConditions []map[string]any) string {
+	base = strings.TrimSpace(base)
+	nameKey := comparableEntityKey(name)
+	if nameKey == "" {
+		return base
+	}
+	var candidates []map[string]any
+	if strings.EqualFold(strings.TrimSpace(entityType), "character") {
+		candidates = physicalConditions
+	} else {
+		candidates = entityConditions
+	}
+	parts := []string{}
+	for _, condition := range candidates {
+		if comparableEntityKey(conditionOwnerName(condition)) != nameKey {
+			continue
+		}
+		label := conditionLabel(condition)
+		if label == "" {
+			continue
+		}
+		if bodyArea := strings.TrimSpace(stringFromMap(condition, "body_area")); bodyArea != "" && !strings.Contains(strings.ToLower(label), strings.ToLower(bodyArea)) {
+			label = label + " (" + bodyArea + ")"
+		}
+		parts = append(parts, "condition: "+label)
+	}
+	if len(parts) == 0 {
+		return base
+	}
+	extra := strings.Join(dedupeStrings(parts), "; ")
+	if base == "" {
+		return extra
+	}
+	if strings.Contains(base, extra) {
+		return base
+	}
+	return base + " | " + extra
+}
+
+func comparableEntityKey(raw string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(raw)), " "))
+}
+
 func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, embCfg completeTurnEmbeddingConfig, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement) {
 	entities := mapFromAny(extraction["entities"])
+	physicalConditions := normalizePhysicalConditionItems(extraction["physical_conditions"])
+	entityConditions := normalizePhysicalConditionItems(extraction["entity_conditions"])
 	saveEntityItems := func(items []any, entityType string) {
 		for _, item := range items {
 			entity := mapFromAny(item)
@@ -3710,12 +4074,19 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			}
 			if saver, ok := s.Store.(entitySaver); ok {
 				localType := extractionFirstNonEmpty(stringFromMap(entity, "entity_type"), stringFromMap(entity, "role"), entityType)
+				description := entityDescriptionWithConditions(
+					extractionFirstNonEmpty(stringFromMap(entity, "status_emotion"), stringFromMap(entity, "description"), stringFromMap(entity, "summary")),
+					name,
+					localType,
+					physicalConditions,
+					entityConditions,
+				)
 				result.trySave("SaveEntity", func() error {
 					return saver.SaveEntity(ctx, &store.Entity{
 						ChatSessionID: sid,
 						Name:          name,
 						EntityType:    localType,
-						Description:   extractionFirstNonEmpty(stringFromMap(entity, "status_emotion"), stringFromMap(entity, "description"), stringFromMap(entity, "summary")),
+						Description:   description,
 						AliasesJSON:   mustCompactJSON(stringsFromAny(entity["aliases"])),
 						FirstSeenTurn: turnIndex,
 						LastSeenTurn:  turnIndex,
@@ -3806,6 +4177,9 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			}, result, func() { result.CharacterEvents++ })
 		}
 	}
+
+	s.savePhysicalConditionsFromExtraction(ctx, sid, turnIndex, extraction, now, result)
+	s.saveEntityConditionsFromExtraction(ctx, sid, turnIndex, extraction, now, result)
 
 	if saver, ok := s.Store.(activeStateSaver); ok {
 		for _, key := range []string{"relationship_memory", "state_deltas", "entities"} {
@@ -4045,6 +4419,10 @@ func (s *Server) saveCriticIngestTrace(ctx context.Context, sid string, turnInde
 		"persona_capsule_candidates":  result.PersonaCapsuleCandidates,
 		"subjective_entity_memories":  result.SubjectiveEntityMemories,
 		"character_states":            result.CharacterStates,
+		"physical_conditions":         result.PhysicalConditions,
+		"entity_conditions":           result.EntityConditions,
+		"status_schema_definitions":   result.StatusSchemaDefinitions,
+		"status_effects":              result.StatusEffects,
 		"pending_threads":             result.PendingThreads,
 		"active_states":               result.ActiveStates,
 		"canonical_layers":            result.CanonicalStateLayers,

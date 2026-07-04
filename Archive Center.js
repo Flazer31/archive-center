@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.4 RC6
+//@display-name Archive Center 2.5 RC1
 //@author memory-scaffold
 //@api 3.0
-//@version 2.4.0-rc6
+//@version 2.5.0-rc1
 
 // ════════════════════════════════════════════════════════════════
 // 이 플러그인은 RisuAI 환경에서 동작하는
@@ -36,8 +36,8 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.4.0-rc6";
-  const BUILD_ID = "2.4.0-rc6-reindex-orphan-dedupe.20260703";
+  const VERSION = "2.5.0-rc1";
+  const BUILD_ID = "2.5.0-rc1-language-output-parity.20260705";
   const BUILD_CHANNEL = "rc5";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
@@ -251,7 +251,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.4 RC6 설정",
+      "settings.title": "🗂️ Archive Center 2.5 RC1 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -1230,7 +1230,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.4 RC6 Settings",
+      "settings.title": "🗂️ Archive Center 2.5 RC1 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -2209,7 +2209,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.4 RC6 設定",
+      "settings.title": "🗂️ Archive Center 2.5 RC1 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -3536,6 +3536,7 @@
   // ──────────────────────────────────────────────────────────────
   let settings = { ...DEFAULT_SETTINGS };
   const _sessionTurnIndices = new Map(); // sessionId → turnIndex
+  const _sessionRoutingTurnBaselines = new Map(); // sessionId -> { backendTurnAtRoute, localPairCountAtRoute }
   const SESSION_TURN_MAP_MAX = 50;
   let panelOpen = false;
   let _settingsActiveTab = "dashboard";
@@ -7637,6 +7638,107 @@
     } catch { /* non-fatal */ }
   }
 
+  function rememberSessionRoutingTurnBaseline(sessionId, baseline) {
+    try {
+      const sid = normalizeSessionId(sessionId);
+      if (!sid || !baseline || typeof baseline !== "object") return null;
+      const localPairCountAtRoute = Math.max(0, Math.floor(Number(baseline.localPairCountAtRoute || 0)));
+      const backendTurnAtRoute = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
+      const row = {
+        sessionId: sid,
+        localPairCountAtRoute,
+        backendTurnAtRoute,
+        reason: String(baseline.reason || "session_routing").trim() || "session_routing",
+        createdAt: Number(baseline.createdAt || Date.now()),
+      };
+      _sessionRoutingTurnBaselines.set(sid, row);
+      if (_sessionRoutingTurnBaselines.size > SESSION_TURN_MAP_MAX) {
+        const oldest = _sessionRoutingTurnBaselines.keys().next().value;
+        _sessionRoutingTurnBaselines.delete(oldest);
+      }
+      if (backendTurnAtRoute > 0) setTurnCounterAtLeast(sid, backendTurnAtRoute);
+      return row;
+    } catch (err) {
+      debugLog("rememberSessionRoutingTurnBaseline failed:", err && err.message);
+      return null;
+    }
+  }
+
+  function getSessionRoutingTurnBaseline(sessionId) {
+    try {
+      const sid = normalizeSessionId(sessionId);
+      if (!sid) return null;
+      return _sessionRoutingTurnBaselines.get(sid) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function countActiveChatCompletedTurnPairsForRoutingBaseline(sessionId) {
+    try {
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId || "");
+      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      return buildCompletedTurnPairsFromActiveChatMessages(messages).length;
+    } catch (err) {
+      debugLog("countActiveChatCompletedTurnPairsForRoutingBaseline failed:", err && err.message);
+      return 0;
+    }
+  }
+
+  async function establishSessionRoutingTurnBaseline(sessionId, reason) {
+    const sid = normalizeSessionId(sessionId);
+    if (!sid || sid === SESSION_FALLBACK) return null;
+    const backendTurnAtRoute = await safeCall(
+      () => fetchBackendLatestTurnIndexForSession(sid),
+      0,
+      "establishSessionRoutingTurnBaseline.latestTurn"
+    );
+    const localPairCountAtRoute = await countActiveChatCompletedTurnPairsForRoutingBaseline(sid);
+    return rememberSessionRoutingTurnBaseline(sid, {
+      backendTurnAtRoute,
+      localPairCountAtRoute,
+      reason,
+      createdAt: Date.now(),
+    });
+  }
+
+  function resolveBackfillPairTurnAgainstRoutingBaseline(sessionId, pair) {
+    const localTurn = Number(pair && pair.turnIndex);
+    if (!Number.isFinite(localTurn) || localTurn < 1) {
+      return { status: "invalid", turnIndex: 0, localTurnIndex: localTurn || 0 };
+    }
+    const baseline = getSessionRoutingTurnBaseline(sessionId);
+    if (!baseline) {
+      return { status: "normal", turnIndex: Math.floor(localTurn), localTurnIndex: Math.floor(localTurn) };
+    }
+    const localBase = Math.max(0, Math.floor(Number(baseline.localPairCountAtRoute || 0)));
+    const backendBase = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
+    const localIndex = Math.floor(localTurn);
+    if (localIndex <= localBase) {
+      return {
+        status: "skip_pre_route_visible_pair",
+        turnIndex: localIndex,
+        localTurnIndex: localIndex,
+        baseline,
+      };
+    }
+    const rebasedTurn = backendBase + (localIndex - localBase);
+    if (rebasedTurn > 0 && rebasedTurn !== localIndex) {
+      return {
+        status: "rebased",
+        turnIndex: rebasedTurn,
+        localTurnIndex: localIndex,
+        baseline,
+      };
+    }
+    return {
+      status: "aligned",
+      turnIndex: localIndex,
+      localTurnIndex: localIndex,
+      baseline,
+    };
+  }
+
   function normalizeTurnPairCompareText(text) {
     try {
       return String(text || "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
@@ -7799,18 +7901,42 @@
       if (!sid) return nextTurnIndex(sessionId);
       const activePair = await findActiveChatCompletedTurnPairForContent(sid, userContent, assistantContent);
       if (activePair && Number(activePair.turnIndex) > 0) {
-        const previousNextTurnIndex = peekNextTurnIndex(sid);
-        setTurnCounterExact(sid, activePair.turnIndex);
+        const latestBackendTurn = await safeCall(
+          () => fetchBackendLatestTurnIndexForSession(sid),
+          0,
+          "reserveAfterRequestLatestTurnIndex"
+        );
+        if (latestBackendTurn > 0) {
+          setTurnCounterAtLeast(sid, latestBackendTurn);
+        }
+        const previousNextTurnIndex = Math.max(peekNextTurnIndex(sid), Number(latestBackendTurn || 0) + 1);
+        const activePairTurnIndex = Number(activePair.turnIndex);
+        const routingTurnResolution = resolveBackfillPairTurnAgainstRoutingBaseline(sid, activePair);
+        const routingTurnIndex = routingTurnResolution && routingTurnResolution.status !== "skip_pre_route_visible_pair"
+          ? Number(routingTurnResolution.turnIndex || 0)
+          : 0;
+        const hasRoutingBaseline = !!(routingTurnResolution && routingTurnResolution.baseline);
+        const resolvedTurnIndex = hasRoutingBaseline
+          ? Math.max(previousNextTurnIndex, routingTurnIndex)
+          : (activePairTurnIndex >= previousNextTurnIndex ? activePairTurnIndex : previousNextTurnIndex);
+        setTurnCounterExact(sid, resolvedTurnIndex);
         if (lastOrchResult && lastOrchResult._trace) {
           lastOrchResult._trace.turnIndexResolution = {
-            status: "active_chat_aligned",
+            status: routingTurnResolution && routingTurnResolution.status === "rebased"
+              ? "session_routing_baseline_rebased"
+              : (activePairTurnIndex >= previousNextTurnIndex ? "active_chat_aligned" : "active_chat_visible_window_rebased"),
             source: activePair.source,
-            turnIndex: activePair.turnIndex,
+            turnIndex: resolvedTurnIndex,
+            activeChatLocalTurnIndex: activePairTurnIndex,
             pairCount: activePair.pairCount,
             previousNextTurnIndex,
+            latestBackendTurn,
+            routingBaselineReason: routingTurnResolution && routingTurnResolution.baseline ? String(routingTurnResolution.baseline.reason || "") : "",
+            routingBaselineBackendTurn: routingTurnResolution && routingTurnResolution.baseline ? Number(routingTurnResolution.baseline.backendTurnAtRoute || 0) : 0,
+            routingBaselineLocalPairs: routingTurnResolution && routingTurnResolution.baseline ? Number(routingTurnResolution.baseline.localPairCountAtRoute || 0) : 0,
           };
         }
-        return activePair.turnIndex;
+        return resolvedTurnIndex;
       }
     } catch (err) {
       debugLog("reserveAfterRequestPersistenceTurnIndex failed:", err && err.message);
@@ -7900,13 +8026,23 @@
       return { status: "skipped", reason: "invalid_pair" };
     }
     pair = await applyTableReadPolishStorageToBackfillPair(sid, pair);
-    const turn = Number(pair.turnIndex);
+    const turnResolution = resolveBackfillPairTurnAgainstRoutingBaseline(sid, pair);
+    if (turnResolution.status === "skip_pre_route_visible_pair") {
+      return {
+        status: "skipped",
+        reason: "pre_routing_visible_pair",
+        turnIndex: turnResolution.turnIndex,
+        localTurnIndex: turnResolution.localTurnIndex,
+        routingBaseline: turnResolution.baseline,
+      };
+    }
+    const turn = Number(turnResolution.turnIndex);
     const existing = await fetchCanonicalChatLogsForTurn(sid, turn);
     if (Array.isArray(existing)
         && chatLogItemsContainRoleContent(existing, "user", pair.userContent)
         && chatLogItemsContainRoleContent(existing, "assistant", pair.assistantContent)) {
       setTurnCounterAtLeast(sid, turn);
-      await markActiveChatBackfillSaved(sid, pair);
+      await markActiveChatBackfillSaved(sid, Object.assign({}, pair, { turnIndex: turn }));
       return {
         status: "exists",
         turnIndex: turn,
@@ -7937,6 +8073,11 @@
       source: opts.source || pair.source || "risu_active_chat_complete_turn_backfill",
       pair_hash: pair.hash || "",
       requested_turn_index: turn,
+      local_turn_index: turnResolution.localTurnIndex,
+      turn_resolution: turnResolution.status,
+      routing_baseline_reason: turnResolution.baseline ? String(turnResolution.baseline.reason || "") : "",
+      routing_baseline_backend_turn: turnResolution.baseline ? Number(turnResolution.baseline.backendTurnAtRoute || 0) : 0,
+      routing_baseline_local_pairs: turnResolution.baseline ? Number(turnResolution.baseline.localPairCountAtRoute || 0) : 0,
       preserve_requested_turn_index: true,
       force_complete_turn: !!opts.forceCompleteTurn,
     };
@@ -7997,21 +8138,23 @@
       let saved = 0;
       let exists = 0;
       let queued = 0;
+      let skipped = 0;
       let lastTurn = null;
       for (const pair of targetPairs) {
-        const result = await backfillOneActiveChatCompletedTurn(sid, pair);
-        lastTurn = pair.turnIndex;
+        const result = await backfillOneActiveChatCompletedTurn(sid, pair, options);
+        lastTurn = Number(result && result.turnIndex) || pair.turnIndex;
         if (result.status === "saved") saved++;
         else if (result.status === "exists") exists++;
         else if (result.status === "queued") queued++;
+        else if (result.status === "skipped") skipped++;
       }
       const status = queued > 0 ? "warn" : saved > 0 ? "ok" : "skipped";
-      const detail = "active chat backfill " + String(saved) + " saved / " + String(exists) + " existing / " + String(queued) + " queued";
+      const detail = "active chat backfill " + String(saved) + " saved / " + String(exists) + " existing / " + String(queued) + " queued / " + String(skipped) + " skipped";
       updateRuntimeState("lastActiveChatBackfill", status, { detail, turnIndex: lastTurn, reason: options.reason || "" });
       if (saved > 0) {
         updateRuntimeState("lastSaveStatus", "ok", { turnIndex: lastTurn, detail });
       }
-      return { status, saved, exists, queued, totalPairs: pairs.length };
+      return { status, saved, exists, queued, skipped, totalPairs: pairs.length };
     } catch (err) {
       updateRuntimeState("lastActiveChatBackfill", "fail", { detail: err && err.message ? err.message : String(err || "backfill failed") });
       return { status: "fail", reason: err && err.message ? err.message : "backfill failed" };
@@ -11756,6 +11899,10 @@
           injectionPack:      result.injection_pack       || null,
           inputTransparencyModel: result.input_transparency_model || null,
           effectiveInputPreview:  result.effective_input_preview  || null,
+          weakInputPlanner:   result.weak_input_planner   || null,
+          plannerExecutionContract: result.planner_execution_contract || null,
+          progressionChoiceLedger: result.progression_choice_ledger || null,
+          step25ValidationGate: result.step25_validation_gate || null,
           // M-2d: writeback_preview + trace_preview (H-4 non-debug groundwork)
           writebackPreview:   result.writeback_preview    || null,
           tracePreview:       result.trace_preview        || null,
@@ -13362,7 +13509,7 @@
         : null;
       const compactMessages = compactSnapshotMessages(messages);
       const tailMessages = compactMessages.slice(-4);
-      const turnIndex = getSessionTurnIndex(sessionId);
+      const turnIndex = Math.max(loadTurnCounter(sessionId), getSessionTurnIndex(sessionId), 0);
       const turnLedgerState = buildRollbackTurnLedgerOr1f(compactMessages, turnIndex);
       const assistantMessages = extractAssistantSnapshotMessages(compactMessages);
       const assistantTailMessages = assistantMessages.slice(-4);
@@ -14914,6 +15061,10 @@
       complete: { status: "pending" },
       critic: { memoryAttempted: false, memorySaved: false, kgAttempted: false, kgSaved: false, detail: "" },
       languageContext: null,
+      weakInputPlanner: { status: "pending", active: false, taxonomy: "", maxNewBeats: 0, allowSceneJump: false, strategy: "", selectedAnchors: [] },
+      plannerExecutionContract: { status: "pending", active: false, sceneMandate: "", requiredCount: 0, forbiddenCount: 0, maxNewBeats: 0, allowSceneJump: false, protectedLaneActive: false },
+      progressionChoice: { status: "pending", choice: "", reasons: [], maxNewBeats: 0, allowSceneJump: false, callbackCandidate: false, callbackAligned: false, staleSuppressed: false, sameIncident: false },
+      step25ValidationGate: { status: "pending", gateStatus: "", adoptionReady: false, passedCount: 0, totalCount: 0, blockingIds: [] },
       momentum: { status: "pending", applied: false, packetStatus: null },
       // Sprint 2-D: Input Transparency 데이터
       _inputTransparency: null,
@@ -15157,6 +15308,106 @@
       return hasContinuityQuery;
     } catch {
       return false;
+    }
+  }
+
+  function normalizeWeakInputPlannerTrace(rawPlanner) {
+    try {
+      const p = rawPlanner && typeof rawPlanner === "object" ? rawPlanner : null;
+      if (!p) return { status: "skipped", active: false, taxonomy: "", maxNewBeats: 0, allowSceneJump: false, strategy: "", selectedAnchors: [] };
+      const boundary = p.initiative_boundary && typeof p.initiative_boundary === "object" ? p.initiative_boundary : {};
+      const brief = p.acting_brief && typeof p.acting_brief === "object" ? p.acting_brief : {};
+      return {
+        status: String(p.status || "unknown"),
+        active: !!p.active,
+        taxonomy: String(p.taxonomy || ""),
+        maxNewBeats: Number(boundary.max_new_beats || 0),
+        allowSceneJump: !!boundary.allow_scene_jump,
+        strategy: String(brief.reply_strategy || ""),
+        selectedAnchors: Array.isArray(p.selected_anchor_names) ? p.selected_anchor_names.slice(0, 5).map(String) : [],
+      };
+    } catch {
+      return { status: "error", active: false, taxonomy: "", maxNewBeats: 0, allowSceneJump: false, strategy: "", selectedAnchors: [] };
+    }
+  }
+
+  function normalizePlannerExecutionContractTrace(rawContract) {
+    try {
+      const c = rawContract && typeof rawContract === "object" ? rawContract : null;
+      if (!c) return { status: "skipped", active: false, sceneMandate: "", requiredCount: 0, forbiddenCount: 0, maxNewBeats: 0, allowSceneJump: false, protectedLaneActive: false };
+      const scene = c.scene_mandate && typeof c.scene_mandate === "object" ? c.scene_mandate : {};
+      const required = c.required_outcome && typeof c.required_outcome === "object" ? c.required_outcome : {};
+      const forbidden = c.forbidden_move && typeof c.forbidden_move === "object" ? c.forbidden_move : {};
+      const pacing = c.pacing_pressure && typeof c.pacing_pressure === "object" ? c.pacing_pressure : {};
+      const ending = c.ending_requirement && typeof c.ending_requirement === "object" ? c.ending_requirement : {};
+      return {
+        status: String(c.status || "unknown"),
+        active: !!c.active,
+        sceneMandate: String(scene.value || ""),
+        requiredItems: Array.isArray(required.items) ? required.items.slice(0, 5).map(String) : [],
+        requiredCount: Number(required.count || (Array.isArray(required.items) ? required.items.length : 0) || 0),
+        forbiddenItems: Array.isArray(forbidden.items) ? forbidden.items.slice(0, 5).map(String) : [],
+        forbiddenCount: Number(forbidden.count || (Array.isArray(forbidden.items) ? forbidden.items.length : 0) || 0),
+        maxNewBeats: Number(pacing.max_new_beats || 0),
+        allowSceneJump: !!pacing.allow_scene_jump,
+        pacingLevel: String(pacing.level || ""),
+        endingRequirement: String(ending.instruction || ""),
+        protectedLaneActive: !!forbidden.protected_lane_active,
+      };
+    } catch {
+      return { status: "error", active: false, sceneMandate: "", requiredCount: 0, forbiddenCount: 0, maxNewBeats: 0, allowSceneJump: false, protectedLaneActive: false };
+    }
+  }
+
+  function normalizeProgressionChoiceTrace(rawChoice) {
+    try {
+      const c = rawChoice && typeof rawChoice === "object" ? rawChoice : null;
+      if (!c) return { status: "skipped", choice: "", reasons: [], maxNewBeats: 0, allowSceneJump: false, callbackCandidate: false, callbackAligned: false, staleSuppressed: false, sameIncident: false };
+      const ledger = c.scene_advancement_ledger && typeof c.scene_advancement_ledger === "object" ? c.scene_advancement_ledger : {};
+      const callback = c.callback_evaluation && typeof c.callback_evaluation === "object" ? c.callback_evaluation : {};
+      const stall = c.same_incident_stall_detection && typeof c.same_incident_stall_detection === "object" ? c.same_incident_stall_detection : {};
+      return {
+        status: String(c.status || "unknown"),
+        choice: String(c.choice || ledger.decision || ""),
+        reasons: Array.isArray(c.reasons) ? c.reasons.slice(0, 5).map(String) : [],
+        maxNewBeats: Number(ledger.max_new_beats || 0),
+        allowSceneJump: !!ledger.allow_scene_jump,
+        selectedAnchorCount: Number(ledger.selected_anchor_count || 0),
+        activeStorylineCount: Number(ledger.active_storyline_count || 0),
+        activeThreadCount: Number(ledger.active_thread_count || 0),
+        callbackCandidate: !!callback.candidate,
+        callbackAligned: !!callback.aligned_with_active_thread,
+        staleSuppressed: !!callback.stale_revival_suppressed,
+        sameIncident: !!stall.detected,
+      };
+    } catch {
+      return { status: "error", choice: "", reasons: [], maxNewBeats: 0, allowSceneJump: false, callbackCandidate: false, callbackAligned: false, staleSuppressed: false, sameIncident: false };
+    }
+  }
+
+  function normalizeStep25ValidationGateTrace(rawGate) {
+    try {
+      const g = rawGate && typeof rawGate === "object" ? rawGate : null;
+      if (!g) return { status: "skipped", gateStatus: "", adoptionReady: false, passedCount: 0, totalCount: 0, blockingIds: [], checks: [] };
+      return {
+        status: String(g.status || "unknown"),
+        gateStatus: String(g.gate_status || ""),
+        adoptionReady: !!g.adoption_ready,
+        passedCount: Number(g.passed_count || 0),
+        totalCount: Number(g.total_count || 0),
+        blockingIds: Array.isArray(g.blocking_check_ids) ? g.blocking_check_ids.slice(0, 8).map(String) : [],
+        checks: Array.isArray(g.checks) ? g.checks.slice(0, 8).map(function(item) {
+          const row = item && typeof item === "object" ? item : {};
+          return {
+            id: String(row.id || ""),
+            name: String(row.name || ""),
+            status: String(row.status || ""),
+            reason: String(row.reason || ""),
+          };
+        }) : [],
+      };
+    } catch {
+      return { status: "error", gateStatus: "", adoptionReady: false, passedCount: 0, totalCount: 0, blockingIds: [], checks: [] };
     }
   }
 
@@ -15754,7 +16005,7 @@
   }
 
   /** orchestration 중간 결과로부터 _inputTransparency 객체를 생성 */
-  function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview) {
+  function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview, weakInputPlanner, plannerExecutionContract, progressionChoice, step25ValidationGate) {
     try {
       const isContinuity = !!(continuityInfo && continuityInfo.query);
       const retrievedMemories = extractMemoryItems(searchResult, 10);
@@ -15769,6 +16020,10 @@
         languageContext: normalizeLanguageContextTrace(languageContext || (backendRenderModel && backendRenderModel.language_context)),
         backendRenderModel,
         backendEffectiveInputPreview: effectiveInputPreview,
+        weakInputPlanner: weakInputPlanner || null,
+        plannerExecutionContract: plannerExecutionContract || null,
+        progressionChoice: progressionChoice || null,
+        step25ValidationGate: step25ValidationGate || null,
         backendRenderAdopted: !!backendRenderModel,
         hybridRetrieval: buildHybridRetrievalInspection(retrievedMemories, 3),
         fallbackChatLogs: extractFallbackItems(searchResult, 5),
@@ -15987,6 +16242,48 @@
         if (init.forbiddenCount > 0) initParts.push("ban:" + init.forbiddenCount);
         const initStatus = tr.supervisor.status === "ok" ? "ok" : (tr.supervisor.status === "skipped" ? "skipped" : "fail");
         rows.push(r("Initiative", initStatus, initParts.join(" · ")));
+      }
+      const wp = tr.weakInputPlanner || {};
+      if (wp.status && wp.status !== "pending" && wp.status !== "skipped") {
+        const wpParts = [];
+        if (wp.taxonomy) wpParts.push(wp.taxonomy);
+        wpParts.push(wp.active ? "active" : "inactive");
+        if (typeof wp.maxNewBeats === "number") wpParts.push("beats<=" + wp.maxNewBeats);
+        wpParts.push(wp.allowSceneJump ? "sceneJump:yes" : "sceneJump:no");
+        if (Array.isArray(wp.selectedAnchors) && wp.selectedAnchors.length > 0) wpParts.push("anchors:" + wp.selectedAnchors.join("/"));
+        rows.push(r("Weak Planner", wp.active ? "ok" : "skipped", wpParts.join(" · ")));
+      }
+      const pec = tr.plannerExecutionContract || {};
+      if (pec.status && pec.status !== "pending" && pec.status !== "skipped") {
+        const pecParts = [];
+        if (pec.sceneMandate) pecParts.push(truncPreview(pec.sceneMandate, 80));
+        if (typeof pec.requiredCount === "number") pecParts.push("req:" + pec.requiredCount);
+        if (typeof pec.forbiddenCount === "number") pecParts.push("ban:" + pec.forbiddenCount);
+        if (typeof pec.maxNewBeats === "number") pecParts.push("beats<=" + pec.maxNewBeats);
+        pecParts.push(pec.allowSceneJump ? "sceneJump:yes" : "sceneJump:no");
+        if (pec.protectedLaneActive) pecParts.push("protected");
+        rows.push(r("Exec Contract", pec.active ? "ok" : "skipped", pecParts.join(" · ")));
+      }
+      const pcg = tr.progressionChoice || {};
+      if (pcg.status && pcg.status !== "pending" && pcg.status !== "skipped") {
+        const pcgParts = [];
+        if (pcg.choice) pcgParts.push(pcg.choice);
+        if (Array.isArray(pcg.reasons) && pcg.reasons.length > 0) pcgParts.push(truncPreview(pcg.reasons.join("/"), 60));
+        if (typeof pcg.maxNewBeats === "number") pcgParts.push("beats<=" + pcg.maxNewBeats);
+        pcgParts.push(pcg.allowSceneJump ? "sceneJump:yes" : "sceneJump:no");
+        if (pcg.callbackCandidate) pcgParts.push(pcg.callbackAligned ? "callback:aligned" : "callback:candidate");
+        if (pcg.staleSuppressed) pcgParts.push("staleSuppressed");
+        if (pcg.sameIncident) pcgParts.push("sameIncident");
+        rows.push(r("Progression Choice", pcg.choice === "hold" ? "skipped" : "ok", pcgParts.join(" · ")));
+      }
+      const vx25 = tr.step25ValidationGate || {};
+      if (vx25.status && vx25.status !== "pending" && vx25.status !== "skipped") {
+        const vxParts = [];
+        if (vx25.gateStatus) vxParts.push(vx25.gateStatus);
+        vxParts.push(String(vx25.passedCount || 0) + "/" + String(vx25.totalCount || 0));
+        vxParts.push(vx25.adoptionReady ? "adoptionReady" : "hold");
+        if (Array.isArray(vx25.blockingIds) && vx25.blockingIds.length > 0) vxParts.push("block:" + vx25.blockingIds.join("/"));
+        rows.push(r("Step25 Gate", vx25.adoptionReady ? "ok" : "warn", vxParts.join(" · ")));
       }
       const sl = tr.storylines || {};
       if (sl.status && sl.status !== "pending") {
@@ -17227,6 +17524,66 @@
       const hierarchyHtml = renderHierarchyEscalationTraceBlock(it, tr);
       if (hierarchyHtml) parts.push(hierarchyHtml);
 
+      if (it.weakInputPlanner && it.weakInputPlanner.status && it.weakInputPlanner.status !== "skipped") {
+        const wp = it.weakInputPlanner;
+        let wpHtml = '';
+        wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(wp.status || "unknown") + (wp.active ? " / active" : " / inactive")) + '</span></div>';
+        if (wp.taxonomy) wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">taxonomy</span><span class="mo-it-dir-val">' + escapeAttr(String(wp.taxonomy)) + '</span></div>';
+        wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">initiative</span><span class="mo-it-dir-val">' + escapeAttr("beats<=" + String(wp.maxNewBeats || 0) + " / sceneJump:" + (wp.allowSceneJump ? "yes" : "no")) + '</span></div>';
+        if (wp.strategy) wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">strategy</span><span class="mo-it-dir-val">' + escapeAttr(String(wp.strategy)) + '</span></div>';
+        if (Array.isArray(wp.selectedAnchors) && wp.selectedAnchors.length > 0) {
+          wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">anchors</span><span class="mo-it-dir-val">' + escapeAttr(wp.selectedAnchors.join(" / ")) + '</span></div>';
+        }
+        parts.push(renderItBlockRaw("1.8. Weak Input Planner", wpHtml, false));
+      }
+
+      if (it.plannerExecutionContract && it.plannerExecutionContract.status && it.plannerExecutionContract.status !== "skipped") {
+        const pc = it.plannerExecutionContract;
+        let pcHtml = '';
+        pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(pc.status || "unknown") + (pc.active ? " / active" : " / inactive")) + '</span></div>';
+        if (pc.sceneMandate) pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">scene mandate</span><span class="mo-it-dir-val">' + escapeAttr(String(pc.sceneMandate)) + '</span></div>';
+        pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">pacing</span><span class="mo-it-dir-val">' + escapeAttr("beats<=" + String(pc.maxNewBeats || 0) + " / sceneJump:" + (pc.allowSceneJump ? "yes" : "no") + (pc.pacingLevel ? " / " + pc.pacingLevel : "")) + '</span></div>';
+        if (Array.isArray(pc.requiredItems) && pc.requiredItems.length > 0) {
+          pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">required</span><span class="mo-it-dir-val">' + escapeAttr(pc.requiredItems.join(" / ")) + '</span></div>';
+        }
+        if (Array.isArray(pc.forbiddenItems) && pc.forbiddenItems.length > 0) {
+          pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">forbidden</span><span class="mo-it-dir-val">' + escapeAttr(pc.forbiddenItems.join(" / ")) + '</span></div>';
+        }
+        if (pc.endingRequirement) pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">ending</span><span class="mo-it-dir-val">' + escapeAttr(String(pc.endingRequirement)) + '</span></div>';
+        pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">protected lane</span><span class="mo-it-dir-val">' + escapeAttr(pc.protectedLaneActive ? "active / counts only" : "inactive") + '</span></div>';
+        parts.push(renderItBlockRaw("1.9. Planner Execution Contract", pcHtml, false));
+      }
+
+      if (it.progressionChoice && it.progressionChoice.status && it.progressionChoice.status !== "skipped") {
+        const pg = it.progressionChoice;
+        let pgHtml = '';
+        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(pg.status || "unknown")) + '</span></div>';
+        if (pg.choice) pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">choice</span><span class="mo-it-dir-val">' + escapeAttr(String(pg.choice)) + '</span></div>';
+        if (Array.isArray(pg.reasons) && pg.reasons.length > 0) {
+          pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">reason</span><span class="mo-it-dir-val">' + escapeAttr(pg.reasons.join(" / ")) + '</span></div>';
+        }
+        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">ledger</span><span class="mo-it-dir-val">' + escapeAttr("beats<=" + String(pg.maxNewBeats || 0) + " / sceneJump:" + (pg.allowSceneJump ? "yes" : "no") + " / anchors:" + String(pg.selectedAnchorCount || 0)) + '</span></div>';
+        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">callback</span><span class="mo-it-dir-val">' + escapeAttr("candidate:" + (pg.callbackCandidate ? "yes" : "no") + " / aligned:" + (pg.callbackAligned ? "yes" : "no") + " / staleSuppressed:" + (pg.staleSuppressed ? "yes" : "no")) + '</span></div>';
+        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">same incident</span><span class="mo-it-dir-val">' + escapeAttr(pg.sameIncident ? "exact repeat detected" : "not detected") + '</span></div>';
+        parts.push(renderItBlockRaw("1.10. Progression Choice Ledger", pgHtml, false));
+      }
+
+      if (it.step25ValidationGate && it.step25ValidationGate.status && it.step25ValidationGate.status !== "skipped") {
+        const gate = it.step25ValidationGate;
+        let gateHtml = '';
+        gateHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">gate</span><span class="mo-it-dir-val">' + escapeAttr(String(gate.gateStatus || "unknown") + " / " + String(gate.passedCount || 0) + "/" + String(gate.totalCount || 0) + (gate.adoptionReady ? " / adoption ready" : " / hold")) + '</span></div>';
+        if (Array.isArray(gate.blockingIds) && gate.blockingIds.length > 0) {
+          gateHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">blocking</span><span class="mo-it-dir-val">' + escapeAttr(gate.blockingIds.join(" / ")) + '</span></div>';
+        }
+        if (Array.isArray(gate.checks) && gate.checks.length > 0) {
+          gate.checks.forEach(function(row) {
+            const label = [row.id, row.status].filter(Boolean).join(" ");
+            gateHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">' + escapeAttr(label) + '</span><span class="mo-it-dir-val">' + escapeAttr(String(row.name || "") + (row.reason ? " — " + row.reason : "")) + '</span></div>';
+          });
+        }
+        parts.push(renderItBlockRaw("1.11. Step 25 Validation Gate", gateHtml, false));
+      }
+
       // 2. Recent Context
       if (it.recentContext && it.recentContext.length > 0) {
         const ctxHtml = it.recentContext.map(m =>
@@ -17922,12 +18279,11 @@
   function rawInputCacheMatchesCurrentCandidates(rawCached, payloadCandidate, messageInput) {
     try {
       if (!rawCached || !rawCached.text) return false;
-      const raw = normalizeMainTurnCompareText(rawCached.text);
-      if (!raw) return false;
       const payloadText = payloadCandidate && payloadCandidate.text ? payloadCandidate.text : "";
-      const payload = normalizeMainTurnCompareText(payloadText);
-      const message = normalizeMainTurnCompareText(messageInput || "");
-      return !!((payload && raw === payload) || (message && raw === message));
+      return !!(
+        (payloadText && mainTurnTextMatchesOriginal(payloadText, rawCached.text)) ||
+        (messageInput && mainTurnTextMatchesOriginal(messageInput, rawCached.text))
+      );
     } catch {
       return false;
     }
@@ -22073,6 +22429,80 @@
     }
   }
 
+  function extractGigaTransCanonicalAssistantText(text) {
+    try {
+      const raw = String(text == null ? "" : text);
+      if (!/<\s*GigaTrans\b/i.test(raw)) return null;
+      const blocks = [];
+      const re = /<\s*GigaTrans\b[^>]*>([\s\S]*?)<\s*\/\s*GigaTrans\s*>/gi;
+      let match;
+      while ((match = re.exec(raw)) !== null) {
+        const block = String(match[1] || "").trim();
+        if (block) blocks.push(block);
+      }
+      if (blocks.length === 0) {
+        return {
+          provider: "gigatrans",
+          status: "malformed",
+          applied: false,
+          rawChars: raw.length,
+          canonicalAssistantChars: 0,
+          droppedTranslationChars: 0,
+          blockCount: 0,
+        };
+      }
+      const canonical = blocks.join("\n\n").trim();
+      return {
+        provider: "gigatrans",
+        status: "canonicalized",
+        applied: !!canonical,
+        rawChars: raw.length,
+        canonicalAssistantChars: canonical.length,
+        droppedTranslationChars: Math.max(0, raw.length - canonical.length),
+        blockCount: blocks.length,
+        canonicalText: canonical,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function attachTranslationDisplayCanonicalizationTrace(trace, decision, stage, beforeText, afterText) {
+    try {
+      if (!trace || !decision) return;
+      const record = {
+        status: decision.status || (decision.applied ? "canonicalized" : "detected"),
+        stage: String(stage || "assistant_persistence"),
+        provider: decision.provider || "unknown",
+        translation_display_detected: true,
+        canonical_assistant_chars: Number(decision.canonicalAssistantChars || 0),
+        dropped_translation_chars: Number(decision.droppedTranslationChars || 0),
+        raw_chars: Number(decision.rawChars || 0),
+        block_count: Number(decision.blockCount || 0),
+      };
+      trace.translationDisplayCanonicalization = record;
+      if (trace._inputTransparency && typeof trace._inputTransparency === "object") {
+        trace._inputTransparency.translationDisplayCanonicalization = record;
+      }
+      if (decision.applied) {
+        attachSanitizeTrace(trace, buildSanitizeTrace("translation_display_canonicalization:" + record.stage, String(beforeText || ""), String(afterText || "")));
+      }
+    } catch {
+      // Trace-only path; never block persistence.
+    }
+  }
+
+  function canonicalizeAssistantTranslationDisplayForPersistence(text, trace, stage) {
+    const raw = String(text == null ? "" : text);
+    const gigaTransDecision = extractGigaTransCanonicalAssistantText(raw);
+    if (gigaTransDecision) {
+      const canonicalText = gigaTransDecision.applied ? String(gigaTransDecision.canonicalText || "") : raw;
+      attachTranslationDisplayCanonicalizationTrace(trace, gigaTransDecision, stage, raw, canonicalText);
+      return canonicalText;
+    }
+    return raw;
+  }
+
   function normalizeAssistantPrefillComparableText(text) {
     try {
       return String(text || "").replace(/\r\n/g, "\n").trim();
@@ -22239,7 +22669,8 @@
   function normalizeAssistantPersistenceCandidate(text) {
     try {
       if (typeof text !== "string") return "";
-      const persistenceText = stripReasoningPreambleForPersistence(text);
+      const canonicalText = canonicalizeAssistantTranslationDisplayForPersistence(text, null, "normalize_assistant_persistence");
+      const persistenceText = stripReasoningPreambleForPersistence(canonicalText);
       if (!String(persistenceText || "").trim()) return "";
       let clean = sanitizeNarrativeOutputForDisplay(persistenceText);
       clean = sanitizeForCritic(String(clean || ""));
@@ -22580,8 +23011,13 @@
     return "";
   }
 
+  function isSupportedMemoryLanguageCode(lang) {
+    lang = String(lang || "").trim().toLowerCase();
+    return lang === "ko" || lang === "en" || lang === "ja";
+  }
+
   function buildLanguageFallbackChain(usedSource, values) {
-    return ["explicit_override", "plugin_setting", "recent_assistant", "ui_language", "auto_unknown"].map(function(source) {
+    return ["explicit_override", "plugin_setting", "current_assistant", "recent_assistant", "ui_language", "auto_unknown"].map(function(source) {
       return { source, value: values[source] || null, used: source === usedSource };
     });
   }
@@ -22592,24 +23028,27 @@
       var explicitOverride = Object.prototype.hasOwnProperty.call(opts, "outputLanguageOverride") ? opts.outputLanguageOverride : await resolveRuntimeOutputLanguageOverride();
       var explicitCode = normalizeLanguageCodeForTrace(explicitOverride, "");
       if (explicitCode === "auto" || explicitCode === "unknown") explicitCode = "";
+      var assistantOutputLanguage = detectTextLanguageForTrace(opts.assistantContent || "");
+      var currentAssistantLanguage = isSupportedMemoryLanguageCode(assistantOutputLanguage) ? assistantOutputLanguage : "";
       var values = {
         explicit_override: explicitCode || "",
         plugin_setting: "",
+        current_assistant: currentAssistantLanguage,
         recent_assistant: detectRecentAssistantOutputLanguage(opts.messages || []),
         ui_language: normalizeLanguageCodeForTrace(settings.uiLanguage, "unknown"),
       };
       if (values.ui_language === "auto") values.ui_language = "unknown";
-      var source = values.explicit_override ? "explicit_override" : values.plugin_setting ? "plugin_setting" : values.recent_assistant ? "recent_assistant" : (values.ui_language !== "unknown" ? "ui_language" : "auto_unknown");
+      var source = values.explicit_override ? "explicit_override" : values.plugin_setting ? "plugin_setting" : values.current_assistant ? "current_assistant" : values.recent_assistant ? "recent_assistant" : (values.ui_language !== "unknown" ? "ui_language" : "auto_unknown");
       var selected = source === "auto_unknown" ? "auto" : values[source];
-      var confidence = source === "explicit_override" ? 1 : source === "plugin_setting" ? 0.9 : source === "recent_assistant" ? 0.75 : source === "ui_language" ? 0.35 : 0;
+      var confidence = source === "explicit_override" ? 1 : source === "plugin_setting" ? 0.9 : source === "current_assistant" ? 0.95 : source === "recent_assistant" ? 0.75 : source === "ui_language" ? 0.35 : 0;
       return {
         contract_version: LANGUAGE_MEMORY_CONTRACT_VERSION,
         session_output_language: selected,
         output_language_source: source,
         ui_language: values.ui_language || "unknown",
         raw_user_language: detectTextLanguageForTrace(opts.userInput || ""),
-        assistant_output_language: detectTextLanguageForTrace(opts.assistantContent || ""),
-        summary_language: (selected === "ko" || selected === "en" || selected === "ja") ? selected : "auto",
+        assistant_output_language: assistantOutputLanguage,
+        summary_language: isSupportedMemoryLanguageCode(selected) ? selected : "auto",
         search_text_policy: LANGUAGE_MEMORY_SEARCH_TEXT_POLICY,
         locked_for_turn: true,
         confidence: Number(confidence.toFixed(2)),
@@ -23312,6 +23751,10 @@
       const trace = newTurnTrace();
       trace.contextSize = recentContext.length;
       trace.userInputPreview = truncPreview(userInput, 80);
+      trace.weakInputPlanner = normalizeWeakInputPlannerTrace(preparedBundle && preparedBundle.weakInputPlanner);
+      trace.plannerExecutionContract = normalizePlannerExecutionContractTrace(preparedBundle && preparedBundle.plannerExecutionContract);
+      trace.progressionChoice = normalizeProgressionChoiceTrace(preparedBundle && preparedBundle.progressionChoiceLedger);
+      trace.step25ValidationGate = normalizeStep25ValidationGateTrace(preparedBundle && preparedBundle.step25ValidationGate);
       applyOrchestrationModuleTransportTraceOr1e(trace, buildOrchestrationModuleTransportStateOr1e({
         prepareTurnSource: _lastPrepareTurnSource,
         preparedBundle: preparedBundle,
@@ -24239,7 +24682,11 @@
         expandedEntities,
         languageContext,
         preparedBundle && preparedBundle.inputTransparencyModel,
-        preparedBundle && preparedBundle.effectiveInputPreview
+        preparedBundle && preparedBundle.effectiveInputPreview,
+        trace.weakInputPlanner,
+        trace.plannerExecutionContract,
+        trace.progressionChoice,
+        trace.step25ValidationGate
       );
       _effectiveInputAwaitingNewTurn = false;
 
@@ -31646,13 +32093,13 @@
       if (!sample.trim()) return "";
       const lower = sample.toLowerCase();
       const checks = [
-        { id: "choice_generator", re: new RegExp("(\\uC120\\uD0DD\\uC9C0|\\uCD08\\uC774\\uC2A4|choice\\s*(?:module|generator|maker)|generate\\s+choices|option\\s*generator)", "i") },
+        { id: "choice_generator", re: new RegExp("(\\uC120\\uD0DD\\uC9C0\\s*(?:\\uC0DD\\uC131|\\uC791\\uC131|\\uC81C\\uC548|\\uBAA9\\uB85D|\\uD6C4\\uBCF4|\\uC635\\uC158)|\\uCD08\\uC774\\uC2A4\\s*(?:\\uBAA8\\uB4C8|\\uC0DD\\uC131|\\uBA54\\uC774\\uCEE4|\\uBAA9\\uB85D|\\uD6C4\\uBCF4)|choice\\s*(?:module|generator|maker)|generate\\s+choices|option\\s*generator)", "i") },
         { id: "npc_list_module", re: new RegExp("(npc\\s*(?:list|roster|catalog|\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uC5D4\\uD53C\\uC2DC\\s*(?:\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uC5D4\\uD53C\\uC528\\s*(?:\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uB4F1\\uC7A5\\s*\\uC778\\uBB3C\\s*(?:\\uBAA9\\uB85D|\\uB9AC\\uC2A4\\uD2B8))", "i") },
         { id: "memory_helper_prompt", re: new RegExp("(\\uC2A4\\uD1A0\\uB9AC\\s*\\uAE30\\uC5B5\\s*\\uB3C4\\uC6B0\\uBBF8|memory\\s*(?:helper|assistant|summarizer)|long[-_\\s]*term\\s*memory\\s*helper)", "i") },
         { id: "supervisor_prompt", re: new RegExp("(\\uAC10\\uB3C5\\uAD00|\\uBB34\\uB300\\s*\\uB4A4\\uD3B8\\s*\\uC5F0\\uCD9C\\uAC00|\\uC5ED\\uD560\\uADF9\\s*\\uAE30\\uC5B5\\s*\\uC2DC\\uC2A4\\uD15C|supervisor|orchestrator|behind\\s+the\\s+scenes\\s+director)", "i") },
         { id: "critic_review_prompt", re: new RegExp("(\\uBE44\\uD3C9\\uAC00|\\uAF3C\\uAF3C\\uD558\\uAC8C\\s*\\uAC80\\uD1A0|critic|reviewer|quality\\s*review|consistency\\s*check)", "i") },
         { id: "image_or_illustration_helper", re: new RegExp("(\\uC0BD\\uD654|\\uC77C\\uB7EC\\uC2A4\\uD2B8|image\\s*prompt|illustration|novelai|nai\\s*prompt|lightboard|whiteboard)", "i") },
-        { id: "choice_generator", re: /(선택지|초이스|choice\s*(?:module|generator|maker)|generate\s+choices|option\s*generator)/i },
+        { id: "choice_generator", re: /(선택지\s*(?:생성|작성|제안|목록|후보|옵션)|초이스\s*(?:모듈|생성|메이커|목록|후보)|choice\s*(?:module|generator|maker)|generate\s+choices|option\s*generator)/i },
         { id: "npc_list_module", re: /(npc\s*(?:list|roster|catalog)|엔피시\s*(?:리스트|목록)|등장\s*인물\s*(?:목록|리스트))/i },
         { id: "memory_helper_prompt", re: /(스토리\s*기억\s*도우미|memory\s*(?:helper|assistant|summarizer)|long[-_\s]*term\s*memory\s*helper)/i },
         { id: "supervisor_prompt", re: /(감독관|무대\s*뒤편\s*연출가|역할극\s*기억\s*시스템|supervisor|orchestrator|behind\s+the\s+scenes\s+director)/i },
@@ -31674,6 +32121,33 @@
       return String(value || "").replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\s+/g, " ").trim();
     } catch {
       return "";
+    }
+  }
+
+  function mainTurnTextMatchesOriginal(candidateText, originalText) {
+    try {
+      const candidate = normalizeMainTurnCompareText(candidateText);
+      const original = normalizeMainTurnCompareText(originalText);
+      if (!candidate || !original) return false;
+      if (candidate === original) return true;
+      if (!(candidate.length > original.length && candidate.indexOf(original) === 0)) return false;
+      return /[\s<\[\{\(\|]/.test(candidate.charAt(original.length));
+    } catch {
+      return false;
+    }
+  }
+
+  function isSubstantiveUserPayloadText(text) {
+    try {
+      const s = String(text || "").trim();
+      if (!s) return false;
+      if (shouldSkipUserInputPersistence(s) || shouldRejectLowTrustCurrentInput(s)) return false;
+      if (/(?:return\s+json\s+only|output_format|json\s*schema|module\s*output|plugin\s*output)/i.test(s)) return false;
+      const markerRe = /\[[A-Z][A-Z0-9_]{2,}:[^\]\r\n]{1,300}\]/g;
+      const withoutMarkers = s.replace(markerRe, "").replace(/[.。．,，、;；:：!?！？()\[\]{}<>「」『』"'\s]/g, "");
+      return withoutMarkers.length >= 2;
+    } catch {
+      return false;
     }
   }
 
@@ -31722,6 +32196,56 @@
     const rawTail = normalizeMainTurnCompareText(rawInputTailText);
     const payloadTail = normalizeMainTurnCompareText(payloadUserText);
     const auxiliaryMarker = matchAuxiliaryModuleRequestMarker(messages);
+    const payloadTailAuxiliaryMarker = payloadUserText
+      ? matchAuxiliaryModuleRequestMarker([{ role: "user", content: payloadUserText }])
+      : "";
+    if (!payloadTail) {
+      return {
+        allowed: false,
+        contextInjectionAllowed: false,
+        reason: "payload_user_tail_missing",
+        requestType,
+        policy: "main_request_must_match_active_chat_tail",
+      };
+    }
+    if (activeTail && mainTurnTextMatchesOriginal(payloadTail, activeTail)) {
+      return {
+        allowed: true,
+        contextInjectionAllowed: true,
+        reason: payloadTail === activeTail ? "active_tail_match" : "active_tail_prefix_match",
+        requestType,
+        marker: auxiliaryMarker || "",
+        policy: auxiliaryMarker
+          ? "main_user_input_verified_auxiliary_tail_trace_only"
+          : "payload_tail_verified_by_active_chat_tail",
+      };
+    }
+    if (rawTail && mainTurnTextMatchesOriginal(payloadTail, rawTail)) {
+      return {
+        allowed: true,
+        contextInjectionAllowed: true,
+        reason: payloadTail === rawTail ? "raw_input_tail_match" : "raw_input_tail_prefix_match",
+        requestType,
+        marker: auxiliaryMarker || "",
+        policy: auxiliaryMarker
+          ? "main_user_input_verified_auxiliary_tail_trace_only"
+          : "payload_tail_verified_by_input_hook_cache",
+        activeTailPreview: activeTail ? truncPreview(activeTail, 120) : "",
+        payloadTailPreview: payloadTail !== rawTail ? truncPreview(payloadTail, 120) : "",
+      };
+    }
+    if (auxiliaryMarker && !payloadTailAuxiliaryMarker && isSubstantiveUserPayloadText(payloadTail)) {
+      return {
+        allowed: true,
+        contextInjectionAllowed: true,
+        reason: "substantive_user_payload_after_auxiliary_context",
+        requestType,
+        marker: auxiliaryMarker,
+        policy: "latest_user_payload_overrides_older_auxiliary_context",
+        activeTailPreview: activeTail ? truncPreview(activeTail, 120) : "",
+        payloadTailPreview: truncPreview(payloadTail, 120),
+      };
+    }
     if (auxiliaryMarker) {
       return {
         allowed: false,
@@ -31732,45 +32256,13 @@
         policy: "archive_context_injection_requires_main_narrative_request",
       };
     }
-    if (!payloadTail) {
-      return {
-        allowed: false,
-        contextInjectionAllowed: false,
-        reason: "payload_user_tail_missing",
-        requestType,
-        policy: "main_request_must_match_active_chat_tail",
-      };
-    }
     if (!activeTail) {
-      if (rawTail && payloadTail === rawTail) {
-        return {
-          allowed: true,
-          contextInjectionAllowed: true,
-          reason: "raw_input_tail_match",
-          requestType,
-          policy: "payload_tail_verified_by_input_hook_cache",
-        };
-      }
       return {
         allowed: true,
         contextInjectionAllowed: false,
         reason: "active_tail_unavailable_payload_tail_present",
         requestType,
         policy: "allow_orchestration_candidate_but_block_context_injection_until_active_tail_matches",
-      };
-    }
-    if (payloadTail === activeTail) {
-      return { allowed: true, contextInjectionAllowed: true, reason: "active_tail_match", requestType };
-    }
-    if (rawTail && payloadTail === rawTail) {
-      return {
-        allowed: true,
-        contextInjectionAllowed: true,
-        reason: "raw_input_tail_match_active_tail_lag",
-        requestType,
-        policy: "payload_tail_verified_by_input_hook_cache",
-        activeTailPreview: truncPreview(activeTail, 120),
-        payloadTailPreview: truncPreview(payloadTail, 120),
       };
     }
     return {
@@ -31794,11 +32286,11 @@
       const marker = matchAuxiliaryModuleOutputMarker(assistantContent) || matchAuxiliaryModuleOutputMarker(displayContent);
       if (marker) {
         return {
-          allowed: false,
-          reason: "auxiliary_module_output",
+          allowed: true,
+          reason: "main_narrative_candidate",
           requestType,
           marker,
-          policy: "save_candidate_requires_main_narrative_output",
+          policy: "auxiliary_output_marker_trace_only",
         };
       }
       return { allowed: true, reason: "main_narrative_candidate", requestType };
@@ -32472,7 +32964,7 @@
               // M-2d: trace_preview H-4 groundwork — debug 없이도 basic 상태 노출
               tracePreview: (b && b.tracePreview) || null,
             });
-            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.continuityPack || b.recallResult || b.supervisorInputPack || b.injectionPack || b.inputTransparencyModel || b.effectiveInputPreview || b.tracePreview)) ? b : null;
+            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.continuityPack || b.recallResult || b.supervisorInputPack || b.injectionPack || b.inputTransparencyModel || b.effectiveInputPreview || b.weakInputPlanner || b.plannerExecutionContract || b.progressionChoiceLedger || b.step25ValidationGate || b.tracePreview)) ? b : null;
           } else {
             _lastPrepareTurnSource = "backend-off";
             _lastPrepareTurnFallbackReason = "backend_off";
@@ -33468,6 +33960,29 @@
       let turnIdx = peekNextTurnIndex(chatSessionId);
       let turnOocGuardApplied = shouldSkipTurnPersistenceForOoc(userInput, displayContent);
       let persistedAssistantContent = turnOocGuardApplied ? "" : (recoveredAssistantContent || normalizeAssistantPersistenceCandidate(displayContent));
+      if (!turnOocGuardApplied && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
+        const beforeTranslationCanonical = persistedAssistantContent;
+        persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
+          persistedAssistantContent,
+          lastOrchResult && lastOrchResult._trace,
+          "assistant_persistence_initial"
+        );
+        if (persistedAssistantContent !== beforeTranslationCanonical) {
+          recoveredAssistantContent = persistedAssistantContent;
+        }
+        if (typeof displayContent === "string" && displayContent !== persistedAssistantContent) {
+          const displayTranslationDecision = extractGigaTransCanonicalAssistantText(displayContent);
+          if (displayTranslationDecision && displayTranslationDecision.applied) {
+            attachTranslationDisplayCanonicalizationTrace(
+              lastOrchResult && lastOrchResult._trace,
+              displayTranslationDecision,
+              "assistant_persistence_initial",
+              displayContent,
+              persistedAssistantContent
+            );
+          }
+        }
+      }
       if (!turnOocGuardApplied) {
         const saveAssistantOocScrub = scrubOocDirectivesFromUserInput(persistedAssistantContent);
         if (saveAssistantOocScrub.fullyOoc) {
@@ -33582,7 +34097,11 @@
           const activeAssistantComparable = normalizeTurnPairCompareText(activeChatPairAlignment.assistantContent);
           const currentAssistantComparable = normalizeTurnPairCompareText(persistedAssistantContent);
           if (activeAssistantComparable && (!currentAssistantComparable || activeAssistantComparable !== currentAssistantComparable)) {
-            persistedAssistantContent = activeChatPairAlignment.assistantContent;
+            persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
+              activeChatPairAlignment.assistantContent,
+              lastOrchResult && lastOrchResult._trace,
+              "active_chat_pair_assistant"
+            );
             recoveredAssistantContent = persistedAssistantContent;
             if (typeof displayContent === "string") {
               displayContent = activeChatPairAlignment.assistantContent;
@@ -33766,7 +34285,12 @@
         if (outputEnhanceResult && outputEnhanceResult.content !== displayContent) {
           displayContent = outputEnhanceResult.content;
           recoveredAssistantContent = normalizeAssistantPersistenceCandidate(displayContent) || String(displayContent || "");
-          persistedAssistantContent = recoveredAssistantContent;
+          persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
+            recoveredAssistantContent,
+            lastOrchResult && lastOrchResult._trace,
+            "table_read_output_enhance"
+          );
+          recoveredAssistantContent = persistedAssistantContent;
           hasPersistedAssistantContent = typeof persistedAssistantContent === "string" && !!persistedAssistantContent.trim();
           if (lastOrchResult && lastOrchResult._trace) {
             lastOrchResult._trace.tableReadOutputEnhance = {
@@ -33787,7 +34311,12 @@
         if (proofDisplayContent !== displayContent) {
           displayContent = proofDisplayContent;
           recoveredAssistantContent = normalizeAssistantPersistenceCandidate(displayContent) || String(displayContent || "");
-          persistedAssistantContent = recoveredAssistantContent;
+          persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
+            recoveredAssistantContent,
+            lastOrchResult && lastOrchResult._trace,
+            "table_read_polish_proof"
+          );
+          recoveredAssistantContent = persistedAssistantContent;
           hasPersistedAssistantContent = typeof persistedAssistantContent === "string" && !!persistedAssistantContent.trim();
           if (lastOrchResult && lastOrchResult._trace) {
             lastOrchResult._trace.tableReadPolishProof = {
@@ -33889,6 +34418,7 @@
           : _ctOk ? "warn"
           : "fail";
         updateRuntimeState("lastCompleteTurnStatus", ctRsStatus, {
+          turnIndex: persistedTurnIdx,
           source: _ctSource,
           detail: ctStatus,
           failReasons: ctFail,
@@ -33947,6 +34477,7 @@
             const currentFailReasons = (_ctResult && Array.isArray(_ctResult.fail_reasons)) ? _ctResult.fail_reasons.slice() : [];
             if (currentFailReasons.indexOf(reason) < 0) currentFailReasons.push(reason);
             updateRuntimeState("lastCompleteTurnStatus", "warn", {
+              turnIndex: persistedTurnIdx,
               source: _ctSource,
               detail: "complete-turn " + rawVerify.status,
               failReasons: currentFailReasons,
@@ -33979,10 +34510,10 @@
           flushQueueSave().catch(function() {});
           completeTurnRetryQueued = true;
           updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: `complete-turn failed → queued (${_failedQueue.length})` });
-          updateRuntimeState("lastCompleteTurnStatus", "fail", { source: "backend", detail: "complete-turn failed → queued", failReasons: ["complete_turn_retry_queued"] });
+          updateRuntimeState("lastCompleteTurnStatus", "fail", { turnIndex: persistedTurnIdx, source: "backend", detail: "complete-turn failed → queued", failReasons: ["complete_turn_retry_queued"] });
         } else {
           updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: "complete-turn request build failed" });
-          updateRuntimeState("lastCompleteTurnStatus", "fail", { source: "backend", detail: "complete-turn request build failed", failReasons: ["complete_turn_request_build_failed"] });
+          updateRuntimeState("lastCompleteTurnStatus", "fail", { turnIndex: persistedTurnIdx, source: "backend", detail: "complete-turn request build failed", failReasons: ["complete_turn_request_build_failed"] });
         }
       }
 
@@ -35141,6 +35672,7 @@
   function resetSessionRoutingRuntimeCaches() {
     _sessionCache = { charIdx: null, chatIdx: null, sessionId: null, observedChatUniqueId: "" };
     _sessionReadCompatCache = { cacheKey: "", plan: null, cachedAt: 0 };
+    _sessionRoutingTurnBaselines.clear();
     _sessionMigrationApplyInFlight.clear();
     Object.keys(_sessionMigrationApplyLastAttemptAt).forEach(function(key) {
       delete _sessionMigrationApplyLastAttemptAt[key];
@@ -44352,15 +44884,20 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       _timelineState.sessionId = sourceSid;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
+      const routingBaseline = await establishSessionRoutingTurnBaseline(sourceSid, "timeline_attach");
       updateRuntimeState("sessionWriteRouting", "ok", {
         detail: "manual attach current chat -> " + shortenSessionIdForDisplay(sourceSid),
         sourceSessionId: sourceSid,
         targetSessionId: targetSid,
+        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
       setSessionMigrationUiStatus("ok", tf("timeline.attach.success", { source: sourceLabel }), {
         sourceSessionId: sourceSid,
         targetSessionId: targetSid,
         migrationId: 0,
+        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
       await loadTimelineData(true, { sessionId: sourceSid, skipRuntimeSessionResolve: true });
       return true;
@@ -44467,10 +45004,21 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       _timelineState.sessionId = targetSid;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
+      const routingBaseline = await establishSessionRoutingTurnBaseline(targetSid, "timeline_migrate");
+      updateRuntimeState("sessionWriteRouting", "ok", {
+        detail: "timeline migration target -> " + shortenSessionIdForDisplay(targetSid),
+        sourceSessionId: sourceSid,
+        targetSessionId: targetSid,
+        reason: "timeline_migrate",
+        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
+      });
       setSessionMigrationUiStatus("ok", tf("timeline.migration.success", { target: targetLabel }), {
         sourceSessionId: sourceSid,
         targetSessionId: targetSid,
         migrationId: migrationID,
+        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
       await loadTimelineData(true, { sessionId: targetSid, skipRuntimeSessionResolve: true });
       return true;
@@ -45282,6 +45830,72 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         + rows.map(function(r){ return formatStateRow(r.label, r.state); }).join("")
         + '</div>';
     }
+    function laneStatusFromPipeline(status, fallbackOk) {
+      var st = String(status || "").toLowerCase();
+      if (!st && fallbackOk === true) return "ok";
+      if (!st && fallbackOk === false) return "unknown";
+      if (!st) return "unknown";
+      if (/^(ok|saved|present|completed|accepted|upserted|repaired)$/.test(st)) return "ok";
+      if (/^(skipped|not_called|not_configured|disabled|empty|none)$/.test(st)) return "skipped";
+      if (/^(queued|pending|delayed|partial|degraded|fallback|missing_suspected|not_checked_no_raw)$/.test(st)) return "warn";
+      if (/^(fail|failed|error|missing|lost|blocked)$/.test(st)) return "fail";
+      return "warn";
+    }
+    function countPart(label, value) {
+      return value == null ? null : label + ":" + String(value);
+    }
+    function buildPersistenceLaneRows(ct) {
+      if (!ct || ct.status === "idle") return [];
+      var pipeline = ct.persistencePipeline && typeof ct.persistencePipeline === "object" ? ct.persistencePipeline : null;
+      var raw = pipeline && pipeline.raw && typeof pipeline.raw === "object" ? pipeline.raw : null;
+      var derived = pipeline && pipeline.derived && typeof pipeline.derived === "object" ? pipeline.derived : null;
+      var vector = pipeline && pipeline.vector && typeof pipeline.vector === "object" ? pipeline.vector : null;
+      var rawStatus = raw && raw.status ? String(raw.status) : String(ct.rawStatus || "");
+      var derivedStatus = derived && derived.status ? String(derived.status) : String(ct.derivedStatus || "");
+      var vectorStatus = vector && vector.status ? String(vector.status) : String(ct.vectorStatus || "");
+      var rows = [];
+      rows.push({
+        label: "Raw Save",
+        state: {
+          status: laneStatusFromPipeline(rawStatus, ct.chatLogsSaved != null && ct.chatLogsSaved > 0),
+          turnIndex: ct.turnIndex,
+          detail: [
+            rawStatus || (ct.chatLogsSaved != null ? "saved" : "unknown"),
+            countPart("log", ct.chatLogsSaved),
+          ].filter(Boolean).join(" / "),
+        },
+      });
+      rows.push({
+        label: "Derived",
+        state: {
+          status: laneStatusFromPipeline(derivedStatus, ct.derivedArtifactsSaved != null && ct.derivedArtifactsSaved > 0),
+          turnIndex: ct.turnIndex,
+          detail: [
+            derivedStatus || (ct.derivedArtifactsSaved != null ? "present" : "unknown"),
+            countPart("mem", ct.memoriesSaved),
+            countPart("evi", ct.evidenceSaved),
+            countPart("kg", ct.kgTriplesSaved),
+            countPart("rule", ct.worldRulesSaved),
+            countPart("der", ct.derivedArtifactsSaved),
+          ].filter(Boolean).join(" / "),
+        },
+      });
+      rows.push({
+        label: "Vector Upsert",
+        state: {
+          status: laneStatusFromPipeline(vectorStatus, ct.vectorUpserted != null && ct.vectorUpserted > 0),
+          turnIndex: ct.turnIndex,
+          detail: [
+            vectorStatus || (ct.vectorUpserted != null ? "upserted" : "unknown"),
+            countPart("total", ct.vectorUpserted),
+            countPart("mem", ct.vectorMemoryUpserted),
+            countPart("evi", ct.vectorEvidenceUpserted),
+            countPart("rule", ct.vectorWorldRuleUpserted),
+          ].filter(Boolean).join(" / "),
+        },
+      });
+      return rows;
+    }
 
     var pluginState = { status: s.enabled ? "ok" : "fail", detail: s.enabled ? "enabled" : "disabled" };
     var sessionState = { status: "unknown", detail: "resolving\u2026" };
@@ -45346,6 +45960,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         + '</div>'
         + '<div class="mo-dash-row" style="flex-wrap:wrap;gap:4px">' + chips.join("") + failChips + '</div>'
         + '</div>';
+      var laneRows = buildPersistenceLaneRows(ct);
+      if (laneRows.length > 0) {
+        out += renderCard("\uD83D\uDCE6", "Persistence Lanes", laneRows);
+      }
     }
 
     // autoRollback, sessionRouting, etc — 조건부 행
@@ -45375,7 +45993,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     var allStates = [
       rs.lastBridgeHealth, rs.lastSupervisorWakeup, rs.lastSearchStatus,
       rs.lastSupervisorStatus, rs.lastInjectionStatus, rs.lastSaveStatus,
-      rs.lastCompleteStatus, rs.prepareTurnStatus,
+      rs.lastCompleteStatus, rs.lastCompleteTurnStatus, rs.prepareTurnStatus,
     ];
     var fail = allStates.filter(function(x){ return x && (x.status === "fail" || x.status === "error"); }).length;
     var warn = allStates.filter(function(x){ return x && x.status === "warn"; }).length;
@@ -50280,7 +50898,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.4 RC6 Release",
+    pre_release_bundle_authority: "Archive Center 2.5 RC1 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",

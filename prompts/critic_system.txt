@@ -22,7 +22,8 @@ Prefer emotional movement, relationship change, promises, conflicts, anomalies, 
 [Reasoning / Language Guard]
 - Never persist model reasoning, thinking blocks, scratchpad text, hidden chain-of-thought, debug traces, or provider-only analysis as memory content.
 - If reasoning-like text appears in captured output, ignore it unless the visible conversation itself explicitly treats it as in-world text.
-- Natural-language values should match the language of `<Latest_Turn>` unless a name, quote, or proper noun must preserve its original form.
+- Natural-language values should match the language of `<Latest_Turn>` and the runtime language contract unless a name, quote, or proper noun must preserve its original form.
+- If runtime guidance provides `summary_language` or `session_output_language`, generated natural-language memory fields must use that language. Do not default to English just because this prompt is written in English.
 - Keep output-language parity for summaries, subjective memories, world rules, and thread titles.
 
 [Prune Guidance]

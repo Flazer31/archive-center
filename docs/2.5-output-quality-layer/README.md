@@ -13,6 +13,8 @@ documents so they do not mix with unrelated Archive Center runtime docs.
 - `2.5-live-qa-hardening-2026-06-28.md`
 - `2.5-fusion-orchestrator-roadmap-2026-06-28.md`
 - `2.5-mdash-fusion-operating-contract-2026-06-29.md`
+- `2.5-mdash-fusion-fugu-full-flow-2026-07-01.md`
+- `2.5-strong-fusion-enhancement-roadmap-2026-07-02.md`
 
 Use this as the active 2.5 design anchor. It defines the standalone-first
 RisuAI output quality layer, including Input Enhance MDASH, Output Check MDASH,
@@ -46,6 +48,20 @@ older wording makes Fugu, Fusion, MDASH, or Table Read sound broader, weaker,
 or more autonomous than intended, this contract wins: the plugin is a
 deterministic-router, specialist-reader, fusion-director, segment-composer, and
 JS-verifier pipeline for verified enhanced output.
+
+Use the MDASH/Fusion/Fugu full flow document as the current end-to-end sequence
+map. It records the full operating order, the current alpha maturity snapshot,
+and the next implementation order after the first verified `fusion_enhance`
+trace: patch apply stability, reasoning-only control, segment-level fusion
+composition, full Table Read opt-in execution, router/cost profiles, and UI
+hardening.
+
+Use the strong fusion enhancement roadmap as the current direction lock for
+the next implementation pass. If older wording makes the plugin sound
+suggestion-only, too timid, or focused on weak local patches, this roadmap wins:
+specialist AIs should generate strong improvement candidates, while the
+Fusion Director, Segment Composer, and verifier decide what is safe enough to
+return.
 
 ## Reference Archive
 
