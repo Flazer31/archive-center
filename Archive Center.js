@@ -6480,18 +6480,15 @@
       out.chatIdx = Number.isInteger(chatIdx) ? chatIdx : null;
 
       let expectedChatUniqueId = parsed && parsed.chatUniqueId ? String(parsed.chatUniqueId || "").trim() : "";
-      let pinnedCurrentChatForSession = false;
       if (Number.isInteger(charIdx) && Number.isInteger(chatIdx)) {
         try {
           const pinnedRecord = await loadPinnedSessionId(charIdx, chatIdx);
           const pinnedSessionId = String(pinnedRecord && pinnedRecord.sessionId || "").trim();
-          const pinnedObservedChatUniqueId = String(pinnedRecord && pinnedRecord.observedChatUniqueId || "").trim();
           if (pinnedSessionId && pinnedSessionId === String(sessionId || "").trim()) {
-            pinnedCurrentChatForSession = true;
-            if (pinnedObservedChatUniqueId) expectedChatUniqueId = pinnedObservedChatUniqueId;
+            expectedChatUniqueId = String(pinnedRecord && pinnedRecord.observedChatUniqueId || "").trim();
           }
         } catch {
-          pinnedCurrentChatForSession = false;
+          // non-fatal: fall back to the session id's own chat uid.
         }
       }
 
@@ -6502,11 +6499,6 @@
           out.chat = activeChat;
           out.source = "R.getCharacter";
           if (extractActiveChatMessageCount(activeChat) > 0) return out;
-        }
-        if (pinnedCurrentChatForSession && Number.isInteger(chatIdx) && char && Array.isArray(char.chats) && char.chats[chatIdx]) {
-          out.chat = char.chats[chatIdx];
-          out.source = "R.getCharacter.pinned_current_chat";
-          if (extractActiveChatMessageCount(out.chat) > 0) return out;
         }
       }
 
@@ -13613,77 +13605,6 @@
   }
 
   /** session의 기존 snapshot을 조회 (없으면 null) */
-  function snapshotMessageMatchesContent(message, role, content) {
-    try {
-      if (!message || message.role !== role) return false;
-      const left = computeTailHashFromSnapshotMessages([{ role, content: String(message.content || "") }]);
-      const right = computeTailHashFromSnapshotMessages([{ role, content: String(content || "") }]);
-      return left === right;
-    } catch {
-      return false;
-    }
-  }
-
-  function promoteCompletedTurnSnapshot(sessionId, userInput, assistantContent, turnIndex) {
-    try {
-      const userText = String(userInput || "").trim();
-      const assistantText = normalizeAssistantPersistenceCandidate(String(assistantContent || "")) || String(assistantContent || "").trim();
-      if (!userText || !assistantText || shouldSkipUserInputPersistence(userText)) {
-        promoteAssistantSnapshot(sessionId, assistantContent, turnIndex);
-        return;
-      }
-      const prev = getSessionSnapshot(sessionId);
-      if (!prev) return;
-      const nextMessagesPreview = [...(Array.isArray(prev.messagesPreview) ? prev.messagesPreview : [])];
-      const last = nextMessagesPreview[nextMessagesPreview.length - 1] || null;
-      const prevLast = nextMessagesPreview[nextMessagesPreview.length - 2] || null;
-      const pairAlreadyTracked = snapshotMessageMatchesContent(prevLast, "user", userText)
-        && snapshotMessageMatchesContent(last, "assistant", assistantText);
-      if (!pairAlreadyTracked) {
-        if (!snapshotMessageMatchesContent(last, "user", userText)) {
-          nextMessagesPreview.push({ role: "user", content: userText });
-        }
-        const nextLast = nextMessagesPreview[nextMessagesPreview.length - 1] || null;
-        if (!snapshotMessageMatchesContent(nextLast, "assistant", assistantText)) {
-          nextMessagesPreview.push({ role: "assistant", content: assistantText });
-        }
-      }
-
-      const resolvedTurnIndex = typeof turnIndex === "number" ? turnIndex : prev.turnIndex;
-      const turnLedgerState = buildRollbackTurnLedgerOr1f(nextMessagesPreview, resolvedTurnIndex);
-      const tailMessages = nextMessagesPreview.slice(-4);
-      const assistantMessages = extractAssistantSnapshotMessages(nextMessagesPreview);
-      const assistantTailMessages = assistantMessages.slice(-4);
-      const assistantTurnAnchors = (turnLedgerState.entries || [])
-        .filter(function(entry) { return entry && entry.role === "assistant"; })
-        .map(function(entry) { return entry.turnIndex; });
-      _sessionSnapshots[sessionId] = {
-        msgCount: nextMessagesPreview.length,
-        assistantMsgCount: assistantMessages.length,
-        turnIndex: resolvedTurnIndex,
-        tailHash: computeTailHashFromSnapshotMessages(tailMessages),
-        assistantTailHash: computeTailHashFromSnapshotMessages(assistantTailMessages),
-        tailMessages,
-        assistantMessagesPreview: assistantMessages,
-        assistantTurnAnchors,
-        messagesPreview: nextMessagesPreview,
-        turnLedgerState,
-        lastRole: "assistant",
-        checkedAt: new Date().toISOString(),
-        lastPromotedAssistant: {
-          turnIndex: resolvedTurnIndex,
-          fingerprint: computeAssistantSnapshotFingerprint(assistantText),
-          promotedAt: Date.now(),
-          syncState: pairAlreadyTracked ? "confirmed_active_chat" : "pending_active_chat_confirmation",
-          confirmedAt: pairAlreadyTracked ? Date.now() : null,
-        },
-      };
-      persistRollbackTurnLedgerOr1f(sessionId, turnLedgerState);
-    } catch {
-      promoteAssistantSnapshot(sessionId, assistantContent, turnIndex);
-    }
-  }
-
   function getSessionSnapshot(sessionId) {
     try {
       const snapshot = _sessionSnapshots[sessionId] || null;
@@ -34584,7 +34505,16 @@
         scheduleTimelinePostCompleteTurnRefresh(chatSessionId, persistedTurnIdx);
         rawVerify = await verifyAndRepairCompleteTurnChatLogs(chatSessionId, persistedTurnIdx, safeSavedUserInput, persistedAssistantContent);
         if (!effectiveTurnOocGuardApplied && hasPersistedAssistantContent) {
-          promoteCompletedTurnSnapshot(chatSessionId, safeSavedUserInput, persistedAssistantContent, persistedTurnIdx);
+          const refreshedSnapshot = await safeCall(async function() {
+            const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId);
+            const comparable = resolvedActiveChat && resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+            if (!Array.isArray(comparable) || comparable.length === 0) return false;
+            updateSessionSnapshot(chatSessionId, comparable);
+            return true;
+          }, false, "postCompleteTurnSnapshotRefresh");
+          if (!refreshedSnapshot) {
+            promoteAssistantSnapshot(chatSessionId, persistedAssistantContent, persistedTurnIdx);
+          }
         }
         if (effectiveTurnOocGuardApplied) {
           updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: persistedTurnIdx, detail: "skipped (ooc turn guard)" });
