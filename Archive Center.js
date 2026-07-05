@@ -32258,6 +32258,17 @@
       };
     }
     if (!activeTail) {
+      if (!payloadTailAuxiliaryMarker && isSubstantiveUserPayloadText(payloadUserText)) {
+        return {
+          allowed: true,
+          contextInjectionAllowed: true,
+          reason: "payload_user_tail_recovery_without_active_tail",
+          requestType,
+          marker: "",
+          policy: "allow_verified_payload_user_tail_when_active_chat_tail_temporarily_unavailable",
+          payloadTailPreview: truncPreview(payloadTail, 120),
+        };
+      }
       return {
         allowed: true,
         contextInjectionAllowed: false,
@@ -32799,6 +32810,12 @@
         debugLog("beforeRequest: non-main request skipped:", mainRequestDecision.reason, "type:", type);
         return payload;
       }
+      if (mainRequestDecision.reason === "payload_user_tail_recovery_without_active_tail") {
+        const recoveredPayloadUserText = getLastPayloadUserText(messages);
+        if (recoveredPayloadUserText && !shouldSkipUserInputPersistence(recoveredPayloadUserText)) {
+          cacheRawInputForSession(orchSessionId, recoveredPayloadUserText);
+        }
+      }
       const contextInjectionGate = {
         allowed: !!mainRequestDecision.contextInjectionAllowed,
         reason: mainRequestDecision.reason || "",
@@ -32862,6 +32879,19 @@
       // 현재 턴 입력은 payload 직접값과 메시지 tail을 함께 비교해 결정한다.
       let userInputInfo = resolveCurrentTurnUserInputInfo(payload, messages, orchSessionId);
       let userInput = userInputInfo.text;
+      if (mainRequestDecision.reason === "payload_user_tail_recovery_without_active_tail" && shouldSkipUserInputPersistence(userInput)) {
+        const recoveredPayloadUserText = getLastPayloadUserText(messages);
+        if (recoveredPayloadUserText && !shouldSkipUserInputPersistence(recoveredPayloadUserText)) {
+          userInput = recoveredPayloadUserText;
+          userInputInfo = {
+            text: recoveredPayloadUserText,
+            source: "payload_user_tail_recovery_without_active_tail",
+            metaOnly: false,
+            actualEmptyInput: false,
+          };
+          cacheRawInputForSession(orchSessionId, recoveredPayloadUserText);
+        }
+      }
       if (isSaveType(type) && shouldSkipUserInputPersistence(userInput)) {
         const activeTailUserInput = await recoverCurrentUserInputFromActiveChatTail(orchSessionId);
         if (activeTailUserInput && !shouldSkipUserInputPersistence(activeTailUserInput)) {
