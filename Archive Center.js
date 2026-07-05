@@ -6479,22 +6479,9 @@
       out.charIdx = Number.isInteger(charIdx) ? charIdx : null;
       out.chatIdx = Number.isInteger(chatIdx) ? chatIdx : null;
 
-      let expectedChatUniqueId = parsed && parsed.chatUniqueId ? String(parsed.chatUniqueId || "").trim() : "";
-      if (Number.isInteger(charIdx) && Number.isInteger(chatIdx)) {
-        try {
-          const pinnedRecord = await loadPinnedSessionId(charIdx, chatIdx);
-          const pinnedSessionId = String(pinnedRecord && pinnedRecord.sessionId || "").trim();
-          if (pinnedSessionId && pinnedSessionId === String(sessionId || "").trim()) {
-            expectedChatUniqueId = String(pinnedRecord && pinnedRecord.observedChatUniqueId || "").trim();
-          }
-        } catch {
-          // non-fatal: fall back to the session id's own chat uid.
-        }
-      }
-
       if (R && typeof R.getCharacter === "function") {
         const char = await R.getCharacter();
-        const activeChat = resolveActiveChatFromCharacter(char, chatIdx, expectedChatUniqueId);
+        const activeChat = resolveActiveChatFromCharacter(char, chatIdx, parsed && parsed.chatUniqueId);
         if (activeChat) {
           out.chat = activeChat;
           out.source = "R.getCharacter";
@@ -6506,11 +6493,11 @@
       if (Array.isArray(characters) && characters.length > 0) {
         let character = null;
         let chat = null;
-        if (expectedChatUniqueId) {
+        if (parsed && parsed.chatUniqueId) {
           for (const candidate of characters) {
             if (!candidate || !Array.isArray(candidate.chats)) continue;
             const matched = candidate.chats.find(function(item) {
-              return String((item && item.id) || "").trim() === expectedChatUniqueId;
+              return String((item && item.id) || "").trim() === parsed.chatUniqueId;
             });
             if (matched) {
               character = candidate;
@@ -14780,6 +14767,7 @@
     const now = Date.now();
     if (!options.force && (now - _rollbackTailReconcileLastAt) < ROLLBACK_TAIL_RECONCILE_INTERVAL_MS) return false;
     _rollbackTailReconcileLastAt = now;
+    if (hasRecentPromotedAssistantSyncPending(sid)) return false;
 
     _rollbackTailReconcileInFlight = true;
     try {
@@ -14792,7 +14780,6 @@
       if (!(latestBackendTurn > activeCompletedTurnCount)) return false;
       const backendGap = latestBackendTurn - activeCompletedTurnCount;
       const ledgerTailRollback = buildLedgerVerifiedTailRollback(sid, comparable, activeCompletedTurnCount, latestBackendTurn);
-      if (hasRecentPromotedAssistantSyncPending(sid) && !ledgerTailRollback) return false;
       const recentTrimGuard = getRecentRisuHistoryTrimGuard(sid);
       if (recentTrimGuard && !ledgerTailRollback) {
         updateRuntimeState("lastAutoRollback", "skipped", {
@@ -34505,16 +34492,7 @@
         scheduleTimelinePostCompleteTurnRefresh(chatSessionId, persistedTurnIdx);
         rawVerify = await verifyAndRepairCompleteTurnChatLogs(chatSessionId, persistedTurnIdx, safeSavedUserInput, persistedAssistantContent);
         if (!effectiveTurnOocGuardApplied && hasPersistedAssistantContent) {
-          const refreshedSnapshot = await safeCall(async function() {
-            const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId);
-            const comparable = resolvedActiveChat && resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
-            if (!Array.isArray(comparable) || comparable.length === 0) return false;
-            updateSessionSnapshot(chatSessionId, comparable);
-            return true;
-          }, false, "postCompleteTurnSnapshotRefresh");
-          if (!refreshedSnapshot) {
-            promoteAssistantSnapshot(chatSessionId, persistedAssistantContent, persistedTurnIdx);
-          }
+          promoteAssistantSnapshot(chatSessionId, persistedAssistantContent, persistedTurnIdx);
         }
         if (effectiveTurnOocGuardApplied) {
           updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: persistedTurnIdx, detail: "skipped (ooc turn guard)" });
