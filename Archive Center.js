@@ -6479,13 +6479,34 @@
       out.charIdx = Number.isInteger(charIdx) ? charIdx : null;
       out.chatIdx = Number.isInteger(chatIdx) ? chatIdx : null;
 
+      let expectedChatUniqueId = parsed && parsed.chatUniqueId ? String(parsed.chatUniqueId || "").trim() : "";
+      let pinnedCurrentChatForSession = false;
+      if (Number.isInteger(charIdx) && Number.isInteger(chatIdx)) {
+        try {
+          const pinnedRecord = await loadPinnedSessionId(charIdx, chatIdx);
+          const pinnedSessionId = String(pinnedRecord && pinnedRecord.sessionId || "").trim();
+          const pinnedObservedChatUniqueId = String(pinnedRecord && pinnedRecord.observedChatUniqueId || "").trim();
+          if (pinnedSessionId && pinnedSessionId === String(sessionId || "").trim()) {
+            pinnedCurrentChatForSession = true;
+            if (pinnedObservedChatUniqueId) expectedChatUniqueId = pinnedObservedChatUniqueId;
+          }
+        } catch {
+          pinnedCurrentChatForSession = false;
+        }
+      }
+
       if (R && typeof R.getCharacter === "function") {
         const char = await R.getCharacter();
-        const activeChat = resolveActiveChatFromCharacter(char, chatIdx, parsed && parsed.chatUniqueId);
+        const activeChat = resolveActiveChatFromCharacter(char, chatIdx, expectedChatUniqueId);
         if (activeChat) {
           out.chat = activeChat;
           out.source = "R.getCharacter";
           if (extractActiveChatMessageCount(activeChat) > 0) return out;
+        }
+        if (pinnedCurrentChatForSession && Number.isInteger(chatIdx) && char && Array.isArray(char.chats) && char.chats[chatIdx]) {
+          out.chat = char.chats[chatIdx];
+          out.source = "R.getCharacter.pinned_current_chat";
+          if (extractActiveChatMessageCount(out.chat) > 0) return out;
         }
       }
 
@@ -6493,11 +6514,11 @@
       if (Array.isArray(characters) && characters.length > 0) {
         let character = null;
         let chat = null;
-        if (parsed && parsed.chatUniqueId) {
+        if (expectedChatUniqueId) {
           for (const candidate of characters) {
             if (!candidate || !Array.isArray(candidate.chats)) continue;
             const matched = candidate.chats.find(function(item) {
-              return String((item && item.id) || "").trim() === parsed.chatUniqueId;
+              return String((item && item.id) || "").trim() === expectedChatUniqueId;
             });
             if (matched) {
               character = candidate;
@@ -13592,6 +13613,77 @@
   }
 
   /** session의 기존 snapshot을 조회 (없으면 null) */
+  function snapshotMessageMatchesContent(message, role, content) {
+    try {
+      if (!message || message.role !== role) return false;
+      const left = computeTailHashFromSnapshotMessages([{ role, content: String(message.content || "") }]);
+      const right = computeTailHashFromSnapshotMessages([{ role, content: String(content || "") }]);
+      return left === right;
+    } catch {
+      return false;
+    }
+  }
+
+  function promoteCompletedTurnSnapshot(sessionId, userInput, assistantContent, turnIndex) {
+    try {
+      const userText = String(userInput || "").trim();
+      const assistantText = normalizeAssistantPersistenceCandidate(String(assistantContent || "")) || String(assistantContent || "").trim();
+      if (!userText || !assistantText || shouldSkipUserInputPersistence(userText)) {
+        promoteAssistantSnapshot(sessionId, assistantContent, turnIndex);
+        return;
+      }
+      const prev = getSessionSnapshot(sessionId);
+      if (!prev) return;
+      const nextMessagesPreview = [...(Array.isArray(prev.messagesPreview) ? prev.messagesPreview : [])];
+      const last = nextMessagesPreview[nextMessagesPreview.length - 1] || null;
+      const prevLast = nextMessagesPreview[nextMessagesPreview.length - 2] || null;
+      const pairAlreadyTracked = snapshotMessageMatchesContent(prevLast, "user", userText)
+        && snapshotMessageMatchesContent(last, "assistant", assistantText);
+      if (!pairAlreadyTracked) {
+        if (!snapshotMessageMatchesContent(last, "user", userText)) {
+          nextMessagesPreview.push({ role: "user", content: userText });
+        }
+        const nextLast = nextMessagesPreview[nextMessagesPreview.length - 1] || null;
+        if (!snapshotMessageMatchesContent(nextLast, "assistant", assistantText)) {
+          nextMessagesPreview.push({ role: "assistant", content: assistantText });
+        }
+      }
+
+      const resolvedTurnIndex = typeof turnIndex === "number" ? turnIndex : prev.turnIndex;
+      const turnLedgerState = buildRollbackTurnLedgerOr1f(nextMessagesPreview, resolvedTurnIndex);
+      const tailMessages = nextMessagesPreview.slice(-4);
+      const assistantMessages = extractAssistantSnapshotMessages(nextMessagesPreview);
+      const assistantTailMessages = assistantMessages.slice(-4);
+      const assistantTurnAnchors = (turnLedgerState.entries || [])
+        .filter(function(entry) { return entry && entry.role === "assistant"; })
+        .map(function(entry) { return entry.turnIndex; });
+      _sessionSnapshots[sessionId] = {
+        msgCount: nextMessagesPreview.length,
+        assistantMsgCount: assistantMessages.length,
+        turnIndex: resolvedTurnIndex,
+        tailHash: computeTailHashFromSnapshotMessages(tailMessages),
+        assistantTailHash: computeTailHashFromSnapshotMessages(assistantTailMessages),
+        tailMessages,
+        assistantMessagesPreview: assistantMessages,
+        assistantTurnAnchors,
+        messagesPreview: nextMessagesPreview,
+        turnLedgerState,
+        lastRole: "assistant",
+        checkedAt: new Date().toISOString(),
+        lastPromotedAssistant: {
+          turnIndex: resolvedTurnIndex,
+          fingerprint: computeAssistantSnapshotFingerprint(assistantText),
+          promotedAt: Date.now(),
+          syncState: pairAlreadyTracked ? "confirmed_active_chat" : "pending_active_chat_confirmation",
+          confirmedAt: pairAlreadyTracked ? Date.now() : null,
+        },
+      };
+      persistRollbackTurnLedgerOr1f(sessionId, turnLedgerState);
+    } catch {
+      promoteAssistantSnapshot(sessionId, assistantContent, turnIndex);
+    }
+  }
+
   function getSessionSnapshot(sessionId) {
     try {
       const snapshot = _sessionSnapshots[sessionId] || null;
@@ -14767,7 +14859,6 @@
     const now = Date.now();
     if (!options.force && (now - _rollbackTailReconcileLastAt) < ROLLBACK_TAIL_RECONCILE_INTERVAL_MS) return false;
     _rollbackTailReconcileLastAt = now;
-    if (hasRecentPromotedAssistantSyncPending(sid)) return false;
 
     _rollbackTailReconcileInFlight = true;
     try {
@@ -14780,6 +14871,7 @@
       if (!(latestBackendTurn > activeCompletedTurnCount)) return false;
       const backendGap = latestBackendTurn - activeCompletedTurnCount;
       const ledgerTailRollback = buildLedgerVerifiedTailRollback(sid, comparable, activeCompletedTurnCount, latestBackendTurn);
+      if (hasRecentPromotedAssistantSyncPending(sid) && !ledgerTailRollback) return false;
       const recentTrimGuard = getRecentRisuHistoryTrimGuard(sid);
       if (recentTrimGuard && !ledgerTailRollback) {
         updateRuntimeState("lastAutoRollback", "skipped", {
@@ -34492,7 +34584,7 @@
         scheduleTimelinePostCompleteTurnRefresh(chatSessionId, persistedTurnIdx);
         rawVerify = await verifyAndRepairCompleteTurnChatLogs(chatSessionId, persistedTurnIdx, safeSavedUserInput, persistedAssistantContent);
         if (!effectiveTurnOocGuardApplied && hasPersistedAssistantContent) {
-          promoteAssistantSnapshot(chatSessionId, persistedAssistantContent, persistedTurnIdx);
+          promoteCompletedTurnSnapshot(chatSessionId, safeSavedUserInput, persistedAssistantContent, persistedTurnIdx);
         }
         if (effectiveTurnOocGuardApplied) {
           updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: persistedTurnIdx, detail: "skipped (ooc turn guard)" });
