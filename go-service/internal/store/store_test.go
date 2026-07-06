@@ -523,8 +523,8 @@ func TestMariaDBStoreLockSessionMigrationSourceWritesLockAfterVectorReindex(t *t
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migrations")).
 		WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "status", "chroma_reindexed_count"}).
-			AddRow("source-session", "target-session", "vector_reindexed", 2))
+		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count"}).
+			AddRow("source-session", "target-session", SessionMigrationModeCopyThenLockSource, "vector_reindexed", 2))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migration_locks")).
 		WithArgs("source-session").
 		WillReturnRows(sqlmock.NewRows([]string{"migration_id", "source_session_id", "target_session_id", "locked", "lock_status", "reason", "locked_at"}))
@@ -563,13 +563,37 @@ func TestMariaDBStoreLockSessionMigrationSourceBlocksBeforeVectorReindex(t *test
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migrations")).
 		WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "status", "chroma_reindexed_count"}).
-			AddRow("source-session", "target-session", "copied", 0))
+		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count"}).
+			AddRow("source-session", "target-session", SessionMigrationModeCopyThenLockSource, "copied", 0))
 	mock.ExpectRollback()
 
 	_, err = m.LockSessionMigrationSource(context.Background(), 42, "too early")
 	if err == nil || !strings.Contains(err.Error(), "not vector_reindexed") {
 		t.Fatalf("expected vector_reindexed block, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBStoreLockSessionMigrationSourceBlocksCopyKeepSourceMode(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	m := &mariadbStore{db: db}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migrations")).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count"}).
+			AddRow("source-session", "target-session", SessionMigrationModeCopyKeepSource, "vector_reindexed", 2))
+	mock.ExpectRollback()
+
+	_, err = m.LockSessionMigrationSource(context.Background(), 42, "should not lock")
+	if err == nil || !strings.Contains(err.Error(), "does not lock source") {
+		t.Fatalf("expected copy_keep_source lock block, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

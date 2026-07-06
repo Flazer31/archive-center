@@ -7391,6 +7391,55 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	}
 }
 
+func TestRollbackMinFromTurnClampsAttachedSessionDelete(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+
+	rec := &rollbackRecordingStore{Store: &turnRecordingStore{returnMemories: []store.Memory{
+		{ID: 51, ChatSessionID: "sess-attached", TurnIndex: 6},
+	}}}
+	srv := &Server{
+		Cfg:            cfg,
+		Store:          rec,
+		StoreOpenError: nil,
+		Vector:         &turnRecordingVectorStore{},
+	}
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodDelete, "/rollback/1?chat_session_id=sess-attached&req_source=auto_rollback&min_from_turn=6&protected_before_turn=5&requested_turn_index=1", nil)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp["turn_index"] != float64(6) {
+		t.Fatalf("turn_index = %v, want clamped 6", resp["turn_index"])
+	}
+	rb, ok := resp["rollback_plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("rollback_plan is not an object")
+	}
+	if rb["requested_turn_index"] != float64(1) || rb["min_from_turn"] != float64(6) || rb["protected_before_turn"] != float64(5) {
+		t.Fatalf("rollback baseline fields mismatch: %#v", rb)
+	}
+	if rb["session_routing_baseline_clamped"] != true {
+		t.Fatalf("session_routing_baseline_clamped = %v, want true", rb["session_routing_baseline_clamped"])
+	}
+	for _, got := range rec.deletes {
+		if !strings.HasSuffix(got, ":sess-attached:6") {
+			t.Fatalf("delete call used unsafe fromTurn: %s", got)
+		}
+	}
+}
+
 func TestRollbackLiveWritePartialError(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBShadow

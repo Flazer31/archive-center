@@ -19,7 +19,8 @@ const (
 	sessionMigrationLockVersion     = "sc-mig-lock.v1"
 	sessionMigrationRollbackVersion = "sc-mig-rollback.v1"
 	sessionMigrationCleanupVersion  = "sc-mig-cleanup.v1"
-	sessionMigrationModeCopyLock    = "copy_then_lock_source"
+	sessionMigrationModeCopyLock    = store.SessionMigrationModeCopyThenLockSource
+	sessionMigrationModeCopyKeep    = store.SessionMigrationModeCopyKeepSource
 	sessionMigrationSubjectiveCap   = 1000
 )
 
@@ -108,9 +109,9 @@ func (s *Server) handleSessionMigratePreview(w http.ResponseWriter, r *http.Requ
 	if sourceID != "" && targetID != "" && sourceID == targetID {
 		blockedReasons = append(blockedReasons, "source_target_must_differ")
 	}
-	if mode != sessionMigrationModeCopyLock {
+	if !sessionMigrationModeSupported(mode) {
 		blockedReasons = append(blockedReasons, "unsupported_mode")
-		warnings = append(warnings, "supported_mode: "+sessionMigrationModeCopyLock)
+		warnings = append(warnings, "supported_modes: "+sessionMigrationSupportedModesText())
 	}
 
 	sourceCounts, sourceWarnings, sourceErr := s.sessionMigrationPreviewCounts(r.Context(), sourceID)
@@ -928,9 +929,9 @@ func (s *Server) sessionMigrationValidate(ctx context.Context, sourceID, targetI
 	if sourceID != "" && targetID != "" && sourceID == targetID {
 		blockedReasons = append(blockedReasons, "source_target_must_differ")
 	}
-	if mode != sessionMigrationModeCopyLock {
+	if !sessionMigrationModeSupported(mode) {
 		blockedReasons = append(blockedReasons, "unsupported_mode")
-		warnings = append(warnings, "supported_mode: "+sessionMigrationModeCopyLock)
+		warnings = append(warnings, "supported_modes: "+sessionMigrationSupportedModesText())
 	}
 
 	sourceCounts, sourceWarnings, sourceErr := s.sessionMigrationPreviewCounts(ctx, sourceID)
@@ -976,6 +977,19 @@ func sessionMigrationCountsFromStore(in store.SessionMigrationArtifactCounts) se
 		CanonicalTotal:              in.CanonicalTotal,
 		CanonicalAndSubjectiveTotal: in.CanonicalAndSubjectiveTotal,
 	}
+}
+
+func sessionMigrationModeSupported(mode string) bool {
+	switch strings.TrimSpace(mode) {
+	case sessionMigrationModeCopyLock, sessionMigrationModeCopyKeep:
+		return true
+	default:
+		return false
+	}
+}
+
+func sessionMigrationSupportedModesText() string {
+	return sessionMigrationModeCopyLock + "," + sessionMigrationModeCopyKeep
 }
 
 func sessionMigrationUniqueVectorIDs(docs []store.SessionMigrationVectorDocument) []string {

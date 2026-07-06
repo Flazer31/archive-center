@@ -3284,7 +3284,7 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 	targetID := strings.TrimSpace(req.TargetSessionID)
 	mode := strings.TrimSpace(req.Mode)
 	if mode == "" {
-		mode = "copy_then_lock_source"
+		mode = SessionMigrationModeCopyThenLockSource
 	}
 	if sourceID == "" || targetID == "" {
 		return nil, errors.New("source_session_id and target_session_id are required")
@@ -3292,7 +3292,7 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 	if sourceID == targetID {
 		return nil, errors.New("source and target sessions must differ")
 	}
-	if mode != "copy_then_lock_source" {
+	if mode != SessionMigrationModeCopyThenLockSource && mode != SessionMigrationModeCopyKeepSource {
 		return nil, errors.New("unsupported session migration mode")
 	}
 
@@ -3538,19 +3538,22 @@ func (m *mariadbStore) LockSessionMigrationSource(ctx context.Context, migration
 		}
 	}()
 
-	var sourceID, targetID, status string
+	var sourceID, targetID, mode, status string
 	var reindexedCount int
 	err = tx.QueryRowContext(ctx, `
-		SELECT source_session_id, target_session_id, status, chroma_reindexed_count
+		SELECT source_session_id, target_session_id, mode, status, chroma_reindexed_count
 		FROM session_migrations
 		WHERE id = ?
 		FOR UPDATE
-	`, migrationID).Scan(&sourceID, &targetID, &status, &reindexedCount)
+	`, migrationID).Scan(&sourceID, &targetID, &mode, &status, &reindexedCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(mode) != SessionMigrationModeCopyThenLockSource {
+		return nil, fmt.Errorf("session migration source lock blocked: migration mode %q does not lock source", mode)
 	}
 	if status != "vector_reindexed" && status != "source_locked" {
 		return nil, fmt.Errorf("session migration source lock blocked: migration status %q is not vector_reindexed", status)

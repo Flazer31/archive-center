@@ -425,6 +425,50 @@ func TestSessionMigrateCompleteCopiesOnlyAfterEmptyTargetPreview(t *testing.T) {
 	}
 }
 
+func TestSessionMigrateCompleteCopyKeepSourcePassesMode(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	targetID := "char_59_cid_copy"
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{{ID: 1, ChatSessionID: sourceID}},
+		memories: []store.Memory{{ID: 3, ChatSessionID: sourceID}},
+		completeResult: &store.SessionMigrationCompleteResult{
+			MigrationID:           100,
+			Status:                "copied",
+			SourceSessionID:       sourceID,
+			TargetSessionID:       targetID,
+			Mode:                  sessionMigrationModeCopyKeep,
+			Counts:                store.SessionMigrationArtifactCounts{ChatLogs: 1, Memories: 1, CanonicalTotal: 2, CanonicalAndSubjectiveTotal: 2},
+			RowMapCount:           2,
+			SourceLocked:          false,
+			ReadyForLive:          false,
+			ChromaReindexRequired: true,
+		},
+	}
+	vec := &sessionMigrationPreviewVector{counts: map[string]int{sourceID: 2}}
+	resp := performSessionMigrationComplete(t, st, vec, map[string]string{
+		"source_session_id": sourceID,
+		"target_session_id": targetID,
+		"mode":              sessionMigrationModeCopyKeep,
+		"operator_note":     "manual copy",
+	})
+
+	if !st.completeCalled {
+		t.Fatalf("expected CompleteSessionMigration to be called")
+	}
+	if st.completeRequest.Mode != sessionMigrationModeCopyKeep {
+		t.Fatalf("mode = %q, want %q", st.completeRequest.Mode, sessionMigrationModeCopyKeep)
+	}
+	if st.completeRequest.OperatorNote != "manual copy" {
+		t.Fatalf("operator note = %q", st.completeRequest.OperatorNote)
+	}
+	if resp.Blocked || !resp.WriteAttempted || resp.Mode != sessionMigrationModeCopyKeep || resp.SourceLocked {
+		t.Fatalf("unexpected copy_keep_source complete response: %+v", resp)
+	}
+	if resp.MigrationID != 100 || resp.RowMapCount != 2 {
+		t.Fatalf("unexpected migration result: %+v", resp)
+	}
+}
+
 func TestSessionMigrateCompleteDoesNotWriteWhenPreviewBlocked(t *testing.T) {
 	sessionID := "char_59_cid_same"
 	st := &sessionMigrationPreviewStore{chatLogs: []store.ChatLog{{ID: 1, ChatSessionID: sessionID}}}

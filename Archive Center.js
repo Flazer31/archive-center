@@ -38,8 +38,8 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "2.5.0-js-update-url.20260705";
-  const BUILD_CHANNEL = "rc5";
+  const BUILD_ID = "2.5.0-release.20260707";
+  const BUILD_CHANNEL = "stable";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -235,7 +235,6 @@
     pluginMainApplyMode: "shadow",
     pluginMainRewriteLegacyOptIn: false,
     tableReadOutputPolishEnabled: false,
-    tableReadOutputEnhanceEnabled: false,
     // ── 18.5-3b: operator-gated Chroma live limited cutover ──
     // ── I-1d: Aggregate read (experimental) — true 시 3개 개별 fetch 대신 단일 GET /session-state 사용 ──
     useAggregateRead: false,
@@ -318,11 +317,7 @@
       "tableRead.note.tr2": "TR-2는 단일 모델이 여러 캐릭터의 관점을 시뮬레이션합니다. TR-3는 아직 남겨둔 멀티 모델 병렬 호출 단계입니다.",
       "tableRead.note.review": "TR-Review-1은 이미 나온 출력 초안을 캐릭터 말투, 비밀 노출, 감정선, 시간/장소/관계 연속성 기준으로 읽기 전용 검토합니다. 자동 교체나 DB 저장은 하지 않습니다.",
       "tableRead.note.llmMissing": "대본 리딩 LLM endpoint/api key/model이 없으면 실행할 수 없습니다.",
-      "tableRead.outputEnhance.settingTitle": "대본 리딩 최종 출력 개선",
-      "tableRead.outputEnhance.enabled": "최종 응답 반환 전에 검사/개선",
-      "tableRead.outputEnhance.settingHint": "출력 저장 전에 출력 검사 → 미니 대본 리딩 → 최종 출력 개선을 실행하고, 개선된 최종문을 RisuAI 반환값과 DB 저장값에 함께 사용합니다.",
       "dash.status.tableReadPolish": "대본 리딩 구 후처리",
-      "dash.status.tableReadOutputEnhance": "대본 리딩 최종 출력",
       "tableRead.section.entities": "참여 인물",
       "tableRead.section.result": "검사 결과",
       "tableRead.section.reviewScript": "대본 리딩",
@@ -1064,14 +1059,6 @@
       "settings.debug.forceIdleHint": "디버그 전용입니다. 다음 비어 있지 않은 일반 입력 1회에 idle_reentry를 강제로 적용합니다.",
       "settings.debug.forceIdleOff": "꺼짐",
       "settings.debug.tab.disabled": "디버그 모드가 꺼져 있습니다. 오른쪽 위 디버그 버튼을 켜면 이 탭의 상세 정보를 볼 수 있습니다.",
-      "settings.debug.tableReadCompareEmpty": "아직 대본 리딩 최종 출력 개선 결과가 없습니다.",
-      "settings.debug.tableReadCompareFinal": "최종 출력",
-      "settings.debug.tableReadCompareHint": "최근 대본 리딩 최종 출력 개선 결과의 원문/최종문/변경 이유/보호한 비밀만 읽기 전용으로 확인합니다.",
-      "settings.debug.tableReadCompareIssues": "변경 이유",
-      "settings.debug.tableReadCompareMeta": "세션 / 턴",
-      "settings.debug.tableReadCompareOriginal": "원문 출력",
-      "settings.debug.tableReadCompareProtected": "보호된 비밀",
-      "settings.debug.tableReadCompareTitle": "TR-OUT-5 디버그 추적",
       "settings.hint.auxiliaryInjectionAnchorMarker": "선택 사항입니다. 자동/앵커 모드는 이 마커가 들어간 마지막 메시지 뒤에 기억을 삽입합니다.",
       "settings.hint.auxiliaryInjectionPlacement": "Archive Center의 큰 기억 블록을 어디에 넣을지 정합니다. 기존 프롬프트 순서에 의존하는 프리셋이면 기존 방식을 사용하세요.",
       "settings.hint.injectionBudgetExtraChars": "자동 주입 예산 위로 추가 허용할 문자 수입니다. 토큰이 아니라 chars 기준이며, 관련 기억이 없으면 높은 한도를 전부 채우지 않습니다.",
@@ -1297,11 +1284,7 @@
       "tableRead.note.tr2": "TR-2 simulates character viewpoints with a single model. TR-3 is the later multi-model parallel-agent step.",
       "tableRead.note.review": "TR-Review-1 read-only reviews an already generated assistant draft for voice fit, secret leaks, emotion flow, and time/location/relationship continuity. It does not replace output or write to the DB.",
       "tableRead.note.llmMissing": "Table Read LLM endpoint/api key/model is required.",
-      "tableRead.outputEnhance.settingTitle": "Table Read Final Output Enhance",
-      "tableRead.outputEnhance.enabled": "Check/enhance before final response return",
-      "tableRead.outputEnhance.settingHint": "Runs Output Check → Mini Table Read → Output Enhance before saving output, then uses the enhanced final text for both RisuAI return and DB storage.",
       "dash.status.tableReadPolish": "Legacy Table Read Postprocess",
-      "dash.status.tableReadOutputEnhance": "Table Read Final Output",
       "tableRead.section.entities": "Participants",
       "tableRead.section.result": "Result",
       "tableRead.section.reviewScript": "Table Read Script",
@@ -1352,14 +1335,6 @@
       "settings.debug.forceIdleOff": "off",
       "settings.debug.forceIdleArmed": "armed: next normal input",
       "settings.debug.forceIdleHint": "Debug only. Forces idle_reentry for the next non-empty, non-resume input once.",
-      "settings.debug.tableReadCompareTitle": "TR-OUT-5 debug trace",
-      "settings.debug.tableReadCompareHint": "Read-only debug view for the latest Table Read final output enhancement: original text, final text, change reasons, and protected secrets only.",
-      "settings.debug.tableReadCompareEmpty": "No Table Read final output enhancement result is available yet.",
-      "settings.debug.tableReadCompareOriginal": "Original Output",
-      "settings.debug.tableReadCompareFinal": "Final Output",
-      "settings.debug.tableReadCompareIssues": "Change Reasons",
-      "settings.debug.tableReadCompareProtected": "Protected Secrets",
-      "settings.debug.tableReadCompareMeta": "Session / Turn",
       "settings.debug.tab.disabled": "Debug mode is off. Turn it on with the top-right debug button to view details in this tab.",
       "settings.label.supervisorTimeout": "Director Timeout (sec)",
       "settings.label.criticTimeout": "Critic/Reviewer Timeout (sec)",
@@ -2276,11 +2251,7 @@
       "tableRead.note.tr2": "TR-2は単一モデルが複数キャラクターの視点をシミュレートします。TR-3は後続のマルチモデル並列呼び出し段階です。",
       "tableRead.note.review": "TR-Review-1は既に生成された出力下書きを、キャラクターの声、秘密漏洩、感情の流れ、時間/場所/関係の連続性から読み取り専用で検討します。自動置換やDB保存は行いません。",
       "tableRead.note.llmMissing": "読み合わせLLMのendpoint/api key/modelが必要です。",
-      "tableRead.outputEnhance.settingTitle": "読み合わせ最終出力改善",
-      "tableRead.outputEnhance.enabled": "最終応答返却前に検査/改善",
-      "tableRead.outputEnhance.settingHint": "出力保存前に出力検査 → ミニ読み合わせ → 最終出力改善を実行し、改善後の最終文をRisuAI返却値とDB保存値の両方に使います。",
       "dash.status.tableReadPolish": "旧読み合わせ後処理",
-      "dash.status.tableReadOutputEnhance": "読み合わせ最終出力",
       "tableRead.section.entities": "参加人物",
       "tableRead.section.result": "検査結果",
       "tableRead.section.reviewScript": "読み合わせ",
@@ -2331,14 +2302,6 @@
       "settings.debug.forceIdleOff": "off",
       "settings.debug.forceIdleArmed": "armed: 次の通常入力1回",
       "settings.debug.forceIdleHint": "デバッグ専用。空入力とresume系を除く次の入力1回だけ idle_reentry として処理します。",
-      "settings.debug.tableReadCompareTitle": "TR-OUT-5 デバッグ追跡",
-      "settings.debug.tableReadCompareHint": "直近の読み合わせ最終出力改善について、原文/最終文/変更理由/保護した秘密だけを読み取り専用で確認します。",
-      "settings.debug.tableReadCompareEmpty": "確認できる読み合わせ最終出力改善結果はまだありません。",
-      "settings.debug.tableReadCompareOriginal": "原文出力",
-      "settings.debug.tableReadCompareFinal": "最終出力",
-      "settings.debug.tableReadCompareIssues": "変更理由",
-      "settings.debug.tableReadCompareProtected": "保護した秘密",
-      "settings.debug.tableReadCompareMeta": "セッション/ターン",
       "settings.debug.tab.disabled": "デバッグモードはオフです。右上のデバッグボタンで有効にすると、このタブの詳細情報が表示されます。",
       "settings.label.supervisorTimeout": "監督官タイムアウト（秒）",
       "settings.label.criticTimeout": "評論家タイムアウト（秒）",
@@ -3694,8 +3657,6 @@
   let _tableReadPolishStorageLedger = null;
   let _tableReadPolishStorageLedgerLoadPromise = null;
   let _debugContinuityOverride = null; // debug 전용: 다음 1회 continuity trigger 강제
-  let _tableReadPolishProofOnce = false; // debug 전용: 다음 1회 afterRequest output replacement proof
-  const TABLE_READ_POLISH_PROOF_MARKER = "[TR-POLISH-1 PROOF: afterRequest replacement applied]";
   const AUTO_CONTINUE_USER_INPUT_MARKER = "[auto-continue]";
   const _rawInputBySession = new Map(); // input hook에서 잡은 raw user input 캐시
   const RAW_INPUT_CACHE_MAX = 50;
@@ -3771,12 +3732,8 @@
     lastCriticLedgerProbe: { status: "idle", time: null, detail: null, sessionId: null, dashboard: null, trace: null },
     // TR-POLISH-4: live Table Read output polish status.
     lastTableReadPolish: { status: "idle", time: null, detail: null },
-    // TR-OUT-4: final-return Table Read output enhance status.
-    lastTableReadOutputEnhance: { status: "idle", time: null, detail: null },
-    // TR-OUT-5: safe debug trace for latest original/final output enhancement.
+    // Table Read live trace snapshot for manual/debug inspection.
     lastTableReadPolishDebug: { status: "idle", time: null, detail: null, snapshot: null },
-    // TR-POLISH-1: afterRequest return/storage replacement proof.
-    lastTableReadPolishProof: { status: "idle", time: null, detail: null },
   };
 
   function updateRuntimeState(key, status, extra = {}) {
@@ -5391,56 +5348,6 @@
     }
   }
 
-  function isTableReadPolishProofArmed() {
-    return !!_tableReadPolishProofOnce;
-  }
-
-  function armTableReadPolishProofOnce() {
-    _tableReadPolishProofOnce = true;
-    updateRuntimeState("lastTableReadPolishProof", "armed", {
-      detail: "next persisted output",
-      marker: TABLE_READ_POLISH_PROOF_MARKER,
-    });
-  }
-
-  function clearTableReadPolishProofOnce(reason = "cancelled") {
-    if (!_tableReadPolishProofOnce) return false;
-    _tableReadPolishProofOnce = false;
-    updateRuntimeState("lastTableReadPolishProof", "idle", { detail: reason });
-    return true;
-  }
-
-  function applyTableReadPolishProofOnce(content, type, chatSessionId, syntheticAfterRequest) {
-    try {
-      if (!settings.debug || !_tableReadPolishProofOnce) return content;
-      if (!isSaveType(type)) return content;
-      if (typeof content !== "string" || !content.trim()) return content;
-      const original = String(content || "");
-      const marker = TABLE_READ_POLISH_PROOF_MARKER;
-      const replaced = original.indexOf(marker) >= 0
-        ? original
-        : original.replace(/\s+$/g, "") + "\n\n" + marker;
-      _tableReadPolishProofOnce = false;
-      updateRuntimeState("lastTableReadPolishProof", syntheticAfterRequest ? "warn" : "ok", {
-        detail: syntheticAfterRequest
-          ? "marker applied to persistence path; streaming display may already be rendered"
-          : "marker returned from native afterRequest",
-        marker,
-        chatSessionId: chatSessionId || "",
-        requestType: String(type || "model"),
-        originalChars: original.length,
-        finalChars: replaced.length,
-        synthetic: !!syntheticAfterRequest,
-      });
-      return replaced;
-    } catch (err) {
-      updateRuntimeState("lastTableReadPolishProof", "fail", {
-        detail: err && err.message ? err.message : String(err || "unknown"),
-      });
-      return content;
-    }
-  }
-
   function tableReadPolishTextKey(value) {
     return String(value || "").trim().toLowerCase();
   }
@@ -6038,276 +5945,6 @@
       })
       .filter((line) => line.trim())
       .join("\n");
-  }
-
-  function tableReadOutputCheckNeedsEnhance(data) {
-    const verdict = String(data && data.verdict || "accept").toLowerCase();
-    return !!(data && data.requires_output_enhance) || verdict === "minor_revise" || verdict === "major_revise";
-  }
-
-  async function tryApplyTableReadOutputEnhance(content, context) {
-    const original = String(content || "");
-    if (!settings || !settings.tableReadOutputEnhanceEnabled) return { content: original, applied: false, stage: "disabled" };
-    if (!original.trim()) return { content: original, applied: false, stage: "empty" };
-    const chatSessionId = String(context && context.chatSessionId || "").trim();
-    const userInput = String(context && context.userInput || "");
-    const turnIndex = Number(context && context.turnIndex || 0);
-    if (!tableReadLLMConfigured()) {
-      updateRuntimeState("lastTableReadOutputEnhance", "warn", {
-        turnIndex,
-        detail: "enabled but Table Read LLM is not configured",
-      });
-      return { content: original, applied: false, stage: "llm_missing" };
-    }
-    try {
-      const recentContext = context && context.recentContext;
-      const bundles = await loadTableReadPolishEntityBundles(chatSessionId);
-      const entities = tableReadSelectPolishEntities(bundles, userInput, original, recentContext).slice(0, 3);
-      if (!entities.length) {
-        updateRuntimeState("lastTableReadOutputEnhance", "skipped", {
-          turnIndex,
-          detail: "no relevant entity memories",
-        });
-        return { content: original, applied: false, stage: "no_entities" };
-      }
-      const protectedEnvelope = splitTableReadOutputProtectedEnvelope(original);
-      const assistantDraftForTableRead = protectedEnvelope.body || original;
-      const outputSegmentGuard = buildTableReadOutputSegmentGuard(assistantDraftForTableRead);
-      const timeoutMs = typeof resolvePluginMainTimeoutMs === "function"
-        ? Math.max(30000, resolvePluginMainTimeoutMs())
-        : getRequestTimeoutSettingMs();
-      const commonBody = {
-        chat_session_id: chatSessionId,
-        turn_index: turnIndex,
-        scene_text: "",
-        user_input: userInput,
-        assistant_draft: assistantDraftForTableRead,
-        output_structure_guard: {
-          version: "tr_out_structure_guard.v2",
-          protected_prefix: protectedEnvelope.prefix,
-          protected_suffix: protectedEnvelope.suffix,
-          protected_count: protectedEnvelope.protectedCount,
-          segment_mode: outputSegmentGuard.mode,
-          mutable_segments: outputSegmentGuard.mutable_segments,
-          protected_segments: outputSegmentGuard.protected_segments,
-          patch_schema: outputSegmentGuard.patch_schema,
-          rule: "TR may improve mutable narrative body segments only. Prefer patches over full rewrite. Protected regex/image/header/Chatindex lines must remain exact.",
-        },
-        recent_context_summary: tableReadBuildRecentContextSummary(recentContext),
-        entities,
-        max_memories_per_entity: 4,
-        max_entities: 3,
-        llm: tableReadBuildLLMRequestForOutputBody(assistantDraftForTableRead),
-      };
-      const outputCheck = await bridgeFetchWithRetry("/table-read/output-check", {
-        method: "POST",
-        body: commonBody,
-        timeoutMs,
-      }, 1);
-      if (!outputCheck || outputCheck.status !== "ok") {
-        updateRuntimeState("lastTableReadOutputEnhance", "fail", {
-          turnIndex,
-          detail: formatBridgeFailureForDisplay("/table-read/output-check", "output check failed"),
-        });
-        return { content: original, applied: false, stage: "output_check_failed" };
-      }
-      let miniRead = null;
-      const miniReadRequired = !!outputCheck.requires_table_read;
-      const shouldRunMiniReadTrace = true;
-      if (shouldRunMiniReadTrace) {
-        miniRead = await bridgeFetchWithRetry("/table-read/mini-read", {
-          method: "POST",
-          body: { ...commonBody, output_check_context: outputCheck },
-          timeoutMs,
-        }, 1);
-        if (!miniRead || miniRead.status !== "ok") {
-          if (!miniReadRequired) {
-            miniRead = {
-              status: "skipped",
-              fallback_reason: "optional_mini_read_failed",
-              participant_notes: [],
-              mini_discussion: [],
-              output_enhance_notes: [],
-              protected_reveals: [],
-              story_risks: [],
-            };
-          } else {
-            updateRuntimeState("lastTableReadOutputEnhance", "warn", {
-              turnIndex,
-              detail: "mini-read unavailable; original kept",
-            });
-            return { content: original, applied: false, stage: "mini_read_failed", outputCheck };
-          }
-        }
-      }
-      const shouldEnhance = tableReadOutputCheckNeedsEnhance(outputCheck);
-      if (!shouldEnhance) {
-        updateRuntimeState("lastTableReadOutputEnhance", "skipped", {
-          turnIndex,
-          detail: miniRead && miniRead.status === "ok"
-            ? "output check accepted original; mini table read recorded"
-            : "output check accepted original",
-          verdict: outputCheck.verdict || "accept",
-          entityCount: entities.length,
-        });
-        updateRuntimeState("lastTableReadPolishDebug", "skipped", {
-          turnIndex,
-          detail: "latest TR-OUT accepted original",
-          snapshot: buildTableReadPolishDebugSnapshot(chatSessionId, turnIndex, original, original, {
-            issues: outputCheck.issues || [],
-            protected_reveals: outputCheck.protected_reveals || [],
-            fallback_reason: outputCheck.fallback_reason || "",
-          }, entities, {
-            changed: false,
-            syntheticAfterRequest: !!(context && context.syntheticAfterRequest),
-            outputCheck,
-            miniRead,
-            protectedEnvelope,
-          }),
-        });
-        return { content: original, applied: false, stage: "accepted", outputCheck, miniRead };
-      }
-      const enhanced = await bridgeFetchWithRetry("/table-read/output-enhance", {
-        method: "POST",
-        body: { ...commonBody, output_check_context: outputCheck, mini_read_context: miniRead || {} },
-        timeoutMs,
-      }, 1);
-      if (!enhanced || enhanced.status !== "ok") {
-        updateRuntimeState("lastTableReadOutputEnhance", "fail", {
-          turnIndex,
-          detail: formatBridgeFailureForDisplay("/table-read/output-enhance", "output enhance failed"),
-        });
-        return { content: original, applied: false, stage: "enhance_failed", outputCheck, miniRead };
-      }
-      const outputPatches = tableReadExtractOutputPatches(enhanced);
-      const patchApply = tableReadApplyOutputSegmentPatches(outputSegmentGuard, outputPatches);
-      const finalText = patchApply && patchApply.ok
-        ? patchApply.text
-        : String(enhanced.assistant_output_final || "").trim();
-      if (!finalText) {
-        updateRuntimeState("lastTableReadOutputEnhance", "warn", {
-          turnIndex,
-          detail: outputPatches.length
-            ? "output patches rejected and assistant_output_final missing; original kept"
-            : "assistant_output_final missing; original kept",
-          patchRejected: patchApply && patchApply.rejected || [],
-        });
-        return { content: original, applied: false, stage: "final_missing", outputCheck, miniRead, enhanced };
-      }
-      const restoredFinalText = reapplyTableReadOutputProtectedEnvelope(protectedEnvelope, finalText);
-      if (!tableReadProtectedSegmentsPreserved(outputSegmentGuard, stripMatchingTableReadEnvelope(restoredFinalText, protectedEnvelope))) {
-        updateRuntimeState("lastTableReadOutputEnhance", "warn", {
-          turnIndex,
-          detail: "protected output markers changed or disappeared; original kept",
-          changed: false,
-          verdict: outputCheck.verdict || "accept",
-          entityCount: entities.length,
-        });
-        updateRuntimeState("lastTableReadPolishDebug", "warn", {
-          turnIndex,
-          detail: "latest TR-OUT rejected protected marker drift",
-          snapshot: buildTableReadPolishDebugSnapshot(chatSessionId, turnIndex, original, original, {
-            ...enhanced,
-            issues: ["protected output markers changed or disappeared; original kept"].concat(enhanced.issues_repaired || enhanced.issues || outputCheck.issues || []),
-            protected_reveals: enhanced.protected_reveals || outputCheck.protected_reveals || [],
-            fallback_reason: "protected_marker_guard",
-          }, entities, {
-            changed: false,
-            syntheticAfterRequest: !!(context && context.syntheticAfterRequest),
-            outputCheck,
-            miniRead,
-            enhanced,
-            protectedEnvelope,
-            outputSegmentGuard,
-          }),
-        });
-        return { content: original, applied: false, stage: "protected_marker_guard", outputCheck, miniRead, enhanced };
-      }
-      if (tableReadOutputLooksTruncated(assistantDraftForTableRead, finalText)) {
-        updateRuntimeState("lastTableReadOutputEnhance", "warn", {
-          turnIndex,
-          detail: "enhanced output looked truncated; original kept",
-          changed: false,
-          verdict: outputCheck.verdict || "accept",
-          entityCount: entities.length,
-        });
-        updateRuntimeState("lastTableReadPolishDebug", "warn", {
-          turnIndex,
-          detail: "latest TR-OUT rejected truncated enhancement",
-          snapshot: buildTableReadPolishDebugSnapshot(chatSessionId, turnIndex, original, original, {
-            ...enhanced,
-            issues: ["enhanced output looked truncated; original kept"].concat(enhanced.issues_repaired || enhanced.issues || outputCheck.issues || []),
-            protected_reveals: enhanced.protected_reveals || outputCheck.protected_reveals || [],
-            fallback_reason: "truncated_guard",
-          }, entities, {
-            changed: false,
-            syntheticAfterRequest: !!(context && context.syntheticAfterRequest),
-            outputCheck,
-            miniRead,
-            enhanced,
-            protectedEnvelope,
-            outputSegmentGuard,
-          }),
-        });
-        return { content: original, applied: false, stage: "truncated_guard", outputCheck, miniRead, enhanced };
-      }
-      const changed = restoredFinalText.trim() !== original.trim();
-      const status = changed ? (context && context.syntheticAfterRequest ? "warn" : "ok") : "skipped";
-      updateRuntimeState("lastTableReadOutputEnhance", status, {
-        turnIndex,
-        detail: changed
-          ? "enhanced " + original.length + "→" + restoredFinalText.length + " chars"
-            + (protectedEnvelope.protectedCount ? " / structure preserved " + protectedEnvelope.protectedCount : "")
-            + (context && context.syntheticAfterRequest ? " (storage path)" : "")
-          : "original kept",
-        changed,
-        verdict: outputCheck.verdict || "accept",
-        entityCount: entities.length,
-      });
-      updateRuntimeState("lastTableReadPolishDebug", status, {
-        turnIndex,
-        detail: changed ? "latest TR-OUT comparison ready" : "latest TR-OUT kept original",
-        snapshot: buildTableReadPolishDebugSnapshot(chatSessionId, turnIndex, original, restoredFinalText, {
-          ...enhanced,
-          issues: enhanced.issues_repaired || enhanced.issues || outputCheck.issues || [],
-          protected_reveals: enhanced.protected_reveals || outputCheck.protected_reveals || [],
-          patches: outputPatches,
-        }, entities, {
-          changed,
-          patchApplied: !!(patchApply && patchApply.ok),
-          patchCount: patchApply && patchApply.applied || 0,
-          syntheticAfterRequest: !!(context && context.syntheticAfterRequest),
-          outputCheck,
-          miniRead,
-          enhanced,
-          protectedEnvelope,
-          outputSegmentGuard,
-        }),
-      });
-      if (changed) {
-        await rememberTableReadPolishStorage(chatSessionId, turnIndex, userInput, original, restoredFinalText, {
-          ...enhanced,
-          output_check_context: outputCheck,
-          mini_read_context: miniRead || {},
-        }, {
-          syntheticAfterRequest: !!(context && context.syntheticAfterRequest),
-          source: "after_request_table_read_output_enhance",
-        });
-      }
-      return {
-        content: changed ? restoredFinalText : original,
-        applied: changed,
-        outputCheck,
-        miniRead,
-        enhanced,
-      };
-    } catch (err) {
-      updateRuntimeState("lastTableReadOutputEnhance", "fail", {
-        turnIndex,
-        detail: err && err.message ? err.message : String(err || "unknown"),
-      });
-      return { content: original, applied: false, stage: "exception" };
-    }
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -7761,7 +7398,6 @@
       if (/[.!?]\s*$/.test(s)) score += 30;
       if (/["')\]]\s*$/.test(s)) score += 15;
       if (/[,;:]\s*$/.test(s)) score -= 80;
-      if (looksLikeStreamingPlanningOnlyText(s)) score -= 2000;
       return score;
     } catch {
       return -100000;
@@ -11228,9 +10864,6 @@
       merged.pluginMainApplyMode = "shadow";
     }
     merged.tableReadOutputPolishEnabled = false;
-    // TR-OUT final-return integration is explicit opt-in because it can change
-    // the assistant text that RisuAI displays and Archive Center stores.
-    merged.tableReadOutputEnhanceEnabled = !!merged.tableReadOutputEnhanceEnabled;
     // Step 23 / 2.3: shadow is the safe default. Do not migrate it to rewrite mode.
     merged.uiLanguage = sanitizeEnumValue(
       merged.uiLanguage,
@@ -12346,6 +11979,43 @@
       return { status: "warn", detail };
     }
     return { status: "ok", detail };
+  }
+
+  function renderBridgeHealthSummary(result) {
+    const health = result && result.health;
+    const ready = result && result.ready;
+    const checks = ready && typeof ready.checks === "object" && ready.checks ? ready.checks : {};
+    const storeMode = String(checks.store_mode || ready?.store_mode || "");
+    const vectorMode = String(ready?.vector_mode || checks.vector_mode || "");
+    const chromaConfigured = checks.chromadb === "configured" || checks.chromadb_vector === "enabled" || checks.vector_accelerator === "chromadb";
+    const mariaConfigured = checks.mariadb === "configured" || checks.mariadb_authority === "enabled" || /mariadb/i.test(storeMode);
+
+    const row = (label, statusClass, statusText, detail) =>
+      '<div style="display:flex;gap:8px;align-items:flex-start;line-height:1.45;margin:2px 0">' +
+        '<strong style="min-width:92px;color:#e0e0e0">' + escapeAttr(label) + '</strong>' +
+        '<span class="' + escapeAttr(statusClass) + '" style="font-weight:700">' + escapeAttr(statusText) + '</span>' +
+        (detail ? '<span style="color:#9aa0b5">' + escapeAttr(detail) + '</span>' : '') +
+      '</div>';
+
+    const goOk = !!(health && health.status === "ok");
+    const mariaOk = !!(ready && ready.ready === true && ready.store_ready === true && mariaConfigured);
+    const chromaOk = !!(ready && ready.vector_ready === true && chromaConfigured);
+    const mariaStatus = !ready ? ["mo-dot-unknown", "미확인", "/ready 응답 없음"]
+      : mariaOk ? ["mo-dot-ok", "정상", storeMode || "mariadb"]
+      : ready.store_ready === false ? ["mo-dot-fail", "실패", storeMode || "store not ready"]
+      : ["mo-dot-warn", "비활성", storeMode || "not configured"];
+    const chromaStatus = !ready ? ["mo-dot-unknown", "미확인", "/ready 응답 없음"]
+      : chromaOk ? ["mo-dot-ok", "정상", vectorMode || "chromadb"]
+      : ready.vector_ready === false ? ["mo-dot-fail", "실패", vectorMode || "vector not ready"]
+      : ["mo-dot-warn", "대체 모드", vectorMode || "fallback"];
+
+    const overall = result && result.status ? " / verdict: " + String(result.status) : "";
+    return '<div class="mo-status mo-status-' + escapeAttr(result && result.status === "ok" ? "ok" : result && result.status === "warn" ? "wait" : "fail") + '">' +
+      row("Go Backend", goOk ? "mo-dot-ok" : "mo-dot-fail", goOk ? "정상" : "실패", health && health.service ? health.service : "") +
+      row("MariaDB", mariaStatus[0], mariaStatus[1], mariaStatus[2]) +
+      row("ChromaDB", chromaStatus[0], chromaStatus[1], chromaStatus[2]) +
+      '<div style="margin-top:4px;color:#9aa0b5">profile: ' + escapeAttr(String(ready?.runtime_profile || checks.runtime_profile || "unknown")) + overall + '</div>' +
+      '</div>';
   }
 
   async function testBridgeHealth() {
@@ -13662,8 +13332,8 @@
           content: String(item && item.content || ""),
         };
       }));
-      let reasoningTailCount = 0;
-      let lastReasoningBlocked = null;
+      let skippedCandidateCount = 0;
+      let lastBlockedCandidate = null;
       let latestUserIndex = -1;
       for (let i = list.length - 1; i >= 0; i--) {
         if (list[i] && list[i].role === "user") {
@@ -13679,7 +13349,7 @@
         const rawText = String(item.content || "");
         const rawHash = rawTailHash || (rawText ? computeAssistantSnapshotFingerprint(rawText) : "");
         if (!rawText.trim()) {
-          lastReasoningBlocked = {
+          lastBlockedCandidate = {
             candidate: "",
             candidateHash: "",
             rawHash,
@@ -13693,22 +13363,9 @@
         const candidate = normalizeAssistantPersistenceCandidate(rawText);
         const readiness = assessStreamingAssistantCandidateForSyntheticAfterRequest(rawText, candidate, item.raw);
         const candidateHash = candidate ? computeAssistantSnapshotFingerprint(candidate) : "";
-        if (!readiness.ready && readiness.reason === "reasoning_or_planning_only") {
-          reasoningTailCount += 1;
-          lastReasoningBlocked = {
-            candidate: "",
-            candidateHash: "",
-            rawHash,
-            stabilityHash: rawHash,
-            blockedReason: readiness.reason,
-            streamingState: readiness.streamingState || "unknown",
-            rawChars: rawText.length,
-            skippedReasoningTailCount: reasoningTailCount,
-          };
-          continue;
-        }
         if (!readiness.ready) {
-          lastReasoningBlocked = {
+          skippedCandidateCount += 1;
+          lastBlockedCandidate = {
             candidate,
             candidateHash,
             rawHash,
@@ -13716,7 +13373,7 @@
             blockedReason: readiness.reason,
             streamingState: readiness.streamingState || "unknown",
             rawChars: rawText.length,
-            skippedReasoningTailCount: reasoningTailCount,
+            skippedCandidateCount: skippedCandidateCount,
           };
           continue;
         }
@@ -13728,7 +13385,7 @@
           blockedReason: "",
           streamingState: readiness.streamingState || "unknown",
           rawChars: rawText.length,
-          skippedReasoningTailCount: reasoningTailCount,
+          skippedCandidateCount: skippedCandidateCount,
           index: i,
         });
       }
@@ -13744,13 +13401,13 @@
           blockedReason: "",
           streamingState: selected.streamingState || "unknown",
           rawChars: Number(selected.rawChars || candidate.length),
-          skippedReasoningTailCount: reasoningTailCount,
+          skippedCandidateCount: skippedCandidateCount,
           selectedAssistantIndex: Number(selected.index || 0),
           assistantCandidateCount: readyRecords.length,
         };
       }
-      if (lastReasoningBlocked) {
-        return lastReasoningBlocked;
+      if (lastBlockedCandidate) {
+        return lastBlockedCandidate;
       }
       return {
         candidate: "",
@@ -21791,11 +21448,8 @@
     return merged;
   }
 
-  // K-1d: Narrative Control State fetch helper (Step 7)
-  // GET /narrative-control/{session_id} 로부터 persistent guidance state를 가져온다.
-  // backend 미연결이거나 오류 시 { fetched: false } 형태의 safe fallback을 반환한다.
-  async function fetchNarrativeControl(chatSessionId) {
-    const _empty = {
+  function makeEmptyNarrativeControlResult() {
+    return {
       stateStatus: "skeleton",
       skeletonOnly: true,
       storyPlan: {
@@ -21806,7 +21460,8 @@
       director: {
         sceneMandate: "", requiredOutcomes: [], forbiddenMoves: [],
         pressureLevel: "steady", executionChecklist: [], personaGuardrails: [],
-        worldGuardrails: [], focusCharacters: [], lastTurn: 0, stateStatus: "empty"
+        worldGuardrails: [], focusCharacters: [], lastTurn: 0, stateStatus: "empty",
+        resolvedOutcomes: [], expiredForbidden: []
       },
       lastAdvancedTurn: null,
       lastValidatedTurn: null,
@@ -21820,9 +21475,16 @@
       },
       warnings: [],
       generatedAt: null,
-      compactHistory: [],   // K-5d
+      compactHistory: [],
       fetched: false,
     };
+  }
+
+  // K-1d: Narrative Control State fetch helper (Step 7)
+  // GET /narrative-control/{session_id} 로부터 persistent guidance state를 가져온다.
+  // backend 미연결이거나 오류 시 { fetched: false } 형태의 safe fallback을 반환한다.
+  async function fetchNarrativeControl(chatSessionId) {
+    const _empty = makeEmptyNarrativeControlResult();
     if (!settings.enabled || !settings.dbEnabled) return _empty;
     const sessionId = chatSessionId || await getCurrentChatSessionId();
     if (!sessionId) return _empty;
@@ -22052,8 +21714,7 @@
           return (isReasoningEnvelopeName(blockName) || looksLikeHiddenReasoningBody(inner) || looksLikePromptTemplateScaffold(blockText)) ? "" : match;
         });
         clean = clean.replace(/<([A-Za-z][A-Za-z0-9_:-]{1,40})(?:\s+[^>\n]{0,120})?>[\s\S]*$/gi, function(match, tagName) {
-          var inner = String(match || "").replace(/^<[^>\n]+>/, "");
-          return (isReasoningEnvelopeName(tagName) || looksLikeHiddenReasoningBody(inner) || looksLikePromptTemplateScaffold(inner)) ? "" : match;
+          return isReasoningEnvelopeName(tagName) ? "" : match;
         });
         clean = clean.replace(/<__filter_complete__\s*\/?>/gi, "");
       }
@@ -22115,12 +21776,7 @@
         if (!best || index < best.index) best = { index, cutAt, marker };
       }
 
-      var headingRe = /^\s*#{1,6}\s+\S.*$/gm;
       var match = null;
-      while ((match = headingRe.exec(s)) !== null) {
-        consider(match.index, match.index, "markdown_heading");
-      }
-
       var tagRe = /<\s*(?:final|answer|response)\s*>/ig;
       while ((match = tagRe.exec(s)) !== null) {
         consider(match.index, match.index + match[0].length, "final_tag");
@@ -22237,7 +21893,6 @@
     try {
       var split = splitReasoningPreambleFromVisibleOutput(text);
       if (split.hasBoundary) return split.after;
-      if (looksLikeStreamingPlanningOnlyText(text)) return "";
       return String(text || "");
     } catch {
       return String(text || "");
@@ -22332,11 +21987,7 @@
       if (streamingState === "streaming") {
         return { ready: false, reason: "active_chat_message_still_streaming", streamingState };
       }
-      var raw = String(rawText || "");
       var candidate = String(candidateText || "").trim();
-      if (looksLikeStreamingPlanningOnlyText(raw)) {
-        return { ready: false, reason: "reasoning_or_planning_only", streamingState };
-      }
       if (!candidate) {
         return { ready: false, reason: "assistant_visible_output_empty", streamingState };
       }
@@ -22678,7 +22329,6 @@
       if (!String(clean || "").trim()) return "";
       if (isLikelyEffectiveInputScaffoldText(clean)) return "";
       if (looksLikeReasoningTransitionOnlyText(clean)) return "";
-      if (looksLikeStreamingPlanningOnlyText(clean)) return "";
       return String(clean || "").trim();
     } catch {
       return "";
@@ -22707,11 +22357,30 @@
     }
   }
 
-  async function recoverAssistantContentFromActiveChat(chatSessionId, seedRecord) {
+  async function recoverAssistantContentFromActiveChat(chatSessionId, seedRecord, expectedUserContent) {
     try {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "");
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       if (!Array.isArray(messages) || messages.length === 0) return "";
+
+      const expectedUser = normalizeMainTurnCompareText(expectedUserContent);
+      if (expectedUser) {
+        const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
+        if (!Array.isArray(pairs) || pairs.length === 0) return "";
+        for (let i = pairs.length - 1; i >= 0; i--) {
+          const pair = pairs[i];
+          if (!pair || !pair.userContent || !pair.assistantContent) continue;
+          const pairUser = String(pair.userContent || "");
+          const userMatches = mainTurnTextMatchesOriginal(pairUser, expectedUser)
+            || mainTurnTextMatchesOriginal(expectedUser, pairUser);
+          if (!userMatches) continue;
+          const candidate = normalizeAssistantPersistenceCandidate(String(pair.assistantContent || ""));
+          if (!candidate) return "";
+          if (isAssistantPrefillSeedText(candidate, seedRecord)) return "";
+          return candidate;
+        }
+        return "";
+      }
 
       const previousSnapshot = getSessionSnapshot(chatSessionId);
       const previousAssistant = getLastNonEmptyAssistantComparableContent(
@@ -22991,12 +22660,19 @@
         else if (cp >= 0x4e00 && cp <= 0x9fff) cjk++;
         else if ((cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122)) latin++;
       }
-      if (hangul && kana) return "mixed";
-      if (hangul) return "ko";
-      if (kana) return "ja";
-      if (latin && cjk) return "mixed";
-      if (latin) return "en";
-      return "unknown";
+      var jaScore = kana + (kana > 0 ? cjk : 0);
+      var scores = [
+        { code: "ko", count: hangul },
+        { code: "ja", count: jaScore },
+        { code: "en", count: latin },
+      ].filter(function(item) { return item.count > 0; }).sort(function(a, b) { return b.count - a.count; });
+      if (!scores.length) return "unknown";
+      if (scores.length === 1) return scores[0].code;
+      var top = scores[0];
+      var second = scores[1];
+      if (top.count >= Math.max(8, second.count * 2.5)) return top.code;
+      if (second.count >= Math.max(8, top.count * 0.35)) return "mixed";
+      return top.code;
     } catch { return "unknown"; }
   }
 
@@ -23745,13 +23421,21 @@
     };
   }
 
-  async function orchestrateTurnHelpers(userInput, recentContext, continuityInfo, preparedBundle, languageContext) {
+  async function orchestrateTurnHelpers(userInput, recentContext, continuityInfo, preparedBundle, languageContext, options = {}) {
     if (!settings.enabled) return null;
     try {
       debugLog("orchestrateTurnHelpers start");
+      const orchestrationOptions = options && typeof options === "object" ? options : {};
+      const freshFirstTurnLightMode = !!orchestrationOptions.freshFirstTurnLightMode;
       const trace = newTurnTrace();
       trace.contextSize = recentContext.length;
       trace.userInputPreview = truncPreview(userInput, 80);
+      trace.firstTurnLightMode = {
+        enabled: freshFirstTurnLightMode,
+        reason: freshFirstTurnLightMode ? "fresh_session_no_completed_pairs_or_backend_turns" : "off",
+        supervisorOnly: freshFirstTurnLightMode,
+        meta: orchestrationOptions.freshFirstTurnLightModeMeta || null,
+      };
       trace.weakInputPlanner = normalizeWeakInputPlannerTrace(preparedBundle && preparedBundle.weakInputPlanner);
       trace.plannerExecutionContract = normalizePlannerExecutionContractTrace(preparedBundle && preparedBundle.plannerExecutionContract);
       trace.progressionChoice = normalizeProgressionChoiceTrace(preparedBundle && preparedBundle.progressionChoiceLedger);
@@ -23813,24 +23497,31 @@
       // 0.5 Phase 2-3 + 2-4: Active States Fetch (multi-path recall보다 먼저 실행)
       // active state는 path B query 생성에도 사용되므로 recall 전에 조회한다.
       let activeStatesResult = { states: [], count: 0, fetched: false };
-      try {
-        activeStatesResult = await runActiveStatesFetch(chatSessionId);
-      } catch (asErr) {
-        warnLog("active-states fetch failed (non-fatal):", asErr.message);
+      if (freshFirstTurnLightMode) {
+        activeStatesResult = { states: [], count: 0, fetched: false, skipped: true, skipReason: "fresh_first_turn_light_mode" };
+      } else {
+        try {
+          activeStatesResult = await runActiveStatesFetch(chatSessionId);
+        } catch (asErr) {
+          warnLog("active-states fetch failed (non-fatal):", asErr.message);
+        }
       }
       trace.activeStates = {
-        status: activeStatesResult.fetched ? (activeStatesResult.count > 0 ? "ok" : "empty") : "fail",
+        status: activeStatesResult.skipped ? "skipped" : (activeStatesResult.fetched ? (activeStatesResult.count > 0 ? "ok" : "empty") : "fail"),
         fetched: activeStatesResult.fetched,
         count: activeStatesResult.count,
         types: activeStatesResult.states.map(function(s) { return s.state_type; }),
+        skipReason: activeStatesResult.skipReason || "",
       };
-      debugLog("active-states:", activeStatesResult.count, "states fetched");
+      debugLog("active-states:", activeStatesResult.count, activeStatesResult.skipped ? "states skipped (fresh first turn)" : "states fetched");
 
       // K-1e: Narrative Control State fetch (Step 7) — shadow/read-only, 실패해도 계속 진행
       let narrativeControlResult = null;
       try {
         // M-2a: bundled narrative-control이 있으면 fetch skip
-        if (preparedBundle && preparedBundle.narrativeControl) {
+        if (freshFirstTurnLightMode) {
+          narrativeControlResult = makeEmptyNarrativeControlResult();
+        } else if (preparedBundle && preparedBundle.narrativeControl) {
           const nc = preparedBundle.narrativeControl;
           const sp = nc.story_plan || {};
           const dr = nc.director || {};
@@ -23970,7 +23661,26 @@
       // 경로 B: active state 기반 보조 recall (Phase 2-4)
       // M-2b: bundled recallResult가 있으면 search fetch skip (backend에서 이미 수행)
       let searchResult;
-      if (preparedBundle && preparedBundle.recallResult && preparedBundle.recallResult.search) {
+      if (freshFirstTurnLightMode) {
+        searchResult = {
+          items: [],
+          injection_text: "",
+          memory_count: 0,
+          fallback_count: 0,
+          counts: null,
+          chromaLive: null,
+          continuityUsed: false,
+          pathBUsed: false,
+          paths: [],
+          dedupeStats: { before: 0, after: 0, removed: 0 },
+          pathBInfo: null,
+          multiMatchCount: 0,
+          recallLanes: null,
+          recallLaneTrace: null,
+          firstTurnLightMode: true,
+        };
+        debugLog("fresh first turn light mode: recall skipped; supervisor continues");
+      } else if (preparedBundle && preparedBundle.recallResult && preparedBundle.recallResult.search) {
         const bs = preparedBundle.recallResult.search;
         searchResult = {
           items: Array.isArray(bs.items) ? bs.items : [],
@@ -24003,7 +23713,7 @@
       const memoryLaneCounts = buildMemoryLaneCounts(searchResult);
       trace.search = {
         ...trace.search,
-        status: searchResult.items.length > 0 ? "ok" : "empty",
+        status: freshFirstTurnLightMode ? "skipped" : (searchResult.items.length > 0 ? "ok" : "empty"),
         itemCount: searchResult.items.length,
         memoryCount: searchResult.memory_count || 0,
         fallbackCount: searchResult.fallback_count || 0,
@@ -24048,7 +23758,9 @@
       const extractedEntities = extractEntitiesFromText(effectiveText);
       const expandedEntities = expandEntitiesWithAliases(extractedEntities);
       let kgRecallResult = { items: [], count: 0, entitiesSent: 0 };
-      if (preparedBundle && preparedBundle.recallResult && preparedBundle.recallResult.kg) {
+      if (freshFirstTurnLightMode) {
+        kgRecallResult = { items: [], count: 0, entitiesSent: expandedEntities.length, skipped: true, skipReason: "fresh_first_turn_light_mode" };
+      } else if (preparedBundle && preparedBundle.recallResult && preparedBundle.recallResult.kg) {
         const bk = preparedBundle.recallResult.kg;
         kgRecallResult = {
           items: Array.isArray(bk.items) ? bk.items : [],
@@ -24061,7 +23773,7 @@
         kgRecallResult = await runKGRecall(expandedEntities, chatSessionId);
       }
       trace.kgRecall = {
-        status: kgRecallResult.count > 0 ? "ok" : (extractedEntities.length > 0 ? "empty" : "skipped"),
+        status: kgRecallResult.skipped ? "skipped" : (kgRecallResult.count > 0 ? "ok" : (extractedEntities.length > 0 ? "empty" : "skipped")),
         entitiesExtracted: extractedEntities.length,
         entitiesSent: kgRecallResult.entitiesSent,
         triplesReturned: kgRecallResult.count,
@@ -24074,7 +23786,9 @@
       // M-2b: bundled recallResult가 있으면 episode fetch skip
       const episodeQuery = continuityActsAsPrimary ? (continuityInfo.query || "") : userInput;
       let episodeRecallResult = { items: [], count: 0 };
-      if (preparedBundle && preparedBundle.recallResult && preparedBundle.recallResult.episode) {
+      if (freshFirstTurnLightMode) {
+        episodeRecallResult = { items: [], count: 0, skipped: true, skipReason: "fresh_first_turn_light_mode" };
+      } else if (preparedBundle && preparedBundle.recallResult && preparedBundle.recallResult.episode) {
         const be = preparedBundle.recallResult.episode;
         episodeRecallResult = {
           items: Array.isArray(be.items) ? be.items : [],
@@ -24085,7 +23799,7 @@
         episodeRecallResult = await runEpisodeRecall(episodeQuery, chatSessionId);
       }
       trace.episodeRecall = {
-        status: episodeRecallResult.count > 0 ? "ok" : (episodeQuery.trim() ? "empty" : "skipped"),
+        status: episodeRecallResult.skipped ? "skipped" : (episodeRecallResult.count > 0 ? "ok" : (episodeQuery.trim() ? "empty" : "skipped")),
         count: episodeRecallResult.count,
         queryPreview: truncPreview(episodeQuery, 200),
       };
@@ -24113,6 +23827,7 @@
         trace.guidanceState.arbitrationNotes = _guidanceArbitration.notes;
       }
       const _pmShadowPromise = (function() {
+        if (freshFirstTurnLightMode) return Promise.resolve(null);
         if (!_applyGate.shouldRunShadow) return Promise.resolve(null);
         const _orchPreview = wakeUpContext ? wakeUpContext.slice(0, 1200) : null;
         // K-4b+4c: arbitration 결과의 suppressed 항목을 hints에서 제외
@@ -24206,7 +23921,9 @@
 
       // J-1d: Plugin Main shadow call 결과 수집 — supervisor 완료 후 await (이미 병렬 실행 중)
       let _pmShadowResult = await _pmShadowPromise;
-      if (!_applyGate.shouldRunShadow) {
+      if (freshFirstTurnLightMode) {
+        trace.pluginMain = { status: "skip", called: false, improved: false, elapsed_ms: null, reasoningSummary: "fresh_first_turn_light_mode", preview: "" };
+      } else if (!_applyGate.shouldRunShadow) {
         const _skipReason = _applyGate.mode === "off" ? "mode=off" : "not configured";
         trace.pluginMain = { status: "skip", called: false, improved: false, elapsed_ms: null, reasoningSummary: _skipReason, preview: "" };
         if (_applyGate.mode !== "off") {
@@ -24411,7 +24128,7 @@
 
       // I-1d: Aggregate prefetch (experimental) — useAggregateRead=true 시 단일 GET /session-state로 3개 섹션 한 번에 조회
       let _aggregateSnapshot = null;
-      if (settings.useAggregateRead) {
+      if (settings.useAggregateRead && !freshFirstTurnLightMode) {
         try {
           // M-2a: bundled session-state가 있으면 fetch skip
           if (preparedBundle && preparedBundle.sessionState && preparedBundle.sessionState.fetched) {
@@ -24428,7 +24145,9 @@
 
       // 3.2 E-1e: Storyline Fetch (injection용 — sync와 별도 GET)
       let storylineResult = { items: [], count: 0, fetched: false, source: "direct", continuityPackFallback: false };
-      if (_aggregateSnapshot) {
+      if (freshFirstTurnLightMode) {
+        storylineResult = { items: [], count: 0, fetched: false, source: "fresh_first_turn_light_mode", continuityPackFallback: false };
+      } else if (_aggregateSnapshot) {
         var _slItems = _aggregateSnapshot.sections.storylines;
         storylineResult = { items: _slItems, count: _slItems.length, fetched: true, source: "aggregate", continuityPackFallback: false };
       } else {
@@ -24438,7 +24157,7 @@
           warnLog("storyline-fetch failed (non-fatal):", slErr.message);
         }
       }
-      if (storylineResult.fetched === false) {
+      if (!freshFirstTurnLightMode && storylineResult.fetched === false) {
         const continuityStorylineResult = buildStorylineResultFromContinuityPack(await loadContinuityPackOnce());
         storylineResult = applyContinuityPackFallback(storylineResult, continuityStorylineResult, "storylines");
       }
@@ -24460,7 +24179,9 @@
 
       // 3.3 E-2: Character State Fetch
       let characterResult = { items: [], count: 0 };
-      if (_aggregateSnapshot) {
+      if (freshFirstTurnLightMode) {
+        characterResult = { items: [], count: 0, skipped: true, skipReason: "fresh_first_turn_light_mode" };
+      } else if (_aggregateSnapshot) {
         var _chItems = _aggregateSnapshot.sections.characters;
         characterResult = { items: _chItems, count: _chItems.length };
       } else {
@@ -24485,7 +24206,9 @@
 
       // 3.5 E-4: World Rules Fetch (injection용)
       let worldRulesResult = { items: [], count: 0, fetched: false, source: "direct", continuityPackFallback: false };
-      if (_aggregateSnapshot) {
+      if (freshFirstTurnLightMode) {
+        worldRulesResult = { items: [], count: 0, fetched: false, source: "fresh_first_turn_light_mode", continuityPackFallback: false };
+      } else if (_aggregateSnapshot) {
         var _wrItems = _aggregateSnapshot.sections.world_rules;
         worldRulesResult = { items: _wrItems, count: _wrItems.length, fetched: true, source: "aggregate", continuityPackFallback: false };
       } else {
@@ -24495,7 +24218,7 @@
           warnLog("world-rules-fetch failed (non-fatal):", wrErr.message);
         }
       }
-      if (worldRulesResult.fetched === false) {
+      if (!freshFirstTurnLightMode && worldRulesResult.fetched === false) {
         const continuityWorldRulesResult = buildWorldRulesResultFromContinuityPack(await loadContinuityPackOnce());
         worldRulesResult = applyContinuityPackFallback(worldRulesResult, continuityWorldRulesResult, "world-rules");
       }
@@ -24524,24 +24247,29 @@
 
       // 3.6 H-5d: Continuity Hooks Fetch (injection용 — open+paused만)
       let pendingThreadsResult = { items: [], count: 0, fetched: false };
-      try {
-        pendingThreadsResult = await fetchPendingThreads(chatSessionId);
-      } catch (chookErr) {
-        warnLog("pending-threads-fetch failed (non-fatal):", chookErr.message);
+      if (freshFirstTurnLightMode) {
+        pendingThreadsResult = { items: [], count: 0, fetched: false, skipped: true, skipReason: "fresh_first_turn_light_mode" };
+      } else {
+        try {
+          pendingThreadsResult = await fetchPendingThreads(chatSessionId);
+        } catch (chookErr) {
+          warnLog("pending-threads-fetch failed (non-fatal):", chookErr.message);
+        }
       }
       trace.pendingThreads = {
         status: pendingThreadsResult.fetched ? (pendingThreadsResult.count > 0 ? "ok" : "empty") : "skip",
         count: pendingThreadsResult.count,
         fetched: pendingThreadsResult.fetched,
       };
-      if (!pendingThreadsResult.fetched) {
+      if (!pendingThreadsResult.fetched && !pendingThreadsResult.skipped) {
         warnLog("pending-threads: fetch skipped (dbEnabled=" + settings.dbEnabled + ", sessionId=" + (chatSessionId ? chatSessionId.slice(0, 20) + "..." : "missing") + ")");
       }
       debugLog("pendingThreads:", pendingThreadsResult.count, "open/paused hooks", pendingThreadsResult.fetched ? "(fetched)" : "(not fetched)");
 
       // I-2c momentum packet trace (fetch는 runSupervisor 내부에서 수행, 여기서는 그 결과를 trace에 기록)
       // supervisor result에 momentum_applied 플래그가 없으면 skip로 표시
-      const _mpStatus = (supervisorResult && supervisorResult._momentumApplied) ? "ok" :
+      const _mpStatus = freshFirstTurnLightMode ? "skip" :
+                        (supervisorResult && supervisorResult._momentumApplied) ? "ok" :
                         (settings.dbEnabled && chatSessionId ? "fetched" : "skip");
       trace.momentum = {
         status: _mpStatus,
@@ -32040,7 +31768,7 @@
       for (const marker of AUXILIARY_MODULE_OUTPUT_MARKERS) {
         const escaped = String(marker).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const tagPattern = new RegExp("<\\s*/?\\s*" + escaped.replace(/[-_ ]/g, "[-_\\s]*") + "\\b", "i");
-        const bracketPattern = new RegExp("^(?:\\[|【|#|#{1,6}\\s*|━━\\s*)\\s*" + escaped.replace(/[-_ ]/g, "[-_\\s]*") + "\\b", "i");
+        const bracketPattern = new RegExp("^(?:\\[|【|━━\\s*)\\s*" + escaped.replace(/[-_ ]/g, "[-_\\s]*") + "\\b", "i");
         if (tagPattern.test(s) || bracketPattern.test(s)) return marker;
       }
       if (/^<\s*(?:npc|npc[-_\s]*list|lightboard|novelai|nai|illustration|image[-_\s]*prompt|sns|community|evaluation|module)[^>]*>/i.test(s)) return "tagged_auxiliary_module";
@@ -32081,9 +31809,9 @@
         if (!text.trim()) return false;
         if (role === "assistant") return false;
         if (role === "user") {
-          const structuredUserAuxRe = new RegExp("(^\\s*(?:\\{|\\[|```|#{1,6}\\s*)|return\\s+json\\s+only|output_format|json\\s*schema|module\\s*output|plugin\\s*output|\\uC120\\uD0DD\\uC9C0\\s*\\uC0DD\\uC131|\\uCD08\\uC774\\uC2A4\\s*\\uBAA8\\uB4C8|npc\\s*(?:list|roster|catalog|\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uC5D4\\uD53C\\uC2DC\\s*(?:\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uC5D4\\uD53C\\uC528\\s*(?:\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uB4F1\\uC7A5\\s*\\uC778\\uBB3C\\s*(?:\\uBAA9\\uB85D|\\uB9AC\\uC2A4\\uD2B8)|\\uB2F9\\uC2E0\\uC740[\\s\\S]{0,80}(?:\\uC2A4\\uD1A0\\uB9AC\\s*\\uAE30\\uC5B5\\s*\\uB3C4\\uC6B0\\uBBF8|\\uC5ED\\uD560\\uADF9\\s*\\uAE30\\uC5B5\\s*\\uC2DC\\uC2A4\\uD15C|\\uBB34\\uB300\\s*\\uB4A4\\uD3B8\\s*\\uC5F0\\uCD9C\\uAC00|\\uAF3C\\uAF3C\\uD558\\uAC8C\\s*\\uAC80\\uD1A0|\\uBE44\\uD3C9\\uAC00)|story\\s*memory\\s*helper|memory\\s*(?:helper|assistant)|supervisor|critic\\s*(?:reviewer|module)?)", "i");
+          const structuredUserAuxRe = new RegExp("(^\\s*(?:\\{|\\[|```)|return\\s+json\\s+only|output_format|json\\s*schema|module\\s*output|plugin\\s*output|\\uC120\\uD0DD\\uC9C0\\s*\\uC0DD\\uC131|\\uCD08\\uC774\\uC2A4\\s*\\uBAA8\\uB4C8|npc\\s*(?:list|roster|catalog|\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uC5D4\\uD53C\\uC2DC\\s*(?:\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uC5D4\\uD53C\\uC528\\s*(?:\\uB9AC\\uC2A4\\uD2B8|\\uBAA9\\uB85D)|\\uB4F1\\uC7A5\\s*\\uC778\\uBB3C\\s*(?:\\uBAA9\\uB85D|\\uB9AC\\uC2A4\\uD2B8)|\\uB2F9\\uC2E0\\uC740[\\s\\S]{0,80}(?:\\uC2A4\\uD1A0\\uB9AC\\s*\\uAE30\\uC5B5\\s*\\uB3C4\\uC6B0\\uBBF8|\\uC5ED\\uD560\\uADF9\\s*\\uAE30\\uC5B5\\s*\\uC2DC\\uC2A4\\uD15C|\\uBB34\\uB300\\s*\\uB4A4\\uD3B8\\s*\\uC5F0\\uCD9C\\uAC00|\\uAF3C\\uAF3C\\uD558\\uAC8C\\s*\\uAC80\\uD1A0|\\uBE44\\uD3C9\\uAC00)|story\\s*memory\\s*helper|memory\\s*(?:helper|assistant)|supervisor|critic\\s*(?:reviewer|module)?)", "i");
           if (structuredUserAuxRe.test(text)) return true;
-          return /(^\s*(?:\{|\[|```|#{1,6}\s*)|return\s+json\s+only|output_format|json\s*schema|module\s*output|plugin\s*output|선택지\s*생성|초이스\s*모듈|npc\s*(?:list|roster)|엔피시\s*(?:리스트|목록))/i.test(text);
+          return /(^\s*(?:\{|\[|```)|return\s+json\s+only|output_format|json\s*schema|module\s*output|plugin\s*output|선택지\s*생성|초이스\s*모듈|npc\s*(?:list|roster)|엔피시\s*(?:리스트|목록))/i.test(text);
         }
         return true;
       });
@@ -32892,17 +32620,22 @@
           cacheRawInputForSession(orchSessionId, recoveredPayloadUserText);
         }
       }
-      if (isSaveType(type) && shouldSkipUserInputPersistence(userInput)) {
+      if (isSaveType(type)) {
         const activeTailUserInput = await recoverCurrentUserInputFromActiveChatTail(orchSessionId);
         if (activeTailUserInput && !shouldSkipUserInputPersistence(activeTailUserInput)) {
-          userInput = activeTailUserInput;
-          userInputInfo = {
-            text: activeTailUserInput,
-            source: "active_chat_tail_user",
-            metaOnly: false,
-            actualEmptyInput: false,
-          };
-          cacheRawInputForSession(orchSessionId, activeTailUserInput);
+          const activeTailMatchesCurrent =
+            mainTurnTextMatchesOriginal(userInput, activeTailUserInput)
+            || mainTurnTextMatchesOriginal(activeTailUserInput, userInput);
+          if (shouldSkipUserInputPersistence(userInput) || !activeTailMatchesCurrent) {
+            userInput = activeTailUserInput;
+            userInputInfo = {
+              text: activeTailUserInput,
+              source: activeTailMatchesCurrent ? "active_chat_tail_user" : "active_chat_tail_user_replace",
+              metaOnly: false,
+              actualEmptyInput: false,
+            };
+            cacheRawInputForSession(orchSessionId, activeTailUserInput);
+          }
         }
       }
 
@@ -32972,11 +32705,53 @@
 
       saveLastSessionActivityAt(orchSessionId, Date.now()).catch(function() {});
 
+      let freshFirstTurnLightMode = false;
+      let freshFirstTurnLightModeMeta = null;
+      if (isSaveType(type)) {
+        const continuityRequiresRecall = !!(continuityInfo && (continuityInfo.query || continuityInfo.packBlock || continuityInfo.packPriorityRequested));
+        const routingBaseline = getSessionRoutingTurnBaseline(orchSessionId);
+        const routingBaselineBackendTurn = Number(routingBaseline && routingBaseline.backendTurnAtRoute || 0);
+        const activeCompletedPairs = await safeCall(
+          () => countActiveChatCompletedTurnPairsForRoutingBaseline(orchSessionId),
+          0,
+          "freshFirstTurnLightMode.activePairs"
+        );
+        const latestBackendTurn = await safeCall(
+          () => fetchBackendLatestTurnIndexForSession(orchSessionId),
+          0,
+          "freshFirstTurnLightMode.latestBackendTurn"
+        );
+        freshFirstTurnLightMode = !continuityRequiresRecall
+          && Number(activeCompletedPairs || 0) <= 0
+          && Number(latestBackendTurn || 0) <= 0
+          && routingBaselineBackendTurn <= 0;
+        freshFirstTurnLightModeMeta = {
+          activeCompletedPairs: Number(activeCompletedPairs || 0),
+          latestBackendTurn: Number(latestBackendTurn || 0),
+          routingBaselineBackendTurn,
+          continuityRequiresRecall,
+        };
+        if (settings.debug) {
+          debugLog("fresh-first-turn light mode:", freshFirstTurnLightMode ? "on" : "off", JSON.stringify(freshFirstTurnLightModeMeta));
+        }
+      }
+
       // M-1c: prepare-turn thin adapter probe
       // main model 타입에서만 실행 — model/otherAx 저장, submodel은 skip
       // skeleton 응답을 받아도 기존 local orchestration path는 그대로 유지된다.
       // backend off / timeout 시 fail-open으로 진행.
       if (isSaveType(type)) {
+        if (freshFirstTurnLightMode) {
+          _lastPrepareTurnSource = "fresh-first-turn-light";
+          _lastPrepareTurnFallbackReason = "recall_skipped_supervisor_local";
+          _lastPrepareTurnBundle = null;
+          updateRuntimeState("prepareTurnStatus", "ok", {
+            source: _lastPrepareTurnSource,
+            fallback_reason: _lastPrepareTurnFallbackReason,
+            detail: "fresh first turn light mode",
+            meta: freshFirstTurnLightModeMeta,
+          });
+        } else {
         try {
           const ptResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext);
           if (ptResult) {
@@ -33008,6 +32783,7 @@
           _lastPrepareTurnSource = "backend-error";
           _lastPrepareTurnFallbackReason = "backend_error";
           _lastPrepareTurnBundle = null;
+        }
         }
 
         orchestrationDirtySignals = resolveOrchestrationDirtySignalsOr1c(orchSessionId, {
@@ -33058,7 +32834,10 @@
       // orchestration 실행 — 결과는 캐시에 보관
       // Phase 1-1: continuityInfo가 있으면 orchestrateTurnHelpers에 전달
       try {
-        lastOrchResult = await orchestrateTurnHelpers(userInput, recentContext, continuityInfo, _lastPrepareTurnBundle, turnLanguageContext);
+        lastOrchResult = await orchestrateTurnHelpers(userInput, recentContext, continuityInfo, _lastPrepareTurnBundle, turnLanguageContext, {
+          freshFirstTurnLightMode,
+          freshFirstTurnLightModeMeta,
+        });
       } catch (orchErr) {
         _pendingOrchBySession.delete(orchSessionId);
         throw orchErr;
@@ -33586,6 +33365,7 @@
       const chatSessionId = await resolveAfterRequestWriteSessionId(lastOrchResult);
       const syntheticAfterRequest = _streamingAfterRequestSyntheticCallDepth > 0;
       const rawAfterRequestText = typeof content === "string" ? content : "";
+      let responseReturnContent = content;
       const rememberedNonMainSkip = takeNonMainRequestSkip(chatSessionId, type);
       const requestType = String(type || "model");
       const auxiliaryTypedWithoutMainContext = (requestType === "submodel" || requestType === "otherAx")
@@ -33640,7 +33420,11 @@
       if (typeof displayContent === "string") {
         recoveredAssistantContent = nativePersistableContent || normalizeAssistantPersistenceCandidate(displayContent);
         if (!recoveredAssistantContent) {
-          const activeChatAssistant = await recoverAssistantContentFromActiveChat(chatSessionId, assistantPrefillSeed);
+          const activeChatAssistant = await recoverAssistantContentFromActiveChat(
+            chatSessionId,
+            assistantPrefillSeed,
+            lastOrchResult && lastOrchResult._userInput
+          );
           if (activeChatAssistant) {
             recoveredAssistantContent = activeChatAssistant;
             if (!String(displayContent || "").trim()) {
@@ -33709,7 +33493,7 @@
         if (panelOpen) {
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderNonPersistableFragmentIgnored");
         }
-        return displayContent ?? content;
+        return responseReturnContent;
       }
       if (lastOrchResult && lastOrchResult._trace) {
         attachSanitizeTrace(lastOrchResult._trace, displaySanitizeTrace);
@@ -33734,7 +33518,7 @@
             failReasons: ["llm_gate_blocked"],
           });
 
-          return displayContent ?? content ?? "";
+          return responseReturnContent ?? "";
         }
 
         // 비용이 이미 발생한 경우 응답 본문을 유지하고 정상 저장 경로로 복구한다.
@@ -33754,7 +33538,7 @@
       );
       if ((content == null || typeof content !== "string" || !content.trim()) && !hasAfterRequestAssistantCandidate) {
         _effectiveInputAwaitingNewTurn = false;
-        return displayContent ?? "";
+        return responseReturnContent ?? "";
       }
 
       // 큐 소진은 타입과 무관하게 항상 실행 — 이전 턴 실패 데이터 복구
@@ -33772,7 +33556,7 @@
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderNonModel");
         }
         debugLog("afterRequest: skip save for type:", type);
-        return displayContent;
+        return responseReturnContent;
       }
 
       if (skipPersist && skipPersist.reason === "ooc_turn") {
@@ -33792,7 +33576,7 @@
         });
 
         debugLog("afterRequest: OOC turn → skip DB save/critic/episode/maintenance", skipPersist.source || "unknown");
-        return displayContent;
+        return responseReturnContent;
       }
       // Sprint 4-A-1: pending context consume
       const pendingCtx = _pendingOrchBySession.get(chatSessionId);
@@ -33919,7 +33703,7 @@
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderOocSaveLayer");
         }
         debugLog("afterRequest: OOC turn blocked at save layer");
-        return displayContent ?? "";
+        return responseReturnContent ?? "";
       } else if (saveUserOocScrub.changed) {
         const beforeUserOocScrub = userInput;
         userInput = saveUserOocScrub.text;
@@ -33986,7 +33770,7 @@
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderUserInputMissing");
         }
         debugLog("[M-4c] user input missing; skip complete-turn before advancing turn counter");
-        return displayContent ?? "";
+        return responseReturnContent ?? "";
       }
       let turnIdx = peekNextTurnIndex(chatSessionId);
       let turnOocGuardApplied = shouldSkipTurnPersistenceForOoc(userInput, displayContent);
@@ -34228,7 +34012,7 @@
             await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderStaleAssistantReplay");
           }
           debugLog("[M-4c] stale assistant replay blocked before complete-turn save");
-          return displayContent ?? "";
+            return responseReturnContent ?? "";
         }
       }
       if (!turnOocGuardApplied && !hasPersistedAssistantContent) {
@@ -34269,7 +34053,7 @@
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderAssistantMissing");
         }
         debugLog("[M-4c] assistant content missing; skip empty assistant persistence and complete fallback");
-        return displayContent ?? "";
+        return responseReturnContent ?? "";
       }
       turnIdx = await reserveAfterRequestPersistenceTurnIndex(chatSessionId, safeSavedUserInput, persistedAssistantContent);
       const persistenceGate = buildMainNarrativePersistenceGateDecision(type, {
@@ -34303,60 +34087,7 @@
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderPersistenceGate");
         }
         debugLog("[persistence-gate] skip auxiliary/non-main output:", gateDetail, "type:", type);
-        return displayContent ?? "";
-      }
-      if (!turnOocGuardApplied && typeof displayContent === "string") {
-        const outputEnhanceResult = await tryApplyTableReadOutputEnhance(displayContent, {
-          chatSessionId,
-          turnIndex: turnIdx,
-          userInput: safeSavedUserInput,
-          recentContext: recentCtx,
-          syntheticAfterRequest,
-        });
-        if (outputEnhanceResult && outputEnhanceResult.content !== displayContent) {
-          displayContent = outputEnhanceResult.content;
-          recoveredAssistantContent = normalizeAssistantPersistenceCandidate(displayContent) || String(displayContent || "");
-          persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
-            recoveredAssistantContent,
-            lastOrchResult && lastOrchResult._trace,
-            "table_read_output_enhance"
-          );
-          recoveredAssistantContent = persistedAssistantContent;
-          hasPersistedAssistantContent = typeof persistedAssistantContent === "string" && !!persistedAssistantContent.trim();
-          if (lastOrchResult && lastOrchResult._trace) {
-            lastOrchResult._trace.tableReadOutputEnhance = {
-              status: "applied",
-              changed: true,
-              syntheticAfterRequest: !!syntheticAfterRequest,
-              verdict: outputEnhanceResult.outputCheck && outputEnhanceResult.outputCheck.verdict || null,
-              protectedReveals: outputEnhanceResult.enhanced && outputEnhanceResult.enhanced.protected_reveals
-                || outputEnhanceResult.outputCheck && outputEnhanceResult.outputCheck.protected_reveals
-                || [],
-              changeReasons: outputEnhanceResult.enhanced && outputEnhanceResult.enhanced.issues_repaired
-                || outputEnhanceResult.outputCheck && outputEnhanceResult.outputCheck.issues
-                || [],
-            };
-          }
-        }
-        const proofDisplayContent = applyTableReadPolishProofOnce(displayContent, type, chatSessionId, syntheticAfterRequest);
-        if (proofDisplayContent !== displayContent) {
-          displayContent = proofDisplayContent;
-          recoveredAssistantContent = normalizeAssistantPersistenceCandidate(displayContent) || String(displayContent || "");
-          persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
-            recoveredAssistantContent,
-            lastOrchResult && lastOrchResult._trace,
-            "table_read_polish_proof"
-          );
-          recoveredAssistantContent = persistedAssistantContent;
-          hasPersistedAssistantContent = typeof persistedAssistantContent === "string" && !!persistedAssistantContent.trim();
-          if (lastOrchResult && lastOrchResult._trace) {
-            lastOrchResult._trace.tableReadPolishProof = {
-              status: "applied",
-              marker: TABLE_READ_POLISH_PROOF_MARKER,
-              syntheticAfterRequest: !!syntheticAfterRequest,
-            };
-          }
-        }
+        return responseReturnContent ?? "";
       }
       let temporalDeicticValidation = null;
       try {
@@ -34763,7 +34494,7 @@
       if (panelOpen) {
         await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRender");
       }
-      return displayContent;
+      return responseReturnContent;
     } catch (err) {
       _effectiveInputAwaitingNewTurn = false;
       warnLog("onAfterRequest error:", err.message);
@@ -45929,12 +45660,25 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
 
     var pluginState = { status: s.enabled ? "ok" : "fail", detail: s.enabled ? "enabled" : "disabled" };
-    var sessionState = { status: "unknown", detail: "resolving\u2026" };
+    var displaySessionId = String(
+      runtimeState && runtimeState.currentSessionId ||
+      rs && rs.sessionWriteRouting && rs.sessionWriteRouting.targetSessionId ||
+      _timelineState && _timelineState.currentSessionId ||
+      rs && rs.sessionWriteRouting && rs.sessionWriteRouting.rawSessionId ||
+      ""
+    ).trim();
+    var sessionState = displaySessionId
+      ? { status: "ok", detail: shortenSessionIdForDisplay(displaySessionId), targetSessionId: displaySessionId }
+      : { status: "unknown", detail: "resolving\u2026" };
+    var supervisorHealthState = rs.lastSupervisorWakeup || { status: "unknown" };
+    if ((!supervisorHealthState.status || supervisorHealthState.status === "unknown") && rs.lastSupervisorStatus && rs.lastSupervisorStatus.status === "ok") {
+      supervisorHealthState = { status: "skipped", time: rs.lastSupervisorStatus.time || null, detail: "health test not run / turn call ok" };
+    }
     var connectionRows = [
       { label: dashLabel.plugin, state: pluginState },
       { label: dashLabel.sessionId, state: sessionState },
       { label: dashLabel.bridgeHealth, state: rs.lastBridgeHealth },
-      { label: dashLabel.supervisorHealthTest, state: rs.lastSupervisorWakeup },
+      { label: dashLabel.supervisorHealthTest, state: supervisorHealthState },
       { label: dashLabel.search, state: rs.lastSearchStatus },
       { label: dashLabel.supervisorCall, state: rs.lastSupervisorStatus },
     ];
@@ -46005,7 +45749,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if (rs.lastRisuForkCopyCapture && rs.lastRisuForkCopyCapture.status !== "idle") extraRows.push({ label: dashLabel.forkCopyCapture, state: rs.lastRisuForkCopyCapture });
     if (rs.lastSessionDeleteSync && rs.lastSessionDeleteSync.status !== "idle") extraRows.push({ label: dashLabel.sessionDeleteSync, state: rs.lastSessionDeleteSync });
     if (rs.lastActiveChatBackfill && rs.lastActiveChatBackfill.status !== "idle") extraRows.push({ label: dashLabel.activeChatBackfill, state: rs.lastActiveChatBackfill });
-    if (rs.lastTableReadOutputEnhance && rs.lastTableReadOutputEnhance.status !== "idle") extraRows.push({ label: dashLabel.tableReadOutputEnhance, state: rs.lastTableReadOutputEnhance });
     if (extraRows.length > 0) out += renderCard("\uD83D\uDD04", "Activity", extraRows);
 
     // 오류
@@ -46048,56 +45791,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       return `<div class="mo-dash-row"><span class="mo-dot ${dotCls}"></span><span class="mo-dash-label">${escapeAttr(label)}</span><span class="mo-dash-value">${escapeAttr(statusLabel)}${escapeAttr(extra)}${escapeAttr(detail + placementDetail)}${escapeAttr(time)}</span></div>`;
     } catch {
       return `<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">${escapeAttr(label)}</span><span class="mo-dash-value">render error</span></div>`;
-    }
-  }
-
-  function renderTableReadPolishDebugCompare() {
-    try {
-      const state = runtimeState.lastTableReadPolishDebug || {};
-      const snap = state.snapshot && typeof state.snapshot === "object" ? state.snapshot : null;
-      if (!snap) {
-        return '<div class="mo-note">' + escapeAttr(t("settings.debug.tableReadCompareEmpty")) + '</div>';
-      }
-      const previewBlock = (title, text) => {
-        const fullText = String(text || "");
-        return '<div class="mo-preview-block mo-preview-debug mo-tr-full-output" style="min-width:0">'
-          + '<div class="mo-preview-title">' + escapeAttr(title) + '</div>'
-          + '<div class="mo-note">' + escapeAttr(String(fullText.length || 0) + " chars") + '</div>'
-          + '<div class="mo-preview-text mo-tr-full-output-text">'
-          + escapeAttr(fullText)
-          + '</div></div>';
-      };
-      const listBlock = (title, items) => {
-        const arr = Array.isArray(items) ? items.filter(Boolean) : [];
-        if (!arr.length) {
-          return '<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">' + escapeAttr(title) + '</div><div class="mo-note">' + escapeAttr(t("tableRead.label.noIssues")) + '</div></div>';
-        }
-        return '<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">' + escapeAttr(title) + '</div>'
-          + arr.map((item) => '<div class="mo-dash-row" style="font-size:11px"><span class="mo-dot mo-dot-warn"></span><span class="mo-dash-value">' + escapeAttr(item) + '</span></div>').join("")
-          + '</div>';
-      };
-      const meta = [
-        t("settings.debug.tableReadCompareMeta") + ": " + shortenSessionIdForDisplay(snap.chatSessionId || "") + " / turn " + String(snap.turnIndex || "?"),
-        String(snap.version || "tr_out_5.debug_trace.v1"),
-        "changed=" + String(!!snap.changed),
-        "entities=" + String(snap.entityCount || 0),
-        String(snap.originalLength || 0) + "→" + String(snap.finalLength || 0) + " chars",
-        snap.fallbackReason ? "fallback=" + snap.fallbackReason : "",
-        snap.syntheticAfterRequest ? "storage path" : "",
-      ].filter(Boolean).join(" · ");
-      return ''
-        + formatStateRow("TR-OUT-5", state)
-        + '<div class="mo-note">' + escapeAttr(meta) + '</div>'
-        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">'
-        + previewBlock(t("settings.debug.tableReadCompareOriginal"), snap.originalFull || snap.originalPreview || "")
-        + previewBlock(t("settings.debug.tableReadCompareFinal"), snap.finalFull || snap.finalPreview || "")
-        + '</div>'
-        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">'
-        + listBlock(t("settings.debug.tableReadCompareIssues"), snap.issues)
-        + listBlock(t("settings.debug.tableReadCompareProtected"), snap.protectedReveals)
-        + '</div>';
-    } catch (err) {
-      return '<div class="mo-status mo-status-fail">TR-OUT-5 render error: ' + escapeAttr(err && err.message ? err.message : String(err || "unknown")) + '</div>';
     }
   }
 
@@ -48109,7 +47802,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const moderatorSummary = tableReadReviewText(miniRead.moderatorSummary, "");
     const envelope = snap.protectedEnvelope || {};
     const meta = [
-      t("settings.debug.tableReadCompareMeta") + ": " + shortenSessionIdForDisplay(snap.chatSessionId || "") + " / turn " + String(snap.turnIndex || "?"),
+      "Session: " + shortenSessionIdForDisplay(snap.chatSessionId || "") + " / turn " + String(snap.turnIndex || "?"),
       String(snap.originalLength || 0) + "→" + String(snap.finalLength || 0) + " chars",
       envelope.protectedCount ? t("tableRead.live.protectedEnvelope") + " " + String(envelope.protectedCount) : "",
       snap.syntheticAfterRequest ? "storage path" : "",
@@ -48159,10 +47852,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const reviewHtml = review ? renderTableReadReviewStructured(review) : "";
     const revisionHtml = revision ? renderTableReadRevisionStructured(revision) : "";
     return '<div class="mo-settings-card"><div class="mo-section">' + escapeAttr(title) + '</div>' + agentHtml + simHtml + reviewHtml + revisionHtml + '</div>';
-  }
-
-  function isTableReadTabVisible(s = settings) {
-    return !!(s && (s.debug || s.tableReadOutputEnhanceEnabled));
   }
 
   function renderTableReadLlmSettingsPanel(s = settings) {
@@ -48641,10 +48330,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       if (_settingsActiveTab === "detail") {
         _settingsActiveTab = "timeline";
       }
-      const tableReadTabVisible = isTableReadTabVisible(s);
-      if (!tableReadTabVisible && _settingsActiveTab === "table_read") {
-        _settingsActiveTab = "dashboard";
-      }
 
       const dashLabel = {
         plugin: t("dash.status.plugin"),
@@ -48667,8 +48352,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         forkCopyCapture: "Fork/Copy Capture",
         sessionDeleteSync: t("dash.status.sessionDeleteSync"),
         activeChatBackfill: t("dash.status.activeChatBackfill"),
-        tableReadPolish: t("dash.status.tableReadPolish"),
-        tableReadOutputEnhance: t("dash.status.tableReadOutputEnhance"),
+        tableReadPolish: "Legacy Table Read Postprocess",
         personaCapsule: t("persona.tab"),
         completeTurn: t("dash.status.completeTurn"),
         maintenanceQueue: t("dash.status.maintenanceQueue"),
@@ -48681,9 +48365,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         : { status: "unknown", detail: t("dash.status.value.notYet") };
       if (_settingsActiveTab === "persona") {
         await personaCapsuleResolveSessionDefaults();
-      }
-      if (_settingsActiveTab === "table_read") {
-        await tableReadResolveSessionDefaults();
       }
 
       const settingsSubtabsHtml = (activeTab) => {
@@ -48725,7 +48406,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       <button class="mo-tab-btn${_settingsActiveTab === "timeline" ? " is-active" : ""}" data-tab="timeline">📅 ${escapeAttr(t('settings.tab.timeline'))}</button>
       <button class="mo-tab-btn${_settingsActiveTab === "archive" ? " is-active" : ""}" data-tab="archive">🔍 ${escapeAttr(t('settings.tab.explore'))}</button>
       <button class="mo-tab-btn${_settingsActiveTab === "dashboard" ? " is-active" : ""}" data-tab="dashboard">📊 ${escapeAttr(t('settings.tab.dashboard'))}</button>
-      ${tableReadTabVisible ? '<button class="mo-tab-btn' + (_settingsActiveTab === "table_read" ? " is-active" : "") + '" data-tab="table_read">🎭 ' + escapeAttr(t('settings.tab.tableRead')) + '</button>' : ''}
       <button class="mo-tab-btn${settingsTopActive ? " is-active" : ""}" data-tab="settings">⚙ ${escapeAttr(t('settings.tab.settings'))}</button>
       <button class="mo-tab-btn${_settingsActiveTab === "debug" ? " is-active" : ""}" id="mo-tab-btn-debug" data-tab="debug" style="${s.debug ? "" : "display:none"}">${t('settings.tab.debug')}</button>
     </div>
@@ -48757,13 +48437,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         ${renderExplorerSection()}
       </div>
     </div>
-
-    ${tableReadTabVisible ? '<div class="mo-tab-panel' + (_settingsActiveTab === "table_read" ? " is-active" : "") + '" data-tab-panel="table_read">' : ''}
-    ${tableReadTabVisible ? `
-      <div class="mo-dash" id="mo-table-read-root">
-        ${renderTableReadSection()}
-      </div>
-    </div>` : ''}
 
     <div class="mo-tab-panel${_settingsActiveTab === "persona" ? " is-active" : ""}" data-tab-panel="persona">
       ${settingsSubtabsHtml("persona")}
@@ -49160,11 +48833,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           </select>
           ${renderSettingsInjectionBudgetPreview(s)}
         </div>
-        <div class="mo-row">
-          <label>${t('tableRead.outputEnhance.settingTitle')}</label>
-          <label class="mo-checkline"><input type="checkbox" id="mo-tableReadOutputEnhanceEnabled" ${s.tableReadOutputEnhanceEnabled ? "checked" : ""}> ${t('tableRead.outputEnhance.enabled')}</label>
-          <small>${t('tableRead.outputEnhance.settingHint')}</small>
-        </div>
         <div class="mo-row mo-range-row">
           <label>${t('settings.label.injectionBudgetExtraChars')}</label>
           <input type="number" id="mo-injectionBudgetExtraChars" value="${s.injectionBudgetExtraChars ?? 0}" min="0" max="15000" step="500">
@@ -49252,12 +48920,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <div class="mo-dash-row"><span class="mo-dot mo-dot-ok"></span><span class="mo-dash-label">Plugin Build</span><span class="mo-dash-value">${escapeAttr(BUILD_LABEL)}</span></div>
           <div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Build Channel</span><span class="mo-dash-value">${escapeAttr(BUILD_CHANNEL)}</span></div>
           ${formatStateRow("Continuity Debug", rs.lastContinuityDebug)}
-        </div>
-
-        <div class="mo-section">${t('settings.debug.tableReadCompareTitle')}</div>
-        <div class="mo-section-desc">${t('settings.debug.tableReadCompareHint')}</div>
-        <div class="mo-dash">
-          ${renderTableReadPolishDebugCompare()}
         </div>
 
         <div class="mo-section">Inspection Surface Roles</div>
@@ -49631,7 +49293,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       function setActiveSettingsTab(tab) {
         if (!tab) return;
         if (tab === "detail") tab = "timeline";
-        if (tab === "table_read" && !isTableReadTabVisible()) tab = "dashboard";
         const prevTab = _settingsActiveTab || "dashboard";
         const body = document.querySelector("#mo-settings-overlay .mo-body") || document.querySelector(".mo-body");
         const viewportScrollState = captureSettingsViewportScrollState();
@@ -49656,11 +49317,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         if (tab === "persona") {
           personaCapsuleResolveSessionDefaults().then(() => {
             personaCapsuleRefreshUI();
-          }).catch(() => {});
-        }
-        if (tab === "table_read") {
-          tableReadResolveSessionDefaults().then(() => {
-            tableReadRefreshUI();
           }).catch(() => {});
         }
         if (body && prevTab !== tab) {
@@ -49772,7 +49428,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           if (debugToggleBusy) return;
         debugToggleBusy = true;
 
-          const prevTableReadTabVisible = isTableReadTabVisible(settings);
           const prevDebug = !!debugToggleInput.checked;
           const nextDebug = !prevDebug;
           debugToggleInput.checked = nextDebug;
@@ -49799,12 +49454,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 1200);
           }
 
-          if (saved && prevTableReadTabVisible !== isTableReadTabVisible(settings)) {
-            debugToggleBusy = false;
-            await closeSettingsPanel();
-            await renderSettingsPanel();
-            return;
-          }
 
           debugToggleBusy = false;
         });
@@ -49858,12 +49507,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           if (!tab || tab === _settingsActiveTab) return;
           setActiveSettingsTab(tab);
           if (tab === "timeline") loadTimelineData(true);
-          if (tab === "table_read") tableReadResolveSessionDefaults().then(() => tableReadRefreshUI()).catch(() => {});
         });
       });
       _setActiveSettingsTabForTimeline = setActiveSettingsTab;
       attachTimelineEvents();
-      attachTableReadEvents();
 
       bindSettingsRangeSyncEvents(document);
       const syncAllRangesFromInputs = () => syncSettingsRangesFromInputs(document);
@@ -50070,21 +49717,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         "mo-subLlmReasoningBudgetTokensHint",
         "mo-subLlmMaxCompletionTokens",
       );
-      bindProviderReasoningPresetSync(
-        "mo-tableReadLlmProvider",
-        "mo-tableReadLlmModel",
-        "mo-tableReadLlmReasoningPreset",
-        "mo-tableReadLlmReasoningGuide",
-        "mo-tableReadLlmReasoningEffort",
-        "mo-tableReadLlmReasoningEffortRow",
-        "mo-tableReadLlmReasoningEffortLabel",
-        "mo-tableReadLlmReasoningEffortHint",
-        "mo-tableReadLlmReasoningBudgetTokensRow",
-        "mo-tableReadLlmReasoningBudgetTokens",
-        "mo-tableReadLlmReasoningBudgetTokensLabel",
-        "mo-tableReadLlmReasoningBudgetTokensHint",
-        "mo-tableReadLlmMaxCompletionTokens",
-      );
 
       const vertexEndpointPlaceholder = "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models";
       const vertexServiceAccountPlaceholder = '{"type":"service_account",...}';
@@ -50121,11 +49753,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         endpoint: t('settings.placeholder.sameAsMain'),
         model: "예: gpt-4o-mini",
       });
-      bindVertexProviderHints("mo-tableReadLlmProvider", "mo-tableReadLlmApiKeyLabel", "mo-tableReadLlmApiKey", "mo-tableReadLlmEndpointLabel", "mo-tableReadLlmEndpoint", "mo-tableReadLlmModel", "mo-tableReadLlmVertexHint", {
-        api: t('settings.placeholder.sameAsMain'),
-        endpoint: t('settings.placeholder.sameAsMain'),
-        model: "예: gpt-4o-mini",
-      });
       bindVertexProviderHints("mo-embeddingProvider", "mo-embeddingApiKeyLabel", "mo-embeddingApiKey", "mo-embeddingEndpointLabel", "mo-embeddingEndpoint", "mo-embeddingModel", "mo-embeddingVertexHint", {
         api: t('settings.placeholder.sameAsMain'),
         endpoint: t('settings.placeholder.sameAsMain'),
@@ -50137,7 +49764,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       $("mo-save-btn").addEventListener("click", async () => {
         try {
           const prevDebug = settings.debug;
-          const prevTableReadTabVisible = isTableReadTabVisible(settings);
           const rawBridgeUrl = $("mo-bridgeUrl").value;
           const readValue = (id, fallback = "", trim = false) => {
             const el = $(id);
@@ -50181,16 +49807,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             subLlmReasoningPreset: $("mo-subLlmReasoningPreset").value.trim(),
             subLlmReasoningEffort: $("mo-subLlmReasoningEffort").value.trim(),
             subLlmReasoningBudgetTokens: $("mo-subLlmReasoningBudgetTokens").value,
-            tableReadLlmApiKey: readValue("mo-tableReadLlmApiKey", settings.tableReadLlmApiKey),
-            tableReadLlmProvider: readValue("mo-tableReadLlmProvider", settings.tableReadLlmProvider),
-            tableReadLlmEndpoint: readValue("mo-tableReadLlmEndpoint", settings.tableReadLlmEndpoint, true),
-            tableReadLlmModel: readValue("mo-tableReadLlmModel", settings.tableReadLlmModel, true),
-            tableReadLlmTimeoutMs: parseInt(readValue("mo-tableReadLlmTimeoutMs", settings.tableReadLlmTimeoutMs), 10) || settings.tableReadLlmTimeoutMs || 90000,
-            tableReadLlmTemperature: readValue("mo-tableReadLlmTemperature", settings.tableReadLlmTemperature),
-            tableReadLlmMaxCompletionTokens: readValue("mo-tableReadLlmMaxCompletionTokens", settings.tableReadLlmMaxCompletionTokens),
-            tableReadLlmReasoningPreset: readValue("mo-tableReadLlmReasoningPreset", settings.tableReadLlmReasoningPreset, true),
-            tableReadLlmReasoningEffort: readValue("mo-tableReadLlmReasoningEffort", settings.tableReadLlmReasoningEffort, true),
-            tableReadLlmReasoningBudgetTokens: readValue("mo-tableReadLlmReasoningBudgetTokens", settings.tableReadLlmReasoningBudgetTokens),
             embeddingProvider: $("mo-embeddingProvider").value,
             embeddingApiKey: $("mo-embeddingApiKey").value,
             embeddingEndpoint: $("mo-embeddingEndpoint").value.trim(),
@@ -50205,7 +49821,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             storyNarrativeStance: $("mo-storyNarrativeStance").value,
             // J-3a: Plugin Main Apply Mode
             pluginMainApplyMode: $("mo-pluginMainApplyMode").value,
-            tableReadOutputEnhanceEnabled: readChecked("mo-tableReadOutputEnhanceEnabled", settings.tableReadOutputEnhanceEnabled),
             // F-1: UI Language
             uiLanguage: $("mo-uiLanguage").value,
             uiDetailMode: $("mo-uiDetailMode").value,
@@ -50213,7 +49828,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           // sanitizeSettings가 숫자/URL 검증을 처리
           const updated = await updateSettings(patch);
           if (!updated) throw new Error("save failed");
-          if (prevDebug !== settings.debug || prevTableReadTabVisible !== isTableReadTabVisible(settings)) {
+          if (prevDebug !== settings.debug) {
             await closeSettingsPanel();
             await renderSettingsPanel();
             return;
@@ -50247,13 +49862,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             const el = $(id);
             if (el) el.checked = !!value;
           };
-          setValueIfPresent("mo-tableReadLlmProvider", settings.tableReadLlmProvider || "");
-          setValueIfPresent("mo-tableReadLlmTimeoutMs", settings.tableReadLlmTimeoutMs || 90000);
-          setValueIfPresent("mo-tableReadLlmTemperature", settings.tableReadLlmTemperature);
-          setValueIfPresent("mo-tableReadLlmMaxCompletionTokens", settings.tableReadLlmMaxCompletionTokens);
-          setValueIfPresent("mo-tableReadLlmReasoningPreset", settings.tableReadLlmReasoningPreset || "auto");
-          setValueIfPresent("mo-tableReadLlmReasoningEffort", settings.tableReadLlmReasoningEffort || "none");
-          setValueIfPresent("mo-tableReadLlmReasoningBudgetTokens", settings.tableReadLlmReasoningBudgetTokens || 0);
           for (let i = 0; i < reasoningSyncRunners.length; i++) reasoningSyncRunners[i]();
           $("mo-topK").value = settings.topK;
           $("mo-llmRetryCount").value = settings.llmRetryCount;
@@ -50262,7 +49870,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           setValueIfPresent("mo-auxiliaryInjectionAnchorMarker", settings.auxiliaryInjectionAnchorMarker || "");
           $("mo-narrativeGuideStrength").value = settings.narrativeGuideStrength || "weak";
           $("mo-storyNarrativeStance").value = settings.storyNarrativeStance || "balanced";
-          setCheckedIfPresent("mo-tableReadOutputEnhanceEnabled", settings.tableReadOutputEnhanceEnabled);
           $("mo-uiDetailMode").value = settings.uiDetailMode || "full";
           syncInputImprovementDependentControls();
           syncAllRangesFromInputs();
@@ -50291,19 +49898,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         }
       });
 
-      const tableReadOutputEnhanceToggle = $("mo-tableReadOutputEnhanceEnabled");
-      if (tableReadOutputEnhanceToggle) {
-        tableReadOutputEnhanceToggle.addEventListener("change", () => {
-          const statusEl = $("mo-save-status");
-          if (statusEl) {
-            statusEl.textContent = t('settings.status.saved');
-            statusEl.style.color = "#a0a0b0";
-          }
-          const saveBtn = $("mo-save-btn");
-          if (saveBtn) saveBtn.click();
-        });
-      }
-
       // 기본값 복원
       $("mo-reset-btn").addEventListener("click", async () => {
         try {
@@ -50324,7 +49918,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         try {
           const result = await withUiBridgeSettings(() => testBridgeHealth());
           if (result) {
-            resultEl.innerHTML = '<div class="mo-status mo-status-ok">' + t('test.health.ok') + ' — ' + escapeAttr(JSON.stringify(result)) + '</div>';
+            resultEl.innerHTML = renderBridgeHealthSummary(result);
           } else {
             resultEl.innerHTML = '<div class="mo-status mo-status-fail">' + t('test.health.fail') + '</div>';
           }

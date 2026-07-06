@@ -2489,10 +2489,25 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	if reqSource == "" {
 		reqSource = "unknown"
 	}
+	requestedTurnIndex := turnIndex
+	protectedBeforeTurn := intFromAny(r.URL.Query().Get("protected_before_turn"), 0)
+	minFromTurn := intFromAny(r.URL.Query().Get("min_from_turn"), 0)
+	if minFromTurn <= 0 && protectedBeforeTurn > 0 {
+		minFromTurn = protectedBeforeTurn + 1
+	}
+	baselineClamped := false
+	if minFromTurn > 0 && turnIndex < minFromTurn {
+		turnIndex = minFromTurn
+		baselineClamped = true
+	}
 
 	rollbackStore, hasRollback := s.Store.(store.RollbackStore)
 	if !hasRollback || !s.usesShadowWriteStore() {
 		rollbackPlan := buildRollbackPlan(sid, turnIndex, reqSource)
+		rollbackPlan["requested_turn_index"] = requestedTurnIndex
+		rollbackPlan["protected_before_turn"] = protectedBeforeTurn
+		rollbackPlan["min_from_turn"] = minFromTurn
+		rollbackPlan["session_routing_baseline_clamped"] = baselineClamped
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":          "ok",
 			"source":          "shadow",
@@ -2636,25 +2651,29 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		"chat_session_id": sid,
 		"turn_index":      turnIndex,
 		"rollback_plan": map[string]any{
-			"status":                      "executed",
-			"source":                      s.storeWriteSource(),
-			"chat_session_id":             sid,
-			"turn_index":                  turnIndex,
-			"req_source":                  reqSource,
-			"would_delete":                true,
-			"would_write":                 true,
-			"mutation_enabled":            true,
-			"sync_replay_gate":            true,
-			"save_update_delete_gate":     true,
-			"stale_vector_replay_gate":    true,
-			"rollback_vector_delete_gate": true,
-			"rebuild_replay_gate":         false,
-			"vector_doc_delete_policy":    "canonical_row_first_then_vector",
-			"stale_summary_policy":        "tombstone_before_rebuild",
-			"turn_delete_policy":          "tail_from_earliest_deleted_turn",
-			"hierarchy_invalidation":      "delete_overlapping_episode_chapter_arc_saga_ranges",
-			"step23_invalidation":         "delete_turn_scoped_support_records_from_from_turn",
-			"rebuild_owner":               "chroma_shadow_orchestrator",
+			"status":                           "executed",
+			"source":                           s.storeWriteSource(),
+			"chat_session_id":                  sid,
+			"turn_index":                       turnIndex,
+			"requested_turn_index":             requestedTurnIndex,
+			"req_source":                       reqSource,
+			"protected_before_turn":            protectedBeforeTurn,
+			"min_from_turn":                    minFromTurn,
+			"session_routing_baseline_clamped": baselineClamped,
+			"would_delete":                     true,
+			"would_write":                      true,
+			"mutation_enabled":                 true,
+			"sync_replay_gate":                 true,
+			"save_update_delete_gate":          true,
+			"stale_vector_replay_gate":         true,
+			"rollback_vector_delete_gate":      true,
+			"rebuild_replay_gate":              false,
+			"vector_doc_delete_policy":         "canonical_row_first_then_vector",
+			"stale_summary_policy":             "tombstone_before_rebuild",
+			"turn_delete_policy":               "tail_from_earliest_deleted_turn",
+			"hierarchy_invalidation":           "delete_overlapping_episode_chapter_arc_saga_ranges",
+			"step23_invalidation":              "delete_turn_scoped_support_records_from_from_turn",
+			"rebuild_owner":                    "chroma_shadow_orchestrator",
 		},
 		"deletions": deletions,
 		"errors":    delErrs,

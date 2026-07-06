@@ -287,6 +287,11 @@ type EffectiveInputListStore interface {
 	ListEffectiveInputs(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]EffectiveInput, error)
 }
 
+const (
+	SessionMigrationModeCopyThenLockSource = "copy_then_lock_source"
+	SessionMigrationModeCopyKeepSource     = "copy_keep_source"
+)
+
 // SessionMigrationArtifactCounts mirrors the tables copied by complete session
 // migration. ChromaDB vectors are intentionally handled in a later step.
 type SessionMigrationArtifactCounts struct {
@@ -302,7 +307,7 @@ type SessionMigrationArtifactCounts struct {
 }
 
 // SessionMigrationCompleteRequest is the MariaDB copy phase for complete
-// session migration. It is intentionally scoped to an empty target session.
+// session migration/copy. It is intentionally scoped to an empty target session.
 type SessionMigrationCompleteRequest struct {
 	SourceSessionID string
 	TargetSessionID string
