@@ -4509,6 +4509,229 @@ func TestPrepareTurnEntityRecollectionRelevanceFiltersUnrelatedNPCMemory(t *test
 	}
 }
 
+func TestPrepareTurnCharacterPrivateRecollectionBlocksStaleOwnerMention(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "target-private-stale", TurnIndex: 1, Role: "user", Content: "Ashley Silvertrail argues in the archive."},
+			{ID: 2, ChatSessionID: "target-private-stale", TurnIndex: 1, Role: "assistant", Content: "Ashley keeps her doubts private."},
+			{ID: 3, ChatSessionID: "target-private-stale", TurnIndex: 2, Role: "user", Content: "Niv and Ingrid move to the garden."},
+			{ID: 4, ChatSessionID: "target-private-stale", TurnIndex: 2, Role: "assistant", Content: "Niv laughs while Ingrid answers quietly."},
+		},
+		returnActiveStates: []store.ActiveState{
+			{ID: 1, ChatSessionID: "target-private-stale", StateType: "scene", Content: `{"location":"garden","present_entities":["Niv","Ingrid"]}`, TurnIndex: 2},
+		},
+		returnCanonicalLayers: []store.CanonicalStateLayer{
+			{ID: 1, ChatSessionID: "target-private-stale", LayerType: "entity_state", Content: `{"characters":[{"name":"Ashley Silvertrail"},{"name":"Niv"},{"name":"Ingrid"}]}`, TurnIndex: 2},
+		},
+		returnEntityMemories: []store.ProtagonistEntityMemory{
+			{
+				ID:                  81,
+				OwnerEntityKey:      "ashley_silvertrail",
+				OwnerEntityName:     "Ashley Silvertrail",
+				OwnerEntityRole:     "npc",
+				OwnerVisibility:     "owner_private",
+				SourceChatSessionID: "target-private-stale",
+				SourceTurn:          1,
+				MemoryText:          "Ashley privately distrusts the archive conversation.",
+				TargetRevealPolicy:  "owner_private_until_revealed",
+				Portability:         "npc_private_recollection",
+				Importance10:        9,
+			},
+			{
+				ID:                  82,
+				OwnerEntityKey:      "niv",
+				OwnerEntityName:     "Niv",
+				OwnerEntityRole:     "npc",
+				OwnerVisibility:     "owner_private",
+				SourceChatSessionID: "target-private-stale",
+				SourceTurn:          2,
+				MemoryText:          "Niv privately enjoys Ingrid's dry humor.",
+				TargetRevealPolicy:  "owner_private_until_revealed",
+				Portability:         "npc_private_recollection",
+				Importance10:        7,
+			},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"target-private-stale","turn_index":3,"raw_user_input":"Niv asks Ingrid what she thinks of the garden path.","settings":{"max_injection_chars":2200,"max_input_context_chars":1200,"injection_enabled":true,"input_context_enabled":true,"top_k":4}}`
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	injectionText, _ := resp["injection_text"].(string)
+	if strings.Contains(injectionText, "owner Ashley") || strings.Contains(injectionText, "archive conversation") {
+		t.Fatalf("stale off-scene owner leaked into private recollection: %q", injectionText)
+	}
+	if !strings.Contains(injectionText, "owner Niv") {
+		t.Fatalf("current-scene private recollection missing: %q", injectionText)
+	}
+	relevance, ok := resp["entity_recollection_relevance"].(map[string]any)
+	if !ok {
+		t.Fatalf("entity_recollection_relevance surface missing")
+	}
+	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(1) {
+		t.Fatalf("unexpected stale-owner relevance counts: %+v", relevance)
+	}
+	if relevance["character_private_gate"] != "owner_entity_must_match_current_user_input_immediate_chat_or_current_scene_state" {
+		t.Fatalf("unexpected private recollection gate: %+v", relevance)
+	}
+}
+
+func TestPrepareTurnCharacterPrivateRecollectionAllowsMentionedOffscreenOwner(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "target-private-mentioned", TurnIndex: 4, Role: "user", Content: "Niv and Ingrid sit near the stairwell."},
+			{ID: 2, ChatSessionID: "target-private-mentioned", TurnIndex: 4, Role: "assistant", Content: "Their voices carry farther than they realize."},
+		},
+		returnActiveStates: []store.ActiveState{
+			{ID: 1, ChatSessionID: "target-private-mentioned", StateType: "scene", Content: `{"location":"stairwell","present_entities":["Niv","Ingrid"]}`, TurnIndex: 4},
+		},
+		returnEntityMemories: []store.ProtagonistEntityMemory{
+			{
+				ID:                  91,
+				OwnerEntityKey:      "ashley_silvertrail",
+				OwnerEntityName:     "Ashley Silvertrail",
+				OwnerEntityRole:     "npc",
+				OwnerVisibility:     "owner_private",
+				SourceChatSessionID: "target-private-mentioned",
+				SourceTurn:          3,
+				MemoryText:          "Ashley privately fears Niv and Ingrid already distrust her.",
+				TargetRevealPolicy:  "owner_private_until_revealed",
+				Portability:         "npc_private_recollection",
+				Importance10:        8,
+			},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"target-private-mentioned","turn_index":5,"raw_user_input":"Niv and Ingrid quietly complain about Ashley Silvertrail, unaware she may be nearby.","settings":{"max_injection_chars":2200,"max_input_context_chars":1200,"injection_enabled":true,"input_context_enabled":true,"top_k":4}}`
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	injectionText, _ := resp["injection_text"].(string)
+	if !strings.Contains(injectionText, "owner Ashley Silvertrail") {
+		t.Fatalf("explicitly mentioned offscreen owner should remain eligible: %q", injectionText)
+	}
+	relevance, ok := resp["entity_recollection_relevance"].(map[string]any)
+	if !ok {
+		t.Fatalf("entity_recollection_relevance surface missing")
+	}
+	if relevance["character_private_after_filter"] != float64(1) {
+		t.Fatalf("mentioned owner should pass private relevance gate: %+v", relevance)
+	}
+}
+
+func TestPrepareTurnCharacterPrivateRecollectionCapsSameOwnerRepeats(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "target-private-cap", TurnIndex: 7, Role: "user", Content: "Chloe waits in the hallway."},
+			{ID: 2, ChatSessionID: "target-private-cap", TurnIndex: 7, Role: "assistant", Content: "Chloe keeps her expression calm."},
+		},
+		returnEntityMemories: []store.ProtagonistEntityMemory{
+			{
+				ID:                  101,
+				OwnerEntityKey:      "chloe",
+				OwnerEntityName:     "Chloe",
+				OwnerEntityRole:     "npc",
+				OwnerVisibility:     "owner_private",
+				SourceChatSessionID: "target-private-cap",
+				SourceTurn:          5,
+				MemoryText:          "Chloe privately remembers the first hallway warning.",
+				TargetRevealPolicy:  "owner_private_until_revealed",
+				Portability:         "npc_private_recollection",
+				Importance10:        8,
+			},
+			{
+				ID:                  102,
+				OwnerEntityKey:      "chloe",
+				OwnerEntityName:     "Chloe",
+				OwnerEntityRole:     "npc",
+				OwnerVisibility:     "owner_private",
+				SourceChatSessionID: "target-private-cap",
+				SourceTurn:          6,
+				MemoryText:          "Chloe privately remembers the second hallway warning.",
+				TargetRevealPolicy:  "owner_private_until_revealed",
+				Portability:         "npc_private_recollection",
+				Importance10:        7,
+			},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"target-private-cap","turn_index":8,"raw_user_input":"Chloe asks Siwoo to slow down.","settings":{"max_injection_chars":2200,"max_input_context_chars":1200,"injection_enabled":true,"input_context_enabled":true,"top_k":4}}`
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	injectionText, _ := resp["injection_text"].(string)
+	if !strings.Contains(injectionText, "first hallway warning") || strings.Contains(injectionText, "second hallway warning") {
+		t.Fatalf("same-owner private recollection cap failed: %q", injectionText)
+	}
+	surface, ok := resp["character_private_recollection"].(map[string]any)
+	if !ok {
+		t.Fatalf("character_private_recollection surface missing")
+	}
+	if surface["count"] != float64(1) {
+		t.Fatalf("expected one private recollection after owner cap, got %+v", surface)
+	}
+	relevance, ok := resp["entity_recollection_relevance"].(map[string]any)
+	if !ok {
+		t.Fatalf("entity_recollection_relevance surface missing")
+	}
+	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(1) || relevance["character_private_owner_cap"] != float64(1) {
+		t.Fatalf("unexpected owner-cap relevance surface: %+v", relevance)
+	}
+	dropped, ok := relevance["dropped"].([]any)
+	if !ok || len(dropped) != 1 {
+		t.Fatalf("expected one dropped duplicate owner item: %+v", relevance)
+	}
+	drop, ok := dropped[0].(map[string]any)
+	if !ok || drop["reason"] != "owner_repetition_capped" {
+		t.Fatalf("expected owner_repetition_capped drop reason, got %+v", dropped[0])
+	}
+}
+
 func TestPrepareTurnAttachedNPCPrivateCapsuleUsesCharacterPrivateLane(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnChatLogs: []store.ChatLog{
@@ -5053,7 +5276,7 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 	body := `{
 		"chat_session_id":"sess-247a-render",
 		"turn_index":9,
-		"raw_user_input":"Continue the private scene carefully.",
+		"raw_user_input":"Continue Gloria's private scene carefully.",
 		"client_meta":{"chroma_query_vector":[0.4,0.2]},
 		"settings":{"apply_mode":"shadow","max_injection_chars":3000,"injection_enabled":true,"input_context_enabled":false,"top_k":1}
 	}`
@@ -12041,6 +12264,46 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		}
 		if !strings.Contains(assembly.MemoryText, "kind=romantic_feeling") {
 			t.Fatalf("protected memory guard missing kind: %q", assembly.MemoryText)
+		}
+	})
+
+	t.Run("protected_secret_memory_requires_current_entity_scope", func(t *testing.T) {
+		memories := []store.Memory{{
+			ID:        89,
+			TurnIndex: 8,
+			SummaryJSON: mustCompactJSON(map[string]any{
+				"turn_summary": "Elsie concealed her former role.",
+				"protected_secrets": []any{
+					map[string]any{
+						"secret_kind":       "former_role",
+						"owner":             "Elsie",
+						"summary":           "Elsie concealed her former role.",
+						"disclosure_policy": "owner_private_until_revealed",
+						"knowledge_scope": map[string]any{
+							"known_by": []string{"Elsie"},
+						},
+					},
+				},
+			}),
+			Importance: 0.9,
+		}}
+		blocked := buildPrepareTurnInjectionAssembly(memories, nil, nil, []store.ChatLog{
+			{TurnIndex: 7, Role: "user", Content: "Niv and Ingrid inspect the courtyard."},
+			{TurnIndex: 7, Role: "assistant", Content: "They keep their voices low."},
+		}, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Niv asks Ingrid about the courtyard.", "default", nil, nil, nil)
+		if strings.Contains(blocked.MemoryText, "Protected continuity guard") || strings.Contains(blocked.MemoryText, "former_role") {
+			t.Fatalf("off-scene protected memory guard should not inject: %q", blocked.MemoryText)
+		}
+		if got := intFromAny(blocked.Counts["protected_memory_dropped_count"], 0); got != 1 {
+			t.Fatalf("protected memory drop count = %d, want 1; counts=%#v", got, blocked.Counts)
+		}
+
+		allowed := buildPrepareTurnInjectionAssembly(memories, nil, nil, []store.ChatLog{
+			{TurnIndex: 7, Role: "user", Content: "Niv and Ingrid inspect the courtyard."},
+			{TurnIndex: 7, Role: "assistant", Content: "They keep their voices low."},
+		}, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Niv and Ingrid mention Elsie while speaking in the courtyard.", "default", nil, nil, nil)
+		if !strings.Contains(allowed.MemoryText, "Protected continuity guard") || !strings.Contains(allowed.MemoryText, "kind=former_role") {
+			t.Fatalf("currently mentioned protected memory guard should inject: %q", allowed.MemoryText)
 		}
 	})
 

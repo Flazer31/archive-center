@@ -1,5 +1,5 @@
 //@name Archive Center
-//@display-name Archive Center 2.5.0
+//@display-name Archive Center 2.5.0 RC3
 //@author memory-scaffold
 //@api 3.0
 //@version 2.5.0
@@ -38,8 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "2.5.0-release.20260707";
-  const BUILD_CHANNEL = "stable";
+  const BUILD_ID = "2.5.0-rc3-copy-resume-anchor.20260708-1";
+  const BUILD_CHANNEL = "rc3";
+  const BUILD_TIME = "2026-07-08 KST";
+  const BUILD_NOTES = "post-copy/attach/migrate transient resume anchor + persistent rollback guard + private recollection guard + Vertex Flex PayGo";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -62,6 +64,7 @@
   const ACTIVE_CHAT_RECENT_REBUILD_DEFAULT_TURNS = 5;
   const ACTIVE_CHAT_RECENT_REBUILD_MAX_TURNS = 10;
   const ACTIVE_CHAT_REBUILD_DEFAULT_ORDER = "oldest";
+  const SESSION_ROUTING_RESUME_ANCHOR_MAX_TURNS = 2;
   const STARTUP_MESSAGE_FIELD_KEYS = Object.freeze([
     "firstMessage", "first_message", "firstMes", "first_mes",
     "greeting", "greetingMessage", "greeting_message",
@@ -87,6 +90,7 @@
   const NARRATIVE_GUIDE_STRENGTH_OPTIONS = Object.freeze(["none", "weak", "medium", "strong"]);
   const ROLLBACK_IDLE_WATCHER_MODES = Object.freeze(["event", "slow", "fast_debug", "off"]);
   const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto", "before_latest_user", "after_anchor_marker", "after_last_cache_point", "after_first_system", "end"]);
+  const VERTEX_FLEX_MODE_OPTIONS = Object.freeze(["off", "provisioned_then_flex", "flex_only"]);
     // J-3a: Plugin Main apply mode 허용값
   const PLUGIN_MAIN_APPLY_MODES = Object.freeze(["off", "shadow", "reviewed_apply"]);
   const UI_LANGUAGE_OPTIONS = Object.freeze(["ko", "en", "ja"]);
@@ -177,6 +181,9 @@
     pluginMainReasoningEffort: "none",
     pluginMainReasoningBudgetTokens: 0,
     pluginMainMaxCompletionTokens: 1024,
+    pluginMainVertexFlexMode: "off",
+    pluginMainExtraHeadersJson: "",
+    pluginMainExtraBodyJson: "",
     // ── 편집 검토 LLM (편집자 결과 second-pass 검토 전용) ──
     subLlmProvider: "openai",
     subLlmApiKey: "",
@@ -188,6 +195,9 @@
     subLlmReasoningEffort: "none",
     subLlmReasoningBudgetTokens: 0,
     subLlmMaxCompletionTokens: 1024,
+    subLlmVertexFlexMode: "off",
+    subLlmExtraHeadersJson: "",
+    subLlmExtraBodyJson: "",
     // ── Script Reading LLM / Table Read Lite (출력 검토 전용; 비어 있으면 미설정) ──
     tableReadLlmProvider: "",
     tableReadLlmApiKey: "",
@@ -251,7 +261,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.5.0 설정",
+      "settings.title": "🗂️ Archive Center 2.5.0 RC3 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -1141,6 +1151,7 @@
       "timeline.badge.items": "항목 {n}개",
       "timeline.button.attachCurrent": "연결",
       "timeline.button.cleanup": "원본 정리",
+      "timeline.button.copy": "복사",
       "timeline.button.delete": "삭제",
       "timeline.button.detail": "상세",
       "timeline.button.loadMore": "더 불러오기",
@@ -1175,6 +1186,10 @@
       "timeline.migration.cleanupConfirm": "잠긴 원본 세션을 영구 정리합니다.\n\n이전: {id}\n원본: {source}\n대상: {target}\n\n원본 MariaDB 행과 원본 ChromaDB 벡터를 삭제합니다.\n대상 세션이 정상인지 확인한 뒤에만 실행하세요.\n\n정말 정리하시겠습니까?",
       "timeline.migration.cleanupRunning": "원본 세션 정리 중...",
       "timeline.migration.cleanupSuccess": "원본 세션 정리 완료: source={source}",
+      "timeline.copy.confirm": "이 Archive Center DB 세션을 현재 활성 채팅으로 복사합니다.\n\n원본: {source}\n대상: {target}\n\n단계:\n1. dry-run 미리보기\n2. MariaDB 행 복사\n3. ChromaDB 벡터 재색인\n\n원본 DB 행은 잠그거나 삭제하지 않습니다.\n대상 세션은 비어 있어야 합니다.\n\n계속하시겠습니까?",
+      "timeline.copy.failed": "세션 복사 실패: {reason}",
+      "timeline.copy.running": "세션 복사 중...",
+      "timeline.copy.success": "세션 복사 완료: target={target}",
       "timeline.migration.confirm": "이 Archive Center 세션을 현재 활성 채팅으로 이동합니다.\n\n원본: {source}\n대상: {target}\n\n단계:\n1. dry-run 미리보기\n2. MariaDB 행 복사\n3. ChromaDB 벡터 재색인\n4. 원본 잠금\n\n원본 DB 행은 삭제하지 않고 읽기/쓰기를 잠급니다.\n대상 세션은 비어 있어야 합니다.\n\n계속하시겠습니까?",
       "timeline.migration.failed": "세션 이전 실패: {reason}",
       "timeline.migration.noActiveTarget": "현재 활성 채팅 세션이 없습니다.",
@@ -1206,6 +1221,7 @@
       "timeline.session.characterChat": "캐릭터 {char} / 채팅 {chat}",
       "timeline.session.characterChatId": "캐릭터 {char} / 채팅 {chat}",
       "timeline.session.cleanupTitle": "잠긴 원본 DB/벡터 행 최종 정리",
+      "timeline.session.copyTitle": "이 DB 세션을 현재 활성 채팅으로 복사",
       "timeline.session.current": "현재",
       "timeline.session.currentChat": "현재 채팅",
       "timeline.session.deleteTitle": "이 Archive Center DB 세션 삭제",
@@ -1218,7 +1234,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.5.0 Settings",
+      "settings.title": "🗂️ Archive Center 2.5.0 RC3 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -1416,10 +1432,12 @@
       "timeline.session.deleteTitle": "Delete this Archive Center DB session",
       "timeline.button.delete": "Delete",
       "timeline.button.attachCurrent": "Attach",
+      "timeline.button.copy": "Copy",
       "timeline.button.migrate": "Move",
       "timeline.button.rollback": "Undo Move",
       "timeline.button.cleanup": "Cleanup Source",
       "timeline.session.attachTitle": "Attach this Archive session to the current chat",
+      "timeline.session.copyTitle": "Copy this DB session to the current active chat",
       "timeline.session.migrateTitle": "Move this DB session to the current active chat",
       "timeline.session.rollbackTitle": "Rollback the latest session migration by ledger",
       "timeline.session.cleanupTitle": "Finalize cleanup of locked source DB/vector rows",
@@ -1430,6 +1448,9 @@
       "timeline.migration.rollbackSuccess": "Session migration rollback complete: migration={id}",
       "timeline.migration.cleanupRunning": "Source session cleanup running...",
       "timeline.migration.cleanupSuccess": "Source session cleanup complete: source={source}",
+      "timeline.copy.running": "Session copy running...",
+      "timeline.copy.success": "Session copy complete: target={target}",
+      "timeline.copy.failed": "Session copy failed: {reason}",
       "timeline.migration.reason.source_session_id_required": "Source session id is missing.",
       "timeline.migration.reason.target_session_id_required": "Target session id is missing.",
       "timeline.migration.reason.source_target_must_differ": "Source and target sessions are the same.",
@@ -1447,6 +1468,7 @@
       "timeline.attach.confirm": "Attach the current active chat to the selected Archive Center session.\n\nCurrent chat: {target}\nArchive session: {source}\n\nNo DB rows are copied, moved, merged, or deleted. This only changes the current chat routing pin. Any rows already saved under another session remain there until you migrate or merge them explicitly.\n\nContinue?",
       "timeline.attach.success": "Current chat attached to: {source}",
       "timeline.attach.failed": "Current chat attach failed: {reason}",
+      "timeline.copy.confirm": "Copy this Archive Center DB session into the current active chat.\n\nSource: {source}\nTarget: {target}\n\nSteps:\n1. dry-run preview\n2. MariaDB row copy\n3. ChromaDB vector reindex\n\nSource DB rows are not locked or deleted.\nTarget session must be empty.\n\nContinue?",
       "timeline.migration.confirm": "Move this Archive Center session into the current active chat.\n\nSource: {source}\nTarget: {target}\n\nSteps:\n1. dry-run preview\n2. MariaDB row copy\n3. ChromaDB vector reindex\n4. source lock\n\nSource DB rows are not deleted; the source is locked out from reads/writes.\nTarget session must be empty.\n\nContinue?",
       "timeline.migration.rollbackConfirm": "Rollback the latest session migration.\n\nmigration: {id}\nSource: {source}\nTarget: {target}\n\nOnly copied target rows recorded in row_map and matching ChromaDB vectors will be deleted.\nThe source lock will be released.\n\nContinue?",
       "timeline.migration.cleanupConfirm": "Permanently cleanup the locked source session.\n\nmigration: {id}\nSource: {source}\nTarget: {target}\n\nThis deletes source MariaDB rows and source ChromaDB vectors.\nRun this only after confirming the target session is healthy.\n\nReally cleanup?",
@@ -2185,7 +2207,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.5.0 設定",
+      "settings.title": "🗂️ Archive Center 2.5.0 RC3 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -3120,12 +3142,17 @@
 
       // ── i18n parity backfill (generated; keep keysets aligned) ──
       "timeline.button.cleanup": "元セッションを整理",
+      "timeline.button.copy": "コピー",
       "timeline.button.migrate": "移動",
       "timeline.button.rollback": "移動を取り消す",
       "timeline.label.migrationOps": "移行後の操作",
       "timeline.migration.cleanupConfirm": "ロックされた元セッションを完全に整理します。\n\n移行: {id}\n元: {source}\n対象: {target}\n\n元のMariaDB行とChromaDBベクトルを削除します。\n対象セッションが正常であることを確認してから実行してください。\n\n本当に整理しますか？",
       "timeline.migration.cleanupRunning": "元セッションを整理中...",
       "timeline.migration.cleanupSuccess": "元セッションの整理が完了しました: source={source}",
+      "timeline.copy.confirm": "このArchive Center DBセッションを現在のアクティブチャットへコピーします。\n\n元: {source}\n対象: {target}\n\n手順:\n1. dry-runプレビュー\n2. MariaDB行コピー\n3. ChromaDBベクトル再インデックス\n\n元DB行はロックまたは削除されません。\n対象セッションは空である必要があります。\n\n続行しますか？",
+      "timeline.copy.failed": "セッションコピーに失敗しました: {reason}",
+      "timeline.copy.running": "セッションコピー中...",
+      "timeline.copy.success": "セッションコピー完了: target={target}",
       "timeline.migration.confirm": "このArchive Centerセッションを現在のアクティブチャットへ移動します。\n\n元: {source}\n対象: {target}\n\n手順:\n1. dry-runプレビュー\n2. MariaDB行コピー\n3. ChromaDBベクトル再インデックス\n4. 元セッションをロック\n\n元DB行は削除されず、読み書きがロックされます。\n対象セッションは空である必要があります。\n\n続行しますか？",
       "timeline.migration.failed": "セッション移行に失敗しました: {reason}",
       "timeline.migration.noActiveTarget": "現在のアクティブチャットセッションがありません。",
@@ -3146,6 +3173,7 @@
       "timeline.migration.success": "セッション移行完了: target={target}",
       "timeline.migration.targetUnstable": "現在のチャットの安定CIDを解決できませんでした。新しいチャットを一度選択/更新してから再試行してください。",
       "timeline.session.cleanupTitle": "ロックされた元DB/ベクトル行を最終整理",
+      "timeline.session.copyTitle": "このDBセッションを現在のアクティブチャットへコピー",
       "timeline.session.migrateTitle": "このDBセッションを現在のアクティブチャットへ移動",
       "timeline.session.rollbackTitle": "ledgerに基づき最新のセッション移行をロールバック",
     },
@@ -3540,6 +3568,7 @@
     sourceSessionId: "",
     targetSessionId: "",
     migrationId: 0,
+    migrationMode: "",
     status: "idle",
     message: "",
     error: "",
@@ -5966,6 +5995,7 @@
   const SESSION_WRITE_CANONICAL_CACHE_MS = 10000;
   const SESSION_DELETE_LEDGER_KEY = `${PLUGIN_ID}_session_delete_ledger_v1`;
   const SESSION_DISPLAY_LOOKUP_KEY = `${PLUGIN_ID}_session_display_lookup_v1`;
+  const SESSION_ROUTING_BASELINE_PREFIX = `${PLUGIN_ID}_session_routing_baseline_v1`;
   const SESSION_DISPLAY_LOOKUP_MAX = 600;
   const SESSION_DELETE_LEDGER_VERSION = "risu_chat_delete_sync.v1";
   const SESSION_DELETE_LEDGER_MAX = 80;
@@ -7294,6 +7324,7 @@
         const oldest = _sessionRoutingTurnBaselines.keys().next().value;
         _sessionRoutingTurnBaselines.delete(oldest);
       }
+      persistSessionRoutingTurnBaseline(row);
       if (backendTurnAtRoute > 0) setTurnCounterAtLeast(sid, backendTurnAtRoute);
       return row;
     } catch (err) {
@@ -7302,11 +7333,76 @@
     }
   }
 
+  function sessionRoutingBaselineStorageKey(sessionId) {
+    const sid = normalizeSessionId(sessionId);
+    return sid ? `${SESSION_ROUTING_BASELINE_PREFIX}_${encodeURIComponent(sid)}` : "";
+  }
+
+  function persistSessionRoutingTurnBaseline(row) {
+    try {
+      if (!row || !row.sessionId) return;
+      const key = sessionRoutingBaselineStorageKey(row.sessionId);
+      if (!key) return;
+      const payload = JSON.stringify({
+        version: "session_routing_baseline.v1",
+        baseline: row,
+      });
+      safeStorageSet(key, payload);
+      persistentSet(key, payload).catch(function() {});
+    } catch (err) {
+      debugLog("persistSessionRoutingTurnBaseline failed:", err && err.message);
+    }
+  }
+
+  function readStoredSessionRoutingTurnBaseline(sessionId) {
+    try {
+      const sid = normalizeSessionId(sessionId);
+      const key = sessionRoutingBaselineStorageKey(sid);
+      if (!sid || !key) return null;
+      const raw = safeStorageGet(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const source = parsed && parsed.baseline && typeof parsed.baseline === "object"
+        ? parsed.baseline
+        : parsed;
+      const backendTurnAtRoute = Math.max(0, Math.floor(Number(source && source.backendTurnAtRoute || 0)));
+      if (backendTurnAtRoute <= 0) return null;
+      const row = {
+        sessionId: sid,
+        localPairCountAtRoute: Math.max(0, Math.floor(Number(source && source.localPairCountAtRoute || 0))),
+        backendTurnAtRoute,
+        reason: String(source && source.reason || "session_routing").trim() || "session_routing",
+        createdAt: Number(source && source.createdAt || Date.now()),
+      };
+      _sessionRoutingTurnBaselines.set(sid, row);
+      setTurnCounterAtLeast(sid, backendTurnAtRoute);
+      return row;
+    } catch (err) {
+      debugLog("readStoredSessionRoutingTurnBaseline failed:", err && err.message);
+      return null;
+    }
+  }
+
+  function forgetSessionRoutingTurnBaseline(sessionId) {
+    try {
+      const sid = normalizeSessionId(sessionId);
+      if (!sid) return;
+      _sessionRoutingTurnBaselines.delete(sid);
+      const key = sessionRoutingBaselineStorageKey(sid);
+      if (key) {
+        safeStorageRemove(key);
+        persistentDelete(key).catch(function() {});
+      }
+    } catch (err) {
+      debugLog("forgetSessionRoutingTurnBaseline failed:", err && err.message);
+    }
+  }
+
   function getSessionRoutingTurnBaseline(sessionId) {
     try {
       const sid = normalizeSessionId(sessionId);
       if (!sid) return null;
-      return _sessionRoutingTurnBaselines.get(sid) || null;
+      return _sessionRoutingTurnBaselines.get(sid) || readStoredSessionRoutingTurnBaseline(sid) || null;
     } catch {
       return null;
     }
@@ -7374,6 +7470,168 @@
       turnIndex: localIndex,
       localTurnIndex: localIndex,
       baseline,
+    };
+  }
+
+  function resolveSessionRoutingRollbackProtection(sessionId) {
+    try {
+      const baseline = getSessionRoutingTurnBaseline(sessionId);
+      if (!baseline) return null;
+      const backendBase = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
+      if (backendBase <= 0) return null;
+      return {
+        baseline,
+        protectedBeforeTurn: backendBase,
+        minFromTurn: backendBase + 1,
+        reason: String(baseline.reason || "session_routing"),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveVisibleCompletedTurnCountAgainstRoutingBaseline(sessionId, visibleCompletedTurnCount) {
+    try {
+      const visible = Math.max(0, Math.floor(Number(visibleCompletedTurnCount || 0)));
+      const baseline = getSessionRoutingTurnBaseline(sessionId);
+      if (!baseline) {
+        return {
+          status: "normal",
+          visibleCompletedTurnCount: visible,
+          completedTurnCount: visible,
+          baseline: null,
+        };
+      }
+      const localBase = Math.max(0, Math.floor(Number(baseline.localPairCountAtRoute || 0)));
+      const backendBase = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
+      if (backendBase <= 0) {
+        return {
+          status: "baseline_without_backend_turn",
+          visibleCompletedTurnCount: visible,
+          completedTurnCount: visible,
+          baseline,
+        };
+      }
+      const completedTurnCount = backendBase + Math.max(0, visible - localBase);
+      return {
+        status: completedTurnCount === visible ? "aligned" : "rebased",
+        visibleCompletedTurnCount: visible,
+        completedTurnCount,
+        baseline,
+        localPairCountAtRoute: localBase,
+        backendTurnAtRoute: backendBase,
+      };
+    } catch {
+      const visible = Math.max(0, Math.floor(Number(visibleCompletedTurnCount || 0)));
+      return {
+        status: "error",
+        visibleCompletedTurnCount: visible,
+        completedTurnCount: visible,
+        baseline: null,
+      };
+    }
+  }
+
+  function isSessionRoutingResumeAnchorReason(reason) {
+    const value = String(reason || "").trim();
+    return value === "timeline_copy" || value === "timeline_migrate" || value === "timeline_attach";
+  }
+
+  function resolveSessionRoutingResumeAnchorState(sessionId) {
+    try {
+      const sid = normalizeSessionId(sessionId);
+      if (!sid) return { active: false, reason: "missing_session" };
+      const baseline = getSessionRoutingTurnBaseline(sid);
+      if (!baseline) return { active: false, reason: "no_routing_baseline" };
+      const baselineReason = String(baseline.reason || "");
+      if (!isSessionRoutingResumeAnchorReason(baselineReason)) {
+        return { active: false, reason: "baseline_not_resume_route", baseline };
+      }
+      const backendBase = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
+      if (backendBase <= 0) return { active: false, reason: "baseline_without_backend_turn", baseline };
+      const nextTurn = Math.max(0, Math.floor(Number(peekNextTurnIndex(sid) || 0)));
+      const postRouteTurn = nextTurn > backendBase ? nextTurn - backendBase : 0;
+      if (postRouteTurn < 1 || postRouteTurn > SESSION_ROUTING_RESUME_ANCHOR_MAX_TURNS) {
+        return {
+          active: false,
+          reason: "outside_resume_window",
+          baseline,
+          backendTurnAtRoute: backendBase,
+          nextTurn,
+          postRouteTurn,
+          maxPostRouteTurns: SESSION_ROUTING_RESUME_ANCHOR_MAX_TURNS,
+        };
+      }
+      return {
+        active: true,
+        baseline,
+        routeReason: baselineReason,
+        backendTurnAtRoute: backendBase,
+        nextTurn,
+        postRouteTurn,
+        maxPostRouteTurns: SESSION_ROUTING_RESUME_ANCHOR_MAX_TURNS,
+      };
+    } catch (err) {
+      debugLog("resolveSessionRoutingResumeAnchorState failed:", err && err.message);
+      return { active: false, reason: "error" };
+    }
+  }
+
+  function buildSessionRoutingResumeAnchorText(anchorState) {
+    try {
+      if (!anchorState || !anchorState.active) return "";
+      const routeReason = String(anchorState.routeReason || "session_routing");
+      const turnLabel = String(anchorState.postRouteTurn || "?") + "/" + String(anchorState.maxPostRouteTurns || SESSION_ROUTING_RESUME_ANCHOR_MAX_TURNS);
+      return [
+        "━━ Resume Anchor ━━",
+        "Temporary post-" + routeReason + " handoff anchor (" + turnLabel + "). This is support-only and must not be stored or treated as new long-term memory.",
+        "Treat the following Input Context as the carried scene state from the source Archive session, not as unrelated old recall.",
+        "Preserve unresolved scene constraints, relationship state, current items, location, and verified evidence until the new turns update them. The current user input remains highest priority.",
+      ].join("\n");
+    } catch {
+      return "";
+    }
+  }
+
+  function applySessionRoutingResumeAnchorToInputContext(inputContextResult, sessionId) {
+    const inputCtx = inputContextResult && typeof inputContextResult === "object"
+      ? inputContextResult
+      : { applied: false, text: "", sections: [], dropped: [], chars: 0, sources: [] };
+    const anchorState = resolveSessionRoutingResumeAnchorState(sessionId);
+    if (!anchorState || !anchorState.active) {
+      return { inputContext: inputCtx, resumeAnchor: anchorState };
+    }
+    const anchorText = buildSessionRoutingResumeAnchorText(anchorState);
+    if (!anchorText) return { inputContext: inputCtx, resumeAnchor: anchorState };
+    const baseText = String(inputCtx.text || "").trim();
+    const text = [anchorText, baseText].filter(Boolean).join("\n");
+    const anchorSection = {
+      key: "resume_anchor",
+      label: "Resume Anchor",
+      text: anchorText,
+      source: "session_routing_baseline",
+      family: "resume",
+      mandatory: true,
+      displayOrder: -1,
+      routeReason: anchorState.routeReason,
+      postRouteTurn: anchorState.postRouteTurn,
+      maxPostRouteTurns: anchorState.maxPostRouteTurns,
+    };
+    const sections = [anchorSection].concat(Array.isArray(inputCtx.sections) ? inputCtx.sections : []);
+    const sources = Array.isArray(inputCtx.sources) ? inputCtx.sources.slice() : [];
+    if (sources.indexOf("session_routing_baseline") < 0) sources.unshift("session_routing_baseline");
+    return {
+      inputContext: {
+        ...inputCtx,
+        applied: true,
+        text,
+        sections,
+        chars: text.length,
+        slotCount: sections.length,
+        sources,
+        resumeAnchor: anchorState,
+      },
+      resumeAnchor: anchorState,
     };
   }
 
@@ -7532,21 +7790,88 @@
     }
   }
 
+  async function findLatestActiveChatCompletedTurnPair(sessionId) {
+    try {
+      const sid = String(sessionId || "").trim();
+      if (!sid) return null;
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
+      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
+      for (let i = pairs.length - 1; i >= 0; i--) {
+        const pair = pairs[i];
+        if (pair && Number(pair.turnIndex) > 0 && pair.userContent && pair.assistantContent) {
+          return Object.assign({}, pair, {
+            pairCount: pairs.length,
+            source: "active_chat_latest_pair",
+          });
+        }
+      }
+      return null;
+    } catch (err) {
+      debugLog("findLatestActiveChatCompletedTurnPair failed:", err && err.message);
+      return null;
+    }
+  }
+
+  async function findLatestActiveChatUnsavedCompletedTurnPair(sessionId) {
+    try {
+      const sid = String(sessionId || "").trim();
+      if (!sid) return null;
+      const pair = await findLatestActiveChatCompletedTurnPair(sid);
+      if (!pair || !pair.userContent || !pair.assistantContent || !Number.isFinite(Number(pair.turnIndex))) return null;
+      const latestBackendTurn = await safeCall(
+        () => fetchBackendLatestTurnIndexForSession(sid),
+        0,
+        "findLatestActiveChatUnsavedCompletedTurnPair.latestTurn"
+      );
+      const turnResolution = resolveBackfillPairTurnAgainstRoutingBaseline(sid, pair);
+      if (turnResolution && turnResolution.status === "skip_pre_route_visible_pair") return null;
+      const resolvedTurn = Number(turnResolution && turnResolution.turnIndex || pair.turnIndex || 0);
+      if (!Number.isFinite(resolvedTurn) || resolvedTurn < 1) return null;
+      if (resolvedTurn <= Number(latestBackendTurn || 0)) return null;
+      return Object.assign({}, pair, {
+        source: "active_chat_latest_unsaved_pair",
+        turnIndex: resolvedTurn,
+        localTurnIndex: Number(pair.turnIndex),
+        latestBackendTurn: Number(latestBackendTurn || 0),
+        turnResolution: String(turnResolution && turnResolution.status || "normal"),
+      });
+    } catch (err) {
+      debugLog("findLatestActiveChatUnsavedCompletedTurnPair failed:", err && err.message);
+      return null;
+    }
+  }
   async function reserveAfterRequestPersistenceTurnIndex(sessionId, userContent, assistantContent) {
     try {
       const sid = String(sessionId || "").trim();
       if (!sid) return nextTurnIndex(sessionId);
-      const activePair = await findActiveChatCompletedTurnPairForContent(sid, userContent, assistantContent);
-      if (activePair && Number(activePair.turnIndex) > 0) {
-        const latestBackendTurn = await safeCall(
-          () => fetchBackendLatestTurnIndexForSession(sid),
-          0,
-          "reserveAfterRequestLatestTurnIndex"
-        );
-        if (latestBackendTurn > 0) {
-          setTurnCounterAtLeast(sid, latestBackendTurn);
+      const latestBackendTurn = await safeCall(
+        () => fetchBackendLatestTurnIndexForSession(sid),
+        0,
+        "reserveAfterRequestLatestTurnIndex"
+      );
+      if (latestBackendTurn > 0) {
+        setTurnCounterAtLeast(sid, latestBackendTurn);
+      }
+      const previousNextTurnIndex = Math.max(peekNextTurnIndex(sid), Number(latestBackendTurn || 0) + 1);
+      let activePair = await findActiveChatCompletedTurnPairForContent(sid, userContent, assistantContent);
+      let activePairMatchMode = activePair ? "user_assistant_content" : "";
+      if (!activePair && normalizeTurnPairCompareText(userContent)) {
+        activePair = await findActiveChatCompletedTurnPairForUserContent(sid, userContent);
+        if (activePair) activePairMatchMode = "user_content";
+      }
+      if (!activePair) {
+        const latestPair = await findLatestActiveChatCompletedTurnPair(sid);
+        const wantedUser = normalizeTurnPairCompareText(userContent);
+        const wantedAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(assistantContent));
+        const latestUser = normalizeTurnPairCompareText(latestPair && latestPair.userContent);
+        const latestAssistant = normalizeTurnPairCompareText(latestPair && latestPair.assistantContent);
+        if (latestPair && ((wantedUser && latestUser === wantedUser) || (wantedAssistant && latestAssistant === wantedAssistant))) {
+          activePair = latestPair;
+          activePairMatchMode = wantedUser && latestUser === wantedUser ? "latest_user_content" : "latest_assistant_content";
         }
-        const previousNextTurnIndex = Math.max(peekNextTurnIndex(sid), Number(latestBackendTurn || 0) + 1);
+      }
+      if (activePair && Number(activePair.turnIndex) > 0) {
         const activePairTurnIndex = Number(activePair.turnIndex);
         const routingTurnResolution = resolveBackfillPairTurnAgainstRoutingBaseline(sid, activePair);
         const routingTurnIndex = routingTurnResolution && routingTurnResolution.status !== "skip_pre_route_visible_pair"
@@ -7563,6 +7888,7 @@
               ? "session_routing_baseline_rebased"
               : (activePairTurnIndex >= previousNextTurnIndex ? "active_chat_aligned" : "active_chat_visible_window_rebased"),
             source: activePair.source,
+            matchMode: activePairMatchMode || "unknown",
             turnIndex: resolvedTurnIndex,
             activeChatLocalTurnIndex: activePairTurnIndex,
             pairCount: activePair.pairCount,
@@ -8573,6 +8899,7 @@
       if (!sid) return;
       delete _sessionSnapshots[sid];
       _sessionTurnIndices.delete(sid);
+      forgetSessionRoutingTurnBaseline(sid);
       _rollbackTurnLedgerBySession.delete(sid || "default");
       safeStorageRemove(rollbackTurnLedgerStorageKey(sid));
       persistentDelete(rollbackTurnLedgerStorageKey(sid)).catch(function() {});
@@ -10301,6 +10628,14 @@
     return marker.slice(0, 200);
   }
 
+  function normalizeVertexFlexModeSetting(value) {
+    return sanitizeEnumValue(value, DEFAULT_SETTINGS.pluginMainVertexFlexMode, VERTEX_FLEX_MODE_OPTIONS);
+  }
+
+  function sanitizeProviderOverrideJsonSetting(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
   function normalizeReasoningEffort(value, defaultVal) {
     const fallback = (typeof defaultVal === "string" && defaultVal.trim()) ? defaultVal.trim() : "none";
     return sanitizeEnumValue(value, fallback, REASONING_EFFORT_OPTIONS);
@@ -10533,6 +10868,33 @@
       payload.budget_tokens = reasoningBudgetTokens;
     }
     return payload;
+  }
+
+  function applyProviderRequestOverrideFields(payload, source) {
+    if (!payload || typeof payload !== "object") return payload;
+    const isSub = source === "sub";
+    const provider = normalizeLlmProvider(payload.provider || (isSub ? settings.subLlmProvider : settings.pluginMainProvider), "openai");
+    if (provider !== "vertex") return payload;
+    const flexMode = normalizeVertexFlexModeSetting(isSub ? settings.subLlmVertexFlexMode : settings.pluginMainVertexFlexMode);
+    const extraHeaders = sanitizeProviderOverrideJsonSetting(isSub ? settings.subLlmExtraHeadersJson : settings.pluginMainExtraHeadersJson);
+    const extraBody = sanitizeProviderOverrideJsonSetting(isSub ? settings.subLlmExtraBodyJson : settings.pluginMainExtraBodyJson);
+    if (flexMode && flexMode !== "off") payload.vertex_flex_mode = flexMode;
+    if (extraHeaders) payload.extra_headers_json = extraHeaders;
+    if (extraBody) payload.extra_body_json = extraBody;
+    return payload;
+  }
+
+  function providerRequestOverrideSettingsForProvider(s, source, provider) {
+    const cfg = s || {};
+    if (normalizeLlmProvider(provider, "openai") !== "vertex") {
+      return { vertexFlexMode: "off", extraHeadersJson: "", extraBodyJson: "" };
+    }
+    const isSub = source === "sub";
+    return {
+      vertexFlexMode: normalizeVertexFlexModeSetting(isSub ? cfg.subLlmVertexFlexMode : cfg.pluginMainVertexFlexMode),
+      extraHeadersJson: sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraHeadersJson : cfg.pluginMainExtraHeadersJson),
+      extraBodyJson: sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraBodyJson : cfg.pluginMainExtraBodyJson),
+    };
   }
 
   function resolveReasoningSyncUiState(options) {
@@ -10776,6 +11138,9 @@
     }
     merged.pluginMainReasoningEffort = getPluginMainReasoningEffortSetting(merged.pluginMainReasoningEffort);
     merged.pluginMainReasoningBudgetTokens = getPluginMainReasoningBudgetTokensSetting(merged.pluginMainReasoningBudgetTokens);
+    merged.pluginMainVertexFlexMode = normalizeVertexFlexModeSetting(merged.pluginMainVertexFlexMode);
+    merged.pluginMainExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraHeadersJson);
+    merged.pluginMainExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraBodyJson);
     merged.supervisorTimeout = sanitizeNumber(merged.supervisorTimeout, 60, 5, 6000);
     merged.criticTimeout = sanitizeNumber(merged.criticTimeout, 90, 5, 6000);
     merged.subLlmProvider = getSubLlmProviderSetting(merged.subLlmProvider);
@@ -10791,6 +11156,9 @@
     }
     merged.subLlmReasoningEffort = getSubLlmReasoningEffortSetting(merged.subLlmReasoningEffort);
     merged.subLlmReasoningBudgetTokens = getSubLlmReasoningBudgetTokensSetting(merged.subLlmReasoningBudgetTokens);
+    merged.subLlmVertexFlexMode = normalizeVertexFlexModeSetting(merged.subLlmVertexFlexMode);
+    merged.subLlmExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraHeadersJson);
+    merged.subLlmExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraBodyJson);
     merged.tableReadLlmProvider = getTableReadLlmProviderSetting(merged.tableReadLlmProvider);
     merged.tableReadLlmTimeoutMs = getTableReadLlmTimeoutSettingMs(merged.tableReadLlmTimeoutMs);
     merged.tableReadLlmTemperature = getTableReadLlmTemperatureSetting(merged.tableReadLlmTemperature);
@@ -10962,6 +11330,8 @@
     const effectiveCritic = resolveEffectiveCriticConfig(s);
       const mainProvider = getPluginMainProviderSetting(s.pluginMainProvider);
       const criticProvider = getSubLlmProviderSetting(s.subLlmProvider || mainProvider);
+    const mainOverrides = providerRequestOverrideSettingsForProvider(s, "main", mainProvider);
+    const criticOverrides = providerRequestOverrideSettingsForProvider(s, "sub", criticProvider);
     const body = {
         mainProvider,
       mainApiKey: typeof s.pluginMainApiKey === "string" ? s.pluginMainApiKey : "",
@@ -10972,6 +11342,9 @@
       mainReasoningPreset: getPluginMainReasoningPresetSetting(s.pluginMainReasoningPreset),
       mainReasoningEffort: getPluginMainReasoningEffortSetting(s.pluginMainReasoningEffort),
       mainReasoningBudgetTokens: getPluginMainReasoningBudgetTokensSetting(s.pluginMainReasoningBudgetTokens),
+      mainVertexFlexMode: mainOverrides.vertexFlexMode,
+      mainExtraHeadersJson: mainOverrides.extraHeadersJson,
+      mainExtraBodyJson: mainOverrides.extraBodyJson,
         criticProvider,
       criticApiKey: effectiveCritic.apiKey,
       criticEndpoint: effectiveCritic.endpoint,
@@ -10981,6 +11354,9 @@
       criticReasoningPreset: getSubLlmReasoningPresetSetting(s.subLlmReasoningPreset),
       criticReasoningEffort: getSubLlmReasoningEffortSetting(s.subLlmReasoningEffort),
       criticReasoningBudgetTokens: getSubLlmReasoningBudgetTokensSetting(s.subLlmReasoningBudgetTokens),
+      criticVertexFlexMode: criticOverrides.vertexFlexMode,
+      criticExtraHeadersJson: criticOverrides.extraHeadersJson,
+      criticExtraBodyJson: criticOverrides.extraBodyJson,
       supervisorProvider: mainProvider,
       supervisorApiKey: typeof s.pluginMainApiKey === "string" ? s.pluginMainApiKey : "",
       supervisorEndpoint: typeof s.pluginMainEndpoint === "string" ? s.pluginMainEndpoint : "",
@@ -10990,6 +11366,9 @@
       supervisorReasoningPreset: getPluginMainReasoningPresetSetting(s.pluginMainReasoningPreset),
       supervisorReasoningEffort: getPluginMainReasoningEffortSetting(s.pluginMainReasoningEffort),
       supervisorReasoningBudgetTokens: getPluginMainReasoningBudgetTokensSetting(s.pluginMainReasoningBudgetTokens),
+      supervisorVertexFlexMode: mainOverrides.vertexFlexMode,
+      supervisorExtraHeadersJson: mainOverrides.extraHeadersJson,
+      supervisorExtraBodyJson: mainOverrides.extraBodyJson,
       embeddingApiKey: typeof s.embeddingApiKey === "string" ? s.embeddingApiKey : "",
       embeddingProvider: normalizeEmbeddingProvider(s.embeddingProvider, DEFAULT_SETTINGS.embeddingProvider),
       embeddingEndpoint: typeof s.embeddingEndpoint === "string" ? s.embeddingEndpoint : "",
@@ -11013,6 +11392,7 @@
     const effectiveCritic = resolveEffectiveCriticConfig(settings);
     const mainProvider = getPluginMainProviderSetting(settings.pluginMainProvider);
     const criticProvider = getSubLlmProviderSetting(settings.subLlmProvider || mainProvider);
+    const criticOverrides = providerRequestOverrideSettingsForProvider(settings, "sub", criticProvider);
     const meta = {
       critic: {
         api_key: effectiveCritic.apiKey,
@@ -11025,6 +11405,9 @@
         reasoning_preset: getSubLlmReasoningPresetSetting(settings.subLlmReasoningPreset),
         reasoning_effort: getSubLlmReasoningEffortSetting(settings.subLlmReasoningEffort),
         reasoning_budget_tokens: getSubLlmReasoningBudgetTokensSetting(settings.subLlmReasoningBudgetTokens),
+        vertex_flex_mode: criticOverrides.vertexFlexMode,
+        extra_headers_json: criticOverrides.extraHeadersJson,
+        extra_body_json: criticOverrides.extraBodyJson,
       },
       embedding: {
         api_key: String(settings.embeddingApiKey || "").trim(),
@@ -11076,6 +11459,10 @@
     if (copy.subLlmApiKey) copy.subLlmApiKey = maskApiKey(copy.subLlmApiKey);
     if (copy.tableReadLlmApiKey) copy.tableReadLlmApiKey = maskApiKey(copy.tableReadLlmApiKey);
     if (copy.embeddingApiKey) copy.embeddingApiKey = maskApiKey(copy.embeddingApiKey);
+    if (copy.pluginMainExtraHeadersJson) copy.pluginMainExtraHeadersJson = "[configured]";
+    if (copy.pluginMainExtraBodyJson) copy.pluginMainExtraBodyJson = "[configured]";
+    if (copy.subLlmExtraHeadersJson) copy.subLlmExtraHeadersJson = "[configured]";
+    if (copy.subLlmExtraBodyJson) copy.subLlmExtraBodyJson = "[configured]";
     return copy;
   }
 
@@ -11420,8 +11807,10 @@
     return data;
   }
 
-  async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext) {
+  async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext, options = {}) {
     try {
+      const prepareOptions = options && typeof options === "object" ? options : {};
+      const freshFirstTurnLightMode = !!prepareOptions.freshFirstTurnLightMode;
       const resolvedGuideMode = resolveNarrativeGuideMode(
         settings.narrativeGuideMode,
         messages,
@@ -11447,16 +11836,23 @@
           narrative_stance: settings.storyNarrativeStance || "balanced",
           apply_mode: settings.pluginMainApplyMode || "shadow",
           takeover_mode: "off",  // 사용자 경로 단순화: takeover 비활성 고정
-          injection_enabled: true,
-          input_context_enabled: !!settings.inputContextEnabled,
-          max_injection_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,
-          max_input_context_chars: settings.maxInputContextChars || 800,
+          injection_enabled: !freshFirstTurnLightMode,
+          input_context_enabled: freshFirstTurnLightMode ? false : !!settings.inputContextEnabled,
+          max_injection_chars: freshFirstTurnLightMode ? 0 : (settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars),
+          max_input_context_chars: freshFirstTurnLightMode ? 0 : (settings.maxInputContextChars || 800),
           episode_interval_turns: settings.episodeIntervalTurns || DEFAULT_SETTINGS.episodeIntervalTurns,
           supervisor_enabled: true,
-          top_k: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
+          top_k: freshFirstTurnLightMode ? 0 : sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
         },
       };
       body.client_meta = body.client_meta || {};
+      if (freshFirstTurnLightMode) {
+        body.client_meta.fresh_first_turn_light_mode = {
+          enabled: true,
+          reason: "skip_past_recall_keep_supervisor_and_raw_turn_contract",
+          meta: prepareOptions.freshFirstTurnLightModeMeta || null,
+        };
+      }
       const normalizedLanguageContext = normalizeLanguageContextTrace(languageContext);
       if (normalizedLanguageContext) {
         body.client_meta.language_context = normalizedLanguageContext;
@@ -14203,7 +14599,16 @@
     try {
       debugLog("executeAutoRollback: session=", sessionId, "turn=", turnIndex, "reason=", reason, "source=", requestSource);
 
-      const result = await bridgeFetch(`/rollback/${turnIndex}?chat_session_id=${encodeURIComponent(sessionId)}&req_source=${encodeURIComponent(requestSource)}`, {
+      const rollbackParams = new URLSearchParams();
+      rollbackParams.set("chat_session_id", String(sessionId || ""));
+      rollbackParams.set("req_source", requestSource);
+      const routingProtection = requestSource === "manual" ? null : resolveSessionRoutingRollbackProtection(sessionId);
+      if (routingProtection) {
+        rollbackParams.set("protected_before_turn", String(routingProtection.protectedBeforeTurn));
+        rollbackParams.set("min_from_turn", String(routingProtection.minFromTurn));
+      }
+
+      const result = await bridgeFetch(`/rollback/${turnIndex}?${rollbackParams.toString()}`, {
         method: "DELETE",
         timeoutMs: getRequestTimeoutSettingMs(),
       });
@@ -14221,12 +14626,16 @@
 
         // turn counter를 rollback 지점으로 되돌림
         const newCounter = Math.max(0, turnIndex - 1);
+        const effectiveRollbackTurn = Number.isFinite(Number(result.turn_index)) && Number(result.turn_index) > 0
+          ? Number(result.turn_index)
+          : turnIndex;
+        const rollbackCounter = Math.max(0, effectiveRollbackTurn - 1);
         const rollbackKey = turnCounterStorageKey(sessionId);
-        safeStorageSet(rollbackKey, String(newCounter));
-        persistentSet(rollbackKey, String(newCounter)).catch(() => {});
-        setSessionTurnIndex(sessionId, newCounter);
+        safeStorageSet(rollbackKey, String(rollbackCounter));
+        persistentSet(rollbackKey, String(rollbackCounter)).catch(() => {});
+        setSessionTurnIndex(sessionId, rollbackCounter);
         _rollbackInvalidationBySession.set(sessionId, Date.now());
-        const tableReadPolishRemoved = await removeTableReadPolishStorageFromTurn(sessionId, turnIndex);
+        const tableReadPolishRemoved = await removeTableReadPolishStorageFromTurn(sessionId, effectiveRollbackTurn);
 
         // L-3c: guidance state 무효화 여부를 runtime state에 기록
         //   backend L-3b에서 GuidancePlanState.state_status="empty"로 리셋됨.
@@ -14237,18 +14646,20 @@
         }
         _rollbackInvalidationStateBySession.set(
           sessionId || "default",
-          buildRollbackInvalidationStateOr1g(sessionId, turnIndex, reason, result, { requestSource })
+          buildRollbackInvalidationStateOr1g(sessionId, effectiveRollbackTurn, reason, result, { requestSource })
         );
         if (updateAutoState) {
           updateRuntimeState("lastAutoRollback", rollbackPartial ? "warn" : "ok", {
             detail: rollbackPartial
-              ? `rollback partial warning (turn ${turnIndex}): ${summarizeRollbackErrors(result)}`
-              : `turn ${turnIndex}+ rolled back (${reason})`,
+              ? `rollback partial warning (turn ${effectiveRollbackTurn}): ${summarizeRollbackErrors(result)}`
+              : `turn ${effectiveRollbackTurn}+ rolled back (${reason})`,
             sessionId,
-            turnIndex,
+            turnIndex: effectiveRollbackTurn,
+            requestedTurnIndex: turnIndex,
             deleted: result,
             guidanceInvalidated,
             tableReadPolishRemoved,
+            sessionRoutingProtection: routingProtection || null,
           });
         }
         if (guidanceInvalidated) {
@@ -14256,6 +14667,7 @@
         }
         console.log(LOG_PREFIX, `${requestSource === "auto" ? "Auto" : "Manual"}-rollback executed: session=${sessionId} from_turn=${turnIndex}`,
           `deleted: logs=${result.deleted_chat_logs||0} mem=${result.deleted_memories||0} kg=${result.deleted_kg_triples||0}`,
+          effectiveRollbackTurn !== turnIndex ? `| clamped_from=${turnIndex} to=${effectiveRollbackTurn}` : "",
           guidanceInvalidated ? "| guidance: invalidated" : "",
           rollbackPartial ? "| partial_error warning" : "");
         return true;
@@ -14432,28 +14844,37 @@
       if (!Array.isArray(rawMessages) || rawMessages.length === 0) return false;
       const comparable = extractActiveChatComparableMessages(activeChat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable);
-      const activeCompletedTurnCount = pairs.length;
+      const visibleCompletedTurnCount = pairs.length;
+      const completedTurnResolution = resolveVisibleCompletedTurnCountAgainstRoutingBaseline(sid, visibleCompletedTurnCount);
+      const activeCompletedTurnCount = Number(completedTurnResolution.completedTurnCount || visibleCompletedTurnCount || 0);
       const latestBackendTurn = await fetchBackendLatestTurnIndexForSession(sid);
       if (!(latestBackendTurn > activeCompletedTurnCount)) return false;
       const backendGap = latestBackendTurn - activeCompletedTurnCount;
       const ledgerTailRollback = buildLedgerVerifiedTailRollback(sid, comparable, activeCompletedTurnCount, latestBackendTurn);
+      const baselineTailRollbackAllowed = !!(completedTurnResolution.baseline)
+        && backendGap > 0
+        && backendGap <= ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS;
       const recentTrimGuard = getRecentRisuHistoryTrimGuard(sid);
       if (recentTrimGuard && !ledgerTailRollback) {
         updateRuntimeState("lastAutoRollback", "skipped", {
           detail: "active chat history trim/cut protected; DB rows preserved",
           sessionId: sid,
           activeCompletedTurnCount,
+          visibleCompletedTurnCount,
           backendLatestTurnIndex: latestBackendTurn,
+          turnResolution: completedTurnResolution,
           guard: recentTrimGuard,
         });
         return false;
       }
-      if (!options.allowBlindTailRollback && !ledgerTailRollback) {
+      if (!options.allowBlindTailRollback && !ledgerTailRollback && !baselineTailRollbackAllowed) {
         updateRuntimeState("lastAutoRollback", "skipped", {
           detail: "active chat tail is shorter than backend by " + backendGap + " turns; blind rollback blocked, use explicit Explorer delete to remove DB rows",
           sessionId: sid,
           activeCompletedTurnCount,
+          visibleCompletedTurnCount,
           backendLatestTurnIndex: latestBackendTurn,
+          turnResolution: completedTurnResolution,
           policyVersion: "or1f.risu_history_trim_guard.v2",
           guardReason: "blind_tail_reconcile_blocked",
         });
@@ -14464,7 +14885,9 @@
           detail: "active chat shorter than backend by " + backendGap + " turns; blind rollback blocked as possible /cut history trim",
           sessionId: sid,
           activeCompletedTurnCount,
+          visibleCompletedTurnCount,
           backendLatestTurnIndex: latestBackendTurn,
+          turnResolution: completedTurnResolution,
           policyVersion: "or1f.risu_history_trim_guard.v1",
         });
         return false;
@@ -14484,10 +14907,12 @@
 
       const rolledBack = await executeAutoRollback(sid, rollbackFrom, "active_chat_tail_missing_from_runtime", {
         activeCompletedTurnCount,
+        visibleCompletedTurnCount,
         backendLatestTurnIndex: latestBackendTurn,
         rollbackToTurn: rollbackFrom,
         reason: options.reason || "runtime_tail_reconcile",
         tailReconcileVerification: ledgerTailRollback || null,
+        turnResolution: completedTurnResolution,
         duplicateSignature,
       });
       if (rolledBack) updateSessionSnapshot(sid, comparable);
@@ -19669,6 +20094,7 @@
       proxyBody.max_completion_tokens = maxCompletionTokens;
     }
     applyReasoningFieldsToPayload(proxyBody, reasoningControls, reasoningPreset, reasoningEffort, reasoningBudgetTokens);
+    applyProviderRequestOverrideFields(proxyBody, "main");
 
     // bridgeFetch는 성공 시 파싱된 data 객체, 실패 시 null 반환
     const data = await bridgeFetch("/proxy/plugin-main", {
@@ -20107,6 +20533,7 @@
       payload.max_completion_tokens = maxCompletionTokens;
     }
     applyReasoningFieldsToPayload(payload, reasoningControls, reasoningPreset, reasoningEffort, reasoningBudgetTokens);
+    applyProviderRequestOverrideFields(payload, "sub");
 
     const data = await bridgeFetch("/proxy/plugin-main", {
       method: "POST",
@@ -31663,7 +32090,7 @@
         blocks: budgetResult.blocks.map(b => ({ label: b.label, chars: b.chars })),
         trimmed: budgetResult.trimmed,
         // Sprint 4-B-2 placeholder
-        inputContext: { applied: false, sections: [], dropped: [], chars: 0, budget: 0, maxSlots: 0, slotCount: 0, slotGovernorPolicyVersion: null, slotGovernorMode: null, adaptiveProfile: "empty", signals: null, needs: [], risks: [], sources: [], staleArcDemotionApplied: false, helperOverlapSuppressionApplied: false, helperOverlapLabels: [], supportLaneNote: "Support-only anchor lane; does not overwrite canonical state." },
+        inputContext: { applied: false, sections: [], dropped: [], chars: 0, budget: 0, maxSlots: 0, slotCount: 0, slotGovernorPolicyVersion: null, slotGovernorMode: null, adaptiveProfile: "empty", signals: null, needs: [], risks: [], sources: [], staleArcDemotionApplied: false, helperOverlapSuppressionApplied: false, helperOverlapLabels: [], resumeAnchor: null, supportLaneNote: "Support-only anchor lane; does not overwrite canonical state." },
       };
 
       // Sprint 4-B-2: Input Context 주입 — 마지막 user 메시지 직전에 삽입
@@ -31680,6 +32107,11 @@
             triggerMode: continuityTrace ? continuityTrace.triggerMode || null : null,
             sagaText: sagaText,
           });
+          const resumeAnchorResult = applySessionRoutingResumeAnchorToInputContext(
+            inputCtx,
+            (orchResult && orchResult._chatSessionId) ? orchResult._chatSessionId : null,
+          );
+          inputCtx = resumeAnchorResult.inputContext || inputCtx;
           injectionResult.inputContext = {
             applied: inputCtx.applied,
             sections: inputCtx.sections || [],
@@ -31699,6 +32131,7 @@
             staleArcDemotionApplied: !!inputCtx.staleArcDemotionApplied,
             helperOverlapSuppressionApplied: !!inputCtx.helperOverlapSuppressionApplied,
             helperOverlapLabels: inputCtx.helperOverlapLabels || [],
+            resumeAnchor: inputCtx.resumeAnchor || resumeAnchorResult.resumeAnchor || null,
             supportLaneNote: inputCtx.supportLaneNote || "Support-only anchor lane; does not overwrite canonical state.",
             source: Array.isArray(inputCtx.sources) && inputCtx.sources.length > 0
               ? Array.from(new Set(inputCtx.sources)).join("+")
@@ -32741,19 +33174,11 @@
       // skeleton 응답을 받아도 기존 local orchestration path는 그대로 유지된다.
       // backend off / timeout 시 fail-open으로 진행.
       if (isSaveType(type)) {
-        if (freshFirstTurnLightMode) {
-          _lastPrepareTurnSource = "fresh-first-turn-light";
-          _lastPrepareTurnFallbackReason = "recall_skipped_supervisor_local";
-          _lastPrepareTurnBundle = null;
-          updateRuntimeState("prepareTurnStatus", "ok", {
-            source: _lastPrepareTurnSource,
-            fallback_reason: _lastPrepareTurnFallbackReason,
-            detail: "fresh first turn light mode",
-            meta: freshFirstTurnLightModeMeta,
-          });
-        } else {
         try {
-          const ptResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext);
+          const ptResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext, {
+            freshFirstTurnLightMode,
+            freshFirstTurnLightModeMeta,
+          });
           if (ptResult) {
             _lastPrepareTurnSource = ptResult.source || "backend-off";
             // fallback_reason: "" (완전 성공) 이 falsy 처리되지 않도록 ?? 방어
@@ -32783,7 +33208,6 @@
           _lastPrepareTurnSource = "backend-error";
           _lastPrepareTurnFallbackReason = "backend_error";
           _lastPrepareTurnBundle = null;
-        }
         }
 
         orchestrationDirtySignals = resolveOrchestrationDirtySignalsOr1c(orchSessionId, {
@@ -33634,6 +34058,7 @@
       const recentCtx = (lastOrchResult && Array.isArray(lastOrchResult._recentContext)) ? lastOrchResult._recentContext : [];
       let userInput = (lastOrchResult && lastOrchResult._userInput) ? String(lastOrchResult._userInput) : "";
       let userInputRecoverySource = "";
+      let activeChatLatestSavePair = null;
       let actualEmptyUserInput = !!(lastOrchResult && lastOrchResult._actualEmptyUserInput);
       const actualEmptyRawInput = peekActualEmptyRawInputForSession(chatSessionId);
       if (actualEmptyRawInput && shouldSkipUserInputPersistence(userInput)) {
@@ -33671,6 +34096,16 @@
         if (backendUserInput && !shouldSkipUserInputPersistence(backendUserInput)) {
           userInput = String(backendUserInput || "");
           userInputRecoverySource = "backend_chat_logs";
+        }
+      }
+      if (!actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
+        activeChatLatestSavePair = await findLatestActiveChatUnsavedCompletedTurnPair(chatSessionId);
+        if (activeChatLatestSavePair && !shouldSkipUserInputPersistence(activeChatLatestSavePair.userContent)) {
+          userInput = String(activeChatLatestSavePair.userContent || "");
+          userInputRecoverySource = "active_chat_latest_unsaved_pair";
+          if (activeChatLatestSavePair.assistantContent) {
+            recoveredAssistantContent = String(activeChatLatestSavePair.assistantContent || "");
+          }
         }
       }
       let safeSavedUserInput = shouldSkipUserInputPersistence(userInput) ? "" : userInput;
@@ -33732,7 +34167,14 @@
       }
       if (!String(safeSavedUserInput || "").trim()) {
         const skippedTurnIdx = peekNextTurnIndex(chatSessionId);
-        updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: skippedTurnIdx, detail: "user_input_missing; save skipped" });
+        const userInputMissingRecoveryArmed = !syntheticAfterRequest;
+        if (userInputMissingRecoveryArmed) {
+          armStreamingAfterRequestWatch(chatSessionId, type, "user_input_missing");
+        }
+        const userInputMissingDetail = userInputMissingRecoveryArmed
+          ? "user_input_missing; active chat recovery armed"
+          : "user_input_missing; save skipped";
+        updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: skippedTurnIdx, detail: userInputMissingDetail });
         updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: skippedTurnIdx, detail: "critic skipped: user_input_missing" });
         updateRuntimeState("lastCompleteTurnStatus", "idle", {
           source: "local",
@@ -33815,7 +34257,7 @@
           }
         }
       }
-      let activeChatPairAlignment = null;
+      let activeChatPairAlignment = activeChatLatestSavePair || null;
       if (!turnOocGuardApplied && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
         const currentUserComparableForAssistantLookup = normalizeTurnPairCompareText(safeSavedUserInput);
         const currentUserIsAutoContinueForAssistantLookup =
@@ -43379,6 +43821,9 @@ html,body{width:100%;height:100%;overflow:hidden}
 .mo-tl-session-migrate{flex:0 0 auto;white-space:nowrap;border:1px solid #305b7d;background:#102033;color:#9fd2ff;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
 .mo-tl-session-migrate:hover{background:#153451;border-color:#3498db;color:#fff}
 .mo-tl-session-migrate:disabled{opacity:.55;cursor:wait}
+.mo-tl-session-copy{flex:0 0 auto;white-space:nowrap;border:1px solid #6d5b2b;background:#211b0f;color:#ffd889;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
+.mo-tl-session-copy:hover{background:#362913;border-color:#d8a83a;color:#fff}
+.mo-tl-session-copy:disabled{opacity:.55;cursor:wait}
 .mo-tl-session-attach{flex:0 0 auto;white-space:nowrap;border:1px solid #3c6852;background:#10261c;color:#a8e7c7;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
 .mo-tl-session-attach:hover{background:#153728;border-color:#39b77a;color:#fff}
 .mo-tl-session-attach:disabled{opacity:.55;cursor:wait}
@@ -44590,6 +45035,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if (meta.sourceSessionId !== undefined) _sessionMigrationUi.sourceSessionId = String(meta.sourceSessionId || "");
     if (meta.targetSessionId !== undefined) _sessionMigrationUi.targetSessionId = String(meta.targetSessionId || "");
     if (meta.migrationId !== undefined) _sessionMigrationUi.migrationId = Number(meta.migrationId || 0);
+    if (meta.migrationMode !== undefined) _sessionMigrationUi.migrationMode = String(meta.migrationMode || "");
     refreshTimelineUI();
   }
 
@@ -44630,6 +45076,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       sourceSessionId: sourceSid,
       targetSessionId: targetSid,
       migrationId: 0,
+      migrationMode: "",
     });
     try {
       const observedChatUniqueId = activeIdentity && activeIdentity.chatUniqueId ? activeIdentity.chatUniqueId : "";
@@ -44676,6 +45123,136 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
   }
 
+  function sessionMigrationCopyLastBridgeFailure(path, fallback) {
+    try {
+      const item = _lastBridgeFailureByPath.get(String(path || ""));
+      if (item && item.detail) return String(item.detail);
+    } catch { /* no-op */ }
+    return String(fallback || "unknown");
+  }
+
+  async function bridgeFetchSessionCopyStep(phase, path, options) {
+    const result = await bridgeFetch(path, options);
+    if (result !== null) return result;
+    throw new Error(phase + ": " + sessionMigrationCopyLastBridgeFailure(path, "null response"));
+  }
+
+  async function runTimelineSessionCopy(sourceSessionId) {
+    const sourceSid = String(sourceSessionId || "").trim();
+    if (!sourceSid || timelineIsPlaceholderSessionId(sourceSid) || _sessionMigrationUi.running) return false;
+    let targetSid = "";
+    try {
+      targetSid = String(await getCurrentMigrationTargetSessionId() || "").trim();
+    } catch {
+      targetSid = "";
+    }
+    if (timelineIsPlaceholderSessionId(targetSid)) {
+      setSessionMigrationUiStatus("fail", t("timeline.migration.noActiveTarget"), { sourceSessionId: sourceSid, targetSessionId: targetSid, migrationMode: "copy_keep_source" });
+      return false;
+    }
+    if (!isCidSessionId(targetSid)) {
+      setSessionMigrationUiStatus("fail", t("timeline.migration.targetUnstable"), { sourceSessionId: sourceSid, targetSessionId: targetSid, migrationMode: "copy_keep_source" });
+      return false;
+    }
+    if (sourceSid === targetSid) {
+      setSessionMigrationUiStatus("fail", t("timeline.migration.sameSession"), { sourceSessionId: sourceSid, targetSessionId: targetSid, migrationMode: "copy_keep_source" });
+      return false;
+    }
+    const sourceLabel = getSessionDisplayLabel(sourceSid, false);
+    const targetLabel = getSessionDisplayLabel(targetSid, false);
+    const confirmMessage = tf("timeline.copy.confirm", {
+      source: sourceLabel + " / " + shortenSessionIdForDisplay(sourceSid),
+      target: targetLabel + " / " + shortenSessionIdForDisplay(targetSid),
+    });
+    if (typeof confirm === "function" && !confirm(confirmMessage)) return false;
+
+    _sessionMigrationUi.running = true;
+    setSessionMigrationUiStatus("running", t("timeline.copy.running"), {
+      sourceSessionId: sourceSid,
+      targetSessionId: targetSid,
+      migrationId: 0,
+      migrationMode: "copy_keep_source",
+    });
+    try {
+      const previewBody = {
+        source_session_id: sourceSid,
+        target_session_id: targetSid,
+        mode: "copy_keep_source",
+      };
+      const preview = await bridgeFetchSessionCopyStep("preview", "/sessions/migrate-preview", {
+        method: "POST",
+        body: previewBody,
+        timeoutMs: getRequestTimeoutSettingMs(),
+      });
+      if (!preview || preview.blocked) {
+        throw new Error(sessionMigrationBlockedReason(preview, "preview_blocked", "/sessions/migrate-preview"));
+      }
+
+      const completeOptions = {
+        method: "POST",
+        body: {
+          source_session_id: sourceSid,
+          target_session_id: targetSid,
+          mode: "copy_keep_source",
+          operator_note: "timeline_ui_copy_wizard",
+        },
+        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 30000),
+      };
+      const complete = await bridgeFetchSessionCopyStep("complete", "/sessions/migrate-complete", completeOptions);
+      if (!complete || complete.blocked || !Number(complete.migration_id || 0)) {
+        throw new Error(sessionMigrationBlockedReason(complete, "complete_blocked", "/sessions/migrate-complete"));
+      }
+      const migrationID = Number(complete.migration_id || 0);
+      _sessionMigrationUi.migrationId = migrationID;
+      _sessionMigrationUi.migrationMode = "copy_keep_source";
+
+      const reindex = await bridgeFetchSessionCopyStep("reindex", "/sessions/migrate-reindex", {
+        method: "POST",
+        body: { migration_id: migrationID },
+        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 60000),
+      });
+      if (!reindex || reindex.blocked) {
+        throw new Error(sessionMigrationBlockedReason(reindex, "reindex_blocked", "/sessions/migrate-reindex"));
+      }
+
+      _timelineState.selectedSessionId = targetSid;
+      _timelineState.sessionId = targetSid;
+      _timelineSelectedDetail = null;
+      _timelineState.detailItem = null;
+      const routingBaseline = await establishSessionRoutingTurnBaseline(targetSid, "timeline_copy");
+      updateRuntimeState("sessionWriteRouting", "ok", {
+        detail: "timeline copy target -> " + shortenSessionIdForDisplay(targetSid),
+        sourceSessionId: sourceSid,
+        targetSessionId: targetSid,
+        reason: "timeline_copy",
+        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
+      });
+      setSessionMigrationUiStatus("ok", tf("timeline.copy.success", { target: targetLabel }), {
+        sourceSessionId: sourceSid,
+        targetSessionId: targetSid,
+        migrationId: migrationID,
+        migrationMode: "copy_keep_source",
+        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
+      });
+      await loadTimelineData(true, { sessionId: targetSid, skipRuntimeSessionResolve: true });
+      return true;
+    } catch (err) {
+      const reason = err && err.message ? err.message : "unknown";
+      const detail = reason + " / source=" + shortenSessionIdForDisplay(sourceSid) + " / target=" + shortenSessionIdForDisplay(targetSid || "unresolved");
+      setSessionMigrationUiStatus("fail", tf("timeline.copy.failed", { reason: detail }), {
+        sourceSessionId: sourceSid,
+        targetSessionId: targetSid,
+        migrationMode: "copy_keep_source",
+      });
+      return false;
+    } finally {
+      _sessionMigrationUi.running = false;
+      refreshTimelineUI();
+    }
+  }
+
   async function runTimelineSessionMigration(sourceSessionId) {
     const sourceSid = String(sourceSessionId || "").trim();
     if (!sourceSid || timelineIsPlaceholderSessionId(sourceSid) || _sessionMigrationUi.running) return false;
@@ -44710,6 +45287,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       sourceSessionId: sourceSid,
       targetSessionId: targetSid,
       migrationId: 0,
+      migrationMode: "copy_then_lock_source",
     });
     try {
       const preview = await bridgeFetch("/sessions/migrate-preview", {
@@ -44779,6 +45357,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         sourceSessionId: sourceSid,
         targetSessionId: targetSid,
         migrationId: migrationID,
+        migrationMode: "copy_then_lock_source",
         routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
         routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
@@ -45333,6 +45912,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       ? '<div class="mo-status mo-status-' + escapeAttr(_sessionMigrationUi.status === "ok" ? "ok" : _sessionMigrationUi.status === "running" ? "wait" : "fail") + '">' + escapeAttr(_sessionMigrationUi.message) + '</div>'
       : '';
     const migrationOpsSourceId = String(_sessionMigrationUi.sourceSessionId || "").trim();
+    const migrationOpsMode = String(_sessionMigrationUi.migrationMode || "");
+    const migrationOpsCleanupHtml = migrationOpsMode === "copy_keep_source" ? "" :
+            '<button type="button" class="mo-tl-session-cleanup" data-timeline-session-cleanup-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.cleanupTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.cleanup")) + '</button>';
     const migrationOpsHtml = _sessionMigrationUi.migrationId && migrationOpsSourceId
       ? '<div class="mo-tl-migration-ops">' +
           '<div>' +
@@ -45341,7 +45923,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           '</div>' +
           '<div class="mo-tl-migration-ops-actions">' +
             '<button type="button" class="mo-tl-session-rollback" data-timeline-session-rollback-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.rollbackTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.rollback")) + '</button>' +
-            '<button type="button" class="mo-tl-session-cleanup" data-timeline-session-cleanup-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.cleanupTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.cleanup")) + '</button>' +
+            migrationOpsCleanupHtml +
           '</div>' +
         '</div>'
       : '';
@@ -45351,15 +45933,19 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const lifecycle = resolveRuntimeSessionLifecycle(sid);
       const sessionLabel = getSessionDisplayLabel(sid, false);
       const canAttach = !!(_timelineState.currentSessionId && sid && sid !== _timelineState.currentSessionId && !timelineIsPlaceholderSessionId(sid) && !lifecycle.deleted);
+      const canCopy = !!(_timelineState.currentSessionId && sid && sid !== _timelineState.currentSessionId && !timelineIsPlaceholderSessionId(sid) && !lifecycle.deleted);
       const canMigrate = !!(_timelineState.currentSessionId && sid && sid !== _timelineState.currentSessionId && !timelineIsPlaceholderSessionId(sid) && !lifecycle.deleted);
       const attachBtn = canAttach
         ? '<button type="button" class="mo-tl-session-attach" data-timeline-session-attach-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.attachTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.attachCurrent")) + '</button>'
+        : '';
+      const copyBtn = canCopy
+        ? '<button type="button" class="mo-tl-session-copy" data-timeline-session-copy-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.copyTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(_sessionMigrationUi.running && _sessionMigrationUi.sourceSessionId === sid ? t("timeline.button.loading") : t("timeline.button.copy")) + '</button>'
         : '';
       const migrateBtn = canMigrate
         ? '<button type="button" class="mo-tl-session-migrate" data-timeline-session-migrate-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.migrateTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(_sessionMigrationUi.running && _sessionMigrationUi.sourceSessionId === sid ? t("timeline.button.loading") : t("timeline.button.migrate")) + '</button>'
         : '';
       return '<div role="button" tabindex="0" class="mo-tl-session' + (active ? ' is-active' : '') + (lifecycle.deleted ? ' is-deleted' : '') + '" data-timeline-session-id="' + escapeAttr(sid) + '">' +
-        '<div class="mo-tl-session-meta is-head"><span class="mo-tl-session-name" title="' + escapeAttr(buildSessionDisplayTitle(sid)) + '">' + escapeAttr(sessionLabel) + '</span><span class="mo-tl-session-head-actions"><span class="mo-tl-session-badge is-' + escapeAttr(lifecycle.status) + '">' + escapeAttr(lifecycle.label) + '</span>' + attachBtn + migrateBtn + '<button type="button" class="mo-tl-session-delete" data-timeline-session-delete-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.deleteTitle")) + '">' + escapeAttr(t("timeline.button.delete")) + '</button></span></div>' +
+        '<div class="mo-tl-session-meta is-head"><span class="mo-tl-session-name" title="' + escapeAttr(buildSessionDisplayTitle(sid)) + '">' + escapeAttr(sessionLabel) + '</span><span class="mo-tl-session-head-actions"><span class="mo-tl-session-badge is-' + escapeAttr(lifecycle.status) + '">' + escapeAttr(lifecycle.label) + '</span>' + attachBtn + copyBtn + migrateBtn + '<button type="button" class="mo-tl-session-delete" data-timeline-session-delete-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.deleteTitle")) + '">' + escapeAttr(t("timeline.button.delete")) + '</button></span></div>' +
       '</div>';
     }).join("") : '<div class="mo-note">' + (_timelineState.sessionsLoading ? escapeAttr(t("timeline.note.loadingSessions")) : escapeAttr(t("timeline.note.noSessions"))) + '</div>';
     const streamHtml = items.length > 0 ? turnGroups.map(renderTimelineTurnGroup).join("") : renderTimelineEmptyState();
@@ -48526,6 +49112,22 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <label>Model</label>
         <input type="text" id="mo-pluginMainModel" value="${escapeAttr(s.pluginMainModel)}" placeholder="예: gpt-4o">
       </div>
+      <div class="mo-row" id="mo-pluginMainVertexFlexRow">
+        <label>Vertex Flex PayGo</label>
+        <select id="mo-pluginMainVertexFlexMode">
+          <option value="off"${(s.pluginMainVertexFlexMode || "off") === "off" ? " selected" : ""}>off</option>
+          <option value="provisioned_then_flex"${s.pluginMainVertexFlexMode === "provisioned_then_flex" ? " selected" : ""}>provisioned_then_flex</option>
+          <option value="flex_only"${s.pluginMainVertexFlexMode === "flex_only" ? " selected" : ""}>flex_only</option>
+        </select>
+      </div>
+      <div class="mo-row" id="mo-pluginMainExtraHeadersJsonRow">
+        <label>Extra Headers JSON</label>
+        <textarea id="mo-pluginMainExtraHeadersJson" rows="2" spellcheck="false" placeholder="{}">${escapeAttr(s.pluginMainExtraHeadersJson || "")}</textarea>
+      </div>
+      <div class="mo-row" id="mo-pluginMainExtraBodyJsonRow">
+        <label>Extra Body JSON</label>
+        <textarea id="mo-pluginMainExtraBodyJson" rows="2" spellcheck="false" placeholder="{}">${escapeAttr(s.pluginMainExtraBodyJson || "")}</textarea>
+      </div>
       <div class="mo-row mo-range-row">
         <label>Timeout (ms)</label>
         <input type="number" id="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? 60000}" min="5000" max="300000" step="5000">
@@ -48607,6 +49209,22 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       <div class="mo-row">
         <label>Model</label>
         <input type="text" id="mo-subLlmModel" value="${escapeAttr(s.subLlmModel)}" placeholder="예: gpt-4o-mini">
+      </div>
+      <div class="mo-row" id="mo-subLlmVertexFlexRow">
+        <label>Vertex Flex PayGo</label>
+        <select id="mo-subLlmVertexFlexMode">
+          <option value="off"${(s.subLlmVertexFlexMode || "off") === "off" ? " selected" : ""}>off</option>
+          <option value="provisioned_then_flex"${s.subLlmVertexFlexMode === "provisioned_then_flex" ? " selected" : ""}>provisioned_then_flex</option>
+          <option value="flex_only"${s.subLlmVertexFlexMode === "flex_only" ? " selected" : ""}>flex_only</option>
+        </select>
+      </div>
+      <div class="mo-row" id="mo-subLlmExtraHeadersJsonRow">
+        <label>Extra Headers JSON</label>
+        <textarea id="mo-subLlmExtraHeadersJson" rows="2" spellcheck="false" placeholder="{}">${escapeAttr(s.subLlmExtraHeadersJson || "")}</textarea>
+      </div>
+      <div class="mo-row" id="mo-subLlmExtraBodyJsonRow">
+        <label>Extra Body JSON</label>
+        <textarea id="mo-subLlmExtraBodyJson" rows="2" spellcheck="false" placeholder="{}">${escapeAttr(s.subLlmExtraBodyJson || "")}</textarea>
       </div>
       <div class="mo-row mo-range-row">
         <label>Timeout (ms)</label>
@@ -48919,6 +49537,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <div class="mo-dash">
           <div class="mo-dash-row"><span class="mo-dot mo-dot-ok"></span><span class="mo-dash-label">Plugin Build</span><span class="mo-dash-value">${escapeAttr(BUILD_LABEL)}</span></div>
           <div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Build Channel</span><span class="mo-dash-value">${escapeAttr(BUILD_CHANNEL)}</span></div>
+          <div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Build Time</span><span class="mo-dash-value">${escapeAttr(BUILD_TIME)}</span></div>
+          <div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Patch Notes</span><span class="mo-dash-value">${escapeAttr(BUILD_NOTES)}</span></div>
           ${formatStateRow("Continuity Debug", rs.lastContinuityDebug)}
         </div>
 
@@ -49114,6 +49734,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       btn.addEventListener("click", (e) => {
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-delete-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-attach-id]")) return;
+        if (e.target && e.target.closest && e.target.closest("[data-timeline-session-copy-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-migrate-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-rollback-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-cleanup-id]")) return;
@@ -49123,6 +49744,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         if (e.key !== "Enter" && e.key !== " ") return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-delete-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-attach-id]")) return;
+        if (e.target && e.target.closest && e.target.closest("[data-timeline-session-copy-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-migrate-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-rollback-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-cleanup-id]")) return;
@@ -49146,6 +49768,15 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         e.stopPropagation();
         const sid = btn.getAttribute("data-timeline-session-attach-id") || "";
         attachTimelineSessionToCurrentChat(sid);
+      });
+    });
+
+    document.querySelectorAll("[data-timeline-session-copy-id]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sid = btn.getAttribute("data-timeline-session-copy-id") || "";
+        runTimelineSessionCopy(sid);
       });
     });
 
@@ -49721,6 +50352,23 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const vertexEndpointPlaceholder = "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models";
       const vertexServiceAccountPlaceholder = '{"type":"service_account",...}';
       const vertexHintText = "LIBRA native 방식: 서비스 계정 JSON 전체와 /publishers/google/models까지의 endpoint prefix를 사용합니다. PROJECT_ID는 JSON의 project_id로 자동 치환됩니다. 모델은 gemini-3.5-flash처럼 google/ 없이 입력하세요.";
+      const syncVertexOverrideRows = (providerId, rowIds) => {
+        const providerEl = $(providerId);
+        if (!providerEl) return;
+        const sync = () => {
+          const isVertex = String(providerEl.value || "").trim().toLowerCase() === "vertex";
+          (rowIds || []).forEach((rowId) => {
+            const row = $(rowId);
+            if (!row) return;
+            row.style.display = isVertex ? "" : "none";
+            row.querySelectorAll("input,select,textarea,button").forEach((el) => {
+              el.disabled = !isVertex;
+            });
+          });
+        };
+        providerEl.addEventListener("change", sync);
+        sync();
+      };
       const bindVertexProviderHints = (providerId, apiLabelId, apiInputId, endpointLabelId, endpointInputId, modelInputId, hintId, defaults) => {
         const providerEl = $(providerId);
         if (!providerEl) return;
@@ -49761,6 +50409,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
 
       // 저장
+      syncVertexOverrideRows("mo-pluginMainProvider", ["mo-pluginMainVertexFlexRow", "mo-pluginMainExtraHeadersJsonRow", "mo-pluginMainExtraBodyJsonRow"]);
+      syncVertexOverrideRows("mo-subLlmProvider", ["mo-subLlmVertexFlexRow", "mo-subLlmExtraHeadersJsonRow", "mo-subLlmExtraBodyJsonRow"]);
+
       $("mo-save-btn").addEventListener("click", async () => {
         try {
           const prevDebug = settings.debug;
@@ -49797,6 +50448,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             pluginMainReasoningPreset: $("mo-pluginMainReasoningPreset").value.trim(),
             pluginMainReasoningEffort: $("mo-pluginMainReasoningEffort").value.trim(),
             pluginMainReasoningBudgetTokens: $("mo-pluginMainReasoningBudgetTokens").value,
+            pluginMainVertexFlexMode: readValue("mo-pluginMainVertexFlexMode", settings.pluginMainVertexFlexMode, true),
+            pluginMainExtraHeadersJson: readValue("mo-pluginMainExtraHeadersJson", settings.pluginMainExtraHeadersJson, true),
+            pluginMainExtraBodyJson: readValue("mo-pluginMainExtraBodyJson", settings.pluginMainExtraBodyJson, true),
             subLlmApiKey: $("mo-subLlmApiKey").value,
             subLlmProvider: $("mo-subLlmProvider").value,
             subLlmEndpoint: $("mo-subLlmEndpoint").value.trim(),
@@ -49807,6 +50461,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             subLlmReasoningPreset: $("mo-subLlmReasoningPreset").value.trim(),
             subLlmReasoningEffort: $("mo-subLlmReasoningEffort").value.trim(),
             subLlmReasoningBudgetTokens: $("mo-subLlmReasoningBudgetTokens").value,
+            subLlmVertexFlexMode: readValue("mo-subLlmVertexFlexMode", settings.subLlmVertexFlexMode, true),
+            subLlmExtraHeadersJson: readValue("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson, true),
+            subLlmExtraBodyJson: readValue("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson, true),
             embeddingProvider: $("mo-embeddingProvider").value,
             embeddingApiKey: $("mo-embeddingApiKey").value,
             embeddingEndpoint: $("mo-embeddingEndpoint").value.trim(),
@@ -49862,6 +50519,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             const el = $(id);
             if (el) el.checked = !!value;
           };
+          setValueIfPresent("mo-pluginMainVertexFlexMode", settings.pluginMainVertexFlexMode || "off");
+          setValueIfPresent("mo-pluginMainExtraHeadersJson", settings.pluginMainExtraHeadersJson || "");
+          setValueIfPresent("mo-pluginMainExtraBodyJson", settings.pluginMainExtraBodyJson || "");
+          setValueIfPresent("mo-subLlmVertexFlexMode", settings.subLlmVertexFlexMode || "off");
+          setValueIfPresent("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson || "");
+          setValueIfPresent("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson || "");
           for (let i = 0; i < reasoningSyncRunners.length; i++) reasoningSyncRunners[i]();
           $("mo-topK").value = settings.topK;
           $("mo-llmRetryCount").value = settings.llmRetryCount;
@@ -49948,6 +50611,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testReasoningEffort = normalizeReasoningEffortForControls((($("mo-pluginMainReasoningEffort") || {}).value || "none").trim(), testReasoningControls);
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-pluginMainReasoningBudgetTokens") || {}).value), 0);
           const testMaxCompletionTokens = getPluginMainMaxCompletionTokensSetting((($("mo-pluginMainMaxCompletionTokens") || {}).value));
+          const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-pluginMainVertexFlexMode") || {}).value || "off").trim());
+          const testExtraHeadersJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraHeadersJson") || {}).value || ""));
+          const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraBodyJson") || {}).value || ""));
           const testBody = {
             model: testModel,
             messages: [{ role: "user", content: "ping" }],
@@ -49959,6 +50625,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             max_completion_tokens: testMaxCompletionTokens,
           };
           applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
+          if (testProvider === "vertex") {
+            if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
+            if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
+            if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
+          }
           const data = await withUiBridgeSettings(() => bridgeFetch("/proxy/plugin-main", {
             method: "POST",
             timeoutMs: testTimeoutMs,
@@ -49999,6 +50670,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testReasoningEffort = normalizeReasoningEffortForControls((($("mo-subLlmReasoningEffort") || {}).value || "none").trim(), testReasoningControls);
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-subLlmReasoningBudgetTokens") || {}).value), 0);
           const testMaxCompletionTokens = getSubLlmMaxCompletionTokensSetting((($("mo-subLlmMaxCompletionTokens") || {}).value));
+          const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-subLlmVertexFlexMode") || {}).value || "off").trim());
+          const testExtraHeadersJson = sanitizeProviderOverrideJsonSetting((($("mo-subLlmExtraHeadersJson") || {}).value || ""));
+          const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-subLlmExtraBodyJson") || {}).value || ""));
           const testBody = {
             model: testModel,
             messages: [{ role: "user", content: "ping" }],
@@ -50010,6 +50684,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             max_completion_tokens: testMaxCompletionTokens,
           };
           applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
+          if (testProvider === "vertex") {
+            if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
+            if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
+            if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
+          }
           const data = await withUiBridgeSettings(() => bridgeFetch("/proxy/plugin-main", {
             method: "POST",
             timeoutMs: testTimeoutMs,

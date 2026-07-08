@@ -507,6 +507,105 @@ func TestProxyVertexNormalizesNativeResponse(t *testing.T) {
 	}
 }
 
+func TestProxyVertexFlexAndExtraBodyOverrides(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		switch r.URL.String() {
+		case "https://oauth2.googleapis.com/token":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"vertex-token","expires_in":3600}`)),
+			}, nil
+		case "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models/gemini-3.5-flash:generateContent":
+			if got := r.Header.Get("X-Vertex-AI-LLM-Shared-Request-Type"); got != "flex" {
+				t.Fatalf("shared request type = %q, want flex", got)
+			}
+			if got := r.Header.Get("X-Vertex-AI-LLM-Request-Type"); got != "shared" {
+				t.Fatalf("request type = %q, want shared", got)
+			}
+			if got := r.Header.Get("X-Test-Feature"); got != "enabled" {
+				t.Fatalf("extra header = %q, want enabled", got)
+			}
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode upstream body: %v", err)
+			}
+			genCfg := mapFromAny(body["generationConfig"])
+			if genCfg["responseMimeType"] != "application/json" {
+				t.Fatalf("extra body did not merge generationConfig: %+v", genCfg)
+			}
+			if body["model"] != nil || body["stream"] != nil {
+				t.Fatalf("protected extra body keys should be blocked: %+v", body)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"vertex flex ok"}]}}]}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected request URL: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	credential := testVertexServiceAccountJSON(t)
+	flex := "flex_only"
+	headersJSON := `{"X-Test-Feature":"enabled","Authorization":"bad"}`
+	bodyJSON := `{"generationConfig":{"responseMimeType":"application/json"},"model":"bad","stream":true}`
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:           &credential,
+		Endpoint:         strPtr("https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"),
+		Model:            strPtr("gemini-3.5-flash"),
+		Provider:         strPtr("vertex"),
+		VertexFlexMode:   &flex,
+		ExtraHeadersJSON: &headersJSON,
+		ExtraBodyJSON:    &bodyJSON,
+		MaxTokens:        int64Ptr(5),
+		Messages:         []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err != nil {
+		t.Fatalf("performProxyPluginMain error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want token + generateContent", calls)
+	}
+	if got := chatCompletionText(resp); got != "vertex flex ok" {
+		t.Fatalf("content = %q, want vertex flex ok", got)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["vertex_flex_applied"] != true {
+		t.Fatalf("missing override trace: %+v", trace)
+	}
+}
+
+func TestProxyRejectsInvalidExtraHeadersJSON(t *testing.T) {
+	bad := `["not-object"]`
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:           strPtr("sk-test"),
+		Endpoint:         strPtr("https://api.example.com/v1"),
+		Model:            strPtr("gpt-test"),
+		Provider:         strPtr("openai"),
+		ExtraHeadersJSON: &bad,
+		Messages:         []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err == nil {
+		t.Fatalf("expected invalid JSON object error")
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+}
+
 func TestCallEmbeddingGeminiUsesEmbedContent(t *testing.T) {
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {

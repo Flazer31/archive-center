@@ -15,6 +15,7 @@ documents so they do not mix with unrelated Archive Center runtime docs.
 - `2.5-mdash-fusion-operating-contract-2026-06-29.md`
 - `2.5-mdash-fusion-fugu-full-flow-2026-07-01.md`
 - `2.5-strong-fusion-enhancement-roadmap-2026-07-02.md`
+- `../provider-request-overrides-flex-paygo-contract.md`
 
 Use this as the active 2.5 design anchor. It defines the standalone-first
 RisuAI output quality layer, including Input Enhance MDASH, Output Check MDASH,
@@ -62,6 +63,11 @@ suggestion-only, too timid, or focused on weak local patches, this roadmap wins:
 specialist AIs should generate strong improvement candidates, while the
 Fusion Director, Segment Composer, and verifier decide what is safe enough to
 return.
+
+Use the provider request overrides and Vertex Flex PayGo contract as the shared
+provider-options contract with Archive Center. Archive Center should apply the
+contract in the Go backend, while the standalone Output Quality Layer should
+apply the same setting names and safety rules inside its own JS provider caller.
 
 ## Reference Archive
 

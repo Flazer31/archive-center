@@ -5078,6 +5078,8 @@ func prepareTurnMemoryLaneCounters(selection prepareTurnMemoryLaneSelection, inj
 		"relevant_memory_count":                         len(selection.Relevant),
 		"deep_memory_count":                             len(selection.Deep),
 		"recent_memory_count":                           len(selection.Recent),
+		"protected_memory_dropped_count":                intFromAny(selection.Trace["protected_memory_dropped_count"], 0),
+		"protected_memory_gate":                         stringFromMap(selection.Trace, "protected_memory_gate"),
 		"selected_memory_total_count":                   prepareTurnSelectedMemoryCount(selection),
 		"selected_memory_total_target":                  intFromAny(selection.Trace["top_k_memory_target"], 0),
 		"selected_memory_top_k_contract":                stringFromMap(selection.Trace, "top_k_definition"),
@@ -5124,6 +5126,114 @@ func collapsePrepareTurnMemoryLaneSelection(selection prepareTurnMemoryLaneSelec
 	selection.Trace["memory_collapsed_count"] = collapsed
 	selection.Trace["selected_total_after_collapse"] = prepareTurnSelectedMemoryCount(selection)
 	return selection
+}
+
+func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLaneSelection, rawUserInput string, chatLogs []store.ChatLog, perspectiveContext map[string]any) prepareTurnMemoryLaneSelection {
+	ctx := buildPrepareTurnRecollectionContext(rawUserInput, chatLogs, nil, nil)
+	before := prepareTurnSelectedMemoryCount(selection)
+	dropped := []map[string]any{}
+	filterLane := func(lane string, items []store.Memory) []store.Memory {
+		out := make([]store.Memory, 0, len(items))
+		for _, item := range items {
+			ok, reason := prepareTurnProtectedMemoryRelevant(item, ctx, perspectiveContext)
+			if ok {
+				out = append(out, item)
+				continue
+			}
+			dropped = append(dropped, map[string]any{
+				"lane":       lane,
+				"id":         item.ID,
+				"turn_index": item.TurnIndex,
+				"reason":     reason,
+			})
+		}
+		return out
+	}
+	selection.VectorRelevant = filterLane("vector_relevant", selection.VectorRelevant)
+	selection.Relevant = filterLane("relevant", selection.Relevant)
+	selection.Deep = filterLane("deep", selection.Deep)
+	selection.Recent = filterLane("recent", selection.Recent)
+	if selection.Trace == nil {
+		selection.Trace = map[string]any{}
+	}
+	selection.Trace["protected_memory_before_filter"] = before
+	selection.Trace["protected_memory_after_filter"] = prepareTurnSelectedMemoryCount(selection)
+	selection.Trace["protected_memory_dropped_count"] = len(dropped)
+	selection.Trace["protected_memory_gate"] = "protected_owner_subject_knowledge_scope_or_current_pov_must_match_current_user_input_immediate_chat_or_pov"
+	selection.Trace["protected_memory_dropped"] = dropped
+	return selection
+}
+
+func prepareTurnProtectedMemoryRelevant(item store.Memory, ctx prepareTurnRecollectionContext, perspectiveContext map[string]any) (bool, string) {
+	tokens, protected := prepareTurnProtectedMemoryEntityTokens(item)
+	if !protected {
+		return true, "not_protected_memory"
+	}
+	if len(tokens) == 0 {
+		return true, "protected_memory_without_entity_scope"
+	}
+	if guard := prepareTurnProtectedMemoryGuard(item, perspectiveContext); guard.Active && guard.POVScoped {
+		return true, "current_pov_scoped_identity_guard"
+	}
+	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.rawUserInput) {
+		return true, "explicit_current_user_input"
+	}
+	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.immediateChatText) {
+		return true, "immediate_chat_mention"
+	}
+	if pov := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"])); pov != "" && prepareTurnAnyOwnerTokenMatches(tokens, pov) {
+		return true, "current_pov_match"
+	}
+	return false, "protected_entity_not_in_current_input_or_immediate_chat"
+}
+
+func prepareTurnProtectedMemoryEntityTokens(item store.Memory) ([]string, bool) {
+	parsed := parseJSONMap(item.SummaryJSON)
+	protectedSecrets := sliceFromAny(parsed["protected_secrets"])
+	identityAccuracy := sliceFromAny(parsed["character_identity_accuracy"])
+	if len(protectedSecrets) == 0 && len(identityAccuracy) == 0 {
+		return nil, false
+	}
+	tokens := []string{}
+	add := func(value string) {
+		for _, token := range prepareTurnOwnerTokens(value, value) {
+			if token != "" && !stringSliceContains(tokens, token) {
+				tokens = append(tokens, token)
+			}
+		}
+	}
+	addValues := func(values []string) {
+		for _, value := range values {
+			add(value)
+		}
+	}
+	for _, raw := range protectedSecrets {
+		secret := mapFromAny(raw)
+		add(stringFromMap(secret, "owner"))
+		addValues(stringsFromAny(secret["subject"]))
+		scope := mapFromAny(secret["knowledge_scope"])
+		addValues(stringsFromAny(scope["known_by"]))
+		addValues(stringsFromAny(scope["suspected_by"]))
+		addValues(stringsFromAny(scope["unknown_to"]))
+	}
+	for _, raw := range identityAccuracy {
+		identity := mapFromAny(raw)
+		for _, key := range []string{
+			"canonical_entity_name",
+			"surface_identity_name",
+			"true_identity_name",
+			"public_identity_name",
+			"alias_name",
+			"real_identity_name",
+		} {
+			add(stringFromMap(identity, key))
+		}
+		scope := mapFromAny(identity["knowledge_scope"])
+		addValues(stringsFromAny(scope["known_by"]))
+		addValues(stringsFromAny(scope["suspected_by"]))
+		addValues(stringsFromAny(scope["unknown_to"]))
+	}
+	return tokens, true
 }
 
 func collapsePrepareTurnStorylines(items []store.Storyline) []store.Storyline {
@@ -6369,6 +6479,7 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	memoryQuery := prepareTurnMemorySelectionQuery(rawUserInput, chatLogs, perspectiveContext, topK)
 	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow)
 	memorySelection = collapsePrepareTurnMemoryLaneSelection(memorySelection)
+	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, rawUserInput, chatLogs, perspectiveContext)
 	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, perspectiveContext)
 	for k, v := range prepareTurnMemoryLaneProtectedCounts(memorySelection, perspectiveContext) {
 		out.Counts[k] = v
@@ -7476,9 +7587,9 @@ func personaMemoryEntryHasTag(tags []string, needle string) bool {
 }
 
 type prepareTurnRecollectionContext struct {
-	rawUserInput     string
-	recentChatText   string
-	currentStateText string
+	rawUserInput       string
+	immediateChatText  string
+	currentSceneStates string
 }
 
 func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.ChatLog, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories *[]store.ProtagonistEntityMemory) map[string]any {
@@ -7486,11 +7597,29 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 	beforePrivate := len(*characterPrivateMemories)
 	filteredPrivate := make([]store.ProtagonistEntityMemory, 0, beforePrivate)
 	selectedOwners := []string{}
+	selectedOwnerKeys := map[string]bool{}
 	droppedOwners := []string{}
 	dropped := []map[string]any{}
 	for _, item := range *characterPrivateMemories {
+		ownerKey := prepareTurnMemoryOwnerIdentity(item.OwnerEntityKey, item.OwnerEntityName)
+		if ownerKey != "" && selectedOwnerKeys[ownerKey] {
+			owner := prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName)
+			if owner != "" && !stringSliceContains(droppedOwners, owner) {
+				droppedOwners = append(droppedOwners, owner)
+			}
+			dropped = append(dropped, map[string]any{
+				"id":                item.ID,
+				"owner_entity_key":  item.OwnerEntityKey,
+				"owner_entity_name": item.OwnerEntityName,
+				"reason":            "owner_repetition_capped",
+			})
+			continue
+		}
 		if ok, reason := prepareTurnCharacterPrivateMemoryRelevant(item, ctx); ok {
 			filteredPrivate = append(filteredPrivate, item)
+			if ownerKey != "" {
+				selectedOwnerKeys[ownerKey] = true
+			}
 			if owner := prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName); owner != "" && !stringSliceContains(selectedOwners, owner) {
 				selectedOwners = append(selectedOwners, owner)
 			}
@@ -7517,7 +7646,8 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 		"character_private_before_filter": beforePrivate,
 		"character_private_after_filter":  len(filteredPrivate),
 		"character_private_dropped_count": beforePrivate - len(filteredPrivate),
-		"character_private_gate":          "owner_entity_must_match_current_user_input_recent_chat_or_current_scene_state",
+		"character_private_gate":          "owner_entity_must_match_current_user_input_immediate_chat_or_current_scene_state",
+		"character_private_owner_cap":     1,
 		"selected_owner_entities":         selectedOwners,
 		"dropped_owner_entities":          droppedOwners,
 		"dropped":                         dropped,
@@ -7525,36 +7655,41 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 		"blocks_unrelated_entity_memory":  true,
 		"truth_authority":                 false,
 		"canonical_write":                 false,
-		"context_sources":                 []string{"current_user_input", "recent_chat_logs", "active_states", "canonical_state_layers"},
+		"context_sources":                 []string{"current_user_input", "immediate_chat_tail", "latest_active_states"},
 	}
 }
 
 func buildPrepareTurnRecollectionContext(rawUserInput string, chatLogs []store.ChatLog, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer) prepareTurnRecollectionContext {
-	recent := []string{}
-	start := len(chatLogs) - 6
+	_ = canonicalLayers
+	immediate := []string{}
+	start := len(chatLogs) - 2
 	if start < 0 {
 		start = 0
 	}
 	for _, item := range chatLogs[start:] {
 		if text := strings.TrimSpace(item.Content); text != "" {
-			recent = append(recent, text)
+			immediate = append(immediate, text)
 		}
 	}
 	state := []string{}
+	latestStateTurn := 0
 	for _, item := range activeStates {
-		if text := strings.TrimSpace(item.Content); text != "" {
-			state = append(state, text)
+		if item.TurnIndex > latestStateTurn {
+			latestStateTurn = item.TurnIndex
 		}
 	}
-	for _, item := range canonicalLayers {
+	for _, item := range activeStates {
+		if latestStateTurn > 0 && item.TurnIndex != latestStateTurn {
+			continue
+		}
 		if text := strings.TrimSpace(item.Content); text != "" {
 			state = append(state, text)
 		}
 	}
 	return prepareTurnRecollectionContext{
-		rawUserInput:     strings.TrimSpace(rawUserInput),
-		recentChatText:   strings.Join(recent, "\n"),
-		currentStateText: strings.Join(state, "\n"),
+		rawUserInput:       strings.TrimSpace(rawUserInput),
+		immediateChatText:  strings.Join(immediate, "\n"),
+		currentSceneStates: strings.Join(state, "\n"),
 	}
 }
 
@@ -7566,13 +7701,13 @@ func prepareTurnCharacterPrivateMemoryRelevant(item store.ProtagonistEntityMemor
 	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.rawUserInput) {
 		return true, "explicit_current_user_input"
 	}
-	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.recentChatText) {
-		return true, "recent_chat_mention"
+	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.immediateChatText) {
+		return true, "immediate_chat_mention"
 	}
-	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.currentStateText) {
+	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.currentSceneStates) {
 		return true, "current_scene_state_mention"
 	}
-	return false, "owner_not_in_current_input_recent_chat_or_current_state"
+	return false, "owner_not_in_current_input_immediate_chat_or_current_state"
 }
 
 func prepareTurnOwnerTokens(ownerKey, ownerName string) []string {
@@ -7635,6 +7770,15 @@ func prepareTurnMemoryOwnerLabel(ownerKey, ownerName string) string {
 		return text
 	}
 	return strings.TrimSpace(ownerKey)
+}
+
+func prepareTurnMemoryOwnerIdentity(ownerKey, ownerName string) string {
+	for _, raw := range []string{ownerKey, ownerName} {
+		if normalized := normalizePrepareTurnEntityNeedle(raw); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
 }
 
 func stringSliceContains(values []string, needle string) bool {

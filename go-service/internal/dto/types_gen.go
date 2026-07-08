@@ -1078,6 +1078,8 @@ type ProxyPluginMainRequest struct {
 	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
 	Endpoint            *string `json:"endpoint,omitempty"`
+	ExtraBodyJSON       *string `json:"extra_body_json,omitempty"`
+	ExtraHeadersJSON    *string `json:"extra_headers_json,omitempty"`
 	GlmThinkingType     *string `json:"glm_thinking_type,omitempty"`
 	MaxCompletionTokens *int64  `json:"max_completion_tokens,omitempty"`
 	// PRESENCE: Optional non-null scalar int64: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
@@ -1094,8 +1096,9 @@ type ProxyPluginMainRequest struct {
 	ReasoningPreset       *string `json:"reasoning_preset,omitempty"`
 	// PRESENCE: Optional non-null scalar float64: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (0.7): Go handler must apply default when field is absent in request.
-	Temperature *float64 `json:"temperature,omitempty"`
-	TimeoutMs   *int64   `json:"timeout_ms,omitempty"`
+	Temperature    *float64 `json:"temperature,omitempty"`
+	TimeoutMs      *int64   `json:"timeout_ms,omitempty"`
+	VertexFlexMode *string  `json:"vertex_flex_mode,omitempty"`
 }
 
 // ApplyDefaults applies default values for optional pointer scalar fields in ProxyPluginMainRequest.
@@ -1108,6 +1111,14 @@ func (dto *ProxyPluginMainRequest) ApplyDefaults() {
 		v := ""
 		dto.Endpoint = &v
 	}
+	if dto.ExtraBodyJSON == nil {
+		v := ""
+		dto.ExtraBodyJSON = &v
+	}
+	if dto.ExtraHeadersJSON == nil {
+		v := ""
+		dto.ExtraHeadersJSON = &v
+	}
 	if dto.MaxTokens == nil {
 		v := int64(1024)
 		dto.MaxTokens = &v
@@ -1119,6 +1130,10 @@ func (dto *ProxyPluginMainRequest) ApplyDefaults() {
 	if dto.Temperature == nil {
 		v := 0.7
 		dto.Temperature = &v
+	}
+	if dto.VertexFlexMode == nil {
+		v := ""
+		dto.VertexFlexMode = &v
 	}
 }
 

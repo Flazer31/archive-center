@@ -116,6 +116,10 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		body["max_completion_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 		delete(body, "max_tokens")
 	}
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
+	if overrideErr != nil {
+		return nil, http.StatusBadRequest, overrideErr
+	}
 
 	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
 	if err != nil {
@@ -138,6 +142,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	if data == nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("OpenAI-like provider returned invalid JSON")
 	}
+	proxyAttachRequestOverrideTrace(data, overrideTrace)
 	return data, http.StatusOK, nil
 }
 
@@ -165,12 +170,17 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": maxInt64(1024, budget)}
 	}
 
-	status, data, raw, err := proxyDoJSON(ctx, target, map[string]string{
+	headers := map[string]string{
 		"Content-Type":      "application/json",
 		"Accept":            "application/json",
 		"x-api-key":         apiKey,
 		"anthropic-version": "2023-06-01",
-	}, body)
+	}
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, "claude", false)
+	if overrideErr != nil {
+		return nil, http.StatusBadRequest, overrideErr
+	}
+	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
 	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
@@ -181,7 +191,9 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	if content == "" {
 		return nil, http.StatusBadGateway, fmt.Errorf("Claude returned no text content")
 	}
-	return proxyNormalizeChatResponse(content, model, "stop"), http.StatusOK, nil
+	resp := proxyNormalizeChatResponse(content, model, "stop")
+	proxyAttachRequestOverrideTrace(resp, overrideTrace)
+	return resp, http.StatusOK, nil
 }
 
 func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model string, vertex bool) (map[string]any, int, error) {
@@ -235,6 +247,14 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		target = proxyNormalizeGeminiEndpoint(endpoint, model, "generateContent")
 		headers["x-goog-api-key"] = apiKey
 	}
+	geminiProvider := "gemini"
+	if vertex {
+		geminiProvider = "vertex"
+	}
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, geminiProvider, vertex)
+	if overrideErr != nil {
+		return nil, http.StatusBadRequest, overrideErr
+	}
 
 	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
 	if err != nil {
@@ -251,7 +271,9 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	if content == "" {
 		return nil, http.StatusBadGateway, fmt.Errorf("Gemini/Vertex returned no text content")
 	}
-	return proxyNormalizeChatResponse(content, model, "stop"), http.StatusOK, nil
+	resp := proxyNormalizeChatResponse(content, model, "stop")
+	proxyAttachRequestOverrideTrace(resp, overrideTrace)
+	return resp, http.StatusOK, nil
 }
 
 func proxyGetCopilotToken(ctx context.Context, apiKey string) (string, int, error) {
@@ -388,6 +410,176 @@ func proxyDoJSON(ctx context.Context, target string, headers map[string]string, 
 		data = nil
 	}
 	return resp.StatusCode, data, raw, nil
+}
+
+func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, req dto.ProxyPluginMainRequest, provider string, vertex bool) (map[string]any, error) {
+	trace := map[string]any{}
+	headerJSON := strings.TrimSpace(stringPtrValue(req.ExtraHeadersJSON, ""))
+	if headerJSON != "" {
+		extraHeaders, err := proxyParseJSONObject(headerJSON, "extra_headers_json")
+		if err != nil {
+			return trace, err
+		}
+		applied, blocked := proxyApplyExtraHeaders(headers, extraHeaders)
+		trace["extra_headers_applied"] = len(applied) > 0
+		trace["extra_header_keys"] = applied
+		if len(blocked) > 0 {
+			trace["extra_header_blocked"] = blocked
+		}
+	}
+
+	bodyJSON := strings.TrimSpace(stringPtrValue(req.ExtraBodyJSON, ""))
+	if bodyJSON != "" {
+		extraBody, err := proxyParseJSONObject(bodyJSON, "extra_body_json")
+		if err != nil {
+			return trace, err
+		}
+		applied, blocked := proxyMergeExtraBody(body, extraBody, "")
+		trace["extra_body_applied"] = len(applied) > 0
+		trace["extra_body_keys"] = applied
+		if len(blocked) > 0 {
+			trace["extra_body_blocked"] = blocked
+		}
+	}
+
+	mode := proxyNormalizeVertexFlexMode(stringPtrValue(req.VertexFlexMode, ""))
+	if mode != "" && mode != "off" {
+		trace["vertex_flex_mode"] = mode
+		if !vertex {
+			trace["vertex_flex_applied"] = false
+			trace["vertex_flex_skip_reason"] = "provider_not_vertex"
+		} else {
+			headers["X-Vertex-AI-LLM-Shared-Request-Type"] = "flex"
+			if mode == "flex_only" {
+				headers["X-Vertex-AI-LLM-Request-Type"] = "shared"
+			}
+			trace["vertex_flex_applied"] = true
+		}
+	}
+	if len(trace) > 0 && strings.TrimSpace(provider) != "" {
+		trace["provider"] = strings.TrimSpace(provider)
+	}
+	return trace, nil
+}
+
+func proxyParseJSONObject(raw, label string) (map[string]any, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("%s must be valid JSON object: %w", label, err)
+	}
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be a JSON object", label)
+	}
+	return obj, nil
+}
+
+func proxyApplyExtraHeaders(headers map[string]string, extra map[string]any) ([]string, []string) {
+	applied := []string{}
+	blocked := []string{}
+	for key, value := range extra {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		if proxyProtectedHeader(name) {
+			blocked = append(blocked, name)
+			continue
+		}
+		text, ok := proxyHeaderValue(value)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		headers[name] = text
+		applied = append(applied, name)
+	}
+	return applied, blocked
+}
+
+func proxyHeaderValue(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case json.Number:
+		return v.String(), true
+	case float64, bool:
+		return fmt.Sprint(v), true
+	default:
+		return "", false
+	}
+}
+
+func proxyProtectedHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "authorization", "content-type", "accept", "x-goog-api-key", "x-api-key", "anthropic-version", "host", "content-length":
+		return true
+	default:
+		return false
+	}
+}
+
+func proxyMergeExtraBody(dst map[string]any, src map[string]any, path string) ([]string, []string) {
+	applied := []string{}
+	blocked := []string{}
+	for key, value := range src {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		fullKey := name
+		if path != "" {
+			fullKey = path + "." + name
+		}
+		if path == "" && proxyProtectedBodyKey(name) {
+			blocked = append(blocked, fullKey)
+			continue
+		}
+		incomingMap, incomingIsMap := value.(map[string]any)
+		if existingMap := mapFromAny(dst[name]); incomingIsMap && len(existingMap) > 0 {
+			nestedApplied, nestedBlocked := proxyMergeExtraBody(existingMap, incomingMap, fullKey)
+			dst[name] = existingMap
+			applied = append(applied, nestedApplied...)
+			blocked = append(blocked, nestedBlocked...)
+			continue
+		}
+		dst[name] = value
+		applied = append(applied, fullKey)
+	}
+	return applied, blocked
+}
+
+func proxyProtectedBodyKey(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "model", "messages", "contents", "system", "systeminstruction", "api_key", "apikey", "provider", "endpoint", "stream":
+		return true
+	default:
+		return false
+	}
+}
+
+func proxyNormalizeVertexFlexMode(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	normalized = strings.ReplaceAll(normalized, " ", "_")
+	switch normalized {
+	case "", "off", "disabled", "disable", "none":
+		return "off"
+	case "provisioned_then_flex", "provisioned_flex":
+		return "provisioned_then_flex"
+	case "flex_only", "shared":
+		return "flex_only"
+	default:
+		return "off"
+	}
+}
+
+func proxyAttachRequestOverrideTrace(resp map[string]any, trace map[string]any) {
+	if len(trace) == 0 || resp == nil {
+		return
+	}
+	resp["_proxy_request_overrides"] = trace
 }
 
 func proxyOpenAIBaseURL(provider, endpoint string) string {

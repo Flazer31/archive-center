@@ -3341,49 +3341,49 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 	rowMapCount := 0
 	count, maps, err := copySessionMigrationChatLogs(ctx, tx, migrationID, sourceID, targetID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy chat_logs: %w", err)
 	}
 	counts.ChatLogs = count
 	rowMapCount += maps
 
 	count, maps, err = copySessionMigrationEffectiveInputs(ctx, tx, migrationID, sourceID, targetID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy effective_input_logs: %w", err)
 	}
 	counts.EffectiveInputs = count
 	rowMapCount += maps
 
 	count, maps, err = copySessionMigrationMemories(ctx, tx, migrationID, sourceID, targetID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy memories: %w", err)
 	}
 	counts.Memories = count
 	rowMapCount += maps
 
 	count, maps, err = copySessionMigrationEvidence(ctx, tx, migrationID, sourceID, targetID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy direct_evidence_records: %w", err)
 	}
 	counts.DirectEvidence = count
 	rowMapCount += maps
 
 	count, maps, err = copySessionMigrationKGTriples(ctx, tx, migrationID, sourceID, targetID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy kg_triples: %w", err)
 	}
 	counts.KGTriples = count
 	rowMapCount += maps
 
 	count, maps, err = copySessionMigrationEpisodes(ctx, tx, migrationID, sourceID, targetID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy episode_summaries: %w", err)
 	}
 	counts.Episodes = count
 	rowMapCount += maps
 
 	count, maps, err = copySessionMigrationSubjectiveEntityMemories(ctx, tx, migrationID, sourceID, targetID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("copy protagonist_entity_memories: %w", err)
 	}
 	counts.SubjectiveEntityMemories = count
 	rowMapCount += maps
@@ -4075,30 +4075,44 @@ func copySessionMigrationChatLogs(ctx context.Context, tx *sql.Tx, migrationID i
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
-	count, mapped := 0, 0
+	type chatLogCopyRow struct {
+		sourceRowID int64
+		turnIndex   int
+		role        string
+		content     string
+		createdAt   time.Time
+	}
+	items := []chatLogCopyRow{}
 	for rows.Next() {
-		var sourceRowID int64
-		var turnIndex int
-		var role, content string
-		var createdAt time.Time
-		if err := rows.Scan(&sourceRowID, &turnIndex, &role, &content, &createdAt); err != nil {
+		var item chatLogCopyRow
+		if err := rows.Scan(&item.sourceRowID, &item.turnIndex, &item.role, &item.content, &item.createdAt); err != nil {
 			return 0, 0, err
 		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	count, mapped := 0, 0
+	for _, item := range items {
 		targetRowID, err := insertSessionMigrationCopiedRow(ctx, tx, `
 			INSERT INTO chat_logs (chat_session_id, turn_index, role, content, created_at)
 			VALUES (?, ?, ?, ?, ?)
-		`, targetID, turnIndex, role, content, nonZeroTime(createdAt))
+		`, targetID, item.turnIndex, item.role, item.content, nonZeroTime(item.createdAt))
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "chat_logs", sourceRowID, targetRowID); err != nil {
+		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "chat_logs", item.sourceRowID, targetRowID); err != nil {
 			return 0, 0, err
 		}
 		count++
 		mapped++
 	}
-	return count, mapped, rows.Err()
+	return count, mapped, nil
 }
 
 func copySessionMigrationEffectiveInputs(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {
@@ -4111,30 +4125,43 @@ func copySessionMigrationEffectiveInputs(ctx context.Context, tx *sql.Tx, migrat
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
-	count, mapped := 0, 0
+	type effectiveInputCopyRow struct {
+		sourceRowID    int64
+		turnIndex      int
+		effectiveInput string
+		createdAt      time.Time
+	}
+	items := []effectiveInputCopyRow{}
 	for rows.Next() {
-		var sourceRowID int64
-		var turnIndex int
-		var effectiveInput string
-		var createdAt time.Time
-		if err := rows.Scan(&sourceRowID, &turnIndex, &effectiveInput, &createdAt); err != nil {
+		var item effectiveInputCopyRow
+		if err := rows.Scan(&item.sourceRowID, &item.turnIndex, &item.effectiveInput, &item.createdAt); err != nil {
 			return 0, 0, err
 		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	count, mapped := 0, 0
+	for _, item := range items {
 		targetRowID, err := insertSessionMigrationCopiedRow(ctx, tx, `
 			INSERT INTO effective_input_logs (chat_session_id, turn_index, effective_input, created_at)
 			VALUES (?, ?, ?, ?)
-		`, targetID, turnIndex, effectiveInput, nonZeroTime(createdAt))
+		`, targetID, item.turnIndex, item.effectiveInput, nonZeroTime(item.createdAt))
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "effective_input_logs", sourceRowID, targetRowID); err != nil {
+		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "effective_input_logs", item.sourceRowID, targetRowID); err != nil {
 			return 0, 0, err
 		}
 		count++
 		mapped++
 	}
-	return count, mapped, rows.Err()
+	return count, mapped, nil
 }
 
 func copySessionMigrationMemories(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {
@@ -4149,39 +4176,60 @@ func copySessionMigrationMemories(ctx context.Context, tx *sql.Tx, migrationID i
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
-	count, mapped := 0, 0
+	type memoryCopyRow struct {
+		sourceRowID           int64
+		turnIndex             int
+		summaryJSON           sql.NullString
+		embedding             sql.NullString
+		embeddingModel        sql.NullString
+		evidence              sql.NullString
+		placeWing             sql.NullString
+		placeRoom             sql.NullString
+		importance            sql.NullFloat64
+		emotionalBoost        sql.NullFloat64
+		emotionalIntensity    sql.NullFloat64
+		narrativeSignificance sql.NullFloat64
+		createdAt             time.Time
+	}
+	items := []memoryCopyRow{}
 	for rows.Next() {
-		var sourceRowID int64
-		var turnIndex int
-		var summaryJSON, embedding, embeddingModel, evidence, placeWing, placeRoom sql.NullString
-		var importance, emotionalBoost, emotionalIntensity, narrativeSignificance sql.NullFloat64
-		var createdAt time.Time
-		if err := rows.Scan(&sourceRowID, &turnIndex, &summaryJSON, &embedding, &embeddingModel,
-			&importance, &emotionalBoost, &evidence, &emotionalIntensity, &narrativeSignificance,
-			&placeWing, &placeRoom, &createdAt); err != nil {
+		var item memoryCopyRow
+		if err := rows.Scan(&item.sourceRowID, &item.turnIndex, &item.summaryJSON, &item.embedding, &item.embeddingModel,
+			&item.importance, &item.emotionalBoost, &item.evidence, &item.emotionalIntensity, &item.narrativeSignificance,
+			&item.placeWing, &item.placeRoom, &item.createdAt); err != nil {
 			return 0, 0, err
 		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	count, mapped := 0, 0
+	for _, item := range items {
 		targetRowID, err := insertSessionMigrationCopiedRow(ctx, tx, `
 			INSERT INTO memories (
 				chat_session_id, turn_index, summary_json, embedding, embedding_model,
 				importance, emotional_boost, evidence, emotional_intensity,
 				narrative_significance, place_wing, place_room, created_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, targetID, turnIndex, nullStringArg(summaryJSON), nullStringArg(embedding), nullStringArg(embeddingModel),
-			nullFloatArg(importance), nullFloatArg(emotionalBoost), nullStringArg(evidence),
-			nullFloatArg(emotionalIntensity), nullFloatArg(narrativeSignificance),
-			nullStringArg(placeWing), nullStringArg(placeRoom), nonZeroTime(createdAt))
+		`, targetID, item.turnIndex, nullStringArg(item.summaryJSON), nullStringArg(item.embedding), nullStringArg(item.embeddingModel),
+			nullFloatArg(item.importance), nullFloatArg(item.emotionalBoost), nullStringArg(item.evidence),
+			nullFloatArg(item.emotionalIntensity), nullFloatArg(item.narrativeSignificance),
+			nullStringArg(item.placeWing), nullStringArg(item.placeRoom), nonZeroTime(item.createdAt))
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "memories", sourceRowID, targetRowID); err != nil {
+		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "memories", item.sourceRowID, targetRowID); err != nil {
 			return 0, 0, err
 		}
 		count++
 		mapped++
 	}
-	return count, mapped, rows.Err()
+	return count, mapped, nil
 }
 
 func copySessionMigrationEvidence(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {
@@ -4197,24 +4245,47 @@ func copySessionMigrationEvidence(ctx context.Context, tx *sql.Tx, migrationID i
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
+	type evidenceCopyRow struct {
+		sourceRowID          int64
+		evidenceKind         string
+		evidenceText         string
+		archiveState         string
+		captureStage         string
+		captureVerification  string
+		sourceTurnStart      int
+		sourceTurnEnd        int
+		turnAnchor           sql.NullInt64
+		supersededByID       sql.NullInt64
+		sourceMessageIDsJSON sql.NullString
+		sourceHash           sql.NullString
+		committedGate        sql.NullString
+		lineageJSON          sql.NullString
+		repairNeeded         bool
+		tombstoned           bool
+		createdAt            time.Time
+	}
+	items := []evidenceCopyRow{}
+	for rows.Next() {
+		var item evidenceCopyRow
+		if err := rows.Scan(&item.sourceRowID, &item.evidenceKind, &item.evidenceText, &item.sourceTurnStart, &item.sourceTurnEnd,
+			&item.turnAnchor, &item.sourceMessageIDsJSON, &item.sourceHash, &item.archiveState, &item.captureStage,
+			&item.captureVerification, &item.committedGate, &item.lineageJSON, &item.repairNeeded, &item.tombstoned,
+			&item.supersededByID, &item.createdAt); err != nil {
+			return 0, 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
 	count, mapped := 0, 0
 	targetBySource := map[int64]int64{}
 	supersededByOldSource := map[int64]int64{}
-	for rows.Next() {
-		var sourceRowID int64
-		var evidenceKind, evidenceText, archiveState, captureStage, captureVerification string
-		var sourceTurnStart, sourceTurnEnd int
-		var turnAnchor, supersededByID sql.NullInt64
-		var sourceMessageIDsJSON, sourceHash, committedGate, lineageJSON sql.NullString
-		var repairNeeded, tombstoned bool
-		var createdAt time.Time
-		if err := rows.Scan(&sourceRowID, &evidenceKind, &evidenceText, &sourceTurnStart, &sourceTurnEnd,
-			&turnAnchor, &sourceMessageIDsJSON, &sourceHash, &archiveState, &captureStage,
-			&captureVerification, &committedGate, &lineageJSON, &repairNeeded, &tombstoned,
-			&supersededByID, &createdAt); err != nil {
-			return 0, 0, err
-		}
+	for _, item := range items {
 		targetRowID, err := insertSessionMigrationCopiedRow(ctx, tx, `
 			INSERT INTO direct_evidence_records (
 				chat_session_id, evidence_kind, evidence_text, source_turn_start, source_turn_end,
@@ -4222,26 +4293,23 @@ func copySessionMigrationEvidence(ctx context.Context, tx *sql.Tx, migrationID i
 				capture_verification, committed_gate, lineage_json, repair_needed, tombstoned,
 				superseded_by_id, created_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, targetID, evidenceKind, evidenceText, sourceTurnStart, sourceTurnEnd,
-			nullIntArg(turnAnchor), nullStringArg(sourceMessageIDsJSON), nullStringArg(sourceHash),
-			archiveState, captureStage, captureVerification, nullStringArg(committedGate),
-			nullStringArg(lineageJSON), repairNeeded, tombstoned, nullIntArg(supersededByID),
-			nonZeroTime(createdAt))
+		`, targetID, item.evidenceKind, item.evidenceText, item.sourceTurnStart, item.sourceTurnEnd,
+			nullIntArg(item.turnAnchor), nullStringArg(item.sourceMessageIDsJSON), nullStringArg(item.sourceHash),
+			item.archiveState, item.captureStage, item.captureVerification, nullStringArg(item.committedGate),
+			nullStringArg(item.lineageJSON), item.repairNeeded, item.tombstoned, nullIntArg(item.supersededByID),
+			nonZeroTime(item.createdAt))
 		if err != nil {
 			return 0, 0, err
 		}
-		targetBySource[sourceRowID] = targetRowID
-		if supersededByID.Valid {
-			supersededByOldSource[targetRowID] = supersededByID.Int64
+		targetBySource[item.sourceRowID] = targetRowID
+		if item.supersededByID.Valid {
+			supersededByOldSource[targetRowID] = item.supersededByID.Int64
 		}
-		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "direct_evidence_records", sourceRowID, targetRowID); err != nil {
+		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "direct_evidence_records", item.sourceRowID, targetRowID); err != nil {
 			return 0, 0, err
 		}
 		count++
 		mapped++
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
 	}
 	for targetRowID, oldSupersededID := range supersededByOldSource {
 		if newSupersededID, ok := targetBySource[oldSupersededID]; ok {
@@ -4267,30 +4335,47 @@ func copySessionMigrationKGTriples(ctx context.Context, tx *sql.Tx, migrationID 
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
-	count, mapped := 0, 0
+	type kgTripleCopyRow struct {
+		sourceRowID int64
+		subject     string
+		predicate   string
+		object      string
+		validFrom   sql.NullInt64
+		validTo     sql.NullInt64
+		sourceTurn  sql.NullInt64
+		createdAt   time.Time
+	}
+	items := []kgTripleCopyRow{}
 	for rows.Next() {
-		var sourceRowID int64
-		var subject, predicate, object string
-		var validFrom, validTo, sourceTurn sql.NullInt64
-		var createdAt time.Time
-		if err := rows.Scan(&sourceRowID, &subject, &predicate, &object, &validFrom, &validTo, &sourceTurn, &createdAt); err != nil {
+		var item kgTripleCopyRow
+		if err := rows.Scan(&item.sourceRowID, &item.subject, &item.predicate, &item.object, &item.validFrom, &item.validTo, &item.sourceTurn, &item.createdAt); err != nil {
 			return 0, 0, err
 		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	count, mapped := 0, 0
+	for _, item := range items {
 		targetRowID, err := insertSessionMigrationCopiedRow(ctx, tx, `
 			INSERT INTO kg_triples (chat_session_id, subject, predicate, object, valid_from, valid_to, source_turn, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, targetID, subject, predicate, object, nullIntArg(validFrom), nullIntArg(validTo), nullIntArg(sourceTurn), nonZeroTime(createdAt))
+		`, targetID, item.subject, item.predicate, item.object, nullIntArg(item.validFrom), nullIntArg(item.validTo), nullIntArg(item.sourceTurn), nonZeroTime(item.createdAt))
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "kg_triples", sourceRowID, targetRowID); err != nil {
+		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "kg_triples", item.sourceRowID, targetRowID); err != nil {
 			return 0, 0, err
 		}
 		count++
 		mapped++
 	}
-	return count, mapped, rows.Err()
+	return count, mapped, nil
 }
 
 func copySessionMigrationEpisodes(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {
@@ -4304,36 +4389,55 @@ func copySessionMigrationEpisodes(ctx context.Context, tx *sql.Tx, migrationID i
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
-	count, mapped := 0, 0
+	type episodeCopyRow struct {
+		sourceRowID             int64
+		fromTurn                int
+		toTurn                  int
+		summaryText             string
+		keyEntities             sql.NullString
+		keyEvents               sql.NullString
+		openLoopsJSON           sql.NullString
+		relationshipChangesJSON sql.NullString
+		embeddingVector         sql.NullString
+		embeddingModel          sql.NullString
+		createdAt               time.Time
+	}
+	items := []episodeCopyRow{}
 	for rows.Next() {
-		var sourceRowID int64
-		var fromTurn, toTurn int
-		var summaryText string
-		var keyEntities, keyEvents, openLoopsJSON, relationshipChangesJSON, embeddingVector, embeddingModel sql.NullString
-		var createdAt time.Time
-		if err := rows.Scan(&sourceRowID, &fromTurn, &toTurn, &summaryText, &keyEntities, &keyEvents,
-			&openLoopsJSON, &relationshipChangesJSON, &embeddingVector, &embeddingModel, &createdAt); err != nil {
+		var item episodeCopyRow
+		if err := rows.Scan(&item.sourceRowID, &item.fromTurn, &item.toTurn, &item.summaryText, &item.keyEntities, &item.keyEvents,
+			&item.openLoopsJSON, &item.relationshipChangesJSON, &item.embeddingVector, &item.embeddingModel, &item.createdAt); err != nil {
 			return 0, 0, err
 		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	count, mapped := 0, 0
+	for _, item := range items {
 		targetRowID, err := insertSessionMigrationCopiedRow(ctx, tx, `
 			INSERT INTO episode_summaries (
 				chat_session_id, from_turn, to_turn, summary_text, key_entities, key_events,
 				open_loops_json, relationship_changes_json, embedding_vector, embedding_model, created_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, targetID, fromTurn, toTurn, summaryText, nullStringArg(keyEntities), nullStringArg(keyEvents),
-			nullStringArg(openLoopsJSON), nullStringArg(relationshipChangesJSON), nullStringArg(embeddingVector),
-			nullStringArg(embeddingModel), nonZeroTime(createdAt))
+		`, targetID, item.fromTurn, item.toTurn, item.summaryText, nullStringArg(item.keyEntities), nullStringArg(item.keyEvents),
+			nullStringArg(item.openLoopsJSON), nullStringArg(item.relationshipChangesJSON), nullStringArg(item.embeddingVector),
+			nullStringArg(item.embeddingModel), nonZeroTime(item.createdAt))
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "episode_summaries", sourceRowID, targetRowID); err != nil {
+		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "episode_summaries", item.sourceRowID, targetRowID); err != nil {
 			return 0, 0, err
 		}
 		count++
 		mapped++
 	}
-	return count, mapped, rows.Err()
+	return count, mapped, nil
 }
 
 func copySessionMigrationSubjectiveEntityMemories(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {
@@ -4349,23 +4453,47 @@ func copySessionMigrationSubjectiveEntityMemories(ctx context.Context, tx *sql.T
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
-	count, mapped := 0, 0
+	type subjectiveEntityMemoryCopyRow struct {
+		sourceRowID         int64
+		personaEntityKey    string
+		personaEntityName   string
+		ownerEntityKey      string
+		ownerEntityName     string
+		ownerEntityRole     string
+		ownerVisibility     string
+		memoryText          string
+		portability         string
+		targetRevealPolicy  string
+		sourceCharacterName sql.NullString
+		evidenceExcerpt     sql.NullString
+		tagsJSON            sql.NullString
+		sourceTurn          sql.NullInt64
+		secretGuard         bool
+		importance10        sql.NullFloat64
+		emotionalWeight     sql.NullFloat64
+		createdAt           time.Time
+		updatedAt           time.Time
+	}
+	items := []subjectiveEntityMemoryCopyRow{}
 	for rows.Next() {
-		var sourceRowID int64
-		var personaEntityKey, personaEntityName, ownerEntityKey, ownerEntityName string
-		var ownerEntityRole, ownerVisibility, memoryText, portability, targetRevealPolicy string
-		var sourceCharacterName, evidenceExcerpt, tagsJSON sql.NullString
-		var sourceTurn sql.NullInt64
-		var secretGuard bool
-		var importance10, emotionalWeight sql.NullFloat64
-		var createdAt, updatedAt time.Time
-		if err := rows.Scan(&sourceRowID, &personaEntityKey, &personaEntityName, &ownerEntityKey, &ownerEntityName,
-			&ownerEntityRole, &ownerVisibility, &sourceCharacterName, &sourceTurn,
-			&memoryText, &evidenceExcerpt, &secretGuard, &portability, &tagsJSON,
-			&targetRevealPolicy, &importance10, &emotionalWeight, &createdAt, &updatedAt); err != nil {
+		var item subjectiveEntityMemoryCopyRow
+		if err := rows.Scan(&item.sourceRowID, &item.personaEntityKey, &item.personaEntityName, &item.ownerEntityKey, &item.ownerEntityName,
+			&item.ownerEntityRole, &item.ownerVisibility, &item.sourceCharacterName, &item.sourceTurn,
+			&item.memoryText, &item.evidenceExcerpt, &item.secretGuard, &item.portability, &item.tagsJSON,
+			&item.targetRevealPolicy, &item.importance10, &item.emotionalWeight, &item.createdAt, &item.updatedAt); err != nil {
 			return 0, 0, err
 		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	count, mapped := 0, 0
+	for _, item := range items {
 		targetRowID, err := insertSessionMigrationCopiedRow(ctx, tx, `
 			INSERT INTO protagonist_entity_memories (
 				persona_entity_key, persona_entity_name, owner_entity_key, owner_entity_name,
@@ -4373,21 +4501,21 @@ func copySessionMigrationSubjectiveEntityMemories(ctx context.Context, tx *sql.T
 				source_turn_index, memory_text, evidence_excerpt, secret_guard, portability,
 				tags_json, target_reveal_policy, importance_10, emotional_weight, created_at, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, personaEntityKey, personaEntityName, ownerEntityKey, ownerEntityName,
-			ownerEntityRole, ownerVisibility, targetID, nullStringArg(sourceCharacterName),
-			nullIntArg(sourceTurn), memoryText, nullStringArg(evidenceExcerpt), secretGuard, portability,
-			nullStringArg(tagsJSON), targetRevealPolicy, nullFloatArg(importance10), nullFloatArg(emotionalWeight),
-			nonZeroTime(createdAt), nonZeroTime(updatedAt))
+		`, item.personaEntityKey, item.personaEntityName, item.ownerEntityKey, item.ownerEntityName,
+			item.ownerEntityRole, item.ownerVisibility, targetID, nullStringArg(item.sourceCharacterName),
+			nullIntArg(item.sourceTurn), item.memoryText, nullStringArg(item.evidenceExcerpt), item.secretGuard, item.portability,
+			nullStringArg(item.tagsJSON), item.targetRevealPolicy, nullFloatArg(item.importance10), nullFloatArg(item.emotionalWeight),
+			nonZeroTime(item.createdAt), nonZeroTime(item.updatedAt))
 		if err != nil {
 			return 0, 0, err
 		}
-		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "protagonist_entity_memories", sourceRowID, targetRowID); err != nil {
+		if err := insertSessionMigrationRowMap(ctx, tx, migrationID, "protagonist_entity_memories", item.sourceRowID, targetRowID); err != nil {
 			return 0, 0, err
 		}
 		count++
 		mapped++
 	}
-	return count, mapped, rows.Err()
+	return count, mapped, nil
 }
 
 func insertSessionMigrationCopiedRow(ctx context.Context, tx *sql.Tx, query string, args ...any) (int64, error) {

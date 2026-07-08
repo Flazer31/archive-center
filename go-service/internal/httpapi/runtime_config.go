@@ -8,43 +8,52 @@ import (
 // RuntimeConfig mirrors the 0.8 /config/update runtime settings that the JS
 // bridge sends after the user saves the settings panel.
 type RuntimeConfig struct {
-	Synced                    bool
-	MainProvider              string
-	MainAPIKey                string
-	MainEndpoint              string
-	MainModel                 string
-	MainTimeoutSec            int64
-	MainTemperature           *float64
-	MainMaxTokens             *int64
-	MainReasoningPreset       string
-	MainReasoningEffort       string
-	MainReasoningBudget       *int64
-	CriticProvider            string
-	CriticAPIKey              string
-	CriticEndpoint            string
-	CriticModel               string
-	CriticTimeoutSec          int64
-	CriticTemperature         *float64
-	CriticMaxTokens           *int64
-	CriticReasoningPreset     string
-	CriticReasoningEffort     string
-	CriticReasoningBudget     *int64
-	SupervisorProvider        string
-	SupervisorAPIKey          string
-	SupervisorEndpoint        string
-	SupervisorModel           string
-	SupervisorTimeoutSec      int64
-	SupervisorTemperature     *float64
-	SupervisorMaxTokens       *int64
-	SupervisorReasoningPreset string
-	SupervisorReasoningEffort string
-	SupervisorReasoningBudget *int64
-	EmbeddingProvider         string
-	EmbeddingAPIKey           string
-	EmbeddingEndpoint         string
-	EmbeddingModel            string
-	EmbeddingTimeoutSec       int64
-	TopK                      int64
+	Synced                     bool
+	MainProvider               string
+	MainAPIKey                 string
+	MainEndpoint               string
+	MainModel                  string
+	MainTimeoutSec             int64
+	MainTemperature            *float64
+	MainMaxTokens              *int64
+	MainReasoningPreset        string
+	MainReasoningEffort        string
+	MainReasoningBudget        *int64
+	MainExtraHeadersJSON       string
+	MainExtraBodyJSON          string
+	MainVertexFlexMode         string
+	CriticProvider             string
+	CriticAPIKey               string
+	CriticEndpoint             string
+	CriticModel                string
+	CriticTimeoutSec           int64
+	CriticTemperature          *float64
+	CriticMaxTokens            *int64
+	CriticReasoningPreset      string
+	CriticReasoningEffort      string
+	CriticReasoningBudget      *int64
+	CriticExtraHeadersJSON     string
+	CriticExtraBodyJSON        string
+	CriticVertexFlexMode       string
+	SupervisorProvider         string
+	SupervisorAPIKey           string
+	SupervisorEndpoint         string
+	SupervisorModel            string
+	SupervisorTimeoutSec       int64
+	SupervisorTemperature      *float64
+	SupervisorMaxTokens        *int64
+	SupervisorReasoningPreset  string
+	SupervisorReasoningEffort  string
+	SupervisorReasoningBudget  *int64
+	SupervisorExtraHeadersJSON string
+	SupervisorExtraBodyJSON    string
+	SupervisorVertexFlexMode   string
+	EmbeddingProvider          string
+	EmbeddingAPIKey            string
+	EmbeddingEndpoint          string
+	EmbeddingModel             string
+	EmbeddingTimeoutSec        int64
+	TopK                       int64
 }
 
 type embeddingModelIdentity struct {
@@ -174,6 +183,9 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("mainReasoningPreset", &s.RuntimeConfig.MainReasoningPreset)
 	setString("mainReasoningEffort", &s.RuntimeConfig.MainReasoningEffort)
 	setIntPtr("mainReasoningBudgetTokens", &s.RuntimeConfig.MainReasoningBudget)
+	setString("mainExtraHeadersJson", &s.RuntimeConfig.MainExtraHeadersJSON)
+	setString("mainExtraBodyJson", &s.RuntimeConfig.MainExtraBodyJSON)
+	setString("mainVertexFlexMode", &s.RuntimeConfig.MainVertexFlexMode)
 	setString("criticProvider", &s.RuntimeConfig.CriticProvider)
 	setString("criticApiKey", &s.RuntimeConfig.CriticAPIKey)
 	setString("criticEndpoint", &s.RuntimeConfig.CriticEndpoint)
@@ -184,6 +196,9 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("criticReasoningPreset", &s.RuntimeConfig.CriticReasoningPreset)
 	setString("criticReasoningEffort", &s.RuntimeConfig.CriticReasoningEffort)
 	setIntPtr("criticReasoningBudgetTokens", &s.RuntimeConfig.CriticReasoningBudget)
+	setString("criticExtraHeadersJson", &s.RuntimeConfig.CriticExtraHeadersJSON)
+	setString("criticExtraBodyJson", &s.RuntimeConfig.CriticExtraBodyJSON)
+	setString("criticVertexFlexMode", &s.RuntimeConfig.CriticVertexFlexMode)
 	setString("supervisorProvider", &s.RuntimeConfig.SupervisorProvider)
 	setString("supervisorApiKey", &s.RuntimeConfig.SupervisorAPIKey)
 	setString("supervisorEndpoint", &s.RuntimeConfig.SupervisorEndpoint)
@@ -194,6 +209,9 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("supervisorReasoningPreset", &s.RuntimeConfig.SupervisorReasoningPreset)
 	setString("supervisorReasoningEffort", &s.RuntimeConfig.SupervisorReasoningEffort)
 	setIntPtr("supervisorReasoningBudgetTokens", &s.RuntimeConfig.SupervisorReasoningBudget)
+	setString("supervisorExtraHeadersJson", &s.RuntimeConfig.SupervisorExtraHeadersJSON)
+	setString("supervisorExtraBodyJson", &s.RuntimeConfig.SupervisorExtraBodyJSON)
+	setString("supervisorVertexFlexMode", &s.RuntimeConfig.SupervisorVertexFlexMode)
 	setString("embeddingProvider", &s.RuntimeConfig.EmbeddingProvider)
 	setString("embeddingApiKey", &s.RuntimeConfig.EmbeddingAPIKey)
 	setString("embeddingEndpoint", &s.RuntimeConfig.EmbeddingEndpoint)
@@ -238,6 +256,9 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 		ReasoningPreset:       rt.SupervisorReasoningPreset,
 		ReasoningEffort:       rt.SupervisorReasoningEffort,
 		ReasoningBudgetTokens: int64PtrValue(rt.SupervisorReasoningBudget, 0),
+		ExtraHeadersJSON:      rt.SupervisorExtraHeadersJSON,
+		ExtraBodyJSON:         rt.SupervisorExtraBodyJSON,
+		VertexFlexMode:        rt.SupervisorVertexFlexMode,
 	}
 }
 
@@ -262,6 +283,9 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 		ReasoningPreset:       rt.MainReasoningPreset,
 		ReasoningEffort:       rt.MainReasoningEffort,
 		ReasoningBudgetTokens: int64PtrValue(rt.MainReasoningBudget, 0),
+		ExtraHeadersJSON:      rt.MainExtraHeadersJSON,
+		ExtraBodyJSON:         rt.MainExtraBodyJSON,
+		VertexFlexMode:        rt.MainVertexFlexMode,
 	}
 }
 

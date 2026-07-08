@@ -9098,6 +9098,7 @@ func (s *Server) callChapterSummaryLLM(ctx context.Context, sid string, fromTurn
 		Temperature:         &temp,
 		TimeoutMs:           &cfg.TimeoutMs,
 	}
+	applyProxyOverridesFromLLMConfig(&req, cfg)
 	upstream, _, err := performProxyPluginMain(ctx, req)
 	if err != nil {
 		return store.ChapterSummary{}, map[string]any{
@@ -9445,6 +9446,7 @@ func (s *Server) callHierarchySummaryLLM(ctx context.Context, kind string, sid s
 		Temperature:         &temp,
 		TimeoutMs:           &cfg.TimeoutMs,
 	}
+	applyProxyOverridesFromLLMConfig(&req, cfg)
 	upstream, _, err := performProxyPluginMain(ctx, req)
 	if err != nil {
 		return nil, map[string]any{"configured": true, "endpoint_host": endpointHost(cfg.Endpoint), "model": cfg.Model}, err
@@ -11419,6 +11421,7 @@ func (s *Server) scoreHypaMemoryImport(ctx context.Context, sid string, summary 
 	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
 		req.GlmThinkingType = &cfg.GlmThinkingType
 	}
+	applyProxyOverridesFromLLMConfig(&req, cfg)
 
 	upstream, _, err := performProxyPluginMain(ctx, req)
 	if err != nil {

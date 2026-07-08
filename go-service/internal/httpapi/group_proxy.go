@@ -215,6 +215,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		Temperature: &temp,
 		TimeoutMs:   &cfg.TimeoutMs,
 	}
+	applyProxyOverridesFromLLMConfig(&reqBody, cfg)
 	upstream, _, err := performProxyPluginMain(ctx, reqBody)
 	if err != nil {
 		return nil, map[string]any{"prompt_source": promptSource, "model": cfg.Model}, err
@@ -228,6 +229,9 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		"prompt_source": promptSource,
 		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
 		"usage":         upstream["usage"],
+	}
+	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+		trace["request_overrides"] = requestOverrides
 	}
 	return parsed, trace, nil
 }

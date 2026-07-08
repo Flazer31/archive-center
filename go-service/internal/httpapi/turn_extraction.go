@@ -33,6 +33,9 @@ type completeTurnLLMConfig struct {
 	ReasoningEffort       string
 	ReasoningBudgetTokens int64
 	GlmThinkingType       string
+	ExtraHeadersJSON      string
+	ExtraBodyJSON         string
+	VertexFlexMode        string
 	ForceWorldRuleAudit   bool
 }
 
@@ -901,6 +904,9 @@ func completeTurnExtractionConfigFromMeta(meta map[string]any) completeTurnExtra
 			ReasoningEffort:       stringFromMap(criticMap, "reasoning_effort"),
 			ReasoningBudgetTokens: int64FromMap(criticMap, "reasoning_budget_tokens", 0),
 			GlmThinkingType:       stringFromMap(criticMap, "glm_thinking_type"),
+			ExtraHeadersJSON:      stringFromMap(criticMap, "extra_headers_json"),
+			ExtraBodyJSON:         stringFromMap(criticMap, "extra_body_json"),
+			VertexFlexMode:        stringFromMap(criticMap, "vertex_flex_mode"),
 			ForceWorldRuleAudit:   boolFromAny(meta["force_world_rule_backfill"]) || boolFromAny(meta["force_focused_world_rule_audit"]),
 		},
 		Embedder: completeTurnEmbeddingConfig{
@@ -947,6 +953,15 @@ func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnE
 	}
 	if strings.TrimSpace(cfg.Critic.GlmThinkingType) == "" {
 		cfg.Critic.GlmThinkingType = glmThinkingTypeFromReasoning(cfg.Critic.ReasoningPreset, cfg.Critic.ReasoningEffort)
+	}
+	if strings.TrimSpace(cfg.Critic.ExtraHeadersJSON) == "" {
+		cfg.Critic.ExtraHeadersJSON = rt.CriticExtraHeadersJSON
+	}
+	if strings.TrimSpace(cfg.Critic.ExtraBodyJSON) == "" {
+		cfg.Critic.ExtraBodyJSON = rt.CriticExtraBodyJSON
+	}
+	if strings.TrimSpace(cfg.Critic.VertexFlexMode) == "" {
+		cfg.Critic.VertexFlexMode = rt.CriticVertexFlexMode
 	}
 
 	if rt.Synced {
@@ -1031,6 +1046,30 @@ func addCompleteTurnReasoningTraceFields(trace map[string]any, cfg completeTurnL
 	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
 		trace["glm_thinking_type"] = strings.TrimSpace(cfg.GlmThinkingType)
 	}
+	if strings.TrimSpace(cfg.VertexFlexMode) != "" {
+		trace["vertex_flex_mode"] = strings.TrimSpace(cfg.VertexFlexMode)
+	}
+	if strings.TrimSpace(cfg.ExtraHeadersJSON) != "" {
+		trace["extra_headers_json_configured"] = true
+	}
+	if strings.TrimSpace(cfg.ExtraBodyJSON) != "" {
+		trace["extra_body_json_configured"] = true
+	}
+}
+
+func applyProxyOverridesFromLLMConfig(req *dto.ProxyPluginMainRequest, cfg completeTurnLLMConfig) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.ExtraHeadersJSON) != "" {
+		req.ExtraHeadersJSON = &cfg.ExtraHeadersJSON
+	}
+	if strings.TrimSpace(cfg.ExtraBodyJSON) != "" {
+		req.ExtraBodyJSON = &cfg.ExtraBodyJSON
+	}
+	if strings.TrimSpace(cfg.VertexFlexMode) != "" {
+		req.VertexFlexMode = &cfg.VertexFlexMode
+	}
 }
 
 func glmThinkingTypeFromReasoning(preset, effort string) string {
@@ -1100,6 +1139,7 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
 		req.GlmThinkingType = &cfg.GlmThinkingType
 	}
+	applyProxyOverridesFromLLMConfig(&req, cfg)
 
 	upstream, _, err := performProxyPluginMain(ctx, req)
 	providerRetryTrace := map[string]any{}
@@ -1169,6 +1209,9 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 			},
 		},
 		"preview_pass": previewPass,
+	}
+	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+		trace["request_overrides"] = requestOverrides
 	}
 	trace["critic_archive_ledger"] = criticArchiveLedgerTrace
 	if len(languageContext) > 0 {
@@ -1282,6 +1325,7 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
 		req.GlmThinkingType = &cfg.GlmThinkingType
 	}
+	applyProxyOverridesFromLLMConfig(&req, cfg)
 	trace["llm_call_attempt"] = true
 	upstream, _, err := performProxyPluginMain(ctx, req)
 	if err != nil {
@@ -1302,6 +1346,9 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	trace["status"] = "ok"
 	trace["model"] = extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model)
 	trace["usage"] = upstream["usage"]
+	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+		trace["request_overrides"] = requestOverrides
+	}
 	trace["world_rule_count"] = count
 	if count == 0 {
 		trace["reason"] = extractionFirstNonEmpty(stringFromMap(mapFromAny(parsed["audit"]), "reason"), "audit_returned_no_durable_rule")
