@@ -2192,6 +2192,150 @@ func TestAdminReindexDryRunReportsDerivedArtifactVectorCandidates(t *testing.T) 
 	}
 }
 
+func TestAdminReindexBlocksPartialClientMetaEmbeddingWithoutEnvFallback(t *testing.T) {
+	t.Setenv("AC_LT_EMBEDDING_API_KEY", "env-key")
+	t.Setenv("AC_LT_EMBEDDING_ENDPOINT", "https://env.example.test/v1/embeddings")
+	t.Setenv("AC_LT_EMBEDDING_PROVIDER", "voyageai")
+	t.Setenv("AC_LT_EMBEDDING_MODEL", "voyage-3-large")
+
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBShadow
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{
+		returnMemories: []store.Memory{
+			{ID: 1, ChatSessionID: "sess-partial-embed", TurnIndex: 1, SummaryJSON: `{"summary":"Needs a new vector."}`},
+		},
+	}
+	srv.StoreOpenError = nil
+	srv.Vector = &turnRecordingVectorStore{}
+
+	meta := map[string]any{
+		"embedding": map[string]any{
+			"provider": "voyageai",
+			"model":    "voyage-3-large",
+		},
+	}
+	cfgResolved := srv.completeTurnExtractionConfig(meta)
+	if cfgResolved.Embedder.Source != "client_meta_partial" {
+		t.Fatalf("embedding source = %q, want client_meta_partial", cfgResolved.Embedder.Source)
+	}
+	if cfgResolved.Embedder.APIKey != "" || cfgResolved.Embedder.Endpoint != "" {
+		t.Fatalf("partial client_meta must not be filled from env: %#v", cfgResolved.Embedder)
+	}
+
+	resp, err := srv.runAdminReindexJob(context.Background(), "sess-partial-embed", map[string]any{
+		"client_meta": meta,
+		"force":       true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("runAdminReindexJob: %v", err)
+	}
+	if resp["status"] != "blocked" || resp["reason"] != "embedding_config_incomplete" {
+		t.Fatalf("response = %#v, want blocked embedding_config_incomplete", resp)
+	}
+	trace, ok := resp["embedding_config_trace"].(map[string]any)
+	if !ok || trace["source"] != "client_meta_partial" {
+		t.Fatalf("embedding trace = %#v", resp["embedding_config_trace"])
+	}
+}
+
+func TestCompleteTurnConfigBlocksPartialClientMetaCriticWithoutRuntimeFallback(t *testing.T) {
+	srv := NewServer(config.Default())
+	srv.RuntimeConfig.CriticAPIKey = "runtime-key"
+	srv.RuntimeConfig.CriticEndpoint = "https://runtime.example.test/v1/chat/completions"
+	srv.RuntimeConfig.CriticModel = "runtime-critic"
+	srv.RuntimeConfig.CriticProvider = "openai"
+
+	cfg := srv.completeTurnExtractionConfig(map[string]any{
+		"critic": map[string]any{
+			"provider": "openai",
+			"model":    "ui-critic",
+		},
+	})
+
+	if cfg.Critic.Source != "client_meta_partial.critic" {
+		t.Fatalf("critic source = %q, want client_meta_partial.critic", cfg.Critic.Source)
+	}
+	if cfg.Critic.APIKey != "" || cfg.Critic.Endpoint != "" {
+		t.Fatalf("partial client_meta critic must not be filled from runtime: %#v", cfg.Critic)
+	}
+	if cfg.Critic.hasConfig() {
+		t.Fatalf("partial client_meta critic unexpectedly configured: %#v", cfg.Critic)
+	}
+}
+
+func TestAdminReindexBlocksChromaDimensionMismatchAtFirstVectorError(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBShadow
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{
+		returnMemories: []store.Memory{
+			{ID: 1, ChatSessionID: "sess-dim-mismatch", TurnIndex: 1, SummaryJSON: `{"summary":"Already embedded memory."}`, Embedding: `[0.1,0.2]`, EmbeddingModel: "old-model"},
+		},
+	}
+	srv.StoreOpenError = nil
+	srv.Vector = &turnRecordingVectorStore{upsertErr: fmt.Errorf("chroma collection dimension mismatch: current embedding dimension=1024; existing collection was created with a different embedding dimension")}
+
+	resp, err := srv.runAdminReindexJob(context.Background(), "sess-dim-mismatch", map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("runAdminReindexJob: %v", err)
+	}
+	if resp["status"] != "blocked" || resp["reason"] != "chroma_collection_dimension_mismatch" {
+		t.Fatalf("response = %#v, want blocked chroma_collection_dimension_mismatch", resp)
+	}
+	if resp["stage"] != "collection_recreate_required" || resp["ui_action"] != "recreate_chromadb_collection_then_reindex" {
+		t.Fatalf("dimension mismatch guidance missing: %#v", resp)
+	}
+	if resp["blocked_tier"] != "memory" || resp["blocked_row_id"] != int64(1) {
+		t.Fatalf("blocked target mismatch: %#v", resp)
+	}
+}
+
+func TestAdminReindexDerivedArtifactsEmitsTierProgress(t *testing.T) {
+	srv := NewServer(config.Default())
+	events := []map[string]any{}
+	progress := adminReindexDerivedArtifactProgress{
+		Total: 2,
+		Progress: func(item map[string]any) {
+			events = append(events, cloneMapAny(item))
+		},
+	}
+	result := srv.adminReindexDerivedArtifacts(
+		context.Background(),
+		"sess-derived-progress",
+		completeTurnExtractionConfig{},
+		false,
+		100,
+		[]store.DirectEvidence{{ID: 10, ChatSessionID: "sess-derived-progress", EvidenceText: "The brass key opens the cellar.", SourceTurnEnd: 1}},
+		[]store.WorldRule{{ID: 20, ChatSessionID: "sess-derived-progress", Scope: "location", ScopeName: "cellar", Category: "access", Key: "brass_key", ValueJSON: `{"value":"The cellar opens with a brass key."}`, SourceTurn: 1}},
+		progress,
+	)
+	if result.Processed != 2 || result.Skipped != 2 {
+		t.Fatalf("result = %+v, want processed/skipped 2", result)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected progress events")
+	}
+	seenEvidence := false
+	seenWorldRule := false
+	for _, event := range events {
+		if event["stage"] != "derived_artifact_reindex" {
+			continue
+		}
+		if event["tier"] == "evidence" && event["phase"] == "item_done" {
+			seenEvidence = true
+		}
+		if event["tier"] == "world_rule" && event["phase"] == "item_done" {
+			seenWorldRule = true
+		}
+	}
+	if !seenEvidence || !seenWorldRule {
+		t.Fatalf("missing tier progress: evidence=%v world_rule=%v events=%#v", seenEvidence, seenWorldRule, events)
+	}
+}
+
 func TestAdminVectorOrphanAuditDeletesFullListingOrphans(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority

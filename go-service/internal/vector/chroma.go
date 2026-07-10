@@ -137,6 +137,7 @@ func (s *chromaStore) Upsert(ctx context.Context, sessionID string, docs []Vecto
 			"source_table":    doc.SourceTable,
 			"source_row_id":   doc.SourceRowID,
 			"schema_version":  doc.SchemaVersion,
+			"embedding_dim":   len(doc.Embedding),
 		}
 		if strings.TrimSpace(doc.SearchTextPolicy) != "" {
 			meta["search_text_policy"] = strings.TrimSpace(doc.SearchTextPolicy)
@@ -169,7 +170,10 @@ func (s *chromaStore) Upsert(ctx context.Context, sessionID string, docs []Vecto
 		"documents":  documents,
 	}
 	_, err = s.doJSON(ctx, http.MethodPost, s.collectionOperationPath(ref, "upsert"), body, nil, http.StatusOK, http.StatusCreated)
-	return err
+	if err != nil {
+		return chromaDimensionMismatchError(err, docs)
+	}
+	return nil
 }
 
 func (s *chromaStore) DeleteSession(ctx context.Context, sessionID string) error {
@@ -378,6 +382,27 @@ func isChromaMissingCollectionError(err error) bool {
 	text := err.Error()
 	return strings.Contains(text, "InvalidCollection") ||
 		(strings.Contains(text, "returned 400") && strings.Contains(text, "does not exist"))
+}
+
+func chromaDimensionMismatchError(err error, docs []VectorDocument) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	if !strings.Contains(text, "expecting embedding with dimension") || !strings.Contains(text, "got") {
+		return err
+	}
+	dim := 0
+	for _, doc := range docs {
+		if len(doc.Embedding) > 0 {
+			dim = len(doc.Embedding)
+			break
+		}
+	}
+	if dim > 0 {
+		return fmt.Errorf("chroma collection dimension mismatch: current embedding dimension=%d; existing collection was created with a different embedding dimension. Recreate the ChromaDB collection or keep the previous embedding model. Original error: %w", dim, err)
+	}
+	return fmt.Errorf("chroma collection dimension mismatch: existing collection was created with a different embedding dimension. Recreate the ChromaDB collection or keep the previous embedding model. Original error: %w", err)
 }
 
 func (s *chromaStore) usesV2API() bool {

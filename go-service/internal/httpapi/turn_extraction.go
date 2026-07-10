@@ -25,6 +25,7 @@ type completeTurnLLMConfig struct {
 	Endpoint              string
 	Model                 string
 	Provider              string
+	Source                string
 	TimeoutMs             int64
 	Temperature           float64
 	MaxTokens             int64
@@ -45,6 +46,7 @@ type completeTurnEmbeddingConfig struct {
 	Model     string
 	Provider  string
 	TimeoutMs int64
+	Source    string
 }
 
 type completeTurnExtractionConfig struct {
@@ -924,10 +926,7 @@ func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnE
 	rt := s.runtimeConfigSnapshot()
 	criticMap := mapFromAny(meta["critic"])
 
-	cfg.Critic.Provider = extractionFirstNonEmpty(cfg.Critic.Provider, rt.CriticProvider)
-	cfg.Critic.APIKey = extractionFirstNonEmpty(cfg.Critic.APIKey, rt.CriticAPIKey)
-	cfg.Critic.Endpoint = extractionFirstNonEmpty(cfg.Critic.Endpoint, rt.CriticEndpoint)
-	cfg.Critic.Model = extractionFirstNonEmpty(cfg.Critic.Model, rt.CriticModel)
+	cfg.Critic = selectCompleteTurnLLMCoreConfig(cfg.Critic, criticMap, rt.CriticProvider, rt.CriticAPIKey, rt.CriticEndpoint, rt.CriticModel, "critic")
 	if rt.CriticTimeoutSec > 0 {
 		cfg.Critic.TimeoutMs = runtimeTimeoutMs(rt.CriticTimeoutSec, cfg.Critic.TimeoutMs)
 	}
@@ -964,34 +963,90 @@ func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnE
 		cfg.Critic.VertexFlexMode = rt.CriticVertexFlexMode
 	}
 
-	if rt.Synced {
-		cfg.Embedder.Provider = extractionFirstNonEmpty(cfg.Embedder.Provider, rt.EmbeddingProvider)
-		cfg.Embedder.APIKey = extractionFirstNonEmpty(cfg.Embedder.APIKey, rt.EmbeddingAPIKey)
-		cfg.Embedder.Endpoint = extractionFirstNonEmpty(cfg.Embedder.Endpoint, rt.EmbeddingEndpoint)
-	} else {
-		cfg.Embedder.Provider = extractionFirstNonEmpty(
-			cfg.Embedder.Provider,
-			rt.EmbeddingProvider,
+	cfg.Embedder = s.selectCompleteTurnEmbeddingConfig(meta, cfg.Embedder, rt)
+	return cfg
+}
+
+func selectCompleteTurnLLMCoreConfig(metaCfg completeTurnLLMConfig, metaMap map[string]any, runtimeProvider, runtimeAPIKey, runtimeEndpoint, runtimeModel, label string) completeTurnLLMConfig {
+	metaCfg.APIKey = normalizeConfigSecret(metaCfg.APIKey)
+	if len(metaMap) > 0 && metaCfg.hasAnyAuthorityConfigField() {
+		metaCfg.Source = "client_meta." + label
+		if !metaCfg.hasConfig() {
+			metaCfg.Source = "client_meta_partial." + label
+		}
+		return metaCfg
+	}
+	runtimeCfg := metaCfg
+	runtimeCfg.Provider = strings.TrimSpace(runtimeProvider)
+	runtimeCfg.APIKey = normalizeConfigSecret(runtimeAPIKey)
+	runtimeCfg.Endpoint = strings.TrimSpace(runtimeEndpoint)
+	runtimeCfg.Model = strings.TrimSpace(runtimeModel)
+	runtimeCfg.Source = "runtime_config." + label
+	if runtimeCfg.hasAnyAuthorityConfigField() {
+		if !runtimeCfg.hasConfig() {
+			runtimeCfg.Source = "runtime_config_partial." + label
+		}
+		return runtimeCfg
+	}
+	metaCfg.Source = "missing." + label
+	return metaCfg
+}
+
+func (s *Server) selectCompleteTurnEmbeddingConfig(meta map[string]any, metaCfg completeTurnEmbeddingConfig, rt RuntimeConfig) completeTurnEmbeddingConfig {
+	metaCfg.APIKey = normalizeConfigSecret(metaCfg.APIKey)
+	if metaCfg.TimeoutMs <= 0 {
+		metaCfg.TimeoutMs = 30000
+	}
+	timeoutMs := metaCfg.TimeoutMs
+	if rt.EmbeddingTimeoutSec > 0 {
+		timeoutMs = runtimeTimeoutMs(rt.EmbeddingTimeoutSec, timeoutMs)
+	}
+	metaCfg.TimeoutMs = timeoutMs
+	metaEmbedding := mapFromAny(meta["embedding"])
+	if len(metaEmbedding) > 0 && metaCfg.hasAnyAuthorityConfigField() {
+		metaCfg.Source = "client_meta"
+		if !metaCfg.hasConfig() {
+			metaCfg.Source = "client_meta_partial"
+		}
+		return metaCfg
+	}
+
+	runtimeCfg := completeTurnEmbeddingConfig{
+		Provider:  strings.TrimSpace(rt.EmbeddingProvider),
+		APIKey:    normalizeConfigSecret(rt.EmbeddingAPIKey),
+		Endpoint:  strings.TrimSpace(rt.EmbeddingEndpoint),
+		Model:     strings.TrimSpace(rt.EmbeddingModel),
+		TimeoutMs: timeoutMs,
+		Source:    "runtime_config",
+	}
+	if runtimeCfg.hasAnyAuthorityConfigField() {
+		if !runtimeCfg.hasConfig() {
+			runtimeCfg.Source = "runtime_config_partial"
+		}
+		return runtimeCfg
+	}
+
+	envCfg := completeTurnEmbeddingConfig{
+		Provider: strings.TrimSpace(extractionFirstNonEmpty(
 			s.Cfg.EmbedderProvider,
 			embeddingEnvFirst("AC_EMBEDDER_PROVIDER", "AC_LT_EMBEDDING_PROVIDER", "PROJECT_EMBEDDING_PROVIDER", "AC_PROJECT_EMBEDDING_PROVIDER"),
-		)
-		cfg.Embedder.APIKey = extractionFirstNonEmpty(
-			cfg.Embedder.APIKey,
-			rt.EmbeddingAPIKey,
-			embeddingEnvFirst("AC_EMBEDDER_API_KEY", "AC_LT_EMBEDDING_API_KEY", "PROJECT_EMBEDDING_API_KEY", "AC_PROJECT_EMBEDDING_API_KEY"),
-		)
-		cfg.Embedder.Endpoint = extractionFirstNonEmpty(
-			cfg.Embedder.Endpoint,
-			rt.EmbeddingEndpoint,
+		)),
+		APIKey: normalizeConfigSecret(embeddingEnvFirst("AC_EMBEDDER_API_KEY", "AC_LT_EMBEDDING_API_KEY", "PROJECT_EMBEDDING_API_KEY", "AC_PROJECT_EMBEDDING_API_KEY")),
+		Endpoint: strings.TrimSpace(extractionFirstNonEmpty(
 			s.Cfg.EmbedderEndpoint,
 			embeddingEnvFirst("AC_EMBEDDER_ENDPOINT", "AC_LT_EMBEDDING_ENDPOINT", "PROJECT_EMBEDDING_ENDPOINT", "AC_PROJECT_EMBEDDING_ENDPOINT"),
-		)
+		)),
+		Model: strings.TrimSpace(extractionFirstNonEmpty(
+			s.Cfg.EmbedderModel,
+			embeddingEnvFirst("AC_EMBEDDER_MODEL", "AC_LT_EMBEDDING_MODEL", "PROJECT_EMBEDDING_MODEL", "AC_PROJECT_EMBEDDING_MODEL"),
+		)),
+		TimeoutMs: timeoutMs,
+		Source:    "env_or_config",
 	}
-	cfg.Embedder.Model = extractionFirstNonEmpty(cfg.Embedder.Model, s.currentProjectEmbeddingModel())
-	if rt.EmbeddingTimeoutSec > 0 {
-		cfg.Embedder.TimeoutMs = runtimeTimeoutMs(rt.EmbeddingTimeoutSec, cfg.Embedder.TimeoutMs)
+	if !envCfg.hasConfig() {
+		envCfg.Source = "missing"
 	}
-	return cfg
+	return envCfg
 }
 
 func (c completeTurnLLMConfig) hasConfig() bool {
@@ -1002,6 +1057,12 @@ func (c completeTurnLLMConfig) missingFields() []string {
 	return configMissingFieldsWithProvider(c.Provider, c.APIKey, c.Endpoint, c.Model)
 }
 
+func (c completeTurnLLMConfig) hasAnyAuthorityConfigField() bool {
+	return strings.TrimSpace(normalizeConfigSecret(c.APIKey)) != "" ||
+		strings.TrimSpace(c.Endpoint) != "" ||
+		strings.TrimSpace(c.Model) != ""
+}
+
 func (c completeTurnEmbeddingConfig) hasConfig() bool {
 	return len(c.missingFields()) == 0
 }
@@ -1010,9 +1071,49 @@ func (c completeTurnEmbeddingConfig) missingFields() []string {
 	return configMissingFieldsWithProvider(c.Provider, c.APIKey, c.Endpoint, c.Model)
 }
 
+func (c completeTurnEmbeddingConfig) hasAnyConfigField() bool {
+	return strings.TrimSpace(c.Provider) != "" ||
+		strings.TrimSpace(normalizeConfigSecret(c.APIKey)) != "" ||
+		strings.TrimSpace(c.Endpoint) != "" ||
+		strings.TrimSpace(c.Model) != ""
+}
+
+func (c completeTurnEmbeddingConfig) hasAnyAuthorityConfigField() bool {
+	return strings.TrimSpace(normalizeConfigSecret(c.APIKey)) != "" ||
+		strings.TrimSpace(c.Endpoint) != "" ||
+		strings.TrimSpace(c.Model) != ""
+}
+
+func normalizeConfigSecret(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || isMaskedSecretValue(v) {
+		return ""
+	}
+	return v
+}
+
+func isMaskedSecretValue(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	if strings.Contains(v, "•") || strings.Contains(v, "●") {
+		return true
+	}
+	allMask := true
+	for _, r := range v {
+		if r != '*' && r != '＊' {
+			allMask = false
+			break
+		}
+	}
+	return allMask && len([]rune(v)) >= 4
+}
+
 func completeTurnLLMConfigTrace(cfg completeTurnExtractionConfig) map[string]any {
 	criticTrace := map[string]any{
 		"configured":     cfg.Critic.hasConfig(),
+		"source":         strings.TrimSpace(cfg.Critic.Source),
 		"provider":       strings.TrimSpace(cfg.Critic.Provider),
 		"endpoint_host":  endpointHost(cfg.Critic.Endpoint),
 		"model":          strings.TrimSpace(cfg.Critic.Model),
@@ -1024,6 +1125,7 @@ func completeTurnLLMConfigTrace(cfg completeTurnExtractionConfig) map[string]any
 		"critic": criticTrace,
 		"embedding": map[string]any{
 			"configured":     cfg.Embedder.hasConfig(),
+			"source":         strings.TrimSpace(cfg.Embedder.Source),
 			"provider":       strings.TrimSpace(cfg.Embedder.Provider),
 			"endpoint_host":  endpointHost(cfg.Embedder.Endpoint),
 			"model":          strings.TrimSpace(cfg.Embedder.Model),

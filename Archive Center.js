@@ -1,5 +1,5 @@
 //@name Archive Center
-//@display-name Archive Center 2.5.0 RC3
+//@display-name Archive Center 2.5.0 RC4
 //@author memory-scaffold
 //@api 3.0
 //@version 2.5.0
@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "2.5.0-rc3-copy-resume-anchor.20260708-1";
-  const BUILD_CHANNEL = "rc3";
-  const BUILD_TIME = "2026-07-08 KST";
-  const BUILD_NOTES = "post-copy/attach/migrate transient resume anchor + persistent rollback guard + private recollection guard + Vertex Flex PayGo";
+  const BUILD_ID = "2.5.0-rc4-postprocessor-canonical-output.20260710-1";
+  const BUILD_CHANNEL = "rc4";
+  const BUILD_TIME = "2026-07-10 KST";
+  const BUILD_NOTES = "postprocessor final output canonicalization + stable rollback comparison + existing RC3 guards";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -6438,9 +6438,10 @@
     try {
       const comparable = extractComparableMessageRoleAndContent(message);
       if (!comparable) return null;
+      const content = canonicalizeAssistantSnapshotContentForComparison(comparable.role, comparable.content);
       return {
         role: comparable.role,
-        content: comparable.content.slice(0, 100),
+        content: content.slice(0, 100),
       };
     } catch {
       return null;
@@ -6903,6 +6904,19 @@
     return result && Array.isArray(result.items) ? result.items : null;
   }
 
+  async function fetchCanonicalChatLogsForTurnRange(sessionId, fromTurn, toTurn) {
+    const sid = String(sessionId || "").trim();
+    const from = Number(fromTurn);
+    const to = Number(toTurn);
+    if (!sid || !Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < from) return null;
+    const path = "/canonical/" + encodeURIComponent(sid) + "/chat-logs?from_turn=" + encodeURIComponent(String(from)) + "&to_turn=" + encodeURIComponent(String(to));
+    const result = await safeCall(
+      () => bridgeFetch(path, { method: "GET", timeoutMs: Math.min(getRequestTimeoutSettingMs(), 2500) }),
+      null, "fetchCanonicalChatLogsForTurnRange"
+    );
+    return result && Array.isArray(result.items) ? result.items : null;
+  }
+
   function extractCanonicalChatLogRoleContent(item) {
     try {
       if (!item || typeof item !== "object") return null;
@@ -6970,6 +6984,77 @@
         && chatLogItemsContainRoleContent(existing, "assistant", p.assistant_content || "");
     } catch {
       return false;
+    }
+  }
+
+  function buildCanonicalChatLogPairsFromItems(items) {
+    const byTurn = new Map();
+    try {
+      for (const item of Array.isArray(items) ? items : []) {
+        const parsed = extractCanonicalChatLogRoleContent(item);
+        if (!parsed) continue;
+        const rawTurn = item && (item.turn_index != null ? item.turn_index
+          : item.TurnIndex != null ? item.TurnIndex
+          : item.turnIndex != null ? item.turnIndex
+          : item.Turn != null ? item.Turn
+          : item.turn != null ? item.turn
+          : 0);
+        const turn = Number(rawTurn || 0);
+        if (!Number.isFinite(turn) || turn < 1) continue;
+        const current = byTurn.get(turn) || { turnIndex: turn, userContent: "", assistantContent: "" };
+        if (parsed.role === "user" && !current.userContent) {
+          current.userContent = parsed.content;
+        } else if (parsed.role === "assistant" && !current.assistantContent) {
+          current.assistantContent = normalizeAssistantPersistenceCandidate(parsed.content);
+        }
+        byTurn.set(turn, current);
+      }
+      return Array.from(byTurn.values())
+        .filter(function(pair) { return pair && pair.userContent && pair.assistantContent; })
+        .sort(function(a, b) { return Number(a.turnIndex || 0) - Number(b.turnIndex || 0); });
+    } catch {
+      return [];
+    }
+  }
+
+  async function findRecentPersistedCompleteTurnPairForContent(sessionId, userContent, assistantContent) {
+    try {
+      const sid = String(sessionId || "").trim();
+      const wantedUser = normalizeTurnPairCompareText(userContent);
+      const wantedAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(assistantContent));
+      if (!sid || !wantedUser || !wantedAssistant) return null;
+      const latestBackendTurn = await safeCall(
+        () => fetchBackendLatestTurnIndexForSession(sid),
+        0,
+        "findRecentPersistedCompleteTurnPairForContent.latestTurn"
+      );
+      const latest = Number(latestBackendTurn || 0);
+      if (!Number.isFinite(latest) || latest < 1) return null;
+      const from = Math.max(1, latest - 5);
+      const items = await fetchCanonicalChatLogsForTurnRange(sid, from, latest);
+      const pairs = buildCanonicalChatLogPairsFromItems(items);
+      for (let i = pairs.length - 1; i >= 0; i--) {
+        const pair = pairs[i];
+        const pairUser = normalizeTurnPairCompareText(pair && pair.userContent);
+        if (!pairUser || pairUser !== wantedUser) continue;
+        const pairAssistantRaw = pair && pair.assistantContent || "";
+        const pairAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(pairAssistantRaw));
+        const assistantMatches = pairAssistant && (
+          pairAssistant === wantedAssistant
+          || isSameAssistantComparableText(pairAssistantRaw, assistantContent)
+          || computeAssistantSnapshotFingerprint(pairAssistantRaw) === computeAssistantSnapshotFingerprint(assistantContent)
+        );
+        if (!assistantMatches) continue;
+        return {
+          turnIndex: Number(pair.turnIndex || 0),
+          latestBackendTurn: latest,
+          source: "recent_backend_pair_duplicate_guard",
+        };
+      }
+      return null;
+    } catch (err) {
+      debugLog("findRecentPersistedCompleteTurnPairForContent failed:", err && err.message);
+      return null;
     }
   }
 
@@ -7743,7 +7828,7 @@
       for (let i = pairs.length - 1; i >= 0; i--) {
         const pair = pairs[i];
         if (!pair || !Number.isFinite(Number(pair.turnIndex))) continue;
-        const pairAssistant = normalizeTurnPairCompareText(pair.assistantContent);
+        const pairAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(pair.assistantContent));
         if (!pairAssistant || pairAssistant !== wantedAssistant) continue;
         const pairUser = normalizeTurnPairCompareText(pair.userContent);
         if (wantedUser && (!pairUser || pairUser !== wantedUser)) continue;
@@ -7865,7 +7950,7 @@
         const wantedUser = normalizeTurnPairCompareText(userContent);
         const wantedAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(assistantContent));
         const latestUser = normalizeTurnPairCompareText(latestPair && latestPair.userContent);
-        const latestAssistant = normalizeTurnPairCompareText(latestPair && latestPair.assistantContent);
+        const latestAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(latestPair && latestPair.assistantContent));
         if (latestPair && ((wantedUser && latestUser === wantedUser) || (wantedAssistant && latestAssistant === wantedAssistant))) {
           activePair = latestPair;
           activePairMatchMode = wantedUser && latestUser === wantedUser ? "latest_user_content" : "latest_assistant_content";
@@ -8131,11 +8216,17 @@
   // shrink the previously observed snapshot.
   async function resolveRollbackComparableMessages(sessionId, payloadMessages) {
     const activeChatMessages = await getCurrentActiveChatRollbackMessages();
-    if (Array.isArray(activeChatMessages) && activeChatMessages.length > 0) {
-      return { messages: activeChatMessages, source: "active_chat" };
-    }
     const normalizedPayloadMessages = compactSnapshotMessages(payloadMessages);
     const previousSnapshot = getSessionSnapshot(sessionId);
+    if (Array.isArray(activeChatMessages) && activeChatMessages.length > 0) {
+      const activeComparable = compactSnapshotMessages(activeChatMessages);
+      const previousCount = Number(previousSnapshot && previousSnapshot.msgCount || 0);
+      if (normalizedPayloadMessages.length > activeComparable.length
+          && (!previousCount || activeComparable.length < previousCount)) {
+        return { messages: normalizedPayloadMessages, source: "payload_newer_than_stale_active_chat" };
+      }
+      return { messages: activeComparable, source: "active_chat" };
+    }
     if (!previousSnapshot) {
       return { messages: normalizedPayloadMessages, source: "payload_bootstrap" };
     }
@@ -12491,7 +12582,10 @@
   function computeTailHashFromSnapshotMessages(tailMessages) {
     try {
       if (!Array.isArray(tailMessages) || tailMessages.length === 0) return "empty";
-      const parts = tailMessages.map(m => (m.role || "") + ":" + String(m.content || ""));
+      const parts = tailMessages.map(function(m) {
+        const normalized = canonicalizeSnapshotMessageForComparison(m);
+        return (normalized && normalized.role || "") + ":" + String(normalized && normalized.content || "");
+      });
       // 간단한 djb2 hash
       let hash = 5381;
       const str = parts.join("|");
@@ -12503,7 +12597,8 @@
   }
 
   function computeAssistantSnapshotFingerprint(content) {
-    return computeTailHashFromSnapshotMessages([{ role: "assistant", content: String(content || "").slice(0, 100) }]);
+    const canonical = canonicalizeAssistantSnapshotContentForComparison("assistant", String(content || ""));
+    return computeTailHashFromSnapshotMessages([{ role: "assistant", content: String(canonical || "").slice(0, 100) }]);
   }
 
   function computeTailHash(messages, tailCount = 4) {
@@ -13997,7 +14092,9 @@
   }
 
   function areSnapshotMessagesEqual(left, right) {
-    return !!left && !!right && left.role === right.role && String(left.content || "") === String(right.content || "");
+    const a = canonicalizeSnapshotMessageForComparison(left);
+    const b = canonicalizeSnapshotMessageForComparison(right);
+    return !!a && !!b && a.role === b.role && String(a.content || "") === String(b.content || "");
   }
 
   function computeCommonSnapshotPrefixLength(previousMessages, currentMessages) {
@@ -14236,12 +14333,6 @@
       const firstRemovedTurn = Number((assistantDeletionState && assistantDeletionState.firstRemovedTurnIndex) || 0);
       const ledgerAnchorTurn = Number((detectionState && detectionState.ledgerAnchorTurnIndex) || 0);
       const previousTurn = Number((previousSnapshot && previousSnapshot.turnIndex) || 0);
-      const removedMsgCount = Number((detectionState && detectionState.removedMsgCount) || 0);
-      const insertedMsgCount = Number((detectionState && detectionState.insertedMsgCount) || 0);
-      const fullTurnDeleteVisible = removedMsgCount >= 2 && insertedMsgCount === 0;
-      if (fullTurnDeleteVisible) {
-        return null;
-      }
       const targetsPromotedTurn = promotedTurn >= 1
         && (
           firstRemovedTurn === promotedTurn
@@ -14257,6 +14348,8 @@
         ageMs,
         graceMs: ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS,
         syncState: promotion.syncState,
+        guardReason: "pending_promoted_assistant_not_confirmed_in_active_chat",
+        action: "skip_db_rollback_until_active_chat_confirms_or_next_turn_rebases_snapshot",
       };
     } catch {
       return null;
@@ -14710,8 +14803,21 @@
       if (detection.shouldRollback) {
         _lastAutoRollbackSkipSignature = null;
         debugLog("Auto-rollback detected:", detection.reason, detection.detail);
-        const success = await executeAutoRollback(sessionId, detection.newTurnIndex, detection.reason, detection.detail);
+        const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId);
+        const success = resolvedActiveChat && resolvedActiveChat.chat
+          ? await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, {
+              reason: detection.reason,
+              force: true,
+              allowBlindTailRollback: false,
+            })
+          : false;
         if (!success) {
+          updateRuntimeState("lastAutoRollback", "skipped", {
+            detail: "unverified rollback signal blocked; waiting active-chat/backend turn-count reconciliation (" + detection.reason + ")",
+            sessionId,
+            requestedTurnIndex: detection.newTurnIndex,
+            detection: detection.detail,
+          });
           // 실행 실패해도 snapshot은 갱신하여 반복 시도 방지
           _lastAutoRollbackSignature = String(detection.detail.duplicateSignature || (sessionId + "|" + (detection.detail.currentMsgCount || 0) + "|" + (detection.detail.currentTailHash || "")));
         }
@@ -14756,7 +14862,7 @@
       const promotedAt = Number(promotion.promotedAt || 0);
       if (!Number.isFinite(promotedAt) || promotedAt <= 0) return false;
       const ageMs = Date.now() - promotedAt;
-      return ageMs >= 0 && ageMs < ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS;
+      return ageMs >= 0 && ageMs <= ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS;
     } catch {
       return false;
     }
@@ -14836,7 +14942,14 @@
     const now = Date.now();
     if (!options.force && (now - _rollbackTailReconcileLastAt) < ROLLBACK_TAIL_RECONCILE_INTERVAL_MS) return false;
     _rollbackTailReconcileLastAt = now;
-    if (hasRecentPromotedAssistantSyncPending(sid)) return false;
+    if (hasRecentPromotedAssistantSyncPending(sid)) {
+      updateRuntimeState("lastAutoRollback", "skipped", {
+        detail: "pending assistant output not yet confirmed in active chat; rollback blocked",
+        sessionId: sid,
+        policyVersion: "or1f.pending_assistant_confirmation_guard.v1",
+      });
+      return false;
+    }
 
     _rollbackTailReconcileInFlight = true;
     try {
@@ -15540,6 +15653,25 @@
       }
       return Object.keys(preview).length > 0 ? preview : truncPreview(JSON.stringify(d), 200);
     } catch { return null; }
+  }
+
+  function normalizeSupervisorEnvelope(result) {
+    try {
+      if (!result || typeof result !== "object") return result;
+      const wrapped = result.supervisor_result;
+      if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) return result;
+      const directive = (wrapped.directive && typeof wrapped.directive === "object" && !Array.isArray(wrapped.directive))
+        ? wrapped.directive
+        : wrapped;
+      if (!result.directive && directive && typeof directive === "object") result.directive = directive;
+      if (!result.book_author && directive && directive.book_author) result.book_author = directive.book_author;
+      if (!result.director && directive && directive.director) result.director = directive.director;
+      if (!result.section_world && directive && directive.section_world) result.section_world = directive.section_world;
+      if (!result.storyline_selection && wrapped.storyline_selection) result.storyline_selection = wrapped.storyline_selection;
+      return result;
+    } catch {
+      return result;
+    }
   }
 
   function extractStorylineSelectionSummary(supervisorResult) {
@@ -20830,7 +20962,7 @@
       }
     }
 
-    const result = await safeCall(
+    const result = normalizeSupervisorEnvelope(await safeCall(
       () => bridgeFetch("/supervisor", { method: "POST", body: {
         context_messages: contextMessages,
         wake_up_context: wakeUpContext || "",
@@ -20845,7 +20977,7 @@
         auto_advance_trigger: autoAdvanceTrigger || "none",
       }, timeoutMs: getSupervisorTimeoutMs() }),
       null, "runSupervisor"
-    );
+    ));
     if (result) {
       _lastSupervisorFailureReason = "";
       updateRuntimeState("lastSupervisorStatus", "ok", { detail: "directive received" });
@@ -22571,6 +22703,126 @@
     }
   }
 
+  function extractAssistantTaggedBlocks(text, tagNames) {
+    try {
+      const raw = String(text == null ? "" : text);
+      const out = [];
+      const names = Array.isArray(tagNames) ? tagNames : [];
+      for (const name of names) {
+        const safeName = String(name || "").trim();
+        if (!safeName) continue;
+        const escaped = safeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const re = new RegExp("<\\s*" + escaped + "\\b[^>]*>([\\s\\S]*?)<\\s*\\/\\s*" + escaped + "\\s*>", "gi");
+        let match;
+        while ((match = re.exec(raw)) !== null) {
+          const block = String(match[1] || "").trim();
+          if (block) out.push(block);
+        }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  function removeAssistantTaggedBlocks(text, tagNames) {
+    try {
+      let raw = String(text == null ? "" : text);
+      const names = Array.isArray(tagNames) ? tagNames : [];
+      for (const name of names) {
+        const safeName = String(name || "").trim();
+        if (!safeName) continue;
+        const escaped = safeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const re = new RegExp("<\\s*" + escaped + "\\b[^>]*>[\\s\\S]*?<\\s*\\/\\s*" + escaped + "\\s*>", "gi");
+        raw = raw.replace(re, "");
+      }
+      return raw.trim();
+    } catch {
+      return String(text == null ? "" : text).trim();
+    }
+  }
+
+  function extractPostprocessorCanonicalAssistantText(text) {
+    try {
+      const raw = String(text == null ? "" : text);
+      if (!raw.trim()) return null;
+
+      const contractFinalTags = [
+        "ArchiveCenterFinalOutput",
+        "ArchiveCenterFinal",
+        "ACFinalOutput",
+        "ACFinal",
+        "PostprocessorFinalOutput",
+        "PostprocessorFinal",
+        "PostProcessFinal",
+        "FinalAssistantOutput",
+        "CanonicalAssistantOutput",
+        "QualityLayerFinalOutput",
+        "QualityLayerFinal",
+      ];
+      const contractFinalBlocks = extractAssistantTaggedBlocks(raw, contractFinalTags);
+      if (contractFinalBlocks.length > 0) {
+        const canonical = contractFinalBlocks.join("\n\n").trim();
+        return {
+          provider: "postprocessor_contract",
+          status: "canonicalized",
+          applied: !!canonical,
+          rawChars: raw.length,
+          canonicalAssistantChars: canonical.length,
+          droppedDraftChars: Math.max(0, raw.length - canonical.length),
+          blockCount: contractFinalBlocks.length,
+          canonicalText: canonical,
+        };
+      }
+
+      const legacyComparePresent = /<\s*ReKoCompare\b/i.test(raw) || /<\s*ReKoResult\b/i.test(raw);
+      if (legacyComparePresent) {
+        const visibleFinal = removeAssistantTaggedBlocks(raw, ["ReKoCompare"]);
+        const legacyFinalBlocks = extractAssistantTaggedBlocks(raw, ["ReKoAfter", "ReKoResult"]);
+        const canonical = (visibleFinal || legacyFinalBlocks.join("\n\n")).trim();
+        return {
+          provider: "legacy_compare_postprocessor",
+          status: canonical ? "canonicalized" : "detected",
+          applied: !!canonical,
+          rawChars: raw.length,
+          canonicalAssistantChars: canonical.length,
+          droppedDraftChars: Math.max(0, raw.length - canonical.length),
+          blockCount: legacyFinalBlocks.length,
+          canonicalText: canonical,
+        };
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function attachPostprocessorCanonicalizationTrace(trace, decision, stage, beforeText, afterText) {
+    try {
+      if (!trace || !decision) return;
+      const record = {
+        status: decision.status || (decision.applied ? "canonicalized" : "detected"),
+        stage: String(stage || "assistant_persistence"),
+        provider: decision.provider || "unknown",
+        postprocessor_output_detected: true,
+        canonical_assistant_chars: Number(decision.canonicalAssistantChars || 0),
+        dropped_draft_chars: Number(decision.droppedDraftChars || 0),
+        raw_chars: Number(decision.rawChars || 0),
+        block_count: Number(decision.blockCount || 0),
+      };
+      trace.postprocessorCanonicalization = record;
+      if (trace._inputTransparency && typeof trace._inputTransparency === "object") {
+        trace._inputTransparency.postprocessorCanonicalization = record;
+      }
+      if (decision.applied) {
+        attachSanitizeTrace(trace, buildSanitizeTrace("postprocessor_canonicalization:" + record.stage, String(beforeText || ""), String(afterText || "")));
+      }
+    } catch {
+      // Trace-only path; never block persistence.
+    }
+  }
+
   function canonicalizeAssistantTranslationDisplayForPersistence(text, trace, stage) {
     const raw = String(text == null ? "" : text);
     const gigaTransDecision = extractGigaTransCanonicalAssistantText(raw);
@@ -22580,6 +22832,41 @@
       return canonicalText;
     }
     return raw;
+  }
+
+  function canonicalizeAssistantOutputForPersistence(text, trace, stage) {
+    const raw = String(text == null ? "" : text);
+    const postprocessorDecision = extractPostprocessorCanonicalAssistantText(raw);
+    const postprocessorText = postprocessorDecision && postprocessorDecision.applied
+      ? String(postprocessorDecision.canonicalText || "")
+      : raw;
+    if (postprocessorDecision) {
+      attachPostprocessorCanonicalizationTrace(trace, postprocessorDecision, stage, raw, postprocessorText);
+    }
+    return canonicalizeAssistantTranslationDisplayForPersistence(postprocessorText, trace, stage);
+  }
+
+  function canonicalizeAssistantSnapshotContentForComparison(role, content) {
+    try {
+      const normalizedRole = String(role || "").toLowerCase();
+      if (normalizedRole !== "assistant") return String(content || "");
+      return normalizeAssistantPersistenceCandidate(String(content || "")) || String(content || "");
+    } catch {
+      return String(content || "");
+    }
+  }
+
+  function canonicalizeSnapshotMessageForComparison(message) {
+    try {
+      if (!message || typeof message !== "object") return null;
+      const role = message.role === "assistant" ? "assistant" : "user";
+      return {
+        role,
+        content: canonicalizeAssistantSnapshotContentForComparison(role, message.content),
+      };
+    } catch {
+      return message || null;
+    }
   }
 
   function normalizeAssistantPrefillComparableText(text) {
@@ -22748,7 +23035,7 @@
   function normalizeAssistantPersistenceCandidate(text) {
     try {
       if (typeof text !== "string") return "";
-      const canonicalText = canonicalizeAssistantTranslationDisplayForPersistence(text, null, "normalize_assistant_persistence");
+      const canonicalText = canonicalizeAssistantOutputForPersistence(text, null, "normalize_assistant_persistence");
       const persistenceText = stripReasoningPreambleForPersistence(canonicalText);
       if (!String(persistenceText || "").trim()) return "";
       let clean = sanitizeNarrativeOutputForDisplay(persistenceText);
@@ -32438,6 +32725,16 @@
         policy: "allow_orchestration_candidate_but_block_context_injection_until_active_tail_matches",
       };
     }
+    if (!payloadTailAuxiliaryMarker && isSubstantiveUserPayloadText(payloadUserText)) {
+      return {
+        allowed: true,
+        contextInjectionAllowed: true,
+        reason: "input_rewrite_allowed",
+        requestType,
+        marker: "",
+        policy: "allow_substantive_payload_tail_as_main_request",
+      };
+    }
     return {
       allowed: false,
       contextInjectionAllowed: false,
@@ -33059,7 +33356,15 @@
           const activeTailMatchesCurrent =
             mainTurnTextMatchesOriginal(userInput, activeTailUserInput)
             || mainTurnTextMatchesOriginal(activeTailUserInput, userInput);
-          if (shouldSkipUserInputPersistence(userInput) || !activeTailMatchesCurrent) {
+          const acceptedInputRewrite = !!(
+            mainRequestDecision
+            && mainRequestDecision.reason === "input_rewrite_allowed"
+            && mainRequestDecision.contextInjectionAllowed
+            && !shouldSkipUserInputPersistence(userInput)
+          );
+          if (acceptedInputRewrite && !activeTailMatchesCurrent) {
+            cacheRawInputForSession(orchSessionId, userInput);
+          } else if (shouldSkipUserInputPersistence(userInput) || !activeTailMatchesCurrent) {
             userInput = activeTailUserInput;
             userInputInfo = {
               text: activeTailUserInput,
@@ -34218,13 +34523,13 @@
       let turnOocGuardApplied = shouldSkipTurnPersistenceForOoc(userInput, displayContent);
       let persistedAssistantContent = turnOocGuardApplied ? "" : (recoveredAssistantContent || normalizeAssistantPersistenceCandidate(displayContent));
       if (!turnOocGuardApplied && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
-        const beforeTranslationCanonical = persistedAssistantContent;
-        persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
+        const beforeOutputCanonical = persistedAssistantContent;
+        persistedAssistantContent = canonicalizeAssistantOutputForPersistence(
           persistedAssistantContent,
           lastOrchResult && lastOrchResult._trace,
           "assistant_persistence_initial"
         );
-        if (persistedAssistantContent !== beforeTranslationCanonical) {
+        if (persistedAssistantContent !== beforeOutputCanonical) {
           recoveredAssistantContent = persistedAssistantContent;
         }
         if (typeof displayContent === "string" && displayContent !== persistedAssistantContent) {
@@ -34351,10 +34656,10 @@
           ? await findActiveChatCompletedTurnPairForUserContent(chatSessionId, safeSavedUserInput)
           : null);
         if (activeChatPairAlignment && activeChatPairAlignment.assistantContent) {
-          const activeAssistantComparable = normalizeTurnPairCompareText(activeChatPairAlignment.assistantContent);
-          const currentAssistantComparable = normalizeTurnPairCompareText(persistedAssistantContent);
+          const activeAssistantComparable = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(activeChatPairAlignment.assistantContent));
+          const currentAssistantComparable = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(persistedAssistantContent));
           if (activeAssistantComparable && (!currentAssistantComparable || activeAssistantComparable !== currentAssistantComparable)) {
-            persistedAssistantContent = canonicalizeAssistantTranslationDisplayForPersistence(
+            persistedAssistantContent = canonicalizeAssistantOutputForPersistence(
               activeChatPairAlignment.assistantContent,
               lastOrchResult && lastOrchResult._trace,
               "active_chat_pair_assistant"
@@ -34495,6 +34800,45 @@
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderAssistantMissing");
         }
         debugLog("[M-4c] assistant content missing; skip empty assistant persistence and complete fallback");
+        return responseReturnContent ?? "";
+      }
+      const recentPersistedDuplicate = !turnOocGuardApplied && hasPersistedAssistantContent
+        ? await findRecentPersistedCompleteTurnPairForContent(chatSessionId, safeSavedUserInput, persistedAssistantContent)
+        : null;
+      if (recentPersistedDuplicate && Number(recentPersistedDuplicate.turnIndex || 0) > 0) {
+        const duplicateTurnIndex = Number(recentPersistedDuplicate.turnIndex);
+        trackTurnIndex(duplicateTurnIndex, chatSessionId);
+        setTurnCounterAtLeast(chatSessionId, duplicateTurnIndex);
+        promoteAssistantSnapshot(chatSessionId, persistedAssistantContent, duplicateTurnIndex);
+        updateRuntimeState("lastSaveStatus", "ok", { turnIndex: duplicateTurnIndex, detail: "idempotent pair replay; duplicate save skipped" });
+        updateRuntimeState("lastCompleteStatus", "ok", { turnIndex: duplicateTurnIndex, detail: "accepted (existing pair)" });
+        updateRuntimeState("lastCompleteTurnStatus", "ok", {
+          turnIndex: duplicateTurnIndex,
+          source: "local",
+          detail: "idempotent_pair_replay",
+          failReasons: [],
+        });
+        if (lastOrchResult && lastOrchResult._trace) {
+          lastOrchResult._trace.duplicatePersistenceGuard = {
+            status: "skipped_duplicate_complete_turn",
+            source: recentPersistedDuplicate.source || "recent_backend_pair_duplicate_guard",
+            existingTurnIndex: duplicateTurnIndex,
+            latestBackendTurn: Number(recentPersistedDuplicate.latestBackendTurn || 0),
+            userChars: String(safeSavedUserInput || "").length,
+            assistantChars: String(persistedAssistantContent || "").length,
+          };
+          lastOrchResult._trace.endedAt = new Date().toISOString();
+          lastTurnTrace = lastOrchResult._trace;
+          pushTurnHistory(lastTurnTrace);
+          syncRuntimeStateFromTurnTrace(lastTurnTrace);
+        }
+        _pendingOrchBySession.delete(chatSessionId);
+        _effectiveInputAwaitingNewTurn = false;
+        lastOrchResult = null;
+        if (panelOpen) {
+          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderDuplicatePairReplay");
+        }
+        debugLog("[M-4c] duplicate complete-turn pair skipped; existing turn:", duplicateTurnIndex);
         return responseReturnContent ?? "";
       }
       turnIdx = await reserveAfterRequestPersistenceTurnIndex(chatSessionId, safeSavedUserInput, persistedAssistantContent);
@@ -36356,6 +36700,9 @@
     const failedTurns = Array.isArray(progress.failed_turns) ? progress.failed_turns : [];
     const failedIds = Array.isArray(progress.failed_ids) ? progress.failed_ids : [];
     const last = progress.last_processed != null ? String(progress.last_processed) : "";
+    const phase = progress.phase != null ? String(progress.phase) : "";
+    const reason = progress.reason != null ? String(progress.reason) : "";
+    const action = progress.ui_action != null ? String(progress.ui_action) : "";
     const failurePreview = failedTurns.length > 0
       ? failedTurns.slice(0, 5).map(function(item) {
           if (!item || typeof item !== "object") return String(item || "");
@@ -36366,6 +36713,7 @@
       '<strong>' + escapeAttr(label || "Background Job") + '</strong> ' + escapeAttr(status) +
       '<br>job: ' + escapeAttr(String(job.job_id || "")) +
       '<br>stage: ' + escapeAttr(stage) +
+      (phase ? ' / phase: ' + escapeAttr(phase) : '') +
       ' / progress: ' + pct + '% (' + processed + '/' + total + ')' +
       ' / ok: ' + succeeded + ' / failed: ' + failed + ' / skipped: ' + skipped +
       (last ? '<br>last: ' + escapeAttr(last) : '') +
@@ -36375,6 +36723,12 @@
       '<span style="font-size:11px;color:#888">Runs in backend background; browser request timeout no longer stops the job.</span>';
     if (failurePreview) {
       html += '<br><span style="font-size:11px;color:#f59e0b">failures: ' + escapeAttr(failurePreview) + '</span>';
+    }
+    if (reason) {
+      html += '<br><span style="font-size:11px;color:#f59e0b">reason: ' + escapeAttr(reason) + '</span>';
+    }
+    if (action) {
+      html += '<br><span style="font-size:11px;color:#93c5fd">action: ' + escapeAttr(action) + '</span>';
     }
     if (progress.error) {
       html += '<br><span style="font-size:11px;color:#f87171">error: ' + escapeAttr(String(progress.error)) + '</span>';
@@ -37142,6 +37496,8 @@
     const reviewTurns = Array.isArray(result.review_needed_turns) ? result.review_needed_turns : [];
     const hierarchy = rescan.hierarchy_backfill && typeof rescan.hierarchy_backfill === "object" ? rescan.hierarchy_backfill : null;
     const hierarchyBlocked = hierarchy ? formatHierarchyBlockedSummary(hierarchy) : "";
+    const reindexReason = reindex.reason != null ? String(reindex.reason) : "";
+    const reindexAction = reindex.ui_action != null ? String(reindex.ui_action) : "";
     const artifactSummary = [
       "mem:" + Number(artifactCounts.memories || 0),
       "evi:" + Number(artifactCounts.evidence || 0),
@@ -37171,20 +37527,23 @@
       ' / succeeded ' + Number(rescan.succeeded || 0) +
       ' / failed ' + Number(rescan.failed || 0) +
       ' / skipped ' + Number(rescan.skipped || 0) +
-      '<br>reindex: candidates ' + Number(reindex.candidates || 0) +
+      '<br>reindex: candidates ' + Number(reindex.candidates || reindex.candidate_count || 0) +
       ' / upserted ' + Number(reindex.upserted || 0) +
-      ' / skipped ' + Number(reindex.skipped || 0) +
+      ' / skipped ' + Number(reindex.skipped || reindex.skipped_count || 0) +
+      (reindexReason ? ' / reason: ' + escapeAttr(reindexReason) : '') +
       '<br>artifacts: ' + escapeAttr(artifactSummary) +
       (Number(plan.raw_import_candidates || 0) > 0 ? '<br>raw import candidates: ' + Number(plan.raw_import_candidates || 0) : '') +
       (reviewTurns.length > 0 ? '<br><span style="color:#f59e0b">review needed: ' + escapeAttr(formatTurnIndexPreview(reviewTurns, 16)) + '</span>' : '') +
+      (reindexAction ? '<br><span style="color:#93c5fd">reindex action: ' + escapeAttr(reindexAction) + '</span>' : '') +
       (hierarchyBlocked ? '<br><span style="color:#f59e0b">hierarchy blocked: ' + escapeAttr(hierarchyBlocked) + '</span>' : '') +
       (warnings.length > 0 ? '<br><span style="font-size:11px;color:#f59e0b">warnings: ' + escapeAttr(warnings.slice(0, 6).join(" / ")) + '</span>' : '') +
       '<br><span style="font-size:11px;color:#888">삭제/rollback 없음 · visible trim은 DB 삭제 근거로 사용하지 않음</span>' +
       '</div>';
   }
 
-  async function normalizeSession(sessionId, maxItems) {
+  async function normalizeSession(sessionId, maxItems, options = {}) {
     const sid = String(sessionId || "").trim();
+    const opts = options && typeof options === "object" ? options : {};
     if (!sid) {
       alert(t('rescan.noSession'));
       return false;
@@ -37248,6 +37607,7 @@
             turn_indices: turnIndices,
             force_reindex: true,
             dry_run: false,
+            skip_rescan: !!opts.skipRescan,
             client_meta: buildAdminRuntimeClientMeta(Object.assign({ source: "explorer_session_normalize" }, planMeta)),
           },
         }),
@@ -42393,6 +42753,7 @@
           '</div>' +
           '<div class="mo-reindex-row">' +
             '<label>max_items: <input type="number" id="mo-session-normalize-max" value="1000" min="1" max="5000" style="width:80px"></label>' +
+            ' <label><input type="checkbox" id="mo-session-normalize-skip-rescan"> skip_rescan</label>' +
             '<button class="mo-btn mo-btn-primary" id="mo-session-normalize-btn"' +
               (_sessionNormalizeState.loading ? ' disabled' : '') + '>' +
               (_sessionNormalizeState.loading ? '⏳ 정상화 중...' : '▶ 세션 정상화 실행') +
@@ -43556,8 +43917,9 @@
           e.stopPropagation();
           const sid = _explorer.selectedSessionId;
           const maxEl = document.getElementById("mo-session-normalize-max");
+          const skipRescanEl = document.getElementById("mo-session-normalize-skip-rescan");
           if (sid) {
-            await normalizeSession(sid, maxEl ? maxEl.value : 1000);
+            await normalizeSession(sid, maxEl ? maxEl.value : 1000, { skipRescan: !!(skipRescanEl && skipRescanEl.checked) });
           }
         });
       }
@@ -44320,6 +44682,114 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if (normalized === "idle") return t("dash.status.state.idle");
     if (normalized === "unknown") return t("dash.status.state.unknown");
     return String(status || t("dash.status.state.unknown"));
+  }
+
+  function dashboardSimpleText(key) {
+    const lang = sanitizeEnumValue(settings && settings.uiLanguage, DEFAULT_SETTINGS.uiLanguage, UI_LANGUAGE_OPTIONS);
+    const table = {
+      ko: {
+        duplicateExisting: "기존 저장값 사용 (중복 저장 방지)",
+        existingAccepted: "이미 저장된 턴을 사용함",
+        noNewLaneNeeded: "새로 만들 항목 없음 (기존 저장값 사용)",
+        supervisorOkByTurn: "최근 턴 호출로 정상 확인됨",
+        firstTurnLight: "첫 턴 빠른 시작: 일부 기억 검색 생략",
+        streamingWaitFinal: "작성 중 조각은 무시하고 최종 출력 대기",
+        streamingRecovered: "RisuAI 화면에서 최종 출력 복구",
+        streamingTimeout: "최종 출력 감지 지연",
+        deletedTurnSynced: "삭제된 턴을 DB에서도 정리함",
+        rollbackBlockedUnverified: "삭제인지 숨김인지 확실하지 않아 DB 정리 보류",
+        historyTrimProtected: "화면 기록이 짧아졌지만 /cut일 수 있어 DB 유지",
+        pendingSync: "방금 저장한 턴 동기화 대기",
+        noTrackedTurn: "삭제 추적 기준 없음",
+        noCompletedPairs: "완료된 새 턴 없음",
+        noMissingBackfill: "누락 없음",
+        queueOk: "저장소 정상",
+        localOnly: "아직 로컬 상태",
+        synced: "동기화됨",
+      },
+      en: {
+        duplicateExisting: "Using existing saved turn (duplicate save prevented)",
+        existingAccepted: "Existing saved turn accepted",
+        noNewLaneNeeded: "No new rows needed; using existing save",
+        supervisorOkByTurn: "Confirmed by the latest turn call",
+        firstTurnLight: "Fast first turn: some memory search skipped",
+        streamingWaitFinal: "Draft fragment ignored; waiting for final output",
+        streamingRecovered: "Final output recovered from RisuAI chat",
+        streamingTimeout: "Final output detection delayed",
+        deletedTurnSynced: "Deleted turn was also cleaned from DB",
+        rollbackBlockedUnverified: "DB cleanup paused until deletion is confirmed",
+        historyTrimProtected: "Chat history is shorter; DB kept in case this was /cut",
+        pendingSync: "Waiting for the latest saved turn to sync",
+        noTrackedTurn: "No deletion anchor yet",
+        noCompletedPairs: "No completed new turn",
+        noMissingBackfill: "Nothing missing",
+        queueOk: "Queue storage OK",
+        localOnly: "Local state only so far",
+        synced: "Synced",
+      },
+      ja: {
+        duplicateExisting: "既存の保存済みターンを使用 (重複保存を防止)",
+        existingAccepted: "既存の保存済みターンを使用",
+        noNewLaneNeeded: "新規作成なし (既存の保存値を使用)",
+        supervisorOkByTurn: "直近のターン呼び出しで正常確認",
+        firstTurnLight: "初回高速開始: 一部の記憶検索を省略",
+        streamingWaitFinal: "途中断片を無視し、最終出力を待機",
+        streamingRecovered: "RisuAI画面から最終出力を復元",
+        streamingTimeout: "最終出力の検出が遅延",
+        deletedTurnSynced: "削除ターンをDB側でも整理",
+        rollbackBlockedUnverified: "削除確認待ちのためDB整理を保留",
+        historyTrimProtected: "履歴が短いため /cut の可能性としてDBを保持",
+        pendingSync: "保存済みターンの同期待ち",
+        noTrackedTurn: "削除追跡の基準なし",
+        noCompletedPairs: "完了した新規ターンなし",
+        noMissingBackfill: "欠落なし",
+        queueOk: "キュー保存正常",
+        localOnly: "まだローカル状態",
+        synced: "同期済み",
+      },
+    };
+    return (table[lang] && table[lang][key]) || (table.en && table.en[key]) || key;
+  }
+
+  function simplifyDashboardDetail(detail) {
+    const raw = typeof detail === "object" ? JSON.stringify(detail) : String(detail || "");
+    if (!raw.trim()) return "";
+    if (/idempotent pair replay|idempotent_pair_replay|duplicate save skipped/i.test(raw)) return dashboardSimpleText("duplicateExisting");
+    if (/accepted \(existing pair\)/i.test(raw)) return dashboardSimpleText("existingAccepted");
+    if (/health test not run\s*\/\s*turn call ok/i.test(raw)) return dashboardSimpleText("supervisorOkByTurn");
+    if (/first turn light mode/i.test(raw)) return dashboardSimpleText("firstTurnLight");
+    if (/native non-persistable fragment ignored|waiting final output/i.test(raw)) return dashboardSimpleText("streamingWaitFinal");
+    if (/native afterRequest missing; recovered from active chat/i.test(raw)) return dashboardSimpleText("streamingRecovered");
+    if (/timeout waiting for native afterRequest\/active assistant/i.test(raw)) return dashboardSimpleText("streamingTimeout");
+    if (/active_chat_tail_missing_from_runtime|assistant_deleted_output_removed/.test(raw) && /rolled back|rollback/i.test(raw)) return dashboardSimpleText("deletedTurnSynced");
+    if (/unverified rollback signal blocked/i.test(raw)) return dashboardSimpleText("rollbackBlockedUnverified");
+    if (/active chat tail is shorter than backend|history trim\/cut protected|possible \/cut/i.test(raw)) return dashboardSimpleText("historyTrimProtected");
+    if (/recent_completed_turn_waiting_active_chat_sync/i.test(raw)) return dashboardSimpleText("pendingSync");
+    if (/no_tracked_turn_index/i.test(raw)) return dashboardSimpleText("noTrackedTurn");
+    if (/no_completed_pairs/i.test(raw)) return dashboardSimpleText("noCompletedPairs");
+    if (/active chat backfill 0 saved \/ 1 existing/i.test(raw)) return dashboardSimpleText("noMissingBackfill");
+    if (/^load:ok\s*\/\s*save:ok$/i.test(raw)) return dashboardSimpleText("queueOk");
+    if (/^local only$/i.test(raw)) return dashboardSimpleText("localOnly");
+    if (/^synced$/i.test(raw)) return dashboardSimpleText("synced");
+    return raw;
+  }
+
+  function normalizeDashboardStateForDisplay(label, stateObj) {
+    const s = Object.assign({}, stateObj || { status: "unknown" });
+    const rawDetail = s.detail;
+    const simpleDetail = simplifyDashboardDetail(rawDetail);
+    if (simpleDetail) s.detail = simpleDetail;
+    const raw = typeof rawDetail === "object" ? JSON.stringify(rawDetail) : String(rawDetail || "");
+    if (/idempotent pair replay|idempotent_pair_replay|duplicate save skipped|accepted \(existing pair\)/i.test(raw)) {
+      s.status = "ok";
+    } else if (/health test not run\s*\/\s*turn call ok/i.test(raw) && String(s.status || "") === "skipped") {
+      s.status = "ok";
+    } else if (/native non-persistable fragment ignored|waiting final output/i.test(raw)) {
+      s.status = "running";
+    } else if (/active chat backfill 0 saved \/ 1 existing|^load:ok\s*\/\s*save:ok$/i.test(raw)) {
+      s.status = "ok";
+    }
+    return s;
   }
 
   function tWithVars(key, vars) {
@@ -46152,7 +46622,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     function cardSummaryHtml(rows) {
       var ok = 0, warn = 0, fail = 0;
       rows.forEach(function(r) {
-        var st = (r.state && r.state.status) ? String(r.state.status) : "unknown";
+        var displayState = normalizeDashboardStateForDisplay(r.label, r.state);
+        var st = (displayState && displayState.status) ? String(displayState.status) : "unknown";
         if (st === "ok") ok++;
         else if (st === "warn") warn++;
         else if (st === "fail" || st === "error") fail++;
@@ -46164,8 +46635,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       return parts.join("");
     }
     function cardCls(rows) {
-      if (rows.some(function(r){ return r.state && (r.state.status === "fail" || r.state.status === "error"); })) return "mo-dash-card has-fail";
-      if (rows.some(function(r){ return r.state && r.state.status === "warn"; })) return "mo-dash-card has-warn";
+      if (rows.some(function(r){ var st = normalizeDashboardStateForDisplay(r.label, r.state); return st && (st.status === "fail" || st.status === "error"); })) return "mo-dash-card has-fail";
+      if (rows.some(function(r){ var st = normalizeDashboardStateForDisplay(r.label, r.state); return st && st.status === "warn"; })) return "mo-dash-card has-warn";
       return "mo-dash-card";
     }
     function renderCard(icon, title, rows) {
@@ -46194,6 +46665,15 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
     function buildPersistenceLaneRows(ct) {
       if (!ct || ct.status === "idle") return [];
+      var duplicatePairReplay = /idempotent pair replay|idempotent_pair_replay|duplicate save skipped|accepted \(existing pair\)/i.test(String(ct.detail || ""));
+      if (duplicatePairReplay) {
+        var existingDetail = dashboardSimpleText("noNewLaneNeeded");
+        return [
+          { label: "Raw Save", state: { status: "ok", turnIndex: ct.turnIndex, detail: existingDetail } },
+          { label: "Derived", state: { status: "ok", turnIndex: ct.turnIndex, detail: existingDetail } },
+          { label: "Vector Upsert", state: { status: "ok", turnIndex: ct.turnIndex, detail: existingDetail } },
+        ];
+      }
       var pipeline = ct.persistencePipeline && typeof ct.persistencePipeline === "object" ? ct.persistencePipeline : null;
       var raw = pipeline && pipeline.raw && typeof pipeline.raw === "object" ? pipeline.raw : null;
       var derived = pipeline && pipeline.derived && typeof pipeline.derived === "object" ? pipeline.derived : null;
@@ -46260,18 +46740,35 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if ((!supervisorHealthState.status || supervisorHealthState.status === "unknown") && rs.lastSupervisorStatus && rs.lastSupervisorStatus.status === "ok") {
       supervisorHealthState = { status: "skipped", time: rs.lastSupervisorStatus.time || null, detail: "health test not run / turn call ok" };
     }
+    var firstTurnLightDisplay = !!(
+      lastTurnTrace &&
+      lastTurnTrace.firstTurnLightMode &&
+      lastTurnTrace.firstTurnLightMode.enabled
+    );
+    function displayFirstTurnLightSkippedState(stateObj, detail) {
+      var st = stateObj || { status: "unknown" };
+      if (!firstTurnLightDisplay) return st;
+      if (st.status === "unknown" || st.status === "off") {
+        return {
+          status: "skipped",
+          time: st.time || lastTurnTrace.endedAt || null,
+          detail: detail || "first turn light mode",
+        };
+      }
+      return st;
+    }
     var connectionRows = [
       { label: dashLabel.plugin, state: pluginState },
       { label: dashLabel.sessionId, state: sessionState },
       { label: dashLabel.bridgeHealth, state: rs.lastBridgeHealth },
       { label: dashLabel.supervisorHealthTest, state: supervisorHealthState },
-      { label: dashLabel.search, state: rs.lastSearchStatus },
+      { label: dashLabel.search, state: displayFirstTurnLightSkippedState(rs.lastSearchStatus, "first turn light mode") },
       { label: dashLabel.supervisorCall, state: rs.lastSupervisorStatus },
     ];
 
     var runtimeSyncState = { status: _prepareTurnEverContacted ? "ok" : "unknown", detail: _prepareTurnEverContacted ? "synced" : "local only" };
     var engineRows = [
-      { label: dashLabel.turnEngine, state: rs.prepareTurnStatus },
+      { label: dashLabel.turnEngine, state: displayFirstTurnLightSkippedState(rs.prepareTurnStatus, "first turn light mode") },
       { label: dashLabel.guideMode, state: guideModeDashboardState },
       { label: dashLabel.runtimeSync, state: runtimeSyncState },
     ];
@@ -46281,7 +46778,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     var qpSave = runtimeState && runtimeState.queuePersistence && runtimeState.queuePersistence.lastSave;
     var queueStorageState = { status: qpSave ? qpSave.status : "unknown", detail: [qpLoad ? "load:" + qpLoad.status : null, qpSave ? "save:" + qpSave.status : null].filter(Boolean).join(" / ") || "not yet" };
     var saveRows = [
-      { label: dashLabel.injection, state: rs.lastInjectionStatus },
+      { label: dashLabel.injection, state: displayFirstTurnLightSkippedState(rs.lastInjectionStatus, "first turn light mode") },
       { label: dashLabel.save, state: rs.lastSaveStatus },
       { label: dashLabel.complete, state: rs.lastCompleteStatus },
       { label: dashLabel.retryQueue, state: retryState },
@@ -46311,13 +46808,18 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       if (ct.vectorMemoryUpserted != null || ct.vectorEvidenceUpserted != null || ct.vectorWorldRuleUpserted != null) {
         chips.push('<span class="mo-dash-chip mo-dash-chip-num">vecLane m:' + (ct.vectorMemoryUpserted == null ? "?" : ct.vectorMemoryUpserted) + ' e:' + (ct.vectorEvidenceUpserted == null ? "?" : ct.vectorEvidenceUpserted) + ' r:' + (ct.vectorWorldRuleUpserted == null ? "?" : ct.vectorWorldRuleUpserted) + '</span>');
       }
+      var ctSimpleDetail = simplifyDashboardDetail(ct.detail || "");
+      if (ctSimpleDetail) chips.push('<span class="mo-dash-chip mo-dash-chip-num">' + escapeAttr(ctSimpleDetail) + '</span>');
       var failChips = ct.failReasons && ct.failReasons.length > 0
         ? ct.failReasons.map(function(fr){ return '<span class="mo-dash-chip mo-dash-chip-fail">' + fr + '</span>'; }).join("")
         : "";
+      var ctSourceLabel = /idempotent pair replay|idempotent_pair_replay|duplicate save skipped|accepted \(existing pair\)/i.test(String(ct.detail || ""))
+        ? dashboardSimpleText("existingAccepted")
+        : (ct.source || "local");
       out += '<div class="' + ctCls + '">'
         + '<div class="mo-dash-card-head"><span class="mo-dash-card-icon">\u2705</span>'
         + '<span class="mo-dash-card-title">Complete Turn</span>'
-        + '<div class="mo-dash-card-summary"><span class="mo-dash-chip mo-dash-chip-' + (ct.status === "ok" ? "ok" : ct.status === "warn" ? "warn" : "fail") + '">[' + (ct.source || "local") + ']</span></div>'
+        + '<div class="mo-dash-card-summary"><span class="mo-dash-chip mo-dash-chip-' + (ct.status === "ok" ? "ok" : ct.status === "warn" ? "warn" : "fail") + '">[' + escapeAttr(ctSourceLabel) + ']</span></div>'
         + '</div>'
         + '<div class="mo-dash-row" style="flex-wrap:wrap;gap:4px">' + chips.join("") + failChips + '</div>'
         + '</div>';
@@ -46354,7 +46856,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       rs.lastBridgeHealth, rs.lastSupervisorWakeup, rs.lastSearchStatus,
       rs.lastSupervisorStatus, rs.lastInjectionStatus, rs.lastSaveStatus,
       rs.lastCompleteStatus, rs.lastCompleteTurnStatus, rs.prepareTurnStatus,
-    ];
+    ].map(function(st) { return normalizeDashboardStateForDisplay("", st); });
     var fail = allStates.filter(function(x){ return x && (x.status === "fail" || x.status === "error"); }).length;
     var warn = allStates.filter(function(x){ return x && x.status === "warn"; }).length;
     var parts = [];
@@ -46366,7 +46868,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
   function formatStateRow(label, stateObj) {
     try {
-      const s = stateObj || { status: "unknown" };
+      const s = normalizeDashboardStateForDisplay(label, stateObj);
       const dotCls = statusDotClass(s.status);
       const statusLabel = runtimeStatusLabel(s.status);
       const placementDetail = s.placement ? " @ " + formatAuxiliaryPlacementTrace(s.placement) : "";
