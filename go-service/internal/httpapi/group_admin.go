@@ -1200,7 +1200,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	artifactResult := s.adminReindexDerivedArtifacts(r.Context(), sid, cfg, dryRun, maxItems, allEvidence, allWorldRules)
+	artifactResult := s.adminReindexDerivedArtifacts(r.Context(), sid, cfg, dryRun, maxItems, allEvidence, allWorldRules, adminReindexDerivedArtifactProgress{})
 	if !dryRun {
 		processed += artifactResult.Processed
 		upserted += artifactResult.Upserted
@@ -1245,6 +1245,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 			"embedding_provider":       strings.TrimSpace(cfg.Embedder.Provider),
 			"embedding_configured":     cfg.Embedder.hasConfig(),
 			"embedding_missing_fields": cfg.Embedder.missingFields(),
+			"embedding_config_trace":   adminEmbeddingConfigTrace(meta, cfg),
 			"failed_ids":               failedIDs,
 			"skipped_ids":              skippedIDs,
 			"derived_artifact_reindex": artifactResult.Summary(),
@@ -1279,6 +1280,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 		"embedding_provider":       strings.TrimSpace(cfg.Embedder.Provider),
 		"embedding_configured":     cfg.Embedder.hasConfig(),
 		"embedding_missing_fields": cfg.Embedder.missingFields(),
+		"embedding_config_trace":   adminEmbeddingConfigTrace(meta, cfg),
 		"failed_ids":               failedIDs,
 		"skipped_ids":              skippedIDs,
 		"derived_artifact_reindex": artifactResult.Summary(),
@@ -1345,18 +1347,33 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 	if len(memories) > maxItems {
 		memories = memories[:maxItems]
 	}
+	derivedEvidenceCandidates, derivedWorldRuleCandidates := adminReindexDerivedArtifactCandidateCounts(maxItems, allEvidence, allWorldRules)
+	totalCandidates := len(memories) + derivedEvidenceCandidates + derivedWorldRuleCandidates
+	if block := adminReindexEmbeddingPreflightBlock(sid, cfg, meta, force, dryRun, maxItems, batchSize, memories, derivedEvidenceCandidates, derivedWorldRuleCandidates, preIntegrity); block != nil {
+		if progress != nil {
+			progress(block)
+		}
+		return block, nil
+	}
 	if progress != nil {
 		progress(map[string]any{
-			"status":             "running",
-			"candidate_count":    len(memories),
-			"processed":          0,
-			"upserted":           0,
-			"skipped_count":      0,
-			"failed_count":       0,
-			"progress_percent":   0,
-			"foreground_timeout": false,
-			"timeout_policy":     "background_job_detached_from_http_request",
-			"integrity_report":   preIntegrity,
+			"status":                 "running",
+			"stage":                  "memory_reindex",
+			"tier":                   "memory",
+			"candidate_count":        totalCandidates,
+			"memory_candidates":      len(memories),
+			"evidence_candidates":    derivedEvidenceCandidates,
+			"world_rule_candidates":  derivedWorldRuleCandidates,
+			"processed":              0,
+			"upserted":               0,
+			"skipped_count":          0,
+			"failed_count":           0,
+			"progress_percent":       0,
+			"foreground_timeout":     false,
+			"timeout_policy":         "background_job_detached_from_http_request",
+			"integrity_report":       preIntegrity,
+			"llm_config_trace":       completeTurnLLMConfigTrace(cfg),
+			"embedding_config_trace": adminEmbeddingConfigTrace(meta, cfg),
 		})
 	}
 
@@ -1389,7 +1406,13 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 						failedIDs = append(failedIDs, mem.ID)
 						skipped++
 						if progress != nil {
-							progress(adminReindexProgress(processed, len(memories), upserted, skipped, failedIDs, skippedIDs, mem.ID, errorsOut))
+							p := adminReindexProgress(processed, totalCandidates, upserted, skipped, failedIDs, skippedIDs, mem.ID, errorsOut)
+							p["stage"] = "memory_reindex"
+							p["tier"] = "memory"
+							p["memory_candidates"] = len(memories)
+							p["evidence_candidates"] = derivedEvidenceCandidates
+							p["world_rule_candidates"] = derivedWorldRuleCandidates
+							progress(p)
 						}
 						continue
 					}
@@ -1412,6 +1435,13 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 						if result.VectorStatus != "" && result.VectorStatus != "not_requested" && result.VectorStatus != "ok" {
 							errorsOut = append(errorsOut, fmt.Sprintf("memory:%d vector: %s", mem.ID, result.VectorStatus))
 							failedIDs = append(failedIDs, mem.ID)
+							if isChromaDimensionMismatchStatus(result.VectorStatus) {
+								blocked := adminReindexCollectionMismatchResult(sid, cfg, meta, dryRun, force, maxItems, batchSize, totalCandidates, processed, upserted, skipped, failedIDs, skippedIDs, errorsOut, preIntegrity, adminReindexDerivedArtifactResult{}, "memory", mem.ID)
+								if progress != nil {
+									progress(blocked)
+								}
+								return blocked, nil
+							}
 						} else {
 							skippedIDs = append(skippedIDs, mem.ID)
 						}
@@ -1419,16 +1449,39 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 				}
 			}
 			if progress != nil {
-				progress(adminReindexProgress(processed, len(memories), upserted, skipped, failedIDs, skippedIDs, mem.ID, errorsOut))
+				p := adminReindexProgress(processed, totalCandidates, upserted, skipped, failedIDs, skippedIDs, mem.ID, errorsOut)
+				p["stage"] = "memory_reindex"
+				p["tier"] = "memory"
+				p["memory_candidates"] = len(memories)
+				p["evidence_candidates"] = derivedEvidenceCandidates
+				p["world_rule_candidates"] = derivedWorldRuleCandidates
+				progress(p)
 			}
 		}
 	}
-	artifactResult := s.adminReindexDerivedArtifacts(ctx, sid, cfg, dryRun, maxItems, allEvidence, allWorldRules)
+	artifactProgress := adminReindexDerivedArtifactProgress{
+		Progress:      progress,
+		BaseProcessed: processed,
+		BaseUpserted:  upserted,
+		BaseSkipped:   skipped,
+		Total:         totalCandidates,
+		FailedIDs:     append([]int64{}, failedIDs...),
+		SkippedIDs:    append([]int64{}, skippedIDs...),
+		Errors:        append([]string{}, errorsOut...),
+	}
+	artifactResult := s.adminReindexDerivedArtifacts(ctx, sid, cfg, dryRun, maxItems, allEvidence, allWorldRules, artifactProgress)
 	if !dryRun {
 		processed += artifactResult.Processed
 		upserted += artifactResult.Upserted
 		skipped += artifactResult.Skipped
 		errorsOut = append(errorsOut, artifactResult.Errors...)
+		if artifactResult.BlockedReason != "" {
+			blocked := adminReindexCollectionMismatchResult(sid, cfg, meta, dryRun, force, maxItems, batchSize, totalCandidates, processed, upserted, skipped, failedIDs, skippedIDs, errorsOut, preIntegrity, artifactResult, artifactResult.BlockedTier, artifactResult.BlockedRowID)
+			if progress != nil {
+				progress(blocked)
+			}
+			return blocked, nil
+		}
 	}
 	processedBatches := 0
 	if processed > 0 {
@@ -1469,6 +1522,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 			"embedding_provider":       strings.TrimSpace(cfg.Embedder.Provider),
 			"embedding_configured":     cfg.Embedder.hasConfig(),
 			"embedding_missing_fields": cfg.Embedder.missingFields(),
+			"embedding_config_trace":   adminEmbeddingConfigTrace(meta, cfg),
 			"failed_ids":               failedIDs,
 			"skipped_ids":              skippedIDs,
 			"derived_artifact_reindex": artifactResult.Summary(),
@@ -1503,6 +1557,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 		"embedding_provider":       strings.TrimSpace(cfg.Embedder.Provider),
 		"embedding_configured":     cfg.Embedder.hasConfig(),
 		"embedding_missing_fields": cfg.Embedder.missingFields(),
+		"embedding_config_trace":   adminEmbeddingConfigTrace(meta, cfg),
 		"failed_ids":               failedIDs,
 		"skipped_ids":              skippedIDs,
 		"derived_artifact_reindex": artifactResult.Summary(),
@@ -1711,6 +1766,139 @@ func adminReindexProgress(processed, total, upserted, skipped int, failedIDs, sk
 		"errors":           append([]string{}, errorsOut...),
 		"last_processed":   lastID,
 		"progress_percent": adminJobProgressPercent(processed, total),
+	}
+}
+
+func adminReindexEmbeddingPreflightBlock(sid string, cfg completeTurnExtractionConfig, meta map[string]any, force, dryRun bool, maxItems, batchSize int, memories []store.Memory, evidenceCandidates, worldRuleCandidates int, integrity map[string]any) map[string]any {
+	if dryRun {
+		return nil
+	}
+	if !adminReindexNeedsEmbedding(force, memories, evidenceCandidates, worldRuleCandidates) {
+		return nil
+	}
+	if cfg.Embedder.hasConfig() {
+		return nil
+	}
+	reason := "missing_embedding_config"
+	if strings.Contains(strings.TrimSpace(cfg.Embedder.Source), "partial") {
+		reason = "embedding_config_incomplete"
+	}
+	return map[string]any{
+		"status":                   "blocked",
+		"stage":                    "embedding_config_preflight",
+		"reason":                   reason,
+		"ui_action":                "complete_embedding_settings_or_disable_reindex",
+		"chat_session_id":          sid,
+		"mutation_enabled":         true,
+		"reindex_executed":         false,
+		"dry_run":                  dryRun,
+		"force":                    force,
+		"batch_size":               batchSize,
+		"max_items":                maxItems,
+		"candidate_count":          len(memories) + evidenceCandidates + worldRuleCandidates,
+		"memory_candidates":        len(memories),
+		"evidence_candidates":      evidenceCandidates,
+		"world_rule_candidates":    worldRuleCandidates,
+		"processed":                0,
+		"upserted":                 0,
+		"skipped_count":            0,
+		"failed_count":             0,
+		"progress_percent":         100,
+		"embedding_configured":     false,
+		"embedding_missing_fields": cfg.Embedder.missingFields(),
+		"embedding_config_trace":   adminEmbeddingConfigTrace(meta, cfg),
+		"integrity_report":         integrity,
+		"errors":                   []string{reason},
+		"note":                     "vector reindex was blocked before mutation because embedding settings are incomplete; UI/env/runtime fields were not mixed",
+	}
+}
+
+func adminReindexNeedsEmbedding(force bool, memories []store.Memory, evidenceCandidates, worldRuleCandidates int) bool {
+	if evidenceCandidates > 0 || worldRuleCandidates > 0 {
+		return true
+	}
+	for _, mem := range memories {
+		if strings.TrimSpace(reindexMemoryDocumentText(mem)) == "" {
+			continue
+		}
+		embeddingText := strings.TrimSpace(mem.Embedding)
+		if force || embeddingText == "" || embeddingText == "[]" {
+			return true
+		}
+	}
+	return false
+}
+
+func isChromaDimensionMismatchStatus(status string) bool {
+	text := strings.ToLower(strings.TrimSpace(status))
+	return strings.Contains(text, "chroma collection dimension mismatch") ||
+		(strings.Contains(text, "expecting embedding with dimension") && strings.Contains(text, "got"))
+}
+
+func adminReindexCollectionMismatchResult(sid string, cfg completeTurnExtractionConfig, meta map[string]any, dryRun, force bool, maxItems, batchSize, totalCandidates, processed, upserted, skipped int, failedIDs, skippedIDs []int64, errorsOut []string, integrity map[string]any, artifactResult adminReindexDerivedArtifactResult, blockedTier string, blockedRowID int64) map[string]any {
+	return map[string]any{
+		"status":                   "blocked",
+		"stage":                    "collection_recreate_required",
+		"reason":                   "chroma_collection_dimension_mismatch",
+		"ui_action":                "recreate_chromadb_collection_then_reindex",
+		"chat_session_id":          sid,
+		"mutation_enabled":         true,
+		"reindex_executed":         upserted > 0,
+		"dry_run":                  dryRun,
+		"force":                    force,
+		"batch_size":               batchSize,
+		"max_items":                maxItems,
+		"candidate_count":          totalCandidates,
+		"processed":                processed,
+		"upserted":                 upserted,
+		"skipped_count":            skipped,
+		"failed_count":             len(failedIDs),
+		"failed_ids":               append([]int64{}, failedIDs...),
+		"skipped_ids":              append([]int64{}, skippedIDs...),
+		"errors":                   append([]string{}, errorsOut...),
+		"blocked_tier":             nilIfEmpty(blockedTier),
+		"blocked_row_id":           blockedRowID,
+		"embedding_model":          strings.TrimSpace(cfg.Embedder.Model),
+		"embedding_provider":       strings.TrimSpace(cfg.Embedder.Provider),
+		"embedding_configured":     cfg.Embedder.hasConfig(),
+		"embedding_missing_fields": cfg.Embedder.missingFields(),
+		"embedding_config_trace":   adminEmbeddingConfigTrace(meta, cfg),
+		"derived_artifact_reindex": artifactResult.Summary(),
+		"integrity_report":         integrity,
+		"quality_verification": map[string]any{
+			"status":               "blocked_collection_recreate_required",
+			"required_for_cutover": true,
+		},
+		"note": "ChromaDB collection uses a different embedding dimension. The job stopped at the first mismatch to avoid repeated failures.",
+	}
+}
+
+func adminEmbeddingConfigTrace(meta map[string]any, cfg completeTurnExtractionConfig) map[string]any {
+	rawEmbedder := completeTurnExtractionConfigFromMeta(meta).Embedder
+	metaEmbedding := mapFromAny(meta["embedding"])
+	source := strings.TrimSpace(cfg.Embedder.Source)
+	if source == "" {
+		source = "missing"
+		switch {
+		case rawEmbedder.hasConfig():
+			source = "client_meta"
+		case len(metaEmbedding) > 0:
+			source = "client_meta_partial"
+		case cfg.Embedder.hasConfig():
+			source = "runtime_or_env"
+		}
+	}
+	return map[string]any{
+		"configured":                 cfg.Embedder.hasConfig(),
+		"source":                     source,
+		"provider":                   strings.TrimSpace(cfg.Embedder.Provider),
+		"endpoint_host":              endpointHost(cfg.Embedder.Endpoint),
+		"model":                      strings.TrimSpace(cfg.Embedder.Model),
+		"timeout_ms":                 cfg.Embedder.TimeoutMs,
+		"missing_fields":             cfg.Embedder.missingFields(),
+		"client_meta_present":        len(metaEmbedding) > 0,
+		"client_meta_configured":     rawEmbedder.hasConfig(),
+		"client_meta_missing_fields": rawEmbedder.missingFields(),
 	}
 }
 
@@ -2346,7 +2534,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		shouldRunRawWorldAudit := forceWorldRuleBackfill &&
 			(forceRawWorldRuleAudit || (artifactCounts["world_rules"] == 0 && intFromAny(worldRuleBackfill["generated"], 0) == 0))
 		if shouldRunRawWorldAudit {
-			rawWorldRuleBackfill := s.backfillWorldRulesFromChatLogs(ctx, sid, runLogs, runTargets, req.DryRun, extractionCfg.Critic)
+			rawWorldRuleBackfill := s.backfillWorldRulesFromChatLogs(ctx, sid, runLogs, runTargets, req.DryRun, extractionCfg.Critic, progress)
 			worldRuleBackfill = mergeWorldRuleBackfillResults(worldRuleBackfill, rawWorldRuleBackfill)
 			artifactCounts["world_rules"] += intFromAny(rawWorldRuleBackfill["generated"], 0)
 			if errText := strings.TrimSpace(stringFromMap(rawWorldRuleBackfill, "error")); errText != "" {
@@ -3374,7 +3562,7 @@ func (s *Server) backfillWorldRulesFromMemories(ctx context.Context, sid string,
 	return result
 }
 
-func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string, logs []store.ChatLog, targetTurns map[int]bool, dryRun bool, cfg completeTurnLLMConfig) map[string]any {
+func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string, logs []store.ChatLog, targetTurns map[int]bool, dryRun bool, cfg completeTurnLLMConfig, progress adminJobProgressFunc) map[string]any {
 	result := map[string]any{
 		"status":     "skipped",
 		"source":     "raw_chat_logs_world_rule_audit",
@@ -3416,6 +3604,7 @@ func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string,
 		result["reason"] = "no_chat_log_chunks"
 		return result
 	}
+	result["chunk_count"] = len(chunks)
 	existingRules, err := s.Store.ListWorldRules(ctx, sid)
 	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
 		result["status"] = "partial_error"
@@ -3433,15 +3622,59 @@ func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string,
 	candidates := 0
 	auditRuns := 0
 	traces := []map[string]any{}
-	for _, chunk := range chunks {
+	if progress != nil {
+		progress(map[string]any{
+			"status":           "running",
+			"stage":            "raw_world_rule_backfill",
+			"phase":            "chunk_scan_start",
+			"candidate_count":  len(chunks),
+			"processed":        0,
+			"generated":        0,
+			"existing":         0,
+			"skipped_count":    0,
+			"progress_percent": 0,
+		})
+	}
+	for idx, chunk := range chunks {
 		select {
 		case <-ctx.Done():
 			result["status"] = "partial_error"
 			result["error"] = ctx.Err().Error()
+			if progress != nil {
+				progress(map[string]any{
+					"status":           "error",
+					"stage":            "raw_world_rule_backfill",
+					"phase":            "canceled",
+					"candidate_count":  len(chunks),
+					"processed":        auditRuns,
+					"generated":        generated,
+					"existing":         existing,
+					"skipped_count":    skipped,
+					"progress_percent": adminJobProgressPercent(auditRuns, len(chunks)),
+					"error":            ctx.Err().Error(),
+				})
+			}
 			return result
 		default:
 		}
 		auditRuns++
+		if progress != nil {
+			progress(map[string]any{
+				"status":           "running",
+				"stage":            "raw_world_rule_backfill",
+				"phase":            "llm_call_start",
+				"candidate_count":  len(chunks),
+				"processed":        idx,
+				"chunk_index":      idx + 1,
+				"chunk_count":      len(chunks),
+				"start_turn":       chunk.startTurn,
+				"end_turn":         chunk.endTurn,
+				"generated":        generated,
+				"existing":         existing,
+				"skipped_count":    skipped,
+				"progress_percent": adminJobProgressPercent(idx, len(chunks)),
+			})
+		}
 		audited, trace := s.runCompleteTurnWorldRuleAudit(
 			ctx,
 			sid,
@@ -3458,11 +3691,80 @@ func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string,
 			"end_turn":   chunk.endTurn,
 			"trace":      trace,
 		})
+		if progress != nil {
+			progress(map[string]any{
+				"status":           "running",
+				"stage":            "raw_world_rule_backfill",
+				"phase":            "llm_response_received",
+				"candidate_count":  len(chunks),
+				"processed":        idx,
+				"chunk_index":      idx + 1,
+				"chunk_count":      len(chunks),
+				"start_turn":       chunk.startTurn,
+				"end_turn":         chunk.endTurn,
+				"generated":        generated,
+				"existing":         existing,
+				"skipped_count":    skipped,
+				"last_trace":       trace,
+				"progress_percent": adminJobProgressPercent(idx, len(chunks)),
+			})
+		}
 		if stringFromMap(trace, "status") == "error" {
 			skipped++
+			if progress != nil {
+				progress(map[string]any{
+					"status":           "running",
+					"stage":            "raw_world_rule_backfill",
+					"phase":            "llm_call_error",
+					"candidate_count":  len(chunks),
+					"processed":        idx + 1,
+					"chunk_index":      idx + 1,
+					"chunk_count":      len(chunks),
+					"start_turn":       chunk.startTurn,
+					"end_turn":         chunk.endTurn,
+					"generated":        generated,
+					"existing":         existing,
+					"skipped_count":    skipped,
+					"last_trace":       trace,
+					"progress_percent": adminJobProgressPercent(idx+1, len(chunks)),
+				})
+			}
 			continue
 		}
-		for _, raw := range worldRuleItemsForSave(audited) {
+		if progress != nil {
+			progress(map[string]any{
+				"status":           "running",
+				"stage":            "raw_world_rule_backfill",
+				"phase":            "parse_start",
+				"candidate_count":  len(chunks),
+				"processed":        idx,
+				"chunk_index":      idx + 1,
+				"chunk_count":      len(chunks),
+				"start_turn":       chunk.startTurn,
+				"end_turn":         chunk.endTurn,
+				"progress_percent": adminJobProgressPercent(idx, len(chunks)),
+			})
+		}
+		rawRules := worldRuleItemsForSave(audited)
+		if progress != nil {
+			progress(map[string]any{
+				"status":                "running",
+				"stage":                 "raw_world_rule_backfill",
+				"phase":                 "parse_done",
+				"candidate_count":       len(chunks),
+				"processed":             idx,
+				"chunk_index":           idx + 1,
+				"chunk_count":           len(chunks),
+				"start_turn":            chunk.startTurn,
+				"end_turn":              chunk.endTurn,
+				"chunk_rule_candidates": len(rawRules),
+				"progress_percent":      adminJobProgressPercent(idx, len(chunks)),
+			})
+		}
+		chunkGeneratedBefore := generated
+		chunkExistingBefore := existing
+		chunkSkippedBefore := skipped
+		for _, raw := range rawRules {
 			ruleMap := mapFromAny(raw)
 			key := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(ruleMap, "key"), stringFromMap(ruleMap, "name")))
 			if key == "" {
@@ -3478,6 +3780,26 @@ func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string,
 				continue
 			}
 			seen[sig] = true
+			if progress != nil {
+				progress(map[string]any{
+					"status":           "running",
+					"stage":            "raw_world_rule_backfill",
+					"phase":            "save_start",
+					"candidate_count":  len(chunks),
+					"processed":        idx,
+					"chunk_index":      idx + 1,
+					"chunk_count":      len(chunks),
+					"start_turn":       chunk.startTurn,
+					"end_turn":         chunk.endTurn,
+					"rule_key":         key,
+					"rule_scope":       scope,
+					"rule_scope_name":  scopeName,
+					"generated":        generated,
+					"existing":         existing,
+					"skipped_count":    skipped,
+					"progress_percent": adminJobProgressPercent(idx, len(chunks)),
+				})
+			}
 			err := saver.SaveWorldRule(ctx, &store.WorldRule{
 				ChatSessionID: sid,
 				Scope:         scope,
@@ -3499,9 +3821,68 @@ func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string,
 				result["skipped"] = skipped
 				result["audit_runs"] = auditRuns
 				result["audit_trace"] = traces
+				if progress != nil {
+					progress(map[string]any{
+						"status":           "error",
+						"stage":            "raw_world_rule_backfill",
+						"phase":            "save_error",
+						"candidate_count":  len(chunks),
+						"processed":        idx + 1,
+						"chunk_index":      idx + 1,
+						"chunk_count":      len(chunks),
+						"start_turn":       chunk.startTurn,
+						"end_turn":         chunk.endTurn,
+						"generated":        generated,
+						"existing":         existing,
+						"skipped_count":    skipped,
+						"error":            err.Error(),
+						"progress_percent": adminJobProgressPercent(idx+1, len(chunks)),
+					})
+				}
 				return result
 			}
 			generated++
+			if progress != nil {
+				progress(map[string]any{
+					"status":           "running",
+					"stage":            "raw_world_rule_backfill",
+					"phase":            "save_done",
+					"candidate_count":  len(chunks),
+					"processed":        idx,
+					"chunk_index":      idx + 1,
+					"chunk_count":      len(chunks),
+					"start_turn":       chunk.startTurn,
+					"end_turn":         chunk.endTurn,
+					"rule_key":         key,
+					"rule_scope":       scope,
+					"rule_scope_name":  scopeName,
+					"generated":        generated,
+					"existing":         existing,
+					"skipped_count":    skipped,
+					"progress_percent": adminJobProgressPercent(idx, len(chunks)),
+				})
+			}
+		}
+		if progress != nil {
+			progress(map[string]any{
+				"status":           "running",
+				"stage":            "raw_world_rule_backfill",
+				"phase":            "chunk_done",
+				"candidate_count":  len(chunks),
+				"processed":        idx + 1,
+				"chunk_index":      idx + 1,
+				"chunk_count":      len(chunks),
+				"start_turn":       chunk.startTurn,
+				"end_turn":         chunk.endTurn,
+				"generated":        generated,
+				"existing":         existing,
+				"skipped_count":    skipped,
+				"chunk_generated":  generated - chunkGeneratedBefore,
+				"chunk_existing":   existing - chunkExistingBefore,
+				"chunk_skipped":    skipped - chunkSkippedBefore,
+				"last_trace":       trace,
+				"progress_percent": adminJobProgressPercent(idx+1, len(chunks)),
+			})
 		}
 	}
 	result["status"] = "ok"

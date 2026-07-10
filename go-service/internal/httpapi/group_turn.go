@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -265,6 +266,61 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 					"note":     "complete-turn idempotent replay; existing turn artifacts kept",
 				})
 				return
+			}
+		}
+	}
+	if s.usesShadowWriteStore() && strings.TrimSpace(userText) != "" && strings.TrimSpace(assistantText) != "" {
+		if existingLogs, err := s.Store.ListChatLogs(ctx, sid, 0, 0); err == nil {
+			if existingTurn, ok := completeTurnFindPersistedTurnWithContent(existingLogs, sid, userText, assistantText); ok && existingTurn > 0 && existingTurn != req.TurnIndex {
+				if completeTurnHasDerivedArtifacts(ctx, s.Store, sid, existingTurn) {
+					now := time.Now().UTC()
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status":                  "ok",
+						"source":                  s.storeWriteSource(),
+						"chat_session_id":         sid,
+						"turn_index":              existingTurn,
+						"generated_at":            now.Format(time.RFC3339),
+						"save_ok":                 true,
+						"save_error":              "",
+						"chat_logs_saved":         0,
+						"memories_saved":          0,
+						"evidence_saved":          0,
+						"kg_triples_saved":        0,
+						"vectors_upserted":        0,
+						"derived_artifacts_saved": 0,
+						"critic_triggered":        false,
+						"critic_result":           nil,
+						"llm_config_trace":        llmConfigTrace,
+						"episode_result":          map[string]any{"checked": false, "triggered": false, "range": nil, "reason": "idempotent_pair_replay"},
+						"chapter_result":          map[string]any{"checked": false, "triggered": false, "range": nil, "reason": "idempotent_pair_replay"},
+						"maintenance_enqueued":    false,
+						"fail_reasons":            []string{},
+						"trace_handoff": map[string]any{
+							"skeleton":               false,
+							"turn_index":             existingTurn,
+							"save_ok":                true,
+							"critic_triggered":       false,
+							"idempotent_replay":      true,
+							"idempotent_pair_replay": true,
+							"requested_turn_index":   requestedTurnIndex,
+							"llm_config_trace":       llmConfigTrace,
+							"store_mode":             string(s.Cfg.StoreMode),
+							"store_write_source":     s.storeWriteSource(),
+							"existing_chat_logs":     len(existingLogs),
+							"duplicate_guard":        "same_session_exact_pair_exists_on_another_turn",
+							"note":                   "complete-turn detected the same raw user+assistant pair on another turn and skipped duplicate writes",
+						},
+						"warnings": []string{"complete_turn_idempotent_pair_replay: same raw user+assistant pair already exists on turn " + strconv.Itoa(existingTurn) + "; duplicate writes skipped"},
+						"note":     "complete-turn idempotent pair replay; existing turn artifacts kept",
+					})
+					return
+				}
+				req.TurnIndex = existingTurn
+				requestedTurnIndex = existingTurn
+				rawUserAlreadyPersisted = true
+				rawAssistantAlreadyPersisted = true
+				rawTurnAlreadyPersisted = true
+				requestedTurnHasAnyRaw = true
 			}
 		}
 	}
@@ -915,8 +971,8 @@ func (s *Server) completeTurnHierarchyPromotionCheckpoint(ctx context.Context, s
 func completeTurnAlreadyPersistedWithContent(logs []store.ChatLog, sid string, turnIndex int, userText, assistantText string) bool {
 	hasUser := false
 	hasAssistant := false
-	normalizedUser := strings.TrimSpace(userText)
-	normalizedAssistant := strings.TrimSpace(assistantText)
+	normalizedUser := completeTurnComparableContentForRole("user", userText)
+	normalizedAssistant := completeTurnComparableContentForRole("assistant", assistantText)
 	if normalizedUser == "" || normalizedAssistant == "" {
 		return false
 	}
@@ -924,8 +980,9 @@ func completeTurnAlreadyPersistedWithContent(logs []store.ChatLog, sid string, t
 		if item.ChatSessionID != sid || item.TurnIndex != turnIndex {
 			continue
 		}
-		content := strings.TrimSpace(item.Content)
-		switch strings.ToLower(strings.TrimSpace(item.Role)) {
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		content := completeTurnComparableContentForRole(role, item.Content)
+		switch role {
 		case "user":
 			if content == normalizedUser {
 				hasUser = true
@@ -937,6 +994,135 @@ func completeTurnAlreadyPersistedWithContent(logs []store.ChatLog, sid string, t
 		}
 	}
 	return hasUser && hasAssistant
+}
+
+func completeTurnFindPersistedTurnWithContent(logs []store.ChatLog, sid string, userText, assistantText string) (int, bool) {
+	normalizedUser := completeTurnComparableContentForRole("user", userText)
+	normalizedAssistant := completeTurnComparableContentForRole("assistant", assistantText)
+	if normalizedUser == "" || normalizedAssistant == "" {
+		return 0, false
+	}
+	type pairPresence struct {
+		user      bool
+		assistant bool
+	}
+	byTurn := map[int]pairPresence{}
+	for _, item := range logs {
+		if item.ChatSessionID != sid || item.TurnIndex <= 0 {
+			continue
+		}
+		presence := byTurn[item.TurnIndex]
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		content := completeTurnComparableContentForRole(role, item.Content)
+		switch role {
+		case "user":
+			if content == normalizedUser {
+				presence.user = true
+			}
+		case "assistant":
+			if content == normalizedAssistant {
+				presence.assistant = true
+			}
+		}
+		byTurn[item.TurnIndex] = presence
+	}
+	bestTurn := 0
+	for turn, presence := range byTurn {
+		if presence.user && presence.assistant && (bestTurn == 0 || turn < bestTurn) {
+			bestTurn = turn
+		}
+	}
+	if bestTurn <= 0 {
+		return 0, false
+	}
+	return bestTurn, true
+}
+
+func completeTurnComparableContentForRole(role, text string) string {
+	normalizedRole := strings.ToLower(strings.TrimSpace(role))
+	content := text
+	if normalizedRole == "assistant" {
+		content = completeTurnCanonicalAssistantPersistenceText(content)
+	}
+	return completeTurnLooseCompareText(content)
+}
+
+func completeTurnLooseCompareText(text string) string {
+	clean := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"))
+	if clean == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(clean), " ")
+}
+
+func completeTurnCanonicalAssistantPersistenceText(text string) string {
+	raw := strings.TrimSpace(text)
+	if raw == "" {
+		return ""
+	}
+	for _, tag := range []string{
+		"ArchiveCenterFinalOutput",
+		"ArchiveCenterFinal",
+		"ACFinalOutput",
+		"ACFinal",
+		"PostprocessorFinalOutput",
+		"PostprocessorFinal",
+		"PostProcessFinal",
+		"FinalAssistantOutput",
+		"CanonicalAssistantOutput",
+		"QualityLayerFinalOutput",
+		"QualityLayerFinal",
+	} {
+		if blocks := completeTurnExtractTaggedBlocks(raw, tag); len(blocks) > 0 {
+			return strings.TrimSpace(strings.Join(blocks, "\n\n"))
+		}
+	}
+	if strings.Contains(strings.ToLower(raw), "<rekocompare") || strings.Contains(strings.ToLower(raw), "<rekoresult") {
+		visible := completeTurnRemoveTaggedBlocks(raw, "ReKoCompare")
+		if strings.TrimSpace(visible) != "" {
+			return strings.TrimSpace(visible)
+		}
+		if blocks := completeTurnExtractTaggedBlocks(raw, "ReKoAfter"); len(blocks) > 0 {
+			return strings.TrimSpace(strings.Join(blocks, "\n\n"))
+		}
+		if blocks := completeTurnExtractTaggedBlocks(raw, "ReKoResult"); len(blocks) > 0 {
+			return strings.TrimSpace(strings.Join(blocks, "\n\n"))
+		}
+	}
+	if strings.Contains(strings.ToLower(raw), "<gigatrans") {
+		if blocks := completeTurnExtractTaggedBlocks(raw, "GigaTrans"); len(blocks) > 0 {
+			return strings.TrimSpace(strings.Join(blocks, "\n\n"))
+		}
+	}
+	return raw
+}
+
+func completeTurnExtractTaggedBlocks(text, tagName string) []string {
+	tag := strings.TrimSpace(tagName)
+	if tag == "" || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	re := regexp.MustCompile(`(?is)<\s*` + regexp.QuoteMeta(tag) + `\b[^>]*>(.*?)<\s*/\s*` + regexp.QuoteMeta(tag) + `\s*>`)
+	matches := re.FindAllStringSubmatch(text, -1)
+	out := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		if block := strings.TrimSpace(match[1]); block != "" {
+			out = append(out, block)
+		}
+	}
+	return out
+}
+
+func completeTurnRemoveTaggedBlocks(text, tagName string) string {
+	tag := strings.TrimSpace(tagName)
+	if tag == "" || strings.TrimSpace(text) == "" {
+		return text
+	}
+	re := regexp.MustCompile(`(?is)<\s*` + regexp.QuoteMeta(tag) + `\b[^>]*>.*?<\s*/\s*` + regexp.QuoteMeta(tag) + `\s*>`)
+	return strings.TrimSpace(re.ReplaceAllString(text, ""))
 }
 
 func completeTurnRawRolePresence(logs []store.ChatLog, sid string, turnIndex int) (bool, bool) {
@@ -962,14 +1148,15 @@ func completeTurnRawRolePresence(logs []store.ChatLog, sid string, turnIndex int
 func completeTurnRawRoleContentMatches(logs []store.ChatLog, sid string, turnIndex int, userText, assistantText string) (bool, bool) {
 	userMatches := false
 	assistantMatches := false
-	normalizedUser := strings.TrimSpace(userText)
-	normalizedAssistant := strings.TrimSpace(assistantText)
+	normalizedUser := completeTurnComparableContentForRole("user", userText)
+	normalizedAssistant := completeTurnComparableContentForRole("assistant", assistantText)
 	for _, item := range logs {
 		if item.ChatSessionID != sid || item.TurnIndex != turnIndex {
 			continue
 		}
-		content := strings.TrimSpace(item.Content)
-		switch strings.ToLower(strings.TrimSpace(item.Role)) {
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		content := completeTurnComparableContentForRole(role, item.Content)
+		switch role {
 		case "user":
 			if normalizedUser != "" && content == normalizedUser {
 				userMatches = true

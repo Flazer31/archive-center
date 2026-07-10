@@ -77,6 +77,7 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 	m.pruneLocked()
 	m.mu.Unlock()
 
+	snapshot := job.snapshot()
 	go func() {
 		m.update(id, "running", map[string]any{"status": "running", "started": true})
 		result, err := work(context.Background(), func(progress map[string]any) {
@@ -89,7 +90,7 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 		m.finish(id, "completed", result, "")
 	}()
 
-	return job.snapshot()
+	return snapshot
 }
 
 func (m *adminJobManager) get(id string) (map[string]any, bool) {

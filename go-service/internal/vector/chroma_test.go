@@ -220,6 +220,44 @@ func TestChromaStoreCreatesCollectionWhenV2ReturnsInvalidCollection(t *testing.T
 	}
 }
 
+func TestChromaStoreUpsertReportsDimensionMismatch(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors":
+			_, _ = w.Write([]byte(`{"id":"collection-1","name":"archive_center_vectors"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/collection-1/upsert":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"InvalidArgumentError","message":"Collection expecting embedding with dimension of 3072, got 1024"}`))
+		default:
+			http.Error(w, r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	raw, err := NewChromaStore(ts.URL, "archive_center_vectors", "/api/v2")
+	if err != nil {
+		t.Fatalf("NewChromaStore: %v", err)
+	}
+	err = raw.Upsert(context.Background(), "sess-1", []VectorDocument{{
+		ID:            "memory:sess-1:1",
+		Embedding:     make([]float32, 1024),
+		Tier:          "memory",
+		ChatSessionID: "sess-1",
+		SourceTable:   "memories",
+		SourceRowID:   "1",
+		SchemaVersion: "memory.v2",
+		DocumentText:  "hello",
+	}})
+	if err == nil {
+		t.Fatal("expected dimension mismatch error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "chroma collection dimension mismatch") || !strings.Contains(text, "current embedding dimension=1024") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestChromaWhereBuildsSessionAndTierFilter(t *testing.T) {
 	where := chromaWhere("sess-1", `tier == "memory"`)
 	raw, _ := json.Marshal(where)

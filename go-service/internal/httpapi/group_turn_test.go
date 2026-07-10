@@ -70,6 +70,7 @@ type turnRecordingStore struct {
 type turnRecordingVectorStore struct {
 	docs               []vector.VectorDocument
 	deletedDocumentIDs []string
+	upsertErr          error
 }
 
 func (f *turnRecordingVectorStore) Search(ctx context.Context, sessionID string, query []float32, limit int, filter string) ([]vector.VectorDocument, error) {
@@ -77,6 +78,9 @@ func (f *turnRecordingVectorStore) Search(ctx context.Context, sessionID string,
 }
 
 func (f *turnRecordingVectorStore) Upsert(ctx context.Context, sessionID string, docs []vector.VectorDocument) error {
+	if f.upsertErr != nil {
+		return f.upsertErr
+	}
 	f.docs = append(f.docs, docs...)
 	return nil
 }
@@ -1019,6 +1023,114 @@ func TestCompleteTurnActiveChatBackfillPreservesRequestedTurnIndex(t *testing.T)
 		if log.TurnIndex != 6 {
 			t.Fatalf("saved chat log turn = %d, want 6; logs=%#v", log.TurnIndex, fake.savedChatLogs)
 		}
+	}
+}
+
+func TestCompleteTurnExactPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-pair-replay", TurnIndex: 5, Role: "user", Content: "same user text"},
+			{ID: 2, ChatSessionID: "sess-pair-replay", TurnIndex: 5, Role: "assistant", Content: "same assistant text"},
+			{ID: 3, ChatSessionID: "sess-pair-replay", TurnIndex: 7, Role: "user", Content: "later user text"},
+			{ID: 4, ChatSessionID: "sess-pair-replay", TurnIndex: 7, Role: "assistant", Content: "later assistant text"},
+		},
+		returnMemories: []store.Memory{
+			{ID: 10, ChatSessionID: "sess-pair-replay", TurnIndex: 5, SummaryJSON: `{"summary":"same pair already derived"}`},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-pair-replay","turn_index":8,"user_input":"same user text","assistant_content":"same assistant text","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["turn_index"] != float64(5) {
+		t.Fatalf("turn_index = %v, want existing turn 5", resp["turn_index"])
+	}
+	if resp["chat_logs_saved"] != float64(0) || resp["derived_artifacts_saved"] != float64(0) || resp["critic_triggered"] != false {
+		t.Fatalf("exact pair replay must not save duplicate raw/derived rows: %+v", resp)
+	}
+	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("exact pair replay saved duplicate artifacts, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+	trace, _ := resp["trace_handoff"].(map[string]any)
+	if trace["duplicate_guard"] != "same_session_exact_pair_exists_on_another_turn" {
+		t.Fatalf("duplicate_guard = %v, want same_session_exact_pair_exists_on_another_turn; resp=%+v", trace["duplicate_guard"], resp)
+	}
+}
+
+func TestCompleteTurnPostprocessorPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-post-replay", TurnIndex: 7, Role: "user", Content: "same selected option"},
+			{ID: 2, ChatSessionID: "sess-post-replay", TurnIndex: 7, Role: "assistant", Content: `<ReKoCompare><ReKoBefore>draft text</ReKoBefore><ReKoAfter>final polished text</ReKoAfter><ReKoMeta>mode=KR</ReKoMeta></ReKoCompare>`},
+		},
+		returnMemories: []store.Memory{
+			{ID: 10, ChatSessionID: "sess-post-replay", TurnIndex: 7, SummaryJSON: `{"summary":"already derived"}`},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	bodyBytes, err := json.Marshal(map[string]any{
+		"chat_session_id":   "sess-post-replay",
+		"turn_index":        8,
+		"user_input":        "same selected option",
+		"assistant_content": "final polished text",
+		"client_meta": map[string]any{
+			"critic": map[string]any{
+				"api_key":  "k",
+				"endpoint": "https://example.test/v1/chat/completions",
+				"model":    "m",
+				"provider": "openai",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["turn_index"] != float64(7) {
+		t.Fatalf("turn_index = %v, want existing turn 7", resp["turn_index"])
+	}
+	if resp["chat_logs_saved"] != float64(0) || resp["derived_artifacts_saved"] != float64(0) || resp["critic_triggered"] != false {
+		t.Fatalf("postprocessor replay must not save duplicate rows: %+v", resp)
+	}
+	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("postprocessor replay saved duplicate artifacts, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+	trace, _ := resp["trace_handoff"].(map[string]any)
+	if trace["duplicate_guard"] != "same_session_exact_pair_exists_on_another_turn" {
+		t.Fatalf("duplicate_guard = %v, want same_session_exact_pair_exists_on_another_turn; resp=%+v", trace["duplicate_guard"], resp)
 	}
 }
 

@@ -548,6 +548,9 @@ func adminSessionNormalizeStatus(repairResult, rescanResult, reindexResult map[s
 		if status == "failed" || status == "error" {
 			return "failed"
 		}
+		if status == "blocked" {
+			return "blocked"
+		}
 		if intFromAny(result["failed"], 0) > 0 || len(sliceFromAny(result["failed_turns"])) > 0 || len(sliceFromAny(result["errors"])) > 0 {
 			return "partial_error"
 		}

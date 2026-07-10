@@ -22,9 +22,23 @@ type adminReindexDerivedArtifactResult struct {
 	FailedIDsByTier  map[string][]int64
 	SkippedIDsByTier map[string][]int64
 	Errors           []string
+	BlockedReason    string
+	BlockedTier      string
+	BlockedRowID     int64
 	Processed        int
 	Upserted         int
 	Skipped          int
+}
+
+type adminReindexDerivedArtifactProgress struct {
+	Progress      adminJobProgressFunc
+	BaseProcessed int
+	BaseUpserted  int
+	BaseSkipped   int
+	Total         int
+	FailedIDs     []int64
+	SkippedIDs    []int64
+	Errors        []string
 }
 
 func newAdminReindexDerivedArtifactResult() adminReindexDerivedArtifactResult {
@@ -50,11 +64,65 @@ func (r adminReindexDerivedArtifactResult) Summary() map[string]any {
 		"upserted":            r.Upserted,
 		"skipped":             r.Skipped,
 		"errors":              r.Errors,
+		"blocked_reason":      nilIfEmpty(r.BlockedReason),
+		"blocked_tier":        nilIfEmpty(r.BlockedTier),
+		"blocked_row_id":      r.BlockedRowID,
 		"policy":              "existing direct_evidence/world_rules rows are reindexed only when embedding settings are available",
 	}
 }
 
-func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, cfg completeTurnExtractionConfig, dryRun bool, maxItems int, evidence []store.DirectEvidence, worldRules []store.WorldRule) adminReindexDerivedArtifactResult {
+func (p adminReindexDerivedArtifactProgress) emit(tier, phase string, result adminReindexDerivedArtifactResult, lastID int64) {
+	if p.Progress == nil {
+		return
+	}
+	processed := p.BaseProcessed + result.Processed
+	upserted := p.BaseUpserted + result.Upserted
+	skipped := p.BaseSkipped + result.Skipped
+	failedIDs := append([]int64{}, p.FailedIDs...)
+	for _, ids := range result.FailedIDsByTier {
+		failedIDs = append(failedIDs, ids...)
+	}
+	skippedIDs := append([]int64{}, p.SkippedIDs...)
+	for _, ids := range result.SkippedIDsByTier {
+		skippedIDs = append(skippedIDs, ids...)
+	}
+	errorsOut := append([]string{}, p.Errors...)
+	errorsOut = append(errorsOut, result.Errors...)
+	progress := adminReindexProgress(processed, p.Total, upserted, skipped, failedIDs, skippedIDs, lastID, errorsOut)
+	progress["stage"] = "derived_artifact_reindex"
+	progress["tier"] = tier
+	progress["phase"] = phase
+	progress["tier_processed"] = result.ProcessedByTier[tier]
+	progress["tier_total"] = result.CandidatesByTier[tier]
+	progress["derived_artifact_reindex"] = result.Summary()
+	p.Progress(progress)
+}
+
+func adminReindexDerivedArtifactCandidateCounts(maxItems int, evidence []store.DirectEvidence, worldRules []store.WorldRule) (int, int) {
+	evidenceCount := 0
+	for _, item := range evidence {
+		if adminEvidenceVectorEligible(item) {
+			evidenceCount++
+		}
+	}
+	worldRuleCount := 0
+	for _, item := range worldRules {
+		if adminWorldRuleVectorEligible(item) {
+			worldRuleCount++
+		}
+	}
+	if maxItems > 0 {
+		if evidenceCount > maxItems {
+			evidenceCount = maxItems
+		}
+		if worldRuleCount > maxItems {
+			worldRuleCount = maxItems
+		}
+	}
+	return evidenceCount, worldRuleCount
+}
+
+func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, cfg completeTurnExtractionConfig, dryRun bool, maxItems int, evidence []store.DirectEvidence, worldRules []store.WorldRule, progress adminReindexDerivedArtifactProgress) adminReindexDerivedArtifactResult {
 	result := newAdminReindexDerivedArtifactResult()
 	evidenceCandidates := []store.DirectEvidence{}
 	for _, item := range evidence {
@@ -78,10 +146,20 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 			worldRuleCandidates = worldRuleCandidates[:maxItems]
 		}
 	}
+	result.CandidatesByTier["evidence"] = len(evidenceCandidates)
+	result.CandidatesByTier["world_rule"] = len(worldRuleCandidates)
 	if dryRun {
 		return result
 	}
+	progress.emit("evidence", "tier_start", result, 0)
 	for _, item := range evidenceCandidates {
+		select {
+		case <-ctx.Done():
+			result.Errors = append(result.Errors, "evidence reindex canceled: "+ctx.Err().Error())
+			progress.emit("evidence", "canceled", result, item.ID)
+			return result
+		default:
+		}
 		result.Processed++
 		result.ProcessedByTier["evidence"]++
 		saveResult := artifactSaveResult{VectorStatus: "not_requested"}
@@ -89,6 +167,7 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 		if saveResult.VectorsEvidenceUpserted > 0 {
 			result.Upserted += saveResult.VectorsEvidenceUpserted
 			result.UpsertedByTier["evidence"] += saveResult.VectorsEvidenceUpserted
+			progress.emit("evidence", "item_done", result, item.ID)
 			continue
 		}
 		result.Skipped++
@@ -96,11 +175,28 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 		if saveResult.VectorStatus != "" && saveResult.VectorStatus != "not_requested" && saveResult.VectorStatus != "ok" {
 			result.Errors = append(result.Errors, fmt.Sprintf("evidence:%d vector: %s", item.ID, saveResult.VectorStatus))
 			result.FailedIDsByTier["evidence"] = append(result.FailedIDsByTier["evidence"], item.ID)
+			if isChromaDimensionMismatchStatus(saveResult.VectorStatus) {
+				result.BlockedReason = "chroma_collection_dimension_mismatch"
+				result.BlockedTier = "evidence"
+				result.BlockedRowID = item.ID
+				progress.emit("evidence", "collection_recreate_required", result, item.ID)
+				return result
+			}
 		} else {
 			result.SkippedIDsByTier["evidence"] = append(result.SkippedIDsByTier["evidence"], item.ID)
 		}
+		progress.emit("evidence", "item_done", result, item.ID)
 	}
+	progress.emit("evidence", "tier_done", result, 0)
+	progress.emit("world_rule", "tier_start", result, 0)
 	for _, item := range worldRuleCandidates {
+		select {
+		case <-ctx.Done():
+			result.Errors = append(result.Errors, "world_rule reindex canceled: "+ctx.Err().Error())
+			progress.emit("world_rule", "canceled", result, item.ID)
+			return result
+		default:
+		}
 		result.Processed++
 		result.ProcessedByTier["world_rule"]++
 		saveResult := artifactSaveResult{VectorStatus: "not_requested"}
@@ -108,6 +204,7 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 		if saveResult.VectorsWorldRuleUpserted > 0 {
 			result.Upserted += saveResult.VectorsWorldRuleUpserted
 			result.UpsertedByTier["world_rule"] += saveResult.VectorsWorldRuleUpserted
+			progress.emit("world_rule", "item_done", result, item.ID)
 			continue
 		}
 		result.Skipped++
@@ -115,10 +212,19 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 		if saveResult.VectorStatus != "" && saveResult.VectorStatus != "not_requested" && saveResult.VectorStatus != "ok" {
 			result.Errors = append(result.Errors, fmt.Sprintf("world_rule:%d vector: %s", item.ID, saveResult.VectorStatus))
 			result.FailedIDsByTier["world_rule"] = append(result.FailedIDsByTier["world_rule"], item.ID)
+			if isChromaDimensionMismatchStatus(saveResult.VectorStatus) {
+				result.BlockedReason = "chroma_collection_dimension_mismatch"
+				result.BlockedTier = "world_rule"
+				result.BlockedRowID = item.ID
+				progress.emit("world_rule", "collection_recreate_required", result, item.ID)
+				return result
+			}
 		} else {
 			result.SkippedIDsByTier["world_rule"] = append(result.SkippedIDsByTier["world_rule"], item.ID)
 		}
+		progress.emit("world_rule", "item_done", result, item.ID)
 	}
+	progress.emit("world_rule", "tier_done", result, 0)
 	return result
 }
 
