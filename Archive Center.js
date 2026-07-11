@@ -10444,7 +10444,10 @@
       stage: "after_request_orch",
     });
 
-    if (isCidSessionId(currentSessionId) && currentSessionId !== orchSessionId) {
+    // A provisional pre-request session may resolve to its real CID while the
+    // request is running. Once the request already owns a CID, however, keep
+    // that origin even if the user opens another chat before afterRequest.
+    if (!isCidSessionId(orchSessionId) && isCidSessionId(currentSessionId) && currentSessionId !== orchSessionId) {
       updateRuntimeState("sessionWriteRouting", "canonicalized", {
         detail: orchSessionId + " -> " + currentSessionId + " (fresh active cid)",
         rawSessionId: orchSessionId,

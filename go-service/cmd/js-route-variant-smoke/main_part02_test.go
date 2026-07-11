@@ -855,6 +855,21 @@ func TestArchiveCenterJSStreamingAfterRequestPollerMarkers(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSAfterRequestKeepsEstablishedOriginCID(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		"async function resolveAfterRequestWriteSessionId(orchResult)",
+		"!isCidSessionId(orchSessionId) && isCidSessionId(currentSessionId) && currentSessionId !== orchSessionId",
+		`reason: "fresh_active_cid_after_request"`,
+		"return orchSessionId || currentSessionId;",
+	}
+	for _, marker := range required {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing afterRequest origin-session guard %q", marker)
+		}
+	}
+}
+
 func TestArchiveCenterJSEpisodeGenerateOkStatusMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
