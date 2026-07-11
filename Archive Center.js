@@ -11640,24 +11640,26 @@
         fetchInit.body = (typeof body === "string") ? body : JSON.stringify(body);
       }
 
-      // timeout을 Promise.race로 구현
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      if (controller) fetchInit.signal = controller.signal;
+      let timeoutTimer = null;
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error("timeout")), timeout);
+        timeoutTimer = setTimeout(() => {
+          try { if (controller) controller.abort(); } catch { /* no-op */ }
+          reject(new Error("timeout"));
+        }, timeout);
       });
 
       let response;
-      if (R && typeof R.nativeFetch === "function") {
-        response = await Promise.race([R.nativeFetch(url, fetchInit), timeoutPromise]);
-      } else {
-        // fallback: 일반 fetch (브라우저 콘솔 디버깅용)
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
-        fetchInit.signal = controller.signal;
-        try {
+      try {
+        if (R && typeof R.nativeFetch === "function") {
+          response = await Promise.race([R.nativeFetch(url, fetchInit), timeoutPromise]);
+        } else {
+          // fallback: 일반 fetch (브라우저 콘솔 디버깅용)
           response = await fetch(url, fetchInit);
-        } finally {
-          clearTimeout(timer);
         }
+      } finally {
+        if (timeoutTimer !== null) clearTimeout(timeoutTimer);
       }
 
       // Response 객체의 status / ok 확인
@@ -12374,22 +12376,37 @@
           if (await isCompleteTurnPayloadAlreadySaved(item.payload)) {
             ok = true;
           } else {
-            const res = await bridgeFetchWithRetry("/complete-turn", { method: "POST", body: item.payload, timeoutMs: getCompleteTurnTimeoutMs() });
-            ok = !!(res && res.status && res.status !== "error" && res.status !== "skeleton" && res.save_ok !== false);
+            const requestKey = String(item.payload?.client_meta?.idempotency_key || "").trim();
+            const requestStatus = requestKey
+              ? await bridgeFetch("/complete-turn/request-status?idempotency_key=" + encodeURIComponent(requestKey), { method: "GET", timeoutMs: Math.min(getRequestTimeoutSettingMs(), 5000) })
+              : null;
+            if (requestStatus && requestStatus.status === "processing") {
+              stillFailed.push(item);
+              continue;
+            }
+            if (requestStatus && requestStatus.status === "completed" && requestStatus.success === true) {
+              ok = true;
+            } else if (requestStatus && requestStatus.status === "completed") {
+              stillFailed.push(item);
+              continue;
+            } else {
+              const res = await bridgeFetchWithRetry("/complete-turn", { method: "POST", body: item.payload, timeoutMs: getCompleteTurnTimeoutMs() }, 1);
+              ok = !!(res && res.status && res.status !== "error" && res.status !== "skeleton" && res.save_ok !== false);
+            }
           }
         } else if (item.type === "save") {
-          const res = await bridgeFetchWithRetry("/turns", { method: "POST", body: item.payload });
+          const res = await bridgeFetchWithRetry("/turns", { method: "POST", body: item.payload }, 1);
           ok = !!(res && res.status === "ok");
           shadowGuardedLegacy = !ok && isBridgeShadowGuardFailure("/turns");
         } else if (item.type === "complete") {
-          const res = await bridgeFetchWithRetry("/turns/complete", { method: "POST", body: item.payload });
+          const res = await bridgeFetchWithRetry("/turns/complete", { method: "POST", body: item.payload }, 1);
           ok = !!(res && res.status && res.status !== "error");
           shadowGuardedLegacy = !ok && isBridgeShadowGuardFailure("/turns/complete");
         } else if (item.type === "chat_log") {
           const sid = String((item.payload && item.payload.chat_session_id) || "").trim();
           const body = serializeChatLogRecoveryPayload(item.payload || {});
           const res = sid
-            ? await bridgeFetchWithRetry("/canonical/" + encodeURIComponent(sid) + "/chat-logs", { method: "POST", body })
+            ? await bridgeFetchWithRetry("/canonical/" + encodeURIComponent(sid) + "/chat-logs", { method: "POST", body }, 1)
             : null;
           ok = !!(res && res.saved !== false);
         }
@@ -23531,7 +23548,7 @@
       chat_session_id: sessionId,
     };
     const result = await safeCall(
-      () => bridgeFetchWithRetry("/turns", { method: "POST", body }),
+      () => bridgeFetchWithRetry("/turns", { method: "POST", body }, 1),
       null, "saveTurnToBackend"
     );
     if (result) {
@@ -23560,7 +23577,7 @@
       chat_session_id: sessionId,
     };
     const result = await safeCall(
-      () => bridgeFetchWithRetry("/effective-inputs", { method: "POST", body }),
+      () => bridgeFetchWithRetry("/effective-inputs", { method: "POST", body }, 1),
       null, "saveEffectiveInputToBackend"
     );
     return !!(result && result.status === "ok");
@@ -23579,7 +23596,7 @@
       output_language_override: outputLanguageOverride || null,
     };
     const result = await safeCall(
-      () => bridgeFetchWithRetry("/turns/complete", { method: "POST", body }),
+      () => bridgeFetchWithRetry("/turns/complete", { method: "POST", body }, 1),
       null, "notifyTurnComplete"
     );
     if (result) {
@@ -23606,7 +23623,7 @@
       output_language_override: outputLanguageOverride || null,
     };
     const result = await safeCall(
-      () => bridgeFetchWithRetry("/turns/complete", { method: "POST", body }),
+      () => bridgeFetchWithRetry("/turns/complete", { method: "POST", body }, 1),
       null, "notifyTurnCompleteWithResult"
     );
     if (result) {
@@ -23649,6 +23666,13 @@
       const embeddingEndpoint = String(settings.embeddingEndpoint || "").trim();
       const embeddingModel = String(settings.embeddingModel || "").trim();
       const actualEmptyUserInput = String(userInput || "") === AUTO_CONTINUE_USER_INPUT_MARKER;
+      const idempotencyKey = [
+        "complete_turn",
+        String(chatSessionId || ""),
+        String(typeof turnIdx === "number" ? turnIdx : 0),
+        computeOrchestrationDirtyHashOr1c(String(userInput || "")),
+        computeOrchestrationDirtyHashOr1c(String(assistantContent || "")),
+      ].join(":");
       const body = {
         chat_session_id: chatSessionId,
         turn_index: typeof turnIdx === "number" ? turnIdx : 0,
@@ -23666,6 +23690,8 @@
           arc_auto_enabled: true,
           saga_auto_enabled: true,
           actual_empty_user_input: actualEmptyUserInput,
+          request_id: idempotencyKey,
+          idempotency_key: idempotencyKey,
           logical_user_turn_key: actualEmptyUserInput ? AUTO_CONTINUE_USER_INPUT_MARKER : "",
           user_input_kind: actualEmptyUserInput ? "auto_continue" : "normal",
           critic: {
@@ -23715,7 +23741,7 @@
         : [];
       const meta = body.client_meta && typeof body.client_meta === "object" ? body.client_meta : {};
       const safeClientMeta = {};
-      ["episode_interval_turns", "long_session_refresh_enabled", "chapter_auto_enabled", "arc_auto_enabled", "saga_auto_enabled", "chapter_interval_turns", "arc_interval_turns", "saga_interval_turns"].forEach(function(key) {
+      ["episode_interval_turns", "long_session_refresh_enabled", "chapter_auto_enabled", "arc_auto_enabled", "saga_auto_enabled", "chapter_interval_turns", "arc_interval_turns", "saga_interval_turns", "request_id", "idempotency_key"].forEach(function(key) {
         if (Object.prototype.hasOwnProperty.call(meta, key)) safeClientMeta[key] = meta[key];
       });
       if (meta.preserve_requested_turn_index === true) safeClientMeta.preserve_requested_turn_index = true;
@@ -32697,11 +32723,11 @@
       : "";
     if (!payloadTail) {
       return {
-        allowed: false,
+		allowed: true,
         contextInjectionAllowed: false,
         reason: "payload_user_tail_missing",
         requestType,
-        policy: "main_request_must_match_active_chat_tail",
+		policy: "model_request_allowed_without_injectable_user_tail",
       };
     }
     if (activeTail && mainTurnTextMatchesOriginal(payloadTail, activeTail)) {
@@ -32763,12 +32789,12 @@
     }
     if (auxiliaryMarker) {
       return {
-        allowed: false,
+        allowed: true,
         contextInjectionAllowed: false,
-        reason: "auxiliary_module_request",
+        reason: "model_request_auxiliary_marker_trace_only",
         requestType,
         marker: auxiliaryMarker,
-        policy: "archive_context_injection_requires_main_narrative_request",
+        policy: "risu_model_type_is_authoritative_marker_does_not_block",
       };
     }
     if (!activeTail) {
@@ -32802,11 +32828,11 @@
       };
     }
     return {
-      allowed: false,
-      contextInjectionAllowed: false,
-      reason: "payload_user_tail_mismatch_active_tail_block",
+      allowed: true,
+      contextInjectionAllowed: true,
+      reason: "model_payload_tail_authoritative",
       requestType,
-      policy: "block_main_request_until_payload_matches_active_tail",
+      policy: "risu_model_type_and_latest_payload_user_are_authoritative",
       activeTailPreview: truncPreview(activeTail, 120),
       payloadTailPreview: truncPreview(payloadTail, 120),
     };
@@ -35175,7 +35201,7 @@
             () => tryCompleteTurn(turnIdx, safeSavedUserInput, persistedAssistantContent, criticCtx, chatSessionId, _improvementTrace, _ctBody),
             null, "tryCompleteTurn"
           );
-      const _ctOk = !!(_ctResult && _ctResult.status !== "skeleton" && _ctResult.status !== "error");
+      const _ctOk = !!(_ctResult && _ctResult.status !== "skeleton" && _ctResult.status !== "error" && _ctResult.status !== "processing");
       const effectiveTurnOocGuardApplied = turnOocGuardApplied || isOocTurnGuardResult(_ctResult);
       const _ctSource = _ctOk ? "backend" : "local";
       if (_ctResult) {

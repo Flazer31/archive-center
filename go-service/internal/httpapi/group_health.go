@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -130,8 +131,23 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	vectorReady := false
 	vectorDegraded := false
 	if s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.VectorOpenError == nil {
-		checks["chromadb_vector"] = "enabled"
-		vectorReady = true
+		probeCtx, cancelProbe := context.WithTimeout(r.Context(), 5*time.Second)
+		health, healthErr := s.Vector.Health(probeCtx)
+		cancelProbe()
+		if healthErr == nil && strings.TrimSpace(health.Status) == "ok" && health.ModelReady {
+			checks["chromadb_vector"] = "enabled"
+			vectorReady = true
+		} else {
+			checks["chromadb_vector"] = "health_error"
+			if healthErr != nil {
+				checks["chromadb_vector_error"] = healthErr.Error()
+			} else {
+				checks["chromadb_vector_error"] = fmt.Sprintf("status=%s model_ready=%t", health.Status, health.ModelReady)
+			}
+			if !s.Cfg.VectorRequiresEndpoint() {
+				vectorDegraded = true
+			}
+		}
 	} else if s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" {
 		checks["chromadb_vector"] = "open_error"
 		if s.VectorOpenError != nil {

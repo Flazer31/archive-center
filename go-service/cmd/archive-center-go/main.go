@@ -3,9 +3,11 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/httpapi"
@@ -35,6 +37,13 @@ func main() {
 
 	mux := http.NewServeMux()
 	server := httpapi.NewServer(cfg)
+	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := server.ValidateRuntimeDependencies(preflightCtx); err != nil {
+		cancelPreflight()
+		logger.Error("runtime dependency preflight failed", "error", err)
+		os.Exit(1)
+	}
+	cancelPreflight()
 	server.RegisterRoutes(mux)
 
 	logger.Info("starting server", "bind", cfg.BindAddr, "mode", cfg.Mode)

@@ -135,7 +135,7 @@ func TestArchiveCenterJSRerollRollbackPath(t *testing.T) {
 		"async function checkAndAutoRollback",
 		"async function executeAutoRollback",
 		"await checkAndAutoRollback(orchSessionId, rollbackComparable.messages)",
-		"bridgeFetch(`/rollback/${turnIndex}?chat_session_id=${encodeURIComponent(sessionId)}&req_source=${encodeURIComponent(requestSource)}`",
+		`rollbackParams.set("req_source", requestSource);`,
 		"method: \"DELETE\"",
 		"requestSource = options && options.requestSource ? String(options.requestSource) : \"auto\"",
 		"assistant_deleted_before_next_user_turn",
@@ -146,7 +146,6 @@ func TestArchiveCenterJSRerollRollbackPath(t *testing.T) {
 		"function assessPromotedAssistantSyncRollbackGuard",
 		"recent_completed_turn_waiting_active_chat_sync",
 		"pending_active_chat_confirmation",
-		"fullTurnDeleteVisible",
 		"skipSnapshotUpdate",
 	}
 	for _, needle := range required {
@@ -235,12 +234,12 @@ func TestArchiveCenterJSAuxiliaryInjectionPlacementI18nAndBudgetPreviewMarkers(t
 func TestSeq01ContextInjectionToggleRemovedAndSyncedToInputImprovement(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`"settings.section.common.desc": "These settings are for Publisher-layer (Director/Editor) and Critic orchestration. Plugin/DB paths stay active, and supervisor plus Context Injection remain on without hidden legacy toggles. Turning Input Improvement off stops only user-input rewriting."`,
+		`"settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC2 default mode."`,
 		`merged.dbEnabled = true;`,
 		`merged.supervisorEnabled = true;`,
 		`settings.pluginMainApplyMode`,
 		`inputImprovementApplied`,
-		`rewriteAllowed: (String(applyMode.mode || settings.pluginMainApplyMode || 'shadow') === 'reviewed_apply')`,
+		`rewriteAllowed: applyModeName === 'reviewed_apply' && !!settings.pluginMainRewriteLegacyOptIn && payloadRewritten`,
 		`<select id="mo-pluginMainApplyMode">`,
 		`mo-injection-budget-preview`,
 	}
@@ -515,7 +514,7 @@ func TestArchiveCenterJSSeq04SanitizeTraceMarkers(t *testing.T) {
 		`debugLog("sanitize trace:", entry.stage, "removed", entry.removedChars, "chars")`,
 		`buildSanitizeTrace("display_output", content, normalizedContent)`,
 		`buildSanitizeTrace("critic_persist_assistant", displayContent, persistedAssistantContent)`,
-		`buildSanitizeTrace("critic_user_input", criticUserInput.slice(0, 500), safeUser)`,
+		`buildSanitizeTrace("critic_user_input", criticUserInput, safeUser)`,
 		`renderItBlockRaw("1-0. Sanitization Trace", sanHtml, false)`,
 		`rows.push(r("Sanitize", changedCount > 0 ? "ok" : "skipped"`,
 	}
@@ -646,7 +645,7 @@ func TestArchiveCenterJSI18nFrameworkMarkers(t *testing.T) {
 		`settings = sanitizeSettings(parsed)`,
 		`${t('settings.title')}`,
 		`${t('dash.section.turnTrace')}`,
-		`${t('settings.section.explorer')}`,
+		"const settingsSubtabsHtml = (activeTab) => {",
 		`t('explorer.chatLogs.loading')`,
 	}
 	for _, needle := range required {
@@ -1400,7 +1399,7 @@ func TestArchiveCenterJSPrepareTurnInjectionPackMarkers(t *testing.T) {
 	required := []string{
 		"function applyContextInjection(payload, orchResult)",
 		"const _ip = orchResult._injectionPack || null",
-		"const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult)",
+		"const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult, sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK))",
 		"const kgText = (_ip && _ip.kg_text) ? _ip.kg_text : formatKGBlock(kgRecallResult)",
 		"const fallbackText = (_ip && _ip.fallback_text) ? _ip.fallback_text : (includeFallback ? formatFallbackBlock(searchResult) : \"\")",
 		"const latestDirectEvidenceText = (_ip && _ip.latest_direct_evidence_text) ? String(_ip.latest_direct_evidence_text) : \"\"",
@@ -1622,8 +1621,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 2.1.0",
-		`const VERSION = "2.1.0";`,
+		"//@version 2.5.0",
+		`const VERSION = "2.5.0";`,
 		`const VERSION_STR = typeof VERSION !== "undefined" ? String(VERSION) : "unknown";`,
 		"source_version:    VERSION_STR",
 	}
@@ -1737,7 +1736,7 @@ func TestArchiveCenterJSContinuityPackLatestEquivalentMarkers(t *testing.T) {
 		"function resolveCurrentTurnUserInputInfo(payload, messages, sessionId)",
 		`source: "input_hook"`,
 		`source: "messages.meta_only"`,
-		"shouldRejectLowTrustCurrentInput(lastUserMsg.content)",
+		"shouldRejectLowTrustCurrentInput(auxiliaryMessageContentText(lastUserMsg.content))",
 		"metaOnlyInput: !!userInputInfo.metaOnly",
 		"t('settings.debug.forceIdleBtn')",
 		"debugForced: true",
@@ -1785,7 +1784,7 @@ func TestArchiveCenterJSSeq07PersistentGuidanceMaintenanceMarkers(t *testing.T) 
 func TestArchiveCenterJSSeq08BackendTurnEngineFailOpenMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type)",
+		"async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext, options = {})",
 		`bridgeFetch("/prepare-turn"`,
 		`return { source: "backend-off", fallback_reason: "backend_off", status: "error" }`,
 		`return { source: "backend-error", fallback_reason: "backend_error", status: "error" }`,
@@ -1821,27 +1820,57 @@ func TestArchiveCenterJSSeq08BackendTurnEngineFailOpenMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSGeminiAIStudioOtherAxPersistsMarkers(t *testing.T) {
+func TestArchiveCenterJSOnlyModelTypeEntersPersistence(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"function isNarrativeType(type)",
-		`type === "otherAx"`,
 		"function isSaveType(type)",
-		`return !type || type === "model" || type === "otherAx";`,
-		"const AUXILIARY_MODULE_OUTPUT_MARKERS = Object.freeze",
-		"function matchAuxiliaryModuleOutputMarker(text)",
-		"function buildMainNarrativePersistenceGateDecision(type, context)",
-		`reason: "auxiliary_module_output"`,
-		`policy: "save_candidate_requires_main_narrative_output"`,
-		"const persistenceGate = buildMainNarrativePersistenceGateDecision(type, {",
-		`lastOrchResult._trace.persistenceGate = persistenceGate;`,
-		`debugLog("[persistence-gate] skip auxiliary/non-main output:"`,
-		`reason: injectionSkippedReason`,
-		`debugLog("afterRequest: skip save for type:", type);`,
+		"function isContextInjectionType(type)",
+		`return !type || type === "model";`,
+		"archive_center_ignores_non_model_risu_requests",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing Gemini AI Studio OtherAx persistence marker %q", needle)
+		}
+	}
+}
+
+func TestArchiveCenterJSModelPayloadIsNotBlockedByPromptMarkersOrTailMismatch(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`reason: "model_request_auxiliary_marker_trace_only"`,
+		`policy: "risu_model_type_is_authoritative_marker_does_not_block"`,
+		`reason: "model_payload_tail_authoritative"`,
+		`policy: "risu_model_type_and_latest_payload_user_are_authoritative"`,
+		`reason: "post_output_secondary_request"`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing model ownership contract %q", marker)
+		}
+	}
+	for _, obsolete := range []string{
+		`reason: "auxiliary_module_request"`,
+		`reason: "payload_user_tail_mismatch_active_tail_block"`,
+	} {
+		if strings.Contains(src, obsolete) {
+			t.Fatalf("Archive Center.js still blocks model requests with obsolete content classifier %q", obsolete)
+		}
+	}
+}
+
+func TestArchiveCenterJSPersistenceRequestsDoNotBlindRetry(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`bridgeFetchWithRetry("/turns", { method: "POST", body }, 1)`,
+		`bridgeFetchWithRetry("/effective-inputs", { method: "POST", body }, 1)`,
+		`bridgeFetchWithRetry("/turns/complete", { method: "POST", body }, 1)`,
+		`bridgeFetchWithRetry("/complete-turn", { method: "POST", body, timeoutMs: getCompleteTurnTimeoutMs() }, 1)`,
+		`/complete-turn/request-status?idempotency_key=`,
+		`idempotency_key: idempotencyKey`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing persistence idempotency marker %q", marker)
 		}
 	}
 }
@@ -1908,7 +1937,7 @@ func TestArchiveCenterJSSessionStateAggregateReadRoundTripEvidence(t *testing.T)
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"let _aggregateSnapshot = null;",
-		"if (settings.useAggregateRead) {",
+		"if (settings.useAggregateRead && !freshFirstTurnLightMode) {",
 		"const _snap = await fetchSessionState(chatSessionId);",
 		"storylineResult = { items: _slItems, count: _slItems.length, fetched: true, source: \"aggregate\", continuityPackFallback: false };",
 		"characterResult = { items: _chItems, count: _chItems.length };",
@@ -2466,8 +2495,8 @@ func TestArchiveCenterJSSeq12P187OR1bFallbackRouteMarkers(t *testing.T) {
 		`policyVersion: "or1b.v1"`,
 		`owner: "step12.orchestration"`,
 		`supportedRoutes: ["blocked_empty_result", "cached_result", "skip_protection_only", "direct_result"]`,
-		`emptyResultRoute: "blocked_empty_result"`,
-		`emptyResultPayloadAction: "buildBlockedPayload"`,
+		`emptyResultRoute: "direct_result"`,
+		`emptyResultPayloadAction: "preserve_original_payload"`,
 		`readyCacheRoute: "cached_result"`,
 		`readyCachePayloadAction: "consume_pending_ready_result"`,
 		`readyCacheReuseScope: "same_chat_session_after_request_only"`,
@@ -3542,7 +3571,7 @@ func TestArchiveCenterJSSeq13P56MemOrchNullReturnHardeningMarkers(t *testing.T) 
 		`return buildIntentionalOrchestrationSkipResult("empty_input_no_continuity", trace)`,
 		`if (!lastOrchResult) {`,
 		`orchestration returned null`,
-		`reason: "llm_gate_blocked"`,
+		`detail: "llm_gate_blocked"`,
 		`if (isIntentionalOrchestrationSkipResult(lastOrchResult)) {`,
 		`resolveOrchestrationFallbackRouteOr1b("intentional_skip")`,
 		`status: "skipped"`,
@@ -3758,7 +3787,7 @@ func TestArchiveCenterJSSeq13P147TB1aProfileModelTokenEstimatorMarkers(t *testin
 		`wide_context_500k: 300000`,
 		`ultra_long_1m_plus: 900000`,
 		`extreme_long_2m_plus: 1700000`,
-		`step13TokenEstimatorBudgetLimitByProfile = {`,
+		`const step13TokenEstimatorBudgetLimitByProfile = adaptiveInjectionBudgetProfileLimits();`,
 		`step13TokenEstimatorLowConfidenceSources = ["none", "message_char_estimate"]`,
 		`step13TokenEstimatorDriftTelemetryFields = [`,
 		`"manualBudgetLimit"`,
@@ -4399,7 +4428,7 @@ func TestArchiveCenterJSSeq165P141HelperInjectionBudgetManagerMarkers(t *testing
 		"wide_context_500k",
 		"ultra_long_1m_plus",
 		"extreme_long_2m_plus",
-		"const step13TokenEstimatorBudgetLimitByProfile = {",
+		"const step13TokenEstimatorBudgetLimitByProfile = adaptiveInjectionBudgetProfileLimits();",
 		"const step13TokenBudgetFallbackRules = {",
 		"reliable_runtime_tokens",
 		"low_confidence_runtime_source",
@@ -4448,7 +4477,7 @@ func TestArchiveCenterJSSeq165P142InputContextSlotGovernorMarkers(t *testing.T) 
 func TestArchiveCenterJSSeq165P143TransparencyPreviewRuntimeTraceExtendMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities) {",
+		"function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview, weakInputPlanner, plannerExecutionContract, progressionChoice, step25ValidationGate) {",
 		"function logTurnTraceSummary() {",
 		"function renderTurnTraceRows() {",
 		"_inputTransparency = buildInputTransparency(",
@@ -4478,7 +4507,7 @@ func TestArchiveCenterJSSeq165P144HandoffAnchorMetadataAlignmentMarkers(t *testi
 		"inputCtx = buildInputContext(orchResult._userInput || \"\", orchResult, _ip ? (_ip.input_context_text || \"\") : \"\", {",
 		"injectionTextSource: _ip ? \"bundle\" : \"local\"",
 		"const _ip = orchResult._injectionPack || null",
-		"const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult)",
+		"const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult, sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK))",
 		"const kgText = (_ip && _ip.kg_text) ? _ip.kg_text : formatKGBlock(kgRecallResult)",
 		"const fallbackText = (_ip && _ip.fallback_text) ? _ip.fallback_text : (includeFallback ? formatFallbackBlock(searchResult) : \"\")",
 		"const latestDirectEvidenceText = (_ip && _ip.latest_direct_evidence_text) ? String(_ip.latest_direct_evidence_text) : \"\"",
@@ -4530,10 +4559,10 @@ func TestArchiveCenterJSSeq165P169DecisionAdaptiveFloorCeilingMarkers(t *testing
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"const manualBudgetLimit = Math.max(500, settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars);",
-		"mid_context_300k: 3000",
-		"wide_context_500k: 5000",
-		"ultra_long_1m_plus: 7000",
-		"extreme_long_2m_plus: 10000",
+		"mid_context_300k: 6000",
+		"wide_context_500k: 9000",
+		"ultra_long_1m_plus: 14000",
+		"extreme_long_2m_plus: 18000",
 		"const step13TokenTruthFloorCoreLabels = [\"latest_direct_evidence\", \"recent_raw_turn\", \"active_state\", \"canonical_state_layer\"];",
 		"const step13TokenTruthFloorContinuityLabels = [\"storylines\", \"episode\", \"chapter\", \"arc\", \"saga\"];",
 	}
@@ -6715,7 +6744,7 @@ func TestArchiveCenterJSSeq18P373ToP392PreReleaseMarkers(t *testing.T) {
 		"pre_release_1_0_0_marker",
 		"1.0.0-pre",
 		"pre_release_bundle_authority",
-		"Archive Center 2.1 Release",
+		"Archive Center 2.5.0 Release",
 		"pre_release_smoke_checks",
 		"scoped_verbatim_recall",
 		"hybrid_baseline",
@@ -9877,7 +9906,7 @@ func TestArchiveCenterJSMemoryImportanceDisplayScaleMarkers(t *testing.T) {
 		"function formatMemoryImportanceDisplay",
 		"function normalizeMemoryImportanceDisplayToStore",
 		`"imp:" + formatMemoryImportanceDisplay(m.importance) + "/10"`,
-		`" (importance:" + formatMemoryImportanceDisplay(item.importance) + "/10)"`,
+		`"imp:" + formatMemoryImportanceDisplay(item.importance) + "/10"`,
 		`body.importance = normalizeMemoryImportanceDisplayToStore(fields.importance)`,
 		`_explorer.editFields.importance = formatMemoryImportanceDisplay(_explorer.editFields.importance)`,
 		`t("timeline.detail.importance"), selected.importance != null ? (formatMemoryImportanceDisplay(selected.importance) + "/10") : ""`,
@@ -10178,7 +10207,7 @@ func TestArchiveCenterJSTableReadOutputEnhanceStorageConsistencyMarkers(t *testi
 		"function rememberTableReadPolishStorage",
 		"function applyTableReadPolishStorageToBackfillPair",
 		"function buildTableReadPolishCompleteTurnMeta",
-		"after_request_table_read_output_enhance",
+		"after_request_table_read_polish",
 		"tr_polish_5.single_final_output.v1",
 		"originalPairHash",
 		"finalPairHash",

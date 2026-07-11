@@ -334,5 +334,3 @@ func allCanonicalExcept(except string) []string {
 	}
 	return out
 }
-
-

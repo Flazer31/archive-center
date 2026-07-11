@@ -50,7 +50,21 @@ func TestGoBackendEnvCarriesReferenceEmbeddingModel(t *testing.T) {
 }
 
 func TestCopy08ToTemp(t *testing.T) {
-	src := `M:\risulongmemory\Archive Center Beta 0.8(fix)`
+	src := t.TempDir()
+	for rel, content := range map[string]string{
+		filepath.Join("backend", "main.py"):              "print('fixture')\n",
+		"Archive Center.js":                              "//@api 3.0\n",
+		"memory.db":                                      "fixture",
+		filepath.Join("backend", ".venv", "ignored.txt"): "must not be copied",
+	} {
+		path := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	dst, err := os.MkdirTemp("", "fixture-live-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -69,8 +83,8 @@ func TestCopy08ToTemp(t *testing.T) {
 	}
 
 	venvPath := filepath.Join(dst, "backend", ".venv")
-	if info, err := os.Stat(venvPath); err == nil && !info.IsDir() {
-		t.Errorf(".venv should not be a regular file copied by robocopy /XD")
+	if _, err := os.Stat(venvPath); !os.IsNotExist(err) {
+		t.Errorf(".venv should be excluded from fixture copy, stat err=%v", err)
 	}
 }
 

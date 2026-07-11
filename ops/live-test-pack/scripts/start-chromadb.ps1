@@ -33,9 +33,9 @@ $dataDir = Join-Path $packRoot ".runtime\chromadb"
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
 if ($InstallChroma) {
-    & $Python -m pip install chromadb
+    & $Python -m pip install "chromadb==1.5.9"
     if ($LASTEXITCODE -ne 0) {
-        throw "pip install chromadb failed."
+        throw "pip install chromadb==1.5.9 failed."
     }
 }
 

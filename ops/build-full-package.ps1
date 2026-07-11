@@ -330,6 +330,14 @@ New-Item -ItemType Directory -Force -Path $targetFull | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $targetFull "bin") | Out-Null
 
 $goServiceRoot = Join-Path $repoRoot "go-service"
+$goVersionText = (& go version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $goVersionText -notmatch '\bgo(\d+)\.(\d+)\.(\d+)\b') {
+    throw "Archive Center release packaging requires Go 1.26.5 or newer. Detected: $goVersionText"
+}
+$detectedGoVersion = [Version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $Matches[3])
+if ($detectedGoVersion -lt [Version]"1.26.5") {
+    throw "Archive Center release packaging requires Go 1.26.5 or newer. Detected: $goVersionText"
+}
 Push-Location $goServiceRoot
 try {
     & go build -buildvcs=false -trimpath -ldflags "-s -w" -o (Join-Path $targetFull "bin\archive-center-go.exe") ./cmd/archive-center-go
@@ -439,6 +447,9 @@ $manifest = [ordered]@{
     includes_runtime_binaries = $releaseReady
     runtime_profile_default = $runtimeProfileDefault
     vector_mode_default = $vectorModeDefault
+    go_toolchain = $goVersionText
+    chromadb_version = "1.5.9"
+    chromadb_api_path = "/api/v2"
     required_runtime_payloads = $requiredRuntimePayloads
     runtime_payloads = [ordered]@{
         mariadb_copied_from = $MariaDBRuntime

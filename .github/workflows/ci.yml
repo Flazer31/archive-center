@@ -1,0 +1,95 @@
+name: Archive Center CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+          check-latest: false
+          cache: true
+          cache-dependency-path: go-service/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify required source files
+        shell: bash
+        run: |
+          test -f "Archive Center.js"
+          test -f "go-service/go.mod"
+          test -f "prompts/supervisor_system.txt"
+          test -f "prompts/critic_system.txt"
+          grep -q '^//@version 2\.5\.0$' "Archive Center.js"
+          grep -q '^  const VERSION = "2\.5\.0";' "Archive Center.js"
+          grep -q '^AC_CHROMA_API_PATH=/api/v2$' .env.example
+          grep -q 'chromadb==1.5.9' ops/full-package-posix/start-full-posix.sh
+          if grep -R 'AC_CHROMA_API_PATH=/api/v1' .env.example ops/live-test-pack/.env.live.example; then exit 1; fi
+
+      - name: Check JavaScript syntax
+        run: node --check "Archive Center.js"
+
+      - name: Check Go formatting
+        working-directory: go-service
+        shell: bash
+        run: |
+          unformatted="$(find . -type f -name '*.go' -print0 | xargs -0 gofmt -l)"
+          test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
+
+      - name: Go vet
+        working-directory: go-service
+        run: go vet ./...
+
+      - name: Go test
+        working-directory: go-service
+        run: go test ./... -count=1
+
+      - name: Start ChromaDB 1.5.9
+        shell: bash
+        run: |
+          python -m pip install "chromadb==1.5.9"
+          chroma run --host 127.0.0.1 --port 8000 --path "${RUNNER_TEMP}/archive-center-chroma" >"${RUNNER_TEMP}/chromadb.log" 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8000/api/v2/heartbeat >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              cat "${RUNNER_TEMP}/chromadb.log"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: ChromaDB 1.5.9 API v2 integration
+        working-directory: go-service
+        env:
+          AC_CHROMA_INTEGRATION_ENDPOINT: http://127.0.0.1:8000
+        run: go test ./internal/vector -run TestChroma159V2Integration -count=1 -v
+
+      - name: Build backend
+        working-directory: go-service
+        run: go build ./cmd/archive-center-go
+
+      - name: Install govulncheck
+        working-directory: go-service
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Vulnerability scan
+        working-directory: go-service
+        run: govulncheck ./...

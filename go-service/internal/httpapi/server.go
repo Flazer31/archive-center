@@ -4,7 +4,9 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -26,6 +28,30 @@ type Server struct {
 	RuntimeConfig   RuntimeConfig
 	RuntimeConfigMu sync.RWMutex
 	AdminJobs       *adminJobManager
+	CompleteTurns   *completeTurnRequestLedger
+}
+
+// ValidateRuntimeDependencies verifies live dependencies before the HTTP
+// service advertises readiness. Chroma Health checks both the configured API
+// heartbeat and collection endpoint without deleting existing data.
+func (s *Server) ValidateRuntimeDependencies(ctx context.Context) error {
+	if s.StoreOpenError != nil && s.Cfg.StoreMode == config.StoreModeMariaDBAuthority {
+		return fmt.Errorf("mariadb startup preflight failed: %w", s.StoreOpenError)
+	}
+	if !s.Cfg.ChromaEnabled || strings.TrimSpace(s.Cfg.ChromaEndpoint) == "" {
+		return nil
+	}
+	if s.VectorOpenError != nil {
+		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): %w", s.Cfg.ChromaAPIPath, s.VectorOpenError)
+	}
+	health, err := s.Vector.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): %w", s.Cfg.ChromaAPIPath, err)
+	}
+	if strings.TrimSpace(health.Status) != "ok" || !health.ModelReady {
+		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): status=%s model_ready=%t", s.Cfg.ChromaAPIPath, health.Status, health.ModelReady)
+	}
+	return nil
 }
 
 // NewServer creates a Server with the given configuration.
@@ -50,6 +76,7 @@ func NewServer(cfg config.Config) *Server {
 		Vector:          vs,
 		VectorOpenError: vectorErr,
 		AdminJobs:       newAdminJobManager(),
+		CompleteTurns:   newCompleteTurnRequestLedger(),
 	}
 }
 

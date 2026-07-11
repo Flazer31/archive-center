@@ -4259,7 +4259,8 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 	if strings.TrimSpace(assistantText) == "" {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":          "failed",
-			"detail":          "assistant_content_missing",
+			"code":            "assistant_content_missing",
+			"detail":          "no completed assistant output was found for this turn",
 			"chat_session_id": sid,
 			"turn_index":      req.TurnIndex,
 			"source":          s.storeWriteSource(),
@@ -4269,7 +4270,8 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 	if shouldApplyCompleteTurnOOCGuard(userText, assistantText, nil) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":          "skipped",
-			"reason":          "ooc_guard",
+			"code":            "ooc_guard",
+			"detail":          "this turn was excluded from memory regeneration by the OOC guard",
 			"chat_session_id": sid,
 			"turn_index":      req.TurnIndex,
 			"source":          s.storeWriteSource(),
@@ -4281,7 +4283,8 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 	if !extractionCfg.Critic.hasConfig() {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "failed",
-			"detail":           "critic_config_missing",
+			"code":             "critic_config_missing",
+			"detail":           "critic LLM configuration is incomplete",
 			"chat_session_id":  sid,
 			"turn_index":       req.TurnIndex,
 			"source":           s.storeWriteSource(),
@@ -4292,6 +4295,7 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 	if req.DryRun {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "ok",
+			"code":             "dry_run_ready",
 			"dry_run":          true,
 			"chat_session_id":  sid,
 			"turn_index":       req.TurnIndex,
@@ -4306,7 +4310,8 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "failed",
-			"detail":           "critic_extract_failed: " + err.Error(),
+			"code":             "critic_extract_failed",
+			"detail":           err.Error(),
 			"chat_session_id":  sid,
 			"turn_index":       req.TurnIndex,
 			"source":           s.storeWriteSource(),
@@ -4319,8 +4324,10 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))
 	saveResult := s.saveCriticExtractionArtifacts(r.Context(), sid, req.TurnIndex, extraction, content, extractionCfg.Embedder, now)
 	status := "ok"
+	code := "regenerated"
 	if saveResult.Errors > 0 {
 		status = "partial_error"
+		code = "regenerated_with_warnings"
 	}
 
 	allLogs, _ := s.Store.ListChatLogs(r.Context(), sid, 0, 0)
@@ -4349,6 +4356,7 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                           status,
+		"code":                             code,
 		"source":                           s.storeWriteSource(),
 		"chat_session_id":                  sid,
 		"turn_index":                       req.TurnIndex,

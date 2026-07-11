@@ -52,6 +52,7 @@ func (s *Server) registerTurnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /turns/repair-replay", s.handleTurnsRepairReplay)
 	mux.HandleFunc("POST /turns/complete", s.handleTurnsComplete)
 	mux.HandleFunc("POST /complete-turn", s.handleCompleteTurn)
+	mux.HandleFunc("GET /complete-turn/request-status", s.handleCompleteTurnRequestStatus)
 	mux.HandleFunc("POST /prepare-turn", s.handlePrepareTurn)
 	mux.HandleFunc("POST /effective-inputs", s.handleEffectiveInputs)
 	mux.HandleFunc("DELETE /rollback/{turn_index}", s.handleRollback)
@@ -110,6 +111,12 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.executeCompleteTurnIdempotent(r.Context(), w, completeTurnIdempotencyKey(req.ClientMeta), func(target http.ResponseWriter) {
+		s.handleCompleteTurnDecoded(target, r, req)
+	})
+}
+
+func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Request, req dto.M4CompleteTurnRequest) {
 	sid := strings.TrimSpace(req.ChatSessionID)
 	if sid == "" {
 		writeError(w, http.StatusBadRequest, "missing_param", "chat_session_id is required")

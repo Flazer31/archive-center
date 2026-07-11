@@ -1,11 +1,12 @@
 module github.com/risulongmemory/archive-center-go
 
-go 1.26
+go 1.26.5
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/milvus-io/milvus/client/v2 v2.6.4
+	github.com/shirou/gopsutil/v3 v3.23.12
 	modernc.org/sqlite v1.29.10
 )
 
@@ -67,7 +68,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/samber/lo v1.27.0 // indirect
-	github.com/shirou/gopsutil/v3 v3.23.12 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/soheilhy/cmux v0.1.5 // indirect

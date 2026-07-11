@@ -365,7 +365,7 @@ ensure_termux_proot_chromadb() {
 
 	log "Preparing ChromaDB inside Termux proot distro: $PROOT_CHROMA_DISTRO"
 	proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl ca-certificates"
-	proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "mkdir -p '$PROOT_CHROMA_ROOT' '$PROOT_CHROMA_DATA' && python3 -m venv '$PROOT_CHROMA_VENV' && '$PROOT_CHROMA_VENV/bin/python' -m pip install --upgrade pip wheel setuptools && '$PROOT_CHROMA_VENV/bin/python' -m pip install 'chromadb>=0.5,<1.0'"
+	proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "mkdir -p '$PROOT_CHROMA_ROOT' '$PROOT_CHROMA_DATA' && python3 -m venv '$PROOT_CHROMA_VENV' && '$PROOT_CHROMA_VENV/bin/python' -m pip install --upgrade pip wheel setuptools && '$PROOT_CHROMA_VENV/bin/python' -m pip install 'chromadb==1.5.9'"
 }
 
 ensure_chromadb() {
@@ -388,9 +388,9 @@ ensure_chromadb() {
 	fi
 	venv_python="$venv_dir/bin/python"
 	"$venv_python" -m pip install --upgrade pip wheel setuptools
-	if ! "$venv_python" -c 'import chromadb' >/dev/null 2>&1; then
-		log "Installing ChromaDB into managed runtime"
-		"$venv_python" -m pip install "chromadb>=0.5,<1.0"
+	if ! "$venv_python" -c 'from importlib.metadata import version; assert version("chromadb") == "1.5.9"' >/dev/null 2>&1; then
+		log "Installing pinned ChromaDB 1.5.9 into managed runtime"
+		"$venv_python" -m pip install --upgrade "chromadb==1.5.9"
 	fi
 	CHROMA_PYTHON=$venv_python
 	export CHROMA_PYTHON
