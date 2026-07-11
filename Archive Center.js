@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "2.5.0-rc4-postprocessor-secondary-turn-guard.20260710-2";
-  const BUILD_CHANNEL = "rc4";
-  const BUILD_TIME = "2026-07-10 KST";
-  const BUILD_NOTES = "generic post-output secondary request guard + final output turn replacement + existing RC4 guards";
+  const BUILD_ID = "2.5.0-3.0-go-split-backend-timing-probe.20260711-1";
+  const BUILD_CHANNEL = "3.0-dev";
+  const BUILD_TIME = "2026-07-11 KST";
+  const BUILD_NOTES = "Go file decomposition validation + prepare/complete backend timing probe";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -12010,6 +12010,7 @@
         status: result.status || "ok",
         generated_at: result.generated_at || "",
         warnings: result.warnings || [],
+        backendTiming: result.backend_timing || null,
         // M-2a: bundled reads (null 이면 plugin이 개별 fetch로 fallback)
         bundle: {
           sessionState:       bundledSessionState,
@@ -33748,6 +33749,7 @@
               fallback_reason: _lastPrepareTurnFallbackReason,
               // M-2d: trace_preview H-4 groundwork — debug 없이도 basic 상태 노출
               tracePreview: (b && b.tracePreview) || null,
+              backendTiming: ptResult.backendTiming || null,
             });
             _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.continuityPack || b.recallResult || b.supervisorInputPack || b.injectionPack || b.inputTransparencyModel || b.effectiveInputPreview || b.weakInputPlanner || b.plannerExecutionContract || b.progressionChoiceLedger || b.step25ValidationGate || b.tracePreview)) ? b : null;
           } else {
@@ -35236,6 +35238,7 @@
           subjectiveEntityMemoriesSaved: _ctResult && typeof _ctResult.subjective_entity_memories_saved === "number" ? _ctResult.subjective_entity_memories_saved : null,
           worldRulesSaved: _ctResult && typeof _ctResult.world_rules_saved === "number" ? _ctResult.world_rules_saved : null,
           derivedArtifactsSaved: _ctResult && typeof _ctResult.derived_artifacts_saved === "number" ? _ctResult.derived_artifacts_saved : null,
+          backendTiming: _ctResult && _ctResult.backend_timing && typeof _ctResult.backend_timing === "object" ? _ctResult.backend_timing : null,
           persistencePipeline: ctPipeline,
           rawStatus: ctRaw && ctRaw.status ? String(ctRaw.status) : "",
           derivedStatus: ctDerived && ctDerived.status ? String(ctDerived.status) : "",
@@ -35295,6 +35298,7 @@
               subjectiveEntityMemoriesSaved: _ctResult && typeof _ctResult.subjective_entity_memories_saved === "number" ? _ctResult.subjective_entity_memories_saved : null,
               worldRulesSaved: _ctResult && typeof _ctResult.world_rules_saved === "number" ? _ctResult.world_rules_saved : null,
               derivedArtifactsSaved: _ctResult && typeof _ctResult.derived_artifacts_saved === "number" ? _ctResult.derived_artifacts_saved : null,
+              backendTiming: _ctResult && _ctResult.backend_timing && typeof _ctResult.backend_timing === "object" ? _ctResult.backend_timing : null,
               persistencePipeline: ctPipeline,
               rawStatus: ctRaw && ctRaw.status ? String(ctRaw.status) : "",
               derivedStatus: ctDerived && ctDerived.status ? String(ctDerived.status) : "",
@@ -46986,6 +46990,63 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
       return rows;
     }
+    function buildBackendTimingRows(prepareState, completeState) {
+      var stageLabels = {
+        request_decode: "요청 읽기",
+        migration_guard: "세션 확인",
+        store_reads: "MariaDB 읽기",
+        recollection_filter: "인물 기억 선별",
+        vector_recall: "ChromaDB 검색",
+        injection_assembly: "기억 주입 조립",
+        response_assembly: "응답 자료 조립",
+        preflight: "저장 전 확인",
+        critic_llm: "평론가 LLM",
+        raw_and_audit_store: "원문 저장",
+        derived_store: "요약·객체 저장",
+        embedding: "임베딩 생성",
+        vector_upsert: "ChromaDB 저장",
+        maintenance_handoff: "후속 작업 등록",
+        episode_checkpoint: "에피소드 확인",
+        hierarchy_checkpoint: "계층 요약 확인",
+      };
+      function timingRow(label, timing) {
+        if (!timing || typeof timing !== "object") return null;
+        var total = Number(timing.total_ms);
+        var stages = timing.stages_ms && typeof timing.stages_ms === "object" ? timing.stages_ms : {};
+        var slowestStage = String(timing.slowest_stage || "");
+        var slowest = Number(timing.slowest_ms);
+        function seconds(ms) {
+          if (!Number.isFinite(ms)) return "?";
+          return ms >= 1000 ? (ms / 1000).toFixed(ms >= 10000 ? 1 : 2) + "초" : Math.round(ms) + "ms";
+        }
+        var ordered = Object.keys(stages).map(function(stage) {
+          return { stage: stage, ms: Number(stages[stage]) };
+        }).filter(function(item) {
+          return Number.isFinite(item.ms) && item.ms >= 1;
+        }).sort(function(a, b) {
+          return b.ms - a.ms;
+        });
+        var detailParts = ["총 " + seconds(total)];
+        if (slowestStage && Number.isFinite(slowest)) {
+          detailParts.push("가장 느림: " + (stageLabels[slowestStage] || slowestStage) + " " + seconds(slowest));
+        }
+        ordered.slice(0, 5).forEach(function(item) {
+          if (item.stage === slowestStage) return;
+          detailParts.push((stageLabels[item.stage] || item.stage) + " " + seconds(item.ms));
+        });
+        return {
+          label: label,
+          state: {
+            status: Number.isFinite(slowest) && slowest >= 10000 ? "warn" : "ok",
+            detail: detailParts.join(" / "),
+          },
+        };
+      }
+      return [
+        timingRow("턴 준비", prepareState && prepareState.backendTiming),
+        timingRow("저장·기억 생성", completeState && completeState.backendTiming),
+      ].filter(Boolean);
+    }
 
     var pluginState = { status: s.enabled ? "ok" : "fail", detail: s.enabled ? "enabled" : "disabled" };
     var displaySessionId = String(
@@ -47089,6 +47150,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       if (laneRows.length > 0) {
         out += renderCard("\uD83D\uDCE6", "Persistence Lanes", laneRows);
       }
+    }
+
+    var backendTimingRows = buildBackendTimingRows(rs.prepareTurnStatus, rs.lastCompleteTurnStatus);
+    if (backendTimingRows.length > 0) {
+      out += renderCard("\u23F1", "Backend Timing", backendTimingRows);
     }
 
     // autoRollback, sessionRouting, etc — 조건부 행
