@@ -56,6 +56,10 @@ jobs:
         working-directory: go-service
         run: go vet ./...
 
+      - name: Core regression contract
+        shell: bash
+        run: sh ./scripts/test-core-regressions.sh
+
       - name: Go test
         working-directory: go-service
         run: go test ./... -count=1
