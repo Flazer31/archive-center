@@ -870,6 +870,31 @@ func TestArchiveCenterJSAfterRequestKeepsEstablishedOriginCID(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSReusesPreparedActiveStatesBeforeEndpointFallback(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		"function activeStatesResultFromPreparedBundle(preparedBundle)",
+		`source: "prepare_turn_bundle"`,
+		"const bundledActiveStates = activeStatesResultFromPreparedBundle(preparedBundle);",
+		"activeStatesResult = await runActiveStatesFetch(chatSessionId);",
+		`source: activeStatesResult.source || (activeStatesResult.fetched ? "active_states_endpoint" : "none")`,
+	}
+	for _, marker := range required {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing prepared active-state reuse marker %q", marker)
+		}
+	}
+
+	bundleAt := strings.Index(src, "const bundledActiveStates = activeStatesResultFromPreparedBundle(preparedBundle);")
+	if bundleAt < 0 {
+		t.Fatal("prepared active-state reuse branch is missing")
+	}
+	fallbackAt := strings.Index(src[bundleAt:], "activeStatesResult = await runActiveStatesFetch(chatSessionId);")
+	if fallbackAt < 0 {
+		t.Fatal("prepared active-state reuse must be evaluated before endpoint fallback")
+	}
+}
+
 func TestArchiveCenterJSEpisodeGenerateOkStatusMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{

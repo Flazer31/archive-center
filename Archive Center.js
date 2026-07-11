@@ -19614,6 +19614,37 @@
   // Phase 2-3: Active State Fetch & Block Formatting
   // ────────────────────────────────────────────────────────────
 
+  function activeStatesResultFromPreparedBundle(preparedBundle) {
+    try {
+      const pack = preparedBundle && preparedBundle.continuityPack;
+      if (!pack || typeof pack !== "object" || !Array.isArray(pack.items)) return null;
+      const declaredCount = Math.max(0, Number(pack.active_state_count || 0));
+      const states = pack.items.filter(function(item) {
+        return item && String(item.kind || "").toLowerCase() === "active_state";
+      }).map(function(item) {
+        return {
+          state_type: String(item.state_type || ""),
+          turn_index: Number(item.turn_index || 0),
+          content: String(item.content || ""),
+        };
+      }).filter(function(item) {
+        return !!item.state_type && !!item.content.trim();
+      });
+      // A non-zero declaration with no usable rows means an older or partial
+      // backend shape. Let the existing endpoint fallback recover full data.
+      if (declaredCount > 0 && states.length === 0) return null;
+      return {
+        states,
+        count: states.length,
+        fetched: true,
+        source: "prepare_turn_bundle",
+        declaredCount,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Phase 2-3: 백엔드에서 현재 session의 활성 상태를 조회한다.
    * GET /active-states/{chat_session_id}를 호출하여 최신 상태 목록을 반환한다.
@@ -24253,10 +24284,16 @@
       if (freshFirstTurnLightMode) {
         activeStatesResult = { states: [], count: 0, fetched: false, skipped: true, skipReason: "fresh_first_turn_light_mode" };
       } else {
-        try {
-          activeStatesResult = await runActiveStatesFetch(chatSessionId);
-        } catch (asErr) {
-          warnLog("active-states fetch failed (non-fatal):", asErr.message);
+        const bundledActiveStates = activeStatesResultFromPreparedBundle(preparedBundle);
+        if (bundledActiveStates) {
+          activeStatesResult = bundledActiveStates;
+          debugLog("M-2a: active-states from prepare-turn continuity bundle,", activeStatesResult.count, "states");
+        } else {
+          try {
+            activeStatesResult = await runActiveStatesFetch(chatSessionId);
+          } catch (asErr) {
+            warnLog("active-states fetch failed (non-fatal):", asErr.message);
+          }
         }
       }
       trace.activeStates = {
@@ -24265,6 +24302,7 @@
         count: activeStatesResult.count,
         types: activeStatesResult.states.map(function(s) { return s.state_type; }),
         skipReason: activeStatesResult.skipReason || "",
+        source: activeStatesResult.source || (activeStatesResult.fetched ? "active_states_endpoint" : "none"),
       };
       debugLog("active-states:", activeStatesResult.count, activeStatesResult.skipped ? "states skipped (fresh first turn)" : "states fetched");
 
