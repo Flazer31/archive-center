@@ -10,6 +10,9 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 ARCHIVE_CENTER_NODE_BINARY=$(command -v node)
 export ARCHIVE_CENTER_NODE_BINARY
+GOCACHE=${GOCACHE:-${TMPDIR:-/tmp}/archive-center-core-regression-go-build}
+mkdir -p "$GOCACHE"
+export GOCACHE
 
 # Keep this list synchronized with testdata/core-regression-suite.json.
 # Every selected test uses source-extracted JavaScript, httptest, fake Store,
