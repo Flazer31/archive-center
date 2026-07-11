@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,9 @@ type turnRecordingStore struct {
 	savedCharacterStates    []*store.CharacterState
 	returnStatusDefinitions []store.StatusSchemaDefinition
 	savedStatusDefinitions  []store.StatusSchemaDefinition
+	returnStatusCurrent     []store.StatusCurrentValue
+	savedStatusCurrent      []store.StatusCurrentValue
+	savedStatusEvents       []store.StatusChangeEvent
 	savedStatusEffects      []store.StatusEffect
 	savedPendingThreads     []*store.PendingThread
 	savedActiveStates       []*store.ActiveState
@@ -407,11 +411,55 @@ func (f *turnRecordingStore) SaveStatusSchemaDefinitions(ctx context.Context, de
 	return out, nil
 }
 
+func (f *turnRecordingStore) ListStatusCurrentValues(ctx context.Context, chatSessionID, ownerScope, ownerID, statusKey string, limit int) ([]store.StatusCurrentValue, error) {
+	out := []store.StatusCurrentValue{}
+	for _, item := range f.returnStatusCurrent {
+		if chatSessionID != "" && item.ChatSessionID != chatSessionID {
+			continue
+		}
+		if ownerScope != "" && item.OwnerScope != ownerScope {
+			continue
+		}
+		if ownerID != "" && item.OwnerID != ownerID {
+			continue
+		}
+		if statusKey != "" && item.StatusKey != statusKey {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) SaveStatusCurrentValue(ctx context.Context, value store.StatusCurrentValue) (store.StatusCurrentValue, error) {
+	if value.ID <= 0 {
+		value.ID = int64(len(f.savedStatusCurrent) + 1)
+	}
+	f.savedStatusCurrent = append(f.savedStatusCurrent, value)
+	replaced := false
+	for i := range f.returnStatusCurrent {
+		item := f.returnStatusCurrent[i]
+		if item.ChatSessionID == value.ChatSessionID && item.RegistryID == value.RegistryID && item.OwnerScope == value.OwnerScope && item.OwnerID == value.OwnerID {
+			f.returnStatusCurrent[i] = value
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		f.returnStatusCurrent = append(f.returnStatusCurrent, value)
+	}
+	return value, nil
+}
+
 func (f *turnRecordingStore) ListStatusChangeEvents(ctx context.Context, chatSessionID, ownerScope, ownerID, statusKey string, limit int) ([]store.StatusChangeEvent, error) {
-	return nil, nil
+	return append([]store.StatusChangeEvent(nil), f.savedStatusEvents...), nil
 }
 
 func (f *turnRecordingStore) SaveStatusChangeEvent(ctx context.Context, event store.StatusChangeEvent) (store.StatusChangeEvent, error) {
+	if event.ID <= 0 {
+		event.ID = int64(len(f.savedStatusEvents) + 1)
+	}
+	f.savedStatusEvents = append(f.savedStatusEvents, event)
 	return event, nil
 }
 
@@ -3497,7 +3545,7 @@ func TestCompleteTurnKoreanOOCGuardSkipsWrites(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnSourceAwareGuardSkipsDerivedIngest(t *testing.T) {
+func TestCompleteTurnStructuredCanonicalContentDoesNotSkipDerivedIngest(t *testing.T) {
 	fake := &turnRecordingStore{}
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -3509,7 +3557,9 @@ func TestCompleteTurnSourceAwareGuardSkipsDerivedIngest(t *testing.T) {
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
-		return &http.Response{StatusCode: http.StatusInternalServerError, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		extraction := `{"turn_summary":"The scene continues under the requested constraints.","importance_score":6}`
+		response := `{"model":"critic-model","choices":[{"message":{"content":` + strconv.Quote(extraction) + `}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
 
@@ -3534,21 +3584,11 @@ func TestCompleteTurnSourceAwareGuardSkipsDerivedIngest(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp["critic_triggered"] != false || calls != 0 {
-		t.Fatalf("source-aware guard should skip critic call, triggered=%v calls=%d resp=%+v", resp["critic_triggered"], calls, resp)
+	if resp["critic_triggered"] != true || calls != 1 {
+		t.Fatalf("structured canonical turn should reach critic, triggered=%v calls=%d resp=%+v", resp["critic_triggered"], calls, resp)
 	}
-	if len(fake.savedChatLogs) != 2 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 || len(fake.savedPendingThreads) != 0 {
-		t.Fatalf("source-aware guard should keep raw save but skip derived artifacts, logs=%d memories=%d evidence=%d kg=%d threads=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples), len(fake.savedPendingThreads))
-	}
-	reasons, _ := resp["fail_reasons"].([]any)
-	found := false
-	for _, item := range reasons {
-		if strings.Contains(fmt.Sprint(item), "source_aware_ingest_guard") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected source_aware_ingest_guard fail reason, got %+v", resp["fail_reasons"])
+	if len(fake.savedChatLogs) != 2 || len(fake.savedMemories) != 1 {
+		t.Fatalf("structured canonical turn should save raw and derived memory, logs=%d memories=%d", len(fake.savedChatLogs), len(fake.savedMemories))
 	}
 }
 
@@ -3765,9 +3805,9 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if !ok {
 		t.Fatalf("trace_summary is not an object")
 	}
-	// 5 original reads + 7 narrative reads + persona capsule read = 13 total.
-	if trace["reads_ok"] != float64(13) {
-		t.Errorf("reads_ok = %v, want 13", trace["reads_ok"])
+	// 5 original reads + 7 narrative reads + persona capsule + current-state read.
+	if trace["reads_ok"] != float64(14) {
+		t.Errorf("reads_ok = %v, want 14", trace["reads_ok"])
 	}
 	if trace["memory_count"] != float64(2) {
 		t.Errorf("memory_count = %v, want 2", trace["memory_count"])
@@ -6928,6 +6968,107 @@ func TestAdminRescanRegeneratesMissingArtifactsFromRawTurn(t *testing.T) {
 	}
 	if !hasAuditEvent(fake.savedAuditLogs, "admin_rescan") {
 		t.Fatalf("expected admin_rescan audit, got %#v", fake.savedAuditLogs)
+	}
+}
+
+func TestAdminRescanIncludesTurnZeroAndTrustsCanonicalPlanBlocks(t *testing.T) {
+	starter := "The rain had not stopped when Mina reached the old gate.\n\n# Narrative Guide\nScene Mandate: preserve the language barrier.\nForbidden Moves:\n- instant mutual understanding"
+	if !looksLikeSourceControlResidue(starter) {
+		t.Fatal("test fixture must exercise the legacy source-aware content heuristic")
+	}
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ChatSessionID: "sess-starter-rescan", TurnIndex: 0, Role: "assistant", Content: starter, CreatedAt: time.Now()},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	extractionBytes, _ := json.Marshal(map[string]any{
+		"turn_summary":     "Mina reaches the old gate while the language barrier remains active.",
+		"importance_score": 8,
+		"world_rules": []any{
+			map[string]any{"scope": "session", "scope_name": "Communication", "category": "setting", "key": "language_barrier", "value": "Mina and the locals cannot yet understand each other."},
+		},
+	})
+	chatResp, _ := json.Marshal(map[string]any{
+		"model":   "rescan-critic",
+		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
+	})
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(chatResp)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	updateBody := `{"criticApiKey":"sk-rescan","criticEndpoint":"https://api.example.com/v1","criticModel":"rescan-critic","criticProvider":"openai","criticTimeout":45}`
+	updateReq := httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader([]byte(updateBody)))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRec := httptest.NewRecorder()
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("config/update status = %d, want 200: %s", updateRec.Code, updateRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/rescan", bytes.NewReader([]byte(`{"chat_session_id":"sess-starter-rescan","max_items":10,"client_meta":{"full_session_backfill":true}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rescan status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode rescan: %v", err)
+	}
+	if resp["candidate_count"] != float64(1) || resp["succeeded"] != float64(1) {
+		t.Fatalf("turn-zero rescan counts mismatch: %+v", resp)
+	}
+	processed, _ := resp["processed_turns"].([]any)
+	if len(processed) != 1 || processed[0] != float64(0) {
+		t.Fatalf("processed_turns = %#v, want [0]", resp["processed_turns"])
+	}
+	if len(fake.savedMemories) != 1 || fake.savedMemories[0].TurnIndex != 0 {
+		t.Fatalf("starter memory was not generated at turn 0: %#v", fake.savedMemories)
+	}
+}
+
+func TestRepairReplayAcceptsAssistantStarterAtTurnZero(t *testing.T) {
+	fake := &turnRecordingStore{}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-starter-repair","entries":[{"turn_index":0,"assistant_content":"The story opens at the rain-soaked gate."}]}`
+	req := httptest.NewRequest(http.MethodPost, "/turns/repair-replay", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("repair replay status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode repair replay: %v", err)
+	}
+	if resp["total_repaired_role_count"] != float64(1) {
+		t.Fatalf("turn-zero repair result mismatch: %+v", resp)
+	}
+	if len(fake.savedChatLogs) != 1 || fake.savedChatLogs[0].TurnIndex != 0 || fake.savedChatLogs[0].Role != "assistant" {
+		t.Fatalf("starter chat log was not repaired at turn 0: %#v", fake.savedChatLogs)
 	}
 }
 

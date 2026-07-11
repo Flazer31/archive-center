@@ -262,6 +262,7 @@ func (s *Server) handleListProtagonistEntityMemories(w http.ResponseWriter, r *h
 	if ownerEntityKey == "" {
 		ownerEntityKey = personaEntityKey
 	}
+	ownerEntityName := strings.TrimSpace(r.URL.Query().Get("owner_entity_name"))
 	items, err := s.listProtagonistEntityMemoriesByCanonicalOwner(r.Context(), st, store.ProtagonistEntityMemoryFilter{
 		PersonaEntityKey:    personaEntityKey,
 		OwnerEntityKey:      ownerEntityKey,
@@ -273,6 +274,17 @@ func (s *Server) handleListProtagonistEntityMemories(w http.ResponseWriter, r *h
 	if err != nil {
 		writeInternalError(w, err.Error())
 		return
+	}
+	if ownerEntityName != "" {
+		exactName := comparableEntityKey(ownerEntityName)
+		filtered := make([]store.ProtagonistEntityMemory, 0, len(items))
+		for _, item := range items {
+			itemName := strings.TrimSpace(firstNonEmpty(item.OwnerEntityName, item.PersonaEntityName, item.OwnerEntityKey, item.PersonaEntityKey))
+			if comparableEntityKey(itemName) == exactName {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
@@ -511,6 +523,17 @@ func (s *Server) handleCreateSubjectiveEntityMemoryCapsule(w http.ResponseWriter
 		writeInternalError(w, err.Error())
 		return
 	}
+	if req.OwnerEntityName != "" {
+		exactName := comparableEntityKey(req.OwnerEntityName)
+		filtered := make([]store.ProtagonistEntityMemory, 0, len(memories))
+		for _, memory := range memories {
+			memoryName := strings.TrimSpace(firstNonEmpty(memory.OwnerEntityName, memory.PersonaEntityName, memory.OwnerEntityKey, memory.PersonaEntityKey))
+			if comparableEntityKey(memoryName) == exactName {
+				filtered = append(filtered, memory)
+			}
+		}
+		memories = filtered
+	}
 	entries := make([]store.PersonaMemoryEntry, 0, len(req.MemoryIDs))
 	sourceMemoryIDs := []int64{}
 	for _, memory := range memories {
@@ -662,6 +685,7 @@ func (s *Server) handleRepairSubjectiveEntityMemoryAliases(w http.ResponseWriter
 		"scanned":                plan.Scanned,
 		"alias_group_count":      len(plan.Groups),
 		"repairable_count":       len(plan.Changes),
+		"review_required_count":  plan.ReviewRequiredCount,
 		"updated_count":          updated,
 		"errors":                 updateErrors,
 		"groups":                 plan.Groups,
@@ -1049,27 +1073,34 @@ func (s *Server) handleListAttachedPersonaEntries(w http.ResponseWriter, r *http
 }
 
 type subjectiveEntityAliasRepairPlan struct {
-	Scanned int                                 `json:"scanned"`
-	Groups  []subjectiveEntityAliasRepairGroup  `json:"groups"`
-	Changes []subjectiveEntityAliasRepairChange `json:"changes"`
+	Scanned             int                                 `json:"scanned"`
+	ReviewRequiredCount int                                 `json:"review_required_count"`
+	Groups              []subjectiveEntityAliasRepairGroup  `json:"groups"`
+	Changes             []subjectiveEntityAliasRepairChange `json:"changes"`
 }
 
 type subjectiveEntityAliasRepairGroup struct {
-	CanonicalOwnerKey  string                              `json:"canonical_owner_key"`
-	CanonicalOwnerName string                              `json:"canonical_owner_name"`
-	OwnerEntityRole    string                              `json:"owner_entity_role"`
-	OwnerVisibility    string                              `json:"owner_visibility"`
-	MemoryCount        int                                 `json:"memory_count"`
-	RepairableCount    int                                 `json:"repairable_count"`
-	Aliases            []subjectiveEntityAliasRepairAlias  `json:"aliases"`
-	Changes            []subjectiveEntityAliasRepairChange `json:"changes"`
+	CanonicalOwnerKey   string                              `json:"canonical_owner_key"`
+	CanonicalOwnerName  string                              `json:"canonical_owner_name"`
+	OwnerEntityRole     string                              `json:"owner_entity_role"`
+	OwnerVisibility     string                              `json:"owner_visibility"`
+	MemoryCount         int                                 `json:"memory_count"`
+	RepairableCount     int                                 `json:"repairable_count"`
+	ReviewRequiredCount int                                 `json:"review_required_count"`
+	Decision            string                              `json:"decision"`
+	EvidenceStatus      string                              `json:"evidence_status"`
+	CandidateReasons    []string                            `json:"candidate_reasons"`
+	Aliases             []subjectiveEntityAliasRepairAlias  `json:"aliases"`
+	Changes             []subjectiveEntityAliasRepairChange `json:"changes"`
 }
 
 type subjectiveEntityAliasRepairAlias struct {
-	OwnerEntityKey  string  `json:"owner_entity_key"`
-	OwnerEntityName string  `json:"owner_entity_name"`
-	Count           int     `json:"count"`
-	MemoryIDs       []int64 `json:"memory_ids"`
+	OwnerEntityKey  string   `json:"owner_entity_key"`
+	OwnerEntityName string   `json:"owner_entity_name"`
+	Count           int      `json:"count"`
+	MemoryIDs       []int64  `json:"memory_ids"`
+	SourceTurns     []int    `json:"source_turns"`
+	MemoryPreviews  []string `json:"memory_previews"`
 }
 
 type subjectiveEntityAliasRepairChange struct {
@@ -1079,6 +1110,8 @@ type subjectiveEntityAliasRepairChange struct {
 	ToOwnerKey     string `json:"to_owner_key"`
 	ToOwnerName    string `json:"to_owner_name"`
 	SourceTurn     int    `json:"source_turn_index"`
+	Decision       string `json:"decision"`
+	EvidenceReason string `json:"evidence_reason"`
 	TargetTagsJSON string `json:"-"`
 }
 
@@ -1129,6 +1162,11 @@ func (s *Server) buildSubjectiveEntityAliasRepairPlan(ctx context.Context, sourc
 			if memory.ID > 0 {
 				group.Aliases[idx].MemoryIDs = append(group.Aliases[idx].MemoryIDs, memory.ID)
 			}
+			group.Aliases[idx].SourceTurns = appendUniqueInt(group.Aliases[idx].SourceTurns, memory.SourceTurn)
+			preview := truncateRunes(strings.TrimSpace(memory.MemoryText), 120)
+			if preview != "" {
+				group.Aliases[idx].MemoryPreviews = appendUniqueString(group.Aliases[idx].MemoryPreviews, preview)
+			}
 		} else {
 			group.aliasIndex[aliasKey] = len(group.Aliases)
 			ids := []int64{}
@@ -1140,9 +1178,18 @@ func (s *Server) buildSubjectiveEntityAliasRepairPlan(ctx context.Context, sourc
 				OwnerEntityName: originalOwnerName,
 				Count:           1,
 				MemoryIDs:       ids,
+				SourceTurns:     []int{memory.SourceTurn},
+				MemoryPreviews:  []string{truncateRunes(strings.TrimSpace(memory.MemoryText), 120)},
 			})
 		}
 		if !subjectiveEntityMemoryOwnerNeedsRepair(memory, canonicalMemory) {
+			continue
+		}
+		decision, evidenceReason := subjectiveEntityAliasRepairDecision(memory)
+		group.CandidateReasons = appendUniqueString(group.CandidateReasons, evidenceReason)
+		if decision != "confirmed_auto_apply" {
+			group.ReviewRequiredCount++
+			plan.ReviewRequiredCount++
 			continue
 		}
 		change := subjectiveEntityAliasRepairChange{
@@ -1152,6 +1199,8 @@ func (s *Server) buildSubjectiveEntityAliasRepairPlan(ctx context.Context, sourc
 			ToOwnerKey:     canonicalKey,
 			ToOwnerName:    canonicalName,
 			SourceTurn:     memory.SourceTurn,
+			Decision:       decision,
+			EvidenceReason: evidenceReason,
 			TargetTagsJSON: subjectiveEntityAliasRepairTags(memory, canonicalMemory),
 		}
 		group.RepairableCount++
@@ -1160,12 +1209,48 @@ func (s *Server) buildSubjectiveEntityAliasRepairPlan(ctx context.Context, sourc
 	}
 	for _, key := range order {
 		group := groups[key]
+		switch {
+		case group.RepairableCount > 0 && group.ReviewRequiredCount > 0:
+			group.Decision = "mixed"
+			group.EvidenceStatus = "partially_confirmed"
+		case group.RepairableCount > 0:
+			group.Decision = "confirmed_auto_apply"
+			group.EvidenceStatus = "confirmed_identity_evidence"
+		case group.ReviewRequiredCount > 0:
+			group.Decision = "review_required"
+			group.EvidenceStatus = "name_similarity_only"
+		default:
+			group.Decision = "clean"
+			group.EvidenceStatus = "no_change"
+		}
 		if group.RepairableCount == 0 && len(group.Aliases) <= 1 {
 			continue
 		}
 		plan.Groups = append(plan.Groups, group.subjectiveEntityAliasRepairGroup)
 	}
 	return plan
+}
+
+func subjectiveEntityAliasRepairDecision(memory store.ProtagonistEntityMemory) (string, string) {
+	if subjectiveEntityMemoryHasAnyTag(memory, "confirmed_identity_alias_canonicalized") {
+		if strings.TrimSpace(memory.EvidenceExcerpt) != "" {
+			return "confirmed_auto_apply", "confirmed_same_entity_record_with_grounded_evidence"
+		}
+		return "review_required", "confirmed_identity_tag_without_grounded_evidence"
+	}
+	if subjectiveEntityMemoryHasAnyTag(memory, "entity_alias_repaired", "entity_force_merged") {
+		return "confirmed_auto_apply", "previous_explicit_user_merge"
+	}
+	return "review_required", "name_similarity_without_confirmed_identity"
+}
+
+func appendUniqueInt(items []int, value int) []int {
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
 }
 
 func subjectiveEntityMemoryOwnerNeedsRepair(before, after store.ProtagonistEntityMemory) bool {
@@ -1213,14 +1298,18 @@ func subjectiveEntityAliasRepairTags(before, after store.ProtagonistEntityMemory
 
 func subjectiveEntityAliasRepairPolicy() map[string]any {
 	return map[string]any{
-		"surface":                 "subjective_entity_alias_repair",
-		"default_mode":            "dry_run",
-		"apply_requires_explicit": true,
-		"mutation_scope":          "owner_persona_identity_fields_only",
-		"memory_text_mutation":    false,
-		"evidence_mutation":       false,
-		"delete_duplicate_rows":   false,
-		"merge_mode":              "canonical_owner_key_rewrite_no_delete",
+		"surface":                    "subjective_entity_alias_repair",
+		"default_mode":               "dry_run",
+		"apply_requires_explicit":    true,
+		"mutation_scope":             "owner_persona_identity_fields_only",
+		"memory_text_mutation":       false,
+		"evidence_mutation":          false,
+		"delete_duplicate_rows":      false,
+		"merge_mode":                 "canonical_owner_key_rewrite_no_delete",
+		"automatic_apply_gate":       "confirmed_identity_tag_plus_grounded_evidence_or_previous_explicit_merge",
+		"memory_text_is_proof":       false,
+		"name_similarity_is_proof":   false,
+		"ambiguous_candidate_action": "review_or_manual_force_merge",
 	}
 }
 
@@ -1335,15 +1424,23 @@ func (s *Server) subjectiveEntityMemoryGroups(ctx context.Context, sourceSID str
 		ownerName       string
 		ownerRole       string
 		ownerVisibility string
+		scopeVariants   map[string]bool
 		count           int
 		latestTurn      int
 		latestText      string
 		maxImportance   float64
 	}
+	memories = s.canonicalizeSubjectiveEntityMemoriesForRead(ctx, sourceSID, memories)
+	explicitMergedOwnerKeys := map[string]bool{}
+	for _, memory := range memories {
+		ownerKey := strings.TrimSpace(firstNonEmpty(memory.OwnerEntityKey, memory.PersonaEntityKey))
+		if ownerKey != "" && subjectiveEntityMemoryHasAnyTag(memory, "entity_alias_repaired", "entity_force_merged") {
+			explicitMergedOwnerKeys[ownerKey] = true
+		}
+	}
 	order := []string{}
 	groups := map[string]*groupState{}
 	for _, memory := range memories {
-		memory = s.canonicalizeSubjectiveEntityMemoryForRead(ctx, sourceSID, memory)
 		ownerKey := strings.TrimSpace(firstNonEmpty(memory.OwnerEntityKey, memory.PersonaEntityKey))
 		if ownerKey == "" {
 			ownerKey = "unknown"
@@ -1356,15 +1453,21 @@ func (s *Server) subjectiveEntityMemoryGroups(ctx context.Context, sourceSID str
 		if ownerVisibility == "" {
 			ownerVisibility = "player_known"
 		}
-		key := ownerKey + "\x1f" + ownerRole + "\x1f" + ownerVisibility
+		ownerName := strings.TrimSpace(firstNonEmpty(memory.OwnerEntityName, memory.PersonaEntityName, ownerKey))
+		key := "name:" + comparableEntityKey(ownerName)
+		if explicitMergedOwnerKeys[ownerKey] {
+			key = "explicit:" + ownerKey
+		} else if key == "name:" {
+			key = "key:" + ownerKey
+		}
 		group := groups[key]
 		if group == nil {
-			ownerName := strings.TrimSpace(firstNonEmpty(memory.OwnerEntityName, memory.PersonaEntityName, ownerKey))
 			group = &groupState{
 				ownerKey:        ownerKey,
 				ownerName:       ownerName,
 				ownerRole:       ownerRole,
 				ownerVisibility: ownerVisibility,
+				scopeVariants:   map[string]bool{},
 				latestTurn:      memory.SourceTurn,
 				latestText:      truncateRunes(strings.TrimSpace(memory.MemoryText), 180),
 				maxImportance:   memory.Importance10,
@@ -1372,6 +1475,7 @@ func (s *Server) subjectiveEntityMemoryGroups(ctx context.Context, sourceSID str
 			groups[key] = group
 			order = append(order, key)
 		}
+		group.scopeVariants[ownerRole+"\x1f"+ownerVisibility] = true
 		group.count++
 		if memory.SourceTurn > group.latestTurn {
 			group.latestTurn = memory.SourceTurn
@@ -1398,6 +1502,8 @@ func (s *Server) subjectiveEntityMemoryGroups(ctx context.Context, sourceSID str
 			"owner_entity_name":      group.ownerName,
 			"owner_entity_role":      group.ownerRole,
 			"owner_visibility":       group.ownerVisibility,
+			"scope_variant_count":    len(group.scopeVariants),
+			"mixed_owner_scope":      len(group.scopeVariants) > 1,
 			"source_chat_session_id": sourceSID,
 			"memory_count":           group.count,
 			"latest_turn_index":      group.latestTurn,
@@ -1409,6 +1515,21 @@ func (s *Server) subjectiveEntityMemoryGroups(ctx context.Context, sourceSID str
 		})
 	}
 	return items
+}
+
+func subjectiveEntityMemoryHasAnyTag(memory store.ProtagonistEntityMemory, needles ...string) bool {
+	var tags []string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(memory.TagsJSON)), &tags); err != nil {
+		return false
+	}
+	for _, tag := range tags {
+		for _, needle := range needles {
+			if strings.TrimSpace(tag) == needle {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func subjectiveEntityBundlePolicy() map[string]any {

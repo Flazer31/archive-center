@@ -4266,10 +4266,10 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	if shouldApplyCompleteTurnOOCGuard(userText, assistantText, nil) || shouldSkipDerivedIngestForSourceAwareGuard(userText, assistantText) {
+	if shouldApplyCompleteTurnOOCGuard(userText, assistantText, nil) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":          "skipped",
-			"reason":          "source_guard",
+			"reason":          "ooc_guard",
 			"chat_session_id": sid,
 			"turn_index":      req.TurnIndex,
 			"source":          s.storeWriteSource(),
@@ -4302,7 +4302,7 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	extraction, criticTrace, err := s.runCompleteTurnCritic(r.Context(), sid, req.TurnIndex, userText, assistantText, nil, nil, extractionCfg.Critic)
+	extraction, criticTrace, err := s.runCompleteTurnCriticFromCanonicalLogs(r.Context(), sid, req.TurnIndex, userText, assistantText, extractionCfg.Critic)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "failed",

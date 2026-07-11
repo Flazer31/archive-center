@@ -413,10 +413,8 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		if extractionCfg.Critic.hasConfig() {
 			if assistantText == "" {
 				failReasons = append(failReasons, "critic_skipped: assistant_content_missing")
-			} else if shouldSkipDerivedIngestForSourceAwareGuard(userText, assistantText) {
-				failReasons = append(failReasons, "critic_skipped: source_aware_ingest_guard")
 			} else {
-				result, trace, err := s.runCompleteTurnCritic(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic, languageContext)
+				result, trace, err := s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic, true, languageContext)
 				if err != nil {
 					criticFailureReason = "critic_extract_failed: " + err.Error()
 					failReasons = append(failReasons, criticFailureReason)
@@ -455,6 +453,8 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 	entityConditionsSaved := 0
 	statusSchemaDefinitionsSaved := 0
 	statusEffectsSaved := 0
+	narrativeCurrentStatesSaved := 0
+	narrativeStateEventsSaved := 0
 	pendingThreadsSaved := 0
 	activeStatesSaved := 0
 	canonicalStateLayersSaved := 0
@@ -621,6 +621,8 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			entityConditionsSaved += artifactResult.EntityConditions
 			statusSchemaDefinitionsSaved += artifactResult.StatusSchemaDefinitions
 			statusEffectsSaved += artifactResult.StatusEffects
+			narrativeCurrentStatesSaved += artifactResult.NarrativeCurrentStates
+			narrativeStateEventsSaved += artifactResult.NarrativeStateEvents
 			pendingThreadsSaved += artifactResult.PendingThreads
 			activeStatesSaved += artifactResult.ActiveStates
 			canonicalStateLayersSaved += artifactResult.CanonicalStateLayers
@@ -698,7 +700,7 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			warnings = append(warnings, "hierarchy_promotion_failed: "+errText)
 		}
 	}
-	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + trustStatesSaved
+	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + trustStatesSaved
 	rawStatus := "skipped"
 	if chatLogsSaved > 0 || effectiveInputSaved > 0 {
 		rawStatus = "ok"
@@ -739,6 +741,8 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 			"entity_conditions_saved":          entityConditionsSaved,
 			"status_schema_definitions_saved":  statusSchemaDefinitionsSaved,
 			"status_effects_saved":             statusEffectsSaved,
+			"narrative_current_states_saved":   narrativeCurrentStatesSaved,
+			"narrative_state_events_saved":     narrativeStateEventsSaved,
 			"canonical_state_layers_saved":     canonicalStateLayersSaved,
 		},
 		"vector": map[string]any{
@@ -772,6 +776,8 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		"entity_conditions_saved":          entityConditionsSaved,
 		"status_schema_definitions_saved":  statusSchemaDefinitionsSaved,
 		"status_effects_saved":             statusEffectsSaved,
+		"narrative_current_states_saved":   narrativeCurrentStatesSaved,
+		"narrative_state_events_saved":     narrativeStateEventsSaved,
 		"pending_threads_saved":            pendingThreadsSaved,
 		"active_states_saved":              activeStatesSaved,
 		"canonical_state_layers_saved":     canonicalStateLayersSaved,
@@ -1432,6 +1438,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var episodeSums []store.EpisodeSummary
 	var personaEntries []store.PersonaMemoryEntry
 	var characterPrivateMemories []store.ProtagonistEntityMemory
+	var narrativeCurrentValues []store.StatusCurrentValue
 
 	readErrs := []error{}
 	readsOK := 0
@@ -1540,6 +1547,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				readErrs = append(readErrs, err)
 			}
 		}
+		if valueStore, ok := s.Store.(store.StatusCurrentValueStore); ok {
+			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, "", "", narrativeStateStatusKey, 1000); err == nil {
+				narrativeCurrentValues = values
+				readsOK++
+			} else if !errors.Is(err, store.ErrNotEnabled) {
+				readErrs = append(readErrs, err)
+			}
+		}
 	}
 
 	recollectionRelevance := filterPrepareTurnEntityRecollections(rawUserInput, chatLogs, activeStates, canonicalLayers, personaEntries, &characterPrivateMemories)
@@ -1570,7 +1585,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if !degraded {
 		documents = buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, chatLogs)
 		if injectionEnabled {
-			injectionAssembly = buildPrepareTurnInjectionAssembly(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, maxInjectionChars, rawUserInput, profile, documents, vectorShadow, languageContext, perspectiveContext)
+			assemblyPerspectiveContext := prepareTurnPerspectiveWithNarrativeState(perspectiveContext, narrativeCurrentValues, activeStates)
+			injectionAssembly = buildPrepareTurnInjectionAssembly(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, maxInjectionChars, rawUserInput, profile, documents, vectorShadow, languageContext, assemblyPerspectiveContext)
 		}
 	}
 	injectionText := injectionAssembly.Text
@@ -2523,6 +2539,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				"pending_thread_count":          len(pendingThreads),
 				"active_state_count":            len(activeStates),
 				"canonical_layer_count":         len(canonicalLayers),
+				"narrative_current_state_count": len(narrativeCurrentValues),
 				"episode_summary_count":         len(episodeSums),
 				"max_injection_chars":           maxInjectionChars,
 				"max_input_context_chars":       maxInputContextChars,
@@ -2760,6 +2777,12 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		} else {
 			deletions[t.name] = map[string]any{"ok": true}
 		}
+	}
+	if restored, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid); err != nil {
+		deletions["narrative_current_state_restore"] = map[string]any{"ok": false, "error": err.Error()}
+		delErrs = append(delErrs, fmt.Sprintf("narrative current state restore: %v", err))
+	} else {
+		deletions["narrative_current_state_restore"] = map[string]any{"ok": true, "restored": restored}
 	}
 	if vectorCollectErr != nil {
 		deletions["vectors"] = map[string]any{"ok": false, "attempted": false, "error": vectorCollectErr.Error()}
@@ -4227,6 +4250,7 @@ type prepareTurnInjectionAssembly struct {
 	EpisodeText              string
 	PersonaText              string
 	CharacterPrivateText     string
+	ContinuityCorrectionText string
 	LatestDirectEvidenceText string
 	RecentRawTurnText        string
 	ScopedVerbatimText       string
@@ -4299,6 +4323,7 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 		"effective_user_input":                  rawUserInput,
 		"injection_text":                        nilIfEmpty(assembly.Text),
 		"input_context_text":                    nilIfEmpty(inputContextText),
+		"continuity_correction_text":            nilIfEmpty(assembly.ContinuityCorrectionText),
 		"memory_text":                           nilIfEmpty(assembly.MemoryText),
 		"language_context":                      nilIfEmptyMap(assembly.LanguageContext),
 		"language_injection_trace":              nilIfEmptyMap(assembly.LanguageInjectionTrace),
@@ -5087,13 +5112,13 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			"top_k_memory_target":         totalLimit,
 			"vector_memory_policy":        "chromadb_hits_hydrated_to_mariadb_memory_before_injection",
 			"relevant_memory_limit":       totalLimit,
-			"deep_memory_policy":          "above_average_importance_among_ranked_non_relevant",
+			"deep_memory_policy":          "importance_only_when_no_current_query",
 			"input_memory_count":          len(memories),
 			"eligible_memory_count":       len(clean),
 			"recent_order":                "ranked_recency_tiebreak_for_non_relevant_memory",
 			"relevant_order":              "query_overlap_first_then_importance_then_recency",
 			"deep_order":                  "ranked_non_relevant_high_importance_support",
-			"selection_policy":            "rank_all_memories_by_relevance_importance_recency_no_fixed_recent_quota",
+			"selection_policy":            "query_relevance_then_recent_fallback; old_importance_alone_cannot_outrank_current_scene",
 			"query_present":               queryPresent,
 			"input_rewrite_applied":       false,
 			"raw_user_input_preserved":    true,
@@ -5178,6 +5203,14 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			if ia.relevance != ja.relevance {
 				return ia.relevance > ja.relevance
 			}
+			if !ir && !jr {
+				if ia.recency != ja.recency {
+					return ia.recency > ja.recency
+				}
+				if ia.item.TurnIndex != ja.item.TurnIndex {
+					return ia.item.TurnIndex > ja.item.TurnIndex
+				}
+			}
 		}
 		if ia.importance != ja.importance {
 			return ia.importance > ja.importance
@@ -5203,7 +5236,7 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			out.RelevantScores[candidate.key] = candidate.relevance
 			continue
 		}
-		if avgImportance > 0 && candidate.importance >= avgImportance {
+		if !queryPresent && avgImportance > 0 && candidate.importance >= avgImportance {
 			out.Deep = append(out.Deep, candidate.item)
 			continue
 		}
@@ -6638,6 +6671,7 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	if len(perspectiveContextArg) > 0 {
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
 	}
+	narrativeCurrentValues, activeStates := prepareTurnNarrativeStateFromPerspective(perspectiveContextArg)
 
 	out := prepareTurnInjectionAssembly{
 		LanguageContext:    languageContext,
@@ -6667,6 +6701,15 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow)
 	memorySelection = collapsePrepareTurnMemoryLaneSelection(memorySelection)
 	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, rawUserInput, chatLogs, perspectiveContext)
+	out.ContinuityCorrectionText, out.Counts["continuity_correction"] = buildNarrativeContinuityCorrection(
+		narrativeCurrentValues,
+		rawUserInput,
+		chatLogs,
+		activeStates,
+		memorySelection,
+		recallLimit,
+	)
+	memorySelection = filterMemorySelectionAgainstNarrativeCurrentState(memorySelection, narrativeCurrentValues)
 	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, perspectiveContext)
 	for k, v := range prepareTurnMemoryLaneProtectedCounts(memorySelection, perspectiveContext) {
 		out.Counts[k] = v
@@ -6676,9 +6719,15 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 
 	kgLines := make([]string, 0, minInt(len(kgTriples), recallLimit))
+	kgClosedDropped := 0
+	kgReferenceTurn := prepareTurnMaxObservedTurn(chatLogs, nil)
 	for _, t := range kgTriples {
 		if len(kgLines) >= recallLimit {
 			break
+		}
+		if kgReferenceTurn > 0 && ((t.ValidTo > 0 && t.ValidTo < kgReferenceTurn) || (t.ValidFrom > 0 && t.ValidFrom > kgReferenceTurn)) {
+			kgClosedDropped++
+			continue
 		}
 		line := strings.TrimSpace(fmt.Sprintf("%s --%s--> %s", t.Subject, t.Predicate, t.Object))
 		if line == "-->" {
@@ -6868,6 +6917,7 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 	addPrepareTurnBlock(&out, "canonical_state_layer", "store.canonical_state_layers", out.CanonText, len(canonLines), maxChars)
 	addPrepareTurnBlock(&out, "persona_recollection", "store.persona_memory_entries", out.PersonaText, minInt(len(personaEntries), recallLimit), maxChars)
 	addPrepareTurnBlock(&out, "character_private_recollection", "store.protagonist_entity_memories", out.CharacterPrivateText, minInt(len(characterPrivateMemories), recallLimit), maxChars)
+	addPrepareTurnBlock(&out, "continuity_correction", "store.status_current_values", out.ContinuityCorrectionText, intFromAny(mapFromAny(out.Counts["continuity_correction"])["selected_count"], 0), maxChars)
 
 	parts := make([]string, 0, len(out.Blocks))
 	for _, block := range out.Blocks {
@@ -6906,6 +6956,7 @@ func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []stor
 		out.Counts["raw_evidence_attached_count"] = intFromAny(memoryTrace["raw_evidence_attached_count"], 0)
 	}
 	out.Counts["kg_bound"] = len(kgLines)
+	out.Counts["kg_closed_or_not_yet_valid_dropped"] = kgClosedDropped
 	out.Counts["direct_evidence_bound"] = len(directEvidenceLines)
 	out.Counts["fallback_bound"] = len(fallbackLines)
 	out.Counts["fallback_count"] = len(fallbackLines)
@@ -7780,6 +7831,7 @@ type prepareTurnRecollectionContext struct {
 }
 
 func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.ChatLog, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories *[]store.ProtagonistEntityMemory) map[string]any {
+	const characterPrivateTotalCap = 2
 	ctx := buildPrepareTurnRecollectionContext(rawUserInput, chatLogs, activeStates, canonicalLayers)
 	beforePrivate := len(*characterPrivateMemories)
 	filteredPrivate := make([]store.ProtagonistEntityMemory, 0, beforePrivate)
@@ -7803,6 +7855,19 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 			continue
 		}
 		if ok, reason := prepareTurnCharacterPrivateMemoryRelevant(item, ctx); ok {
+			if len(filteredPrivate) >= characterPrivateTotalCap {
+				owner := prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName)
+				if owner != "" && !stringSliceContains(droppedOwners, owner) {
+					droppedOwners = append(droppedOwners, owner)
+				}
+				dropped = append(dropped, map[string]any{
+					"id":                item.ID,
+					"owner_entity_key":  item.OwnerEntityKey,
+					"owner_entity_name": item.OwnerEntityName,
+					"reason":            "private_recollection_total_capped",
+				})
+				continue
+			}
 			filteredPrivate = append(filteredPrivate, item)
 			if ownerKey != "" {
 				selectedOwnerKeys[ownerKey] = true
@@ -7835,6 +7900,7 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 		"character_private_dropped_count": beforePrivate - len(filteredPrivate),
 		"character_private_gate":          "owner_entity_must_match_current_user_input_immediate_chat_or_current_scene_state",
 		"character_private_owner_cap":     1,
+		"character_private_total_cap":     characterPrivateTotalCap,
 		"selected_owner_entities":         selectedOwners,
 		"dropped_owner_entities":          droppedOwners,
 		"dropped":                         dropped,
@@ -10903,7 +10969,7 @@ func (s *Server) runChatLogRepairReplay(ctx context.Context, sid string, req dto
 
 	for _, entry := range req.Entries {
 		turnIndex := entry.TurnIndex
-		if turnIndex <= 0 {
+		if turnIndex < 0 {
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turnIndex, "reason": "invalid_turn_index"})
 			continue
 		}

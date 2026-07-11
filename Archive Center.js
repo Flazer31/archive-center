@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "2.5.0-rc4-postprocessor-canonical-output.20260710-1";
+  const BUILD_ID = "2.5.0-rc4-postprocessor-secondary-turn-guard.20260710-2";
   const BUILD_CHANNEL = "rc4";
   const BUILD_TIME = "2026-07-10 KST";
-  const BUILD_NOTES = "postprocessor final output canonicalization + stable rollback comparison + existing RC3 guards";
+  const BUILD_NOTES = "generic post-output secondary request guard + final output turn replacement + existing RC4 guards";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -837,15 +837,18 @@
       "explorer.entities.memoryBrowserTitle": "엔티티별 주관 기억",
       "explorer.entities.memoryBrowserDesc": "현재 세션에 저장된 각 인물의 주관 기억입니다. 같은 사건도 인물마다 다르게 기억될 수 있습니다.",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
-      "explorer.entities.aliasRepairDesc": "영어/한글/성·이름으로 갈라진 주관 기억 소유자를 검사하고, 적용 시 owner/persona 키만 표준 이름으로 합칩니다.",
+      "explorer.entities.aliasRepairDesc": "갈라진 주관 기억 소유자를 검사합니다. 확정된 동일 인물 근거가 있는 행만 적용되며, 이름 유사도와 기억 내용은 검토 자료로만 표시됩니다.",
       "explorer.entities.aliasRepairDryRun": "Alias Repair 검사",
       "explorer.entities.aliasRepairApply": "적용",
       "explorer.entities.aliasRepairLoading": "검사 중...",
       "explorer.entities.aliasRepairApplying": "적용 중...",
       "explorer.entities.aliasRepairNoResult": "아직 검사 결과가 없습니다.",
-      "explorer.entities.aliasRepairClean": "정리할 alias가 없습니다.",
-      "explorer.entities.aliasRepairSummary": "검사 {scanned}건 / 그룹 {groups}개 / 수정 후보 {repairable}건 / 적용 {updated}건",
-      "explorer.entities.aliasRepairConfirm": "수정 후보 {count}건을 표준 엔티티 이름으로 합칠까요?\n기억 내용은 바꾸지 않고 owner/persona 키만 수정합니다.",
+      "explorer.entities.aliasRepairClean": "확정 근거로 자동 적용할 후보가 없습니다. 확인 필요 후보는 내용을 검토한 뒤 강제 합치기를 사용하세요.",
+      "explorer.entities.aliasRepairSummary": "검사 {scanned}건 / 그룹 {groups}개 / 확정 적용 {repairable}건 / 확인 필요 {review}건 / 적용 {updated}건",
+      "explorer.entities.aliasRepairConfirm": "확정된 동일 인물 근거가 있는 {count}건만 적용할까요?\n기억 본문과 근거는 바꾸거나 삭제하지 않습니다.",
+      "explorer.entities.aliasRepairAuto": "확정 적용",
+      "explorer.entities.aliasRepairReview": "확인 필요",
+      "explorer.entities.aliasRepairMemoryPreview": "기억 참고",
       "explorer.entities.aliasRepairGroup": "표준",
       "explorer.entities.aliasRepairAliases": "별칭",
       "explorer.entities.aliasRepairError": "Alias Repair 실패",
@@ -1979,15 +1982,18 @@
       "explorer.entities.memoryBrowserTitle": "Entity Subjective Memories",
       "explorer.entities.memoryBrowserDesc": "Entity-owned subjective memories saved in this session. The same event can be remembered differently by each character.",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
-      "explorer.entities.aliasRepairDesc": "Check split subjective-memory owners caused by English/Korean names or partial names. Apply rewrites only owner/persona keys to the canonical entity.",
+      "explorer.entities.aliasRepairDesc": "Inspect split subjective-memory owners. Apply changes only when confirmed same-entity evidence exists; name similarity and memory text are review context only.",
       "explorer.entities.aliasRepairDryRun": "Check Alias Repair",
       "explorer.entities.aliasRepairApply": "Apply",
       "explorer.entities.aliasRepairLoading": "Checking...",
       "explorer.entities.aliasRepairApplying": "Applying...",
       "explorer.entities.aliasRepairNoResult": "No repair check has been run yet.",
-      "explorer.entities.aliasRepairClean": "No alias repair candidates.",
-      "explorer.entities.aliasRepairSummary": "scanned {scanned} / groups {groups} / candidates {repairable} / updated {updated}",
-      "explorer.entities.aliasRepairConfirm": "Merge {count} alias candidates into canonical entity names?\nOnly owner/persona keys are changed; memory text is not modified.",
+      "explorer.entities.aliasRepairClean": "No candidates have confirmed evidence for automatic apply. Review ambiguous candidates and use Force Merge only when certain.",
+      "explorer.entities.aliasRepairSummary": "scanned {scanned} / groups {groups} / confirmed {repairable} / review {review} / updated {updated}",
+      "explorer.entities.aliasRepairConfirm": "Apply only the {count} candidates with confirmed same-entity evidence?\nMemory text and evidence are preserved.",
+      "explorer.entities.aliasRepairAuto": "Confirmed",
+      "explorer.entities.aliasRepairReview": "Review",
+      "explorer.entities.aliasRepairMemoryPreview": "Memory context",
       "explorer.entities.aliasRepairGroup": "Canonical",
       "explorer.entities.aliasRepairAliases": "Aliases",
       "explorer.entities.aliasRepairError": "Alias Repair failed",
@@ -2920,15 +2926,18 @@
       "explorer.entities.memoryBrowserTitle": "エンティティ別主観記憶",
       "explorer.entities.memoryBrowserDesc": "このセッションに保存された各人物の主観記憶です。同じ出来事でも人物ごとに異なる記憶として扱えます。",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
-      "explorer.entities.aliasRepairDesc": "英語/韓国語/一部名で分割された主観記憶の所有者を検査し、適用時は owner/persona キーだけを標準名に統合します。",
+      "explorer.entities.aliasRepairDesc": "分割された主観記憶の所有者を検査します。同一人物の確定根拠がある行だけを適用し、名前の類似性と記憶内容は確認資料としてのみ表示します。",
       "explorer.entities.aliasRepairDryRun": "Alias Repair 検査",
       "explorer.entities.aliasRepairApply": "適用",
       "explorer.entities.aliasRepairLoading": "検査中...",
       "explorer.entities.aliasRepairApplying": "適用中...",
       "explorer.entities.aliasRepairNoResult": "まだ検査結果がありません。",
-      "explorer.entities.aliasRepairClean": "修復候補はありません。",
-      "explorer.entities.aliasRepairSummary": "検査 {scanned}件 / グループ {groups}個 / 修復候補 {repairable}件 / 適用 {updated}件",
-      "explorer.entities.aliasRepairConfirm": "{count}件の候補を標準エンティティ名に統合しますか？\n記憶本文は変更せず、owner/persona キーだけを修正します。",
+      "explorer.entities.aliasRepairClean": "確定根拠により自動適用できる候補はありません。確認が必要な候補は内容を確認してから強制統合を使用してください。",
+      "explorer.entities.aliasRepairSummary": "検査 {scanned}件 / グループ {groups}個 / 確定適用 {repairable}件 / 要確認 {review}件 / 適用 {updated}件",
+      "explorer.entities.aliasRepairConfirm": "同一人物の確定根拠がある {count}件だけを適用しますか？\n記憶本文と根拠は変更・削除しません。",
+      "explorer.entities.aliasRepairAuto": "確定適用",
+      "explorer.entities.aliasRepairReview": "要確認",
+      "explorer.entities.aliasRepairMemoryPreview": "記憶参考",
       "explorer.entities.aliasRepairGroup": "標準",
       "explorer.entities.aliasRepairAliases": "別名",
       "explorer.entities.aliasRepairError": "Alias Repair 失敗",
@@ -32186,6 +32195,7 @@
       const latestDirectEvidenceText = (_ip && _ip.latest_direct_evidence_text) ? String(_ip.latest_direct_evidence_text) : "";
       const recentRawTurnText = (_ip && _ip.recent_raw_turn_text) ? String(_ip.recent_raw_turn_text) : "";
       const canonicalStateLayerText = (_ip && _ip.canon_text) ? String(_ip.canon_text) : "";
+      const continuityCorrectionText = (_ip && _ip.continuity_correction_text) ? String(_ip.continuity_correction_text).trim() : "";
       const verbatimSupport = (_ip && _ip.verbatim_support && typeof _ip.verbatim_support === "object") ? {
         active: !!_ip.verbatim_support.active,
         count: Number(_ip.verbatim_support.count || _ip.scoped_verbatim_support_count || 0),
@@ -32297,10 +32307,15 @@
         }
         return out;
       }
-      const fullInjectionText = trimBySections(
-        [String(protectionText || "").trim(), String(budgetResult.finalText || "").trim()].filter(Boolean).join("\n\n"),
-        hardLimit,
-      );
+      const baseInjectionSource = [String(protectionText || "").trim(), String(budgetResult.finalText || "").trim()].filter(Boolean).join("\n\n");
+      const correctionReserve = continuityCorrectionText
+        ? Math.min(continuityCorrectionText.length + 2, Math.max(200, Math.floor(hardLimit * 0.18)))
+        : 0;
+      const baseInjectionText = trimBySections(baseInjectionSource, Math.max(0, hardLimit - correctionReserve));
+      const continuityCorrectionForInjection = continuityCorrectionText && continuityCorrectionText.length <= correctionReserve
+        ? continuityCorrectionText
+        : "";
+      const fullInjectionText = [baseInjectionText, continuityCorrectionForInjection].filter(Boolean).join("\n\n");
 
       if (!fullInjectionText) {
         const noContentResult = { ...emptyResult, status: "skipped", reason: "budget_trimmed_to_empty" };
@@ -32337,6 +32352,9 @@
                 activeStateIncluded: activeStateText.length > 0,
         canonicalStateLayerIncluded: canonicalStateLayerText.length > 0,
         canonicalStateLayerDelivered: canonicalStateLayerDelivered,
+        continuityCorrectionIncluded: continuityCorrectionText.length > 0,
+        continuityCorrectionDelivered: continuityCorrectionForInjection.length > 0,
+        continuityCorrectionChars: continuityCorrectionForInjection.length,
         canonicalStateHardFloorSlotEnabled: !!(budgetResult.budgetPolicy && budgetResult.budgetPolicy.canonicalStateLayerHardFloorEnabled),
                 canonicalConflictGuardApplied: !!(budgetResult.budgetPolicy && Number(budgetResult.budgetPolicy.canonicalConflictGuardSuppressedCount || 0) > 0),
                 canonicalConflictSuppressedBlocks: budgetResult.budgetPolicy && Array.isArray(budgetResult.budgetPolicy.canonicalConflictGuardSuppressedBlocks)
@@ -32629,7 +32647,35 @@
     }
   }
 
-  function buildMainRequestOwnershipDecision(type, messages, activeTailUserText, rawInputTailText) {
+  function buildPostOutputSecondaryRequestContext(activeMessages) {
+    try {
+      const list = Array.isArray(activeMessages) ? activeMessages : [];
+      const latest = getLastNonEmptyComparableMessage(list);
+      if (!latest || latest.role !== "assistant") return null;
+      const pairs = buildCompletedTurnPairsFromActiveChatMessages(list);
+      if (!Array.isArray(pairs) || pairs.length === 0) return null;
+      const pair = pairs[pairs.length - 1];
+      const userContent = String((pair && pair.userContent) || "").trim();
+      const assistantContent = normalizeAssistantPersistenceCandidate(String((pair && pair.assistantContent) || ""));
+      const latestAssistant = normalizeAssistantPersistenceCandidate(String(latest.content || ""));
+      if (!userContent || !assistantContent || !latestAssistant) return null;
+      if (!isSameAssistantComparableText(assistantContent, latestAssistant)) return null;
+      return {
+        userContent,
+        assistantContent,
+        contextMessages: list.slice(-20).map(function(item) {
+          return {
+            role: String((item && item.role) || ""),
+            content: String((item && item.content) || ""),
+          };
+        }),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function buildMainRequestOwnershipDecision(type, messages, activeTailUserText, rawInputTailText, activeChatMessages) {
     const requestType = String(type || "model");
     if (!isNarrativeType(type)) {
       return {
@@ -32645,6 +32691,7 @@
     const rawTail = normalizeMainTurnCompareText(rawInputTailText);
     const payloadTail = normalizeMainTurnCompareText(payloadUserText);
     const auxiliaryMarker = matchAuxiliaryModuleRequestMarker(messages);
+    const postOutputContext = buildPostOutputSecondaryRequestContext(activeChatMessages);
     const payloadTailAuxiliaryMarker = payloadUserText
       ? matchAuxiliaryModuleRequestMarker([{ role: "user", content: payloadUserText }])
       : "";
@@ -32668,6 +32715,25 @@
           ? "main_user_input_verified_auxiliary_tail_trace_only"
           : "payload_tail_verified_by_active_chat_tail",
       };
+    }
+    if (postOutputContext) {
+      const previousUser = normalizeMainTurnCompareText(postOutputContext.userContent);
+      const payloadIsPreviousUser = previousUser && (
+        mainTurnTextMatchesOriginal(payloadTail, previousUser)
+        || mainTurnTextMatchesOriginal(previousUser, payloadTail)
+      );
+      if (!payloadIsPreviousUser) {
+        return {
+          allowed: false,
+          contextInjectionAllowed: false,
+          reason: "post_output_secondary_request",
+          requestType,
+          marker: auxiliaryMarker || "",
+          policy: "replace_latest_completed_turn_with_secondary_final_output",
+          postOutputReplacement: postOutputContext,
+          payloadTailPreview: truncPreview(payloadTail, 120),
+        };
+      }
     }
     if (rawTail && mainTurnTextMatchesOriginal(payloadTail, rawTail)) {
       return {
@@ -32783,7 +32849,14 @@
         requestType: decision && decision.requestType ? String(decision.requestType) : "",
         stage: String(stage || ""),
         reason: decision && decision.reason ? String(decision.reason) : "non_main_request",
-        expiresAt: Date.now() + NON_MAIN_REQUEST_SKIP_TTL_MS,
+        postOutputReplacement: decision && decision.postOutputReplacement
+          ? decision.postOutputReplacement
+          : null,
+        expiresAt: Date.now() + (
+          decision && decision.reason === "post_output_secondary_request"
+            ? Math.max(600000, getPluginMainTimeoutSettingMs() + 60000)
+            : NON_MAIN_REQUEST_SKIP_TTL_MS
+        ),
       });
     } catch {
       // non-fatal
@@ -32827,6 +32900,143 @@
       stage,
       sessionId: sessionId || "",
     });
+  }
+
+  async function resolvePostOutputFinalAssistant(sessionId, replacement, fallbackContent) {
+    const sid = String(sessionId || "").trim();
+    const originalUser = normalizeMainTurnCompareText(replacement && replacement.userContent);
+    const originalAssistant = normalizeAssistantPersistenceCandidate(String((replacement && replacement.assistantContent) || ""));
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise(function(resolve) { setTimeout(resolve, 150); });
+      const activeMessages = await getCurrentActiveChatComparableMessages(sid);
+      const current = buildPostOutputSecondaryRequestContext(activeMessages);
+      const currentUser = normalizeMainTurnCompareText(current && current.userContent);
+      const currentAssistant = normalizeAssistantPersistenceCandidate(String((current && current.assistantContent) || ""));
+      if (currentUser && currentUser === originalUser && currentAssistant && !isSameAssistantComparableText(currentAssistant, originalAssistant)) {
+        return currentAssistant;
+      }
+    }
+    return normalizeAssistantPersistenceCandidate(String(fallbackContent || ""));
+  }
+
+  async function replacePersistedTurnWithPostOutputFinal(sessionId, skipRecord, responseContent) {
+    const sid = String(sessionId || "").trim();
+    const replacement = skipRecord && skipRecord.postOutputReplacement;
+    const originalUser = String((replacement && replacement.userContent) || "").trim();
+    const originalAssistant = normalizeAssistantPersistenceCandidate(String((replacement && replacement.assistantContent) || ""));
+    const finalAssistant = await resolvePostOutputFinalAssistant(sid, replacement, responseContent);
+    if (!sid || !originalUser || !originalAssistant || !finalAssistant) {
+      return { handled: true, replaced: false, reason: "post_output_replacement_content_missing" };
+    }
+    if (isSameAssistantComparableText(originalAssistant, finalAssistant)) {
+      return { handled: true, replaced: false, reason: "post_output_unchanged" };
+    }
+
+    const persistedPair = await findRecentPersistedCompleteTurnPairForContent(sid, originalUser, originalAssistant);
+    if (!persistedPair || !Number.isFinite(Number(persistedPair.turnIndex))) {
+      return { handled: true, replaced: false, reason: "post_output_original_pair_not_found" };
+    }
+    const turnIndex = Number(persistedPair.turnIndex);
+    if (turnIndex !== Number(persistedPair.latestBackendTurn || 0)) {
+      return { handled: true, replaced: false, reason: "post_output_target_not_latest_turn", turnIndex };
+    }
+
+    const contextMessages = Array.isArray(replacement.contextMessages) ? replacement.contextMessages : [];
+    const body = await buildCompleteTurnRequestBody(
+      turnIndex,
+      originalUser,
+      finalAssistant,
+      contextMessages,
+      sid,
+      null
+    );
+    if (!body) {
+      return { handled: true, replaced: false, reason: "post_output_complete_turn_body_failed", turnIndex };
+    }
+    body.client_meta = body.client_meta && typeof body.client_meta === "object" ? body.client_meta : {};
+    body.client_meta.preserve_requested_turn_index = true;
+    body.client_meta.postprocessor_final_replace = {
+      enabled: true,
+      source: "post_output_secondary_request",
+      previous_assistant_hash: computeAssistantSnapshotFingerprint(originalAssistant),
+    };
+    const queuedPayload = buildCompleteTurnQueuePayload(body);
+    if (queuedPayload) {
+      enqueue("complete_turn", queuedPayload);
+      await flushQueueSave();
+    }
+
+    const rolledBack = await executeAutoRollback(
+      sid,
+      turnIndex,
+      "postprocessor_final_output_replace",
+      { postprocessorFinalReplace: true },
+      { requestSource: "postprocessor_final_replace", updateAutoState: false }
+    );
+    if (!rolledBack) {
+      if (queuedPayload) {
+        removeQueuedItem("complete_turn", queuedPayload);
+        await flushQueueSave();
+      }
+      return { handled: true, replaced: false, reason: "post_output_rollback_failed", turnIndex };
+    }
+
+    const result = await tryCompleteTurn(
+      turnIndex,
+      originalUser,
+      finalAssistant,
+      contextMessages,
+      sid,
+      null,
+      body
+    );
+    const saved = !!(result && result.status !== "error" && result.status !== "skeleton" && result.save_ok);
+    if (!saved) {
+      return { handled: true, replaced: false, queued: !!queuedPayload, reason: "post_output_resave_queued", turnIndex };
+    }
+    if (queuedPayload && removeQueuedItem("complete_turn", queuedPayload)) {
+      await flushQueueSave();
+    }
+    trackTurnIndex(turnIndex, sid);
+    promoteAssistantSnapshot(sid, finalAssistant, turnIndex);
+    upsertTimelineCompleteTurnPendingArtifacts(sid, turnIndex, originalUser, finalAssistant, result);
+    scheduleTimelinePostCompleteTurnRefresh(sid, turnIndex);
+    return { handled: true, replaced: true, reason: "post_output_final_replaced", turnIndex, result };
+  }
+
+  function schedulePostOutputFinalReplacement(sessionId, skipRecord, responseContent) {
+    const sid = String(sessionId || "").trim();
+    updateRuntimeState("lastSaveStatus", "warn", { detail: "후처리 최종문 반영 대기" });
+    updateRuntimeState("lastCompleteStatus", "warn", { detail: "후처리 최종문 반영 대기" });
+    setTimeout(function() {
+      replacePersistedTurnWithPostOutputFinal(sid, skipRecord, responseContent).then(async function(result) {
+        const status = result && result.replaced ? "ok" : result && result.queued ? "warn" : "skipped";
+        const detail = result && result.replaced
+          ? "후처리 최종문으로 직전 턴을 교체함"
+          : result && result.queued
+            ? "후처리 최종문 재저장 대기"
+            : "후처리 요청은 새 턴으로 저장하지 않음";
+        const state = {
+          turnIndex: result && result.turnIndex,
+          detail,
+          reason: result && result.reason,
+        };
+        updateRuntimeState("lastSaveStatus", status, state);
+        updateRuntimeState("lastCompleteStatus", status, state);
+        updateRuntimeState("lastCompleteTurnStatus", status, {
+          source: result && result.replaced ? "backend" : "local",
+          turnIndex: result && result.turnIndex,
+          detail,
+          failReasons: result && result.replaced ? [] : [String((result && result.reason) || "post_output_final_not_replaced")],
+          requestType: "model",
+        });
+        debugLog("post-output final replacement completed:", result);
+        if (panelOpen) await safeCall(() => renderSettingsPanel(), undefined, "renderPostOutputReplacementCompleted");
+      }).catch(function(err) {
+        warnLog("post-output final replacement failed:", err && err.message);
+        updateRuntimeState("lastSaveStatus", "warn", { detail: "후처리 요청은 새 턴으로 저장하지 않음", reason: "post_output_replace_error" });
+      });
+    }, 0);
   }
 
   function isChatMessageLike(value) {
@@ -33246,6 +33456,12 @@
       if (!orchSessionId) {
         orchSessionId = await resolveCanonicalWriteSessionId(await getCurrentChatSessionId(), { stage: "before_request" });
       }
+      let mainRequestActiveMessages = [];
+      try {
+        mainRequestActiveMessages = await getCurrentActiveChatComparableMessages(orchSessionId);
+      } catch {
+        mainRequestActiveMessages = [];
+      }
       let mainRequestActiveTail = "";
       try {
         mainRequestActiveTail = await recoverCurrentUserInputFromActiveChatTail(orchSessionId);
@@ -33261,13 +33477,20 @@
       } catch {
         mainRequestRawTail = "";
       }
-      const mainRequestDecision = buildMainRequestOwnershipDecision(type, messages, mainRequestActiveTail, mainRequestRawTail);
+      const mainRequestDecision = buildMainRequestOwnershipDecision(
+        type,
+        messages,
+        mainRequestActiveTail,
+        mainRequestRawTail,
+        mainRequestActiveMessages
+      );
       if (!mainRequestDecision.allowed) {
         rememberNonMainRequestSkip(orchSessionId, mainRequestDecision, "beforeRequest");
         markNonMainRequestHookSkipped("beforeRequest", orchSessionId, mainRequestDecision);
         debugLog("beforeRequest: non-main request skipped:", mainRequestDecision.reason, "type:", type);
         return payload;
       }
+      _nonMainRequestSkipBySession.delete(String(orchSessionId || ""));
       if (mainRequestDecision.reason === "payload_user_tail_recovery_without_active_tail") {
         const recoveredPayloadUserText = getLastPayloadUserText(messages);
         if (recoveredPayloadUserText && !shouldSkipUserInputPersistence(recoveredPayloadUserText)) {
@@ -34101,6 +34324,15 @@
         && !syntheticAfterRequest
         && !lastOrchResult
         && !_pendingOrchBySession.get(chatSessionId);
+      if (rememberedNonMainSkip && rememberedNonMainSkip.reason === "post_output_secondary_request") {
+        schedulePostOutputFinalReplacement(
+          chatSessionId,
+          rememberedNonMainSkip,
+          rawAfterRequestText
+        );
+        debugLog("afterRequest: post-output secondary response scheduled for existing-turn replacement");
+        return content;
+      }
       if (rememberedNonMainSkip || auxiliaryTypedWithoutMainContext) {
         const skipDecision = rememberedNonMainSkip || {
           requestType: String(type || "model"),
@@ -35760,8 +35992,7 @@
     if (!item || typeof item !== "object") return "";
     return [
       String(item.owner_entity_key || "").trim(),
-      String(item.owner_entity_role || "").trim(),
-      String(item.owner_visibility || "").trim(),
+      String(item.owner_entity_name || "").trim(),
       String(item.source_chat_session_id || "").trim(),
     ].join("\x1f");
   }
@@ -35787,9 +36018,8 @@
     try {
       const params = new URLSearchParams();
       params.set("owner_entity_key", String(bundle.owner_entity_key || ""));
+      params.set("owner_entity_name", String(bundle.owner_entity_name || ""));
       params.set("source_chat_session_id", String(bundle.source_chat_session_id || explorerSessionId() || ""));
-      if (bundle.owner_entity_role) params.set("owner_entity_role", String(bundle.owner_entity_role || ""));
-      if (bundle.owner_visibility) params.set("owner_visibility", String(bundle.owner_visibility || ""));
       params.set("limit", "80");
       const data = await bridgeFetch("/subjective-entity-memories?" + params.toString(), {
         method: "GET",
@@ -35890,6 +36120,7 @@
           scanned: Number(result.scanned || 0),
           groups: Number(result.alias_group_count || (Array.isArray(result.groups) ? result.groups.length : 0)),
           repairable,
+          review: Number(result.review_required_count || 0),
           updated: Number(result.updated_count || 0),
         })
       : t('explorer.entities.aliasRepairNoResult');
@@ -35901,14 +36132,19 @@
       const canonical = formatDisplayEntityLabel(group.canonical_owner_name || group.canonical_owner_key || "");
       const aliases = Array.isArray(group.aliases) ? group.aliases.map((alias) => {
         const label = formatDisplayEntityLabel(alias.owner_entity_name || alias.owner_entity_key || "");
-        return label + ' x' + Number(alias.count || 0);
+        const turns = Array.isArray(alias.source_turns) ? alias.source_turns.filter((turn) => Number.isFinite(Number(turn))).join('/') : '';
+        return label + ' x' + Number(alias.count || 0) + (turns ? ' (turn ' + turns + ')' : '');
       }).join(', ') : '';
+      const previews = Array.isArray(group.aliases) ? group.aliases.flatMap((alias) => Array.isArray(alias.memory_previews) ? alias.memory_previews : []).filter(Boolean).slice(0, 2).join(' / ') : '';
+      const autoCount = Number(group.repairable_count || 0);
+      const reviewCount = Number(group.review_required_count || 0);
       return '<div class="mo-ent-card" style="padding:8px;margin-top:8px">' +
         '<div class="mo-ent-card-header">' +
           '<span class="mo-ent-name">' + escapeAttr(t('explorer.entities.aliasRepairGroup')) + ': ' + escapeAttr(canonical) + '</span>' +
-          '<span class="mo-tl-badge">' + escapeAttr(String(Number(group.repairable_count || 0))) + '</span>' +
+          '<span class="mo-tl-badge">' + escapeAttr(t('explorer.entities.aliasRepairAuto') + ' ' + autoCount + ' / ' + t('explorer.entities.aliasRepairReview') + ' ' + reviewCount) + '</span>' +
         '</div>' +
         '<div class="mo-ent-detail mo-note">' + escapeAttr(t('explorer.entities.aliasRepairAliases')) + ': ' + escapeAttr(aliases || '-') + '</div>' +
+        (previews ? '<div class="mo-ent-detail mo-note">' + escapeAttr(t('explorer.entities.aliasRepairMemoryPreview')) + ': ' + escapeAttr(previews) + '</div>' : '') +
       '</div>';
     }).join('');
     const cleanNote = result && repairable <= 0
@@ -40298,7 +40534,7 @@
     const ts = _explorer.trust;
     const trustCount = ts.storylines.length + ts.worldRules.length + ts.hooks.length;
     const wg = _explorer.worldGraph;
-    const worldCount = wg.rules.length;
+    const worldCount = wg.allRules.length > 0 ? wg.allRules.length : wg.rules.length;
     return [
       {
         key: "chat_logs",
@@ -47309,6 +47545,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   function personaCapsuleEntityBundleKey(item) {
     return [
       String(item && item.owner_entity_key || "").trim(),
+      String(item && item.owner_entity_name || "").trim(),
       String(item && item.owner_entity_role || "").trim(),
       String(item && item.owner_visibility || "").trim(),
       String(item && item.source_chat_session_id || "").trim(),
@@ -47421,6 +47658,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     personaCapsuleRefreshUI();
     const params = new URLSearchParams();
     params.set("owner_entity_key", ownerKey);
+    params.set("owner_entity_name", String(_personaCapsuleState.ownerEntityName || ""));
     params.set("owner_entity_role", personaCapsuleOwnerRole());
     params.set("owner_visibility", personaCapsuleOwnerVisibility());
     params.set("source_chat_session_id", sourceSID);

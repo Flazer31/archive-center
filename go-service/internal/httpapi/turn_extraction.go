@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,8 @@ type artifactSaveResult struct {
 	EntityConditions         int
 	StatusSchemaDefinitions  int
 	StatusEffects            int
+	NarrativeCurrentStates   int
+	NarrativeStateEvents     int
 	PendingThreads           int
 	ActiveStates             int
 	Entities                 int
@@ -354,10 +357,6 @@ func shouldApplyCompleteTurnOOCGuard(userInput, assistantContent string, context
 
 func looksLikeOOCText(text string) bool {
 	return oocPrefixPattern.MatchString(strings.TrimSpace(text))
-}
-
-func shouldSkipDerivedIngestForSourceAwareGuard(userInput, assistantContent string) bool {
-	return looksLikeSourceControlResidue(userInput) || looksLikeSourceControlResidue(assistantContent)
 }
 
 func looksLikeSourceControlResidue(text string) bool {
@@ -1189,6 +1188,14 @@ func glmThinkingTypeFromReasoning(preset, effort string) string {
 }
 
 func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
+	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, contextMessages, outputLanguageOverride, cfg, false, languageContextArg...)
+}
+
+func (s *Server) runCompleteTurnCriticFromCanonicalLogs(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, cfg completeTurnLLMConfig) (map[string]any, map[string]any, error) {
+	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, nil, nil, cfg, true)
+}
+
+func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, canonicalChatLogs bool, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
 	if !cfg.hasConfig() {
 		return nil, nil, errors.New("critic_config_missing")
 	}
@@ -1197,12 +1204,19 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 		languageContext = normalizeCompleteTurnLanguageContext(languageContextArg[0])
 	}
 	systemPrompt, promptSource := readCriticSystemPrompt(s.Cfg.PromptDir)
-	sanitizedUserInput := sanitizeTextForCriticInput(userInput)
-	sanitizedAssistantContent := sanitizeTextForCriticInput(assistantContent)
+	sanitizedUserInput := ""
+	sanitizedAssistantContent := ""
+	if canonicalChatLogs {
+		sanitizedUserInput = sanitizeCriticStorageText(userInput)
+		sanitizedAssistantContent = sanitizeCriticStorageText(assistantContent)
+	} else {
+		sanitizedUserInput = sanitizeTextForCriticInput(userInput)
+		sanitizedAssistantContent = sanitizeTextForCriticInput(assistantContent)
+	}
 	safeUserInput := boundCompleteTurnCriticInput(sanitizedUserInput, 4000)
 	safeAssistantContent := boundCompleteTurnCriticInput(sanitizedAssistantContent, 9000)
 	if strings.TrimSpace(safeUserInput+"\n"+safeAssistantContent) == "" {
-		return nil, map[string]any{"prompt_source": promptSource, "source_aware_ingest_guard": true}, errors.New("source_aware_ingest_guard")
+		return nil, map[string]any{"prompt_source": promptSource, "source_aware_ingest_guard": !canonicalChatLogs, "canonical_chat_logs": canonicalChatLogs}, errors.New("critic_input_empty_after_sanitize")
 	}
 	safeContextMessages := sanitizeContextMessagesForCriticInput(contextMessages)
 	previewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, safeUserInput, safeAssistantContent)
@@ -1674,7 +1688,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
@@ -1692,6 +1706,10 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
 		"- relationship_memory may include target_name or pair when trust changes. If no target exists, leave it empty.",
 		"- character_deltas should capture named character status, location, emotional posture, relationship changes, injuries, intentions, or role/authority changes seen in the latest turn.",
+		"- Separate narrative_events (what happened), state_claims (objective current facts), and belief_updates (one character's current perception). Do not promote beliefs to objective truth.",
+		"- state_claims and belief_updates use stable state_slot keys and transition=set|reaffirm|change|reversal|recovery|correction|reveal|resolve|uncertain|clear. Turn is audit order, not semantic authority.",
+		"- Every narrative_events/state_claims/belief_updates item requires a short exact evidence_excerpt from the latest completed turn. Omit unsupported items.",
+		"- Also repeat each accepted event/state/belief evidence_excerpt in top-level evidence_excerpts so current values and change events can link to direct evidence.",
 		"- physical_conditions is for evidence-bound body/health continuity that can affect roleplay: illness, fever, cold, pregnancy, menstruation, poisoning, fracture, accident/fall injury, body damage, impairment, missing body part, recovery, worsening, or cleared condition.",
 		"- Each physical_conditions item should include owner_entity_name or owner_entity_key, condition_label, effect_kind when obvious (temporary_effect or injury), evidence_excerpt, source_turn_index, and may include severity_text, body_area, onset_story_clock_json, duration_json, expires_at_clock_json, prognosis_text, age_or_vulnerability_note, uncertainty_note, and authority_hint.",
 		"- Do not invent medical calendars, fixed cycles, healing times, or numeric severity values. If duration is not explicit in the latest turn or safe context, use duration_policy=unknown_until_updated and keep prognosis_text/age_or_vulnerability_note descriptive.",
@@ -2072,6 +2090,9 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
 	out["physical_conditions"] = sliceFromAny(raw["physical_conditions"])
 	out["entity_conditions"] = sliceFromAny(raw["entity_conditions"])
+	out["narrative_events"] = sliceFromAny(raw["narrative_events"])
+	out["state_claims"] = sliceFromAny(raw["state_claims"])
+	out["belief_updates"] = sliceFromAny(raw["belief_updates"])
 	protectedSecrets := normalizeProtectedSecrets(raw["protected_secrets"])
 	characterIdentityAccuracy := normalizeCharacterIdentityAccuracy(raw["character_identity_accuracy"])
 	subjectiveMemories := normalizeSubjectiveEntityMemories(raw["subjective_entity_memories"])
@@ -2147,6 +2168,9 @@ func looksLikeStructuredCriticPayloadText(text string) bool {
 		"pending_threads",
 		"physical_conditions",
 		"relationship_memory",
+		"narrative_events",
+		"state_claims",
+		"belief_updates",
 		"state_deltas",
 		"subjective_entity_memories",
 		"turn_summary",
@@ -2968,6 +2992,12 @@ func (s *Server) canonicalizeSubjectiveEntityMemoriesForRead(ctx context.Context
 	for _, memory := range memories {
 		out = append(out, s.canonicalizeSubjectiveEntityMemoryForRead(ctx, sid, memory))
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SourceTurn != out[j].SourceTurn {
+			return out[i].SourceTurn > out[j].SourceTurn
+		}
+		return out[i].ID > out[j].ID
+	})
 	return out
 }
 
@@ -3093,8 +3123,8 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 			}
 			evidence = grounded
 		}
-		if subjectiveEntityMemoryAlreadyExists(ctx, st, sid, ownerKey, sourceTurn, memoryText) {
-			result.addSkipReason("subjective_entity_memories", "duplicate_source_turn_owner_memory", map[string]any{
+		if duplicateReason := subjectiveEntityMemoryDuplicateReason(ctx, st, sid, ownerKey, sourceTurn, memoryText, evidence); duplicateReason != "" {
+			result.addSkipReason("subjective_entity_memories", duplicateReason, map[string]any{
 				"index":            idx,
 				"owner_entity_key": ownerKey,
 				"source_turn":      sourceTurn,
@@ -3191,25 +3221,37 @@ func protectedSecretTagsFromSubjectiveItem(item map[string]any) []string {
 	return out
 }
 
-func subjectiveEntityMemoryAlreadyExists(ctx context.Context, st store.ProtagonistEntityMemoryStore, sid, ownerKey string, sourceTurn int, memoryText string) bool {
+func subjectiveEntityMemoryDuplicateReason(ctx context.Context, st store.ProtagonistEntityMemoryStore, sid, ownerKey string, sourceTurn int, memoryText, evidence string) string {
 	existing, err := st.ListProtagonistEntityMemories(ctx, store.ProtagonistEntityMemoryFilter{
 		OwnerEntityKey:      ownerKey,
 		SourceChatSessionID: sid,
 		Limit:               80,
 	})
 	if err != nil {
-		return false
+		return ""
 	}
-	normalizedText := strings.TrimSpace(strings.ToLower(memoryText))
+	normalizedText := normalizeSubjectiveMemoryDuplicateText(memoryText)
+	normalizedEvidence := normalizeSubjectiveMemoryDuplicateText(evidence)
 	for _, item := range existing {
-		if item.SourceTurn != sourceTurn {
-			continue
+		if normalizeSubjectiveMemoryDuplicateText(item.MemoryText) == normalizedText {
+			if item.SourceTurn == sourceTurn {
+				return "duplicate_source_turn_owner_memory"
+			}
+			return "duplicate_owner_memory_text"
 		}
-		if strings.TrimSpace(strings.ToLower(item.MemoryText)) == normalizedText {
-			return true
+		turnDistance := item.SourceTurn - sourceTurn
+		if turnDistance < 0 {
+			turnDistance = -turnDistance
+		}
+		if len(normalizedEvidence) >= 24 && turnDistance <= 3 && normalizeSubjectiveMemoryDuplicateText(item.EvidenceExcerpt) == normalizedEvidence {
+			return "duplicate_nearby_owner_evidence"
 		}
 	}
-	return false
+	return ""
+}
+
+func normalizeSubjectiveMemoryDuplicateText(text string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(text))), " ")
 }
 
 func emotionalImportanceBoost(emotionalIntensity float64) float64 {
@@ -3368,6 +3410,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		extraction = mergedExtraction
 		result.Warnings = append(result.Warnings, "confirmed_identity_alias_canonical_merge_applied")
 	}
+	extraction = appendNarrativeStateEvidenceExcerpts(extraction)
 	memorySearchText := completeTurnMemorySearchText(summary, extraction, content)
 	searchText := strings.TrimSpace(memorySearchText.Text)
 	if searchText == "" {
@@ -3474,6 +3517,10 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		})
 	}
 
+	// Current narrative state is resolved only after direct evidence has been
+	// persisted, so every accepted change can point back to concrete evidence.
+	s.saveNarrativeStateFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
+
 	for _, item := range sliceFromAny(extraction["kg_triples"]) {
 		triple := mapFromAny(item)
 		subject := s.canonicalCharacterName(ctx, sid, sanitizeKGPart(stringFromMap(triple, "subject")))
@@ -3529,7 +3576,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 }
 
 func (s *Server) memoryForTurnAlreadyExists(ctx context.Context, sid string, turnIndex int, result *artifactSaveResult) (int64, string) {
-	if s == nil || s.Store == nil || turnIndex <= 0 {
+	if s == nil || s.Store == nil || turnIndex < 0 {
 		return 0, ""
 	}
 	memories, err := s.Store.ListMemories(ctx, sid, turnIndex, turnIndex)
@@ -4216,13 +4263,24 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 	entities := mapFromAny(extraction["entities"])
 	physicalConditions := normalizePhysicalConditionItems(extraction["physical_conditions"])
 	entityConditions := normalizePhysicalConditionItems(extraction["entity_conditions"])
+	seenExactEntities := map[string]bool{}
 	saveEntityItems := func(items []any, entityType string) {
-		for _, item := range items {
+		for idx, item := range items {
 			entity := mapFromAny(item)
 			name := s.canonicalCharacterName(ctx, sid, strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(entity, "name"), stringFromMap(entity, "label"), stringFromMap(entity, "title"))))
 			if name == "" || isPlaceholderKGPart(name) {
 				continue
 			}
+			exactKey := strings.ToLower(strings.TrimSpace(entityType)) + "\x1f" + comparableEntityKey(name)
+			if seenExactEntities[exactKey] {
+				result.addSkipReason("entities", "duplicate_exact_entity_name_type", map[string]any{
+					"index":       idx,
+					"name":        name,
+					"entity_type": entityType,
+				})
+				continue
+			}
+			seenExactEntities[exactKey] = true
 			if saver, ok := s.Store.(entitySaver); ok {
 				localType := extractionFirstNonEmpty(stringFromMap(entity, "entity_type"), stringFromMap(entity, "role"), entityType)
 				description := entityDescriptionWithConditions(
@@ -4574,6 +4632,8 @@ func (s *Server) saveCriticIngestTrace(ctx context.Context, sid string, turnInde
 		"entity_conditions":           result.EntityConditions,
 		"status_schema_definitions":   result.StatusSchemaDefinitions,
 		"status_effects":              result.StatusEffects,
+		"narrative_current_states":    result.NarrativeCurrentStates,
+		"narrative_state_events":      result.NarrativeStateEvents,
 		"pending_threads":             result.PendingThreads,
 		"active_states":               result.ActiveStates,
 		"canonical_layers":            result.CanonicalStateLayers,

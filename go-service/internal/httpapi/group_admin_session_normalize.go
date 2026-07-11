@@ -131,7 +131,7 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 		rescanReq := adminRescanRequest{
 			ChatSessionID: sid,
 			MaxItems:      req.MaxItems,
-			TurnIndices:   uniqueSortedInts(req.TurnIndices),
+			TurnIndices:   uniqueSortedNonNegativeInts(req.TurnIndices),
 			ClientMeta:    meta,
 			DryRun:        req.DryRun,
 			Background:    false,
@@ -254,7 +254,7 @@ func adminSessionNormalizeRepairEntries(req adminSessionNormalizeRequest) []dto.
 	combined = append(combined, req.Entries...)
 	byTurn := map[int]dto.ChatLogRepairEntryRequest{}
 	for _, item := range combined {
-		if item.TurnIndex <= 0 {
+		if item.TurnIndex < 0 {
 			continue
 		}
 		user := ""
@@ -325,7 +325,7 @@ func adminSessionNormalizeJobRequest(sid string, req adminSessionNormalizeReques
 		"chat_session_id":       sid,
 		"max_items":             req.MaxItems,
 		"batch_size":            req.BatchSize,
-		"turn_indices":          uniqueSortedInts(req.TurnIndices),
+		"turn_indices":          uniqueSortedNonNegativeInts(req.TurnIndices),
 		"repair_entry_count":    len(entries),
 		"repair_turn_preview":   adminSessionNormalizeEntryTurns(entries, 20),
 		"dry_run":               req.DryRun,
@@ -349,7 +349,7 @@ func adminSessionNormalizeEntryTurns(entries []dto.ChatLogRepairEntryRequest, li
 			turns = append(turns, entry.TurnIndex)
 		}
 	}
-	turns = uniqueSortedInts(turns)
+	turns = uniqueSortedNonNegativeInts(turns)
 	if limit > 0 && len(turns) > limit {
 		return turns[:limit]
 	}
@@ -375,6 +375,7 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 		"raw_turns":            0,
 		"raw_complete_turns":   0,
 		"raw_partial_turns":    0,
+		"starter_turn_present": false,
 		"memories":             0,
 		"direct_evidence":      0,
 		"kg_triples":           0,
@@ -394,16 +395,18 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 	} else {
 		roleByTurn := map[int]map[string]bool{}
 		minTurn, maxTurn := 0, 0
+		hasTurn := false
 		for _, log := range logs {
-			if log.ChatSessionID != sid || log.TurnIndex <= 0 {
+			if log.ChatSessionID != sid || log.TurnIndex < 0 {
 				continue
 			}
-			if minTurn == 0 || log.TurnIndex < minTurn {
+			if !hasTurn || log.TurnIndex < minTurn {
 				minTurn = log.TurnIndex
 			}
-			if log.TurnIndex > maxTurn {
+			if !hasTurn || log.TurnIndex > maxTurn {
 				maxTurn = log.TurnIndex
 			}
+			hasTurn = true
 			role := strings.ToLower(strings.TrimSpace(log.Role))
 			if role != "user" && role != "assistant" {
 				continue
@@ -415,7 +418,17 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 		}
 		partialTurns := []int{}
 		completeTurns := 0
+		dialogueTurns := 0
+		starterTurnPresent := false
 		for turn, roles := range roleByTurn {
+			if turn == 0 {
+				starterTurnPresent = roles["assistant"]
+				if !starterTurnPresent {
+					partialTurns = append(partialTurns, turn)
+				}
+				continue
+			}
+			dialogueTurns++
 			if roles["user"] && roles["assistant"] {
 				completeTurns++
 			} else {
@@ -423,12 +436,13 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 			}
 		}
 		counts["chat_log_rows"] = len(logs)
-		counts["raw_turns"] = len(roleByTurn)
+		counts["raw_turns"] = dialogueTurns
 		counts["raw_complete_turns"] = completeTurns
 		counts["raw_partial_turns"] = len(partialTurns)
+		counts["starter_turn_present"] = starterTurnPresent
 		counts["min_turn"] = minTurn
 		counts["max_turn"] = maxTurn
-		counts["partial_turn_preview"] = adminSessionNormalizeLimitInts(uniqueSortedInts(partialTurns), 20)
+		counts["partial_turn_preview"] = adminSessionNormalizeLimitInts(uniqueSortedNonNegativeInts(partialTurns), 20)
 	}
 	if memories, err := s.Store.ListMemories(ctx, sid, 0, 0); err == nil {
 		counts["memories"] = len(memories)
@@ -488,7 +502,7 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 		"raw_import_candidates":          len(entries),
 		"raw_partial_review_candidates":  intFromAny(before["raw_partial_turns"], 0),
 		"critic_rescan_max_items":        req.MaxItems,
-		"critic_rescan_turn_indices":     uniqueSortedInts(req.TurnIndices),
+		"critic_rescan_turn_indices":     uniqueSortedNonNegativeInts(req.TurnIndices),
 		"critic_rescan_force_backfills":  true,
 		"world_rule_review_needed":       rawTurns > 0 && worldRules == 0,
 		"episode_review_needed":          rawTurns >= normalizedEpisodeInterval(0) && episodes == 0,

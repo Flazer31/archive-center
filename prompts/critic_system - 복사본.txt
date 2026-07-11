@@ -136,39 +136,6 @@ Return one JSON object with this shape. Unknown or unused surfaces may be empty.
       "injection_policy": "support_only_persona_recollection"
     }
   ],
-  "narrative_events": [
-    {
-      "event_type": "",
-      "summary": "",
-      "participants": [],
-      "evidence_excerpt": ""
-    }
-  ],
-  "state_claims": [
-    {
-      "subject": "",
-      "subject_type": "character",
-      "state_slot": "",
-      "value": "",
-      "claim_scope": "objective",
-      "transition": "set",
-      "confidence": 0.8,
-      "evidence_excerpt": ""
-    }
-  ],
-  "belief_updates": [
-    {
-      "perspective_owner": "",
-      "subject": "",
-      "subject_type": "character",
-      "state_slot": "",
-      "value": "",
-      "claim_scope": "belief",
-      "transition": "set",
-      "confidence": 0.8,
-      "evidence_excerpt": ""
-    }
-  ],
   "prune_targets": [],
   "evidence_excerpts": [],
   "emotional_intensity": 0.5,
@@ -261,29 +228,17 @@ Return one JSON object with this shape. Unknown or unused surfaces may be empty.
 - If `world_rule_audit.durable_rule_found` is true, `world_rules` must not be empty unless the rule cannot be safely expressed; in that case explain why in `world_rule_audit.reason`.
 - Mirror a durable rule in `world_state.rules` only when it shapes the current setting state. Do not mirror every historical fact.
 - Communication and comprehension limits are valid world/current-scene constraints when confirmed: language barrier, no shared language, cannot understand a language, translator absence, literacy/script limits, magical/technical translation limits, or communication only through gesture, objects, repeated words, or partial inference.
-- Gesture, objects, facial expression, repeated words, and partial inference may create rough intent guesses, but they do not resolve a language barrier or create fluent understanding.
-- If such a communication constraint is active, keep it in `world_rules` and mirror it in `world_state.rules` when it shapes the current scene. Do not clear or soften it unless the latest turn explicitly establishes a reliable interpreter, translation magic/device, learned shared language, confirmed common language, or direct user instruction that the barrier is resolved.
+- If such a communication constraint is active, keep it in `world_rules` and mirror it in `world_state.rules` when it shapes the current scene. Do not clear or soften it unless the latest turn explicitly establishes translation, learning, interpretation, shared language, or another change.
 - For system/progression stories, capture abstract mechanics such as randomized acquisition, progression currency, upgrade unlock, access condition, challenge/reward loop, item acquisition, party limits, cooldowns, rank gates, or base/environment constraints.
 
 [World Rule Mandatory Audit]
 Before returning JSON, silently run this audit:
-- Did the latest turn establish, confirm, continue, or explicitly resolve any stable setting constraint, current scene constraint, repeated system mechanic, progression mechanic, acquisition method, challenge/reward loop, exchange/cost rule, growth/unlock rule, access condition, social order, faction norm, institution rule, resource/logistics rule, environment constraint, language/comprehension constraint, magic/technology law, rank/authority rule, schedule/calendar rule, contract, taboo, or unspoken norm?
-- If yes, `world_rule_audit.durable_rule_found` must be true and `world_rules` must not be empty. Emit at least one compact, evidence-bound rule with `scope`, `category`, `key`, `value`, and optional `scope_name`, `confidence`, or `verification`.
-- Also mirror the same durable rule in `world_state.rules` when it shapes the current setting state.
+- Did the latest turn establish, confirm, continue, or explicitly resolve any stable setting constraint, current scene constraint, repeated system mechanic, social order, faction norm, institution rule, environment constraint, language/comprehension constraint, magic/technology law, rank/authority rule, schedule/calendar rule, contract, taboo, or unspoken norm?
+- If yes, `world_rule_audit.durable_rule_found` must be true and `world_rules` must not be empty unless the rule is already unchanged and no new record is needed; in that case explain the unchanged active constraint in `world_rule_audit.reason`.
 - For early-session setup turns, do not wait for many turns before capturing foundational constraints. A 1-7 turn session can already establish world rules.
-- If an active world/current-scene constraint is already present and the latest turn continues under it, preserve it; do not clear or weaken it merely because the latest turn focuses on another event.
-- If no rule is emitted despite these signals, the implied decision is: "the latest turn established no durable setting constraint." Only make that decision when it is truly supported.
+- Do not prune, clear, or weaken an active world/current-scene constraint merely because the latest turn focuses on another event.
 
 [State And Movement]
-- Separate events, objective current state, and character belief. Do not put all three into one summary-shaped record.
-- `narrative_events` are things that happened. They are history and must not become a current value by themselves.
-- `state_claims` are evidence-bound current facts. Use a stable `state_slot` that names the state dimension, not a sentence or a turn number.
-- `belief_updates` are what one named character currently believes, suspects, misunderstands, or knows. Set `perspective_owner`; do not promote these records to objective truth.
-- Use `transition` one of `set`, `reaffirm`, `change`, `reversal`, `recovery`, `correction`, `reveal`, `resolve`, `uncertain`, or `clear`.
-- The backend treats turn index only as deterministic audit order. Do not infer that an older fact is current merely because it was important.
-- Every event/state/belief item must include a short exact `evidence_excerpt` from the latest completed turn. If no exact evidence exists, omit the item.
-- Also include each accepted event/state/belief `evidence_excerpt` in top-level `evidence_excerpts`; the backend uses that shared excerpt to link the current value and its change ledger to direct evidence.
-- When the latest turn changes or corrects an existing state, return the new current value. Do not repeat the old value as another current claim.
 - Use `state_deltas` for current scene state, time state, tension, relationship changes, and opened/resolved threads.
 - If location changed, record it consistently:
   - `state_deltas.scene_state.location`

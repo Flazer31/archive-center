@@ -650,17 +650,17 @@ func TestSubjectiveEntityMemoryEntityBundlesAndAutoCapsule(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&listResp); err != nil {
 		t.Fatalf("decode entity bundles: %v", err)
 	}
-	if listResp.Count != 2 || len(listResp.Items) != 2 {
-		t.Fatalf("entity bundle count = %d items=%+v, want Chloe and Saori only", listResp.Count, listResp.Items)
+	if listResp.Count != 3 || len(listResp.Items) != 3 {
+		t.Fatalf("entity bundle count = %d items=%+v, want exact-name Chloe, 클로에, and Saori bundles", listResp.Count, listResp.Items)
 	}
 	if listResp.Policy["memory_id_selection_required"] != false || listResp.Policy["user_selects"] != "entity_bundle" {
 		t.Fatalf("PMC-16 entity bundle policy mismatch: %+v", listResp.Policy)
 	}
 	var foundChloe bool
 	for _, item := range listResp.Items {
-		if item["owner_entity_key"] == "chloe" {
+		if item["owner_entity_name"] == "Chloe" {
 			foundChloe = true
-			if item["memory_count"] != float64(3) || item["default_prepare_lane"] != "character_private_recollection" {
+			if item["memory_count"] != float64(2) || item["default_prepare_lane"] != "character_private_recollection" {
 				t.Fatalf("Chloe bundle mismatch: %+v", item)
 			}
 		}
@@ -672,6 +672,7 @@ func TestSubjectiveEntityMemoryEntityBundlesAndAutoCapsule(t *testing.T) {
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/subjective-entity-memories/capsule", strings.NewReader(`{
 		"owner_entity_key":"chloe",
+		"owner_entity_name":"Chloe",
 		"source_chat_session_id":"source-a",
 		"target_reveal_policy":"owner_private_until_revealed"
 	}`))
@@ -687,8 +688,8 @@ func TestSubjectiveEntityMemoryEntityBundlesAndAutoCapsule(t *testing.T) {
 		t.Fatalf("auto capsule did not infer entity name from selected memories: %+v", fake.capsules[0])
 	}
 	entries := fake.entries[fake.capsules[0].ID]
-	if len(entries) != 3 {
-		t.Fatalf("auto capsule entries = %d, want only Chloe source-a memories", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("auto capsule entries = %d, want exact-name Chloe source-a memories", len(entries))
 	}
 	for _, entry := range entries {
 		if strings.Contains(entry.MemoryText, "Saori") || strings.Contains(entry.MemoryText, "another session") {
@@ -722,7 +723,7 @@ func TestSubjectiveEntityMemoryAliasRepairDryRunAndApply(t *testing.T) {
 			OwnerVisibility:     "owner_private",
 			SourceChatSessionID: "source-repair",
 			SourceTurn:          3,
-			MemoryText:          "Chloe remembers the same route under a Korean display spelling.",
+			MemoryText:          "Chloe remembers the first route.",
 			TargetRevealPolicy:  "owner_private_until_revealed",
 			TagsJSON:            `["npc_private"]`,
 			Importance10:        8,
@@ -756,23 +757,26 @@ func TestSubjectiveEntityMemoryAliasRepairDryRunAndApply(t *testing.T) {
 		t.Fatalf("dry-run status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var dryRun struct {
-		DryRunOnly      bool `json:"dry_run_only"`
-		RepairableCount int  `json:"repairable_count"`
-		UpdatedCount    int  `json:"updated_count"`
-		Groups          []struct {
-			CanonicalOwnerKey string `json:"canonical_owner_key"`
-			MemoryCount       int    `json:"memory_count"`
-			RepairableCount   int    `json:"repairable_count"`
+		DryRunOnly          bool `json:"dry_run_only"`
+		RepairableCount     int  `json:"repairable_count"`
+		ReviewRequiredCount int  `json:"review_required_count"`
+		UpdatedCount        int  `json:"updated_count"`
+		Groups              []struct {
+			CanonicalOwnerKey   string `json:"canonical_owner_key"`
+			MemoryCount         int    `json:"memory_count"`
+			RepairableCount     int    `json:"repairable_count"`
+			ReviewRequiredCount int    `json:"review_required_count"`
+			Decision            string `json:"decision"`
 		} `json:"groups"`
 		Policy map[string]any `json:"policy"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&dryRun); err != nil {
 		t.Fatalf("decode dry-run: %v", err)
 	}
-	if !dryRun.DryRunOnly || dryRun.RepairableCount != 1 || dryRun.UpdatedCount != 0 {
+	if !dryRun.DryRunOnly || dryRun.RepairableCount != 0 || dryRun.ReviewRequiredCount != 1 || dryRun.UpdatedCount != 0 {
 		t.Fatalf("dry-run repair counts mismatch: %+v", dryRun)
 	}
-	if len(dryRun.Groups) != 1 || dryRun.Groups[0].CanonicalOwnerKey != "chloe" || dryRun.Groups[0].MemoryCount != 2 || dryRun.Groups[0].RepairableCount != 1 {
+	if len(dryRun.Groups) != 1 || dryRun.Groups[0].CanonicalOwnerKey != "chloe" || dryRun.Groups[0].MemoryCount != 2 || dryRun.Groups[0].RepairableCount != 0 || dryRun.Groups[0].ReviewRequiredCount != 1 || dryRun.Groups[0].Decision != "review_required" {
 		t.Fatalf("dry-run group mismatch: %+v", dryRun.Groups)
 	}
 	if dryRun.Policy["delete_duplicate_rows"] != false {
@@ -790,24 +794,23 @@ func TestSubjectiveEntityMemoryAliasRepairDryRunAndApply(t *testing.T) {
 		t.Fatalf("apply status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var applied struct {
-		DryRunOnly      bool `json:"dry_run_only"`
-		RepairableCount int  `json:"repairable_count"`
-		UpdatedCount    int  `json:"updated_count"`
+		DryRunOnly          bool `json:"dry_run_only"`
+		RepairableCount     int  `json:"repairable_count"`
+		ReviewRequiredCount int  `json:"review_required_count"`
+		UpdatedCount        int  `json:"updated_count"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&applied); err != nil {
 		t.Fatalf("decode apply: %v", err)
 	}
-	if applied.DryRunOnly || applied.RepairableCount != 1 || applied.UpdatedCount != 1 {
+	if applied.DryRunOnly || applied.RepairableCount != 0 || applied.ReviewRequiredCount != 1 || applied.UpdatedCount != 0 {
 		t.Fatalf("apply repair counts mismatch: %+v", applied)
 	}
 	repaired := fake.entityMemories[1]
-	if repaired.OwnerEntityKey != "chloe" || repaired.PersonaEntityKey != "chloe" {
-		t.Fatalf("alias row was not repaired to canonical key: %+v", repaired)
+	if repaired.OwnerEntityKey != "keulroe" || repaired.PersonaEntityKey != "keulroe" {
+		t.Fatalf("unconfirmed alias row must remain unchanged: %+v", repaired)
 	}
-	for _, needle := range []string{"entity_alias_repaired", "owner_entity_alias_key:keulroe", "raw_owner_entity_key:keulroe"} {
-		if !strings.Contains(repaired.TagsJSON, needle) {
-			t.Fatalf("repair tag %q missing from %s", needle, repaired.TagsJSON)
-		}
+	if strings.Contains(repaired.TagsJSON, "entity_alias_repaired") {
+		t.Fatalf("unconfirmed alias must not receive repair tag: %s", repaired.TagsJSON)
 	}
 
 	rec = httptest.NewRecorder()
@@ -823,13 +826,8 @@ func TestSubjectiveEntityMemoryAliasRepairDryRunAndApply(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&listResp); err != nil {
 		t.Fatalf("decode entity bundles: %v", err)
 	}
-	if listResp.Count != 2 {
-		t.Fatalf("entity bundle count = %d items=%+v, want Chloe and Saori only", listResp.Count, listResp.Items)
-	}
-	for _, item := range listResp.Items {
-		if item["owner_entity_key"] == "chloe" && item["memory_count"] != float64(2) {
-			t.Fatalf("repaired Chloe bundle should include both memories: %+v", item)
-		}
+	if listResp.Count != 3 {
+		t.Fatalf("entity bundle count = %d items=%+v, want unconfirmed Chloe/클로에 split plus Saori", listResp.Count, listResp.Items)
 	}
 }
 
@@ -854,6 +852,8 @@ func TestSubjectiveEntityMemoryAliasRepairVexKoreanAlias(t *testing.T) {
 			SourceChatSessionID: "source-vex-repair",
 			SourceTurn:          2,
 			MemoryText:          "Vex remembers the same route under a Korean display spelling.",
+			EvidenceExcerpt:     "Vex and 벡스 are explicitly revealed as the same person.",
+			TagsJSON:            `["confirmed_identity_alias_canonicalized"]`,
 			Importance10:        8,
 		},
 	} {

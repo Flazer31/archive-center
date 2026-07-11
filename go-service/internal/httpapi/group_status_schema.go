@@ -1202,7 +1202,7 @@ func statusLifecyclePolicyValue() statusLifecyclePolicy {
 		RequiresStoryClockForEffects: true,
 		CurrentValueMutationAllowed:  false,
 		VectorTruthWriter:            false,
-		AcceptedEventKinds:           []string{"set", "increase", "decrease", "clear", "effect_applied", "effect_expired", "effect_cleared"},
+		AcceptedEventKinds:           []string{"set", "change", "reaffirm", "reversal", "recovery", "correction", "reveal", "resolve", "uncertain", "clear", "event_observed", "increase", "decrease", "effect_applied", "effect_expired", "effect_cleared"},
 		AcceptedEffectKinds:          []string{"temporary_effect", "buff", "debuff", "injury", "cooldown"},
 		AcceptedEffectStates:         []string{"pending", "active", "expired", "cleared"},
 		CanonicalEventSource:         "mariadb.status_change_events",
@@ -2322,7 +2322,7 @@ func statusSchemaNormalizeValueKind(raw string) string {
 
 func statusNormalizeEventKind(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "set", "increase", "decrease", "clear", "effect_applied", "effect_expired", "effect_cleared":
+	case "set", "change", "reaffirm", "reversal", "recovery", "correction", "reveal", "resolve", "uncertain", "clear", "event_observed", "increase", "decrease", "effect_applied", "effect_expired", "effect_cleared":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""

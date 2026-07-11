@@ -1942,10 +1942,16 @@ func (s *Server) handleAdminRescan(w http.ResponseWriter, r *http.Request) {
 			bgReq.Background = false
 			return s.runAdminRescanWithProgress(ctx, sid, bgReq, progress)
 		})
+		reusedRunningJob := boolFromAny(job["reused_running_job"])
+		jobStatus := strings.TrimSpace(fmt.Sprint(job["status"]))
 		job["status"] = "accepted"
-		job["job_status"] = "queued"
+		job["job_status"] = jobStatus
 		job["poll_route"] = "/admin/jobs/" + fmt.Sprint(job["job_id"])
-		job["note"] = "rescan is running in the background; poll the job route for progress"
+		if reusedRunningJob {
+			job["note"] = "an existing rescan for this session is still running; poll the existing job route"
+		} else {
+			job["note"] = "rescan is running in the background; poll the job route for progress"
+		}
 		writeJSON(w, http.StatusAccepted, job)
 		return
 	}
@@ -2411,7 +2417,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 
 	targetTurns := map[int]bool{}
 	for _, turn := range req.TurnIndices {
-		if turn > 0 {
+		if turn >= 0 {
 			targetTurns[turn] = true
 		}
 	}
@@ -2428,13 +2434,13 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		boolFromAny(req.ClientMeta["force_episode_backfill"])
 	memoryTurns := map[int]bool{}
 	for _, mem := range memories {
-		if mem.ChatSessionID == sid && mem.TurnIndex > 0 {
+		if mem.ChatSessionID == sid && mem.TurnIndex >= 0 {
 			memoryTurns[mem.TurnIndex] = true
 		}
 	}
 	turnLogs := map[int]map[string]string{}
 	for _, log := range logs {
-		if log.ChatSessionID != sid || log.TurnIndex <= 0 {
+		if log.ChatSessionID != sid || log.TurnIndex < 0 {
 			continue
 		}
 		if len(targetTurns) > 0 && !targetTurns[log.TurnIndex] {
@@ -2460,7 +2466,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		}
 		turns = append(turns, turn)
 	}
-	turns = uniqueSortedInts(turns)
+	turns = uniqueSortedNonNegativeInts(turns)
 	if len(turns) > maxItems {
 		turns = turns[:maxItems]
 	}
@@ -2651,11 +2657,11 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			}
 			continue
 		}
-		if shouldApplyCompleteTurnOOCGuard(userText, assistantText, nil) || shouldSkipDerivedIngestForSourceAwareGuard(userText, assistantText) {
+		if shouldApplyCompleteTurnOOCGuard(userText, assistantText, nil) {
 			skipped++
-			skippedTurns = append(skippedTurns, map[string]any{"turn_index": turn, "reason": "source_guard"})
+			skippedTurns = append(skippedTurns, map[string]any{"turn_index": turn, "reason": "ooc_guard"})
 			if progress != nil {
-				progress(adminRescanProgress(len(processedTurns)+failed+skipped, len(turns), succeeded, failed, skipped, processedTurns, failedTurns, skippedTurns, artifactCounts, turn, "source_guard"))
+				progress(adminRescanProgress(len(processedTurns)+failed+skipped, len(turns), succeeded, failed, skipped, processedTurns, failedTurns, skippedTurns, artifactCounts, turn, "ooc_guard"))
 			}
 			continue
 		}
@@ -2667,7 +2673,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			}
 			continue
 		}
-		extraction, trace, err := s.runCompleteTurnCritic(ctx, sid, turn, userText, assistantText, nil, nil, extractionCfg.Critic)
+		extraction, trace, err := s.runCompleteTurnCriticFromCanonicalLogs(ctx, sid, turn, userText, assistantText, extractionCfg.Critic)
 		if err != nil {
 			failed++
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turn, "reason": "critic_extract_failed: " + err.Error(), "trace": trace})
@@ -2759,7 +2765,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		"succeeded":           succeeded,
 		"failed":              failed,
 		"skipped":             skipped,
-		"processed_turns":     uniqueSortedInts(processedTurns),
+		"processed_turns":     uniqueSortedNonNegativeInts(processedTurns),
 		"failed_turns":        failedTurns,
 		"skipped_turns":       skippedTurns,
 		"artifact_counts":     artifactCounts,
@@ -2779,7 +2785,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			"succeeded":           succeeded,
 			"failed_count":        failed,
 			"skipped_count":       skipped,
-			"processed_turns":     uniqueSortedInts(processedTurns),
+			"processed_turns":     uniqueSortedNonNegativeInts(processedTurns),
 			"failed_turns":        failedTurns,
 			"skipped_turns":       skippedTurns,
 			"artifact_counts":     cloneIntMapAny(artifactCounts),
@@ -2801,7 +2807,7 @@ func adminRescanProgress(processed, total, succeeded, failed, skipped int, proce
 		"succeeded":        succeeded,
 		"failed_count":     failed,
 		"skipped_count":    skipped,
-		"processed_turns":  uniqueSortedInts(processedTurns),
+		"processed_turns":  uniqueSortedNonNegativeInts(processedTurns),
 		"failed_turns":     append([]map[string]any{}, failedTurns...),
 		"skipped_turns":    append([]map[string]any{}, skippedTurns...),
 		"artifact_counts":  cloneIntMapAny(artifactCounts),
@@ -3264,10 +3270,24 @@ func turnRangesCover(ranges []turnRange, fromTurn, toTurn int) bool {
 func intsToSet(items []int) map[int]bool {
 	out := map[int]bool{}
 	for _, item := range items {
-		if item > 0 {
+		if item >= 0 {
 			out[item] = true
 		}
 	}
+	return out
+}
+
+func uniqueSortedNonNegativeInts(values []int) []int {
+	seen := map[int]bool{}
+	out := []int{}
+	for _, value := range values {
+		if value < 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Ints(out)
 	return out
 }
 
@@ -3504,7 +3524,7 @@ func (s *Server) backfillWorldRulesFromMemories(ctx context.Context, sid string,
 	existing := 0
 	skipped := 0
 	for _, mem := range memories {
-		if mem.ChatSessionID != sid || mem.TurnIndex <= 0 {
+		if mem.ChatSessionID != sid || mem.TurnIndex < 0 {
 			continue
 		}
 		if len(targetTurns) > 0 && !targetTurns[mem.TurnIndex] {
@@ -3907,7 +3927,7 @@ type worldRuleAuditChatLogChunk struct {
 func buildWorldRuleAuditChatLogChunks(sid string, logs []store.ChatLog, targetTurns map[int]bool) []worldRuleAuditChatLogChunk {
 	turnLogs := map[int]map[string]string{}
 	for _, log := range logs {
-		if log.ChatSessionID != sid || log.TurnIndex <= 0 {
+		if log.ChatSessionID != sid || log.TurnIndex < 0 {
 			continue
 		}
 		if len(targetTurns) > 0 && !targetTurns[log.TurnIndex] {

@@ -15,6 +15,8 @@ documents so they do not mix with unrelated Archive Center runtime docs.
 - `2.5-mdash-fusion-operating-contract-2026-06-29.md`
 - `2.5-mdash-fusion-fugu-full-flow-2026-07-01.md`
 - `2.5-strong-fusion-enhancement-roadmap-2026-07-02.md`
+- `rescan-canonical-backfill-fix.md`
+- `long-session-subjective-memory-accuracy-gate.md`
 - `../provider-request-overrides-flex-paygo-contract.md`
 
 Use this as the active 2.5 design anchor. It defines the standalone-first

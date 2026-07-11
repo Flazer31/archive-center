@@ -47,12 +47,28 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 	if m == nil {
 		m = newAdminJobManager()
 	}
+	normalizedKind := strings.TrimSpace(kind)
+	normalizedSID := strings.TrimSpace(sid)
+	m.mu.Lock()
+	for i := len(m.order) - 1; i >= 0; i-- {
+		existing := m.jobs[m.order[i]]
+		if existing == nil || !strings.EqualFold(strings.TrimSpace(existing.Kind), normalizedKind) || strings.TrimSpace(existing.SessionID) != normalizedSID {
+			continue
+		}
+		if existing.Status != "queued" && existing.Status != "running" {
+			continue
+		}
+		snapshot := existing.snapshot()
+		snapshot["reused_running_job"] = true
+		m.mu.Unlock()
+		return snapshot
+	}
 	now := time.Now().UTC()
-	id := fmt.Sprintf("%s-%d-%06d", strings.ToLower(strings.TrimSpace(kind)), now.UnixNano(), atomic.AddUint64(&m.nextID, 1))
+	id := fmt.Sprintf("%s-%d-%06d", strings.ToLower(normalizedKind), now.UnixNano(), atomic.AddUint64(&m.nextID, 1))
 	job := &adminBackgroundJob{
 		ID:        id,
-		Kind:      strings.TrimSpace(kind),
-		SessionID: strings.TrimSpace(sid),
+		Kind:      normalizedKind,
+		SessionID: normalizedSID,
 		Status:    "queued",
 		Request:   sanitizeAdminJobRequest(request),
 		Progress: map[string]any{
@@ -71,7 +87,6 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 		StartedAt: now,
 		UpdatedAt: now,
 	}
-	m.mu.Lock()
 	m.jobs[id] = job
 	m.order = append(m.order, id)
 	m.pruneLocked()
