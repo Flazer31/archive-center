@@ -1066,7 +1066,8 @@ func TestArchiveCenterJSCompleteTurnTimelineTargetedRefreshMarkers(t *testing.T)
 	required := []string{
 		`pendingItems: []`,
 		`type: "pending_artifacts"`,
-		`function timelineVisibleItems()`,
+		`pending_items: Array.isArray(_timelineState.pendingItems) ? _timelineState.pendingItems : []`,
+		`_timelineState.viewModel = result.timeline || null`,
 		`function upsertTimelineCompleteTurnPendingArtifacts`,
 		`function scheduleTimelinePostCompleteTurnRefresh`,
 		`upsertTimelineCompleteTurnPendingArtifacts(chatSessionId, persistedTurnIdx`,

@@ -3571,6 +3571,7 @@
     detailLoading: false,
     detailError: "",
     expandedTurnKey: "",
+    viewModel: null,
   };
   const _sessionMigrationUi = {
     running: false,
@@ -35757,6 +35758,7 @@
       status: "",
       error: "",
     },
+    viewModel: null,
   };
 
   // Sprint 3-E-4: Critic Feedback state
@@ -40664,21 +40666,23 @@
   // ──────────────────────────────────────────────────────────────
 
   function renderExplorerSessionsList() {
-    if (_explorer.sessionsLoading) return '<div class="mo-note">' + t('explorer.sessions.loading') + '</div>';
-    const visibleSessions = explorerVisibleSessions();
+    const model = _explorer.viewModel;
+    if (!model) return '<div class="mo-note">Presentation ViewModel unavailable</div>';
+    const visibleSessions = Array.isArray(model.sessions) ? model.sessions : [];
+    if (_explorer.sessionsLoading && visibleSessions.length === 0) return '<div class="mo-note">' + t('explorer.sessions.loading') + '</div>';
     if (visibleSessions.length === 0) return '<div class="mo-note">' + t('explorer.sessions.empty') + '</div>';
 
-    const selectedSid = _explorer.selectedSessionId;
-    const liveSid = _explorer.activeChatSessionId; // Sprint 2-G: 현재 활성 채팅 세션
     return visibleSessions.map(s => {
-      const isSelected = s.chat_session_id === selectedSid;
-      const isLive = s.chat_session_id === liveSid;
-      const visibleLabel = getSessionDisplayLabel(s.chat_session_id, true);
-      const counts = "logs:" + s.chat_logs_count + " mem:" + s.memories_count + " kg:" + s.kg_triples_count;
+      const sid = String(s.session_id || "");
+      const isSelected = !!s.selected;
+      const isLive = !!s.current;
+      const visibleLabel = getSessionDisplayLabel(sid, true);
+      const laneCounts = s.counts || {};
+      const counts = "logs:" + Number(laneCounts.chat_logs || 0) + " mem:" + Number(laneCounts.memories || 0) + " kg:" + Number(laneCounts.kg_triples || 0);
       const cls = "mo-ex-session" + (isSelected ? " mo-ex-session-active" : "") + (isLive ? " mo-ex-session-live" : "");
-      return '<div class="' + cls + '" data-session-id="' + escapeAttr(s.chat_session_id) + '">' +
+      return '<div class="' + cls + '" data-session-id="' + escapeAttr(sid) + '">' +
         (isLive ? '<span class="mo-ex-live-badge" title="' + t('explorer.sessions.activeChatTooltip') + '">●</span>' : '') +
-        '<span class="mo-ex-session-id" title="' + escapeAttr(buildSessionDisplayTitle(s.chat_session_id)) + '">' + escapeAttr(visibleLabel) + '</span>' +
+        '<span class="mo-ex-session-id" title="' + escapeAttr(buildSessionDisplayTitle(sid)) + '">' + escapeAttr(visibleLabel) + '</span>' +
         '<span class="mo-ex-session-counts">' + escapeAttr(counts) + '</span>' +
         (s.last_activity ? '<span class="mo-ex-session-time">' + escapeAttr(formatDashboardTimestampLocal(s.last_activity)) + '</span>' : '') +
       '</div>';
@@ -40686,52 +40690,10 @@
   }
 
   function getExplorerTabItems() {
-    const ts = _explorer.trust;
-    const trustCount = ts.storylines.length + ts.worldRules.length + ts.hooks.length;
-    const wg = _explorer.worldGraph;
-    const worldCount = wg.allRules.length > 0 ? wg.allRules.length : wg.rules.length;
-    return [
-      {
-        key: "chat_logs",
-        label: t("explorer.tabs.chat_logs.label"),
-        count: _explorer.chatLogs.total,
-      },
-      {
-        key: "memories",
-        label: t("explorer.tabs.memories.label"),
-        count: _explorer.memories.total,
-      },
-      {
-        key: "direct_evidence",
-        label: t("explorer.tabs.direct_evidence.label"),
-        count: _explorer.directEvidence.total,
-      },
-      {
-        key: "kg_triples",
-        label: t("explorer.tabs.kg_triples.label"),
-        count: _explorer.kgTriples.total,
-      },
-      {
-        key: "episodes",
-        label: t("explorer.tabs.episodes.label"),
-        count: (_explorer.episodes.total + _explorer.chapters.total + _explorer.arcs.total + _explorer.sagas.total),
-      },
-      {
-        key: "trust",
-        label: t("explorer.tabs.trust.label"),
-        count: trustCount,
-      },
-      {
-        key: "world",
-        label: t("explorer.tabs.world.label"),
-        count: worldCount,
-      },
-      {
-        key: "entities",
-        label: t("explorer.tabs.entities.label"),
-        count: (_explorer.entities.characters.length + _explorer.entities.locations.length + _explorer.entities.items.length),
-      },
-    ];
+    const tabs = _explorer.viewModel && Array.isArray(_explorer.viewModel.tabs) ? _explorer.viewModel.tabs : [];
+    return tabs.map(function(tab) {
+      return { key: String(tab.key || ""), label: presentationExplorerTabLabel(tab.key), count: Number(tab.count || 0) };
+    });
   }
 
   function renderExplorerTabs(tabItems) {
@@ -43105,6 +43067,8 @@
   }
 
   function renderExplorerSection() {
+    const viewModel = _explorer.viewModel;
+    if (!viewModel) return '<div class="mo-note">Presentation ViewModel unavailable</div>';
     const selectedSid = _explorer.selectedSessionId;
     const liveSid = _explorer.activeChatSessionId;
     const debugToolsVisible = !!settings.debug;
@@ -43112,8 +43076,8 @@
 
     // Sprint 2-G: 동기화 상태 표시
     let syncIndicator = '';
-    if (liveSid) {
-      if (selectedSid === liveSid) {
+    if (viewModel.sync_state !== "unknown") {
+      if (viewModel.sync_state === "current") {
         syncIndicator = '<span class="mo-ex-sync mo-ex-sync-ok" title="탐색 필터가 현재 활성 채팅과 일치합니다">✔ 현재 채팅</span>';
       } else {
         syncIndicator = '<span class="mo-ex-sync mo-ex-sync-diff" title="탐색 필터가 활성 채팅과 다릅니다">⚠ 다른 세션</span>' +
@@ -43478,7 +43442,7 @@
       rescanPanel +
       hypaImportPanel +
       '<div class="mo-ex-sessions-box">' +
-        '<div class="mo-ex-sessions-header">Sessions (' + explorerVisibleSessions().length + ') <button class="mo-btn-toggle" id="mo-ex-refresh-sessions">↻ 새로고침</button></div>' +
+        '<div class="mo-ex-sessions-header">Sessions (' + (Array.isArray(viewModel.sessions) ? viewModel.sessions.length : 0) + ') <button class="mo-btn-toggle" id="mo-ex-refresh-sessions">↻ 새로고침</button></div>' +
         (_explorer.sessionsError ? '<div class="mo-status mo-status-warn">' + escapeAttr(_explorer.sessionsError) + '</div>' : '') +
         '<div class="mo-ex-sessions-list" id="mo-ex-sessions-list">' + renderExplorerSessionsList() + '</div>' +
       '</div>' +
@@ -43569,6 +43533,7 @@
     try {
       const preserveScroll = options && options.preserveScroll !== false;
       const scrollState = preserveScroll ? captureExplorerScrollState() : null;
+      await loadPresentationViewModels();
       // Sprint 2-G: 전체 explorer 섹션 재렌더 (sync indicator 포함)
       const explorerRoot = document.getElementById("mo-explorer-root");
       if (explorerRoot) {
@@ -45153,21 +45118,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
   function timelineItemKey(item) {
     if (!item || typeof item !== "object") return "";
+    const view = presentationTimelineItemView(item);
+    if (view.key) return String(view.key);
     return String(item.type || "item") + ":" + String(item.id ?? item.source_id ?? "");
-  }
-
-  function normalizeTimelineType(type, role) {
-    const raw = String(type || "").toLowerCase();
-    if (raw === "chat_log") return String(role || "chat_log").toLowerCase() === "assistant" ? "assistant" : "user";
-    if (raw === "kg_triple") return "episode";
-    if (raw === "direct_evidence" || raw === "evidence") return "memory";
-    if (raw === "memory" || raw === "episode") return raw;
-    if (raw === "pending_artifacts") return "pending";
-    return "user";
   }
 
   function timelineItemTitle(item) {
     if (!item || typeof item !== "object") return t("timeline.detail.itemFallback");
+    if (item.view && typeof item.view === "object") return presentationTimelineTitle(item);
     const type = String(item.type || "item");
     if (item.title) return String(item.title);
     if (type === "chat_log") return String(item.role || "chat_log");
@@ -45181,6 +45139,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
   function timelineItemPreview(item) {
     if (!item || typeof item !== "object") return "";
+    if (item.view && typeof item.view === "object") return String(item.view.preview || "");
     return timelineReadableText(item.preview || item.summary || item.content || item.summary_json || item.summary_text || item.evidence_text || "");
   }
 
@@ -45219,23 +45178,17 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   }
 
   function timelineDisplayTurnKey(item) {
+    const view = presentationTimelineItemView(item);
+    if (view.display_turn_key) return String(view.display_turn_key);
     const turnText = timelineItemTurnText(item);
     if (turnText) return "turn:" + turnText;
     return timelineTurnKey(item);
   }
 
-  function timelineTurnGroupKind(group) {
-    try {
-      if (group && String(group.key || "") === "turn:" + STARTUP_MESSAGE_TURN_INDEX) return "starter";
-      return "turn";
-    } catch {
-      return "turn";
-    }
-  }
-
   function timelineTypeDisplay(item) {
-    const normalizedType = normalizeTimelineType(item && item.type, item && item.role);
-    const rawType = String((item && item.type) || "").toLowerCase();
+    const view = presentationTimelineItemView(item);
+    const normalizedType = String(view.normalized_type || "user");
+    const rawType = String(view.raw_type || "").toLowerCase();
     if (normalizedType === "assistant") return t("timeline.type.assistant");
     if (normalizedType === "user") return t("timeline.type.user");
     if (normalizedType === "memory") return rawType === "evidence" || rawType === "direct_evidence" ? t("timeline.type.evidence") : t("timeline.type.memory");
@@ -45261,64 +45214,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   }
 
   function timelineFindItemByKey(key) {
-    const items = timelineVisibleItems();
+    const items = _timelineState.viewModel && Array.isArray(_timelineState.viewModel.items) ? _timelineState.viewModel.items : [];
     return items.find((candidate) => timelineItemKey(candidate) === key) || null;
-  }
-
-  function timelineCompactTurnPreview(value, limit) {
-    const cap = Math.max(36, Math.floor(Number(limit || 72)));
-    let clean = String(value || "")
-      .replace(/#{1,6}\s*/g, " ")
-      .replace(/Chatindex:\s*\d+/gi, " ")
-      .replace(/\*\*/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!clean) return "";
-    const sentence = clean.match(/^(.{12,}?)([.!?。！？…]|다\.|요\.|음\.|함\.|했다\.|였다\.)\s/);
-    if (sentence && sentence[1]) clean = sentence[1].trim();
-    if (clean.length <= cap) return clean;
-    return clean.slice(0, Math.max(0, cap - 1)).trim() + "…";
-  }
-
-  function timelineBuildTurnGroups(items) {
-    const groups = [];
-    const byKey = new Map();
-    (Array.isArray(items) ? items : []).forEach((item) => {
-      if (!item || typeof item !== "object") return;
-      const key = timelineDisplayTurnKey(item);
-      let group = byKey.get(key);
-      if (!group) {
-        const turnText = timelineItemTurnText(item);
-        group = {
-          key,
-          turnText,
-          createdText: String(item.created_at || ""),
-          items: [],
-          counts: {},
-        };
-        byKey.set(key, group);
-        groups.push(group);
-      }
-      const rawType = String(item.type || normalizeTimelineType(item.type, item.role) || "item").toLowerCase();
-      group.counts[rawType] = Number(group.counts[rawType] || 0) + 1;
-      if (!group.createdText && item.created_at) group.createdText = String(item.created_at);
-      group.items.push(item);
-    });
-    return groups;
-  }
-
-  function timelineTurnPreview(group) {
-    if (!group || !Array.isArray(group.items)) return "";
-    const primary = group.items.find((item) => {
-      const type = String(item.type || "").toLowerCase();
-      return type === "memory" || type === "evidence" || type === "direct_evidence";
-    }) || group.items.find((item) => String(item.type || "").toLowerCase() === "episode")
-      || group.items.find((item) => String(item.type || "").toLowerCase() === "chat_log" && String(item.role || "").toLowerCase() === "assistant");
-    const preferred = primary
-      || group.items.find((item) => timelineItemPreview(item).trim())
-      || group.items[0];
-    const preview = timelineItemPreview(preferred);
-    return timelineCompactTurnPreview(preview || timelineItemTitle(preferred), 72);
   }
 
   function timelineTurnBadgeHtml(group) {
@@ -45327,22 +45224,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const label = timelineSourceCountLabel(type, group.counts[type]);
       return label ? '<span class="mo-tl-badge">' + escapeAttr(label) + '</span>' : "";
     }).filter(Boolean).join("");
-  }
-
-  function timelineVisibleItems() {
-    const selectedSid = String(_timelineState.selectedSessionId || _timelineState.sessionId || _timelineState.currentSessionId || "");
-    const now = Date.now();
-    const pending = (Array.isArray(_timelineState.pendingItems) ? _timelineState.pendingItems : [])
-      .filter((item) => {
-        if (!item || typeof item !== "object") return false;
-        if (Number(item.expires_at_ms || 0) > 0 && Number(item.expires_at_ms || 0) < now) return false;
-        const sid = String(item.chat_session_id || item.session_id || "");
-        return !sid || !selectedSid || sid === selectedSid;
-      });
-    if (pending.length !== _timelineState.pendingItems.length) {
-      _timelineState.pendingItems = pending.slice();
-    }
-    return pending.concat(Array.isArray(_timelineState.items) ? _timelineState.items : []);
   }
 
   function pruneTimelinePendingArtifacts(sessionId, loadedItems) {
@@ -45556,12 +45437,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       ]) + '</div>');
     }
     return parts.filter(Boolean).join("");
-  }
-
-  function renderTimelineEmptyState() {
-    if (_timelineState.loading) return '<div class="mo-note">' + escapeAttr(t("timeline.button.loading")) + '</div>';
-    if (_timelineState.error) return '<div class="mo-status mo-status-fail">' + escapeAttr(_timelineState.error) + '</div>';
-    return '<div class="mo-note">' + escapeAttr(t("timeline.empty.noItems")) + '</div>';
   }
 
   function timelineSessionId(session) {
@@ -46363,9 +46238,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
   }
 
-  function refreshTimelineUI(options = {}) {
+  async function refreshTimelineUI(options = {}) {
     const preserveScroll = options && options.preserveScroll !== false;
     const scrollState = preserveScroll ? captureTimelineScrollState() : null;
+    await loadPresentationViewModels();
     const timelinePanel = document.querySelector('[data-tab-panel="timeline"]');
     if (timelinePanel) {
       timelinePanel.innerHTML = renderTimelinePanel();
@@ -46628,52 +46504,18 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
   }
 
-  function renderTimelineCard(item) {
-    const normalizedType = normalizeTimelineType(item.type, item.role);
-    const safeType = escapeAttr(normalizedType);
-    const title = escapeAttr(timelineItemTitle(item));
-    const summary = escapeAttr(timelineItemPreview(item));
-    const key = timelineItemKey(item);
-    const isSelected = _timelineSelectedDetail && timelineItemKey(_timelineSelectedDetail) === key;
-    const detailRef = String(item.detail_ref || "");
-    const turnText = String(item.turn_index ?? item.turn_anchor ?? item.source_turn ?? item.to_turn ?? "");
-    const createdText = String(item.created_at || "");
-    const sourceType = String(item.type || normalizedType || "item");
-    const sourceId = item.id ?? item.source_id ?? "";
-    const idBadge = sourceId !== "" ? '<span class="mo-tl-badge">' + escapeAttr(sourceType + " #" + String(sourceId)) + '</span>' : "";
-    const evidence = summary ? '<div class="mo-tl-evidence">' + summary + '</div>' : '<div class="mo-note">' + escapeAttr(t("timeline.note.noPreview")) + '</div>';
-    const timeParts = formatTimelineTimestampParts(createdText);
-    const editButton = timelineCanEditItem(item)
-      ? '<button class="mo-btn mo-btn-ghost" data-timeline-edit-key="' + escapeAttr(key) + '">' + escapeAttr(t("explorer.btn.editTooltip")) + '</button>'
-      : '';
-    return '<article class="mo-tl-entry mo-tl-entry-' + safeType + '">' +
-      '<div class="mo-tl-entry-meta"><span class="mo-tl-entry-turn">#' + escapeAttr(turnText || "-") + '</span><span class="mo-tl-entry-date">' + escapeAttr(timeParts.date) + '</span><span class="mo-tl-entry-time">' + escapeAttr(timeParts.time) + '</span></div>' +
-      '<div class="mo-tl-node mo-tl-node-' + safeType + '"></div>' +
-      '<div class="mo-tl-card mo-tl-' + safeType + (isSelected ? ' is-expanded' : '') + '" data-timeline-key="' + escapeAttr(key) + '">' +
-        '<div class="mo-tl-card-head">' +
-          '<div><div class="mo-tl-type">' + safeType + '</div><div class="mo-tl-title">' + title + '</div></div>' +
-          '<div class="mo-tl-badges">' + idBadge + '</div>' +
-        '</div>' +
-        '<div class="mo-tl-summary">' + summary + '</div>' +
-        '<div class="mo-tl-expanded">' +
-          evidence +
-          '<div class="mo-tl-actions">' + editButton + '<button class="mo-btn mo-btn-info" data-timeline-detail-key="' + escapeAttr(key) + '" data-timeline-detail-ref="' + escapeAttr(detailRef) + '">' + escapeAttr(t("timeline.button.viewDetail")) + '</button></div>' +
-        '</div>' +
-      '</div>' +
-    '</article>';
-  }
-
   function renderTimelineTurnItemRow(item) {
-    const normalizedType = normalizeTimelineType(item.type, item.role);
+    const view = presentationTimelineItemView(item);
+    const normalizedType = String(view.normalized_type || "user");
     const safeType = escapeAttr(normalizedType);
-    const key = timelineItemKey(item);
-    const title = escapeAttr(timelineItemTitle(item));
-    const preview = escapeAttr(timelineItemPreview(item));
+    const key = String(view.key || timelineItemKey(item));
+    const title = escapeAttr(presentationTimelineTitle(item));
+    const preview = escapeAttr(String(view.preview || ""));
     const detailRef = String(item.detail_ref || "");
     const isSelected = _timelineSelectedDetail && timelineItemKey(_timelineSelectedDetail) === key;
-    const sourceId = item.id ?? item.source_id ?? "";
+    const sourceId = view.source_id ?? item.id ?? item.source_id ?? "";
     const sourceBadge = sourceId !== "" ? " #" + String(sourceId) : "";
-    const editButton = timelineCanEditItem(item)
+    const editButton = view.can_edit
       ? '<button type="button" class="mo-btn mo-btn-ghost" data-timeline-edit-key="' + escapeAttr(key) + '">' + escapeAttr(t("explorer.btn.editTooltip")) + '</button>'
       : '';
     return '<div class="mo-tl-turn-item mo-tl-' + safeType + (isSelected ? ' is-active' : '') + '" data-timeline-inline-key="' + escapeAttr(key) + '">' +
@@ -46688,11 +46530,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const selectedTurnKey = timelineSelectedTurnKey();
     const isExpanded = _timelineState.expandedTurnKey === group.key;
     const isSelected = selectedTurnKey === group.key;
-    const groupKind = timelineTurnGroupKind(group);
+    const groupKind = String(group.kind || "turn");
     const turnText = group.turnText || "-";
     const createdText = String(group.createdText || "");
-    const summary = escapeAttr(timelineTurnPreview(group));
-    const itemCount = Array.isArray(group.items) ? group.items.length : 0;
+    const summary = escapeAttr(String(group.preview || ""));
+    const itemCount = Number(group.item_count || 0);
     const badges = timelineTurnBadgeHtml(group) + '<span class="mo-tl-badge">' + escapeAttr(tf("timeline.badge.items", { n: String(itemCount) })) + '</span>';
     const rows = (group.items || []).map(renderTimelineTurnItemRow).join("");
     const typeLabel = groupKind === "starter" ? t("timeline.turn.kind.starter") : groupKind === "input" ? t("timeline.turn.kind.input") : t("timeline.turn.kind.turn");
@@ -46714,18 +46556,20 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   }
 
   function renderTimelinePanel() {
-    const items = timelineVisibleItems();
+    const viewModel = _timelineState.viewModel;
+    if (!viewModel) return '<div class="mo-note">Presentation ViewModel unavailable</div>';
+    const items = Array.isArray(viewModel.items) ? viewModel.items : [];
     const activeItem = _timelineState.detailItem || _timelineSelectedDetail || items[0] || null;
-    const turnGroups = timelineBuildTurnGroups(items);
-    const meta = _timelineState.meta || {};
-    const sourceCounts = meta.source_counts || {};
+    const turnGroups = Array.isArray(viewModel.groups) ? viewModel.groups : [];
+    const summary = viewModel.summary || {};
+    const sourceCounts = summary.source_counts || {};
     const countText = tf("timeline.count.summary", {
-      turns: turnGroups.length,
-      items: items.length,
-      total: meta.total_unpaged != null ? meta.total_unpaged : items.length,
+      turns: Number(summary.turns || 0),
+      items: Number(summary.items || 0),
+      total: Number(summary.total || 0),
     });
-    const selectedSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
-    const sessions = Array.isArray(_timelineState.sessions) ? _timelineState.sessions : [];
+    const selectedSessionId = String(viewModel.selected_session_id || "");
+    const sessions = Array.isArray(viewModel.sessions) ? viewModel.sessions : [];
     const detailMode = sanitizeEnumValue(settings.uiDetailMode, DEFAULT_SETTINGS.uiDetailMode, UI_DETAIL_MODE_OPTIONS);
     const activeDetailHtml = activeItem ? renderDetailPanel(activeItem) : '<div class="mo-note">' + escapeAttr(t("timeline.note.selectItem")) + '</div>';
     const migrationStatusHtml = _sessionMigrationUi.status && _sessionMigrationUi.status !== "idle" && _sessionMigrationUi.message
@@ -46748,13 +46592,13 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         '</div>'
       : '';
     const sessionListHtml = sessions.length > 0 ? sessions.map((session) => {
-      const sid = timelineSessionId(session);
-      const active = sid === selectedSessionId;
-      const lifecycle = resolveRuntimeSessionLifecycle(sid);
+      const sid = String(session.session_id || "");
+      const active = !!session.selected;
+      const lifecycle = { deleted: !!session.deleted, status: String(session.status || "active"), label: String(session.label || session.status || "active") };
       const sessionLabel = getSessionDisplayLabel(sid, false);
-      const canAttach = !!(_timelineState.currentSessionId && sid && sid !== _timelineState.currentSessionId && !timelineIsPlaceholderSessionId(sid) && !lifecycle.deleted);
-      const canCopy = !!(_timelineState.currentSessionId && sid && sid !== _timelineState.currentSessionId && !timelineIsPlaceholderSessionId(sid) && !lifecycle.deleted);
-      const canMigrate = !!(_timelineState.currentSessionId && sid && sid !== _timelineState.currentSessionId && !timelineIsPlaceholderSessionId(sid) && !lifecycle.deleted);
+      const canAttach = !!session.can_attach;
+      const canCopy = !!session.can_copy;
+      const canMigrate = !!session.can_migrate;
       const attachBtn = canAttach
         ? '<button type="button" class="mo-tl-session-attach" data-timeline-session-attach-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.attachTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.attachCurrent")) + '</button>'
         : '';
@@ -46768,10 +46612,13 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         '<div class="mo-tl-session-meta is-head"><span class="mo-tl-session-name" title="' + escapeAttr(buildSessionDisplayTitle(sid)) + '">' + escapeAttr(sessionLabel) + '</span><span class="mo-tl-session-head-actions"><span class="mo-tl-session-badge is-' + escapeAttr(lifecycle.status) + '">' + escapeAttr(lifecycle.label) + '</span>' + attachBtn + copyBtn + migrateBtn + '<button type="button" class="mo-tl-session-delete" data-timeline-session-delete-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.deleteTitle")) + '">' + escapeAttr(t("timeline.button.delete")) + '</button></span></div>' +
       '</div>';
     }).join("") : '<div class="mo-note">' + (_timelineState.sessionsLoading ? escapeAttr(t("timeline.note.loadingSessions")) : escapeAttr(t("timeline.note.noSessions"))) + '</div>';
-    const streamHtml = items.length > 0 ? turnGroups.map(renderTimelineTurnGroup).join("") : renderTimelineEmptyState();
+    const streamHtml = items.length > 0 ? turnGroups.map(renderTimelineTurnGroup).join("")
+      : viewModel.empty_state === "loading" ? '<div class="mo-note">' + escapeAttr(t("timeline.button.loading")) + '</div>'
+      : viewModel.empty_state === "error" ? '<div class="mo-status mo-status-fail">' + escapeAttr(_timelineState.error) + '</div>'
+      : '<div class="mo-note">' + escapeAttr(t("timeline.empty.noItems")) + '</div>';
     const loadMoreHtml = items.length > 0
-      ? (_timelineState.hasMore
-        ? '<div class="mo-tl-load-more"><button class="mo-btn mo-btn-info" id="mo-timeline-load-more-btn"' + (_timelineState.loadingMore ? ' disabled' : '') + '>' + escapeAttr(_timelineState.loadingMore ? t("timeline.button.loading") : t("timeline.button.loadMore")) + '</button></div>'
+      ? (viewModel.load_more_state === "available" || viewModel.load_more_state === "loading"
+        ? '<div class="mo-tl-load-more"><button class="mo-btn mo-btn-info" id="mo-timeline-load-more-btn"' + (viewModel.load_more_state === "loading" ? ' disabled' : '') + '>' + escapeAttr(viewModel.load_more_state === "loading" ? t("timeline.button.loading") : t("timeline.button.loadMore")) + '</button></div>'
         : '<div class="mo-tl-load-note">' + escapeAttr(t("timeline.note.noMore")) + '</div>')
       : '';
     return '<div class="mo-tl-shell">' +
@@ -46918,6 +46765,100 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       warnLog("dashboard ViewModel unavailable:", err?.message || err);
       return null;
     }
+  }
+
+  async function loadPresentationViewModels() {
+    try {
+      const lifecycleById = {};
+      (Array.isArray(_timelineState.sessions) ? _timelineState.sessions : []).forEach(function(session) {
+        const sid = String((session || {}).chat_session_id || (session || {}).session_id || "");
+        if (sid) lifecycleById[sid] = resolveRuntimeSessionLifecycle(sid);
+      });
+      const result = await bridgeFetch("/presentation/view-model", {
+        method: "POST",
+        timeoutMs: Math.min(getRequestTimeoutSettingMs(), 5000),
+        body: {
+          timeline: {
+            items: Array.isArray(_timelineState.items) ? _timelineState.items : [],
+            pending_items: Array.isArray(_timelineState.pendingItems) ? _timelineState.pendingItems : [],
+            sessions: Array.isArray(_timelineState.sessions) ? _timelineState.sessions : [],
+            selected_session_id: String(_timelineState.selectedSessionId || _timelineState.sessionId || _timelineState.currentSessionId || ""),
+            current_session_id: String(_timelineState.currentSessionId || ""),
+            meta: _timelineState.meta || {},
+            lifecycle_by_id: lifecycleById,
+            now_ms: Date.now(),
+            loading: !!_timelineState.loading,
+            loading_more: !!_timelineState.loadingMore,
+            has_more: !!_timelineState.hasMore,
+            error: String(_timelineState.error || ""),
+          },
+          explorer: {
+            sessions: Array.isArray(_explorer.sessions) ? _explorer.sessions : [],
+            selected_session_id: String(_explorer.selectedSessionId || ""),
+            active_chat_session_id: String(_explorer.activeChatSessionId || ""),
+            active_tab: String(_explorer.activeTab || "chat_logs"),
+            totals: {
+              chat_logs: Number(_explorer.chatLogs.total || 0),
+              memories: Number(_explorer.memories.total || 0),
+              direct_evidence: Number(_explorer.directEvidence.total || 0),
+              kg_triples: Number(_explorer.kgTriples.total || 0),
+              episodes: Number(_explorer.episodes.total || 0),
+              chapters: Number(_explorer.chapters.total || 0),
+              arcs: Number(_explorer.arcs.total || 0),
+              sagas: Number(_explorer.sagas.total || 0),
+            },
+            trust: {
+              storylines: Array.isArray(_explorer.trust.storylines) ? _explorer.trust.storylines : [],
+              world_rules: Array.isArray(_explorer.trust.worldRules) ? _explorer.trust.worldRules : [],
+              hooks: Array.isArray(_explorer.trust.hooks) ? _explorer.trust.hooks : [],
+            },
+            world_graph: {
+              rules: Array.isArray(_explorer.worldGraph.rules) ? _explorer.worldGraph.rules : [],
+              all_rules: Array.isArray(_explorer.worldGraph.allRules) ? _explorer.worldGraph.allRules : [],
+            },
+            entities: {
+              characters: Array.isArray(_explorer.entities.characters) ? _explorer.entities.characters : [],
+              locations: Array.isArray(_explorer.entities.locations) ? _explorer.entities.locations : [],
+              items: Array.isArray(_explorer.entities.items) ? _explorer.entities.items : [],
+            },
+            sessions_loading: !!_explorer.sessionsLoading,
+          },
+        },
+      });
+      if (!result || result.status !== "ok" || result.contract_version !== "presentation.viewmodel.v1") {
+        _timelineState.viewModel = null;
+        _explorer.viewModel = null;
+        return null;
+      }
+      _timelineState.viewModel = result.timeline || null;
+      _explorer.viewModel = result.explorer || null;
+      return result;
+    } catch (err) {
+      _timelineState.viewModel = null;
+      _explorer.viewModel = null;
+      warnLog("presentation ViewModel unavailable:", err?.message || err);
+      return null;
+    }
+  }
+
+  function presentationTimelineItemView(item) {
+    return item && item.view && typeof item.view === "object" ? item.view : {};
+  }
+
+  function presentationTimelineTitle(item) {
+    const view = presentationTimelineItemView(item);
+    if (view.title) return String(view.title);
+    const id = String(view.source_id ?? item?.id ?? item?.source_id ?? "");
+    if (view.title_code === "memoryTitle") return tf("timeline.item.memoryTitle", { id });
+    if (view.title_code === "episodeTitle") return tf("timeline.item.episodeTitle", { id });
+    if (view.title_code === "kgTitle") return tf("timeline.item.kgTitle", { id });
+    if (view.title_code === "evidenceTitle") return tf("timeline.item.evidenceTitle", { id });
+    if (view.title_code === "pendingTitle") return t("timeline.item.pendingTitle");
+    return t("timeline.detail.itemFallback");
+  }
+
+  function presentationExplorerTabLabel(key) {
+    return t("explorer.tabs." + String(key || "chat_logs") + ".label");
   }
 
   function dashboardViewModelLabel(key, dashLabel) {
@@ -49602,6 +49543,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         ? { status: "ok", detail: String(lastGuideSupervisor.guideMode) + (lastGuideSupervisor.guideModeBasis ? " / " + String(lastGuideSupervisor.guideModeBasis) : "") }
         : { status: "unknown", detail: t("dash.status.value.notYet") };
       const dashboardViewModel = await loadDashboardViewModel(rs, s, guideModeDashboardState);
+      await loadPresentationViewModels();
       if (_settingsActiveTab === "persona") {
         await personaCapsuleResolveSessionDefaults();
       }
@@ -50467,7 +50409,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         const wasOpen = _timelineState.expandedTurnKey === key;
         _timelineState.expandedTurnKey = wasOpen ? "" : key;
         if (!wasOpen && timelineSelectedTurnKey() !== key) {
-          const group = timelineBuildTurnGroups(timelineVisibleItems()).find((candidate) => candidate.key === key);
+          const groups = _timelineState.viewModel && Array.isArray(_timelineState.viewModel.groups) ? _timelineState.viewModel.groups : [];
+          const group = groups.find((candidate) => candidate.key === key);
           if (group && group.items && group.items.length > 0) _timelineSelectedDetail = group.items[0];
         }
         refreshTimelineUI();

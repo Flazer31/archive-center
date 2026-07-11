@@ -396,6 +396,7 @@ func (s *Server) handleTimelineItem(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	detail = presentationTimelineItem(detail)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":    "ok",
