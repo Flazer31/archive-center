@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "2.5.0-3.0-go-split-backend-timing-probe.20260711-1";
+  const BUILD_ID = "3.0-dev-js-backend-dedup-complete.20260711-1";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-11 KST";
-  const BUILD_NOTES = "Go file decomposition validation + prepare/complete backend timing probe";
+  const BUILD_NOTES = "Duplicate session reads removed; RisuAI host rendering and compatibility fallback preserved";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -11992,6 +11992,9 @@
       const ss = result.session_state;
       if (ss && ss.snapshot_status) {
         bundledSessionState = {
+          contractVersion: ss.contract_version || null,
+          chatSessionId: ss.chat_session_id || chatSessionId,
+          source: "prepare_turn_bundle",
           sections: {
             active_states:    Array.isArray(ss.active_states)    ? ss.active_states    : [],
             storylines:       Array.isArray(ss.storylines)       ? ss.storylines       : [],
@@ -12000,6 +12003,7 @@
             pending_threads: Array.isArray(ss.pending_threads) ? ss.pending_threads : [],
           },
           section_meta:    ss.section_meta    || {},
+          completeSections: ss.complete_sections && typeof ss.complete_sections === "object" ? ss.complete_sections : {},
           snapshot_status: ss.snapshot_status || "empty",
           warnings:        ss.warnings        || [],
           generated_at:    ss.generated_at    || null,
@@ -19616,6 +19620,32 @@
 
   function activeStatesResultFromPreparedBundle(preparedBundle) {
     try {
+      const snapshot = preparedBundle && preparedBundle.sessionState;
+      const snapshotComplete = !!(snapshot && snapshot.fetched && snapshot.completeSections && snapshot.completeSections.active_states === true);
+      if (snapshotComplete && snapshot.sections && Array.isArray(snapshot.sections.active_states)) {
+        const declaredCount = Math.max(0, Number(snapshot.section_meta && snapshot.section_meta.active_state_count || 0));
+        const states = snapshot.sections.active_states.map(function(item) {
+          return {
+            state_type: String(item && item.state_type || ""),
+            turn_index: Number(item && item.turn_index || 0),
+            content: String(item && item.content || ""),
+          };
+        }).filter(function(item) {
+          return !!item.state_type && !!item.content.trim();
+        });
+        if (states.length === declaredCount) {
+          return {
+            states,
+            count: states.length,
+            fetched: true,
+            source: "prepare_turn_session_state",
+            declaredCount,
+          };
+        }
+      }
+      // 새 계약이 해당 섹션을 불완전하다고 명시했다면 축약 continuity pack으로
+      // 대신하지 않고 기존 endpoint가 다시 읽게 한다.
+      if (snapshot && snapshot.contractVersion === "session_state.runtime_support.v1") return null;
       const pack = preparedBundle && preparedBundle.continuityPack;
       if (!pack || typeof pack !== "object" || !Array.isArray(pack.items)) return null;
       const declaredCount = Math.max(0, Number(pack.active_state_count || 0));
@@ -19642,6 +19672,29 @@
       };
     } catch {
       return null;
+    }
+  }
+
+  function sessionSnapshotSectionIsComplete(snapshot, sectionName) {
+    try {
+      if (!snapshot || snapshot.fetched !== true || !snapshot.sections) return false;
+      if (snapshot.source === "session_state_endpoint") return Array.isArray(snapshot.sections[sectionName]);
+      return !!(snapshot.completeSections && snapshot.completeSections[sectionName] === true && Array.isArray(snapshot.sections[sectionName]));
+    } catch {
+      return false;
+    }
+  }
+
+  function preparedSessionStateMatchesReadPlan(preparedBundle, plan) {
+    try {
+      const snapshot = preparedBundle && preparedBundle.sessionState;
+      if (!snapshot || snapshot.fetched !== true || !plan) return false;
+      const primary = String(plan.primarySessionId || "").trim();
+      const snapshotSession = String(snapshot.chatSessionId || "").trim();
+      const sessionIds = Array.isArray(plan.allSessionIds) ? plan.allSessionIds.filter(Boolean) : [];
+      return !!primary && !!snapshotSession && primary === snapshotSession && sessionIds.length === 1 && sessionIds[0] === primary;
+    } catch {
+      return false;
     }
   }
 
@@ -22002,6 +22055,14 @@
       warnings: [],
       generated_at: null,
       fetched: false,
+      source: "session_state_endpoint",
+      completeSections: {
+        active_states: true,
+        storylines: true,
+        characters: true,
+        world_rules: true,
+        pending_threads: true,
+      },
       compatSessionIds: [],
     };
     let compatSessionsWithData = [];
@@ -24278,13 +24339,26 @@
       _actStages.prepare = Date.now() - _stageStart;
       _stageStart = Date.now();
 
+      // prepare-turn 묶음은 현재 세션 하나만 담는다. 복사/연결/이동 호환 읽기가
+      // 필요한 경우에는 기존 multi-session 경로를 유지한다.
+      let _preparedBundleReadPlan = null;
+      let _preparedBundleCanReplaceSessionReads = false;
+      if (!freshFirstTurnLightMode && preparedBundle && preparedBundle.sessionState) {
+        try {
+          _preparedBundleReadPlan = await resolveCompatSessionReadPlan(chatSessionId || null);
+          _preparedBundleCanReplaceSessionReads = preparedSessionStateMatchesReadPlan(preparedBundle, _preparedBundleReadPlan);
+        } catch (_compatPlanErr) {
+          _preparedBundleCanReplaceSessionReads = false;
+        }
+      }
+
       // 0.5 Phase 2-3 + 2-4: Active States Fetch (multi-path recall보다 먼저 실행)
       // active state는 path B query 생성에도 사용되므로 recall 전에 조회한다.
       let activeStatesResult = { states: [], count: 0, fetched: false };
       if (freshFirstTurnLightMode) {
         activeStatesResult = { states: [], count: 0, fetched: false, skipped: true, skipReason: "fresh_first_turn_light_mode" };
       } else {
-        const bundledActiveStates = activeStatesResultFromPreparedBundle(preparedBundle);
+        const bundledActiveStates = activeStatesResultFromPreparedBundle(_preparedBundleCanReplaceSessionReads ? preparedBundle : null);
         if (bundledActiveStates) {
           activeStatesResult = bundledActiveStates;
           debugLog("M-2a: active-states from prepare-turn continuity bundle,", activeStatesResult.count, "states");
@@ -24919,10 +24993,13 @@
 
       // I-1d: Aggregate prefetch (experimental) — useAggregateRead=true 시 단일 GET /session-state로 3개 섹션 한 번에 조회
       let _aggregateSnapshot = null;
-      if (settings.useAggregateRead && !freshFirstTurnLightMode) {
+      if (!freshFirstTurnLightMode && (
+        (_preparedBundleCanReplaceSessionReads && preparedBundle && preparedBundle.sessionState && preparedBundle.sessionState.fetched) ||
+        settings.useAggregateRead
+      )) {
         try {
           // M-2a: bundled session-state가 있으면 fetch skip
-          if (preparedBundle && preparedBundle.sessionState && preparedBundle.sessionState.fetched) {
+          if (_preparedBundleCanReplaceSessionReads && preparedBundle && preparedBundle.sessionState && preparedBundle.sessionState.fetched) {
             _aggregateSnapshot = preparedBundle.sessionState;
             debugLog("M-2a: session-state from prepare-turn bundle (", _aggregateSnapshot.snapshot_status, ")");
           } else {
@@ -24938,9 +25015,9 @@
       let storylineResult = { items: [], count: 0, fetched: false, source: "direct", continuityPackFallback: false };
       if (freshFirstTurnLightMode) {
         storylineResult = { items: [], count: 0, fetched: false, source: "fresh_first_turn_light_mode", continuityPackFallback: false };
-      } else if (_aggregateSnapshot) {
+      } else if (sessionSnapshotSectionIsComplete(_aggregateSnapshot, "storylines")) {
         var _slItems = _aggregateSnapshot.sections.storylines;
-        storylineResult = { items: _slItems, count: _slItems.length, fetched: true, source: "aggregate", continuityPackFallback: false };
+        storylineResult = { items: _slItems, count: _slItems.length, fetched: true, source: _aggregateSnapshot.source || "prepare_turn_bundle", continuityPackFallback: false };
       } else {
         try {
           storylineResult = await fetchStorylines(chatSessionId);
@@ -24963,6 +25040,7 @@
         activeCount: storylineResult.items.filter(function(s) { return s.status === "active"; }).length,
         usedOverlay: !!storylineResult.usedOverlay,
         overlayCount: storylineResult.overlayCount || 0,
+        source: storylineResult.source || "direct",
         freshness: storylineResult.freshness || summarizeOverlayFreshness([], "last_turn"),
         selection: _storylineSelection,
       };
@@ -24972,9 +25050,9 @@
       let characterResult = { items: [], count: 0 };
       if (freshFirstTurnLightMode) {
         characterResult = { items: [], count: 0, skipped: true, skipReason: "fresh_first_turn_light_mode" };
-      } else if (_aggregateSnapshot) {
+      } else if (sessionSnapshotSectionIsComplete(_aggregateSnapshot, "characters")) {
         var _chItems = _aggregateSnapshot.sections.characters;
-        characterResult = { items: _chItems, count: _chItems.length };
+        characterResult = { items: _chItems, count: _chItems.length, fetched: true, source: _aggregateSnapshot.source || "prepare_turn_bundle" };
       } else {
         try {
           characterResult = await fetchCharacterStates(chatSessionId);
@@ -24985,6 +25063,7 @@
       trace.characters = {
         status: characterResult.count > 0 ? "ok" : "empty",
         count: characterResult.count,
+        source: characterResult.source || (characterResult.fetched ? "characters_endpoint" : "none"),
       };
       debugLog("characters:", characterResult.count, "states");
 
@@ -24999,7 +25078,7 @@
       let worldRulesResult = { items: [], count: 0, fetched: false, source: "direct", continuityPackFallback: false };
       if (freshFirstTurnLightMode) {
         worldRulesResult = { items: [], count: 0, fetched: false, source: "fresh_first_turn_light_mode", continuityPackFallback: false };
-      } else if (_aggregateSnapshot) {
+      } else if (sessionSnapshotSectionIsComplete(_aggregateSnapshot, "world_rules")) {
         var _wrItems = _aggregateSnapshot.sections.world_rules;
         worldRulesResult = { items: _wrItems, count: _wrItems.length, fetched: true, source: "aggregate", continuityPackFallback: false };
       } else {
@@ -25040,6 +25119,9 @@
       let pendingThreadsResult = { items: [], count: 0, fetched: false };
       if (freshFirstTurnLightMode) {
         pendingThreadsResult = { items: [], count: 0, fetched: false, skipped: true, skipReason: "fresh_first_turn_light_mode" };
+      } else if (sessionSnapshotSectionIsComplete(_aggregateSnapshot, "pending_threads")) {
+        var _ptItems = _aggregateSnapshot.sections.pending_threads;
+        pendingThreadsResult = { items: _ptItems, count: _ptItems.length, fetched: true, source: _aggregateSnapshot.source || "prepare_turn_bundle" };
       } else {
         try {
           pendingThreadsResult = await fetchPendingThreads(chatSessionId);
@@ -25051,6 +25133,7 @@
         status: pendingThreadsResult.fetched ? (pendingThreadsResult.count > 0 ? "ok" : "empty") : "skip",
         count: pendingThreadsResult.count,
         fetched: pendingThreadsResult.fetched,
+        source: pendingThreadsResult.source || (pendingThreadsResult.fetched ? "pending_threads_endpoint" : "none"),
       };
       if (!pendingThreadsResult.fetched && !pendingThreadsResult.skipped) {
         warnLog("pending-threads: fetch skipped (dbEnabled=" + settings.dbEnabled + ", sessionId=" + (chatSessionId ? chatSessionId.slice(0, 20) + "..." : "missing") + ")");
@@ -32243,7 +32326,8 @@
       const episodeText = (_ip && _ip.episode_text) ? _ip.episode_text : buildEpisodeBlock(episodeRecallResult);
       const chapterText = (_ip && _ip.chapter_text) ? _ip.chapter_text : "";
 
-      // E-1e: storyline 블록 생성
+      // RisuAI 표시명 정리와 현재 턴 overlay는 host adapter가 소유한다.
+      // 백엔드 묶음은 조회 결과만 재사용하고 최종 표시 문자열은 기존 formatter로 만든다.
       const storylineText = formatStorylineBlock(storylineResult);
 
       // E-2: character state 블록 생성

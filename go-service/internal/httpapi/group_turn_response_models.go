@@ -601,15 +601,17 @@ func laneSelectionReason(lane string) string {
 
 // buildSessionState assembles the JS-adapter-consumable session_state bundle.
 func buildSessionState(
+	sid string,
 	degraded bool,
 	activeStates []store.ActiveState,
 	storylines []store.Storyline,
 	charStates []store.CharacterState,
+	charEvents []store.CharacterEvent,
+	chatLogs []store.ChatLog,
 	worldRules []store.WorldRule,
 	pendingThreads []store.PendingThread,
-	recallLimit int,
+	readComplete map[string]bool,
 ) map[string]any {
-	recallLimit = prepareTurnRecallLimit(recallLimit)
 	status := "ready"
 	warnings := []any{}
 	if degraded {
@@ -617,47 +619,25 @@ func buildSessionState(
 		warnings = append(warnings, "Store unavailable; returning empty session state.")
 	}
 
-	boundedActive := make([]map[string]any, 0, minInt(len(activeStates), recallLimit))
-	for i, as := range activeStates {
-		if i >= recallLimit {
-			break
-		}
-		boundedActive = append(boundedActive, map[string]any{
-			"id":         as.ID,
-			"state_type": as.StateType,
-			"turn_index": as.TurnIndex,
-		})
-	}
+	boundedActive := activeStateRuntimeSupportItems(activeStates)
+	boundedStorylines := storylineResponseItems(storylines, resolveStorylineReferenceTurn(storylines, ""))
 
-	boundedStorylines := make([]map[string]any, 0, minInt(len(storylines), recallLimit))
-	for i, sl := range storylines {
-		if i >= recallLimit {
-			break
+	characterReferenceTurn := 0
+	for _, log := range chatLogs {
+		if log.TurnIndex > characterReferenceTurn {
+			characterReferenceTurn = log.TurnIndex
 		}
-		boundedStorylines = append(boundedStorylines, map[string]any{
-			"id":     sl.ID,
-			"name":   sl.Name,
-			"status": sl.Status,
-		})
 	}
-
-	boundedChars := make([]map[string]any, 0, minInt(len(charStates), recallLimit))
-	for i, cs := range charStates {
-		if i >= recallLimit {
-			break
+	for _, item := range charStates {
+		if item.TurnIndex > characterReferenceTurn {
+			characterReferenceTurn = item.TurnIndex
 		}
-		boundedChars = append(boundedChars, map[string]any{
-			"id":             cs.ID,
-			"character_name": cs.CharacterName,
-			"turn_index":     cs.TurnIndex,
-		})
 	}
+	recentText, recentKeywords := characterRecentMentionSignalFromLogs(chatLogs, characterReferenceTurn)
+	boundedChars := characterResponseItems(charStates, charEvents, characterReferenceTurn, recentText, recentKeywords)
 
-	boundedRules := make([]map[string]any, 0, minInt(len(worldRules), recallLimit))
-	for i, wr := range worldRules {
-		if i >= recallLimit {
-			break
-		}
+	boundedRules := make([]map[string]any, 0, len(worldRules))
+	for _, wr := range worldRules {
 		boundedRules = append(boundedRules, map[string]any{
 			"id":       wr.ID,
 			"scope":    wr.Scope,
@@ -666,26 +646,21 @@ func buildSessionState(
 		})
 	}
 
-	boundedThreads := make([]map[string]any, 0, minInt(len(pendingThreads), recallLimit))
-	for i, pt := range pendingThreads {
-		if i >= recallLimit {
-			break
-		}
-		boundedThreads = append(boundedThreads, map[string]any{
-			"id":           pt.ID,
-			"thread_key":   pt.ThreadKey,
-			"status":       pt.Status,
-			"created_turn": pt.CreatedTurn,
-		})
-	}
+	boundedThreads := pendingThreadResponseItems(pendingThreads)
+	completeActive := !degraded && readComplete["active_states"]
+	completeStorylines := !degraded && readComplete["storylines"]
+	completeCharacters := !degraded && readComplete["character_states"] && readComplete["character_events"] && readComplete["chat_logs"]
+	completeThreads := !degraded && readComplete["pending_threads"]
 
 	return map[string]any{
-		"snapshot_status": status,
-		"active_states":   boundedActive,
-		"storylines":      boundedStorylines,
-		"characters":      boundedChars,
-		"world_rules":     boundedRules,
-		"pending_threads": boundedThreads,
+		"contract_version": "session_state.runtime_support.v1",
+		"chat_session_id":  sid,
+		"snapshot_status":  status,
+		"active_states":    boundedActive,
+		"storylines":       boundedStorylines,
+		"characters":       boundedChars,
+		"world_rules":      boundedRules,
+		"pending_threads":  boundedThreads,
 		"section_meta": map[string]any{
 			"active_state_count":   len(activeStates),
 			"storyline_count":      len(storylines),
@@ -693,10 +668,30 @@ func buildSessionState(
 			"world_rule_count":     len(worldRules),
 			"pending_thread_count": len(pendingThreads),
 		},
+		"complete_sections": map[string]any{
+			"active_states":   completeActive,
+			"storylines":      completeStorylines,
+			"characters":      completeCharacters,
+			"pending_threads": completeThreads,
+			"world_rules":     false,
+		},
 		"warnings":     warnings,
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
 		"fetched":      true,
 	}
+}
+
+func activeStateRuntimeSupportItems(items []store.ActiveState) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"id":         item.ID,
+			"state_type": item.StateType,
+			"turn_index": item.TurnIndex,
+			"content":    item.Content,
+		})
+	}
+	return out
 }
 
 // buildNarrativeControl assembles the JS-adapter-consumable narrative_control bundle.

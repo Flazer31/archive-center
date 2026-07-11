@@ -875,7 +875,7 @@ func TestArchiveCenterJSReusesPreparedActiveStatesBeforeEndpointFallback(t *test
 	required := []string{
 		"function activeStatesResultFromPreparedBundle(preparedBundle)",
 		`source: "prepare_turn_bundle"`,
-		"const bundledActiveStates = activeStatesResultFromPreparedBundle(preparedBundle);",
+		"const bundledActiveStates = activeStatesResultFromPreparedBundle(_preparedBundleCanReplaceSessionReads ? preparedBundle : null);",
 		"activeStatesResult = await runActiveStatesFetch(chatSessionId);",
 		`source: activeStatesResult.source || (activeStatesResult.fetched ? "active_states_endpoint" : "none")`,
 	}
@@ -885,13 +885,40 @@ func TestArchiveCenterJSReusesPreparedActiveStatesBeforeEndpointFallback(t *test
 		}
 	}
 
-	bundleAt := strings.Index(src, "const bundledActiveStates = activeStatesResultFromPreparedBundle(preparedBundle);")
+	bundleAt := strings.Index(src, "const bundledActiveStates = activeStatesResultFromPreparedBundle(_preparedBundleCanReplaceSessionReads ? preparedBundle : null);")
 	if bundleAt < 0 {
 		t.Fatal("prepared active-state reuse branch is missing")
 	}
 	fallbackAt := strings.Index(src[bundleAt:], "activeStatesResult = await runActiveStatesFetch(chatSessionId);")
 	if fallbackAt < 0 {
 		t.Fatal("prepared active-state reuse must be evaluated before endpoint fallback")
+	}
+}
+
+func TestArchiveCenterJSReusesCompletePreparedStoreSections(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		"completeSections: ss.complete_sections",
+		`source: "prepare_turn_bundle"`,
+		"function sessionSnapshotSectionIsComplete(snapshot, sectionName)",
+		"function preparedSessionStateMatchesReadPlan(preparedBundle, plan)",
+		"_preparedBundleCanReplaceSessionReads = preparedSessionStateMatchesReadPlan",
+		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "storylines")`,
+		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "characters")`,
+		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "pending_threads")`,
+		"const storylineText = formatStorylineBlock(storylineResult);",
+		"const characterBaseText = formatCharacterBlock(characterResult);",
+		"const pendingThreadText = formatPendingThreadBlock(pendingThreadsResult",
+	}
+	for _, marker := range required {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing complete prepared-section reuse marker %q", marker)
+		}
+	}
+
+	worldRuleFallback := `sessionSnapshotSectionIsComplete(_aggregateSnapshot, "world_rules")`
+	if !strings.Contains(src, worldRuleFallback) || !strings.Contains(src, "world_rules: true") {
+		t.Fatal("world-rule endpoint aggregate fallback contract is missing")
 	}
 }
 
@@ -933,10 +960,11 @@ func TestArchiveCenterJSSessionStateAggregateReadRoundTripEvidence(t *testing.T)
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"let _aggregateSnapshot = null;",
-		"if (settings.useAggregateRead && !freshFirstTurnLightMode) {",
+		"(_preparedBundleCanReplaceSessionReads && preparedBundle && preparedBundle.sessionState && preparedBundle.sessionState.fetched) ||",
 		"const _snap = await fetchSessionState(chatSessionId);",
-		"storylineResult = { items: _slItems, count: _slItems.length, fetched: true, source: \"aggregate\", continuityPackFallback: false };",
-		"characterResult = { items: _chItems, count: _chItems.length };",
+		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "storylines")`,
+		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "characters")`,
+		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "world_rules")`,
 		"worldRulesResult = { items: _wrItems, count: _wrItems.length, fetched: true, source: \"aggregate\", continuityPackFallback: false };",
 	}
 	for _, needle := range required {
@@ -958,31 +986,35 @@ async function fetchSessionState() {
 async function fetchStorylines() { calls.push("/storylines"); return { items: [1], count: 1, fetched: true }; }
 async function fetchCharacterStates() { calls.push("/characters"); return { items: [2], count: 1 }; }
 async function fetchWorldRules() { calls.push("/world-rules"); return { items: [3], count: 1, fetched: true }; }
-async function simulate(useAggregateRead) {
+function sectionComplete(snapshot, name) {
+  return !!(snapshot && snapshot.fetched && snapshot.sections && snapshot.completeSections && snapshot.completeSections[name] === true);
+}
+async function simulate(useAggregateRead, preparedSnapshot) {
   calls.length = 0;
   const settings = { useAggregateRead };
   const chatSessionId = "sess";
-  let _aggregateSnapshot = null;
-  if (settings.useAggregateRead) {
+  let _aggregateSnapshot = preparedSnapshot || null;
+  if (!_aggregateSnapshot && settings.useAggregateRead) {
     const _snap = await fetchSessionState(chatSessionId);
+    _snap.completeSections = { storylines: true, characters: true, world_rules: true };
     if (_snap.fetched) _aggregateSnapshot = _snap;
   }
   let storylineResult;
-  if (_aggregateSnapshot) {
+  if (sectionComplete(_aggregateSnapshot, "storylines")) {
     const _slItems = _aggregateSnapshot.sections.storylines;
     storylineResult = { items: _slItems, count: _slItems.length, fetched: true, source: "aggregate" };
   } else {
     storylineResult = await fetchStorylines(chatSessionId);
   }
   let characterResult;
-  if (_aggregateSnapshot) {
+  if (sectionComplete(_aggregateSnapshot, "characters")) {
     const _chItems = _aggregateSnapshot.sections.characters;
     characterResult = { items: _chItems, count: _chItems.length };
   } else {
     characterResult = await fetchCharacterStates(chatSessionId);
   }
   let worldRulesResult;
-  if (_aggregateSnapshot) {
+  if (sectionComplete(_aggregateSnapshot, "world_rules")) {
     const _wrItems = _aggregateSnapshot.sections.world_rules;
     worldRulesResult = { items: _wrItems, count: _wrItems.length, fetched: true, source: "aggregate" };
   } else {
@@ -991,8 +1023,16 @@ async function simulate(useAggregateRead) {
   return { count: calls.length, calls: calls.slice(), storylineResult, characterResult, worldRulesResult };
 }
 (async () => {
-  const aggregate = await simulate(true);
-  const direct = await simulate(false);
+  const prepared = await simulate(false, {
+    fetched: true,
+    sections: { storylines: [1], characters: [2], world_rules: [3] },
+    completeSections: { storylines: true, characters: true, world_rules: false }
+  });
+  const aggregate = await simulate(true, null);
+  const direct = await simulate(false, null);
+  if (prepared.count !== 1 || prepared.calls[0] !== "/world-rules") {
+    throw new Error("prepared calls = " + JSON.stringify(prepared));
+  }
   if (aggregate.count !== 1 || aggregate.calls[0] !== "/session-state") {
     throw new Error("aggregate calls = " + JSON.stringify(aggregate));
   }

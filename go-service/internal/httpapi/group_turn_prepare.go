@@ -87,6 +87,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var storylines []store.Storyline
 	var worldRules []store.WorldRule
 	var charStates []store.CharacterState
+	var charEvents []store.CharacterEvent
 	var pendingThreads []store.PendingThread
 	var activeStates []store.ActiveState
 	var canonicalLayers []store.CanonicalStateLayer
@@ -97,6 +98,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 
 	readErrs := []error{}
 	readsOK := 0
+	sessionStateReads := map[string]bool{}
 
 	storeReadsStartedAt := time.Now()
 	if s.Store != nil {
@@ -122,6 +124,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		if c, err := s.Store.ListChatLogs(ctx, sid, 0, 0); err == nil {
 			chatLogs = c
 			readsOK++
+			sessionStateReads["chat_logs"] = true
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
@@ -134,6 +137,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		if sl, err := s.Store.ListStorylines(ctx, sid); err == nil {
 			storylines = sl
 			readsOK++
+			sessionStateReads["storylines"] = true
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
@@ -146,18 +150,27 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		if cs, err := s.Store.ListCharacterStates(ctx, sid); err == nil {
 			charStates = cs
 			readsOK++
+			sessionStateReads["character_states"] = true
+		} else if !errors.Is(err, store.ErrNotEnabled) {
+			readErrs = append(readErrs, err)
+		}
+		if ce, err := s.Store.ListCharacterEvents(ctx, sid, ""); err == nil {
+			charEvents = ce
+			sessionStateReads["character_events"] = true
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
 		if pt, err := s.Store.ListPendingThreads(ctx, sid, ""); err == nil {
 			pendingThreads = pt
 			readsOK++
+			sessionStateReads["pending_threads"] = true
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
 		if as, err := s.Store.ListActiveStates(ctx, sid, ""); err == nil {
 			activeStates = as
 			readsOK++
+			sessionStateReads["active_states"] = true
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
@@ -331,7 +344,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		inputContextOut = inputContextText
 	}
 
-	sessionState := buildSessionState(degraded, activeStates, storylines, charStates, worldRules, pendingThreads, supportRecallLimit)
+	sessionState := buildSessionState(sid, degraded, activeStates, storylines, charStates, charEvents, chatLogs, worldRules, pendingThreads, sessionStateReads)
 	narrativeControl := buildNarrativeControl(degraded, storylines, worldRules, pendingThreads, charStates)
 	continuityPack := buildContinuityPack(sid, queryPreview, degraded, resumePack, episodeSums, chatLogs, activeStates, canonicalLayers, supportRecallLimit)
 	progressionLedger := buildProgressionLedger(sid, degraded, storylines, worldRules, pendingThreads, episodeSums, supportRecallLimit)
