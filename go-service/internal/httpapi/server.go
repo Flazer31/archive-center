@@ -151,9 +151,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	s.registerCanonicalRoutes(sub) // R1 store-backed canonical shadow
 	// Deprecated vector shadow/proof routes are intentionally not mounted in
 	// the active 2.0 runtime. ChromaDB is the selected vector accelerator.
-	s.registerProxyRoutes(sub)    // R2 write
-	s.registerAdminRoutes(sub)    // R2 write
-	s.registerTimelineRoutes(sub) // R1 read
+	s.registerProxyRoutes(sub)     // R2 write
+	s.registerAdminRoutes(sub)     // R2 write
+	s.registerTimelineRoutes(sub)  // R1 read
+	s.registerDashboardRoutes(sub) // R1 presentation model
 	s.registerSessionMigrationRoutes(sub)
 	s.registerNarrativeRoutes(sub) // R1 read + R2 write
 	s.registerPersonaRoutes(sub)   // R1 read + R2 write

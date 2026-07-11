@@ -45142,47 +45142,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     return (table[lang] && table[lang][key]) || (table.en && table.en[key]) || key;
   }
 
-  function simplifyDashboardDetail(detail) {
-    const raw = typeof detail === "object" ? JSON.stringify(detail) : String(detail || "");
-    if (!raw.trim()) return "";
-    if (/idempotent pair replay|idempotent_pair_replay|duplicate save skipped/i.test(raw)) return dashboardSimpleText("duplicateExisting");
-    if (/accepted \(existing pair\)/i.test(raw)) return dashboardSimpleText("existingAccepted");
-    if (/health test not run\s*\/\s*turn call ok/i.test(raw)) return dashboardSimpleText("supervisorOkByTurn");
-    if (/first turn light mode/i.test(raw)) return dashboardSimpleText("firstTurnLight");
-    if (/native non-persistable fragment ignored|waiting final output/i.test(raw)) return dashboardSimpleText("streamingWaitFinal");
-    if (/native afterRequest missing; recovered from active chat/i.test(raw)) return dashboardSimpleText("streamingRecovered");
-    if (/timeout waiting for native afterRequest\/active assistant/i.test(raw)) return dashboardSimpleText("streamingTimeout");
-    if (/active_chat_tail_missing_from_runtime|assistant_deleted_output_removed/.test(raw) && /rolled back|rollback/i.test(raw)) return dashboardSimpleText("deletedTurnSynced");
-    if (/unverified rollback signal blocked/i.test(raw)) return dashboardSimpleText("rollbackBlockedUnverified");
-    if (/active chat tail is shorter than backend|history trim\/cut protected|possible \/cut/i.test(raw)) return dashboardSimpleText("historyTrimProtected");
-    if (/recent_completed_turn_waiting_active_chat_sync/i.test(raw)) return dashboardSimpleText("pendingSync");
-    if (/no_tracked_turn_index/i.test(raw)) return dashboardSimpleText("noTrackedTurn");
-    if (/no_completed_pairs/i.test(raw)) return dashboardSimpleText("noCompletedPairs");
-    if (/active chat backfill 0 saved \/ 1 existing/i.test(raw)) return dashboardSimpleText("noMissingBackfill");
-    if (/^load:ok\s*\/\s*save:ok$/i.test(raw)) return dashboardSimpleText("queueOk");
-    if (/^local only$/i.test(raw)) return dashboardSimpleText("localOnly");
-    if (/^synced$/i.test(raw)) return dashboardSimpleText("synced");
-    return raw;
-  }
-
-  function normalizeDashboardStateForDisplay(label, stateObj) {
-    const s = Object.assign({}, stateObj || { status: "unknown" });
-    const rawDetail = s.detail;
-    const simpleDetail = simplifyDashboardDetail(rawDetail);
-    if (simpleDetail) s.detail = simpleDetail;
-    const raw = typeof rawDetail === "object" ? JSON.stringify(rawDetail) : String(rawDetail || "");
-    if (/idempotent pair replay|idempotent_pair_replay|duplicate save skipped|accepted \(existing pair\)/i.test(raw)) {
-      s.status = "ok";
-    } else if (/health test not run\s*\/\s*turn call ok/i.test(raw) && String(s.status || "") === "skipped") {
-      s.status = "ok";
-    } else if (/native non-persistable fragment ignored|waiting final output/i.test(raw)) {
-      s.status = "running";
-    } else if (/active chat backfill 0 saved \/ 1 existing|^load:ok\s*\/\s*save:ok$/i.test(raw)) {
-      s.status = "ok";
-    }
-    return s;
-  }
-
   function tWithVars(key, vars) {
     let out = t(key);
     if (!vars || typeof vars !== "object") return out;
@@ -46931,397 +46890,133 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     return "mo-dash-card";
   }
 
-  function criticLedgerLaneCountsText(dashboard) {
-    const counts = dashboard && dashboard.lane_counts && typeof dashboard.lane_counts === "object" ? dashboard.lane_counts : {};
-    const keys = Object.keys(counts).sort();
-    if (!keys.length) return "no lanes";
-    return keys.map(function(key) { return key + ":" + String(counts[key] || 0); }).join(" / ");
-  }
-
-  function renderCriticLedgerProbeCard(state) {
-    const st = state || { status: "idle", detail: "not probed" };
-    const dash = st.dashboard && typeof st.dashboard === "object" ? st.dashboard : null;
-    const chips = [];
-    if (dash && dash.item_count != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">items:' + escapeAttr(String(dash.item_count)) + '</span>');
-    if (dash && Array.isArray(dash.missing_lanes) && dash.missing_lanes.length) chips.push('<span class="mo-dash-chip mo-dash-chip-warn">missing:' + escapeAttr(String(dash.missing_lanes.length)) + '</span>');
-    if (dash && Array.isArray(dash.warnings) && dash.warnings.length) chips.push('<span class="mo-dash-chip mo-dash-chip-warn">warn:' + escapeAttr(String(dash.warnings.length)) + '</span>');
-    const safety = dash && dash.safety && typeof dash.safety === "object" ? dash.safety : null;
-    const safetyLine = safety
-      ? '<div class="mo-dash-row"><span class="mo-dot ' + (safety.raw_archive_dump_blocked ? 'mo-dot-ok' : 'mo-dot-warn') + '"></span><span class="mo-dash-label">Safety</span><span class="mo-dash-value">scrubbed:' + escapeAttr(String(safety.scrubbed_items || 0)) + ' / streaming:' + escapeAttr(String(safety.streaming_mismatch || "none")) + '</span></div>'
-      : '';
-    const laneLine = dash
-      ? '<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Lanes</span><span class="mo-dash-value">' + escapeAttr(criticLedgerLaneCountsText(dash)) + '</span></div>'
-      : '';
-    return '<div class="' + criticLedgerProbeCardClass(st) + '">'
-      + '<div class="mo-dash-card-head">'
-      + '<span class="mo-dash-card-icon">\uD83D\uDCCB</span>'
-      + '<span class="mo-dash-card-title">Critic Ledger</span>'
-      + '<div class="mo-dash-card-summary">' + chips.join("") + '</div>'
-      + '</div>'
-      + formatStateRow("Probe", st)
-      + laneLine
-      + safetyLine
-      + '<div class="mo-dash-row"><span class="mo-dash-label">Action</span><span class="mo-dash-value"><button type="button" class="mo-btn mo-btn-info" data-critic-ledger-probe="1">Probe current session</button></span></div>'
-      + '</div>';
-  }
-
-  function renderCriticLedgerProbeDebugSection() {
-    const st = runtimeState.lastCriticLedgerProbe || { status: "idle", detail: "not probed" };
-    const dash = st.dashboard && typeof st.dashboard === "object" ? st.dashboard : null;
-    const trace = st.trace && typeof st.trace === "object" ? st.trace : null;
-    const safety = dash && dash.safety && typeof dash.safety === "object" ? dash.safety : null;
-    const warnings = dash && Array.isArray(dash.warnings) ? dash.warnings : [];
-    const previews = dash && Array.isArray(dash.items_preview) ? dash.items_preview : [];
-    const missing = dash && Array.isArray(dash.missing_lanes) ? dash.missing_lanes : [];
-    let html = ''
-      + formatStateRow("Probe", st)
-      + '<div class="mo-dash-row"><span class="mo-dash-label">Action</span><span class="mo-dash-value"><button type="button" class="mo-btn mo-btn-info" data-critic-ledger-probe="1">Probe current session</button></span></div>';
-    if (!dash) {
-      return html + '<div class="mo-note">No ledger debug probe has been run in this panel yet.</div>';
-    }
-    html += '<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Session</span><span class="mo-dash-value">' + escapeAttr(shortenSessionIdForDisplay(st.sessionId || "")) + '</span></div>';
-    html += '<div class="mo-dash-row"><span class="mo-dot mo-dot-ok"></span><span class="mo-dash-label">Read-only</span><span class="mo-dash-value">write:false / vector:false / llm:false</span></div>';
-    html += '<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Lane counts</span><span class="mo-dash-value">' + escapeAttr(criticLedgerLaneCountsText(dash)) + '</span></div>';
-    if (safety) {
-      html += '<div class="mo-dash-row"><span class="mo-dot ' + (safety.raw_archive_dump_blocked ? 'mo-dot-ok' : 'mo-dot-warn') + '"></span><span class="mo-dash-label">Safety</span><span class="mo-dash-value">raw_dump_blocked:' + escapeAttr(String(!!safety.raw_archive_dump_blocked)) + ' / scrubbed:' + escapeAttr(String(safety.scrubbed_items || 0)) + ' / streaming:' + escapeAttr(String(safety.streaming_mismatch || "none")) + '</span></div>';
-    }
-    if (trace) {
-      html += '<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Route</span><span class="mo-dash-value">' + escapeAttr(String(trace.route || st.route || "")) + ' -> ' + escapeAttr(String(trace.preview_route || "")) + '</span></div>';
-    }
-    html += '<div class="mo-dash-row"><span class="mo-dot ' + (missing.length ? 'mo-dot-warn' : 'mo-dot-ok') + '"></span><span class="mo-dash-label">Missing lanes</span><span class="mo-dash-value">' + escapeAttr(missing.length ? missing.join(", ") : "none") + '</span></div>';
-    if (warnings.length) {
-      html += warnings.slice(0, 4).map(function(w) {
-        return '<div class="mo-dash-row"><span class="mo-dot mo-dot-warn"></span><span class="mo-dash-label">Warning</span><span class="mo-dash-value">' + escapeAttr(truncPreview(String(w), 180)) + '</span></div>';
-      }).join("");
-    }
-    if (previews.length) {
-      html += '<div class="mo-section" style="margin-top:8px">Items Preview</div>';
-      html += previews.slice(0, 6).map(function(item) {
-        const lane = item && item.lane ? String(item.lane) : "item";
-        const summary = item && item.summary_preview ? String(item.summary_preview) : "";
-        return '<div class="mo-dash-row" style="align-items:flex-start"><span class="mo-dot mo-dot-ok"></span><span class="mo-dash-label">' + escapeAttr(lane) + '</span><span class="mo-dash-value">' + escapeAttr(truncPreview(summary, 220)) + '</span></div>';
-      }).join("");
-    }
-    html += '<div class="mo-section" style="margin-top:8px">Feedback checks</div>';
-    html += '<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Streaming</span><span class="mo-dash-value">' + escapeAttr(safety ? String(safety.streaming_mismatch || "none") : "none") + '</span></div>';
-    html += '<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Rollback</span><span class="mo-dash-value">' + escapeAttr(String((runtimeState.lastAutoRollback && runtimeState.lastAutoRollback.detail) || (runtimeState.lastError && runtimeState.lastError.detail) || "no recent rollback signal")) + '</span></div>';
-    html += '<div class="mo-dash-row"><span class="mo-dot mo-dot-unknown"></span><span class="mo-dash-label">Runtime</span><span class="mo-dash-value">' + escapeAttr(String((dash && dash.runtime_profile) || st.runtimeProfile || "see backend response")) + '</span></div>';
-    return html;
-  }
-
-  function renderDashboardCards(rs, s, dashLabel, guideModeDashboardState, _prepareTurnEverContacted, _failedQueue, runtimeState) {
-    function cardSummaryHtml(rows) {
-      var ok = 0, warn = 0, fail = 0;
-      rows.forEach(function(r) {
-        var displayState = normalizeDashboardStateForDisplay(r.label, r.state);
-        var st = (displayState && displayState.status) ? String(displayState.status) : "unknown";
-        if (st === "ok") ok++;
-        else if (st === "warn") warn++;
-        else if (st === "fail" || st === "error") fail++;
+  async function loadDashboardViewModel(rs, s, guideModeDashboardState) {
+    try {
+      const firstTurnLight = !!(
+        lastTurnTrace &&
+        lastTurnTrace.firstTurnLightMode &&
+        lastTurnTrace.firstTurnLightMode.enabled
+      );
+      return await bridgeFetch("/dashboard/view-model", {
+        method: "POST",
+        timeoutMs: Math.min(getRequestTimeoutSettingMs(), 5000),
+        body: {
+          runtime_state: rs,
+          plugin_enabled: !!s.enabled,
+          session_candidates: {
+            runtime_current: runtimeState && runtimeState.currentSessionId || "",
+            timeline_current: _timelineState && _timelineState.currentSessionId || "",
+          },
+          prepare_turn_ever_contacted: !!_prepareTurnEverContacted,
+          failed_queue_depth: Array.isArray(_failedQueue) ? _failedQueue.length : 0,
+          guide_mode_state: guideModeDashboardState,
+          first_turn_light: firstTurnLight,
+          first_turn_ended_at: lastTurnTrace && lastTurnTrace.endedAt || "",
+        },
       });
-      var parts = [];
-      if (fail > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-fail">\u2715 ' + fail + '</span>');
-      if (warn > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-warn">\u26a0 ' + warn + '</span>');
-      if (ok > 0)   parts.push('<span class="mo-dash-chip mo-dash-chip-ok">\u2713 ' + ok + '</span>');
+    } catch (err) {
+      warnLog("dashboard ViewModel unavailable:", err?.message || err);
+      return null;
+    }
+  }
+
+  function dashboardViewModelLabel(key, dashLabel) {
+    const labels = {
+      plugin: dashLabel.plugin,
+      sessionId: dashLabel.sessionId,
+      bridgeHealth: dashLabel.bridgeHealth,
+      supervisorHealthTest: dashLabel.supervisorHealthTest,
+      search: dashLabel.search,
+      supervisorCall: dashLabel.supervisorCall,
+      turnEngine: dashLabel.turnEngine,
+      guideMode: dashLabel.guideMode,
+      runtimeSync: dashLabel.runtimeSync,
+      injection: dashLabel.injection,
+      save: dashLabel.save,
+      complete: dashLabel.complete,
+      retryQueue: dashLabel.retryQueue,
+      queueStorage: dashLabel.queueStorage,
+      autoRollback: dashLabel.autoRollback,
+      streamingHook: dashLabel.streamingHook,
+      sessionRouting: dashLabel.sessionRouting,
+      forkCopyCapture: dashLabel.forkCopyCapture,
+      sessionDeleteSync: dashLabel.sessionDeleteSync,
+      activeChatBackfill: dashLabel.activeChatBackfill,
+      lastError: dashLabel.lastError,
+      criticProbe: "Probe",
+      criticItems: "Items",
+      criticLanes: "Lanes",
+      criticSafety: "Safety",
+      rawSave: "Raw Save",
+      derived: "Derived",
+      vectorUpsert: "Vector Upsert",
+      prepareTiming: "Turn Prepare",
+      completeTiming: "Save / Memory Build",
+    };
+    return labels[key] || String(key || "");
+  }
+
+  function dashboardViewModelText(value) {
+    const raw = String(value || "");
+    if (raw.startsWith("@")) return dashboardSimpleText(raw.slice(1));
+    if (/^\[@[^\]]+\]$/.test(raw)) return "[" + dashboardSimpleText(raw.slice(2, -1)) + "]";
+    return raw;
+  }
+
+  function renderDashboardViewModel(vm, dashLabel) {
+    if (!vm || vm.status !== "ok" || !Array.isArray(vm.cards)) {
+      return '<div class="mo-dash-card has-warn"><div class="mo-dash-card-head"><span class="mo-dash-card-icon">⚠</span><span class="mo-dash-card-title">Dashboard</span></div>'
+        + '<div class="mo-dash-row"><span class="mo-dot mo-dot-warn"></span><span class="mo-dash-label">Backend ViewModel</span><span class="mo-dash-value">unavailable</span></div></div>';
+    }
+    function summaryHtml(summary) {
+      const parts = [];
+      if (summary && Number(summary.fail) > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-fail">✕ ' + Number(summary.fail) + '</span>');
+      if (summary && Number(summary.warn) > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-warn">⚠ ' + Number(summary.warn) + '</span>');
+      if (summary && Number(summary.ok) > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-ok">✓ ' + Number(summary.ok) + '</span>');
       return parts.join("");
     }
-    function cardCls(rows) {
-      if (rows.some(function(r){ var st = normalizeDashboardStateForDisplay(r.label, r.state); return st && (st.status === "fail" || st.status === "error"); })) return "mo-dash-card has-fail";
-      if (rows.some(function(r){ var st = normalizeDashboardStateForDisplay(r.label, r.state); return st && st.status === "warn"; })) return "mo-dash-card has-warn";
-      return "mo-dash-card";
+    function renderRow(row) {
+      const status = String(row && row.status || "unknown");
+      const detail = row && row.detail_code ? dashboardSimpleText(row.detail_code) : String(row && row.detail || "");
+      const placement = row && row.placement ? " @ " + formatAuxiliaryPlacementTrace(row.placement) : "";
+      const timeText = formatDashboardTimestampLocal(row && row.time);
+      const time = timeText ? " (" + timeText + ")" : "";
+      const extra = row && row.item_count != null
+        ? " [" + row.item_count + t("common.itemSuffix") + "]"
+        : row && row.turn_index != null ? " [turn " + row.turn_index + "]" : "";
+      return '<div class="mo-dash-row"><span class="mo-dot ' + statusDotClass(status) + '"></span>'
+        + '<span class="mo-dash-label">' + escapeAttr(dashboardViewModelLabel(row && row.label_key, dashLabel)) + '</span>'
+        + '<span class="mo-dash-value">' + escapeAttr(runtimeStatusLabel(status) + extra + (detail ? " — " + detail : "") + placement + time) + '</span></div>';
     }
-    function renderCard(icon, title, rows) {
-      return '<div class="' + cardCls(rows) + '">'
-        + '<div class="mo-dash-card-head">'
-        + '<span class="mo-dash-card-icon">' + icon + '</span>'
-        + '<span class="mo-dash-card-title">' + title + '</span>'
-        + '<div class="mo-dash-card-summary">' + cardSummaryHtml(rows) + '</div>'
-        + '</div>'
-        + rows.map(function(r){ return formatStateRow(r.label, r.state); }).join("")
-        + '</div>';
-    }
-    function laneStatusFromPipeline(status, fallbackOk) {
-      var st = String(status || "").toLowerCase();
-      if (!st && fallbackOk === true) return "ok";
-      if (!st && fallbackOk === false) return "unknown";
-      if (!st) return "unknown";
-      if (/^(ok|saved|present|completed|accepted|upserted|repaired)$/.test(st)) return "ok";
-      if (/^(skipped|not_called|not_configured|disabled|empty|none)$/.test(st)) return "skipped";
-      if (/^(queued|pending|delayed|partial|degraded|fallback|missing_suspected|not_checked_no_raw)$/.test(st)) return "warn";
-      if (/^(fail|failed|error|missing|lost|blocked)$/.test(st)) return "fail";
-      return "warn";
-    }
-    function countPart(label, value) {
-      return value == null ? null : label + ":" + String(value);
-    }
-    function buildPersistenceLaneRows(ct) {
-      if (!ct || ct.status === "idle") return [];
-      var duplicatePairReplay = /idempotent pair replay|idempotent_pair_replay|duplicate save skipped|accepted \(existing pair\)/i.test(String(ct.detail || ""));
-      if (duplicatePairReplay) {
-        var existingDetail = dashboardSimpleText("noNewLaneNeeded");
-        return [
-          { label: "Raw Save", state: { status: "ok", turnIndex: ct.turnIndex, detail: existingDetail } },
-          { label: "Derived", state: { status: "ok", turnIndex: ct.turnIndex, detail: existingDetail } },
-          { label: "Vector Upsert", state: { status: "ok", turnIndex: ct.turnIndex, detail: existingDetail } },
-        ];
-      }
-      var pipeline = ct.persistencePipeline && typeof ct.persistencePipeline === "object" ? ct.persistencePipeline : null;
-      var raw = pipeline && pipeline.raw && typeof pipeline.raw === "object" ? pipeline.raw : null;
-      var derived = pipeline && pipeline.derived && typeof pipeline.derived === "object" ? pipeline.derived : null;
-      var vector = pipeline && pipeline.vector && typeof pipeline.vector === "object" ? pipeline.vector : null;
-      var rawStatus = raw && raw.status ? String(raw.status) : String(ct.rawStatus || "");
-      var derivedStatus = derived && derived.status ? String(derived.status) : String(ct.derivedStatus || "");
-      var vectorStatus = vector && vector.status ? String(vector.status) : String(ct.vectorStatus || "");
-      var rows = [];
-      rows.push({
-        label: "Raw Save",
-        state: {
-          status: laneStatusFromPipeline(rawStatus, ct.chatLogsSaved != null && ct.chatLogsSaved > 0),
-          turnIndex: ct.turnIndex,
-          detail: [
-            rawStatus || (ct.chatLogsSaved != null ? "saved" : "unknown"),
-            countPart("log", ct.chatLogsSaved),
-          ].filter(Boolean).join(" / "),
-        },
-      });
-      rows.push({
-        label: "Derived",
-        state: {
-          status: laneStatusFromPipeline(derivedStatus, ct.derivedArtifactsSaved != null && ct.derivedArtifactsSaved > 0),
-          turnIndex: ct.turnIndex,
-          detail: [
-            derivedStatus || (ct.derivedArtifactsSaved != null ? "present" : "unknown"),
-            countPart("mem", ct.memoriesSaved),
-            countPart("evi", ct.evidenceSaved),
-            countPart("kg", ct.kgTriplesSaved),
-            countPart("rule", ct.worldRulesSaved),
-            countPart("der", ct.derivedArtifactsSaved),
-          ].filter(Boolean).join(" / "),
-        },
-      });
-      rows.push({
-        label: "Vector Upsert",
-        state: {
-          status: laneStatusFromPipeline(vectorStatus, ct.vectorUpserted != null && ct.vectorUpserted > 0),
-          turnIndex: ct.turnIndex,
-          detail: [
-            vectorStatus || (ct.vectorUpserted != null ? "upserted" : "unknown"),
-            countPart("total", ct.vectorUpserted),
-            countPart("mem", ct.vectorMemoryUpserted),
-            countPart("evi", ct.vectorEvidenceUpserted),
-            countPart("rule", ct.vectorWorldRuleUpserted),
-          ].filter(Boolean).join(" / "),
-        },
-      });
-      return rows;
-    }
-    function buildBackendTimingRows(prepareState, completeState) {
-      var stageLabels = {
-        request_decode: "요청 읽기",
-        migration_guard: "세션 확인",
-        store_reads: "MariaDB 읽기",
-        recollection_filter: "인물 기억 선별",
-        vector_recall: "ChromaDB 검색",
-        injection_assembly: "기억 주입 조립",
-        response_assembly: "응답 자료 조립",
-        preflight: "저장 전 확인",
-        critic_llm: "평론가 LLM",
-        raw_and_audit_store: "원문 저장",
-        derived_store: "요약·객체 저장",
-        embedding: "임베딩 생성",
-        vector_upsert: "ChromaDB 저장",
-        maintenance_handoff: "후속 작업 등록",
-        episode_checkpoint: "에피소드 확인",
-        hierarchy_checkpoint: "계층 요약 확인",
-      };
-      function timingRow(label, timing) {
-        if (!timing || typeof timing !== "object") return null;
-        var total = Number(timing.total_ms);
-        var stages = timing.stages_ms && typeof timing.stages_ms === "object" ? timing.stages_ms : {};
-        var slowestStage = String(timing.slowest_stage || "");
-        var slowest = Number(timing.slowest_ms);
-        function seconds(ms) {
-          if (!Number.isFinite(ms)) return "?";
-          return ms >= 1000 ? (ms / 1000).toFixed(ms >= 10000 ? 1 : 2) + "초" : Math.round(ms) + "ms";
-        }
-        var ordered = Object.keys(stages).map(function(stage) {
-          return { stage: stage, ms: Number(stages[stage]) };
-        }).filter(function(item) {
-          return Number.isFinite(item.ms) && item.ms >= 1;
-        }).sort(function(a, b) {
-          return b.ms - a.ms;
-        });
-        var detailParts = ["총 " + seconds(total)];
-        if (slowestStage && Number.isFinite(slowest)) {
-          detailParts.push("가장 느림: " + (stageLabels[slowestStage] || slowestStage) + " " + seconds(slowest));
-        }
-        ordered.slice(0, 5).forEach(function(item) {
-          if (item.stage === slowestStage) return;
-          detailParts.push((stageLabels[item.stage] || item.stage) + " " + seconds(item.ms));
-        });
-        return {
-          label: label,
-          state: {
-            status: Number.isFinite(slowest) && slowest >= 10000 ? "warn" : "ok",
-            detail: detailParts.join(" / "),
-          },
-        };
-      }
-      return [
-        timingRow("턴 준비", prepareState && prepareState.backendTiming),
-        timingRow("저장·기억 생성", completeState && completeState.backendTiming),
-      ].filter(Boolean);
-    }
-
-    var pluginState = { status: s.enabled ? "ok" : "fail", detail: s.enabled ? "enabled" : "disabled" };
-    var displaySessionId = String(
-      runtimeState && runtimeState.currentSessionId ||
-      rs && rs.sessionWriteRouting && rs.sessionWriteRouting.targetSessionId ||
-      _timelineState && _timelineState.currentSessionId ||
-      rs && rs.sessionWriteRouting && rs.sessionWriteRouting.rawSessionId ||
-      ""
-    ).trim();
-    var sessionState = displaySessionId
-      ? { status: "ok", detail: shortenSessionIdForDisplay(displaySessionId), targetSessionId: displaySessionId }
-      : { status: "unknown", detail: "resolving\u2026" };
-    var supervisorHealthState = rs.lastSupervisorWakeup || { status: "unknown" };
-    if ((!supervisorHealthState.status || supervisorHealthState.status === "unknown") && rs.lastSupervisorStatus && rs.lastSupervisorStatus.status === "ok") {
-      supervisorHealthState = { status: "skipped", time: rs.lastSupervisorStatus.time || null, detail: "health test not run / turn call ok" };
-    }
-    var firstTurnLightDisplay = !!(
-      lastTurnTrace &&
-      lastTurnTrace.firstTurnLightMode &&
-      lastTurnTrace.firstTurnLightMode.enabled
-    );
-    function displayFirstTurnLightSkippedState(stateObj, detail) {
-      var st = stateObj || { status: "unknown" };
-      if (!firstTurnLightDisplay) return st;
-      if (st.status === "unknown" || st.status === "off") {
-        return {
-          status: "skipped",
-          time: st.time || lastTurnTrace.endedAt || null,
-          detail: detail || "first turn light mode",
-        };
-      }
-      return st;
-    }
-    var connectionRows = [
-      { label: dashLabel.plugin, state: pluginState },
-      { label: dashLabel.sessionId, state: sessionState },
-      { label: dashLabel.bridgeHealth, state: rs.lastBridgeHealth },
-      { label: dashLabel.supervisorHealthTest, state: supervisorHealthState },
-      { label: dashLabel.search, state: displayFirstTurnLightSkippedState(rs.lastSearchStatus, "first turn light mode") },
-      { label: dashLabel.supervisorCall, state: rs.lastSupervisorStatus },
-    ];
-
-    var runtimeSyncState = { status: _prepareTurnEverContacted ? "ok" : "unknown", detail: _prepareTurnEverContacted ? "synced" : "local only" };
-    var engineRows = [
-      { label: dashLabel.turnEngine, state: displayFirstTurnLightSkippedState(rs.prepareTurnStatus, "first turn light mode") },
-      { label: dashLabel.guideMode, state: guideModeDashboardState },
-      { label: dashLabel.runtimeSync, state: runtimeSyncState },
-    ];
-
-    var retryState = { status: _failedQueue.length > 0 ? "warn" : "ok", detail: _failedQueue.length > 0 ? _failedQueue.length + " pending" : "empty" };
-    var qpLoad = runtimeState && runtimeState.queuePersistence && runtimeState.queuePersistence.lastLoad;
-    var qpSave = runtimeState && runtimeState.queuePersistence && runtimeState.queuePersistence.lastSave;
-    var queueStorageState = { status: qpSave ? qpSave.status : "unknown", detail: [qpLoad ? "load:" + qpLoad.status : null, qpSave ? "save:" + qpSave.status : null].filter(Boolean).join(" / ") || "not yet" };
-    var saveRows = [
-      { label: dashLabel.injection, state: displayFirstTurnLightSkippedState(rs.lastInjectionStatus, "first turn light mode") },
-      { label: dashLabel.save, state: rs.lastSaveStatus },
-      { label: dashLabel.complete, state: rs.lastCompleteStatus },
-      { label: dashLabel.retryQueue, state: retryState },
-      { label: dashLabel.queueStorage, state: queueStorageState },
-    ];
-
-    var out = renderCard("\uD83D\uDD0C", "Connection", connectionRows)
-      + renderCard("\u2699\uFE0F", "Engine", engineRows)
-      + renderCriticLedgerProbeCard(rs.lastCriticLedgerProbe)
-      + renderCard("\uD83D\uDCBE", "Save / Queue", saveRows);
-
-    // completeTurn 상세 칩
-    if (rs.lastCompleteTurnStatus && rs.lastCompleteTurnStatus.status !== "idle") {
-      var ct = rs.lastCompleteTurnStatus;
-      var ctCls = ct.status === "ok" ? "mo-dash-card" : ct.status === "warn" ? "mo-dash-card has-warn" : "mo-dash-card has-fail";
-      var chips = [];
-      if (ct.chatLogsSaved != null)    chips.push('<span class="mo-dash-chip mo-dash-chip-num">log:' + ct.chatLogsSaved + '</span>');
-      if (ct.memoriesSaved != null)    chips.push('<span class="mo-dash-chip mo-dash-chip-num">mem:' + ct.memoriesSaved + '</span>');
-      if (ct.evidenceSaved != null)    chips.push('<span class="mo-dash-chip mo-dash-chip-num">evi:' + ct.evidenceSaved + '</span>');
-      if (ct.kgTriplesSaved != null)   chips.push('<span class="mo-dash-chip mo-dash-chip-num">kg:' + ct.kgTriplesSaved + '</span>');
-      if (ct.subjectiveEntityMemoriesSaved != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">sem:' + ct.subjectiveEntityMemoriesSaved + '</span>');
-      if (ct.worldRulesSaved != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">rule:' + ct.worldRulesSaved + '</span>');
-      if (ct.derivedArtifactsSaved != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">der:' + ct.derivedArtifactsSaved + '</span>');
-      if (ct.rawStatus) chips.push('<span class="mo-dash-chip mo-dash-chip-num">raw:' + escapeAttr(ct.rawStatus) + '</span>');
-      if (ct.derivedStatus) chips.push('<span class="mo-dash-chip mo-dash-chip-num">derived:' + escapeAttr(ct.derivedStatus) + '</span>');
-      if (ct.vectorUpserted != null) chips.push('<span class="mo-dash-chip mo-dash-chip-num">vec:' + ct.vectorUpserted + '</span>');
-      if (ct.vectorMemoryUpserted != null || ct.vectorEvidenceUpserted != null || ct.vectorWorldRuleUpserted != null) {
-        chips.push('<span class="mo-dash-chip mo-dash-chip-num">vecLane m:' + (ct.vectorMemoryUpserted == null ? "?" : ct.vectorMemoryUpserted) + ' e:' + (ct.vectorEvidenceUpserted == null ? "?" : ct.vectorEvidenceUpserted) + ' r:' + (ct.vectorWorldRuleUpserted == null ? "?" : ct.vectorWorldRuleUpserted) + '</span>');
-      }
-      var ctSimpleDetail = simplifyDashboardDetail(ct.detail || "");
-      if (ctSimpleDetail) chips.push('<span class="mo-dash-chip mo-dash-chip-num">' + escapeAttr(ctSimpleDetail) + '</span>');
-      var failChips = ct.failReasons && ct.failReasons.length > 0
-        ? ct.failReasons.map(function(fr){ return '<span class="mo-dash-chip mo-dash-chip-fail">' + fr + '</span>'; }).join("")
-        : "";
-      var ctSourceLabel = /idempotent pair replay|idempotent_pair_replay|duplicate save skipped|accepted \(existing pair\)/i.test(String(ct.detail || ""))
-        ? dashboardSimpleText("existingAccepted")
-        : (ct.source || "local");
-      out += '<div class="' + ctCls + '">'
-        + '<div class="mo-dash-card-head"><span class="mo-dash-card-icon">\u2705</span>'
-        + '<span class="mo-dash-card-title">Complete Turn</span>'
-        + '<div class="mo-dash-card-summary"><span class="mo-dash-chip mo-dash-chip-' + (ct.status === "ok" ? "ok" : ct.status === "warn" ? "warn" : "fail") + '">[' + escapeAttr(ctSourceLabel) + ']</span></div>'
-        + '</div>'
-        + '<div class="mo-dash-row" style="flex-wrap:wrap;gap:4px">' + chips.join("") + failChips + '</div>'
-        + '</div>';
-      var laneRows = buildPersistenceLaneRows(ct);
-      if (laneRows.length > 0) {
-        out += renderCard("\uD83D\uDCE6", "Persistence Lanes", laneRows);
-      }
-    }
-
-    var backendTimingRows = buildBackendTimingRows(rs.prepareTurnStatus, rs.lastCompleteTurnStatus);
-    if (backendTimingRows.length > 0) {
-      out += renderCard("\u23F1", "Backend Timing", backendTimingRows);
-    }
-
-    // autoRollback, sessionRouting, etc — 조건부 행
-    var extraRows = [];
-    if (rs.lastAutoRollback && rs.lastAutoRollback.status !== "idle") extraRows.push({ label: dashLabel.autoRollback, state: rs.lastAutoRollback });
-    if (rs.lastStreamingAfterRequest && rs.lastStreamingAfterRequest.status !== "idle") extraRows.push({ label: dashLabel.streamingHook, state: rs.lastStreamingAfterRequest });
-    if (rs.sessionWriteRouting && rs.sessionWriteRouting.status !== "idle") extraRows.push({ label: dashLabel.sessionRouting, state: rs.sessionWriteRouting });
-    if (rs.lastRisuForkCopyCapture && rs.lastRisuForkCopyCapture.status !== "idle") extraRows.push({ label: dashLabel.forkCopyCapture, state: rs.lastRisuForkCopyCapture });
-    if (rs.lastSessionDeleteSync && rs.lastSessionDeleteSync.status !== "idle") extraRows.push({ label: dashLabel.sessionDeleteSync, state: rs.lastSessionDeleteSync });
-    if (rs.lastActiveChatBackfill && rs.lastActiveChatBackfill.status !== "idle") extraRows.push({ label: dashLabel.activeChatBackfill, state: rs.lastActiveChatBackfill });
-    if (extraRows.length > 0) out += renderCard("\uD83D\uDD04", "Activity", extraRows);
-
-    // 오류
-    if (rs.lastError) {
-      out += '<div class="mo-dash-card has-fail">'
-        + '<div class="mo-dash-card-head"><span class="mo-dash-card-icon">\u26a0\uFE0F</span><span class="mo-dash-card-title">Last Error</span></div>'
-        + formatStateRow(dashLabel.lastError, rs.lastError)
-        + '</div>';
-    }
-
-    return out;
+    return vm.cards.map(function(card) {
+      const severity = String(card && card.severity || "unknown");
+      const cls = severity === "fail" ? "mo-dash-card has-fail" : severity === "warn" ? "mo-dash-card has-warn" : "mo-dash-card";
+      const chips = Array.isArray(card && card.chips) ? card.chips.map(function(chip) {
+        const tone = /^(ok|warn|fail|num)$/.test(String(chip && chip.tone || "")) ? String(chip.tone) : "num";
+        return '<span class="mo-dash-chip mo-dash-chip-' + tone + '">' + escapeAttr(dashboardViewModelText(chip && chip.label)) + '</span>';
+      }).join("") : "";
+      const rows = Array.isArray(card && card.rows) ? card.rows.map(renderRow).join("") : "";
+      return '<div class="' + cls + '"><div class="mo-dash-card-head">'
+        + '<span class="mo-dash-card-icon">' + escapeAttr(card && card.icon || "") + '</span>'
+        + '<span class="mo-dash-card-title">' + escapeAttr(card && card.title || "Dashboard") + '</span>'
+        + '<div class="mo-dash-card-summary">' + (chips || summaryHtml(card && card.summary)) + '</div>'
+        + '</div>' + rows + '</div>';
+    }).join("");
   }
 
-  function renderHeaderHealthBadges(rs, s) {
+  function renderDashboardViewModelHeader(vm, s) {
     if (!s || !s.enabled) return '<span class="mo-hdr-health-badge mo-hdr-health-badge-fail">OFF</span>';
-    var allStates = [
-      rs.lastBridgeHealth, rs.lastSupervisorWakeup, rs.lastSearchStatus,
-      rs.lastSupervisorStatus, rs.lastInjectionStatus, rs.lastSaveStatus,
-      rs.lastCompleteStatus, rs.lastCompleteTurnStatus, rs.prepareTurnStatus,
-    ].map(function(st) { return normalizeDashboardStateForDisplay("", st); });
-    var fail = allStates.filter(function(x){ return x && (x.status === "fail" || x.status === "error"); }).length;
-    var warn = allStates.filter(function(x){ return x && x.status === "warn"; }).length;
-    var parts = [];
-    if (fail > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-fail">\u2715 ' + fail + ' FAIL</span>');
-    if (warn > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-warn">\u26a0 ' + warn + ' WARN</span>');
-    if (fail === 0 && warn === 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-ok">\u2713 ' + escapeAttr(t("header.health.allOk")) + '</span>');
+    if (!vm || !vm.summary) return '<div class="mo-hdr-health"><span class="mo-hdr-health-badge mo-hdr-health-badge-warn">Dashboard unavailable</span></div>';
+    const parts = [];
+    if (Number(vm.summary.fail) > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-fail">✕ ' + Number(vm.summary.fail) + ' FAIL</span>');
+    if (Number(vm.summary.warn) > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-warn">⚠ ' + Number(vm.summary.warn) + ' WARN</span>');
+    if (Number(vm.summary.fail) === 0 && Number(vm.summary.warn) === 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-ok">✓ ' + escapeAttr(t("header.health.allOk")) + '</span>');
     return '<div class="mo-hdr-health">' + parts.join("") + '</div>';
   }
 
   function formatStateRow(label, stateObj) {
     try {
-      const s = normalizeDashboardStateForDisplay(label, stateObj);
+      const s = Object.assign({}, stateObj || { status: "unknown" });
       const dotCls = statusDotClass(s.status);
       const statusLabel = runtimeStatusLabel(s.status);
       const placementDetail = s.placement ? " @ " + formatAuxiliaryPlacementTrace(s.placement) : "";
@@ -49906,6 +49601,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const guideModeDashboardState = lastGuideSupervisor && lastGuideSupervisor.guideMode
         ? { status: "ok", detail: String(lastGuideSupervisor.guideMode) + (lastGuideSupervisor.guideModeBasis ? " / " + String(lastGuideSupervisor.guideModeBasis) : "") }
         : { status: "unknown", detail: t("dash.status.value.notYet") };
+      const dashboardViewModel = await loadDashboardViewModel(rs, s, guideModeDashboardState);
       if (_settingsActiveTab === "persona") {
         await personaCapsuleResolveSessionDefaults();
       }
@@ -49935,7 +49631,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       <span class="mo-hdr-ver">${VERSION}</span>
     </div>
     <div class="mo-hdr-actions">
-      ${renderHeaderHealthBadges(rs, s)}
+      ${renderDashboardViewModelHeader(dashboardViewModel, s)}
       <button class="mo-btn mo-btn-danger-solid mo-hdr-danger-btn" id="mo-debug-hard-reset-btn" style="${s.debug ? "" : "display:none"}" title="${escapeAttr(t('routing.hardReset.title'))}">${t('settings.btn.hardResetCurrentSessionMapping')}</button>
       <button class="mo-btn mo-btn-danger-solid mo-hdr-danger-btn" id="mo-admin-db-reset-header-btn" style="${s.debug ? "" : "display:none"}" title="${escapeAttr(t('databaseReset.title'))}">${escapeAttr(t('databaseReset.button'))}</button>
       <button class="mo-debug-toggle${s.debug ? " is-on" : ""}" id="mo-debug-header-btn" aria-pressed="${s.debug ? "true" : "false"}">${t('settings.label.debug')}</button>
@@ -49960,7 +49656,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     <div class="mo-tab-panel${_settingsActiveTab === "dashboard" ? " is-active" : ""}" data-tab-panel="dashboard">
     <!-- dashboard panel -->
     <div class="mo-dash" id="mo-dashboard">
-      ${renderDashboardCards(rs, s, dashLabel, guideModeDashboardState, _prepareTurnEverContacted, _failedQueue, runtimeState)}
+      ${renderDashboardViewModel(dashboardViewModel, dashLabel)}
     </div>
 
     </div>
