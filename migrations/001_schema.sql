@@ -956,3 +956,203 @@ CREATE TABLE IF NOT EXISTS status_effects (
     CONSTRAINT fk_status_effect_registry FOREIGN KEY (registry_id) REFERENCES status_schema_registry(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Status effect lifecycle rows for temporary effects, buffs, debuffs, injuries, and cooldowns.';
+
+
+-- ---------------------------------------------------------------------------
+-- Archive Center 3.0 reference work library
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS reference_works (
+    work_id           CHAR(36)        PRIMARY KEY,
+    title             VARCHAR(500)    NOT NULL,
+    work_type         VARCHAR(50)     NOT NULL DEFAULT 'custom',
+    default_language  VARCHAR(32)     NOT NULL DEFAULT '',
+    status            VARCHAR(50)     NOT NULL DEFAULT 'draft',
+    metadata_json     JSON            NULL,
+    revision          BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_at        DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at        DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    INDEX idx_reference_work_status (status, updated_at),
+    INDEX idx_reference_work_title (title(180))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Reusable original-work/reference library root, independent from chat sessions.';
+
+CREATE TABLE IF NOT EXISTS reference_continuities (
+    continuity_id         CHAR(36)        PRIMARY KEY,
+    work_id               CHAR(36)        NOT NULL,
+    continuity_key        VARCHAR(255)    NOT NULL,
+    label                 VARCHAR(500)    NOT NULL,
+    parent_continuity_id  CHAR(36)        NULL,
+    status                VARCHAR(50)     NOT NULL DEFAULT 'active',
+    metadata_json         JSON            NULL,
+    revision              BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_at            DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at            DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    UNIQUE KEY uq_reference_continuity_key (work_id, continuity_key),
+    INDEX idx_reference_continuity_work (work_id, status, updated_at),
+    CONSTRAINT fk_reference_continuity_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_continuity_parent FOREIGN KEY (parent_continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Separates novel, animation, remake, branch, and user-defined continuities.';
+
+CREATE TABLE IF NOT EXISTS reference_documents (
+    document_id      CHAR(36)        PRIMARY KEY,
+    work_id          CHAR(36)        NOT NULL,
+    continuity_id    CHAR(36)        NOT NULL,
+    source_type      VARCHAR(50)     NOT NULL DEFAULT 'manual_text',
+    source_uri       TEXT            NULL,
+    content_hash     CHAR(64)        NOT NULL,
+    raw_retention    VARCHAR(50)     NOT NULL DEFAULT 'full',
+    raw_text         LONGTEXT        NULL,
+    import_status    VARCHAR(50)     NOT NULL DEFAULT 'pending',
+    provenance_json  JSON            NULL,
+    created_at       DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at       DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    UNIQUE KEY uq_reference_document_hash (work_id, continuity_id, content_hash),
+    INDEX idx_reference_document_status (work_id, continuity_id, import_status, updated_at),
+    CONSTRAINT fk_reference_document_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_document_continuity FOREIGN KEY (continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Manual, file, or web provenance records for reference material.';
+
+CREATE TABLE IF NOT EXISTS reference_timeline_nodes (
+    node_id          CHAR(36)        PRIMARY KEY,
+    work_id          CHAR(36)        NOT NULL,
+    continuity_id    CHAR(36)        NOT NULL,
+    node_key         VARCHAR(255)    NOT NULL,
+    label            VARCHAR(500)    NOT NULL,
+    ordinal_value    BIGINT          NOT NULL DEFAULT 0,
+    parent_node_id   CHAR(36)        NULL,
+    branch_key       VARCHAR(255)    NOT NULL DEFAULT 'main',
+    node_kind        VARCHAR(50)     NOT NULL DEFAULT 'event',
+    metadata_json    JSON            NULL,
+    created_at       DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at       DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    UNIQUE KEY uq_reference_timeline_key (continuity_id, branch_key, node_key),
+    INDEX idx_reference_timeline_order (continuity_id, branch_key, ordinal_value),
+    CONSTRAINT fk_reference_timeline_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_timeline_continuity FOREIGN KEY (continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_timeline_parent FOREIGN KEY (parent_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Event-oriented chronology and branch anchors; ordinal is not story-clock time.';
+
+CREATE TABLE IF NOT EXISTS reference_entities (
+    entity_id         CHAR(36)        PRIMARY KEY,
+    work_id           CHAR(36)        NOT NULL,
+    continuity_id     CHAR(36)        NOT NULL,
+    entity_type       VARCHAR(50)     NOT NULL,
+    canonical_name    VARCHAR(500)    NOT NULL,
+    description_text  LONGTEXT        NULL,
+    metadata_json     JSON            NULL,
+    review_status     VARCHAR(50)     NOT NULL DEFAULT 'pending',
+    created_at        DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at        DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    INDEX idx_reference_entity_name (work_id, continuity_id, canonical_name(180)),
+    INDEX idx_reference_entity_type (work_id, continuity_id, entity_type, review_status),
+    CONSTRAINT fk_reference_entity_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_entity_continuity FOREIGN KEY (continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Reference-only people, places, items, and factions; never auto-merged into session entities.';
+
+CREATE TABLE IF NOT EXISTS reference_entity_aliases (
+    alias_id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    work_id           CHAR(36)        NOT NULL,
+    continuity_id     CHAR(36)        NOT NULL,
+    entity_id         CHAR(36)        NOT NULL,
+    alias_text        VARCHAR(500)    NOT NULL,
+    normalized_alias  VARCHAR(255)    NOT NULL,
+    language_code     VARCHAR(32)     NOT NULL DEFAULT '',
+    created_at        DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    UNIQUE KEY uq_reference_entity_alias (work_id, continuity_id, entity_id, normalized_alias),
+    INDEX idx_reference_alias_lookup (work_id, continuity_id, normalized_alias),
+    CONSTRAINT fk_reference_alias_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_alias_continuity FOREIGN KEY (continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_alias_entity FOREIGN KEY (entity_id) REFERENCES reference_entities(entity_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Surface aliases scoped to one work and continuity.';
+
+CREATE TABLE IF NOT EXISTS reference_claims (
+    claim_id             CHAR(36)        PRIMARY KEY,
+    work_id              CHAR(36)        NOT NULL,
+    continuity_id        CHAR(36)        NOT NULL,
+    document_id          CHAR(36)        NOT NULL,
+    claim_type           VARCHAR(50)     NOT NULL,
+    subject_entity_id    CHAR(36)        NULL,
+    claim_text           LONGTEXT        NOT NULL,
+    evidence_excerpt     TEXT            NULL,
+    temporal_scope       VARCHAR(50)     NOT NULL DEFAULT 'bounded',
+    valid_from_node_id   CHAR(36)        NULL,
+    valid_to_node_id     CHAR(36)        NULL,
+    reveal_from_node_id  CHAR(36)        NULL,
+    branch_key           VARCHAR(255)    NOT NULL DEFAULT 'main',
+    knowledge_scope      VARCHAR(50)     NOT NULL DEFAULT 'public_world',
+    confidence           DOUBLE          NOT NULL DEFAULT 0,
+    review_status        VARCHAR(50)     NOT NULL DEFAULT 'pending',
+    metadata_json        JSON            NULL,
+    created_at           DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at           DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    INDEX idx_reference_claim_recall (work_id, continuity_id, review_status, branch_key, reveal_from_node_id),
+    INDEX idx_reference_claim_subject (subject_entity_id, claim_type),
+    INDEX idx_reference_claim_document (document_id, review_status),
+    CONSTRAINT fk_reference_claim_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_claim_continuity FOREIGN KEY (continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_claim_document FOREIGN KEY (document_id) REFERENCES reference_documents(document_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_claim_subject FOREIGN KEY (subject_entity_id) REFERENCES reference_entities(entity_id) ON DELETE SET NULL,
+    CONSTRAINT fk_reference_claim_valid_from FOREIGN KEY (valid_from_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL,
+    CONSTRAINT fk_reference_claim_valid_to FOREIGN KEY (valid_to_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL,
+    CONSTRAINT fk_reference_claim_reveal_from FOREIGN KEY (reveal_from_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Approved factual units with chronology, spoiler, branch, and knowledge scope.';
+
+CREATE TABLE IF NOT EXISTS reference_claim_knowers (
+    claim_id    CHAR(36)    NOT NULL,
+    entity_id   CHAR(36)    NOT NULL,
+    created_at  DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    PRIMARY KEY (claim_id, entity_id),
+    INDEX idx_reference_knower_entity (entity_id, claim_id),
+    CONSTRAINT fk_reference_knower_claim FOREIGN KEY (claim_id) REFERENCES reference_claims(claim_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_knower_entity FOREIGN KEY (entity_id) REFERENCES reference_entities(entity_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Character-scoped knowledge for private or limited reference claims.';
+
+CREATE TABLE IF NOT EXISTS session_reference_bindings (
+    binding_id              CHAR(36)        PRIMARY KEY,
+    chat_session_id         VARCHAR(255)    NOT NULL,
+    work_id                 CHAR(36)        NOT NULL,
+    continuity_id           CHAR(36)        NOT NULL,
+    binding_role            VARCHAR(50)     NOT NULL DEFAULT 'primary',
+    enabled                 BOOLEAN         NOT NULL DEFAULT TRUE,
+    anchor_mode             VARCHAR(50)     NOT NULL DEFAULT 'manual',
+    current_node_id         CHAR(36)        NULL,
+    reveal_ceiling_node_id  CHAR(36)        NULL,
+    divergence_node_id      CHAR(36)        NULL,
+    future_policy           VARCHAR(50)     NOT NULL DEFAULT 'block',
+    priority                INT             NOT NULL DEFAULT 0,
+    revision                BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_at              DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at              DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    UNIQUE KEY uq_session_reference_binding (chat_session_id(180), work_id, continuity_id),
+    INDEX idx_session_reference_enabled (chat_session_id, enabled, priority),
+    INDEX idx_reference_binding_work (work_id, continuity_id, enabled),
+    CONSTRAINT fk_session_reference_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_session_reference_continuity FOREIGN KEY (continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_session_reference_current_node FOREIGN KEY (current_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL,
+    CONSTRAINT fk_session_reference_reveal_node FOREIGN KEY (reveal_ceiling_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL,
+    CONSTRAINT fk_session_reference_divergence_node FOREIGN KEY (divergence_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Explicit reusable-work links for one RisuAI chat session.';
+
+CREATE TABLE IF NOT EXISTS session_reference_runtime (
+    binding_id                CHAR(36)        PRIMARY KEY,
+    candidate_node_id         CHAR(36)        NULL,
+    candidate_source_turn     INT             NULL,
+    candidate_evidence_json   JSON            NULL,
+    candidate_confirmed       BOOLEAN         NOT NULL DEFAULT FALSE,
+    last_claim_ids_json       JSON            NULL,
+    diagnostics_json          JSON            NULL,
+    revision                  BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_at                DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at                DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    CONSTRAINT fk_session_reference_runtime_binding FOREIGN KEY (binding_id) REFERENCES session_reference_bindings(binding_id) ON DELETE CASCADE,
+    CONSTRAINT fk_session_reference_runtime_candidate FOREIGN KEY (candidate_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='One mutable assisted-anchor candidate per binding; not an accumulating memory lane.';

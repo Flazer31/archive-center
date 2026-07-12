@@ -159,6 +159,7 @@ func TestMariaDBDeleteSession(t *testing.T) {
 	ctx := context.Background()
 	sid := "sess-delete"
 
+	mock.ExpectExec("DELETE FROM session_reference_bindings").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM persona_capsule_attachments").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM protagonist_entity_memories").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM chat_logs").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 10))

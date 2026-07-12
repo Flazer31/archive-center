@@ -575,6 +575,11 @@ func (m *mariadbStore) DeleteSession(ctx context.Context, chatSessionID string) 
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	// Session deletion removes only the reusable-work link. The referenced
+	// work, documents, claims, and vectors are library-owned and must survive.
+	if _, err := m.db.ExecContext(ctx, "DELETE FROM session_reference_bindings WHERE chat_session_id = ?", chatSessionID); err != nil {
+		return err
+	}
 	if _, err := m.db.ExecContext(ctx, "DELETE FROM persona_capsule_attachments WHERE target_chat_session_id = ?", chatSessionID); err != nil {
 		return err
 	}

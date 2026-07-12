@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -309,4 +310,84 @@ func TestCompatibilityMigrationsIncludeSessionMigrationTables(t *testing.T) {
 			t.Fatalf("compatibility migration statements missing %q", required)
 		}
 	}
+}
+
+func TestCompatibilityMigrationsIncludeReferenceLibraryTables(t *testing.T) {
+	tableNames := []string{
+		"reference_works",
+		"reference_continuities",
+		"reference_documents",
+		"reference_timeline_nodes",
+		"reference_entities",
+		"reference_entity_aliases",
+		"reference_claims",
+		"reference_claim_knowers",
+		"session_reference_bindings",
+		"session_reference_runtime",
+	}
+	joined := strings.Join(compatibilityMigrationStatements(), "\n")
+	for _, tableName := range tableNames {
+		required := "CREATE TABLE IF NOT EXISTS " + tableName
+		if !strings.Contains(joined, required) {
+			t.Fatalf("compatibility migration statements missing %q", required)
+		}
+	}
+
+	schemaPath, ok := findSchemaUp(".", 6)
+	if !ok {
+		t.Fatal("fresh-install schema was not found")
+	}
+	statements, err := loadStatements(schemaPath)
+	if err != nil {
+		t.Fatalf("load fresh-install schema: %v", err)
+	}
+	freshSchema := strings.Join(statements, "\n")
+	for _, tableName := range tableNames {
+		required := "CREATE TABLE IF NOT EXISTS " + tableName
+		if !strings.Contains(freshSchema, required) {
+			t.Fatalf("fresh-install schema missing %q", required)
+		}
+	}
+
+	compatibilityByTable := referenceCreateStatementsByTable(compatibilityMigrationStatements())
+	freshByTable := referenceCreateStatementsByTable(statements)
+	for _, tableName := range tableNames {
+		if compatibilityByTable[tableName] != freshByTable[tableName] {
+			t.Fatalf("reference table %s differs between fresh schema and compatibility migration: %s", tableName,
+				firstSQLTokenDifference(compatibilityByTable[tableName], freshByTable[tableName]))
+		}
+	}
+}
+
+func firstSQLTokenDifference(left, right string) string {
+	leftFields := strings.Fields(left)
+	rightFields := strings.Fields(right)
+	limit := len(leftFields)
+	if len(rightFields) < limit {
+		limit = len(rightFields)
+	}
+	for i := 0; i < limit; i++ {
+		if leftFields[i] != rightFields[i] {
+			return fmt.Sprintf("token %d: compatibility=%q fresh=%q", i, leftFields[i], rightFields[i])
+		}
+	}
+	return fmt.Sprintf("token count: compatibility=%d fresh=%d", len(leftFields), len(rightFields))
+}
+
+func referenceCreateStatementsByTable(statements []string) map[string]string {
+	out := map[string]string{}
+	for _, statement := range statements {
+		fields := strings.Fields(statement)
+		if len(fields) < 6 || !strings.EqualFold(strings.Join(fields[:5], " "), "CREATE TABLE IF NOT EXISTS") {
+			continue
+		}
+		tableName := strings.Trim(fields[5], "`")
+		if strings.HasPrefix(tableName, "reference_") || strings.HasPrefix(tableName, "session_reference_") {
+			normalized := strings.Join(fields, " ")
+			normalized = strings.ReplaceAll(normalized, "( ", "(")
+			normalized = strings.ReplaceAll(normalized, " )", ")")
+			out[tableName] = normalized
+		}
+	}
+	return out
 }

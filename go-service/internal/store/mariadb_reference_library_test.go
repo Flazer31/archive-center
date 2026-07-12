@@ -1,0 +1,142 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
+)
+
+func newReferenceLibraryMock(t *testing.T) (*mariadbStore, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return &mariadbStore{db: db}, mock
+}
+
+func TestCreateReferenceWorkAndDuplicateDocumentGuard(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectExec("INSERT INTO reference_works").
+		WithArgs("work-1", "Example", "novel", "ko", "draft", nil).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := store.CreateReferenceWork(context.Background(), &ReferenceWork{
+		WorkID: "work-1", Title: "Example", WorkType: "novel", DefaultLanguage: "ko", Status: "draft",
+	}); err != nil {
+		t.Fatalf("CreateReferenceWork: %v", err)
+	}
+
+	mock.ExpectExec("INSERT INTO reference_documents").
+		WithArgs("doc-2", "work-1", "continuity-1", "manual_text", nil, "same-hash", "full", "body", "pending", nil).
+		WillReturnError(&mysql.MySQLError{Number: 1062, Message: "duplicate content hash"})
+	err := store.SaveReferenceDocument(context.Background(), &ReferenceDocument{
+		DocumentID: "doc-2", WorkID: "work-1", ContinuityID: "continuity-1",
+		ContentHash: "same-hash", RawText: "body",
+	})
+	if !errors.Is(err, ErrReferenceConflict) {
+		t.Fatalf("SaveReferenceDocument error = %v, want ErrReferenceConflict", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteReferenceWorkBlocksLinkedSession(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT binding_id FROM session_reference_bindings
+		WHERE work_id = ? LIMIT 1 FOR UPDATE`)).
+		WithArgs("work-1").
+		WillReturnRows(sqlmock.NewRows([]string{"binding_id"}).AddRow("binding-1"))
+	mock.ExpectRollback()
+
+	err := store.DeleteReferenceWork(context.Background(), "work-1")
+	if !errors.Is(err, ErrReferenceWorkInUse) {
+		t.Fatalf("DeleteReferenceWork error = %v, want ErrReferenceWorkInUse", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteReferenceWorkAfterUnlink(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT binding_id FROM session_reference_bindings").
+		WithArgs("work-1").
+		WillReturnRows(sqlmock.NewRows([]string{"binding_id"}))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM reference_works WHERE work_id = ?")).
+		WithArgs("work-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := store.DeleteReferenceWork(context.Background(), "work-1"); err != nil {
+		t.Fatalf("DeleteReferenceWork: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReferenceWorkRevisionConflict(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectExec("UPDATE reference_works").
+		WithArgs("Changed", "novel", "ko", "ready", nil, "work-1", int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	err := store.UpdateReferenceWork(context.Background(), &ReferenceWork{
+		WorkID: "work-1", Title: "Changed", WorkType: "novel", DefaultLanguage: "ko", Status: "ready",
+	}, 4)
+	if !errors.Is(err, ErrReferenceConflict) {
+		t.Fatalf("UpdateReferenceWork error = %v, want ErrReferenceConflict", err)
+	}
+}
+
+func TestSessionDeleteStartsByRemovingBindingOnly(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	stop := errors.New("stop after binding cleanup probe")
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM session_reference_bindings WHERE chat_session_id = ?")).
+		WithArgs("session-1").
+		WillReturnError(stop)
+	err := store.DeleteSession(context.Background(), "session-1")
+	if !errors.Is(err, stop) {
+		t.Fatalf("DeleteSession error = %v, want probe error", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionBindingUsesOptimisticRevision(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectExec("UPDATE session_reference_bindings").
+		WithArgs("primary", true, "manual", nil, nil, nil, "block", 0, "binding-1", "session-1", int64(2)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	err := store.UpsertSessionReferenceBinding(context.Background(), &SessionReferenceBinding{
+		BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1",
+		BindingRole: "primary", Enabled: true, AnchorMode: "manual", FuturePolicy: "block",
+	}, 2)
+	if !errors.Is(err, ErrReferenceConflict) {
+		t.Fatalf("UpsertSessionReferenceBinding error = %v, want ErrReferenceConflict", err)
+	}
+}
+
+func TestAdminResetIncludesReferenceTablesChildFirst(t *testing.T) {
+	wantOrder := []string{
+		"session_reference_runtime", "session_reference_bindings", "reference_claim_knowers",
+		"reference_claims", "reference_entity_aliases", "reference_entities",
+		"reference_timeline_nodes", "reference_documents", "reference_continuities", "reference_works",
+	}
+	if len(mariaAdminResetTables) < len(wantOrder) {
+		t.Fatalf("admin reset table count = %d", len(mariaAdminResetTables))
+	}
+	for i, want := range wantOrder {
+		if mariaAdminResetTables[i] != want {
+			t.Fatalf("admin reset table %d = %q, want %q", i, mariaAdminResetTables[i], want)
+		}
+	}
+}

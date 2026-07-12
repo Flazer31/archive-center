@@ -56,6 +56,16 @@ func (m *mariadbStore) Ping(ctx context.Context) error {
 }
 
 var mariaAdminResetTables = []string{
+	"session_reference_runtime",
+	"session_reference_bindings",
+	"reference_claim_knowers",
+	"reference_claims",
+	"reference_entity_aliases",
+	"reference_entities",
+	"reference_timeline_nodes",
+	"reference_documents",
+	"reference_continuities",
+	"reference_works",
 	"persona_capsule_attachments",
 	"persona_memory_entries",
 	"persona_memory_capsules",

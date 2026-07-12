@@ -217,7 +217,7 @@ func applyStatements(ctx context.Context, db sqlExecer, statements []string, rep
 }
 
 func compatibilityMigrationStatements() []string {
-	return []string{
+	statements := []string{
 		"ALTER TABLE storylines ADD COLUMN IF NOT EXISTS confidence DOUBLE",
 		"ALTER TABLE storylines ADD COLUMN IF NOT EXISTS evidence_count INT",
 		"ALTER TABLE storylines ADD COLUMN IF NOT EXISTS last_evidence_turn INT",
@@ -246,6 +246,7 @@ func compatibilityMigrationStatements() []string {
 		"CREATE TABLE IF NOT EXISTS status_change_events (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, chat_session_id VARCHAR(255) NOT NULL, registry_id BIGINT UNSIGNED NOT NULL, status_value_id BIGINT UNSIGNED NULL, status_key VARCHAR(255) NOT NULL, owner_scope VARCHAR(80) NOT NULL, owner_id VARCHAR(255) NOT NULL, event_kind VARCHAR(80) NOT NULL, previous_value_json JSON NULL, new_value_json JSON NULL, evidence_json JSON NOT NULL, source_turn INT NULL, story_clock_json JSON NULL, event_state VARCHAR(50) NOT NULL DEFAULT 'recorded', created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL, INDEX idx_status_event_session (chat_session_id, created_at), INDEX idx_status_event_owner (chat_session_id, owner_scope, owner_id(180), status_key(120), created_at), INDEX idx_status_event_registry (registry_id, created_at), CONSTRAINT fk_status_event_registry FOREIGN KEY (registry_id) REFERENCES status_schema_registry(id) ON DELETE CASCADE, CONSTRAINT fk_status_event_current FOREIGN KEY (status_value_id) REFERENCES status_current_values(id) ON DELETE SET NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 		"CREATE TABLE IF NOT EXISTS status_effects (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, chat_session_id VARCHAR(255) NOT NULL, registry_id BIGINT UNSIGNED NOT NULL, status_key VARCHAR(255) NOT NULL, owner_scope VARCHAR(80) NOT NULL, owner_id VARCHAR(255) NOT NULL, effect_kind VARCHAR(80) NOT NULL, effect_label VARCHAR(255) NULL, effect_payload_json JSON NULL, evidence_json JSON NOT NULL, source_turn INT NULL, start_clock_json JSON NOT NULL, duration_json JSON NULL, expires_at_clock_json JSON NULL, effect_state VARCHAR(50) NOT NULL DEFAULT 'active', cleared_evidence_json JSON NULL, cleared_turn INT NULL, created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL, updated_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL, INDEX idx_status_effect_session (chat_session_id, effect_state, updated_at), INDEX idx_status_effect_owner (chat_session_id, owner_scope, owner_id(180), status_key(120), effect_state), INDEX idx_status_effect_registry (registry_id, effect_state), CONSTRAINT fk_status_effect_registry FOREIGN KEY (registry_id) REFERENCES status_schema_registry(id) ON DELETE CASCADE) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
 	}
+	return append(statements, referenceLibrarySchemaStatements()...)
 }
 
 func applyCompatibilityMigrations(ctx context.Context, db sqlExecer, report *schemaReport) error {
