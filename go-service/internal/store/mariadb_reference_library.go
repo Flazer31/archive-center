@@ -418,7 +418,8 @@ func (m *mariadbStore) UpsertReferenceTimelineNode(ctx context.Context, item *Re
 			parent_node_id = IF(review_status = 'pending', VALUES(parent_node_id), parent_node_id),
 			branch_key = IF(review_status = 'pending', VALUES(branch_key), branch_key),
 			node_kind = IF(review_status = 'pending', VALUES(node_kind), node_kind),
-			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json)
+			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json),
+			review_status = IF(review_status = 'pending', VALUES(review_status), review_status)
 	`, strings.TrimSpace(item.NodeID), strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ContinuityID),
 		strings.TrimSpace(item.NodeKey), strings.TrimSpace(item.Label), item.Ordinal,
 		referenceNullable(item.ParentNodeID), defaultString(item.BranchKey, "main"),
@@ -487,7 +488,8 @@ func (m *mariadbStore) UpsertReferenceEntity(ctx context.Context, item *Referenc
 			entity_type = IF(review_status = 'pending', VALUES(entity_type), entity_type),
 			canonical_name = IF(review_status = 'pending', VALUES(canonical_name), canonical_name),
 			description_text = IF(review_status = 'pending', VALUES(description_text), description_text),
-			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json)
+			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json),
+			review_status = IF(review_status = 'pending', VALUES(review_status), review_status)
 	`, strings.TrimSpace(item.EntityID), strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ContinuityID),
 		strings.TrimSpace(item.EntityType), strings.TrimSpace(item.CanonicalName), referenceNullable(item.DescriptionText),
 		referenceJSON(item.MetadataJSON), defaultString(item.ReviewStatus, "pending"))
@@ -615,7 +617,8 @@ func (m *mariadbStore) UpsertReferenceClaim(ctx context.Context, item *Reference
 			branch_key = IF(review_status = 'pending', VALUES(branch_key), branch_key),
 			knowledge_scope = IF(review_status = 'pending', VALUES(knowledge_scope), knowledge_scope),
 			confidence = IF(review_status = 'pending', VALUES(confidence), confidence),
-			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json)
+			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json),
+			review_status = IF(review_status = 'pending', VALUES(review_status), review_status)
 	`, strings.TrimSpace(item.ClaimID), strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ContinuityID),
 		strings.TrimSpace(item.DocumentID), strings.TrimSpace(item.ClaimType), referenceNullable(item.SubjectEntityID),
 		strings.TrimSpace(item.ClaimText), referenceNullable(item.EvidenceExcerpt), defaultString(item.TemporalScope, "bounded"),

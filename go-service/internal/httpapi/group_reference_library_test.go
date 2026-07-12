@@ -180,6 +180,26 @@ func (f *referenceLibraryHTTPStore) UpdateReferenceCandidateReview(_ context.Con
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reviews = append(f.reviews, referenceReviewCall{workID: workID, kind: kind, id: id, status: status})
+	switch kind {
+	case "timeline":
+		for i := range f.timeline {
+			if f.timeline[i].WorkID == workID && f.timeline[i].NodeID == id {
+				f.timeline[i].ReviewStatus = status
+			}
+		}
+	case "entity":
+		for i := range f.entities {
+			if f.entities[i].WorkID == workID && f.entities[i].EntityID == id {
+				f.entities[i].ReviewStatus = status
+			}
+		}
+	case "claim":
+		for i := range f.claims {
+			if f.claims[i].WorkID == workID && f.claims[i].ClaimID == id {
+				f.claims[i].ReviewStatus = status
+			}
+		}
+	}
 	return nil
 }
 
@@ -254,6 +274,10 @@ func TestReferenceExtractionQueueReusesRunningDocumentJob(t *testing.T) {
 	body := map[string]any{"client_meta": map[string]any{"critic": map[string]any{"provider": "openai", "api_key": "test", "endpoint": upstream.URL, "model": "test", "timeout_ms": 30000}}}
 	first := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/documents/doc-1/extract", body)
 	second := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/documents/doc-1/extract", body)
+	if request, ok := first["request"].(map[string]any); !ok || request["auto_review"] != true {
+		close(release)
+		t.Fatalf("reference extraction did not default to automatic review: %#v", first)
+	}
 	if first["job_id"] != second["job_id"] || second["reused_running_job"] != true {
 		close(release)
 		t.Fatalf("running job was not reused: first=%#v second=%#v", first, second)
@@ -293,4 +317,43 @@ func TestReferenceExtractionLinksExistingAliasesAndTimeline(t *testing.T) {
 	if got := fake.claims[len(fake.claims)-1]; got.SubjectEntityID != "alice-id" || got.ValidFromNodeID != "start-id" {
 		t.Fatalf("claim links were not resolved: %#v", got)
 	}
+}
+
+func TestReferenceAutoReviewApprovesSupportedAndLeavesAmbiguousPending(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"decisions\":[{\"kind\":\"entity\",\"id\":\"entity-supported\",\"decision\":\"approved\",\"reason\":\"direct evidence\"},{\"kind\":\"entity\",\"id\":\"entity-ambiguous\",\"decision\":\"pending\",\"reason\":\"heading may not be an organization\"}]}"}}]}`))
+	}))
+	defer upstream.Close()
+
+	fake := newReferenceLibraryHTTPStore()
+	fake.entities = append(fake.entities,
+		store.ReferenceEntity{EntityID: "entity-supported", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "HUNTR/X", EntityType: "faction", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"direct source sentence"}`},
+		store.ReferenceEntity{EntityID: "entity-ambiguous", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "1930s Hunters", EntityType: "faction", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"1930s heading"}`},
+	)
+	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := map[string]any{
+		"continuity_id": "continuity-1",
+		"client_meta":   map[string]any{"critic": map[string]any{"provider": "openai", "api_key": "test", "endpoint": upstream.URL, "model": "test", "timeout_ms": 30000}},
+	}
+	started := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/review/auto", body)
+	jobID := started["job_id"].(string)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		job, ok := srv.AdminJobs.get(jobID)
+		if ok && job["status"] == "completed" {
+			if fake.entities[0].ReviewStatus != "approved" || fake.entities[1].ReviewStatus != "pending" {
+				t.Fatalf("unexpected review statuses: %#v", fake.entities)
+			}
+			result := job["result"].(map[string]any)
+			if intFromAny(result["approved"], 0) != 1 || intFromAny(result["remaining_pending"], 0) != 1 {
+				t.Fatalf("unexpected auto review result: %#v", result)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("reference auto review job did not complete")
 }

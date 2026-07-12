@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-import-ui-hotfix.20260712-1";
+  const BUILD_ID = "3.0-dev-reference-auto-review.20260712-2";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-12 KST";
-  const BUILD_NOTES = "Reference file review UI added; missing Critic Ledger debug renderer restored";
+  const BUILD_NOTES = "Reference candidates are conservatively auto-reviewed; ambiguous items remain for manual or bulk review";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -11591,7 +11591,7 @@
     referenceLibrarySetStatus("running", "평론가가 자료 후보를 추출하는 중입니다.", "");
     const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/documents/" + referenceLibraryPath(documentId) + "/extract", {
       method: "POST",
-      body: { client_meta: buildAdminRuntimeClientMeta({ source: "reference_file_extract" }) },
+      body: { auto_review: true, client_meta: buildAdminRuntimeClientMeta({ source: "reference_file_extract" }) },
       timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
     });
     if (!data || !data.job_id) {
@@ -11614,8 +11614,11 @@
       referenceLibraryRefreshUI();
       if (data.status === "completed") {
         await referenceLibraryLoadCandidates();
-        const pending = Number(data.result && data.result.pending_review || _referenceLibraryState.candidates.count || 0);
-        referenceLibrarySetStatus("ok", "자동 추출이 끝났습니다. 검수할 후보 " + pending + "개가 있습니다.", "");
+        const resultPending = data.result ? (data.result.remaining_pending ?? data.result.pending_review) : undefined;
+        const pending = Number(resultPending ?? _referenceLibraryState.candidates.count ?? 0);
+        const approved = Number(data.result && data.result.approved || data.result && data.result.auto_review && data.result.auto_review.approved || 0);
+        const rejected = Number(data.result && data.result.rejected || data.result && data.result.auto_review && data.result.auto_review.rejected || 0);
+        referenceLibrarySetStatus("ok", "자동 처리가 끝났습니다. 승인 " + approved + "개 · 제외 " + rejected + "개 · 직접 확인 " + pending + "개", "");
         return;
       }
       if (data.status === "failed") {
@@ -11660,6 +11663,53 @@
     await referenceLibraryLoadCandidates();
   }
 
+  function referenceLibraryPendingItems() {
+    const candidates = _referenceLibraryState.candidates || {};
+    return []
+      .concat((candidates.timeline || []).map((item) => ({ kind: "timeline", id: item.node_id })))
+      .concat((candidates.entities || []).map((item) => ({ kind: "entity", id: item.entity_id })))
+      .concat((candidates.claims || []).map((item) => ({ kind: "claim", id: item.claim_id })))
+      .filter((item) => item.id);
+  }
+
+  async function referenceLibraryBulkReview(decision) {
+    const workId = _referenceLibraryState.selectedWorkId;
+    const items = referenceLibraryPendingItems().map((item) => ({ kind: item.kind, id: item.id, decision }));
+    if (!workId || items.length === 0) return;
+    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/review", {
+      method: "POST",
+      body: { items },
+      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+    });
+    if (!data || data.status !== "ok") {
+      referenceLibrarySetStatus("error", "", "후보 일괄 검수 상태를 저장하지 못했습니다.");
+      return;
+    }
+    await referenceLibraryLoadCandidates();
+    referenceLibrarySetStatus("ok", "남은 후보 " + items.length + "개를 " + (decision === "approved" ? "승인" : "제외") + "했습니다.", "");
+  }
+
+  async function referenceLibraryStartAutoReview() {
+    const workId = _referenceLibraryState.selectedWorkId;
+    const continuityId = _referenceLibraryState.selectedContinuityId;
+    if (!workId || !continuityId || referenceLibraryPendingItems().length === 0) {
+      referenceLibrarySetStatus("error", "", "자동 검수할 대기 후보가 없습니다.");
+      return;
+    }
+    referenceLibrarySetStatus("running", "평론가가 대기 후보를 자동 검수하는 중입니다.", "");
+    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/review/auto", {
+      method: "POST",
+      body: { continuity_id: continuityId, client_meta: buildAdminRuntimeClientMeta({ source: "reference_candidate_auto_review" }) },
+      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+    });
+    if (!data || !data.job_id) {
+      referenceLibrarySetStatus("error", "", "자동 검수 작업을 시작하지 못했습니다. 평론가 설정을 확인하세요.");
+      return;
+    }
+    _referenceLibraryState.job = data;
+    await referenceLibraryPollJob(String(data.job_id));
+  }
+
   function referenceCandidateRows(kind, items) {
     if (!Array.isArray(items) || items.length === 0) return '<div class="mo-section-desc">대기 중인 후보가 없습니다.</div>';
     return items.map((item) => {
@@ -11700,6 +11750,11 @@
       + '<div class="mo-section-desc">' + escapeAttr(statusText) + (state.job ? ' · 진행률 ' + jobProgress + '%' : '') + '</div></div>'
       + '<div class="mo-section">검수 대기 후보 ' + Number(state.candidates.count || 0) + '</div>'
       + '<div class="mo-section-desc">승인한 후보만 이후 원작 자료로 사용할 수 있습니다. 제외해도 원본 파일은 남습니다.</div>'
+      + (Number(state.candidates.count || 0) > 0 ? '<div class="mo-inline-actions">'
+        + '<button type="button" class="mo-btn mo-btn-success" id="mo-reference-auto-review">평론가 자동 검수</button>'
+        + '<button type="button" class="mo-btn mo-btn-info" id="mo-reference-bulk-approve">남은 후보 모두 승인</button>'
+        + '<button type="button" class="mo-btn mo-btn-danger-solid" id="mo-reference-bulk-reject">남은 후보 모두 제외</button>'
+        + '</div>' : '')
       + '<div class="mo-section">연표</div>' + referenceCandidateRows("timeline", state.candidates.timeline)
       + '<div class="mo-section">인물·장소·물품</div>' + referenceCandidateRows("entity", state.candidates.entities)
       + '<div class="mo-section">사실·설정</div>' + referenceCandidateRows("claim", state.candidates.claims);
@@ -11734,6 +11789,16 @@
     if (importFile) importFile.addEventListener("click", () => referenceLibraryImportFile(byId("mo-reference-file")?.files?.[0]));
     const extract = byId("mo-reference-extract");
     if (extract) extract.addEventListener("click", () => referenceLibraryStartExtraction());
+    const autoReview = byId("mo-reference-auto-review");
+    if (autoReview) autoReview.addEventListener("click", () => referenceLibraryStartAutoReview());
+    const bulkApprove = byId("mo-reference-bulk-approve");
+    if (bulkApprove) bulkApprove.addEventListener("click", () => {
+      if (confirm("현재 남은 원작 자료 후보를 모두 승인할까요?")) referenceLibraryBulkReview("approved");
+    });
+    const bulkReject = byId("mo-reference-bulk-reject");
+    if (bulkReject) bulkReject.addEventListener("click", () => {
+      if (confirm("현재 남은 원작 자료 후보를 모두 제외할까요? 원본 파일은 삭제되지 않습니다.")) referenceLibraryBulkReview("rejected");
+    });
     document.querySelectorAll("[data-reference-review]").forEach((btn) => {
       btn.addEventListener("click", () => referenceLibraryReview(btn.getAttribute("data-reference-kind"), btn.getAttribute("data-reference-id"), btn.getAttribute("data-reference-review")));
     });

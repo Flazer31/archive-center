@@ -24,6 +24,22 @@ func TestArchiveCenterJSCriticLedgerDebugRendererIsDefined(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSReferenceAutoReviewUIMarkers(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`body: { auto_review: true, client_meta:`,
+		`function referenceLibraryStartAutoReview()`,
+		`/review/auto`,
+		`id="mo-reference-auto-review"`,
+		`id="mo-reference-bulk-approve"`,
+		`id="mo-reference-bulk-reject"`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing reference auto-review marker %q", marker)
+		}
+	}
+}
+
 func archiveCenterRoot(t *testing.T) string {
 	t.Helper()
 	candidates := []string{
