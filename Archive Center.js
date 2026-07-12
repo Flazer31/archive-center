@@ -38,7 +38,7 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-library-browser.20260712-5";
+  const BUILD_ID = "3.0-dev-reference-library-browser.20260712-6";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-12 KST";
   const BUILD_NOTES = "Generated reference library browser with detailed extraction errors and source-start schema synchronization";
@@ -11642,15 +11642,20 @@
     const continuityId = _referenceLibraryState.selectedContinuityId;
     const continuityQuery = continuityId ? "?continuity_id=" + encodeURIComponent(continuityId) : "";
     const libraryData = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/library" + continuityQuery, { method: "GET" });
-    if (libraryData) {
-      _referenceLibraryState.library = {
-        timeline: Array.isArray(libraryData.timeline) ? libraryData.timeline : [],
-        entities: Array.isArray(libraryData.entities) ? libraryData.entities : [],
-        claims: Array.isArray(libraryData.claims) ? libraryData.claims : [],
-        count: Number(libraryData.count || 0),
-        type_counts: libraryData.type_counts && typeof libraryData.type_counts === "object" ? libraryData.type_counts : {},
-      };
+    if (!libraryData || libraryData.status !== "ok") {
+      _referenceLibraryState.library = { timeline: [], entities: [], claims: [], count: 0, type_counts: {} };
+      _referenceLibraryState.error = "생성된 자료 조회 API를 사용할 수 없습니다. 최신 소스 백엔드를 재시작하세요.";
+      referenceLibraryRefreshUI();
+      return;
     }
+    _referenceLibraryState.error = "";
+    _referenceLibraryState.library = {
+      timeline: Array.isArray(libraryData.timeline) ? libraryData.timeline : [],
+      entities: Array.isArray(libraryData.entities) ? libraryData.entities : [],
+      claims: Array.isArray(libraryData.claims) ? libraryData.claims : [],
+      count: Number(libraryData.count || 0),
+      type_counts: libraryData.type_counts && typeof libraryData.type_counts === "object" ? libraryData.type_counts : {},
+    };
     referenceLibraryRefreshUI();
   }
 
@@ -11706,7 +11711,9 @@
       + '<button type="button" class="mo-btn ' + (libraryView === "entities" ? 'mo-btn-info' : '') + '" data-reference-library-view="entities">인물·장소·물품 ' + (library.entities || []).length + '</button>'
       + '<button type="button" class="mo-btn ' + (libraryView === "claims" ? 'mo-btn-info' : '') + '" data-reference-library-view="claims">사실·설정 ' + (library.claims || []).length + '</button>'
       + '</div>';
-    const empty = !state.selectedWorkId
+    const empty = state.error
+      ? '<div class="mo-section-desc">' + escapeAttr(state.error) + '</div>'
+      : !state.selectedWorkId
       ? '<div class="mo-section-desc">작품을 선택하면 평론가가 생성한 자료가 여기에 표시됩니다.</div>'
       : Number(library.count || 0) === 0
         ? '<div class="mo-section-desc">아직 생성된 자료가 없습니다. 자료 추가에서 파일을 넣고 자동 생성을 실행하세요.</div>'

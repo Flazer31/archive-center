@@ -37,6 +37,7 @@ func TestArchiveCenterJSReferenceLibraryUIMarkers(t *testing.T) {
 		`data-reference-library-view="claims"`,
 		`생성된 자료`,
 		`평론가 자동 생성`,
+		`최신 소스 백엔드를 재시작하세요`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing reference library marker %q", marker)
