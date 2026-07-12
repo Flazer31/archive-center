@@ -19,16 +19,17 @@ import (
 
 // Server holds the HTTP handler dependencies.
 type Server struct {
-	Cfg             config.Config
-	Started         time.Time
-	Store           store.Store
-	StoreOpenError  error
-	Vector          vector.VectorStore
-	VectorOpenError error
-	RuntimeConfig   RuntimeConfig
-	RuntimeConfigMu sync.RWMutex
-	AdminJobs       *adminJobManager
-	CompleteTurns   *completeTurnRequestLedger
+	Cfg               config.Config
+	Started           time.Time
+	Store             store.Store
+	StoreOpenError    error
+	Vector            vector.VectorStore
+	VectorOpenError   error
+	RuntimeConfig     RuntimeConfig
+	RuntimeConfigMu   sync.RWMutex
+	AdminJobs         *adminJobManager
+	CompleteTurns     *completeTurnRequestLedger
+	RollbackDecisions *rollbackDecisionLedger
 }
 
 // ValidateRuntimeDependencies verifies live dependencies before the HTTP
@@ -69,14 +70,15 @@ func NewServer(cfg config.Config) *Server {
 		vs = vector.NewFakeVectorStore()
 	}
 	return &Server{
-		Cfg:             cfg,
-		Started:         time.Now().UTC(),
-		Store:           st,
-		StoreOpenError:  storeErr,
-		Vector:          vs,
-		VectorOpenError: vectorErr,
-		AdminJobs:       newAdminJobManager(),
-		CompleteTurns:   newCompleteTurnRequestLedger(),
+		Cfg:               cfg,
+		Started:           time.Now().UTC(),
+		Store:             st,
+		StoreOpenError:    storeErr,
+		Vector:            vs,
+		VectorOpenError:   vectorErr,
+		AdminJobs:         newAdminJobManager(),
+		CompleteTurns:     newCompleteTurnRequestLedger(),
+		RollbackDecisions: newRollbackDecisionLedger(),
 	}
 }
 

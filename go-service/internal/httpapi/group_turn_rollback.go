@@ -29,6 +29,18 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	if reqSource == "" {
 		reqSource = "unknown"
 	}
+	decisionToken := strings.TrimSpace(r.URL.Query().Get("decision_token"))
+	decisionVerified := false
+	if decisionToken != "" {
+		if _, ok := s.rollbackDecisionLedger().consume(decisionToken, sid, turnIndex); !ok {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"status": "blocked", "code": "rollback_decision_token_invalid",
+				"chat_session_id": sid, "turn_index": turnIndex,
+			})
+			return
+		}
+		decisionVerified = true
+	}
 	requestedTurnIndex := turnIndex
 	protectedBeforeTurn := intFromAny(r.URL.Query().Get("protected_before_turn"), 0)
 	minFromTurn := intFromAny(r.URL.Query().Get("min_from_turn"), 0)
@@ -48,6 +60,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		rollbackPlan["protected_before_turn"] = protectedBeforeTurn
 		rollbackPlan["min_from_turn"] = minFromTurn
 		rollbackPlan["session_routing_baseline_clamped"] = baselineClamped
+		rollbackPlan["decision_verified"] = decisionVerified
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":          "ok",
 			"source":          "shadow",
@@ -206,6 +219,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 			"protected_before_turn":            protectedBeforeTurn,
 			"min_from_turn":                    minFromTurn,
 			"session_routing_baseline_clamped": baselineClamped,
+			"decision_verified":                decisionVerified,
 			"would_delete":                     true,
 			"would_write":                      true,
 			"mutation_enabled":                 true,

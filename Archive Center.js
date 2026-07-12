@@ -7531,102 +7531,6 @@
     });
   }
 
-  function resolveBackfillPairTurnAgainstRoutingBaseline(sessionId, pair) {
-    const localTurn = Number(pair && pair.turnIndex);
-    if (!Number.isFinite(localTurn) || localTurn < 1) {
-      return { status: "invalid", turnIndex: 0, localTurnIndex: localTurn || 0 };
-    }
-    const baseline = getSessionRoutingTurnBaseline(sessionId);
-    if (!baseline) {
-      return { status: "normal", turnIndex: Math.floor(localTurn), localTurnIndex: Math.floor(localTurn) };
-    }
-    const localBase = Math.max(0, Math.floor(Number(baseline.localPairCountAtRoute || 0)));
-    const backendBase = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
-    const localIndex = Math.floor(localTurn);
-    if (localIndex <= localBase) {
-      return {
-        status: "skip_pre_route_visible_pair",
-        turnIndex: localIndex,
-        localTurnIndex: localIndex,
-        baseline,
-      };
-    }
-    const rebasedTurn = backendBase + (localIndex - localBase);
-    if (rebasedTurn > 0 && rebasedTurn !== localIndex) {
-      return {
-        status: "rebased",
-        turnIndex: rebasedTurn,
-        localTurnIndex: localIndex,
-        baseline,
-      };
-    }
-    return {
-      status: "aligned",
-      turnIndex: localIndex,
-      localTurnIndex: localIndex,
-      baseline,
-    };
-  }
-
-  function resolveSessionRoutingRollbackProtection(sessionId) {
-    try {
-      const baseline = getSessionRoutingTurnBaseline(sessionId);
-      if (!baseline) return null;
-      const backendBase = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
-      if (backendBase <= 0) return null;
-      return {
-        baseline,
-        protectedBeforeTurn: backendBase,
-        minFromTurn: backendBase + 1,
-        reason: String(baseline.reason || "session_routing"),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  function resolveVisibleCompletedTurnCountAgainstRoutingBaseline(sessionId, visibleCompletedTurnCount) {
-    try {
-      const visible = Math.max(0, Math.floor(Number(visibleCompletedTurnCount || 0)));
-      const baseline = getSessionRoutingTurnBaseline(sessionId);
-      if (!baseline) {
-        return {
-          status: "normal",
-          visibleCompletedTurnCount: visible,
-          completedTurnCount: visible,
-          baseline: null,
-        };
-      }
-      const localBase = Math.max(0, Math.floor(Number(baseline.localPairCountAtRoute || 0)));
-      const backendBase = Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0)));
-      if (backendBase <= 0) {
-        return {
-          status: "baseline_without_backend_turn",
-          visibleCompletedTurnCount: visible,
-          completedTurnCount: visible,
-          baseline,
-        };
-      }
-      const completedTurnCount = backendBase + Math.max(0, visible - localBase);
-      return {
-        status: completedTurnCount === visible ? "aligned" : "rebased",
-        visibleCompletedTurnCount: visible,
-        completedTurnCount,
-        baseline,
-        localPairCountAtRoute: localBase,
-        backendTurnAtRoute: backendBase,
-      };
-    } catch {
-      const visible = Math.max(0, Math.floor(Number(visibleCompletedTurnCount || 0)));
-      return {
-        status: "error",
-        visibleCompletedTurnCount: visible,
-        completedTurnCount: visible,
-        baseline: null,
-      };
-    }
-  }
-
   function isSessionRoutingResumeAnchorReason(reason) {
     const value = String(reason || "").trim();
     return value === "timeline_copy" || value === "timeline_migrate" || value === "timeline_attach";
@@ -7919,7 +7823,7 @@
         0,
         "findLatestActiveChatUnsavedCompletedTurnPair.latestTurn"
       );
-      const turnResolution = resolveBackfillPairTurnAgainstRoutingBaseline(sid, pair);
+      const turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair.turnIndex);
       if (turnResolution && turnResolution.status === "skip_pre_route_visible_pair") return null;
       const resolvedTurn = Number(turnResolution && turnResolution.turnIndex || pair.turnIndex || 0);
       if (!Number.isFinite(resolvedTurn) || resolvedTurn < 1) return null;
@@ -7968,7 +7872,7 @@
       }
       if (activePair && Number(activePair.turnIndex) > 0) {
         const activePairTurnIndex = Number(activePair.turnIndex);
-        const routingTurnResolution = resolveBackfillPairTurnAgainstRoutingBaseline(sid, activePair);
+        const routingTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", activePair.turnIndex);
         const routingTurnIndex = routingTurnResolution && routingTurnResolution.status !== "skip_pre_route_visible_pair"
           ? Number(routingTurnResolution.turnIndex || 0)
           : 0;
@@ -8084,7 +7988,7 @@
       return { status: "skipped", reason: "invalid_pair" };
     }
     pair = await applyTableReadPolishStorageToBackfillPair(sid, pair);
-    const turnResolution = resolveBackfillPairTurnAgainstRoutingBaseline(sid, pair);
+    const turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair.turnIndex);
     if (turnResolution.status === "skip_pre_route_visible_pair") {
       return {
         status: "skipped",
@@ -14721,22 +14625,106 @@
     }
   }
 
+  function serializeSessionRoutingBaselineForBackend(sessionId) {
+    const baseline = getSessionRoutingTurnBaseline(sessionId);
+    if (!baseline) return null;
+    return {
+      backend_turn_at_route: Math.max(0, Math.floor(Number(baseline.backendTurnAtRoute || 0))),
+      local_pairs_at_route: Math.max(0, Math.floor(Number(baseline.localPairCountAtRoute || 0))),
+      reason: String(baseline.reason || "session_routing"),
+    };
+  }
+
+  async function requestBackendSessionRoutingTurnResolution(sessionId, mode, value) {
+    const result = await bridgeFetch("/session-routing/turn-resolution", {
+      method: "POST",
+      timeoutMs: getRequestTimeoutSettingMs(),
+      body: {
+        mode: String(mode || "pair"),
+        local_turn_index: mode === "pair" ? Math.max(0, Math.floor(Number(value || 0))) : 0,
+        visible_completed_turns: mode === "visible_completed" ? Math.max(0, Math.floor(Number(value || 0))) : 0,
+        baseline: serializeSessionRoutingBaselineForBackend(sessionId),
+      },
+    });
+    if (!result || result.status !== "ok" || result.contract_version !== "session-routing.turn-resolution.v1") {
+      return { status: "backend_unavailable", turnIndex: 0, completedTurnCount: 0, baseline: null };
+    }
+    return {
+      status: String(result.resolution || "normal"),
+      turnIndex: Number(result.turn_index || 0),
+      completedTurnCount: Number(result.completed_turns || 0),
+      localTurnIndex: Number(result.local_turn_index || 0),
+      protectedBeforeTurn: Number(result.protected_before_turn || 0),
+      minFromTurn: Number(result.min_from_turn || 0),
+      baseline: result.baseline_applied ? getSessionRoutingTurnBaseline(sessionId) : null,
+      backendDecision: result,
+    };
+  }
+
+  async function requestBackendRollbackDecision(sessionId, candidateFromTurn, reason, detail, requestSource) {
+    const observed = detail && typeof detail === "object" ? detail : {};
+    const backendLatestTurn = Number(observed.backendLatestTurnIndex || 0) > 0
+      ? Number(observed.backendLatestTurnIndex)
+      : await safeCall(() => fetchBackendLatestTurnIndexForSession(sessionId), 0, "rollbackDecision.latestTurn");
+    const result = await bridgeFetch("/rollback/decision", {
+      method: "POST",
+      timeoutMs: getRequestTimeoutSettingMs(),
+      body: {
+        chat_session_id: String(sessionId || ""),
+        request_source: String(requestSource || "auto"),
+        reason: String(reason || "unknown"),
+        candidate_from_turn: Math.max(0, Math.floor(Number(candidateFromTurn || 0))),
+        previous_turn_index: Math.max(0, Math.floor(Number(observed.prevTurnIndex || observed.previousTurnIndex || 0))),
+        first_removed_turn: Math.max(0, Math.floor(Number(observed.firstRemovedTurnIndex || 0))),
+        ledger_anchor_turn: Math.max(0, Math.floor(Number(observed.ledgerAnchorTurnIndex || 0))),
+        removed_assistant_count: Math.max(0, Math.floor(Number(observed.removedAssistantCount || observed.turnsRemoved || 0))),
+        removed_message_count: Math.max(0, Math.floor(Number(observed.removedMsgCount || 0))),
+        visible_completed_turns: Math.max(0, Math.floor(Number(observed.visibleCompletedTurnCount || observed.activeCompletedTurnCount || 0))),
+        backend_latest_turn: Math.max(0, Math.floor(Number(backendLatestTurn || 0))),
+        deletion_observed: true,
+        ledger_verified: !!(observed.tailReconcileVerification && observed.tailReconcileVerification.status === "verified_tail_delete"),
+        history_trim_guard: false,
+        duplicate_blocked: false,
+        pending_output_guard: false,
+        allow_manual_candidate: String(requestSource || "auto") === "manual",
+        baseline: serializeSessionRoutingBaselineForBackend(sessionId),
+      },
+    });
+    if (!result || result.status !== "ok" || result.contract_version !== "rollback.decision.v1") return null;
+    return result;
+  }
+
   async function executeAutoRollback(sessionId, turnIndex, reason, detail, options = {}) {
     const requestSource = options && options.requestSource ? String(options.requestSource) : "auto";
     const updateAutoState = !(options && options.updateAutoState === false);
     try {
       debugLog("executeAutoRollback: session=", sessionId, "turn=", turnIndex, "reason=", reason, "source=", requestSource);
 
+      const decision = await requestBackendRollbackDecision(sessionId, turnIndex, reason, detail, requestSource);
+      if (!decision || decision.allowed !== true || !decision.decision_token || Number(decision.from_turn || 0) < 1) {
+        if (updateAutoState) {
+          updateRuntimeState("lastAutoRollback", "skipped", {
+            detail: "backend rollback decision blocked: " + String(decision && decision.reason || "decision unavailable"),
+            sessionId,
+            requestedTurnIndex: turnIndex,
+            decision: decision || null,
+          });
+        }
+        return false;
+      }
+      const decidedTurnIndex = Number(decision.from_turn);
+
       const rollbackParams = new URLSearchParams();
       rollbackParams.set("chat_session_id", String(sessionId || ""));
       rollbackParams.set("req_source", requestSource);
-      const routingProtection = requestSource === "manual" ? null : resolveSessionRoutingRollbackProtection(sessionId);
-      if (routingProtection) {
-        rollbackParams.set("protected_before_turn", String(routingProtection.protectedBeforeTurn));
-        rollbackParams.set("min_from_turn", String(routingProtection.minFromTurn));
-      }
+      rollbackParams.set("decision_token", String(decision.decision_token));
+      const routingProtection = decision.baseline_applied ? {
+        protectedBeforeTurn: Number(decision.protected_before_turn || 0),
+        minFromTurn: Number(decision.min_from_turn || 0),
+        source: "backend_rollback_decision",
+      } : null;
 
-      const result = await bridgeFetch(`/rollback/${turnIndex}?${rollbackParams.toString()}`, {
+      const result = await bridgeFetch(`/rollback/${decidedTurnIndex}?${rollbackParams.toString()}`, {
         method: "DELETE",
         timeoutMs: getRequestTimeoutSettingMs(),
       });
@@ -14753,7 +14741,7 @@
         persistentDelete(rollbackTurnLedgerStorageKey(sessionId)).catch(function() {});
 
         // turn counter를 rollback 지점으로 되돌림
-        const newCounter = Math.max(0, turnIndex - 1);
+        const newCounter = Math.max(0, decidedTurnIndex - 1);
         const effectiveRollbackTurn = Number.isFinite(Number(result.turn_index)) && Number(result.turn_index) > 0
           ? Number(result.turn_index)
           : turnIndex;
@@ -14784,6 +14772,7 @@
             sessionId,
             turnIndex: effectiveRollbackTurn,
             requestedTurnIndex: turnIndex,
+            decisionTokenUsed: true,
             deleted: result,
             guidanceInvalidated,
             tableReadPolishRemoved,
@@ -14793,9 +14782,9 @@
         if (guidanceInvalidated) {
           debugLog("L-3c: guidance state invalidated by rollback — next NC fetch will rebuild");
         }
-        console.log(LOG_PREFIX, `${requestSource === "auto" ? "Auto" : "Manual"}-rollback executed: session=${sessionId} from_turn=${turnIndex}`,
+        console.log(LOG_PREFIX, `${requestSource === "auto" ? "Auto" : "Manual"}-rollback executed: session=${sessionId} from_turn=${decidedTurnIndex}`,
           `deleted: logs=${result.deleted_chat_logs||0} mem=${result.deleted_memories||0} kg=${result.deleted_kg_triples||0}`,
-          effectiveRollbackTurn !== turnIndex ? `| clamped_from=${turnIndex} to=${effectiveRollbackTurn}` : "",
+          effectiveRollbackTurn !== turnIndex ? `| decided_from=${turnIndex} to=${effectiveRollbackTurn}` : "",
           guidanceInvalidated ? "| guidance: invalidated" : "",
           rollbackPartial ? "| partial_error warning" : "");
         return true;
@@ -14993,7 +14982,7 @@
       const comparable = extractActiveChatComparableMessages(activeChat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable);
       const visibleCompletedTurnCount = pairs.length;
-      const completedTurnResolution = resolveVisibleCompletedTurnCountAgainstRoutingBaseline(sid, visibleCompletedTurnCount);
+      const completedTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "visible_completed", visibleCompletedTurnCount);
       const activeCompletedTurnCount = Number(completedTurnResolution.completedTurnCount || visibleCompletedTurnCount || 0);
       const latestBackendTurn = await fetchBackendLatestTurnIndexForSession(sid);
       if (!(latestBackendTurn > activeCompletedTurnCount)) return false;
