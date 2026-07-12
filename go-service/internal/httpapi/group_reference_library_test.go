@@ -374,6 +374,18 @@ func TestReferenceAutoReviewApprovesSupportedAndLeavesAmbiguousPending(t *testin
 			if intFromAny(summary["approved"], 0) != 1 || intFromAny(summary["pending"], 0) != 1 || intFromAny(summary["total"], 0) != 2 {
 				t.Fatalf("unexpected review summary: %#v", summary)
 			}
+			library := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
+			if intFromAny(library["count"], 0) != 1 {
+				t.Fatalf("generated library did not contain exactly the approved item: %#v", library)
+			}
+			entities := library["entities"].([]any)
+			if len(entities) != 1 || entities[0].(map[string]any)["entity_id"] != "entity-supported" {
+				t.Fatalf("generated library exposed a pending item: %#v", entities)
+			}
+			typeCounts := library["type_counts"].(map[string]any)
+			if intFromAny(typeCounts["entity_faction"], 0) != 1 {
+				t.Fatalf("generated library type counts were incorrect: %#v", typeCounts)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

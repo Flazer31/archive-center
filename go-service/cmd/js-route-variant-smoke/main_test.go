@@ -24,22 +24,22 @@ func TestArchiveCenterJSCriticLedgerDebugRendererIsDefined(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSReferenceAutoReviewUIMarkers(t *testing.T) {
+func TestArchiveCenterJSReferenceLibraryUIMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
 		`body: { auto_review: true, client_meta:`,
-		`function referenceLibraryStartAutoReview()`,
-		`/review/auto`,
-		`id="mo-reference-auto-review"`,
-		`id="mo-reference-bulk-approve"`,
-		`id="mo-reference-bulk-reject"`,
-		`review_status=all`,
-		`data-reference-view="approved"`,
-		`data-reference-view="rejected"`,
-		`item.review_reason`,
+		`/library`,
+		`data-reference-panel="library"`,
+		`data-reference-panel="import"`,
+		`data-reference-library-view="all"`,
+		`data-reference-library-view="timeline"`,
+		`data-reference-library-view="entities"`,
+		`data-reference-library-view="claims"`,
+		`생성된 자료`,
+		`평론가 자동 생성`,
 	} {
 		if !strings.Contains(src, marker) {
-			t.Fatalf("Archive Center.js missing reference auto-review marker %q", marker)
+			t.Fatalf("Archive Center.js missing reference library marker %q", marker)
 		}
 	}
 }

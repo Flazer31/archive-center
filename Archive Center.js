@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-review-audit.20260712-3";
+  const BUILD_ID = "3.0-dev-reference-library-browser.20260712-4";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-12 KST";
-  const BUILD_NOTES = "Reference review results now expose pending, approved, and rejected items with reviewer, reason, and time";
+  const BUILD_NOTES = "Generated original-work timeline, entities, and facts are visible in a dedicated library tab";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -3590,8 +3590,9 @@
     selectedContinuityId: "",
     document: null,
     job: null,
-    candidates: { timeline: [], entities: [], claims: [], count: 0, summary: { pending: 0, approved: 0, rejected: 0, total: 0 } },
-    reviewView: "pending",
+    library: { timeline: [], entities: [], claims: [], count: 0, type_counts: {} },
+    panelView: "library",
+    libraryView: "all",
     loading: false,
     status: "idle",
     message: "",
@@ -11495,7 +11496,7 @@
     if (data.continuities.length > 0) {
       _referenceLibraryState.selectedContinuityId = String(data.continuities[0].continuity_id || "");
     }
-    await referenceLibraryLoadCandidates();
+    await referenceLibraryLoadData();
     return true;
   }
 
@@ -11614,9 +11615,9 @@
       _referenceLibraryState.job = data;
       referenceLibraryRefreshUI();
       if (data.status === "completed") {
-        await referenceLibraryLoadCandidates();
+        await referenceLibraryLoadData();
         const resultPending = data.result ? (data.result.remaining_pending ?? data.result.pending_review) : undefined;
-        const pending = Number(resultPending ?? _referenceLibraryState.candidates.count ?? 0);
+        const pending = Number(resultPending ?? 0);
         const approved = Number(data.result && data.result.approved || data.result && data.result.auto_review && data.result.auto_review.approved || 0);
         const rejected = Number(data.result && data.result.rejected || data.result && data.result.auto_review && data.result.auto_review.rejected || 0);
         referenceLibrarySetStatus("ok", "자동 처리가 끝났습니다. 승인 " + approved + "개 · 제외 " + rejected + "개 · 직접 확인 " + pending + "개", "");
@@ -11629,154 +11630,89 @@
     }
   }
 
-  async function referenceLibraryLoadCandidates() {
+  async function referenceLibraryLoadData() {
     const workId = _referenceLibraryState.selectedWorkId;
     if (!workId) {
-      _referenceLibraryState.candidates = { timeline: [], entities: [], claims: [], count: 0, summary: { pending: 0, approved: 0, rejected: 0, total: 0 } };
+      _referenceLibraryState.library = { timeline: [], entities: [], claims: [], count: 0, type_counts: {} };
       referenceLibraryRefreshUI();
       return;
     }
     const continuityId = _referenceLibraryState.selectedContinuityId;
-    const query = "?review_status=all" + (continuityId ? "&continuity_id=" + encodeURIComponent(continuityId) : "");
-    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/review-candidates" + query, { method: "GET" });
-    if (data) {
-      _referenceLibraryState.candidates = {
-        timeline: Array.isArray(data.timeline) ? data.timeline : [],
-        entities: Array.isArray(data.entities) ? data.entities : [],
-        claims: Array.isArray(data.claims) ? data.claims : [],
-        count: Number(data.count || 0),
-        summary: data.summary && typeof data.summary === "object" ? data.summary : { pending: 0, approved: 0, rejected: 0, total: Number(data.count || 0) },
+    const continuityQuery = continuityId ? "?continuity_id=" + encodeURIComponent(continuityId) : "";
+    const libraryData = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/library" + continuityQuery, { method: "GET" });
+    if (libraryData) {
+      _referenceLibraryState.library = {
+        timeline: Array.isArray(libraryData.timeline) ? libraryData.timeline : [],
+        entities: Array.isArray(libraryData.entities) ? libraryData.entities : [],
+        claims: Array.isArray(libraryData.claims) ? libraryData.claims : [],
+        count: Number(libraryData.count || 0),
+        type_counts: libraryData.type_counts && typeof libraryData.type_counts === "object" ? libraryData.type_counts : {},
       };
     }
     referenceLibraryRefreshUI();
   }
 
-  async function referenceLibraryReview(kind, id, decision) {
-    const workId = _referenceLibraryState.selectedWorkId;
-    if (!workId || !kind || !id) return;
-    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/review", {
-      method: "POST",
-      body: { items: [{ kind, id, decision }] },
-    });
-    if (!data || data.status !== "ok") {
-      referenceLibrarySetStatus("error", "", "후보의 검수 상태를 저장하지 못했습니다.");
-      return;
+  function referenceLibraryRows(kind, items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return '<div class="mo-section-desc">이 종류로 생성된 자료가 없습니다.</div>';
     }
-    await referenceLibraryLoadCandidates();
-  }
-
-  function referenceLibraryPendingItems() {
-    const candidates = _referenceLibraryState.candidates || {};
-    return []
-      .concat((candidates.timeline || []).filter((item) => String(item.review_status || "pending") === "pending").map((item) => ({ kind: "timeline", id: item.node_id })))
-      .concat((candidates.entities || []).filter((item) => String(item.review_status || "pending") === "pending").map((item) => ({ kind: "entity", id: item.entity_id })))
-      .concat((candidates.claims || []).filter((item) => String(item.review_status || "pending") === "pending").map((item) => ({ kind: "claim", id: item.claim_id })))
-      .filter((item) => item.id);
-  }
-
-  async function referenceLibraryBulkReview(decision) {
-    const workId = _referenceLibraryState.selectedWorkId;
-    const items = referenceLibraryPendingItems().map((item) => ({ kind: item.kind, id: item.id, decision }));
-    if (!workId || items.length === 0) return;
-    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/review", {
-      method: "POST",
-      body: { items },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
-    });
-    if (!data || data.status !== "ok") {
-      referenceLibrarySetStatus("error", "", "후보 일괄 검수 상태를 저장하지 못했습니다.");
-      return;
-    }
-    await referenceLibraryLoadCandidates();
-    referenceLibrarySetStatus("ok", "남은 후보 " + items.length + "개를 " + (decision === "approved" ? "승인" : "제외") + "했습니다.", "");
-  }
-
-  async function referenceLibraryStartAutoReview() {
-    const workId = _referenceLibraryState.selectedWorkId;
-    const continuityId = _referenceLibraryState.selectedContinuityId;
-    if (!workId || !continuityId || referenceLibraryPendingItems().length === 0) {
-      referenceLibrarySetStatus("error", "", "자동 검수할 대기 후보가 없습니다.");
-      return;
-    }
-    referenceLibrarySetStatus("running", "평론가가 대기 후보를 자동 검수하는 중입니다.", "");
-    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/review/auto", {
-      method: "POST",
-      body: { continuity_id: continuityId, client_meta: buildAdminRuntimeClientMeta({ source: "reference_candidate_auto_review" }) },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
-    });
-    if (!data || !data.job_id) {
-      referenceLibrarySetStatus("error", "", "자동 검수 작업을 시작하지 못했습니다. 평론가 설정을 확인하세요.");
-      return;
-    }
-    _referenceLibraryState.job = data;
-    await referenceLibraryPollJob(String(data.job_id));
-  }
-
-  function referenceCandidateRows(kind, items, allowActions) {
-    if (!Array.isArray(items) || items.length === 0) return '<div class="mo-section-desc">이 상태의 항목이 없습니다.</div>';
     return items.map((item) => {
-      const id = String(item.node_id || item.entity_id || item.claim_id || "");
-      const title = String(item.label || item.canonical_name || item.claim_text || "후보");
       let metadata = {};
       try { metadata = item.metadata_json ? JSON.parse(item.metadata_json) : {}; } catch { metadata = {}; }
+      const title = String(item.label || item.canonical_name || item.claim_text || "이름 없는 자료");
       const detail = kind === "timeline"
-        ? String(item.node_key || "") + " · " + String(item.node_kind || "event")
+        ? [item.node_key, item.node_kind].filter(Boolean).join(" · ")
         : kind === "entity"
-          ? String(item.entity_type || "entity") + (item.description_text ? " · " + String(item.description_text) : "")
-          : [item.claim_type, item.temporal_scope, item.evidence_excerpt].filter(Boolean).join(" · ");
+          ? [item.entity_type, item.description_text].filter(Boolean).join(" · ")
+          : [item.claim_type, item.temporal_scope].filter(Boolean).join(" · ");
       const evidence = String(item.evidence_excerpt || metadata.evidence_excerpt || "").trim();
-      const reviewSource = String(item.review_source || "").trim();
-      const reviewReason = String(item.review_reason || "").trim();
-      const reviewedAt = String(item.reviewed_at || "").trim();
-      const reviewStatus = String(item.review_status || "pending");
-      const sourceLabel = reviewSource === "critic_auto" ? "평론가 자동 검수" : reviewSource === "manual_bulk" ? "사용자 일괄 검수" : reviewSource === "manual" ? "사용자 검수" : reviewSource || (reviewStatus !== "pending" ? "기존 검수 · 상세 기록 없음" : "");
       return '<div class="mo-dash-card">'
         + '<div class="mo-dash-card-head"><span class="mo-dash-card-title">' + escapeAttr(title) + '</span></div>'
-        + '<div class="mo-section-desc">' + escapeAttr(detail) + '</div>'
-        + (evidence ? '<div class="mo-section-desc"><strong>원문 근거:</strong> ' + escapeAttr(evidence) + '</div>' : '')
-        + (sourceLabel || reviewReason || reviewedAt ? '<div class="mo-section-desc"><strong>판정:</strong> ' + escapeAttr([sourceLabel, reviewReason, reviewedAt].filter(Boolean).join(" · ")) + '</div>' : '')
-        + (allowActions ? '<div class="mo-inline-actions">'
-        + '<button type="button" class="mo-btn mo-btn-success" data-reference-review="approved" data-reference-kind="' + escapeAttr(kind) + '" data-reference-id="' + escapeAttr(id) + '">승인</button>'
-        + '<button type="button" class="mo-btn mo-btn-danger-solid" data-reference-review="rejected" data-reference-kind="' + escapeAttr(kind) + '" data-reference-id="' + escapeAttr(id) + '">제외</button>'
-        + '</div>' : '') + '</div>';
+        + (detail ? '<div class="mo-section-desc">' + escapeAttr(detail) + '</div>' : '')
+        + (evidence ? '<div class="mo-section-desc"><strong>근거:</strong> ' + escapeAttr(evidence) + '</div>' : '')
+        + '</div>';
     }).join("");
   }
 
   function renderReferenceLibrarySection() {
     const state = _referenceLibraryState;
+    const panelView = state.panelView || "library";
+    const libraryView = state.libraryView || "all";
+    const library = state.library || { timeline: [], entities: [], claims: [], count: 0 };
     const workOptions = ['<option value="">작품 선택</option>'].concat(state.works.map((item) => '<option value="' + escapeAttr(item.work_id) + '"' + (String(item.work_id) === state.selectedWorkId ? ' selected' : '') + '>' + escapeAttr(item.title) + '</option>')).join("");
     const continuityOptions = ['<option value="">이야기 흐름 선택</option>'].concat(state.continuities.map((item) => '<option value="' + escapeAttr(item.continuity_id) + '"' + (String(item.continuity_id) === state.selectedContinuityId ? ' selected' : '') + '>' + escapeAttr(item.label) + '</option>')).join("");
     const jobProgress = state.job && state.job.progress ? Number(state.job.progress.progress_percent || 0) : 0;
     const statusText = state.error || state.message || (state.loading ? "불러오는 중입니다." : "작품을 선택하거나 새로 만드세요.");
-    const summary = state.candidates.summary || { pending: 0, approved: 0, rejected: 0, total: 0 };
-    const reviewView = state.reviewView || "pending";
-    const visibleTimeline = (state.candidates.timeline || []).filter((item) => String(item.review_status || "pending") === reviewView);
-    const visibleEntities = (state.candidates.entities || []).filter((item) => String(item.review_status || "pending") === reviewView);
-    const visibleClaims = (state.candidates.claims || []).filter((item) => String(item.review_status || "pending") === reviewView);
-    const pendingCount = Number(summary.pending || 0);
-    return '<div class="mo-section">원작 자료 가져오기</div>'
-      + '<div class="mo-section-desc">TXT, Markdown, JSON 파일을 평론가가 읽고 연표·인물·설정 후보로 나눕니다. 승인 전에는 채팅 기억에 주입되지 않습니다.</div>'
-      + '<div class="mo-dash-card"><div class="mo-row"><label>새 작품</label><input id="mo-reference-work-title" type="text" placeholder="작품 이름"><select id="mo-reference-work-type"><option value="novel">소설</option><option value="animation">애니메이션</option><option value="game">게임</option><option value="comic">만화</option><option value="other">기타</option></select><button type="button" class="mo-btn mo-btn-success" id="mo-reference-work-create">만들기</button></div>'
+    const selector = '<div class="mo-dash-card">'
       + '<div class="mo-row"><label>작품</label><select id="mo-reference-work-select">' + workOptions + '</select></div>'
       + '<div class="mo-row"><label>이야기 흐름</label><select id="mo-reference-continuity-select">' + continuityOptions + '</select></div>'
-      + '<div class="mo-row"><label>새 흐름</label><input id="mo-reference-continuity-label" type="text" placeholder="예: 애니메이션 본편"><input id="mo-reference-continuity-key" type="text" placeholder="선택 키"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-continuity-create">추가</button></div></div>'
-      + '<div class="mo-dash-card"><div class="mo-row"><label>자료 파일</label><input id="mo-reference-file" type="file" accept=".txt,.md,.markdown,.json,text/plain,application/json"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-file-import">파일 저장</button><button type="button" class="mo-btn mo-btn-success" id="mo-reference-extract"' + (state.document ? '' : ' disabled') + '>평론가 자동 추출</button></div>'
-      + '<div class="mo-section-desc">' + escapeAttr(statusText) + (state.job ? ' · 진행률 ' + jobProgress + '%' : '') + '</div></div>'
-      + '<div class="mo-section">검수 결과</div>'
-      + '<div class="mo-section-desc">승인한 후보만 이후 원작 자료로 사용할 수 있습니다. 제외해도 원본 파일은 남습니다.</div>'
-      + '<div class="mo-inline-actions">'
-        + '<button type="button" class="mo-btn ' + (reviewView === "pending" ? 'mo-btn-info' : '') + '" data-reference-view="pending">확인 필요 ' + pendingCount + '</button>'
-        + '<button type="button" class="mo-btn ' + (reviewView === "approved" ? 'mo-btn-success' : '') + '" data-reference-view="approved">승인 ' + Number(summary.approved || 0) + '</button>'
-        + '<button type="button" class="mo-btn ' + (reviewView === "rejected" ? 'mo-btn-danger-solid' : '') + '" data-reference-view="rejected">제외 ' + Number(summary.rejected || 0) + '</button>'
-        + '</div>'
-      + (pendingCount > 0 && reviewView === "pending" ? '<div class="mo-inline-actions">'
-        + '<button type="button" class="mo-btn mo-btn-success" id="mo-reference-auto-review">평론가 자동 검수</button>'
-        + '<button type="button" class="mo-btn mo-btn-info" id="mo-reference-bulk-approve">남은 후보 모두 승인</button>'
-        + '<button type="button" class="mo-btn mo-btn-danger-solid" id="mo-reference-bulk-reject">남은 후보 모두 제외</button>'
-        + '</div>' : '')
-      + '<div class="mo-section">연표</div>' + referenceCandidateRows("timeline", visibleTimeline, reviewView === "pending")
-      + '<div class="mo-section">인물·장소·물품</div>' + referenceCandidateRows("entity", visibleEntities, reviewView === "pending")
-      + '<div class="mo-section">사실·설정</div>' + referenceCandidateRows("claim", visibleClaims, reviewView === "pending");
+      + '</div>';
+    const tabs = '<div class="mo-inline-actions">'
+      + '<button type="button" class="mo-btn ' + (panelView === "library" ? 'mo-btn-success' : '') + '" data-reference-panel="library">생성된 자료 ' + Number(library.count || 0) + '</button>'
+      + '<button type="button" class="mo-btn ' + (panelView === "import" ? 'mo-btn-info' : '') + '" data-reference-panel="import">자료 추가</button>'
+      + '</div>';
+    if (panelView === "import") {
+      return '<div class="mo-section">원작 자료</div>' + tabs + selector
+        + '<div class="mo-dash-card"><div class="mo-row"><label>새 작품</label><input id="mo-reference-work-title" type="text" placeholder="작품 이름"><select id="mo-reference-work-type"><option value="novel">소설</option><option value="animation">애니메이션</option><option value="game">게임</option><option value="comic">만화</option><option value="other">기타</option></select><button type="button" class="mo-btn mo-btn-success" id="mo-reference-work-create">만들기</button></div>'
+        + '<div class="mo-row"><label>새 흐름</label><input id="mo-reference-continuity-label" type="text" placeholder="예: 애니메이션 본편"><input id="mo-reference-continuity-key" type="text" placeholder="선택 키"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-continuity-create">추가</button></div></div>'
+        + '<div class="mo-dash-card"><div class="mo-row"><label>자료 파일</label><input id="mo-reference-file" type="file" accept=".txt,.md,.markdown,.json,text/plain,application/json"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-file-import">파일 저장</button><button type="button" class="mo-btn mo-btn-success" id="mo-reference-extract"' + (state.document ? '' : ' disabled') + '>평론가 자동 생성</button></div>'
+        + '<div class="mo-section-desc">' + escapeAttr(statusText) + (state.job ? ' · 진행률 ' + jobProgress + '%' : '') + '</div></div>';
+    }
+    const filters = '<div class="mo-inline-actions">'
+      + '<button type="button" class="mo-btn ' + (libraryView === "all" ? 'mo-btn-info' : '') + '" data-reference-library-view="all">전체 ' + Number(library.count || 0) + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "timeline" ? 'mo-btn-info' : '') + '" data-reference-library-view="timeline">연표 ' + (library.timeline || []).length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "entities" ? 'mo-btn-info' : '') + '" data-reference-library-view="entities">인물·장소·물품 ' + (library.entities || []).length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "claims" ? 'mo-btn-info' : '') + '" data-reference-library-view="claims">사실·설정 ' + (library.claims || []).length + '</button>'
+      + '</div>';
+    const empty = !state.selectedWorkId
+      ? '<div class="mo-section-desc">작품을 선택하면 평론가가 생성한 자료가 여기에 표시됩니다.</div>'
+      : Number(library.count || 0) === 0
+        ? '<div class="mo-section-desc">아직 생성된 자료가 없습니다. 자료 추가에서 파일을 넣고 자동 생성을 실행하세요.</div>'
+        : '';
+    return '<div class="mo-section">원작 자료</div>' + tabs + selector + filters + empty
+      + ((libraryView === "all" || libraryView === "timeline") && (library.timeline || []).length ? '<div class="mo-section">연표</div>' + referenceLibraryRows("timeline", library.timeline) : '')
+      + ((libraryView === "all" || libraryView === "entities") && (library.entities || []).length ? '<div class="mo-section">인물·장소·물품</div>' + referenceLibraryRows("entity", library.entities) : '')
+      + ((libraryView === "all" || libraryView === "claims") && (library.claims || []).length ? '<div class="mo-section">사실·설정</div>' + referenceLibraryRows("claim", library.claims) : '');
   }
 
   function referenceLibraryRefreshUI() {
@@ -11788,6 +11724,18 @@
 
   function attachReferenceLibraryEvents() {
     const byId = (id) => document.getElementById(id);
+    document.querySelectorAll("[data-reference-panel]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _referenceLibraryState.panelView = String(btn.getAttribute("data-reference-panel") || "library");
+        referenceLibraryRefreshUI();
+      });
+    });
+    document.querySelectorAll("[data-reference-library-view]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _referenceLibraryState.libraryView = String(btn.getAttribute("data-reference-library-view") || "all");
+        referenceLibraryRefreshUI();
+      });
+    });
     const createWork = byId("mo-reference-work-create");
     if (createWork) createWork.addEventListener("click", () => referenceLibraryCreateWork(byId("mo-reference-work-title")?.value, byId("mo-reference-work-type")?.value));
     const workSelect = byId("mo-reference-work-select");
@@ -11800,7 +11748,7 @@
     if (continuitySelect) continuitySelect.addEventListener("change", async () => {
       _referenceLibraryState.selectedContinuityId = String(continuitySelect.value || "");
       _referenceLibraryState.document = null;
-      await referenceLibraryLoadCandidates();
+      await referenceLibraryLoadData();
     });
     const createContinuity = byId("mo-reference-continuity-create");
     if (createContinuity) createContinuity.addEventListener("click", () => referenceLibraryCreateContinuity(byId("mo-reference-continuity-label")?.value, byId("mo-reference-continuity-key")?.value));
@@ -11808,25 +11756,6 @@
     if (importFile) importFile.addEventListener("click", () => referenceLibraryImportFile(byId("mo-reference-file")?.files?.[0]));
     const extract = byId("mo-reference-extract");
     if (extract) extract.addEventListener("click", () => referenceLibraryStartExtraction());
-    const autoReview = byId("mo-reference-auto-review");
-    if (autoReview) autoReview.addEventListener("click", () => referenceLibraryStartAutoReview());
-    const bulkApprove = byId("mo-reference-bulk-approve");
-    if (bulkApprove) bulkApprove.addEventListener("click", () => {
-      if (confirm("현재 남은 원작 자료 후보를 모두 승인할까요?")) referenceLibraryBulkReview("approved");
-    });
-    const bulkReject = byId("mo-reference-bulk-reject");
-    if (bulkReject) bulkReject.addEventListener("click", () => {
-      if (confirm("현재 남은 원작 자료 후보를 모두 제외할까요? 원본 파일은 삭제되지 않습니다.")) referenceLibraryBulkReview("rejected");
-    });
-    document.querySelectorAll("[data-reference-view]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        _referenceLibraryState.reviewView = String(btn.getAttribute("data-reference-view") || "pending");
-        referenceLibraryRefreshUI();
-      });
-    });
-    document.querySelectorAll("[data-reference-review]").forEach((btn) => {
-      btn.addEventListener("click", () => referenceLibraryReview(btn.getAttribute("data-reference-kind"), btn.getAttribute("data-reference-id"), btn.getAttribute("data-reference-review")));
-    });
   }
 
   async function updateSettings(patch) {

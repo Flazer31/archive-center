@@ -65,10 +65,52 @@ func (s *Server) registerReferenceLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /reference-works/{work_id}/continuities", s.handleReferenceContinuityCreate)
 	mux.HandleFunc("POST /reference-works/{work_id}/documents", s.handleReferenceDocumentCreate)
 	mux.HandleFunc("POST /reference-works/{work_id}/documents/{document_id}/extract", s.handleReferenceDocumentExtract)
+	mux.HandleFunc("GET /reference-works/{work_id}/library", s.handleReferenceLibraryBrowse)
 	mux.HandleFunc("GET /reference-works/{work_id}/review-candidates", s.handleReferenceReviewCandidates)
 	mux.HandleFunc("POST /reference-works/{work_id}/review", s.handleReferenceReviewApply)
 	mux.HandleFunc("POST /reference-works/{work_id}/review/auto", s.handleReferenceAutoReview)
 	mux.HandleFunc("GET /reference-jobs/{job_id}", s.handleReferenceJob)
+}
+
+func (s *Server) handleReferenceLibraryBrowse(w http.ResponseWriter, r *http.Request) {
+	ref, ok := s.referenceLibraryStore(w)
+	if !ok {
+		return
+	}
+	workID := strings.TrimSpace(r.PathValue("work_id"))
+	continuityID := strings.TrimSpace(r.URL.Query().Get("continuity_id"))
+	timeline, err := ref.ListReferenceTimelineNodes(r.Context(), workID, continuityID, "")
+	if err != nil {
+		writeReferenceStoreError(w, err)
+		return
+	}
+	entities, err := ref.ListReferenceEntities(r.Context(), workID, continuityID, "")
+	if err != nil {
+		writeReferenceStoreError(w, err)
+		return
+	}
+	claims, err := ref.ListReferenceClaims(r.Context(), workID, continuityID, "approved", "")
+	if err != nil {
+		writeReferenceStoreError(w, err)
+		return
+	}
+	timeline = filterTimelineByReviewStatus(timeline, "approved")
+	entities = filterEntitiesByReviewStatus(entities, "approved")
+	typeCounts := map[string]int{"timeline": len(timeline), "entities": len(entities), "claims": len(claims)}
+	for _, entity := range entities {
+		key := "entity_" + strings.ToLower(strings.TrimSpace(entity.EntityType))
+		typeCounts[key]++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "ok",
+		"work_id":       workID,
+		"continuity_id": continuityID,
+		"timeline":      timeline,
+		"entities":      entities,
+		"claims":        claims,
+		"count":         len(timeline) + len(entities) + len(claims),
+		"type_counts":   typeCounts,
+	})
 }
 
 func (s *Server) referenceLibraryStore(w http.ResponseWriter) (store.ReferenceLibraryStore, bool) {
