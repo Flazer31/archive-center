@@ -33,6 +33,10 @@ func TestArchiveCenterJSReferenceAutoReviewUIMarkers(t *testing.T) {
 		`id="mo-reference-auto-review"`,
 		`id="mo-reference-bulk-approve"`,
 		`id="mo-reference-bulk-reject"`,
+		`review_status=all`,
+		`data-reference-view="approved"`,
+		`data-reference-view="rejected"`,
+		`item.review_reason`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing reference auto-review marker %q", marker)

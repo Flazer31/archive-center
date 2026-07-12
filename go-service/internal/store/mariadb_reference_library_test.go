@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
@@ -127,11 +128,34 @@ func TestSessionBindingUsesOptimisticRevision(t *testing.T) {
 
 func TestReferenceCandidateReviewIsScopedToWork(t *testing.T) {
 	store, mock := newReferenceLibraryMock(t)
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE reference_entities SET review_status = ? WHERE work_id = ? AND entity_id = ?")).
-		WithArgs("approved", "work-1", "entity-1").
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE reference_entities SET review_status = ?, review_source = ?, review_reason = ?, reviewed_at = CURRENT_TIMESTAMP(3) WHERE work_id = ? AND entity_id = ?")).
+		WithArgs("approved", "critic_auto", "direct evidence", "work-1", "entity-1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := store.UpdateReferenceCandidateReview(context.Background(), "work-1", "entity", "entity-1", "approved"); err != nil {
+	if err := store.UpdateReferenceCandidateReview(context.Background(), "work-1", "entity", "entity-1", "approved", "critic_auto", "direct evidence"); err != nil {
 		t.Fatalf("UpdateReferenceCandidateReview: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListReferenceEntitiesReturnsReviewAudit(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	now := time.Date(2026, 7, 12, 12, 30, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT entity_id, work_id, continuity_id, entity_type, canonical_name").
+		WithArgs("work-1", "continuity-1").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"entity_id", "work_id", "continuity_id", "entity_type", "canonical_name",
+			"description_text", "metadata_json", "review_status", "review_source",
+			"review_reason", "reviewed_at", "created_at", "updated_at",
+		}).AddRow("entity-1", "work-1", "continuity-1", "faction", "HUNTR/X", "Hunters", nil,
+			"approved", "critic_auto", "direct evidence", now, now, now))
+	items, err := store.ListReferenceEntities(context.Background(), "work-1", "continuity-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ReviewSource != "critic_auto" || items[0].ReviewReason != "direct evidence" || items[0].ReviewedAt == nil {
+		t.Fatalf("review audit was not returned: %#v", items)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

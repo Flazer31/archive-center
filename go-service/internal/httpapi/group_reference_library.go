@@ -241,6 +241,14 @@ func (s *Server) handleReferenceReviewCandidates(w http.ResponseWriter, r *http.
 	}
 	workID := r.PathValue("work_id")
 	continuityID := strings.TrimSpace(r.URL.Query().Get("continuity_id"))
+	reviewStatus := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("review_status")))
+	if reviewStatus == "" {
+		reviewStatus = "pending"
+	}
+	if reviewStatus != "pending" && reviewStatus != "approved" && reviewStatus != "rejected" && reviewStatus != "all" {
+		writeBadRequest(w, "review_status must be pending, approved, rejected, or all")
+		return
+	}
 	timeline, err := ref.ListReferenceTimelineNodes(r.Context(), workID, continuityID, "")
 	if err != nil {
 		writeReferenceStoreError(w, err)
@@ -251,14 +259,18 @@ func (s *Server) handleReferenceReviewCandidates(w http.ResponseWriter, r *http.
 		writeReferenceStoreError(w, err)
 		return
 	}
-	claims, err := ref.ListReferenceClaims(r.Context(), workID, continuityID, "pending", "")
+	claims, err := ref.ListReferenceClaims(r.Context(), workID, continuityID, "", "")
 	if err != nil {
 		writeReferenceStoreError(w, err)
 		return
 	}
-	timeline = filterPendingTimeline(timeline)
-	entities = filterPendingEntities(entities)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "timeline": timeline, "entities": entities, "claims": claims, "count": len(timeline) + len(entities) + len(claims)})
+	summary := referenceReviewSummary(timeline, entities, claims)
+	if reviewStatus != "all" {
+		timeline = filterTimelineByReviewStatus(timeline, reviewStatus)
+		entities = filterEntitiesByReviewStatus(entities, reviewStatus)
+		claims = filterClaimsByReviewStatus(claims, reviewStatus)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "review_status": reviewStatus, "timeline": timeline, "entities": entities, "claims": claims, "count": len(timeline) + len(entities) + len(claims), "summary": summary})
 }
 
 func (s *Server) handleReferenceReviewApply(w http.ResponseWriter, r *http.Request) {
@@ -271,8 +283,12 @@ func (s *Server) handleReferenceReviewApply(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	updated := 0
+	reviewSource := "manual"
+	if len(req.Items) > 1 {
+		reviewSource = "manual_bulk"
+	}
 	for _, item := range req.Items {
-		if err := ref.UpdateReferenceCandidateReview(r.Context(), r.PathValue("work_id"), strings.TrimSpace(item.Kind), strings.TrimSpace(item.ID), strings.TrimSpace(item.Decision)); err != nil {
+		if err := ref.UpdateReferenceCandidateReview(r.Context(), r.PathValue("work_id"), strings.TrimSpace(item.Kind), strings.TrimSpace(item.ID), strings.TrimSpace(item.Decision), reviewSource, "user review"); err != nil {
 			writeReferenceStoreError(w, err)
 			return
 		}
@@ -376,24 +392,42 @@ func defaultReferenceString(value, fallback string) string {
 	return strings.TrimSpace(value)
 }
 
-func filterPendingTimeline(items []store.ReferenceTimelineNode) []store.ReferenceTimelineNode {
+func filterTimelineByReviewStatus(items []store.ReferenceTimelineNode, status string) []store.ReferenceTimelineNode {
 	out := []store.ReferenceTimelineNode{}
 	for _, item := range items {
-		if item.ReviewStatus == "pending" {
+		if item.ReviewStatus == status {
 			out = append(out, item)
 		}
 	}
 	return out
 }
 
-func filterPendingEntities(items []store.ReferenceEntity) []store.ReferenceEntity {
+func filterEntitiesByReviewStatus(items []store.ReferenceEntity, status string) []store.ReferenceEntity {
 	out := []store.ReferenceEntity{}
 	for _, item := range items {
-		if item.ReviewStatus == "pending" {
+		if item.ReviewStatus == status {
 			out = append(out, item)
 		}
 	}
 	return out
+}
+
+func filterClaimsByReviewStatus(items []store.ReferenceClaim, status string) []store.ReferenceClaim {
+	out := []store.ReferenceClaim{}
+	for _, item := range items {
+		if item.ReviewStatus == status {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func referenceReviewSummary(timeline []store.ReferenceTimelineNode, entities []store.ReferenceEntity, claims []store.ReferenceClaim) map[string]int {
+	summary := map[string]int{"pending": 0, "approved": 0, "rejected": 0, "total": len(timeline) + len(entities) + len(claims)}
+	for _, status := range []string{"pending", "approved", "rejected"} {
+		summary[status] = len(filterTimelineByReviewStatus(timeline, status)) + len(filterEntitiesByReviewStatus(entities, status)) + len(filterClaimsByReviewStatus(claims, status))
+	}
+	return summary
 }
 
 func callReferenceExtractor(ctx context.Context, cfg completeTurnLLMConfig, doc *store.ReferenceDocument, chunk string, chunkIndex, chunkTotal int) (map[string]any, error) {
@@ -639,6 +673,7 @@ func (s *Server) runReferenceAutoReviewJob(ctx context.Context, ref store.Refere
 			}
 			seen[key] = struct{}{}
 			decision := strings.ToLower(strings.TrimSpace(stringFromMap(decisionItem, "decision")))
+			reason := truncateRunes(strings.TrimSpace(stringFromMap(decisionItem, "reason")), 800)
 			if decision == "approve" {
 				decision = "approved"
 			}
@@ -649,13 +684,11 @@ func (s *Server) runReferenceAutoReviewJob(ctx context.Context, ref store.Refere
 				decision = "pending"
 			}
 			switch decision {
-			case "approved", "rejected":
-				if err := ref.UpdateReferenceCandidateReview(ctx, workID, kind, id, decision); err != nil {
+			case "approved", "rejected", "pending":
+				if err := ref.UpdateReferenceCandidateReview(ctx, workID, kind, id, decision, "critic_auto", reason); err != nil {
 					return nil, err
 				}
 				counts[decision]++
-			case "pending":
-				counts["pending"]++
 			default:
 				counts["invalid"]++
 			}

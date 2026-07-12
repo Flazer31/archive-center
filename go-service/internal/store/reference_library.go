@@ -53,32 +53,38 @@ type ReferenceDocument struct {
 }
 
 type ReferenceTimelineNode struct {
-	NodeID       string    `json:"node_id"`
-	WorkID       string    `json:"work_id"`
-	ContinuityID string    `json:"continuity_id"`
-	NodeKey      string    `json:"node_key"`
-	Label        string    `json:"label"`
-	Ordinal      int64     `json:"ordinal"`
-	ParentNodeID string    `json:"parent_node_id,omitempty"`
-	BranchKey    string    `json:"branch_key"`
-	NodeKind     string    `json:"node_kind"`
-	MetadataJSON string    `json:"metadata_json,omitempty"`
-	ReviewStatus string    `json:"review_status"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	NodeID       string     `json:"node_id"`
+	WorkID       string     `json:"work_id"`
+	ContinuityID string     `json:"continuity_id"`
+	NodeKey      string     `json:"node_key"`
+	Label        string     `json:"label"`
+	Ordinal      int64      `json:"ordinal"`
+	ParentNodeID string     `json:"parent_node_id,omitempty"`
+	BranchKey    string     `json:"branch_key"`
+	NodeKind     string     `json:"node_kind"`
+	MetadataJSON string     `json:"metadata_json,omitempty"`
+	ReviewStatus string     `json:"review_status"`
+	ReviewSource string     `json:"review_source,omitempty"`
+	ReviewReason string     `json:"review_reason,omitempty"`
+	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 type ReferenceEntity struct {
-	EntityID        string    `json:"entity_id"`
-	WorkID          string    `json:"work_id"`
-	ContinuityID    string    `json:"continuity_id"`
-	EntityType      string    `json:"entity_type"`
-	CanonicalName   string    `json:"canonical_name"`
-	DescriptionText string    `json:"description_text,omitempty"`
-	MetadataJSON    string    `json:"metadata_json,omitempty"`
-	ReviewStatus    string    `json:"review_status"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	EntityID        string     `json:"entity_id"`
+	WorkID          string     `json:"work_id"`
+	ContinuityID    string     `json:"continuity_id"`
+	EntityType      string     `json:"entity_type"`
+	CanonicalName   string     `json:"canonical_name"`
+	DescriptionText string     `json:"description_text,omitempty"`
+	MetadataJSON    string     `json:"metadata_json,omitempty"`
+	ReviewStatus    string     `json:"review_status"`
+	ReviewSource    string     `json:"review_source,omitempty"`
+	ReviewReason    string     `json:"review_reason,omitempty"`
+	ReviewedAt      *time.Time `json:"reviewed_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type ReferenceEntityAlias struct {
@@ -93,26 +99,29 @@ type ReferenceEntityAlias struct {
 }
 
 type ReferenceClaim struct {
-	ClaimID          string    `json:"claim_id"`
-	WorkID           string    `json:"work_id"`
-	ContinuityID     string    `json:"continuity_id"`
-	DocumentID       string    `json:"document_id"`
-	ClaimType        string    `json:"claim_type"`
-	SubjectEntityID  string    `json:"subject_entity_id,omitempty"`
-	ClaimText        string    `json:"claim_text"`
-	EvidenceExcerpt  string    `json:"evidence_excerpt,omitempty"`
-	TemporalScope    string    `json:"temporal_scope"`
-	ValidFromNodeID  string    `json:"valid_from_node_id,omitempty"`
-	ValidToNodeID    string    `json:"valid_to_node_id,omitempty"`
-	RevealFromNodeID string    `json:"reveal_from_node_id,omitempty"`
-	BranchKey        string    `json:"branch_key"`
-	KnowledgeScope   string    `json:"knowledge_scope"`
-	Confidence       float64   `json:"confidence"`
-	ReviewStatus     string    `json:"review_status"`
-	MetadataJSON     string    `json:"metadata_json,omitempty"`
-	KnowerEntityIDs  []string  `json:"knower_entity_ids,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ClaimID          string     `json:"claim_id"`
+	WorkID           string     `json:"work_id"`
+	ContinuityID     string     `json:"continuity_id"`
+	DocumentID       string     `json:"document_id"`
+	ClaimType        string     `json:"claim_type"`
+	SubjectEntityID  string     `json:"subject_entity_id,omitempty"`
+	ClaimText        string     `json:"claim_text"`
+	EvidenceExcerpt  string     `json:"evidence_excerpt,omitempty"`
+	TemporalScope    string     `json:"temporal_scope"`
+	ValidFromNodeID  string     `json:"valid_from_node_id,omitempty"`
+	ValidToNodeID    string     `json:"valid_to_node_id,omitempty"`
+	RevealFromNodeID string     `json:"reveal_from_node_id,omitempty"`
+	BranchKey        string     `json:"branch_key"`
+	KnowledgeScope   string     `json:"knowledge_scope"`
+	Confidence       float64    `json:"confidence"`
+	ReviewStatus     string     `json:"review_status"`
+	ReviewSource     string     `json:"review_source,omitempty"`
+	ReviewReason     string     `json:"review_reason,omitempty"`
+	ReviewedAt       *time.Time `json:"reviewed_at,omitempty"`
+	MetadataJSON     string     `json:"metadata_json,omitempty"`
+	KnowerEntityIDs  []string   `json:"knower_entity_ids,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type SessionReferenceBinding struct {
@@ -180,7 +189,7 @@ type ReferenceLibraryStore interface {
 	ListReferenceClaims(context.Context, string, string, string, string) ([]ReferenceClaim, error)
 	ReplaceReferenceClaimKnowers(context.Context, string, []string) error
 	DeleteReferenceClaim(context.Context, string) error
-	UpdateReferenceCandidateReview(context.Context, string, string, string, string) error
+	UpdateReferenceCandidateReview(context.Context, string, string, string, string, string, string) error
 
 	UpsertSessionReferenceBinding(context.Context, *SessionReferenceBinding, int64) error
 	ListSessionReferenceBindings(context.Context, string, bool) ([]SessionReferenceBinding, error)

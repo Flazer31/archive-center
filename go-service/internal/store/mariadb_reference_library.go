@@ -435,7 +435,8 @@ func (m *mariadbStore) ListReferenceTimelineNodes(ctx context.Context, workID, c
 		return nil, err
 	}
 	query := `SELECT node_id, work_id, continuity_id, node_key, label, ordinal_value,
-		                 parent_node_id, branch_key, node_kind, metadata_json, review_status, created_at, updated_at
+		                 parent_node_id, branch_key, node_kind, metadata_json, review_status,
+		                 review_source, review_reason, reviewed_at, created_at, updated_at
 	          FROM reference_timeline_nodes WHERE work_id = ?`
 	args := []any{strings.TrimSpace(workID)}
 	if strings.TrimSpace(continuityID) != "" {
@@ -455,14 +456,21 @@ func (m *mariadbStore) ListReferenceTimelineNodes(ctx context.Context, workID, c
 	items := []ReferenceTimelineNode{}
 	for rows.Next() {
 		var item ReferenceTimelineNode
-		var parent, metadata sql.NullString
+		var parent, metadata, reviewReason sql.NullString
+		var reviewedAt sql.NullTime
 		if err := rows.Scan(&item.NodeID, &item.WorkID, &item.ContinuityID, &item.NodeKey, &item.Label,
 			&item.Ordinal, &parent, &item.BranchKey, &item.NodeKind, &metadata, &item.ReviewStatus,
+			&item.ReviewSource, &reviewReason, &reviewedAt,
 			&item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		item.ParentNodeID = nullStringValue(parent)
 		item.MetadataJSON = nullStringValue(metadata)
+		item.ReviewReason = nullStringValue(reviewReason)
+		if reviewedAt.Valid {
+			value := reviewedAt.Time
+			item.ReviewedAt = &value
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -504,7 +512,8 @@ func (m *mariadbStore) ListReferenceEntities(ctx context.Context, workID, contin
 		return nil, err
 	}
 	query := `SELECT entity_id, work_id, continuity_id, entity_type, canonical_name,
-	                 description_text, metadata_json, review_status, created_at, updated_at
+	                 description_text, metadata_json, review_status, review_source,
+	                 review_reason, reviewed_at, created_at, updated_at
 	          FROM reference_entities WHERE work_id = ?`
 	args := []any{strings.TrimSpace(workID)}
 	if strings.TrimSpace(continuityID) != "" {
@@ -524,14 +533,21 @@ func (m *mariadbStore) ListReferenceEntities(ctx context.Context, workID, contin
 	items := []ReferenceEntity{}
 	for rows.Next() {
 		var item ReferenceEntity
-		var description, metadata sql.NullString
+		var description, metadata, reviewReason sql.NullString
+		var reviewedAt sql.NullTime
 		if err := rows.Scan(&item.EntityID, &item.WorkID, &item.ContinuityID, &item.EntityType,
-			&item.CanonicalName, &description, &metadata, &item.ReviewStatus,
+			&item.CanonicalName, &description, &metadata, &item.ReviewStatus, &item.ReviewSource,
+			&reviewReason, &reviewedAt,
 			&item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		item.DescriptionText = nullStringValue(description)
 		item.MetadataJSON = nullStringValue(metadata)
+		item.ReviewReason = nullStringValue(reviewReason)
+		if reviewedAt.Valid {
+			value := reviewedAt.Time
+			item.ReviewedAt = &value
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -638,7 +654,7 @@ func (m *mariadbStore) ListReferenceClaims(ctx context.Context, workID, continui
 	query := `SELECT claim_id, work_id, continuity_id, document_id, claim_type, subject_entity_id,
 	                 claim_text, evidence_excerpt, temporal_scope, valid_from_node_id, valid_to_node_id,
 	                 reveal_from_node_id, branch_key, knowledge_scope, confidence, review_status,
-	                 metadata_json, created_at, updated_at
+	                 review_source, review_reason, reviewed_at, metadata_json, created_at, updated_at
 	          FROM reference_claims WHERE work_id = ?`
 	args := []any{strings.TrimSpace(workID)}
 	if strings.TrimSpace(continuityID) != "" {
@@ -661,11 +677,13 @@ func (m *mariadbStore) ListReferenceClaims(ctx context.Context, workID, continui
 	items := []ReferenceClaim{}
 	for rows.Next() {
 		var item ReferenceClaim
-		var subject, evidence, validFrom, validTo, revealFrom, metadata sql.NullString
+		var subject, evidence, validFrom, validTo, revealFrom, metadata, reviewReason sql.NullString
+		var reviewedAt sql.NullTime
 		if err := rows.Scan(&item.ClaimID, &item.WorkID, &item.ContinuityID, &item.DocumentID,
 			&item.ClaimType, &subject, &item.ClaimText, &evidence, &item.TemporalScope,
 			&validFrom, &validTo, &revealFrom, &item.BranchKey, &item.KnowledgeScope,
-			&item.Confidence, &item.ReviewStatus, &metadata, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			&item.Confidence, &item.ReviewStatus, &item.ReviewSource, &reviewReason, &reviewedAt,
+			&metadata, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		item.SubjectEntityID = nullStringValue(subject)
@@ -674,6 +692,11 @@ func (m *mariadbStore) ListReferenceClaims(ctx context.Context, workID, continui
 		item.ValidToNodeID = nullStringValue(validTo)
 		item.RevealFromNodeID = nullStringValue(revealFrom)
 		item.MetadataJSON = nullStringValue(metadata)
+		item.ReviewReason = nullStringValue(reviewReason)
+		if reviewedAt.Valid {
+			value := reviewedAt.Time
+			item.ReviewedAt = &value
+		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -750,8 +773,8 @@ func (m *mariadbStore) DeleteReferenceClaim(ctx context.Context, claimID string)
 	return m.deleteReferenceRow(ctx, "reference_claims", "claim_id", claimID)
 }
 
-func (m *mariadbStore) UpdateReferenceCandidateReview(ctx context.Context, workID, kind, id, status string) error {
-	if referenceRequired(workID, kind, id, status) != nil {
+func (m *mariadbStore) UpdateReferenceCandidateReview(ctx context.Context, workID, kind, id, status, source, reason string) error {
+	if referenceRequired(workID, kind, id, status, source) != nil {
 		return ErrInvalidReference
 	}
 	if status != "approved" && status != "rejected" && status != "pending" {
@@ -770,8 +793,8 @@ func (m *mariadbStore) UpdateReferenceCandidateReview(ctx context.Context, workI
 		return err
 	}
 	result, err := m.db.ExecContext(ctx,
-		"UPDATE "+target[0]+" SET review_status = ? WHERE work_id = ? AND "+target[1]+" = ?",
-		status, strings.TrimSpace(workID), strings.TrimSpace(id))
+		"UPDATE "+target[0]+" SET review_status = ?, review_source = ?, review_reason = ?, reviewed_at = CURRENT_TIMESTAMP(3) WHERE work_id = ? AND "+target[1]+" = ?",
+		status, strings.TrimSpace(source), referenceNullable(reason), strings.TrimSpace(workID), strings.TrimSpace(id))
 	if err != nil {
 		return referenceStoreError(err)
 	}

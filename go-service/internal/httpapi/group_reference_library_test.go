@@ -33,6 +33,8 @@ type referenceReviewCall struct {
 	kind   string
 	id     string
 	status string
+	source string
+	reason string
 }
 
 func newReferenceLibraryHTTPStore() *referenceLibraryHTTPStore {
@@ -176,27 +178,37 @@ func (f *referenceLibraryHTTPStore) ReplaceReferenceClaimKnowers(context.Context
 	return nil
 }
 
-func (f *referenceLibraryHTTPStore) UpdateReferenceCandidateReview(_ context.Context, workID, kind, id, status string) error {
+func (f *referenceLibraryHTTPStore) UpdateReferenceCandidateReview(_ context.Context, workID, kind, id, status, source, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.reviews = append(f.reviews, referenceReviewCall{workID: workID, kind: kind, id: id, status: status})
+	f.reviews = append(f.reviews, referenceReviewCall{workID: workID, kind: kind, id: id, status: status, source: source, reason: reason})
+	now := time.Now().UTC()
 	switch kind {
 	case "timeline":
 		for i := range f.timeline {
 			if f.timeline[i].WorkID == workID && f.timeline[i].NodeID == id {
 				f.timeline[i].ReviewStatus = status
+				f.timeline[i].ReviewSource = source
+				f.timeline[i].ReviewReason = reason
+				f.timeline[i].ReviewedAt = &now
 			}
 		}
 	case "entity":
 		for i := range f.entities {
 			if f.entities[i].WorkID == workID && f.entities[i].EntityID == id {
 				f.entities[i].ReviewStatus = status
+				f.entities[i].ReviewSource = source
+				f.entities[i].ReviewReason = reason
+				f.entities[i].ReviewedAt = &now
 			}
 		}
 	case "claim":
 		for i := range f.claims {
 			if f.claims[i].WorkID == workID && f.claims[i].ClaimID == id {
 				f.claims[i].ReviewStatus = status
+				f.claims[i].ReviewSource = source
+				f.claims[i].ReviewReason = reason
+				f.claims[i].ReviewedAt = &now
 			}
 		}
 	}
@@ -347,9 +359,20 @@ func TestReferenceAutoReviewApprovesSupportedAndLeavesAmbiguousPending(t *testin
 			if fake.entities[0].ReviewStatus != "approved" || fake.entities[1].ReviewStatus != "pending" {
 				t.Fatalf("unexpected review statuses: %#v", fake.entities)
 			}
+			if fake.entities[0].ReviewSource != "critic_auto" || fake.entities[0].ReviewReason != "direct evidence" || fake.entities[0].ReviewedAt == nil {
+				t.Fatalf("automatic review audit was not recorded: %#v", fake.entities[0])
+			}
+			if fake.entities[1].ReviewSource != "critic_auto" || fake.entities[1].ReviewReason == "" || fake.entities[1].ReviewedAt == nil {
+				t.Fatalf("pending review reason was not recorded: %#v", fake.entities[1])
+			}
 			result := job["result"].(map[string]any)
 			if intFromAny(result["approved"], 0) != 1 || intFromAny(result["remaining_pending"], 0) != 1 {
 				t.Fatalf("unexpected auto review result: %#v", result)
+			}
+			listed := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/review-candidates?continuity_id=continuity-1&review_status=all", nil)
+			summary := listed["summary"].(map[string]any)
+			if intFromAny(summary["approved"], 0) != 1 || intFromAny(summary["pending"], 0) != 1 || intFromAny(summary["total"], 0) != 2 {
+				t.Fatalf("unexpected review summary: %#v", summary)
 			}
 			return
 		}
