@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -132,6 +133,12 @@ func (f *referenceLibraryHTTPStore) ListReferenceTimelineNodes(_ context.Context
 			out = append(out, item)
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Ordinal == out[j].Ordinal {
+			return out[i].NodeKey < out[j].NodeKey
+		}
+		return out[i].Ordinal < out[j].Ordinal
+	})
 	return out, nil
 }
 
@@ -148,6 +155,28 @@ func (f *referenceLibraryHTTPStore) NormalizeReferenceTimelineOrder(_ context.Co
 		f.timeline[index].Ordinal = int64((order + 1) * 10)
 	}
 	return len(indexes), nil
+}
+
+func (f *referenceLibraryHTTPStore) ApplyReferenceTimelineOrder(_ context.Context, workID, continuityID string, orderedIDs []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	indexes := map[string]int{}
+	for i := range f.timeline {
+		if f.timeline[i].WorkID == workID && f.timeline[i].ContinuityID == continuityID && f.timeline[i].ReviewStatus == "approved" {
+			indexes[f.timeline[i].NodeID] = i
+		}
+	}
+	if len(indexes) != len(orderedIDs) {
+		return 0, store.ErrReferenceConflict
+	}
+	for order, id := range orderedIDs {
+		index, ok := indexes[id]
+		if !ok {
+			return 0, store.ErrReferenceConflict
+		}
+		f.timeline[index].Ordinal = int64((order + 1) * 10)
+	}
+	return len(orderedIDs), nil
 }
 
 func (f *referenceLibraryHTTPStore) UpsertReferenceEntity(_ context.Context, item *store.ReferenceEntity) error {
@@ -521,23 +550,43 @@ func TestAnalyzeReferenceLibraryFlagsFactKeyConflict(t *testing.T) {
 }
 
 func TestReferenceTimelineNormalizeAssignsSpacedUniqueOrder(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ordered_ids\":[\"node-1\",\"node-3\",\"node-2\"],\"unresolved_ids\":[],\"duplicate_groups\":[],\"conflict_groups\":[],\"notes\":[]}"}}]}`))
+	}))
+	defer upstream.Close()
 	fake := newReferenceLibraryHTTPStore()
 	fake.timeline = append(fake.timeline,
-		store.ReferenceTimelineNode{NodeID: "node-1", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "a", Label: "A", Ordinal: 0, ReviewStatus: "approved"},
-		store.ReferenceTimelineNode{NodeID: "node-2", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "b", Label: "B", Ordinal: 1, ReviewStatus: "approved"},
-		store.ReferenceTimelineNode{NodeID: "node-3", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "c", Label: "C", Ordinal: 1, ReviewStatus: "approved"},
+		store.ReferenceTimelineNode{NodeID: "node-1", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "a", Label: "1620", Ordinal: 0, ReviewStatus: "approved"},
+		store.ReferenceTimelineNode{NodeID: "node-2", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "b", Label: "1900", Ordinal: 1, ReviewStatus: "approved"},
+		store.ReferenceTimelineNode{NodeID: "node-3", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "c", Label: "1700", Ordinal: 1, ReviewStatus: "approved"},
 	)
 	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	result := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/library/timeline/normalize?continuity_id=continuity-1", map[string]any{})
-	if intFromAny(result["updated"], 0) != 3 || fake.timeline[0].Ordinal != 10 || fake.timeline[1].Ordinal != 20 || fake.timeline[2].Ordinal != 30 {
-		t.Fatalf("timeline order was not normalized: result=%#v timeline=%#v", result, fake.timeline)
+	started := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/library/timeline/normalize?continuity_id=continuity-1", map[string]any{
+		"continuity_id": "continuity-1",
+		"client_meta":   map[string]any{"critic": map[string]any{"provider": "openai", "api_key": "test", "endpoint": upstream.URL, "model": "test", "timeout_ms": 30000}},
+	})
+	jobID := started["job_id"].(string)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		job, ok := srv.AdminJobs.get(jobID)
+		if ok && job["status"] == "completed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	job, _ := srv.AdminJobs.get(jobID)
+	if job["status"] != "completed" || fake.timeline[0].Ordinal != 10 || fake.timeline[2].Ordinal != 20 || fake.timeline[1].Ordinal != 30 {
+		t.Fatalf("timeline chronology was not applied: job=%#v timeline=%#v", job, fake.timeline)
 	}
 	listed := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
 	timeline := listed["timeline"].([]any)
+	wantLabels := []string{"1620", "1700", "1900"}
 	for i, raw := range timeline {
-		if intFromAny(raw.(map[string]any)["display_order"], 0) != i+1 {
+		item := raw.(map[string]any)
+		if intFromAny(item["display_order"], 0) != i+1 || item["label"] != wantLabels[i] {
 			t.Fatalf("display order %d was not sequential: %#v", i, timeline)
 		}
 	}

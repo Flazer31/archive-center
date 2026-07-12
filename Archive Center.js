@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-library-manager.20260712-8";
+  const BUILD_ID = "3.0-dev-reference-library-manager.20260712-9";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-12 KST";
-  const BUILD_NOTES = "Reference library accuracy management with normalized timeline ordering";
+  const BUILD_NOTES = "Evidence-based chronological ordering for reference timelines";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -11617,6 +11617,12 @@
       referenceLibraryRefreshUI();
       if (data.status === "completed") {
         await referenceLibraryLoadData();
+        if (String(data.kind || "") === "reference_timeline_chronology") {
+          const unresolved = Number(data.result && Array.isArray(data.result.unresolved_ids) ? data.result.unresolved_ids.length : 0);
+          const conflicts = Number(data.result && Array.isArray(data.result.conflict_groups) ? data.result.conflict_groups.length : 0);
+          referenceLibrarySetStatus("ok", "연표를 시간순으로 정리했습니다. 시점 확인 필요 " + unresolved + "개 · 충돌 " + conflicts + "개", "");
+          return;
+        }
         const resultPending = data.result ? (data.result.remaining_pending ?? data.result.pending_review) : undefined;
         const pending = Number(resultPending ?? 0);
         const approved = Number(data.result && data.result.approved || data.result && data.result.auto_review && data.result.auto_review.approved || 0);
@@ -11625,6 +11631,10 @@
         return;
       }
       if (data.status === "failed") {
+        if (String(data.kind || "") === "reference_timeline_chronology") {
+          referenceLibrarySetStatus("error", "", "연표 시간순 정리에 실패했습니다: " + String(data.error || "원인 미확인"));
+          return;
+        }
         const warnings = data.result && Array.isArray(data.result.warnings) ? data.result.warnings.filter(Boolean) : [];
         const detail = warnings.length > 0 ? " · " + warnings.slice(0, 3).join(" · ") : "";
         referenceLibrarySetStatus("error", "", "자동 추출에 실패했습니다: " + String(data.error || "원인 미확인") + detail);
@@ -11775,7 +11785,7 @@
     const diagnosticSummary = Number(diagnostics.duplicate_count || 0) || Number(diagnostics.conflict_count || 0)
       ? '<div class="mo-section-desc">중복 확인 ' + Number(diagnostics.duplicate_count || 0) + '건 · 충돌 확인 ' + Number(diagnostics.conflict_count || 0) + '건 · 사용자 확정 ' + Number(diagnostics.user_locked_count || 0) + '건</div>'
       : '';
-    const timelineActions = (library.timeline || []).length > 0 ? '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-timeline-normalize">연표 번호 정리</button></div>' : '';
+    const timelineActions = (library.timeline || []).length > 0 ? '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-timeline-normalize">연표 시간순 정리</button></div>' : '';
     return '<div class="mo-section">원작 자료</div>' + tabs + selector + filters + diagnosticSummary + timelineActions + empty
       + ((libraryView === "all" || libraryView === "character") && entitiesByType("character").length ? '<div class="mo-section">인물</div>' + referenceLibraryRows("entity", entitiesByType("character"), false) : '')
       + ((libraryView === "all" || libraryView === "location") && entitiesByType("location").length ? '<div class="mo-section">장소</div>' + referenceLibraryRows("entity", entitiesByType("location"), false) : '')
@@ -11816,13 +11826,15 @@
     if (!workId || !continuityId) return false;
     const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/library/timeline/normalize?continuity_id=" + encodeURIComponent(continuityId), {
       method: "POST",
-      body: {},
+      body: { continuity_id: continuityId, client_meta: buildAdminRuntimeClientMeta({ source: "reference_timeline_chronology" }) },
+      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
     });
-    if (!data || data.status !== "ok") {
-      referenceLibrarySetStatus("error", "", "연표 번호를 정리하지 못했습니다.");
+    if (!data || !data.job_id) {
+      referenceLibrarySetStatus("error", "", "연표 시간순 정리 작업을 시작하지 못했습니다. 평론가 설정을 확인하세요.");
       return false;
     }
-    await referenceLibraryLoadData();
+    _referenceLibraryState.job = data;
+    await referenceLibraryPollJob(String(data.job_id));
     return true;
   }
 

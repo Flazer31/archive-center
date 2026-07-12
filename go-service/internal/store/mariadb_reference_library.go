@@ -529,6 +529,65 @@ func (m *mariadbStore) NormalizeReferenceTimelineOrder(ctx context.Context, work
 	return len(ids), nil
 }
 
+func (m *mariadbStore) ApplyReferenceTimelineOrder(ctx context.Context, workID, continuityID string, orderedIDs []string) (int, error) {
+	if referenceRequired(workID, continuityID) != nil || len(orderedIDs) == 0 {
+		return 0, ErrInvalidReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return 0, err
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT node_id FROM reference_timeline_nodes
+		WHERE work_id = ? AND continuity_id = ? AND review_status = 'approved'
+	`, strings.TrimSpace(workID), strings.TrimSpace(continuityID))
+	if err != nil {
+		return 0, err
+	}
+	allowed := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		allowed[id] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(allowed) != len(orderedIDs) {
+		return 0, ErrReferenceConflict
+	}
+	seen := map[string]struct{}{}
+	for _, id := range orderedIDs {
+		id = strings.TrimSpace(id)
+		if _, ok := allowed[id]; !ok {
+			return 0, ErrReferenceConflict
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return 0, ErrReferenceConflict
+		}
+		seen[id] = struct{}{}
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for i, id := range orderedIDs {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE reference_timeline_nodes SET ordinal_value = ?
+			WHERE work_id = ? AND continuity_id = ? AND node_id = ? AND review_status = 'approved'
+		`, int64((i+1)*10), strings.TrimSpace(workID), strings.TrimSpace(continuityID), strings.TrimSpace(id)); err != nil {
+			return 0, referenceStoreError(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(orderedIDs), nil
+}
+
 func (m *mariadbStore) UpsertReferenceEntity(ctx context.Context, item *ReferenceEntity) error {
 	if item == nil || referenceRequired(item.EntityID, item.WorkID, item.ContinuityID, item.EntityType, item.CanonicalName) != nil {
 		return ErrInvalidReference

@@ -200,6 +200,7 @@ type ReferenceLibraryStore interface {
 	ListReferenceTimelineNodes(context.Context, string, string, string) ([]ReferenceTimelineNode, error)
 	DeleteReferenceTimelineNode(context.Context, string) error
 	NormalizeReferenceTimelineOrder(context.Context, string, string) (int, error)
+	ApplyReferenceTimelineOrder(context.Context, string, string, []string) (int, error)
 
 	UpsertReferenceEntity(context.Context, *ReferenceEntity) error
 	ListReferenceEntities(context.Context, string, string, string) ([]ReferenceEntity, error)
