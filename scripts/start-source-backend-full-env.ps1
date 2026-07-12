@@ -68,6 +68,18 @@ if (-not (Test-PortOpen $chromaPort)) {
     throw "ChromaDB is not listening on 127.0.0.1:$chromaPort. Start the full package services first."
 }
 
+$schemaPath = Join-Path $root "migrations\001_schema.sql"
+Write-Host "Applying current source MariaDB schema"
+Push-Location $goRoot
+try {
+    go run -buildvcs=false ./cmd/mariadb-schema -dsn $env:AC_MARIADB_DSN -schema $schemaPath -execute
+    if ($LASTEXITCODE -ne 0) {
+        throw "mariadb-schema failed. The source backend was not started."
+    }
+} finally {
+    Pop-Location
+}
+
 Write-Host "Starting Archive Center source backend with full-package services"
 Write-Host "  Go:      $($env:AC_BIND_ADDR)"
 Write-Host "  MariaDB: 127.0.0.1:$MariaDBPort"

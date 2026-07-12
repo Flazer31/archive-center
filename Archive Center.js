@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-library-browser.20260712-4";
+  const BUILD_ID = "3.0-dev-reference-library-browser.20260712-5";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-12 KST";
-  const BUILD_NOTES = "Generated original-work timeline, entities, and facts are visible in a dedicated library tab";
+  const BUILD_NOTES = "Generated reference library browser with detailed extraction errors and source-start schema synchronization";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -11624,7 +11624,9 @@
         return;
       }
       if (data.status === "failed") {
-        referenceLibrarySetStatus("error", "", "자동 추출에 실패했습니다: " + String(data.error || "원인 미확인"));
+        const warnings = data.result && Array.isArray(data.result.warnings) ? data.result.warnings.filter(Boolean) : [];
+        const detail = warnings.length > 0 ? " · " + warnings.slice(0, 3).join(" · ") : "";
+        referenceLibrarySetStatus("error", "", "자동 추출에 실패했습니다: " + String(data.error || "원인 미확인") + detail);
         return;
       }
     }
