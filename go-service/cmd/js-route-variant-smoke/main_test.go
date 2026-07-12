@@ -11,6 +11,19 @@ import (
 	"testing"
 )
 
+func TestArchiveCenterJSCriticLedgerDebugRendererIsDefined(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		"function renderCriticLedgerProbeDebugSection()",
+		"${renderCriticLedgerProbeDebugSection()}",
+		`data-critic-ledger-probe="1"`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing critic ledger debug renderer marker %q", marker)
+		}
+	}
+}
+
 func archiveCenterRoot(t *testing.T) string {
 	t.Helper()
 	candidates := []string{

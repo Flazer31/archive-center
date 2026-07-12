@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-js-backend-dedup-complete.20260711-1";
+  const BUILD_ID = "3.0-dev-reference-import-ui-hotfix.20260712-1";
   const BUILD_CHANNEL = "3.0-dev";
-  const BUILD_TIME = "2026-07-11 KST";
-  const BUILD_NOTES = "Duplicate session reads removed; RisuAI host rendering and compatibility fallback preserved";
+  const BUILD_TIME = "2026-07-12 KST";
+  const BUILD_NOTES = "Reference file review UI added; missing Critic Ledger debug renderer restored";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -12118,6 +12118,13 @@
       route: data.route || "/critic/archive-ledger/debug",
     });
     return data;
+  }
+
+  function renderCriticLedgerProbeDebugSection() {
+    const state = runtimeState.lastCriticLedgerProbe || { status: "idle", detail: "not probed" };
+    return formatStateRow("Probe", state)
+      + '<div class="mo-dash-row"><span class="mo-dash-label">Action</span>'
+      + '<span class="mo-dash-value"><button type="button" class="mo-btn mo-btn-info" data-critic-ledger-probe="1">Probe current session</button></span></div>';
   }
 
   async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext, options = {}) {
