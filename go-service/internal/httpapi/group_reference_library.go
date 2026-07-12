@@ -84,6 +84,7 @@ func (s *Server) registerReferenceLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /reference-works/{work_id}/documents", s.handleReferenceDocumentCreate)
 	mux.HandleFunc("POST /reference-works/{work_id}/documents/{document_id}/extract", s.handleReferenceDocumentExtract)
 	mux.HandleFunc("GET /reference-works/{work_id}/library", s.handleReferenceLibraryBrowse)
+	mux.HandleFunc("POST /reference-works/{work_id}/library/timeline/normalize", s.handleReferenceTimelineNormalize)
 	mux.HandleFunc("PATCH /reference-works/{work_id}/library/{kind}/{item_id}", s.handleReferenceLibraryItemPatch)
 	mux.HandleFunc("DELETE /reference-works/{work_id}/library/{kind}/{item_id}", s.handleReferenceLibraryItemExclude)
 	mux.HandleFunc("GET /reference-works/{work_id}/review-candidates", s.handleReferenceReviewCandidates)
@@ -124,6 +125,9 @@ func (s *Server) handleReferenceLibraryBrowse(w http.ResponseWriter, r *http.Req
 	timeline = dedupeReferenceTimeline(timeline)
 	entities = dedupeReferenceEntities(entities)
 	claims = dedupeReferenceClaims(claims)
+	for i := range timeline {
+		timeline[i].DisplayOrder = i + 1
+	}
 	documents, err := ref.ListReferenceDocuments(r.Context(), workID, continuityID, "")
 	if err != nil {
 		writeReferenceStoreError(w, err)
@@ -152,6 +156,21 @@ func (s *Server) handleReferenceLibraryBrowse(w http.ResponseWriter, r *http.Req
 		"documents":   referenceDocumentSourceViews(documents),
 		"diagnostics": diagnostics,
 	})
+}
+
+func (s *Server) handleReferenceTimelineNormalize(w http.ResponseWriter, r *http.Request) {
+	ref, ok := s.referenceLibraryStore(w)
+	if !ok {
+		return
+	}
+	workID := strings.TrimSpace(r.PathValue("work_id"))
+	continuityID := strings.TrimSpace(r.URL.Query().Get("continuity_id"))
+	updated, err := ref.NormalizeReferenceTimelineOrder(r.Context(), workID, continuityID)
+	if err != nil {
+		writeReferenceStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "updated": updated, "spacing": 10})
 }
 
 func referenceDocumentSourceViews(items []store.ReferenceDocument) []map[string]any {
@@ -829,6 +848,9 @@ func (s *Server) runReferenceExtractionJob(ctx context.Context, ref store.Refere
 		if reviewErr != nil {
 			warnings = append(warnings, "automatic review: "+reviewErr.Error())
 			autoReviewResult = map[string]any{"status": "failed", "error": reviewErr.Error()}
+		}
+		if _, normalizeErr := ref.NormalizeReferenceTimelineOrder(ctx, doc.WorkID, doc.ContinuityID); normalizeErr != nil {
+			warnings = append(warnings, "timeline order normalization: "+normalizeErr.Error())
 		}
 	}
 	status := "parsed"

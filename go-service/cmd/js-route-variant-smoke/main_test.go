@@ -42,6 +42,8 @@ func TestArchiveCenterJSReferenceLibraryUIMarkers(t *testing.T) {
 		`data-reference-edit=`,
 		`data-reference-exclude=`,
 		`data-reference-restore=`,
+		`id="mo-reference-timeline-normalize"`,
+		`/library/timeline/normalize`,
 		`생성된 자료`,
 		`평론가 자동 생성`,
 		`최신 소스 백엔드를 재시작하세요`,

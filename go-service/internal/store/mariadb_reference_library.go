@@ -480,6 +480,55 @@ func (m *mariadbStore) DeleteReferenceTimelineNode(ctx context.Context, nodeID s
 	return m.deleteReferenceRow(ctx, "reference_timeline_nodes", "node_id", nodeID)
 }
 
+func (m *mariadbStore) NormalizeReferenceTimelineOrder(ctx context.Context, workID, continuityID string) (int, error) {
+	if referenceRequired(workID, continuityID) != nil {
+		return 0, ErrInvalidReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return 0, err
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT node_id FROM reference_timeline_nodes
+		WHERE work_id = ? AND continuity_id = ? AND review_status = 'approved'
+		ORDER BY ordinal_value, branch_key, node_key, node_id
+	`, strings.TrimSpace(workID), strings.TrimSpace(continuityID))
+	if err != nil {
+		return 0, err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for i, id := range ids {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE reference_timeline_nodes SET ordinal_value = ?
+			WHERE work_id = ? AND continuity_id = ? AND node_id = ?
+		`, int64((i+1)*10), strings.TrimSpace(workID), strings.TrimSpace(continuityID), id); err != nil {
+			return 0, referenceStoreError(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
 func (m *mariadbStore) UpsertReferenceEntity(ctx context.Context, item *ReferenceEntity) error {
 	if item == nil || referenceRequired(item.EntityID, item.WorkID, item.ContinuityID, item.EntityType, item.CanonicalName) != nil {
 		return ErrInvalidReference

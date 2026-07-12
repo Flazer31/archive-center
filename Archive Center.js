@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-library-manager.20260712-7";
+  const BUILD_ID = "3.0-dev-reference-library-manager.20260712-8";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-12 KST";
-  const BUILD_NOTES = "Reference library categories, provenance, user-locked edits, recoverable deletion, and conflict diagnostics";
+  const BUILD_NOTES = "Reference library accuracy management with normalized timeline ordering";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -11694,7 +11694,7 @@
       const itemKey = kind + ":" + id;
       const title = String(item.label || item.canonical_name || item.claim_text || "이름 없는 자료");
       const detail = kind === "timeline"
-        ? [item.node_key, item.node_kind].filter(Boolean).join(" · ")
+        ? [item.display_order ? "표시 순서 " + item.display_order : "", item.node_key, item.node_kind].filter(Boolean).join(" · ")
         : kind === "entity"
           ? [item.entity_type, item.description_text].filter(Boolean).join(" · ")
           : [item.claim_type, item.temporal_scope].filter(Boolean).join(" · ");
@@ -11708,7 +11708,7 @@
         if (kind === "entity") {
           editForm = '<div class="mo-section-desc"><div class="mo-row"><label>종류</label><select data-reference-field="entity_type"><option value="character"' + (item.entity_type === "character" ? ' selected' : '') + '>인물</option><option value="location"' + (item.entity_type === "location" ? ' selected' : '') + '>장소</option><option value="item"' + (item.entity_type === "item" ? ' selected' : '') + '>물품</option><option value="faction"' + (item.entity_type === "faction" ? ' selected' : '') + '>세력·조직</option></select></div><div class="mo-row"><label>이름</label><input data-reference-field="canonical_name" value="' + escapeAttr(item.canonical_name || '') + '"></div><label>설명</label><textarea data-reference-field="description_text" rows="4">' + escapeAttr(item.description_text || '') + '</textarea></div>';
         } else if (kind === "timeline") {
-          editForm = '<div class="mo-section-desc"><div class="mo-row"><label>표시 이름</label><input data-reference-field="label" value="' + escapeAttr(item.label || '') + '"></div><div class="mo-row"><label>식별 키</label><input data-reference-field="node_key" value="' + escapeAttr(item.node_key || '') + '"><label>순서</label><input type="number" data-reference-field="ordinal" value="' + Number(item.ordinal || 0) + '"></div><div class="mo-row"><label>종류</label><input data-reference-field="node_kind" value="' + escapeAttr(item.node_kind || 'event') + '"><label>분기</label><input data-reference-field="branch_key" value="' + escapeAttr(item.branch_key || 'main') + '"></div></div>';
+          editForm = '<div class="mo-section-desc"><div class="mo-row"><label>표시 이름</label><input data-reference-field="label" value="' + escapeAttr(item.label || '') + '"></div><div class="mo-row"><label>식별 키</label><input data-reference-field="node_key" value="' + escapeAttr(item.node_key || '') + '"><label>내부 정렬값</label><input type="number" data-reference-field="ordinal" value="' + Number(item.ordinal || 0) + '"></div><div class="mo-row"><label>종류</label><input data-reference-field="node_kind" value="' + escapeAttr(item.node_kind || 'event') + '"><label>분기</label><input data-reference-field="branch_key" value="' + escapeAttr(item.branch_key || 'main') + '"></div></div>';
         } else {
           editForm = '<div class="mo-section-desc"><div class="mo-row"><label>종류</label><select data-reference-field="claim_type"><option value="world_rule"' + (item.claim_type === "world_rule" ? ' selected' : '') + '>세계 규칙</option><option value="relationship"' + (item.claim_type === "relationship" ? ' selected' : '') + '>관계</option><option value="event"' + (item.claim_type === "event" ? ' selected' : '') + '>사건</option><option value="character"' + (item.claim_type === "character" ? ' selected' : '') + '>인물 정보</option><option value="item"' + (item.claim_type === "item" ? ' selected' : '') + '>물품 정보</option><option value="location"' + (item.claim_type === "location" ? ' selected' : '') + '>장소 정보</option></select></div><label>내용</label><textarea data-reference-field="claim_text" rows="4">' + escapeAttr(item.claim_text || '') + '</textarea><label>원문 근거</label><textarea data-reference-field="evidence_excerpt" rows="3">' + escapeAttr(item.evidence_excerpt || '') + '</textarea><div class="mo-row"><label>시간 범위</label><select data-reference-field="temporal_scope"><option value="timeless"' + (item.temporal_scope === "timeless" ? ' selected' : '') + '>상시</option><option value="bounded"' + (item.temporal_scope === "bounded" ? ' selected' : '') + '>구간</option><option value="event"' + (item.temporal_scope === "event" ? ' selected' : '') + '>사건</option></select><label>공개 범위</label><select data-reference-field="knowledge_scope"><option value="public_world"' + (item.knowledge_scope === "public_world" ? ' selected' : '') + '>세계 공개</option><option value="entity_scoped"' + (item.knowledge_scope === "entity_scoped" ? ' selected' : '') + '>인물 한정</option><option value="narrator_only"' + (item.knowledge_scope === "narrator_only" ? ' selected' : '') + '>서술자 전용</option></select><label>신뢰도</label><input type="number" min="0" max="1" step="0.05" data-reference-field="confidence" value="' + Number(item.confidence || 0) + '"></div></div>';
         }
@@ -11775,7 +11775,8 @@
     const diagnosticSummary = Number(diagnostics.duplicate_count || 0) || Number(diagnostics.conflict_count || 0)
       ? '<div class="mo-section-desc">중복 확인 ' + Number(diagnostics.duplicate_count || 0) + '건 · 충돌 확인 ' + Number(diagnostics.conflict_count || 0) + '건 · 사용자 확정 ' + Number(diagnostics.user_locked_count || 0) + '건</div>'
       : '';
-    return '<div class="mo-section">원작 자료</div>' + tabs + selector + filters + diagnosticSummary + empty
+    const timelineActions = (library.timeline || []).length > 0 ? '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-timeline-normalize">연표 번호 정리</button></div>' : '';
+    return '<div class="mo-section">원작 자료</div>' + tabs + selector + filters + diagnosticSummary + timelineActions + empty
       + ((libraryView === "all" || libraryView === "character") && entitiesByType("character").length ? '<div class="mo-section">인물</div>' + referenceLibraryRows("entity", entitiesByType("character"), false) : '')
       + ((libraryView === "all" || libraryView === "location") && entitiesByType("location").length ? '<div class="mo-section">장소</div>' + referenceLibraryRows("entity", entitiesByType("location"), false) : '')
       + ((libraryView === "all" || libraryView === "item") && entitiesByType("item").length ? '<div class="mo-section">물품</div>' + referenceLibraryRows("entity", entitiesByType("item"), false) : '')
@@ -11805,6 +11806,22 @@
       return false;
     }
     _referenceLibraryState.editingItemKey = "";
+    await referenceLibraryLoadData();
+    return true;
+  }
+
+  async function referenceLibraryNormalizeTimeline() {
+    const workId = _referenceLibraryState.selectedWorkId;
+    const continuityId = _referenceLibraryState.selectedContinuityId;
+    if (!workId || !continuityId) return false;
+    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/library/timeline/normalize?continuity_id=" + encodeURIComponent(continuityId), {
+      method: "POST",
+      body: {},
+    });
+    if (!data || data.status !== "ok") {
+      referenceLibrarySetStatus("error", "", "연표 번호를 정리하지 못했습니다.");
+      return false;
+    }
     await referenceLibraryLoadData();
     return true;
   }
@@ -11893,6 +11910,8 @@
     if (importFile) importFile.addEventListener("click", () => referenceLibraryImportFile(byId("mo-reference-file")?.files?.[0]));
     const extract = byId("mo-reference-extract");
     if (extract) extract.addEventListener("click", () => referenceLibraryStartExtraction());
+    const normalizeTimeline = byId("mo-reference-timeline-normalize");
+    if (normalizeTimeline) normalizeTimeline.addEventListener("click", () => referenceLibraryNormalizeTimeline());
   }
 
   async function updateSettings(patch) {

@@ -135,6 +135,21 @@ func (f *referenceLibraryHTTPStore) ListReferenceTimelineNodes(_ context.Context
 	return out, nil
 }
 
+func (f *referenceLibraryHTTPStore) NormalizeReferenceTimelineOrder(_ context.Context, workID, continuityID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	indexes := []int{}
+	for i := range f.timeline {
+		if f.timeline[i].WorkID == workID && f.timeline[i].ContinuityID == continuityID && f.timeline[i].ReviewStatus == "approved" {
+			indexes = append(indexes, i)
+		}
+	}
+	for order, index := range indexes {
+		f.timeline[index].Ordinal = int64((order + 1) * 10)
+	}
+	return len(indexes), nil
+}
+
 func (f *referenceLibraryHTTPStore) UpsertReferenceEntity(_ context.Context, item *store.ReferenceEntity) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -502,5 +517,28 @@ func TestAnalyzeReferenceLibraryFlagsFactKeyConflict(t *testing.T) {
 	diagnostics := analyzeReferenceLibrary(nil, nil, claims)
 	if intFromAny(diagnostics["conflict_count"], 0) != 1 {
 		t.Fatalf("fact-key conflict was not detected: %#v", diagnostics)
+	}
+}
+
+func TestReferenceTimelineNormalizeAssignsSpacedUniqueOrder(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	fake.timeline = append(fake.timeline,
+		store.ReferenceTimelineNode{NodeID: "node-1", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "a", Label: "A", Ordinal: 0, ReviewStatus: "approved"},
+		store.ReferenceTimelineNode{NodeID: "node-2", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "b", Label: "B", Ordinal: 1, ReviewStatus: "approved"},
+		store.ReferenceTimelineNode{NodeID: "node-3", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "c", Label: "C", Ordinal: 1, ReviewStatus: "approved"},
+	)
+	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	result := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/library/timeline/normalize?continuity_id=continuity-1", map[string]any{})
+	if intFromAny(result["updated"], 0) != 3 || fake.timeline[0].Ordinal != 10 || fake.timeline[1].Ordinal != 20 || fake.timeline[2].Ordinal != 30 {
+		t.Fatalf("timeline order was not normalized: result=%#v timeline=%#v", result, fake.timeline)
+	}
+	listed := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
+	timeline := listed["timeline"].([]any)
+	for i, raw := range timeline {
+		if intFromAny(raw.(map[string]any)["display_order"], 0) != i+1 {
+			t.Fatalf("display order %d was not sequential: %#v", i, timeline)
+		}
 	}
 }

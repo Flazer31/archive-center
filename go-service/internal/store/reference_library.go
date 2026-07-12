@@ -69,6 +69,7 @@ type ReferenceTimelineNode struct {
 	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+	DisplayOrder int        `json:"display_order,omitempty"`
 }
 
 type ReferenceEntity struct {
@@ -198,6 +199,7 @@ type ReferenceLibraryStore interface {
 	UpsertReferenceTimelineNode(context.Context, *ReferenceTimelineNode) error
 	ListReferenceTimelineNodes(context.Context, string, string, string) ([]ReferenceTimelineNode, error)
 	DeleteReferenceTimelineNode(context.Context, string) error
+	NormalizeReferenceTimelineOrder(context.Context, string, string) (int, error)
 
 	UpsertReferenceEntity(context.Context, *ReferenceEntity) error
 	ListReferenceEntities(context.Context, string, string, string) ([]ReferenceEntity, error)
