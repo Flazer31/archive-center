@@ -124,6 +124,26 @@ type ReferenceClaim struct {
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
+type ReferenceLibraryItemUpdate struct {
+	WorkID          string
+	Kind            string
+	ID              string
+	EntityType      string
+	CanonicalName   string
+	DescriptionText string
+	NodeKey         string
+	Label           string
+	Ordinal         int64
+	NodeKind        string
+	BranchKey       string
+	ClaimType       string
+	ClaimText       string
+	EvidenceExcerpt string
+	TemporalScope   string
+	KnowledgeScope  string
+	Confidence      float64
+}
+
 type SessionReferenceBinding struct {
 	BindingID           string    `json:"binding_id"`
 	ChatSessionID       string    `json:"chat_session_id"`
@@ -190,6 +210,7 @@ type ReferenceLibraryStore interface {
 	ReplaceReferenceClaimKnowers(context.Context, string, []string) error
 	DeleteReferenceClaim(context.Context, string) error
 	UpdateReferenceCandidateReview(context.Context, string, string, string, string, string, string) error
+	UpdateReferenceLibraryItem(context.Context, *ReferenceLibraryItemUpdate) error
 
 	UpsertSessionReferenceBinding(context.Context, *SessionReferenceBinding, int64) error
 	ListSessionReferenceBindings(context.Context, string, bool) ([]SessionReferenceBinding, error)

@@ -92,6 +92,18 @@ func (f *referenceLibraryHTTPStore) GetReferenceDocument(_ context.Context, id s
 	return nil, store.ErrNotFound
 }
 
+func (f *referenceLibraryHTTPStore) ListReferenceDocuments(_ context.Context, workID, continuityID, _ string) ([]store.ReferenceDocument, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []store.ReferenceDocument{}
+	for _, item := range f.documents {
+		if item.WorkID == workID && (continuityID == "" || item.ContinuityID == continuityID) {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 func (f *referenceLibraryHTTPStore) UpdateReferenceDocumentStatus(_ context.Context, id, status string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -213,6 +225,41 @@ func (f *referenceLibraryHTTPStore) UpdateReferenceCandidateReview(_ context.Con
 		}
 	}
 	return nil
+}
+
+func (f *referenceLibraryHTTPStore) UpdateReferenceLibraryItem(_ context.Context, item *store.ReferenceLibraryItemUpdate) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now().UTC()
+	switch item.Kind {
+	case "timeline":
+		for i := range f.timeline {
+			if f.timeline[i].WorkID == item.WorkID && f.timeline[i].NodeID == item.ID {
+				f.timeline[i].NodeKey, f.timeline[i].Label = item.NodeKey, item.Label
+				f.timeline[i].Ordinal, f.timeline[i].NodeKind, f.timeline[i].BranchKey = item.Ordinal, item.NodeKind, item.BranchKey
+				f.timeline[i].ReviewStatus, f.timeline[i].ReviewSource, f.timeline[i].ReviewedAt = "approved", "user_edit", &now
+				return nil
+			}
+		}
+	case "entity":
+		for i := range f.entities {
+			if f.entities[i].WorkID == item.WorkID && f.entities[i].EntityID == item.ID {
+				f.entities[i].EntityType, f.entities[i].CanonicalName, f.entities[i].DescriptionText = item.EntityType, item.CanonicalName, item.DescriptionText
+				f.entities[i].ReviewStatus, f.entities[i].ReviewSource, f.entities[i].ReviewedAt = "approved", "user_edit", &now
+				return nil
+			}
+		}
+	case "claim":
+		for i := range f.claims {
+			if f.claims[i].WorkID == item.WorkID && f.claims[i].ClaimID == item.ID {
+				f.claims[i].ClaimType, f.claims[i].ClaimText, f.claims[i].EvidenceExcerpt = item.ClaimType, item.ClaimText, item.EvidenceExcerpt
+				f.claims[i].TemporalScope, f.claims[i].KnowledgeScope, f.claims[i].Confidence = item.TemporalScope, item.KnowledgeScope, item.Confidence
+				f.claims[i].ReviewStatus, f.claims[i].ReviewSource, f.claims[i].ReviewedAt = "approved", "user_edit", &now
+				return nil
+			}
+		}
+	}
+	return store.ErrNotFound
 }
 
 func referenceLibraryTestRequest(t *testing.T, mux http.Handler, method, path string, body any) map[string]any {
@@ -391,4 +438,69 @@ func TestReferenceAutoReviewApprovesSupportedAndLeavesAmbiguousPending(t *testin
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("reference auto review job did not complete")
+}
+
+func TestReferenceLibraryManageEditExcludeAndRestore(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	fake.documents = append(fake.documents, store.ReferenceDocument{DocumentID: "doc-1", WorkID: "work-1", ContinuityID: "continuity-1", RawText: "must not leak", ProvenanceJSON: `{"filename":"canon.txt"}`})
+	fake.entities = append(fake.entities, store.ReferenceEntity{EntityID: "entity-1", WorkID: "work-1", ContinuityID: "continuity-1", EntityType: "character", CanonicalName: "Old Name", ReviewStatus: "approved", MetadataJSON: `{"document_id":"doc-1","evidence_excerpt":"source"}`})
+	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	listed := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
+	if intFromAny(listed["count"], 0) != 1 {
+		t.Fatalf("approved item missing: %#v", listed)
+	}
+	documents := listed["documents"].([]any)
+	if len(documents) != 1 || documents[0].(map[string]any)["raw_text"] != nil {
+		t.Fatalf("source view leaked document text: %#v", documents)
+	}
+
+	referenceLibraryTestRequest(t, mux, http.MethodPatch, "/reference-works/work-1/library/entity/entity-1", map[string]any{"action": "edit", "entity_type": "location", "canonical_name": "Correct Name", "description_text": "Corrected"})
+	if fake.entities[0].CanonicalName != "Correct Name" || fake.entities[0].EntityType != "location" || fake.entities[0].ReviewSource != "user_edit" {
+		t.Fatalf("user edit was not locked: %#v", fake.entities[0])
+	}
+
+	referenceLibraryTestRequest(t, mux, http.MethodDelete, "/reference-works/work-1/library/entity/entity-1", nil)
+	listed = referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
+	if intFromAny(listed["count"], 0) != 0 || intFromAny(listed["excluded"].(map[string]any)["count"], 0) != 1 {
+		t.Fatalf("recoverable delete was not separated: %#v", listed)
+	}
+
+	referenceLibraryTestRequest(t, mux, http.MethodPatch, "/reference-works/work-1/library/entity/entity-1", map[string]any{"action": "restore"})
+	listed = referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
+	if intFromAny(listed["count"], 0) != 1 || fake.entities[0].ReviewSource != "user_restore" {
+		t.Fatalf("excluded item was not restored: %#v", listed)
+	}
+}
+
+func TestReferenceClaimStableIDIgnoresChunkAndCandidateOrder(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	doc := &store.ReferenceDocument{DocumentID: "doc-1", WorkID: "work-1", ContinuityID: "continuity-1"}
+	first := map[string]any{"claims": []any{map[string]any{"claim_type": "world_rule", "claim_text": "Magic requires a spoken name."}}}
+	if _, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, first, 0); err != nil {
+		t.Fatal(err)
+	}
+	second := map[string]any{"claims": []any{
+		map[string]any{"claim_type": "event", "claim_text": "Another fact."},
+		map[string]any{"claim_type": "world_rule", "claim_text": "Magic requires a spoken name."},
+	}}
+	if _, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, second, 4); err != nil {
+		t.Fatal(err)
+	}
+	if fake.claims[0].ClaimID != fake.claims[2].ClaimID {
+		t.Fatalf("same semantic claim received different IDs: %q != %q", fake.claims[0].ClaimID, fake.claims[2].ClaimID)
+	}
+}
+
+func TestAnalyzeReferenceLibraryFlagsFactKeyConflict(t *testing.T) {
+	claims := []store.ReferenceClaim{
+		{ClaimID: "claim-1", ClaimType: "world_rule", ClaimText: "The gate is blue.", MetadataJSON: `{"fact_key":"gate_color"}`},
+		{ClaimID: "claim-2", ClaimType: "world_rule", ClaimText: "The gate is red.", MetadataJSON: `{"fact_key":"gate_color"}`},
+	}
+	diagnostics := analyzeReferenceLibrary(nil, nil, claims)
+	if intFromAny(diagnostics["conflict_count"], 0) != 1 {
+		t.Fatalf("fact-key conflict was not detected: %#v", diagnostics)
+	}
 }

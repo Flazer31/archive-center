@@ -801,6 +801,65 @@ func (m *mariadbStore) UpdateReferenceCandidateReview(ctx context.Context, workI
 	return referenceRowsChanged(result)
 }
 
+func (m *mariadbStore) UpdateReferenceLibraryItem(ctx context.Context, item *ReferenceLibraryItemUpdate) error {
+	if item == nil || referenceRequired(item.WorkID, item.Kind, item.ID) != nil {
+		return ErrInvalidReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	var result sql.Result
+	var err error
+	switch strings.TrimSpace(item.Kind) {
+	case "timeline":
+		if referenceRequired(item.NodeKey, item.Label, item.NodeKind, item.BranchKey) != nil {
+			return ErrInvalidReference
+		}
+		result, err = m.db.ExecContext(ctx, `
+			UPDATE reference_timeline_nodes
+			SET node_key = ?, label = ?, ordinal_value = ?, node_kind = ?, branch_key = ?,
+				review_status = 'approved', review_source = 'user_edit',
+				review_reason = 'user corrected reference data', reviewed_at = CURRENT_TIMESTAMP(3)
+			WHERE work_id = ? AND node_id = ?
+		`, strings.TrimSpace(item.NodeKey), strings.TrimSpace(item.Label), item.Ordinal,
+			strings.TrimSpace(item.NodeKind), strings.TrimSpace(item.BranchKey),
+			strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ID))
+	case "entity":
+		if referenceRequired(item.EntityType, item.CanonicalName) != nil {
+			return ErrInvalidReference
+		}
+		result, err = m.db.ExecContext(ctx, `
+			UPDATE reference_entities
+			SET entity_type = ?, canonical_name = ?, description_text = ?,
+				review_status = 'approved', review_source = 'user_edit',
+				review_reason = 'user corrected reference data', reviewed_at = CURRENT_TIMESTAMP(3)
+			WHERE work_id = ? AND entity_id = ?
+		`, strings.TrimSpace(item.EntityType), strings.TrimSpace(item.CanonicalName),
+			referenceNullable(item.DescriptionText), strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ID))
+	case "claim":
+		if referenceRequired(item.ClaimType, item.ClaimText, item.TemporalScope, item.KnowledgeScope) != nil {
+			return ErrInvalidReference
+		}
+		result, err = m.db.ExecContext(ctx, `
+			UPDATE reference_claims
+			SET claim_type = ?, claim_text = ?, evidence_excerpt = ?, temporal_scope = ?,
+				knowledge_scope = ?, confidence = ?, review_status = 'approved',
+				review_source = 'user_edit', review_reason = 'user corrected reference data',
+				reviewed_at = CURRENT_TIMESTAMP(3)
+			WHERE work_id = ? AND claim_id = ?
+		`, strings.TrimSpace(item.ClaimType), strings.TrimSpace(item.ClaimText),
+			referenceNullable(item.EvidenceExcerpt), strings.TrimSpace(item.TemporalScope),
+			strings.TrimSpace(item.KnowledgeScope), item.Confidence,
+			strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ID))
+	default:
+		return ErrInvalidReference
+	}
+	if err != nil {
+		return referenceStoreError(err)
+	}
+	return referenceRowsChanged(result)
+}
+
 func (m *mariadbStore) UpsertSessionReferenceBinding(ctx context.Context, item *SessionReferenceBinding, expectedRevision int64) error {
 	if item == nil || expectedRevision < 0 || referenceRequired(item.BindingID, item.ChatSessionID, item.WorkID, item.ContinuityID) != nil {
 		return ErrInvalidReference

@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-library-browser.20260712-6";
+  const BUILD_ID = "3.0-dev-reference-library-manager.20260712-7";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-12 KST";
-  const BUILD_NOTES = "Generated reference library browser with detailed extraction errors and source-start schema synchronization";
+  const BUILD_NOTES = "Reference library categories, provenance, user-locked edits, recoverable deletion, and conflict diagnostics";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -3590,9 +3590,10 @@
     selectedContinuityId: "",
     document: null,
     job: null,
-    library: { timeline: [], entities: [], claims: [], count: 0, type_counts: {} },
+    library: { timeline: [], entities: [], claims: [], count: 0, type_counts: {}, excluded: { timeline: [], entities: [], claims: [], count: 0 }, documents: [], diagnostics: {} },
     panelView: "library",
     libraryView: "all",
+    editingItemKey: "",
     loading: false,
     status: "idle",
     message: "",
@@ -11635,7 +11636,7 @@
   async function referenceLibraryLoadData() {
     const workId = _referenceLibraryState.selectedWorkId;
     if (!workId) {
-      _referenceLibraryState.library = { timeline: [], entities: [], claims: [], count: 0, type_counts: {} };
+      _referenceLibraryState.library = { timeline: [], entities: [], claims: [], count: 0, type_counts: {}, excluded: { timeline: [], entities: [], claims: [], count: 0 }, documents: [], diagnostics: {} };
       referenceLibraryRefreshUI();
       return;
     }
@@ -11643,7 +11644,7 @@
     const continuityQuery = continuityId ? "?continuity_id=" + encodeURIComponent(continuityId) : "";
     const libraryData = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/library" + continuityQuery, { method: "GET" });
     if (!libraryData || libraryData.status !== "ok") {
-      _referenceLibraryState.library = { timeline: [], entities: [], claims: [], count: 0, type_counts: {} };
+      _referenceLibraryState.library = { timeline: [], entities: [], claims: [], count: 0, type_counts: {}, excluded: { timeline: [], entities: [], claims: [], count: 0 }, documents: [], diagnostics: {} };
       _referenceLibraryState.error = "생성된 자료 조회 API를 사용할 수 없습니다. 최신 소스 백엔드를 재시작하세요.";
       referenceLibraryRefreshUI();
       return;
@@ -11655,17 +11656,42 @@
       claims: Array.isArray(libraryData.claims) ? libraryData.claims : [],
       count: Number(libraryData.count || 0),
       type_counts: libraryData.type_counts && typeof libraryData.type_counts === "object" ? libraryData.type_counts : {},
+      excluded: libraryData.excluded && typeof libraryData.excluded === "object" ? libraryData.excluded : { timeline: [], entities: [], claims: [], count: 0 },
+      documents: Array.isArray(libraryData.documents) ? libraryData.documents : [],
+      diagnostics: libraryData.diagnostics && typeof libraryData.diagnostics === "object" ? libraryData.diagnostics : {},
     };
     referenceLibraryRefreshUI();
   }
 
-  function referenceLibraryRows(kind, items) {
+  function referenceLibrarySourceLabel(item) {
+    let metadata = {};
+    try { metadata = item.metadata_json ? JSON.parse(item.metadata_json) : {}; } catch { metadata = {}; }
+    const documentId = String(item.document_id || metadata.document_id || "");
+    const document = (_referenceLibraryState.library.documents || []).find((entry) => String(entry.document_id || "") === documentId);
+    if (!document) return documentId ? "문서 " + documentId.slice(0, 8) : "출처 미확인";
+    let provenance = {};
+    try { provenance = document.provenance_json ? JSON.parse(document.provenance_json) : {}; } catch { provenance = {}; }
+    return String(provenance.filename || provenance.source_uri || document.source_uri || "입력 문서");
+  }
+
+  function referenceLibraryDiagnosticIDs(name) {
+    const groups = _referenceLibraryState.library.diagnostics && _referenceLibraryState.library.diagnostics[name];
+    const out = new Set();
+    (Array.isArray(groups) ? groups : []).forEach((group) => (group.ids || []).forEach((id) => out.add(String(id))));
+    return out;
+  }
+
+  function referenceLibraryRows(kind, items, excluded) {
     if (!Array.isArray(items) || items.length === 0) {
       return '<div class="mo-section-desc">이 종류로 생성된 자료가 없습니다.</div>';
     }
+    const duplicateIDs = referenceLibraryDiagnosticIDs("duplicate_groups");
+    const conflictIDs = referenceLibraryDiagnosticIDs("conflict_groups");
     return items.map((item) => {
       let metadata = {};
       try { metadata = item.metadata_json ? JSON.parse(item.metadata_json) : {}; } catch { metadata = {}; }
+      const id = String(item.node_id || item.entity_id || item.claim_id || "");
+      const itemKey = kind + ":" + id;
       const title = String(item.label || item.canonical_name || item.claim_text || "이름 없는 자료");
       const detail = kind === "timeline"
         ? [item.node_key, item.node_kind].filter(Boolean).join(" · ")
@@ -11673,10 +11699,28 @@
           ? [item.entity_type, item.description_text].filter(Boolean).join(" · ")
           : [item.claim_type, item.temporal_scope].filter(Boolean).join(" · ");
       const evidence = String(item.evidence_excerpt || metadata.evidence_excerpt || "").trim();
+      const userLocked = String(item.review_source || "").startsWith("user_");
+      const badges = (userLocked ? '<span class="mo-tl-badge">사용자 확정</span>' : '')
+        + (duplicateIDs.has(id) ? '<span class="mo-tl-badge">중복 확인</span>' : '')
+        + (conflictIDs.has(id) ? '<span class="mo-tl-badge">충돌 확인</span>' : '');
+      let editForm = '';
+      if (_referenceLibraryState.editingItemKey === itemKey && !excluded) {
+        if (kind === "entity") {
+          editForm = '<div class="mo-section-desc"><div class="mo-row"><label>종류</label><select data-reference-field="entity_type"><option value="character"' + (item.entity_type === "character" ? ' selected' : '') + '>인물</option><option value="location"' + (item.entity_type === "location" ? ' selected' : '') + '>장소</option><option value="item"' + (item.entity_type === "item" ? ' selected' : '') + '>물품</option><option value="faction"' + (item.entity_type === "faction" ? ' selected' : '') + '>세력·조직</option></select></div><div class="mo-row"><label>이름</label><input data-reference-field="canonical_name" value="' + escapeAttr(item.canonical_name || '') + '"></div><label>설명</label><textarea data-reference-field="description_text" rows="4">' + escapeAttr(item.description_text || '') + '</textarea></div>';
+        } else if (kind === "timeline") {
+          editForm = '<div class="mo-section-desc"><div class="mo-row"><label>표시 이름</label><input data-reference-field="label" value="' + escapeAttr(item.label || '') + '"></div><div class="mo-row"><label>식별 키</label><input data-reference-field="node_key" value="' + escapeAttr(item.node_key || '') + '"><label>순서</label><input type="number" data-reference-field="ordinal" value="' + Number(item.ordinal || 0) + '"></div><div class="mo-row"><label>종류</label><input data-reference-field="node_kind" value="' + escapeAttr(item.node_kind || 'event') + '"><label>분기</label><input data-reference-field="branch_key" value="' + escapeAttr(item.branch_key || 'main') + '"></div></div>';
+        } else {
+          editForm = '<div class="mo-section-desc"><div class="mo-row"><label>종류</label><select data-reference-field="claim_type"><option value="world_rule"' + (item.claim_type === "world_rule" ? ' selected' : '') + '>세계 규칙</option><option value="relationship"' + (item.claim_type === "relationship" ? ' selected' : '') + '>관계</option><option value="event"' + (item.claim_type === "event" ? ' selected' : '') + '>사건</option><option value="character"' + (item.claim_type === "character" ? ' selected' : '') + '>인물 정보</option><option value="item"' + (item.claim_type === "item" ? ' selected' : '') + '>물품 정보</option><option value="location"' + (item.claim_type === "location" ? ' selected' : '') + '>장소 정보</option></select></div><label>내용</label><textarea data-reference-field="claim_text" rows="4">' + escapeAttr(item.claim_text || '') + '</textarea><label>원문 근거</label><textarea data-reference-field="evidence_excerpt" rows="3">' + escapeAttr(item.evidence_excerpt || '') + '</textarea><div class="mo-row"><label>시간 범위</label><select data-reference-field="temporal_scope"><option value="timeless"' + (item.temporal_scope === "timeless" ? ' selected' : '') + '>상시</option><option value="bounded"' + (item.temporal_scope === "bounded" ? ' selected' : '') + '>구간</option><option value="event"' + (item.temporal_scope === "event" ? ' selected' : '') + '>사건</option></select><label>공개 범위</label><select data-reference-field="knowledge_scope"><option value="public_world"' + (item.knowledge_scope === "public_world" ? ' selected' : '') + '>세계 공개</option><option value="entity_scoped"' + (item.knowledge_scope === "entity_scoped" ? ' selected' : '') + '>인물 한정</option><option value="narrator_only"' + (item.knowledge_scope === "narrator_only" ? ' selected' : '') + '>서술자 전용</option></select><label>신뢰도</label><input type="number" min="0" max="1" step="0.05" data-reference-field="confidence" value="' + Number(item.confidence || 0) + '"></div></div>';
+        }
+        editForm += '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-success" data-reference-save="' + escapeAttr(itemKey) + '">저장</button><button type="button" class="mo-btn" data-reference-edit-cancel="1">취소</button></div>';
+      }
       return '<div class="mo-dash-card">'
-        + '<div class="mo-dash-card-head"><span class="mo-dash-card-title">' + escapeAttr(title) + '</span></div>'
+        + '<div class="mo-dash-card-head"><span class="mo-dash-card-title">' + escapeAttr(title) + '</span><span>' + badges + '</span></div>'
         + (detail ? '<div class="mo-section-desc">' + escapeAttr(detail) + '</div>' : '')
         + (evidence ? '<div class="mo-section-desc"><strong>근거:</strong> ' + escapeAttr(evidence) + '</div>' : '')
+        + '<div class="mo-section-desc"><strong>출처:</strong> ' + escapeAttr(referenceLibrarySourceLabel(item)) + '</div>'
+        + (excluded ? '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-success" data-reference-restore="' + escapeAttr(itemKey) + '">복구</button></div>' : '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" data-reference-edit="' + escapeAttr(itemKey) + '">수정</button><button type="button" class="mo-btn mo-btn-danger-solid" data-reference-exclude="' + escapeAttr(itemKey) + '">삭제</button></div>')
+        + editForm
         + '</div>';
     }).join("");
   }
@@ -11705,11 +11749,21 @@
         + '<div class="mo-dash-card"><div class="mo-row"><label>자료 파일</label><input id="mo-reference-file" type="file" accept=".txt,.md,.markdown,.json,text/plain,application/json"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-file-import">파일 저장</button><button type="button" class="mo-btn mo-btn-success" id="mo-reference-extract"' + (state.document ? '' : ' disabled') + '>평론가 자동 생성</button></div>'
         + '<div class="mo-section-desc">' + escapeAttr(statusText) + (state.job ? ' · 진행률 ' + jobProgress + '%' : '') + '</div></div>';
     }
+    const entitiesByType = (type) => (library.entities || []).filter((item) => String(item.entity_type || "") === type);
+    const worldRules = (library.claims || []).filter((item) => String(item.claim_type || "") === "world_rule");
+    const otherClaims = (library.claims || []).filter((item) => String(item.claim_type || "") !== "world_rule");
+    const excluded = library.excluded || { timeline: [], entities: [], claims: [], count: 0 };
+    const diagnostics = library.diagnostics || {};
     const filters = '<div class="mo-inline-actions">'
       + '<button type="button" class="mo-btn ' + (libraryView === "all" ? 'mo-btn-info' : '') + '" data-reference-library-view="all">전체 ' + Number(library.count || 0) + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "character" ? 'mo-btn-info' : '') + '" data-reference-library-view="character">인물 ' + entitiesByType("character").length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "location" ? 'mo-btn-info' : '') + '" data-reference-library-view="location">장소 ' + entitiesByType("location").length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "item" ? 'mo-btn-info' : '') + '" data-reference-library-view="item">물품 ' + entitiesByType("item").length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "faction" ? 'mo-btn-info' : '') + '" data-reference-library-view="faction">세력·조직 ' + entitiesByType("faction").length + '</button>'
       + '<button type="button" class="mo-btn ' + (libraryView === "timeline" ? 'mo-btn-info' : '') + '" data-reference-library-view="timeline">연표 ' + (library.timeline || []).length + '</button>'
-      + '<button type="button" class="mo-btn ' + (libraryView === "entities" ? 'mo-btn-info' : '') + '" data-reference-library-view="entities">인물·장소·물품 ' + (library.entities || []).length + '</button>'
-      + '<button type="button" class="mo-btn ' + (libraryView === "claims" ? 'mo-btn-info' : '') + '" data-reference-library-view="claims">사실·설정 ' + (library.claims || []).length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "world_rule" ? 'mo-btn-info' : '') + '" data-reference-library-view="world_rule">세계 규칙 ' + worldRules.length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "claims" ? 'mo-btn-info' : '') + '" data-reference-library-view="claims">관계·사건 ' + otherClaims.length + '</button>'
+      + '<button type="button" class="mo-btn ' + (libraryView === "excluded" ? 'mo-btn-danger-solid' : '') + '" data-reference-library-view="excluded">삭제됨 ' + Number(excluded.count || 0) + '</button>'
       + '</div>';
     const empty = state.error
       ? '<div class="mo-section-desc">' + escapeAttr(state.error) + '</div>'
@@ -11718,10 +11772,18 @@
       : Number(library.count || 0) === 0
         ? '<div class="mo-section-desc">아직 생성된 자료가 없습니다. 자료 추가에서 파일을 넣고 자동 생성을 실행하세요.</div>'
         : '';
-    return '<div class="mo-section">원작 자료</div>' + tabs + selector + filters + empty
-      + ((libraryView === "all" || libraryView === "timeline") && (library.timeline || []).length ? '<div class="mo-section">연표</div>' + referenceLibraryRows("timeline", library.timeline) : '')
-      + ((libraryView === "all" || libraryView === "entities") && (library.entities || []).length ? '<div class="mo-section">인물·장소·물품</div>' + referenceLibraryRows("entity", library.entities) : '')
-      + ((libraryView === "all" || libraryView === "claims") && (library.claims || []).length ? '<div class="mo-section">사실·설정</div>' + referenceLibraryRows("claim", library.claims) : '');
+    const diagnosticSummary = Number(diagnostics.duplicate_count || 0) || Number(diagnostics.conflict_count || 0)
+      ? '<div class="mo-section-desc">중복 확인 ' + Number(diagnostics.duplicate_count || 0) + '건 · 충돌 확인 ' + Number(diagnostics.conflict_count || 0) + '건 · 사용자 확정 ' + Number(diagnostics.user_locked_count || 0) + '건</div>'
+      : '';
+    return '<div class="mo-section">원작 자료</div>' + tabs + selector + filters + diagnosticSummary + empty
+      + ((libraryView === "all" || libraryView === "character") && entitiesByType("character").length ? '<div class="mo-section">인물</div>' + referenceLibraryRows("entity", entitiesByType("character"), false) : '')
+      + ((libraryView === "all" || libraryView === "location") && entitiesByType("location").length ? '<div class="mo-section">장소</div>' + referenceLibraryRows("entity", entitiesByType("location"), false) : '')
+      + ((libraryView === "all" || libraryView === "item") && entitiesByType("item").length ? '<div class="mo-section">물품</div>' + referenceLibraryRows("entity", entitiesByType("item"), false) : '')
+      + ((libraryView === "all" || libraryView === "faction") && entitiesByType("faction").length ? '<div class="mo-section">세력·조직</div>' + referenceLibraryRows("entity", entitiesByType("faction"), false) : '')
+      + ((libraryView === "all" || libraryView === "timeline") && (library.timeline || []).length ? '<div class="mo-section">연표</div>' + referenceLibraryRows("timeline", library.timeline, false) : '')
+      + ((libraryView === "all" || libraryView === "world_rule") && worldRules.length ? '<div class="mo-section">세계 규칙</div>' + referenceLibraryRows("claim", worldRules, false) : '')
+      + ((libraryView === "all" || libraryView === "claims") && otherClaims.length ? '<div class="mo-section">관계·사건</div>' + referenceLibraryRows("claim", otherClaims, false) : '')
+      + (libraryView === "excluded" ? '<div class="mo-section">삭제된 자료</div>' + referenceLibraryRows("timeline", excluded.timeline || [], true) + referenceLibraryRows("entity", excluded.entities || [], true) + referenceLibraryRows("claim", excluded.claims || [], true) : '');
   }
 
   function referenceLibraryRefreshUI() {
@@ -11729,6 +11791,39 @@
     if (!root) return;
     root.innerHTML = renderReferenceLibrarySection();
     attachReferenceLibraryEvents();
+  }
+
+  async function referenceLibraryMutateItem(kind, id, method, body) {
+    const workId = _referenceLibraryState.selectedWorkId;
+    if (!workId || !kind || !id) return false;
+    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/library/" + referenceLibraryPath(kind) + "/" + referenceLibraryPath(id), {
+      method,
+      body: body || undefined,
+    });
+    if (!data || data.status !== "ok") {
+      referenceLibrarySetStatus("error", "", "원작 자료 변경을 저장하지 못했습니다.");
+      return false;
+    }
+    _referenceLibraryState.editingItemKey = "";
+    await referenceLibraryLoadData();
+    return true;
+  }
+
+  function referenceLibraryItemKey(value) {
+    const raw = String(value || "");
+    const split = raw.indexOf(":");
+    return split > 0 ? { kind: raw.slice(0, split), id: raw.slice(split + 1) } : { kind: "", id: "" };
+  }
+
+  function referenceLibraryEditBody(kind, root) {
+    const value = (name) => root.querySelector('[data-reference-field="' + name + '"]')?.value ?? "";
+    if (kind === "entity") {
+      return { action: "edit", entity_type: value("entity_type"), canonical_name: value("canonical_name"), description_text: value("description_text") };
+    }
+    if (kind === "timeline") {
+      return { action: "edit", label: value("label"), node_key: value("node_key"), ordinal: Number(value("ordinal") || 0), node_kind: value("node_kind"), branch_key: value("branch_key") };
+    }
+    return { action: "edit", claim_type: value("claim_type"), claim_text: value("claim_text"), evidence_excerpt: value("evidence_excerpt"), temporal_scope: value("temporal_scope"), knowledge_scope: value("knowledge_scope"), confidence: Number(value("confidence") || 0) };
   }
 
   function attachReferenceLibraryEvents() {
@@ -11743,6 +11838,39 @@
       btn.addEventListener("click", () => {
         _referenceLibraryState.libraryView = String(btn.getAttribute("data-reference-library-view") || "all");
         referenceLibraryRefreshUI();
+      });
+    });
+    document.querySelectorAll("[data-reference-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _referenceLibraryState.editingItemKey = String(btn.getAttribute("data-reference-edit") || "");
+        referenceLibraryRefreshUI();
+      });
+    });
+    document.querySelectorAll("[data-reference-edit-cancel]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        _referenceLibraryState.editingItemKey = "";
+        referenceLibraryRefreshUI();
+      });
+    });
+    document.querySelectorAll("[data-reference-save]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const item = referenceLibraryItemKey(btn.getAttribute("data-reference-save"));
+        const root = btn.closest(".mo-dash-card") || btn.parentElement;
+        await referenceLibraryMutateItem(item.kind, item.id, "PATCH", referenceLibraryEditBody(item.kind, root));
+      });
+    });
+    document.querySelectorAll("[data-reference-exclude]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const item = referenceLibraryItemKey(btn.getAttribute("data-reference-exclude"));
+        if (confirm("이 자료를 삭제할까요? DB에는 복구 가능한 상태로 보관되며 AI 주입에서는 제외됩니다.")) {
+          await referenceLibraryMutateItem(item.kind, item.id, "DELETE");
+        }
+      });
+    });
+    document.querySelectorAll("[data-reference-restore]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const item = referenceLibraryItemKey(btn.getAttribute("data-reference-restore"));
+        await referenceLibraryMutateItem(item.kind, item.id, "PATCH", { action: "restore" });
       });
     });
     const createWork = byId("mo-reference-work-create");
