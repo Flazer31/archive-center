@@ -170,6 +170,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	s.registerStep23ThemeOffscreenRoutes(sub)
 	s.registerStep23CaptureVerificationRoutes(sub)
 	s.registerStatusSchemaRoutes(sub)
+	s.registerReferenceLibraryRoutes(sub)
 	s.registerUpdateRoutes(sub)
 	mux.Handle("/", s.corsMiddleware(s.authMiddleware(s.reverseProxyBasePathMiddleware(sub))))
 }

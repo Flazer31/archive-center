@@ -63,6 +63,7 @@ type ReferenceTimelineNode struct {
 	BranchKey    string    `json:"branch_key"`
 	NodeKind     string    `json:"node_kind"`
 	MetadataJSON string    `json:"metadata_json,omitempty"`
+	ReviewStatus string    `json:"review_status"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -160,7 +161,9 @@ type ReferenceLibraryStore interface {
 	DeleteReferenceContinuity(context.Context, string) error
 
 	SaveReferenceDocument(context.Context, *ReferenceDocument) error
+	GetReferenceDocument(context.Context, string) (*ReferenceDocument, error)
 	ListReferenceDocuments(context.Context, string, string, string) ([]ReferenceDocument, error)
+	UpdateReferenceDocumentStatus(context.Context, string, string) error
 	DeleteReferenceDocument(context.Context, string) error
 
 	UpsertReferenceTimelineNode(context.Context, *ReferenceTimelineNode) error
@@ -177,6 +180,7 @@ type ReferenceLibraryStore interface {
 	ListReferenceClaims(context.Context, string, string, string, string) ([]ReferenceClaim, error)
 	ReplaceReferenceClaimKnowers(context.Context, string, []string) error
 	DeleteReferenceClaim(context.Context, string) error
+	UpdateReferenceCandidateReview(context.Context, string, string, string, string) error
 
 	UpsertSessionReferenceBinding(context.Context, *SessionReferenceBinding, int64) error
 	ListSessionReferenceBindings(context.Context, string, bool) ([]SessionReferenceBinding, error)

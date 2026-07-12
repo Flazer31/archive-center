@@ -1025,10 +1025,12 @@ CREATE TABLE IF NOT EXISTS reference_timeline_nodes (
     branch_key       VARCHAR(255)    NOT NULL DEFAULT 'main',
     node_kind        VARCHAR(50)     NOT NULL DEFAULT 'event',
     metadata_json    JSON            NULL,
+    review_status    VARCHAR(50)     NOT NULL DEFAULT 'pending',
     created_at       DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
     updated_at       DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
     UNIQUE KEY uq_reference_timeline_key (continuity_id, branch_key, node_key),
     INDEX idx_reference_timeline_order (continuity_id, branch_key, ordinal_value),
+    INDEX idx_reference_timeline_review (work_id, continuity_id, review_status, ordinal_value),
     CONSTRAINT fk_reference_timeline_work FOREIGN KEY (work_id) REFERENCES reference_works(work_id) ON DELETE CASCADE,
     CONSTRAINT fk_reference_timeline_continuity FOREIGN KEY (continuity_id) REFERENCES reference_continuities(continuity_id) ON DELETE CASCADE,
     CONSTRAINT fk_reference_timeline_parent FOREIGN KEY (parent_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL

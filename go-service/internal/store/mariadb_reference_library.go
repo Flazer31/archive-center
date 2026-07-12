@@ -286,6 +286,50 @@ func (m *mariadbStore) SaveReferenceDocument(ctx context.Context, item *Referenc
 	return referenceStoreError(err)
 }
 
+func (m *mariadbStore) GetReferenceDocument(ctx context.Context, documentID string) (*ReferenceDocument, error) {
+	if referenceRequired(documentID) != nil {
+		return nil, ErrInvalidReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	var item ReferenceDocument
+	var uri, raw, provenance sql.NullString
+	err := m.db.QueryRowContext(ctx, `
+		SELECT document_id, work_id, continuity_id, source_type, source_uri, content_hash,
+		       raw_retention, raw_text, import_status, provenance_json, created_at, updated_at
+		FROM reference_documents WHERE document_id = ?
+	`, strings.TrimSpace(documentID)).Scan(&item.DocumentID, &item.WorkID, &item.ContinuityID,
+		&item.SourceType, &uri, &item.ContentHash, &item.RawRetention, &raw, &item.ImportStatus,
+		&provenance, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.SourceURI = nullStringValue(uri)
+	item.RawText = nullStringValue(raw)
+	item.ProvenanceJSON = nullStringValue(provenance)
+	return &item, nil
+}
+
+func (m *mariadbStore) UpdateReferenceDocumentStatus(ctx context.Context, documentID, status string) error {
+	if referenceRequired(documentID, status) != nil {
+		return ErrInvalidReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE reference_documents SET import_status = ? WHERE document_id = ?
+	`, strings.TrimSpace(status), strings.TrimSpace(documentID))
+	if err != nil {
+		return referenceStoreError(err)
+	}
+	return referenceRowsChanged(result)
+}
+
 func (m *mariadbStore) ListReferenceDocuments(ctx context.Context, workID, continuityID, status string) ([]ReferenceDocument, error) {
 	if referenceRequired(workID) != nil {
 		return nil, ErrInvalidReference
@@ -366,15 +410,19 @@ func (m *mariadbStore) UpsertReferenceTimelineNode(ctx context.Context, item *Re
 	_, err := m.db.ExecContext(ctx, `
 		INSERT INTO reference_timeline_nodes
 			(node_id, work_id, continuity_id, node_key, label, ordinal_value,
-			 parent_node_id, branch_key, node_kind, metadata_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE label = VALUES(label), ordinal_value = VALUES(ordinal_value),
-			parent_node_id = VALUES(parent_node_id), branch_key = VALUES(branch_key),
-			node_kind = VALUES(node_kind), metadata_json = VALUES(metadata_json)
+			 parent_node_id, branch_key, node_kind, metadata_json, review_status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			label = IF(review_status = 'pending', VALUES(label), label),
+			ordinal_value = IF(review_status = 'pending', VALUES(ordinal_value), ordinal_value),
+			parent_node_id = IF(review_status = 'pending', VALUES(parent_node_id), parent_node_id),
+			branch_key = IF(review_status = 'pending', VALUES(branch_key), branch_key),
+			node_kind = IF(review_status = 'pending', VALUES(node_kind), node_kind),
+			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json)
 	`, strings.TrimSpace(item.NodeID), strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ContinuityID),
 		strings.TrimSpace(item.NodeKey), strings.TrimSpace(item.Label), item.Ordinal,
 		referenceNullable(item.ParentNodeID), defaultString(item.BranchKey, "main"),
-		defaultString(item.NodeKind, "event"), referenceJSON(item.MetadataJSON))
+		defaultString(item.NodeKind, "event"), referenceJSON(item.MetadataJSON), defaultString(item.ReviewStatus, "pending"))
 	return referenceStoreError(err)
 }
 
@@ -386,7 +434,7 @@ func (m *mariadbStore) ListReferenceTimelineNodes(ctx context.Context, workID, c
 		return nil, err
 	}
 	query := `SELECT node_id, work_id, continuity_id, node_key, label, ordinal_value,
-	                 parent_node_id, branch_key, node_kind, metadata_json, created_at, updated_at
+		                 parent_node_id, branch_key, node_kind, metadata_json, review_status, created_at, updated_at
 	          FROM reference_timeline_nodes WHERE work_id = ?`
 	args := []any{strings.TrimSpace(workID)}
 	if strings.TrimSpace(continuityID) != "" {
@@ -408,7 +456,7 @@ func (m *mariadbStore) ListReferenceTimelineNodes(ctx context.Context, workID, c
 		var item ReferenceTimelineNode
 		var parent, metadata sql.NullString
 		if err := rows.Scan(&item.NodeID, &item.WorkID, &item.ContinuityID, &item.NodeKey, &item.Label,
-			&item.Ordinal, &parent, &item.BranchKey, &item.NodeKind, &metadata,
+			&item.Ordinal, &parent, &item.BranchKey, &item.NodeKind, &metadata, &item.ReviewStatus,
 			&item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -435,9 +483,11 @@ func (m *mariadbStore) UpsertReferenceEntity(ctx context.Context, item *Referenc
 			(entity_id, work_id, continuity_id, entity_type, canonical_name,
 			 description_text, metadata_json, review_status)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE entity_type = VALUES(entity_type), canonical_name = VALUES(canonical_name),
-			description_text = VALUES(description_text), metadata_json = VALUES(metadata_json),
-			review_status = VALUES(review_status)
+		ON DUPLICATE KEY UPDATE
+			entity_type = IF(review_status = 'pending', VALUES(entity_type), entity_type),
+			canonical_name = IF(review_status = 'pending', VALUES(canonical_name), canonical_name),
+			description_text = IF(review_status = 'pending', VALUES(description_text), description_text),
+			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json)
 	`, strings.TrimSpace(item.EntityID), strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ContinuityID),
 		strings.TrimSpace(item.EntityType), strings.TrimSpace(item.CanonicalName), referenceNullable(item.DescriptionText),
 		referenceJSON(item.MetadataJSON), defaultString(item.ReviewStatus, "pending"))
@@ -553,12 +603,19 @@ func (m *mariadbStore) UpsertReferenceClaim(ctx context.Context, item *Reference
 			 claim_text, evidence_excerpt, temporal_scope, valid_from_node_id, valid_to_node_id,
 			 reveal_from_node_id, branch_key, knowledge_scope, confidence, review_status, metadata_json)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE claim_type = VALUES(claim_type), subject_entity_id = VALUES(subject_entity_id),
-			claim_text = VALUES(claim_text), evidence_excerpt = VALUES(evidence_excerpt),
-			temporal_scope = VALUES(temporal_scope), valid_from_node_id = VALUES(valid_from_node_id),
-			valid_to_node_id = VALUES(valid_to_node_id), reveal_from_node_id = VALUES(reveal_from_node_id),
-			branch_key = VALUES(branch_key), knowledge_scope = VALUES(knowledge_scope),
-			confidence = VALUES(confidence), review_status = VALUES(review_status), metadata_json = VALUES(metadata_json)
+		ON DUPLICATE KEY UPDATE
+			claim_type = IF(review_status = 'pending', VALUES(claim_type), claim_type),
+			subject_entity_id = IF(review_status = 'pending', VALUES(subject_entity_id), subject_entity_id),
+			claim_text = IF(review_status = 'pending', VALUES(claim_text), claim_text),
+			evidence_excerpt = IF(review_status = 'pending', VALUES(evidence_excerpt), evidence_excerpt),
+			temporal_scope = IF(review_status = 'pending', VALUES(temporal_scope), temporal_scope),
+			valid_from_node_id = IF(review_status = 'pending', VALUES(valid_from_node_id), valid_from_node_id),
+			valid_to_node_id = IF(review_status = 'pending', VALUES(valid_to_node_id), valid_to_node_id),
+			reveal_from_node_id = IF(review_status = 'pending', VALUES(reveal_from_node_id), reveal_from_node_id),
+			branch_key = IF(review_status = 'pending', VALUES(branch_key), branch_key),
+			knowledge_scope = IF(review_status = 'pending', VALUES(knowledge_scope), knowledge_scope),
+			confidence = IF(review_status = 'pending', VALUES(confidence), confidence),
+			metadata_json = IF(review_status = 'pending', VALUES(metadata_json), metadata_json)
 	`, strings.TrimSpace(item.ClaimID), strings.TrimSpace(item.WorkID), strings.TrimSpace(item.ContinuityID),
 		strings.TrimSpace(item.DocumentID), strings.TrimSpace(item.ClaimType), referenceNullable(item.SubjectEntityID),
 		strings.TrimSpace(item.ClaimText), referenceNullable(item.EvidenceExcerpt), defaultString(item.TemporalScope, "bounded"),
@@ -688,6 +745,34 @@ func (m *mariadbStore) listReferenceClaimKnowers(ctx context.Context, claimID st
 
 func (m *mariadbStore) DeleteReferenceClaim(ctx context.Context, claimID string) error {
 	return m.deleteReferenceRow(ctx, "reference_claims", "claim_id", claimID)
+}
+
+func (m *mariadbStore) UpdateReferenceCandidateReview(ctx context.Context, workID, kind, id, status string) error {
+	if referenceRequired(workID, kind, id, status) != nil {
+		return ErrInvalidReference
+	}
+	if status != "approved" && status != "rejected" && status != "pending" {
+		return ErrInvalidReference
+	}
+	tableAndKey := map[string][2]string{
+		"timeline": {"reference_timeline_nodes", "node_id"},
+		"entity":   {"reference_entities", "entity_id"},
+		"claim":    {"reference_claims", "claim_id"},
+	}
+	target, ok := tableAndKey[strings.TrimSpace(kind)]
+	if !ok {
+		return ErrInvalidReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	result, err := m.db.ExecContext(ctx,
+		"UPDATE "+target[0]+" SET review_status = ? WHERE work_id = ? AND "+target[1]+" = ?",
+		status, strings.TrimSpace(workID), strings.TrimSpace(id))
+	if err != nil {
+		return referenceStoreError(err)
+	}
+	return referenceRowsChanged(result)
 }
 
 func (m *mariadbStore) UpsertSessionReferenceBinding(ctx context.Context, item *SessionReferenceBinding, expectedRevision int64) error {

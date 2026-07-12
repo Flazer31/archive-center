@@ -125,6 +125,19 @@ func TestSessionBindingUsesOptimisticRevision(t *testing.T) {
 	}
 }
 
+func TestReferenceCandidateReviewIsScopedToWork(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE reference_entities SET review_status = ? WHERE work_id = ? AND entity_id = ?")).
+		WithArgs("approved", "work-1", "entity-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := store.UpdateReferenceCandidateReview(context.Background(), "work-1", "entity", "entity-1", "approved"); err != nil {
+		t.Fatalf("UpdateReferenceCandidateReview: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdminResetIncludesReferenceTablesChildFirst(t *testing.T) {
 	wantOrder := []string{
 		"session_reference_runtime", "session_reference_bindings", "reference_claim_knowers",
