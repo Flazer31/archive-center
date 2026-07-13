@@ -8144,12 +8144,25 @@
   // payload.messages can be a truncated request window, so rollback detection must
   // prefer live active-chat history and only fall back to payload when it cannot
   // shrink the previously observed snapshot.
-  async function resolveRollbackComparableMessages(sessionId, payloadMessages) {
+  async function resolveRollbackComparableMessages(sessionId, payloadMessages, currentRawUserInput) {
     const activeChatMessages = await getCurrentActiveChatRollbackMessages();
     const normalizedPayloadMessages = compactSnapshotMessages(payloadMessages);
     const previousSnapshot = getSessionSnapshot(sessionId);
     if (Array.isArray(activeChatMessages) && activeChatMessages.length > 0) {
       const activeComparable = compactSnapshotMessages(activeChatMessages);
+      const expectedCurrentUser = String(currentRawUserInput || "").trim();
+      const activeTailUser = getLastPayloadUserText(activeComparable);
+      const activeContainsCurrentUser = !!(
+        expectedCurrentUser
+        && activeTailUser
+        && (
+          mainTurnTextMatchesOriginal(expectedCurrentUser, activeTailUser)
+          || mainTurnTextMatchesOriginal(activeTailUser, expectedCurrentUser)
+        )
+      );
+      if (activeContainsCurrentUser) {
+        return { messages: activeComparable, source: "active_chat_current_input_confirmed" };
+      }
       const previousCount = Number(previousSnapshot && previousSnapshot.msgCount || 0);
       if (normalizedPayloadMessages.length > activeComparable.length
           && (!previousCount || activeComparable.length < previousCount)) {
@@ -34174,7 +34187,7 @@
       // Sprint 3-E-2: rollback 자동 감지 (model 타입에서만, orchestration 전에)
       if (isSaveType(type)) {
         try {
-          const rollbackComparable = await resolveRollbackComparableMessages(orchSessionId, messages);
+          const rollbackComparable = await resolveRollbackComparableMessages(orchSessionId, messages, mainRequestRawTail);
           if (rollbackComparable.messages) {
             await checkAndAutoRollback(orchSessionId, rollbackComparable.messages);
           } else if (settings.debug) {

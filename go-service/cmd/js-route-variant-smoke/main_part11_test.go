@@ -22,6 +22,26 @@ func extractArchiveCenterJSFunction(t *testing.T, src, name string) string {
 	return strings.TrimSpace(src[start:end])
 }
 
+func extractArchiveCenterJSAsyncFunction(t *testing.T, src, name string) string {
+	t.Helper()
+	marker := "  async function " + name + "("
+	start := strings.Index(src, marker)
+	if start < 0 {
+		t.Fatalf("Archive Center.js async function %s not found", name)
+	}
+	nextFunction := strings.Index(src[start+len(marker):], "\n  function ")
+	nextAsyncFunction := strings.Index(src[start+len(marker):], "\n  async function ")
+	next := nextFunction
+	if next < 0 || (nextAsyncFunction >= 0 && nextAsyncFunction < next) {
+		next = nextAsyncFunction
+	}
+	if next < 0 {
+		t.Fatalf("Archive Center.js async function %s has no following function boundary", name)
+	}
+	end := start + len(marker) + next
+	return strings.TrimSpace(src[start:end])
+}
+
 func TestCoreRegressionInputOwnershipAndCanonicalOutputRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -236,5 +256,67 @@ assertTrue(!!withCommand && withCommand.explicitCommandObserved === true, "slash
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Archive Center history trim runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRollbackComparablePrefersActiveChatWhenCurrentInputIsConfirmed(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Archive Center rollback source runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "resolveRollbackComparableMessages")
+	script := functionBody + `
+let fixtureActiveMessages = [];
+let fixturePreviousSnapshot = null;
+async function getCurrentActiveChatRollbackMessages() { return fixtureActiveMessages; }
+function compactSnapshotMessages(messages) { return Array.isArray(messages) ? messages : []; }
+function getSessionSnapshot() { return fixturePreviousSnapshot; }
+function getLastPayloadUserText(messages) {
+  for (let i = (messages || []).length - 1; i >= 0; i--) {
+    if (messages[i] && messages[i].role === "user") return String(messages[i].content || "");
+  }
+  return "";
+}
+function mainTurnTextMatchesOriginal(left, right) {
+  const a = String(left || "").trim();
+  const b = String(right || "").trim();
+  return a === b || (!!a && !!b && (a.startsWith(b) || b.startsWith(a)));
+}
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
+}
+
+(async function() {
+  fixturePreviousSnapshot = {msgCount: 8};
+  fixtureActiveMessages = [
+    {role:"user",content:"u1"}, {role:"assistant",content:"a1"},
+    {role:"user",content:"u2"}, {role:"assistant",content:"a2"},
+    {role:"user",content:"u3"}, {role:"assistant",content:"a3"},
+    {role:"user",content:"new player input"}
+  ];
+  const longPayload = Array.from({length:20}, (_, i) => ({role:i % 2 ? "assistant" : "user", content:"prompt-" + i}));
+  longPayload.push({role:"user",content:"rewritten payload input"});
+  let result = await resolveRollbackComparableMessages("s", longPayload, "new player input");
+  assertEqual(result.source, "active_chat_current_input_confirmed", "deleted active history with current input must remain authoritative");
+  assertEqual(result.messages.length, 7, "active chat deletion shape lost");
+
+  fixtureActiveMessages[fixtureActiveMessages.length - 1] = {role:"user",content:"stale previous input"};
+  result = await resolveRollbackComparableMessages("s", longPayload, "new player input");
+  assertEqual(result.source, "payload_newer_than_stale_active_chat", "unconfirmed stale active chat must keep payload fallback");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Archive Center rollback source JS runtime fixture failed: %v\n%s", err, out)
 	}
 }
