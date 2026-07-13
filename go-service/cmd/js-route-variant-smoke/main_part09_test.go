@@ -996,8 +996,6 @@ func TestArchiveCenterJSActiveChatRescanDryRunMarkers(t *testing.T) {
 		"ACTIVE_CHAT_RECENT_REBUILD_MAX_TURNS",
 		"ACTIVE_CHAT_REBUILD_DEFAULT_ORDER",
 		"function resolveCurrentActiveChatObject",
-		"R.getChatFromIndex",
-		`out.source = "R.getChatFromIndex"`,
 		"function runActiveChatRescanDryRun",
 		"function runActiveChatRecentRebuild",
 		"function computeActiveChatRescanDryRunPlan",

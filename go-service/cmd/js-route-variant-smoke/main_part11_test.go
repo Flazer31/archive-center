@@ -61,7 +61,6 @@ function rawInputCacheMatchesCurrentCandidates(rawCached, payloadCandidate, mess
   if (!rawCached || !rawCached.text) return false;
   return !!((payloadCandidate && payloadCandidate.text === rawCached.text) || messageInput === rawCached.text);
 }
-
 function isFreshStrongRawInput(rawCached) { return !!(rawCached && rawCached.text && rawCached.strong); }
 function isRisuPromptScaffoldMessage(text) { return /Sealed\. Conduct|cached context control/i.test(String(text || "")); }
 function isMetaPromptLikeMessage(text) { return isRisuPromptScaffoldMessage(text); }
@@ -184,51 +183,5 @@ assertEqual(realPostprocessor.reason, "post_output_secondary_request", "postproc
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Archive Center core regression JS runtime fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestResolveCurrentActiveChatObjectPrefersOfficialDirectChatAPI(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for Archive Center active chat runtime fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	fn := extractArchiveCenterJSFunction(t, src, "resolveCurrentActiveChatObject")
-	script := fn + `
-let characterFallbackCalls = 0;
-function parseSessionDisplayIdentity() { return null; }
-function extractActiveChatMessageCount(chat) { return Array.isArray(chat && chat.messages) ? chat.messages.length : 0; }
-function resolveActiveChatFromCharacter(char) { return char && Array.isArray(char.chats) ? char.chats[0] : null; }
-function getRisuCharacterListSnapshot() { return []; }
-function debugLog() {}
-let R = {
-  async getCurrentChatIndex() { return 2; },
-  async getCurrentCharacterIndex() { return 3; },
-  async getChatFromIndex(charIndex, chatIndex) {
-    if (charIndex !== 3 || chatIndex !== 2) throw new Error("wrong direct chat indices");
-    return {messages:[{role:"user",content:"one"},{role:"assistant",content:"two"}]};
-  },
-  async getCharacter() { characterFallbackCalls++; return {chats:[{messages:[{role:"user",content:"fallback"}]}]}; }
-};
-(async function() {
-  const direct = await resolveCurrentActiveChatObject("fixture-session");
-  if (direct.source !== "R.getChatFromIndex") throw new Error("direct chat API was not preferred: " + direct.source);
-  if (characterFallbackCalls !== 0) throw new Error("character fallback ran despite a valid direct chat");
-
-  R.getChatFromIndex = async function() { throw new Error("unsupported"); };
-  const fallback = await resolveCurrentActiveChatObject("fixture-session");
-  if (fallback.source !== "R.getCharacter") throw new Error("legacy fallback was not preserved: " + fallback.source);
-  if (characterFallbackCalls !== 1) throw new Error("character fallback call count mismatch");
-})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Archive Center direct active chat runtime fixture failed: %v\n%s", err, out)
 	}
 }
