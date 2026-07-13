@@ -13147,10 +13147,12 @@
   function recordRisuHistoryTrimGuard(sessionId, source, detail = {}) {
     try {
       const sid = String(sessionId || "").trim() || "default";
+      const normalizedSource = String(source || "unknown");
       const entry = Object.assign({}, detail || {}, {
         policyVersion: "or1f.risu_history_trim_guard.v1",
         sessionId: sid,
-        source: String(source || "unknown"),
+        source: normalizedSource,
+        explicitCommandObserved: normalizedSource === "risu_slash_command" || detail.explicitCommandObserved === true,
         action: "skip_db_rollback_preserve_archive_db",
         recordedAtMs: Date.now(),
       });
@@ -13166,6 +13168,10 @@
       const sid = String(sessionId || "").trim() || "default";
       const entry = _rollbackHistoryTrimGuardBySession.get(sid);
       if (!entry) return null;
+      if (entry.explicitCommandObserved !== true) {
+        _rollbackHistoryTrimGuardBySession.delete(sid);
+        return null;
+      }
       const ageMs = Date.now() - Number(entry.recordedAtMs || 0);
       if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > ROLLBACK_HISTORY_TRIM_GUARD_MS) {
         _rollbackHistoryTrimGuardBySession.delete(sid);
@@ -13202,6 +13208,8 @@
 
   function buildPersistedLedgerHistoryTrimGuardOr1f(sessionId, currentMessages) {
     try {
+      const commandIntent = getRecentRisuHistoryTrimGuard(sessionId);
+      if (!commandIntent) return null;
       const ledgerState = loadRollbackTurnLedgerOr1f(sessionId);
       const entries = ledgerState && Array.isArray(ledgerState.entries) ? ledgerState.entries : [];
       const currentList = compactSnapshotMessages(currentMessages);
@@ -13220,7 +13228,8 @@
         commonPrefixLen,
         commonSuffixLen,
         trackedTurnIndex: Number(ledgerState.trackedTurnIndex || 0),
-        commandIntent: !!getRecentRisuHistoryTrimGuard(sessionId),
+        commandIntent: true,
+        explicitCommandObserved: true,
         note: "RisuAI /cut or /del can shorten the visible active chat without meaning Archive Center DB deletion.",
       };
     } catch {
@@ -13230,6 +13239,8 @@
 
   function buildSnapshotHistoryTrimGuardOr1f(sessionId, previousSnapshot, currentMessages, detectionState, assistantDeletionState) {
     try {
+      const commandIntent = getRecentRisuHistoryTrimGuard(sessionId);
+      if (!commandIntent) return null;
       const prevList = Array.isArray(previousSnapshot && previousSnapshot.messagesPreview) ? previousSnapshot.messagesPreview : [];
       const currentList = compactSnapshotMessages(currentMessages);
       if (prevList.length === 0 || currentList.length === 0 || currentList.length >= prevList.length) return null;
@@ -13258,7 +13269,8 @@
         previousTailHash: String(previousSnapshot && previousSnapshot.tailHash || ""),
         currentTailHash,
         previousTurnIndex: Number(previousSnapshot && previousSnapshot.turnIndex || 0),
-        commandIntent: !!getRecentRisuHistoryTrimGuard(sessionId),
+        commandIntent: true,
+        explicitCommandObserved: true,
         note: "Visible RisuAI history was trimmed from the head; Archive Center keeps DB rows and only refreshes the local snapshot.",
       };
     } catch {
@@ -13268,6 +13280,8 @@
 
   function buildAmbiguousHistoryTrimGuardOr1f(sessionId, previousSnapshot, currentMessages, detectionState, assistantDeletionState, reason) {
     try {
+      const commandIntent = getRecentRisuHistoryTrimGuard(sessionId);
+      if (!commandIntent) return null;
       const prevList = Array.isArray(previousSnapshot && previousSnapshot.messagesPreview) ? previousSnapshot.messagesPreview : [];
       const currentList = compactSnapshotMessages(currentMessages);
       const removedMsgCount = Number(detectionState && detectionState.removedMsgCount || Math.max(0, prevList.length - currentList.length));
@@ -13290,7 +13304,8 @@
         commonPrefixLen,
         commonSuffixLen,
         ledgerAnchorTurnIndex: Number(detectionState && detectionState.ledgerAnchorTurnIndex || 0),
-        commandIntent: !!getRecentRisuHistoryTrimGuard(sessionId),
+        commandIntent: true,
+        explicitCommandObserved: true,
         action: "skip_db_rollback_preserve_archive_db",
         note: "Ambiguous active-chat gap may be Hypa/RisuAI visible history compression. Automatic Archive DB rollback is blocked; use explicit Explorer delete for real deletion.",
       };

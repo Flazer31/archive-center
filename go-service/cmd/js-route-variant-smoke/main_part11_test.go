@@ -61,6 +61,7 @@ function rawInputCacheMatchesCurrentCandidates(rawCached, payloadCandidate, mess
   if (!rawCached || !rawCached.text) return false;
   return !!((payloadCandidate && payloadCandidate.text === rawCached.text) || messageInput === rawCached.text);
 }
+
 function isFreshStrongRawInput(rawCached) { return !!(rawCached && rawCached.text && rawCached.strong); }
 function isRisuPromptScaffoldMessage(text) { return /Sealed\. Conduct|cached context control/i.test(String(text || "")); }
 function isMetaPromptLikeMessage(text) { return isRisuPromptScaffoldMessage(text); }
@@ -183,5 +184,57 @@ assertEqual(realPostprocessor.reason, "post_output_secondary_request", "postproc
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Archive Center core regression JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestHistoryTrimGuardRequiresObservedSlashCommand(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Archive Center history trim runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := []string{
+		extractArchiveCenterJSFunction(t, src, "recordRisuHistoryTrimGuard"),
+		extractArchiveCenterJSFunction(t, src, "getRecentRisuHistoryTrimGuard"),
+		extractArchiveCenterJSFunction(t, src, "buildSnapshotHistoryTrimGuardOr1f"),
+	}
+	script := strings.Join(functions, "\n\n") + `
+const _rollbackHistoryTrimGuardBySession = new Map();
+const ROLLBACK_HISTORY_TRIM_GUARD_MS = 5 * 60 * 1000;
+function compactSnapshotMessages(messages) { return Array.isArray(messages) ? messages : []; }
+function computeTailHash() { return "fixture-tail"; }
+function assertTrue(value, label) { if (!value) throw new Error(label); }
+
+recordRisuHistoryTrimGuard("s", "active_chat_suffix_window_trim", {});
+assertTrue(getRecentRisuHistoryTrimGuard("s") === null, "inferred trim must not become command intent");
+const withoutCommand = buildSnapshotHistoryTrimGuardOr1f(
+  "s",
+  {messagesPreview:[{role:"user",content:"old"},{role:"assistant",content:"kept"}], turnIndex:1, tailHash:"old"},
+  [{role:"assistant",content:"kept"}],
+  {commonPrefixLen:0, commonSuffixLen:1, removedMsgCount:1, insertedMsgCount:0},
+  {previousAssistantCount:1, currentAssistantCount:1}
+);
+assertTrue(withoutCommand === null, "ordinary deletion must not be protected as slash trim");
+
+recordRisuHistoryTrimGuard("s", "risu_slash_command", {commandPreview:"/cut"});
+assertTrue(getRecentRisuHistoryTrimGuard("s") !== null, "observed slash command must enable trim protection");
+const withCommand = buildSnapshotHistoryTrimGuardOr1f(
+  "s",
+  {messagesPreview:[{role:"user",content:"old"},{role:"assistant",content:"kept"}], turnIndex:1, tailHash:"old"},
+  [{role:"assistant",content:"kept"}],
+  {commonPrefixLen:0, commonSuffixLen:1, removedMsgCount:1, insertedMsgCount:0},
+  {previousAssistantCount:1, currentAssistantCount:1}
+);
+assertTrue(!!withCommand && withCommand.explicitCommandObserved === true, "slash trim protection missing");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Archive Center history trim runtime fixture failed: %v\n%s", err, out)
 	}
 }
