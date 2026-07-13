@@ -1426,7 +1426,7 @@ func prepareTurnVectorHitSimilarity(hit map[string]any) (float64, bool) {
 }
 
 func prepareTurnVectorSimilarityEligible(score float64, source string) bool {
-	if strings.TrimSpace(source) == "chroma_distance_inverse" {
+	if strings.HasSuffix(strings.TrimSpace(source), "distance_inverse") {
 		return score >= prepareTurnMinInverseDistanceSimilarity
 	}
 	return score >= prepareTurnMinCosineSimilarity

@@ -180,6 +180,9 @@ func TestSDKVectorStoreSearch(t *testing.T) {
 	if docs[0].DocumentText != "hello world" {
 		t.Errorf("DocumentText = %q, want hello world", docs[0].DocumentText)
 	}
+	if !docs[0].SimilarityAvailable || docs[0].SimilaritySource != "milvus_l2_distance_inverse" {
+		t.Errorf("Milvus score was not preserved as an actual distance-derived similarity: %+v", docs[0])
+	}
 
 	if len(mock.searchCalls) != 1 {
 		t.Fatalf("expected 1 search call, got %d", len(mock.searchCalls))

@@ -168,6 +168,12 @@ func (s *sdkVectorStore) Search(ctx context.Context, sessionID string, vector []
 			if dtCol := rs.GetColumn("document_text"); dtCol != nil {
 				doc.DocumentText, _ = dtCol.GetAsString(i)
 			}
+			if i < len(rs.Scores) {
+				doc.Distance = float64(rs.Scores[i])
+				doc.Similarity = inverseDistanceSimilarity(doc.Distance)
+				doc.SimilarityAvailable = true
+				doc.SimilaritySource = "milvus_l2_distance_inverse"
+			}
 			docs = append(docs, doc)
 		}
 	}

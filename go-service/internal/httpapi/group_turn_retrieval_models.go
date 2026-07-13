@@ -120,9 +120,9 @@ func retrievalDocumentQ1(sourceType, sourceSubtype, sourceTable string, id int64
 		"turn_index":      turnIndex,
 		"title":           title,
 		"text":            text,
-		"similarity":      1.0,
+		"similarity":      nil,
 		"created_at":      createdAt,
-		"query_matched":   true,
+		"query_matched":   false,
 		"metadata":        meta,
 	}
 	return doc
@@ -151,24 +151,24 @@ func retrievalIndexSnapshotFromDocuments(sid string, documents []map[string]any)
 	}
 }
 
-func buildANNCandidateSnapshotQ2(docs []map[string]any, vectorShadow map[string]any) map[string]any {
+func buildANNCandidateSnapshotQ2(_ []map[string]any, vectorShadow map[string]any) map[string]any {
 	candidates := []map[string]any{}
-	for i, doc := range docs {
-		if i >= 8 {
+	for _, hit := range prepareTurnVectorSearchResultMaps(vectorShadow["search_results"]) {
+		if len(candidates) >= 8 {
 			break
 		}
+		score, ok := prepareTurnVectorHitSimilarity(hit)
+		if !ok {
+			continue
+		}
 		candidate := map[string]any{}
-		for k, v := range doc {
+		for k, v := range hit {
 			candidate[k] = v
 		}
-		score := 1.0 - float64(i)*0.05
-		if score < 0.1 {
-			score = 0.1
-		}
-		candidate["ann_rank"] = i + 1
+		candidate["ann_rank"] = len(candidates) + 1
 		candidate["rerank_score"] = score
 		candidate["similarity"] = score
-		candidate["query_matched"] = true
+		candidate["query_matched"] = prepareTurnVectorSimilarityEligible(score, stringFromMap(hit, "similarity_source"))
 		candidates = append(candidates, candidate)
 	}
 	vectorMode, _ := vectorShadow["mode"].(string)
@@ -184,9 +184,9 @@ func buildANNCandidateSnapshotQ2(docs []map[string]any, vectorShadow map[string]
 		"status":          status,
 		"candidate_count": len(candidates),
 		"candidates":      candidates,
-		"rerank_applied":  len(candidates) > 1,
-		"rerank_policy":   "metadata_score_v1",
-		"merge_policy":    "tier_head_then_rerank_v1",
+		"rerank_applied":  len(candidates) > 0,
+		"rerank_policy":   "actual_vector_similarity_v1",
+		"merge_policy":    "actual_similarity_desc_v1",
 		"vector_mode":     vectorMode,
 		"benchmark": map[string]any{
 			"status":           status,
