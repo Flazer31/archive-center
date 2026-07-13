@@ -289,6 +289,46 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 	allEvidence := append([]store.DirectEvidence(nil), evidence...)
 	allWorldRules := append([]store.WorldRule(nil), worldRules...)
 	preIntegrity := s.adminReindexIntegrityReport(ctx, sid, allMemories, allEvidence, allWorldRules, strings.TrimSpace(cfg.Embedder.Model))
+	if !dryRun && !force && boolFromAny(preIntegrity["index_usable_for_vector_first_read"]) {
+		result := map[string]any{
+			"status":                 "ok",
+			"source":                 s.storeWriteSource(),
+			"chat_session_id":        sid,
+			"mutation_enabled":       true,
+			"reindex_executed":       false,
+			"reason":                 "vector_index_already_current",
+			"dry_run":                false,
+			"force":                  false,
+			"batch_size":             batchSize,
+			"max_items":              maxItems,
+			"candidates":             0,
+			"processed":              0,
+			"upserted":               0,
+			"skipped":                0,
+			"embedding_config_trace": adminEmbeddingConfigTrace(meta, cfg),
+			"integrity_report":       preIntegrity,
+			"pre_reindex_integrity":  preIntegrity,
+			"post_reindex_integrity": preIntegrity,
+			"errors":                 []string{},
+			"background":             true,
+			"note":                   "reindex skipped because the canonical vector candidate count and stored ChromaDB documents are already current",
+		}
+		if progress != nil {
+			progress(map[string]any{
+				"status":           "completed",
+				"stage":            "already_current",
+				"reason":           "vector_index_already_current",
+				"candidate_count":  0,
+				"processed":        0,
+				"upserted":         0,
+				"skipped_count":    0,
+				"failed_count":     0,
+				"integrity_report": preIntegrity,
+				"progress_percent": 100,
+			})
+		}
+		return result, nil
+	}
 	if len(memories) > maxItems {
 		memories = memories[:maxItems]
 	}

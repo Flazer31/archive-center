@@ -17,6 +17,7 @@
 5. Episode and hierarchy ranges still begin at turn `1`; turn `0` supplies initial world, character, location, language, and continuity evidence.
 6. Only one background job of the same kind may run for the same session. A repeated request reuses the existing job id.
 7. Raw logs are not rewritten by rescan. Missing derived artifacts are rebuilt through the configured Critic pipeline and existing dedupe checks.
+8. Session Normalize resumes from existing artifacts by default. Re-running it skips turns that already have canonical memory and does not force raw world-rule, episode, hierarchy, or vector regeneration unless an operator explicitly requests those force flags.
 
 ## Implementation
 
@@ -25,6 +26,7 @@
 - Removed the content-shape source-aware derived guard after a live complete-turn has been accepted as a canonical user/assistant pair. Auxiliary-request rejection remains a capture/routing responsibility before canonical persistence.
 - Allowed turn `0` in repair replay, session-normalize inputs, rescan candidates, processed-turn progress, memory world-rule backfill, and raw world-rule audit.
 - Added same-kind/same-session background job reuse in `adminJobManager`.
+- Removed Session Normalize's unconditional force flags so a partial run resumes from missing turns instead of replaying every successful Critic call.
 
 ## Regression Gates
 

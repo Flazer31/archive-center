@@ -86,6 +86,41 @@ func TestAdminReindexDerivedArtifactsEmitsTierProgress(t *testing.T) {
 	}
 }
 
+func TestAdminReindexSkipsAlreadyCurrentIndexWithoutForce(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{returnMemories: []store.Memory{{
+		ID:             7,
+		ChatSessionID:  "sess-reindex-current",
+		TurnIndex:      3,
+		SummaryJSON:    `{"summary":"The gate is already indexed."}`,
+		Embedding:      `[0.1,0.2,0.3]`,
+		EmbeddingModel: "test-embedding",
+	}}}
+	srv.StoreOpenError = nil
+	vec := &turnRecordingVectorStore{docs: []vector.VectorDocument{{
+		ID:            "memory:sess-reindex-current:7",
+		Tier:          "memory",
+		ChatSessionID: "sess-reindex-current",
+		SourceTable:   "memories",
+		SourceRowID:   "7",
+	}}}
+	srv.Vector = vec
+
+	result, err := srv.runAdminReindexJob(context.Background(), "sess-reindex-current", map[string]any{"force": false}, nil)
+	if err != nil {
+		t.Fatalf("runAdminReindexJob: %v", err)
+	}
+	if result["reason"] != "vector_index_already_current" || result["reindex_executed"] != false {
+		t.Fatalf("already-current result mismatch: %#v", result)
+	}
+	if len(vec.docs) != 1 {
+		t.Fatalf("already-current reindex must not upsert duplicates: %#v", vec.docs)
+	}
+}
+
 func TestAdminVectorOrphanAuditDeletesFullListingOrphans(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -385,5 +420,52 @@ func TestAdminSessionNormalizeQueuesRedactedBackgroundJob(t *testing.T) {
 	}
 	if request["destructive"] != false {
 		t.Fatalf("destructive flag = %v, want false", request["destructive"])
+	}
+}
+
+func TestAdminSessionNormalizeDefaultsToResumeExistingArtifacts(t *testing.T) {
+	meta := adminSessionNormalizeClientMeta(map[string]any{"source": "explorer_session_normalize"})
+	for _, key := range []string{
+		"force_derived_rebuild",
+		"force_world_rule_backfill",
+		"force_raw_world_rule_audit",
+		"force_episode_backfill",
+		"force_hierarchy_backfill",
+	} {
+		if boolFromAny(meta[key]) {
+			t.Fatalf("%s must be opt-in for resumable session normalization: %#v", key, meta)
+		}
+	}
+	if !boolFromAny(meta["resume_existing_artifacts"]) || !boolFromAny(meta["full_session_backfill"]) {
+		t.Fatalf("resume/full-session markers missing: %#v", meta)
+	}
+	if adminSessionNormalizeForceReindex(adminSessionNormalizeRequest{}) {
+		t.Fatal("force_reindex must default to false so completed vectors are not rebuilt on every retry")
+	}
+}
+
+func TestAdminSessionNormalizePreservesExplicitForceOptions(t *testing.T) {
+	meta := adminSessionNormalizeClientMeta(map[string]any{
+		"force_derived_rebuild":      true,
+		"force_world_rule_backfill":  true,
+		"force_raw_world_rule_audit": true,
+		"force_episode_backfill":     true,
+		"force_hierarchy_backfill":   true,
+	})
+	for _, key := range []string{
+		"force_derived_rebuild",
+		"force_world_rule_backfill",
+		"force_raw_world_rule_audit",
+		"force_episode_backfill",
+		"force_hierarchy_backfill",
+	} {
+		if !boolFromAny(meta[key]) {
+			t.Fatalf("explicit %s option was not preserved: %#v", key, meta)
+		}
+	}
+	force := true
+	resume := false
+	if !adminSessionNormalizeForceReindex(adminSessionNormalizeRequest{ForceReindex: &force, ResumeExisting: &resume}) {
+		t.Fatal("explicit force_reindex=true must remain available")
 	}
 }

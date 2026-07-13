@@ -56,9 +56,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		boolFromAny(req.ClientMeta["force_focused_world_rule_audit"]) ||
 		fullSessionBackfill
 	forceDerivedRebuild := boolFromAny(req.ClientMeta["force_derived_rebuild"]) ||
-		boolFromAny(req.ClientMeta["derived_backfill_only"]) ||
-		forceWorldRuleBackfill ||
-		boolFromAny(req.ClientMeta["force_episode_backfill"])
+		boolFromAny(req.ClientMeta["derived_backfill_only"])
 	memoryTurns := map[int]bool{}
 	for _, mem := range memories {
 		if mem.ChatSessionID == sid && mem.TurnIndex >= 0 {

@@ -157,6 +157,69 @@ func TestAdminRescanLongSessionResumesFromTurnZeroThrough120WithoutDuplicates(t 
 	}
 }
 
+func TestSessionNormalizeRescanMetadataDoesNotReplaySuccessfulCriticCalls(t *testing.T) {
+	const sessionID = "sess-normalize-resume"
+	logs := []store.ChatLog{
+		{ChatSessionID: sessionID, TurnIndex: 1, Role: "user", Content: "The traveler reaches the old gate.", CreatedAt: time.Now()},
+		{ChatSessionID: sessionID, TurnIndex: 1, Role: "assistant", Content: "The guard refuses entry until dawn.", CreatedAt: time.Now()},
+		{ChatSessionID: sessionID, TurnIndex: 2, Role: "user", Content: "The traveler waits beside the wall.", CreatedAt: time.Now()},
+		{ChatSessionID: sessionID, TurnIndex: 2, Role: "assistant", Content: "At dawn the gate opens.", CreatedAt: time.Now()},
+	}
+	fake := &longSessionRescanStore{turnRecordingStore: &turnRecordingStore{returnChatLogs: logs}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	criticCalls := 0
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		criticCalls++
+		extractionBytes, _ := json.Marshal(map[string]any{
+			"turn_summary":     fmt.Sprintf("normalized-memory-%d", criticCalls),
+			"importance_score": 6,
+		})
+		chatResp, _ := json.Marshal(map[string]any{
+			"model":   "normalize-critic",
+			"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(chatResp)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	meta := adminSessionNormalizeClientMeta(map[string]any{
+		"critic": map[string]any{
+			"api_key":  "sk-normalize",
+			"endpoint": "https://api.example.com/v1",
+			"model":    "normalize-critic",
+			"provider": "openai",
+		},
+	})
+	req := adminRescanRequest{ChatSessionID: sessionID, MaxItems: 1000, ClientMeta: meta}
+	first, err := srv.runAdminRescan(context.Background(), sessionID, req)
+	if err != nil {
+		t.Fatalf("first normalize rescan: %v", err)
+	}
+	if first["candidate_count"] != 2 || first["succeeded"] != 2 {
+		t.Fatalf("first normalize rescan mismatch: %#v", first)
+	}
+	second, err := srv.runAdminRescan(context.Background(), sessionID, req)
+	if err != nil {
+		t.Fatalf("second normalize rescan: %v", err)
+	}
+	if second["candidate_count"] != 0 || second["succeeded"] != 0 {
+		t.Fatalf("second normalize rescan must skip completed turns: %#v", second)
+	}
+	if criticCalls != 2 {
+		t.Fatalf("critic calls = %d, want 2 total with no replay on retry", criticCalls)
+	}
+}
+
 func assertProcessedTurnRange(t *testing.T, value any, first, last int) {
 	t.Helper()
 	items, ok := value.([]any)

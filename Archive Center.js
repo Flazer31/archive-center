@@ -16328,7 +16328,9 @@
             room: item.archive_room || null,
             finalScore: Number.isFinite(Number(item.final_score)) ? Number(item.final_score) : null,
             semanticRankScore: Number.isFinite(Number(item.semantic_rank_score)) ? Number(item.semantic_rank_score) : null,
-            vectorRankScore: Number.isFinite(Number(item.vector_rank_score)) ? Number(item.vector_rank_score) : null,
+            vectorSimilarityScore: Number.isFinite(Number(item.vector_similarity_score))
+              ? Number(item.vector_similarity_score)
+              : (Number.isFinite(Number(item.vector_rank_score)) ? Number(item.vector_rank_score) : null),
             keywordOverlapScore: Number.isFinite(Number(item.keyword_overlap_score)) ? Number(item.keyword_overlap_score) : null,
             softBiasScore: Number.isFinite(Number(item.soft_bias_score)) ? Number(item.soft_bias_score) : null,
             speakerBiasScore: Number.isFinite(Number(item.speaker_bias_score)) ? Number(item.speaker_bias_score) : null,
@@ -16604,7 +16606,7 @@
             m.wing,
             m.room,
             m.finalScore != null ? "final:" + formatInspectionScore(m.finalScore) : null,
-            m.vectorRankScore != null ? "vec:" + formatInspectionScore(m.vectorRankScore) : null,
+            m.vectorSimilarityScore != null ? "vec:" + formatInspectionScore(m.vectorSimilarityScore) : null,
             m.keywordOverlapScore != null ? "kw:" + formatInspectionScore(m.keywordOverlapScore) : null,
             Number(m.softBiasScore || 0) > 0 ? "soft:" + formatInspectionScore(m.softBiasScore) : null,
             m.hasEvidence ? "ev✓" : null,
@@ -17945,7 +17947,8 @@
     if (item.similarity_score != null) parts.push("sim:" + formatInspectionScore(item.similarity_score));
     if (item.final_score != null) parts.push("final:" + formatInspectionScore(item.final_score));
     if (item.keyword_overlap_score != null) parts.push("kw:" + formatInspectionScore(item.keyword_overlap_score));
-    if (item.vector_rank_score != null) parts.push("vec:" + formatInspectionScore(item.vector_rank_score));
+    const vectorSimilarity = item.vector_similarity_score != null ? item.vector_similarity_score : item.vector_rank_score;
+    if (vectorSimilarity != null) parts.push("vec:" + formatInspectionScore(vectorSimilarity));
     if (item.compression_state) parts.push("state:" + item.compression_state);
     return parts.join(" / ");
   }
@@ -18340,7 +18343,7 @@
             m.wing,
             m.room,
             m.finalScore != null ? "final:" + formatInspectionScore(m.finalScore) : null,
-            m.vectorRankScore != null ? "vec:" + formatInspectionScore(m.vectorRankScore) : null,
+            m.vectorSimilarityScore != null ? "vec:" + formatInspectionScore(m.vectorSimilarityScore) : null,
             m.keywordOverlapScore != null ? "kw:" + formatInspectionScore(m.keywordOverlapScore) : null,
             Number(m.softBiasScore || 0) > 0 ? "soft:" + formatInspectionScore(m.softBiasScore) : null,
           ].filter(Boolean).join(" · ");
@@ -38484,7 +38487,8 @@
             batch_size: 50,
             repair_entries: repairEntries,
             turn_indices: turnIndices,
-            force_reindex: true,
+            force_reindex: false,
+            resume_existing: true,
             dry_run: false,
             skip_rescan: !!opts.skipRescan,
             client_meta: buildAdminRuntimeClientMeta(Object.assign({ source: "explorer_session_normalize" }, planMeta)),

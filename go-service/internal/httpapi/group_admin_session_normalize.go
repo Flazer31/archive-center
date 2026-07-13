@@ -15,18 +15,19 @@ import (
 )
 
 type adminSessionNormalizeRequest struct {
-	ChatSessionID string                          `json:"chat_session_id"`
-	MaxItems      int                             `json:"max_items"`
-	BatchSize     int                             `json:"batch_size"`
-	TurnIndices   []int                           `json:"turn_indices"`
-	ClientMeta    map[string]any                  `json:"client_meta"`
-	RepairEntries []dto.ChatLogRepairEntryRequest `json:"repair_entries"`
-	Entries       []dto.ChatLogRepairEntryRequest `json:"entries"`
-	DryRun        bool                            `json:"dry_run"`
-	SkipRepair    bool                            `json:"skip_repair"`
-	SkipRescan    bool                            `json:"skip_rescan"`
-	SkipReindex   bool                            `json:"skip_reindex"`
-	ForceReindex  *bool                           `json:"force_reindex"`
+	ChatSessionID  string                          `json:"chat_session_id"`
+	MaxItems       int                             `json:"max_items"`
+	BatchSize      int                             `json:"batch_size"`
+	TurnIndices    []int                           `json:"turn_indices"`
+	ClientMeta     map[string]any                  `json:"client_meta"`
+	RepairEntries  []dto.ChatLogRepairEntryRequest `json:"repair_entries"`
+	Entries        []dto.ChatLogRepairEntryRequest `json:"entries"`
+	DryRun         bool                            `json:"dry_run"`
+	SkipRepair     bool                            `json:"skip_repair"`
+	SkipRescan     bool                            `json:"skip_rescan"`
+	SkipReindex    bool                            `json:"skip_reindex"`
+	ForceReindex   *bool                           `json:"force_reindex"`
+	ResumeExisting *bool                           `json:"resume_existing"`
 }
 
 func (s *Server) handleAdminSessionNormalize(w http.ResponseWriter, r *http.Request) {
@@ -303,21 +304,27 @@ func adminSessionNormalizeClientMeta(raw map[string]any) map[string]any {
 	}
 	meta["source"] = "session_normalize"
 	meta["background"] = true
-	meta["force_derived_rebuild"] = true
-	meta["force_world_rule_backfill"] = true
-	meta["force_raw_world_rule_audit"] = true
-	meta["force_episode_backfill"] = true
-	meta["force_hierarchy_backfill"] = true
+	meta["resume_existing_artifacts"] = true
 	meta["full_session_backfill"] = true
 	meta["session_normalize_full_session_backfill"] = true
 	return meta
 }
 
 func adminSessionNormalizeForceReindex(req adminSessionNormalizeRequest) bool {
+	if adminSessionNormalizeResumeExisting(req) {
+		return false
+	}
 	if req.ForceReindex == nil {
-		return true
+		return false
 	}
 	return *req.ForceReindex
+}
+
+func adminSessionNormalizeResumeExisting(req adminSessionNormalizeRequest) bool {
+	if req.ResumeExisting == nil {
+		return true
+	}
+	return *req.ResumeExisting
 }
 
 func adminSessionNormalizeJobRequest(sid string, req adminSessionNormalizeRequest, entries []dto.ChatLogRepairEntryRequest) map[string]any {
@@ -333,6 +340,7 @@ func adminSessionNormalizeJobRequest(sid string, req adminSessionNormalizeReques
 		"skip_rescan":           req.SkipRescan,
 		"skip_reindex":          req.SkipReindex,
 		"force_reindex":         adminSessionNormalizeForceReindex(req),
+		"resume_existing":       adminSessionNormalizeResumeExisting(req),
 		"client_meta_keys":      adminSessionNormalizeMetaKeys(req.ClientMeta),
 		"content_redacted":      true,
 		"background":            true,
@@ -503,11 +511,13 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 		"raw_partial_review_candidates":  intFromAny(before["raw_partial_turns"], 0),
 		"critic_rescan_max_items":        req.MaxItems,
 		"critic_rescan_turn_indices":     uniqueSortedNonNegativeInts(req.TurnIndices),
-		"critic_rescan_force_backfills":  true,
+		"critic_rescan_force_backfills":  false,
+		"critic_rescan_resume_existing":  true,
 		"world_rule_review_needed":       rawTurns > 0 && worldRules == 0,
 		"episode_review_needed":          rawTurns >= normalizedEpisodeInterval(0) && episodes == 0,
 		"vector_reindex_max_items":       req.MaxItems,
 		"vector_reindex_force":           adminSessionNormalizeForceReindex(req),
+		"resume_existing":                adminSessionNormalizeResumeExisting(req),
 		"safe_to_repeat":                 true,
 		"destructive":                    false,
 		"raw_turns_before":               rawTurns,
