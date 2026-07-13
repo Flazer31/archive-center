@@ -6172,6 +6172,19 @@
       out.charIdx = Number.isInteger(charIdx) ? charIdx : null;
       out.chatIdx = Number.isInteger(chatIdx) ? chatIdx : null;
 
+      if (R && typeof R.getChatFromIndex === "function" && Number.isInteger(charIdx) && Number.isInteger(chatIdx)) {
+        try {
+          const directChat = await R.getChatFromIndex(charIdx, chatIdx);
+          if (directChat && typeof directChat === "object" && extractActiveChatMessageCount(directChat) > 0) {
+            out.chat = directChat;
+            out.source = "R.getChatFromIndex";
+            return out;
+          }
+        } catch {
+          // Older RisuAI builds may expose the method without supporting the current chat shape.
+        }
+      }
+
       if (R && typeof R.getCharacter === "function") {
         const char = await R.getCharacter();
         const activeChat = resolveActiveChatFromCharacter(char, chatIdx, parsed && parsed.chatUniqueId);
