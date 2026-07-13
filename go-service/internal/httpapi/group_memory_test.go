@@ -899,7 +899,7 @@ func TestSearchVectorFirstHydratesMemoryWithoutLexicalTopKFill(t *testing.T) {
 	vectorFake := &fakeVectorStore{
 		healthSnapshot: vector.HealthSnapshot{Status: "ok", TotalCount: 2, ModelReady: true},
 		searchResults: []vector.VectorDocument{
-			{ID: "memory:sess-vector-search:1", Tier: "memory", ChatSessionID: "sess-vector-search", SourceTable: "memories", SourceRowID: "1", DocumentText: "semantic old shrine"},
+			{ID: "memory:sess-vector-search:1", Tier: "memory", ChatSessionID: "sess-vector-search", SourceTable: "memories", SourceRowID: "1", DocumentText: "semantic old shrine", Similarity: 0.82, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
 		},
 	}
 	srv.Vector = vectorFake
@@ -933,8 +933,8 @@ func TestSearchVectorFirstHydratesMemoryWithoutLexicalTopKFill(t *testing.T) {
 		t.Fatalf("vector search calls = %d, want 1", vectorFake.searchCalls)
 	}
 	items, ok := resp["items"].([]any)
-	if !ok || len(items) != 1 {
-		t.Fatalf("items = %T/%v, want only hydrated Chroma result", resp["items"], resp["items"])
+	if !ok || len(items) != 2 {
+		t.Fatalf("items = %T/%v, want vector result plus lexical fill", resp["items"], resp["items"])
 	}
 	first, ok := items[0].(map[string]any)
 	if !ok {
@@ -943,8 +943,8 @@ func TestSearchVectorFirstHydratesMemoryWithoutLexicalTopKFill(t *testing.T) {
 	if first["id"] != float64(1) || first["lane"] != "vector_relevant" || first["vector_hydrated"] != true {
 		t.Fatalf("first item = %#v, want hydrated vector memory id 1", first)
 	}
-	if _, ok := first["vector_rank_score"]; !ok {
-		t.Fatalf("first item missing vector_rank_score: %#v", first)
+	if _, ok := first["vector_similarity_score"]; !ok {
+		t.Fatalf("first item missing vector_similarity_score: %#v", first)
 	}
 	trace, ok := resp["vector_search"].(map[string]any)
 	if !ok {
@@ -953,8 +953,8 @@ func TestSearchVectorFirstHydratesMemoryWithoutLexicalTopKFill(t *testing.T) {
 	if trace["vector_memory_count"] != float64(1) {
 		t.Fatalf("vector_memory_count = %v, want 1", trace["vector_memory_count"])
 	}
-	if trace["lexical_fill_enabled"] != false || trace["vector_recall_ready"] != true {
-		t.Fatalf("vector-first trace should block lexical topK fill: %#v", trace)
+	if trace["lexical_fill_enabled"] != true || trace["vector_recall_ready"] != true {
+		t.Fatalf("vector-first trace should fill unused topK slots lexically: %#v", trace)
 	}
 	if trace["chat_log_fallback_enabled"] != false {
 		t.Fatalf("chat_log_fallback_enabled = %v, want false in vector-first /search trace", trace["chat_log_fallback_enabled"])
@@ -964,7 +964,7 @@ func TestSearchVectorFirstHydratesMemoryWithoutLexicalTopKFill(t *testing.T) {
 	}
 }
 
-func TestSearchVectorDegradedDoesNotLexicalFillAfterVectorAttempt(t *testing.T) {
+func TestSearchVectorDegradedFallsBackToLexicalAfterVectorAttempt(t *testing.T) {
 	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"model":"embed-model","data":[{"embedding":[0.1,0.2]}]}`)
@@ -1009,15 +1009,15 @@ func TestSearchVectorDegradedDoesNotLexicalFillAfterVectorAttempt(t *testing.T) 
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp["retrieval_mode"] != "vector_degraded_no_fill" {
-		t.Fatalf("retrieval_mode = %v, want vector_degraded_no_fill; resp=%#v", resp["retrieval_mode"], resp)
+	if resp["retrieval_mode"] != "vector_degraded_lexical" {
+		t.Fatalf("retrieval_mode = %v, want vector_degraded_lexical; resp=%#v", resp["retrieval_mode"], resp)
 	}
 	if reason := strings.TrimSpace(fmt.Sprint(resp["retrieval_fallback_reason"])); reason == "" || reason == "<nil>" {
 		t.Fatalf("retrieval_fallback_reason = %v, want non-empty degraded reason", resp["retrieval_fallback_reason"])
 	}
 	items, ok := resp["items"].([]any)
-	if !ok || len(items) != 0 {
-		t.Fatalf("items = %T/%v, want no lexical fill after vector attempt", resp["items"], resp["items"])
+	if !ok || len(items) != 1 {
+		t.Fatalf("items = %T/%v, want lexical fill after vector miss", resp["items"], resp["items"])
 	}
 	trace, ok := resp["vector_search"].(map[string]any)
 	if !ok {
@@ -1026,8 +1026,8 @@ func TestSearchVectorDegradedDoesNotLexicalFillAfterVectorAttempt(t *testing.T) 
 	if trace["search_result"] != "not_found" {
 		t.Fatalf("search_result = %v, want not_found", trace["search_result"])
 	}
-	if trace["lexical_fill_enabled"] != false || trace["vector_recall_attempted"] != true {
-		t.Fatalf("vector degraded trace should block lexical fill after attempt: %#v", trace)
+	if trace["lexical_fill_enabled"] != true || trace["vector_recall_attempted"] != true {
+		t.Fatalf("vector degraded trace should allow lexical fill after attempt: %#v", trace)
 	}
 }
 
@@ -1059,7 +1059,7 @@ func TestStep29RegressionSearchVectorFirstDefeatsRecentOnlyRanking(t *testing.T)
 	vectorFake := &fakeVectorStore{
 		healthSnapshot: vector.HealthSnapshot{Status: "ok", TotalCount: 8, ModelReady: true},
 		searchResults: []vector.VectorDocument{
-			{ID: "memory:sess-29-vector-recent:1", Tier: "memory", ChatSessionID: "sess-29-vector-recent", SourceTable: "memories", SourceRowID: "1", DocumentText: "ancient shrine vow"},
+			{ID: "memory:sess-29-vector-recent:1", Tier: "memory", ChatSessionID: "sess-29-vector-recent", SourceTable: "memories", SourceRowID: "1", DocumentText: "ancient shrine vow", Similarity: 0.81, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
 		},
 	}
 	srv.Vector = vectorFake
@@ -1087,8 +1087,8 @@ func TestStep29RegressionSearchVectorFirstDefeatsRecentOnlyRanking(t *testing.T)
 		t.Fatalf("decode: %v", err)
 	}
 	items, ok := resp["items"].([]any)
-	if !ok || len(items) != 1 {
-		t.Fatalf("items = %T/%v, want only Chroma-selected semantic result", resp["items"], resp["items"])
+	if !ok || len(items) < 1 {
+		t.Fatalf("items = %T/%v, want Chroma-selected semantic result first", resp["items"], resp["items"])
 	}
 	first := items[0].(map[string]any)
 	if first["id"] != float64(1) || first["lane"] != "vector_relevant" || first["vector_hydrated"] != true {
@@ -1098,7 +1098,7 @@ func TestStep29RegressionSearchVectorFirstDefeatsRecentOnlyRanking(t *testing.T)
 		t.Fatalf("retrieval_mode = %v, want vector_first", resp["retrieval_mode"])
 	}
 	trace := resp["vector_search"].(map[string]any)
-	if trace["vector_memory_count"] != float64(1) || trace["lexical_memory_count"] != float64(0) || trace["lexical_fill_enabled"] != false {
+	if trace["vector_memory_count"] != float64(1) || trace["lexical_fill_enabled"] != true {
 		t.Fatalf("vector/lexical counts mismatch: %#v", trace)
 	}
 }

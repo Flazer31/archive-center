@@ -34,12 +34,16 @@ func TestPrepareTurnVectorHydrationUsesVectorIDFallbackAndFiltersNonMemory(t *te
 				"score": 0.99,
 			},
 			{
-				"id":   "memory:sess-vector:4",
-				"tier": "memory",
+				"id":                "memory:sess-vector:4",
+				"tier":              "memory",
+				"similarity":        0.84,
+				"similarity_source": "cosine_from_query_and_stored_embedding",
 			},
 			{
-				"id":   "memory:sess-vector:4",
-				"tier": "memory",
+				"id":                "memory:sess-vector:4",
+				"tier":              "memory",
+				"similarity":        0.84,
+				"similarity_source": "cosine_from_query_and_stored_embedding",
 			},
 		},
 	}

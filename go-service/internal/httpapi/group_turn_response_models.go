@@ -60,7 +60,8 @@ func buildRecallResult(
 			}
 			if lane == "vector_relevant" {
 				if score := memorySelection.VectorScores[prepareTurnMemoryLaneKey(m)]; score > 0 {
-					item["vector_rank_score"] = score
+					item["vector_similarity_score"] = score
+					item["similarity"] = score
 				}
 			}
 			items = append(items, item)
@@ -522,7 +523,8 @@ func buildPrepareTurnRecallLanes(selection prepareTurnMemoryLaneSelection, rawFa
 			}
 			if lane == "vector_relevant" {
 				if score := selection.VectorScores[prepareTurnMemoryLaneKey(item)]; score > 0 {
-					row["vector_rank_score"] = score
+					row["vector_similarity_score"] = score
+					row["similarity"] = score
 				}
 			}
 			out = append(out, row)

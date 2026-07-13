@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,19 +79,27 @@ func (s *chromaStore) Search(ctx context.Context, sessionID string, vector []flo
 	if limit <= 0 {
 		limit = 5
 	}
+	candidateLimit := limit * 4
+	if candidateLimit < 12 {
+		candidateLimit = 12
+	}
+	if candidateLimit > 40 {
+		candidateLimit = 40
+	}
 	body := map[string]any{
 		"query_embeddings": [][]float32{vector},
-		"n_results":        limit,
-		"include":          []string{"metadatas", "documents", "distances"},
+		"n_results":        candidateLimit,
+		"include":          []string{"metadatas", "documents", "distances", "embeddings"},
 	}
 	if where := chromaWhere(sessionID, filter); len(where) > 0 {
 		body["where"] = where
 	}
 	var out struct {
-		IDs       [][]string         `json:"ids"`
-		Documents [][]string         `json:"documents"`
-		Metadatas [][]map[string]any `json:"metadatas"`
-		Distances [][]float64        `json:"distances"`
+		IDs        [][]string         `json:"ids"`
+		Documents  [][]string         `json:"documents"`
+		Metadatas  [][]map[string]any `json:"metadatas"`
+		Distances  [][]float64        `json:"distances"`
+		Embeddings [][][]float32      `json:"embeddings"`
 	}
 	if _, err := s.doJSON(ctx, http.MethodPost, s.collectionOperationPath(ref, "query"), body, &out, http.StatusOK); err != nil {
 		return nil, err
@@ -107,9 +117,63 @@ func (s *chromaStore) Search(ctx context.Context, sessionID string, vector []flo
 		if len(out.Documents) > 0 && i < len(out.Documents[0]) {
 			text = out.Documents[0][i]
 		}
-		docs = append(docs, vectorDocumentFromChroma(id, text, meta))
+		doc := vectorDocumentFromChroma(id, text, meta)
+		if len(out.Distances) > 0 && i < len(out.Distances[0]) {
+			doc.Distance = out.Distances[0][i]
+			doc.Similarity = inverseDistanceSimilarity(doc.Distance)
+			doc.SimilarityAvailable = true
+			doc.SimilaritySource = "chroma_distance_inverse"
+		}
+		if len(out.Embeddings) > 0 && i < len(out.Embeddings[0]) && len(out.Embeddings[0][i]) > 0 {
+			doc.Embedding = out.Embeddings[0][i]
+			if similarity, ok := cosineSimilarity(vector, doc.Embedding); ok {
+				doc.Similarity = similarity
+				doc.SimilarityAvailable = true
+				doc.SimilaritySource = "cosine_from_query_and_stored_embedding"
+			}
+		}
+		docs = append(docs, doc)
+	}
+	sort.SliceStable(docs, func(i, j int) bool {
+		left := docs[i]
+		right := docs[j]
+		if left.SimilarityAvailable != right.SimilarityAvailable {
+			return left.SimilarityAvailable
+		}
+		if left.Similarity != right.Similarity {
+			return left.Similarity > right.Similarity
+		}
+		return left.Distance < right.Distance
+	})
+	if len(docs) > limit {
+		docs = docs[:limit]
 	}
 	return docs, nil
+}
+
+func inverseDistanceSimilarity(distance float64) float64 {
+	if distance < 0 {
+		distance = 0
+	}
+	return 1 / (1 + distance)
+}
+
+func cosineSimilarity(left, right []float32) (float64, bool) {
+	if len(left) == 0 || len(left) != len(right) {
+		return 0, false
+	}
+	var dot, leftNorm, rightNorm float64
+	for i := range left {
+		l := float64(left[i])
+		r := float64(right[i])
+		dot += l * r
+		leftNorm += l * l
+		rightNorm += r * r
+	}
+	if leftNorm == 0 || rightNorm == 0 {
+		return 0, false
+	}
+	return math.Max(-1, math.Min(1, dot/(math.Sqrt(leftNorm)*math.Sqrt(rightNorm)))), true
 }
 
 func (s *chromaStore) Upsert(ctx context.Context, sessionID string, docs []VectorDocument) error {

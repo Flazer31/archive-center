@@ -862,6 +862,8 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 				"summary_language":        "en",
 				"session_output_language": "en",
 				"alias_count":             3,
+				"similarity":              0.86,
+				"similarity_source":       "cosine_from_query_and_stored_embedding",
 			},
 		},
 	}
@@ -904,7 +906,7 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnVectorReadyDoesNotFillTopKWithLexicalRecent(t *testing.T) {
+func TestPrepareTurnVectorReadyFillsUnusedTopKWithLexicalRecent(t *testing.T) {
 	memories := []store.Memory{
 		{ID: 1, TurnIndex: 1, SummaryJSON: `{"turn_summary":"Mina hid the brass key under the old shrine."}`, Importance: 5},
 		{ID: 2, TurnIndex: 9, SummaryJSON: `{"turn_summary":"Recent unrelated market conversation."}`, Importance: 9},
@@ -913,7 +915,7 @@ func TestPrepareTurnVectorReadyDoesNotFillTopKWithLexicalRecent(t *testing.T) {
 	vectorShadow := map[string]any{
 		"search_result": "ok",
 		"search_results": []map[string]any{
-			{"id": "memory:sess-vector:1", "source_table": "memories", "source_row_id": "1"},
+			{"id": "memory:sess-vector:1", "source_table": "memories", "source_row_id": "1", "similarity": 0.84, "similarity_source": "cosine_from_query_and_stored_embedding"},
 		},
 	}
 
@@ -921,14 +923,45 @@ func TestPrepareTurnVectorReadyDoesNotFillTopKWithLexicalRecent(t *testing.T) {
 	if len(selection.VectorRelevant) != 1 {
 		t.Fatalf("vector relevant count = %d, want 1", len(selection.VectorRelevant))
 	}
-	if len(selection.Relevant)+len(selection.Deep)+len(selection.Recent) != 0 {
-		t.Fatalf("Chroma-ready recall must not fill topK with lexical/recent lanes: %#v", selection)
+	if len(selection.Relevant)+len(selection.Deep)+len(selection.Recent) != 2 {
+		t.Fatalf("Chroma-ready recall should fill unused topK slots: %#v", selection)
 	}
-	if got := prepareTurnSelectedMemoryCount(selection); got != 1 {
-		t.Fatalf("selected count = %d, want only hydrated Chroma hit", got)
+	if got := prepareTurnSelectedMemoryCount(selection); got != 3 {
+		t.Fatalf("selected count = %d, want vector hit plus two fallback memories", got)
 	}
-	if selection.Trace["lexical_fill_enabled"] != false || selection.Trace["vector_recall_ready"] != true {
+	if selection.Trace["lexical_fill_enabled"] != true || selection.Trace["vector_recall_ready"] != true {
 		t.Fatalf("vector-ready trace mismatch: %#v", selection.Trace)
+	}
+}
+
+func TestPrepareTurnRejectsLowSimilarityVectorAndUsesQueryRelevantFallback(t *testing.T) {
+	memories := []store.Memory{
+		{ID: 1, TurnIndex: 1, SummaryJSON: `{"turn_summary":"Unrelated opening battle memory."}`, Importance: 0.9},
+		{ID: 2, TurnIndex: 20, SummaryJSON: `{"turn_summary":"The party leaves the clinic and enters the shopping street."}`, Importance: 0.5},
+	}
+	vectorShadow := map[string]any{
+		"search_result": "ok",
+		"search_results": []map[string]any{
+			{
+				"id":                "memory:sess-vector:1",
+				"source_table":      "memories",
+				"source_row_id":     "1",
+				"similarity":        0.08,
+				"similarity_source": "cosine_from_query_and_stored_embedding",
+			},
+		},
+	}
+
+	selection := selectPrepareTurnMemoryLanesWithVector(memories, "Leave the clinic and walk into the shopping street.", 1, vectorShadow)
+	if len(selection.VectorRelevant) != 0 {
+		t.Fatalf("low-similarity vector hit must not be injected: %#v", selection.VectorRelevant)
+	}
+	if len(selection.Relevant) != 1 || selection.Relevant[0].ID != 2 {
+		t.Fatalf("query-relevant lexical memory should replace rejected vector hit: %#v", selection)
+	}
+	trace := mapFromAny(selection.Trace["vector_recall"])
+	if got := intFromAny(trace["below_similarity_count"], 0); got != 1 {
+		t.Fatalf("below_similarity_count = %d, want 1; trace=%#v", got, trace)
 	}
 }
 
@@ -948,7 +981,7 @@ func TestStep29RegressionPrepareTurnVectorIsInjectedNotShadowOnly(t *testing.T) 
 	srv.Vector = &fakeVectorStore{
 		healthSnapshot: vector.HealthSnapshot{Status: "ok", TotalCount: 2, ModelReady: true},
 		searchResults: []vector.VectorDocument{
-			{ID: "memory:sess-29-shadow-only:1", Tier: "memory", ChatSessionID: "sess-29-shadow-only", SourceTable: "memories", SourceRowID: "1", DocumentText: "old semantic oath"},
+			{ID: "memory:sess-29-shadow-only:1", Tier: "memory", ChatSessionID: "sess-29-shadow-only", SourceTable: "memories", SourceRowID: "1", DocumentText: "old semantic oath", Similarity: 0.83, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
 		},
 	}
 	srv.VectorOpenError = nil
@@ -1048,7 +1081,7 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 	srv.Vector = &fakeVectorStore{
 		healthSnapshot: vector.HealthSnapshot{Status: "ok", TotalCount: 2, ModelReady: true},
 		searchResults: []vector.VectorDocument{
-			{ID: "memory:sess-247a-render:1", Tier: "memory", ChatSessionID: "sess-247a-render", SourceTable: "memories", SourceRowID: "1", DocumentText: "sealed crest protected identity"},
+			{ID: "memory:sess-247a-render:1", Tier: "memory", ChatSessionID: "sess-247a-render", SourceTable: "memories", SourceRowID: "1", DocumentText: "sealed crest protected identity", Similarity: 0.88, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
 		},
 	}
 	srv.VectorOpenError = nil

@@ -433,10 +433,10 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 		vectorShadow := map[string]any{
 			"search_result": "ok",
 			"search_results": []map[string]any{
-				{"id": "evidence:sess-artifact-vector:101", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "101"},
-				{"id": "world_rule:sess-artifact-vector:201", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "201"},
-				{"id": "evidence:sess-artifact-vector:102", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "102"},
-				{"id": "world_rule:sess-artifact-vector:202", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "202"},
+				{"id": "evidence:sess-artifact-vector:101", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "101", "similarity": 0.87, "similarity_source": "cosine_from_query_and_stored_embedding"},
+				{"id": "world_rule:sess-artifact-vector:201", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "201", "similarity": 0.82, "similarity_source": "cosine_from_query_and_stored_embedding"},
+				{"id": "evidence:sess-artifact-vector:102", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "102", "similarity": 0.78, "similarity_source": "cosine_from_query_and_stored_embedding"},
+				{"id": "world_rule:sess-artifact-vector:202", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "202", "similarity": 0.76, "similarity_source": "cosine_from_query_and_stored_embedding"},
 			},
 		}
 		assembly := buildPrepareTurnInjectionAssembly(nil, nil, evidence, nil, nil, worldRules, nil, nil, nil, nil, nil, nil, nil, 4, 4000, "Gloria thinks about Lia.", "default", nil, vectorShadow, nil, map[string]any{"current_pov": "Gloria"})
@@ -494,9 +494,9 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 			"search_result": "ok",
 			"search_results": []map[string]any{
 				{"id": "episode:sess-24:77", "source_table": "episode_summaries", "source_row_id": "77"},
-				{"id": "memory:sess-24:2", "source_table": "memories", "source_row_id": "2", "raw_language": "ja", "summary_language": "en", "session_output_language": "en", "alias_count": 2},
+				{"id": "memory:sess-24:2", "source_table": "memories", "source_row_id": "2", "raw_language": "ja", "summary_language": "en", "session_output_language": "en", "alias_count": 2, "similarity": 0.86, "similarity_source": "cosine_from_query_and_stored_embedding"},
 				{"id": "memory:sess-24:99", "source_table": "memories", "source_row_id": "99"},
-				{"id": "memory:sess-24:1", "source_table": "memories", "source_row_id": "1", "raw_language": "ko", "summary_language": "en", "session_output_language": "en", "alias_count": 2},
+				{"id": "memory:sess-24:1", "source_table": "memories", "source_row_id": "1", "raw_language": "ko", "summary_language": "en", "session_output_language": "en", "alias_count": 2, "similarity": 0.81, "similarity_source": "cosine_from_query_and_stored_embedding"},
 			},
 		}
 		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 2, 3000, "Recall the old oath.", "default", nil, vectorShadow, nil)

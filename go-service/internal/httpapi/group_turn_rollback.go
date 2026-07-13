@@ -421,6 +421,11 @@ func vectorDocumentSearchPreview(docs []vector.VectorDocument) []map[string]any 
 			"schema_version":  doc.SchemaVersion,
 			"preview":         truncateTextForShadow(doc.DocumentText, 240),
 		}
+		if doc.SimilarityAvailable {
+			item["similarity"] = doc.Similarity
+			item["distance"] = doc.Distance
+			item["similarity_source"] = doc.SimilaritySource
+		}
 		if strings.TrimSpace(doc.SearchTextPolicy) != "" {
 			item["search_text_policy"] = strings.TrimSpace(doc.SearchTextPolicy)
 		}

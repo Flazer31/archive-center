@@ -61,6 +61,10 @@ type CollectionResetter interface {
 type VectorDocument struct {
 	ID                    string
 	Embedding             []float32
+	Distance              float64
+	Similarity            float64
+	SimilarityAvailable   bool
+	SimilaritySource      string
 	Tier                  string
 	ChatSessionID         string
 	SourceTable           string

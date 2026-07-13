@@ -349,7 +349,8 @@ func (s *Server) vectorFirstSearchMemoryItems(ctx context.Context, req dto.Searc
 		item["vector_hydrated"] = true
 		item["vector_truth_boundary"] = "vector_hit_is_selector_only_mariadb_memory_is_canonical"
 		if score := hydration.Scores[prepareTurnMemoryLaneKey(mem)]; score > 0 {
-			item["vector_rank_score"] = score
+			item["vector_similarity_score"] = score
+			item["similarity"] = score
 		}
 		out = append(out, item)
 		seenMemoryIDs[mem.ID] = true
@@ -365,11 +366,11 @@ func (s *Server) vectorFirstSearchMemoryItems(ctx context.Context, req dto.Searc
 		retrievalMode = "vector_first"
 		fallbackReason = ""
 	} else if vectorSearchAttempted {
-		retrievalMode = "vector_degraded_no_fill"
+		retrievalMode = "vector_degraded_lexical"
 	}
 	vectorSelectedCount := len(out)
 	lexicalFillReason := ""
-	lexicalFillEnabled := !(vectorRecallReady || vectorSearchAttempted)
+	lexicalFillEnabled := !vectorRecallReady || vectorSelectedCount < topK
 	if lexicalFillEnabled && vectorSelectedCount > 0 && vectorSelectedCount < topK {
 		lexicalFillReason = "vector_result_count_below_top_k"
 	} else if lexicalFillEnabled && vectorSelectedCount == 0 {

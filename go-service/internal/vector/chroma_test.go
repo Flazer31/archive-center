@@ -49,7 +49,8 @@ func newChromaTestServer(t *testing.T, state *chromaTestServerState) *httptest.S
 					"source_row_id":"7",
 					"schema_version":"q1a.v1"
 				}]],
-				"distances":[[0.1]]
+				"distances":[[0.1]],
+				"embeddings":[[[0.1,0.2]]]
 			}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/collection-1/get":
 			_, _ = w.Write([]byte(`{"ids":["doc-1","doc-2"]}`))
@@ -101,6 +102,20 @@ func TestChromaStoreUpsertSearchCountDelete(t *testing.T) {
 	if docs[0].ChatSessionID != "sess-1" || docs[0].SourceTable != "memories" {
 		t.Fatalf("metadata not mapped: %+v", docs[0])
 	}
+	if !docs[0].SimilarityAvailable || docs[0].Similarity < 0.999 || docs[0].SimilaritySource != "cosine_from_query_and_stored_embedding" {
+		t.Fatalf("actual cosine similarity not preserved: %+v", docs[0])
+	}
+	state.mu.Lock()
+	queryCandidateLimit := 0
+	for _, body := range state.bodies {
+		if value, ok := body["n_results"].(float64); ok {
+			queryCandidateLimit = int(value)
+		}
+	}
+	state.mu.Unlock()
+	if queryCandidateLimit != 12 {
+		t.Fatalf("query n_results = %d, want overfetch 12 for reranking", queryCandidateLimit)
+	}
 
 	total, err := store.Count(ctx, "")
 	if err != nil || total != 2 {
@@ -139,6 +154,42 @@ func TestChromaStoreUpsertSearchCountDelete(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing request %q in:\n%s", want, joined)
 		}
+	}
+}
+
+func TestChromaStoreReranksReturnedCandidatesByActualCosine(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/collections/archive_center_vectors"):
+			_, _ = w.Write([]byte(`{"id":"collection-1","name":"archive_center_vectors"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/collections/collection-1/query"):
+			_, _ = w.Write([]byte(`{
+				"ids":[["old-fixed","query-relevant"]],
+				"documents":[["old fixed memory","query relevant memory"]],
+				"metadatas":[[
+					{"tier":"memory","chat_session_id":"sess-rerank"},
+					{"tier":"memory","chat_session_id":"sess-rerank"}
+				]],
+				"distances":[[0.01,0.9]],
+				"embeddings":[[[0,1],[1,0]]]
+			}`))
+		default:
+			http.Error(w, r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	raw, err := NewChromaStore(ts.URL, "archive_center_vectors", "/api/v2")
+	if err != nil {
+		t.Fatalf("NewChromaStore: %v", err)
+	}
+	docs, err := raw.Search(context.Background(), "sess-rerank", []float32{1, 0}, 1, "tier == memory")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(docs) != 1 || docs[0].ID != "query-relevant" {
+		t.Fatalf("actual cosine rerank did not replace fixed upstream order: %+v", docs)
 	}
 }
 

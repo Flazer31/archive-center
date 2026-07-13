@@ -594,8 +594,8 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["vector_recall"] = vectorHydration.Trace
 	out.Trace["vector_recall_ready"] = vectorRecallReady
 	out.Trace["vector_recall_attempted"] = vectorRecallAttempted
-	out.Trace["lexical_fill_enabled"] = !vectorRecallReady && prepareTurnSelectedMemoryCount(out) < totalLimit
-	if vectorRecallReady {
+	out.Trace["lexical_fill_enabled"] = prepareTurnSelectedMemoryCount(out) < totalLimit
+	if vectorRecallReady && prepareTurnSelectedMemoryCount(out) >= totalLimit {
 		out.Trace["vector_selected"] = len(out.VectorRelevant)
 		out.Trace["recent_selected"] = 0
 		out.Trace["relevant_selected"] = 0
@@ -710,7 +710,7 @@ func prepareTurnVectorRecallReady(trace map[string]any) bool {
 	if trace == nil {
 		return false
 	}
-	return strings.TrimSpace(stringFromMap(trace, "status")) == "ready"
+	return strings.TrimSpace(stringFromMap(trace, "status")) == "ready" && intFromAny(trace["selected_count"], 0) > 0
 }
 
 func prepareTurnVectorSearchAttempted(vectorShadow map[string]any) bool {
@@ -1035,6 +1035,11 @@ type prepareTurnVectorArtifactHydration struct {
 	Trace      map[string]any
 }
 
+const (
+	prepareTurnMinCosineSimilarity          = 0.30
+	prepareTurnMinInverseDistanceSimilarity = 0.55
+)
+
 func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow map[string]any, limit int) prepareTurnVectorMemoryHydration {
 	out := prepareTurnVectorMemoryHydration{
 		Items:  []store.Memory{},
@@ -1049,6 +1054,8 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			"duplicate_count":                 0,
 			"missing_count":                   0,
 			"non_memory_count":                0,
+			"score_missing_count":             0,
+			"below_similarity_count":          0,
 			"search_text_policy":              languageMemorySearchPolicy,
 			"hit_language_context_count":      0,
 			"hit_alias_indexed_count":         0,
@@ -1099,7 +1106,7 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 	hydratedRawLanguageCounts := map[string]int{}
 	hydratedSummaryLanguageCounts := map[string]int{}
 	hydratedSessionLanguageCounts := map[string]int{}
-	for rank, hit := range hits {
+	for _, hit := range hits {
 		if len(out.Items) >= limit {
 			break
 		}
@@ -1122,6 +1129,15 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			out.Trace["duplicate_count"] = intFromAny(out.Trace["duplicate_count"], 0) + 1
 			continue
 		}
+		score, scoreOK := prepareTurnVectorHitSimilarity(hit)
+		if !scoreOK {
+			out.Trace["score_missing_count"] = intFromAny(out.Trace["score_missing_count"], 0) + 1
+			continue
+		}
+		if !prepareTurnVectorSimilarityEligible(score, stringFromMap(hit, "similarity_source")) {
+			out.Trace["below_similarity_count"] = intFromAny(out.Trace["below_similarity_count"], 0) + 1
+			continue
+		}
 		seen[id] = true
 		out.Items = append(out.Items, item)
 		languageMeta := memoryVectorLanguageMetadata(item)
@@ -1135,7 +1151,7 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			out.Trace["hydrated_alias_ready_count"] = intFromAny(out.Trace["hydrated_alias_ready_count"], 0) + 1
 		}
 		key := prepareTurnMemoryLaneKey(item)
-		out.Scores[key] = prepareTurnVectorRankScore(rank)
+		out.Scores[key] = score
 	}
 	out.Trace["hydrated_count"] = len(out.Items)
 	out.Trace["selected_count"] = len(out.Items)
@@ -1164,6 +1180,8 @@ func prepareTurnHydrateVectorArtifactHits(evidence []store.DirectEvidence, world
 			"scope_filtered_count":      0,
 			"missing_count":             0,
 			"duplicate_count":           0,
+			"score_missing_count":       0,
+			"below_similarity_count":    0,
 		},
 	}
 	limit = prepareTurnRecallLimit(limit)
@@ -1199,6 +1217,15 @@ func prepareTurnHydrateVectorArtifactHits(evidence []store.DirectEvidence, world
 	for _, hit := range hits {
 		if len(out.Evidence)+len(out.WorldRules) >= limit {
 			break
+		}
+		score, scoreOK := prepareTurnVectorHitSimilarity(hit)
+		if !scoreOK {
+			out.Trace["score_missing_count"] = intFromAny(out.Trace["score_missing_count"], 0) + 1
+			continue
+		}
+		if !prepareTurnVectorSimilarityEligible(score, stringFromMap(hit, "similarity_source")) {
+			out.Trace["below_similarity_count"] = intFromAny(out.Trace["below_similarity_count"], 0) + 1
+			continue
 		}
 		sourceTable := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "source_table")))
 		tier := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "tier")))
@@ -1383,12 +1410,26 @@ func prepareTurnVectorSearchResultMaps(value any) []map[string]any {
 	}
 }
 
-func prepareTurnVectorRankScore(rank int) float64 {
-	score := 1.0 - float64(rank)*0.05
-	if score < 0.1 {
-		return 0.1
+func prepareTurnVectorHitSimilarity(hit map[string]any) (float64, bool) {
+	if hit == nil {
+		return 0, false
 	}
-	return score
+	raw, ok := hit["similarity"]
+	if !ok {
+		return 0, false
+	}
+	score := extractionFloatFromAny(raw, -2)
+	if score < -1 || score > 1 {
+		return 0, false
+	}
+	return score, true
+}
+
+func prepareTurnVectorSimilarityEligible(score float64, source string) bool {
+	if strings.TrimSpace(source) == "chroma_distance_inverse" {
+		return score >= prepareTurnMinInverseDistanceSimilarity
+	}
+	return score >= prepareTurnMinCosineSimilarity
 }
 
 func prepareTurnMemoryAlreadySelected(selection prepareTurnMemoryLaneSelection, item store.Memory) bool {
