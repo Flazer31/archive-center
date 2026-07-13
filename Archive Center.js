@@ -6602,13 +6602,15 @@
     try {
       const out = [];
       const rawMessages = extractActiveChatMessageList(activeChat);
-      for (const raw of rawMessages) {
+      for (let rawMessageIndex = 0; rawMessageIndex < rawMessages.length; rawMessageIndex++) {
+        const raw = rawMessages[rawMessageIndex];
         const comparable = extractComparableMessageRoleAndContent(raw);
         if (comparable && (comparable.content || comparable.role === "user")) {
           out.push({
             role: comparable.role,
             content: comparable.content,
             raw: raw,
+            risuMessageIndex: rawMessageIndex,
           });
           continue;
         }
@@ -6617,7 +6619,7 @@
         const previousRole = out.length > 0 ? out[out.length - 1].role : "";
         const role = inferComparableRoleFromSequence(raw, previousRole);
         if (role === "user" || role === "assistant") {
-          out.push({ role, content, raw });
+          out.push({ role, content, raw, risuMessageIndex: rawMessageIndex });
         }
       }
       return out;
@@ -6723,6 +6725,33 @@
     };
   }
 
+  function resolveSelectedStartupMessageTurnZeroCandidate(character, activeChat) {
+    try {
+      if (!character || typeof character !== "object" || !activeChat || typeof activeChat !== "object") return null;
+      if (String(character.type || "").toLowerCase() === "group") return null;
+      const firstMessage = ["firstMessage", "first_message", "firstMes", "first_mes"]
+        .map(function(key) { return getStringFieldValue(character, key); })
+        .find(Boolean) || "";
+      const alternateGreetings = Array.isArray(character.alternateGreetings)
+        ? character.alternateGreetings
+        : (Array.isArray(character.alternate_greetings) ? character.alternate_greetings : []);
+      const nested = activeChat.data && typeof activeChat.data === "object" ? activeChat.data : null;
+      const rawIndex = Number(activeChat.fmIndex != null ? activeChat.fmIndex : (nested && nested.fmIndex));
+      const selectedIndex = Number.isInteger(rawIndex) ? rawIndex : -1;
+      const selectedAlternate = selectedIndex >= 0
+        ? normalizeStartupMessageContent(alternateGreetings[selectedIndex])
+        : "";
+      const selected = selectedAlternate || firstMessage;
+      if (!selected) return null;
+      return buildStartupMessageTurnZeroCandidateFromText(
+        selected,
+        selectedAlternate ? "risu_selected_alternate_greeting_turn0" : "risu_selected_first_message_turn0"
+      );
+    } catch {
+      return null;
+    }
+  }
+
   async function getCurrentStartupMessageTurnZeroCandidate(fallbackMessages) {
     try {
       const fallbackComparable = Array.isArray(fallbackMessages)
@@ -6731,6 +6760,7 @@
       const activeMessages = [];
       let fieldCandidates = [];
       let activeChatResolved = false;
+      let selectedActiveStarter = null;
 
       if (R && typeof R.getCharacter === "function") {
         let chatIdx = null;
@@ -6742,6 +6772,7 @@
         if (activeChat) {
           activeChatResolved = true;
           activeMessages.push(...extractActiveChatComparableMessages(activeChat));
+          selectedActiveStarter = resolveSelectedStartupMessageTurnZeroCandidate(char, activeChat);
         }
         fieldCandidates.push(...collectStartupMessageFieldCandidates(char));
       }
@@ -6750,6 +6781,7 @@
         activeMessages.length > 0 ? activeMessages : fallbackComparable
       );
       if (fromActive) return fromActive;
+      if (selectedActiveStarter) return selectedActiveStarter;
 
       // Many RisuAI characters expose multiple selectable starter stories.
       // Once an active chat is resolved, character-level fields are unsafe:
@@ -7767,6 +7799,8 @@
           userContent: String(pair.userContent || ""),
           assistantContent: String(pair.assistantContent || ""),
           pairCount: pairs.length,
+          risuUserMessageIndex: Number.isInteger(pair.risuUserMessageIndex) ? pair.risuUserMessageIndex : null,
+          risuAssistantMessageIndex: Number.isInteger(pair.risuAssistantMessageIndex) ? pair.risuAssistantMessageIndex : null,
           source: wantedUser && pairUser ? "active_chat_user_assistant_pair" : "active_chat_assistant_pair",
         };
       }
@@ -7795,6 +7829,8 @@
           userContent: String(pair.userContent || ""),
           assistantContent: String(pair.assistantContent || ""),
           pairCount: pairs.length,
+          risuUserMessageIndex: Number.isInteger(pair.risuUserMessageIndex) ? pair.risuUserMessageIndex : null,
+          risuAssistantMessageIndex: Number.isInteger(pair.risuAssistantMessageIndex) ? pair.risuAssistantMessageIndex : null,
           source: "active_chat_user_pair",
         };
       }
@@ -7889,19 +7925,43 @@
       if (activePair && Number(activePair.turnIndex) > 0) {
         const activePairTurnIndex = Number(activePair.turnIndex);
         const routingTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", activePair.turnIndex);
+        if (routingTurnResolution && routingTurnResolution.status === "skip_pre_route_visible_pair") {
+          return previousNextTurnIndex;
+        }
         const routingTurnIndex = routingTurnResolution && routingTurnResolution.status !== "skip_pre_route_visible_pair"
           ? Number(routingTurnResolution.turnIndex || 0)
           : 0;
         const hasRoutingBaseline = !!(routingTurnResolution && routingTurnResolution.baseline);
         const resolvedTurnIndex = hasRoutingBaseline
-          ? Math.max(previousNextTurnIndex, routingTurnIndex)
-          : (activePairTurnIndex >= previousNextTurnIndex ? activePairTurnIndex : previousNextTurnIndex);
+          ? routingTurnIndex
+          : activePairTurnIndex;
+        if (resolvedTurnIndex > 0 && resolvedTurnIndex <= Number(latestBackendTurn || 0)) {
+          const existing = await safeCall(
+            () => fetchCanonicalChatLogsForTurn(sid, resolvedTurnIndex),
+            null,
+            "reserveAfterRequestExistingLogicalTurn"
+          );
+          const sameExistingPair = Array.isArray(existing)
+            && chatLogItemsContainRoleContent(existing, "user", userContent)
+            && chatLogItemsContainRoleContent(existing, "assistant", assistantContent);
+          if (Array.isArray(existing) && !sameExistingPair) {
+            await executeAutoRollback(sid, resolvedTurnIndex, "risu_message_index_turn_replaced", {
+              prevTurnIndex: Number(latestBackendTurn || 0),
+              firstRemovedTurnIndex: resolvedTurnIndex,
+              removedAssistantCount: Math.max(1, Number(latestBackendTurn || 0) - resolvedTurnIndex + 1),
+              visibleCompletedTurnCount: Number(activePair.pairCount || activePairTurnIndex || 0),
+              backendLatestTurnIndex: Number(latestBackendTurn || 0),
+              risuUserMessageIndex: Number(activePair.risuUserMessageIndex),
+              risuAssistantMessageIndex: Number(activePair.risuAssistantMessageIndex),
+            }, { updateAutoState: true });
+          }
+        }
         setTurnCounterExact(sid, resolvedTurnIndex);
         if (lastOrchResult && lastOrchResult._trace) {
           lastOrchResult._trace.turnIndexResolution = {
             status: routingTurnResolution && routingTurnResolution.status === "rebased"
               ? "session_routing_baseline_rebased"
-              : (activePairTurnIndex >= previousNextTurnIndex ? "active_chat_aligned" : "active_chat_visible_window_rebased"),
+              : "risu_message_index_aligned",
             source: activePair.source,
             matchMode: activePairMatchMode || "unknown",
             turnIndex: resolvedTurnIndex,
@@ -7912,6 +7972,8 @@
             routingBaselineReason: routingTurnResolution && routingTurnResolution.baseline ? String(routingTurnResolution.baseline.reason || "") : "",
             routingBaselineBackendTurn: routingTurnResolution && routingTurnResolution.baseline ? Number(routingTurnResolution.baseline.backendTurnAtRoute || 0) : 0,
             routingBaselineLocalPairs: routingTurnResolution && routingTurnResolution.baseline ? Number(routingTurnResolution.baseline.localPairCountAtRoute || 0) : 0,
+            risuUserMessageIndex: Number(activePair.risuUserMessageIndex),
+            risuAssistantMessageIndex: Number(activePair.risuAssistantMessageIndex),
           };
         }
         return resolvedTurnIndex;
@@ -7935,6 +7997,7 @@
       let pendingUser = "";
       let pendingAssistantCandidates = [];
       let pendingStartIndex = 0;
+      let pendingUserMessageIndex = null;
 
       function emitPending(endIndex) {
         const userContent = String(pendingUser || "").trim();
@@ -7942,7 +8005,13 @@
         const assistantContent = selectedAssistant ? String(selectedAssistant.candidate || "").trim() : "";
         if (!userContent || !assistantContent) return;
         if (shouldSkipUserInputPersistence(userContent) || shouldSkipTurnPersistenceForOoc(userContent, assistantContent)) return;
-        const turnIndex = pairs.length + 1;
+        const risuUserMessageIndex = Number.isInteger(pendingUserMessageIndex) ? pendingUserMessageIndex : null;
+        const risuAssistantMessageIndex = selectedAssistant && Number.isInteger(selectedAssistant.risuMessageIndex)
+          ? selectedAssistant.risuMessageIndex
+          : null;
+        const turnIndex = Number.isInteger(risuUserMessageIndex) && risuUserMessageIndex >= 0 && risuUserMessageIndex % 2 === 0
+          ? Math.floor(risuUserMessageIndex / 2) + 1
+          : pairs.length + 1;
         const contextMessages = comparable
           .slice(Math.max(0, pendingStartIndex - ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES), pendingStartIndex)
           .map(function(msg) {
@@ -7956,6 +8025,8 @@
           endIndex,
           assistantCandidateCount: pendingAssistantCandidates.length,
           selectedAssistantIndex: selectedAssistant ? Number(selectedAssistant.index || 0) : null,
+          risuUserMessageIndex: Number.isInteger(risuUserMessageIndex) ? risuUserMessageIndex : null,
+          risuAssistantMessageIndex: Number.isInteger(risuAssistantMessageIndex) ? risuAssistantMessageIndex : null,
           hash: computeOrchestrationDirtyHashOr1c(userContent + "\n---assistant---\n" + assistantContent),
           source: "risu_active_chat_complete_turn_backfill",
         });
@@ -7975,6 +8046,7 @@
             : AUTO_CONTINUE_USER_INPUT_MARKER;
           pendingAssistantCandidates = [];
           pendingStartIndex = i;
+          pendingUserMessageIndex = Number.isInteger(msg.risuMessageIndex) ? msg.risuMessageIndex : null;
         } else if (msg.role === "assistant") {
           if (!pendingUser) continue; // leading assistant messages are turn 0 starter candidates.
           const assistantContent = normalizeAssistantPersistenceCandidate(content);
@@ -7983,6 +8055,7 @@
               candidate: assistantContent,
               rawContent: content,
               index: i,
+              risuMessageIndex: Number.isInteger(msg.risuMessageIndex) ? msg.risuMessageIndex : null,
               streamingState: getActiveChatMessageStreamingState(msg.raw),
             });
           }
@@ -15448,7 +15521,7 @@
       const ledgerState = loadRollbackTurnLedgerOr1f(sid);
       const entries = ledgerState && Array.isArray(ledgerState.entries) ? ledgerState.entries : [];
       const currentList = compactSnapshotMessages(currentMessages);
-      if (!ledgerState || entries.length === 0 || currentList.length === 0) return null;
+      if (!ledgerState || entries.length === 0) return null;
 
       const completedCount = Math.max(0, Number(activeCompletedTurnCount || 0));
       const backendLatest = Math.max(0, Number(latestBackendTurn || 0));
@@ -15503,7 +15576,7 @@
     _rollbackTailReconcileInFlight = true;
     try {
       const rawMessages = extractActiveChatMessageList(activeChat);
-      if (!Array.isArray(rawMessages) || rawMessages.length === 0) return false;
+      if (!Array.isArray(rawMessages)) return false;
       const comparable = extractActiveChatComparableMessages(activeChat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable);
       const visibleCompletedTurnCount = pairs.length;
@@ -15598,7 +15671,7 @@
       if (!sessionId) return false;
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId);
       const messages = resolvedActiveChat.chat ? extractActiveChatRollbackMessages(resolvedActiveChat.chat) : [];
-      if (!Array.isArray(messages) || messages.length === 0) return false;
+      if (!resolvedActiveChat.chat || !Array.isArray(messages)) return false;
       const watcherSignature = [
         messages.length,
         computeTailHash(messages),

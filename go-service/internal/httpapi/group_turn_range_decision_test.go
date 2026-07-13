@@ -67,6 +67,36 @@ func TestSessionRoutingTurnResolutionPreservesOldPlusNewTurns(t *testing.T) {
 	}
 }
 
+func TestAllSessionRoutingModesProtectImportedTurnsOnFirstLocalDelete(t *testing.T) {
+	for _, reason := range []string{"timeline_copy", "timeline_migrate", "timeline_attach"} {
+		t.Run(reason, func(t *testing.T) {
+			baseline := &routingTurnBaseline{BackendTurnAtRoute: 7, LocalPairsAtRoute: 0, Reason: reason}
+			firstLocalTurn := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
+				Mode: "pair", LocalTurnIndex: 1, Baseline: baseline,
+			})
+			if firstLocalTurn.TurnIndex != 8 || firstLocalTurn.ProtectedBeforeTurn != 7 || firstLocalTurn.MinFromTurn != 8 {
+				t.Fatalf("first local turn must be 7+1, resolution=%+v", firstLocalTurn)
+			}
+
+			afterDelete := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
+				Mode: "visible_completed", VisibleCompletedTurns: 0, Baseline: baseline,
+			})
+			if afterDelete.CompletedTurns != 7 || afterDelete.ProtectedBeforeTurn != 7 || afterDelete.MinFromTurn != 8 {
+				t.Fatalf("empty local chat must retain imported seven turns, resolution=%+v", afterDelete)
+			}
+
+			decision := calculateRollbackDecision(rollbackDecisionRequest{
+				ChatSessionID: "char_1_cid_target", RequestSource: "auto", Reason: "assistant_deleted_output_removed",
+				CandidateFromTurn: 1, PreviousTurnIndex: 8, RemovedAssistantCount: 1,
+				VisibleCompletedTurns: 0, BackendLatestTurn: 8, DeletionObserved: true, Baseline: baseline,
+			})
+			if !decision.Allowed || decision.FromTurn != 8 || decision.ProtectedBeforeTurn != 7 || decision.MinFromTurn != 8 {
+				t.Fatalf("first local delete must remove only turn 8, decision=%+v", decision)
+			}
+		})
+	}
+}
+
 func TestRollbackDecisionTokenIsOneUseAndBoundToRange(t *testing.T) {
 	ledger := newRollbackDecisionLedger()
 	record := ledger.issue("s", 4, "auto")
