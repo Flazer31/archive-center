@@ -6,5 +6,5 @@
 
 문서:
 
+- `../3.0-implementation-ledger.md`: RC4 이후 전체 3.0 구현·되돌림·미완료 작업의 통합 원장
 - `current-state-belief-implementation.md`: 설계, 실제 변경, 검증, 되돌림 및 재적용 기준
-
