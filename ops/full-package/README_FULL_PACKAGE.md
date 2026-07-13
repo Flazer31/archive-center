@@ -113,4 +113,3 @@ Do not put these into a release zip:
 - API keys
 - `.git`
 - `.runtime-cache`
-- Milvus runtime/data

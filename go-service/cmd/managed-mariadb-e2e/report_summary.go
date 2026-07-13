@@ -41,9 +41,6 @@ func summarizeVectorRuntime() map[string]any {
 		"chromadb_collection":                     collection,
 		"chromadb_api_path":                       apiPath,
 		"live_cutover_requires_chromadb_endpoint": true,
-		"milvus_required":                         false,
-		"milvus_default":                          false,
-		"milvus_optional_experimental":            true,
 	}
 }
 

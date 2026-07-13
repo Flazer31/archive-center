@@ -92,7 +92,6 @@ func run(binPath, goServiceRoot string, startupTimeout, probeTimeout time.Durati
 			"authority_switch":       false,
 			"mariadb_required":       false,
 			"mariadb_authority":      false,
-			"milvus_required":        false,
 			"chromadb_required":      true,
 			"chroma_retired":         false,
 			"go_default_switch":      false,
@@ -236,19 +235,14 @@ func buildCommand(ctx context.Context, spec launchSpec) (*exec.Cmd, string, []st
 
 func forcedNoopEnv(base []string, port int) []string {
 	blocked := map[string]bool{
-		"AC_BIND_ADDR":           true,
-		"AC_MODE":                true,
-		"AC_STORE_MODE":          true,
-		"AC_MARIADB_DSN":         true,
-		"AC_STORE_FIXTURE_DIR":   true,
-		"AC_CHROMA_ENDPOINT":     true,
-		"AC_CHROMA_COLLECTION":   true,
-		"AC_CHROMA_API_PATH":     true,
-		"AC_MILVUS_ENDPOINT":     true,
-		"AC_MILVUS_LITE_PATH":    true,
-		"AC_MILVUS_STUB_ENABLED": true,
-		"AC_MILVUS_SDK_ENABLED":  true,
-		"AC_MILVUS_LIVE_ENABLED": true,
+		"AC_BIND_ADDR":         true,
+		"AC_MODE":              true,
+		"AC_STORE_MODE":        true,
+		"AC_MARIADB_DSN":       true,
+		"AC_STORE_FIXTURE_DIR": true,
+		"AC_CHROMA_ENDPOINT":   true,
+		"AC_CHROMA_COLLECTION": true,
+		"AC_CHROMA_API_PATH":   true,
 	}
 	out := make([]string, 0, len(base)+3)
 	for _, kv := range base {

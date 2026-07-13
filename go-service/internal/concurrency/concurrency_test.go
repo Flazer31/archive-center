@@ -227,17 +227,6 @@ func TestSharedState_MariaDBReady(t *testing.T) {
 	}
 }
 
-func TestSharedState_MilvusReady(t *testing.T) {
-	ss := NewSharedState()
-	if ss.IsMilvusReady() {
-		t.Fatal("default Milvus ready should be false")
-	}
-	ss.SetMilvusReady(true)
-	if !ss.IsMilvusReady() {
-		t.Fatal("Milvus ready round-trip failed")
-	}
-}
-
 func TestSharedState_EmbeddingConfig(t *testing.T) {
 	ss := NewSharedState()
 	model, endpoint := ss.GetEmbeddingConfig()

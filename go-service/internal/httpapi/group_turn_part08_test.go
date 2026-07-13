@@ -372,7 +372,6 @@ func TestRollbackMinFromTurnClampsAttachedSessionDelete(t *testing.T) {
 func TestRollbackLiveWritePartialError(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBShadow
-	cfg.MilvusSDKEnabled = true
 
 	rec := &rollbackRecordingStore{Store: store.NewNoopStore()}
 	rec.deleteErr = errors.New("boom")

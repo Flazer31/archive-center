@@ -30,9 +30,6 @@ func TestDefault(t *testing.T) {
 	if cfg.Readiness.MariaDBConfigured {
 		t.Error("MariaDBConfigured should be false by default")
 	}
-	if cfg.Readiness.MilvusConfigured {
-		t.Error("MilvusConfigured should be false by default")
-	}
 	if cfg.MariaDBProductReadEnabled {
 		t.Error("MariaDBProductReadEnabled should be false by default")
 	}
@@ -47,24 +44,6 @@ func TestDefault(t *testing.T) {
 	}
 	if cfg.ChromaAPIPath != "/api/v2" {
 		t.Errorf("ChromaAPIPath = %q, want /api/v2", cfg.ChromaAPIPath)
-	}
-	if cfg.MilvusStubEnabled {
-		t.Error("MilvusStubEnabled should be false by default")
-	}
-	if cfg.MilvusLitePath != "" {
-		t.Errorf("MilvusLitePath should be empty by default, got %q", cfg.MilvusLitePath)
-	}
-	if cfg.MilvusSDKEnabled {
-		t.Error("MilvusSDKEnabled should be false by default")
-	}
-	if cfg.MilvusRecallReadEnabled {
-		t.Error("MilvusRecallReadEnabled should be false by default")
-	}
-	if cfg.MilvusProductReadEnabled {
-		t.Error("MilvusProductReadEnabled should be false by default")
-	}
-	if cfg.MilvusEndpoint != "" {
-		t.Errorf("MilvusEndpoint should be empty by default, got %q", cfg.MilvusEndpoint)
 	}
 	if cfg.PromptDir != "" {
 		t.Errorf("PromptDir should be empty by default, got %q", cfg.PromptDir)
@@ -169,19 +148,6 @@ func TestLoadFixtureShadowStoreMode(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("fixture shadow config should validate: %v", err)
-	}
-}
-
-func TestLoadMilvusStubEnabledOverride(t *testing.T) {
-	t.Setenv("AC_MILVUS_STUB_ENABLED", "true")
-	t.Setenv("AC_MILVUS_LITE_PATH", "/tmp/milvus_test.db")
-
-	cfg := Load()
-	if !cfg.MilvusStubEnabled {
-		t.Error("MilvusStubEnabled should be true when AC_MILVUS_STUB_ENABLED=true")
-	}
-	if cfg.MilvusLitePath != "/tmp/milvus_test.db" {
-		t.Errorf("MilvusLitePath = %q, want %q", cfg.MilvusLitePath, "/tmp/milvus_test.db")
 	}
 }
 
@@ -305,63 +271,6 @@ func TestValidateBlocksMariaDBProductReadWithoutDSN(t *testing.T) {
 	}
 }
 
-func TestLoadMilvusSDKEnabledOverride(t *testing.T) {
-	t.Setenv("AC_MILVUS_SDK_ENABLED", "true")
-	t.Setenv("AC_MILVUS_ENDPOINT", "localhost:19530")
-
-	cfg := Load()
-	if !cfg.MilvusSDKEnabled {
-		t.Error("MilvusSDKEnabled should be true when AC_MILVUS_SDK_ENABLED=true")
-	}
-	if cfg.MilvusEndpoint != "localhost:19530" {
-		t.Errorf("MilvusEndpoint = %q, want %q", cfg.MilvusEndpoint, "localhost:19530")
-	}
-	if !cfg.Readiness.MilvusConfigured {
-		t.Error("Readiness.MilvusConfigured should be true when endpoint is set")
-	}
-}
-
-func TestLoadMilvusRecallReadEnabledOverride(t *testing.T) {
-	t.Setenv("AC_MILVUS_SDK_ENABLED", "true")
-	t.Setenv("AC_MILVUS_ENDPOINT", "localhost:19530")
-	t.Setenv("AC_MILVUS_RECALL_READ_ENABLED", "true")
-
-	cfg := Load()
-	if !cfg.MilvusRecallReadEnabled {
-		t.Error("MilvusRecallReadEnabled should be true when AC_MILVUS_RECALL_READ_ENABLED=true")
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() should allow bounded recall read drill with SDK endpoint: %v", err)
-	}
-}
-
-func TestLoadMilvusProductReadEnabledOverride(t *testing.T) {
-	t.Setenv("AC_MILVUS_SDK_ENABLED", "true")
-	t.Setenv("AC_MILVUS_ENDPOINT", "localhost:19530")
-	t.Setenv("AC_MILVUS_RECALL_READ_ENABLED", "true")
-	t.Setenv("AC_MILVUS_PRODUCT_READ_ENABLED", "true")
-
-	cfg := Load()
-	if !cfg.MilvusProductReadEnabled {
-		t.Error("MilvusProductReadEnabled should be true when AC_MILVUS_PRODUCT_READ_ENABLED=true")
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("Validate() should allow product read proof with SDK endpoint and recall read enabled: %v", err)
-	}
-}
-
-func TestLoadIgnoresMilvusLiveEnabledEnvInR1(t *testing.T) {
-	t.Setenv("AC_MILVUS_LIVE_ENABLED", "true")
-
-	cfg := Load()
-	if cfg.MilvusStubEnabled {
-		t.Error("AC_MILVUS_LIVE_ENABLED must not enable the R1 stub or live retrieval")
-	}
-	if cfg.MilvusSDKEnabled {
-		t.Error("AC_MILVUS_LIVE_ENABLED must not enable the SDK store")
-	}
-}
-
 func TestValidateBlocksLiveAndCutoverWithoutMariaDBAuthority(t *testing.T) {
 	for _, mode := range []Mode{ModeLive, ModeCutover} {
 		cfg := Default()
@@ -390,24 +299,6 @@ func TestValidateAllowsShadow(t *testing.T) {
 	cfg.Mode = ModeShadow
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() should allow shadow mode: %v", err)
-	}
-}
-
-func TestValidateBlocksMilvusRecallReadWithoutSDKEndpoint(t *testing.T) {
-	cfg := Default()
-	cfg.MilvusRecallReadEnabled = true
-	if err := cfg.Validate(); err == nil {
-		t.Error("Validate() should reject Milvus recall read drill without SDK endpoint")
-	}
-}
-
-func TestValidateBlocksMilvusProductReadWithoutRecallRead(t *testing.T) {
-	cfg := Default()
-	cfg.MilvusSDKEnabled = true
-	cfg.MilvusEndpoint = "localhost:19530"
-	cfg.MilvusProductReadEnabled = true
-	if err := cfg.Validate(); err == nil {
-		t.Error("Validate() should reject Milvus product read proof without recall read enabled")
 	}
 }
 
@@ -548,9 +439,6 @@ func TestStringRedacted(t *testing.T) {
 	if !strings.Contains(s, "StoreMode=noop") {
 		t.Errorf("String() should contain StoreMode, got %q", s)
 	}
-	if !strings.Contains(s, "MilvusStubEnabled=false") {
-		t.Errorf("String() should contain MilvusStubEnabled=false, got %q", s)
-	}
 	if !strings.Contains(s, "RuntimeProfile=core_lite") {
 		t.Errorf("String() should contain RuntimeProfile=core_lite, got %q", s)
 	}
@@ -560,14 +448,11 @@ func TestStringRedacted(t *testing.T) {
 	if !strings.Contains(s, "ChromaEnabled=false") {
 		t.Errorf("String() should contain ChromaEnabled=false, got %q", s)
 	}
-	if !strings.Contains(s, "MilvusSDKEnabled=false") {
-		t.Errorf("String() should contain MilvusSDKEnabled=false, got %q", s)
-	}
 }
 
 func TestLoadPreservesDefaultsWhenNoEnv(t *testing.T) {
 	// Ensure environment is clean for known keys.
-	for _, key := range []string{"AC_BIND_ADDR", "AC_MODE", "AC_STORE_MODE", "AC_RUNTIME_PROFILE", "AC_VECTOR_MODE", "AC_BUILD_VERSION", "AC_BUILD_COMMIT", "AC_BUILD_TIME", "AC_MARIADB_DSN", "AC_STORE_FIXTURE_DIR", "AC_CHROMA_ENDPOINT", "AC_CHROMA_COLLECTION", "AC_CHROMA_API_PATH", "AC_MILVUS_ENDPOINT", "AC_BEARER_TOKEN", "AC_ENFORCE_AUTH", "AC_MILVUS_LIVE_ENABLED", "AC_MILVUS_STUB_ENABLED", "AC_MILVUS_LITE_PATH", "AC_MILVUS_SDK_ENABLED", "AC_PROMPT_DIR"} {
+	for _, key := range []string{"AC_BIND_ADDR", "AC_MODE", "AC_STORE_MODE", "AC_RUNTIME_PROFILE", "AC_VECTOR_MODE", "AC_BUILD_VERSION", "AC_BUILD_COMMIT", "AC_BUILD_TIME", "AC_MARIADB_DSN", "AC_STORE_FIXTURE_DIR", "AC_CHROMA_ENDPOINT", "AC_CHROMA_COLLECTION", "AC_CHROMA_API_PATH", "AC_BEARER_TOKEN", "AC_ENFORCE_AUTH", "AC_PROMPT_DIR"} {
 		os.Unsetenv(key)
 	}
 
@@ -595,9 +480,6 @@ func TestLoadPreservesDefaultsWhenNoEnv(t *testing.T) {
 	if cfg.Readiness.MariaDBConfigured != want.Readiness.MariaDBConfigured {
 		t.Errorf("MariaDBConfigured = %v, want %v", cfg.Readiness.MariaDBConfigured, want.Readiness.MariaDBConfigured)
 	}
-	if cfg.Readiness.MilvusConfigured != want.Readiness.MilvusConfigured {
-		t.Errorf("MilvusConfigured = %v, want %v", cfg.Readiness.MilvusConfigured, want.Readiness.MilvusConfigured)
-	}
 	if cfg.Readiness.ChromaConfigured != want.Readiness.ChromaConfigured {
 		t.Errorf("ChromaConfigured = %v, want %v", cfg.Readiness.ChromaConfigured, want.Readiness.ChromaConfigured)
 	}
@@ -606,18 +488,6 @@ func TestLoadPreservesDefaultsWhenNoEnv(t *testing.T) {
 	}
 	if cfg.ChromaEndpoint != want.ChromaEndpoint {
 		t.Errorf("ChromaEndpoint = %q, want %q", cfg.ChromaEndpoint, want.ChromaEndpoint)
-	}
-	if cfg.MilvusStubEnabled != want.MilvusStubEnabled {
-		t.Errorf("MilvusStubEnabled = %v, want %v", cfg.MilvusStubEnabled, want.MilvusStubEnabled)
-	}
-	if cfg.MilvusLitePath != want.MilvusLitePath {
-		t.Errorf("MilvusLitePath = %q, want %q", cfg.MilvusLitePath, want.MilvusLitePath)
-	}
-	if cfg.MilvusSDKEnabled != want.MilvusSDKEnabled {
-		t.Errorf("MilvusSDKEnabled = %v, want %v", cfg.MilvusSDKEnabled, want.MilvusSDKEnabled)
-	}
-	if cfg.MilvusEndpoint != want.MilvusEndpoint {
-		t.Errorf("MilvusEndpoint = %q, want %q", cfg.MilvusEndpoint, want.MilvusEndpoint)
 	}
 	if cfg.PromptDir != want.PromptDir {
 		t.Errorf("PromptDir = %q, want %q", cfg.PromptDir, want.PromptDir)

@@ -106,33 +106,6 @@ type Config struct {
 	// ChromaAPIPath is the Chroma HTTP API prefix. Default is /api/v2.
 	ChromaAPIPath string
 
-	// MilvusStubEnabled wires the deprecated disabled Milvus Lite seam.
-	// Default is false; Milvus is future-only and not a 2.0 install requirement.
-	MilvusStubEnabled bool
-
-	// MilvusSDKEnabled explicitly opts into the deprecated Milvus SDK vector store.
-	// Default is false; ChromaDB is the selected 2.0 vector accelerator.
-	MilvusSDKEnabled bool
-
-	// MilvusLitePath is the local persist path for Milvus Lite.
-	// Only used when MilvusStubEnabled is true. In R0/R1 this is
-	// accepted but not connected.
-	MilvusLitePath string
-
-	// MilvusEndpoint is the Milvus server endpoint (e.g. "localhost:19530").
-	// Only used when MilvusSDKEnabled is true.
-	MilvusEndpoint string
-
-	// MilvusRecallReadEnabled allows the selected recall surface to perform a
-	// bounded Milvus read drill. Default is false; this is not a default runtime
-	// or product cutover switch.
-	MilvusRecallReadEnabled bool
-
-	// MilvusProductReadEnabled promotes the selected recall surface from a
-	// bounded drill to an explicit R2 product-read proof. Default is false and
-	// it is accepted only with the SDK endpoint plus recall-read drill enabled.
-	MilvusProductReadEnabled bool
-
 	// PromptDir is the editable prompt directory used by the migrated prompt
 	// editor. Only known prompt files are exposed by the HTTP API.
 	PromptDir string
@@ -182,10 +155,6 @@ type ReadinessConfig struct {
 
 	// ChromaConfigured is true when a Chroma endpoint is present in the environment.
 	ChromaConfigured bool
-
-	// MilvusConfigured is true when a Milvus endpoint is present in the environment.
-	// Milvus remains future-only in 2.0 and is not required for readiness.
-	MilvusConfigured bool
 }
 
 // AuthConfig holds bearer-token authentication settings.
@@ -209,12 +178,6 @@ func Default() Config {
 		ChromaEndpoint:            "",
 		ChromaCollection:          "archive_center_vectors",
 		ChromaAPIPath:             "/api/v2",
-		MilvusStubEnabled:         false,
-		MilvusSDKEnabled:          false,
-		MilvusLitePath:            "",
-		MilvusEndpoint:            "",
-		MilvusRecallReadEnabled:   false,
-		MilvusProductReadEnabled:  false,
 		PromptDir:                 "",
 		BuildVersion:              "2.0.0-dev",
 		BuildCommit:               "unknown",
@@ -222,7 +185,6 @@ func Default() Config {
 		Readiness: ReadinessConfig{
 			MariaDBConfigured: false,
 			ChromaConfigured:  false,
-			MilvusConfigured:  false,
 		},
 		Auth: AuthConfig{
 			BearerToken: "",
@@ -326,9 +288,6 @@ func Load() Config {
 	if v := os.Getenv("AC_CHROMA_API_PATH"); v != "" {
 		cfg.ChromaAPIPath = v
 	}
-	cfg.MilvusEndpoint = os.Getenv("AC_MILVUS_ENDPOINT")
-	cfg.Readiness.MilvusConfigured = cfg.MilvusEndpoint != ""
-	cfg.MilvusLitePath = os.Getenv("AC_MILVUS_LITE_PATH")
 	cfg.PromptDir = os.Getenv("AC_PROMPT_DIR")
 	cfg.ChromaShadowPersistDir = os.Getenv("AC_CHROMA_SHADOW_PERSIST_DIR")
 	cfg.EmbedderProvider = os.Getenv("AC_EMBEDDER_PROVIDER")
@@ -341,18 +300,6 @@ func Load() Config {
 		default:
 			cfg.PrunePolicy = "soft"
 		}
-	}
-	if os.Getenv("AC_MILVUS_STUB_ENABLED") == "true" {
-		cfg.MilvusStubEnabled = true
-	}
-	if os.Getenv("AC_MILVUS_SDK_ENABLED") == "true" {
-		cfg.MilvusSDKEnabled = true
-	}
-	if os.Getenv("AC_MILVUS_RECALL_READ_ENABLED") == "true" {
-		cfg.MilvusRecallReadEnabled = true
-	}
-	if os.Getenv("AC_MILVUS_PRODUCT_READ_ENABLED") == "true" {
-		cfg.MilvusProductReadEnabled = true
 	}
 	if os.Getenv("AC_MARIADB_PRODUCT_READ_ENABLED") == "true" {
 		cfg.MariaDBProductReadEnabled = true
@@ -489,12 +436,6 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.ChromaEndpoint) != "" && strings.TrimSpace(c.ChromaCollection) == "" {
 		return fmt.Errorf("config: chroma vector store requires AC_CHROMA_COLLECTION")
 	}
-	if c.MilvusRecallReadEnabled && (!c.MilvusSDKEnabled || strings.TrimSpace(c.MilvusEndpoint) == "") {
-		return fmt.Errorf("config: milvus recall read drill requires AC_MILVUS_SDK_ENABLED=true and AC_MILVUS_ENDPOINT")
-	}
-	if c.MilvusProductReadEnabled && (!c.MilvusRecallReadEnabled || !c.MilvusSDKEnabled || strings.TrimSpace(c.MilvusEndpoint) == "") {
-		return fmt.Errorf("config: milvus product read proof requires AC_MILVUS_RECALL_READ_ENABLED=true, AC_MILVUS_SDK_ENABLED=true, and AC_MILVUS_ENDPOINT")
-	}
 	return nil
 }
 
@@ -570,5 +511,5 @@ func (c Config) IsLiveCutoverAllowed() bool {
 
 // String returns a redacted string representation safe for logs.
 func (c Config) String() string {
-	return fmt.Sprintf("Config{BindAddr=%s Mode=%s StoreMode=%s RuntimeProfile=%s VectorMode=%s MariaDBProductReadEnabled=%t ChromaEnabled=%t MilvusStubEnabled=%t MilvusSDKEnabled=%t MilvusRecallReadEnabled=%t MilvusProductReadEnabled=%t Version=%s}", c.BindAddr, c.Mode, c.StoreMode, c.RuntimeProfile, c.VectorMode, c.MariaDBProductReadEnabled, c.ChromaEnabled, c.MilvusStubEnabled, c.MilvusSDKEnabled, c.MilvusRecallReadEnabled, c.MilvusProductReadEnabled, c.BuildVersion)
+	return fmt.Sprintf("Config{BindAddr=%s Mode=%s StoreMode=%s RuntimeProfile=%s VectorMode=%s MariaDBProductReadEnabled=%t ChromaEnabled=%t Version=%s}", c.BindAddr, c.Mode, c.StoreMode, c.RuntimeProfile, c.VectorMode, c.MariaDBProductReadEnabled, c.ChromaEnabled, c.BuildVersion)
 }

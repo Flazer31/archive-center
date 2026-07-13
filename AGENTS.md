@@ -14,7 +14,7 @@
   - Go-primary backend service.
   - MariaDB canonical truth store.
   - ChromaDB-compatible vector retrieval lane by default.
-  - Milvus Lite is named only as an optional/experimental vector backend and must not be treated as the default remigration target unless the user explicitly reopens it.
+  - ChromaDB is the product vector backend. The retired Milvus experiment must not be restored without an explicit new architecture decision.
 - Use R0/R1/R2/R3 vocabulary:
   - R0: contracts, inventories, benchmarks, scaffolding.
   - R1: shadow write/read/compare.

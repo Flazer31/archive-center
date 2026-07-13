@@ -583,8 +583,7 @@ print_preflight() {
   "mariadb_present": $(json_bool "$mariadb_present"),
   "chromadb_present": $(json_bool "$chromadb_present"),
   "normal_user_manual_mariadb_required": false,
-  "normal_user_manual_chromadb_required": $(json_bool "$manual_chromadb_required"),
-  "milvus_included": false
+  "normal_user_manual_chromadb_required": $(json_bool "$manual_chromadb_required")
 }
 EOF
 }

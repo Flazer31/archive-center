@@ -322,7 +322,6 @@ foreach ($target in $targets) {
         size_bytes = [int64]$sizeBytes
         canonical_store = "mariadb"
         vector_engine = "optional_chromadb"
-        milvus_included = $false
         runtime_payloads_included = $false
         runtime_profile_default = $target.RuntimeProfileDefault
         vector_mode_default = $target.VectorModeDefault
@@ -356,7 +355,6 @@ foreach ($target in $targets) {
             ".git",
             ".runtime",
             ".runtime-cache",
-            "Milvus runtime/data",
             "user database files",
             "ChromaDB persist data"
         )

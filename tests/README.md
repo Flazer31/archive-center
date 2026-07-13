@@ -8,8 +8,7 @@ Initial tests should prove compatibility and safety before any live cutover:
 
 - current API contract preservation
 - MariaDB shadow parity
-- Milvus Lite shadow parity
+- ChromaDB retrieval and degraded-mode behavior
 - Go runtime trace/error parity
 - rollback/fallback behavior
 - clean artifact/release hygiene
-

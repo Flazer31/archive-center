@@ -443,7 +443,6 @@ $manifest = [ordered]@{
     size_bytes = [int64]$sizeBytes
     canonical_store = "mariadb"
     vector_engine = $vectorEngine
-    milvus_included = $false
     includes_runtime_binaries = $releaseReady
     runtime_profile_default = $runtimeProfileDefault
     vector_mode_default = $vectorModeDefault
@@ -498,7 +497,6 @@ $manifest = [ordered]@{
         "test binaries",
         "database files",
         "ChromaDB persist data",
-        "Milvus runtime/data",
         "backup/release/deploy outputs"
     )
     missing = $missing

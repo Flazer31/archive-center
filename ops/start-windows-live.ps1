@@ -4,15 +4,9 @@ param(
     [string]$RuntimeDir = "",
     [string]$ProviderBin = "",
     [string]$GoBinary = "",
-    [string]$MilvusEndpoint = "",
-    [string]$MilvusLitePython = "",
-    [string]$MilvusDataDir = "",
-    [int]$MilvusPort = 0,
-    [string]$MilvusQuerySet = "",
     [string]$GoCacheDir = "",
     [string]$Out = "",
     [switch]$UseExistingBinary,
-    [switch]$StartManagedMilvus,
     [switch]$WriteSmoke,
     [switch]$SmokeOnly
 )
@@ -117,34 +111,6 @@ function Find-MariaDBProvider {
     throw "Bundled MariaDB provider was not found. Stage the managed runtime first; normal users must not install MariaDB manually."
 }
 
-function Find-MilvusLitePython {
-    param([string]$RepoRoot, [string]$WorkspaceRoot, [string]$ExplicitPython)
-
-    $candidates = @()
-    if (-not [string]::IsNullOrWhiteSpace($ExplicitPython)) {
-        $candidates += (Resolve-FullPath $ExplicitPython)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($env:AC_MILVUS_LITE_PYTHON)) {
-        $candidates += (Resolve-FullPath $env:AC_MILVUS_LITE_PYTHON)
-    }
-    $candidates += (Join-Path $WorkspaceRoot ".runtime-cache\temp\archive-center-2.0\milvus-lite-runtime\Scripts\python.exe")
-    $candidates += (Join-Path $WorkspaceRoot ".runtime-cache\archive-center-2.0\milvus-lite-runtime\Scripts\python.exe")
-    $candidates += (Join-Path $RepoRoot "runtime\Python\Scripts\python.exe")
-    $candidates += (Join-Path $RepoRoot "runtime\python\Scripts\python.exe")
-
-    foreach ($candidate in $candidates) {
-        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            continue
-        }
-        & $candidate -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('milvus_lite') else 1)" *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return $candidate
-        }
-    }
-
-    throw "Bundled Milvus Lite Python runtime was not found. Stage the managed runtime first; normal users must not install Milvus manually."
-}
-
 function Start-ManagedProcess {
     param(
         [string]$FileName,
@@ -231,18 +197,6 @@ function Get-StatNumber {
     return [int]$value
 }
 
-function Read-FirstMilvusQuery {
-    param([string]$QuerySetPath)
-    if ([string]::IsNullOrWhiteSpace($QuerySetPath) -or -not (Test-Path -LiteralPath $QuerySetPath -PathType Leaf)) {
-        return $null
-    }
-    $payload = Get-Content -LiteralPath $QuerySetPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($null -eq $payload.queries -or $payload.queries.Count -lt 1) {
-        return $null
-    }
-    return $payload.queries[0]
-}
-
 function Resolve-GoCommand {
     param([string]$RepoRoot, [string]$WorkspaceRoot)
 
@@ -309,10 +263,6 @@ $dataDir = Join-Path $RuntimeDir "mariadb-data"
 $logDir = Join-Path $RuntimeDir "logs"
 New-Item -ItemType Directory -Force -Path $dataDir, $logDir | Out-Null
 
-if ([string]::IsNullOrWhiteSpace($MilvusQuerySet)) {
-    $MilvusQuerySet = Join-Path $repoRoot "benchmarks\chroma-milvus-query-set-2026-05-25-real.json"
-}
-
 $provider = Find-MariaDBProvider $repoRoot $workspaceRoot $ProviderBin
 $providerBinDir = Split-Path -Parent $provider
 $installDb = Join-Path $providerBinDir "mariadb-install-db.exe"
@@ -356,33 +306,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "MariaDB bootstrap SQL failed."
 }
 
-$startedMilvus = $null
-$milvusPrepareReport = $null
-if ($StartManagedMilvus) {
-    if (-not [string]::IsNullOrWhiteSpace($MilvusEndpoint)) {
-        throw "Use either -StartManagedMilvus or -MilvusEndpoint, not both."
-    }
-    $milvusPython = Find-MilvusLitePython $repoRoot $workspaceRoot $MilvusLitePython
-    if ($MilvusPort -le 0) {
-        $MilvusPort = Get-FreeTcpPort
-    }
-    if ([string]::IsNullOrWhiteSpace($MilvusDataDir)) {
-        $MilvusDataDir = Join-Path $workspaceRoot ".runtime-cache\temp\archive-center-2.0-live\milvus-lite-$MilvusPort.db"
-    }
-    $MilvusDataDir = Resolve-FullPath $MilvusDataDir
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $MilvusDataDir) | Out-Null
-    $milvusArgs = @("-m", "milvus_lite", "server", "--data-dir", $MilvusDataDir, "--host", "127.0.0.1", "--port", [string]$MilvusPort)
-    $startedMilvus = Start-ManagedProcess -FileName $milvusPython -ArgList $milvusArgs -WorkingDirectory $RuntimeDir -Stdout "capture" -Stderr "capture"
-    Start-Sleep -Seconds 2
-    if ($startedMilvus.HasExited) {
-        $milvusOut = $startedMilvus.StandardOutput.ReadToEnd()
-        $milvusErr = $startedMilvus.StandardError.ReadToEnd()
-        throw "Milvus Lite exited early with code $($startedMilvus.ExitCode). stdout=$milvusOut stderr=$milvusErr"
-    }
-    Wait-TcpPort -Port $MilvusPort -TimeoutSeconds 60
-    $MilvusEndpoint = "http://127.0.0.1:$MilvusPort"
-}
-
 $defaultGoCache = Join-Path $workspaceRoot ".runtime-cache\temp\go-cache-active"
 if ([string]::IsNullOrWhiteSpace($GoCacheDir)) {
     $GoCacheDir = $defaultGoCache
@@ -399,17 +322,6 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "mariadb-schema failed."
     }
-    if (-not [string]::IsNullOrWhiteSpace($MilvusEndpoint) -and (Test-Path -LiteralPath $MilvusQuerySet -PathType Leaf)) {
-        $milvusPrepareOut = Join-Path $workspaceRoot ".runtime-cache\temp\archive-center-2.0-live\milvus-collection-prepare-$MilvusPort.json"
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $milvusPrepareOut) | Out-Null
-        & $goCmd run -buildvcs=false ./cmd/milvus-sdk-smoke -execute -ensure-collection -endpoint $MilvusEndpoint -query-set $MilvusQuerySet -out $milvusPrepareOut
-        if ($LASTEXITCODE -ne 0) {
-            throw "milvus-sdk-smoke collection prepare failed."
-        }
-        if (Test-Path -LiteralPath $milvusPrepareOut -PathType Leaf) {
-            $milvusPrepareReport = Get-Content -LiteralPath $milvusPrepareOut -Raw -Encoding UTF8 | ConvertFrom-Json
-        }
-    }
 } finally {
     Pop-Location
 }
@@ -422,13 +334,6 @@ $goEnv = @{
     "AC_PROMPT_DIR" = (Join-Path $repoRoot "prompts")
     "GOCACHE" = $env:GOCACHE
     "GOMODCACHE" = $env:GOMODCACHE
-}
-
-if (-not [string]::IsNullOrWhiteSpace($MilvusEndpoint)) {
-    $goEnv["AC_MILVUS_ENDPOINT"] = $MilvusEndpoint
-    $goEnv["AC_MILVUS_SDK_ENABLED"] = "true"
-    $goEnv["AC_MILVUS_RECALL_READ_ENABLED"] = "true"
-    $goEnv["AC_MILVUS_PRODUCT_READ_ENABLED"] = "true"
 }
 
 if ([string]::IsNullOrWhiteSpace($GoBinary)) {
@@ -449,12 +354,6 @@ Write-Host "Archive Center 2.0 live source runtime"
 Write-Host "  Go:      $BindAddr"
 Write-Host "  MariaDB: 127.0.0.1:$MariaDBPort ($dbName)"
 Write-Host "  Store:   mariadb_authority"
-if ([string]::IsNullOrWhiteSpace($MilvusEndpoint)) {
-    Write-Host "  Milvus:  not enabled (pass -MilvusEndpoint to enable SDK/product-read path)"
-} else {
-    Write-Host "  Milvus:  $MilvusEndpoint"
-}
-
 if ($SmokeOnly) {
     if (-not [string]::IsNullOrWhiteSpace($GoBinary)) {
         $goProcess = Start-ManagedProcess -FileName (Resolve-FullPath $GoBinary) -ArgList @() -WorkingDirectory $goServiceRoot -Environment $goEnv
@@ -515,72 +414,6 @@ if ($SmokeOnly) {
             }
         }
 
-        $milvusSmokeReport = $null
-        if (-not [string]::IsNullOrWhiteSpace($MilvusEndpoint)) {
-            $milvusQuery = Read-FirstMilvusQuery -QuerySetPath $MilvusQuerySet
-            if ($null -ne $milvusQuery) {
-                $milvusSid = [string]$milvusQuery.chat_session_id
-                if ([string]::IsNullOrWhiteSpace($milvusSid) -and $null -ne $milvusPrepareReport) {
-                    $milvusSid = [string]$milvusPrepareReport.session_id
-                }
-                $sourceId = [string]$milvusQuery.source_id
-                $vector = @($milvusQuery.embedding)
-                $limit = 5
-                $filter = ""
-                if (-not [string]::IsNullOrWhiteSpace($milvusSid)) {
-                    $filter = "chat_session_id == `"$milvusSid`""
-                }
-                $preparePayload = @{
-                    chat_session_id = $milvusSid
-                    turn_index = 1
-                    raw_user_input = "Milvus product-read smoke"
-                    client_meta = @{
-                        milvus_query_vector = $vector
-                        milvus_filter = $filter
-                    }
-                    settings = @{
-                        top_k = $limit
-                        injection_enabled = $false
-                        input_context_enabled = $false
-                    }
-                } | ConvertTo-Json -Depth 32
-                $prepareTurn = Invoke-RestMethod -Method Post -Uri "$baseUrl/prepare-turn" -ContentType "application/json; charset=utf-8" -Body $preparePayload -TimeoutSec 20
-                $recall = $prepareTurn.recall_result
-                $vectorShadow = $recall.vector_shadow
-                $topId = $null
-                if ($null -ne $vectorShadow.search_results -and $vectorShadow.search_results.Count -gt 0) {
-                    $topId = [string]$vectorShadow.search_results[0].id
-                }
-                $milvusOk = (
-                    $vectorShadow.milvus_live_enabled -eq $true -and
-                    $vectorShadow.live_retrieval_enabled -eq $true -and
-                    $vectorShadow.product_read_enabled -eq $true -and
-                    $vectorShadow.search_result -eq "ok" -and
-                    $vectorShadow.search_result_count -ge 1
-                )
-                $milvusSmokeReport = [pscustomobject]@{
-                    status = $(if ($milvusOk) { "ok" } else { "failed" })
-                    endpoint = $MilvusEndpoint
-                    query_set = $MilvusQuerySet
-                    session_id = $milvusSid
-                    source_id = $sourceId
-                    top_id = $topId
-                    collection_prepare = $milvusPrepareReport
-                    prepare_turn = $prepareTurn
-                    summary = [pscustomobject]@{
-                        persisted_milvus_live_enabled = $true
-                        persisted_live_retrieval_enabled = $true
-                        bounded_shadow_route_only = $false
-                        search_result = [string]$vectorShadow.search_result
-                        search_result_count = [int]$vectorShadow.search_result_count
-                        product_read_enabled = [bool]$vectorShadow.product_read_enabled
-                        milvus_live_enabled = [bool]$vectorShadow.milvus_live_enabled
-                        live_retrieval_enabled = [bool]$vectorShadow.live_retrieval_enabled
-                    }
-                }
-            }
-        }
-
         $report = [pscustomobject]@{
             status = "ok"
             base_url = $baseUrl
@@ -588,9 +421,6 @@ if ($SmokeOnly) {
             stats_before = $beforeStats
             stats_after = $afterStats
             write_smoke = $writeSmokeReport
-            milvus_smoke = $milvusSmokeReport
-            milvus_endpoint = $MilvusEndpoint
-            managed_milvus_started = [bool]$StartManagedMilvus
             runtime_dir = $RuntimeDir
         }
         $json = $report | ConvertTo-Json -Depth 16
@@ -603,9 +433,6 @@ if ($SmokeOnly) {
     } finally {
         if ($goProcess -and -not $goProcess.HasExited) {
             $goProcess.Kill()
-        }
-        if ($startedMilvus -and -not $startedMilvus.HasExited) {
-            $startedMilvus.Kill()
         }
         if ($startedMariaDB -and -not $startedMariaDB.HasExited) {
             $startedMariaDB.Kill()
@@ -634,8 +461,5 @@ try {
 } finally {
     if ($startedMariaDB -and -not $startedMariaDB.HasExited) {
         $startedMariaDB.Kill()
-    }
-    if ($startedMilvus -and -not $startedMilvus.HasExited) {
-        $startedMilvus.Kill()
     }
 }

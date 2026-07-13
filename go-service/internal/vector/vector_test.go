@@ -2,7 +2,6 @@ package vector
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -120,68 +119,5 @@ func TestFakeVectorStoreCount(t *testing.T) {
 	}
 	if !f.countCalled {
 		t.Error("count was not called")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Milvus disabled stub tests
-// ---------------------------------------------------------------------------
-
-func TestMilvusOpenReturnsDisabledStub(t *testing.T) {
-	vs, err := OpenMilvusLite("any-path")
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if vs == nil {
-		t.Fatal("expected non-nil VectorStore, got nil")
-	}
-	// All operations on the stub must return ErrNotEnabled without connecting.
-	ctx := context.Background()
-	if _, err := vs.Search(ctx, "", nil, 0, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Search: expected ErrNotEnabled, got %v", err)
-	}
-	if err := vs.Upsert(ctx, "", nil); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Upsert: expected ErrNotEnabled, got %v", err)
-	}
-	if err := vs.DeleteSession(ctx, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("DeleteSession: expected ErrNotEnabled, got %v", err)
-	}
-	if err := vs.Rebuild(ctx, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Rebuild: expected ErrNotEnabled, got %v", err)
-	}
-	if _, err := vs.Health(ctx); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Health: expected ErrNotEnabled, got %v", err)
-	}
-	if _, err := vs.Count(ctx, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Count: expected ErrNotEnabled, got %v", err)
-	}
-}
-
-func TestMilvusStoreImplementsInterface(t *testing.T) {
-	// Compile-time check.
-	var _ VectorStore = &milvusStore{}
-}
-
-func TestMilvusStoreAllMethodsDisabled(t *testing.T) {
-	m := &milvusStore{}
-	ctx := context.Background()
-
-	if _, err := m.Search(ctx, "", nil, 0, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Search: expected ErrNotEnabled, got %v", err)
-	}
-	if err := m.Upsert(ctx, "", nil); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Upsert: expected ErrNotEnabled, got %v", err)
-	}
-	if err := m.DeleteSession(ctx, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("DeleteSession: expected ErrNotEnabled, got %v", err)
-	}
-	if err := m.Rebuild(ctx, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Rebuild: expected ErrNotEnabled, got %v", err)
-	}
-	if _, err := m.Health(ctx); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Health: expected ErrNotEnabled, got %v", err)
-	}
-	if _, err := m.Count(ctx, ""); !errors.Is(err, ErrNotEnabled) {
-		t.Errorf("Count: expected ErrNotEnabled, got %v", err)
 	}
 }

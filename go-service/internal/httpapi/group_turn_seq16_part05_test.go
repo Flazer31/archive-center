@@ -313,12 +313,6 @@ func TestSeq16P246C2ChromaAdapterContract(t *testing.T) {
 	if vs["engine"] != "chromadb" {
 		t.Fatalf("vector_shadow.engine=%v, want chromadb", vs["engine"])
 	}
-	for _, key := range []string{"optional_engine", "milvus_required", "milvus_live_enabled"} {
-		if _, ok := vs[key]; ok {
-			t.Fatalf("vector_shadow.%s should not be exposed in ChromaDB-only runtime: %+v", key, vs)
-		}
-	}
-
 	if filter, ok := vs["filter"].(string); ok && !strings.Contains(filter, "seq16-p246") {
 		t.Fatalf("vector_shadow.filter=%v, must contain session id", filter)
 	}

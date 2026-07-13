@@ -458,11 +458,6 @@ func TestPrepareTurnChromaRecallReadUsesClientMetaVector(t *testing.T) {
 	if vectorShadow["live_retrieval_enabled"] != false {
 		t.Errorf("live_retrieval_enabled = %v, want false", vectorShadow["live_retrieval_enabled"])
 	}
-	for _, key := range []string{"milvus_required", "milvus_live_enabled", "optional_engine"} {
-		if _, ok := vectorShadow[key]; ok {
-			t.Errorf("vector_shadow.%s should not be exposed in ChromaDB-only runtime: %+v", key, vectorShadow)
-		}
-	}
 }
 
 func TestPrepareTurnChromaEndpointMarksR2Source(t *testing.T) {
@@ -520,11 +515,6 @@ func TestPrepareTurnChromaEndpointMarksR2Source(t *testing.T) {
 	}
 	if vectorShadow["chromadb_live_enabled"] != true {
 		t.Errorf("chromadb_live_enabled = %v, want true", vectorShadow["chromadb_live_enabled"])
-	}
-	for _, key := range []string{"milvus_required", "milvus_live_enabled", "optional_engine"} {
-		if _, ok := vectorShadow[key]; ok {
-			t.Errorf("vector_shadow.%s should not be exposed in ChromaDB-only runtime: %+v", key, vectorShadow)
-		}
 	}
 }
 

@@ -105,12 +105,11 @@ func runSmoke(handler http.Handler, sessionID string) smokeReport {
 		Scope:     "R1 JS adapter read response shape smoke",
 		Note: "Read response shape smoke. This proves the 0.8 JS adapter read routes return JSON-parseable responses " +
 			"with stable top-level fields and expected primitive types in Go 2.0. " +
-			"It does not prove behavior parity, MariaDB default cutover, Milvus live cutover, or product readiness.",
+			"It does not prove behavior parity, MariaDB default cutover, ChromaDB live retrieval, or product readiness.",
 		Routes: []shapeResult{},
 		OpenGaps: []string{
 			"Behavior parity remains open for R2-guarded write and mutation surfaces.",
 			"MariaDB is not the live default Store in this smoke.",
-			"Milvus live retrieval remains disabled in R0/R1.",
 			"Deep field-by-field parity against the Python 0.8 backend is not measured here.",
 			"Nested object/array element shapes are not validated in this slice.",
 		},

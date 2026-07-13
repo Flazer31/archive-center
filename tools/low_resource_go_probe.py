@@ -3,7 +3,7 @@
 
 The probe builds the Go backend into a temporary directory, starts it in
 shadow/noop mode, measures startup time, idle RSS, and read-only route latency,
-then writes a JSON report. It does not start MariaDB or Milvus, does not mutate
+then writes a JSON report. It does not start MariaDB or an external vector service, does not mutate
 runtime authority, and does not write into the 0.8 reference tree.
 """
 
@@ -226,7 +226,7 @@ def build_report(repo_root: Path, count: int, startup_timeout: int) -> dict[str,
             "report_only": True,
             "mutates_source_tree": False,
             "mariadb_started": False,
-            "milvus_started": False,
+            "external_vector_service_started": False,
             "authority_switch": False,
             "go_default_switch": False,
         },

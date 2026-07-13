@@ -21,7 +21,6 @@ You need these running locally or reachable from this machine:
 2. ChromaDB HTTP server, represented by `AC_CHROMA_ENDPOINT`.
 3. Optional but recommended: LLM critic endpoint and embedding endpoint.
 
-Milvus Lite is not part of this live-test path.
 
 ## Quick Start
 

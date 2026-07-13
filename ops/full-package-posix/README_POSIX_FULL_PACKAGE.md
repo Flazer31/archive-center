@@ -94,6 +94,5 @@ the imported memories should be searchable through ChromaDB.
 
 - MariaDB remains the canonical store.
 - ChromaDB is the only vector engine.
-- Milvus Lite is not included.
 - Normal users should not need to manually configure MariaDB or ChromaDB.
 - Real device proof is still required before these packages are promoted to RC.

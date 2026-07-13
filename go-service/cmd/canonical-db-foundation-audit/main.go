@@ -650,7 +650,7 @@ func defaultNonGoals() []string {
 		"does not start MariaDB or require a DSN",
 		"does not switch MariaDB authority",
 		"does not mark product cutover readiness green",
-		"does not migrate Chroma/Milvus authority",
+		"does not migrate ChromaDB authority",
 		"does not edit Archive Center.js",
 	}
 }

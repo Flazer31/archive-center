@@ -179,7 +179,7 @@ func TestRunSafetyFlagsStayFalse(t *testing.T) {
 	lookup := &fakeLookup{paths: map[string]string{}}
 	r := run("/db.sqlite", "", "", false, false, "sess-1", lookup)
 
-	for _, key := range []string{"authority_switch", "mariadb_product_read_persisted", "mariadb_authority_default_enabled", "live_milvus", "chroma_retired", "go_default_switch"} {
+	for _, key := range []string{"authority_switch", "mariadb_product_read_persisted", "mariadb_authority_default_enabled", "chroma_retired", "go_default_switch"} {
 		value, ok := r.SafetyFlags[key]
 		if !ok {
 			t.Fatalf("missing safety flag %q", key)
@@ -188,17 +188,11 @@ func TestRunSafetyFlagsStayFalse(t *testing.T) {
 			t.Fatalf("safety flag %q = true, want false", key)
 		}
 	}
-	if r.SafetyFlags["milvus_required"] {
-		t.Fatal("milvus_required should remain false for the 2.0 MariaDB+ChromaDB path")
-	}
 	if !r.SafetyFlags["chromadb_required"] {
 		t.Fatal("chromadb_required should be true for the 2.0 vector accelerator path")
 	}
 	if r.VectorRuntime["accelerator"] != "chromadb" {
 		t.Fatalf("vector accelerator = %v, want chromadb", r.VectorRuntime["accelerator"])
-	}
-	if r.VectorRuntime["milvus_required"] != false {
-		t.Fatalf("vector milvus_required = %v, want false", r.VectorRuntime["milvus_required"])
 	}
 	if r.VectorRuntime["chromadb_required"] != true {
 		t.Fatalf("vector chromadb_required = %v, want true", r.VectorRuntime["chromadb_required"])

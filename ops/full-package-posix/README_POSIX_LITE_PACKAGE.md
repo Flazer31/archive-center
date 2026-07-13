@@ -78,5 +78,4 @@ Use this only for high-memory testing. For normal mobile use, keep Lite.
 
 - MariaDB remains the canonical store.
 - ChromaDB is optional in Lite.
-- Milvus Lite is not included.
 - Real target-device proof is still required before promotion to release.

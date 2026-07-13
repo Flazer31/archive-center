@@ -171,7 +171,7 @@ Routes were extracted via static inspection of `@app.<method>("...")` decorators
 |------|--------|--------|
 | FastAPI/Pydantic models | blocker | Many routes depend on typed request/response models. Go migration needs explicit schema contracts first. |
 | SQLAlchemy session lifecycle | blocker | Turn and explorer routes assume SQLAlchemy `SessionLocal`. MariaDB driver + sql migration must precede parity. |
-| ChromaDB client lifecycle | blocker | Shadow and retrieval routes depend on Chroma `Collection` objects. Milvus Lite client contract not yet defined. |
+| ChromaDB client lifecycle | active | Retrieval routes use the ChromaDB HTTP client while MariaDB remains canonical truth. |
 | ArchiveBridge / PalaceBridge | blocker | Narrative and session routes use Python bridge objects with complex state. These are not directly port-able without interface redesign. |
 | `turn_contracts.py` packet shapes | blocker | `PrepareTurnRequest`, `M4CompleteTurnResponse`, etc. are deeply nested. JSON schema extraction is a prerequisite. |
 | `retrieval_document_builder.py` | blocker | Retrieval document schema and provenance tracking must be preserved. |

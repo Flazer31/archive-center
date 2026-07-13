@@ -108,7 +108,6 @@
 | 78 | `GET /metrics/lc1s/step17-bundle-closure` | `GET /metrics/lc1s/step17-bundle-closure` | R1-read |
 | 79 | `POST /chroma-shadow/*` (6 R1 probes) | 6 POST routes | R1-read (Store/Vector-backed evidence) |
 | 80 | `POST /chroma-shadow/*` (4 R2 routes) | 4 POST routes | R2-guarded |
-| 81 | `POST /milvus-shadow/*` (2 drill routes) | 2 POST routes | R1-shadow/R1-degraded |
 
 ## 2.0-Only Routes (no 0.8 JS bridge target)
 
@@ -153,17 +152,11 @@ additions for operational depth:
    implementation. The `MariaDBEnabled` path exists in config but has no
    R1 verification against a running instance.
 
-6. **Actual Milvus live cutover still open.** `milvus_live_enabled` is always
-   `false` in HTTP surfaces. The `MilvusSDKEnabled` config flag exists but no
-   R1 test verifies end-to-end vector search against a real Milvus instance.
-   `milvus-shadow/*` drill endpoints exercise the boundary but never flip
-   the switch.
-
-7. **Admin operations are guarded.** `POST /admin/rescan`, `/admin/reindex`,
+6. **Admin operations are guarded.** `POST /admin/rescan`, `/admin/reindex`,
    `/admin/session-migrate` return 503. The 0.8 adapter calls these from
    maintenance/debug panels.
 
-8. **Proxy passthrough is blocked.** `POST /proxy/plugin-main` returns 503
+7. **Proxy passthrough is blocked.** `POST /proxy/plugin-main` returns 503
    with validated endpoint. The 0.8 adapter uses this as the backend bundle
    entry point for coprocessor orchestration.
 

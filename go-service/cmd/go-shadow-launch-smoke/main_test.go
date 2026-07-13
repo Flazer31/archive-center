@@ -16,12 +16,10 @@ func TestForcedNoopEnvClearsDBAndVectorSettings(t *testing.T) {
 		"AC_STORE_MODE=mariadb_read_shadow",
 		"AC_MARIADB_DSN=user:secret@tcp(localhost:3306)/db",
 		"AC_CHROMA_ENDPOINT=http://127.0.0.1:8000",
-		"AC_MILVUS_ENDPOINT=localhost:19530",
-		"AC_MILVUS_SDK_ENABLED=true",
 	}, 28220)
 
 	joined := strings.Join(env, "\n")
-	for _, forbidden := range []string{"secret", "AC_MARIADB_DSN=", "AC_CHROMA_ENDPOINT=", "AC_MILVUS_ENDPOINT=", "AC_MILVUS_SDK_ENABLED=true", "AC_MODE=live", "AC_STORE_MODE=mariadb"} {
+	for _, forbidden := range []string{"secret", "AC_MARIADB_DSN=", "AC_CHROMA_ENDPOINT=", "AC_MODE=live", "AC_STORE_MODE=mariadb"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("forced env leaked forbidden value %q in %q", forbidden, joined)
 		}

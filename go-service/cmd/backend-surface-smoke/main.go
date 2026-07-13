@@ -86,7 +86,7 @@ func runSurfaceSmoke(sessionID string) report {
 	rep := report{
 		CheckedAt: now,
 		Status:    "ok",
-		Note:      "2.0-4m R1 backend decomposition surface smoke. No DB/Milvus/LLM calls. Shadow/noop only.",
+		Note:      "2.0-4m R1 backend decomposition surface smoke. No DB/vector/LLM calls. Shadow/noop only.",
 		Checks:    []surfaceCheck{},
 	}
 
@@ -513,7 +513,7 @@ func openGapsForPhase(phase string) string {
 	case "1-D":
 		return "Go route surface exists in noop mode; palace/narrative_read.py extraction and value-level compare evidence remain incomplete."
 	case "2-A":
-		return "Go retrieval read surface exists in noop mode; services/retrieval_read.py extraction, real Store/Vector data parity, and live Chroma/Milvus compare evidence remain incomplete."
+		return "Go retrieval read surface exists in noop mode; services/retrieval_read.py extraction, real Store/Vector data parity, and live Chroma evidence remain incomplete."
 	case "2-B":
 		return "Go explorer read surface exists in noop mode; services/explorer.py read extraction and Store-backed value-level compare evidence remain incomplete."
 	case "3":

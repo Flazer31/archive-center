@@ -3,6 +3,8 @@
 > Scope: `go-service` skeleton as of slice `2.0-1-basic-structure-migration`
 > Status: R0/R1 preparatory; no live traffic
 > Port: `127.0.0.1:28080` (non-conflicting with 0.8 backend)
+> Historical note: the current product uses ChromaDB. The abandoned Milvus
+> experiment has been removed from runtime, configuration, and dependencies.
 
 ## What the Go Skeleton Provides
 
@@ -11,7 +13,7 @@
 | Method | Path | Response Shape | Purpose |
 |--------|------|----------------|---------|
 | GET | /health | `{"status":"ok","service":"archive-center-go","mode":"shadow","timestamp":"..."}` | Liveness probe. |
-| GET | /ready | Shadow mode: HTTP 200, `{"ready":true,"mode":"shadow","checks":{"shadow_mode":"active","mariadb":"not_configured","milvus":"not_configured","live_cutover":"disabled"},"timestamp":"..."}`<br>Non-shadow mode: HTTP 503, `{"ready":false,"mode":"...","checks":{"shadow_mode":"inactive","mode_guard":"mode \"...\" is disabled in this slice","mariadb":"...","milvus":"...","live_cutover":"disabled"},"timestamp":"..."}` | Readiness probe. In shadow mode it returns `ready=true` because shadow traffic does not require live DBs. In non-shadow modes it returns HTTP 503 with `ready=false` and a mode guard, even if the caller bypassed `main` validation. |
+| GET | /ready | Returns dependency readiness for the configured MariaDB and ChromaDB runtime. | Readiness probe. |
 | GET | /version | `{"version":"2.0.0-dev","commit":"unknown","build_time":"...","go_version":"unknown"}` | Build metadata. |
 
 ### Behavior Guarantees
@@ -19,7 +21,7 @@
 1. **Shadow-only default**: `Config.Mode` defaults to `shadow`. Live and cutover are accepted by `Load()` but rejected by `Validate()`.
 2. **Live cutover disabled**: `Config.IsLiveCutoverAllowed()` returns `false` unconditionally. The readiness payload always reports `live_cutover: disabled`. Additionally, the `/ready` handler itself returns HTTP 503 and `ready: false` for any non-shadow mode, regardless of whether `main` validation was bypassed.
 3. **No secrets in config**: `Config.String()` is redacted. Secrets must be injected via environment or a future secret manager.
-4. **No DB connections**: MariaDB and Milvus are not wired. Readiness reports `not_configured` when the corresponding env vars are absent.
+4. **Historical boundary**: this document records the original shadow skeleton. Current MariaDB and ChromaDB behavior is documented by the runtime readiness contract.
 5. **Stdlib-only**: No third-party dependencies. The module uses `net/http`, `encoding/json`, `log/slog`, and `os` only.
 
 ## What the Go Skeleton Does NOT Provide
@@ -58,7 +60,7 @@ The Go skeleton preserves the following trace vocabulary so that logs and probes
 | `AC_BUILD_COMMIT` | `unknown` | Build commit SHA. |
 | `AC_BUILD_TIME` | current UTC | Build timestamp. |
 | `AC_MARIADB_DSN` | (empty) | If present, readiness reports `mariadb: configured`. |
-| `AC_MILVUS_ENDPOINT` | (empty) | If present, readiness reports `milvus: configured`. |
+| `AC_CHROMA_ENDPOINT` | (empty) | ChromaDB endpoint used by the current vector runtime. |
 
 ## Relation to 2.0 Milestones
 
@@ -68,11 +70,11 @@ This slice provides **initial R0 evidence and structure** for the items below. I
 |-----------|------------|
 | 2.0-1a (Go module scaffold) | **Supported / prepares R0 evidence for.** Module, main, config, and httpapi packages exist and compile. |
 | 2.0-1g (Config defaults + env override) | **Supported / prepares R0 evidence for.** `config.Default()` and `config.Load()` are implemented and tested. |
-| 2.0-1j (Readiness probe with dependency states) | **Supported / prepares R0 evidence for.** `/ready` reports `not_configured` for MariaDB and Milvus, and `disabled` for live cutover. It also returns HTTP 503 for non-shadow modes as a runtime guard. |
+| 2.0-1j (Readiness probe with dependency states) | **Supported / prepares R0 evidence for.** The current `/ready` response reports MariaDB and ChromaDB readiness. |
 | 2.0-2a (Route parity shadow) | **Not started**. Requires JSON schema extraction from 0.8 Pydantic models. Suggested as next step. |
 | 2.0-2b (Baseline benchmark capture) | **Not started**. Suggested as next step after route inventory is accepted. |
 | MariaDB truth cutover | **Blocked** until R2. Must remain a separate event. |
-| Milvus live read switch | **Blocked** until R2. Must remain a separate event. |
+| ChromaDB vector readiness | **Implemented after this historical slice.** See current runtime documentation. |
 
 ## Risk Notes
 

@@ -50,7 +50,7 @@ Goals:
 | 18 | `maintenance_pass_states` | No (derived) | Insert per pass | P2 |
 | 19-22 | `episode/chapter/arc/saga_summaries` | No (summary) | Insert on generation | P2 |
 
-> **Chroma vector data** (`.chroma_shadow/chroma.sqlite3`) is **out of scope** for MariaDB truth; it is covered by the Milvus shadow contract instead.
+> **Chroma vector data** is **out of scope** for MariaDB truth and can be rebuilt from MariaDB canonical rows.
 
 ---
 

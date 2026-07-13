@@ -264,7 +264,6 @@ report = {
     "paths": preflight.get("paths", {}),
     "go_backend": go_backend,
     "mariadb": preflight.get("mariadb", {}),
-    "milvus_lite": preflight.get("milvus_lite", {}),
     "lifecycle": lifecycle,
     "lifecycle_detail": {
         "install_dir_removed": not install_dir.exists(),
@@ -272,7 +271,6 @@ report = {
         "source_tree_mutated": False,
         "authority_switch": False,
         "go_default_switch": False,
-        "milvus_live_switch": False,
     },
     "warnings": warnings + list(preflight.get("warnings", []) or []),
     "failures": failures + list(preflight.get("failures", []) or []),

@@ -15,7 +15,6 @@ type SharedState struct {
 
 	// Readiness flags (mirrors 0.8 readiness checks).
 	MariaDBReady bool
-	MilvusReady  bool
 
 	// EmbeddingModel is the current active embedding model identifier.
 	EmbeddingModel string
@@ -55,20 +54,6 @@ func (s *SharedState) IsMariaDBReady() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.MariaDBReady
-}
-
-// SetMilvusReady sets the Milvus readiness flag.
-func (s *SharedState) SetMilvusReady(ready bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.MilvusReady = ready
-}
-
-// IsMilvusReady returns the Milvus readiness flag.
-func (s *SharedState) IsMilvusReady() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.MilvusReady
 }
 
 // SetEmbeddingConfig updates the embedding model and endpoint.

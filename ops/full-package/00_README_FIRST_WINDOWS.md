@@ -43,4 +43,3 @@ RisuAI 페이지가 HTTPS라면 브라우저가 HTTP 요청을 막을 수 있습
 - `.runtime` 폴더는 사용자 PC에 생성되는 로컬 DB/런타임 데이터입니다.
 - 배포 zip에는 사용자 DB, ChromaDB persist data, API 키가 들어 있으면 안 됩니다.
 - `.env.full.local.protected`는 같은 Windows 사용자 계정에서만 복호화됩니다. 다른 PC나 다른 계정으로 복사하면 그대로 사용할 수 없습니다.
-- Milvus Lite는 Archive Center 2.1 배포 대상이 아닙니다.

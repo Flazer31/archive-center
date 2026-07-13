@@ -934,9 +934,6 @@ func TestSeq13P222ExportPackageLogicalEventDecisionMarkers(t *testing.T) {
 	if contract["vector_engine_policy"] != "chromadb_only" {
 		t.Fatalf("vector_engine_policy = %v, want chromadb_only", contract["vector_engine_policy"])
 	}
-	if _, ok := contract["milvus_lite_policy"]; ok {
-		t.Fatalf("milvus_lite_policy should not be exposed in 2.0 runtime contract: %+v", contract)
-	}
 	if contract["manual_first"] != true {
 		t.Fatalf("manual_first = %v, want true", contract["manual_first"])
 	}

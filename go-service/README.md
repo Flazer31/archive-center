@@ -40,7 +40,7 @@ go run ./cmd/shadow-parity-report/main.go -python-base http://127.0.0.1:8000 -go
 
 Flags: `-python-base`, `-go-base`, `-out` (empty = stdout), `-timeout`.
 
-The report is R1 evidence only. It compares status codes and top-level JSON keys for allowlisted read-only probes; it does not authorize R2 write routes, MariaDB authority, Milvus live reads, or Go default runtime switch.
+The report is R1 evidence only. It compares status codes and top-level JSON keys for allowlisted read-only probes; it does not authorize R2 write routes, MariaDB authority, ChromaDB live reads, or Go default runtime switch.
 
 ## Dependencies
 

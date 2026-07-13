@@ -108,8 +108,6 @@ func runWithOptions(sqliteDB, exportDir, pythonBaseURL string, execute, keepTemp
 			"mariadb_authority_default_enabled": false,
 			"chromadb_required":                 true,
 			"chromadb_endpoint_configured":      strings.TrimSpace(os.Getenv("AC_CHROMA_ENDPOINT")) != "",
-			"milvus_required":                   false,
-			"live_milvus":                       false,
 			"chroma_retired":                    false,
 			"go_default_switch":                 false,
 		},
