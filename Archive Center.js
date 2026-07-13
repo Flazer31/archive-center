@@ -33358,6 +33358,20 @@
           : "payload_tail_verified_by_active_chat_tail",
       };
     }
+    if (rawTail && mainTurnTextMatchesOriginal(payloadTail, rawTail)) {
+      return {
+        allowed: true,
+        contextInjectionAllowed: true,
+        reason: payloadTail === rawTail ? "raw_input_tail_match" : "raw_input_tail_prefix_match",
+        requestType,
+        marker: auxiliaryMarker || "",
+        policy: auxiliaryMarker
+          ? "main_user_input_verified_auxiliary_tail_trace_only"
+          : "payload_tail_verified_by_input_hook_cache",
+        activeTailPreview: activeTail ? truncPreview(activeTail, 120) : "",
+        payloadTailPreview: payloadTail !== rawTail ? truncPreview(payloadTail, 120) : "",
+      };
+    }
     if (postOutputContext) {
       const previousUser = normalizeMainTurnCompareText(postOutputContext.userContent);
       const payloadIsPreviousUser = previousUser && (
@@ -33376,20 +33390,6 @@
           payloadTailPreview: truncPreview(payloadTail, 120),
         };
       }
-    }
-    if (rawTail && mainTurnTextMatchesOriginal(payloadTail, rawTail)) {
-      return {
-        allowed: true,
-        contextInjectionAllowed: true,
-        reason: payloadTail === rawTail ? "raw_input_tail_match" : "raw_input_tail_prefix_match",
-        requestType,
-        marker: auxiliaryMarker || "",
-        policy: auxiliaryMarker
-          ? "main_user_input_verified_auxiliary_tail_trace_only"
-          : "payload_tail_verified_by_input_hook_cache",
-        activeTailPreview: activeTail ? truncPreview(activeTail, 120) : "",
-        payloadTailPreview: payloadTail !== rawTail ? truncPreview(payloadTail, 120) : "",
-      };
     }
     if (auxiliaryMarker && !payloadTailAuxiliaryMarker && isSubstantiveUserPayloadText(payloadTail)) {
       return {

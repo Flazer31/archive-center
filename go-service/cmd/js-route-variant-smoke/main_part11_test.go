@@ -81,7 +81,8 @@ function normalizeMainTurnCompareText(text) { return String(text || "").trim().r
 function matchAuxiliaryModuleRequestMarker(messages) {
   return (messages || []).some(m => /AUXILIARY_MODULE_MARKER/.test(String(m && m.content || ""))) ? "fixture_auxiliary" : "";
 }
-function buildPostOutputSecondaryRequestContext() { return null; }
+let fixturePostOutputContext = null;
+function buildPostOutputSecondaryRequestContext() { return fixturePostOutputContext; }
 function mainTurnTextMatchesOriginal(left, right) {
   return left === right || (!!left && !!right && (left.startsWith(right) || right.startsWith(left)));
 }
@@ -152,6 +153,29 @@ const auxiliaryOnly = buildMainRequestOwnershipDecision("model", [
 ], "", "", []);
 assertEqual(auxiliaryOnly.allowed, true, "model marker is trace-only");
 assertEqual(auxiliaryOnly.contextInjectionAllowed, false, "auxiliary-only marker not injected");
+
+fixturePostOutputContext = {
+  userContent: "previous player input",
+  assistantContent: "previous assistant output",
+  contextMessages: []
+};
+const genuineNextTurn = buildMainRequestOwnershipDecision("model", [
+  {role:"user", content:"genuine next player input"}
+], "previous player input", "genuine next player input", [
+  {role:"user", content:"previous player input"},
+  {role:"assistant", content:"previous assistant output"}
+]);
+assertEqual(genuineNextTurn.allowed, true, "new raw input must win over stale post-output context");
+assertEqual(genuineNextTurn.reason, "raw_input_tail_match", "new raw input ownership reason");
+
+const realPostprocessor = buildMainRequestOwnershipDecision("model", [
+  {role:"user", content:"rewrite the previous assistant output"}
+], "previous player input", "", [
+  {role:"user", content:"previous player input"},
+  {role:"assistant", content:"previous assistant output"}
+]);
+assertEqual(realPostprocessor.allowed, false, "postprocessor request remains excluded from a new turn");
+assertEqual(realPostprocessor.reason, "post_output_secondary_request", "postprocessor ownership reason");
 `
 
 	cmd := exec.Command(nodePath, "-")
