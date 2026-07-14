@@ -86,7 +86,8 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
 	fake.continuities = []store.ReferenceContinuity{{ContinuityID: "continuity-1", WorkID: "work-1", Status: "active"}}
 	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 10, BranchKey: "main", ReviewStatus: "approved"}}
-	fake.claims = []store.ReferenceClaim{{ClaimID: "claim-safe", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "The gate opens only at night.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"}}
+	fake.entities = []store.ReferenceEntity{{EntityID: "entity-gate", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "gate", EntityType: "place", ReviewStatus: "approved"}}
+	fake.claims = []store.ReferenceClaim{{ClaimID: "claim-safe", WorkID: "work-1", ContinuityID: "continuity-1", SubjectEntityID: "entity-gate", ClaimType: "access_rule", ClaimText: "The gate opens only at night.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"}}
 	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", Enabled: false, InjectionEnabled: false, CurrentNodeID: "node-current"}}
 	embeddingServer, _ := referenceVectorEmbeddingServer(t)
 	defer embeddingServer.Close()
@@ -105,6 +106,15 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	}
 	if live["effective_user_input"] != "Open the gate" {
 		t.Fatalf("reference recall rewrote user input: %#v", live["effective_user_input"])
+	}
+	coverage := live["reference_recall"].(map[string]any)["coverage_shadow"].(map[string]any)
+	if coverage["mode"] != "shadow" || coverage["injection_filtered"] != false || coverage["evaluated_count"] != float64(1) {
+		t.Fatalf("coverage shadow = %#v", coverage)
+	}
+	selected := live["reference_recall"].(map[string]any)["selected"].([]any)
+	selectedItem := selected[0].(map[string]any)
+	if selectedItem["coverage_status"] != "covered" || selectedItem["needed"] != true {
+		t.Fatalf("selected coverage = %#v", selectedItem)
 	}
 
 	firstTurn := prepareTurnReferenceFirstTurnResponse(t, mux)
@@ -158,6 +168,10 @@ func prepareTurnReferenceResponse(t *testing.T, handler http.Handler) map[string
 		"chat_session_id": "session-1",
 		"turn_index":      2,
 		"raw_user_input":  "Open the gate",
+		"messages": []map[string]any{
+			{"role": "system", "content": "The gate opens only at night."},
+			{"role": "user", "content": "Open the gate"},
+		},
 		"settings": map[string]any{
 			"injection_enabled":   true,
 			"max_injection_chars": 1200,

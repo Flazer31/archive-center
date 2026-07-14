@@ -266,7 +266,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	timing.addElapsed("injection_assembly", injectionStartedAt)
 	referenceRecallStartedAt := time.Now()
-	referenceRecall := s.buildSessionReferenceRecall(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta)
+	referenceRecall := s.buildSessionReferenceRecallWithMessages(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta, req.Messages)
 	referenceInjectionEnabled := referenceRecall.LiveBindingCount > 0
 	referenceInjectionText := ""
 	if referenceInjectionEnabled {

@@ -15,39 +15,56 @@ import (
 const referenceRecallContractVersion = "reference_recall.v1"
 
 type referenceRecallRequest struct {
-	Query      string         `json:"query"`
-	Limit      int            `json:"limit"`
-	ClientMeta map[string]any `json:"client_meta"`
+	Query      string           `json:"query"`
+	Limit      int              `json:"limit"`
+	Messages   []map[string]any `json:"messages,omitempty"`
+	ClientMeta map[string]any   `json:"client_meta"`
 }
 
 type referenceRecallItem struct {
-	BindingID        string         `json:"binding_id"`
-	WorkID           string         `json:"work_id"`
-	WorkTitle        string         `json:"work_title"`
-	ContinuityID     string         `json:"continuity_id"`
-	ReferenceKind    string         `json:"reference_kind"`
-	SourceID         string         `json:"source_id"`
-	Text             string         `json:"text"`
-	ChromaRank       int            `json:"chroma_rank"`
-	Distance         *float64       `json:"distance,omitempty"`
-	CosineSimilarity *float64       `json:"cosine_similarity,omitempty"`
-	Eligible         bool           `json:"eligible"`
-	Reason           string         `json:"reason"`
-	Metadata         map[string]any `json:"metadata,omitempty"`
+	BindingID               string         `json:"binding_id"`
+	WorkID                  string         `json:"work_id"`
+	WorkTitle               string         `json:"work_title"`
+	ContinuityID            string         `json:"continuity_id"`
+	ReferenceKind           string         `json:"reference_kind"`
+	SourceID                string         `json:"source_id"`
+	Text                    string         `json:"text"`
+	ChromaRank              int            `json:"chroma_rank"`
+	Distance                *float64       `json:"distance,omitempty"`
+	CosineSimilarity        *float64       `json:"cosine_similarity,omitempty"`
+	Eligible                bool           `json:"eligible"`
+	Reason                  string         `json:"reason"`
+	Needed                  bool           `json:"needed"`
+	NeededBy                []string       `json:"needed_by"`
+	CoverageStatus          string         `json:"coverage_status"`
+	CoverageConfidence      string         `json:"coverage_confidence"`
+	MatchedRequestLocations []string       `json:"matched_request_locations"`
+	MissingFields           []string       `json:"missing_fields"`
+	DecisionReason          string         `json:"decision_reason"`
+	Metadata                map[string]any `json:"metadata,omitempty"`
+}
+
+type referenceCoverageSummary struct {
+	ContractVersion   string         `json:"contract_version"`
+	Mode              string         `json:"mode"`
+	EvaluatedCount    int            `json:"evaluated_count"`
+	StatusCounts      map[string]int `json:"status_counts"`
+	InjectionFiltered bool           `json:"injection_filtered"`
 }
 
 type referenceRecallResult struct {
-	ContractVersion  string                `json:"contract_version"`
-	Status           string                `json:"status"`
-	Mode             string                `json:"mode"`
-	ChatSessionID    string                `json:"chat_session_id"`
-	Query            string                `json:"query"`
-	Selected         []referenceRecallItem `json:"selected"`
-	Excluded         []referenceRecallItem `json:"excluded"`
-	BindingCount     int                   `json:"binding_count"`
-	LiveBindingCount int                   `json:"live_binding_count"`
-	Warnings         []string              `json:"warnings"`
-	ScoreContract    map[string]any        `json:"score_contract"`
+	ContractVersion  string                   `json:"contract_version"`
+	Status           string                   `json:"status"`
+	Mode             string                   `json:"mode"`
+	ChatSessionID    string                   `json:"chat_session_id"`
+	Query            string                   `json:"query"`
+	Selected         []referenceRecallItem    `json:"selected"`
+	Excluded         []referenceRecallItem    `json:"excluded"`
+	BindingCount     int                      `json:"binding_count"`
+	LiveBindingCount int                      `json:"live_binding_count"`
+	Warnings         []string                 `json:"warnings"`
+	ScoreContract    map[string]any           `json:"score_contract"`
+	CoverageShadow   referenceCoverageSummary `json:"coverage_shadow"`
 }
 
 type referenceRecallScope struct {
@@ -68,11 +85,15 @@ func (s *Server) handleSessionReferenceRecallPreview(w http.ResponseWriter, r *h
 	if !decodeReferenceJSON(w, r, &req) {
 		return
 	}
-	result := s.buildSessionReferenceRecall(r.Context(), strings.TrimSpace(r.PathValue("chat_session_id")), req.Query, req.Limit, req.ClientMeta)
+	result := s.buildSessionReferenceRecallWithMessages(r.Context(), strings.TrimSpace(r.PathValue("chat_session_id")), req.Query, req.Limit, req.ClientMeta, req.Messages)
 	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query string, limit int, clientMeta map[string]any) referenceRecallResult {
+	return s.buildSessionReferenceRecallWithMessages(ctx, sid, query, limit, clientMeta, nil)
+}
+
+func (s *Server) buildSessionReferenceRecallWithMessages(ctx context.Context, sid, query string, limit int, clientMeta map[string]any, messages []map[string]any) referenceRecallResult {
 	result := referenceRecallResult{
 		ContractVersion: referenceRecallContractVersion,
 		Status:          "skipped",
@@ -83,6 +104,7 @@ func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query str
 		Excluded:        []referenceRecallItem{},
 		Warnings:        []string{},
 		ScoreContract:   referenceVectorScoreContract(),
+		CoverageShadow:  newReferenceCoverageSummary(),
 	}
 	if result.ChatSessionID == "" || result.Query == "" {
 		result.Warnings = append(result.Warnings, "missing_session_or_query")
@@ -167,6 +189,7 @@ func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query str
 			if !include {
 				continue
 			}
+			item = applyReferenceCoverageShadow(item, scope, result.Query, messages)
 			if item.Eligible {
 				result.Selected = append(result.Selected, item)
 			} else {
@@ -184,6 +207,7 @@ func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query str
 	if len(result.Selected) > limit {
 		result.Selected = result.Selected[:limit]
 	}
+	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded)
 	result.Status = "ready"
 	return result
 }
@@ -238,7 +262,10 @@ func loadReferenceRecallScope(ctx context.Context, ref store.ReferenceLibrarySto
 }
 
 func referenceRecallCanonicalItem(scope referenceRecallScope, raw vector.ExactQueryResult) (referenceRecallItem, bool) {
-	meta := raw.Document.Metadata
+	meta := map[string]any{}
+	for key, value := range raw.Document.Metadata {
+		meta[key] = value
+	}
 	kind := strings.ToLower(strings.TrimSpace(fmt.Sprint(meta["reference_kind"])))
 	sourceID := strings.TrimSpace(fmt.Sprint(meta["source_id"]))
 	item := referenceRecallItem{BindingID: scope.binding.BindingID, WorkID: scope.binding.WorkID, ContinuityID: scope.binding.ContinuityID, ReferenceKind: kind, SourceID: sourceID, ChromaRank: raw.ChromaRank, Eligible: true, Reason: "eligible", Metadata: meta}
@@ -260,6 +287,8 @@ func referenceRecallCanonicalItem(scope referenceRecallScope, raw vector.ExactQu
 			return item, false
 		}
 		item.Text = strings.TrimSpace(node.Label)
+		item.Metadata["node_key"] = node.NodeKey
+		item.Metadata["node_kind"] = node.NodeKind
 		item.Eligible, item.Reason = referenceRecallTimelineEligible(scope, node)
 	case "entity":
 		entity, ok := scope.entities[sourceID]
@@ -267,12 +296,16 @@ func referenceRecallCanonicalItem(scope referenceRecallScope, raw vector.ExactQu
 			return item, false
 		}
 		item.Text = strings.TrimSpace(entity.CanonicalName + ": " + entity.DescriptionText)
+		item.Metadata["entity_type"] = entity.EntityType
+		item.Metadata["canonical_name"] = entity.CanonicalName
 	case "claim":
 		claim, ok := scope.claims[sourceID]
 		if !ok {
 			return item, false
 		}
 		item.Text = strings.TrimSpace(claim.ClaimText)
+		item.Metadata["claim_type"] = claim.ClaimType
+		item.Metadata["subject_entity_id"] = claim.SubjectEntityID
 		item.Eligible, item.Reason = referenceRecallClaimEligible(scope, claim)
 	default:
 		return item, false

@@ -515,6 +515,7 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 		return nil, err
 	}
 	materials := make([]referenceVectorMaterial, 0, len(timeline)+len(entities)+len(claims))
+	entityNames := map[string][]string{}
 	for _, item := range timeline {
 		metadata := map[string]any{"branch_key": item.BranchKey, "node_kind": item.NodeKind, "ordinal": item.Ordinal}
 		text := referenceVectorText("Timeline", item.Label, referenceMetadataText(item.MetadataJSON, "evidence_excerpt", "description", "summary"))
@@ -537,9 +538,10 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 		if len(aliasTexts) > 0 {
 			detail = strings.TrimSpace(detail + "\nAliases: " + strings.Join(aliasTexts, ", "))
 		}
+		entityNames[item.EntityID] = append([]string{item.CanonicalName}, aliasTexts...)
 		text := referenceVectorText(item.EntityType, item.CanonicalName, detail)
 		if text != "" {
-			materials = append(materials, referenceVectorMaterial{Kind: "entity", ID: item.EntityID, Text: text, Metadata: map[string]any{"entity_type": item.EntityType, "canonical_name": item.CanonicalName}})
+			materials = append(materials, referenceVectorMaterial{Kind: "entity", ID: item.EntityID, Text: text, Metadata: map[string]any{"entity_type": item.EntityType, "canonical_name": item.CanonicalName, "aliases": aliasTexts}})
 		}
 	}
 	for _, item := range claims {
@@ -557,6 +559,9 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 			"branch_key":          item.BranchKey,
 			"knowledge_scope":     item.KnowledgeScope,
 			"confidence":          item.Confidence,
+		}
+		if names := entityNames[item.SubjectEntityID]; len(names) > 0 {
+			metadata["subject_names"] = names
 		}
 		text := referenceVectorText("Claim", item.ClaimType, detail)
 		if text != "" {
