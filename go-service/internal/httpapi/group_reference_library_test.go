@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -419,7 +420,7 @@ func TestReferenceExtractionLinksExistingAliasesAndTimeline(t *testing.T) {
 		"timeline": []any{map[string]any{"node_key": "after", "label": "After", "parent_node_key": "start"}},
 		"claims":   []any{map[string]any{"claim_type": "character", "subject": "A", "claim_text": "A returns.", "temporal_scope": "bounded", "valid_from_node_key": "start"}},
 	}
-	counts, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, parsed, 0)
+	counts, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, parsed, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,6 +432,39 @@ func TestReferenceExtractionLinksExistingAliasesAndTimeline(t *testing.T) {
 	}
 	if got := fake.claims[len(fake.claims)-1]; got.SubjectEntityID != "alice-id" || got.ValidFromNodeID != "start-id" {
 		t.Fatalf("claim links were not resolved: %#v", got)
+	}
+}
+
+func TestReferenceExtractionStoresOnlyGroundedOriginalExcerpts(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	doc := &store.ReferenceDocument{DocumentID: "doc-1", WorkID: "work-1", ContinuityID: "continuity-1"}
+	source := "Rumi is the\nleader of HUNTR/X.\nThe stage is quiet."
+	parsed := map[string]any{"claims": []any{
+		map[string]any{"claim_type": "character", "claim_text": "Rumi leads HUNTR/X.", "evidence_excerpt": "Rumi is the leader of HUNTR/X.", "temporal_scope": "timeless"},
+		map[string]any{"claim_type": "event", "claim_text": "An invented event occurred.", "evidence_excerpt": "This sentence is not in the source.", "temporal_scope": "timeless"},
+	}}
+	counts, warnings, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, parsed, source, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["claims"] != 2 || len(fake.claims) != 2 {
+		t.Fatalf("claim extraction counts=%#v claims=%#v", counts, fake.claims)
+	}
+	if fake.claims[0].EvidenceExcerpt != "Rumi is the\nleader of HUNTR/X." {
+		t.Fatalf("grounded excerpt did not preserve original text: %q", fake.claims[0].EvidenceExcerpt)
+	}
+	metadata := map[string]any{}
+	if err := json.Unmarshal([]byte(fake.claims[0].MetadataJSON), &metadata); err != nil || metadata["evidence_grounded"] != true || metadata["chunk_index"] != float64(2) {
+		t.Fatalf("grounded provenance missing: %#v err=%v", metadata, err)
+	}
+	if fake.claims[1].EvidenceExcerpt != "" || !strings.Contains(strings.Join(warnings, "\n"), "claim evidence excerpt was not found in source") {
+		t.Fatalf("ungrounded excerpt was not rejected: claim=%#v warnings=%#v", fake.claims[1], warnings)
+	}
+}
+
+func TestReferenceGroundedSourceExcerptRejectsParaphrase(t *testing.T) {
+	if got := referenceGroundedSourceExcerpt("Mira guards the sealed gate.", "Mira protects a gate."); got != "" {
+		t.Fatalf("paraphrase was accepted as original evidence: %q", got)
 	}
 }
 
@@ -535,14 +569,14 @@ func TestReferenceClaimStableIDIgnoresChunkAndCandidateOrder(t *testing.T) {
 	fake := newReferenceLibraryHTTPStore()
 	doc := &store.ReferenceDocument{DocumentID: "doc-1", WorkID: "work-1", ContinuityID: "continuity-1"}
 	first := map[string]any{"claims": []any{map[string]any{"claim_type": "world_rule", "claim_text": "Magic requires a spoken name."}}}
-	if _, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, first, 0); err != nil {
+	if _, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, first, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	second := map[string]any{"claims": []any{
 		map[string]any{"claim_type": "event", "claim_text": "Another fact."},
 		map[string]any{"claim_type": "world_rule", "claim_text": "Magic requires a spoken name."},
 	}}
-	if _, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, second, 4); err != nil {
+	if _, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, second, "", 4); err != nil {
 		t.Fatal(err)
 	}
 	if fake.claims[0].ClaimID != fake.claims[2].ClaimID {

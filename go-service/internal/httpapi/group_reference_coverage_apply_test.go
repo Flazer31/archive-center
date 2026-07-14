@@ -17,7 +17,7 @@ func TestReferenceCoverageApplicationInjectsOnlyPartialAndMissingWithoutSyntheti
 				"entity-mira": {EntityID: "entity-mira", CanonicalName: "Mira", DescriptionText: "Leader of HUNTR/X."},
 			},
 			claims: map[string]store.ReferenceClaim{
-				"claim-gate": {ClaimID: "claim-gate", ClaimText: "The gate opens only at night."},
+				"claim-gate": {ClaimID: "claim-gate", DocumentID: "doc-1", ClaimText: "The gate opens only at night.", EvidenceExcerpt: "At midnight, the eastern gate opened.", MetadataJSON: `{"chunk_index":2,"evidence_grounded":true}`},
 			},
 			nodes: map[string]store.ReferenceTimelineNode{},
 		},
@@ -45,6 +45,13 @@ func TestReferenceCoverageApplicationInjectsOnlyPartialAndMissingWithoutSyntheti
 	if items[0].Distance == nil || *items[0].Distance != distance || items[0].CosineSimilarity == nil || *items[0].CosineSimilarity != cosine {
 		t.Fatalf("raw Chroma measurements changed: %#v", items[0])
 	}
+	if !items[0].SourceVerified || items[0].SourceDocumentID != "doc-1" || items[0].SourceChunkIndex == nil || *items[0].SourceChunkIndex != 2 || items[0].SourceExcerpt != "At midnight, the eastern gate opened." || items[0].ContentMode != "structured_plus_source" {
+		t.Fatalf("structured and original source were not linked: %#v", items[0])
+	}
+	formatted := formatReferenceRecallInjection(referenceRecallResult{Status: "ready", InjectionItems: items[:1]}, 1000)
+	if !containsAll(formatted, "Structured: The gate opens only at night.", "Original excerpt: At midnight, the eastern gate opened.") {
+		t.Fatalf("combined source injection = %q", formatted)
+	}
 	if items[1].SourceID != "entity-mira" || items[1].SelectionSource != "coverage_field_index" || items[1].ChromaRank != nil || items[1].Distance != nil || items[1].CosineSimilarity != nil {
 		t.Fatalf("field index item received a synthetic Chroma score: %#v", items[1])
 	}
@@ -66,5 +73,21 @@ func TestReferenceCoverageApplicationDoesNotInjectCoveredSource(t *testing.T) {
 	items, summary := buildReferenceCoverageInjectionItems(nil, map[string]referenceRecallScope{"binding-1": scope}, []referenceRecallItem{{BindingID: "binding-1", ReferenceKind: "claim", SourceID: "claim-1", ChromaRank: 1}}, index, 3)
 	if len(items) != 0 || summary.SkippedStatusCounts["covered"] != 1 {
 		t.Fatalf("covered source was injected: items=%#v summary=%#v", items, summary)
+	}
+}
+
+func TestReferenceCoverageApplicationDoesNotPresentUnverifiedExcerptAsOriginal(t *testing.T) {
+	scope := referenceRecallScope{
+		binding:  store.SessionReferenceBinding{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1"},
+		work:     &store.ReferenceWork{WorkID: "work-1", Title: "Example"},
+		claims:   map[string]store.ReferenceClaim{"claim-1": {ClaimID: "claim-1", DocumentID: "doc-1", ClaimText: "Structured fact.", EvidenceExcerpt: "Unverified legacy excerpt."}},
+		entities: map[string]store.ReferenceEntity{},
+		nodes:    map[string]store.ReferenceTimelineNode{},
+	}
+	index := newReferenceCoverageFieldIndexSummary()
+	index.NeededSourceItems = []referenceCoverageNeededSource{{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceKind: "claim", SourceID: "claim-1", CoverageStatus: "missing", MissingFields: []string{"claim_text"}, Eligible: true}}
+	items, _ := buildReferenceCoverageInjectionItems(nil, map[string]referenceRecallScope{"binding-1": scope}, nil, index, 3)
+	if len(items) != 1 || items[0].SourceVerified || items[0].SourceExcerpt != "" || items[0].ContentMode != "structured_only" {
+		t.Fatalf("unverified excerpt was presented as original: %#v", items)
 	}
 }

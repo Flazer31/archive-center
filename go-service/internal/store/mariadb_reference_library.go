@@ -952,6 +952,7 @@ func (m *mariadbStore) UpdateReferenceLibraryItem(ctx context.Context, item *Ref
 			UPDATE reference_claims
 			SET claim_type = ?, claim_text = ?, evidence_excerpt = ?, temporal_scope = ?,
 				knowledge_scope = ?, confidence = ?, review_status = 'approved',
+				metadata_json = JSON_SET(COALESCE(metadata_json, JSON_OBJECT()), '$.evidence_grounded', false),
 				review_source = 'user_edit', review_reason = 'user corrected reference data',
 				reviewed_at = CURRENT_TIMESTAMP(3)
 			WHERE work_id = ? AND claim_id = ?

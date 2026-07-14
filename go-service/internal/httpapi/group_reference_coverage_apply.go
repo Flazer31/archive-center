@@ -18,6 +18,11 @@ type referenceInjectionItem struct {
 	ReferenceKind    string   `json:"reference_kind"`
 	SourceID         string   `json:"source_id"`
 	Text             string   `json:"text"`
+	SourceExcerpt    string   `json:"source_excerpt,omitempty"`
+	SourceDocumentID string   `json:"source_document_id,omitempty"`
+	SourceChunkIndex *int     `json:"source_chunk_index,omitempty"`
+	SourceVerified   bool     `json:"source_verified"`
+	ContentMode      string   `json:"content_mode"`
 	CoverageStatus   string   `json:"coverage_status"`
 	MissingFields    []string `json:"missing_fields"`
 	NeededBy         []string `json:"needed_by"`
@@ -91,7 +96,7 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 			continue
 		}
 		rank := candidate.ChromaRank
-		items = append(items, referenceInjectionItem{
+		item := referenceInjectionItem{
 			BindingID:        candidate.BindingID,
 			WorkID:           candidate.WorkID,
 			WorkTitle:        candidate.WorkTitle,
@@ -106,7 +111,8 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 			ChromaRank:       &rank,
 			Distance:         candidate.Distance,
 			CosineSimilarity: candidate.CosineSimilarity,
-		})
+		}
+		items = append(items, referenceCoverageAttachSourceExcerpt(item, scope, needed))
 		applied[key] = true
 		summary.ChromaAppliedCount++
 		if len(items) == limit {
@@ -148,7 +154,7 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 		if scope.work != nil {
 			workTitle = scope.work.Title
 		}
-		items = append(items, referenceInjectionItem{
+		item := referenceInjectionItem{
 			BindingID:       needed.BindingID,
 			WorkID:          needed.WorkID,
 			WorkTitle:       workTitle,
@@ -160,7 +166,8 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 			MissingFields:   append([]string{}, needed.MissingFields...),
 			NeededBy:        append([]string{}, needed.NeededBy...),
 			SelectionSource: "coverage_field_index",
-		})
+		}
+		items = append(items, referenceCoverageAttachSourceExcerpt(item, scope, needed))
 		applied[referenceCoverageSourceKey(needed.BindingID, needed.ReferenceKind, needed.SourceID)] = true
 		summary.FieldIndexApplied++
 		if len(items) == limit {
@@ -235,6 +242,22 @@ func referenceCoverageMissingFieldText(scope referenceRecallScope, needed refere
 	default:
 		return ""
 	}
+}
+
+func referenceCoverageAttachSourceExcerpt(item referenceInjectionItem, scope referenceRecallScope, needed referenceCoverageNeededSource) referenceInjectionItem {
+	excerpt, documentID, chunkIndex := referenceCoverageGroundedSource(scope, needed.ReferenceKind, needed.SourceID)
+	item.SourceExcerpt = excerpt
+	item.SourceDocumentID = documentID
+	item.SourceChunkIndex = chunkIndex
+	item.SourceVerified = excerpt != ""
+	item.ContentMode = "structured_only"
+	if excerpt != "" {
+		item.ContentMode = "structured_plus_source"
+		if referenceCoverageNormalize(excerpt) == referenceCoverageNormalize(item.Text) {
+			item.ContentMode = "structured_matches_source"
+		}
+	}
+	return item
 }
 
 func referenceCoverageStringSliceContains(values []string, target string) bool {

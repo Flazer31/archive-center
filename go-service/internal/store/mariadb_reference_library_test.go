@@ -156,6 +156,24 @@ func TestUpdateReferenceLibraryEntityMarksUserEdit(t *testing.T) {
 	}
 }
 
+func TestUpdateReferenceLibraryClaimClearsSourceVerification(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectExec("metadata_json = JSON_SET").
+		WithArgs("world_rule", "Corrected fact", "edited excerpt", "timeless", "public_world", 0.9, "work-1", "claim-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	err := store.UpdateReferenceLibraryItem(context.Background(), &ReferenceLibraryItemUpdate{
+		WorkID: "work-1", Kind: "claim", ID: "claim-1", ClaimType: "world_rule",
+		ClaimText: "Corrected fact", EvidenceExcerpt: "edited excerpt", TemporalScope: "timeless",
+		KnowledgeScope: "public_world", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("UpdateReferenceLibraryItem: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestListReferenceEntitiesReturnsReviewAudit(t *testing.T) {
 	store, mock := newReferenceLibraryMock(t)
 	now := time.Date(2026, 7, 12, 12, 30, 0, 0, time.UTC)

@@ -848,7 +848,7 @@ func (s *Server) runReferenceExtractionJob(ctx context.Context, ref store.Refere
 			warnings = append(warnings, fmt.Sprintf("chunk %d: %v", i+1, err))
 			continue
 		}
-		chunkCounts, saveWarnings, err := saveReferenceExtractionCandidates(ctx, ref, doc, parsed, i)
+		chunkCounts, saveWarnings, err := saveReferenceExtractionCandidates(ctx, ref, doc, parsed, chunk, i)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("chunk %d save: %v", i+1, err))
 			continue
@@ -1206,7 +1206,7 @@ func (s *Server) runReferenceAutoReviewJob(ctx context.Context, ref store.Refere
 	return map[string]any{"status": "completed", "approved": counts["approved"], "rejected": counts["rejected"], "pending_decisions": counts["pending"], "invalid_decisions": counts["invalid"], "remaining_pending": len(remaining)}, nil
 }
 
-func saveReferenceExtractionCandidates(ctx context.Context, ref store.ReferenceLibraryStore, doc *store.ReferenceDocument, parsed map[string]any, chunkIndex int) (map[string]int, []string, error) {
+func saveReferenceExtractionCandidates(ctx context.Context, ref store.ReferenceLibraryStore, doc *store.ReferenceDocument, parsed map[string]any, sourceChunk string, chunkIndex int) (map[string]int, []string, error) {
 	counts := map[string]int{"timeline": 0, "entities": 0, "claims": 0}
 	warnings := append([]string{}, stringSliceFromAny(parsed["warnings"])...)
 	timelineMap := map[string]string{}
@@ -1235,7 +1235,12 @@ func saveReferenceExtractionCandidates(ctx context.Context, ref store.ReferenceL
 		key := strings.TrimSpace(stringFromMap(item, "node_key"))
 		nodeID := stringFromMap(item, "resolved_node_id")
 		parentID := timelineMap[strings.ToLower(strings.TrimSpace(stringFromMap(item, "parent_node_key")))]
-		metadata := referenceCandidateMetadata(doc.DocumentID, chunkIndex, stringFromMap(item, "evidence_excerpt"))
+		rawEvidence := stringFromMap(item, "evidence_excerpt")
+		evidence := referenceGroundedSourceExcerpt(sourceChunk, rawEvidence)
+		if strings.TrimSpace(rawEvidence) != "" && evidence == "" {
+			warnings = append(warnings, "timeline evidence excerpt was not found in source: "+truncateRunes(key, 100))
+		}
+		metadata := referenceCandidateMetadata(doc.DocumentID, chunkIndex, evidence)
 		node := &store.ReferenceTimelineNode{NodeID: nodeID, WorkID: doc.WorkID, ContinuityID: doc.ContinuityID, NodeKey: key, Label: strings.TrimSpace(stringFromMap(item, "label")), Ordinal: int64(intFromAny(item["ordinal"], 0)), ParentNodeID: parentID, BranchKey: defaultReferenceString(stringFromMap(item, "branch_key"), "main"), NodeKind: defaultReferenceString(stringFromMap(item, "node_kind"), "event"), MetadataJSON: metadata, ReviewStatus: "pending"}
 		if err := ref.UpsertReferenceTimelineNode(ctx, node); err != nil {
 			return counts, warnings, err
@@ -1265,7 +1270,12 @@ func saveReferenceExtractionCandidates(ctx context.Context, ref store.ReferenceL
 		}
 		entityID := referenceStableID("entity", doc.WorkID, doc.ContinuityID, strings.ToLower(name))
 		entityMap[strings.ToLower(name)] = entityID
-		metadata := referenceCandidateMetadata(doc.DocumentID, chunkIndex, stringFromMap(item, "evidence_excerpt"))
+		rawEvidence := stringFromMap(item, "evidence_excerpt")
+		evidence := referenceGroundedSourceExcerpt(sourceChunk, rawEvidence)
+		if strings.TrimSpace(rawEvidence) != "" && evidence == "" {
+			warnings = append(warnings, "entity evidence excerpt was not found in source: "+truncateRunes(name, 100))
+		}
+		metadata := referenceCandidateMetadata(doc.DocumentID, chunkIndex, evidence)
 		entity := &store.ReferenceEntity{EntityID: entityID, WorkID: doc.WorkID, ContinuityID: doc.ContinuityID, EntityType: defaultReferenceString(stringFromMap(item, "entity_type"), "character"), CanonicalName: name, DescriptionText: stringFromMap(item, "description"), MetadataJSON: metadata, ReviewStatus: "pending"}
 		if err := ref.UpsertReferenceEntity(ctx, entity); err != nil {
 			return counts, warnings, err
@@ -1288,7 +1298,12 @@ func saveReferenceExtractionCandidates(ctx context.Context, ref store.ReferenceL
 		subjectName := strings.ToLower(strings.TrimSpace(stringFromMap(item, "subject")))
 		claimType := defaultReferenceString(stringFromMap(item, "claim_type"), "event")
 		claimID := referenceStableID("claim", doc.WorkID, doc.ContinuityID, claimType, subjectName, normalizeReferenceText(text))
-		claim := &store.ReferenceClaim{ClaimID: claimID, WorkID: doc.WorkID, ContinuityID: doc.ContinuityID, DocumentID: doc.DocumentID, ClaimType: claimType, SubjectEntityID: entityMap[subjectName], ClaimText: text, EvidenceExcerpt: truncateRunes(stringFromMap(item, "evidence_excerpt"), 800), TemporalScope: defaultReferenceString(stringFromMap(item, "temporal_scope"), "bounded"), ValidFromNodeID: timelineMap[strings.ToLower(stringFromMap(item, "valid_from_node_key"))], ValidToNodeID: timelineMap[strings.ToLower(stringFromMap(item, "valid_to_node_key"))], RevealFromNodeID: timelineMap[strings.ToLower(stringFromMap(item, "reveal_from_node_key"))], BranchKey: defaultReferenceString(stringFromMap(item, "branch_key"), "main"), KnowledgeScope: defaultReferenceString(stringFromMap(item, "knowledge_scope"), "public_world"), Confidence: floatFromAny(item["confidence"]), ReviewStatus: "pending", MetadataJSON: referenceCandidateMetadataWithFactKey(doc.DocumentID, chunkIndex, stringFromMap(item, "fact_key"))}
+		rawEvidence := stringFromMap(item, "evidence_excerpt")
+		evidence := referenceGroundedSourceExcerpt(sourceChunk, rawEvidence)
+		if strings.TrimSpace(rawEvidence) != "" && evidence == "" {
+			warnings = append(warnings, "claim evidence excerpt was not found in source: "+truncateRunes(text, 100))
+		}
+		claim := &store.ReferenceClaim{ClaimID: claimID, WorkID: doc.WorkID, ContinuityID: doc.ContinuityID, DocumentID: doc.DocumentID, ClaimType: claimType, SubjectEntityID: entityMap[subjectName], ClaimText: text, EvidenceExcerpt: truncateRunes(evidence, 800), TemporalScope: defaultReferenceString(stringFromMap(item, "temporal_scope"), "bounded"), ValidFromNodeID: timelineMap[strings.ToLower(stringFromMap(item, "valid_from_node_key"))], ValidToNodeID: timelineMap[strings.ToLower(stringFromMap(item, "valid_to_node_key"))], RevealFromNodeID: timelineMap[strings.ToLower(stringFromMap(item, "reveal_from_node_key"))], BranchKey: defaultReferenceString(stringFromMap(item, "branch_key"), "main"), KnowledgeScope: defaultReferenceString(stringFromMap(item, "knowledge_scope"), "public_world"), Confidence: floatFromAny(item["confidence"]), ReviewStatus: "pending", MetadataJSON: referenceCandidateMetadataWithFactKey(doc.DocumentID, chunkIndex, stringFromMap(item, "fact_key"), evidence != "")}
 		if claim.TemporalScope != "timeless" && claim.ValidFromNodeID == "" {
 			warnings = append(warnings, "claim chronology unresolved: "+truncateRunes(text, 100))
 		}
@@ -1311,18 +1326,20 @@ func saveReferenceExtractionCandidates(ctx context.Context, ref store.ReferenceL
 
 func referenceCandidateMetadata(documentID string, chunkIndex int, evidenceExcerpt string) string {
 	metadata, _ := json.Marshal(map[string]any{
-		"document_id":      strings.TrimSpace(documentID),
-		"chunk_index":      chunkIndex,
-		"evidence_excerpt": truncateRunes(strings.TrimSpace(evidenceExcerpt), 800),
+		"document_id":       strings.TrimSpace(documentID),
+		"chunk_index":       chunkIndex,
+		"evidence_excerpt":  truncateRunes(strings.TrimSpace(evidenceExcerpt), 800),
+		"evidence_grounded": strings.TrimSpace(evidenceExcerpt) != "",
 	})
 	return string(metadata)
 }
 
-func referenceCandidateMetadataWithFactKey(documentID string, chunkIndex int, factKey string) string {
+func referenceCandidateMetadataWithFactKey(documentID string, chunkIndex int, factKey string, evidenceGrounded bool) string {
 	metadata, _ := json.Marshal(map[string]any{
-		"document_id": strings.TrimSpace(documentID),
-		"chunk_index": chunkIndex,
-		"fact_key":    strings.TrimSpace(factKey),
+		"document_id":       strings.TrimSpace(documentID),
+		"chunk_index":       chunkIndex,
+		"fact_key":          strings.TrimSpace(factKey),
+		"evidence_grounded": evidenceGrounded,
 	})
 	return string(metadata)
 }
