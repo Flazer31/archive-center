@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-const referenceCoverageContractVersion = "coverage_shadow.v2"
+const referenceCoverageContractVersion = "coverage_shadow.v3"
 
 type referenceCoverageMessage struct {
 	location   string
@@ -26,11 +26,13 @@ func newReferenceCoverageSummary(sceneContext referenceCoverageSceneContext) ref
 		StatusCounts:      map[string]int{},
 		InjectionFiltered: false,
 		SceneSignals:      summarizeReferenceCoverageSceneSignals(sceneContext),
+		FieldIndex:        newReferenceCoverageFieldIndexSummary(),
 	}
 }
 
-func summarizeReferenceCoverage(selected, excluded []referenceRecallItem, sceneContext referenceCoverageSceneContext) referenceCoverageSummary {
+func summarizeReferenceCoverage(selected, excluded []referenceRecallItem, sceneContext referenceCoverageSceneContext, fieldIndex referenceCoverageFieldIndexSummary) referenceCoverageSummary {
 	summary := newReferenceCoverageSummary(sceneContext)
+	summary.FieldIndex = fieldIndex
 	for _, item := range append(append([]referenceRecallItem{}, selected...), excluded...) {
 		status := strings.TrimSpace(item.CoverageStatus)
 		if status == "" {
@@ -274,6 +276,7 @@ func referenceCoverageEntityNames(scope referenceRecallScope, entityID string) [
 	if entity, ok := scope.entities[entityID]; ok && strings.TrimSpace(entity.CanonicalName) != "" {
 		names = append(names, strings.TrimSpace(entity.CanonicalName))
 	}
+	names = append(names, scope.aliases[entityID]...)
 	return names
 }
 

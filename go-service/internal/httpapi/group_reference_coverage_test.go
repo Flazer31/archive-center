@@ -85,7 +85,7 @@ func TestReferenceCoverageShadowKeepsUnknownAndHardFilterReasonsExplicit(t *test
 		t.Fatalf("future coverage = %#v", future)
 	}
 
-	summary := summarizeReferenceCoverage([]referenceRecallItem{unknown}, []referenceRecallItem{future}, referenceCoverageSceneContext{})
+	summary := summarizeReferenceCoverage([]referenceRecallItem{unknown}, []referenceRecallItem{future}, referenceCoverageSceneContext{}, newReferenceCoverageFieldIndexSummary())
 	if summary.Mode != "shadow" || summary.InjectionFiltered || summary.EvaluatedCount != 2 || summary.StatusCounts["unknown"] != 1 || summary.StatusCounts["not_applicable"] != 1 {
 		t.Fatalf("coverage summary = %#v", summary)
 	}

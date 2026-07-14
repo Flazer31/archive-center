@@ -1182,3 +1182,51 @@ CREATE TABLE IF NOT EXISTS session_reference_runtime (
     CONSTRAINT fk_session_reference_runtime_candidate FOREIGN KEY (candidate_node_id) REFERENCES reference_timeline_nodes(node_id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='One mutable assisted-anchor candidate per binding; not an accumulating memory lane.';
+
+CREATE TABLE IF NOT EXISTS session_reference_coverage_snapshots (
+    binding_id             CHAR(36)        PRIMARY KEY,
+    contract_version       VARCHAR(50)     NOT NULL,
+    context_hash           CHAR(64)        NOT NULL,
+    inventory_hash         CHAR(64)        NOT NULL,
+    snapshot_hash          CHAR(64)        NOT NULL,
+    source_message_count   INT             NOT NULL DEFAULT 0,
+    field_count            INT             NOT NULL DEFAULT 0,
+    covered_field_count    INT             NOT NULL DEFAULT 0,
+    stats_json             JSON            NULL,
+    revision               BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    created_at             DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at             DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    INDEX idx_reference_coverage_snapshot_hash (snapshot_hash),
+    CONSTRAINT fk_reference_coverage_snapshot_binding FOREIGN KEY (binding_id)
+        REFERENCES session_reference_bindings(binding_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='One replaceable active-request coverage snapshot per reference binding; no turn history.';
+
+CREATE TABLE IF NOT EXISTS session_reference_coverage_fields (
+    binding_id              CHAR(36)        NOT NULL,
+    field_key               CHAR(64)        NOT NULL,
+    work_id                 CHAR(36)        NOT NULL,
+    continuity_id           CHAR(36)        NOT NULL,
+    reference_kind          VARCHAR(50)     NOT NULL,
+    source_id               CHAR(36)        NOT NULL,
+    field_name              VARCHAR(255)    NOT NULL,
+    field_value             LONGTEXT        NOT NULL,
+    normalized_value        LONGTEXT        NOT NULL,
+    match_values_json       JSON            NULL,
+    present_in_context      BOOLEAN         NOT NULL DEFAULT FALSE,
+    matched_locations_json  JSON            NULL,
+    eligible                BOOLEAN         NOT NULL DEFAULT TRUE,
+    eligibility_reason      VARCHAR(100)    NOT NULL DEFAULT 'eligible',
+    created_at              DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at              DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    PRIMARY KEY (binding_id, field_key),
+    INDEX idx_reference_coverage_source (binding_id, reference_kind, source_id),
+    INDEX idx_reference_coverage_presence (binding_id, present_in_context, eligible),
+    CONSTRAINT fk_reference_coverage_field_snapshot FOREIGN KEY (binding_id)
+        REFERENCES session_reference_coverage_snapshots(binding_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_coverage_field_work FOREIGN KEY (work_id)
+        REFERENCES reference_works(work_id) ON DELETE CASCADE,
+    CONSTRAINT fk_reference_coverage_field_continuity FOREIGN KEY (continuity_id)
+        REFERENCES reference_continuities(continuity_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Current field-level comparison between active request context and approved reference inventory.';

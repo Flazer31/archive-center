@@ -178,8 +178,12 @@ func TestPrepareTurnReferenceCoverageUsesStoreSceneSignals(t *testing.T) {
 	}
 	recall := result["reference_recall"].(map[string]any)
 	coverage := recall["coverage_shadow"].(map[string]any)
-	if coverage["contract_version"] != "coverage_shadow.v2" || coverage["injection_filtered"] != false {
+	if coverage["contract_version"] != "coverage_shadow.v3" || coverage["injection_filtered"] != false {
 		t.Fatalf("coverage contract = %#v", coverage)
+	}
+	fieldIndex := coverage["field_index"].(map[string]any)
+	if fieldIndex["contract_version"] != "coverage_field_index.v1" || fieldIndex["status"] != "ready" {
+		t.Fatalf("field index contract = %#v", fieldIndex)
 	}
 	sceneSignals := coverage["scene_signals"].(map[string]any)
 	if sceneSignals["recent_completed_turn"] != float64(3) || sceneSignals["recent_dialogue_count"] != float64(2) {

@@ -14,14 +14,19 @@ import (
 
 type referenceBindingHTTPStore struct {
 	*referenceLibraryHTTPStore
-	bindings []store.SessionReferenceBinding
-	runtimes map[string]store.SessionReferenceRuntime
+	bindings       []store.SessionReferenceBinding
+	runtimes       map[string]store.SessionReferenceRuntime
+	coverage       map[string]store.SessionReferenceCoverageSnapshot
+	coverageFields map[string][]store.SessionReferenceCoverageField
+	coverageWrites int
 }
 
 func newReferenceBindingHTTPStore() *referenceBindingHTTPStore {
 	return &referenceBindingHTTPStore{
 		referenceLibraryHTTPStore: newReferenceLibraryHTTPStore(),
 		runtimes:                  map[string]store.SessionReferenceRuntime{},
+		coverage:                  map[string]store.SessionReferenceCoverageSnapshot{},
+		coverageFields:            map[string][]store.SessionReferenceCoverageField{},
 	}
 }
 
@@ -84,6 +89,8 @@ func (f *referenceBindingHTTPStore) DeleteSessionReferenceBinding(_ context.Cont
 		if f.bindings[i].ChatSessionID == sid && f.bindings[i].BindingID == bindingID {
 			f.bindings = append(f.bindings[:i], f.bindings[i+1:]...)
 			delete(f.runtimes, bindingID)
+			delete(f.coverage, bindingID)
+			delete(f.coverageFields, bindingID)
 			return nil
 		}
 	}
@@ -106,6 +113,33 @@ func (f *referenceBindingHTTPStore) GetSessionReferenceRuntime(_ context.Context
 	}
 	copy := item
 	return &copy, nil
+}
+
+func (f *referenceBindingHTTPStore) ListReferenceEntityAliasesByScope(_ context.Context, workID, continuityID string) ([]store.ReferenceEntityAlias, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []store.ReferenceEntityAlias{}
+	for _, aliases := range f.aliases {
+		for _, item := range aliases {
+			if item.WorkID == workID && item.ContinuityID == continuityID {
+				out = append(out, item)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f *referenceBindingHTTPStore) ReplaceSessionReferenceCoverageSnapshot(_ context.Context, snapshot *store.SessionReferenceCoverageSnapshot, fields []store.SessionReferenceCoverageField) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if existing, ok := f.coverage[snapshot.BindingID]; ok && existing.SnapshotHash == snapshot.SnapshotHash {
+		return false, nil
+	}
+	copy := *snapshot
+	f.coverage[snapshot.BindingID] = copy
+	f.coverageFields[snapshot.BindingID] = append([]store.SessionReferenceCoverageField(nil), fields...)
+	f.coverageWrites++
+	return true, nil
 }
 
 func newReferenceBindingTestMux() (*referenceBindingHTTPStore, http.Handler) {

@@ -19,6 +19,7 @@ type referenceCoverageSceneContext struct {
 	RecentDialogue      []referenceCoverageSceneSource
 	CurrentLocations    []referenceCoverageSceneSource
 	ActiveRules         []referenceCoverageSceneSource
+	Conversation        []referenceCoverageSceneSource
 }
 
 type referenceCoverageSceneSignalSummary struct {
@@ -64,7 +65,26 @@ func buildReferenceCoverageSceneContext(chatLogs []store.ChatLog, activeStates [
 	context.RecentCompletedTurn, context.RecentDialogue = referenceCoverageLatestCompletedDialogue(chatLogs)
 	context.CurrentLocations = referenceCoverageCurrentLocations(activeStates, canonicalLayers)
 	context.ActiveRules = referenceCoverageActiveRules(worldRules, ruleLimit)
+	context.Conversation = referenceCoverageConversationSources(chatLogs)
 	return context
+}
+
+func referenceCoverageConversationSources(chatLogs []store.ChatLog) []referenceCoverageSceneSource {
+	sources := []referenceCoverageSceneSource{}
+	for _, item := range chatLogs {
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		if text := strings.TrimSpace(item.Content); text != "" {
+			sources = append(sources, referenceCoverageSceneSource{
+				Location:  fmt.Sprintf("chat_log:turn:%d:%s:%d", item.TurnIndex, role, item.ID),
+				Text:      text,
+				TurnIndex: item.TurnIndex,
+			})
+		}
+	}
+	return referenceCoverageUniqueSceneSources(sources)
 }
 
 func referenceCoverageLatestCompletedDialogue(chatLogs []store.ChatLog) (int, []referenceCoverageSceneSource) {

@@ -177,6 +177,47 @@ type SessionReferenceRuntime struct {
 	UpdatedAt             time.Time `json:"updated_at"`
 }
 
+type SessionReferenceCoverageSnapshot struct {
+	BindingID          string    `json:"binding_id"`
+	ContractVersion    string    `json:"contract_version"`
+	ContextHash        string    `json:"context_hash"`
+	InventoryHash      string    `json:"inventory_hash"`
+	SnapshotHash       string    `json:"snapshot_hash"`
+	SourceMessageCount int       `json:"source_message_count"`
+	FieldCount         int       `json:"field_count"`
+	CoveredFieldCount  int       `json:"covered_field_count"`
+	StatsJSON          string    `json:"stats_json,omitempty"`
+	Revision           int64     `json:"revision"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type SessionReferenceCoverageField struct {
+	BindingID            string    `json:"binding_id"`
+	FieldKey             string    `json:"field_key"`
+	WorkID               string    `json:"work_id"`
+	ContinuityID         string    `json:"continuity_id"`
+	ReferenceKind        string    `json:"reference_kind"`
+	SourceID             string    `json:"source_id"`
+	FieldName            string    `json:"field_name"`
+	FieldValue           string    `json:"field_value"`
+	NormalizedValue      string    `json:"normalized_value"`
+	MatchValuesJSON      string    `json:"match_values_json,omitempty"`
+	PresentInContext     bool      `json:"present_in_context"`
+	MatchedLocationsJSON string    `json:"matched_locations_json,omitempty"`
+	Eligible             bool      `json:"eligible"`
+	EligibilityReason    string    `json:"eligibility_reason"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+// ReferenceCoverageStore is optional so existing non-MariaDB stores and
+// bounded test doubles do not need to own the field coverage index.
+type ReferenceCoverageStore interface {
+	ListReferenceEntityAliasesByScope(context.Context, string, string) ([]ReferenceEntityAlias, error)
+	ReplaceSessionReferenceCoverageSnapshot(context.Context, *SessionReferenceCoverageSnapshot, []SessionReferenceCoverageField) (bool, error)
+}
+
 // ReferenceLibraryStore is an optional extension. Reference material remains
 // independent from the session-scoped canonical Store and is never addressed
 // through rollback methods.

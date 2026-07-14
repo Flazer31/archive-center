@@ -52,6 +52,7 @@ type referenceCoverageSummary struct {
 	StatusCounts      map[string]int                      `json:"status_counts"`
 	InjectionFiltered bool                                `json:"injection_filtered"`
 	SceneSignals      referenceCoverageSceneSignalSummary `json:"scene_signals"`
+	FieldIndex        referenceCoverageFieldIndexSummary  `json:"field_index"`
 }
 
 type referenceRecallResult struct {
@@ -75,6 +76,7 @@ type referenceRecallScope struct {
 	nodes             map[string]store.ReferenceTimelineNode
 	entities          map[string]store.ReferenceEntity
 	claims            map[string]store.ReferenceClaim
+	aliases           map[string][]string
 	branchKey         string
 	currentOrdinal    *int64
 	revealOrdinal     *int64
@@ -134,16 +136,6 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 		result.Warnings = append(result.Warnings, "reference_store_unavailable")
 		return result
 	}
-	querier, ok := s.ReferenceVector.(vector.ExactMetadataQuerier)
-	if !ok {
-		result.Warnings = append(result.Warnings, "reference_vector_exact_query_unavailable")
-		return result
-	}
-	embedder := s.completeTurnExtractionConfig(clientMeta).Embedder
-	if !embedder.hasConfig() {
-		result.Warnings = append(result.Warnings, "embedding_config_missing")
-		return result
-	}
 	bindings, err := ref.ListSessionReferenceBindings(ctx, result.ChatSessionID, false)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "reference_binding_read_failed: "+err.Error())
@@ -153,6 +145,30 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 	result.LiveBindingCount = len(bindings)
 	if len(bindings) == 0 {
 		result.Status = "empty"
+		return result
+	}
+	sceneEntities := referenceRecallStringSet(clientMeta["reference_scene_entity_ids"])
+	scopes := map[string]referenceRecallScope{}
+	for _, binding := range bindings {
+		scope, scopeErr := loadReferenceRecallScope(ctx, ref, binding, sceneEntities)
+		if scopeErr != nil {
+			result.Warnings = append(result.Warnings, "binding_scope_failed:"+binding.BindingID+": "+scopeErr.Error())
+			continue
+		}
+		scopes[binding.BindingID] = scope
+	}
+	fieldIndex, fieldWarnings := s.buildReferenceCoverageFieldIndex(ctx, bindings, scopes, result.Query, messages, sceneContext)
+	result.CoverageShadow.FieldIndex = fieldIndex
+	result.Warnings = append(result.Warnings, fieldWarnings...)
+
+	querier, ok := s.ReferenceVector.(vector.ExactMetadataQuerier)
+	if !ok {
+		result.Warnings = append(result.Warnings, "reference_vector_exact_query_unavailable")
+		return result
+	}
+	embedder := s.completeTurnExtractionConfig(clientMeta).Embedder
+	if !embedder.hasConfig() {
+		result.Warnings = append(result.Warnings, "embedding_config_missing")
 		return result
 	}
 	embeddingJSON, model, err := callEmbedding(ctx, embedder, result.Query)
@@ -178,11 +194,9 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 	if queryLimit > 200 {
 		queryLimit = 200
 	}
-	sceneEntities := referenceRecallStringSet(clientMeta["reference_scene_entity_ids"])
 	for _, binding := range bindings {
-		scope, scopeErr := loadReferenceRecallScope(ctx, ref, binding, sceneEntities)
-		if scopeErr != nil {
-			result.Warnings = append(result.Warnings, "binding_scope_failed:"+binding.BindingID+": "+scopeErr.Error())
+		scope, ok := scopes[binding.BindingID]
+		if !ok {
 			continue
 		}
 		approvedIDs := referenceRecallApprovedIDs(scope)
@@ -226,13 +240,13 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 	if len(result.Selected) > limit {
 		result.Selected = result.Selected[:limit]
 	}
-	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded, sceneContext)
+	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded, sceneContext, fieldIndex)
 	result.Status = "ready"
 	return result
 }
 
 func loadReferenceRecallScope(ctx context.Context, ref store.ReferenceLibraryStore, binding store.SessionReferenceBinding, sceneEntities map[string]bool) (referenceRecallScope, error) {
-	scope := referenceRecallScope{binding: binding, nodes: map[string]store.ReferenceTimelineNode{}, entities: map[string]store.ReferenceEntity{}, claims: map[string]store.ReferenceClaim{}, branchKey: "main", sceneEntities: sceneEntities}
+	scope := referenceRecallScope{binding: binding, nodes: map[string]store.ReferenceTimelineNode{}, entities: map[string]store.ReferenceEntity{}, claims: map[string]store.ReferenceClaim{}, aliases: map[string][]string{}, branchKey: "main", sceneEntities: sceneEntities}
 	work, err := ref.GetReferenceWork(ctx, binding.WorkID)
 	if err != nil {
 		return scope, err
@@ -269,6 +283,15 @@ func loadReferenceRecallScope(ctx context.Context, ref store.ReferenceLibrarySto
 	}
 	for _, entity := range entities {
 		scope.entities[entity.EntityID] = entity
+	}
+	if coverageStore, ok := ref.(store.ReferenceCoverageStore); ok {
+		aliases, err := coverageStore.ListReferenceEntityAliasesByScope(ctx, binding.WorkID, binding.ContinuityID)
+		if err != nil {
+			return scope, err
+		}
+		for _, alias := range aliases {
+			scope.aliases[alias.EntityID] = append(scope.aliases[alias.EntityID], alias.AliasText)
+		}
 	}
 	claims, err := ref.ListReferenceClaims(ctx, binding.WorkID, binding.ContinuityID, "approved", "")
 	if err != nil {
