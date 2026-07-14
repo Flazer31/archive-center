@@ -552,6 +552,32 @@ func TestMariaDBStoreLockSessionMigrationSourceWritesLockAfterVectorReindex(t *t
 	}
 }
 
+func TestMariaDBStoreGetsRoutingBaselineFromCopiedChatLogLedger(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	m := &mariadbStore{db: db}
+	mock.ExpectQuery(`(?s)FROM session_migrations sm.*JOIN session_migration_row_map rm.*JOIN chat_logs cl.*WHERE sm.target_session_id = \?`).
+		WithArgs("target-session").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "source_session_id", "target_session_id", "mode", "imported_through_turn",
+		}).AddRow(int64(42), "source-session", "target-session", SessionMigrationModeCopyKeepSource, 8))
+
+	baseline, err := m.GetSessionRoutingBaseline(context.Background(), "target-session")
+	if err != nil {
+		t.Fatalf("GetSessionRoutingBaseline failed: %v", err)
+	}
+	if baseline.MigrationID != 42 || baseline.SourceSessionID != "source-session" || baseline.TargetSessionID != "target-session" || baseline.ImportedThroughTurn != 8 {
+		t.Fatalf("unexpected routing baseline: %+v", baseline)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBStoreLockSessionMigrationSourceBlocksBeforeVectorReindex(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

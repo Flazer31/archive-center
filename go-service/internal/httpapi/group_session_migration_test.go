@@ -381,6 +381,56 @@ func TestSessionMigratePreviewAllowsEmptyTargetDryRun(t *testing.T) {
 	}
 }
 
+func TestSessionMigratePreviewAllowsTargetWithOnlyStarterTurnZero(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	targetID := "char_59_cid_fresh"
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: sourceID, TurnIndex: 0, Role: "assistant", Content: "source opening"},
+			{ID: 2, ChatSessionID: targetID, TurnIndex: 0, Role: "assistant", Content: "temporary target opening"},
+		},
+		memories: []store.Memory{{ID: 3, ChatSessionID: sourceID}},
+	}
+	vec := &sessionMigrationPreviewVector{counts: map[string]int{sourceID: 1}}
+	resp := performSessionMigrationPreview(t, st, vec, map[string]string{
+		"source_session_id": sourceID,
+		"target_session_id": targetID,
+	})
+
+	if resp.Blocked || !resp.TargetEmpty {
+		t.Fatalf("starter-only target must remain migration-empty: %+v", resp)
+	}
+	if !resp.TargetCounts.ReplaceableStarterOnly {
+		t.Fatalf("starter-only target was not identified: %+v", resp.TargetCounts)
+	}
+	if !sessionMigrationContainsString(resp.Warnings, "target_starter_turn_zero_will_be_replaced") {
+		t.Fatalf("starter replacement warning missing: %#v", resp.Warnings)
+	}
+}
+
+func TestSessionMigratePreviewStillBlocksStarterPlusAnyOtherRow(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	targetID := "char_59_cid_used"
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: sourceID, TurnIndex: 0, Role: "assistant", Content: "source opening"},
+			{ID: 2, ChatSessionID: targetID, TurnIndex: 0, Role: "assistant", Content: "target opening"},
+			{ID: 3, ChatSessionID: targetID, TurnIndex: 1, Role: "user", Content: "already used"},
+		},
+	}
+	resp := performSessionMigrationPreview(t, st, &sessionMigrationPreviewVector{}, map[string]string{
+		"source_session_id": sourceID,
+		"target_session_id": targetID,
+	})
+
+	if !resp.Blocked || resp.TargetEmpty || resp.TargetCounts.ReplaceableStarterOnly {
+		t.Fatalf("starter plus another row must stay protected: %+v", resp)
+	}
+	if !sessionMigrationContainsString(resp.BlockedReasons, "target_session_not_empty") {
+		t.Fatalf("target_session_not_empty missing: %#v", resp.BlockedReasons)
+	}
+}
+
 func TestSessionMigrateCompleteCopiesOnlyAfterEmptyTargetPreview(t *testing.T) {
 	sourceID := "char_59_cid_source"
 	targetID := "char_59_cid_fresh"

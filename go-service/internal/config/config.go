@@ -103,6 +103,10 @@ type Config struct {
 	// ChromaCollection is the collection used for Archive Center vectors.
 	ChromaCollection string
 
+	// ReferenceChromaCollection is a separate collection for reusable original-
+	// work material. It must never share the session-memory collection.
+	ReferenceChromaCollection string
+
 	// ChromaAPIPath is the Chroma HTTP API prefix. Default is /api/v2.
 	ChromaAPIPath string
 
@@ -177,6 +181,7 @@ func Default() Config {
 		ChromaEnabled:             false,
 		ChromaEndpoint:            "",
 		ChromaCollection:          "archive_center_vectors",
+		ReferenceChromaCollection: "archive_center_reference_vectors",
 		ChromaAPIPath:             "/api/v2",
 		PromptDir:                 "",
 		BuildVersion:              "2.0.0-dev",
@@ -284,6 +289,9 @@ func Load() Config {
 	}
 	if v := os.Getenv("AC_CHROMA_COLLECTION"); v != "" {
 		cfg.ChromaCollection = v
+	}
+	if v := os.Getenv("AC_REFERENCE_CHROMA_COLLECTION"); v != "" {
+		cfg.ReferenceChromaCollection = v
 	}
 	if v := os.Getenv("AC_CHROMA_API_PATH"); v != "" {
 		cfg.ChromaAPIPath = v
@@ -435,6 +443,12 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.ChromaEndpoint) != "" && strings.TrimSpace(c.ChromaCollection) == "" {
 		return fmt.Errorf("config: chroma vector store requires AC_CHROMA_COLLECTION")
+	}
+	if strings.TrimSpace(c.ChromaEndpoint) != "" && strings.TrimSpace(c.ReferenceChromaCollection) == "" {
+		return fmt.Errorf("config: reference vector store requires AC_REFERENCE_CHROMA_COLLECTION")
+	}
+	if strings.TrimSpace(c.ChromaEndpoint) != "" && strings.EqualFold(strings.TrimSpace(c.ChromaCollection), strings.TrimSpace(c.ReferenceChromaCollection)) {
+		return fmt.Errorf("config: AC_REFERENCE_CHROMA_COLLECTION must differ from AC_CHROMA_COLLECTION")
 	}
 	return nil
 }

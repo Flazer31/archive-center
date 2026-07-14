@@ -51,6 +51,29 @@ type DocumentLister interface {
 	ListDocuments(ctx context.Context, sessionID string) ([]VectorDocument, error)
 }
 
+// ExactMetadataQuerier exposes ChromaDB's response order and raw measurements
+// without applying Archive Center's session-memory reranking policy. It is used
+// by reference-library diagnostics where a fabricated or normalized score would
+// hide whether the vector database is actually query-sensitive.
+type ExactMetadataQuerier interface {
+	QueryExact(ctx context.Context, query ExactQuery) ([]ExactQueryResult, error)
+}
+
+type ExactQuery struct {
+	Embedding []float32
+	Limit     int
+	Where     map[string]any
+}
+
+type ExactQueryResult struct {
+	Document          VectorDocument
+	ChromaRank        int
+	Distance          float64
+	DistanceAvailable bool
+	CosineSimilarity  float64
+	CosineAvailable   bool
+}
+
 // CollectionResetter is an explicit operator/debug-only extension for clearing
 // all vector documents while preserving service configuration.
 type CollectionResetter interface {
@@ -78,6 +101,7 @@ type VectorDocument struct {
 	AliasCount            int
 	MigrationID           int64
 	MigratedFromSessionID string
+	Metadata              map[string]any
 }
 
 // HealthSnapshot is the diagnostic shape returned by Health.

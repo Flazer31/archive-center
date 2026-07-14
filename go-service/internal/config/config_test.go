@@ -42,6 +42,9 @@ func TestDefault(t *testing.T) {
 	if cfg.ChromaCollection != "archive_center_vectors" {
 		t.Errorf("ChromaCollection = %q, want archive_center_vectors", cfg.ChromaCollection)
 	}
+	if cfg.ReferenceChromaCollection != "archive_center_reference_vectors" {
+		t.Errorf("ReferenceChromaCollection = %q, want archive_center_reference_vectors", cfg.ReferenceChromaCollection)
+	}
 	if cfg.ChromaAPIPath != "/api/v2" {
 		t.Errorf("ChromaAPIPath = %q, want /api/v2", cfg.ChromaAPIPath)
 	}
@@ -77,6 +80,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("AC_VECTOR_MODE", "external")
 	t.Setenv("AC_CHROMA_ENDPOINT", "http://127.0.0.1:8000")
 	t.Setenv("AC_CHROMA_COLLECTION", "archive_center_test_vectors")
+	t.Setenv("AC_REFERENCE_CHROMA_COLLECTION", "archive_center_test_reference_vectors")
 	t.Setenv("AC_CHROMA_API_PATH", "/api/v1")
 
 	cfg := Load()
@@ -125,6 +129,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.ChromaCollection != "archive_center_test_vectors" {
 		t.Errorf("ChromaCollection = %q", cfg.ChromaCollection)
+	}
+	if cfg.ReferenceChromaCollection != "archive_center_test_reference_vectors" {
+		t.Errorf("ReferenceChromaCollection = %q", cfg.ReferenceChromaCollection)
 	}
 	if cfg.ChromaAPIPath != "/api/v1" {
 		t.Errorf("ChromaAPIPath = %q", cfg.ChromaAPIPath)
@@ -194,6 +201,15 @@ func TestValidateAllowsShadowWithoutChromaEndpoint(t *testing.T) {
 	cfg := Default()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() should allow shadow mode to degrade without Chroma endpoint: %v", err)
+	}
+}
+
+func TestValidateRejectsSharedSessionAndReferenceCollection(t *testing.T) {
+	cfg := Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	cfg.ReferenceChromaCollection = cfg.ChromaCollection
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("Validate() error = %v, want separate collection error", err)
 	}
 }
 

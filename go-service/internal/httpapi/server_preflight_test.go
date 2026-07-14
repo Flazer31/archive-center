@@ -18,6 +18,10 @@ func TestValidateRuntimeDependenciesChecksChromaV2HeartbeatAndCollection(t *test
 			_, _ = w.Write([]byte(`{"id":"collection-1","name":"archive_center_vectors"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/collection-1/count":
 			_, _ = w.Write([]byte(`0`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_reference_vectors":
+			_, _ = w.Write([]byte(`{"id":"reference-collection-1","name":"archive_center_reference_vectors"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/reference-collection-1/count":
+			_, _ = w.Write([]byte(`0`))
 		default:
 			http.Error(w, r.Method+" "+r.URL.Path, http.StatusNotFound)
 		}

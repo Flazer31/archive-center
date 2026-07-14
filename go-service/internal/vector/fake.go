@@ -44,6 +44,10 @@ func (f *fakeVectorStore) Search(ctx context.Context, sessionID string, vector [
 	return nil, ErrNotFound
 }
 
+func (f *fakeVectorStore) QueryExact(ctx context.Context, query ExactQuery) ([]ExactQueryResult, error) {
+	return nil, ErrNotEnabled
+}
+
 func (f *fakeVectorStore) Upsert(ctx context.Context, sessionID string, docs []VectorDocument) error {
 	f.upsertCalled = true
 	f.upsertSessionID = sessionID

@@ -151,6 +151,72 @@ func (s *chromaStore) Search(ctx context.Context, sessionID string, vector []flo
 	return docs, nil
 }
 
+// QueryExact preserves ChromaDB's response order and raw distance. Unlike the
+// session-memory Search method it does not overfetch, normalize distance, or
+// rerank candidates. Cosine is reported only when Chroma returns the stored
+// embedding and it can be calculated from the two real vectors.
+func (s *chromaStore) QueryExact(ctx context.Context, query ExactQuery) ([]ExactQueryResult, error) {
+	if len(query.Embedding) == 0 {
+		return nil, ErrNotFound
+	}
+	ref, err := s.ensureCollection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 5
+	}
+	body := map[string]any{
+		"query_embeddings": [][]float32{query.Embedding},
+		"n_results":        limit,
+		"include":          []string{"metadatas", "documents", "distances", "embeddings"},
+	}
+	if len(query.Where) > 0 {
+		body["where"] = query.Where
+	}
+	var out struct {
+		IDs        [][]string         `json:"ids"`
+		Documents  [][]string         `json:"documents"`
+		Metadatas  [][]map[string]any `json:"metadatas"`
+		Distances  [][]float64        `json:"distances"`
+		Embeddings [][][]float32      `json:"embeddings"`
+	}
+	if _, err := s.doJSON(ctx, http.MethodPost, s.collectionOperationPath(ref, "query"), body, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	if len(out.IDs) == 0 || len(out.IDs[0]) == 0 {
+		return nil, ErrNotFound
+	}
+	results := make([]ExactQueryResult, 0, len(out.IDs[0]))
+	for i, id := range out.IDs[0] {
+		meta := map[string]any{}
+		if len(out.Metadatas) > 0 && i < len(out.Metadatas[0]) && out.Metadatas[0][i] != nil {
+			meta = out.Metadatas[0][i]
+		}
+		text := ""
+		if len(out.Documents) > 0 && i < len(out.Documents[0]) {
+			text = out.Documents[0][i]
+		}
+		doc := vectorDocumentFromChroma(id, text, meta)
+		result := ExactQueryResult{Document: doc, ChromaRank: i + 1}
+		if len(out.Distances) > 0 && i < len(out.Distances[0]) {
+			result.Distance = out.Distances[0][i]
+			result.DistanceAvailable = true
+		}
+		if len(out.Embeddings) > 0 && i < len(out.Embeddings[0]) && len(out.Embeddings[0][i]) > 0 {
+			doc.Embedding = append([]float32(nil), out.Embeddings[0][i]...)
+			result.Document = doc
+			if similarity, ok := cosineSimilarity(query.Embedding, doc.Embedding); ok {
+				result.CosineSimilarity = similarity
+				result.CosineAvailable = true
+			}
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
 func inverseDistanceSimilarity(distance float64) float64 {
 	if distance < 0 {
 		distance = 0
@@ -195,14 +261,13 @@ func (s *chromaStore) Upsert(ctx context.Context, sessionID string, docs []Vecto
 		}
 		ids = append(ids, id)
 		embeddings = append(embeddings, doc.Embedding)
-		meta := map[string]any{
-			"tier":            doc.Tier,
-			"chat_session_id": firstNonEmpty(doc.ChatSessionID, sessionID),
-			"source_table":    doc.SourceTable,
-			"source_row_id":   doc.SourceRowID,
-			"schema_version":  doc.SchemaVersion,
-			"embedding_dim":   len(doc.Embedding),
-		}
+		meta := chromaScalarMetadata(doc.Metadata)
+		meta["tier"] = doc.Tier
+		meta["chat_session_id"] = firstNonEmpty(doc.ChatSessionID, sessionID)
+		meta["source_table"] = doc.SourceTable
+		meta["source_row_id"] = doc.SourceRowID
+		meta["schema_version"] = doc.SchemaVersion
+		meta["embedding_dim"] = len(doc.Embedding)
 		if strings.TrimSpace(doc.SearchTextPolicy) != "" {
 			meta["search_text_policy"] = strings.TrimSpace(doc.SearchTextPolicy)
 		}
@@ -584,7 +649,23 @@ func vectorDocumentFromChroma(id string, text string, meta map[string]any) Vecto
 		AliasCount:            intFromAny(meta["alias_count"]),
 		MigrationID:           int64FromAny(meta["migration_id"]),
 		MigratedFromSessionID: stringFromAny(meta["migrated_from_session_id"]),
+		Metadata:              chromaScalarMetadata(meta),
 	}
+}
+
+func chromaScalarMetadata(input map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range input {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		switch typed := value.(type) {
+		case string, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			out[key] = typed
+		}
+	}
+	return out
 }
 
 func stringFromAny(v any) string {

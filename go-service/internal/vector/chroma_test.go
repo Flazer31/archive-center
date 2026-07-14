@@ -5,10 +5,105 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestChromaExactQueryPreservesRawRankDistanceAndQuerySensitivity(t *testing.T) {
+	var queryBodies []map[string]any
+	var upsertBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/collections/archive_center_reference_vectors"):
+			_, _ = w.Write([]byte(`{"id":"reference-collection","name":"archive_center_reference_vectors"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/collections/reference-collection/upsert"):
+			_ = json.NewDecoder(r.Body).Decode(&upsertBody)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/collections/reference-collection/query"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			queryBodies = append(queryBodies, body)
+			rows, _ := body["query_embeddings"].([]any)
+			first, _ := rows[0].([]any)
+			if first[0].(float64) > 0.5 {
+				_, _ = w.Write([]byte(`{"ids":[["claim-a","claim-b"]],"documents":[["alpha","beta"]],"metadatas":[[{"work_id":"work-1","continuity_id":"main"},{"work_id":"work-1","continuity_id":"main"}]],"distances":[[0.23,1.17]],"embeddings":[[[1,0],[0,1]]]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ids":[["claim-b","claim-a"]],"documents":[["beta","alpha"]],"metadatas":[[{"work_id":"work-1","continuity_id":"main"},{"work_id":"work-1","continuity_id":"main"}]],"distances":[[0.31,1.09]],"embeddings":[[[0,1],[1,0]]]}`))
+		default:
+			http.Error(w, r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	raw, err := NewChromaStore(ts.URL, "archive_center_reference_vectors", "/api/v2")
+	if err != nil {
+		t.Fatalf("NewChromaStore: %v", err)
+	}
+	if err := raw.Upsert(context.Background(), "work-1", []VectorDocument{{
+		ID:            "reference_claim:claim-a",
+		Embedding:     []float32{1, 0},
+		Tier:          "reference_claim",
+		ChatSessionID: "work-1",
+		SourceTable:   "reference_claims",
+		SourceRowID:   "claim-a",
+		SchemaVersion: "reference.v1",
+		DocumentText:  "alpha",
+		Metadata: map[string]any{
+			"work_id":         "work-1",
+			"continuity_id":   "main",
+			"tier":            "must-not-override",
+			"chat_session_id": "must-not-override",
+			"nested":          map[string]any{"ignored": true},
+		},
+	}}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	metadatas := upsertBody["metadatas"].([]any)
+	metadata := metadatas[0].(map[string]any)
+	if metadata["work_id"] != "work-1" || metadata["continuity_id"] != "main" {
+		t.Fatalf("custom scalar metadata missing: %#v", metadata)
+	}
+	if metadata["tier"] != "reference_claim" || metadata["chat_session_id"] != "work-1" {
+		t.Fatalf("reserved metadata was overridden: %#v", metadata)
+	}
+	if _, exists := metadata["nested"]; exists {
+		t.Fatalf("non-scalar metadata should not be sent to Chroma: %#v", metadata)
+	}
+
+	querier := raw.(ExactMetadataQuerier)
+	where := map[string]any{"$and": []map[string]any{{"work_id": "work-1"}, {"continuity_id": "main"}}}
+	firstResults, err := querier.QueryExact(context.Background(), ExactQuery{Embedding: []float32{1, 0}, Limit: 2, Where: where})
+	if err != nil {
+		t.Fatalf("QueryExact first: %v", err)
+	}
+	if len(firstResults) != 2 || firstResults[0].Document.ID != "claim-a" || firstResults[0].ChromaRank != 1 || firstResults[0].Distance != 0.23 {
+		t.Fatalf("raw Chroma order/distance not preserved: %#v", firstResults)
+	}
+	if !firstResults[0].DistanceAvailable || !firstResults[0].CosineAvailable || firstResults[0].CosineSimilarity < 0.999 {
+		t.Fatalf("real vector measurements missing: %#v", firstResults[0])
+	}
+	if firstResults[0].Document.SimilarityAvailable || firstResults[0].Document.SimilaritySource != "" {
+		t.Fatalf("exact query must not synthesize generic similarity: %#v", firstResults[0].Document)
+	}
+	if firstResults[0].Document.Metadata["work_id"] != "work-1" {
+		t.Fatalf("metadata round trip missing: %#v", firstResults[0].Document.Metadata)
+	}
+
+	secondResults, err := querier.QueryExact(context.Background(), ExactQuery{Embedding: []float32{0, 1}, Limit: 2, Where: where})
+	if err != nil {
+		t.Fatalf("QueryExact second: %v", err)
+	}
+	if secondResults[0].Document.ID != "claim-b" || secondResults[0].Distance != 0.31 {
+		t.Fatalf("query change did not change Chroma result: %#v", secondResults)
+	}
+	if len(queryBodies) != 2 || int(queryBodies[0]["n_results"].(float64)) != 2 || !reflect.DeepEqual(queryBodies[0]["where"], map[string]any{"$and": []any{map[string]any{"work_id": "work-1"}, map[string]any{"continuity_id": "main"}}}) {
+		t.Fatalf("exact query body changed: %#v", queryBodies)
+	}
+}
 
 type chromaTestServerState struct {
 	mu       sync.Mutex

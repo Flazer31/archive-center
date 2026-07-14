@@ -22,6 +22,7 @@ func TestChroma159V2Integration(t *testing.T) {
 	store := raw.(interface {
 		VectorStore
 		CollectionResetter
+		ExactMetadataQuerier
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -47,11 +48,33 @@ func TestChroma159V2Integration(t *testing.T) {
 		SchemaVersion: "ci.v1",
 		DocumentText:  "Archive Center ChromaDB 1.5.9 integration proof",
 	}
-	if err := store.Upsert(ctx, doc.ChatSessionID, []VectorDocument{doc}); err != nil {
+	referenceA := VectorDocument{
+		ID:            "ci-reference-a",
+		Embedding:     []float32{1, 0, 0},
+		Tier:          "reference_claim",
+		ChatSessionID: doc.ChatSessionID,
+		SourceTable:   "reference_claims",
+		SourceRowID:   "claim-a",
+		SchemaVersion: "reference.v1",
+		DocumentText:  "red gate",
+		Metadata:      map[string]any{"work_id": "ci-work", "continuity_id": "ci-main", "review_status": "approved"},
+	}
+	referenceB := VectorDocument{
+		ID:            "ci-reference-b",
+		Embedding:     []float32{0, 1, 0},
+		Tier:          "reference_claim",
+		ChatSessionID: doc.ChatSessionID,
+		SourceTable:   "reference_claims",
+		SourceRowID:   "claim-b",
+		SchemaVersion: "reference.v1",
+		DocumentText:  "blue gate",
+		Metadata:      map[string]any{"work_id": "ci-work", "continuity_id": "ci-main", "review_status": "approved"},
+	}
+	if err := store.Upsert(ctx, doc.ChatSessionID, []VectorDocument{doc, referenceA, referenceB}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	count, err := store.Count(ctx, doc.ChatSessionID)
-	if err != nil || count != 1 {
+	if err != nil || count != 3 {
 		t.Fatalf("Count: count=%d err=%v", count, err)
 	}
 	results, err := store.Search(ctx, doc.ChatSessionID, doc.Embedding, 1, "tier == memory")
@@ -60,6 +83,24 @@ func TestChroma159V2Integration(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].ID != doc.ID || results[0].DocumentText != doc.DocumentText {
 		t.Fatalf("unexpected search results: %+v", results)
+	}
+	where := map[string]any{"$and": []map[string]any{{"work_id": "ci-work"}, {"continuity_id": "ci-main"}, {"review_status": "approved"}}}
+	redResults, err := store.QueryExact(ctx, ExactQuery{Embedding: []float32{1, 0, 0}, Limit: 2, Where: where})
+	if err != nil {
+		t.Fatalf("QueryExact red: %v", err)
+	}
+	blueResults, err := store.QueryExact(ctx, ExactQuery{Embedding: []float32{0, 1, 0}, Limit: 2, Where: where})
+	if err != nil {
+		t.Fatalf("QueryExact blue: %v", err)
+	}
+	if len(redResults) != 2 || redResults[0].Document.ID != referenceA.ID || redResults[0].ChromaRank != 1 || !redResults[0].DistanceAvailable {
+		t.Fatalf("unexpected red exact results: %+v", redResults)
+	}
+	if len(blueResults) != 2 || blueResults[0].Document.ID != referenceB.ID || blueResults[0].ChromaRank != 1 || !blueResults[0].DistanceAvailable {
+		t.Fatalf("unexpected blue exact results: %+v", blueResults)
+	}
+	if redResults[0].Document.ID == blueResults[0].Document.ID {
+		t.Fatalf("query-sensitive rank did not change: red=%s blue=%s", redResults[0].Document.ID, blueResults[0].Document.ID)
 	}
 	if err := store.DeleteSession(ctx, doc.ChatSessionID); err != nil {
 		t.Fatalf("DeleteSession: %v", err)

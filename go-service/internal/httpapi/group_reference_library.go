@@ -91,6 +91,14 @@ func (s *Server) registerReferenceLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /reference-works/{work_id}/review", s.handleReferenceReviewApply)
 	mux.HandleFunc("POST /reference-works/{work_id}/review/auto", s.handleReferenceAutoReview)
 	mux.HandleFunc("GET /reference-jobs/{job_id}", s.handleReferenceJob)
+	mux.HandleFunc("POST /reference-works/{work_id}/vector/reindex", s.handleReferenceVectorReindex)
+	mux.HandleFunc("POST /reference-works/{work_id}/vector/search", s.handleReferenceVectorSearch)
+	mux.HandleFunc("GET /reference-works/{work_id}/vector/status", s.handleReferenceVectorStatus)
+	mux.HandleFunc("GET /sessions/{chat_session_id}/reference-bindings", s.handleSessionReferenceBindingsList)
+	mux.HandleFunc("POST /sessions/{chat_session_id}/reference-bindings/preview", s.handleSessionReferenceBindingPreview)
+	mux.HandleFunc("POST /sessions/{chat_session_id}/reference-bindings", s.handleSessionReferenceBindingApply)
+	mux.HandleFunc("PATCH /sessions/{chat_session_id}/reference-bindings/{binding_id}", s.handleSessionReferenceBindingUpdate)
+	mux.HandleFunc("DELETE /sessions/{chat_session_id}/reference-bindings/{binding_id}", s.handleSessionReferenceBindingDelete)
 }
 
 func (s *Server) handleReferenceLibraryBrowse(w http.ResponseWriter, r *http.Request) {
@@ -523,7 +531,7 @@ func (s *Server) handleReferenceJob(w http.ResponseWriter, r *http.Request) {
 	}
 	job, ok := s.AdminJobs.get(r.PathValue("job_id"))
 	kind := fmt.Sprint(job["kind"])
-	if !ok || (kind != "reference_extract" && kind != "reference_auto_review" && kind != "reference_timeline_chronology") {
+	if !ok || (kind != "reference_extract" && kind != "reference_auto_review" && kind != "reference_timeline_chronology" && kind != "reference_vector_reindex") {
 		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found"})
 		return
 	}

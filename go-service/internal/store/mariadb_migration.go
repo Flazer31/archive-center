@@ -18,9 +18,53 @@ import (
 // the dual-write wrapper with noop primary, so it is not an authority switch.
 var _ EffectiveInputListStore = (*mariadbStore)(nil)
 var _ SessionMigrationStore = (*mariadbStore)(nil)
+var _ SessionRoutingBaselineStore = (*mariadbStore)(nil)
 var _ SessionMigrationVectorStore = (*mariadbStore)(nil)
 var _ SessionMigrationSourceLockStore = (*mariadbStore)(nil)
 var _ SessionMigrationRecoveryStore = (*mariadbStore)(nil)
+
+func (m *mariadbStore) GetSessionRoutingBaseline(ctx context.Context, targetSessionID string) (*SessionRoutingBaseline, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	targetID := strings.TrimSpace(targetSessionID)
+	if targetID == "" {
+		return nil, ErrNotFound
+	}
+	row := &SessionRoutingBaseline{}
+	err := m.db.QueryRowContext(ctx, `
+		SELECT sm.id, sm.source_session_id, sm.target_session_id, sm.mode,
+		       COALESCE(MAX(cl.turn_index), 0) AS imported_through_turn
+		FROM session_migrations sm
+		JOIN session_migration_row_map rm
+		  ON rm.migration_id = sm.id
+		 AND rm.table_name = 'chat_logs'
+		 AND rm.target_row_id IS NOT NULL
+		 AND rm.row_status <> 'rolled_back'
+		JOIN chat_logs cl
+		  ON cl.id = rm.target_row_id
+		 AND cl.chat_session_id = sm.target_session_id
+		WHERE sm.target_session_id = ?
+		  AND sm.status NOT IN ('rolled_back', 'rollback_partial')
+		GROUP BY sm.id, sm.source_session_id, sm.target_session_id, sm.mode
+		HAVING imported_through_turn > 0
+		ORDER BY sm.id DESC
+		LIMIT 1
+	`, targetID).Scan(
+		&row.MigrationID,
+		&row.SourceSessionID,
+		&row.TargetSessionID,
+		&row.Mode,
+		&row.ImportedThroughTurn,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
+}
 
 func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req SessionMigrationCompleteRequest) (*SessionMigrationCompleteResult, error) {
 	if err := m.ensureDB(); err != nil {
@@ -64,8 +108,22 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 	if err != nil {
 		return nil, err
 	}
-	if targetCounts.CanonicalAndSubjectiveTotal > 0 {
+	if targetCounts.CanonicalAndSubjectiveTotal > 0 && !targetCounts.ReplaceableStarterOnly {
 		return nil, errors.New("target session is not empty")
+	}
+	targetStarterReplaced := targetCounts.ReplaceableStarterOnly
+	if targetStarterReplaced {
+		res, err := tx.ExecContext(ctx, `
+			DELETE FROM chat_logs
+			WHERE chat_session_id = ? AND turn_index = 0 AND LOWER(TRIM(role)) = 'assistant'
+		`, targetID)
+		if err != nil {
+			return nil, fmt.Errorf("replace target starter turn: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil || affected != 1 {
+			return nil, fmt.Errorf("replace target starter turn: expected 1 row, got %d", affected)
+		}
 	}
 
 	initialCountsJSON, _ := json.Marshal(sourceCounts)
@@ -164,6 +222,7 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 		SourceLocked:          false,
 		ChromaReindexRequired: true,
 		ReadyForLive:          false,
+		TargetStarterReplaced: targetStarterReplaced,
 	}, nil
 }
 
@@ -654,6 +713,17 @@ func sessionMigrationCountArtifactsTx(ctx context.Context, tx *sql.Tx, sessionID
 		}
 	}
 	sessionMigrationFinalizeCounts(&counts)
+	if counts.CanonicalAndSubjectiveTotal == 1 && counts.ChatLogs == 1 {
+		var matching int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM chat_logs
+			WHERE chat_session_id = ? AND turn_index = 0 AND LOWER(TRIM(role)) = 'assistant'
+		`, sessionID).Scan(&matching); err != nil {
+			return counts, err
+		}
+		counts.ReplaceableStarterOnly = matching == 1
+	}
 	return counts, nil
 }
 

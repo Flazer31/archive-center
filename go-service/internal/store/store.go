@@ -295,15 +295,16 @@ const (
 // SessionMigrationArtifactCounts mirrors the tables copied by complete session
 // migration. ChromaDB vectors are intentionally handled in a later step.
 type SessionMigrationArtifactCounts struct {
-	ChatLogs                    int `json:"chat_logs"`
-	EffectiveInputs             int `json:"effective_inputs"`
-	Memories                    int `json:"memories"`
-	DirectEvidence              int `json:"direct_evidence"`
-	KGTriples                   int `json:"kg_triples"`
-	Episodes                    int `json:"episodes"`
-	SubjectiveEntityMemories    int `json:"subjective_entity_memories"`
-	CanonicalTotal              int `json:"canonical_total"`
-	CanonicalAndSubjectiveTotal int `json:"canonical_and_subjective_total"`
+	ChatLogs                    int  `json:"chat_logs"`
+	EffectiveInputs             int  `json:"effective_inputs"`
+	Memories                    int  `json:"memories"`
+	DirectEvidence              int  `json:"direct_evidence"`
+	KGTriples                   int  `json:"kg_triples"`
+	Episodes                    int  `json:"episodes"`
+	SubjectiveEntityMemories    int  `json:"subjective_entity_memories"`
+	CanonicalTotal              int  `json:"canonical_total"`
+	CanonicalAndSubjectiveTotal int  `json:"canonical_and_subjective_total"`
+	ReplaceableStarterOnly      bool `json:"replaceable_starter_only"`
 }
 
 // SessionMigrationCompleteRequest is the MariaDB copy phase for complete
@@ -329,6 +330,7 @@ type SessionMigrationCompleteResult struct {
 	SourceLocked          bool
 	ChromaReindexRequired bool
 	ReadyForLive          bool
+	TargetStarterReplaced bool
 }
 
 // SessionMigrationVectorDocument is a copied target row that can be reindexed
@@ -350,6 +352,23 @@ type SessionMigrationVectorDocument struct {
 // Implementations must use one transaction and write row provenance.
 type SessionMigrationStore interface {
 	CompleteSessionMigration(ctx context.Context, req SessionMigrationCompleteRequest) (*SessionMigrationCompleteResult, error)
+}
+
+// SessionRoutingBaseline is the durable imported-turn boundary for a copied or
+// migrated target session. Rows at or below ImportedThroughTurn belong to the
+// imported archive and must not be removed by deleting a new local turn.
+type SessionRoutingBaseline struct {
+	MigrationID         int64
+	SourceSessionID     string
+	TargetSessionID     string
+	Mode                string
+	ImportedThroughTurn int
+}
+
+// SessionRoutingBaselineStore resolves the imported-turn boundary from the
+// migration ledger instead of relying on client-local routing state.
+type SessionRoutingBaselineStore interface {
+	GetSessionRoutingBaseline(ctx context.Context, targetSessionID string) (*SessionRoutingBaseline, error)
 }
 
 // SessionMigrationVectorStore exposes copied rows that need ChromaDB reindexing

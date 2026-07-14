@@ -19,17 +19,19 @@ import (
 
 // Server holds the HTTP handler dependencies.
 type Server struct {
-	Cfg               config.Config
-	Started           time.Time
-	Store             store.Store
-	StoreOpenError    error
-	Vector            vector.VectorStore
-	VectorOpenError   error
-	RuntimeConfig     RuntimeConfig
-	RuntimeConfigMu   sync.RWMutex
-	AdminJobs         *adminJobManager
-	CompleteTurns     *completeTurnRequestLedger
-	RollbackDecisions *rollbackDecisionLedger
+	Cfg                      config.Config
+	Started                  time.Time
+	Store                    store.Store
+	StoreOpenError           error
+	Vector                   vector.VectorStore
+	VectorOpenError          error
+	ReferenceVector          vector.VectorStore
+	ReferenceVectorOpenError error
+	RuntimeConfig            RuntimeConfig
+	RuntimeConfigMu          sync.RWMutex
+	AdminJobs                *adminJobManager
+	CompleteTurns            *completeTurnRequestLedger
+	RollbackDecisions        *rollbackDecisionLedger
 }
 
 // ValidateRuntimeDependencies verifies live dependencies before the HTTP
@@ -52,6 +54,19 @@ func (s *Server) ValidateRuntimeDependencies(ctx context.Context) error {
 	if strings.TrimSpace(health.Status) != "ok" || !health.ModelReady {
 		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): status=%s model_ready=%t", s.Cfg.ChromaAPIPath, health.Status, health.ModelReady)
 	}
+	if s.ReferenceVectorOpenError != nil {
+		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s api_path=%s): %w", s.Cfg.ReferenceChromaCollection, s.Cfg.ChromaAPIPath, s.ReferenceVectorOpenError)
+	}
+	if s.ReferenceVector == nil {
+		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s): vector store is not initialized", s.Cfg.ReferenceChromaCollection)
+	}
+	referenceHealth, err := s.ReferenceVector.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s api_path=%s): %w", s.Cfg.ReferenceChromaCollection, s.Cfg.ChromaAPIPath, err)
+	}
+	if strings.TrimSpace(referenceHealth.Status) != "ok" || !referenceHealth.ModelReady {
+		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s api_path=%s): status=%s model_ready=%t", s.Cfg.ReferenceChromaCollection, s.Cfg.ChromaAPIPath, referenceHealth.Status, referenceHealth.ModelReady)
+	}
 	return nil
 }
 
@@ -60,25 +75,34 @@ func NewServer(cfg config.Config) *Server {
 	st, storeErr := newStoreForConfig(cfg)
 	var vs vector.VectorStore
 	var vectorErr error
+	var referenceVS vector.VectorStore
+	var referenceVectorErr error
 	switch {
 	case cfg.ChromaEnabled && strings.TrimSpace(cfg.ChromaEndpoint) != "":
 		vs, vectorErr = vector.NewChromaStore(cfg.ChromaEndpoint, cfg.ChromaCollection, cfg.ChromaAPIPath)
+		referenceVS, referenceVectorErr = vector.NewChromaStore(cfg.ChromaEndpoint, cfg.ReferenceChromaCollection, cfg.ChromaAPIPath)
 	default:
 		vs = vector.NewFakeVectorStore()
+		referenceVS = vector.NewFakeVectorStore()
 	}
 	if vectorErr != nil {
 		vs = vector.NewFakeVectorStore()
 	}
+	if referenceVectorErr != nil {
+		referenceVS = vector.NewFakeVectorStore()
+	}
 	return &Server{
-		Cfg:               cfg,
-		Started:           time.Now().UTC(),
-		Store:             st,
-		StoreOpenError:    storeErr,
-		Vector:            vs,
-		VectorOpenError:   vectorErr,
-		AdminJobs:         newAdminJobManager(),
-		CompleteTurns:     newCompleteTurnRequestLedger(),
-		RollbackDecisions: newRollbackDecisionLedger(),
+		Cfg:                      cfg,
+		Started:                  time.Now().UTC(),
+		Store:                    st,
+		StoreOpenError:           storeErr,
+		Vector:                   vs,
+		VectorOpenError:          vectorErr,
+		ReferenceVector:          referenceVS,
+		ReferenceVectorOpenError: referenceVectorErr,
+		AdminJobs:                newAdminJobManager(),
+		CompleteTurns:            newCompleteTurnRequestLedger(),
+		RollbackDecisions:        newRollbackDecisionLedger(),
 	}
 }
 

@@ -49,6 +49,18 @@ func (f *referenceLibraryHTTPStore) CreateReferenceWork(_ context.Context, item 
 	return nil
 }
 
+func (f *referenceLibraryHTTPStore) GetReferenceWork(_ context.Context, workID string) (*store.ReferenceWork, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, item := range f.works {
+		if item.WorkID == workID {
+			copy := item
+			return &copy, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
 func (f *referenceLibraryHTTPStore) ListReferenceWorks(_ context.Context, _ string, _ int) ([]store.ReferenceWork, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -124,12 +136,12 @@ func (f *referenceLibraryHTTPStore) UpsertReferenceTimelineNode(_ context.Contex
 	return nil
 }
 
-func (f *referenceLibraryHTTPStore) ListReferenceTimelineNodes(_ context.Context, workID, continuityID, _ string) ([]store.ReferenceTimelineNode, error) {
+func (f *referenceLibraryHTTPStore) ListReferenceTimelineNodes(_ context.Context, workID, continuityID, reviewStatus string) ([]store.ReferenceTimelineNode, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := []store.ReferenceTimelineNode{}
 	for _, item := range f.timeline {
-		if item.WorkID == workID && (continuityID == "" || item.ContinuityID == continuityID) {
+		if item.WorkID == workID && (continuityID == "" || item.ContinuityID == continuityID) && (reviewStatus == "" || item.ReviewStatus == reviewStatus) {
 			out = append(out, item)
 		}
 	}
@@ -186,12 +198,12 @@ func (f *referenceLibraryHTTPStore) UpsertReferenceEntity(_ context.Context, ite
 	return nil
 }
 
-func (f *referenceLibraryHTTPStore) ListReferenceEntities(_ context.Context, workID, continuityID, _ string) ([]store.ReferenceEntity, error) {
+func (f *referenceLibraryHTTPStore) ListReferenceEntities(_ context.Context, workID, continuityID, reviewStatus string) ([]store.ReferenceEntity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := []store.ReferenceEntity{}
 	for _, item := range f.entities {
-		if item.WorkID == workID && (continuityID == "" || item.ContinuityID == continuityID) {
+		if item.WorkID == workID && (continuityID == "" || item.ContinuityID == continuityID) && (reviewStatus == "" || item.ReviewStatus == reviewStatus) {
 			out = append(out, item)
 		}
 	}

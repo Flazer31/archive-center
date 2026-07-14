@@ -10,8 +10,8 @@
     {
       "name": "risu_adapter_input_output",
       "package": "./cmd/js-route-variant-smoke",
-      "expected_tests": 5,
-      "run": "^(TestCoreRegressionInputOwnershipAndCanonicalOutputRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelPayloadIsNotBlockedByPromptMarkersOrTailMismatch|TestArchiveCenterJSRerollRollbackPath|TestArchiveCenterJSSeq13P181VX1bCopiedSessionDeletionReplayMarkers)$"
+      "expected_tests": 9,
+      "run": "^(TestCoreRegressionInputOwnershipAndCanonicalOutputRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelPayloadIsNotBlockedByPromptMarkersOrTailMismatch|TestArchiveCenterJSRerollRollbackPath|TestArchiveCenterJSSeq13P181VX1bCopiedSessionDeletionReplayMarkers|TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter|TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure|TestCopiedEightPlusOneDeletionKeepsImportedEightTurns|TestPostprocessorReplacementRebuildsDeletionSnapshot)$"
     },
     {
       "name": "persistence_and_partial_success",

@@ -31,16 +31,17 @@ type sessionMigrationPreviewRequest struct {
 }
 
 type sessionMigrationPreviewCounts struct {
-	ChatLogs                    int `json:"chat_logs"`
-	EffectiveInputs             int `json:"effective_inputs"`
-	Memories                    int `json:"memories"`
-	DirectEvidence              int `json:"direct_evidence"`
-	KGTriples                   int `json:"kg_triples"`
-	Episodes                    int `json:"episodes"`
-	SubjectiveEntityMemories    int `json:"subjective_entity_memories"`
-	ChromaVectors               int `json:"chroma_vectors"`
-	CanonicalTotal              int `json:"canonical_total"`
-	CanonicalAndSubjectiveTotal int `json:"canonical_and_subjective_total"`
+	ChatLogs                    int  `json:"chat_logs"`
+	EffectiveInputs             int  `json:"effective_inputs"`
+	Memories                    int  `json:"memories"`
+	DirectEvidence              int  `json:"direct_evidence"`
+	KGTriples                   int  `json:"kg_triples"`
+	Episodes                    int  `json:"episodes"`
+	SubjectiveEntityMemories    int  `json:"subjective_entity_memories"`
+	ChromaVectors               int  `json:"chroma_vectors"`
+	CanonicalTotal              int  `json:"canonical_total"`
+	CanonicalAndSubjectiveTotal int  `json:"canonical_and_subjective_total"`
+	ReplaceableStarterOnly      bool `json:"replaceable_starter_only"`
 }
 
 type sessionMigrationChromaPreview struct {
@@ -133,7 +134,7 @@ func (s *Server) handleSessionMigratePreview(w http.ResponseWriter, r *http.Requ
 	targetCounts.ChromaVectors = chroma.TargetVectors
 
 	sourceExists := sourceCounts.CanonicalAndSubjectiveTotal > 0
-	targetEmpty := targetCounts.CanonicalAndSubjectiveTotal == 0 && chroma.TargetVectors == 0
+	targetEmpty := (targetCounts.CanonicalAndSubjectiveTotal == 0 || targetCounts.ReplaceableStarterOnly) && chroma.TargetVectors == 0
 	if sourceID != "" && !sourceExists {
 		blockedReasons = append(blockedReasons, "source_session_has_no_archive_data")
 	}
@@ -142,6 +143,9 @@ func (s *Server) handleSessionMigratePreview(w http.ResponseWriter, r *http.Requ
 	}
 	if chroma.TargetVectors > 0 {
 		blockedReasons = append(blockedReasons, "target_chroma_vectors_not_empty")
+	}
+	if targetCounts.ReplaceableStarterOnly {
+		warnings = append(warnings, "target_starter_turn_zero_will_be_replaced")
 	}
 	if sourceCounts.CanonicalAndSubjectiveTotal == 0 && chroma.SourceVectors > 0 {
 		warnings = append(warnings, "source_vectors_exist_without_canonical_rows")
@@ -193,6 +197,7 @@ type sessionMigrationCompleteResponse struct {
 	SourceLocked          bool                          `json:"source_locked"`
 	ChromaReindexRequired bool                          `json:"chroma_reindex_required"`
 	ReadyForLive          bool                          `json:"ready_for_live"`
+	TargetStarterReplaced bool                          `json:"target_starter_replaced"`
 	Blocked               bool                          `json:"blocked"`
 	BlockedReasons        []string                      `json:"blocked_reasons"`
 	Warnings              []string                      `json:"warnings"`
@@ -286,6 +291,7 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		SourceLocked:          result.SourceLocked,
 		ChromaReindexRequired: result.ChromaReindexRequired,
 		ReadyForLive:          result.ReadyForLive,
+		TargetStarterReplaced: result.TargetStarterReplaced,
 		Blocked:               false,
 		BlockedReasons:        []string{},
 		Warnings:              append(warnings, "chroma_reindex_pending: run SC-MIG-5 before treating target as live-complete"),
@@ -914,6 +920,10 @@ func (s *Server) sessionMigrationPreviewCounts(ctx context.Context, sessionID st
 
 	counts.CanonicalTotal = counts.ChatLogs + counts.EffectiveInputs + counts.Memories + counts.DirectEvidence + counts.KGTriples + counts.Episodes
 	counts.CanonicalAndSubjectiveTotal = counts.CanonicalTotal + counts.SubjectiveEntityMemories
+	if counts.CanonicalAndSubjectiveTotal == 1 && len(chatLogs) == 1 {
+		row := chatLogs[0]
+		counts.ReplaceableStarterOnly = row.TurnIndex == 0 && strings.EqualFold(strings.TrimSpace(row.Role), "assistant")
+	}
 	return counts, warnings, nil
 }
 
@@ -953,11 +963,14 @@ func (s *Server) sessionMigrationValidate(ctx context.Context, sourceID, targetI
 	if sourceID != "" && sourceCounts.CanonicalAndSubjectiveTotal == 0 {
 		blockedReasons = append(blockedReasons, "source_session_has_no_archive_data")
 	}
-	if targetID != "" && (targetCounts.CanonicalAndSubjectiveTotal > 0 || chroma.TargetVectors > 0) {
+	if targetID != "" && ((targetCounts.CanonicalAndSubjectiveTotal > 0 && !targetCounts.ReplaceableStarterOnly) || chroma.TargetVectors > 0) {
 		blockedReasons = append(blockedReasons, "target_session_not_empty")
 	}
 	if chroma.TargetVectors > 0 {
 		blockedReasons = append(blockedReasons, "target_chroma_vectors_not_empty")
+	}
+	if targetCounts.ReplaceableStarterOnly {
+		warnings = append(warnings, "target_starter_turn_zero_will_be_replaced")
 	}
 	if sourceCounts.CanonicalAndSubjectiveTotal == 0 && chroma.SourceVectors > 0 {
 		warnings = append(warnings, "source_vectors_exist_without_canonical_rows")
@@ -976,6 +989,7 @@ func sessionMigrationCountsFromStore(in store.SessionMigrationArtifactCounts) se
 		SubjectiveEntityMemories:    in.SubjectiveEntityMemories,
 		CanonicalTotal:              in.CanonicalTotal,
 		CanonicalAndSubjectiveTotal: in.CanonicalAndSubjectiveTotal,
+		ReplaceableStarterOnly:      in.ReplaceableStarterOnly,
 	}
 }
 

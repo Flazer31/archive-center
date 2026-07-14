@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
 const (
@@ -123,6 +126,7 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "code": "invalid_rollback_observation"})
 		return
 	}
+	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
 	resp := calculateRollbackDecision(req)
 	if resp.Allowed {
 		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, req.RequestSource)
@@ -170,7 +174,19 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 		protectedBefore, minFrom, baselineApplied = backendBase, backendBase+1, true
 	}
 
-	fromTurn := firstPositive(req.FirstRemovedTurn, req.LedgerAnchorTurn)
+	fromTurn := 0
+	if req.LedgerVerified && req.RemovedAssistantCount > 0 && req.BackendLatestTurn > 0 {
+		if req.RemovedAssistantCount > req.BackendLatestTurn {
+			resp.Reason = "ledger_removed_count_exceeds_backend_tail"
+			return resp
+		}
+		// A persisted migration/attach baseline may be unavailable after a client
+		// reload. A verified tail deletion still has an unambiguous server-side
+		// range: remove exactly the observed assistant turns from the backend tail.
+		fromTurn = req.BackendLatestTurn - req.RemovedAssistantCount + 1
+	} else {
+		fromTurn = firstPositive(req.FirstRemovedTurn, req.LedgerAnchorTurn)
+	}
 	if fromTurn == 0 && req.LedgerVerified && effectiveCompleted >= 0 {
 		fromTurn = effectiveCompleted + 1
 	}
@@ -204,22 +220,44 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 }
 
 type sessionRoutingTurnResolutionRequest struct {
-	Mode                  string               `json:"mode"`
-	LocalTurnIndex        int                  `json:"local_turn_index"`
-	VisibleCompletedTurns int                  `json:"visible_completed_turns"`
-	Baseline              *routingTurnBaseline `json:"baseline,omitempty"`
+	ChatSessionID         string                   `json:"chat_session_id"`
+	Mode                  string                   `json:"mode"`
+	LocalTurnIndex        int                      `json:"local_turn_index"`
+	VisibleCompletedTurns int                      `json:"visible_completed_turns"`
+	RisuUserMessageIndex  *int                     `json:"risu_user_message_index,omitempty"`
+	ObservedPairOrdinal   int                      `json:"observed_pair_ordinal,omitempty"`
+	Observations          []routingTurnObservation `json:"observations,omitempty"`
+	Baseline              *routingTurnBaseline     `json:"baseline,omitempty"`
+}
+
+type routingTurnObservation struct {
+	ObservationIndex     int  `json:"observation_index"`
+	RisuUserMessageIndex *int `json:"risu_user_message_index,omitempty"`
+	ObservedPairOrdinal  int  `json:"observed_pair_ordinal,omitempty"`
+}
+
+type routingTurnResolvedObservation struct {
+	ObservationIndex     int    `json:"observation_index"`
+	RisuUserMessageIndex *int   `json:"risu_user_message_index,omitempty"`
+	ObservedPairOrdinal  int    `json:"observed_pair_ordinal"`
+	LocalTurnIndex       int    `json:"local_turn_index"`
+	TurnIndex            int    `json:"turn_index"`
+	Resolution           string `json:"resolution"`
+	Source               string `json:"source"`
 }
 
 type sessionRoutingTurnResolutionResponse struct {
-	Status              string `json:"status"`
-	ContractVersion     string `json:"contract_version"`
-	Resolution          string `json:"resolution"`
-	TurnIndex           int    `json:"turn_index"`
-	CompletedTurns      int    `json:"completed_turns"`
-	LocalTurnIndex      int    `json:"local_turn_index"`
-	ProtectedBeforeTurn int    `json:"protected_before_turn"`
-	MinFromTurn         int    `json:"min_from_turn"`
-	BaselineApplied     bool   `json:"baseline_applied"`
+	Status               string                           `json:"status"`
+	ContractVersion      string                           `json:"contract_version"`
+	Resolution           string                           `json:"resolution"`
+	TurnIndex            int                              `json:"turn_index"`
+	CompletedTurns       int                              `json:"completed_turns"`
+	LocalTurnIndex       int                              `json:"local_turn_index"`
+	LocalTurnSource      string                           `json:"local_turn_source"`
+	ProtectedBeforeTurn  int                              `json:"protected_before_turn"`
+	MinFromTurn          int                              `json:"min_from_turn"`
+	BaselineApplied      bool                             `json:"baseline_applied"`
+	ResolvedObservations []routingTurnResolvedObservation `json:"resolved_observations,omitempty"`
 }
 
 func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *http.Request) {
@@ -228,15 +266,79 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "code": "invalid_session_routing_observation"})
 		return
 	}
+	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
 	writeJSON(w, http.StatusOK, calculateSessionRoutingTurnResolution(req))
 }
 
+func (s *Server) resolveDurableSessionRoutingBaseline(ctx context.Context, sessionID string, clientBaseline *routingTurnBaseline) *routingTurnBaseline {
+	resolver, ok := s.Store.(store.SessionRoutingBaselineStore)
+	if !ok || strings.TrimSpace(sessionID) == "" {
+		return clientBaseline
+	}
+	durable, err := resolver.GetSessionRoutingBaseline(ctx, strings.TrimSpace(sessionID))
+	if err != nil || durable == nil || durable.ImportedThroughTurn <= 0 {
+		return clientBaseline
+	}
+	reason := "timeline_migrate"
+	if durable.Mode == store.SessionMigrationModeCopyKeepSource {
+		reason = "timeline_copy"
+	}
+	localPairsAtRoute := 0
+	if clientBaseline != nil && routingBaselineReasonSupported(clientBaseline.Reason) {
+		localPairsAtRoute = maxInt(0, clientBaseline.LocalPairsAtRoute)
+	}
+	return &routingTurnBaseline{
+		BackendTurnAtRoute: durable.ImportedThroughTurn,
+		LocalPairsAtRoute:  localPairsAtRoute,
+		Reason:             reason,
+	}
+}
+
 func calculateSessionRoutingTurnResolution(req sessionRoutingTurnResolutionRequest) sessionRoutingTurnResolutionResponse {
-	resp := sessionRoutingTurnResolutionResponse{Status: "ok", ContractVersion: routingTurnContractVersion, Resolution: "normal", LocalTurnIndex: req.LocalTurnIndex}
+	if req.Mode == "batch" {
+		resp := sessionRoutingTurnResolutionResponse{
+			Status:          "ok",
+			ContractVersion: routingTurnContractVersion,
+			Resolution:      "batch",
+			LocalTurnSource: "batch",
+		}
+		resp.ResolvedObservations = make([]routingTurnResolvedObservation, 0, len(req.Observations))
+		for _, observation := range req.Observations {
+			resolved := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
+				Mode:                 "pair",
+				RisuUserMessageIndex: observation.RisuUserMessageIndex,
+				ObservedPairOrdinal:  observation.ObservedPairOrdinal,
+				Baseline:             req.Baseline,
+			})
+			resp.ResolvedObservations = append(resp.ResolvedObservations, routingTurnResolvedObservation{
+				ObservationIndex:     observation.ObservationIndex,
+				RisuUserMessageIndex: observation.RisuUserMessageIndex,
+				ObservedPairOrdinal:  observation.ObservedPairOrdinal,
+				LocalTurnIndex:       resolved.LocalTurnIndex,
+				TurnIndex:            resolved.TurnIndex,
+				Resolution:           resolved.Resolution,
+				Source:               resolved.LocalTurnSource,
+			})
+		}
+		return resp
+	}
+
+	legacyTurn := req.LocalTurnIndex
 	if req.Mode == "visible_completed" {
-		resp.CompletedTurns = maxInt(0, req.VisibleCompletedTurns)
+		legacyTurn = req.VisibleCompletedTurns
+	}
+	localTurn, localTurnSource := resolveObservedRisuLocalTurn(req.RisuUserMessageIndex, req.ObservedPairOrdinal, legacyTurn)
+	resp := sessionRoutingTurnResolutionResponse{
+		Status:          "ok",
+		ContractVersion: routingTurnContractVersion,
+		Resolution:      "normal",
+		LocalTurnIndex:  localTurn,
+		LocalTurnSource: localTurnSource,
+	}
+	if req.Mode == "visible_completed" {
+		resp.CompletedTurns = localTurn
 	} else {
-		resp.TurnIndex = req.LocalTurnIndex
+		resp.TurnIndex = localTurn
 	}
 	baseline := req.Baseline
 	if baseline == nil || !routingBaselineReasonSupported(baseline.Reason) || baseline.BackendTurnAtRoute <= 0 {
@@ -245,27 +347,37 @@ func calculateSessionRoutingTurnResolution(req sessionRoutingTurnResolutionReque
 	localBase, backendBase := maxInt(0, baseline.LocalPairsAtRoute), maxInt(0, baseline.BackendTurnAtRoute)
 	resp.BaselineApplied, resp.ProtectedBeforeTurn, resp.MinFromTurn = true, backendBase, backendBase+1
 	if req.Mode == "visible_completed" {
-		resp.CompletedTurns = backendBase + maxInt(0, req.VisibleCompletedTurns-localBase)
-		if resp.CompletedTurns != req.VisibleCompletedTurns {
+		resp.CompletedTurns = backendBase + maxInt(0, localTurn-localBase)
+		if resp.CompletedTurns != localTurn {
 			resp.Resolution = "rebased"
 		}
 		return resp
 	}
-	if req.LocalTurnIndex <= 0 {
+	if localTurn <= 0 {
 		resp.Resolution, resp.TurnIndex = "invalid", 0
 		return resp
 	}
-	if req.LocalTurnIndex <= localBase {
-		resp.Resolution, resp.TurnIndex = "skip_pre_route_visible_pair", req.LocalTurnIndex
+	if localTurn <= localBase {
+		resp.Resolution, resp.TurnIndex = "skip_pre_route_visible_pair", localTurn
 		return resp
 	}
-	resp.TurnIndex = backendBase + (req.LocalTurnIndex - localBase)
-	if resp.TurnIndex != req.LocalTurnIndex {
+	resp.TurnIndex = backendBase + (localTurn - localBase)
+	if resp.TurnIndex != localTurn {
 		resp.Resolution = "rebased"
 	} else {
 		resp.Resolution = "aligned"
 	}
 	return resp
+}
+
+func resolveObservedRisuLocalTurn(risuUserMessageIndex *int, observedPairOrdinal, legacyTurn int) (int, string) {
+	if risuUserMessageIndex != nil && *risuUserMessageIndex >= 0 && *risuUserMessageIndex%2 == 0 {
+		return (*risuUserMessageIndex / 2) + 1, "risu_user_message_index"
+	}
+	if observedPairOrdinal > 0 {
+		return observedPairOrdinal, "observed_pair_ordinal"
+	}
+	return maxInt(0, legacyTurn), "legacy_local_turn_index"
 }
 
 func routingBaselineReasonSupported(reason string) bool {

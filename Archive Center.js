@@ -198,17 +198,6 @@
     subLlmVertexFlexMode: "off",
     subLlmExtraHeadersJson: "",
     subLlmExtraBodyJson: "",
-    // ── Script Reading LLM / Table Read Lite (출력 검토 전용; 비어 있으면 미설정) ──
-    tableReadLlmProvider: "",
-    tableReadLlmApiKey: "",
-    tableReadLlmEndpoint: "",
-    tableReadLlmModel: "",
-    tableReadLlmTimeoutMs: 90000,
-    tableReadLlmTemperature: 0.3,
-    tableReadLlmReasoningPreset: "auto",
-    tableReadLlmReasoningEffort: "none",
-    tableReadLlmReasoningBudgetTokens: 0,
-    tableReadLlmMaxCompletionTokens: 1400,
     // ── Embedding LLM (메모리 검색용 임베딩) ──
     embeddingProvider: "openai",
     embeddingApiKey: "",
@@ -244,7 +233,6 @@
     // reviewed_apply → merge verdict(approve/partial/first-pass-only)가 허용되면 userInput 교체
     pluginMainApplyMode: "shadow",
     pluginMainRewriteLegacyOptIn: false,
-    tableReadOutputPolishEnabled: false,
     // ── 18.5-3b: operator-gated Chroma live limited cutover ──
     // ── I-1d: Aggregate read (experimental) — true 시 3개 개별 fetch 대신 단일 GET /session-state 사용 ──
     useAggregateRead: false,
@@ -270,7 +258,6 @@
       "settings.tab.prompt": "프롬프트",
       "settings.tab.general": "일반",
       "settings.tab.settings": "설정",
-      "settings.tab.tableRead": "대본 리딩",
       "settings.tab.debug": "디버그",
       "settings.section.status": "설정 상태",
       "settings.section.common": "공통 설정",
@@ -284,14 +271,8 @@
       "settings.pluginMainLlm.showFields": "▸ 필드 보기",
       "settings.section.subLlm": "편집 검토·평론가 LLM (2차 검토/정리)",
       "settings.section.subLlm.desc": "1차 편집 결과의 2차 검토와 응답 후 평론가 정리(요약/구조화)에 사용하는 모델입니다.\n\n비어 있으면 해당 호출은 미설정으로 처리되며 출판사 LLM 값을 자동으로 사용하지 않습니다.",
-      "settings.section.tableReadLlm": "대본 리딩 LLM (Lite 출력 검토)",
-      "settings.section.tableReadLlm.desc": "현재 Lite 구현에서 최종 출력 검사와 인물별 검토 회의에 쓰는 전용 모델입니다.\n\n비어 있으면 해당 호출은 미설정으로 처리되며 출판사 LLM 값을 자동으로 사용하지 않습니다. 추후 MDASH 다중 LLM 설정은 별도 탭에서 분리합니다.",
       "settings.section.embeddingLlm": "기억 색인 LLM (Embedding)",
       "settings.section.embeddingLlm.desc": "출판사/평론가가 참조할 장기 기억 검색용 임베딩 생성에 사용됩니다.",
-      "settings.label.tableReadTemp": "대본 리딩 Temperature",
-      "settings.label.tableReadReasoningPreset": "대본 리딩 Reasoning Preset",
-      "settings.label.tableReadReasoningEffort": "대본 리딩 Reasoning Effort",
-      "settings.label.tableReadMaxCompletionTokens": "대본 리딩 Max Completion Tokens",
       "settings.section.advanced": "⚙ 고급 설정 (접기/펼치기)",
       "settings.section.audit": "감사 기록",
       "settings.section.audit.desc": "관리 작업(편집, 삭제, rollback, reindex 등)의 이력을 확인합니다.",
@@ -299,57 +280,6 @@
       "settings.section.compare.desc": "2개 세션의 요약·채팅·메모리·KG를 나란히 비교합니다 (읽기 전용).",
       "settings.section.prompts": "시스템 프롬프트 편집",
       "settings.section.prompts.desc": "supervisor_system.txt와 critic_system.txt를 불러와 수정하고 저장합니다. 저장한 내용은 다음 supervisor/critic 호출부터 즉시 반영됩니다.",
-      "tableRead.title": "대본 리딩",
-      "tableRead.field.session": "대상 세션",
-      "tableRead.field.scene": "장면 메모",
-      "tableRead.field.userInput": "다음 입력/질문",
-      "tableRead.field.assistantDraft": "어시스턴트 초안",
-      "tableRead.placeholder.scene": "현재 장면이나 확인하고 싶은 갈등을 짧게 적어주세요.",
-      "tableRead.placeholder.userInput": "다음 유저 입력을 넣으면 더 정확하게 읽습니다.",
-      "tableRead.placeholder.assistantDraft": "검토할 AI 출력 초안을 붙여넣으세요. TR-Review-1은 초안을 직접 수정하지 않고 문제점만 판정합니다.",
-      "tableRead.button.loadEntities": "인물 기억 불러오기",
-      "tableRead.button.draft": "검사",
-      "tableRead.button.simulate": "TR-2 실행",
-      "tableRead.button.review": "TR-Review-1 검토",
-      "tableRead.button.revise": "TR-Review-2 수정안",
-      "tableRead.button.copyRevisedDraft": "수정 후보문 복사",
-      "tableRead.status.idle": "아직 검사하지 않았습니다.",
-      "tableRead.status.loading": "대본 리딩 검사 중...",
-      "tableRead.status.loadedEntities": "인물 기억 묶음 {n}개를 불러왔습니다.",
-      "tableRead.status.noEntities": "이 세션에 사용할 인물 기억이 없습니다.",
-      "tableRead.status.draftOk": "검사 완료: 에이전트 {n}명",
-      "tableRead.status.simulateOk": "TR-2 실행 완료",
-      "tableRead.status.reviewOk": "TR-Review-1 검토 완료",
-      "tableRead.status.reviseOk": "TR-Review-2 수정안 생성 완료",
-      "tableRead.status.copyOk": "수정 후보문을 복사했습니다.",
-      "tableRead.status.copyFail": "복사에 실패했습니다. 텍스트를 직접 선택해 복사하세요.",
-      "tableRead.status.fail": "대본 리딩 실패",
-      "tableRead.note.tr2": "TR-2는 단일 모델이 여러 캐릭터의 관점을 시뮬레이션합니다. TR-3는 아직 남겨둔 멀티 모델 병렬 호출 단계입니다.",
-      "tableRead.note.review": "TR-Review-1은 이미 나온 출력 초안을 캐릭터 말투, 비밀 노출, 감정선, 시간/장소/관계 연속성 기준으로 읽기 전용 검토합니다. 자동 교체나 DB 저장은 하지 않습니다.",
-      "tableRead.note.llmMissing": "대본 리딩 LLM endpoint/api key/model이 없으면 실행할 수 없습니다.",
-      "dash.status.tableReadPolish": "대본 리딩 구 후처리",
-      "tableRead.section.entities": "참여 인물",
-      "tableRead.section.result": "검사 결과",
-      "tableRead.section.reviewScript": "대본 리딩",
-      "tableRead.section.characterReviews": "캐릭터별 검토",
-      "tableRead.section.protectedReveals": "보호해야 할 노출",
-      "tableRead.section.revisionNotes": "수정 권고",
-      "tableRead.section.revisionSuggestion": "수정 후보문",
-      "tableRead.section.storyContinuity": "장면 연속성",
-      "tableRead.section.liveTrace": "최근 최종 출력 개선",
-      "tableRead.section.liveParticipants": "참여 인물",
-      "tableRead.section.liveDiscussion": "캐릭터 검토 회의록",
-      "tableRead.section.liveConclusion": "결론",
-      "tableRead.section.liveOutputChange": "출력 변화",
-      "tableRead.live.empty": "아직 대본 리딩 최종 출력 기록이 없습니다.",
-      "tableRead.live.changed": "변경됨",
-      "tableRead.live.kept": "원문 유지",
-      "tableRead.live.original": "원문",
-      "tableRead.live.final": "최종문",
-      "tableRead.live.moderator": "사회자 결론",
-      "tableRead.live.enhanceNotes": "개선 지시",
-      "tableRead.live.repaired": "수정된 문제",
-      "tableRead.live.protectedEnvelope": "구조 보존",
     "timeline.detail.source": "출처",
       "timeline.detail.noMetadata": "반환된 메타데이터가 없습니다.",
       "timeline.detail.message": "메시지",
@@ -443,18 +373,13 @@
       "settings.model.supervisorLlm": "출판사 LLM (감독관)",
       "settings.model.directorLlm": "출판사 LLM (편집자)",
       "settings.model.criticLlm": "평론가 LLM",
-      "settings.model.tableReadLlm": "대본 리딩 LLM",
       "settings.model.embeddingLlm": "기억 색인 LLM",
       "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup 테스트",
       "settings.btn.testCriticLlm": "✍ 평론가 LLM 테스트",
       "settings.btn.testPublisherCall": "📝 출판사 LLM 테스트",
       "settings.btn.testCriticCall": "✍ 평론가 LLM 테스트",
-      "settings.btn.testTableReadCall": "🎭 대본 리딩 LLM 테스트",
       "settings.btn.updateCheck": "업데이트 확인",
       "settings.btn.updateDownload": "업데이트 다운로드",
-      "tableRead.llmTest.missing": "대본 리딩 LLM API Key / Endpoint / Model이 비어 있습니다.",
-      "tableRead.llmTest.loading": "대본 리딩 LLM 호출 테스트 중",
-      "tableRead.llmTest.ok": "대본 리딩 호출 성공",
       "settings.placeholder.sameAsMain": "비어 있으면 미설정",
       "settings.btn.save": "💾 저장",
       "settings.btn.resetDefaults": "↩ 기본값 복원",
@@ -1126,26 +1051,6 @@
       "settings.uiDetailMode.full": "전체",
       "settings.uiDetailMode.reduced_info": "간략",
       "settings.uiDetailMode.status_only": "상태만",
-      "tableRead.empty.entities": "먼저 인물 기억을 불러오세요.",
-      "tableRead.empty.result": "검사 또는 TR-2 결과가 여기에 표시됩니다.",
-      "tableRead.label.changeNotes": "변경 메모",
-      "tableRead.label.concern": "메모",
-      "tableRead.label.emotionFit": "감정",
-      "tableRead.label.knowledgeLeak": "지식 누출",
-      "tableRead.label.memoryCount": "기억 {n}개",
-      "tableRead.label.noIssues": "큰 문제 없음",
-      "tableRead.label.playerKnown": "플레이어가 아는 정보",
-      "tableRead.label.private": "개인 주관 기억",
-      "tableRead.label.privateMemoryLeak": "비밀 누출",
-      "tableRead.label.protectedPreserved": "비밀 보호 유지",
-      "tableRead.label.remainingRisks": "남은 위험",
-      "tableRead.label.revisedDraft": "수정 초안",
-      "tableRead.label.revisionStrategy": "수정 전략",
-      "tableRead.label.safeToPublish": "출력 가능",
-      "tableRead.label.verdict": "판정",
-      "tableRead.label.voiceFit": "말투",
-      "tableRead.live.acceptedOriginal": "출력 검사에서 원문 유지를 선택했습니다.",
-      "tableRead.live.dialogueSkipped": "이 기록에는 캐릭터 검토 회의록이 없습니다. 오래된 trace이거나 Output Check에서 회의가 건너뛰어진 턴일 수 있습니다.",
       "timeline.attach.confirm": "현재 활성 채팅을 선택한 Archive Center 세션에 연결합니다.\n\n현재 채팅: {target}\nArchive 세션: {source}\n\nDB 행은 복사, 이동, 병합, 삭제하지 않습니다. 현재 채팅 라우팅 pin만 변경합니다. 이미 다른 세션에 저장된 행은 명시적으로 이전/병합하기 전까지 그대로 남습니다.\n\n계속하시겠습니까?",
       "timeline.attach.failed": "현재 채팅 연결 실패: {reason}",
       "timeline.attach.noActiveTarget": "현재 활성 채팅이 없습니다.",
@@ -1246,7 +1151,6 @@
       "settings.tab.prompt": "Prompts",
       "settings.tab.general": "General",
       "settings.tab.settings": "Settings",
-      "settings.tab.tableRead": "Table Read",
       "settings.tab.debug": "Debug",
       "settings.section.status": "Settings Status",
       "settings.section.common": "Common Settings",
@@ -1260,14 +1164,8 @@
       "settings.pluginMainLlm.showFields": "▸ Show Fields",
       "settings.section.subLlm": "Review/Critic LLM (Second-pass/Post-process)",
       "settings.section.subLlm.desc": "Used for second-pass review of first-pass edits and post-response critic structuring.\n\nIf left empty, this lane is treated as not configured and does not automatically use Publisher LLM values.",
-      "settings.section.tableReadLlm": "Table Read LLM (Lite Output Review)",
-      "settings.section.tableReadLlm.desc": "Dedicated model for the current Lite final-output check and character review meeting.\n\nIf left empty, this lane is treated as not configured and does not automatically use Publisher LLM values. Future MDASH multi-LLM settings will be split into a separate tab.",
       "settings.section.embeddingLlm": "Indexer LLM (Embedding)",
       "settings.section.embeddingLlm.desc": "Used to generate embeddings for long-memory retrieval referenced by Publisher/Critic.",
-      "settings.label.tableReadTemp": "Table Read Temperature",
-      "settings.label.tableReadReasoningPreset": "Table Read Reasoning Preset",
-      "settings.label.tableReadReasoningEffort": "Table Read Reasoning Effort",
-      "settings.label.tableReadMaxCompletionTokens": "Table Read Max Completion Tokens",
       "settings.section.advanced": "⚙ Advanced Settings (expand/collapse)",
       "settings.section.audit": "監査記録",
       "settings.section.audit.desc": "View history of management operations (edit, delete, rollback, reindex, etc.).",
@@ -1275,77 +1173,6 @@
       "settings.section.compare.desc": "Compare summaries, chats, memories, and KG of 2 sessions side by side (read-only).",
       "settings.section.prompts": "System Prompt Editor",
       "settings.section.prompts.desc": "Load, edit, and save supervisor_system.txt and critic_system.txt. Saved text is applied on the next supervisor/critic call.",
-      "tableRead.title": "Table Read",
-      "tableRead.field.session": "Target Session",
-      "tableRead.field.scene": "Scene Note",
-      "tableRead.field.userInput": "Next Input / Question",
-      "tableRead.field.assistantDraft": "Assistant Draft",
-      "tableRead.placeholder.scene": "Briefly describe the current scene or conflict to inspect.",
-      "tableRead.placeholder.userInput": "Optional next user input for a sharper read.",
-      "tableRead.placeholder.assistantDraft": "Paste the assistant draft to review. TR-Review-1 judges issues without editing the draft.",
-      "tableRead.button.loadEntities": "Load Entity Memories",
-      "tableRead.button.draft": "Check",
-      "tableRead.button.simulate": "Run TR-2",
-      "tableRead.button.review": "Run TR-Review-1",
-      "tableRead.button.revise": "Run TR-Review-2",
-      "tableRead.button.copyRevisedDraft": "Copy Revised Draft",
-      "tableRead.status.idle": "Not checked yet.",
-      "tableRead.status.loading": "Checking table read...",
-      "tableRead.status.loadedEntities": "Loaded {n} entity memory bundles.",
-      "tableRead.status.noEntities": "No entity memories are available for this session.",
-      "tableRead.status.draftOk": "Check complete: {n} agents",
-      "tableRead.status.simulateOk": "TR-2 run complete",
-      "tableRead.status.reviewOk": "TR-Review-1 complete",
-      "tableRead.status.reviseOk": "TR-Review-2 revision generated",
-      "tableRead.status.copyOk": "Copied revised draft.",
-      "tableRead.status.copyFail": "Copy failed. Select the text manually.",
-      "tableRead.status.fail": "Table Read failed",
-      "tableRead.note.tr2": "TR-2 simulates character viewpoints with a single model. TR-3 is the later multi-model parallel-agent step.",
-      "tableRead.note.review": "TR-Review-1 read-only reviews an already generated assistant draft for voice fit, secret leaks, emotion flow, and time/location/relationship continuity. It does not replace output or write to the DB.",
-      "tableRead.note.llmMissing": "Table Read LLM endpoint/api key/model is required.",
-      "dash.status.tableReadPolish": "Legacy Table Read Postprocess",
-      "tableRead.section.entities": "Participants",
-      "tableRead.section.result": "Result",
-      "tableRead.section.reviewScript": "Table Read Script",
-      "tableRead.section.characterReviews": "Character Reviews",
-      "tableRead.section.protectedReveals": "Protected Reveals",
-      "tableRead.section.revisionNotes": "Revision Notes",
-      "tableRead.section.revisionSuggestion": "Revision Suggestion",
-      "tableRead.section.storyContinuity": "Story Continuity",
-      "tableRead.section.liveTrace": "Latest Final Output Enhance",
-      "tableRead.section.liveParticipants": "Participants",
-      "tableRead.section.liveDiscussion": "Character Review Meeting",
-      "tableRead.section.liveConclusion": "Conclusion",
-      "tableRead.section.liveOutputChange": "Output Change",
-      "tableRead.live.empty": "No Table Read final-output trace is available yet.",
-      "tableRead.live.changed": "Changed",
-      "tableRead.live.kept": "Original kept",
-      "tableRead.live.original": "Original",
-      "tableRead.live.final": "Final",
-      "tableRead.live.moderator": "Moderator Summary",
-      "tableRead.live.enhanceNotes": "Enhance Notes",
-      "tableRead.live.repaired": "Repaired Issues",
-      "tableRead.live.protectedEnvelope": "Structure Preserved",
-      "tableRead.live.dialogueSkipped": "No character review meeting notes are stored for this record. It may be an older trace or a turn where the meeting was skipped at Output Check.",
-      "tableRead.live.acceptedOriginal": "Output Check chose to keep the original.",
-      "tableRead.label.verdict": "Verdict",
-      "tableRead.label.revisionStrategy": "Revision Strategy",
-      "tableRead.label.revisedDraft": "Revised Draft",
-      "tableRead.label.changeNotes": "Change Notes",
-      "tableRead.label.remainingRisks": "Remaining Risks",
-      "tableRead.label.protectedPreserved": "Secret Guard Preserved",
-      "tableRead.label.safeToPublish": "Safe to publish",
-      "tableRead.label.voiceFit": "Voice",
-      "tableRead.label.knowledgeLeak": "Knowledge leak",
-      "tableRead.label.privateMemoryLeak": "Secret leak",
-      "tableRead.label.emotionFit": "Emotion",
-      "tableRead.label.concern": "Note",
-      "tableRead.label.noIssues": "No major issue",
-      "tableRead.label.memoryCount": "{n} memories",
-      "tableRead.label.private": "Private recollection",
-      "tableRead.label.playerKnown": "Player-known",
-      "tableRead.empty.entities": "Load entity memories first.",
-      "tableRead.empty.result": "Check or TR-2 results will appear here.",
       "settings.label.debug": "Debug Mode",
       "settings.btn.hardResetCurrentSessionMapping": "Hard Reset Mapping",
       "settings.label.debugContinuityTest": "Continuity Debug Test",
@@ -1591,18 +1418,13 @@
       "settings.model.supervisorLlm": "Publisher LLM (Supervisor)",
       "settings.model.directorLlm": "Publisher LLM (Editor)",
       "settings.model.criticLlm": "Critic LLM",
-      "settings.model.tableReadLlm": "Table Read LLM",
       "settings.model.embeddingLlm": "Embedding LLM",
       "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup Test",
       "settings.btn.testCriticLlm": "✍ Critic LLM Test",
       "settings.btn.testPublisherCall": "📝 Publisher LLM Test",
       "settings.btn.testCriticCall": "✍ Critic LLM Test",
-      "settings.btn.testTableReadCall": "🎭 Table Read LLM Test",
       "settings.btn.updateCheck": "Check Update",
       "settings.btn.updateDownload": "Download Update",
-      "tableRead.llmTest.missing": "Table Read API Key / Endpoint / Model is empty.",
-      "tableRead.llmTest.loading": "Testing Table Read LLM call",
-      "tableRead.llmTest.ok": "Table Read call succeeded",
       "settings.placeholder.sameAsMain": "Empty = not configured",
       "settings.btn.save": "💾 Save",
       "settings.btn.resetDefaults": "↩ Restore Defaults",
@@ -2222,7 +2044,6 @@
       "settings.tab.prompt": "プロンプト",
       "settings.tab.general": "一般",
       "settings.tab.settings": "設定",
-      "settings.tab.tableRead": "読み合わせ",
       "settings.tab.debug": "デバッグ",
       "settings.section.status": "設定状態",
       "settings.section.common": "共通設定",
@@ -2236,14 +2057,8 @@
       "settings.pluginMainLlm.showFields": "▸ フィールド表示",
       "settings.section.subLlm": "編集レビュー・評論家 LLM（二次レビュー/整理）",
       "settings.section.subLlm.desc": "一次編集結果の二次レビューと、応答後の評論家整理（要約/構造化）に使用するモデルです。\n\n空の場合は出版社 LLM の値を自動使用します。",
-      "settings.section.tableReadLlm": "読み合わせ LLM（Lite 出力検討）",
-      "settings.section.tableReadLlm.desc": "現在のLite実装で最終出力の検査とキャラクター検討会議に使う専用モデルです。\n\n空の場合は出版社LLMの値を自動使用します。将来のMDASH複数LLM設定は別タブに分離します。",
       "settings.section.embeddingLlm": "記憶インデックス LLM（Embedding）",
       "settings.section.embeddingLlm.desc": "出版社/評論家が参照する長期記憶検索用の埋め込み生成に使用されます。",
-      "settings.label.tableReadTemp": "読み合わせ Temperature",
-      "settings.label.tableReadReasoningPreset": "読み合わせ Reasoning Preset",
-      "settings.label.tableReadReasoningEffort": "読み合わせ Reasoning Effort",
-      "settings.label.tableReadMaxCompletionTokens": "読み合わせ Max Completion Tokens",
       "settings.section.advanced": "⚙ 詳細設定 (展開/折りたたみ)",
       "settings.section.audit": "Audit Trail",
       "settings.section.audit.desc": "管理操作（編集、削除、rollback、reindex等）の履歴を確認します。",
@@ -2251,77 +2066,6 @@
       "settings.section.compare.desc": "2つのセッションの要約・チャット・メモリ・KGを並べて比較します（読み取り専用）。",
       "settings.section.prompts": "System Prompt 編集",
       "settings.section.prompts.desc": "supervisor_system.txt と critic_system.txt を読み込み、編集して保存します。保存内容は次の supervisor/critic 呼び出しから反映されます。",
-      "tableRead.title": "読み合わせ",
-      "tableRead.field.session": "対象セッション",
-      "tableRead.field.scene": "場面メモ",
-      "tableRead.field.userInput": "次の入力/質問",
-      "tableRead.field.assistantDraft": "アシスタント下書き",
-      "tableRead.placeholder.scene": "確認したい現在の場面や葛藤を短く入力してください。",
-      "tableRead.placeholder.userInput": "次のユーザー入力があれば、より正確に読めます。",
-      "tableRead.placeholder.assistantDraft": "検討するAI出力の下書きを貼り付けてください。TR-Review-1は下書きを直接修正せず、問題点だけを判定します。",
-      "tableRead.button.loadEntities": "人物記憶を読み込む",
-      "tableRead.button.draft": "検査",
-      "tableRead.button.simulate": "TR-2 実行",
-      "tableRead.button.review": "TR-Review-1 検討",
-      "tableRead.button.revise": "TR-Review-2 修正案",
-      "tableRead.button.copyRevisedDraft": "修正案をコピー",
-      "tableRead.status.idle": "まだ検査していません。",
-      "tableRead.status.loading": "読み合わせ検査中...",
-      "tableRead.status.loadedEntities": "人物記憶バンドル {n} 件を読み込みました。",
-      "tableRead.status.noEntities": "このセッションで使える人物記憶がありません。",
-      "tableRead.status.draftOk": "検査完了: エージェント {n} 名",
-      "tableRead.status.simulateOk": "TR-2 実行完了",
-      "tableRead.status.reviewOk": "TR-Review-1 検討完了",
-      "tableRead.status.reviseOk": "TR-Review-2 修正案を生成しました",
-      "tableRead.status.copyOk": "修正案をコピーしました。",
-      "tableRead.status.copyFail": "コピーに失敗しました。テキストを直接選択してください。",
-      "tableRead.status.fail": "読み合わせ失敗",
-      "tableRead.note.tr2": "TR-2は単一モデルが複数キャラクターの視点をシミュレートします。TR-3は後続のマルチモデル並列呼び出し段階です。",
-      "tableRead.note.review": "TR-Review-1は既に生成された出力下書きを、キャラクターの声、秘密漏洩、感情の流れ、時間/場所/関係の連続性から読み取り専用で検討します。自動置換やDB保存は行いません。",
-      "tableRead.note.llmMissing": "読み合わせLLMのendpoint/api key/modelが必要です。",
-      "dash.status.tableReadPolish": "旧読み合わせ後処理",
-      "tableRead.section.entities": "参加人物",
-      "tableRead.section.result": "検査結果",
-      "tableRead.section.reviewScript": "読み合わせ",
-      "tableRead.section.characterReviews": "キャラクター別検討",
-      "tableRead.section.protectedReveals": "保護すべき露出",
-      "tableRead.section.revisionNotes": "修正提案",
-      "tableRead.section.revisionSuggestion": "修正候補文",
-      "tableRead.section.storyContinuity": "場面の連続性",
-      "tableRead.section.liveTrace": "直近の最終出力改善",
-      "tableRead.section.liveParticipants": "参加人物",
-      "tableRead.section.liveDiscussion": "キャラクター検討会議",
-      "tableRead.section.liveConclusion": "結論",
-      "tableRead.section.liveOutputChange": "出力変化",
-      "tableRead.live.empty": "読み合わせ最終出力の記録はまだありません。",
-      "tableRead.live.changed": "変更あり",
-      "tableRead.live.kept": "原文維持",
-      "tableRead.live.original": "原文",
-      "tableRead.live.final": "最終文",
-      "tableRead.live.moderator": "モデレーター結論",
-      "tableRead.live.enhanceNotes": "改善指示",
-      "tableRead.live.repaired": "修正した問題",
-      "tableRead.live.protectedEnvelope": "構造保持",
-      "tableRead.live.dialogueSkipped": "この記録にはキャラクター検討会議の記録がありません。旧記録、またはOutput Check段階で会議呼び出しが省略されたターンです。",
-      "tableRead.live.acceptedOriginal": "Output Checkは原文維持を選択しました。",
-      "tableRead.label.verdict": "判定",
-      "tableRead.label.revisionStrategy": "修正方針",
-      "tableRead.label.revisedDraft": "修正候補文",
-      "tableRead.label.changeNotes": "変更点",
-      "tableRead.label.remainingRisks": "残るリスク",
-      "tableRead.label.protectedPreserved": "秘密保護維持",
-      "tableRead.label.safeToPublish": "出力可能",
-      "tableRead.label.voiceFit": "口調",
-      "tableRead.label.knowledgeLeak": "知識漏洩",
-      "tableRead.label.privateMemoryLeak": "秘密露出",
-      "tableRead.label.emotionFit": "感情線",
-      "tableRead.label.concern": "検討意見",
-      "tableRead.label.noIssues": "大きな問題なし",
-      "tableRead.label.memoryCount": "記憶 {n}件",
-      "tableRead.label.private": "非公開回想",
-      "tableRead.label.playerKnown": "プレイヤー既知",
-      "tableRead.empty.entities": "先に人物記憶を読み込んでください。",
-      "tableRead.empty.result": "検査またはTR-2結果がここに表示されます。",
       "settings.label.debug": "デバッグモード",
       "settings.btn.hardResetCurrentSessionMapping": "現在セッションマッピング強制初期化",
       "settings.label.debugContinuityTest": "Continuity デバッグテスト",
@@ -2532,18 +2276,13 @@
       "settings.model.supervisorLlm": "出版社 LLM（監督官）",
       "settings.model.directorLlm": "出版社 LLM（編集者）",
       "settings.model.criticLlm": "クリティック LLM",
-      "settings.model.tableReadLlm": "読み合わせ LLM",
       "settings.model.embeddingLlm": "記憶インデックス LLM",
       "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup テスト",
       "settings.btn.testCriticLlm": "✍ クリティック LLM テスト",
       "settings.btn.testPublisherCall": "📝 出版社 LLM テスト",
       "settings.btn.testCriticCall": "✍ クリティック LLM テスト",
-      "settings.btn.testTableReadCall": "🎭 読み合わせ LLM テスト",
       "settings.btn.updateCheck": "アップデート確認",
       "settings.btn.updateDownload": "アップデート取得",
-      "tableRead.llmTest.missing": "読み合わせ LLM の API Key / Endpoint / Model が空です。",
-      "tableRead.llmTest.loading": "読み合わせ LLM 呼び出しをテスト中",
-      "tableRead.llmTest.ok": "読み合わせ呼び出し成功",
       "settings.placeholder.sameAsMain": "空欄は未設定",
       "settings.btn.save": "💾 保存",
       "settings.btn.resetDefaults": "↩ デフォルトに戻す",
@@ -3598,6 +3337,19 @@
     status: "idle",
     message: "",
     error: "",
+    sessionId: "",
+    bindings: [],
+    bindingDraft: null,
+    bindingPreview: null,
+    bindingLoading: false,
+    bindingMessage: "",
+    bindingError: "",
+    vectorStatus: null,
+    vectorResults: [],
+    vectorQuery: "",
+    vectorLoading: false,
+    vectorMessage: "",
+    vectorError: "",
   };
   const _personaCapsuleState = {
     personaKey: "",
@@ -3628,21 +3380,6 @@
     candidateQueue: [],
     candidateQueueLoaded: false,
     selectedCapsuleId: "",
-  };
-  const _tableReadState = {
-    sourceSessionId: "",
-    sceneText: "",
-    userInput: "",
-    assistantDraft: "",
-    entityBundles: [],
-    selectedEntityKeys: [],
-    draftResult: null,
-    simulateResult: null,
-    reviewResult: null,
-    reviseResult: null,
-    status: "idle",
-    message: "",
-    loading: false,
   };
   const PROMPT_EDITOR_DEFINITIONS = Object.freeze([
     {
@@ -3785,10 +3522,6 @@
     lastStreamingAfterRequest: { status: "idle", time: null, detail: null },
     // 2.1-4: read-only Critic Archive Ledger operator probe.
     lastCriticLedgerProbe: { status: "idle", time: null, detail: null, sessionId: null, dashboard: null, trace: null },
-    // TR-POLISH-4: live Table Read output polish status.
-    lastTableReadPolish: { status: "idle", time: null, detail: null },
-    // Table Read live trace snapshot for manual/debug inspection.
-    lastTableReadPolishDebug: { status: "idle", time: null, detail: null, snapshot: null },
   };
 
   function updateRuntimeState(key, status, extra = {}) {
@@ -5403,617 +5136,8 @@
     }
   }
 
-  function tableReadPolishTextKey(value) {
-    return String(value || "").trim().toLowerCase();
-  }
-
-  function tableReadPolishEntityAliases(bundle) {
-    const aliases = [];
-    const add = (value) => {
-      const v = tableReadPolishTextKey(value);
-      if (v && !aliases.includes(v)) aliases.push(v);
-    };
-    add(bundle && bundle.owner_entity_name);
-    add(bundle && bundle.owner_entity_key);
-    add(bundle && bundle.persona_entity_name);
-    add(bundle && bundle.display_name);
-    return aliases.filter((item) => item.length >= 2);
-  }
-
-  function tableReadPolishRelevantText(userInput, assistantOutput, recentCtx) {
-    const parts = [userInput, assistantOutput];
-    if (Array.isArray(recentCtx)) {
-      recentCtx.slice(-8).forEach((msg) => {
-        if (msg && msg.content) parts.push(msg.content);
-      });
-    }
-    return tableReadPolishTextKey(parts.filter(Boolean).join("\n"));
-  }
-
-  function tableReadSelectPolishEntities(bundles, userInput, assistantOutput, recentCtx) {
-    const source = tableReadPolishRelevantText(userInput, assistantOutput, recentCtx);
-    if (!source) return [];
-    return (Array.isArray(bundles) ? bundles : [])
-      .map((bundle, index) => {
-        const count = Number(bundle && bundle.memory_count || 0);
-        if (count <= 0) return null;
-        const aliases = tableReadPolishEntityAliases(bundle);
-        const score = aliases.reduce((sum, alias) => sum + (source.indexOf(alias) >= 0 ? 1 : 0), 0);
-        if (score <= 0) return null;
-        return { bundle, score, index };
-      })
-      .filter(Boolean)
-      .sort((a, b) => (b.score - a.score) || (Number(b.bundle.memory_count || 0) - Number(a.bundle.memory_count || 0)) || (a.index - b.index))
-      .slice(0, 4)
-      .map((item) => tableReadEntityRequestFromBundle(item.bundle))
-      .filter((item) => item.entity_key || item.entity_name);
-  }
-
-  async function loadTableReadPolishEntityBundles(chatSessionId) {
-    const sid = String(chatSessionId || "").trim();
-    if (!sid) return [];
-    const params = new URLSearchParams();
-    params.set("source_chat_session_id", sid);
-    const data = await bridgeFetch("/subjective-entity-memories/entities?" + params.toString(), {
-      method: "GET",
-      timeoutMs: getRequestTimeoutSettingMs(),
-    });
-    if (!data || data.status !== "ok" || !Array.isArray(data.items)) return [];
-    return data.items;
-  }
-
-  function buildTableReadPolishDebugSnapshot(chatSessionId, turnIndex, original, finalText, data, entities, options = {}) {
-    const safeArray = (value, limit = 8, maxLen = 260) => Array.isArray(value)
-      ? value.slice(0, limit).map((item) => truncPreview(typeof item === "string" ? item : JSON.stringify(item || {}), maxLen)).filter(Boolean)
-      : [];
-    const safeStructuredArray = (value, limit = 8, maxLen = 360) => {
-      if (!Array.isArray(value)) return [];
-      return value.slice(0, limit).map((item) => {
-        if (item && typeof item === "object" && !Array.isArray(item)) {
-          const out = {};
-          [
-            "entity_name", "entity_key", "speaker", "line", "perspective", "concern",
-            "safe_direction", "desired_direction", "applied_change", "issue", "reason",
-            "note", "review", "verdict",
-          ].forEach((key) => {
-            if (item[key] !== undefined && item[key] !== null && String(item[key]).trim()) {
-              out[key] = truncPreview(String(item[key]), maxLen);
-            }
-          });
-          return Object.keys(out).length ? out : truncPreview(JSON.stringify(item || {}), maxLen);
-        }
-        return truncPreview(String(item || ""), maxLen);
-      }).filter((item) => item && String(typeof item === "object" ? JSON.stringify(item) : item).trim());
-    };
-    const changeReasons = [];
-    safeArray(data && data.issues_repaired, 6, 220).forEach((item) => changeReasons.push(item));
-    safeArray(data && data.issues, 6, 220).forEach((item) => changeReasons.push(item));
-    if (Array.isArray(data && data.entity_review_trace)) {
-      data.entity_review_trace.slice(0, 8).forEach((item) => {
-          const src = item && typeof item === "object" ? item : {};
-          if (src.applied_change) changeReasons.push(truncPreview(String(src.entity_name || src.name || "entity") + ": " + String(src.applied_change), 220));
-        });
-    }
-    if (!changeReasons.length && data && data.fallback_reason) {
-      changeReasons.push("original kept: " + truncPreview(String(data.fallback_reason), 220));
-    }
-    if (!changeReasons.length && options && options.changed) {
-      changeReasons.push("final output changed by Table Read output enhance");
-    }
-    const uniqueReasons = Array.from(new Set(changeReasons.filter(Boolean))).slice(0, 8);
-    const outputCheck = options && options.outputCheck && typeof options.outputCheck === "object" ? options.outputCheck : null;
-    const miniRead = options && options.miniRead && typeof options.miniRead === "object" ? options.miniRead : null;
-    const enhanced = options && options.enhanced && typeof options.enhanced === "object" ? options.enhanced : null;
-    const envelope = options && options.protectedEnvelope && typeof options.protectedEnvelope === "object" ? options.protectedEnvelope : {};
-    return {
-      version: "tr_out_5.debug_trace.v2",
-      chatSessionId: String(chatSessionId || ""),
-      turnIndex: Number(turnIndex || 0),
-      changed: !!(options && options.changed),
-      syntheticAfterRequest: !!(options && options.syntheticAfterRequest),
-      entityCount: Array.isArray(entities) ? entities.length : 0,
-      originalLength: String(original || "").length,
-      finalLength: String(finalText || "").length,
-      originalFull: String(original || ""),
-      finalFull: String(finalText || ""),
-      originalPreview: String(original || "").slice(0, 2400),
-      finalPreview: String(finalText || "").slice(0, 2400),
-      issues: uniqueReasons,
-      protectedReveals: safeArray(data && data.protected_reveals),
-      fallbackReason: data && data.fallback_reason ? String(data.fallback_reason) : "",
-      protectedEnvelope: {
-        protectedCount: Number(envelope.protectedCount || 0),
-        hasPrefix: !!String(envelope.prefix || "").trim(),
-        hasSuffix: !!String(envelope.suffix || "").trim(),
-      },
-      participants: Array.isArray(entities)
-        ? entities.slice(0, 6).map((item) => ({
-            entity_name: String(item && (item.entity_name || item.entity_key) || "").trim(),
-            entity_key: String(item && item.entity_key || "").trim(),
-            role: String(item && item.role || "").trim(),
-            perspective: truncPreview(String(item && item.perspective || ""), 180),
-          })).filter((item) => item.entity_name || item.entity_key)
-        : [],
-      outputCheck: outputCheck ? {
-        verdict: String(outputCheck.verdict || "").trim(),
-        requiresTableRead: !!outputCheck.requires_table_read,
-        requiresOutputEnhance: !!outputCheck.requires_output_enhance,
-        issues: safeArray(outputCheck.issues, 8, 220),
-        activeEntities: safeStructuredArray(outputCheck.active_entities, 8, 220),
-        protectedReveals: safeArray(outputCheck.protected_reveals, 8, 220),
-        fallbackReason: String(outputCheck.fallback_reason || ""),
-      } : null,
-      miniRead: miniRead ? {
-        participantNotes: safeStructuredArray(miniRead.participant_notes, 8, 320),
-        miniDiscussion: safeStructuredArray(miniRead.mini_discussion, 10, 360),
-        moderatorSummary: truncPreview(String(miniRead.moderator_summary || ""), 700),
-        protectedReveals: safeArray(miniRead.protected_reveals, 8, 220),
-        storyRisks: safeArray(miniRead.story_risks, 8, 220),
-        outputEnhanceNotes: safeArray(miniRead.output_enhance_notes, 8, 260),
-        safeToEnhance: miniRead.safe_to_enhance !== false,
-        fallbackReason: String(miniRead.fallback_reason || ""),
-      } : null,
-      enhanced: enhanced ? {
-        changed: !!enhanced.changed,
-        issuesRepaired: safeArray(enhanced.issues_repaired || enhanced.issues, 8, 220),
-        entityReviewTrace: safeStructuredArray(enhanced.entity_review_trace, 8, 320),
-        protectedReveals: safeArray(enhanced.protected_reveals, 8, 220),
-        fallbackReason: String(enhanced.fallback_reason || ""),
-      } : null,
-      updatedAt: new Date().toISOString(),
-    };
-  }
-
-  function isTableReadProtectedOutputLine(line) {
-    try {
-      const s = String(line || "");
-      const trimmed = s.trim();
-      if (!trimmed) return false;
-      if (/[⟦⟧]/.test(trimmed)) return true;
-      if (/^.{1,120}\s*@\s*.{1,80}\s*@\s*.{1,80}$/.test(trimmed)) return true;
-      if (/^\[[A-Za-z0-9_.:\- ]{1,80}\s*:[\s\S]*\]$/.test(trimmed)) return true;
-      if (/^\[[A-Za-z0-9_.:\- ]{1,80}\]$/.test(trimmed) && /portrait|image|sprite|asset|pose|bg|background|cg/i.test(trimmed)) return true;
-      if (/^\s{0,3}#{1,6}\s+\S/.test(s)) return true;
-      if (/Chatindex\s*:/i.test(trimmed)) return true;
-      if (/^[━─=\-*]{3,}$/.test(trimmed)) return true;
-      if (/^<\s*(?:img|hsPortrait|sprite|background)\b/i.test(trimmed)) return true;
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  function splitTableReadOutputProtectedEnvelope(text) {
-    try {
-      const original = String(text || "");
-      if (!original.trim()) return { prefix: "", body: original, suffix: "", protectedCount: 0 };
-      const lines = original.replace(/\r\n/g, "\n").split("\n");
-      let start = 0;
-      let end = lines.length;
-      let prefixEnd = 0;
-      while (prefixEnd < lines.length) {
-        const line = lines[prefixEnd];
-        if (!line.trim() && prefixEnd === 0) {
-          prefixEnd++;
-          continue;
-        }
-        if (!line.trim() && prefixEnd > 0) {
-          prefixEnd++;
-          continue;
-        }
-        if (!isTableReadProtectedOutputLine(line)) break;
-        prefixEnd++;
-      }
-      start = prefixEnd;
-
-      let suffixStart = lines.length;
-      while (suffixStart > start) {
-        const line = lines[suffixStart - 1];
-        if (!line.trim() && suffixStart < lines.length) {
-          suffixStart--;
-          continue;
-        }
-        if (!isTableReadProtectedOutputLine(line)) break;
-        suffixStart--;
-      }
-      end = suffixStart;
-
-      const prefix = lines.slice(0, start).join("\n").trim();
-      const body = lines.slice(start, end).join("\n").trim();
-      const suffix = lines.slice(end).join("\n").trim();
-      return {
-        prefix,
-        body: body || original.trim(),
-        suffix,
-        protectedCount: (prefix ? prefix.split("\n").filter((line) => line.trim()).length : 0)
-          + (suffix ? suffix.split("\n").filter((line) => line.trim()).length : 0),
-      };
-    } catch {
-      return { prefix: "", body: String(text || ""), suffix: "", protectedCount: 0 };
-    }
-  }
-
-  function normalizeTableReadEnvelopeCompare(text) {
-    try {
-      return String(text || "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
-    } catch {
-      return "";
-    }
-  }
-
-  function stripMatchingTableReadEnvelope(text, envelope) {
-    try {
-      let out = String(text || "").replace(/\r\n/g, "\n").trim();
-      const prefix = String(envelope && envelope.prefix || "").trim();
-      const suffix = String(envelope && envelope.suffix || "").trim();
-      if (prefix && normalizeTableReadEnvelopeCompare(out).startsWith(normalizeTableReadEnvelopeCompare(prefix))) {
-        const prefixLines = prefix.replace(/\r\n/g, "\n").split("\n").length;
-        out = out.split("\n").slice(prefixLines).join("\n").trim();
-      }
-      if (suffix && normalizeTableReadEnvelopeCompare(out).endsWith(normalizeTableReadEnvelopeCompare(suffix))) {
-        const suffixLines = suffix.replace(/\r\n/g, "\n").split("\n").length;
-        const parts = out.split("\n");
-        out = parts.slice(0, Math.max(0, parts.length - suffixLines)).join("\n").trim();
-      }
-      return out;
-    } catch {
-      return String(text || "").trim();
-    }
-  }
-
-  function reapplyTableReadOutputProtectedEnvelope(envelope, bodyText) {
-    try {
-      const env = envelope && typeof envelope === "object" ? envelope : {};
-      let body = stripMatchingTableReadEnvelope(bodyText, env).trim();
-      if (!body) body = String(env.body || "").trim();
-      const parts = [];
-      if (String(env.prefix || "").trim()) parts.push(String(env.prefix || "").trim());
-      if (body) parts.push(body);
-      if (String(env.suffix || "").trim()) parts.push(String(env.suffix || "").trim());
-      return parts.join("\n").trim();
-    } catch {
-      return String(bodyText || "").trim();
-    }
-  }
-
-  function tableReadTextParagraphCount(text) {
-    try {
-      return String(text || "")
-        .replace(/\r\n/g, "\n")
-        .split(/\n\s*\n+/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .length;
-    } catch {
-      return 0;
-    }
-  }
-
-  function tableReadOutputLooksTruncated(originalBody, finalBody) {
-    try {
-      const original = String(originalBody || "").trim();
-      const finalText = String(finalBody || "").trim();
-      if (!original || !finalText) return false;
-      if (original.length < 900) return false;
-      if (finalText.length < Math.floor(original.length * 0.72)) return true;
-      const originalParagraphs = tableReadTextParagraphCount(original);
-      const finalParagraphs = tableReadTextParagraphCount(finalText);
-      if (originalParagraphs >= 4 && finalParagraphs > 0 && finalParagraphs < Math.ceil(originalParagraphs * 0.55)) return true;
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  function tableReadBuildLLMRequestForOutputBody(bodyText) {
-    const req = tableReadBuildLLMRequest();
-    try {
-      const bodyLen = String(bodyText || "").length;
-      const currentMax = Number(req.max_completion_tokens || req.max_tokens || 0);
-      const needed = Math.min(16000, Math.max(3200, Math.ceil(bodyLen * 1.15) + 900));
-      const nextMax = Math.max(currentMax || 0, needed);
-      req.max_tokens = nextMax;
-      req.max_completion_tokens = nextMax;
-    } catch {
-      // Keep the base Table Read LLM request unchanged.
-    }
-    return req;
-  }
-
-  function tableReadSimpleTextHash(text) {
-    try {
-      const source = String(text || "");
-      let hash = 2166136261;
-      for (let i = 0; i < source.length; i++) {
-        hash ^= source.charCodeAt(i);
-        hash = Math.imul(hash, 16777619);
-      }
-      return (hash >>> 0).toString(16);
-    } catch {
-      return "0";
-    }
-  }
-
-  function tableReadProtectedSegmentKind(line) {
-    const text = String(line || "").trim();
-    if (!text) return "spacing";
-    if (/<\s*img\b/i.test(text) || /\b(hsPortrait|sprite|image|background|portrait)\b/i.test(text)) return "image_or_visual_marker";
-    if (/^\[[^\]\n]{1,80}:\s*[\s\S]*\]$/.test(text)) return "bracket_control";
-    if (/[⟦⟧]/.test(text) || /^.{1,120}\s*@\s*.{1,80}\s*@\s*.{1,80}$/.test(text)) return "scene_header";
-    if (/^#{1,6}\s+/.test(text) || /\bChatindex\b/i.test(text)) return "heading_or_index";
-    return "output_control";
-  }
-
-  function buildTableReadOutputSegmentGuard(bodyText) {
-    const source = String(bodyText || "").replace(/\r\n/g, "\n");
-    const lines = source.split("\n");
-    const segments = [];
-    let bodyLines = [];
-    let bodyCount = 0;
-    let protectedCount = 0;
-
-    const addSegment = (type, id, text, kind) => {
-      const raw = String(text || "");
-      segments.push({
-        id,
-        type,
-        kind,
-        text: raw,
-        text_preview: raw.slice(0, 1800),
-        hash: tableReadSimpleTextHash(raw),
-        length: raw.length,
-      });
-    };
-    const flushBody = () => {
-      if (!bodyLines.length) return;
-      const text = bodyLines.join("\n");
-      if (text.trim()) {
-        addSegment("body", "body_" + bodyCount++, text, "narrative_body");
-      } else {
-        addSegment("protected", "protected_" + protectedCount++, text, "spacing");
-      }
-      bodyLines = [];
-    };
-
-    for (const line of lines) {
-      if (isTableReadProtectedOutputLine(line)) {
-        flushBody();
-        addSegment("protected", "protected_" + protectedCount++, line, tableReadProtectedSegmentKind(line));
-      } else {
-        bodyLines.push(line);
-      }
-    }
-    flushBody();
-
-    const mutableSegments = segments
-      .filter((seg) => seg.type === "body")
-      .map((seg) => ({
-        id: seg.id,
-        kind: seg.kind,
-        text: seg.text_preview,
-        hash: seg.hash,
-        length: seg.length,
-      }));
-    const protectedSegments = segments
-      .filter((seg) => seg.type === "protected" && String(seg.text || "").trim())
-      .map((seg) => ({
-        id: seg.id,
-        kind: seg.kind,
-        exact_text: seg.text,
-        hash: seg.hash,
-        length: seg.length,
-      }));
-
-    return {
-      version: "tr_out_segment_guard.v1",
-      mode: "patch_mutable_segments_only",
-      segments,
-      mutable_segments: mutableSegments,
-      protected_segments: protectedSegments,
-      patch_schema: {
-        patches: "optional array of {segment_id, replacement, reason}; segment_id must be one of mutable_segments",
-        protected_segments: "must remain byte-for-byte unchanged",
-      },
-    };
-  }
-
-  function tableReadExtractOutputPatches(data) {
-    try {
-      const direct = data && (data.patches || data.output_patches);
-      if (Array.isArray(direct)) return direct;
-      const parsed = data && data.table_read && data.table_read.output_enhance && data.table_read.output_enhance.parsed_json;
-      if (Array.isArray(parsed && parsed.patches)) return parsed.patches;
-      if (Array.isArray(parsed && parsed.output_patches)) return parsed.output_patches;
-    } catch {
-      // Fall through.
-    }
-    return [];
-  }
-
-  function tableReadApplyOutputSegmentPatches(segmentGuard, patches) {
-    try {
-      if (!segmentGuard || !Array.isArray(segmentGuard.segments) || !Array.isArray(patches) || !patches.length) return null;
-      const segments = segmentGuard.segments.map((seg) => ({ ...seg }));
-      const byId = new Map(segments.map((seg) => [seg.id, seg]));
-      let applied = 0;
-      const rejected = [];
-      for (const patch of patches) {
-        const id = String(patch && (patch.segment_id || patch.id || patch.target || patch.target_segment_id) || "").trim();
-        const seg = byId.get(id);
-        if (!seg || seg.type !== "body") {
-          rejected.push(id || "missing_segment_id");
-          continue;
-        }
-        const replacement = String(patch && (patch.replacement || patch.replacement_text || patch.text) || "").trim();
-        if (!replacement) {
-          rejected.push(id + ":empty_replacement");
-          continue;
-        }
-        if (seg.text.length > 500 && replacement.length < Math.floor(seg.text.length * 0.45)) {
-          rejected.push(id + ":replacement_too_short");
-          continue;
-        }
-        seg.text = replacement;
-        seg.hash = tableReadSimpleTextHash(replacement);
-        seg.length = replacement.length;
-        applied++;
-      }
-      if (!applied || rejected.length) {
-        return { ok: false, applied, rejected, text: "" };
-      }
-      return {
-        ok: true,
-        applied,
-        rejected: [],
-        text: segments.map((seg) => String(seg.text || "")).join("\n").trim(),
-      };
-    } catch (err) {
-      return { ok: false, applied: 0, rejected: [err && err.message ? err.message : "patch_exception"], text: "" };
-    }
-  }
-
-  function tableReadProtectedSegmentsPreserved(segmentGuard, finalBodyText) {
-    try {
-      if (!segmentGuard || !Array.isArray(segmentGuard.protected_segments)) return true;
-      const finalText = String(finalBodyText || "");
-      return segmentGuard.protected_segments.every((seg) => {
-        const exact = String(seg && seg.exact_text || "").trim();
-        return !exact || finalText.includes(exact);
-      });
-    } catch {
-      return false;
-    }
-  }
-
-  async function tryApplyTableReadOutputPolish(content, context) {
-    const original = String(content || "");
-    if (!settings || !settings.tableReadOutputPolishEnabled) return { content: original, applied: false };
-    if (!original.trim()) return { content: original, applied: false };
-    if (!tableReadLLMConfigured()) {
-      updateRuntimeState("lastTableReadPolish", "warn", { detail: "enabled but Table Read LLM is not configured" });
-      return { content: original, applied: false };
-    }
-    const chatSessionId = String(context && context.chatSessionId || "").trim();
-    const userInput = String(context && context.userInput || "");
-    const turnIndex = Number(context && context.turnIndex || 0);
-    try {
-      const bundles = await loadTableReadPolishEntityBundles(chatSessionId);
-      const entities = tableReadSelectPolishEntities(bundles, userInput, original, context && context.recentContext);
-      if (!entities.length) {
-        updateRuntimeState("lastTableReadPolish", "skipped", { turnIndex, detail: "no relevant entity memories" });
-        return { content: original, applied: false };
-      }
-      const protectedEnvelope = splitTableReadOutputProtectedEnvelope(original);
-      const assistantOutputForTableRead = protectedEnvelope.body || original;
-      const body = {
-        chat_session_id: chatSessionId,
-        turn_index: turnIndex,
-        scene_text: "",
-        user_input: userInput,
-        assistant_output_original: assistantOutputForTableRead,
-        output_structure_guard: {
-          version: "tr_polish_structure_guard.v1",
-          protected_prefix: protectedEnvelope.prefix,
-          protected_suffix: protectedEnvelope.suffix,
-          protected_count: protectedEnvelope.protectedCount,
-          rule: "Polish only the narrative body; plugin will reattach protected regex/image/header/Chatindex lines exactly.",
-        },
-        recent_context_summary: Array.isArray(context && context.recentContext)
-          ? context.recentContext.slice(-6).map((msg) => (msg && msg.role ? msg.role + ": " : "") + String(msg && msg.content || "").slice(0, 220)).join("\n")
-          : "",
-        entities,
-        max_memories_per_entity: 4,
-        llm: tableReadBuildLLMRequestForOutputBody(assistantOutputForTableRead),
-      };
-      const data = await bridgeFetchWithRetry("/table-read/polish", {
-        method: "POST",
-        body,
-        timeoutMs: typeof resolvePluginMainTimeoutMs === "function" ? Math.max(30000, resolvePluginMainTimeoutMs()) : getRequestTimeoutSettingMs(),
-      }, 1);
-      if (!data || data.status !== "ok") {
-        updateRuntimeState("lastTableReadPolish", "fail", {
-          turnIndex,
-          detail: formatBridgeFailureForDisplay("/table-read/polish", "polish failed"),
-        });
-        return { content: original, applied: false };
-      }
-      const finalText = String(data.assistant_output_final || "").trim();
-      if (!finalText) {
-        updateRuntimeState("lastTableReadPolish", "warn", { turnIndex, detail: "assistant_output_final missing; original kept" });
-        return { content: original, applied: false };
-      }
-      const restoredFinalText = reapplyTableReadOutputProtectedEnvelope(protectedEnvelope, finalText);
-      if (tableReadOutputLooksTruncated(assistantOutputForTableRead, finalText)) {
-        updateRuntimeState("lastTableReadPolish", "warn", {
-          turnIndex,
-          detail: "polish result looked truncated; original kept",
-          changed: false,
-          entityCount: entities.length,
-        });
-        return { content: original, applied: false, result: data, stage: "truncated_guard" };
-      }
-      const changed = restoredFinalText.trim() !== original.trim();
-      const status = changed ? (context && context.syntheticAfterRequest ? "warn" : "ok") : "skipped";
-      const fallback = data.fallback_reason ? " / " + String(data.fallback_reason) : "";
-      updateRuntimeState("lastTableReadPolish", status, {
-        turnIndex,
-        detail: changed
-          ? "polished " + original.length + "→" + restoredFinalText.length + " chars"
-            + (protectedEnvelope.protectedCount ? " / structure preserved " + protectedEnvelope.protectedCount : "")
-            + (context && context.syntheticAfterRequest ? " (storage path)" : "")
-          : "original kept" + fallback,
-        changed,
-        entityCount: entities.length,
-        fallbackReason: data.fallback_reason || null,
-      });
-      updateRuntimeState("lastTableReadPolishDebug", status, {
-        turnIndex,
-        detail: changed ? "latest polish comparison ready" : "latest polish kept original",
-        snapshot: buildTableReadPolishDebugSnapshot(chatSessionId, turnIndex, original, restoredFinalText, data, entities, {
-          changed,
-          syntheticAfterRequest: !!(context && context.syntheticAfterRequest),
-          protectedEnvelope,
-        }),
-      });
-      if (changed) {
-        await rememberTableReadPolishStorage(chatSessionId, turnIndex, userInput, original, restoredFinalText, data, {
-          syntheticAfterRequest: !!(context && context.syntheticAfterRequest),
-          source: "after_request_table_read_polish",
-        });
-      }
-      return { content: changed ? restoredFinalText : original, applied: changed, result: data };
-    } catch (err) {
-      updateRuntimeState("lastTableReadPolish", "fail", {
-        turnIndex,
-        detail: err && err.message ? err.message : String(err || "unknown"),
-      });
-      return { content: original, applied: false };
-    }
-  }
-
-  function tableReadBuildRecentContextSummary(recentCtx, limit = 6, perMessageLimit = 220) {
-    if (!Array.isArray(recentCtx)) return "";
-    return recentCtx.slice(-limit)
-      .map((msg) => {
-        const role = msg && msg.role ? String(msg.role) + ": " : "";
-        return role + String(msg && msg.content || "").slice(0, perMessageLimit);
-      })
-      .filter((line) => line.trim())
-      .join("\n");
-  }
-
-  // ──────────────────────────────────────────────────────────────
-  // [SESSION ID — Sprint 2-A]
-  // 현재 활성 챗을 구분하기 위한 최소 식별 로직.
-  // RisuAI API에서 getCurrentChatIndex/getCurrentCharacterIndex를 사용.
-  // 실패 시 fallback "default"를 반환하며, 플러그인이 죽지 않는다.
-  //
-  // Sprint 3-A-1 fix: RisuAI의 chatPage는 위치 인덱스이며,
-  // 새 챗이 unshift()로 추가되면 기존 챗의 인덱스가 밀린다.
-  // 따라서 R.getCharacter()를 통해 현재 활성 챗의 고유 UUID를 가져오고,
-  // 이를 session key에 사용한다. UUID를 구할 수 없을 때만 index fallback을 사용한다.
-  // ──────────────────────────────────────────────────────────────
-
+  // Active RisuAI chats are keyed by their stable UUID when available.
+  // The fallback is used only while the host has not resolved that identity.
   const SESSION_FALLBACK = "default";
   const SESSION_ID_PIN_PREFIX = `${PLUGIN_ID}_session_id_pin_v1`;
   const SESSION_PIN_RECORD_VERSION = "v2";
@@ -6157,74 +5281,92 @@
     }
   }
 
-  async function resolveCurrentActiveChatObject(sessionId) {
+  function resolveIdentityVerifiedCurrentCharacterChat(character, chatIdx, expectedChatUniqueId) {
+    try {
+      if (!character || !Array.isArray(character.chats)) return null;
+      const expectedId = String(expectedChatUniqueId || "").trim();
+      if (expectedId) {
+        return character.chats.find(function(chat) {
+          return String((chat && chat.id) || "").trim() === expectedId;
+        }) || null;
+      }
+      return Number.isInteger(chatIdx) && character.chats[chatIdx]
+        ? character.chats[chatIdx]
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveCurrentActiveChatObject(sessionId, coordinates) {
     const out = { chat: null, source: "none", charIdx: null, chatIdx: null };
     try {
-      let chatIdx = null;
-      let charIdx = null;
-      const parsed = parseSessionDisplayIdentity(sessionId);
-      if (R && typeof R.getCurrentChatIndex === "function") {
+      let chatIdx = coordinates && Number.isInteger(coordinates.chatIdx) ? coordinates.chatIdx : null;
+      let charIdx = coordinates && Number.isInteger(coordinates.charIdx) ? coordinates.charIdx : null;
+      if (chatIdx == null && R && typeof R.getCurrentChatIndex === "function") {
         try { chatIdx = await R.getCurrentChatIndex(); } catch { chatIdx = null; }
       }
-      if (R && typeof R.getCurrentCharacterIndex === "function") {
+      if (charIdx == null && R && typeof R.getCurrentCharacterIndex === "function") {
         try { charIdx = await R.getCurrentCharacterIndex(); } catch { charIdx = null; }
       }
       out.charIdx = Number.isInteger(charIdx) ? charIdx : null;
       out.chatIdx = Number.isInteger(chatIdx) ? chatIdx : null;
+      const parsed = parseSessionDisplayIdentity(sessionId);
 
-      if (R && typeof R.getCharacter === "function") {
-        const char = await R.getCharacter();
-        const activeChat = resolveActiveChatFromCharacter(char, chatIdx, parsed && parsed.chatUniqueId);
-        if (activeChat) {
-          out.chat = activeChat;
-          out.source = "R.getCharacter";
-          if (extractActiveChatMessageCount(activeChat) > 0) return out;
+      if (R && typeof R.getChatFromIndex === "function" && Number.isInteger(charIdx) && Number.isInteger(chatIdx)) {
+        try {
+          const chat = await R.getChatFromIndex(charIdx, chatIdx);
+          if (chat && typeof chat === "object" && Array.isArray(chat.message)) {
+            out.chat = chat;
+            out.source = "R.getChatFromIndex";
+            return out;
+          }
+        } catch (err) {
+          debugLog("resolveCurrentActiveChatObject index read failed:", err && err.message);
         }
       }
 
-      const characters = getRisuCharacterListSnapshot();
-      if (Array.isArray(characters) && characters.length > 0) {
-        let character = null;
-        let chat = null;
-        if (parsed && parsed.chatUniqueId) {
-          for (const candidate of characters) {
-            if (!candidate || !Array.isArray(candidate.chats)) continue;
-            const matched = candidate.chats.find(function(item) {
-              return String((item && item.id) || "").trim() === parsed.chatUniqueId;
-            });
-            if (matched) {
-              character = candidate;
-              chat = matched;
-              break;
-            }
+      const expectedCharIdx = parsed && Number.isInteger(parsed.charIdx) ? parsed.charIdx : null;
+      if (expectedCharIdx != null && Number.isInteger(charIdx) && expectedCharIdx !== charIdx) {
+        debugLog("resolveCurrentActiveChatObject fallback blocked: character index mismatch");
+        return out;
+      }
+      if (R && typeof R.getCharacter === "function" && Number.isInteger(chatIdx)) {
+        try {
+          const character = await R.getCharacter();
+          const chat = resolveIdentityVerifiedCurrentCharacterChat(
+            character,
+            chatIdx,
+            parsed && parsed.chatUniqueId,
+          );
+          if (chat && typeof chat === "object" && Array.isArray(chat.message)) {
+            out.chat = chat;
+            out.source = "R.getCharacter.identity_verified";
+            return out;
           }
-        }
-        if (!chat && parsed && Number.isInteger(parsed.charIdx) && parsed.charIdx >= 0 && parsed.charIdx < characters.length) {
-          character = characters[parsed.charIdx];
-          if (character && Array.isArray(character.chats)) {
-            if (Number.isInteger(parsed.chatIdx) && parsed.chatIdx >= 0 && parsed.chatIdx < character.chats.length) {
-              chat = character.chats[parsed.chatIdx] || null;
-            } else if (Number.isInteger(chatIdx) && chatIdx >= 0 && chatIdx < character.chats.length) {
-              chat = character.chats[chatIdx] || null;
-            }
-          }
-        }
-        if (!chat && Number.isInteger(charIdx) && charIdx >= 0 && charIdx < characters.length) {
-          character = characters[charIdx];
-          if (character && Array.isArray(character.chats) && Number.isInteger(chatIdx) && character.chats[chatIdx]) {
-            chat = character.chats[chatIdx];
-          }
-        }
-        if (chat) {
-          out.chat = chat;
-          out.source = "DBState.characters";
-          return out;
+        } catch (err) {
+          debugLog("resolveCurrentActiveChatObject identity fallback failed:", err && err.message);
         }
       }
     } catch (err) {
       debugLog("resolveCurrentActiveChatObject failed:", err && err.message);
     }
     return out;
+  }
+
+  function buildSessionNormalizeCompletedTurnPairs(activeChat) {
+    const result = { available: false, pairs: [] };
+    try {
+      if (!activeChat || typeof activeChat !== "object" || !Array.isArray(activeChat.message)) return result;
+      result.available = true;
+      result.pairs = buildCompletedTurnPairsFromActiveChatMessages(
+        extractActiveChatComparableMessages(activeChat),
+        { preserveAllUserInputs: true, source: "risu_get_chat_from_index_session_normalize" },
+      );
+    } catch (err) {
+      debugLog("buildSessionNormalizeCompletedTurnPairs failed:", err && err.message);
+    }
+    return result;
   }
 
   function normalizeRollbackMessageRole(role) {
@@ -6667,8 +5809,8 @@
         const content = normalizeStartupMessageContent(comparable.content);
         if (content) leadingAssistant.push(content);
       }
-      if (leadingAssistant.length === 0) return null;
-      const content = normalizeStartupMessageContent(leadingAssistant.join("\n\n")).slice(0, STARTUP_MESSAGE_MAX_CHARS);
+      if (leadingAssistant.length !== 1) return null;
+      const content = normalizeStartupMessageContent(leadingAssistant[0]).slice(0, STARTUP_MESSAGE_MAX_CHARS);
       if (!content) return null;
       return {
         turnIndex: STARTUP_MESSAGE_TURN_INDEX,
@@ -6762,18 +5904,16 @@
       let activeChatResolved = false;
       let selectedActiveStarter = null;
 
+      const activeChatResult = await resolveCurrentActiveChatObject("");
+      const activeChat = activeChatResult && activeChatResult.chat;
+      if (activeChat) {
+        activeChatResolved = true;
+        activeMessages.push(...extractActiveChatComparableMessages(activeChat));
+      }
+
       if (R && typeof R.getCharacter === "function") {
-        let chatIdx = null;
-        if (typeof R.getCurrentChatIndex === "function") {
-          try { chatIdx = await R.getCurrentChatIndex(); } catch { chatIdx = null; }
-        }
         const char = await R.getCharacter();
-        const activeChat = resolveActiveChatFromCharacter(char, chatIdx);
-        if (activeChat) {
-          activeChatResolved = true;
-          activeMessages.push(...extractActiveChatComparableMessages(activeChat));
-          selectedActiveStarter = resolveSelectedStartupMessageTurnZeroCandidate(char, activeChat);
-        }
+        if (activeChat) selectedActiveStarter = resolveSelectedStartupMessageTurnZeroCandidate(char, activeChat);
         fieldCandidates.push(...collectStartupMessageFieldCandidates(char));
       }
 
@@ -7179,6 +6319,11 @@
       const ledger = await loadStartupMessageLedger();
       const existing = ledger.entries && ledger.entries[sid];
       if (existing && existing.hash === candidate.hash) return false;
+      const existingTurnZero = await fetchCanonicalChatLogsForTurn(sid, STARTUP_MESSAGE_TURN_INDEX);
+      if (Array.isArray(existingTurnZero) && chatLogItemsContainRole(existingTurnZero, "assistant")) {
+        await markStartupMessageLedgerSaved(sid, candidate);
+        return false;
+      }
       _startupMessageSaveInFlight.add(sid);
       try {
         return await saveStartupMessageTurnZeroToBackend(sid, candidate);
@@ -7551,13 +6696,16 @@
     }
   }
 
-  async function countActiveChatCompletedTurnPairsForRoutingBaseline(sessionId) {
+  async function resolveActiveChatCompletedTurnsForRoutingBaseline(sessionId) {
     try {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId || "");
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
-      return buildCompletedTurnPairsFromActiveChatMessages(messages).length;
+      const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
+      const latestPair = pairs.length > 0 ? pairs[pairs.length - 1] : { observedPairOrdinal: 0 };
+      const resolution = await requestBackendSessionRoutingTurnResolution(sessionId, "visible_completed", latestPair);
+      return Number(resolution && resolution.localTurnIndex || 0);
     } catch (err) {
-      debugLog("countActiveChatCompletedTurnPairsForRoutingBaseline failed:", err && err.message);
+      debugLog("resolveActiveChatCompletedTurnsForRoutingBaseline failed:", err && err.message);
       return 0;
     }
   }
@@ -7570,7 +6718,7 @@
       0,
       "establishSessionRoutingTurnBaseline.latestTurn"
     );
-    const localPairCountAtRoute = await countActiveChatCompletedTurnPairsForRoutingBaseline(sid);
+    const localPairCountAtRoute = await resolveActiveChatCompletedTurnsForRoutingBaseline(sid);
     return rememberSessionRoutingTurnBaseline(sid, {
       backendTurnAtRoute,
       localPairCountAtRoute,
@@ -7789,13 +6937,13 @@
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
         const pair = pairs[i];
-        if (!pair || !Number.isFinite(Number(pair.turnIndex))) continue;
+        if (!pair) continue;
         const pairAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(pair.assistantContent));
         if (!pairAssistant || pairAssistant !== wantedAssistant) continue;
         const pairUser = normalizeTurnPairCompareText(pair.userContent);
         if (wantedUser && (!pairUser || pairUser !== wantedUser)) continue;
         return {
-          turnIndex: Number(pair.turnIndex),
+          observedPairOrdinal: Number(pair.observedPairOrdinal || 0),
           userContent: String(pair.userContent || ""),
           assistantContent: String(pair.assistantContent || ""),
           pairCount: pairs.length,
@@ -7821,11 +6969,11 @@
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
         const pair = pairs[i];
-        if (!pair || !Number.isFinite(Number(pair.turnIndex))) continue;
+        if (!pair) continue;
         const pairUser = normalizeTurnPairCompareText(pair.userContent);
         if (!pairUser || pairUser !== wantedUser) continue;
         return {
-          turnIndex: Number(pair.turnIndex),
+          observedPairOrdinal: Number(pair.observedPairOrdinal || 0),
           userContent: String(pair.userContent || ""),
           assistantContent: String(pair.assistantContent || ""),
           pairCount: pairs.length,
@@ -7850,7 +6998,7 @@
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
         const pair = pairs[i];
-        if (pair && Number(pair.turnIndex) > 0 && pair.userContent && pair.assistantContent) {
+        if (pair && pair.userContent && pair.assistantContent) {
           return Object.assign({}, pair, {
             pairCount: pairs.length,
             source: "active_chat_latest_pair",
@@ -7869,21 +7017,21 @@
       const sid = String(sessionId || "").trim();
       if (!sid) return null;
       const pair = await findLatestActiveChatCompletedTurnPair(sid);
-      if (!pair || !pair.userContent || !pair.assistantContent || !Number.isFinite(Number(pair.turnIndex))) return null;
+      if (!pair || !pair.userContent || !pair.assistantContent) return null;
       const latestBackendTurn = await safeCall(
         () => fetchBackendLatestTurnIndexForSession(sid),
         0,
         "findLatestActiveChatUnsavedCompletedTurnPair.latestTurn"
       );
-      const turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair.turnIndex);
+      const turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair);
       if (turnResolution && turnResolution.status === "skip_pre_route_visible_pair") return null;
-      const resolvedTurn = Number(turnResolution && turnResolution.turnIndex || pair.turnIndex || 0);
+      const resolvedTurn = Number(turnResolution && turnResolution.turnIndex || 0);
       if (!Number.isFinite(resolvedTurn) || resolvedTurn < 1) return null;
       if (resolvedTurn <= Number(latestBackendTurn || 0)) return null;
       return Object.assign({}, pair, {
         source: "active_chat_latest_unsaved_pair",
         turnIndex: resolvedTurn,
-        localTurnIndex: Number(pair.turnIndex),
+        localTurnIndex: Number(turnResolution && turnResolution.localTurnIndex || 0),
         latestBackendTurn: Number(latestBackendTurn || 0),
         turnResolution: String(turnResolution && turnResolution.status || "normal"),
       });
@@ -7922,20 +7070,17 @@
           activePairMatchMode = wantedUser && latestUser === wantedUser ? "latest_user_content" : "latest_assistant_content";
         }
       }
-      if (activePair && Number(activePair.turnIndex) > 0) {
-        const activePairTurnIndex = Number(activePair.turnIndex);
-        const routingTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", activePair.turnIndex);
+      if (activePair) {
+        const routingTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", activePair);
         if (routingTurnResolution && routingTurnResolution.status === "skip_pre_route_visible_pair") {
           return previousNextTurnIndex;
         }
         const routingTurnIndex = routingTurnResolution && routingTurnResolution.status !== "skip_pre_route_visible_pair"
           ? Number(routingTurnResolution.turnIndex || 0)
           : 0;
-        const hasRoutingBaseline = !!(routingTurnResolution && routingTurnResolution.baseline);
-        const resolvedTurnIndex = hasRoutingBaseline
-          ? routingTurnIndex
-          : activePairTurnIndex;
-        if (resolvedTurnIndex > 0 && resolvedTurnIndex <= Number(latestBackendTurn || 0)) {
+        const activePairTurnIndex = Number(routingTurnResolution && routingTurnResolution.localTurnIndex || 0);
+        const resolvedTurnIndex = routingTurnIndex > 0 ? routingTurnIndex : previousNextTurnIndex;
+        if (routingTurnIndex > 0 && resolvedTurnIndex <= Number(latestBackendTurn || 0)) {
           const existing = await safeCall(
             () => fetchCanonicalChatLogsForTurn(sid, resolvedTurnIndex),
             null,
@@ -7961,7 +7106,7 @@
           lastOrchResult._trace.turnIndexResolution = {
             status: routingTurnResolution && routingTurnResolution.status === "rebased"
               ? "session_routing_baseline_rebased"
-              : "risu_message_index_aligned",
+              : String(routingTurnResolution && routingTurnResolution.status || "backend_fallback"),
             source: activePair.source,
             matchMode: activePairMatchMode || "unknown",
             turnIndex: resolvedTurnIndex,
@@ -7984,9 +7129,11 @@
     return nextTurnIndex(sessionId);
   }
 
-  function buildCompletedTurnPairsFromActiveChatMessages(messages) {
+  function buildCompletedTurnPairsFromActiveChatMessages(messages, options = {}) {
     const pairs = [];
     try {
+      const preserveAllUserInputs = options && options.preserveAllUserInputs === true;
+      const pairSource = String(options && options.source || "risu_active_chat_complete_turn_backfill");
       const comparable = (Array.isArray(messages) ? messages : [])
         .map(function(msg) { return msg && msg.role && msg.content != null ? msg : extractComparableMessageRoleAndContent(msg); })
         .filter(function(msg) {
@@ -8004,21 +7151,19 @@
         const selectedAssistant = selectBestAssistantCandidateRecord(pendingAssistantCandidates);
         const assistantContent = selectedAssistant ? String(selectedAssistant.candidate || "").trim() : "";
         if (!userContent || !assistantContent) return;
-        if (shouldSkipUserInputPersistence(userContent) || shouldSkipTurnPersistenceForOoc(userContent, assistantContent)) return;
+        if (!preserveAllUserInputs && (shouldSkipUserInputPersistence(userContent) || shouldSkipTurnPersistenceForOoc(userContent, assistantContent))) return;
         const risuUserMessageIndex = Number.isInteger(pendingUserMessageIndex) ? pendingUserMessageIndex : null;
         const risuAssistantMessageIndex = selectedAssistant && Number.isInteger(selectedAssistant.risuMessageIndex)
           ? selectedAssistant.risuMessageIndex
           : null;
-        const turnIndex = Number.isInteger(risuUserMessageIndex) && risuUserMessageIndex >= 0 && risuUserMessageIndex % 2 === 0
-          ? Math.floor(risuUserMessageIndex / 2) + 1
-          : pairs.length + 1;
+        const observedPairOrdinal = pairs.length + 1;
         const contextMessages = comparable
           .slice(Math.max(0, pendingStartIndex - ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES), pendingStartIndex)
           .map(function(msg) {
             return { role: msg.role, content: String(msg.content || "").slice(0, 2000) };
           });
         pairs.push({
-          turnIndex,
+          observedPairOrdinal,
           userContent,
           assistantContent,
           contextMessages,
@@ -8028,7 +7173,7 @@
           risuUserMessageIndex: Number.isInteger(risuUserMessageIndex) ? risuUserMessageIndex : null,
           risuAssistantMessageIndex: Number.isInteger(risuAssistantMessageIndex) ? risuAssistantMessageIndex : null,
           hash: computeOrchestrationDirtyHashOr1c(userContent + "\n---assistant---\n" + assistantContent),
-          source: "risu_active_chat_complete_turn_backfill",
+          source: pairSource,
         });
       }
 
@@ -8042,7 +7187,7 @@
             emitPending(i);
           }
           pendingUser = content
-            ? (shouldSkipUserInputPersistence(content) ? "" : content)
+            ? (preserveAllUserInputs || !shouldSkipUserInputPersistence(content) ? content : "")
             : AUTO_CONTINUE_USER_INPUT_MARKER;
           pendingAssistantCandidates = [];
           pendingStartIndex = i;
@@ -8073,11 +7218,10 @@
   async function backfillOneActiveChatCompletedTurn(sessionId, pair, options = {}) {
     const sid = String(sessionId || "").trim();
     const opts = options && typeof options === "object" ? options : {};
-    if (!sid || !pair || !pair.userContent || !pair.assistantContent || !Number.isFinite(Number(pair.turnIndex))) {
+    if (!sid || !pair || !pair.userContent || !pair.assistantContent) {
       return { status: "skipped", reason: "invalid_pair" };
     }
-    pair = await applyTableReadPolishStorageToBackfillPair(sid, pair);
-    const turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair.turnIndex);
+    const turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair);
     if (turnResolution.status === "skip_pre_route_visible_pair") {
       return {
         status: "skipped",
@@ -8088,6 +7232,10 @@
       };
     }
     const turn = Number(turnResolution.turnIndex);
+    if (!Number.isFinite(turn) || turn < 1) {
+      return { status: "queued", reason: "turn_resolution_unavailable", turnIndex: 0 };
+    }
+    pair = await applyTableReadPolishStorageToBackfillPair(sid, Object.assign({}, pair, { turnIndex: turn }));
     const existing = await fetchCanonicalChatLogsForTurn(sid, turn);
     if (Array.isArray(existing)
         && chatLogItemsContainRoleContent(existing, "user", pair.userContent)
@@ -8193,7 +7341,7 @@
       let lastTurn = null;
       for (const pair of targetPairs) {
         const result = await backfillOneActiveChatCompletedTurn(sid, pair, options);
-        lastTurn = Number(result && result.turnIndex) || pair.turnIndex;
+        lastTurn = Number(result && result.turnIndex) || lastTurn;
         if (result.status === "saved") saved++;
         else if (result.status === "exists") exists++;
         else if (result.status === "queued") queued++;
@@ -8252,50 +7400,6 @@
     return { messages: null, source: "payload_shorter_than_snapshot" };
   }
 
-  function resolveActiveChatFromCharacter(character, preferredChatIdx, expectedChatUniqueId) {
-    try {
-      if (!character || !Array.isArray(character.chats)) return null;
-      const expectedId = String(expectedChatUniqueId || "").trim();
-
-      if (expectedId) {
-        for (const chat of character.chats) {
-          if (String((chat && chat.id) || "").trim() === expectedId) {
-            return chat;
-          }
-        }
-        debugLog("active chat cid mismatch; refusing non-authoritative fallback");
-        return null;
-      }
-
-      const preferredIdx = (typeof preferredChatIdx === "number" && Number.isFinite(preferredChatIdx))
-        ? preferredChatIdx
-        : null;
-      if (preferredIdx != null && character.chats[preferredIdx]) {
-        return character.chats[preferredIdx];
-      }
-
-      const pageIdx = (typeof character.chatPage === "number" && Number.isFinite(character.chatPage))
-        ? character.chatPage
-        : null;
-      if (pageIdx != null && character.chats[pageIdx]) {
-        return character.chats[pageIdx];
-      }
-
-      const nonEmptyChats = character.chats.filter(function(chat) {
-        return chat && typeof chat === "object" && extractActiveChatMessageCount(chat) > 0;
-      });
-      if (nonEmptyChats.length === 1) {
-        return nonEmptyChats[0];
-      }
-      if (nonEmptyChats.length > 1) {
-        debugLog("active chat unresolved; multiple non-empty chats require cid or current index");
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
   async function getActiveChatSessionIdentity(charIdx, chatIdx) {
     const identity = {
       chatUniqueId: "",
@@ -8305,15 +7409,18 @@
       chatName: "",
     };
 
-    if (chatIdx == null || charIdx == null || !R || typeof R.getCharacter !== "function") {
+    if (chatIdx == null || charIdx == null || !R) {
       return identity;
     }
 
     try {
-      const char = await R.getCharacter();
-      const activeChat = resolveActiveChatFromCharacter(char, chatIdx);
+      const activeChatResult = await resolveCurrentActiveChatObject("", { charIdx, chatIdx });
+      const activeChat = activeChatResult && activeChatResult.chat;
       if (!activeChat) return identity;
-      identity.characterName = getNamedDisplayValue(char, ["name", "title", "label", "displayName"]);
+      if (typeof R.getCharacter === "function") {
+        const char = await R.getCharacter();
+        identity.characterName = getNamedDisplayValue(char, ["name", "title", "label", "displayName"]);
+      }
       identity.chatName = getNamedDisplayValue(activeChat, ["name", "title", "label", "displayName", "chatName"]);
       if (activeChat && activeChat.id) {
         identity.chatUniqueId = String(activeChat.id || "").trim();
@@ -11167,42 +10274,6 @@
     return normalizeReasoningBudgetTokens(source, DEFAULT_SETTINGS.subLlmReasoningBudgetTokens);
   }
 
-  function getTableReadLlmProviderSetting(value) {
-    const source = value !== undefined ? value : (settings && settings.tableReadLlmProvider);
-    if (!String(source || "").trim()) return "";
-    return normalizeLlmProvider(source, DEFAULT_SETTINGS.pluginMainProvider);
-  }
-
-  function getTableReadLlmTemperatureSetting(value) {
-    const source = value !== undefined ? value : (settings && settings.tableReadLlmTemperature);
-    return sanitizeFloat(source, DEFAULT_SETTINGS.tableReadLlmTemperature, 0, 2);
-  }
-
-  function getTableReadLlmTimeoutSettingMs(value) {
-    const source = value !== undefined ? value : (settings && settings.tableReadLlmTimeoutMs);
-    return sanitizeNumber(source, DEFAULT_SETTINGS.tableReadLlmTimeoutMs, 5000, 300000);
-  }
-
-  function getTableReadLlmMaxCompletionTokensSetting(value) {
-    const source = value !== undefined ? value : (settings && settings.tableReadLlmMaxCompletionTokens);
-    return sanitizeNumber(source, DEFAULT_SETTINGS.tableReadLlmMaxCompletionTokens, 1, 128000);
-  }
-
-  function getTableReadLlmReasoningPresetSetting(value) {
-    const source = value !== undefined ? value : (settings && settings.tableReadLlmReasoningPreset);
-    return sanitizeTextSetting(source, DEFAULT_SETTINGS.tableReadLlmReasoningPreset);
-  }
-
-  function getTableReadLlmReasoningEffortSetting(value) {
-    const source = value !== undefined ? value : (settings && settings.tableReadLlmReasoningEffort);
-    return normalizeReasoningEffort(source, DEFAULT_SETTINGS.tableReadLlmReasoningEffort);
-  }
-
-  function getTableReadLlmReasoningBudgetTokensSetting(value) {
-    const source = value !== undefined ? value : (settings && settings.tableReadLlmReasoningBudgetTokens);
-    return normalizeReasoningBudgetTokens(source, DEFAULT_SETTINGS.tableReadLlmReasoningBudgetTokens);
-  }
-
   function getOrchestrationTimeoutMs() {
     return Math.max(
       getRequestTimeoutSettingMs(),
@@ -11269,19 +10340,6 @@
     merged.subLlmVertexFlexMode = normalizeVertexFlexModeSetting(merged.subLlmVertexFlexMode);
     merged.subLlmExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraHeadersJson);
     merged.subLlmExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraBodyJson);
-    merged.tableReadLlmProvider = getTableReadLlmProviderSetting(merged.tableReadLlmProvider);
-    merged.tableReadLlmTimeoutMs = getTableReadLlmTimeoutSettingMs(merged.tableReadLlmTimeoutMs);
-    merged.tableReadLlmTemperature = getTableReadLlmTemperatureSetting(merged.tableReadLlmTemperature);
-    merged.tableReadLlmMaxCompletionTokens = getTableReadLlmMaxCompletionTokensSetting(merged.tableReadLlmMaxCompletionTokens);
-    merged.tableReadLlmReasoningPreset = normalizeReasoningPreset(
-      getTableReadLlmReasoningPresetSetting(merged.tableReadLlmReasoningPreset),
-      DEFAULT_SETTINGS.tableReadLlmReasoningPreset,
-    );
-    if (getAllowedReasoningPresetsForProvider(merged.tableReadLlmProvider || merged.pluginMainProvider).indexOf(merged.tableReadLlmReasoningPreset) < 0) {
-      merged.tableReadLlmReasoningPreset = "auto";
-    }
-    merged.tableReadLlmReasoningEffort = getTableReadLlmReasoningEffortSetting(merged.tableReadLlmReasoningEffort);
-    merged.tableReadLlmReasoningBudgetTokens = getTableReadLlmReasoningBudgetTokensSetting(merged.tableReadLlmReasoningBudgetTokens);
     merged.embeddingProvider = normalizeEmbeddingProvider(merged.embeddingProvider, DEFAULT_SETTINGS.embeddingProvider);
     merged.embeddingTimeout = sanitizeNumber(merged.embeddingTimeout, 30, 5, 3000);
     // Phase 4-D-2: 하드코딩 상수 설정화
@@ -11335,13 +10393,10 @@
       DEFAULT_SETTINGS.pluginMainApplyMode,
       PLUGIN_MAIN_APPLY_MODES,
     );
-    // TR-POLISH afterRequest replacement was a proof-only path. Keep it off
-    // until Table Read owns a true pre-output orchestration flow.
     merged.pluginMainRewriteLegacyOptIn = !!merged.pluginMainRewriteLegacyOptIn;
     if (!merged.pluginMainRewriteLegacyOptIn && merged.pluginMainApplyMode === "reviewed_apply") {
       merged.pluginMainApplyMode = "shadow";
     }
-    merged.tableReadOutputPolishEnabled = false;
     // Step 23 / 2.3: shadow is the safe default. Do not migrate it to rewrite mode.
     merged.uiLanguage = sanitizeEnumValue(
       merged.uiLanguage,
@@ -11361,7 +10416,6 @@
     const strKeys = [
       "pluginMainApiKey","pluginMainEndpoint","pluginMainModel",
       "subLlmApiKey","subLlmEndpoint","subLlmModel",
-      "tableReadLlmApiKey","tableReadLlmEndpoint","tableReadLlmModel",
       "embeddingApiKey","embeddingEndpoint","embeddingModel",
     ];
     for (const k of strKeys) {
@@ -11563,6 +10617,9 @@
       _referenceLibraryState.selectedWorkId = String(data.works[0].work_id || "");
     }
     await referenceLibraryLoadContinuities();
+    if (_referenceLibraryState.panelView === "binding") {
+      await referenceLibraryLoadBindings();
+    }
     return true;
   }
 
@@ -11691,6 +10748,90 @@
     await referenceLibraryPollJob(String(data.job_id));
   }
 
+  async function referenceLibraryLoadVectorStatus() {
+    const state = _referenceLibraryState;
+    if (!state.selectedWorkId || !state.selectedContinuityId) {
+      state.vectorStatus = null;
+      return;
+    }
+    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(state.selectedWorkId) + "/vector/status?continuity_id=" + encodeURIComponent(state.selectedContinuityId), {
+      method: "GET",
+      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+    });
+    if (data && data.status === "ok") {
+      state.vectorStatus = data;
+      state.vectorError = "";
+    } else {
+      state.vectorStatus = null;
+      state.vectorError = "원작 벡터 상태를 확인하지 못했습니다.";
+    }
+    referenceLibraryRefreshUI();
+  }
+
+  async function referenceLibraryStartVectorReindex() {
+    const state = _referenceLibraryState;
+    if (!state.selectedWorkId || !state.selectedContinuityId) {
+      state.vectorError = "작품과 이야기 흐름을 먼저 선택하세요.";
+      referenceLibraryRefreshUI();
+      return;
+    }
+    state.vectorLoading = true;
+    state.vectorMessage = "승인된 원작 자료를 전용 ChromaDB 컬렉션에 색인하는 중입니다.";
+    state.vectorError = "";
+    referenceLibraryRefreshUI();
+    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(state.selectedWorkId) + "/vector/reindex", {
+      method: "POST",
+      body: {
+        continuity_id: state.selectedContinuityId,
+        client_meta: buildAdminRuntimeClientMeta({ source: "reference_vector_reindex" }),
+      },
+      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+    });
+    if (!data || !data.job_id) {
+      state.vectorLoading = false;
+      state.vectorError = "원작 벡터 색인을 시작하지 못했습니다. 임베딩 설정과 ChromaDB 연결을 확인하세요.";
+      referenceLibraryRefreshUI();
+      return;
+    }
+    state.job = data;
+    await referenceLibraryPollJob(String(data.job_id));
+  }
+
+  async function referenceLibrarySearchVectors(query) {
+    const state = _referenceLibraryState;
+    const text = String(query || "").trim();
+    state.vectorQuery = text;
+    if (!state.selectedWorkId || !state.selectedContinuityId || !text) {
+      state.vectorError = "작품·이야기 흐름과 검색 문장을 입력하세요.";
+      referenceLibraryRefreshUI();
+      return;
+    }
+    state.vectorLoading = true;
+    state.vectorMessage = "ChromaDB에서 원작 자료를 검색하는 중입니다.";
+    state.vectorError = "";
+    referenceLibraryRefreshUI();
+    const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(state.selectedWorkId) + "/vector/search", {
+      method: "POST",
+      body: {
+        continuity_id: state.selectedContinuityId,
+        query: text,
+        limit: 8,
+        client_meta: buildAdminRuntimeClientMeta({ source: "reference_vector_search" }),
+      },
+      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+    });
+    state.vectorLoading = false;
+    if (!data || data.status !== "ok") {
+      state.vectorResults = [];
+      state.vectorError = "원작 벡터 검색에 실패했습니다. 색인과 임베딩 설정을 확인하세요.";
+      referenceLibraryRefreshUI();
+      return;
+    }
+    state.vectorResults = Array.isArray(data.results) ? data.results : [];
+    state.vectorMessage = "ChromaDB 원시 순위로 " + state.vectorResults.length + "건을 찾았습니다. 점수 정규화와 재정렬은 적용하지 않았습니다.";
+    referenceLibraryRefreshUI();
+  }
+
   async function referenceLibraryPollJob(jobId) {
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -11702,6 +10843,13 @@
       _referenceLibraryState.job = data;
       referenceLibraryRefreshUI();
       if (data.status === "completed") {
+        if (String(data.kind || "") === "reference_vector_reindex") {
+          _referenceLibraryState.vectorLoading = false;
+          _referenceLibraryState.vectorMessage = "원작 벡터 색인이 완료되었습니다. " + Number(data.result && data.result.indexed || 0) + "건";
+          _referenceLibraryState.vectorError = "";
+          await referenceLibraryLoadVectorStatus();
+          return;
+        }
         await referenceLibraryLoadData();
         if (String(data.kind || "") === "reference_timeline_chronology") {
           const unresolved = Number(data.result && Array.isArray(data.result.unresolved_ids) ? data.result.unresolved_ids.length : 0);
@@ -11717,6 +10865,12 @@
         return;
       }
       if (data.status === "failed") {
+        if (String(data.kind || "") === "reference_vector_reindex") {
+          _referenceLibraryState.vectorLoading = false;
+          _referenceLibraryState.vectorError = "원작 벡터 색인에 실패했습니다: " + String(data.error || "원인 미확인");
+          referenceLibraryRefreshUI();
+          return;
+        }
         if (String(data.kind || "") === "reference_timeline_chronology") {
           referenceLibrarySetStatus("error", "", "연표 시간순 정리에 실패했습니다: " + String(data.error || "원인 미확인"));
           return;
@@ -11757,6 +10911,180 @@
       diagnostics: libraryData.diagnostics && typeof libraryData.diagnostics === "object" ? libraryData.diagnostics : {},
     };
     referenceLibraryRefreshUI();
+    await referenceLibraryLoadVectorStatus();
+  }
+
+  function referenceLibrarySelectedBinding() {
+    const state = _referenceLibraryState;
+    return (state.bindings || []).find((item) => String(item.work_id || "") === state.selectedWorkId && String(item.continuity_id || "") === state.selectedContinuityId) || null;
+  }
+
+  function referenceLibraryBindingDraftForSelection() {
+    const state = _referenceLibraryState;
+    const draft = state.bindingDraft && typeof state.bindingDraft === "object" ? state.bindingDraft : null;
+    if (draft && String(draft.work_id || "") === state.selectedWorkId && String(draft.continuity_id || "") === state.selectedContinuityId) {
+      return draft;
+    }
+    const existing = referenceLibrarySelectedBinding();
+    if (existing) {
+      return {
+        work_id: state.selectedWorkId,
+        continuity_id: state.selectedContinuityId,
+        binding_role: String(existing.binding_role || "primary"),
+        enabled: existing.enabled !== false,
+        anchor_mode: String(existing.anchor_mode || "manual"),
+        current_node_id: String(existing.current_node_id || ""),
+        reveal_ceiling_node_id: String(existing.reveal_ceiling_node_id || ""),
+        divergence_node_id: String(existing.divergence_node_id || ""),
+        future_policy: String(existing.future_policy || "block"),
+        priority: Number(existing.priority || 0),
+        expected_revision: Number(existing.revision || 0),
+      };
+    }
+    return {
+      work_id: state.selectedWorkId,
+      continuity_id: state.selectedContinuityId,
+      binding_role: "primary",
+      enabled: true,
+      anchor_mode: "manual",
+      current_node_id: "",
+      reveal_ceiling_node_id: "",
+      divergence_node_id: "",
+      future_policy: "block",
+      priority: 0,
+      expected_revision: 0,
+    };
+  }
+
+  async function referenceLibraryLoadBindings() {
+    const state = _referenceLibraryState;
+    state.bindingLoading = true;
+    state.bindingError = "";
+    referenceLibraryRefreshUI();
+    const sessionId = String(await getCurrentChatSessionId() || "").trim();
+    state.sessionId = sessionId;
+    if (!sessionId) {
+      state.bindings = [];
+      state.bindingLoading = false;
+      state.bindingError = "현재 채팅의 세션 ID를 확인하지 못했습니다.";
+      referenceLibraryRefreshUI();
+      return false;
+    }
+    const data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings", { method: "GET" });
+    state.bindingLoading = false;
+    if (!data || !Array.isArray(data.bindings)) {
+      state.bindings = [];
+      state.bindingError = "세션 연결 API를 사용할 수 없습니다. 최신 소스 백엔드를 재시작하세요.";
+      referenceLibraryRefreshUI();
+      return false;
+    }
+    state.bindings = data.bindings;
+    state.bindingDraft = null;
+    referenceLibraryRefreshUI();
+    return true;
+  }
+
+  function referenceLibraryBindingBody(root) {
+    const value = (id) => String(root && root.querySelector("#" + id)?.value || "").trim();
+    const enabled = root && root.querySelector("#mo-reference-binding-enabled");
+    const existing = referenceLibrarySelectedBinding();
+    return {
+      work_id: _referenceLibraryState.selectedWorkId,
+      continuity_id: _referenceLibraryState.selectedContinuityId,
+      binding_role: value("mo-reference-binding-role") || "primary",
+      enabled: !enabled || enabled.checked,
+      anchor_mode: value("mo-reference-binding-anchor-mode") || "manual",
+      current_node_id: value("mo-reference-binding-current-node"),
+      reveal_ceiling_node_id: value("mo-reference-binding-reveal-node"),
+      divergence_node_id: value("mo-reference-binding-divergence-node"),
+      future_policy: value("mo-reference-binding-future-policy") || "block",
+      priority: Number(value("mo-reference-binding-priority") || 0),
+      expected_revision: Number(existing && existing.revision || 0),
+    };
+  }
+
+  async function referenceLibraryPreviewBinding(root) {
+    const state = _referenceLibraryState;
+    const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    const body = referenceLibraryBindingBody(root);
+    state.sessionId = sessionId;
+    state.bindingDraft = body;
+    state.bindingPreview = null;
+    state.bindingMessage = "연결 범위를 확인하는 중입니다.";
+    state.bindingError = "";
+    referenceLibraryRefreshUI();
+    if (!sessionId || !body.work_id || !body.continuity_id) {
+      state.bindingMessage = "";
+      state.bindingError = "현재 세션, 작품, 이야기 흐름을 모두 확인하세요.";
+      referenceLibraryRefreshUI();
+      return false;
+    }
+    const data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    state.bindingPreview = data && typeof data === "object" ? data : null;
+    state.bindingMessage = data ? (data.valid ? "이 설정으로 연결할 수 있습니다." : "차단된 항목을 확인하세요.") : "";
+    state.bindingError = data ? "" : "세션 연결 미리보기를 불러오지 못했습니다.";
+    referenceLibraryRefreshUI();
+    return !!(data && data.valid);
+  }
+
+  async function referenceLibraryApplyBinding(root) {
+    const state = _referenceLibraryState;
+    const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    const body = referenceLibraryBindingBody(root);
+    const existing = referenceLibrarySelectedBinding();
+    state.sessionId = sessionId;
+    state.bindingDraft = body;
+    state.bindingMessage = "현재 세션에 원작 자료를 연결하는 중입니다.";
+    state.bindingError = "";
+    referenceLibraryRefreshUI();
+    if (!sessionId || !body.work_id || !body.continuity_id) {
+      state.bindingMessage = "";
+      state.bindingError = "현재 세션, 작품, 이야기 흐름을 모두 확인하세요.";
+      referenceLibraryRefreshUI();
+      return false;
+    }
+    const path = "/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings" + (existing ? "/" + referenceLibraryPath(existing.binding_id) : "");
+    const data = await bridgeFetch(path, {
+      method: existing ? "PATCH" : "POST",
+      body: JSON.stringify(body),
+    });
+    if (!data || data.status !== "ok") {
+      state.bindingMessage = "";
+      state.bindingError = "세션 연결을 저장하지 못했습니다. 미리보기에서 차단 이유와 최신 revision을 확인하세요.";
+      referenceLibraryRefreshUI();
+      return false;
+    }
+    state.bindingPreview = data.preview || null;
+    state.bindingMessage = existing ? "세션 연결 설정을 갱신했습니다." : "현재 세션에 원작 자료를 연결했습니다.";
+    state.bindingError = "";
+    await referenceLibraryLoadBindings();
+    state.bindingMessage = existing ? "세션 연결 설정을 갱신했습니다." : "현재 세션에 원작 자료를 연결했습니다.";
+    referenceLibraryRefreshUI();
+    return true;
+  }
+
+  async function referenceLibraryUnlinkBinding() {
+    const state = _referenceLibraryState;
+    const existing = referenceLibrarySelectedBinding();
+    const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    if (!existing || !sessionId) return false;
+    const data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings/" + referenceLibraryPath(existing.binding_id) + "?expected_revision=" + encodeURIComponent(Number(existing.revision || 0)), { method: "DELETE" });
+    if (!data || data.status !== "ok") {
+      state.bindingError = "세션 연결을 해제하지 못했습니다. 연결 정보를 다시 불러온 뒤 시도하세요.";
+      referenceLibraryRefreshUI();
+      return false;
+    }
+    state.bindingDraft = null;
+    state.bindingPreview = null;
+    state.bindingMessage = "세션 연결을 해제했습니다. 원작 자료 자체는 유지됩니다.";
+    state.bindingError = "";
+    await referenceLibraryLoadBindings();
+    state.bindingMessage = "세션 연결을 해제했습니다. 원작 자료 자체는 유지됩니다.";
+    referenceLibraryRefreshUI();
+    return true;
   }
 
   function referenceLibrarySourceLabel(item) {
@@ -11821,6 +11149,97 @@
     }).join("");
   }
 
+  function referenceLibraryBindingReasonLabel(value) {
+    const labels = {
+      chat_session_id_required: "현재 세션 ID가 없습니다.",
+      work_id_required: "작품을 선택하세요.",
+      continuity_id_required: "이야기 흐름을 선택하세요.",
+      work_not_found: "선택한 작품을 찾지 못했습니다.",
+      work_disabled: "비활성화된 작품입니다.",
+      continuity_not_in_work: "선택한 이야기 흐름이 이 작품에 속하지 않습니다.",
+      continuity_not_active: "활성 상태가 아닌 이야기 흐름입니다.",
+      binding_not_found: "갱신할 기존 연결을 찾지 못했습니다.",
+      binding_role_invalid: "연결 역할 값이 올바르지 않습니다.",
+      anchor_mode_invalid: "시점 결정 방식이 올바르지 않습니다.",
+      future_policy_invalid: "미래 정보 정책이 올바르지 않습니다.",
+      current_node_not_approved: "현재 시점이 승인된 연표에 없습니다.",
+      reveal_ceiling_node_not_approved: "공개 상한이 승인된 연표에 없습니다.",
+      divergence_node_not_approved: "원작 분기 시점이 승인된 연표에 없습니다.",
+      selected_nodes_cross_branch: "서로 다른 원작 분기의 시점을 함께 선택할 수 없습니다.",
+      reveal_ceiling_before_current: "공개 상한이 현재 시점보다 앞설 수 없습니다.",
+      divergence_after_current: "원작 분기 시점이 현재 시점보다 뒤에 있습니다.",
+      divergence_requires_current_node: "원작 분기 시점을 사용하려면 현재 시점을 먼저 선택하세요.",
+      current_node_unknown: "현재 시점을 선택하지 않았습니다.",
+      reveal_ceiling_unknown: "공개 상한을 선택하지 않았습니다.",
+    };
+    return labels[String(value || "")] || String(value || "알 수 없는 상태");
+  }
+
+  function renderReferenceBindingPanel(selector) {
+    const state = _referenceLibraryState;
+    const draft = referenceLibraryBindingDraftForSelection();
+    const existing = referenceLibrarySelectedBinding();
+    const timeline = Array.isArray(state.library && state.library.timeline) ? state.library.timeline : [];
+    const optionsFor = (selected) => ['<option value=""' + (!selected ? ' selected' : '') + '>선택하지 않음</option>'].concat(timeline.map((item) => '<option value="' + escapeAttr(item.node_id) + '"' + (String(item.node_id || "") === String(selected || "") ? ' selected' : '') + '>' + escapeAttr(item.label || item.node_key || item.node_id) + '</option>')).join("");
+    const preview = state.bindingPreview && typeof state.bindingPreview === "object" ? state.bindingPreview : null;
+    const blocked = preview && Array.isArray(preview.blocked_reasons) ? preview.blocked_reasons : [];
+    const warnings = preview && Array.isArray(preview.warnings) ? preview.warnings : [];
+    const previewText = blocked.length
+      ? '<div class="mo-section-desc mo-text-danger">연결 차단: ' + blocked.map(referenceLibraryBindingReasonLabel).map(escapeAttr).join(" · ") + '</div>'
+      : preview && preview.valid
+        ? '<div class="mo-section-desc mo-text-success">미리보기 정상 · ' + escapeAttr(preview.action === "update" ? "기존 연결 갱신" : "새 연결 생성") + '</div>'
+        : '';
+    const warningText = warnings.length ? '<div class="mo-section-desc">확인: ' + warnings.map(referenceLibraryBindingReasonLabel).map(escapeAttr).join(" · ") + '</div>' : '';
+    const sessionText = state.sessionId ? state.sessionId : state.bindingLoading ? "확인 중" : "미확인";
+    const disabled = !state.selectedWorkId || !state.selectedContinuityId || !state.sessionId;
+    return '<div class="mo-section">현재 세션 연결</div>' + selector
+      + '<div class="mo-dash-card">'
+      + '<div class="mo-section-desc"><strong>세션:</strong> ' + escapeAttr(sessionText) + (existing ? ' · 연결됨 · revision ' + Number(existing.revision || 0) : ' · 연결 없음') + '</div>'
+      + '<div class="mo-row"><label>연결 역할</label><select id="mo-reference-binding-role"><option value="primary"' + (draft.binding_role === "primary" ? " selected" : "") + '>주 작품</option><option value="crossover"' + (draft.binding_role === "crossover" ? " selected" : "") + '>크로스오버</option><option value="reference_only"' + (draft.binding_role === "reference_only" ? " selected" : "") + '>참고 전용</option></select></div>'
+      + '<div class="mo-row"><label>시점 결정</label><select id="mo-reference-binding-anchor-mode"><option value="manual"' + (draft.anchor_mode === "manual" ? " selected" : "") + '>수동 고정</option><option value="assisted"' + (draft.anchor_mode === "assisted" ? " selected" : "") + '>후보만 자동 제안</option></select></div>'
+      + '<div class="mo-row"><label>현재 원작 시점</label><select id="mo-reference-binding-current-node">' + optionsFor(draft.current_node_id) + '</select></div>'
+      + '<div class="mo-row"><label>공개 상한</label><select id="mo-reference-binding-reveal-node">' + optionsFor(draft.reveal_ceiling_node_id) + '</select></div>'
+      + '<div class="mo-row"><label>원작 분기 시점</label><select id="mo-reference-binding-divergence-node">' + optionsFor(draft.divergence_node_id) + '</select></div>'
+      + '<div class="mo-row"><label>미래 정보</label><select id="mo-reference-binding-future-policy"><option value="block"' + (draft.future_policy === "block" ? " selected" : "") + '>차단</option><option value="preview_only"' + (draft.future_policy === "preview_only" ? " selected" : "") + '>진단에서만 표시</option></select></div>'
+      + '<div class="mo-row"><label>우선순위</label><input id="mo-reference-binding-priority" type="number" min="-100" max="100" step="1" value="' + escapeAttr(Number(draft.priority || 0)) + '"></div>'
+      + '<div class="mo-row"><label>사용</label><input id="mo-reference-binding-enabled" type="checkbox"' + (draft.enabled !== false ? " checked" : "") + '></div>'
+      + '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-binding-preview"' + (disabled ? " disabled" : "") + '>연결 미리보기</button><button type="button" class="mo-btn mo-btn-success" id="mo-reference-binding-apply"' + (disabled ? " disabled" : "") + '>' + (existing ? "연결 갱신" : "현재 세션에 연결") + '</button>' + (existing ? '<button type="button" class="mo-btn mo-btn-danger-solid" id="mo-reference-binding-unlink">연결 해제</button>' : '') + '</div>'
+      + (state.bindingError ? '<div class="mo-section-desc mo-text-danger">' + escapeAttr(state.bindingError) + '</div>' : '')
+      + (state.bindingMessage ? '<div class="mo-section-desc">' + escapeAttr(state.bindingMessage) + '</div>' : '')
+      + previewText + warningText
+      + '<div class="mo-section-desc">연결 해제는 이 세션의 연결 정보만 지우며 원작 자료는 유지합니다. 원작 벡터 검색은 자료 탭에서 확인할 수 있고, 실제 턴 주입은 시점 보호와 함께 별도 단계에서 활성화됩니다.</div>'
+      + '</div>';
+  }
+
+  function renderReferenceVectorPanel() {
+    const state = _referenceLibraryState;
+    const status = state.vectorStatus || {};
+    const counts = status.counts && typeof status.counts === "object" ? status.counts : {};
+    const indexed = Number(status.indexed || 0);
+    const stale = Number(status.stale_indexed || 0);
+    const missing = Number(status.missing_approved || 0);
+    const models = Array.isArray(status.embedding_models) ? status.embedding_models.join(", ") : "";
+    const disabled = !state.selectedWorkId || !state.selectedContinuityId || state.vectorLoading;
+    const metric = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(6) : "없음";
+    const results = (state.vectorResults || []).map((item) => '<div class="mo-memory-item">'
+      + '<div><strong>Chroma #' + Number(item.chroma_rank || 0) + '</strong> · distance ' + metric(item.distance) + ' · cosine ' + metric(item.cosine_similarity) + '</div>'
+      + '<div class="mo-section-desc">' + escapeAttr(String(item.reference_kind || "reference")) + ' · ' + escapeAttr(String(item.document_text || "")) + '</div>'
+      + '</div>').join("");
+    const summary = status.status === "ok"
+      ? '전용 컬렉션 ' + escapeAttr(String(status.collection || "")) + ' · 유효 색인 ' + indexed + '건 (연표 ' + Number(counts.timeline || 0) + ' / 인물·장소·물품 ' + Number(counts.entity || 0) + ' / 사실·설정 ' + Number(counts.claim || 0) + ')' + (stale || missing ? ' · 재색인 필요: 오래된 ' + stale + ' / 누락 ' + missing : '') + (models ? ' · ' + escapeAttr(models) : '')
+      : '아직 전용 원작 벡터 색인 상태를 확인하지 않았습니다.';
+    return '<div class="mo-dash-card">'
+      + '<div class="mo-section">원작 전용 벡터 색인</div>'
+      + '<div class="mo-section-desc">' + summary + '</div>'
+      + '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-success" id="mo-reference-vector-reindex"' + (disabled ? ' disabled' : '') + '>승인 자료 색인</button><button type="button" class="mo-btn mo-btn-info" id="mo-reference-vector-status"' + (disabled ? ' disabled' : '') + '>상태 확인</button></div>'
+      + '<div class="mo-row"><label>검색 확인</label><input id="mo-reference-vector-query" type="text" value="' + escapeAttr(state.vectorQuery || "") + '" placeholder="현재 장면과 관련된 질문 또는 문장"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-vector-search"' + (disabled ? ' disabled' : '') + '>ChromaDB 검색</button></div>'
+      + '<div class="mo-section-desc">ChromaDB 반환 순서와 원시 distance를 그대로 표시합니다. 순위 기반 유사도와 고정 점수는 생성하지 않습니다.</div>'
+      + (state.vectorError ? '<div class="mo-section-desc mo-text-danger">' + escapeAttr(state.vectorError) + '</div>' : '')
+      + (state.vectorMessage ? '<div class="mo-section-desc">' + escapeAttr(state.vectorMessage) + '</div>' : '')
+      + results
+      + '</div>';
+  }
+
   function renderReferenceLibrarySection() {
     const state = _referenceLibraryState;
     const panelView = state.panelView || "library";
@@ -11837,7 +11256,11 @@
     const tabs = '<div class="mo-inline-actions">'
       + '<button type="button" class="mo-btn ' + (panelView === "library" ? 'mo-btn-success' : '') + '" data-reference-panel="library">생성된 자료 ' + Number(library.count || 0) + '</button>'
       + '<button type="button" class="mo-btn ' + (panelView === "import" ? 'mo-btn-info' : '') + '" data-reference-panel="import">자료 추가</button>'
+      + '<button type="button" class="mo-btn ' + (panelView === "binding" ? 'mo-btn-info' : '') + '" data-reference-panel="binding">현재 세션 연결</button>'
       + '</div>';
+    if (panelView === "binding") {
+      return '<div class="mo-section">원작 자료</div>' + tabs + renderReferenceBindingPanel(selector);
+    }
     if (panelView === "import") {
       return '<div class="mo-section">원작 자료</div>' + tabs + selector
         + '<div class="mo-dash-card"><div class="mo-row"><label>새 작품</label><input id="mo-reference-work-title" type="text" placeholder="작품 이름"><select id="mo-reference-work-type"><option value="novel">소설</option><option value="animation">애니메이션</option><option value="game">게임</option><option value="comic">만화</option><option value="other">기타</option></select><button type="button" class="mo-btn mo-btn-success" id="mo-reference-work-create">만들기</button></div>'
@@ -11872,7 +11295,7 @@
       ? '<div class="mo-section-desc">중복 확인 ' + Number(diagnostics.duplicate_count || 0) + '건 · 충돌 확인 ' + Number(diagnostics.conflict_count || 0) + '건 · 사용자 확정 ' + Number(diagnostics.user_locked_count || 0) + '건</div>'
       : '';
     const timelineActions = (library.timeline || []).length > 0 ? '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-timeline-normalize">연표 시간순 정리</button></div>' : '';
-    return '<div class="mo-section">원작 자료</div>' + tabs + selector + filters + diagnosticSummary + timelineActions + empty
+    return '<div class="mo-section">원작 자료</div>' + tabs + selector + renderReferenceVectorPanel() + filters + diagnosticSummary + timelineActions + empty
       + ((libraryView === "all" || libraryView === "character") && entitiesByType("character").length ? '<div class="mo-section">인물</div>' + referenceLibraryRows("entity", entitiesByType("character"), false) : '')
       + ((libraryView === "all" || libraryView === "location") && entitiesByType("location").length ? '<div class="mo-section">장소</div>' + referenceLibraryRows("entity", entitiesByType("location"), false) : '')
       + ((libraryView === "all" || libraryView === "item") && entitiesByType("item").length ? '<div class="mo-section">물품</div>' + referenceLibraryRows("entity", entitiesByType("item"), false) : '')
@@ -11944,9 +11367,12 @@
   function attachReferenceLibraryEvents() {
     const byId = (id) => document.getElementById(id);
     document.querySelectorAll("[data-reference-panel]").forEach((btn) => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         _referenceLibraryState.panelView = String(btn.getAttribute("data-reference-panel") || "library");
         referenceLibraryRefreshUI();
+        if (_referenceLibraryState.panelView === "binding") {
+          await referenceLibraryLoadBindings();
+        }
       });
     });
     document.querySelectorAll("[data-reference-library-view]").forEach((btn) => {
@@ -11994,12 +11420,22 @@
     if (workSelect) workSelect.addEventListener("change", async () => {
       _referenceLibraryState.selectedWorkId = String(workSelect.value || "");
       _referenceLibraryState.document = null;
+      _referenceLibraryState.bindingDraft = null;
+      _referenceLibraryState.bindingPreview = null;
+      _referenceLibraryState.vectorStatus = null;
+      _referenceLibraryState.vectorResults = [];
+      _referenceLibraryState.vectorError = "";
       await referenceLibraryLoadContinuities();
     });
     const continuitySelect = byId("mo-reference-continuity-select");
     if (continuitySelect) continuitySelect.addEventListener("change", async () => {
       _referenceLibraryState.selectedContinuityId = String(continuitySelect.value || "");
       _referenceLibraryState.document = null;
+      _referenceLibraryState.bindingDraft = null;
+      _referenceLibraryState.bindingPreview = null;
+      _referenceLibraryState.vectorStatus = null;
+      _referenceLibraryState.vectorResults = [];
+      _referenceLibraryState.vectorError = "";
       await referenceLibraryLoadData();
     });
     const createContinuity = byId("mo-reference-continuity-create");
@@ -12010,6 +11446,28 @@
     if (extract) extract.addEventListener("click", () => referenceLibraryStartExtraction());
     const normalizeTimeline = byId("mo-reference-timeline-normalize");
     if (normalizeTimeline) normalizeTimeline.addEventListener("click", () => referenceLibraryNormalizeTimeline());
+    const vectorReindex = byId("mo-reference-vector-reindex");
+    if (vectorReindex) vectorReindex.addEventListener("click", () => referenceLibraryStartVectorReindex());
+    const vectorStatus = byId("mo-reference-vector-status");
+    if (vectorStatus) vectorStatus.addEventListener("click", () => referenceLibraryLoadVectorStatus());
+    const vectorSearch = byId("mo-reference-vector-search");
+    if (vectorSearch) vectorSearch.addEventListener("click", () => referenceLibrarySearchVectors(byId("mo-reference-vector-query")?.value));
+    const bindingPreview = byId("mo-reference-binding-preview");
+    if (bindingPreview) bindingPreview.addEventListener("click", async () => {
+      const root = bindingPreview.closest(".mo-dash-card") || bindingPreview.parentElement;
+      await referenceLibraryPreviewBinding(root);
+    });
+    const bindingApply = byId("mo-reference-binding-apply");
+    if (bindingApply) bindingApply.addEventListener("click", async () => {
+      const root = bindingApply.closest(".mo-dash-card") || bindingApply.parentElement;
+      await referenceLibraryApplyBinding(root);
+    });
+    const bindingUnlink = byId("mo-reference-binding-unlink");
+    if (bindingUnlink) bindingUnlink.addEventListener("click", async () => {
+      if (confirm("현재 세션과 이 원작 자료의 연결을 해제할까요? 원작 자료 자체는 삭제되지 않습니다.")) {
+        await referenceLibraryUnlinkBinding();
+      }
+    });
   }
 
   async function updateSettings(patch) {
@@ -12041,7 +11499,6 @@
     const copy = { ...s };
     if (copy.pluginMainApiKey) copy.pluginMainApiKey = maskApiKey(copy.pluginMainApiKey);
     if (copy.subLlmApiKey) copy.subLlmApiKey = maskApiKey(copy.subLlmApiKey);
-    if (copy.tableReadLlmApiKey) copy.tableReadLlmApiKey = maskApiKey(copy.tableReadLlmApiKey);
     if (copy.embeddingApiKey) copy.embeddingApiKey = maskApiKey(copy.embeddingApiKey);
     if (copy.pluginMainExtraHeadersJson) copy.pluginMainExtraHeadersJson = "[configured]";
     if (copy.pluginMainExtraBodyJson) copy.pluginMainExtraBodyJson = "[configured]";
@@ -15233,25 +14690,39 @@
     };
   }
 
-  async function requestBackendSessionRoutingTurnResolution(sessionId, mode, value) {
+  async function requestBackendSessionRoutingTurnResolution(sessionId, mode, observation) {
+    const observed = observation && typeof observation === "object" && !Array.isArray(observation)
+      ? observation
+      : {};
+    const observations = Array.isArray(observation) ? observation : [];
     const result = await bridgeFetch("/session-routing/turn-resolution", {
       method: "POST",
       timeoutMs: getRequestTimeoutSettingMs(),
       body: {
+        chat_session_id: String(sessionId || ""),
         mode: String(mode || "pair"),
-        local_turn_index: mode === "pair" ? Math.max(0, Math.floor(Number(value || 0))) : 0,
-        visible_completed_turns: mode === "visible_completed" ? Math.max(0, Math.floor(Number(value || 0))) : 0,
+        risu_user_message_index: Number.isInteger(observed.risuUserMessageIndex) ? observed.risuUserMessageIndex : null,
+        observed_pair_ordinal: Math.max(0, Math.floor(Number(observed.observedPairOrdinal || 0))),
+        observations: observations.map(function(pair, index) {
+          return {
+            observation_index: index,
+            risu_user_message_index: Number.isInteger(pair && pair.risuUserMessageIndex) ? pair.risuUserMessageIndex : null,
+            observed_pair_ordinal: Math.max(0, Math.floor(Number(pair && pair.observedPairOrdinal || 0))),
+          };
+        }),
         baseline: serializeSessionRoutingBaselineForBackend(sessionId),
       },
     });
     if (!result || result.status !== "ok" || result.contract_version !== "session-routing.turn-resolution.v1") {
-      return { status: "backend_unavailable", turnIndex: 0, completedTurnCount: 0, baseline: null };
+      return { status: "backend_unavailable", turnIndex: 0, completedTurnCount: 0, localTurnIndex: 0, resolvedObservations: [], baseline: null };
     }
     return {
       status: String(result.resolution || "normal"),
       turnIndex: Number(result.turn_index || 0),
       completedTurnCount: Number(result.completed_turns || 0),
       localTurnIndex: Number(result.local_turn_index || 0),
+      localTurnSource: String(result.local_turn_source || ""),
+      resolvedObservations: Array.isArray(result.resolved_observations) ? result.resolved_observations : [],
       protectedBeforeTurn: Number(result.protected_before_turn || 0),
       minFromTurn: Number(result.min_from_turn || 0),
       baseline: result.baseline_applied ? getSessionRoutingTurnBaseline(sessionId) : null,
@@ -15277,7 +14748,7 @@
         ledger_anchor_turn: Math.max(0, Math.floor(Number(observed.ledgerAnchorTurnIndex || 0))),
         removed_assistant_count: Math.max(0, Math.floor(Number(observed.removedAssistantCount || observed.turnsRemoved || 0))),
         removed_message_count: Math.max(0, Math.floor(Number(observed.removedMsgCount || 0))),
-        visible_completed_turns: Math.max(0, Math.floor(Number(observed.visibleCompletedTurnCount || observed.activeCompletedTurnCount || 0))),
+        visible_completed_turns: Math.max(0, Math.floor(Number(observed.visibleCompletedTurnCount ?? observed.activeCompletedTurnCount ?? 0))),
         backend_latest_turn: Math.max(0, Math.floor(Number(backendLatestTurn || 0))),
         deletion_observed: true,
         ledger_verified: !!(observed.tailReconcileVerification && observed.tailReconcileVerification.status === "verified_tail_delete"),
@@ -15579,9 +15050,11 @@
       if (!Array.isArray(rawMessages)) return false;
       const comparable = extractActiveChatComparableMessages(activeChat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable);
-      const visibleCompletedTurnCount = pairs.length;
-      const completedTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "visible_completed", visibleCompletedTurnCount);
-      const activeCompletedTurnCount = Number(completedTurnResolution.completedTurnCount || visibleCompletedTurnCount || 0);
+      const latestPair = pairs.length > 0 ? pairs[pairs.length - 1] : { observedPairOrdinal: 0 };
+      const completedTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "visible_completed", latestPair);
+      if (!completedTurnResolution || completedTurnResolution.status === "backend_unavailable") return false;
+      const visibleCompletedTurnCount = Number(completedTurnResolution.localTurnIndex || 0);
+      const activeCompletedTurnCount = Number(completedTurnResolution.completedTurnCount || 0);
       const latestBackendTurn = await fetchBackendLatestTurnIndexForSession(sid);
       if (!(latestBackendTurn > activeCompletedTurnCount)) return false;
       const backendGap = latestBackendTurn - activeCompletedTurnCount;
@@ -23995,22 +23468,18 @@
       var valueSource = "";
 
       try {
-        if (R && typeof R.getCharacter === "function") {
-          var char = await R.getCharacter();
-          if (char && Array.isArray(char.chats) && typeof char.chatPage === "number") {
-            var activeChat = char.chats[char.chatPage];
-            var savedToggleValues = activeChat && typeof activeChat.savedToggleValues === "object"
-              ? activeChat.savedToggleValues
-              : null;
-            if (savedToggleValues) {
-              var activeValue = savedToggleValues.toggle_lang != null
-                ? savedToggleValues.toggle_lang
-                : savedToggleValues.lang;
-              if (activeValue != null && String(activeValue).trim()) {
-                rawToggleValue = String(activeValue).trim();
-                valueSource = "active_chat.savedToggleValues";
-              }
-            }
+        var activeChatResult = await resolveCurrentActiveChatObject("");
+        var activeChat = activeChatResult && activeChatResult.chat;
+        var savedToggleValues = activeChat && typeof activeChat.savedToggleValues === "object"
+          ? activeChat.savedToggleValues
+          : null;
+        if (savedToggleValues) {
+          var activeValue = savedToggleValues.toggle_lang != null
+            ? savedToggleValues.toggle_lang
+            : savedToggleValues.lang;
+          if (activeValue != null && String(activeValue).trim()) {
+            rawToggleValue = String(activeValue).trim();
+            valueSource = "active_chat.savedToggleValues";
           }
         }
       } catch {}
@@ -33418,6 +32887,39 @@
     }
   }
 
+  async function refreshMainRequestActiveChatForNewUser(sessionId, messages, rawInputTailText, activeChatMessages) {
+    let currentMessages = Array.isArray(activeChatMessages) ? activeChatMessages : [];
+    try {
+      const payloadUserText = getLastPayloadUserText(messages);
+      const rawTail = normalizeMainTurnCompareText(rawInputTailText);
+      const payloadTail = normalizeMainTurnCompareText(payloadUserText);
+      const postOutputContext = buildPostOutputSecondaryRequestContext(currentMessages);
+      if (!postOutputContext || !payloadTail || !rawTail || !mainTurnTextMatchesOriginal(payloadTail, rawTail)) {
+        return currentMessages;
+      }
+      const previousUser = normalizeMainTurnCompareText(postOutputContext.userContent);
+      if (previousUser && (
+        mainTurnTextMatchesOriginal(payloadTail, previousUser)
+        || mainTurnTextMatchesOriginal(previousUser, payloadTail)
+      )) {
+        return currentMessages;
+      }
+
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await new Promise(function(resolve) { setTimeout(resolve, 40); });
+        const refreshed = await getCurrentActiveChatComparableMessages(sessionId);
+        if (Array.isArray(refreshed) && refreshed.length > 0) currentMessages = refreshed;
+        const latest = getLastNonEmptyComparableMessage(currentMessages);
+        if (latest && latest.role === "user" && mainTurnTextMatchesOriginal(payloadTail, latest.content)) {
+          return currentMessages;
+        }
+      }
+      return currentMessages;
+    } catch {
+      return currentMessages;
+    }
+  }
+
   function buildMainRequestOwnershipDecision(type, messages, activeTailUserText, rawInputTailText, activeChatMessages) {
     const requestType = String(type || "model");
     if (!isNarrativeType(type)) {
@@ -33459,20 +32961,6 @@
           : "payload_tail_verified_by_active_chat_tail",
       };
     }
-    if (rawTail && mainTurnTextMatchesOriginal(payloadTail, rawTail)) {
-      return {
-        allowed: true,
-        contextInjectionAllowed: true,
-        reason: payloadTail === rawTail ? "raw_input_tail_match" : "raw_input_tail_prefix_match",
-        requestType,
-        marker: auxiliaryMarker || "",
-        policy: auxiliaryMarker
-          ? "main_user_input_verified_auxiliary_tail_trace_only"
-          : "payload_tail_verified_by_input_hook_cache",
-        activeTailPreview: activeTail ? truncPreview(activeTail, 120) : "",
-        payloadTailPreview: payloadTail !== rawTail ? truncPreview(payloadTail, 120) : "",
-      };
-    }
     if (postOutputContext) {
       const previousUser = normalizeMainTurnCompareText(postOutputContext.userContent);
       const payloadIsPreviousUser = previousUser && (
@@ -33491,6 +32979,20 @@
           payloadTailPreview: truncPreview(payloadTail, 120),
         };
       }
+    }
+    if (rawTail && mainTurnTextMatchesOriginal(payloadTail, rawTail)) {
+      return {
+		allowed: true,
+        contextInjectionAllowed: true,
+        reason: payloadTail === rawTail ? "raw_input_tail_match" : "raw_input_tail_prefix_match",
+        requestType,
+        marker: auxiliaryMarker || "",
+        policy: auxiliaryMarker
+          ? "main_user_input_verified_auxiliary_tail_trace_only"
+          : "payload_tail_verified_by_input_hook_cache",
+        activeTailPreview: activeTail ? truncPreview(activeTail, 120) : "",
+        payloadTailPreview: payloadTail !== rawTail ? truncPreview(payloadTail, 120) : "",
+      };
     }
     if (auxiliaryMarker && !payloadTailAuxiliaryMarker && isSubstantiveUserPayloadText(payloadTail)) {
       return {
@@ -33587,6 +33089,10 @@
     try {
       const sid = String(sessionId || "");
       if (!sid) return;
+      if (decision && decision.reason === "post_output_secondary_request") {
+        const originalUser = String((decision.postOutputReplacement && decision.postOutputReplacement.userContent) || "").trim();
+        if (originalUser) cacheRawInputForSession(sid, originalUser);
+      }
       _nonMainRequestSkipBySession.set(sid, {
         marker: decision && decision.marker ? String(decision.marker) : "",
         requestType: decision && decision.requestType ? String(decision.requestType) : "",
@@ -33674,7 +33180,6 @@
     if (isSameAssistantComparableText(originalAssistant, finalAssistant)) {
       return { handled: true, replaced: false, reason: "post_output_unchanged" };
     }
-
     const persistedPair = await findRecentPersistedCompleteTurnPairForContent(sid, originalUser, originalAssistant);
     if (!persistedPair || !Number.isFinite(Number(persistedPair.turnIndex))) {
       return { handled: true, replaced: false, reason: "post_output_original_pair_not_found" };
@@ -33741,7 +33246,13 @@
       await flushQueueSave();
     }
     trackTurnIndex(turnIndex, sid);
-    promoteAssistantSnapshot(sid, finalAssistant, turnIndex);
+    const finalActiveMessages = await getCurrentActiveChatComparableMessages(sid);
+    updateSessionSnapshot(sid, finalActiveMessages.length > 0
+      ? finalActiveMessages
+      : contextMessages.concat([
+          { role: "user", content: originalUser },
+          { role: "assistant", content: finalAssistant },
+        ]));
     upsertTimelineCompleteTurnPendingArtifacts(sid, turnIndex, originalUser, finalAssistant, result);
     scheduleTimelinePostCompleteTurnRefresh(sid, turnIndex);
     return { handled: true, replaced: true, reason: "post_output_final_replaced", turnIndex, result };
@@ -34220,6 +33731,14 @@
       } catch {
         mainRequestRawTail = "";
       }
+      mainRequestActiveMessages = await refreshMainRequestActiveChatForNewUser(
+        orchSessionId,
+        messages,
+        mainRequestRawTail,
+        mainRequestActiveMessages
+      );
+      const refreshedMainRequestActiveTail = getLastPayloadUserText(mainRequestActiveMessages);
+      if (refreshedMainRequestActiveTail) mainRequestActiveTail = refreshedMainRequestActiveTail;
       const mainRequestDecision = buildMainRequestOwnershipDecision(
         type,
         messages,
@@ -34416,7 +33935,7 @@
         const routingBaseline = getSessionRoutingTurnBaseline(orchSessionId);
         const routingBaselineBackendTurn = Number(routingBaseline && routingBaseline.backendTurnAtRoute || 0);
         const activeCompletedPairs = await safeCall(
-          () => countActiveChatCompletedTurnPairsForRoutingBaseline(orchSessionId),
+          () => resolveActiveChatCompletedTurnsForRoutingBaseline(orchSessionId),
           0,
           "freshFirstTurnLightMode.activePairs"
         );
@@ -38330,8 +37849,31 @@
       debugLog("active chat rescan world rule count failed:", err && err.message);
     }
     const dbRawMap = buildActiveChatRescanDbRawMap(dbRows);
-    let pairSource = "active_chat_role_parse";
-    let pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
+    const canonicalPairResult = buildSessionNormalizeCompletedTurnPairs(resolvedActiveChat.chat);
+    let pairSource = canonicalPairResult.available ? "risu_get_chat_from_index" : "active_chat_role_parse";
+    let pairs = canonicalPairResult.available
+      ? canonicalPairResult.pairs
+      : buildCompletedTurnPairsFromActiveChatMessages(messages);
+    if (pairs.length > 0) {
+      const batchResolution = await requestBackendSessionRoutingTurnResolution(sid, "batch", pairs);
+      const resolved = batchResolution && Array.isArray(batchResolution.resolvedObservations)
+        ? batchResolution.resolvedObservations
+        : [];
+      if (batchResolution.status === "backend_unavailable" || resolved.length !== pairs.length) {
+        throw new Error("session_routing_turn_resolution_unavailable");
+      }
+      pairs = pairs.map(function(pair, index) {
+        const item = resolved[index];
+        if (!item || Number(item.observation_index) !== index || Number(item.turn_index) < 1) {
+          throw new Error("session_routing_turn_resolution_invalid");
+        }
+        return Object.assign({}, pair, {
+          turnIndex: Number(item.turn_index),
+          localTurnIndex: Number(item.local_turn_index || 0),
+          turnIndexSource: String(item.source || "backend"),
+        });
+      });
+    }
     if (pairs.length === 0 && Array.isArray(messages) && messages.length > 0 && dbRawMap.size > 0) {
       const fallbackPairs = buildActiveChatRescanPairsFromDbRawFallback(messages, dbRawMap);
       if (fallbackPairs.length > 0) {
@@ -38444,10 +37986,23 @@
     }
   }
 
-  function buildSessionNormalizeRepairEntriesFromDryRunPlan(plan) {
+  function buildSessionNormalizeRepairEntriesFromDryRunPlan(plan, starterCandidate) {
+    const entries = [];
+    const starterAlreadyStored = (Array.isArray(plan && plan.dbRows) ? plan.dbRows : []).some(function(row) {
+      return Number(row && row.turn_index) === STARTUP_MESSAGE_TURN_INDEX
+        && String(row && row.role || "").trim().toLowerCase() === "assistant"
+        && String(row && row.content || "").trim() !== "";
+    });
+    if (!starterAlreadyStored && starterCandidate && String(starterCandidate.content || "").trim()) {
+      entries.push({
+        turn_index: STARTUP_MESSAGE_TURN_INDEX,
+        assistant_content: String(starterCandidate.content || "").slice(0, STARTUP_MESSAGE_MAX_CHARS),
+        source: String(starterCandidate.source || "active_chat_session_normalize_turn0"),
+      });
+    }
     const rawMissingSet = new Set((Array.isArray(plan && plan.rawMissingTurns) ? plan.rawMissingTurns : []).map(function(turn) { return Number(turn); }));
-    if (rawMissingSet.size === 0) return [];
-    return (Array.isArray(plan && plan.pairs) ? plan.pairs : [])
+    if (rawMissingSet.size === 0) return entries;
+    return entries.concat((Array.isArray(plan && plan.pairs) ? plan.pairs : [])
       .map(function(pair) {
         const turnIndex = Number(pair && pair.turnIndex);
         if (!Number.isFinite(turnIndex) || turnIndex < 1 || !rawMissingSet.has(turnIndex)) return null;
@@ -38458,7 +38013,7 @@
           source: "active_chat_session_normalize",
         }, "active_chat_session_normalize");
       })
-      .filter(Boolean);
+      .filter(Boolean));
   }
 
   function buildSessionNormalizeTargetTurnsFromDryRunPlan(plan) {
@@ -38560,7 +38115,8 @@
       if (activeSid && activeSid === sid) {
         const plan = await computeActiveChatRescanDryRunPlan(sid);
         if (plan && plan.ok) {
-          repairEntries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan);
+          const starterCandidate = await getCurrentStartupMessageTurnZeroCandidate(plan.messages);
+          repairEntries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan, starterCandidate);
           turnIndices = buildSessionNormalizeTargetTurnsFromDryRunPlan(plan);
           planMeta = {
             active_chat_plan_status: "ok",
@@ -39309,20 +38865,14 @@
     // 1. RisuAI에서 현재 챗의 hypaV3Data 읽기
     let hypaData = null;
     try {
-      if (!R || typeof R.getCharacter !== "function") {
+      if (!R || typeof R.getChatFromIndex !== "function") {
         _hypaImportState.error = t('hypaImport.noApi');
         refreshExplorerUI();
         return;
       }
 
-      const char = await R.getCharacter();
-      if (!char || !Array.isArray(char.chats) || typeof char.chatPage !== "number") {
-        _hypaImportState.error = t('hypaImport.noCharData');
-        refreshExplorerUI();
-        return;
-      }
-
-      const activeChat = char.chats[char.chatPage];
+      const activeChatResult = await resolveCurrentActiveChatObject(sessionId);
+      const activeChat = activeChatResult && activeChatResult.chat;
       if (!activeChat) {
         _hypaImportState.error = t('hypaImport.noChatFound');
         refreshExplorerUI();
@@ -45281,17 +44831,14 @@ html,body{width:100%;height:100%;overflow:hidden}
 .mo-llm-split{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
 .mo-llm-split-single{grid-template-columns:minmax(320px,1fr) minmax(0,.55fr)}
 .mo-llm-panel{border:1px solid #2a2a4a;border-radius:10px;padding:10px;background:#11172b}
-.mo-table-read-llm-panel{order:1}
 .mo-embedding-llm-panel{order:2}
 .mo-llm-panel .mo-section{margin-top:0}
-.mo-table-read-layout{display:grid;grid-template-columns:minmax(320px,.95fr) minmax(320px,1.05fr);gap:12px;align-items:start}
-.mo-table-read-left,.mo-table-read-right{min-width:0;display:flex;flex-direction:column;gap:10px}
 @media (max-width: 1180px){
   .mo-tl-shell{grid-template-columns:220px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
   .mo-tl-detail{display:flex;grid-column:1 / -1;max-height:320px}
 }
 @media (max-width: 820px){
-  .mo-llm-split,.mo-common-grid,.mo-test-strip,.mo-tl-shell,.mo-table-read-layout{grid-template-columns:1fr}
+  .mo-llm-split,.mo-common-grid,.mo-test-strip,.mo-tl-shell{grid-template-columns:1fr}
   .mo-tl-shell{height:auto;max-height:none;min-height:0;grid-template-rows:auto auto auto}
   .mo-tl-side{min-height:160px;max-height:230px}
   .mo-tl-session-list{flex:1 1 auto;min-height:112px;max-height:178px}
@@ -45491,34 +45038,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-ex-item-preview{font-size:11px;color:#bbb;padding:3px 0;line-height:1.4;word-break:break-word}
 .mo-ex-item-full{font-size:11px;color:#ccc;padding:4px 0;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto}
 .mo-ex-json{font-family:monospace;font-size:11px;background:#0a0a15;padding:6px 8px;border-radius:4px;border:1px dashed #2a2a4a}
-.mo-tr-review{display:flex;flex-direction:column;gap:12px;margin-top:10px}
-.mo-tr-review-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.mo-tr-verdict,.mo-tr-safe,.mo-tr-metric{display:inline-flex;align-items:center;gap:5px;border-radius:999px;border:1px solid #2a3b5c;background:#0b1224;color:#dbeafe;font-size:11px;font-weight:700;padding:5px 9px}
-.mo-tr-verdict{font-size:13px;padding:7px 12px;letter-spacing:.01em}
-.mo-tr-verdict-ok,.mo-tr-issue-ok{border-color:#2f855a;background:rgba(34,197,94,.12);color:#bbf7d0}
-.mo-tr-verdict-warn,.mo-tr-issue-warn{border-color:#b7791f;background:rgba(245,158,11,.14);color:#fde68a}
-.mo-tr-verdict-bad,.mo-tr-issue-bad{border-color:#dc2626;background:rgba(239,68,68,.13);color:#fecaca}
-.mo-tr-verdict-neutral,.mo-tr-issue-neutral{border-color:#334155;background:rgba(148,163,184,.10);color:#cbd5e1}
-.mo-tr-review-section{border:1px solid rgba(80,100,150,.45);background:rgba(10,18,34,.55);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
-.mo-tr-script{display:flex;flex-direction:column;gap:7px}
-.mo-tr-script-line{display:grid;grid-template-columns:minmax(76px,120px) 1fr;gap:8px;align-items:start;padding:8px 9px;border:1px solid rgba(65,85,130,.55);border-radius:9px;background:rgba(15,23,42,.72)}
-.mo-tr-speaker{font-size:11px;font-weight:800;color:#93c5fd;text-transform:none;word-break:break-word}
-.mo-tr-line{font-size:12px;line-height:1.55;color:#e5e7eb;white-space:pre-wrap}
-.mo-tr-character-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
-.mo-tr-character-card{border:1px solid rgba(59,130,246,.35);background:rgba(12,21,40,.78);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
-.mo-tr-character-title{font-size:13px;font-weight:900;color:#bfdbfe}
-.mo-tr-metrics{display:flex;gap:6px;flex-wrap:wrap}
-.mo-tr-metric b{color:#94a3b8;margin-right:2px}
-.mo-tr-concern{font-size:12px;line-height:1.55;color:#e5e7eb;border-top:1px solid rgba(80,100,150,.35);padding-top:8px}
-.mo-tr-checklist{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;color:#e5e7eb;font-size:12px;line-height:1.55}
-.mo-tr-checklist li::marker{color:#60a5fa}
-.mo-tr-raw summary{cursor:pointer;color:#94a3b8;font-size:11px;margin:2px 0 6px}
-.mo-tr-revision-draft{border:1px solid rgba(96,165,250,.35);background:rgba(2,6,23,.72);border-radius:10px;padding:12px;font-size:13px;line-height:1.65;color:#f8fafc;white-space:pre-wrap}
-.mo-tr-revision-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
-.mo-tr-output-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;min-width:0}
-.mo-tr-output-grid .mo-preview-debug{max-height:240px;margin-top:0;overflow:auto}
-.mo-tr-full-output{max-height:520px!important;overflow:auto}
-.mo-tr-full-output-text{max-height:none!important;overflow:visible!important;white-space:pre-wrap}
 .mo-ex-kg-triple{color:#e0e0e0;font-size:11px;flex:1;min-width:0;word-break:break-word}
 .mo-ex-kg-meta{display:flex;gap:8px;font-size:10px;color:#888;padding:2px 0;flex-wrap:wrap}
 .mo-ex-more-btn{margin-top:6px;align-self:center}
@@ -46143,7 +45662,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         _timelineState.detailError = "";
       }
       if (!append && requestedSessionId && runtimeSid && requestedSessionId === runtimeSid) {
-        await ensureStartupMessageTurnZeroSaved(requestedSessionId, []);
         await ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh", maxPairs: 1 });
       }
       const params = new URLSearchParams();
@@ -46694,6 +46212,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
       if (!result || result.blocked || result.rolled_back !== true) {
         throw new Error(sessionMigrationBlockedReason(result, "rollback_blocked"));
+      }
+      await removeStartupMessageLedgerForSession(targetSid);
+      const activeSid = String(await getCurrentChatSessionId() || "").trim();
+      if (targetSid && activeSid === targetSid) {
+        await ensureStartupMessageTurnZeroSaved(targetSid, []);
       }
       _sessionMigrationUi.migrationId = 0;
       setSessionMigrationUiStatus("ok", tf("timeline.migration.rollbackSuccess", { id: String(migrationID) }), {
@@ -48665,28 +48188,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     });
   }
 
-  function tableReadCurrentSourceSessionId() {
-    return String(
-      _tableReadState.sourceSessionId ||
-      _timelineState.selectedSessionId ||
-      _timelineState.sessionId ||
-      _timelineState.currentSessionId ||
-      ""
-    ).trim();
-  }
-
-  async function tableReadResolveSessionDefaults() {
-    try {
-      const sid = String(await getCurrentChatSessionId() || "").trim();
-      if (sid && !_tableReadState.sourceSessionId) _tableReadState.sourceSessionId = sid;
-      if (sid && (!Array.isArray(_timelineState.sessions) || !_timelineState.sessions.length)) {
-        await loadTimelineSessions(sid, false);
-      }
-    } catch {
-      // UI can still render with the currently selected timeline session.
-    }
-  }
-
   function bindSettingsRangeSyncEvents(scope = document) {
     const root = scope && typeof scope.querySelectorAll === "function" ? scope : document;
     root.querySelectorAll(".mo-range[data-sync-input]").forEach((rangeEl) => {
@@ -48738,1054 +48239,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         }
       });
       btn.dataset.passwordToggleBound = "1";
-    });
-  }
-
-  async function runTableReadLlmConnectionTest(resultEl) {
-    if (!resultEl) return;
-    const read = (id, fallback = "", trim = true) => {
-      const el = document.getElementById(id);
-      const value = el ? el.value : fallback;
-      return trim ? String(value || "").trim() : value;
-    };
-    const trApiKey = read("mo-tableReadLlmApiKey", settings.tableReadLlmApiKey);
-    const trEndpoint = read("mo-tableReadLlmEndpoint", settings.tableReadLlmEndpoint);
-    const trModel = read("mo-tableReadLlmModel", settings.tableReadLlmModel);
-    const trProviderRaw = read("mo-tableReadLlmProvider", settings.tableReadLlmProvider);
-    const apiKey = trApiKey;
-    const endpoint = trEndpoint;
-    const model = trModel;
-    const provider = normalizeLlmProvider(trProviderRaw || "openai", "openai");
-    if (!apiKey || !endpoint || !model) {
-      resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ ' + escapeAttr(t("tableRead.llmTest.missing")) + '</div>';
-      return;
-    }
-    const timeoutMs = getTableReadLlmTimeoutSettingMs(read("mo-tableReadLlmTimeoutMs", settings.tableReadLlmTimeoutMs));
-    const temperature = getTableReadLlmTemperatureSetting(read("mo-tableReadLlmTemperature", settings.tableReadLlmTemperature));
-    const reasoningPreset = getTableReadLlmReasoningPresetSetting(read("mo-tableReadLlmReasoningPreset", settings.tableReadLlmReasoningPreset || "auto"));
-    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model);
-    const reasoningEffort = normalizeReasoningEffortForControls(read("mo-tableReadLlmReasoningEffort", settings.tableReadLlmReasoningEffort || "none"), reasoningControls);
-    const reasoningBudgetTokens = normalizeReasoningBudgetTokens(read("mo-tableReadLlmReasoningBudgetTokens", settings.tableReadLlmReasoningBudgetTokens || 0), 0);
-    const maxCompletionTokens = getTableReadLlmMaxCompletionTokensSetting(read("mo-tableReadLlmMaxCompletionTokens", settings.tableReadLlmMaxCompletionTokens));
-    const body = {
-      model,
-      messages: [{ role: "user", content: "Table Read LLM connection test. Reply with OK." }],
-      max_tokens: 8,
-      endpoint,
-      api_key: apiKey,
-      provider,
-      temperature,
-      timeout_ms: timeoutMs,
-      max_completion_tokens: maxCompletionTokens,
-    };
-    applyReasoningFieldsToPayload(body, reasoningControls, reasoningPreset, reasoningEffort, reasoningBudgetTokens);
-    const prevUrl = settings.bridgeUrl;
-    const prevRequestTimeoutMs = settings.requestTimeoutMs;
-    const bridgeUrlEl = document.getElementById("mo-bridgeUrl");
-    const requestTimeoutEl = document.getElementById("mo-requestTimeoutMs");
-    settings.bridgeUrl = sanitizeBridgeUrl(String((bridgeUrlEl && bridgeUrlEl.value) || settings.bridgeUrl || "").trim());
-    settings.requestTimeoutMs = getRequestTimeoutSettingMs(requestTimeoutEl ? requestTimeoutEl.value : settings.requestTimeoutMs);
-    resultEl.innerHTML = '<div class="mo-status mo-status-wait">⏳ ' + escapeAttr(t("tableRead.llmTest.loading")) + ' (' + escapeAttr("table_read_llm") + ')...</div>';
-    try {
-      const data = await bridgeFetch("/proxy/plugin-main", {
-        method: "POST",
-        timeoutMs,
-        body,
-      });
-      if (!data) {
-        resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ ' + escapeAttr(formatBridgeFailureForDisplay("/proxy/plugin-main", "백엔드가 오류를 반환했습니다.")) + '</div>';
-      } else if (data.error) {
-        resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ ' + escapeAttr(data.error) + '</div>';
-      } else {
-        const reply = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "(응답 없음)";
-        resultEl.innerHTML = '<div class="mo-status mo-status-ok">✅ ' + escapeAttr(t("tableRead.llmTest.ok")) + ' — ' + escapeAttr("table_read_llm") + ' / ' + escapeAttr(model) + ' / ' + escapeAttr(truncPreview(reply, 80)) + '</div>';
-      }
-    } catch (err) {
-      resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ ' + escapeAttr((err && err.message) || "unknown") + '</div>';
-    } finally {
-      settings.bridgeUrl = prevUrl;
-      settings.requestTimeoutMs = prevRequestTimeoutMs;
-    }
-  }
-
-  function tableReadRefreshUI() {
-    const root = document.getElementById("mo-table-read-root");
-    if (root) {
-      root.innerHTML = renderTableReadSection();
-      attachTableReadEvents();
-    } else if (panelOpen) {
-      renderSettingsPanel();
-    }
-  }
-
-  function tableReadSetStatus(status, message) {
-    _tableReadState.status = status || "idle";
-    _tableReadState.message = message || "";
-  }
-
-  function tableReadHydrateFormFromDom() {
-    const read = (id) => {
-      const el = document.getElementById(id);
-      return el ? String(el.value || "") : "";
-    };
-    _tableReadState.sourceSessionId = read("mo-table-read-session").trim() || _tableReadState.sourceSessionId;
-    _tableReadState.sceneText = read("mo-table-read-scene");
-    _tableReadState.userInput = read("mo-table-read-user-input");
-    _tableReadState.assistantDraft = read("mo-table-read-assistant-draft");
-    const checked = Array.from(document.querySelectorAll("[data-table-read-entity-key]:checked"))
-      .map((el) => String(el.getAttribute("data-table-read-entity-key") || "").trim())
-      .filter(Boolean);
-    _tableReadState.selectedEntityKeys = checked;
-  }
-
-  function tableReadBundleKey(item) {
-    return [
-      String(item && item.owner_entity_key || "").trim(),
-      String(item && item.owner_entity_role || "").trim(),
-      String(item && item.owner_visibility || "").trim(),
-    ].join("\x1f");
-  }
-
-  const TABLE_READ_ENTITY_ALIAS_KEY_OVERRIDES = Object.freeze({
-    isiu: "siwoo",
-    leesiwoo: "siwoo",
-    leesiwu: "siwoo",
-    siu: "siwoo",
-    siwoo: "siwoo",
-    siwu: "siwoo",
-    chloe: "chloe",
-    kloe: "chloe",
-    keulroe: "chloe",
-    vex: "vex",
-    bex: "vex",
-    bekseu: "vex",
-  });
-
-  function tableReadCanonicalEntityKey(value) {
-    const key = normalizeEntityName(value);
-    if (!key) return "";
-    return TABLE_READ_ENTITY_ALIAS_KEY_OVERRIDES[key] || key;
-  }
-
-  function tableReadEntityGroupKey(item) {
-    const candidates = [
-      item && item.owner_entity_key,
-      item && item.persona_entity_key,
-      item && item.owner_entity_name,
-      item && item.persona_entity_name,
-    ];
-    for (const value of candidates) {
-      const key = tableReadCanonicalEntityKey(value);
-      if (key) return key;
-    }
-    return tableReadBundleKey(item);
-  }
-
-  function tableReadPreferredEntityName(current, next) {
-    current = String(current || "").trim();
-    next = String(next || "").trim();
-    if (!current) return next;
-    if (!next) return current;
-    const currentHasHangul = /[가-힣]/.test(current);
-    const nextHasHangul = /[가-힣]/.test(next);
-    if (!currentHasHangul && nextHasHangul) return next;
-    return current;
-  }
-
-  function tableReadMergeEntityBundles(bundles) {
-    if (!Array.isArray(bundles) || bundles.length <= 1) return Array.isArray(bundles) ? bundles : [];
-    const order = [];
-    const groups = new Map();
-    for (const item of bundles) {
-      if (!item || typeof item !== "object") continue;
-      const groupKey = tableReadEntityGroupKey(item);
-      if (!groupKey) continue;
-      let group = groups.get(groupKey);
-      const bundleKey = tableReadBundleKey(item);
-      const privateLane = String(item.default_prepare_lane || "") === "character_private_recollection" ||
-        item.secret_guard_required === true ||
-        String(item.owner_visibility || "") === "owner_private" ||
-        /^(npc|character)$/i.test(String(item.owner_entity_role || ""));
-      if (!group) {
-        group = Object.assign({}, item, {
-          owner_entity_key: groupKey,
-          persona_entity_key: groupKey,
-          memory_count: 0,
-          source_bundle_count: 0,
-          source_bundle_keys: [],
-          source_owner_roles: [],
-          source_owner_visibilities: [],
-        });
-        groups.set(groupKey, group);
-        order.push(groupKey);
-      }
-      group.owner_entity_name = tableReadPreferredEntityName(
-        group.owner_entity_name || group.persona_entity_name || group.owner_entity_key,
-        item.owner_entity_name || item.persona_entity_name || item.owner_entity_key,
-      );
-      group.persona_entity_name = group.owner_entity_name;
-      group.memory_count = Number(group.memory_count || 0) + Number(item.memory_count || 0);
-      group.source_bundle_count = Number(group.source_bundle_count || 0) + 1;
-      if (bundleKey && !group.source_bundle_keys.includes(bundleKey)) group.source_bundle_keys.push(bundleKey);
-      const role = String(item.owner_entity_role || "").trim();
-      if (role && !group.source_owner_roles.includes(role)) group.source_owner_roles.push(role);
-      const visibility = String(item.owner_visibility || "").trim();
-      if (visibility && !group.source_owner_visibilities.includes(visibility)) group.source_owner_visibilities.push(visibility);
-      if (privateLane) {
-        group.owner_entity_role = "npc";
-        group.owner_visibility = "owner_private";
-        group.default_prepare_lane = "character_private_recollection";
-        group.default_reveal_policy = "owner_private_until_revealed";
-        group.secret_guard_required = true;
-      }
-      const nextTurn = Number(item.latest_turn_index || 0);
-      const currentTurn = Number(group.latest_turn_index || 0);
-      if (nextTurn >= currentTurn) {
-        group.latest_turn_index = item.latest_turn_index;
-        group.latest_memory_text = item.latest_memory_text || group.latest_memory_text || "";
-      }
-      if (Number(item.max_importance_10 || 0) > Number(group.max_importance_10 || 0)) {
-        group.max_importance_10 = item.max_importance_10;
-      }
-    }
-    return order.map((key) => groups.get(key)).filter(Boolean);
-  }
-
-  function tableReadSelectedBundles() {
-    const bundles = Array.isArray(_tableReadState.entityBundles) ? _tableReadState.entityBundles : [];
-    const selected = Array.isArray(_tableReadState.selectedEntityKeys) ? _tableReadState.selectedEntityKeys.filter(Boolean) : [];
-    if (!selected.length) return bundles;
-    const selectedSet = new Set(selected);
-    return bundles.filter((item) => selectedSet.has(tableReadBundleKey(item)));
-  }
-
-  function tableReadEntityRequestFromBundle(item) {
-    const role = String(item && item.owner_entity_role || "").trim() || "participant";
-    const lane = String(item && item.default_prepare_lane || "").trim();
-    return {
-      entity_key: String(item && item.owner_entity_key || "").trim(),
-      entity_name: String(item && item.owner_entity_name || "").trim(),
-      role,
-      perspective: lane === "character_private_recollection"
-        ? "private character recollection and possible misunderstanding, not direct exposition"
-        : "what this person remembers, notices, and worries about from their own perspective",
-    };
-  }
-
-  function tableReadCurrentReviewContext() {
-    try {
-      const review = _tableReadState.reviewResult &&
-        _tableReadState.reviewResult.table_read &&
-        _tableReadState.reviewResult.table_read.review;
-      return tableReadReviewParsed(review) || null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function tableReadBuildRequest(includeLLM, mode) {
-    const entities = tableReadSelectedBundles().map(tableReadEntityRequestFromBundle)
-      .filter((item) => item.entity_key || item.entity_name);
-    const body = {
-      chat_session_id: tableReadCurrentSourceSessionId(),
-      scene_text: _tableReadState.sceneText || "",
-      user_input: _tableReadState.userInput || "",
-      entities,
-      max_memories_per_entity: 4,
-      multi_model: {
-        enabled: false,
-        mode: "single_model_table_read",
-        max_parallel: 1,
-        require_consensus: false,
-      },
-    };
-    if (mode === "review" || mode === "revise") {
-      body.assistant_draft = _tableReadState.assistantDraft || "";
-    }
-    if (mode === "revise") {
-      const reviewContext = tableReadCurrentReviewContext();
-      if (reviewContext) body.review_context = reviewContext;
-    }
-    if (includeLLM) {
-      body.llm = tableReadBuildLLMRequest();
-    }
-    return body;
-  }
-
-  function resolveEffectiveTableReadLLMConfig() {
-    const s = settings || {};
-    const trEndpoint = String(s.tableReadLlmEndpoint || "").trim();
-    const trApiKey = String(s.tableReadLlmApiKey || "").trim();
-    const trModel = String(s.tableReadLlmModel || "").trim();
-    const trProvider = getTableReadLlmProviderSetting(s.tableReadLlmProvider);
-    const provider = trProvider || "openai";
-    const endpoint = trEndpoint.replace(/\/$/, "");
-    const apiKey = trApiKey;
-    const model = trModel;
-    const reasoningPreset = getTableReadLlmReasoningPresetSetting(s.tableReadLlmReasoningPreset);
-    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model);
-    const reasoningEffort = normalizeReasoningEffortForControls(
-      getTableReadLlmReasoningEffortSetting(s.tableReadLlmReasoningEffort),
-      reasoningControls,
-    );
-    const reasoningBudgetTokens = getTableReadLlmReasoningBudgetTokensSetting(s.tableReadLlmReasoningBudgetTokens);
-    const maxCompletion = getTableReadLlmMaxCompletionTokensSetting(s.tableReadLlmMaxCompletionTokens);
-    return {
-      provider,
-      endpoint,
-      apiKey,
-      model,
-      timeoutMs: getTableReadLlmTimeoutSettingMs(s.tableReadLlmTimeoutMs),
-      temperature: getTableReadLlmTemperatureSetting(s.tableReadLlmTemperature),
-      maxCompletion,
-      reasoningPreset,
-      reasoningEffort,
-      reasoningBudgetTokens,
-      reasoningControls,
-      source: "table_read_llm",
-    };
-  }
-
-  function tableReadLLMConfigured() {
-    const cfg = resolveEffectiveTableReadLLMConfig();
-    return !!(cfg.endpoint && cfg.apiKey && cfg.model);
-  }
-
-  function tableReadBuildLLMRequest() {
-    const cfg = resolveEffectiveTableReadLLMConfig();
-    const req = {
-      endpoint: cfg.endpoint,
-      api_key: cfg.apiKey,
-      model: cfg.model,
-      provider: cfg.provider,
-      max_tokens: cfg.maxCompletion,
-      max_completion_tokens: cfg.maxCompletion,
-      temperature: cfg.temperature,
-      timeout_ms: cfg.timeoutMs,
-      source: cfg.source,
-    };
-    applyReasoningFieldsToPayload(req, cfg.reasoningControls, cfg.reasoningPreset, cfg.reasoningEffort, cfg.reasoningBudgetTokens);
-    return req;
-  }
-
-  async function loadTableReadEntities(options = {}) {
-    await tableReadResolveSessionDefaults();
-    if (options.readForm !== false) tableReadHydrateFormFromDom();
-    const sid = tableReadCurrentSourceSessionId();
-    if (!sid) {
-      tableReadSetStatus("fail", t("persona.status.sourceRequired"));
-      tableReadRefreshUI();
-      return null;
-    }
-    _tableReadState.loading = true;
-    tableReadSetStatus("running", t("tableRead.status.loading"));
-    tableReadRefreshUI();
-    const params = new URLSearchParams();
-    params.set("source_chat_session_id", sid);
-    const data = await bridgeFetch("/subjective-entity-memories/entities?" + params.toString(), {
-      method: "GET",
-      timeoutMs: getRequestTimeoutSettingMs(),
-    });
-    _tableReadState.loading = false;
-    if (!data || data.status !== "ok") {
-      tableReadSetStatus("fail", formatBridgeFailureForDisplay("/subjective-entity-memories/entities", t("tableRead.status.fail")));
-      tableReadRefreshUI();
-      return null;
-    }
-    _tableReadState.entityBundles = tableReadMergeEntityBundles(Array.isArray(data.items) ? data.items : []);
-    _tableReadState.selectedEntityKeys = _tableReadState.entityBundles.map(tableReadBundleKey);
-    tableReadSetStatus(
-      _tableReadState.entityBundles.length ? "ok" : "unknown",
-      _tableReadState.entityBundles.length
-        ? tf("tableRead.status.loadedEntities", { n: _tableReadState.entityBundles.length })
-        : t("tableRead.status.noEntities")
-    );
-    tableReadRefreshUI();
-    return data;
-  }
-
-  async function runTableReadDraft() {
-    await tableReadResolveSessionDefaults();
-    tableReadHydrateFormFromDom();
-    if (!tableReadSelectedBundles().length) {
-      await loadTableReadEntities({ readForm: false });
-    }
-    _tableReadState.loading = true;
-    tableReadSetStatus("running", t("tableRead.status.loading"));
-    tableReadRefreshUI();
-    const data = await bridgeFetch("/table-read/draft", {
-      method: "POST",
-      body: tableReadBuildRequest(false),
-      timeoutMs: getRequestTimeoutSettingMs(),
-    });
-    _tableReadState.loading = false;
-    if (!data || data.status !== "ok") {
-      tableReadSetStatus("fail", formatBridgeFailureForDisplay("/table-read/draft", t("tableRead.status.fail")));
-      tableReadRefreshUI();
-      return null;
-    }
-    _tableReadState.draftResult = data;
-    _tableReadState.simulateResult = null;
-    _tableReadState.reviewResult = null;
-    _tableReadState.reviseResult = null;
-    const agents = data && data.table_read && Array.isArray(data.table_read.agents) ? data.table_read.agents : [];
-    tableReadSetStatus("ok", tf("tableRead.status.draftOk", { n: agents.length }));
-    tableReadRefreshUI();
-    return data;
-  }
-
-  async function runTableReadSimulate() {
-    if (!tableReadLLMConfigured()) {
-      tableReadSetStatus("fail", t("tableRead.note.llmMissing"));
-      tableReadRefreshUI();
-      return null;
-    }
-    await tableReadResolveSessionDefaults();
-    tableReadHydrateFormFromDom();
-    if (!tableReadSelectedBundles().length) {
-      await loadTableReadEntities({ readForm: false });
-    }
-    _tableReadState.loading = true;
-    tableReadSetStatus("running", t("tableRead.status.loading"));
-    tableReadRefreshUI();
-    const data = await bridgeFetch("/table-read/simulate", {
-      method: "POST",
-      body: tableReadBuildRequest(true),
-      timeoutMs: getRequestTimeoutSettingMs(),
-    });
-    _tableReadState.loading = false;
-    if (!data || data.status !== "ok") {
-      tableReadSetStatus("fail", formatBridgeFailureForDisplay("/table-read/simulate", t("tableRead.status.fail")));
-      tableReadRefreshUI();
-      return null;
-    }
-    _tableReadState.simulateResult = data;
-    _tableReadState.reviewResult = null;
-    _tableReadState.reviseResult = null;
-    tableReadSetStatus("ok", t("tableRead.status.simulateOk"));
-    tableReadRefreshUI();
-    return data;
-  }
-
-  async function runTableReadReview() {
-    if (!tableReadLLMConfigured()) {
-      tableReadSetStatus("fail", t("tableRead.note.llmMissing"));
-      tableReadRefreshUI();
-      return null;
-    }
-    await tableReadResolveSessionDefaults();
-    tableReadHydrateFormFromDom();
-    if (!String(_tableReadState.assistantDraft || "").trim()) {
-      tableReadSetStatus("fail", t("tableRead.placeholder.assistantDraft"));
-      tableReadRefreshUI();
-      return null;
-    }
-    if (!tableReadSelectedBundles().length) {
-      await loadTableReadEntities({ readForm: false });
-    }
-    _tableReadState.loading = true;
-    tableReadSetStatus("running", t("tableRead.status.loading"));
-    tableReadRefreshUI();
-    const data = await bridgeFetch("/table-read/review", {
-      method: "POST",
-      body: tableReadBuildRequest(true, "review"),
-      timeoutMs: getRequestTimeoutSettingMs(),
-    });
-    _tableReadState.loading = false;
-    if (!data || data.status !== "ok") {
-      tableReadSetStatus("fail", formatBridgeFailureForDisplay("/table-read/review", t("tableRead.status.fail")));
-      tableReadRefreshUI();
-      return null;
-    }
-    _tableReadState.reviewResult = data;
-    _tableReadState.simulateResult = null;
-    _tableReadState.reviseResult = null;
-    tableReadSetStatus("ok", t("tableRead.status.reviewOk"));
-    tableReadRefreshUI();
-    return data;
-  }
-
-  async function runTableReadRevise() {
-    if (!tableReadLLMConfigured()) {
-      tableReadSetStatus("fail", t("tableRead.note.llmMissing"));
-      tableReadRefreshUI();
-      return null;
-    }
-    await tableReadResolveSessionDefaults();
-    tableReadHydrateFormFromDom();
-    if (!String(_tableReadState.assistantDraft || "").trim()) {
-      tableReadSetStatus("fail", t("tableRead.placeholder.assistantDraft"));
-      tableReadRefreshUI();
-      return null;
-    }
-    if (!tableReadSelectedBundles().length) {
-      await loadTableReadEntities({ readForm: false });
-    }
-    _tableReadState.loading = true;
-    tableReadSetStatus("running", t("tableRead.status.loading"));
-    tableReadRefreshUI();
-    const data = await bridgeFetch("/table-read/revise", {
-      method: "POST",
-      body: tableReadBuildRequest(true, "revise"),
-      timeoutMs: getRequestTimeoutSettingMs(),
-    });
-    _tableReadState.loading = false;
-    if (!data || data.status !== "ok") {
-      tableReadSetStatus("fail", formatBridgeFailureForDisplay("/table-read/revise", t("tableRead.status.fail")));
-      tableReadRefreshUI();
-      return null;
-    }
-    _tableReadState.reviseResult = data;
-    _tableReadState.simulateResult = null;
-    tableReadSetStatus("ok", t("tableRead.status.reviseOk"));
-    tableReadRefreshUI();
-    return data;
-  }
-
-  function renderTableReadSessionSelect() {
-    const selected = tableReadCurrentSourceSessionId();
-    const options = personaCapsuleSessionOptions(selected, selected);
-    const optionHtml = options.length
-      ? options.map((option) => {
-          const sid = String(option.id || "");
-          return '<option value="' + escapeAttr(sid) + '"' + (sid === selected ? " selected" : "") + '>' + escapeAttr(option.label || shortenSessionIdForDisplay(sid)) + '</option>';
-        }).join("")
-      : '<option value="">' + escapeAttr(t("persona.placeholder.sourceSession")) + '</option>';
-    return '<div class="mo-row"><label>' + escapeAttr(t("tableRead.field.session")) + '</label><select id="mo-table-read-session">' + optionHtml + '</select></div>';
-  }
-
-  function renderTableReadEntities() {
-    const bundles = Array.isArray(_tableReadState.entityBundles) ? _tableReadState.entityBundles : [];
-    if (!bundles.length) return '<div class="mo-note">' + escapeAttr(t("tableRead.empty.entities")) + '</div>';
-    const selected = new Set((_tableReadState.selectedEntityKeys || []).filter(Boolean));
-    return bundles.map((item) => {
-      const key = tableReadBundleKey(item);
-      const checked = !selected.size || selected.has(key);
-      const privateLane = String(item.default_prepare_lane || "") === "character_private_recollection" || item.secret_guard_required === true;
-      const title = String(item.owner_entity_name || item.owner_entity_key || "");
-      const role = String(item.owner_entity_role || "participant");
-      const count = Number(item.memory_count || 0);
-      return '<label class="mo-dash-row" style="align-items:flex-start;cursor:pointer">' +
-        '<input type="checkbox" data-table-read-entity-key="' + escapeAttr(key) + '"' + (checked ? " checked" : "") + ' style="margin-top:3px">' +
-        '<span class="mo-dash-label">' + escapeAttr(title || key) + '<br><span class="mo-note">' + escapeAttr(role) + ' · ' + escapeAttr(privateLane ? t("tableRead.label.private") : t("tableRead.label.playerKnown")) + '</span></span>' +
-        '<span class="mo-dash-value">' + escapeAttr(tf("tableRead.label.memoryCount", { n: count })) + '<br><span class="mo-note">' + escapeAttr(truncPreview(item.latest_memory_text || "", 90)) + '</span></span>' +
-      '</label>';
-    }).join("");
-  }
-
-  function tableReadReviewParsed(review) {
-    if (!review || typeof review !== "object") return null;
-    if (review.parsed_json && typeof review.parsed_json === "object") return review.parsed_json;
-    const raw = String(review.content || "").trim();
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? parsed : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function tableReadReviewArray(value) {
-    if (!Array.isArray(value)) return [];
-    return value.filter((item) => item !== null && item !== undefined && String(typeof item === "object" ? JSON.stringify(item) : item).trim());
-  }
-
-  function tableReadReviewText(value, fallback = "") {
-    if (value === null || value === undefined) return fallback;
-    if (typeof value === "boolean") return value ? "true" : "false";
-    if (typeof value === "number") return String(value);
-    if (typeof value === "string") return value.trim() || fallback;
-    try {
-      return JSON.stringify(value);
-    } catch (_) {
-      return fallback;
-    }
-  }
-
-  function tableReadReviewSeverityClass(value, options = {}) {
-    if (typeof value === "boolean") {
-      return value
-        ? (options.trueIsBad ? "mo-tr-issue-bad" : "mo-tr-issue-ok")
-        : (options.trueIsBad ? "mo-tr-issue-ok" : "mo-tr-issue-bad");
-    }
-    const raw = String(value || "").toLowerCase();
-    if (/(major|high|true|leak|bad|low|fail|false|regenerate|큰|심각|낮|노출)/.test(raw)) return "mo-tr-issue-bad";
-    if (/(medium|minor|warn|caution|보통|주의|약간)/.test(raw)) return "mo-tr-issue-warn";
-    if (/(ok|none|good|pass|true|없|정상|높)/.test(raw)) return "mo-tr-issue-ok";
-    return "mo-tr-issue-neutral";
-  }
-
-  function tableReadReviewVerdictClass(verdict) {
-    const raw = String(verdict || "").toLowerCase();
-    if (raw.includes("accept")) return "mo-tr-verdict-ok";
-    if (raw.includes("minor")) return "mo-tr-verdict-warn";
-    if (raw.includes("major")) return "mo-tr-verdict-bad";
-    if (raw.includes("regenerate")) return "mo-tr-verdict-bad";
-    return "mo-tr-verdict-neutral";
-  }
-
-  function renderTableReadReviewMetric(label, value, options = {}) {
-    const display = tableReadReviewText(value, "-");
-    return '<span class="mo-tr-metric ' + tableReadReviewSeverityClass(value, options) + '"><b>' + escapeAttr(label) + '</b>' + escapeAttr(display) + '</span>';
-  }
-
-  function renderTableReadReviewScript(parsed) {
-    if (!parsed || typeof parsed !== "object") return "";
-    const dialogue = tableReadReviewArray(parsed.review_dialogue);
-    let lines = dialogue.map((item) => {
-      const speaker = tableReadReviewText(item && typeof item === "object" ? (item.speaker || item.entity_name) : "", "Table Read");
-      const line = tableReadReviewText(item && typeof item === "object" ? item.line : item, "");
-      if (!line) return "";
-      return '<div class="mo-tr-script-line"><span class="mo-tr-speaker">' + escapeAttr(speaker) + '</span><span class="mo-tr-line">' + escapeAttr(line) + '</span></div>';
-    }).filter(Boolean);
-    if (!lines.length) {
-      const reviews = tableReadReviewArray(parsed.character_reviews);
-      lines.push('<div class="mo-tr-script-line"><span class="mo-tr-speaker">Moderator</span><span class="mo-tr-line">' + escapeAttr(t("tableRead.label.verdict")) + ': ' + escapeAttr(tableReadReviewText(parsed.verdict, "unknown")) + '</span></div>');
-      reviews.forEach((review) => {
-        const speaker = tableReadReviewText(review && review.entity_name, "Character");
-        const concern = tableReadReviewText(review && review.concern, t("tableRead.label.noIssues"));
-        lines.push('<div class="mo-tr-script-line"><span class="mo-tr-speaker">' + escapeAttr(speaker) + '</span><span class="mo-tr-line">' + escapeAttr(concern) + '</span></div>');
-      });
-      const protectedItems = tableReadReviewArray(parsed.protected_reveals);
-      if (protectedItems.length) {
-        lines.push('<div class="mo-tr-script-line"><span class="mo-tr-speaker">Editor</span><span class="mo-tr-line">' + escapeAttr(t("tableRead.section.protectedReveals")) + ': ' + escapeAttr(protectedItems.map((x) => tableReadReviewText(x)).join(" / ")) + '</span></div>');
-      }
-      const notes = tableReadReviewArray(parsed.revision_notes);
-      if (notes.length) {
-        lines.push('<div class="mo-tr-script-line"><span class="mo-tr-speaker">Director</span><span class="mo-tr-line">' + escapeAttr(notes.map((x) => tableReadReviewText(x)).join(" ")) + '</span></div>');
-      }
-    }
-    return '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.reviewScript")) + '</div><div class="mo-tr-script">' + lines.join("") + '</div></div>';
-  }
-
-  function renderTableReadReviewStructured(review) {
-    const parsed = tableReadReviewParsed(review);
-    if (!parsed) {
-      return '<div class="mo-section" style="margin-top:10px">TR-Review-1</div><div class="mo-note">read-only · replaces_output=false</div><div class="mo-ex-json">' + escapeAttr(truncPreview(review.content || "", 1800)) + '</div>';
-    }
-    const verdict = tableReadReviewText(parsed.verdict, "unknown");
-    const safe = parsed.safe_to_publish === true;
-    const continuity = parsed.story_continuity && typeof parsed.story_continuity === "object" ? parsed.story_continuity : {};
-    const reviews = tableReadReviewArray(parsed.character_reviews);
-    const protectedItems = tableReadReviewArray(parsed.protected_reveals);
-    const notes = tableReadReviewArray(parsed.revision_notes);
-    const characterHtml = reviews.length
-      ? reviews.map((review) => {
-          const name = tableReadReviewText(review.entity_name, "Character");
-          return '<div class="mo-tr-character-card">' +
-            '<div class="mo-tr-character-title">' + escapeAttr(name) + '</div>' +
-            '<div class="mo-tr-metrics">' +
-              renderTableReadReviewMetric(t("tableRead.label.voiceFit"), review.voice_fit) +
-              renderTableReadReviewMetric(t("tableRead.label.knowledgeLeak"), review.knowledge_leak, { trueIsBad: true }) +
-              renderTableReadReviewMetric(t("tableRead.label.privateMemoryLeak"), review.private_memory_leak, { trueIsBad: true }) +
-              renderTableReadReviewMetric(t("tableRead.label.emotionFit"), review.emotion_fit) +
-            '</div>' +
-            '<div class="mo-tr-concern"><b>' + escapeAttr(t("tableRead.label.concern")) + '</b><br>' + escapeAttr(tableReadReviewText(review.concern, t("tableRead.label.noIssues"))) + '</div>' +
-          '</div>';
-        }).join("")
-      : '<div class="mo-note">' + escapeAttr(t("tableRead.label.noIssues")) + '</div>';
-    const protectedHtml = protectedItems.length
-      ? '<ul class="mo-tr-checklist">' + protectedItems.map((item) => '<li>' + escapeAttr(tableReadReviewText(item)) + '</li>').join("") + '</ul>'
-      : '<div class="mo-note">' + escapeAttr(t("tableRead.label.noIssues")) + '</div>';
-    const notesHtml = notes.length
-      ? '<ul class="mo-tr-checklist">' + notes.map((item) => '<li>' + escapeAttr(tableReadReviewText(item)) + '</li>').join("") + '</ul>'
-      : '<div class="mo-note">' + escapeAttr(t("tableRead.label.noIssues")) + '</div>';
-    const continuityHtml = '<div class="mo-tr-metrics">' +
-      renderTableReadReviewMetric("location", continuity.location_ok) +
-      renderTableReadReviewMetric("time", continuity.time_ok) +
-      renderTableReadReviewMetric("relationship", continuity.relationship_ok) +
-      renderTableReadReviewMetric("scene flow", continuity.scene_flow_ok) +
-    '</div><div class="mo-note">' + escapeAttr(tableReadReviewText(continuity.notes, "")) + '</div>';
-    return '<div class="mo-tr-review">' +
-      '<div class="mo-tr-review-head">' +
-        '<span class="mo-tr-verdict ' + tableReadReviewVerdictClass(verdict) + '">' + escapeAttr(t("tableRead.label.verdict")) + ': ' + escapeAttr(verdict) + '</span>' +
-        '<span class="mo-tr-safe ' + (safe ? "mo-tr-issue-ok" : "mo-tr-issue-bad") + '">' + escapeAttr(t("tableRead.label.safeToPublish")) + ': ' + escapeAttr(String(safe)) + '</span>' +
-        '<span class="mo-note">read-only · replaces_output=false</span>' +
-      '</div>' +
-      renderTableReadReviewScript(parsed) +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.characterReviews")) + '</div><div class="mo-tr-character-grid">' + characterHtml + '</div></div>' +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.protectedReveals")) + '</div>' + protectedHtml + '</div>' +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.revisionNotes")) + '</div>' + notesHtml + '</div>' +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.storyContinuity")) + '</div>' + continuityHtml + '</div>' +
-      '<details class="mo-tr-raw"><summary>Raw JSON</summary><div class="mo-ex-json">' + escapeAttr(JSON.stringify(parsed, null, 2)) + '</div></details>' +
-    '</div>';
-  }
-
-  function tableReadRevisionParsed(revision) {
-    return tableReadReviewParsed(revision);
-  }
-
-  function tableReadCurrentRevisionText() {
-    try {
-      const result = _tableReadState.reviseResult || null;
-      const revision = result && result.table_read && result.table_read.revision;
-      const parsed = tableReadRevisionParsed(revision);
-      return tableReadReviewText(parsed && parsed.revised_draft, "");
-    } catch (_) {
-      return "";
-    }
-  }
-
-  async function tableReadCopyText(text) {
-    const value = String(text || "");
-    if (!value.trim()) return false;
-    try {
-      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        await navigator.clipboard.writeText(value);
-        return true;
-      }
-    } catch (_) {
-      // Fall back below.
-    }
-    try {
-      const area = document.createElement("textarea");
-      area.value = value;
-      area.setAttribute("readonly", "readonly");
-      area.style.position = "fixed";
-      area.style.left = "-9999px";
-      document.body.appendChild(area);
-      area.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(area);
-      return !!ok;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  async function copyTableReadRevisedDraft() {
-    const ok = await tableReadCopyText(tableReadCurrentRevisionText());
-    tableReadSetStatus(ok ? "ok" : "fail", ok ? t("tableRead.status.copyOk") : t("tableRead.status.copyFail"));
-    tableReadRefreshUI();
-  }
-
-  function renderTableReadRevisionStructured(revision) {
-    const parsed = tableReadRevisionParsed(revision);
-    if (!parsed) {
-      return '<div class="mo-section" style="margin-top:10px">TR-Review-2</div><div class="mo-note">copy_only · auto_apply=false</div><div class="mo-ex-json">' + escapeAttr(truncPreview(revision.content || "", 1800)) + '</div>';
-    }
-    const verdict = tableReadReviewText(parsed.verdict, "unknown");
-    const strategy = tableReadReviewText(parsed.revision_strategy, "");
-    const revisedDraft = tableReadReviewText(parsed.revised_draft, "");
-    const notes = tableReadReviewArray(parsed.change_notes);
-    const risks = tableReadReviewArray(parsed.remaining_risks);
-    const protectedOk = parsed.protected_reveals_preserved === true;
-    const notesHtml = notes.length
-      ? '<ul class="mo-tr-checklist">' + notes.map((item) => '<li>' + escapeAttr(tableReadReviewText(item)) + '</li>').join("") + '</ul>'
-      : '<div class="mo-note">' + escapeAttr(t("tableRead.label.noIssues")) + '</div>';
-    const risksHtml = risks.length
-      ? '<ul class="mo-tr-checklist">' + risks.map((item) => '<li>' + escapeAttr(tableReadReviewText(item)) + '</li>').join("") + '</ul>'
-      : '<div class="mo-note">' + escapeAttr(t("tableRead.label.noIssues")) + '</div>';
-    return '<div class="mo-tr-review">' +
-      '<div class="mo-tr-review-head">' +
-        '<span class="mo-tr-verdict ' + tableReadReviewVerdictClass(verdict) + '">' + escapeAttr(t("tableRead.label.verdict")) + ': ' + escapeAttr(verdict) + '</span>' +
-        '<span class="mo-tr-safe ' + (protectedOk ? "mo-tr-issue-ok" : "mo-tr-issue-warn") + '">' + escapeAttr(t("tableRead.label.protectedPreserved")) + ': ' + escapeAttr(String(protectedOk)) + '</span>' +
-        '<span class="mo-note">copy_only · auto_apply=false</span>' +
-      '</div>' +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.revisionSuggestion")) + '</div>' +
-        (strategy ? '<div class="mo-tr-concern"><b>' + escapeAttr(t("tableRead.label.revisionStrategy")) + '</b><br>' + escapeAttr(strategy) + '</div>' : '') +
-        '<div class="mo-tr-revision-draft" aria-label="' + escapeAttr(t("tableRead.label.revisedDraft")) + '">' + escapeAttr(revisedDraft || tableReadReviewText(revision.content, "")) + '</div>' +
-        '<div class="mo-tr-revision-actions"><button class="mo-btn mo-btn-info" data-table-read-copy-revised="1">' + escapeAttr(t("tableRead.button.copyRevisedDraft")) + '</button></div>' +
-      '</div>' +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.label.changeNotes")) + '</div>' + notesHtml + '</div>' +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.label.remainingRisks")) + '</div>' + risksHtml + '</div>' +
-      '<details class="mo-tr-raw"><summary>Raw JSON</summary><div class="mo-ex-json">' + escapeAttr(JSON.stringify(parsed, null, 2)) + '</div></details>' +
-    '</div>';
-  }
-
-  function tableReadLiveTraceSnapshot() {
-    try {
-      const state = runtimeState && runtimeState.lastTableReadPolishDebug || {};
-      return state.snapshot && typeof state.snapshot === "object" ? state.snapshot : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function tableReadLiveTraceObjectLine(item, fallbackSpeaker) {
-    if (item && typeof item === "object" && !Array.isArray(item)) {
-      const stance = tableReadReviewText(item.stance || item.review_type || item.category || "", "");
-      const speaker = tableReadReviewText(item.speaker || item.entity_name || item.entity_key || fallbackSpeaker || "Table Read", "Table Read")
-        + (stance ? " · " + stance : "");
-      const line = tableReadReviewText(
-        item.comment || item.line || item.concern || item.safe_direction || item.desired_direction || item.applied_change || item.note || item.review || item.reason || item.issue,
-        "",
-      );
-      return { speaker, line };
-    }
-    return { speaker: fallbackSpeaker || "Table Read", line: tableReadReviewText(item, "") };
-  }
-
-  function renderTableReadLiveTraceList(title, items, options = {}) {
-    const arr = tableReadReviewArray(items);
-    if (!arr.length) return "";
-    const asChecklist = options.checklist === true;
-    if (asChecklist) {
-      return '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(title) + '</div><ul class="mo-tr-checklist">'
-        + arr.map((item) => '<li>' + escapeAttr(tableReadReviewText(item)) + '</li>').join("")
-        + '</ul></div>';
-    }
-    const lines = arr.map((item) => {
-      const row = tableReadLiveTraceObjectLine(item, options.fallbackSpeaker || "Table Read");
-      if (!row.line) return "";
-      return '<div class="mo-tr-script-line"><span class="mo-tr-speaker">' + escapeAttr(row.speaker) + '</span><span class="mo-tr-line">' + escapeAttr(row.line) + '</span></div>';
-    }).filter(Boolean);
-    if (!lines.length) return "";
-    return '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(title) + '</div><div class="mo-tr-script">' + lines.join("") + '</div></div>';
-  }
-
-  function renderTableReadLiveOutputTrace() {
-    const snap = tableReadLiveTraceSnapshot();
-    if (!snap) {
-      return '<div class="mo-settings-card"><div class="mo-section">' + escapeAttr(t("tableRead.section.liveTrace")) + '</div><div class="mo-note">' + escapeAttr(t("tableRead.live.empty")) + '</div></div>';
-    }
-    const outputCheck = snap.outputCheck || {};
-    const miniRead = snap.miniRead || {};
-    const enhanced = snap.enhanced || {};
-    const participants = Array.isArray(snap.participants) ? snap.participants : [];
-    const protectedItems = []
-      .concat(tableReadReviewArray(snap.protectedReveals))
-      .concat(tableReadReviewArray(outputCheck.protectedReveals))
-      .concat(tableReadReviewArray(miniRead.protectedReveals))
-      .concat(tableReadReviewArray(enhanced.protectedReveals));
-    const uniqueProtected = Array.from(new Set(protectedItems.map((item) => tableReadReviewText(item)).filter(Boolean))).slice(0, 10);
-    const verdict = tableReadReviewText(outputCheck.verdict, snap.changed ? "enhanced" : "accept");
-    const participantHtml = participants.length
-      ? '<div class="mo-tr-character-grid">' + participants.map((item) => {
-          const name = tableReadReviewText(item.entity_name || item.entity_key, "Entity");
-          const role = tableReadReviewText(item.role, "participant");
-          const perspective = tableReadReviewText(item.perspective, "");
-          return '<div class="mo-tr-character-card"><div class="mo-tr-character-title">' + escapeAttr(name) + '</div>'
-            + '<div class="mo-note">' + escapeAttr(role) + '</div>'
-            + (perspective ? '<div class="mo-tr-concern">' + escapeAttr(perspective) + '</div>' : '')
-            + '</div>';
-        }).join("") + '</div>'
-      : '<div class="mo-note">' + escapeAttr(t("tableRead.empty.entities")) + '</div>';
-    const hasMiniReadTrace = !!(snap.miniRead && typeof snap.miniRead === "object");
-    const discussionHtml = renderTableReadLiveTraceList(t("tableRead.section.liveDiscussion"), miniRead.miniDiscussion, { fallbackSpeaker: "Cast" })
-      || renderTableReadLiveTraceList(t("tableRead.section.liveDiscussion"), miniRead.participantNotes, { fallbackSpeaker: "Cast" });
-    const conclusionItems = []
-      .concat(tableReadReviewArray(miniRead.outputEnhanceNotes))
-      .concat(tableReadReviewArray(enhanced.issuesRepaired))
-      .concat(tableReadReviewArray(snap.issues));
-    const moderatorSummary = tableReadReviewText(miniRead.moderatorSummary, "");
-    const envelope = snap.protectedEnvelope || {};
-    const meta = [
-      "Session: " + shortenSessionIdForDisplay(snap.chatSessionId || "") + " / turn " + String(snap.turnIndex || "?"),
-      String(snap.originalLength || 0) + "→" + String(snap.finalLength || 0) + " chars",
-      envelope.protectedCount ? t("tableRead.live.protectedEnvelope") + " " + String(envelope.protectedCount) : "",
-      snap.syntheticAfterRequest ? "storage path" : "",
-    ].filter(Boolean).join(" · ");
-    const originalFull = String(snap.originalFull || snap.originalPreview || "");
-    const finalFull = String(snap.finalFull || snap.finalPreview || "");
-    const outputPreview = '<div class="mo-tr-output-grid">'
-      + '<div class="mo-preview-block mo-preview-debug mo-tr-full-output"><div class="mo-preview-title">' + escapeAttr(t("tableRead.live.original")) + '</div><div class="mo-note">' + escapeAttr(String(originalFull.length || 0) + " chars") + '</div><div class="mo-preview-text mo-tr-full-output-text">' + escapeAttr(originalFull) + '</div></div>'
-      + '<div class="mo-preview-block mo-preview-debug mo-tr-full-output"><div class="mo-preview-title">' + escapeAttr(t("tableRead.live.final")) + '</div><div class="mo-note">' + escapeAttr(String(finalFull.length || 0) + " chars") + '</div><div class="mo-preview-text mo-tr-full-output-text">' + escapeAttr(finalFull) + '</div></div>'
-      + '</div>';
-    return '<div class="mo-settings-card">' +
-      '<div class="mo-section">' + escapeAttr(t("tableRead.section.liveTrace")) + '</div>' +
-      '<div class="mo-tr-review-head">' +
-        '<span class="mo-tr-verdict ' + tableReadReviewVerdictClass(verdict) + '">' + escapeAttr(t("tableRead.label.verdict")) + ': ' + escapeAttr(verdict) + '</span>' +
-        '<span class="mo-tr-safe ' + (snap.changed ? "mo-tr-issue-warn" : "mo-tr-issue-ok") + '">' + escapeAttr(snap.changed ? t("tableRead.live.changed") : t("tableRead.live.kept")) + '</span>' +
-        '<span class="mo-note">' + escapeAttr(meta) + '</span>' +
-      '</div>' +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.liveParticipants")) + '</div>' + participantHtml + '</div>' +
-      (discussionHtml || '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.liveDiscussion")) + '</div><div class="mo-note">' + escapeAttr(t("tableRead.live.dialogueSkipped")) + '</div></div>') +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.liveConclusion")) + '</div>' +
-        (moderatorSummary ? '<div class="mo-tr-concern"><b>' + escapeAttr(t("tableRead.live.moderator")) + '</b><br>' + escapeAttr(moderatorSummary) + '</div>' : '') +
-        (conclusionItems.length ? '<ul class="mo-tr-checklist">' + Array.from(new Set(conclusionItems.map((item) => tableReadReviewText(item)).filter(Boolean))).slice(0, 10).map((item) => '<li>' + escapeAttr(item) + '</li>').join("") + '</ul>' : '<div class="mo-note">' + escapeAttr(snap.changed ? t("tableRead.label.noIssues") : t("tableRead.live.acceptedOriginal")) + '</div>') +
-        (snap.fallbackReason || enhanced.fallbackReason || miniRead.fallbackReason || outputCheck.fallbackReason ? '<div class="mo-note">fallback: ' + escapeAttr(snap.fallbackReason || enhanced.fallbackReason || miniRead.fallbackReason || outputCheck.fallbackReason) + '</div>' : '') +
-      '</div>' +
-      (uniqueProtected.length ? renderTableReadLiveTraceList(t("tableRead.section.protectedReveals"), uniqueProtected, { checklist: true }) : '') +
-      '<div class="mo-tr-review-section"><div class="mo-section">' + escapeAttr(t("tableRead.section.liveOutputChange")) + '</div>' + outputPreview + '</div>' +
-    '</div>';
-  }
-
-  function renderTableReadResultBlock(result, title) {
-    if (!result || typeof result !== "object") return "";
-    const table = result.table_read || {};
-    const agents = Array.isArray(table.agents) ? table.agents : [];
-    const sim = table.simulation && typeof table.simulation === "object" ? table.simulation : null;
-    const review = table.review && typeof table.review === "object" ? table.review : null;
-    const revision = table.revision && typeof table.revision === "object" ? table.revision : null;
-    const agentHtml = agents.length
-      ? agents.map((agent) => {
-          const policy = agent.private_memory_policy || {};
-          const lane = String(policy.lane || "");
-          return '<div class="mo-dash-row" style="align-items:flex-start"><span class="mo-dot ' + (policy.reveal_to_player === false ? 'mo-dot-warn' : 'mo-dot-ok') + '"></span><span class="mo-dash-label">' + escapeAttr(agent.entity_name || agent.entity_key || "agent") + '</span><span class="mo-dash-value">' + escapeAttr(lane) + ' · ' + escapeAttr(tf("tableRead.label.memoryCount", { n: agent.memory_count || 0 })) + '</span></div>';
-        }).join("")
-      : '<div class="mo-note">' + escapeAttr(t("tableRead.empty.result")) + '</div>';
-    const simHtml = sim
-      ? '<div class="mo-section" style="margin-top:10px">TR-2</div><div class="mo-ex-json">' + escapeAttr(truncPreview(sim.content || JSON.stringify(sim.parsed_json || {}), 1600)) + '</div>'
-      : "";
-    const reviewHtml = review ? renderTableReadReviewStructured(review) : "";
-    const revisionHtml = revision ? renderTableReadRevisionStructured(revision) : "";
-    return '<div class="mo-settings-card"><div class="mo-section">' + escapeAttr(title) + '</div>' + agentHtml + simHtml + reviewHtml + revisionHtml + '</div>';
-  }
-
-  function renderTableReadLlmSettingsPanel(s = settings) {
-    return '<div class="mo-llm-panel mo-table-read-llm-panel">' +
-      '<div class="mo-section">' + escapeAttr(t("settings.section.tableReadLlm")) + '</div>' +
-      '<div class="mo-section-desc">' + t('settings.section.tableReadLlm.desc').replace(/\n/g,'<br>') + '</div>' +
-      '<div class="mo-llm-section">' +
-        '<div class="mo-row">' +
-          '<label id="mo-tableReadLlmApiKeyLabel">API Key</label>' +
-          '<input type="password" id="mo-tableReadLlmApiKey" value="' + escapeAttr(s.tableReadLlmApiKey) + '" placeholder="' + escapeAttr(t('settings.placeholder.sameAsMain')) + '" autocomplete="off">' +
-          '<button type="button" class="mo-btn-toggle" data-target="mo-tableReadLlmApiKey">👁</button>' +
-        '</div>' +
-        '<div class="mo-row">' +
-          '<label>Provider</label>' +
-          '<select id="mo-tableReadLlmProvider">' +
-            '<option value=""' + (!s.tableReadLlmProvider ? " selected" : "") + '>' + escapeAttr(t('settings.placeholder.sameAsMain')) + '</option>' +
-            '<option value="openai"' + (s.tableReadLlmProvider === "openai" ? " selected" : "") + '>OpenAI</option>' +
-            '<option value="claude"' + (s.tableReadLlmProvider === "claude" ? " selected" : "") + '>Claude</option>' +
-            '<option value="gemini"' + (s.tableReadLlmProvider === "gemini" ? " selected" : "") + '>Gemini</option>' +
-            '<option value="openrouter"' + (s.tableReadLlmProvider === "openrouter" ? " selected" : "") + '>OpenRouter</option>' +
-            '<option value="vertex"' + (s.tableReadLlmProvider === "vertex" ? " selected" : "") + '>Vertex</option>' +
-            '<option value="copilot"' + (s.tableReadLlmProvider === "copilot" ? " selected" : "") + '>Copilot</option>' +
-            '<option value="ollama"' + (s.tableReadLlmProvider === "ollama" ? " selected" : "") + '>Ollama</option>' +
-            '<option value="custom"' + (s.tableReadLlmProvider === "custom" ? " selected" : "") + '>Custom</option>' +
-          '</select>' +
-        '</div>' +
-        '<div class="mo-row">' +
-          '<label id="mo-tableReadLlmEndpointLabel">Endpoint</label>' +
-          '<input type="text" id="mo-tableReadLlmEndpoint" value="' + escapeAttr(s.tableReadLlmEndpoint) + '" placeholder="' + escapeAttr(t('settings.placeholder.sameAsMain')) + '">' +
-          '<small id="mo-tableReadLlmVertexHint" style="color:#9aa8c7;font-size:11px;"></small>' +
-        '</div>' +
-        '<div class="mo-row">' +
-          '<label>Model</label>' +
-          '<input type="text" id="mo-tableReadLlmModel" value="' + escapeAttr(s.tableReadLlmModel) + '" placeholder="예: gpt-4o-mini">' +
-        '</div>' +
-        '<div class="mo-row mo-range-row">' +
-          '<label>Timeout (ms)</label>' +
-          '<input type="number" id="mo-tableReadLlmTimeoutMs" value="' + escapeAttr(s.tableReadLlmTimeoutMs ?? 90000) + '" min="5000" max="300000" step="5000">' +
-          '<input class="mo-range" type="range" id="mo-tableReadLlmTimeoutMsRange" data-sync-input="mo-tableReadLlmTimeoutMs" value="' + escapeAttr(s.tableReadLlmTimeoutMs ?? 90000) + '" min="5000" max="300000" step="5000">' +
-        '</div>' +
-        '<div class="mo-row mo-range-row">' +
-          '<label>' + escapeAttr(t('settings.label.tableReadTemp')) + '</label>' +
-          '<input type="number" id="mo-tableReadLlmTemperature" value="' + escapeAttr(s.tableReadLlmTemperature ?? 0.3) + '" min="0" max="2" step="0.1">' +
-          '<input class="mo-range" type="range" id="mo-tableReadLlmTemperatureRange" data-sync-input="mo-tableReadLlmTemperature" value="' + escapeAttr(s.tableReadLlmTemperature ?? 0.3) + '" min="0" max="2" step="0.1">' +
-        '</div>' +
-        '<div class="mo-row">' +
-          '<label>' + escapeAttr(t('settings.label.tableReadReasoningPreset')) + '</label>' +
-          '<select id="mo-tableReadLlmReasoningPreset">' +
-            '<option value="auto"' + ((s.tableReadLlmReasoningPreset || "auto") === "auto" ? " selected" : "") + '>auto</option>' +
-            '<option value="gpt"' + (s.tableReadLlmReasoningPreset === "gpt" ? " selected" : "") + '>gpt</option>' +
-            '<option value="gemini"' + (s.tableReadLlmReasoningPreset === "gemini" ? " selected" : "") + '>gemini</option>' +
-            '<option value="claude"' + (s.tableReadLlmReasoningPreset === "claude" ? " selected" : "") + '>claude</option>' +
-            '<option value="glm"' + (s.tableReadLlmReasoningPreset === "glm" ? " selected" : "") + '>glm</option>' +
-            '<option value="custom"' + (s.tableReadLlmReasoningPreset === "custom" ? " selected" : "") + '>custom</option>' +
-          '</select>' +
-          '<small style="color:#888;font-size:11px;">' + escapeAttr(t('settings.hint.reasoningPreset')) + '</small>' +
-        '</div>' +
-        '<div class="mo-row">' +
-          '<label>Reasoning Guide</label>' +
-          '<div id="mo-tableReadLlmReasoningGuide" style="font-size:12px;color:#9bb2ff;line-height:1.4"></div>' +
-        '</div>' +
-        '<div class="mo-row" id="mo-tableReadLlmReasoningEffortRow">' +
-          '<label id="mo-tableReadLlmReasoningEffortLabel">' + escapeAttr(t('settings.label.tableReadReasoningEffort')) + '</label>' +
-          '<select id="mo-tableReadLlmReasoningEffort">' +
-            '<option value="none"' + ((s.tableReadLlmReasoningEffort || "none") === "none" ? " selected" : "") + '>none</option>' +
-            '<option value="low"' + (s.tableReadLlmReasoningEffort === "low" ? " selected" : "") + '>low</option>' +
-            '<option value="medium"' + (s.tableReadLlmReasoningEffort === "medium" ? " selected" : "") + '>medium</option>' +
-            '<option value="high"' + (s.tableReadLlmReasoningEffort === "high" ? " selected" : "") + '>high</option>' +
-            '<option value="enable"' + (s.tableReadLlmReasoningEffort === "enable" ? " selected" : "") + '>enable</option>' +
-            '<option value="disable"' + (s.tableReadLlmReasoningEffort === "disable" ? " selected" : "") + '>disable</option>' +
-          '</select>' +
-          '<small id="mo-tableReadLlmReasoningEffortHint" style="color:#888;font-size:11px;">' + escapeAttr(t('settings.hint.reasoningEffort')) + '</small>' +
-        '</div>' +
-        '<div class="mo-row" id="mo-tableReadLlmReasoningBudgetTokensRow">' +
-          '<label id="mo-tableReadLlmReasoningBudgetTokensLabel">Reasoning Budget Tokens</label>' +
-          '<input type="number" id="mo-tableReadLlmReasoningBudgetTokens" value="' + escapeAttr(s.tableReadLlmReasoningBudgetTokens ?? 0) + '" min="0" max="131072" step="1">' +
-          '<small id="mo-tableReadLlmReasoningBudgetTokensHint" style="color:#888;font-size:11px;">Gemini/Claude/Custom에서 토큰 예산으로 사용됩니다.</small>' +
-        '</div>' +
-        '<div class="mo-row mo-range-row">' +
-          '<label>' + escapeAttr(t('settings.label.tableReadMaxCompletionTokens')) + '</label>' +
-          '<input type="number" id="mo-tableReadLlmMaxCompletionTokens" value="' + escapeAttr(s.tableReadLlmMaxCompletionTokens ?? 1400) + '" min="1" max="128000" step="1">' +
-          '<input class="mo-range" type="range" id="mo-tableReadLlmMaxCompletionTokensRange" data-sync-input="mo-tableReadLlmMaxCompletionTokens" value="' + escapeAttr(s.tableReadLlmMaxCompletionTokens ?? 1400) + '" min="1" max="128000" step="1">' +
-        '</div>' +
-        '<div class="mo-inline-actions">' +
-          '<button type="button" class="mo-btn mo-btn-info" id="mo-test-call-table-read">' + escapeAttr(t('settings.btn.testTableReadCall')) + '</button>' +
-        '</div>' +
-        '<div id="mo-table-read-llm-test-result"></div>' +
-      '</div>' +
-    '</div>';
-  }
-
-  function renderTableReadSection() {
-    const state = _tableReadState;
-    if (!_timelineState.sessionsLoading && (!Array.isArray(_timelineState.sessions) || !_timelineState.sessions.length)) {
-      tableReadResolveSessionDefaults().then(() => {
-        if (_settingsActiveTab === "table_read") tableReadRefreshUI();
-      }).catch(function() {});
-    }
-    const statusType = state.status === "ok" ? "ok" : state.status === "running" ? "wait" : state.status === "fail" ? "fail" : "unknown";
-    return '<div class="mo-table-read-panel">' +
-      '<div class="mo-section">' + escapeAttr(t("tableRead.title")) + '</div>' +
-      '<div class="mo-status mo-status-' + escapeAttr(statusType) + '">' + escapeAttr(state.message || t("tableRead.status.idle")) + '</div>' +
-      '<div class="mo-table-read-layout">' +
-        '<div class="mo-table-read-left">' +
-          renderTableReadLlmSettingsPanel(settings) +
-        '</div>' +
-        '<div class="mo-table-read-right">' +
-          '<div class="mo-settings-card">' +
-            renderTableReadSessionSelect() +
-            '<div class="mo-inline-actions">' +
-              '<button class="mo-btn mo-btn-info" id="mo-table-read-load"' + (state.loading ? " disabled" : "") + '>' + escapeAttr(t("tableRead.button.loadEntities")) + '</button>' +
-            '</div>' +
-          '</div>' +
-          '<div class="mo-settings-card">' +
-            '<div class="mo-section">' + escapeAttr(t("tableRead.section.entities")) + '</div>' +
-            renderTableReadEntities() +
-          '</div>' +
-        '</div>' +
-      '</div>' +
-      renderTableReadLiveOutputTrace() +
-    '</div>';
-  }
-
-  function attachTableReadEvents() {
-    const root = document.getElementById("mo-table-read-root") || document;
-    bindSettingsRangeSyncEvents(root);
-    syncSettingsRangesFromInputs(root);
-    bindPasswordToggleEvents(root);
-    const tableReadTestBtn = document.getElementById("mo-test-call-table-read");
-    if (tableReadTestBtn && tableReadTestBtn.dataset.tableReadTestBound !== "1") {
-      tableReadTestBtn.addEventListener("click", async () => {
-        const resultEl = document.getElementById("mo-table-read-llm-test-result") || document.getElementById("mo-test-result");
-        tableReadTestBtn.disabled = true;
-        try {
-          await runTableReadLlmConnectionTest(resultEl);
-        } finally {
-          tableReadTestBtn.disabled = false;
-        }
-      });
-      tableReadTestBtn.dataset.tableReadTestBound = "1";
-    }
-    const sessionSelect = document.getElementById("mo-table-read-session");
-    if (sessionSelect) sessionSelect.addEventListener("change", () => {
-      _tableReadState.sourceSessionId = String(sessionSelect.value || "").trim();
-      _tableReadState.entityBundles = [];
-      _tableReadState.selectedEntityKeys = [];
-      _tableReadState.draftResult = null;
-      _tableReadState.simulateResult = null;
-      _tableReadState.reviewResult = null;
-      _tableReadState.reviseResult = null;
-      tableReadRefreshUI();
-    });
-    const loadBtn = document.getElementById("mo-table-read-load");
-    if (loadBtn) loadBtn.addEventListener("click", () => loadTableReadEntities());
-    const draftBtn = document.getElementById("mo-table-read-draft");
-    if (draftBtn) draftBtn.addEventListener("click", () => runTableReadDraft());
-    const simulateBtn = document.getElementById("mo-table-read-simulate");
-    if (simulateBtn) simulateBtn.addEventListener("click", () => runTableReadSimulate());
-    const reviewBtn = document.getElementById("mo-table-read-review");
-    if (reviewBtn) reviewBtn.addEventListener("click", () => runTableReadReview());
-    const reviseBtn = document.getElementById("mo-table-read-revise");
-    if (reviseBtn) reviseBtn.addEventListener("click", () => runTableReadRevise());
-    document.querySelectorAll("[data-table-read-copy-revised]").forEach((btn) => {
-      btn.addEventListener("click", () => copyTableReadRevisedDraft());
     });
   }
 
@@ -50122,7 +48575,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         forkCopyCapture: "Fork/Copy Capture",
         sessionDeleteSync: t("dash.status.sessionDeleteSync"),
         activeChatBackfill: t("dash.status.activeChatBackfill"),
-        tableReadPolish: "Legacy Table Read Postprocess",
         personaCapsule: t("persona.tab"),
         completeTurn: t("dash.status.completeTurn"),
         maintenanceQueue: t("dash.status.maintenanceQueue"),
@@ -50507,89 +48959,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         </div>
       </div>
 
-      <template data-moved-table-read-llm-panel="table_read_tab">
-      <div class="mo-llm-panel mo-table-read-llm-panel">
-        <div class="mo-section-desc">${t('settings.section.tableReadLlm.desc').replace(/\n/g,'<br>')}</div>
-        <div class="mo-llm-section">
-          <div class="mo-row">
-            <label id="mo-tableReadLlmApiKeyLabel">API Key</label>
-            <input type="password" id="mo-tableReadLlmApiKey" value="${escapeAttr(s.tableReadLlmApiKey)}" placeholder="${t('settings.placeholder.sameAsMain')}" autocomplete="off">
-            <button type="button" class="mo-btn-toggle" data-target="mo-tableReadLlmApiKey">👁</button>
-          </div>
-          <div class="mo-row">
-            <label>Provider</label>
-            <select id="mo-tableReadLlmProvider">
-              <option value=""${!s.tableReadLlmProvider ? " selected" : ""}>${t('settings.placeholder.sameAsMain')}</option>
-              <option value="openai"${s.tableReadLlmProvider === "openai" ? " selected" : ""}>OpenAI</option>
-              <option value="claude"${s.tableReadLlmProvider === "claude" ? " selected" : ""}>Claude</option>
-              <option value="gemini"${s.tableReadLlmProvider === "gemini" ? " selected" : ""}>Gemini</option>
-              <option value="openrouter"${s.tableReadLlmProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
-              <option value="vertex"${s.tableReadLlmProvider === "vertex" ? " selected" : ""}>Vertex</option>
-              <option value="copilot"${s.tableReadLlmProvider === "copilot" ? " selected" : ""}>Copilot</option>
-              <option value="ollama"${s.tableReadLlmProvider === "ollama" ? " selected" : ""}>Ollama</option>
-              <option value="custom"${s.tableReadLlmProvider === "custom" ? " selected" : ""}>Custom</option>
-            </select>
-          </div>
-          <div class="mo-row">
-            <label id="mo-tableReadLlmEndpointLabel">Endpoint</label>
-            <input type="text" id="mo-tableReadLlmEndpoint" value="${escapeAttr(s.tableReadLlmEndpoint)}" placeholder="${t('settings.placeholder.sameAsMain')}">
-            <small id="mo-tableReadLlmVertexHint" style="color:#9aa8c7;font-size:11px;"></small>
-          </div>
-          <div class="mo-row">
-            <label>Model</label>
-            <input type="text" id="mo-tableReadLlmModel" value="${escapeAttr(s.tableReadLlmModel)}" placeholder="예: gpt-4o-mini">
-          </div>
-          <div class="mo-row mo-range-row">
-            <label>Timeout (ms)</label>
-            <input type="number" id="mo-tableReadLlmTimeoutMs" value="${s.tableReadLlmTimeoutMs ?? 90000}" min="5000" max="300000" step="5000">
-            <input class="mo-range" type="range" id="mo-tableReadLlmTimeoutMsRange" data-sync-input="mo-tableReadLlmTimeoutMs" value="${s.tableReadLlmTimeoutMs ?? 90000}" min="5000" max="300000" step="5000">
-          </div>
-          <div class="mo-row mo-range-row">
-            <label>${t('settings.label.tableReadTemp')}</label>
-            <input type="number" id="mo-tableReadLlmTemperature" value="${s.tableReadLlmTemperature ?? 0.3}" min="0" max="2" step="0.1">
-            <input class="mo-range" type="range" id="mo-tableReadLlmTemperatureRange" data-sync-input="mo-tableReadLlmTemperature" value="${s.tableReadLlmTemperature ?? 0.3}" min="0" max="2" step="0.1">
-          </div>
-          <div class="mo-row">
-            <label>${t('settings.label.tableReadReasoningPreset')}</label>
-            <select id="mo-tableReadLlmReasoningPreset">
-              <option value="auto"${(s.tableReadLlmReasoningPreset || "auto") === "auto" ? " selected" : ""}>auto</option>
-              <option value="gpt"${s.tableReadLlmReasoningPreset === "gpt" ? " selected" : ""}>gpt</option>
-              <option value="gemini"${s.tableReadLlmReasoningPreset === "gemini" ? " selected" : ""}>gemini</option>
-              <option value="claude"${s.tableReadLlmReasoningPreset === "claude" ? " selected" : ""}>claude</option>
-              <option value="glm"${s.tableReadLlmReasoningPreset === "glm" ? " selected" : ""}>glm</option>
-              <option value="custom"${s.tableReadLlmReasoningPreset === "custom" ? " selected" : ""}>custom</option>
-            </select>
-            <small style="color:#888;font-size:11px;">${t('settings.hint.reasoningPreset')}</small>
-          </div>
-          <div class="mo-row">
-            <label>Reasoning Guide</label>
-            <div id="mo-tableReadLlmReasoningGuide" style="font-size:12px;color:#9bb2ff;line-height:1.4"></div>
-          </div>
-          <div class="mo-row" id="mo-tableReadLlmReasoningEffortRow">
-            <label id="mo-tableReadLlmReasoningEffortLabel">${t('settings.label.tableReadReasoningEffort')}</label>
-            <select id="mo-tableReadLlmReasoningEffort">
-              <option value="none"${(s.tableReadLlmReasoningEffort || "none") === "none" ? " selected" : ""}>none</option>
-              <option value="low"${s.tableReadLlmReasoningEffort === "low" ? " selected" : ""}>low</option>
-              <option value="medium"${s.tableReadLlmReasoningEffort === "medium" ? " selected" : ""}>medium</option>
-              <option value="high"${s.tableReadLlmReasoningEffort === "high" ? " selected" : ""}>high</option>
-              <option value="enable"${s.tableReadLlmReasoningEffort === "enable" ? " selected" : ""}>enable</option>
-              <option value="disable"${s.tableReadLlmReasoningEffort === "disable" ? " selected" : ""}>disable</option>
-            </select>
-            <small id="mo-tableReadLlmReasoningEffortHint" style="color:#888;font-size:11px;">${t('settings.hint.reasoningEffort')}</small>
-          </div>
-          <div class="mo-row" id="mo-tableReadLlmReasoningBudgetTokensRow">
-            <label id="mo-tableReadLlmReasoningBudgetTokensLabel">Reasoning Budget Tokens</label>
-            <input type="number" id="mo-tableReadLlmReasoningBudgetTokens" value="${s.tableReadLlmReasoningBudgetTokens ?? 0}" min="0" max="131072" step="1">
-            <small id="mo-tableReadLlmReasoningBudgetTokensHint" style="color:#888;font-size:11px;">Gemini/Claude/Custom에서 토큰 예산으로 사용됩니다.</small>
-          </div>
-          <div class="mo-row mo-range-row">
-            <label>${t('settings.label.tableReadMaxCompletionTokens')}</label>
-            <input type="number" id="mo-tableReadLlmMaxCompletionTokens" value="${s.tableReadLlmMaxCompletionTokens ?? 1400}" min="1" max="128000" step="1">
-            <input class="mo-range" type="range" id="mo-tableReadLlmMaxCompletionTokensRange" data-sync-input="mo-tableReadLlmMaxCompletionTokens" value="${s.tableReadLlmMaxCompletionTokens ?? 1400}" min="1" max="128000" step="1">
-          </div>
-        </div>
-      </div>
-      </template>
     </div>
 
     <!-- ▸ 공통 설정 (Common) -->
@@ -51095,6 +49464,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       attachReferenceLibraryEvents();
       if (_settingsActiveTab === "reference") {
         if (_referenceLibraryState.works.length === 0) referenceLibraryLoadWorks().catch(() => {});
+        else if (_referenceLibraryState.panelView === "binding") referenceLibraryLoadBindings().catch(() => {});
         else referenceLibraryRefreshUI();
       }
 
@@ -51153,6 +49523,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         if (tab === "reference") {
           if (_referenceLibraryState.works.length === 0) {
             referenceLibraryLoadWorks().catch(() => {});
+          } else if (_referenceLibraryState.panelView === "binding") {
+            referenceLibraryLoadBindings().catch(() => {});
           } else {
             referenceLibraryRefreshUI();
           }

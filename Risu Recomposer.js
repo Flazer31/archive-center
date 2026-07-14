@@ -2,7 +2,7 @@
 //@display-name Risu Recomposer
 //@author recomposer
 //@api 3.0
-//@version 0.1.3
+//@version 0.1.5
 
 
 /*
@@ -29,7 +29,7 @@
     : (typeof risuai !== "undefined" ? risuai : null);
 
   const PLUGIN_ID = "risu_recomposer";
-  const VERSION = "0.1.3";
+  const VERSION = "0.1.5";
   const LOG_PREFIX = "[Recomposer]";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings_v1`;
   const TRACE_KEY = `${PLUGIN_ID}_trace_v1`;
@@ -68,7 +68,7 @@
       label: "Secret / POV Constraint Ledger",
       purpose: "Detect leaks of secrets, private thoughts, hidden narrator knowledge, system/meta text, or information the current POV character should not know. Rewrite the segment to enforce knowledge boundaries.",
       priority: 10,
-      default_prompt: "You are a Secret/POV Constraint specialist for roleplay.\n\nYou receive one mutable prose segment from a larger RP response.\nYour job: rewrite this segment so that no character reveals knowledge they should not have.\n\nRules:\n- The POV character must not narrate others' private thoughts.\n- Secrets, hidden identities, and private memories must not leak.\n- System/meta/prompt text must not appear in prose.\n- Preserve the scene's action and emotional beat.\n- Return a FULL replacement for this segment, not advice.\n\nReturn JSON:\n{\"role\":\"secret_pov_guard\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"voice\"]}]}",
+      default_prompt: "You are a Secret/POV Constraint specialist for roleplay.\n\nYou receive ALL mutable prose segments from a larger RP response in one call.\nYour job: rewrite each segment so that no character reveals knowledge they should not have.\n\nRules:\n- The POV character must not narrate others' private thoughts.\n- Secrets, hidden identities, and private memories must not leak.\n- System/meta/prompt text must not appear in prose.\n- Preserve the scene's action and emotional beat.\n- Return a FULL replacement for each segment, not advice.\n- Return candidates for ALL listed mutable segment IDs.\n\nReturn JSON:\n{\"role\":\"secret_pov_guard\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"voice\"]}, ...]}",
       cost_tier: "standard",
     },
     {
@@ -76,7 +76,7 @@
       label: "Character / Voice",
       purpose: "Inspect and rewrite for character voice, emotional posture, knowledge boundary, and persona consistency.",
       priority: 9,
-      default_prompt: "You are a Character/Voice specialist for roleplay.\n\nYou receive one mutable prose segment from a larger RP response.\nYour job: rewrite this segment so the character's voice, personality, and emotional state are authentic and consistent.\n\nRules:\n- Match the character's established speech patterns and personality.\n- Do not invent new facts or backstory.\n- Do not decide the user's next action.\n- Preserve the scene's action and intent.\n- Return a FULL replacement for this segment, not advice.\n\nReturn JSON:\n{\"role\":\"character_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"voice\"]}]}",
+      default_prompt: "You are a Character/Voice specialist for roleplay.\n\nYou receive ALL mutable prose segments from a larger RP response in one call.\nYour job: rewrite each segment so the character's voice, personality, and emotional state are authentic and consistent.\n\nRules:\n- Match the character's established speech patterns and personality.\n- Do not invent new facts or backstory.\n- Do not decide the user's next action.\n- Preserve the scene's action and intent.\n- Return a FULL replacement for each segment, not advice.\n- Return candidates for ALL listed mutable segment IDs.\n\nReturn JSON:\n{\"role\":\"character_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"voice\"]}, ...]}",
       cost_tier: "standard",
     },
     {
@@ -84,7 +84,7 @@
       label: "Plot / Continuity",
       purpose: "Inspect and rewrite for causality, scene flow, action order, and unresolved promise continuity.",
       priority: 8,
-      default_prompt: "You are a Plot/Continuity specialist for roleplay.\n\nYou receive one mutable prose segment from a larger RP response.\nYour job: rewrite this segment so causality, scene flow, and continuity are correct.\n\nRules:\n- Actions must follow logically from prior context.\n- Do not contradict established facts.\n- Preserve the user's intended direction.\n- Return a FULL replacement for this segment, not advice.\n\nReturn JSON:\n{\"role\":\"plot_continuity_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"continuity\"]}]}",
+      default_prompt: "You are a Plot/Continuity specialist for roleplay.\n\nYou receive ALL mutable prose segments from a larger RP response in one call.\nYour job: rewrite each segment so causality, scene flow, and continuity are correct.\n\nRules:\n- Actions must follow logically from prior context.\n- Do not contradict established facts.\n- Preserve the user's intended direction.\n- Return a FULL replacement for each segment, not advice.\n- Return candidates for ALL listed mutable segment IDs.\n\nReturn JSON:\n{\"role\":\"plot_continuity_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"continuity\"]}, ...]}",
       cost_tier: "standard",
     },
     {
@@ -92,7 +92,7 @@
       label: "World / Scene Logic",
       purpose: "Inspect and rewrite for local world rules, social laws, magic/technology constraints, geography, and faction logic.",
       priority: 7,
-      default_prompt: "You are a World/Scene Logic specialist for roleplay.\n\nYou receive one mutable prose segment from a larger RP response.\nYour job: rewrite this segment so world rules, physical constraints, and scene logic are consistent.\n\nRules:\n- Respect established lore and world rules.\n- Physical actions must be plausible within the setting.\n- Return a FULL replacement for this segment, not advice.\n\nReturn JSON:\n{\"role\":\"world_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"world\"]}]}",
+      default_prompt: "You are a World/Scene Logic specialist for roleplay.\n\nYou receive ALL mutable prose segments from a larger RP response in one call.\nYour job: rewrite each segment so world rules, physical constraints, and scene logic are consistent.\n\nRules:\n- Respect established lore and world rules.\n- Physical actions must be plausible within the setting.\n- Return a FULL replacement for each segment, not advice.\n- Return candidates for ALL listed mutable segment IDs.\n\nReturn JSON:\n{\"role\":\"world_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"world\"]}, ...]}",
       cost_tier: "standard",
     },
     {
@@ -100,7 +100,7 @@
       label: "Style / Rhythm",
       purpose: "Inspect and rewrite for prose rhythm, repetition, awkward phrasing, tone, and transitions.",
       priority: 6,
-      default_prompt: "You are a Style/Rhythm specialist for roleplay.\n\nYou receive one mutable prose segment from a larger RP response.\nYour job: rewrite this segment for better prose rhythm, reduced repetition, smoother transitions, and consistent tone.\n\nRules:\n- Improve flow without changing meaning or character voice.\n- Remove awkward phrasing and redundant repetition.\n- Return a FULL replacement for this segment, not advice.\n\nReturn JSON:\n{\"role\":\"style_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"style\"]}]}",
+      default_prompt: "You are a Style/Rhythm specialist for roleplay.\n\nYou receive ALL mutable prose segments from a larger RP response in one call.\nYour job: rewrite each segment for better prose rhythm, reduced repetition, smoother transitions, and consistent tone.\n\nRules:\n- Improve flow without changing meaning or character voice.\n- Remove awkward phrasing and redundant repetition.\n- Return a FULL replacement for each segment, not advice.\n- Return candidates for ALL listed mutable segment IDs.\n\nReturn JSON:\n{\"role\":\"style_reader\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"style\"]}, ...]}",
       cost_tier: "standard",
     },
     {
@@ -108,7 +108,7 @@
       label: "Agency / Meta Artifact",
       purpose: "Detect and remove user agency takeover, meta text, model self-commentary, translator-like phrasing, and mechanical artifacts.",
       priority: 7,
-      default_prompt: "You are an Agency/Meta Artifact specialist for roleplay.\n\nYou receive one mutable prose segment from a larger RP response.\nYour job: rewrite this segment to remove meta text, model self-commentary, translator-like phrasing, list-like summaries, and any takeover of user agency.\n\nRules:\n- Remove 'As an AI', 'Language model', summary lists, and meta commentary.\n- Do not decide or force the user's feelings, thoughts, or actions.\n- Return a FULL replacement for this segment, not advice.\n\nReturn JSON:\n{\"role\":\"agency_meta_guard\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"agency\"]}]}",
+      default_prompt: "You are an Agency/Meta Artifact specialist for roleplay.\n\nYou receive ALL mutable prose segments from a larger RP response in one call.\nYour job: rewrite each segment to remove meta text, model self-commentary, translator-like phrasing, list-like summaries, and any takeover of user agency.\n\nRules:\n- Remove 'As an AI', 'Language model', summary lists, and meta commentary.\n- Do not decide or force the user's feelings, thoughts, or actions.\n- Return a FULL replacement for each segment, not advice.\n- Return candidates for ALL listed mutable segment IDs.\n\nReturn JSON:\n{\"role\":\"agency_meta_guard\",\"candidates\":[{\"segment_id\":\"SEG_ID\",\"rewrite\":\"full rewritten text\",\"confidence\":0.0,\"tags\":[\"agency\"]}, ...]}",
       cost_tier: "standard",
     },
     {
@@ -377,6 +377,7 @@
       stage: safeString(stage),
       request_type: safeString(type),
       timestamp: Date.now(),
+      streaming: { detected: false, reason: "" },
       roles: [],
       segments: { protected: 0, inspect_only: 0, mutable: 0 },
       candidates: { total: 0, by_segment: {} },
@@ -753,10 +754,12 @@
         });
       }
     });
-    if (!candidates.length) return { candidates: "", active: "" };
+    if (!candidates.length) return { candidates: "", active: "", candidateCount: 0, activeCount: 0 };
     return {
       candidates: candidates.slice(0, 20).map((e) => `[${e.keys}] ${e.content}`).join("\n"),
       active: active.slice(0, 10).map((e) => `[${e.keys}] ${e.content}`).join("\n"),
+      candidateCount: candidates.length,
+      activeCount: active.length,
     };
   }
 
@@ -854,7 +857,7 @@
           const loreResult = extractLorebookSummary(charResult.value, null);
           ctx.lorebook = filterExcludedContext(loreResult.candidates || "");
           ctx.lorebook_active = filterExcludedContext(loreResult.active || "");
-          ctx.sources.lorebook = { available: !!ctx.lorebook, candidate_count: candidates.length || 0, active_count: active.length || 0 };
+          ctx.sources.lorebook = { available: !!ctx.lorebook, candidate_count: loreResult.candidateCount || 0, active_count: loreResult.activeCount || 0 };
         } catch (_) {}
       } else {
         ctx.sources.character = { available: false, error: charResult.error || "" };
@@ -1024,6 +1027,10 @@
 
   async function callProvider(profile, prompts, abortSignal) {
     const provider = sanitizeEnum(profile.provider, PROVIDERS, "openai_compatible");
+    const model = safeString(profile.model).trim();
+    const endpoint = safeString(profile.endpoint).trim();
+    if (!model) throw new Error("missing_model");
+    if (provider !== "ollama_compatible" && provider !== "custom" && !endpoint) throw new Error("missing_endpoint");
     const key = await resolveApiKey(profile.api_key_ref);
     const timeoutMs = clampNumber(profile.timeout_ms, 5000, 300000, 45000);
     const extraHeaders = parseExtraHeaders(profile.extra_headers);
@@ -1405,6 +1412,31 @@
     let usedFallback = false;
     let activeProfile = profile;
 
+    function isProfileConfigured(p) {
+      if (!p) return false;
+      if (!safeString(p.model).trim()) return false;
+      const prov = safeString(p.provider).trim();
+      if (prov !== "ollama_compatible" && prov !== "custom" && !safeString(p.endpoint).trim()) return false;
+      return true;
+    }
+
+    if (!isProfileConfigured(activeProfile)) {
+      lastError = "profile_not_configured";
+      traceRole(trace, {
+        role_id: role.role_id,
+        provider: safeString(activeProfile && activeProfile.provider),
+        model: safeString(activeProfile && activeProfile.model),
+        status: "failed",
+        started_at: startedAt,
+        ended_at: Date.now(),
+        elapsed_ms: 0,
+        retry: 0,
+        fallback: false,
+        error: lastError,
+      });
+      return null;
+    }
+
     while (attempt <= MAX_REPAIR_RETRY) {
       try {
         const result = await callProvider(activeProfile, prompts, abortSignal);
@@ -1440,7 +1472,11 @@
         if (attempt <= MAX_REPAIR_RETRY) {
           continue;
         }
-        if (!usedFallback && profile.fallback_provider && profile.fallback_model) {
+        if (!usedFallback && profile.fallback_provider && profile.fallback_model && isProfileConfigured(Object.assign({}, profile, {
+            provider: profile.fallback_provider,
+            endpoint: profile.fallback_endpoint || profile.endpoint,
+            model: profile.fallback_model,
+          }))) {
           usedFallback = true;
           activeProfile = Object.assign({}, profile, {
             provider: profile.fallback_provider,
@@ -1902,11 +1938,30 @@
   }
 
   let lastRequestContext = null;
+  let lastStreamingState = { detected: false, reason: "" };
+
+  function detectStreamingState(payloadOrContent, type) {
+    const t = safeString(type).toLowerCase();
+    if (/\b(?:stream|streaming|partial|fragment|delta|chunk)\b/.test(t)) {
+      return { detected: true, reason: `request_type_${t}` };
+    }
+    const payload = payloadOrContent;
+    if (payload && typeof payload === "object") {
+      const direct = ["stream", "streaming", "isStreaming", "partial", "fragment", "delta"];
+      for (let i = 0; i < direct.length; i++) {
+        if (payload[direct[i]]) return { detected: true, reason: `payload_${direct[i]}` };
+      }
+      if (payload.options && payload.options.stream) return { detected: true, reason: "payload_options_stream" };
+      if (payload.generation && payload.generation.stream) return { detected: true, reason: "payload_generation_stream" };
+    }
+    return { detected: false, reason: "" };
+  }
 
   async function onBeforeRequest(payload, type) {
     try {
       if (isAuxiliaryRequest(type)) return payload;
       lastRequestContext = payload;
+      lastStreamingState = detectStreamingState(payload, type);
     } catch (err) {
       warn("beforeRequest error:", err);
     }
@@ -1916,6 +1971,7 @@
   async function onAfterRequest(content, type) {
     const trace = newTrace("afterRequest", type);
     traceTimeline(trace, "start");
+    trace.streaming = lastStreamingState;
 
     try {
       if (isAuxiliaryRequest(type)) {
@@ -1926,18 +1982,19 @@
       }
 
       const settings = await loadSettings();
+      _cachedTraceEnabled = settings.trace_enabled !== false;
       if (!settings.enabled) {
         trace.final.enhanced = false;
         trace.final.reason = "plugin_disabled";
-        if (settings.trace_enabled) await saveTrace(trace);
+        if (settings_trace_enabled()) await saveTrace(trace);
         return content;
       }
 
       const originalText = safeString(content);
       if (!originalText.trim()) {
         trace.final.enhanced = false;
-        trace.final.reason = "empty_input";
-        if (settings.trace_enabled) await saveTrace(trace);
+        trace.final.reason = lastStreamingState.detected ? "streaming_empty_final" : "empty_input";
+        if (settings_trace_enabled()) await saveTrace(trace);
         return content;
       }
 
@@ -1950,7 +2007,7 @@
       if (segSummary.mutable === 0) {
         trace.final.enhanced = false;
         trace.final.reason = "no_mutable_segments";
-        if (settings.trace_enabled) await saveTrace(trace);
+        if (settings_trace_enabled()) await saveTrace(trace);
         return content;
       }
 
@@ -1966,7 +2023,7 @@
       if (selectedRoles.length === 0 || selectedRoles.every((r) => !r.is_composer && !settings.role_profiles[r.role_id])) {
         trace.final.enhanced = false;
         trace.final.reason = "no_roles_selected";
-        if (settings.trace_enabled) await saveTrace(trace);
+        if (settings_trace_enabled()) await saveTrace(trace);
         return content;
       }
 
@@ -1994,14 +2051,14 @@
         trace.final.enhanced = false;
         trace.final.reason = `verifier_failed: ${verification.errors.join(", ")}`;
         traceError(trace, trace.final.reason);
-        if (settings.trace_enabled) await saveTrace(trace);
+        if (settings_trace_enabled()) await saveTrace(trace);
         return content;
       }
 
       if (!assembled.changed || assembled.output === originalText) {
         trace.final.enhanced = false;
         trace.final.reason = assembled.changed ? "output_identical" : "no_candidates_applied";
-        if (settings.trace_enabled) await saveTrace(trace);
+        if (settings_trace_enabled()) await saveTrace(trace);
         return content;
       }
 
@@ -2010,7 +2067,7 @@
         trace.final.original_preview = preview(originalText, 200);
         trace.final.final_preview = preview(assembled.output, 200);
 
-        if (settings.trace_enabled) await saveTrace(trace);
+        if (settings_trace_enabled()) await saveTrace(trace);
         return assembled.output;
       } finally {
         if (deadline) deadline.cancel();
@@ -2019,14 +2076,16 @@
       traceError(trace, `pipeline_error: ${safeString(err && err.message)}`);
       trace.final.enhanced = false;
       trace.final.reason = "pipeline_error";
-      if (settings.trace_enabled) await saveTrace(trace);
+      if (settings_trace_enabled()) await saveTrace(trace);
       return content;
     }
   }
 
   function settings_trace_enabled() {
-    return true;
+    return _cachedTraceEnabled;
   }
+
+  let _cachedTraceEnabled = true;
 
   /* ── UI ────────────────────────────────────────────────── */
 
@@ -2043,24 +2102,30 @@
       `<option value="${p.id}" ${settings.preset === p.id ? "selected" : ""}>${escapeHtml(p.label)}</option>`
     ).join("");
     return `
-      <div class="recomposer-section">
-        <h3>Presets</h3>
-        <label>Preset:
+      <div class="recomposer-grid-2col">
+        <div class="recomposer-field">
+          <label>Preset</label>
           <select class="recomposer-preset">${presetOptions}</select>
-        </label>
-        <label>Deadline (ms):
+        </div>
+        <div class="recomposer-field">
+          <label>Deadline (ms)</label>
           <input type="number" class="recomposer-deadline" value="${settings.deadline_ms}" min="10000" max="600000" step="5000">
-        </label>
-        <label>Max Parallel:
+        </div>
+        <div class="recomposer-field">
+          <label>Max Parallel</label>
           <input type="number" class="recomposer-max-parallel" value="${settings.max_parallel}" min="1" max="20">
-        </label>
-        <label>Protected Regex:
-          <input type="text" class="recomposer-protected-regex" value="${escapeHtml(settings.protected_regex)}" placeholder="user-defined protected pattern">
-        </label>
-        <label>Context Char Limit:
+        </div>
+        <div class="recomposer-field">
+          <label>Context Char Limit</label>
           <input type="number" class="recomposer-context-limit" value="${settings.context_char_limit}" min="500" max="50000" step="500">
-        </label>
-        <label><input type="checkbox" class="recomposer-trace-enabled" ${settings.trace_enabled ? "checked" : ""}> Trace Enabled</label>
+        </div>
+        <div class="recomposer-field">
+          <label>Protected Regex</label>
+          <input type="text" class="recomposer-protected-regex" value="${escapeHtml(settings.protected_regex)}" placeholder="user-defined protected pattern">
+        </div>
+        <div class="recomposer-field">
+          <label><input type="checkbox" class="recomposer-trace-enabled" ${settings.trace_enabled ? "checked" : ""}> Trace Enabled</label>
+        </div>
       </div>`;
   }
 
@@ -2071,149 +2136,429 @@
         `<option value="${p}" ${profile.provider === p ? "selected" : ""}>${p}</option>`
       ).join("");
       return `
-        <div class="recomposer-role-row" data-role="${escapeHtml(role.role_id)}">
-          <h4>${escapeHtml(role.label)} ${role.is_composer ? "(Composer)" : ""}</h4>
-          <p class="recomposer-role-purpose">${escapeHtml(role.purpose)}</p>
-          <label>Enabled: <input type="checkbox" class="recomposer-role-enabled" ${profile.enabled ? "checked" : ""}></label>
-          <label>Provider:
-            <select class="recomposer-role-provider">${providerOptions}</select>
-          </label>
-          <label>Endpoint:
-            <input type="text" class="recomposer-role-endpoint" value="${escapeHtml(profile.endpoint)}" placeholder="API endpoint URL">
-          </label>
-          <label>Model:
-            <input type="text" class="recomposer-role-model" value="${escapeHtml(profile.model)}" placeholder="model name">
-          </label>
-          <label>API Key / Ref:
-            <input type="password" class="recomposer-role-key" value="" placeholder="${profile.api_key_ref ? maskKey(profile.api_key_ref) + ' (saved — blank to keep, clear:key to delete)' : 'direct key / arg:name / storage:key / env:KEY'}">
-          </label>
-          <label>Temperature:
-            <input type="number" class="recomposer-role-temp" value="${profile.temperature}" min="0" max="2" step="0.1">
-          </label>
-          <label>Max Output Tokens:
-            <input type="number" class="recomposer-role-max-tokens" value="${profile.max_output_tokens}" min="100" max="32000" step="100">
-          </label>
-          <label>Timeout (ms):
-            <input type="number" class="recomposer-role-timeout" value="${profile.timeout_ms}" min="5000" max="300000" step="5000">
-          </label>
-          <label>System Prompt:
-            <textarea class="recomposer-role-prompt" rows="4">${escapeHtml(profile.system_prompt)}</textarea>
-          </label>
-          <details>
-            <summary>Advanced</summary>
-            <label>Fallback Provider:
-              <input type="text" class="recomposer-role-fb-provider" value="${escapeHtml(profile.fallback_provider)}" placeholder="fallback provider">
-            </label>
-            <label>Fallback Model:
-              <input type="text" class="recomposer-role-fb-model" value="${escapeHtml(profile.fallback_model)}" placeholder="fallback model">
-            </label>
-            <label>Fallback Endpoint:
-              <input type="text" class="recomposer-role-fb-endpoint" value="${escapeHtml(profile.fallback_endpoint)}" placeholder="fallback endpoint">
-            </label>
-            <label>Fallback API Key:
-              <input type="password" class="recomposer-role-fb-key" value="" placeholder="${profile.fallback_api_key_ref ? maskKey(profile.fallback_api_key_ref) + ' (saved — blank to keep, clear:key to delete)' : 'fallback key ref'}">
-            </label>
-            <label>Extra Headers (one per line, Key: Value):
-              <textarea class="recomposer-role-extra-headers" rows="3">${escapeHtml(profile.extra_headers)}</textarea>
-            </label>
-            <label>Extra Body (JSON):
-              <textarea class="recomposer-role-extra-body" rows="3">${escapeHtml(profile.extra_body)}</textarea>
-            </label>
-            <label>Reasoning Preset:
-              <select class="recomposer-role-reasoning">
-                <option value="auto" ${profile.reasoning_preset === "auto" ? "selected" : ""}>auto</option>
-                <option value="gpt" ${profile.reasoning_preset === "gpt" ? "selected" : ""}>gpt</option>
-                <option value="claude" ${profile.reasoning_preset === "claude" ? "selected" : ""}>claude</option>
-                <option value="gemini" ${profile.reasoning_preset === "gemini" ? "selected" : ""}>gemini</option>
-                <option value="glm" ${profile.reasoning_preset === "glm" ? "selected" : ""}>glm</option>
-                <option value="deepseek" ${profile.reasoning_preset === "deepseek" ? "selected" : ""}>deepseek</option>
-              </select>
-            </label>
-            <label>Reasoning Effort:
-              <select class="recomposer-role-reasoning-effort">
-                <option value="auto" ${profile.reasoning_effort === "auto" ? "selected" : ""}>auto</option>
-                <option value="none" ${profile.reasoning_effort === "none" ? "selected" : ""}>none</option>
-                <option value="low" ${profile.reasoning_effort === "low" ? "selected" : ""}>low</option>
-                <option value="medium" ${profile.reasoning_effort === "medium" ? "selected" : ""}>medium</option>
-                <option value="high" ${profile.reasoning_effort === "high" ? "selected" : ""}>high</option>
-              </select>
-            </label>
-            <label>Reasoning Budget Tokens:
-              <input type="number" class="recomposer-role-reasoning-budget" value="${profile.reasoning_budget_tokens}" min="0" max="131072" step="256">
-            </label>
-            <label>Vertex Flex Mode:
-              <select class="recomposer-role-vertex-flex">
-                <option value="off" ${profile.vertex_flex_mode === "off" ? "selected" : ""}>off</option>
-                <option value="provisioned_then_flex" ${profile.vertex_flex_mode === "provisioned_then_flex" ? "selected" : ""}>provisioned_then_flex</option>
-                <option value="flex_only" ${profile.vertex_flex_mode === "flex_only" ? "selected" : ""}>flex_only</option>
-              </select>
-            </label>
-            <label><input type="checkbox" class="recomposer-role-force-json" ${profile.force_json_response ? "checked" : ""}> Force JSON Response</label>
-          </details>
-        </div>`;
+        <details class="recomposer-role-row" data-role="${escapeHtml(role.role_id)}">
+          <summary class="recomposer-role-summary">${escapeHtml(role.label)} ${role.is_composer ? "(Composer)" : ""}</summary>
+          <div class="recomposer-role-body">
+            <p class="recomposer-role-purpose">${escapeHtml(role.purpose)}</p>
+            <label class="recomposer-field-inline"><input type="checkbox" class="recomposer-role-enabled" ${profile.enabled ? "checked" : ""}> Enabled</label>
+            <div class="recomposer-grid-2col">
+              <div class="recomposer-field">
+                <label>Provider</label>
+                <select class="recomposer-role-provider">${providerOptions}</select>
+              </div>
+              <div class="recomposer-field">
+                <label>Model</label>
+                <input type="text" class="recomposer-role-model" value="${escapeHtml(profile.model)}" placeholder="model name">
+              </div>
+              <div class="recomposer-field">
+                <label>Endpoint</label>
+                <input type="text" class="recomposer-role-endpoint" value="${escapeHtml(profile.endpoint)}" placeholder="API endpoint URL">
+              </div>
+              <div class="recomposer-field">
+                <label>API Key / Ref</label>
+                <input type="password" class="recomposer-role-key" value="" placeholder="${profile.api_key_ref ? maskKey(profile.api_key_ref) + ' (saved — blank to keep, clear:key to delete)' : 'direct key / arg:name / storage:key / env:KEY'}">
+              </div>
+              <div class="recomposer-field">
+                <label>Temperature</label>
+                <input type="number" class="recomposer-role-temp" value="${profile.temperature}" min="0" max="2" step="0.1">
+              </div>
+              <div class="recomposer-field">
+                <label>Max Output Tokens</label>
+                <input type="number" class="recomposer-role-max-tokens" value="${profile.max_output_tokens}" min="100" max="32000" step="100">
+              </div>
+              <div class="recomposer-field">
+                <label>Timeout (ms)</label>
+                <input type="number" class="recomposer-role-timeout" value="${profile.timeout_ms}" min="5000" max="300000" step="5000">
+              </div>
+            </div>
+            <div class="recomposer-field">
+              <label>System Prompt</label>
+              <textarea class="recomposer-role-prompt" rows="4">${escapeHtml(profile.system_prompt)}</textarea>
+            </div>
+            <details>
+              <summary>Advanced</summary>
+              <div class="recomposer-grid-2col">
+                <div class="recomposer-field">
+                  <label>Fallback Provider</label>
+                  <input type="text" class="recomposer-role-fb-provider" value="${escapeHtml(profile.fallback_provider)}" placeholder="fallback provider">
+                </div>
+                <div class="recomposer-field">
+                  <label>Fallback Model</label>
+                  <input type="text" class="recomposer-role-fb-model" value="${escapeHtml(profile.fallback_model)}" placeholder="fallback model">
+                </div>
+                <div class="recomposer-field">
+                  <label>Fallback Endpoint</label>
+                  <input type="text" class="recomposer-role-fb-endpoint" value="${escapeHtml(profile.fallback_endpoint)}" placeholder="fallback endpoint">
+                </div>
+                <div class="recomposer-field">
+                  <label>Fallback API Key</label>
+                  <input type="password" class="recomposer-role-fb-key" value="" placeholder="${profile.fallback_api_key_ref ? maskKey(profile.fallback_api_key_ref) + ' (saved — blank to keep, clear:key to delete)' : 'fallback key ref'}">
+                </div>
+                <div class="recomposer-field">
+                  <label>Reasoning Preset</label>
+                  <select class="recomposer-role-reasoning">
+                    <option value="auto" ${profile.reasoning_preset === "auto" ? "selected" : ""}>auto</option>
+                    <option value="gpt" ${profile.reasoning_preset === "gpt" ? "selected" : ""}>gpt</option>
+                    <option value="claude" ${profile.reasoning_preset === "claude" ? "selected" : ""}>claude</option>
+                    <option value="gemini" ${profile.reasoning_preset === "gemini" ? "selected" : ""}>gemini</option>
+                    <option value="glm" ${profile.reasoning_preset === "glm" ? "selected" : ""}>glm</option>
+                    <option value="deepseek" ${profile.reasoning_preset === "deepseek" ? "selected" : ""}>deepseek</option>
+                  </select>
+                </div>
+                <div class="recomposer-field">
+                  <label>Reasoning Effort</label>
+                  <select class="recomposer-role-reasoning-effort">
+                    <option value="auto" ${profile.reasoning_effort === "auto" ? "selected" : ""}>auto</option>
+                    <option value="none" ${profile.reasoning_effort === "none" ? "selected" : ""}>none</option>
+                    <option value="low" ${profile.reasoning_effort === "low" ? "selected" : ""}>low</option>
+                    <option value="medium" ${profile.reasoning_effort === "medium" ? "selected" : ""}>medium</option>
+                    <option value="high" ${profile.reasoning_effort === "high" ? "selected" : ""}>high</option>
+                  </select>
+                </div>
+                <div class="recomposer-field">
+                  <label>Reasoning Budget Tokens</label>
+                  <input type="number" class="recomposer-role-reasoning-budget" value="${profile.reasoning_budget_tokens}" min="0" max="131072" step="256">
+                </div>
+                <div class="recomposer-field">
+                  <label>Vertex Flex Mode</label>
+                  <select class="recomposer-role-vertex-flex">
+                    <option value="off" ${profile.vertex_flex_mode === "off" ? "selected" : ""}>off</option>
+                    <option value="provisioned_then_flex" ${profile.vertex_flex_mode === "provisioned_then_flex" ? "selected" : ""}>provisioned_then_flex</option>
+                    <option value="flex_only" ${profile.vertex_flex_mode === "flex_only" ? "selected" : ""}>flex_only</option>
+                  </select>
+                </div>
+              </div>
+              <div class="recomposer-field">
+                <label>Extra Headers (one per line, Key: Value)</label>
+                <textarea class="recomposer-role-extra-headers" rows="3">${escapeHtml(profile.extra_headers)}</textarea>
+              </div>
+              <div class="recomposer-field">
+                <label>Extra Body (JSON)</label>
+                <textarea class="recomposer-role-extra-body" rows="3">${escapeHtml(profile.extra_body)}</textarea>
+              </div>
+              <label class="recomposer-field-inline"><input type="checkbox" class="recomposer-role-force-json" ${profile.force_json_response ? "checked" : ""}> Force JSON Response</label>
+            </details>
+          </div>
+        </details>`;
     }).join("");
-    return `<div class="recomposer-section"><h3>Roles & Models</h3>${rows}</div>`;
+    return `
+      <div class="recomposer-roles-list">${rows}</div>`;
   }
 
   function renderTracePanel() {
     return `
-      <div class="recomposer-section">
-        <h3>Trace</h3>
-        <button class="recomposer-trace-refresh">Refresh Trace</button>
-        <button class="recomposer-trace-clear">Clear Trace</button>
+      <div class="recomposer-trace-toolbar">
+        <button class="recomposer-trace-refresh recomposer-btn">Refresh Trace</button>
+        <button class="recomposer-trace-clear recomposer-btn">Clear Trace</button>
+      </div>
+      <div class="recomposer-trace-scroll">
         <div class="recomposer-trace-list"></div>
-      </div>`;
-  }
-
-  function renderProviderDetails(settings) {
-    const roles = settings.roles;
-    const rows = roles.map((role) => {
-      const p = settings.role_profiles[role.role_id] || defaultRoleProfile(role.role_id);
-      return `<tr>
-        <td>${escapeHtml(role.role_id)}</td>
-        <td>${escapeHtml(p.provider)}</td>
-        <td>${escapeHtml(maskKey(p.api_key_ref))}</td>
-        <td>${escapeHtml(p.endpoint)}</td>
-        <td>${escapeHtml(p.model)}</td>
-        <td>${p.timeout_ms}</td>
-      </tr>`;
-    }).join("");
-    return `
-      <div class="recomposer-section">
-        <h3>Provider Details</h3>
-        <table class="recomposer-provider-table">
-          <thead><tr><th>Role</th><th>Provider</th><th>Key</th><th>Endpoint</th><th>Model</th><th>Timeout</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
       </div>`;
   }
 
   function renderUI(settings) {
     const style = `
       <style>
-        .recomposer-root { font-family: sans-serif; padding: 12px; max-width: 900px; }
-        .recomposer-section { border: 1px solid #444; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
-        .recomposer-section h3 { margin-top: 0; }
-        .recomposer-role-row { border: 1px solid #333; border-radius: 6px; padding: 10px; margin-bottom: 12px; }
-        .recomposer-role-purpose { color: #aaa; font-size: 0.85em; }
-        .recomposer-role-row label { display: block; margin: 4px 0; }
-        .recomposer-role-row input, .recomposer-role-row select, .recomposer-role-row textarea { width: 100%; max-width: 500px; }
-        .recomposer-provider-table { width: 100%; border-collapse: collapse; }
-        .recomposer-provider-table th, .recomposer-provider-table td { border: 1px solid #333; padding: 4px 8px; text-align: left; }
-        .recomposer-trace-entry { border: 1px solid #333; border-radius: 4px; padding: 8px; margin-bottom: 8px; font-size: 0.85em; }
-        .recomposer-trace-entry pre { white-space: pre-wrap; word-break: break-all; }
-        .recomposer-btn { padding: 6px 16px; cursor: pointer; }
+        .recomposer-root {
+          --rc-bg: #0B0D11;
+          --rc-bg-sub: #0F1116;
+          --rc-card-bg: #13161C;
+          --rc-panel-bg: #181C24;
+          --rc-border: rgba(255,255,255,0.07);
+          --rc-border-hover: rgba(255,255,255,0.12);
+          --rc-fg: #F4F5F7;
+          --rc-fg-muted: #8B909A;
+          --rc-fg-dim: #5C626D;
+          --rc-blue: #5D73E6;
+          --rc-blue-light: #8FA7FF;
+          --rc-purple: #8A55F7;
+          --rc-pink: #E158A6;
+          --rc-cta-bg: #F7F7F9;
+          --rc-cta-fg: #101216;
+          font-family: 'Inter', 'Pretendard Variable', system-ui, -apple-system, sans-serif;
+          background: var(--rc-bg);
+          color: var(--rc-fg);
+          margin: 0 auto;
+          padding: 32px;
+          max-width: 760px;
+          width: 100%;
+          box-sizing: border-box;
+          min-height: 100vh;
+          overflow-y: auto;
+          letter-spacing: -0.01em;
+          -webkit-font-smoothing: antialiased;
+        }
+        .recomposer-root * { box-sizing: border-box; }
+        .recomposer-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 48px;
+        }
+        .recomposer-header h2 {
+          margin: 0;
+          font-size: 28px;
+          font-weight: 500;
+          color: var(--rc-fg);
+          letter-spacing: -0.03em;
+        }
+        .recomposer-header h2 span {
+          color: var(--rc-fg-dim);
+          font-weight: 400;
+        }
+        .recomposer-eyebrow {
+          font-size: 11px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--rc-fg-dim);
+          margin-bottom: 8px;
+        }
+        .recomposer-tabs {
+          display: flex;
+          gap: 0;
+          border-bottom: 1px solid var(--rc-border);
+          margin-bottom: 40px;
+        }
+        .recomposer-tab {
+          padding: 12px 24px;
+          cursor: pointer;
+          border: none;
+          background: transparent;
+          color: var(--rc-fg-dim);
+          font-size: 14px;
+          font-weight: 400;
+          border-bottom: 2px solid transparent;
+          margin-bottom: -1px;
+          transition: color 0.2s, border-color 0.2s;
+        }
+        .recomposer-tab:hover { color: var(--rc-fg-muted); }
+        .recomposer-tab.active {
+          color: var(--rc-fg);
+          border-bottom-color: var(--rc-blue);
+          background: linear-gradient(180deg, transparent 60%, rgba(93,115,230,0.06) 100%);
+        }
+        .recomposer-tab-panel { display: none; }
+        .recomposer-tab-panel.active { display: block; }
+        .recomposer-grid-2col {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 20px;
+        }
+        @media (max-width: 640px) {
+          .recomposer-grid-2col { grid-template-columns: 1fr; }
+          .recomposer-root { padding: 20px; }
+          .recomposer-header { margin-bottom: 32px; }
+          .recomposer-header h2 { font-size: 22px; }
+          .recomposer-tabs { margin-bottom: 24px; }
+          .recomposer-tab { padding: 8px 16px; font-size: 13px; }
+        }
+        .recomposer-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+        .recomposer-field label {
+          font-size: 12px;
+          letter-spacing: 0.04em;
+          color: var(--rc-fg-muted);
+          font-weight: 400;
+        }
+        .recomposer-field-inline {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 8px 0;
+          font-size: 14px;
+          color: var(--rc-fg-muted);
+        }
+        .recomposer-root input[type="text"],
+        .recomposer-root input[type="number"],
+        .recomposer-root input[type="password"],
+        .recomposer-root select,
+        .recomposer-root textarea {
+          width: 100%;
+          min-width: 0;
+          box-sizing: border-box;
+          padding: 10px 14px;
+          border: 1px solid var(--rc-border);
+          border-radius: 10px;
+          background: var(--rc-panel-bg);
+          color: var(--rc-fg);
+          font-size: 14px;
+          font-family: inherit;
+          transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .recomposer-root input:focus,
+        .recomposer-root select:focus,
+        .recomposer-root textarea:focus {
+          outline: none;
+          border-color: var(--rc-blue);
+          box-shadow: 0 0 0 3px rgba(93,115,230,0.12);
+        }
+        .recomposer-root input::placeholder,
+        .recomposer-root textarea::placeholder {
+          color: var(--rc-fg-dim);
+        }
+        .recomposer-root textarea { resize: vertical; line-height: 1.5; }
+        .recomposer-root input[type="checkbox"] {
+          width: 16px;
+          height: 16px;
+          accent-color: var(--rc-blue);
+          cursor: pointer;
+        }
+        .recomposer-roles-list { display: flex; flex-direction: column; gap: 12px; }
+        .recomposer-role-row {
+          border: 1px solid var(--rc-border);
+          border-radius: 14px;
+          background: var(--rc-card-bg);
+          overflow: hidden;
+          box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+          transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .recomposer-role-row[open] {
+          border-color: rgba(138,85,247,0.25);
+          box-shadow: 0 8px 32px rgba(0,0,0,0.3), 0 0 0 1px rgba(138,85,247,0.08);
+        }
+        .recomposer-role-summary {
+          padding: 16px 20px;
+          cursor: pointer;
+          font-weight: 500;
+          font-size: 15px;
+          color: var(--rc-fg);
+          list-style: none;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          transition: color 0.2s;
+        }
+        .recomposer-role-summary:hover { color: var(--rc-blue-light); }
+        .recomposer-role-summary::-webkit-details-marker { display: none; }
+        .recomposer-role-summary::after {
+          content: '';
+          display: inline-block;
+          width: 8px; height: 8px;
+          border-right: 1.5px solid var(--rc-fg-dim);
+          border-bottom: 1.5px solid var(--rc-fg-dim);
+          transform: rotate(-45deg);
+          transition: transform 0.2s, border-color 0.2s;
+          margin-left: 12px;
+        }
+        .recomposer-role-row[open] .recomposer-role-summary::after {
+          transform: rotate(45deg);
+          border-color: var(--rc-blue-light);
+        }
+        .recomposer-role-body { padding: 0 20px 20px; }
+        .recomposer-role-purpose {
+          color: var(--rc-fg-muted);
+          font-size: 13px;
+          line-height: 1.5;
+          margin: 4px 0 16px;
+        }
+        .recomposer-role-row details > summary {
+          cursor: pointer;
+          padding: 12px 0;
+          font-size: 13px;
+          color: var(--rc-fg-muted);
+          list-style: none;
+          border-top: 1px solid var(--rc-border);
+          margin-top: 8px;
+        }
+        .recomposer-role-row details > summary::-webkit-details-marker { display: none; }
+        .recomposer-role-row details > summary::after {
+          content: '›';
+          float: right;
+          color: var(--rc-fg-dim);
+          transition: transform 0.2s;
+        }
+        .recomposer-role-row details[open] > summary::after { transform: rotate(90deg); }
+        .recomposer-trace-toolbar { display: flex; gap: 8px; margin-bottom: 20px; }
+        .recomposer-trace-scroll { overflow-x: auto; }
+        .recomposer-trace-entry {
+          border: 1px solid var(--rc-border);
+          border-radius: 12px;
+          padding: 16px 20px;
+          margin-bottom: 12px;
+          font-size: 13px;
+          background: var(--rc-card-bg);
+          color: var(--rc-fg);
+          box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+        }
+        .recomposer-trace-entry pre {
+          white-space: pre-wrap;
+          word-break: break-all;
+          color: var(--rc-fg-muted);
+          font-size: 12px;
+          line-height: 1.5;
+          margin: 8px 0 0;
+        }
+        .recomposer-trace-entry strong { color: var(--rc-fg); font-weight: 500; }
+        .recomposer-btn {
+          padding: 10px 20px;
+          cursor: pointer;
+          border: 1px solid var(--rc-border);
+          border-radius: 10px;
+          background: var(--rc-card-bg);
+          color: var(--rc-fg);
+          font-size: 14px;
+          font-family: inherit;
+          font-weight: 400;
+          transition: border-color 0.2s, background 0.2s, color 0.2s;
+        }
+        .recomposer-btn:hover {
+          border-color: var(--rc-border-hover);
+          background: var(--rc-panel-bg);
+        }
+        .recomposer-btn-primary {
+          background: var(--rc-cta-bg);
+          color: var(--rc-cta-fg);
+          border-color: var(--rc-cta-bg);
+          font-weight: 500;
+        }
+        .recomposer-btn-primary:hover {
+          background: #FFFFFF;
+          border-color: #FFFFFF;
+        }
+        .recomposer-actions {
+          display: flex;
+          gap: 12px;
+          margin-top: 48px;
+          padding-top: 24px;
+          border-top: 1px solid var(--rc-border);
+        }
+        .recomposer-section-label {
+          font-size: 11px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--rc-fg-dim);
+          margin-bottom: 20px;
+        }
       </style>`;
     const html = `
       <div class="recomposer-root">
         ${style}
-        <h2>Risu Recomposer v${VERSION}</h2>
-        ${renderPresetPanel(settings)}
-        ${renderRolePanel(settings)}
-        ${renderProviderDetails(settings)}
-        ${renderTracePanel()}
-        <button class="recomposer-save recomposer-btn">Save Settings</button>
-        <button class="recomposer-close recomposer-btn">Close</button>
+        <div class="recomposer-header">
+          <div>
+            <div class="recomposer-eyebrow">MDASH / Fusion / Fugu</div>
+            <h2>Risu Recomposer <span>v${VERSION}</span></h2>
+          </div>
+        </div>
+        <div class="recomposer-tabs">
+          <button class="recomposer-tab active" data-tab="general">General</button>
+          <button class="recomposer-tab" data-tab="roles">Roles</button>
+          <button class="recomposer-tab" data-tab="trace">Trace</button>
+        </div>
+        <div class="recomposer-tab-panel active" data-panel="general">
+          <div class="recomposer-section-label">Configuration</div>
+          ${renderPresetPanel(settings)}
+        </div>
+        <div class="recomposer-tab-panel" data-panel="roles">
+          <div class="recomposer-section-label">Specialist Roles & Provider Settings</div>
+          ${renderRolePanel(settings)}
+        </div>
+        <div class="recomposer-tab-panel" data-panel="trace">
+          <div class="recomposer-section-label">Execution Trace</div>
+          ${renderTracePanel()}
+        </div>
+        <div class="recomposer-actions">
+          <button class="recomposer-save recomposer-btn recomposer-btn-primary">Save Settings</button>
+          <button class="recomposer-close recomposer-btn">Close</button>
+        </div>
       </div>`;
     return html;
   }
@@ -2299,25 +2644,44 @@
     const settings = await loadSettings();
     const html = renderUI(settings);
     try {
-      if (RR && typeof RR.showContainer === "function") {
-        await RR.showContainer("fullscreen");
-      }
-    } catch (_) {}
-    try {
-      const container = document.createElement("div");
-      container.innerHTML = html;
-      uiRoot = container.querySelector(".recomposer-root");
-      if (document.body) {
-        const existing = document.body.querySelector(".recomposer-root");
-        if (existing) existing.remove();
-        document.body.appendChild(uiRoot);
-      }
+      if (typeof document === "undefined" || !document.body) return;
+      document.body.innerHTML = html;
+      document.body.style.margin = "0";
+      document.body.style.padding = "0";
+      document.body.style.width = "100%";
+      document.body.style.height = "100%";
+      document.body.style.overflow = "auto";
+      uiRoot = document.body.querySelector(".recomposer-root");
     } catch (err) {
       warn("UI render error:", err);
       return;
     }
     try {
+      if (RR && typeof RR.showContainer === "function") {
+        await RR.showContainer("fullscreen");
+      }
+    } catch (_) {}
+    try {
       if (!uiRoot) return;
+      document.body.addEventListener("click", (e) => {
+        if (e.target === document.body) {
+          try { document.body.innerHTML = ""; } catch (_) {}
+          try {
+            if (RR && typeof RR.hideContainer === "function") RR.hideContainer();
+          } catch (_) {}
+        }
+      });
+      const tabs = uiRoot.querySelectorAll(".recomposer-tab");
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const target = tab.getAttribute("data-tab");
+          uiRoot.querySelectorAll(".recomposer-tab").forEach((t) => t.classList.remove("active"));
+          uiRoot.querySelectorAll(".recomposer-tab-panel").forEach((p) => p.classList.remove("active"));
+          tab.classList.add("active");
+          const panel = uiRoot.querySelector(`.recomposer-tab-panel[data-panel="${target}"]`);
+          if (panel) panel.classList.add("active");
+        });
+      });
       const saveBtn = uiRoot.querySelector(".recomposer-save");
       if (saveBtn) {
         saveBtn.addEventListener("click", async () => {
@@ -2330,9 +2694,7 @@
       const closeBtn = uiRoot.querySelector(".recomposer-close");
       if (closeBtn) {
         closeBtn.addEventListener("click", async () => {
-          try {
-            if (uiRoot && uiRoot.parentNode) uiRoot.parentNode.removeChild(uiRoot);
-          } catch (_) {}
+          try { document.body.innerHTML = ""; } catch (_) {}
           try {
             if (RR && typeof RR.hideContainer === "function") await RR.hideContainer();
           } catch (_) {}
@@ -2502,7 +2864,11 @@
       const trace = newTrace("test", "test");
       const deadline = createDeadline(50);
       const roles = selectRoles(DEFAULT_ROLES, [{ id: "pov_secret_risk", severity: "high" }], "balanced", settings);
-      const profiles = settings.role_profiles;
+      const profiles = deepClone(settings.role_profiles);
+      Object.keys(profiles).forEach((rid) => {
+        profiles[rid].endpoint = "https://test.example.com/v1";
+        profiles[rid].model = "test-model";
+      });
       const result = await scheduleRoles(roles, profiles, segs, "", segs, deadline, trace, 5);
       deadline.cancel();
       if (typeof trace.active_calls_final !== "number") throw new Error("active_calls_final not recorded");
@@ -2723,7 +3089,12 @@
       try {
         const deadline = createDeadline(80);
         const roles = selectRoles(DEFAULT_ROLES, [{ id: "pov_secret_risk", severity: "high" }], "balanced", settings);
-        const result = await scheduleRoles(roles, settings.role_profiles, segs, "", segs, deadline, trace, 5);
+        const testProfiles = deepClone(settings.role_profiles);
+        Object.keys(testProfiles).forEach((rid) => {
+          testProfiles[rid].endpoint = "https://test.example.com/v1";
+          testProfiles[rid].model = "test-model";
+        });
+        const result = await scheduleRoles(roles, testProfiles, segs, "", segs, deadline, trace, 5);
         deadline.cancel();
         if (trace.active_calls_final !== 0) throw new Error(`active_calls_final should be 0, got ${trace.active_calls_final}`);
       } finally {
@@ -2772,7 +3143,12 @@
         const roles = selectRoles(DEFAULT_ROLES, [{ id: "pov_secret_risk", severity: "high" }], "balanced", settings);
         const specialistCount = roles.filter((r) => !r.is_composer).length;
         expectedMax = specialistCount + 1;
-        await scheduleRoles(roles, settings.role_profiles, segs, "", segs, deadline, trace, 5);
+        const testProfiles = deepClone(settings.role_profiles);
+        Object.keys(testProfiles).forEach((rid) => {
+          testProfiles[rid].endpoint = "https://test.example.com/v1";
+          testProfiles[rid].model = "test-model";
+        });
+        await scheduleRoles(roles, testProfiles, segs, "", segs, deadline, trace, 5);
         deadline.cancel();
         if (callCount !== expectedMax) throw new Error(`callCount ${callCount} should equal exactly ${expectedMax} (specialist ${specialistCount} + composer 1)`);
         if (specialistCalls !== specialistCount) throw new Error(`specialistCalls ${specialistCalls} should equal ${specialistCount}`);
@@ -2932,8 +3308,8 @@
       return `fence:${codeFenceSegs.length} inline:${inlineCodeSegs.length} outerFound:${!!outerInline} innerLeaked:${!!innerInline}`;
     });
 
-    // Test 33: 모의 RisuAI에서 registerSetting/registerButton 등록 + openSettingsUI 실행 검증
-    await asyncTest("33_mock_risu_ui_registration_and_open", async () => {
+    // Test 33: 등록/요소 계약 검사 — document 없으면 renderUI 문자열 검사, 있으면 DOM mock으로 검증
+    await asyncTest("33_ui_registration_and_element_contract", async () => {
       const mockR = {
         _registeredSettings: [],
         _registeredButtons: [],
@@ -2941,11 +3317,13 @@
         _arguments: [],
         _showContainerCalled: false,
         _hideContainerCalled: false,
+        _buttonCallback: null,
         async registerSetting(name, callback, icon, type) {
           this._registeredSettings.push({ name, callback, icon, type });
         },
-        async registerButton(buttonObj) {
+        async registerButton(buttonObj, callback) {
           this._registeredButtons.push(buttonObj);
+          this._buttonCallback = callback;
         },
         addRisuReplacer(event, fn) {
           this._replacers[event] = fn;
@@ -2965,32 +3343,97 @@
         const hasSetting = mockR._registeredSettings.some((s) => s.name === "Risu Recomposer" && s.type === "html");
         const buttonObj = mockR._registeredButtons.find((b) => b.name === "Risu Recomposer Settings");
         const hasButton = !!buttonObj;
-        const hasButtonId = buttonObj && buttonObj.id === "risu-recomposer-settings";
-        const hasButtonLocation = buttonObj && buttonObj.location === "hamburger";
+        const hasButtonId = buttonObj && buttonObj.id === "risu-recomposer-chat-btn";
+        const hasButtonLocation = buttonObj && buttonObj.location === "chat";
         const hasButtonIconType = buttonObj && buttonObj.iconType === "html";
-        const hasButtonCallback = buttonObj && typeof buttonObj.onClick === "function";
+        const hasButtonCallback = typeof mockR._buttonCallback === "function";
         const hasBefore = !!mockR._replacers.beforeRequest;
         const hasAfter = !!mockR._replacers.afterRequest;
         if (!hasSetting) throw new Error("registerSetting not called with html type");
         if (!hasButton) throw new Error("registerButton not called");
-        if (!hasButtonId) throw new Error("registerButton missing id");
-        if (!hasButtonLocation) throw new Error("registerButton missing location=hamburger");
+        if (!hasButtonId) throw new Error("registerButton missing id=risu-recomposer-chat-btn");
+        if (!hasButtonLocation) throw new Error("registerButton missing location=chat");
         if (!hasButtonIconType) throw new Error("registerButton missing iconType=html");
-        if (!hasButtonCallback) throw new Error("registerButton missing onClick callback");
+        if (!hasButtonCallback) throw new Error("registerButton second callback arg missing");
         if (!hasBefore || !hasAfter) throw new Error("addRisuReplacer not called for both events");
-        const settingCallback = mockR._registeredSettings.find((s) => s.name === "Risu Recomposer").callback;
-        await settingCallback();
-        if (!mockR._showContainerCalled) throw new Error("showContainer not called by openSettingsUI");
-        const rootEl = document.querySelector(".recomposer-root");
-        if (!rootEl) throw new Error(".recomposer-root not created in DOM");
-        const saveBtn = rootEl.querySelector(".recomposer-save");
-        const closeBtn = rootEl.querySelector(".recomposer-close");
-        if (!saveBtn) throw new Error("save button not found");
-        if (!closeBtn) throw new Error("close button not found");
-        closeBtn.click();
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        if (!mockR._hideContainerCalled) throw new Error("hideContainer not called after close");
-        return `setting:${hasSetting} button:${hasButton} id:${hasButtonId} loc:${hasButtonLocation} iconType:${hasButtonIconType} cb:${hasButtonCallback} show:${mockR._showContainerCalled} hide:${mockR._hideContainerCalled}`;
+        const s = defaultSettings();
+        const uiHtml = renderUI(s);
+        if (uiHtml.indexOf("recomposer-root") < 0) throw new Error("renderUI missing .recomposer-root");
+        if (uiHtml.indexOf("recomposer-tab") < 0) throw new Error("renderUI missing tab structure");
+        if (uiHtml.indexOf('data-tab="general"') < 0) throw new Error("renderUI missing General tab");
+        if (uiHtml.indexOf('data-tab="roles"') < 0) throw new Error("renderUI missing Roles tab");
+        if (uiHtml.indexOf('data-tab="trace"') < 0) throw new Error("renderUI missing Trace tab");
+        if (uiHtml.indexOf("recomposer-save") < 0) throw new Error("renderUI missing save button");
+        if (uiHtml.indexOf("recomposer-close") < 0) throw new Error("renderUI missing close button");
+        if (uiHtml.indexOf("recomposer-role-row") < 0) throw new Error("renderUI missing role rows");
+        if (uiHtml.indexOf("recomposer-provider-table") >= 0) throw new Error("renderUI should not contain provider details table");
+        if (uiHtml.indexOf("--rc-bg") < 0) throw new Error("renderUI missing CSS variables");
+        if (uiHtml.indexOf("max-width: 760px") < 0) throw new Error("renderUI missing max-width 760px");
+        if (uiHtml.indexOf("grid-template-columns") < 0) throw new Error("renderUI missing responsive grid");
+        if (uiHtml.indexOf("@media") < 0) throw new Error("renderUI missing media query");
+        if (uiHtml.indexOf("#0B0D11") < 0) throw new Error("renderUI missing dark background color");
+        if (uiHtml.indexOf("recomposer-btn-primary") < 0) throw new Error("renderUI missing primary button class");
+        if (uiHtml.indexOf("recomposer-eyebrow") < 0) throw new Error("renderUI missing eyebrow label");
+        if (uiHtml.indexOf("recomposer-section-label") < 0) throw new Error("renderUI missing section labels");
+        if (typeof document !== "undefined" && document.body) {
+          const settingCallback = mockR._registeredSettings.find((s2) => s2.name === "Risu Recomposer").callback;
+          await settingCallback();
+          if (!mockR._showContainerCalled) throw new Error("showContainer not called by openSettingsUI");
+          const rootEl = document.querySelector(".recomposer-root");
+          if (!rootEl) throw new Error(".recomposer-root not created in DOM");
+          const saveBtn = rootEl.querySelector(".recomposer-save");
+          const closeBtn = rootEl.querySelector(".recomposer-close");
+          if (!saveBtn) throw new Error("save button not found in DOM");
+          if (!closeBtn) throw new Error("close button not found in DOM");
+          closeBtn.click();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          if (!mockR._hideContainerCalled) throw new Error("hideContainer not called after close");
+          return `setting:${hasSetting} button:${hasButton} id:${hasButtonId} loc:${hasButtonLocation} iconType:${hasButtonIconType} cb:${hasButtonCallback} show:${mockR._showContainerCalled} hide:${mockR._hideContainerCalled} DOM:pass`;
+        }
+        return `setting:${hasSetting} button:${hasButton} id:${hasButtonId} loc:${hasButtonLocation} iconType:${hasButtonIconType} cb:${hasButtonCallback} string:pass`;
+      } finally {
+        globalThis.Risuai = origR;
+      }
+    });
+
+    // Test 34: streaming 감지 — payload type과 payload 객체에서 streaming 감지
+    test("34_streaming_detection", () => {
+      const fromType = detectStreamingState(null, "streaming");
+      if (!fromType.detected) throw new Error("streaming type not detected");
+      const fromPayload = detectStreamingState({ stream: true }, "main");
+      if (!fromPayload.detected) throw new Error("payload.stream not detected");
+      const fromOptions = detectStreamingState({ options: { stream: true } }, "main");
+      if (!fromOptions.detected) throw new Error("payload.options.stream not detected");
+      const notStreaming = detectStreamingState({ messages: [] }, "main");
+      if (notStreaming.detected) throw new Error("non-streaming should not be detected");
+      return `type:${fromType.detected} payload:${fromPayload.detected} options:${fromOptions.detected} normal:${!notStreaming.detected}`;
+    });
+
+    // Test 35: streaming trace 기록 — onAfterRequest에서 streaming 상태가 trace에 기록됨
+    await asyncTest("35_streaming_trace_recorded", async () => {
+      const origR = globalThis.Risuai;
+      const mockR = Object.assign({}, origR || {}, {
+        _registeredSettings: [], _registeredButtons: [], _replacers: {}, _arguments: [],
+        async registerSetting() {}, async registerButton() {},
+        addRisuReplacer(e, f) { this._replacers[e] = f; },
+        addArgument() {},
+        getStorage() { return Promise.resolve(null); },
+        setStorage() { return Promise.resolve(); },
+        async showContainer() {}, async hideContainer() {},
+      });
+      globalThis.Risuai = mockR;
+      try {
+        const beforeFn = mockR._replacers.beforeRequest || globalThis.__recomposer;
+        const afterFn = mockR._replacers.afterRequest;
+        if (!afterFn) {
+          await (globalThis.__recomposer.initialize || function() {})();
+        }
+        const after = mockR._replacers.afterRequest;
+        if (!after) throw new Error("afterRequest replacer not registered");
+        const before = mockR._replacers.beforeRequest;
+        if (before) await before({ options: { stream: true }, messages: [] }, "main");
+        const result = await after("some content here", "main");
+        return `result returned: ${typeof result === "string"}`;
       } finally {
         globalThis.Risuai = origR;
       }
@@ -3025,7 +3468,7 @@
       }
       try {
         if (RR && typeof RR.registerSetting === "function") {
-          await RR.registerSetting("Risu Recomposer", openSettingsUI, "🔧", "html");
+          await RR.registerSetting("Risu Recomposer", openSettingsUI, "🔧", "html", "risu-recomposer-settings");
         }
       } catch (err) {
         error("registerSetting error:", err);
@@ -3036,10 +3479,9 @@
             name: "Risu Recomposer Settings",
             icon: "🔧",
             iconType: "html",
-            location: "hamburger",
-            id: "risu-recomposer-settings",
-            onClick: openSettingsUI,
-          });
+            location: "chat",
+            id: "risu-recomposer-chat-btn",
+          }, openSettingsUI);
         }
       } catch (err) {
         error("registerButton error:", err);
@@ -3084,6 +3526,7 @@
       buildRolePrompt,
       callProvider,
       scheduleRoles,
+      detectStreamingState,
       DEFAULT_ROLES,
       PRESETS,
       PROVIDERS,
