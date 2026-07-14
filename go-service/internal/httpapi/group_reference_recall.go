@@ -39,17 +39,19 @@ type referenceRecallItem struct {
 	CoverageStatus          string         `json:"coverage_status"`
 	CoverageConfidence      string         `json:"coverage_confidence"`
 	MatchedRequestLocations []string       `json:"matched_request_locations"`
+	MatchedContextLocations []string       `json:"matched_context_locations"`
 	MissingFields           []string       `json:"missing_fields"`
 	DecisionReason          string         `json:"decision_reason"`
 	Metadata                map[string]any `json:"metadata,omitempty"`
 }
 
 type referenceCoverageSummary struct {
-	ContractVersion   string         `json:"contract_version"`
-	Mode              string         `json:"mode"`
-	EvaluatedCount    int            `json:"evaluated_count"`
-	StatusCounts      map[string]int `json:"status_counts"`
-	InjectionFiltered bool           `json:"injection_filtered"`
+	ContractVersion   string                              `json:"contract_version"`
+	Mode              string                              `json:"mode"`
+	EvaluatedCount    int                                 `json:"evaluated_count"`
+	StatusCounts      map[string]int                      `json:"status_counts"`
+	InjectionFiltered bool                                `json:"injection_filtered"`
+	SceneSignals      referenceCoverageSceneSignalSummary `json:"scene_signals"`
 }
 
 type referenceRecallResult struct {
@@ -85,7 +87,9 @@ func (s *Server) handleSessionReferenceRecallPreview(w http.ResponseWriter, r *h
 	if !decodeReferenceJSON(w, r, &req) {
 		return
 	}
-	result := s.buildSessionReferenceRecallWithMessages(r.Context(), strings.TrimSpace(r.PathValue("chat_session_id")), req.Query, req.Limit, req.ClientMeta, req.Messages)
+	sid := strings.TrimSpace(r.PathValue("chat_session_id"))
+	sceneContext := s.loadReferenceCoverageSceneContext(r.Context(), sid, prepareTurnSupportRecallLimit(prepareTurnRecallLimit(req.Limit)))
+	result := s.buildSessionReferenceRecallWithSceneContext(r.Context(), sid, req.Query, req.Limit, req.ClientMeta, req.Messages, sceneContext)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -94,6 +98,21 @@ func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query str
 }
 
 func (s *Server) buildSessionReferenceRecallWithMessages(ctx context.Context, sid, query string, limit int, clientMeta map[string]any, messages []map[string]any) referenceRecallResult {
+	return s.buildSessionReferenceRecallWithSceneContext(ctx, sid, query, limit, clientMeta, messages, referenceCoverageSceneContext{})
+}
+
+func (s *Server) loadReferenceCoverageSceneContext(ctx context.Context, sid string, ruleLimit int) referenceCoverageSceneContext {
+	if s.Store == nil || strings.TrimSpace(sid) == "" {
+		return referenceCoverageSceneContext{}
+	}
+	chatLogs, _ := s.Store.ListChatLogs(ctx, sid, 0, 0)
+	activeStates, _ := s.Store.ListActiveStates(ctx, sid, "")
+	canonicalLayers, _ := s.Store.ListCanonicalStateLayers(ctx, sid, "")
+	worldRules, _ := s.Store.ListWorldRules(ctx, sid)
+	return buildReferenceCoverageSceneContext(chatLogs, activeStates, canonicalLayers, worldRules, ruleLimit)
+}
+
+func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context, sid, query string, limit int, clientMeta map[string]any, messages []map[string]any, sceneContext referenceCoverageSceneContext) referenceRecallResult {
 	result := referenceRecallResult{
 		ContractVersion: referenceRecallContractVersion,
 		Status:          "skipped",
@@ -104,7 +123,7 @@ func (s *Server) buildSessionReferenceRecallWithMessages(ctx context.Context, si
 		Excluded:        []referenceRecallItem{},
 		Warnings:        []string{},
 		ScoreContract:   referenceVectorScoreContract(),
-		CoverageShadow:  newReferenceCoverageSummary(),
+		CoverageShadow:  newReferenceCoverageSummary(sceneContext),
 	}
 	if result.ChatSessionID == "" || result.Query == "" {
 		result.Warnings = append(result.Warnings, "missing_session_or_query")
@@ -189,7 +208,7 @@ func (s *Server) buildSessionReferenceRecallWithMessages(ctx context.Context, si
 			if !include {
 				continue
 			}
-			item = applyReferenceCoverageShadow(item, scope, result.Query, messages)
+			item = applyReferenceCoverageShadow(item, scope, result.Query, messages, sceneContext)
 			if item.Eligible {
 				result.Selected = append(result.Selected, item)
 			} else {
@@ -207,7 +226,7 @@ func (s *Server) buildSessionReferenceRecallWithMessages(ctx context.Context, si
 	if len(result.Selected) > limit {
 		result.Selected = result.Selected[:limit]
 	}
-	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded)
+	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded, sceneContext)
 	result.Status = "ready"
 	return result
 }

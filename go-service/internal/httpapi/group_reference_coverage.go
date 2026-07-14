@@ -6,24 +6,31 @@ import (
 	"unicode"
 )
 
-const referenceCoverageContractVersion = "coverage_shadow.v1"
+const referenceCoverageContractVersion = "coverage_shadow.v2"
 
 type referenceCoverageMessage struct {
 	location   string
 	normalized string
+	request    bool
 }
 
-func newReferenceCoverageSummary() referenceCoverageSummary {
+type referenceCoverageLocations struct {
+	All     []string
+	Request []string
+}
+
+func newReferenceCoverageSummary(sceneContext referenceCoverageSceneContext) referenceCoverageSummary {
 	return referenceCoverageSummary{
 		ContractVersion:   referenceCoverageContractVersion,
 		Mode:              "shadow",
 		StatusCounts:      map[string]int{},
 		InjectionFiltered: false,
+		SceneSignals:      summarizeReferenceCoverageSceneSignals(sceneContext),
 	}
 }
 
-func summarizeReferenceCoverage(selected, excluded []referenceRecallItem) referenceCoverageSummary {
-	summary := newReferenceCoverageSummary()
+func summarizeReferenceCoverage(selected, excluded []referenceRecallItem, sceneContext referenceCoverageSceneContext) referenceCoverageSummary {
+	summary := newReferenceCoverageSummary(sceneContext)
 	for _, item := range append(append([]referenceRecallItem{}, selected...), excluded...) {
 		status := strings.TrimSpace(item.CoverageStatus)
 		if status == "" {
@@ -35,9 +42,10 @@ func summarizeReferenceCoverage(selected, excluded []referenceRecallItem) refere
 	return summary
 }
 
-func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecallScope, query string, messages []map[string]any) referenceRecallItem {
+func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecallScope, query string, messages []map[string]any, sceneContext referenceCoverageSceneContext) referenceRecallItem {
 	item.NeededBy = []string{}
 	item.MatchedRequestLocations = []string{}
+	item.MatchedContextLocations = []string{}
 	item.MissingFields = []string{}
 
 	if !item.Eligible {
@@ -47,7 +55,7 @@ func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecal
 		return item
 	}
 
-	item.NeededBy = referenceCoverageNeededBy(item, scope, query)
+	item.NeededBy = referenceCoverageNeededBy(item, scope, query, sceneContext)
 	item.Needed = len(item.NeededBy) > 0
 	if !item.Needed {
 		item.CoverageStatus = "not_applicable"
@@ -56,29 +64,29 @@ func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecal
 		return item
 	}
 
-	requestMessages := referenceCoverageMessages(messages)
-	if len(requestMessages) == 0 {
+	coverageSources := append(referenceCoverageMessages(messages), referenceCoverageSceneMessages(sceneContext)...)
+	if len(coverageSources) == 0 {
 		item.CoverageStatus = "unknown"
 		item.CoverageConfidence = "low"
-		item.DecisionReason = "active_request_messages_unavailable"
+		item.DecisionReason = "coverage_sources_unavailable"
 		return item
 	}
 
-	if locations := referenceCoverageTextLocations(item.Text, requestMessages); len(locations) > 0 {
+	if locations := referenceCoverageTextLocations(item.Text, coverageSources); len(locations.All) > 0 {
 		item.CoverageStatus = "covered"
 		item.CoverageConfidence = "high"
-		item.MatchedRequestLocations = locations
+		applyReferenceCoverageLocations(&item, locations)
 		item.DecisionReason = "exact_reference_text_present"
 		return item
 	}
 
 	switch item.ReferenceKind {
 	case "entity":
-		locations := referenceCoverageNameLocations(referenceCoverageItemEntityNames(item, scope, item.SourceID), requestMessages)
-		if len(locations) > 0 {
+		locations := referenceCoverageNameLocations(referenceCoverageItemEntityNames(item, scope, item.SourceID), coverageSources)
+		if len(locations.All) > 0 {
 			item.CoverageStatus = "partial"
 			item.CoverageConfidence = "high"
-			item.MatchedRequestLocations = locations
+			applyReferenceCoverageLocations(&item, locations)
 			item.MissingFields = []string{"description"}
 			item.DecisionReason = "entity_present_description_missing"
 			return item
@@ -86,14 +94,14 @@ func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecal
 		item.CoverageStatus = "missing"
 		item.CoverageConfidence = "high"
 		item.MissingFields = []string{"entity_profile"}
-		item.DecisionReason = "needed_entity_absent_from_active_request"
+		item.DecisionReason = "needed_entity_absent_from_coverage_sources"
 	case "claim":
 		claim := scope.claims[item.SourceID]
-		locations := referenceCoverageNameLocations(referenceCoverageClaimSubjectNames(item, scope, claim.SubjectEntityID), requestMessages)
-		if len(locations) > 0 {
+		locations := referenceCoverageNameLocations(referenceCoverageClaimSubjectNames(item, scope, claim.SubjectEntityID), coverageSources)
+		if len(locations.All) > 0 {
 			item.CoverageStatus = "partial"
 			item.CoverageConfidence = "high"
-			item.MatchedRequestLocations = locations
+			applyReferenceCoverageLocations(&item, locations)
 			item.MissingFields = []string{referenceCoverageClaimField(claim.ClaimType)}
 			item.DecisionReason = "claim_subject_present_claim_missing"
 			return item
@@ -101,12 +109,12 @@ func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecal
 		item.CoverageStatus = "missing"
 		item.CoverageConfidence = "high"
 		item.MissingFields = []string{referenceCoverageClaimField(claim.ClaimType)}
-		item.DecisionReason = "needed_claim_absent_from_active_request"
+		item.DecisionReason = "needed_claim_absent_from_coverage_sources"
 	case "timeline":
 		item.CoverageStatus = "missing"
 		item.CoverageConfidence = "high"
 		item.MissingFields = []string{"event_detail"}
-		item.DecisionReason = "needed_timeline_fact_absent_from_active_request"
+		item.DecisionReason = "needed_timeline_fact_absent_from_coverage_sources"
 	default:
 		item.CoverageStatus = "unknown"
 		item.CoverageConfidence = "low"
@@ -115,7 +123,7 @@ func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecal
 	return item
 }
 
-func referenceCoverageNeededBy(item referenceRecallItem, scope referenceRecallScope, query string) []string {
+func referenceCoverageNeededBy(item referenceRecallItem, scope referenceRecallScope, query string, sceneContext referenceCoverageSceneContext) []string {
 	reasons := []string{}
 	addReason := func(reason string) {
 		for _, existing := range reasons {
@@ -152,6 +160,15 @@ func referenceCoverageNeededBy(item referenceRecallItem, scope referenceRecallSc
 			addReason("explicit_user_timeline_mention")
 		}
 	}
+	if referenceCoverageSceneSourcesMatchItem(item, scope, sceneContext.RecentDialogue) {
+		addReason("recent_completed_dialogue")
+	}
+	if referenceCoverageSceneSourcesMatchItem(item, scope, sceneContext.CurrentLocations) {
+		addReason("current_location")
+	}
+	if referenceCoverageSceneSourcesMatchItem(item, scope, sceneContext.ActiveRules) {
+		addReason("active_world_rule")
+	}
 	return reasons
 }
 
@@ -184,28 +201,33 @@ func referenceCoverageMessages(messages []map[string]any) []referenceCoverageMes
 		out = append(out, referenceCoverageMessage{
 			location:   fmt.Sprintf("%s#%d", role, index),
 			normalized: normalized,
+			request:    true,
 		})
 	}
 	return out
 }
 
-func referenceCoverageTextLocations(text string, messages []referenceCoverageMessage) []string {
+func referenceCoverageTextLocations(text string, messages []referenceCoverageMessage) referenceCoverageLocations {
 	needle := referenceCoverageNormalize(text)
 	if needle == "" {
-		return nil
+		return referenceCoverageLocations{}
 	}
-	locations := []string{}
+	locations := referenceCoverageLocations{}
 	for _, message := range messages {
 		if strings.Contains(message.normalized, needle) {
-			locations = append(locations, message.location)
+			locations.All = append(locations.All, message.location)
+			if message.request {
+				locations.Request = append(locations.Request, message.location)
+			}
 		}
 	}
 	return locations
 }
 
-func referenceCoverageNameLocations(names []string, messages []referenceCoverageMessage) []string {
-	locations := []string{}
+func referenceCoverageNameLocations(names []string, messages []referenceCoverageMessage) referenceCoverageLocations {
+	locations := referenceCoverageLocations{}
 	seen := map[string]bool{}
+	requestSeen := map[string]bool{}
 	for _, name := range names {
 		needle := referenceCoverageNormalize(name)
 		if needle == "" {
@@ -214,11 +236,20 @@ func referenceCoverageNameLocations(names []string, messages []referenceCoverage
 		for _, message := range messages {
 			if strings.Contains(message.normalized, needle) && !seen[message.location] {
 				seen[message.location] = true
-				locations = append(locations, message.location)
+				locations.All = append(locations.All, message.location)
+			}
+			if message.request && strings.Contains(message.normalized, needle) && !requestSeen[message.location] {
+				requestSeen[message.location] = true
+				locations.Request = append(locations.Request, message.location)
 			}
 		}
 	}
 	return locations
+}
+
+func applyReferenceCoverageLocations(item *referenceRecallItem, locations referenceCoverageLocations) {
+	item.MatchedContextLocations = append([]string{}, locations.All...)
+	item.MatchedRequestLocations = append([]string{}, locations.Request...)
 }
 
 func referenceCoverageContainsAnyName(normalizedText string, names []string) bool {

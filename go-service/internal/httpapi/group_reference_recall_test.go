@@ -137,6 +137,63 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	}
 }
 
+func TestPrepareTurnReferenceCoverageUsesStoreSceneSignals(t *testing.T) {
+	fake := newReferenceBindingHTTPStore()
+	fake.referenceLibraryHTTPStore.Store = &turnRecordingStore{returnChatLogs: []store.ChatLog{
+		{ID: 1, ChatSessionID: "session-1", TurnIndex: 3, Role: "user", Content: "Rumi steps onto the stage."},
+		{ID: 2, ChatSessionID: "session-1", TurnIndex: 3, Role: "assistant", Content: "Rumi checks the rehearsal marks."},
+	}}
+	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
+	fake.continuities = []store.ReferenceContinuity{{ContinuityID: "continuity-1", WorkID: "work-1", Status: "active"}}
+	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 10, BranchKey: "main", ReviewStatus: "approved"}}
+	fake.entities = []store.ReferenceEntity{{EntityID: "entity-rumi", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "Rumi", EntityType: "character", DescriptionText: "Huntrix's leader.", ReviewStatus: "approved"}}
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", CurrentNodeID: "node-current", Priority: 10}}
+	embeddingServer, _ := referenceVectorEmbeddingServer(t)
+	defer embeddingServer.Close()
+	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{{Document: referenceRecallVectorDocument("entity", "entity-rumi"), ChromaRank: 1, CosineSimilarity: 0.9, CosineAvailable: true}}}
+	srv := referenceRecallTestServer(fake, vectorStore, embeddingServer.URL)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{
+		"chat_session_id": "session-1",
+		"turn_index":      4,
+		"raw_user_input":  "Continue.",
+		"messages":        []map[string]any{{"role": "user", "content": "Continue."}},
+		"settings": map[string]any{
+			"injection_enabled":   true,
+			"max_injection_chars": 1200,
+			"top_k":               3,
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prepare-turn status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	result := map[string]any{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	recall := result["reference_recall"].(map[string]any)
+	coverage := recall["coverage_shadow"].(map[string]any)
+	if coverage["contract_version"] != "coverage_shadow.v2" || coverage["injection_filtered"] != false {
+		t.Fatalf("coverage contract = %#v", coverage)
+	}
+	sceneSignals := coverage["scene_signals"].(map[string]any)
+	if sceneSignals["recent_completed_turn"] != float64(3) || sceneSignals["recent_dialogue_count"] != float64(2) {
+		t.Fatalf("scene signals = %#v", sceneSignals)
+	}
+	selected := recall["selected"].([]any)[0].(map[string]any)
+	if selected["coverage_status"] != "partial" || selected["needed"] != true || !anyStringSliceContains(selected["needed_by"], "recent_completed_dialogue") {
+		t.Fatalf("store scene coverage = %#v", selected)
+	}
+	if len(selected["matched_request_locations"].([]any)) != 0 || len(selected["matched_context_locations"].([]any)) == 0 {
+		t.Fatalf("store scene match locations = %#v", selected)
+	}
+}
+
 func prepareTurnReferenceFirstTurnResponse(t *testing.T, handler http.Handler) map[string]any {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
@@ -227,4 +284,14 @@ func containsAll(text string, values ...string) bool {
 		}
 	}
 	return true
+}
+
+func anyStringSliceContains(value any, needle string) bool {
+	items, _ := value.([]any)
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }

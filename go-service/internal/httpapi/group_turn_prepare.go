@@ -266,7 +266,9 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	timing.addElapsed("injection_assembly", injectionStartedAt)
 	referenceRecallStartedAt := time.Now()
-	referenceRecall := s.buildSessionReferenceRecallWithMessages(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta, req.Messages)
+	referenceSceneContext := buildReferenceCoverageSceneContext(chatLogs, activeStates, canonicalLayers, worldRules, supportRecallLimit)
+	referenceSceneContext.ActiveRules = referenceCoverageRenderedActiveRules(injectionAssembly.WorldRulesText)
+	referenceRecall := s.buildSessionReferenceRecallWithSceneContext(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta, req.Messages, referenceSceneContext)
 	referenceInjectionEnabled := referenceRecall.LiveBindingCount > 0
 	referenceInjectionText := ""
 	if referenceInjectionEnabled {
