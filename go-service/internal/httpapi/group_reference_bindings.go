@@ -16,8 +16,6 @@ type referenceBindingRequest struct {
 	WorkID              string `json:"work_id"`
 	ContinuityID        string `json:"continuity_id"`
 	BindingRole         string `json:"binding_role"`
-	Enabled             *bool  `json:"enabled,omitempty"`
-	InjectionEnabled    *bool  `json:"injection_enabled,omitempty"`
 	AnchorMode          string `json:"anchor_mode"`
 	CurrentNodeID       string `json:"current_node_id"`
 	RevealCeilingNodeID string `json:"reveal_ceiling_node_id"`
@@ -224,15 +222,6 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 	bindingRole := referenceBindingEnum(req.BindingRole, "primary", map[string]bool{"primary": true, "crossover": true, "reference_only": true}, "binding_role_invalid", &result.BlockedReasons)
 	anchorMode := referenceBindingEnum(req.AnchorMode, "manual", map[string]bool{"manual": true, "assisted": true}, "anchor_mode_invalid", &result.BlockedReasons)
 	futurePolicy := referenceBindingEnum(req.FuturePolicy, "block", map[string]bool{"block": true, "preview_only": true}, "future_policy_invalid", &result.BlockedReasons)
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-	injectionEnabled := false
-	if req.InjectionEnabled != nil {
-		injectionEnabled = *req.InjectionEnabled
-	}
-
 	if workID != "" {
 		work, err := ref.GetReferenceWork(ctx, workID)
 		if errors.Is(err, store.ErrNotFound) {
@@ -275,9 +264,6 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 			result.Existing = existing
 			result.Action = "update"
 			bindingID = existing.BindingID
-			if req.InjectionEnabled == nil {
-				injectionEnabled = existing.InjectionEnabled
-			}
 		} else if bindingID != "" {
 			result.BlockedReasons = append(result.BlockedReasons, "binding_not_found")
 		}
@@ -321,8 +307,8 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 		WorkID:              workID,
 		ContinuityID:        continuityID,
 		BindingRole:         bindingRole,
-		Enabled:             enabled,
-		InjectionEnabled:    injectionEnabled,
+		Enabled:             true,
+		InjectionEnabled:    true,
 		AnchorMode:          anchorMode,
 		CurrentNodeID:       strings.TrimSpace(req.CurrentNodeID),
 		RevealCeilingNodeID: strings.TrimSpace(req.RevealCeilingNodeID),

@@ -71,7 +71,7 @@ func TestReferenceRecallPrivateClaimRequiresCurrentSceneKnower(t *testing.T) {
 }
 
 func TestReferenceRecallInjectionIsSmallAndSessionFactsStayHigherPriority(t *testing.T) {
-	result := referenceRecallResult{Status: "ready", Selected: []referenceRecallItem{{WorkTitle: "Example", ReferenceKind: "claim", Text: "Canon fact", Metadata: map[string]any{"injection_enabled": true}}}}
+	result := referenceRecallResult{Status: "ready", Selected: []referenceRecallItem{{WorkTitle: "Example", ReferenceKind: "claim", Text: "Canon fact"}}}
 	text := formatReferenceRecallInjection(result, 500)
 	if text == "" || !containsAll(text, "[Original Work Reference]", "Current user input and session-established facts override", "Canon fact") {
 		t.Fatalf("injection = %q", text)
@@ -81,13 +81,13 @@ func TestReferenceRecallInjectionIsSmallAndSessionFactsStayHigherPriority(t *tes
 	}
 }
 
-func TestPrepareTurnReferenceRecallStaysShadowUntilBindingOptIn(t *testing.T) {
+func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	fake := newReferenceBindingHTTPStore()
 	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
 	fake.continuities = []store.ReferenceContinuity{{ContinuityID: "continuity-1", WorkID: "work-1", Status: "active"}}
 	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 10, BranchKey: "main", ReviewStatus: "approved"}}
 	fake.claims = []store.ReferenceClaim{{ClaimID: "claim-safe", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "The gate opens only at night.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"}}
-	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", Enabled: true, CurrentNodeID: "node-current"}}
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", Enabled: false, InjectionEnabled: false, CurrentNodeID: "node-current"}}
 	embeddingServer, _ := referenceVectorEmbeddingServer(t)
 	defer embeddingServer.Close()
 	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{{Document: referenceRecallVectorDocument("claim", "claim-safe"), ChromaRank: 1, CosineSimilarity: 0.9, CosineAvailable: true}}}
@@ -95,16 +95,6 @@ func TestPrepareTurnReferenceRecallStaysShadowUntilBindingOptIn(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	shadow := prepareTurnReferenceResponse(t, mux)
-	if text, _ := shadow["injection_text"].(string); strings.Contains(text, "[Original Work Reference]") {
-		t.Fatalf("shadow binding changed injection: %q", text)
-	}
-	shadowState := shadow["reference_injection"].(map[string]any)
-	if shadowState["applied"] != false || shadowState["mode"] != "shadow" {
-		t.Fatalf("shadow state = %#v", shadowState)
-	}
-
-	fake.bindings[0].InjectionEnabled = true
 	live := prepareTurnReferenceResponse(t, mux)
 	if text, _ := live["injection_text"].(string); !containsAll(text, "[Original Work Reference]", "The gate opens only at night") {
 		t.Fatalf("live reference injection missing: %q", text)
@@ -124,6 +114,16 @@ func TestPrepareTurnReferenceRecallStaysShadowUntilBindingOptIn(t *testing.T) {
 	pack := firstTurn["injection_pack"].(map[string]any)
 	if pack["reference_applied"] != true || pack["reference_selected_count"] != float64(1) {
 		t.Fatalf("first-turn reference pack = %#v", pack)
+	}
+
+	fake.bindings = nil
+	unlinked := prepareTurnReferenceResponse(t, mux)
+	if text, _ := unlinked["injection_text"].(string); strings.Contains(text, "[Original Work Reference]") {
+		t.Fatalf("unlinked session still received reference injection: %q", text)
+	}
+	unlinkedState := unlinked["reference_injection"].(map[string]any)
+	if unlinkedState["applied"] != false {
+		t.Fatalf("unlinked state = %#v", unlinkedState)
 	}
 }
 

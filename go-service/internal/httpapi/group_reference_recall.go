@@ -48,7 +48,6 @@ type referenceRecallResult struct {
 	LiveBindingCount int                   `json:"live_binding_count"`
 	Warnings         []string              `json:"warnings"`
 	ScoreContract    map[string]any        `json:"score_contract"`
-	liveSelected     []referenceRecallItem
 }
 
 type referenceRecallScope struct {
@@ -104,17 +103,13 @@ func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query str
 		result.Warnings = append(result.Warnings, "embedding_config_missing")
 		return result
 	}
-	bindings, err := ref.ListSessionReferenceBindings(ctx, result.ChatSessionID, true)
+	bindings, err := ref.ListSessionReferenceBindings(ctx, result.ChatSessionID, false)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "reference_binding_read_failed: "+err.Error())
 		return result
 	}
 	result.BindingCount = len(bindings)
-	for _, binding := range bindings {
-		if binding.InjectionEnabled {
-			result.LiveBindingCount++
-		}
-	}
+	result.LiveBindingCount = len(bindings)
 	if len(bindings) == 0 {
 		result.Status = "empty"
 		return result
@@ -173,7 +168,6 @@ func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query str
 				continue
 			}
 			if item.Eligible {
-				item.Metadata["injection_enabled"] = binding.InjectionEnabled
 				result.Selected = append(result.Selected, item)
 			} else {
 				result.Excluded = append(result.Excluded, item)
@@ -187,11 +181,6 @@ func (s *Server) buildSessionReferenceRecall(ctx context.Context, sid, query str
 		}
 		return result.Selected[i].ChromaRank < result.Selected[j].ChromaRank
 	})
-	for _, item := range result.Selected {
-		if enabled, _ := item.Metadata["injection_enabled"].(bool); enabled {
-			result.liveSelected = append(result.liveSelected, item)
-		}
-	}
 	if len(result.Selected) > limit {
 		result.Selected = result.Selected[:limit]
 	}
@@ -446,14 +435,7 @@ func formatReferenceRecallInjection(result referenceRecallResult, maxChars int) 
 	var builder strings.Builder
 	builder.WriteString(header)
 	included := 0
-	items := result.liveSelected
-	if items == nil {
-		items = result.Selected
-	}
-	for _, item := range items {
-		if enabled, _ := item.Metadata["injection_enabled"].(bool); !enabled {
-			continue
-		}
+	for _, item := range result.Selected {
 		line := fmt.Sprintf("- [%s / %s] %s\n", item.WorkTitle, item.ReferenceKind, strings.TrimSpace(item.Text))
 		if builder.Len()+len(line) > maxChars {
 			break
