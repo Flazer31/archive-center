@@ -185,6 +185,7 @@ func validReferenceBindingBody() map[string]any {
 		"work_id":                "work-1",
 		"continuity_id":          "continuity-1",
 		"binding_role":           "primary",
+		"reference_mode":         "primary",
 		"anchor_mode":            "manual",
 		"current_node_id":        "node-start",
 		"reveal_ceiling_node_id": "node-middle",
@@ -216,6 +217,9 @@ func TestReferenceBindingPreviewCRUDAndUnlinkPreservesWork(t *testing.T) {
 	}
 	if binding["enabled"] != true || binding["injection_enabled"] != true {
 		t.Fatalf("linked binding must be active without extra toggles: %#v", binding)
+	}
+	if binding["reference_mode"] != "primary" {
+		t.Fatalf("reference mode was not persisted: %#v", binding)
 	}
 
 	code, listed := referenceBindingHTTPCall(t, mux, http.MethodGet, "/sessions/session-1/reference-bindings", nil)
@@ -252,6 +256,7 @@ func TestReferenceBindingPreviewBlocksInvalidScopes(t *testing.T) {
 	}{
 		{name: "work", edit: func(v map[string]any) { v["work_id"] = "missing" }, want: "work_not_found"},
 		{name: "continuity", edit: func(v map[string]any) { v["continuity_id"] = "missing" }, want: "continuity_not_in_work"},
+		{name: "reference mode", edit: func(v map[string]any) { v["reference_mode"] = "automatic_guess" }, want: "reference_mode_invalid"},
 		{name: "unknown node", edit: func(v map[string]any) { v["current_node_id"] = "missing" }, want: "current_node_not_approved"},
 		{name: "pending node", edit: func(v map[string]any) { v["current_node_id"] = "node-pending" }, want: "current_node_not_approved"},
 		{name: "cross branch", edit: func(v map[string]any) { v["reveal_ceiling_node_id"] = "node-alt" }, want: "selected_nodes_cross_branch"},

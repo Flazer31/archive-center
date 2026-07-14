@@ -151,6 +151,7 @@ type SessionReferenceBinding struct {
 	WorkID              string    `json:"work_id"`
 	ContinuityID        string    `json:"continuity_id"`
 	BindingRole         string    `json:"binding_role"`
+	ReferenceMode       string    `json:"reference_mode"`
 	Enabled             bool      `json:"enabled"`
 	InjectionEnabled    bool      `json:"injection_enabled"`
 	AnchorMode          string    `json:"anchor_mode"`

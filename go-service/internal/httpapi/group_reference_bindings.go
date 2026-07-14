@@ -10,12 +10,13 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-const referenceBindingContractVersion = "reference_binding.v1"
+const referenceBindingContractVersion = "reference_binding.v2"
 
 type referenceBindingRequest struct {
 	WorkID              string `json:"work_id"`
 	ContinuityID        string `json:"continuity_id"`
 	BindingRole         string `json:"binding_role"`
+	ReferenceMode       string `json:"reference_mode"`
 	AnchorMode          string `json:"anchor_mode"`
 	CurrentNodeID       string `json:"current_node_id"`
 	RevealCeilingNodeID string `json:"reveal_ceiling_node_id"`
@@ -220,6 +221,7 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 	}
 
 	bindingRole := referenceBindingEnum(req.BindingRole, "primary", map[string]bool{"primary": true, "crossover": true, "reference_only": true}, "binding_role_invalid", &result.BlockedReasons)
+	referenceMode := referenceBindingEnum(req.ReferenceMode, "supplement", map[string]bool{"supplement": true, "primary": true}, "reference_mode_invalid", &result.BlockedReasons)
 	anchorMode := referenceBindingEnum(req.AnchorMode, "manual", map[string]bool{"manual": true, "assisted": true}, "anchor_mode_invalid", &result.BlockedReasons)
 	futurePolicy := referenceBindingEnum(req.FuturePolicy, "block", map[string]bool{"block": true, "preview_only": true}, "future_policy_invalid", &result.BlockedReasons)
 	if workID != "" {
@@ -307,6 +309,7 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 		WorkID:              workID,
 		ContinuityID:        continuityID,
 		BindingRole:         bindingRole,
+		ReferenceMode:       referenceMode,
 		Enabled:             true,
 		InjectionEnabled:    true,
 		AnchorMode:          anchorMode,

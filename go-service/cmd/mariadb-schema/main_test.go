@@ -326,6 +326,9 @@ func TestCompatibilityMigrationsIncludeReferenceLibraryTables(t *testing.T) {
 		"session_reference_runtime",
 	}
 	joined := strings.Join(compatibilityMigrationStatements(), "\n")
+	if !strings.Contains(joined, "ADD COLUMN IF NOT EXISTS reference_mode") {
+		t.Fatal("compatibility migration does not add session_reference_bindings.reference_mode")
+	}
 	for _, tableName := range tableNames {
 		required := "CREATE TABLE IF NOT EXISTS " + tableName
 		if !strings.Contains(joined, required) {

@@ -8,7 +8,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-const referenceCoverageApplicationContractVersion = "coverage_apply.v1"
+const referenceCoverageApplicationContractVersion = "coverage_apply.v2"
 
 type referenceInjectionItem struct {
 	BindingID        string   `json:"binding_id"`
@@ -17,6 +17,7 @@ type referenceInjectionItem struct {
 	ContinuityID     string   `json:"continuity_id"`
 	ReferenceKind    string   `json:"reference_kind"`
 	SourceID         string   `json:"source_id"`
+	ReferenceMode    string   `json:"reference_mode"`
 	Text             string   `json:"text"`
 	SourceExcerpt    string   `json:"source_excerpt,omitempty"`
 	SourceDocumentID string   `json:"source_document_id,omitempty"`
@@ -42,7 +43,9 @@ type referenceCoverageApplicationSummary struct {
 	FieldIndexApplied    int            `json:"field_index_applied_count"`
 	SkippedStatusCounts  map[string]int `json:"skipped_status_counts"`
 	SkippedNoSceneNeed   int            `json:"skipped_no_scene_need_count"`
+	SkippedUnknownMode   int            `json:"skipped_unknown_mode_count"`
 	SkippedEmptyContent  int            `json:"skipped_empty_content_count"`
+	ModeCounts           map[string]int `json:"mode_counts"`
 	TruncatedByItemLimit int            `json:"truncated_by_item_limit_count"`
 }
 
@@ -51,6 +54,7 @@ func newReferenceCoverageApplicationSummary() referenceCoverageApplicationSummar
 		ContractVersion:     referenceCoverageApplicationContractVersion,
 		Mode:                "applied",
 		SkippedStatusCounts: map[string]int{},
+		ModeCounts:          map[string]int{},
 	}
 }
 
@@ -78,19 +82,41 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 	applied := map[string]bool{}
 	for _, candidate := range selected {
 		key := referenceCoverageSourceKey(candidate.BindingID, candidate.ReferenceKind, candidate.SourceID)
-		needed, ok := neededByKey[key]
-		if !ok {
+		needed, neededFound := neededByKey[key]
+		scope, scopeFound := scopes[candidate.BindingID]
+		if !scopeFound {
+			continue
+		}
+		referenceMode := referenceBindingMode(scope.binding)
+		if referenceMode == referenceModeUnknown {
+			summary.SkippedUnknownMode++
+			continue
+		}
+		text := ""
+		selectionSource := "chroma_candidate"
+		if neededFound {
+			if !referenceCoverageStatusInjectable(needed.CoverageStatus) || !needed.Eligible {
+				continue
+			}
+			text = referenceCoverageMissingFieldText(scope, needed)
+		} else if referenceMode == referenceModePrimary && referencePrimaryCandidateApplicable(candidate) {
+			needed = referenceCoverageNeededSource{
+				BindingID:         candidate.BindingID,
+				WorkID:            candidate.WorkID,
+				ContinuityID:      candidate.ContinuityID,
+				ReferenceKind:     candidate.ReferenceKind,
+				SourceID:          candidate.SourceID,
+				NeededBy:          []string{"primary_chroma_relevance"},
+				CoverageStatus:    "primary_context",
+				Eligible:          true,
+				EligibilityReason: candidate.Reason,
+			}
+			text = strings.TrimSpace(candidate.Text)
+			selectionSource = "primary_chroma_candidate"
+		} else {
 			summary.SkippedNoSceneNeed++
 			continue
 		}
-		if !referenceCoverageStatusInjectable(needed.CoverageStatus) || !needed.Eligible {
-			continue
-		}
-		scope, ok := scopes[candidate.BindingID]
-		if !ok {
-			continue
-		}
-		text := referenceCoverageMissingFieldText(scope, needed)
 		if text == "" {
 			summary.SkippedEmptyContent++
 			continue
@@ -103,16 +129,18 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 			ContinuityID:     candidate.ContinuityID,
 			ReferenceKind:    candidate.ReferenceKind,
 			SourceID:         candidate.SourceID,
+			ReferenceMode:    referenceMode,
 			Text:             text,
 			CoverageStatus:   needed.CoverageStatus,
 			MissingFields:    append([]string{}, needed.MissingFields...),
 			NeededBy:         append([]string{}, needed.NeededBy...),
-			SelectionSource:  "chroma_candidate",
+			SelectionSource:  selectionSource,
 			ChromaRank:       &rank,
 			Distance:         candidate.Distance,
 			CosineSimilarity: candidate.CosineSimilarity,
 		}
 		items = append(items, referenceCoverageAttachSourceExcerpt(item, scope, needed))
+		summary.ModeCounts[referenceMode]++
 		applied[key] = true
 		summary.ChromaAppliedCount++
 		if len(items) == limit {
@@ -145,6 +173,11 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 		if !ok {
 			continue
 		}
+		referenceMode := referenceBindingMode(scope.binding)
+		if referenceMode == referenceModeUnknown {
+			summary.SkippedUnknownMode++
+			continue
+		}
 		text := referenceCoverageMissingFieldText(scope, needed)
 		if text == "" {
 			summary.SkippedEmptyContent++
@@ -161,6 +194,7 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 			ContinuityID:    needed.ContinuityID,
 			ReferenceKind:   needed.ReferenceKind,
 			SourceID:        needed.SourceID,
+			ReferenceMode:   referenceMode,
 			Text:            text,
 			CoverageStatus:  needed.CoverageStatus,
 			MissingFields:   append([]string{}, needed.MissingFields...),
@@ -168,6 +202,7 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 			SelectionSource: "coverage_field_index",
 		}
 		items = append(items, referenceCoverageAttachSourceExcerpt(item, scope, needed))
+		summary.ModeCounts[referenceMode]++
 		applied[referenceCoverageSourceKey(needed.BindingID, needed.ReferenceKind, needed.SourceID)] = true
 		summary.FieldIndexApplied++
 		if len(items) == limit {

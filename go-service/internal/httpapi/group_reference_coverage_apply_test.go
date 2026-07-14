@@ -91,3 +91,60 @@ func TestReferenceCoverageApplicationDoesNotPresentUnverifiedExcerptAsOriginal(t
 		t.Fatalf("unverified excerpt was presented as original: %#v", items)
 	}
 }
+
+func TestReferenceCoverageApplicationSeparatesSupplementPrimaryAndUnknownModes(t *testing.T) {
+	distance := 0.19
+	cosine := 0.81
+	candidate := referenceRecallItem{
+		BindingID:        "binding-1",
+		WorkID:           "work-1",
+		WorkTitle:        "Example",
+		ContinuityID:     "continuity-1",
+		ReferenceKind:    "claim",
+		SourceID:         "claim-1",
+		Text:             "Hunters seal demons through song.",
+		ChromaRank:       2,
+		Distance:         &distance,
+		CosineSimilarity: &cosine,
+		Eligible:         true,
+		Reason:           "eligible",
+		Needed:           true,
+		NeededBy:         []string{"primary_chroma_relevance"},
+		CoverageStatus:   "missing",
+		DecisionReason:   "needed_claim_absent_from_coverage_sources",
+	}
+	makeScope := func(mode string) referenceRecallScope {
+		return referenceRecallScope{
+			binding:  store.SessionReferenceBinding{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceMode: mode},
+			work:     &store.ReferenceWork{WorkID: "work-1", Title: "Example"},
+			claims:   map[string]store.ReferenceClaim{"claim-1": {ClaimID: "claim-1", ClaimText: candidate.Text}},
+			entities: map[string]store.ReferenceEntity{},
+			nodes:    map[string]store.ReferenceTimelineNode{},
+		}
+	}
+
+	supplement := makeScope(referenceModeSupplement)
+	items, summary := buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{supplement.binding}, map[string]referenceRecallScope{"binding-1": supplement}, []referenceRecallItem{candidate}, newReferenceCoverageFieldIndexSummary(), 4)
+	if len(items) != 0 || summary.SkippedNoSceneNeed != 1 {
+		t.Fatalf("supplement mode injected unsupported scene context: items=%#v summary=%#v", items, summary)
+	}
+
+	primary := makeScope(referenceModePrimary)
+	items, summary = buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{primary.binding}, map[string]referenceRecallScope{"binding-1": primary}, []referenceRecallItem{candidate}, newReferenceCoverageFieldIndexSummary(), 4)
+	if len(items) != 1 || items[0].ReferenceMode != referenceModePrimary || items[0].SelectionSource != "primary_chroma_candidate" || items[0].CoverageStatus != "primary_context" {
+		t.Fatalf("primary mode did not use the real Chroma candidate: items=%#v summary=%#v", items, summary)
+	}
+	if items[0].ChromaRank == nil || *items[0].ChromaRank != 2 || items[0].Distance == nil || *items[0].Distance != distance || items[0].CosineSimilarity == nil || *items[0].CosineSimilarity != cosine {
+		t.Fatalf("primary mode changed Chroma provenance: %#v", items[0])
+	}
+	formatted := formatReferenceRecallInjection(referenceRecallResult{Status: "ready", InjectionItems: items}, 1000)
+	if !containsAll(formatted, "user-selected primary canon source", candidate.Text) {
+		t.Fatalf("primary mode instruction missing: %q", formatted)
+	}
+
+	unknown := makeScope("invalid_mode")
+	items, summary = buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{unknown.binding}, map[string]referenceRecallScope{"binding-1": unknown}, []referenceRecallItem{candidate}, newReferenceCoverageFieldIndexSummary(), 4)
+	if len(items) != 0 || summary.SkippedUnknownMode != 1 {
+		t.Fatalf("unknown mode was not blocked: items=%#v summary=%#v", items, summary)
+	}
+}

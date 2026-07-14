@@ -53,6 +53,35 @@ func TestReferenceCoverageShadowClassifiesExactPartialMissingAndUnrelatedWithout
 	}
 }
 
+func TestReferenceCoveragePrimaryModeChecksExistingLoreBeforeAddingChromaContext(t *testing.T) {
+	scope := referenceRecallScope{
+		binding: store.SessionReferenceBinding{ReferenceMode: referenceModePrimary},
+		claims: map[string]store.ReferenceClaim{
+			"claim-role": {ClaimID: "claim-role", ClaimType: "role", ClaimText: "Rumi leads Huntrix."},
+		},
+		entities:      map[string]store.ReferenceEntity{},
+		nodes:         map[string]store.ReferenceTimelineNode{},
+		sceneEntities: map[string]bool{},
+	}
+	item := referenceRecallItem{ReferenceKind: "claim", SourceID: "claim-role", Text: "Rumi leads Huntrix.", Eligible: true, Reason: "eligible"}
+
+	covered := applyReferenceCoverageShadow(item, scope, "Continue.", []map[string]any{
+		{"role": "system", "content": "Rumi leads Huntrix."},
+		{"role": "user", "content": "Continue."},
+	}, referenceCoverageSceneContext{})
+	if !covered.Needed || covered.CoverageStatus != "covered" || len(covered.NeededBy) != 1 || covered.NeededBy[0] != "primary_chroma_relevance" {
+		t.Fatalf("primary mode did not suppress already supplied lore: %#v", covered)
+	}
+
+	missing := applyReferenceCoverageShadow(item, scope, "Continue.", []map[string]any{
+		{"role": "system", "content": "The scene begins backstage."},
+		{"role": "user", "content": "Continue."},
+	}, referenceCoverageSceneContext{})
+	if !missing.Needed || missing.CoverageStatus != "missing" || len(missing.NeededBy) != 1 || missing.NeededBy[0] != "primary_chroma_relevance" {
+		t.Fatalf("primary mode did not expose missing canon context: %#v", missing)
+	}
+}
+
 func TestReferenceCoverageShadowKeepsUnknownAndHardFilterReasonsExplicit(t *testing.T) {
 	scope := referenceRecallScope{
 		entities: map[string]store.ReferenceEntity{

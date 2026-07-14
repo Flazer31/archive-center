@@ -928,11 +928,11 @@ func copySessionMigrationReferenceBindings(ctx context.Context, tx *sql.Tx, migr
 	for _, sourceBindingID := range sourceBindingIDs {
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO session_reference_bindings (
-				binding_id, chat_session_id, work_id, continuity_id, binding_role, enabled, injection_enabled,
+				binding_id, chat_session_id, work_id, continuity_id, binding_role, reference_mode, enabled, injection_enabled,
 				anchor_mode, current_node_id, reveal_ceiling_node_id, divergence_node_id,
 				future_policy, priority, revision, created_at, updated_at
 			)
-			SELECT UUID(), ?, work_id, continuity_id, binding_role, enabled, injection_enabled,
+			SELECT UUID(), ?, work_id, continuity_id, binding_role, reference_mode, enabled, injection_enabled,
 			       anchor_mode, current_node_id, reveal_ceiling_node_id, divergence_node_id,
 			       future_policy, priority, 1, created_at, updated_at
 			FROM session_reference_bindings

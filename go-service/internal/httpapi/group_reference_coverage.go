@@ -61,10 +61,15 @@ func applyReferenceCoverageShadow(item referenceRecallItem, scope referenceRecal
 	item.NeededBy = referenceCoverageNeededBy(item, scope, query, sceneContext)
 	item.Needed = len(item.NeededBy) > 0
 	if !item.Needed {
-		item.CoverageStatus = "not_applicable"
-		item.CoverageConfidence = "high"
-		item.DecisionReason = "no_current_scene_need_signal"
-		return item
+		if referenceBindingMode(scope.binding) == referenceModePrimary {
+			item.Needed = true
+			item.NeededBy = []string{"primary_chroma_relevance"}
+		} else {
+			item.CoverageStatus = "not_applicable"
+			item.CoverageConfidence = "high"
+			item.DecisionReason = "no_current_scene_need_signal"
+			return item
+		}
 	}
 
 	coverageSources := append(referenceCoverageMessages(messages), referenceCoverageSceneMessages(sceneContext)...)

@@ -1145,6 +1145,7 @@ CREATE TABLE IF NOT EXISTS session_reference_bindings (
     work_id                 CHAR(36)        NOT NULL,
     continuity_id           CHAR(36)        NOT NULL,
     binding_role            VARCHAR(50)     NOT NULL DEFAULT 'primary',
+    reference_mode          VARCHAR(50)     NOT NULL DEFAULT 'supplement',
     enabled                 BOOLEAN         NOT NULL DEFAULT TRUE,
     injection_enabled       BOOLEAN         NOT NULL DEFAULT FALSE,
     anchor_mode             VARCHAR(50)     NOT NULL DEFAULT 'manual',

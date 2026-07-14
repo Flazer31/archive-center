@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-library-manager.20260712-9";
+  const BUILD_ID = "3.0-dev-reference-mode-policy.20260714-1";
   const BUILD_CHANNEL = "3.0-dev";
-  const BUILD_TIME = "2026-07-12 KST";
-  const BUILD_NOTES = "Evidence-based chronological ordering for reference timelines";
+  const BUILD_TIME = "2026-07-14 KST";
+  const BUILD_NOTES = "Explicit supplement and primary reference modes";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -10951,6 +10951,7 @@
         work_id: state.selectedWorkId,
         continuity_id: state.selectedContinuityId,
         binding_role: String(existing.binding_role || "primary"),
+        reference_mode: String(existing.reference_mode || "supplement"),
         anchor_mode: String(existing.anchor_mode || "manual"),
         current_node_id: String(existing.current_node_id || ""),
         reveal_ceiling_node_id: String(existing.reveal_ceiling_node_id || ""),
@@ -10964,6 +10965,7 @@
       work_id: state.selectedWorkId,
       continuity_id: state.selectedContinuityId,
       binding_role: "primary",
+      reference_mode: "supplement",
       anchor_mode: "manual",
       current_node_id: "",
       reveal_ceiling_node_id: "",
@@ -11009,6 +11011,7 @@
       work_id: _referenceLibraryState.selectedWorkId,
       continuity_id: _referenceLibraryState.selectedContinuityId,
       binding_role: value("mo-reference-binding-role") || "primary",
+      reference_mode: value("mo-reference-mode") || "supplement",
       anchor_mode: value("mo-reference-binding-anchor-mode") || "manual",
       current_node_id: value("mo-reference-binding-current-node"),
       reveal_ceiling_node_id: value("mo-reference-binding-reveal-node"),
@@ -11176,6 +11179,7 @@
       continuity_not_active: "활성 상태가 아닌 이야기 흐름입니다.",
       binding_not_found: "갱신할 기존 연결을 찾지 못했습니다.",
       binding_role_invalid: "연결 역할 값이 올바르지 않습니다.",
+      reference_mode_invalid: "원작 자료 사용 방식이 올바르지 않습니다.",
       anchor_mode_invalid: "시점 결정 방식이 올바르지 않습니다.",
       future_policy_invalid: "미래 정보 정책이 올바르지 않습니다.",
       current_node_not_approved: "현재 시점이 승인된 연표에 없습니다.",
@@ -11212,6 +11216,7 @@
       + '<div class="mo-dash-card">'
       + '<div class="mo-section-desc"><strong>세션:</strong> ' + escapeAttr(sessionText) + (existing ? ' · 연결됨 · revision ' + Number(existing.revision || 0) : ' · 연결 없음') + '</div>'
       + '<div class="mo-row"><label>연결 역할</label><select id="mo-reference-binding-role"><option value="primary"' + (draft.binding_role === "primary" ? " selected" : "") + '>주 작품</option><option value="crossover"' + (draft.binding_role === "crossover" ? " selected" : "") + '>크로스오버</option><option value="reference_only"' + (draft.binding_role === "reference_only" ? " selected" : "") + '>참고 전용</option></select></div>'
+      + '<div class="mo-row"><label>사용 방식</label><select id="mo-reference-mode"><option value="supplement"' + (draft.reference_mode === "supplement" ? " selected" : "") + '>보완 모드 · 기존 로어북의 빈 부분만 보충</option><option value="primary"' + (draft.reference_mode === "primary" ? " selected" : "") + '>단독 모드 · 원작 DB를 주요 설정원으로 사용</option></select></div>'
       + '<div class="mo-row"><label>시점 결정</label><select id="mo-reference-binding-anchor-mode"><option value="manual"' + (draft.anchor_mode === "manual" ? " selected" : "") + '>수동 고정</option><option value="assisted"' + (draft.anchor_mode === "assisted" ? " selected" : "") + '>후보만 자동 제안</option></select></div>'
       + '<div class="mo-row"><label>현재 원작 시점</label><select id="mo-reference-binding-current-node">' + optionsFor(draft.current_node_id) + '</select></div>'
       + '<div class="mo-row"><label>공개 상한</label><select id="mo-reference-binding-reveal-node">' + optionsFor(draft.reveal_ceiling_node_id) + '</select></div>'
@@ -11222,7 +11227,7 @@
       + (state.bindingError ? '<div class="mo-section-desc mo-text-danger">' + escapeAttr(state.bindingError) + '</div>' : '')
       + (state.bindingMessage ? '<div class="mo-section-desc">' + escapeAttr(state.bindingMessage) + '</div>' : '')
       + previewText + warningText
-      + '<div class="mo-section-desc">연결하면 이 세션의 턴에 원작 자료가 사용됩니다. 연결 해제는 세션 연결만 지우며 원작 자료는 유지합니다.</div>'
+      + '<div class="mo-section-desc">보완 모드는 기존 설정을 우선하고 빠진 원작 정보만 채웁니다. 단독 모드는 원작 DB를 주요 설정원으로 사용합니다. 연결 해제는 세션 연결만 지우며 원작 자료는 유지합니다.</div>'
       + '</div>';
   }
 

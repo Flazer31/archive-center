@@ -23,7 +23,7 @@ func TestCopySessionMigrationReferenceBindingsCopiesLinkRuntimeAndLedger(t *test
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT binding_id\n\t\tFROM session_reference_bindings")).
 		WithArgs("source").
 		WillReturnRows(sqlmock.NewRows([]string{"binding_id"}).AddRow("source-binding"))
-	mock.ExpectExec("INSERT INTO session_reference_bindings").
+	mock.ExpectExec("(?s)INSERT INTO session_reference_bindings.*reference_mode").
 		WithArgs("target", "source-binding", "source").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT target.binding_id").
