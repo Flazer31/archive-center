@@ -516,7 +516,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"reference_injection": map[string]any{
 			"enabled":        referenceInjectionEnabled,
 			"applied":        referenceInjectionText != "",
-			"selected_count": len(referenceRecall.Selected),
+			"selected_count": len(referenceRecall.InjectionItems),
 			"injected_count": referenceInjectedCount,
 			"mode":           map[bool]string{true: "live", false: "shadow"}[referenceInjectionEnabled],
 		},

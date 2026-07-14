@@ -71,7 +71,7 @@ func TestReferenceRecallPrivateClaimRequiresCurrentSceneKnower(t *testing.T) {
 }
 
 func TestReferenceRecallInjectionIsSmallAndSessionFactsStayHigherPriority(t *testing.T) {
-	result := referenceRecallResult{Status: "ready", Selected: []referenceRecallItem{{WorkTitle: "Example", ReferenceKind: "claim", Text: "Canon fact"}}}
+	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", Text: "Canon fact"}}}
 	text := formatReferenceRecallInjection(result, 500)
 	if text == "" || !containsAll(text, "[Original Work Reference]", "Current user input and session-established facts override", "Canon fact") {
 		t.Fatalf("injection = %q", text)
@@ -108,13 +108,17 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 		t.Fatalf("reference recall rewrote user input: %#v", live["effective_user_input"])
 	}
 	coverage := live["reference_recall"].(map[string]any)["coverage_shadow"].(map[string]any)
-	if coverage["mode"] != "shadow" || coverage["injection_filtered"] != false || coverage["evaluated_count"] != float64(1) {
-		t.Fatalf("coverage shadow = %#v", coverage)
+	if coverage["mode"] != "applied" || coverage["injection_filtered"] != true || coverage["evaluated_count"] != float64(1) {
+		t.Fatalf("coverage application = %#v", coverage)
 	}
 	selected := live["reference_recall"].(map[string]any)["selected"].([]any)
 	selectedItem := selected[0].(map[string]any)
-	if selectedItem["coverage_status"] != "covered" || selectedItem["needed"] != true {
+	if selectedItem["coverage_status"] != "partial" || selectedItem["needed"] != true {
 		t.Fatalf("selected coverage = %#v", selectedItem)
+	}
+	injectionItems := live["reference_recall"].(map[string]any)["injection_items"].([]any)
+	if len(injectionItems) != 1 || injectionItems[0].(map[string]any)["selection_source"] != "chroma_candidate" {
+		t.Fatalf("coverage injection items = %#v", injectionItems)
 	}
 
 	firstTurn := prepareTurnReferenceFirstTurnResponse(t, mux)
@@ -122,8 +126,21 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 		t.Fatalf("first-turn reference injection missing: %q", text)
 	}
 	pack := firstTurn["injection_pack"].(map[string]any)
-	if pack["reference_applied"] != true || pack["reference_selected_count"] != float64(1) {
+	if pack["reference_applied"] != true || pack["reference_selected_count"] != float64(2) {
 		t.Fatalf("first-turn reference pack = %#v", pack)
+	}
+
+	covered := prepareTurnReferenceResponseWithSystem(t, mux, "The gate opens only at night.")
+	if text, _ := covered["injection_text"].(string); strings.Contains(text, "[Original Work Reference]") {
+		t.Fatalf("covered reference was injected again: %q", text)
+	}
+	coveredState := covered["reference_injection"].(map[string]any)
+	if coveredState["applied"] != false || coveredState["selected_count"] != float64(0) {
+		t.Fatalf("covered reference state = %#v", coveredState)
+	}
+	coveredRecall := covered["reference_recall"].(map[string]any)
+	if len(coveredRecall["selected"].([]any)) != 1 || len(coveredRecall["injection_items"].([]any)) != 0 {
+		t.Fatalf("raw and applied reference lists were not separated: %#v", coveredRecall)
 	}
 
 	fake.bindings = nil
@@ -178,7 +195,7 @@ func TestPrepareTurnReferenceCoverageUsesStoreSceneSignals(t *testing.T) {
 	}
 	recall := result["reference_recall"].(map[string]any)
 	coverage := recall["coverage_shadow"].(map[string]any)
-	if coverage["contract_version"] != "coverage_shadow.v3" || coverage["injection_filtered"] != false {
+	if coverage["contract_version"] != "coverage_shadow.v3" || coverage["mode"] != "applied" || coverage["injection_filtered"] != true {
 		t.Fatalf("coverage contract = %#v", coverage)
 	}
 	fieldIndex := coverage["field_index"].(map[string]any)
@@ -203,7 +220,7 @@ func prepareTurnReferenceFirstTurnResponse(t *testing.T, handler http.Handler) m
 	body, _ := json.Marshal(map[string]any{
 		"chat_session_id": "session-1",
 		"turn_index":      1,
-		"raw_user_input":  "Begin the story",
+		"raw_user_input":  "Begin the story at the gate",
 		"settings": map[string]any{
 			"injection_enabled":   false,
 			"max_injection_chars": 0,
@@ -224,13 +241,17 @@ func prepareTurnReferenceFirstTurnResponse(t *testing.T, handler http.Handler) m
 }
 
 func prepareTurnReferenceResponse(t *testing.T, handler http.Handler) map[string]any {
+	return prepareTurnReferenceResponseWithSystem(t, handler, "The gate is important to this scene.")
+}
+
+func prepareTurnReferenceResponseWithSystem(t *testing.T, handler http.Handler, systemText string) map[string]any {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{
 		"chat_session_id": "session-1",
 		"turn_index":      2,
 		"raw_user_input":  "Open the gate",
 		"messages": []map[string]any{
-			{"role": "system", "content": "The gate opens only at night."},
+			{"role": "system", "content": systemText},
 			{"role": "user", "content": "Open the gate"},
 		},
 		"settings": map[string]any{

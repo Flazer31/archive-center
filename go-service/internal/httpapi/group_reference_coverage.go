@@ -27,6 +27,7 @@ func newReferenceCoverageSummary(sceneContext referenceCoverageSceneContext) ref
 		InjectionFiltered: false,
 		SceneSignals:      summarizeReferenceCoverageSceneSignals(sceneContext),
 		FieldIndex:        newReferenceCoverageFieldIndexSummary(),
+		Application:       newReferenceCoverageApplicationSummary(),
 	}
 }
 

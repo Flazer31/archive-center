@@ -53,6 +53,7 @@ type referenceCoverageSummary struct {
 	InjectionFiltered bool                                `json:"injection_filtered"`
 	SceneSignals      referenceCoverageSceneSignalSummary `json:"scene_signals"`
 	FieldIndex        referenceCoverageFieldIndexSummary  `json:"field_index"`
+	Application       referenceCoverageApplicationSummary `json:"application"`
 }
 
 type referenceRecallResult struct {
@@ -63,6 +64,7 @@ type referenceRecallResult struct {
 	Query            string                   `json:"query"`
 	Selected         []referenceRecallItem    `json:"selected"`
 	Excluded         []referenceRecallItem    `json:"excluded"`
+	InjectionItems   []referenceInjectionItem `json:"injection_items"`
 	BindingCount     int                      `json:"binding_count"`
 	LiveBindingCount int                      `json:"live_binding_count"`
 	Warnings         []string                 `json:"warnings"`
@@ -123,6 +125,7 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 		Query:           strings.TrimSpace(query),
 		Selected:        []referenceRecallItem{},
 		Excluded:        []referenceRecallItem{},
+		InjectionItems:  []referenceInjectionItem{},
 		Warnings:        []string{},
 		ScoreContract:   referenceVectorScoreContract(),
 		CoverageShadow:  newReferenceCoverageSummary(sceneContext),
@@ -241,6 +244,10 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 		result.Selected = result.Selected[:limit]
 	}
 	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded, sceneContext, fieldIndex)
+	result.InjectionItems, result.CoverageShadow.Application = buildReferenceCoverageInjectionItems(bindings, scopes, result.Selected, fieldIndex, limit)
+	result.CoverageShadow.Mode = "applied"
+	result.CoverageShadow.InjectionFiltered = true
+	result.Mode = "live"
 	result.Status = "ready"
 	return result
 }
@@ -500,7 +507,7 @@ func referenceRecallBindingPriority(bindings []store.SessionReferenceBinding, bi
 }
 
 func formatReferenceRecallInjection(result referenceRecallResult, maxChars int) string {
-	if result.Status != "ready" || len(result.Selected) == 0 || maxChars <= 0 {
+	if result.Status != "ready" || len(result.InjectionItems) == 0 || maxChars <= 0 {
 		return ""
 	}
 	header := "[Original Work Reference]\nCurrent user input and session-established facts override this reference. Do not force future canon events.\n"
@@ -510,7 +517,7 @@ func formatReferenceRecallInjection(result referenceRecallResult, maxChars int) 
 	var builder strings.Builder
 	builder.WriteString(header)
 	included := 0
-	for _, item := range result.Selected {
+	for _, item := range result.InjectionItems {
 		line := fmt.Sprintf("- [%s / %s] %s\n", item.WorkTitle, item.ReferenceKind, strings.TrimSpace(item.Text))
 		if builder.Len()+len(line) > maxChars {
 			break

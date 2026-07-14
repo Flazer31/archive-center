@@ -141,6 +141,9 @@ func TestReferenceCoverageFieldIndexReusesSnapshotAndFindsNeededSourceOutsideChr
 	if len(first.Selected) != 1 || first.Selected[0].SourceID != "entity-rumi" || first.Selected[0].ChromaRank != 1 {
 		t.Fatalf("field index changed Chroma result: %#v", first.Selected)
 	}
+	if len(first.InjectionItems) != 1 || first.InjectionItems[0].SourceID != "entity-mira" || first.InjectionItems[0].SelectionSource != "coverage_field_index" || first.InjectionItems[0].ChromaRank != nil {
+		t.Fatalf("needed source outside Chroma window was not applied without a synthetic rank: %#v", first.InjectionItems)
+	}
 
 	second := srv.buildSessionReferenceRecallWithSceneContext(context.Background(), "session-1", "Continue.", 3, nil, messages, scene)
 	if fake.coverageWrites != 1 || second.CoverageShadow.FieldIndex.SnapshotReuses != 1 {
