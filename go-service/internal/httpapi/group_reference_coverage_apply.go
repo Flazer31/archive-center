@@ -35,20 +35,21 @@ type referenceInjectionItem struct {
 }
 
 type referenceCoverageApplicationSummary struct {
-	ContractVersion      string         `json:"contract_version"`
-	Mode                 string         `json:"mode"`
-	RawCandidateCount    int            `json:"raw_candidate_count"`
-	NeededSourceCount    int            `json:"needed_source_count"`
-	AppliedCount         int            `json:"applied_count"`
-	ChromaAppliedCount   int            `json:"chroma_applied_count"`
-	RelationAppliedCount int            `json:"relation_applied_count"`
-	FieldIndexApplied    int            `json:"field_index_applied_count"`
-	SkippedStatusCounts  map[string]int `json:"skipped_status_counts"`
-	SkippedNoSceneNeed   int            `json:"skipped_no_scene_need_count"`
-	SkippedUnknownMode   int            `json:"skipped_unknown_mode_count"`
-	SkippedEmptyContent  int            `json:"skipped_empty_content_count"`
-	ModeCounts           map[string]int `json:"mode_counts"`
-	TruncatedByItemLimit int            `json:"truncated_by_item_limit_count"`
+	ContractVersion        string         `json:"contract_version"`
+	Mode                   string         `json:"mode"`
+	RawCandidateCount      int            `json:"raw_candidate_count"`
+	NeededSourceCount      int            `json:"needed_source_count"`
+	AppliedCount           int            `json:"applied_count"`
+	FoundationAppliedCount int            `json:"foundation_applied_count"`
+	ChromaAppliedCount     int            `json:"chroma_applied_count"`
+	RelationAppliedCount   int            `json:"relation_applied_count"`
+	FieldIndexApplied      int            `json:"field_index_applied_count"`
+	SkippedStatusCounts    map[string]int `json:"skipped_status_counts"`
+	SkippedNoSceneNeed     int            `json:"skipped_no_scene_need_count"`
+	SkippedUnknownMode     int            `json:"skipped_unknown_mode_count"`
+	SkippedEmptyContent    int            `json:"skipped_empty_content_count"`
+	ModeCounts             map[string]int `json:"mode_counts"`
+	TruncatedByItemLimit   int            `json:"truncated_by_item_limit_count"`
 }
 
 func newReferenceCoverageApplicationSummary() referenceCoverageApplicationSummary {
@@ -321,7 +322,7 @@ func referenceCoverageMissingFieldText(scope referenceRecallScope, needed refere
 		if !ok || !referenceCoverageStringSliceContains(needed.MissingFields, "claim_text") {
 			return ""
 		}
-		return strings.TrimSpace(claim.ClaimText)
+		return referenceClaimDisplayText(scope, claim)
 	case "timeline":
 		node, ok := scope.nodes[needed.SourceID]
 		if !ok {

@@ -68,7 +68,7 @@ func buildPrimaryReferenceRelationCompanions(scopes map[string]referenceRecallSc
 				ContinuityID:  scope.binding.ContinuityID,
 				ReferenceKind: "claim",
 				SourceID:      claim.ClaimID,
-				Text:          strings.TrimSpace(claim.ClaimText),
+				Text:          referenceClaimDisplayText(scope, claim),
 				Eligible:      true,
 				Reason:        reason,
 				Metadata: map[string]any{
