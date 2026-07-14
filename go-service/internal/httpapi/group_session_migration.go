@@ -38,6 +38,8 @@ type sessionMigrationPreviewCounts struct {
 	KGTriples                   int  `json:"kg_triples"`
 	Episodes                    int  `json:"episodes"`
 	SubjectiveEntityMemories    int  `json:"subjective_entity_memories"`
+	ReferenceBindings           int  `json:"reference_bindings"`
+	ReferenceRuntimes           int  `json:"reference_runtimes"`
 	ChromaVectors               int  `json:"chroma_vectors"`
 	CanonicalTotal              int  `json:"canonical_total"`
 	CanonicalAndSubjectiveTotal int  `json:"canonical_and_subjective_total"`
@@ -917,6 +919,20 @@ func (s *Server) sessionMigrationPreviewCounts(ctx context.Context, sessionID st
 			warnings = append(warnings, "subjective_entity_memories_count_capped_at_1000")
 		}
 	}
+	if referenceStore, ok := s.Store.(store.ReferenceLibraryStore); ok {
+		bindings, err := referenceStore.ListSessionReferenceBindings(ctx, sessionID, false)
+		if err != nil {
+			return counts, warnings, sessionMigrationReadError("session_reference_bindings", err)
+		}
+		counts.ReferenceBindings = len(bindings)
+		for _, binding := range bindings {
+			if _, err := referenceStore.GetSessionReferenceRuntime(ctx, binding.BindingID); err == nil {
+				counts.ReferenceRuntimes++
+			} else if !errors.Is(err, store.ErrNotFound) {
+				return counts, warnings, sessionMigrationReadError("session_reference_runtime", err)
+			}
+		}
+	}
 
 	counts.CanonicalTotal = counts.ChatLogs + counts.EffectiveInputs + counts.Memories + counts.DirectEvidence + counts.KGTriples + counts.Episodes
 	counts.CanonicalAndSubjectiveTotal = counts.CanonicalTotal + counts.SubjectiveEntityMemories
@@ -963,7 +979,7 @@ func (s *Server) sessionMigrationValidate(ctx context.Context, sourceID, targetI
 	if sourceID != "" && sourceCounts.CanonicalAndSubjectiveTotal == 0 {
 		blockedReasons = append(blockedReasons, "source_session_has_no_archive_data")
 	}
-	if targetID != "" && ((targetCounts.CanonicalAndSubjectiveTotal > 0 && !targetCounts.ReplaceableStarterOnly) || chroma.TargetVectors > 0) {
+	if targetID != "" && ((targetCounts.CanonicalAndSubjectiveTotal > 0 && !targetCounts.ReplaceableStarterOnly) || targetCounts.ReferenceBindings > 0 || chroma.TargetVectors > 0) {
 		blockedReasons = append(blockedReasons, "target_session_not_empty")
 	}
 	if chroma.TargetVectors > 0 {
@@ -987,6 +1003,8 @@ func sessionMigrationCountsFromStore(in store.SessionMigrationArtifactCounts) se
 		KGTriples:                   in.KGTriples,
 		Episodes:                    in.Episodes,
 		SubjectiveEntityMemories:    in.SubjectiveEntityMemories,
+		ReferenceBindings:           in.ReferenceBindings,
+		ReferenceRuntimes:           in.ReferenceRuntimes,
 		CanonicalTotal:              in.CanonicalTotal,
 		CanonicalAndSubjectiveTotal: in.CanonicalAndSubjectiveTotal,
 		ReplaceableStarterOnly:      in.ReplaceableStarterOnly,

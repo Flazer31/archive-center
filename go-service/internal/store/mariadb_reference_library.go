@@ -978,12 +978,12 @@ func (m *mariadbStore) UpsertSessionReferenceBinding(ctx context.Context, item *
 	if expectedRevision == 0 {
 		_, err := m.db.ExecContext(ctx, `
 			INSERT INTO session_reference_bindings
-				(binding_id, chat_session_id, work_id, continuity_id, binding_role, enabled,
+				(binding_id, chat_session_id, work_id, continuity_id, binding_role, enabled, injection_enabled,
 				 anchor_mode, current_node_id, reveal_ceiling_node_id, divergence_node_id,
 				 future_policy, priority)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, strings.TrimSpace(item.BindingID), strings.TrimSpace(item.ChatSessionID), strings.TrimSpace(item.WorkID),
-			strings.TrimSpace(item.ContinuityID), defaultString(item.BindingRole, "primary"), item.Enabled,
+			strings.TrimSpace(item.ContinuityID), defaultString(item.BindingRole, "primary"), item.Enabled, item.InjectionEnabled,
 			defaultString(item.AnchorMode, "manual"), referenceNullable(item.CurrentNodeID),
 			referenceNullable(item.RevealCeilingNodeID), referenceNullable(item.DivergenceNodeID),
 			defaultString(item.FuturePolicy, "block"), item.Priority)
@@ -991,11 +991,11 @@ func (m *mariadbStore) UpsertSessionReferenceBinding(ctx context.Context, item *
 	}
 	result, err := m.db.ExecContext(ctx, `
 		UPDATE session_reference_bindings
-		SET binding_role = ?, enabled = ?, anchor_mode = ?, current_node_id = ?,
+		SET binding_role = ?, enabled = ?, injection_enabled = ?, anchor_mode = ?, current_node_id = ?,
 			reveal_ceiling_node_id = ?, divergence_node_id = ?, future_policy = ?,
 			priority = ?, revision = revision + 1
 		WHERE binding_id = ? AND chat_session_id = ? AND revision = ?
-	`, defaultString(item.BindingRole, "primary"), item.Enabled, defaultString(item.AnchorMode, "manual"),
+	`, defaultString(item.BindingRole, "primary"), item.Enabled, item.InjectionEnabled, defaultString(item.AnchorMode, "manual"),
 		referenceNullable(item.CurrentNodeID), referenceNullable(item.RevealCeilingNodeID),
 		referenceNullable(item.DivergenceNodeID), defaultString(item.FuturePolicy, "block"), item.Priority,
 		strings.TrimSpace(item.BindingID), strings.TrimSpace(item.ChatSessionID), expectedRevision)
@@ -1013,7 +1013,7 @@ func (m *mariadbStore) ListSessionReferenceBindings(ctx context.Context, chatSes
 		return nil, err
 	}
 	query := `SELECT binding_id, chat_session_id, work_id, continuity_id, binding_role,
-	                 enabled, anchor_mode, current_node_id, reveal_ceiling_node_id,
+	                 enabled, injection_enabled, anchor_mode, current_node_id, reveal_ceiling_node_id,
 	                 divergence_node_id, future_policy, priority, revision, created_at, updated_at
 	          FROM session_reference_bindings WHERE chat_session_id = ?`
 	args := []any{strings.TrimSpace(chatSessionID)}
@@ -1031,7 +1031,7 @@ func (m *mariadbStore) ListSessionReferenceBindings(ctx context.Context, chatSes
 		var item SessionReferenceBinding
 		var current, reveal, divergence sql.NullString
 		if err := rows.Scan(&item.BindingID, &item.ChatSessionID, &item.WorkID, &item.ContinuityID,
-			&item.BindingRole, &item.Enabled, &item.AnchorMode, &current, &reveal, &divergence,
+			&item.BindingRole, &item.Enabled, &item.InjectionEnabled, &item.AnchorMode, &current, &reveal, &divergence,
 			&item.FuturePolicy, &item.Priority, &item.Revision, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}

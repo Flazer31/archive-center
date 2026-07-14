@@ -108,7 +108,7 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 	if err != nil {
 		return nil, err
 	}
-	if targetCounts.CanonicalAndSubjectiveTotal > 0 && !targetCounts.ReplaceableStarterOnly {
+	if (targetCounts.CanonicalAndSubjectiveTotal > 0 && !targetCounts.ReplaceableStarterOnly) || targetCounts.ReferenceBindings > 0 {
 		return nil, errors.New("target session is not empty")
 	}
 	targetStarterReplaced := targetCounts.ReplaceableStarterOnly
@@ -191,6 +191,12 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 	}
 	counts.SubjectiveEntityMemories = count
 	rowMapCount += maps
+	bindingsCopied, runtimesCopied, err := copySessionMigrationReferenceBindings(ctx, tx, migrationID, sourceID, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("copy session_reference_bindings: %w", err)
+	}
+	counts.ReferenceBindings = bindingsCopied
+	counts.ReferenceRuntimes = runtimesCopied
 	sessionMigrationFinalizeCounts(&counts)
 
 	countsJSON, _ := json.Marshal(counts)
@@ -471,6 +477,11 @@ func (m *mariadbStore) RollbackSessionMigration(ctx context.Context, migrationID
 
 	counts := SessionMigrationArtifactCounts{}
 	rowMapCount := 0
+	referenceBindingsDeleted, err := deleteSessionMigrationReferenceBindings(ctx, tx, migrationID)
+	if err != nil {
+		return nil, err
+	}
+	counts.ReferenceBindings = referenceBindingsDeleted
 	deletionPlan := []struct {
 		table string
 		dst   *int
@@ -702,11 +713,14 @@ func sessionMigrationCountArtifactsTx(ctx context.Context, tx *sql.Tx, sessionID
 		{"kg_triples", &counts.KGTriples},
 		{"episode_summaries", &counts.Episodes},
 		{"protagonist_entity_memories", &counts.SubjectiveEntityMemories},
+		{"session_reference_bindings", &counts.ReferenceBindings},
 	}
 	for _, item := range tableCounts {
 		query := "SELECT COUNT(*) FROM " + item.name + " WHERE chat_session_id = ?"
 		if item.name == "protagonist_entity_memories" {
 			query = "SELECT COUNT(*) FROM protagonist_entity_memories WHERE source_chat_session_id = ?"
+		} else if item.name == "session_reference_bindings" {
+			query = "SELECT COUNT(*) FROM session_reference_bindings WHERE chat_session_id = ?"
 		}
 		if err := tx.QueryRowContext(ctx, query, sessionID).Scan(item.dst); err != nil {
 			return counts, err
@@ -840,6 +854,9 @@ func execIDBatch(ctx context.Context, tx *sql.Tx, prefix string, ids []int64) (i
 }
 
 func deleteSessionRowsTx(ctx context.Context, tx *sql.Tx, chatSessionID string) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM session_reference_bindings WHERE chat_session_id = ?", chatSessionID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM persona_capsule_attachments WHERE target_chat_session_id = ?", chatSessionID); err != nil {
 		return err
 	}
@@ -879,6 +896,133 @@ func deleteSessionRowsTx(ctx context.Context, tx *sql.Tx, chatSessionID string) 
 		}
 	}
 	return nil
+}
+
+func copySessionMigrationReferenceBindings(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT binding_id
+		FROM session_reference_bindings
+		WHERE chat_session_id = ?
+		ORDER BY priority DESC, created_at, binding_id
+	`, sourceID)
+	if err != nil {
+		return 0, 0, err
+	}
+	sourceBindingIDs := []string{}
+	for rows.Next() {
+		var bindingID string
+		if err := rows.Scan(&bindingID); err != nil {
+			_ = rows.Close()
+			return 0, 0, err
+		}
+		sourceBindingIDs = append(sourceBindingIDs, bindingID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, err
+	}
+	bindingsCopied, runtimesCopied := 0, 0
+	for _, sourceBindingID := range sourceBindingIDs {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO session_reference_bindings (
+				binding_id, chat_session_id, work_id, continuity_id, binding_role, enabled, injection_enabled,
+				anchor_mode, current_node_id, reveal_ceiling_node_id, divergence_node_id,
+				future_policy, priority, revision, created_at, updated_at
+			)
+			SELECT UUID(), ?, work_id, continuity_id, binding_role, enabled, injection_enabled,
+			       anchor_mode, current_node_id, reveal_ceiling_node_id, divergence_node_id,
+			       future_policy, priority, 1, created_at, updated_at
+			FROM session_reference_bindings
+			WHERE binding_id = ? AND chat_session_id = ?
+		`, targetID, sourceBindingID, sourceID)
+		if err != nil {
+			return bindingsCopied, runtimesCopied, err
+		}
+		var targetBindingID string
+		if err := tx.QueryRowContext(ctx, `
+			SELECT target.binding_id
+			FROM session_reference_bindings source
+			JOIN session_reference_bindings target
+			  ON target.chat_session_id = ?
+			 AND target.work_id = source.work_id
+			 AND target.continuity_id = source.continuity_id
+			WHERE source.binding_id = ? AND source.chat_session_id = ?
+		`, targetID, sourceBindingID, sourceID).Scan(&targetBindingID); err != nil {
+			return bindingsCopied, runtimesCopied, err
+		}
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO session_reference_runtime (
+				binding_id, candidate_node_id, candidate_source_turn, candidate_evidence_json,
+				candidate_confirmed, last_claim_ids_json, diagnostics_json, revision, created_at, updated_at
+			)
+			SELECT ?, candidate_node_id, candidate_source_turn, candidate_evidence_json,
+			       candidate_confirmed, last_claim_ids_json, diagnostics_json, 1, created_at, updated_at
+			FROM session_reference_runtime WHERE binding_id = ?
+		`, targetBindingID, sourceBindingID)
+		if err != nil {
+			return bindingsCopied, runtimesCopied, err
+		}
+		if affected, rowsErr := res.RowsAffected(); rowsErr == nil {
+			runtimesCopied += int(affected)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO session_migration_reference_binding_map
+				(migration_id, source_binding_id, target_binding_id, row_status)
+			VALUES (?, ?, ?, 'copied')
+		`, migrationID, sourceBindingID, targetBindingID); err != nil {
+			return bindingsCopied, runtimesCopied, err
+		}
+		bindingsCopied++
+	}
+	return bindingsCopied, runtimesCopied, nil
+}
+
+func deleteSessionMigrationReferenceBindings(ctx context.Context, tx *sql.Tx, migrationID int64) (int, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT target_binding_id
+		FROM session_migration_reference_binding_map
+		WHERE migration_id = ? AND row_status = 'copied'
+	`, migrationID)
+	if err != nil {
+		return 0, err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, id := range ids {
+		res, err := tx.ExecContext(ctx, "DELETE FROM session_reference_bindings WHERE binding_id = ?", id)
+		if err != nil {
+			return deleted, err
+		}
+		if affected, rowsErr := res.RowsAffected(); rowsErr == nil {
+			deleted += int(affected)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE session_migration_reference_binding_map
+		SET row_status = 'rolled_back'
+		WHERE migration_id = ? AND row_status <> 'rolled_back'
+	`, migrationID); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
 }
 
 func copySessionMigrationChatLogs(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {

@@ -152,6 +152,7 @@ type SessionReferenceBinding struct {
 	ContinuityID        string    `json:"continuity_id"`
 	BindingRole         string    `json:"binding_role"`
 	Enabled             bool      `json:"enabled"`
+	InjectionEnabled    bool      `json:"injection_enabled"`
 	AnchorMode          string    `json:"anchor_mode"`
 	CurrentNodeID       string    `json:"current_node_id,omitempty"`
 	RevealCeilingNodeID string    `json:"reveal_ceiling_node_id,omitempty"`

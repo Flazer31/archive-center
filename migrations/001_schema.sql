@@ -648,6 +648,20 @@ CREATE TABLE IF NOT EXISTS session_migration_row_map (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Session complete migration row provenance. Maps source rows to copied target rows for verification and rollback.';
 
+CREATE TABLE IF NOT EXISTS session_migration_reference_binding_map (
+    migration_id       BIGINT UNSIGNED NOT NULL,
+    source_binding_id  CHAR(36)        NOT NULL,
+    target_binding_id  CHAR(36)        NOT NULL,
+    row_status         VARCHAR(50)     NOT NULL DEFAULT 'copied',
+    created_at         DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    PRIMARY KEY (migration_id, source_binding_id),
+    UNIQUE KEY uq_session_migration_reference_target (migration_id, target_binding_id),
+    CONSTRAINT fk_session_migration_reference_binding_map
+        FOREIGN KEY (migration_id) REFERENCES session_migrations(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Maps reusable reference bindings copied by a session migration so rollback removes only migration-owned links.';
+
 -- ---------------------------------------------------------------------------
 -- 21. session_migration_locks
 -- ---------------------------------------------------------------------------
@@ -1132,6 +1146,7 @@ CREATE TABLE IF NOT EXISTS session_reference_bindings (
     continuity_id           CHAR(36)        NOT NULL,
     binding_role            VARCHAR(50)     NOT NULL DEFAULT 'primary',
     enabled                 BOOLEAN         NOT NULL DEFAULT TRUE,
+    injection_enabled       BOOLEAN         NOT NULL DEFAULT FALSE,
     anchor_mode             VARCHAR(50)     NOT NULL DEFAULT 'manual',
     current_node_id         CHAR(36)        NULL,
     reveal_ceiling_node_id  CHAR(36)        NULL,

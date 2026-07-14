@@ -17,6 +17,7 @@ type referenceBindingRequest struct {
 	ContinuityID        string `json:"continuity_id"`
 	BindingRole         string `json:"binding_role"`
 	Enabled             *bool  `json:"enabled,omitempty"`
+	InjectionEnabled    *bool  `json:"injection_enabled,omitempty"`
 	AnchorMode          string `json:"anchor_mode"`
 	CurrentNodeID       string `json:"current_node_id"`
 	RevealCeilingNodeID string `json:"reveal_ceiling_node_id"`
@@ -227,6 +228,10 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	injectionEnabled := false
+	if req.InjectionEnabled != nil {
+		injectionEnabled = *req.InjectionEnabled
+	}
 
 	if workID != "" {
 		work, err := ref.GetReferenceWork(ctx, workID)
@@ -270,6 +275,9 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 			result.Existing = existing
 			result.Action = "update"
 			bindingID = existing.BindingID
+			if req.InjectionEnabled == nil {
+				injectionEnabled = existing.InjectionEnabled
+			}
 		} else if bindingID != "" {
 			result.BlockedReasons = append(result.BlockedReasons, "binding_not_found")
 		}
@@ -314,6 +322,7 @@ func validateReferenceBinding(ctx context.Context, ref store.ReferenceLibrarySto
 		ContinuityID:        continuityID,
 		BindingRole:         bindingRole,
 		Enabled:             enabled,
+		InjectionEnabled:    injectionEnabled,
 		AnchorMode:          anchorMode,
 		CurrentNodeID:       strings.TrimSpace(req.CurrentNodeID),
 		RevealCeilingNodeID: strings.TrimSpace(req.RevealCeilingNodeID),

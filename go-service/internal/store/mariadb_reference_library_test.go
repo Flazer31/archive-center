@@ -115,7 +115,7 @@ func TestSessionDeleteStartsByRemovingBindingOnly(t *testing.T) {
 func TestSessionBindingUsesOptimisticRevision(t *testing.T) {
 	store, mock := newReferenceLibraryMock(t)
 	mock.ExpectExec("UPDATE session_reference_bindings").
-		WithArgs("primary", true, "manual", nil, nil, nil, "block", 0, "binding-1", "session-1", int64(2)).
+		WithArgs("primary", true, false, "manual", nil, nil, nil, "block", 0, "binding-1", "session-1", int64(2)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	err := store.UpsertSessionReferenceBinding(context.Background(), &SessionReferenceBinding{
 		BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1",

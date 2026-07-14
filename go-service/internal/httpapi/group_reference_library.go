@@ -99,6 +99,7 @@ func (s *Server) registerReferenceLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions/{chat_session_id}/reference-bindings", s.handleSessionReferenceBindingApply)
 	mux.HandleFunc("PATCH /sessions/{chat_session_id}/reference-bindings/{binding_id}", s.handleSessionReferenceBindingUpdate)
 	mux.HandleFunc("DELETE /sessions/{chat_session_id}/reference-bindings/{binding_id}", s.handleSessionReferenceBindingDelete)
+	mux.HandleFunc("POST /sessions/{chat_session_id}/reference-recall/preview", s.handleSessionReferenceRecallPreview)
 }
 
 func (s *Server) handleReferenceLibraryBrowse(w http.ResponseWriter, r *http.Request) {

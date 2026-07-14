@@ -127,6 +127,12 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 			deletions[t.name] = map[string]any{"ok": true}
 		}
 	}
+	if cleared, err := clearReferenceRuntimeCandidatesAfterRollback(ctx, s.Store, sid, turnIndex); err != nil {
+		deletions["reference_runtime"] = map[string]any{"ok": false, "error": err.Error()}
+		delErrs = append(delErrs, fmt.Sprintf("reference runtime: %v", err))
+	} else {
+		deletions["reference_runtime"] = map[string]any{"ok": true, "cleared_candidates": cleared, "bindings_preserved": true}
+	}
 	if restored, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid); err != nil {
 		deletions["narrative_current_state_restore"] = map[string]any{"ok": false, "error": err.Error()}
 		delErrs = append(delErrs, fmt.Sprintf("narrative current state restore: %v", err))
@@ -239,6 +245,41 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		"errors":    delErrs,
 		"note":      note,
 	})
+}
+
+func clearReferenceRuntimeCandidatesAfterRollback(ctx context.Context, base store.Store, sid string, fromTurn int) (int, error) {
+	ref, ok := base.(store.ReferenceLibraryStore)
+	if !ok {
+		return 0, nil
+	}
+	bindings, err := ref.ListSessionReferenceBindings(ctx, sid, false)
+	if err != nil {
+		return 0, err
+	}
+	cleared := 0
+	for _, binding := range bindings {
+		runtimeState, err := ref.GetSessionReferenceRuntime(ctx, binding.BindingID)
+		if errors.Is(err, store.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return cleared, err
+		}
+		if runtimeState.CandidateSourceTurn <= 0 || runtimeState.CandidateSourceTurn < fromTurn {
+			continue
+		}
+		runtimeState.CandidateNodeID = ""
+		runtimeState.CandidateSourceTurn = 0
+		runtimeState.CandidateEvidenceJSON = ""
+		runtimeState.CandidateConfirmed = false
+		runtimeState.LastClaimIDsJSON = ""
+		runtimeState.DiagnosticsJSON = `{"reason":"candidate_source_turn_rolled_back"}`
+		if err := ref.UpsertSessionReferenceRuntime(ctx, runtimeState, runtimeState.Revision); err != nil {
+			return cleared, err
+		}
+		cleared++
+	}
+	return cleared, nil
 }
 
 // ---------------------------------------------------------------------------

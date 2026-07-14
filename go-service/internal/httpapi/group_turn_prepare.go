@@ -265,6 +265,20 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	timing.addElapsed("injection_assembly", injectionStartedAt)
+	referenceRecallStartedAt := time.Now()
+	referenceRecall := s.buildSessionReferenceRecall(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta)
+	referenceInjectionEnabled := injectionEnabled && referenceRecall.LiveBindingCount > 0
+	referenceInjectionText := ""
+	if referenceInjectionEnabled {
+		remaining := maxInjectionChars - len(injectionAssembly.Text)
+		if remaining > 0 {
+			referenceInjectionText = formatReferenceRecallInjection(referenceRecall, remaining)
+			if referenceInjectionText != "" {
+				injectionAssembly.Text = strings.TrimSpace(injectionAssembly.Text + "\n\n" + referenceInjectionText)
+			}
+		}
+	}
+	timing.addElapsed("reference_recall", referenceRecallStartedAt)
 	injectionText := injectionAssembly.Text
 	injectionTruncated := injectionAssembly.Truncated
 
@@ -469,25 +483,32 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	backendTiming := timing.snapshot()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":                                        "ok",
-		"source":                                        "shadow",
-		"chat_session_id":                               sid,
-		"generated_at":                                  time.Now().UTC().Format(time.RFC3339),
-		"request_type":                                  requestType,
-		"fallback_reason":                               fallbackReason,
-		"effective_user_input":                          rawUserInput,
-		"injection_text":                                injectionOut,
-		"input_context_text":                            inputContextOut,
-		"supervisor_input_pack":                         supervisorInputPack,
-		"critic_input_pack":                             criticInputPack,
-		"injection_pack":                                injectionPack,
-		"language_context":                              languageContext,
-		"perspective_context":                           perspectiveContext,
-		"input_transparency_model":                      inputTransparencyModel,
-		"effective_input_preview":                       effectiveInputPreview,
-		"backend_timing":                                backendTiming,
-		"trace_preview":                                 tracePreview,
-		"recall_result":                                 recallResult,
+		"status":                   "ok",
+		"source":                   "shadow",
+		"chat_session_id":          sid,
+		"generated_at":             time.Now().UTC().Format(time.RFC3339),
+		"request_type":             requestType,
+		"fallback_reason":          fallbackReason,
+		"effective_user_input":     rawUserInput,
+		"injection_text":           injectionOut,
+		"input_context_text":       inputContextOut,
+		"supervisor_input_pack":    supervisorInputPack,
+		"critic_input_pack":        criticInputPack,
+		"injection_pack":           injectionPack,
+		"language_context":         languageContext,
+		"perspective_context":      perspectiveContext,
+		"input_transparency_model": inputTransparencyModel,
+		"effective_input_preview":  effectiveInputPreview,
+		"backend_timing":           backendTiming,
+		"trace_preview":            tracePreview,
+		"recall_result":            recallResult,
+		"reference_recall":         referenceRecall,
+		"reference_injection": map[string]any{
+			"enabled":        referenceInjectionEnabled,
+			"applied":        referenceInjectionText != "",
+			"selected_count": len(referenceRecall.Selected),
+			"mode":           map[bool]string{true: "live", false: "shadow"}[referenceInjectionEnabled],
+		},
 		"session_state":                                 sessionState,
 		"narrative_control":                             narrativeControl,
 		"progression_ledger":                            progressionLedger,

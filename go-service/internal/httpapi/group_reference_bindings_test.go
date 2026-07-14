@@ -152,6 +152,7 @@ func validReferenceBindingBody() map[string]any {
 		"continuity_id":          "continuity-1",
 		"binding_role":           "primary",
 		"enabled":                true,
+		"injection_enabled":      true,
 		"anchor_mode":            "manual",
 		"current_node_id":        "node-start",
 		"reveal_ceiling_node_id": "node-middle",
@@ -180,6 +181,9 @@ func TestReferenceBindingPreviewCRUDAndUnlinkPreservesWork(t *testing.T) {
 	bindingID := binding["binding_id"].(string)
 	if binding["revision"] != float64(1) {
 		t.Fatalf("create revision=%v", binding["revision"])
+	}
+	if binding["injection_enabled"] != true {
+		t.Fatalf("explicit injection opt-in was not persisted: %#v", binding)
 	}
 
 	code, listed := referenceBindingHTTPCall(t, mux, http.MethodGet, "/sessions/session-1/reference-bindings", nil)

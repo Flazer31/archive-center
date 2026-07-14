@@ -10932,6 +10932,7 @@
         continuity_id: state.selectedContinuityId,
         binding_role: String(existing.binding_role || "primary"),
         enabled: existing.enabled !== false,
+        injection_enabled: existing.injection_enabled === true,
         anchor_mode: String(existing.anchor_mode || "manual"),
         current_node_id: String(existing.current_node_id || ""),
         reveal_ceiling_node_id: String(existing.reveal_ceiling_node_id || ""),
@@ -10946,6 +10947,7 @@
       continuity_id: state.selectedContinuityId,
       binding_role: "primary",
       enabled: true,
+      injection_enabled: false,
       anchor_mode: "manual",
       current_node_id: "",
       reveal_ceiling_node_id: "",
@@ -10987,12 +10989,14 @@
   function referenceLibraryBindingBody(root) {
     const value = (id) => String(root && root.querySelector("#" + id)?.value || "").trim();
     const enabled = root && root.querySelector("#mo-reference-binding-enabled");
+    const injectionEnabled = root && root.querySelector("#mo-reference-binding-injection-enabled");
     const existing = referenceLibrarySelectedBinding();
     return {
       work_id: _referenceLibraryState.selectedWorkId,
       continuity_id: _referenceLibraryState.selectedContinuityId,
       binding_role: value("mo-reference-binding-role") || "primary",
       enabled: !enabled || enabled.checked,
+      injection_enabled: !!(injectionEnabled && injectionEnabled.checked),
       anchor_mode: value("mo-reference-binding-anchor-mode") || "manual",
       current_node_id: value("mo-reference-binding-current-node"),
       reveal_ceiling_node_id: value("mo-reference-binding-reveal-node"),
@@ -11203,11 +11207,12 @@
       + '<div class="mo-row"><label>미래 정보</label><select id="mo-reference-binding-future-policy"><option value="block"' + (draft.future_policy === "block" ? " selected" : "") + '>차단</option><option value="preview_only"' + (draft.future_policy === "preview_only" ? " selected" : "") + '>진단에서만 표시</option></select></div>'
       + '<div class="mo-row"><label>우선순위</label><input id="mo-reference-binding-priority" type="number" min="-100" max="100" step="1" value="' + escapeAttr(Number(draft.priority || 0)) + '"></div>'
       + '<div class="mo-row"><label>사용</label><input id="mo-reference-binding-enabled" type="checkbox"' + (draft.enabled !== false ? " checked" : "") + '></div>'
+      + '<div class="mo-row"><label>턴에 참고 자료 주입</label><input id="mo-reference-binding-injection-enabled" type="checkbox"' + (draft.injection_enabled === true ? " checked" : "") + '></div>'
       + '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-binding-preview"' + (disabled ? " disabled" : "") + '>연결 미리보기</button><button type="button" class="mo-btn mo-btn-success" id="mo-reference-binding-apply"' + (disabled ? " disabled" : "") + '>' + (existing ? "연결 갱신" : "현재 세션에 연결") + '</button>' + (existing ? '<button type="button" class="mo-btn mo-btn-danger-solid" id="mo-reference-binding-unlink">연결 해제</button>' : '') + '</div>'
       + (state.bindingError ? '<div class="mo-section-desc mo-text-danger">' + escapeAttr(state.bindingError) + '</div>' : '')
       + (state.bindingMessage ? '<div class="mo-section-desc">' + escapeAttr(state.bindingMessage) + '</div>' : '')
       + previewText + warningText
-      + '<div class="mo-section-desc">연결 해제는 이 세션의 연결 정보만 지우며 원작 자료는 유지합니다. 원작 벡터 검색은 자료 탭에서 확인할 수 있고, 실제 턴 주입은 시점 보호와 함께 별도 단계에서 활성화됩니다.</div>'
+      + '<div class="mo-section-desc">연결 해제는 이 세션의 연결 정보만 지우며 원작 자료는 유지합니다. 턴 주입을 켜기 전에는 검색 결과만 진단하며 실제 입력은 바꾸지 않습니다.</div>'
       + '</div>';
   }
 

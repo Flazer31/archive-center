@@ -302,6 +302,8 @@ type SessionMigrationArtifactCounts struct {
 	KGTriples                   int  `json:"kg_triples"`
 	Episodes                    int  `json:"episodes"`
 	SubjectiveEntityMemories    int  `json:"subjective_entity_memories"`
+	ReferenceBindings           int  `json:"reference_bindings"`
+	ReferenceRuntimes           int  `json:"reference_runtimes"`
 	CanonicalTotal              int  `json:"canonical_total"`
 	CanonicalAndSubjectiveTotal int  `json:"canonical_and_subjective_total"`
 	ReplaceableStarterOnly      bool `json:"replaceable_starter_only"`
