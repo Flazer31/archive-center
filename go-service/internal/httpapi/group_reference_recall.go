@@ -65,7 +65,6 @@ type referenceRecallResult struct {
 	Selected           []referenceRecallItem    `json:"selected"`
 	RelationCompanions []referenceRecallItem    `json:"relation_companions"`
 	Excluded           []referenceRecallItem    `json:"excluded"`
-	FoundationItems    []referenceInjectionItem `json:"foundation_items"`
 	InjectionItems     []referenceInjectionItem `json:"injection_items"`
 	BindingCount       int                      `json:"binding_count"`
 	LiveBindingCount   int                      `json:"live_binding_count"`
@@ -129,7 +128,6 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 		Selected:           []referenceRecallItem{},
 		RelationCompanions: []referenceRecallItem{},
 		Excluded:           []referenceRecallItem{},
-		FoundationItems:    []referenceInjectionItem{},
 		InjectionItems:     []referenceInjectionItem{},
 		Warnings:           []string{},
 		ScoreContract:      referenceVectorScoreContract(),
@@ -177,25 +175,21 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 	querier, ok := s.ReferenceVector.(vector.ExactMetadataQuerier)
 	if !ok {
 		result.Warnings = append(result.Warnings, "reference_vector_exact_query_unavailable")
-		finalizeSessionReferenceRecall(&result, bindings, scopes, messages, sceneContext, fieldIndex, limit, false)
 		return result
 	}
 	embedder := s.completeTurnExtractionConfig(clientMeta).Embedder
 	if !embedder.hasConfig() {
 		result.Warnings = append(result.Warnings, "embedding_config_missing")
-		finalizeSessionReferenceRecall(&result, bindings, scopes, messages, sceneContext, fieldIndex, limit, false)
 		return result
 	}
 	embeddingJSON, model, err := callEmbedding(ctx, embedder, result.Query)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "reference_query_embedding_failed: "+err.Error())
-		finalizeSessionReferenceRecall(&result, bindings, scopes, messages, sceneContext, fieldIndex, limit, false)
 		return result
 	}
 	queryVector := parseFloat32JSONList(embeddingJSON)
 	if len(queryVector) == 0 {
 		result.Warnings = append(result.Warnings, "reference_query_embedding_empty")
-		finalizeSessionReferenceRecall(&result, bindings, scopes, messages, sceneContext, fieldIndex, limit, false)
 		return result
 	}
 	limit = referenceRecallModeAwareLimit(bindings, limit)
@@ -252,28 +246,14 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 	if len(result.Selected) > limit {
 		result.Selected = result.Selected[:limit]
 	}
-	finalizeSessionReferenceRecall(&result, bindings, scopes, messages, sceneContext, fieldIndex, limit, true)
-	return result
-}
-
-func finalizeSessionReferenceRecall(result *referenceRecallResult, bindings []store.SessionReferenceBinding, scopes map[string]referenceRecallScope, messages []map[string]any, sceneContext referenceCoverageSceneContext, fieldIndex referenceCoverageFieldIndexSummary, limit int, vectorPathComplete bool) {
-	if result == nil {
-		return
-	}
 	result.RelationCompanions = buildPrimaryReferenceRelationCompanions(scopes, result.Selected, result.Query, messages, sceneContext, referencePrimaryRelationCompanionLimit)
 	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded, sceneContext, fieldIndex)
-	sceneItems, application := buildReferenceCoverageInjectionItems(bindings, scopes, result.Selected, result.RelationCompanions, fieldIndex, limit)
-	result.FoundationItems = buildPrimaryReferenceFoundationItems(scopes, sceneContext, referencePrimaryFoundationItemLimit)
-	result.InjectionItems = mergePrimaryReferenceFoundationItems(result.FoundationItems, sceneItems, limit)
-	application.FoundationAppliedCount = len(result.FoundationItems)
-	application.AppliedCount = len(result.InjectionItems)
-	result.CoverageShadow.Application = application
+	result.InjectionItems, result.CoverageShadow.Application = buildReferenceCoverageInjectionItems(bindings, scopes, result.Selected, result.RelationCompanions, fieldIndex, limit)
 	result.CoverageShadow.Mode = "applied"
 	result.CoverageShadow.InjectionFiltered = true
 	result.Mode = "live"
-	if len(result.InjectionItems) > 0 || vectorPathComplete {
-		result.Status = "ready"
-	}
+	result.Status = "ready"
+	return result
 }
 
 func loadReferenceRecallScope(ctx context.Context, ref store.ReferenceLibraryStore, binding store.SessionReferenceBinding, sceneEntities map[string]bool) (referenceRecallScope, error) {
@@ -376,7 +356,7 @@ func referenceRecallCanonicalItem(scope referenceRecallScope, raw vector.ExactQu
 		if !ok {
 			return item, false
 		}
-		item.Text = referenceClaimDisplayText(scope, claim)
+		item.Text = strings.TrimSpace(claim.ClaimText)
 		item.Metadata["claim_type"] = claim.ClaimType
 		item.Metadata["subject_entity_id"] = claim.SubjectEntityID
 		item.Metadata["knowledge_scope"] = claim.KnowledgeScope
@@ -546,43 +526,13 @@ func formatReferenceRecallInjection(result referenceRecallResult, maxChars int) 
 	var builder strings.Builder
 	builder.WriteString(header)
 	included := 0
-	sections := []struct {
-		title string
-		items []referenceInjectionItem
-	}{
-		{title: "[Canon Foundation]\n", items: nil},
-		{title: "[Scene Reference]\n", items: nil},
-	}
 	for _, item := range result.InjectionItems {
-		if item.SelectionSource == "primary_canon_foundation" {
-			sections[0].items = append(sections[0].items, item)
-		} else {
-			sections[1].items = append(sections[1].items, item)
-		}
-	}
-	for _, section := range sections {
-		if len(section.items) == 0 {
-			continue
-		}
-		var sectionBuilder strings.Builder
-		sectionBuilder.WriteString(section.title)
-		sectionIncluded := 0
-		for _, item := range section.items {
-			line := formatReferenceInjectionItem(item)
-			if builder.Len()+sectionBuilder.Len()+len(line) > maxChars {
-				break
-			}
-			sectionBuilder.WriteString(line)
-			sectionIncluded++
-		}
-		if sectionIncluded == 0 {
-			continue
-		}
-		if builder.Len()+sectionBuilder.Len() > maxChars {
+		line := formatReferenceInjectionItem(item)
+		if builder.Len()+len(line) > maxChars {
 			break
 		}
-		builder.WriteString(sectionBuilder.String())
-		included += sectionIncluded
+		builder.WriteString(line)
+		included++
 	}
 	if included == 0 {
 		return ""
