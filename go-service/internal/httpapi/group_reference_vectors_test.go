@@ -194,6 +194,39 @@ func TestReferenceVectorReindexDoesNotDeleteExistingIndexWhenUpsertFails(t *test
 	}
 }
 
+func TestReferenceAutomaticVectorIndexIndexesApprovedMaterial(t *testing.T) {
+	fake := referenceVectorFixtureStore()
+	embeddingServer, calls := referenceVectorEmbeddingServer(t)
+	defer embeddingServer.Close()
+	vectorStore := &referenceVectorTestStore{}
+	srv := &Server{Cfg: config.Config{ReferenceChromaCollection: "archive_center_reference_vectors"}, Store: fake, ReferenceVector: vectorStore}
+	embedder := completeTurnEmbeddingConfig{Provider: "openai", APIKey: "key", Endpoint: embeddingServer.URL, Model: "embed-reference", TimeoutMs: 5000}
+
+	result := srv.runReferenceAutomaticVectorIndex(context.Background(), fake, "work-1", "continuity-1", embedder, func(map[string]any) {})
+
+	if result["status"] != "completed" || result["trigger"] != "automatic_after_review" || result["indexed"] != 3 {
+		t.Fatalf("automatic index result = %#v", result)
+	}
+	if *calls != 3 || len(vectorStore.upserted) != 3 {
+		t.Fatalf("embedding calls=%d upserted=%d, want 3", *calls, len(vectorStore.upserted))
+	}
+}
+
+func TestReferenceAutomaticVectorIndexSkipsWithoutEmbeddingConfig(t *testing.T) {
+	fake := referenceVectorFixtureStore()
+	vectorStore := &referenceVectorTestStore{}
+	srv := &Server{Cfg: config.Config{ReferenceChromaCollection: "archive_center_reference_vectors"}, Store: fake, ReferenceVector: vectorStore}
+
+	result := srv.runReferenceAutomaticVectorIndex(context.Background(), fake, "work-1", "continuity-1", completeTurnEmbeddingConfig{}, func(map[string]any) {})
+
+	if result["status"] != "skipped" || result["reason"] != "embedding_config_missing" {
+		t.Fatalf("automatic index result = %#v", result)
+	}
+	if len(vectorStore.upserted) != 0 {
+		t.Fatalf("unexpected vector upsert = %#v", vectorStore.upserted)
+	}
+}
+
 func TestReferenceVectorSearchReturnsExactChromaMeasurementsWithoutFixedScores(t *testing.T) {
 	fake := referenceVectorFixtureStore()
 	embeddingServer, _ := referenceVectorEmbeddingServer(t)

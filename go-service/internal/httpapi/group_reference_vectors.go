@@ -482,6 +482,25 @@ func (s *Server) runReferenceVectorReindex(ctx context.Context, ref store.Refere
 	}, nil
 }
 
+func (s *Server) runReferenceAutomaticVectorIndex(ctx context.Context, ref store.ReferenceLibraryStore, workID, continuityID string, embedder completeTurnEmbeddingConfig, progress adminJobProgressFunc) map[string]any {
+	if !embedder.hasConfig() {
+		return map[string]any{"status": "skipped", "reason": "embedding_config_missing"}
+	}
+	if s.ReferenceVectorOpenError != nil {
+		return map[string]any{"status": "failed", "error": s.ReferenceVectorOpenError.Error()}
+	}
+	if s.ReferenceVector == nil {
+		return map[string]any{"status": "failed", "error": "reference vector store is not initialized"}
+	}
+	result, err := s.runReferenceVectorReindex(ctx, ref, workID, continuityID, embedder, progress)
+	if err != nil {
+		return map[string]any{"status": "failed", "error": err.Error()}
+	}
+	result["status"] = "completed"
+	result["trigger"] = "automatic_after_review"
+	return result
+}
+
 func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibraryStore, workID, continuityID string) ([]referenceVectorMaterial, error) {
 	timeline, err := ref.ListReferenceTimelineNodes(ctx, workID, continuityID, "approved")
 	if err != nil {

@@ -3350,6 +3350,7 @@
     vectorLoading: false,
     vectorMessage: "",
     vectorError: "",
+    vectorAutoIndexKey: "",
   };
   const _personaCapsuleState = {
     personaKey: "",
@@ -10761,6 +10762,14 @@
     if (data && data.status === "ok") {
       state.vectorStatus = data;
       state.vectorError = "";
+      const missing = Number(data.missing_approved || 0);
+      const autoIndexKey = state.selectedWorkId + "\u0000" + state.selectedContinuityId;
+      if (missing > 0 && !state.vectorLoading && state.vectorAutoIndexKey !== autoIndexKey) {
+        state.vectorAutoIndexKey = autoIndexKey;
+        referenceLibraryRefreshUI();
+        await referenceLibraryStartVectorReindex();
+        return;
+      }
     } else {
       state.vectorStatus = null;
       state.vectorError = "원작 벡터 상태를 확인하지 못했습니다.";
@@ -10789,6 +10798,7 @@
     });
     if (!data || !data.job_id) {
       state.vectorLoading = false;
+      state.vectorAutoIndexKey = "";
       state.vectorError = "원작 벡터 색인을 시작하지 못했습니다. 임베딩 설정과 ChromaDB 연결을 확인하세요.";
       referenceLibraryRefreshUI();
       return;
@@ -10861,12 +10871,22 @@
         const pending = Number(resultPending ?? 0);
         const approved = Number(data.result && data.result.approved || data.result && data.result.auto_review && data.result.auto_review.approved || 0);
         const rejected = Number(data.result && data.result.rejected || data.result && data.result.auto_review && data.result.auto_review.rejected || 0);
-        referenceLibrarySetStatus("ok", "자동 처리가 끝났습니다. 승인 " + approved + "개 · 제외 " + rejected + "개 · 직접 확인 " + pending + "개", "");
+        const vectorIndex = data.result && data.result.vector_index && typeof data.result.vector_index === "object" ? data.result.vector_index : {};
+        const vectorStatus = String(vectorIndex.status || "");
+        const vectorNote = vectorStatus === "completed"
+          ? " · 검색 준비 " + Number(vectorIndex.indexed || 0) + "개"
+          : vectorStatus === "failed"
+            ? " · 검색 준비 실패: " + String(vectorIndex.error || "원인 미확인")
+            : vectorStatus === "skipped" && String(vectorIndex.reason || "") === "embedding_config_missing"
+              ? " · 검색 준비 보류: 임베딩 설정 필요"
+              : "";
+        referenceLibrarySetStatus("ok", "자동 처리가 끝났습니다. 승인 " + approved + "개 · 제외 " + rejected + "개 · 직접 확인 " + pending + "개" + vectorNote, "");
         return;
       }
       if (data.status === "failed") {
         if (String(data.kind || "") === "reference_vector_reindex") {
           _referenceLibraryState.vectorLoading = false;
+          _referenceLibraryState.vectorAutoIndexKey = "";
           _referenceLibraryState.vectorError = "원작 벡터 색인에 실패했습니다: " + String(data.error || "원인 미확인");
           referenceLibraryRefreshUI();
           return;
@@ -11217,6 +11237,7 @@
   }
 
   function renderReferenceVectorPanel() {
+    if (!settings.debug) return "";
     const state = _referenceLibraryState;
     const status = state.vectorStatus || {};
     const counts = status.counts && typeof status.counts === "object" ? status.counts : {};

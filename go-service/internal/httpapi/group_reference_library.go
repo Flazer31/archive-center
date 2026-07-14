@@ -417,8 +417,8 @@ func (s *Server) handleReferenceDocumentExtract(w http.ResponseWriter, r *http.R
 		writeReferenceStoreError(w, err)
 		return
 	}
-	cfg := s.completeTurnExtractionConfig(req.ClientMeta).Critic
-	if !cfg.hasConfig() {
+	extractionCfg := s.completeTurnExtractionConfig(req.ClientMeta)
+	if !extractionCfg.Critic.hasConfig() {
 		writeError(w, http.StatusBadRequest, "critic_config_missing", "critic provider, api key, endpoint, and model are required")
 		return
 	}
@@ -427,7 +427,7 @@ func (s *Server) handleReferenceDocumentExtract(w http.ResponseWriter, r *http.R
 	}
 	autoReview := req.AutoReview == nil || *req.AutoReview
 	job := s.AdminJobs.start("reference_extract", documentID, map[string]any{"work_id": doc.WorkID, "document_id": documentID, "continuity_id": doc.ContinuityID, "auto_review": autoReview}, func(ctx context.Context, progress adminJobProgressFunc) (map[string]any, error) {
-		return s.runReferenceExtractionJob(ctx, ref, doc, cfg, autoReview, progress)
+		return s.runReferenceExtractionJob(ctx, ref, doc, extractionCfg, autoReview, progress)
 	})
 	writeJSON(w, http.StatusAccepted, job)
 }
@@ -826,7 +826,7 @@ func splitReferenceDocument(raw string, maxRunes int) []string {
 	return chunks
 }
 
-func (s *Server) runReferenceExtractionJob(ctx context.Context, ref store.ReferenceLibraryStore, doc *store.ReferenceDocument, cfg completeTurnLLMConfig, autoReview bool, progress adminJobProgressFunc) (map[string]any, error) {
+func (s *Server) runReferenceExtractionJob(ctx context.Context, ref store.ReferenceLibraryStore, doc *store.ReferenceDocument, extractionCfg completeTurnExtractionConfig, autoReview bool, progress adminJobProgressFunc) (map[string]any, error) {
 	if strings.TrimSpace(doc.RawText) == "" {
 		return nil, errors.New("reference_document_raw_text_missing")
 	}
@@ -843,7 +843,7 @@ func (s *Server) runReferenceExtractionJob(ctx context.Context, ref store.Refere
 	succeeded := 0
 	for i, chunk := range chunks {
 		progress(map[string]any{"stage": "critic_extract", "processed": i, "candidate_count": len(chunks), "progress_percent": adminJobProgressPercent(i, len(chunks)), "chunk": i + 1})
-		parsed, err := callReferenceExtractor(ctx, cfg, doc, chunk, i, len(chunks))
+		parsed, err := callReferenceExtractor(ctx, extractionCfg.Critic, doc, chunk, i, len(chunks))
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("chunk %d: %v", i+1, err))
 			continue
@@ -867,13 +867,20 @@ func (s *Server) runReferenceExtractionJob(ctx context.Context, ref store.Refere
 	if autoReview {
 		progress(map[string]any{"stage": "critic_auto_review", "processed": len(chunks), "candidate_count": len(chunks), "progress_percent": 90})
 		var reviewErr error
-		autoReviewResult, reviewErr = s.runReferenceAutoReviewJob(ctx, ref, doc.WorkID, doc.ContinuityID, cfg, progress)
+		autoReviewResult, reviewErr = s.runReferenceAutoReviewJob(ctx, ref, doc.WorkID, doc.ContinuityID, extractionCfg.Critic, progress)
 		if reviewErr != nil {
 			warnings = append(warnings, "automatic review: "+reviewErr.Error())
 			autoReviewResult = map[string]any{"status": "failed", "error": reviewErr.Error()}
 		}
-		if _, normalizeErr := s.runReferenceTimelineChronologyJob(ctx, ref, doc.WorkID, doc.ContinuityID, cfg, progress); normalizeErr != nil {
+		if _, normalizeErr := s.runReferenceTimelineChronologyJob(ctx, ref, doc.WorkID, doc.ContinuityID, extractionCfg.Critic, progress); normalizeErr != nil {
 			warnings = append(warnings, "timeline chronology normalization: "+normalizeErr.Error())
+		}
+	}
+	vectorIndexResult := map[string]any{"status": "skipped", "reason": "automatic_review_disabled"}
+	if autoReview {
+		vectorIndexResult = s.runReferenceAutomaticVectorIndex(ctx, ref, doc.WorkID, doc.ContinuityID, extractionCfg.Embedder, progress)
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(vectorIndexResult["status"])), "failed") {
+			warnings = append(warnings, "automatic reference vector index: "+strings.TrimSpace(fmt.Sprint(vectorIndexResult["error"])))
 		}
 	}
 	status := "parsed"
@@ -888,7 +895,7 @@ func (s *Server) runReferenceExtractionJob(ctx context.Context, ref store.Refere
 		remainingPending = intFromAny(autoReviewResult["remaining_pending"], remainingPending)
 	}
 	progress(map[string]any{"stage": "pending_review", "processed": len(chunks), "candidate_count": len(chunks), "progress_percent": 100})
-	return map[string]any{"status": status, "document_id": doc.DocumentID, "counts": counts, "warnings": warnings, "auto_review": autoReviewResult, "pending_review": remainingPending}, nil
+	return map[string]any{"status": status, "document_id": doc.DocumentID, "counts": counts, "warnings": warnings, "auto_review": autoReviewResult, "vector_index": vectorIndexResult, "pending_review": remainingPending}, nil
 }
 
 type referenceReviewCandidate struct {
