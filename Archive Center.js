@@ -3734,7 +3734,7 @@
         updateRuntimeState("lastInjectionStatus", injection.status, {
           applied: !!injection.applied,
           detail: injection.applied
-            ? Number(injection.totalChars || 0) + "/" + Number(injection.budgetLimit || 0) + " chars; " + formatMemoryLaneCountsDetail(laneCounts)
+            ? Number(injection.totalChars || 0) + "/" + Number(injection.budgetLimit || 0) + " chars; " + formatMemoryLaneCountsDetail(laneCounts) + (injection.referenceIncluded ? "; 원작:" + Number(injection.referenceSelectedCount || 0) : "")
             : (injection.reason || injection.status),
           placement,
         });
@@ -32332,7 +32332,7 @@
    * 반환: { payload, injectionResult } — injectionResult는 trace/transparency용
    */
   function applyContextInjection(payload, orchResult) {
-    const emptyResult = { applied: false, memoriesUsed: 0, fallbackUsed: false, directiveIncluded: false, authorIncluded: false, directorIncluded: false, sectionWorldIncluded: false, storylineIncluded: false, characterIncluded: false, speechStyleIncluded: false, worldRulesIncluded: false, kgIncluded: false, activeStateIncluded: false, canonicalStateLayerIncluded: false, canonicalStateLayerDelivered: false, canonicalStateHardFloorSlotEnabled: false, canonicalConflictGuardApplied: false, canonicalConflictSuppressedBlocks: [], latestDirectEvidenceIncluded: false, recentRawTurnIncluded: false, episodeIncluded: false, chapterIncluded: false, arcIncluded: false, sagaIncluded: false, chapterDelivered: false, arcDelivered: false, sagaDelivered: false, hierarchyEscalation: null, budgetPolicy: null, adaptiveGovernor: null, protection: { text: "", userPriorityIncluded: false, baseRulesIncluded: false, reliabilityGuardIncluded: false, guardTriggerReasons: [], preview: "" }, verbatimSupport: null, hierarchyEscapeHatch: null, trimmedCount: 0, totalChars: 0, budgetLimit: 0, auxiliaryPreview: "", blocks: [], trimmed: [] };
+    const emptyResult = { applied: false, memoriesUsed: 0, referenceIncluded: false, referenceSelectedCount: 0, fallbackUsed: false, directiveIncluded: false, authorIncluded: false, directorIncluded: false, sectionWorldIncluded: false, storylineIncluded: false, characterIncluded: false, speechStyleIncluded: false, worldRulesIncluded: false, kgIncluded: false, activeStateIncluded: false, canonicalStateLayerIncluded: false, canonicalStateLayerDelivered: false, canonicalStateHardFloorSlotEnabled: false, canonicalConflictGuardApplied: false, canonicalConflictSuppressedBlocks: [], latestDirectEvidenceIncluded: false, recentRawTurnIncluded: false, episodeIncluded: false, chapterIncluded: false, arcIncluded: false, sagaIncluded: false, chapterDelivered: false, arcDelivered: false, sagaDelivered: false, hierarchyEscalation: null, budgetPolicy: null, adaptiveGovernor: null, protection: { text: "", userPriorityIncluded: false, baseRulesIncluded: false, reliabilityGuardIncluded: false, guardTriggerReasons: [], preview: "" }, verbatimSupport: null, hierarchyEscapeHatch: null, trimmedCount: 0, totalChars: 0, budgetLimit: 0, auxiliaryPreview: "", blocks: [], trimmed: [] };
     try {
       if (!orchResult) return { payload, injectionResult: emptyResult };
       if (!settings.enabled) {
@@ -32389,6 +32389,8 @@
       const sectionWorldText = formatSectionWorldBlock(supervisorResult);
       // M-3a: memory/KG/episode 텍스트 — bundle 있으면 재사용, 없으면 로컬 포맷
       const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult, sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK));
+      const referenceText = (_ip && _ip.reference_text) ? String(_ip.reference_text).trim() : "";
+      const memoryTextWithReference = [memoryText, referenceText].filter(Boolean).join("\n\n");
       const kgText = (_ip && _ip.kg_text) ? _ip.kg_text : formatKGBlock(kgRecallResult);
       const wakeUpText = (wakeUpContext || "").trim();
 
@@ -32480,7 +32482,7 @@
         activeStateText,
         authorText,
         directorText,
-        memoryText,
+        memoryTextWithReference,
         wakeUpText,
         fallbackText,
         kgText,
@@ -32568,6 +32570,8 @@
       const injectionResult = {
         applied: injected,
         memoriesUsed: memoryCount,
+        referenceIncluded: referenceText.length > 0,
+        referenceSelectedCount: Number(_ip && _ip.reference_selected_count || 0),
         vectorMemoriesUsed: injectionMemoryLaneCounts.vectorRelevant,
         vectorMemoryHitCount: injectionMemoryLaneCounts.vectorHits,
         vectorMemoryHydratedCount: injectionMemoryLaneCounts.vectorHydrated,
@@ -32690,7 +32694,7 @@
       updateRuntimeState("lastInjectionStatus", injected ? "ok" : "fail", {
         applied: injected,
         detail: injected
-          ? `${budgetResult.blocks.length} blocks, ${fullInjectionText.length}/${hardLimit} chars; ${formatMemoryLaneCountsDetail(injectionMemoryLaneCounts)}` + (activeStateText ? " (active_state✓)" : "")
+          ? `${budgetResult.blocks.length} blocks, ${fullInjectionText.length}/${hardLimit} chars; ${formatMemoryLaneCountsDetail(injectionMemoryLaneCounts)}` + (referenceText ? `; reference:${Number(_ip && _ip.reference_selected_count || 0)}` : "") + (activeStateText ? " (active_state✓)" : "")
           : "injection failed",
         placement: auxiliaryPlacement || null,
       });
@@ -34395,6 +34399,8 @@
               status: injectionResult.applied ? "ok" : "skipped",
               applied: injectionResult.applied,
               memoriesUsed: injectionResult.memoriesUsed,
+              referenceIncluded: injectionResult.referenceIncluded || false,
+              referenceSelectedCount: injectionResult.referenceSelectedCount || 0,
               vectorMemoriesUsed: injectionResult.vectorMemoriesUsed || 0,
               vectorMemoryHitCount: injectionResult.vectorMemoryHitCount || 0,
               vectorMemoryHydratedCount: injectionResult.vectorMemoryHydratedCount || 0,

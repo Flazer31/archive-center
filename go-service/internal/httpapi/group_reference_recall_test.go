@@ -116,6 +116,40 @@ func TestPrepareTurnReferenceRecallStaysShadowUntilBindingOptIn(t *testing.T) {
 	if live["effective_user_input"] != "Open the gate" {
 		t.Fatalf("reference recall rewrote user input: %#v", live["effective_user_input"])
 	}
+
+	firstTurn := prepareTurnReferenceFirstTurnResponse(t, mux)
+	if text, _ := firstTurn["injection_text"].(string); !containsAll(text, "[Original Work Reference]", "The gate opens only at night") {
+		t.Fatalf("first-turn reference injection missing: %q", text)
+	}
+	pack := firstTurn["injection_pack"].(map[string]any)
+	if pack["reference_applied"] != true || pack["reference_selected_count"] != float64(1) {
+		t.Fatalf("first-turn reference pack = %#v", pack)
+	}
+}
+
+func prepareTurnReferenceFirstTurnResponse(t *testing.T, handler http.Handler) map[string]any {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"chat_session_id": "session-1",
+		"turn_index":      1,
+		"raw_user_input":  "Begin the story",
+		"settings": map[string]any{
+			"injection_enabled":   false,
+			"max_injection_chars": 0,
+			"top_k":               0,
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first-turn prepare status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	result := map[string]any{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func prepareTurnReferenceResponse(t *testing.T, handler http.Handler) map[string]any {

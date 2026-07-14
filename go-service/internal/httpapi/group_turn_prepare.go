@@ -267,10 +267,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	timing.addElapsed("injection_assembly", injectionStartedAt)
 	referenceRecallStartedAt := time.Now()
 	referenceRecall := s.buildSessionReferenceRecall(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta)
-	referenceInjectionEnabled := injectionEnabled && referenceRecall.LiveBindingCount > 0
+	referenceInjectionEnabled := referenceRecall.LiveBindingCount > 0
 	referenceInjectionText := ""
 	if referenceInjectionEnabled {
-		remaining := maxInjectionChars - len(injectionAssembly.Text)
+		referenceBudget := maxInjectionChars
+		if referenceBudget <= 0 {
+			referenceBudget = 3000
+		}
+		remaining := referenceBudget - len(injectionAssembly.Text)
 		if remaining > 0 {
 			referenceInjectionText = formatReferenceRecallInjection(referenceRecall, remaining)
 			if referenceInjectionText != "" {
@@ -279,6 +283,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	timing.addElapsed("reference_recall", referenceRecallStartedAt)
+	referenceInjectedCount := strings.Count(referenceInjectionText, "\n- [")
 	injectionText := injectionAssembly.Text
 	injectionTruncated := injectionAssembly.Truncated
 
@@ -322,7 +327,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		languageContext,
 	)
 	criticInputPack := buildCriticInputPack(sid, turnIndex, rawUserInput, promptAssembly, evidenceCounts, sectionSummary, degraded)
-	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
+	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled || referenceInjectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
+	injectionPack["reference_text"] = nilIfEmpty(referenceInjectionText)
+	injectionPack["reference_applied"] = referenceInjectionText != ""
+	injectionPack["reference_selected_count"] = referenceInjectedCount
 
 	queryPreview := rawUserInput
 
@@ -507,6 +515,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"enabled":        referenceInjectionEnabled,
 			"applied":        referenceInjectionText != "",
 			"selected_count": len(referenceRecall.Selected),
+			"injected_count": referenceInjectedCount,
 			"mode":           map[bool]string{true: "live", false: "shadow"}[referenceInjectionEnabled],
 		},
 		"session_state":                                 sessionState,
