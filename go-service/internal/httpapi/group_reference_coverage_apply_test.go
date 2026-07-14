@@ -35,7 +35,7 @@ func TestReferenceCoverageApplicationInjectsOnlyPartialAndMissingWithoutSyntheti
 		{BindingID: "binding-1", ReferenceKind: "claim", SourceID: "unknown", CoverageStatus: "unknown", Eligible: true},
 	}
 
-	items, summary := buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{scopes["binding-1"].binding}, scopes, selected, fieldIndex, 4)
+	items, summary := buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{scopes["binding-1"].binding}, scopes, selected, nil, fieldIndex, 4)
 	if len(items) != 2 || summary.AppliedCount != 2 || summary.ChromaAppliedCount != 1 || summary.FieldIndexApplied != 1 {
 		t.Fatalf("application result items=%#v summary=%#v", items, summary)
 	}
@@ -70,7 +70,7 @@ func TestReferenceCoverageApplicationDoesNotInjectCoveredSource(t *testing.T) {
 	}
 	index := newReferenceCoverageFieldIndexSummary()
 	index.NeededSourceItems = []referenceCoverageNeededSource{{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceKind: "claim", SourceID: "claim-1", CoverageStatus: "covered", Eligible: true}}
-	items, summary := buildReferenceCoverageInjectionItems(nil, map[string]referenceRecallScope{"binding-1": scope}, []referenceRecallItem{{BindingID: "binding-1", ReferenceKind: "claim", SourceID: "claim-1", ChromaRank: 1}}, index, 3)
+	items, summary := buildReferenceCoverageInjectionItems(nil, map[string]referenceRecallScope{"binding-1": scope}, []referenceRecallItem{{BindingID: "binding-1", ReferenceKind: "claim", SourceID: "claim-1", ChromaRank: 1}}, nil, index, 3)
 	if len(items) != 0 || summary.SkippedStatusCounts["covered"] != 1 {
 		t.Fatalf("covered source was injected: items=%#v summary=%#v", items, summary)
 	}
@@ -86,7 +86,7 @@ func TestReferenceCoverageApplicationDoesNotPresentUnverifiedExcerptAsOriginal(t
 	}
 	index := newReferenceCoverageFieldIndexSummary()
 	index.NeededSourceItems = []referenceCoverageNeededSource{{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceKind: "claim", SourceID: "claim-1", CoverageStatus: "missing", MissingFields: []string{"claim_text"}, Eligible: true}}
-	items, _ := buildReferenceCoverageInjectionItems(nil, map[string]referenceRecallScope{"binding-1": scope}, nil, index, 3)
+	items, _ := buildReferenceCoverageInjectionItems(nil, map[string]referenceRecallScope{"binding-1": scope}, nil, nil, index, 3)
 	if len(items) != 1 || items[0].SourceVerified || items[0].SourceExcerpt != "" || items[0].ContentMode != "structured_only" {
 		t.Fatalf("unverified excerpt was presented as original: %#v", items)
 	}
@@ -124,13 +124,13 @@ func TestReferenceCoverageApplicationSeparatesSupplementPrimaryAndUnknownModes(t
 	}
 
 	supplement := makeScope(referenceModeSupplement)
-	items, summary := buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{supplement.binding}, map[string]referenceRecallScope{"binding-1": supplement}, []referenceRecallItem{candidate}, newReferenceCoverageFieldIndexSummary(), 4)
+	items, summary := buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{supplement.binding}, map[string]referenceRecallScope{"binding-1": supplement}, []referenceRecallItem{candidate}, nil, newReferenceCoverageFieldIndexSummary(), 4)
 	if len(items) != 0 || summary.SkippedNoSceneNeed != 1 {
 		t.Fatalf("supplement mode injected unsupported scene context: items=%#v summary=%#v", items, summary)
 	}
 
 	primary := makeScope(referenceModePrimary)
-	items, summary = buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{primary.binding}, map[string]referenceRecallScope{"binding-1": primary}, []referenceRecallItem{candidate}, newReferenceCoverageFieldIndexSummary(), 4)
+	items, summary = buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{primary.binding}, map[string]referenceRecallScope{"binding-1": primary}, []referenceRecallItem{candidate}, nil, newReferenceCoverageFieldIndexSummary(), 4)
 	if len(items) != 1 || items[0].ReferenceMode != referenceModePrimary || items[0].SelectionSource != "primary_chroma_candidate" || items[0].CoverageStatus != "primary_context" {
 		t.Fatalf("primary mode did not use the real Chroma candidate: items=%#v summary=%#v", items, summary)
 	}
@@ -143,7 +143,7 @@ func TestReferenceCoverageApplicationSeparatesSupplementPrimaryAndUnknownModes(t
 	}
 
 	unknown := makeScope("invalid_mode")
-	items, summary = buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{unknown.binding}, map[string]referenceRecallScope{"binding-1": unknown}, []referenceRecallItem{candidate}, newReferenceCoverageFieldIndexSummary(), 4)
+	items, summary = buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{unknown.binding}, map[string]referenceRecallScope{"binding-1": unknown}, []referenceRecallItem{candidate}, nil, newReferenceCoverageFieldIndexSummary(), 4)
 	if len(items) != 0 || summary.SkippedUnknownMode != 1 {
 		t.Fatalf("unknown mode was not blocked: items=%#v summary=%#v", items, summary)
 	}
