@@ -3340,6 +3340,7 @@
     sessionId: "",
     bindings: [],
     bindingDraft: null,
+    bindingDraftDirty: false,
     bindingPreview: null,
     bindingLoading: false,
     bindingMessage: "",
@@ -10999,7 +11000,7 @@
       return false;
     }
     state.bindings = data.bindings;
-    state.bindingDraft = null;
+    if (!state.bindingDraftDirty) state.bindingDraft = null;
     referenceLibraryRefreshUI();
     return true;
   }
@@ -11022,10 +11023,17 @@
     };
   }
 
+  function referenceLibraryRememberBindingDraft(root) {
+    const body = referenceLibraryBindingBody(root);
+    _referenceLibraryState.bindingDraft = body;
+    _referenceLibraryState.bindingDraftDirty = true;
+    return body;
+  }
+
   async function referenceLibraryPreviewBinding(root) {
     const state = _referenceLibraryState;
     const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
-    const body = referenceLibraryBindingBody(root);
+    const body = referenceLibraryRememberBindingDraft(root);
     state.sessionId = sessionId;
     state.bindingDraft = body;
     state.bindingPreview = null;
@@ -11052,7 +11060,7 @@
   async function referenceLibraryApplyBinding(root) {
     const state = _referenceLibraryState;
     const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
-    const body = referenceLibraryBindingBody(root);
+    const body = referenceLibraryRememberBindingDraft(root);
     const existing = referenceLibrarySelectedBinding();
     state.sessionId = sessionId;
     state.bindingDraft = body;
@@ -11077,6 +11085,7 @@
       return false;
     }
     state.bindingPreview = data.preview || null;
+    state.bindingDraftDirty = false;
     state.bindingMessage = existing ? "세션 연결 설정을 갱신했습니다." : "현재 세션에 원작 자료를 연결했습니다.";
     state.bindingError = "";
     await referenceLibraryLoadBindings();
@@ -11097,6 +11106,7 @@
       return false;
     }
     state.bindingDraft = null;
+    state.bindingDraftDirty = false;
     state.bindingPreview = null;
     state.bindingMessage = "세션 연결을 해제했습니다. 원작 자료 자체는 유지됩니다.";
     state.bindingError = "";
@@ -11442,6 +11452,7 @@
       _referenceLibraryState.selectedWorkId = String(workSelect.value || "");
       _referenceLibraryState.document = null;
       _referenceLibraryState.bindingDraft = null;
+      _referenceLibraryState.bindingDraftDirty = false;
       _referenceLibraryState.bindingPreview = null;
       _referenceLibraryState.vectorStatus = null;
       _referenceLibraryState.vectorResults = [];
@@ -11453,6 +11464,7 @@
       _referenceLibraryState.selectedContinuityId = String(continuitySelect.value || "");
       _referenceLibraryState.document = null;
       _referenceLibraryState.bindingDraft = null;
+      _referenceLibraryState.bindingDraftDirty = false;
       _referenceLibraryState.bindingPreview = null;
       _referenceLibraryState.vectorStatus = null;
       _referenceLibraryState.vectorResults = [];
@@ -11473,6 +11485,25 @@
     if (vectorStatus) vectorStatus.addEventListener("click", () => referenceLibraryLoadVectorStatus());
     const vectorSearch = byId("mo-reference-vector-search");
     if (vectorSearch) vectorSearch.addEventListener("click", () => referenceLibrarySearchVectors(byId("mo-reference-vector-query")?.value));
+    [
+      "mo-reference-binding-role",
+      "mo-reference-mode",
+      "mo-reference-binding-anchor-mode",
+      "mo-reference-binding-current-node",
+      "mo-reference-binding-reveal-node",
+      "mo-reference-binding-divergence-node",
+      "mo-reference-binding-future-policy",
+      "mo-reference-binding-priority",
+    ].forEach((id) => {
+      const control = byId(id);
+      if (!control) return;
+      const remember = () => {
+        const root = control.closest(".mo-dash-card") || control.parentElement;
+        referenceLibraryRememberBindingDraft(root);
+      };
+      control.addEventListener("change", remember);
+      if (id === "mo-reference-binding-priority") control.addEventListener("input", remember);
+    });
     const bindingPreview = byId("mo-reference-binding-preview");
     if (bindingPreview) bindingPreview.addEventListener("click", async () => {
       const root = bindingPreview.closest(".mo-dash-card") || bindingPreview.parentElement;
