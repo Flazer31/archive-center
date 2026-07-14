@@ -70,14 +70,30 @@ func TestReferenceRecallPrivateClaimRequiresCurrentSceneKnower(t *testing.T) {
 	}
 }
 
-func TestReferenceRecallInjectionIsSmallAndSessionFactsStayHigherPriority(t *testing.T) {
-	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", Text: "Canon fact"}}}
+func TestReferenceRecallSupplementInjectionKeepsSessionFactsHigherPriority(t *testing.T) {
+	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModeSupplement, Text: "Canon fact"}}}
 	text := formatReferenceRecallInjection(result, 500)
 	if text == "" || !containsAll(text, "[Original Work Reference]", "Current user input and session-established facts override", "Canon fact") {
 		t.Fatalf("injection = %q", text)
 	}
 	if text := formatReferenceRecallInjection(result, 20); text != "" {
 		t.Fatalf("tiny budget must not emit a partial header: %q", text)
+	}
+}
+
+func TestReferenceRecallPrimaryInjectionOverridesUnsupportedSessionInvention(t *testing.T) {
+	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, Text: "HUNTR/X consists of Rumi, Mira, and Zoey."}}}
+	text := formatReferenceRecallInjection(result, 900)
+	if !containsAll(text,
+		"user-authored divergence override",
+		"Approved primary canon overrides unsupported model-invented or session-derived claims",
+		"Preserve session-original additions only when they do not conflict",
+		"HUNTR/X consists of Rumi, Mira, and Zoey.",
+	) {
+		t.Fatalf("primary precedence missing: %q", text)
+	}
+	if strings.Contains(text, "session-established facts override this reference") {
+		t.Fatalf("primary mode still lets generated session claims override canon: %q", text)
 	}
 }
 

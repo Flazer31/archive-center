@@ -86,3 +86,12 @@ func referenceRecallModeInstruction(items []referenceInjectionItem) string {
 		return "Supplement only: fill uncovered canon details without repeating or replacing supplied lore."
 	}
 }
+
+func referenceRecallPrecedenceInstruction(items []referenceInjectionItem) string {
+	for _, item := range items {
+		if item.ReferenceMode == referenceModePrimary {
+			return "Current user input and explicit user-authored divergence override this reference. Approved primary canon overrides unsupported model-invented or session-derived claims. Preserve session-original additions only when they do not conflict with approved canon."
+		}
+	}
+	return "Current user input and session-established facts override this reference."
+}
