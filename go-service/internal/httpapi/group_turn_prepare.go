@@ -81,6 +81,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	injectionEnabled := true
 	inputContextEnabled := true
 	memoryTopK := prepareTurnIntSetting(req.Settings.TopK, defaultSettings.TopK)
+	referenceRecallLimit := memoryTopK
+	if req.Settings.ReferenceRecallLimit != nil {
+		referenceRecallLimit = *req.Settings.ReferenceRecallLimit
+		if referenceRecallLimit < 0 {
+			referenceRecallLimit = 0
+		}
+	}
 	supportRecallLimit := prepareTurnSupportRecallLimit(memoryTopK)
 
 	if req.Settings.InjectionEnabled != nil {
@@ -289,7 +296,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	referenceRecallStartedAt := time.Now()
 	referenceSceneContext := buildReferenceCoverageSceneContext(chatLogs, activeStates, canonicalLayers, worldRules, supportRecallLimit)
 	referenceSceneContext.ActiveRules = referenceCoverageRenderedActiveRules(injectionAssembly.WorldRulesText)
-	referenceRecall := s.buildSessionReferenceRecallWithSceneContext(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta, req.Messages, referenceSceneContext)
+	referenceRecall := s.buildSessionReferenceRecallWithSceneContext(r.Context(), sid, rawUserInput, referenceRecallLimit, req.ClientMeta, req.Messages, referenceSceneContext)
 	referenceBudgetPolicy := resolveReferenceInjectionBudget(maxInjectionChars, referenceBudgetBasisChars, referenceOperationalEnabled, referenceRecall.BindingCount, referenceRecall.ReferenceModes, req.Settings.PrimaryCanonBaseMaxChars)
 	primaryCanonBase := newPrimaryCanonBaseResult("not_applicable")
 	switch {

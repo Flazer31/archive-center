@@ -988,6 +988,9 @@ type PrepareTurnSettings struct {
 	// PRESENCE: Optional non-null scalar int carrying the configured memory cap as the reference budget basis.
 	// DEFAULT: No default: absent callers use the effective max_injection_chars for compatibility.
 	ReferenceInjectionBudgetBasisChars *int `json:"reference_injection_budget_basis_chars,omitempty"`
+	// PRESENCE: Optional non-null scalar int controlling only the reference recall candidate limit.
+	// DEFAULT: No default: absent callers inherit the effective top_k for compatibility; explicit zero disables reference recall candidates.
+	ReferenceRecallLimit *int `json:"reference_recall_limit,omitempty"`
 	// PRESENCE: Optional non-null scalar bool controlling only the independent reference lane.
 	// DEFAULT: No default: absent callers inherit injection_enabled for compatibility.
 	ReferenceInjectionEnabled *bool `json:"reference_injection_enabled,omitempty"`

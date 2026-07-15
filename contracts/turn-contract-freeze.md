@@ -94,6 +94,7 @@ Both routes are registered in `group_turn.go` and MUST remain R2 guards until li
 | `input_context_enabled` | bool | `true` | Enable input context |
 | `max_injection_chars` | int | `3000` | Injection length cap |
 | `reference_injection_budget_basis_chars` | int | none | Configured memory cap used as the independent reference budget basis; remains stable when a turn temporarily suppresses main memory injection |
+| `reference_recall_limit` | int | none | Candidate limit used only by original-work recall; absent inherits `top_k`, explicit 0 disables reference candidates, negative clamps to 0 |
 | `reference_injection_enabled` | bool | none | Controls only the independent reference lane; absent callers inherit `injection_enabled` |
 | `primary_canon_base_max_chars` | int | none | Primary Canon Base subbudget inside the resolved reference total; absent/0 disables the base |
 | `max_input_context_chars` | int | `800` | Context length cap |

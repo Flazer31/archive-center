@@ -11950,6 +11950,7 @@
           input_context_enabled: freshFirstTurnLightMode ? false : !!settings.inputContextEnabled,
           max_injection_chars: freshFirstTurnLightMode ? 0 : (settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars),
           reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,
+          reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
           reference_injection_enabled: settings.injectionEnabled !== false,
           primary_canon_base_max_chars: settings.primaryCanonBaseMaxChars,
           max_input_context_chars: freshFirstTurnLightMode ? 0 : (settings.maxInputContextChars || 800),

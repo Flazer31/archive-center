@@ -183,13 +183,17 @@ func TestPrimaryCanonBaseFirstTurnUsesConfiguredReferenceBudgetBasis(t *testing.
 		"chat_session_id": "session-1",
 		"raw_user_input":  "Continue the scene.",
 		"messages":        []map[string]any{{"role": "user", "content": "Continue the scene."}},
+		"client_meta": map[string]any{
+			"fresh_first_turn_light_mode": map[string]any{"enabled": true},
+		},
 		"settings": map[string]any{
 			"injection_enabled":                      false,
 			"reference_injection_enabled":            true,
 			"max_injection_chars":                    0,
 			"reference_injection_budget_basis_chars": 1200,
+			"reference_recall_limit":                 0,
 			"primary_canon_base_max_chars":           300,
-			"top_k":                                  4,
+			"top_k":                                  0,
 		},
 	})
 	rec := httptest.NewRecorder()

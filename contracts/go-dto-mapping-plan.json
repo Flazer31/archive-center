@@ -4263,6 +4263,20 @@
           "default_application_note": "No default: absent callers inherit injection_enabled; the host sends the user setting independently from per-turn main suppression."
         },
         {
+          "name": "reference_recall_limit",
+          "go_field_name": "ReferenceRecallLimit",
+          "json_tag": "reference_recall_limit,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "int",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": false,
+          "default_value": null,
+          "decode_presence_note": "Optional non-null scalar int controlling only the original-work reference recall candidate limit.",
+          "default_application_note": "No default: absent callers inherit the effective top_k; explicit zero is preserved and negative values are clamped to zero."
+        },
+        {
           "name": "primary_canon_base_max_chars",
           "go_field_name": "PrimaryCanonBaseMaxChars",
           "json_tag": "primary_canon_base_max_chars,omitempty",

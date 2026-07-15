@@ -399,6 +399,142 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	}
 }
 
+func TestPrepareTurnFreshFirstTurnSupplementUsesRawInputWithIndependentReferenceBudget(t *testing.T) {
+	fake := newReferenceBindingHTTPStore()
+	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
+	fake.continuities = []store.ReferenceContinuity{{ContinuityID: "continuity-1", WorkID: "work-1", Status: "active"}}
+	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 10, BranchKey: "main", ReviewStatus: "approved"}}
+	fake.entities = []store.ReferenceEntity{{EntityID: "entity-gate", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "gate", EntityType: "place", ReviewStatus: "approved"}}
+	fake.claims = []store.ReferenceClaim{{ClaimID: "claim-safe", WorkID: "work-1", ContinuityID: "continuity-1", SubjectEntityID: "entity-gate", ClaimType: "access_rule", ClaimText: "The gate opens only at night.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"}}
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceMode: referenceModeSupplement, CurrentNodeID: "node-current"}}
+
+	embeddingInputs := []string{}
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode embedding payload: %v", err)
+		}
+		embeddingInputs = append(embeddingInputs, fmt.Sprint(payload["input"]))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"model":"embed-reference","data":[{"embedding":[1,1]}]}`)
+	}))
+	defer embeddingServer.Close()
+
+	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{{Document: referenceRecallVectorDocument("claim", "claim-safe"), ChromaRank: 1}}}
+	srv := referenceRecallTestServer(fake, vectorStore, embeddingServer.URL)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	rawInput := "Open the gate"
+	starter := "The starting message mentions the gate, but it must not become the reference query."
+	body, _ := json.Marshal(map[string]any{
+		"chat_session_id": "session-1",
+		"raw_user_input":  rawInput,
+		"messages":        []map[string]any{{"role": "assistant", "content": starter}, {"role": "user", "content": rawInput}},
+		"settings": map[string]any{
+			"injection_enabled":                      false,
+			"reference_injection_enabled":            true,
+			"max_injection_chars":                    0,
+			"reference_injection_budget_basis_chars": 1200,
+			"reference_recall_limit":                 3,
+			"top_k":                                  0,
+		},
+		"client_meta": map[string]any{
+			"fresh_first_turn_light_mode": map[string]any{"enabled": true},
+		},
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prepare status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	response := map[string]any{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(embeddingInputs) != 1 || embeddingInputs[0] != rawInput || strings.Contains(embeddingInputs[0], starter) {
+		t.Fatalf("reference queries = %#v, want exact raw input %q", embeddingInputs, rawInput)
+	}
+	state := response["reference_injection"].(map[string]any)
+	policy := state["budget_policy"].(map[string]any)
+	if state["applied"] != true || state["injected_count"].(float64) < 1 || policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(600) {
+		t.Fatalf("first-turn supplement state=%#v policy=%#v", state, policy)
+	}
+	pack := response["injection_pack"].(map[string]any)
+	if pack["memory_text"] != nil || !strings.Contains(fmt.Sprint(pack["reference_text"]), "The gate opens only at night") {
+		t.Fatalf("main/reference lane separation failed: %#v", pack)
+	}
+	base := response["primary_canon_base"].(map[string]any)
+	if base["status"] != "not_applicable" || base["text"] != nil {
+		t.Fatalf("supplement invoked primary Canon Base: %#v", base)
+	}
+
+	noEvidenceInput := "Proceed."
+	body, _ = json.Marshal(map[string]any{
+		"chat_session_id": "session-1",
+		"raw_user_input":  noEvidenceInput,
+		"messages":        []map[string]any{{"role": "assistant", "content": starter}, {"role": "user", "content": noEvidenceInput}},
+		"settings": map[string]any{
+			"injection_enabled":                      false,
+			"reference_injection_enabled":            true,
+			"max_injection_chars":                    0,
+			"reference_injection_budget_basis_chars": 1200,
+			"reference_recall_limit":                 3,
+			"top_k":                                  0,
+		},
+		"client_meta": map[string]any{
+			"fresh_first_turn_light_mode": map[string]any{"enabled": true},
+		},
+	})
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("no-evidence prepare status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	response = map[string]any{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	state = response["reference_injection"].(map[string]any)
+	if state["applied"] != false || state["injected_count"] != float64(0) || response["injection_text"] != nil {
+		t.Fatalf("no-evidence first turn forced reference injection: %#v", response)
+	}
+	if len(embeddingInputs) != 2 || embeddingInputs[1] != noEvidenceInput || strings.Contains(embeddingInputs[1], starter) {
+		t.Fatalf("no-evidence reference queries = %#v", embeddingInputs)
+	}
+
+	queriesBeforeDisabledLimits := len(vectorStore.exactQueries)
+	for _, referenceLimit := range []int{0, -3} {
+		body, _ = json.Marshal(map[string]any{
+			"chat_session_id": "session-1",
+			"raw_user_input":  rawInput,
+			"settings": map[string]any{
+				"injection_enabled":                      false,
+				"reference_injection_enabled":            true,
+				"max_injection_chars":                    0,
+				"reference_injection_budget_basis_chars": 1200,
+				"reference_recall_limit":                 referenceLimit,
+				"top_k":                                  3,
+			},
+		})
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("reference limit %d status=%d body=%s", referenceLimit, rec.Code, rec.Body.String())
+		}
+		response = map[string]any{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		state = response["reference_injection"].(map[string]any)
+		if state["applied"] != false || state["injected_count"] != float64(0) || response["injection_text"] != nil {
+			t.Fatalf("reference limit %d was not preserved as disabled: %#v", referenceLimit, response)
+		}
+	}
+	if len(vectorStore.exactQueries) != queriesBeforeDisabledLimits || len(embeddingInputs) != 2 {
+		t.Fatalf("disabled reference limits performed recall: queries=%d/%d embeddings=%#v", len(vectorStore.exactQueries), queriesBeforeDisabledLimits, embeddingInputs)
+	}
+}
+
 func TestPrepareTurnReferenceCountsSelectedSeparatelyFromCharacterBudgetInclusion(t *testing.T) {
 	fake := newReferenceBindingHTTPStore()
 	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}

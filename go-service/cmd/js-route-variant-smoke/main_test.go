@@ -58,6 +58,7 @@ func TestArchiveCenterJSConsumesReferenceLaneOutsideMainInjectionBudget(t *testi
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
 		`reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,`,
+		`reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),`,
 		`reference_injection_enabled: settings.injectionEnabled !== false,`,
 		`const primaryCanonBaseText = (_ip && _ip.primary_canon_base_text) ? String(_ip.primary_canon_base_text).trim() : "";`,
 		`const referenceInjectionText = [primaryCanonBaseText, referenceText].filter(Boolean).join("\n\n");`,

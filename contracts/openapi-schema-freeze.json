@@ -1945,6 +1945,11 @@
           "title": "Reference Injection Budget Basis Chars",
           "description": "Configured memory injection cap used only as the basis for resolving the independent reference budget. This remains stable when a turn temporarily disables main memory injection."
         },
+        "reference_recall_limit": {
+          "type": "integer",
+          "title": "Reference Recall Limit",
+          "description": "Optional candidate limit used only by original-work reference recall. Absent callers inherit top_k; explicit 0 disables reference recall candidates and negative values are clamped to 0."
+        },
         "reference_injection_enabled": {
           "type": "boolean",
           "title": "Reference Injection Enabled",
