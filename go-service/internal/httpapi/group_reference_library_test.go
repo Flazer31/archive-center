@@ -410,6 +410,32 @@ func TestReferenceExtractionQueueReusesRunningDocumentJob(t *testing.T) {
 	t.Fatal("reference extraction job did not complete")
 }
 
+func TestReferenceExtractorUsesEvidenceGroundedGeneralFactionRule(t *testing.T) {
+	var systemPrompt string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode extractor request: %v", err)
+		} else if messages, ok := request["messages"].([]any); ok && len(messages) > 0 {
+			message, _ := messages[0].(map[string]any)
+			systemPrompt, _ = message["content"].(string)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"timeline\":[],\"entities\":[],\"claims\":[],\"warnings\":[]}"}}]}`))
+	}))
+	defer upstream.Close()
+
+	_, err := callReferenceExtractor(context.Background(), completeTurnLLMConfig{
+		APIKey: "test", Endpoint: upstream.URL, Model: "test", Provider: "openai", TimeoutMs: 30000,
+	}, &store.ReferenceDocument{WorkID: "work-1", ContinuityID: "continuity-1", SourceURI: "source.txt"}, "A source chunk.", 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(systemPrompt, "1930s hunters") || !containsAll(systemPrompt, "faction", "distinct in-world organization", "evidence_excerpt", "directly supports") {
+		t.Fatalf("extractor faction rule = %q", systemPrompt)
+	}
+}
+
 func TestReferenceExtractionLinksExistingAliasesAndTimeline(t *testing.T) {
 	fake := newReferenceLibraryHTTPStore()
 	fake.timeline = append(fake.timeline, store.ReferenceTimelineNode{NodeID: "start-id", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "start", ReviewStatus: "approved"})

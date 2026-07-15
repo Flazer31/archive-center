@@ -6,8 +6,6 @@ import (
 	"unicode/utf8"
 )
 
-const referencePrimaryRelationCompanionLimit = 4
-
 type referenceRelationCandidate struct {
 	item        referenceRecallItem
 	confidence  float64
@@ -16,7 +14,7 @@ type referenceRelationCandidate struct {
 
 func buildPrimaryReferenceRelationCompanions(scopes map[string]referenceRecallScope, selected []referenceRecallItem, query string, messages []map[string]any, sceneContext referenceCoverageSceneContext, limit int) []referenceRecallItem {
 	if limit <= 0 {
-		limit = referencePrimaryRelationCompanionLimit
+		return []referenceRecallItem{}
 	}
 	selectedKeys := map[string]bool{}
 	for _, item := range selected {

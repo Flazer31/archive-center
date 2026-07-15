@@ -49,8 +49,8 @@ func TestReferenceCoverageApplicationInjectsOnlyPartialAndMissingWithoutSyntheti
 		t.Fatalf("structured and original source were not linked: %#v", items[0])
 	}
 	formatted := formatReferenceRecallInjection(referenceRecallResult{Status: "ready", InjectionItems: items[:1]}, 1000)
-	if !containsAll(formatted, "Structured: The gate opens only at night.", "Original excerpt: At midnight, the eastern gate opened.") {
-		t.Fatalf("combined source injection = %q", formatted)
+	if !containsAll(formatted.Text, "Structured: The gate opens only at night.", "Original excerpt: At midnight, the eastern gate opened.") || formatted.IncludedCount != 1 {
+		t.Fatalf("combined source injection = %#v", formatted)
 	}
 	if items[1].SourceID != "entity-mira" || items[1].SelectionSource != "coverage_field_index" || items[1].ChromaRank != nil || items[1].Distance != nil || items[1].CosineSimilarity != nil {
 		t.Fatalf("field index item received a synthetic Chroma score: %#v", items[1])
@@ -138,13 +138,94 @@ func TestReferenceCoverageApplicationSeparatesSupplementPrimaryAndUnknownModes(t
 		t.Fatalf("primary mode changed Chroma provenance: %#v", items[0])
 	}
 	formatted := formatReferenceRecallInjection(referenceRecallResult{Status: "ready", InjectionItems: items}, 1000)
-	if !containsAll(formatted, "user-selected primary canon source", candidate.Text) {
-		t.Fatalf("primary mode instruction missing: %q", formatted)
+	if !containsAll(formatted.Text, "user-selected primary canon source", candidate.Text) {
+		t.Fatalf("primary mode instruction missing: %#v", formatted)
 	}
 
 	unknown := makeScope("invalid_mode")
 	items, summary = buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{unknown.binding}, map[string]referenceRecallScope{"binding-1": unknown}, []referenceRecallItem{candidate}, nil, newReferenceCoverageFieldIndexSummary(), 4)
 	if len(items) != 0 || summary.SkippedUnknownMode != 1 {
 		t.Fatalf("unknown mode was not blocked: items=%#v summary=%#v", items, summary)
+	}
+}
+
+func TestReferenceCoverageApplicationLetsRelationCompanionCompeteWithinTotalLimit(t *testing.T) {
+	scope := referenceRecallScope{
+		binding: store.SessionReferenceBinding{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceMode: referenceModePrimary},
+		work:    &store.ReferenceWork{WorkID: "work-1", Title: "Example"},
+		claims: map[string]store.ReferenceClaim{
+			"direct-1":    {ClaimID: "direct-1", ClaimText: "First direct fact."},
+			"direct-2":    {ClaimID: "direct-2", ClaimText: "Second direct fact."},
+			"companion-1": {ClaimID: "companion-1", ClaimText: "Related fact."},
+		},
+		entities: map[string]store.ReferenceEntity{},
+		nodes:    map[string]store.ReferenceTimelineNode{},
+	}
+	selected := []referenceRecallItem{
+		{BindingID: "binding-1", WorkID: "work-1", WorkTitle: "Example", ContinuityID: "continuity-1", ReferenceKind: "claim", SourceID: "direct-1", Text: "First direct fact.", ChromaRank: 1, Eligible: true, CoverageStatus: "missing", NeededBy: []string{"primary_chroma_relevance"}, Reason: "eligible"},
+		{BindingID: "binding-1", WorkID: "work-1", WorkTitle: "Example", ContinuityID: "continuity-1", ReferenceKind: "claim", SourceID: "direct-2", Text: "Second direct fact.", ChromaRank: 2, Eligible: true, CoverageStatus: "missing", NeededBy: []string{"primary_chroma_relevance"}, Reason: "eligible"},
+	}
+	companions := []referenceRecallItem{
+		{BindingID: "binding-1", WorkID: "work-1", WorkTitle: "Example", ContinuityID: "continuity-1", ReferenceKind: "claim", SourceID: "companion-1", Text: "Related fact.", Eligible: true, CoverageStatus: "missing"},
+	}
+
+	items, summary := buildReferenceCoverageInjectionItems([]store.SessionReferenceBinding{scope.binding}, map[string]referenceRecallScope{"binding-1": scope}, selected, companions, newReferenceCoverageFieldIndexSummary(), len(selected))
+	if len(items) > len(selected) || len(items) != len(selected) {
+		t.Fatalf("total limit not preserved: items=%#v", items)
+	}
+	if items[0].SourceID != "direct-1" || items[1].SourceID != "companion-1" || summary.RelationAppliedCount != 1 {
+		t.Fatalf("relation companion did not compete after top direct candidate: items=%#v summary=%#v", items, summary)
+	}
+	if items[1].ChromaRank != nil || items[1].Distance != nil || items[1].CosineSimilarity != nil {
+		t.Fatalf("relation companion received synthetic vector provenance: %#v", items[1])
+	}
+}
+
+func TestReferenceCoverageApplicationPreservesTopDirectAcrossBindings(t *testing.T) {
+	makeScope := func(bindingID string) referenceRecallScope {
+		return referenceRecallScope{
+			binding:  store.SessionReferenceBinding{BindingID: bindingID, WorkID: bindingID, ContinuityID: "main", ReferenceMode: referenceModePrimary},
+			work:     &store.ReferenceWork{WorkID: bindingID, Title: bindingID},
+			claims:   map[string]store.ReferenceClaim{"direct": {ClaimID: "direct", ClaimText: "Direct fact."}, "direct-2": {ClaimID: "direct-2", ClaimText: "Second direct fact."}, "companion-1": {ClaimID: "companion-1", ClaimText: "Related one."}, "companion-2": {ClaimID: "companion-2", ClaimText: "Related two."}},
+			entities: map[string]store.ReferenceEntity{},
+			nodes:    map[string]store.ReferenceTimelineNode{},
+		}
+	}
+	first := makeScope("binding-a")
+	second := makeScope("binding-b")
+	direct := func(bindingID string) referenceRecallItem {
+		return referenceRecallItem{BindingID: bindingID, WorkID: bindingID, ContinuityID: "main", ReferenceKind: "claim", SourceID: "direct", Text: "Direct fact.", Eligible: true, CoverageStatus: "missing", NeededBy: []string{"primary_chroma_relevance"}}
+	}
+	companions := []referenceRecallItem{
+		{BindingID: "binding-a", WorkID: "binding-a", ContinuityID: "main", ReferenceKind: "claim", SourceID: "companion-1", Text: "Related one.", Eligible: true, CoverageStatus: "missing"},
+		{BindingID: "binding-a", WorkID: "binding-a", ContinuityID: "main", ReferenceKind: "claim", SourceID: "companion-2", Text: "Related two.", Eligible: true, CoverageStatus: "missing"},
+	}
+	items, _ := buildReferenceCoverageInjectionItems(
+		[]store.SessionReferenceBinding{first.binding, second.binding},
+		map[string]referenceRecallScope{"binding-a": first, "binding-b": second},
+		[]referenceRecallItem{direct("binding-a"), direct("binding-b")},
+		companions,
+		newReferenceCoverageFieldIndexSummary(),
+		3,
+	)
+	if len(items) != 3 || items[0].BindingID != "binding-a" || items[1].BindingID != "binding-b" || items[2].SelectionSource != "primary_relation_expansion" {
+		t.Fatalf("top direct candidate starved across bindings: %#v", items)
+	}
+
+	covered := direct("binding-b")
+	covered.CoverageStatus = "covered"
+	secondDirect := direct("binding-b")
+	secondDirect.SourceID = "direct-2"
+	secondDirect.Text = "Second direct fact."
+	items, _ = buildReferenceCoverageInjectionItems(
+		[]store.SessionReferenceBinding{first.binding, second.binding},
+		map[string]referenceRecallScope{"binding-a": first, "binding-b": second},
+		[]referenceRecallItem{direct("binding-a"), covered, secondDirect},
+		companions,
+		newReferenceCoverageFieldIndexSummary(),
+		2,
+	)
+	if len(items) != 2 || items[0].BindingID != "binding-a" || items[1].BindingID != "binding-b" || items[1].SourceID != "direct-2" {
+		t.Fatalf("first injectable direct candidate starved across bindings: %#v", items)
 	}
 }

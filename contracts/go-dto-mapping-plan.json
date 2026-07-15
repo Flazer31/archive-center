@@ -4146,7 +4146,7 @@
     {
       "schema_name": "PrepareTurnSettings",
       "go_type_name": "PrepareTurnSettings",
-      "field_count": 11,
+      "field_count": 14,
       "required_count": 0,
       "blocker_count": 0,
       "fields": [
@@ -4233,6 +4233,48 @@
           "default_value": 3000,
           "decode_presence_note": "Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
           "default_application_note": "Optional field with default (3000): Go handler must apply default when field is absent in request."
+        },
+        {
+          "name": "reference_injection_budget_basis_chars",
+          "go_field_name": "ReferenceInjectionBudgetBasisChars",
+          "json_tag": "reference_injection_budget_basis_chars,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "int",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": false,
+          "default_value": null,
+          "decode_presence_note": "Optional non-null scalar int carrying the configured memory cap as the independent reference budget basis.",
+          "default_application_note": "No default: absent callers use the effective max_injection_chars; the host sends the configured value so first-turn memory suppression does not disable reference injection."
+        },
+        {
+          "name": "reference_injection_enabled",
+          "go_field_name": "ReferenceInjectionEnabled",
+          "json_tag": "reference_injection_enabled,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "bool",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": false,
+          "default_value": null,
+          "decode_presence_note": "Optional non-null scalar bool controlling only the independent reference lane.",
+          "default_application_note": "No default: absent callers inherit injection_enabled; the host sends the user setting independently from per-turn main suppression."
+        },
+        {
+          "name": "primary_canon_base_max_chars",
+          "go_field_name": "PrimaryCanonBaseMaxChars",
+          "json_tag": "primary_canon_base_max_chars,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "int",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": false,
+          "default_value": null,
+          "decode_presence_note": "Optional non-null scalar int: absent vs zero-value distinction requires pointer type because zero disables Primary Canon Base. Positive values are subbudget caps within the resolved reference total.",
+          "default_application_note": "No default: absent and explicit zero remain disabled and must not borrow another injection budget or increase the resolved reference total."
         },
         {
           "name": "max_input_context_chars",

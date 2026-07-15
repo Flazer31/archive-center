@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/risulongmemory/archive-center-go/internal/store"
+	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
 const dashboardViewModelContractVersion = "dashboard.viewmodel.v1"
@@ -22,6 +27,7 @@ type dashboardViewModelRequest struct {
 	GuideModeState           map[string]any `json:"guide_mode_state"`
 	FirstTurnLight           bool           `json:"first_turn_light"`
 	FirstTurnEndedAt         string         `json:"first_turn_ended_at"`
+	ReferenceCard            *dashboardCard `json:"-"`
 }
 
 type dashboardViewModel struct {
@@ -74,7 +80,60 @@ func (s *Server) handleDashboardViewModel(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "code": "invalid_dashboard_snapshot"})
 		return
 	}
+	req.ReferenceCard = s.buildReferenceDashboardCard(r.Context(), resolveDashboardSessionID(req))
 	writeJSON(w, http.StatusOK, buildDashboardViewModel(req))
+}
+
+func (s *Server) buildReferenceDashboardCard(ctx context.Context, sessionID string) *dashboardCard {
+	if s == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	ref, ok := s.Store.(store.ReferenceLibraryStore)
+	if !ok {
+		return nil
+	}
+	bindings, err := ref.ListSessionReferenceBindings(ctx, sessionID, false)
+	if len(bindings) == 0 {
+		return nil
+	}
+	row := dashboardRow{LabelKey: "referenceVector", ItemCount: len(bindings)}
+	fail := func(code string) *dashboardCard {
+		row.Status = "fail"
+		row.DetailCode = code
+		card := newDashboardCard("reference", "REF", "Original Work Reference", []dashboardRow{row})
+		return &card
+	}
+	if err != nil {
+		return fail("referenceBindingReadFailed")
+	}
+	if s.ReferenceVectorOpenError != nil {
+		return fail("referenceVectorOpenFailed")
+	}
+	if s.ReferenceVector == nil {
+		return fail("referenceVectorUnavailable")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	health, healthErr := s.ReferenceVector.Health(probeCtx)
+	cancel()
+	if healthErr != nil {
+		return fail("referenceVectorHealthFailed")
+	}
+	if strings.TrimSpace(health.Status) != "ok" || !health.ModelReady {
+		return fail("referenceVectorHealthNotReady")
+	}
+	if _, ok := s.ReferenceVector.(vector.ExactMetadataQuerier); !ok {
+		return fail("referenceVectorExactQueryUnavailable")
+	}
+	if _, ok := s.ReferenceVector.(vector.DocumentLister); !ok {
+		return fail("referenceVectorListingUnavailable")
+	}
+	if !s.completeTurnExtractionConfig(nil).Embedder.hasConfig() {
+		return fail("referenceEmbeddingConfigMissing")
+	}
+	row.Status = "ok"
+	row.DetailCode = "referenceReady"
+	card := newDashboardCard("reference", "REF", "Original Work Reference", []dashboardRow{row})
+	return &card
 }
 
 func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
@@ -97,17 +156,7 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 		return out
 	}
 
-	sessionID := strings.TrimSpace(req.CurrentSessionID)
-	if sessionID == "" {
-		sessionID = dashboardFirstNonEmpty(
-			dashboardString(req.SessionCandidates["runtime_current"]),
-			dashboardString(req.SessionCandidates["timeline_current"]),
-		)
-	}
-	if sessionID == "" {
-		routing := state("sessionWriteRouting")
-		sessionID = dashboardFirstNonEmpty(dashboardString(routing["targetSessionId"]), dashboardString(routing["rawSessionId"]))
-	}
+	sessionID := resolveDashboardSessionID(req)
 	sessionState := map[string]any{"status": "unknown", "detail": "resolving..."}
 	if sessionID != "" {
 		sessionState = map[string]any{"status": "ok", "detail": shortenDashboardSessionID(sessionID)}
@@ -139,6 +188,9 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 	}
 	if critic := buildCriticLedgerDashboardCard(state("lastCriticLedgerProbe")); critic != nil {
 		cards = append(cards, *critic)
+	}
+	if req.ReferenceCard != nil {
+		cards = append(cards, *req.ReferenceCard)
 	}
 	queue := dashboardMap(runtime["queuePersistence"])
 	load := dashboardMap(queue["lastLoad"])
@@ -199,6 +251,21 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 		summary.Unknown += card.Summary.Unknown
 	}
 	return dashboardViewModel{ContractVersion: dashboardViewModelContractVersion, Status: "ok", Summary: summary, Cards: cards}
+}
+
+func resolveDashboardSessionID(req dashboardViewModelRequest) string {
+	sessionID := strings.TrimSpace(req.CurrentSessionID)
+	if sessionID == "" {
+		sessionID = dashboardFirstNonEmpty(
+			dashboardString(req.SessionCandidates["runtime_current"]),
+			dashboardString(req.SessionCandidates["timeline_current"]),
+		)
+	}
+	if sessionID == "" {
+		routing := dashboardMap(req.RuntimeState["sessionWriteRouting"])
+		sessionID = dashboardFirstNonEmpty(dashboardString(routing["targetSessionId"]), dashboardString(routing["rawSessionId"]))
+	}
+	return sessionID
 }
 
 func buildCriticLedgerDashboardCard(probe map[string]any) *dashboardCard {

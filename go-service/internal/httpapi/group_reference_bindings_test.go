@@ -14,11 +14,12 @@ import (
 
 type referenceBindingHTTPStore struct {
 	*referenceLibraryHTTPStore
-	bindings       []store.SessionReferenceBinding
-	runtimes       map[string]store.SessionReferenceRuntime
-	coverage       map[string]store.SessionReferenceCoverageSnapshot
-	coverageFields map[string][]store.SessionReferenceCoverageField
-	coverageWrites int
+	bindings         []store.SessionReferenceBinding
+	runtimes         map[string]store.SessionReferenceRuntime
+	coverage         map[string]store.SessionReferenceCoverageSnapshot
+	coverageFields   map[string][]store.SessionReferenceCoverageField
+	coverageWrites   int
+	bindingListReads int
 }
 
 func newReferenceBindingHTTPStore() *referenceBindingHTTPStore {
@@ -73,6 +74,7 @@ func (f *referenceBindingHTTPStore) UpsertSessionReferenceBinding(_ context.Cont
 func (f *referenceBindingHTTPStore) ListSessionReferenceBindings(_ context.Context, sid string, enabledOnly bool) ([]store.SessionReferenceBinding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.bindingListReads++
 	out := []store.SessionReferenceBinding{}
 	for _, item := range f.bindings {
 		if item.ChatSessionID == sid && (!enabledOnly || item.Enabled) {

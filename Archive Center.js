@@ -165,6 +165,7 @@
     // ── Context Injection Budget (Sprint 3-B, Phase 2-3 revised) ──
     maxInjectionChars: 6000,         // 보조 블록 전체 문자 수 상한
     injectionBudgetExtraChars: 0,    // 자동 산정 예산 위에 허용할 추가 상한
+    primaryCanonBaseMaxChars: 3000,  // 단독 원작 모드 Canon Base 문자 수 상한 (0=비활성)
     activeStateBudgetRatio: 0.20,    // Phase 2-3: 활성 상태 (1순위, 현재 장면 연속성)
     directiveBudgetRatio: 0.20,      // directive (4순위)
     memoryBudgetRatio: 0.35,         // memory (2순위)
@@ -1000,6 +1001,7 @@
       "settings.hint.auxiliaryInjectionAnchorMarker": "선택 사항입니다. 자동/앵커 모드는 이 마커가 들어간 마지막 메시지 뒤에 기억을 삽입합니다.",
       "settings.hint.auxiliaryInjectionPlacement": "Archive Center의 큰 기억 블록을 어디에 넣을지 정합니다. 기존 프롬프트 순서에 의존하는 프리셋이면 기존 방식을 사용하세요.",
       "settings.hint.injectionBudgetExtraChars": "자동 주입 예산 위로 추가 허용할 문자 수입니다. 토큰이 아니라 chars 기준이며, 관련 기억이 없으면 높은 한도를 전부 채우지 않습니다.",
+      "settings.hint.primaryCanonBaseMaxChars": "0이면 비활성화합니다. 단독(primary) 원작 모드의 원작 총예산 안에서 Canon Base가 사용할 수 있는 하위 상한입니다.",
       "settings.hint.maxInjectionChars": "보조 컨텍스트 블록(기억/세계/관계)의 전체 길이를 제한합니다. 토큰이 아니라 chars 기준이며, 자동 주입 예산에는 추정 토큰도 함께 표시됩니다.",
       "settings.hint.reasoningEffort": "none이면 생략합니다. low/medium/high처럼 provider가 지원하는 값을 사용하세요.",
       "settings.hint.reasoningPreset": "auto는 provider 기본값을 사용합니다.",
@@ -1023,6 +1025,7 @@
       "settings.label.debugContinuityTest": "Continuity 디버그 테스트",
       "settings.label.embeddingTimeout": "임베딩 Timeout (초)",
       "settings.label.injectionBudgetExtraChars": "추가 기억 예산 상한 (chars)",
+      "settings.label.primaryCanonBaseMaxChars": "단독 모드 Canon Base 예산 (chars)",
       "settings.label.injectionBudgetPreview": "자동 주입 예산",
       "settings.label.llmRetryCount": "LLM 재시도 횟수",
       "settings.label.llmRetryCount.hint": "0 = 재시도 없음(1회만 시도), 3 = 실패 시 3회 추가 시도",
@@ -1205,6 +1208,8 @@
       "settings.hint.maxInjectionChars": "Character limit, not token limit. Estimated tokens are shown in the auto injection budget preview.",
       "settings.label.injectionBudgetExtraChars": "Additional Memory Budget Ceiling (chars)",
       "settings.hint.injectionBudgetExtraChars": "Extra characters allowed above the automatic injection budget. This is a character limit, not a token limit. A higher ceiling is not filled unless relevant memory exists.",
+      "settings.label.primaryCanonBaseMaxChars": "Primary-mode Canon Base budget (chars)",
+      "settings.hint.primaryCanonBaseMaxChars": "Set to 0 to disable. In primary original-work mode, this is a Canon Base sub-cap within the resolved reference total.",
       "settings.label.narrativeGuideMode": "Narrative Guide (AI Auto)",
       "settings.label.narrativeGuideMode.help": "Auto mode combines recent input, scene pressure, emotional intensity, combat, and relationship signals, then exposes the resolved mode in trace and dashboard.",
       "settings.label.narrativeGuideStrength": "Narrative Guide Strength",
@@ -2098,6 +2103,8 @@
       "settings.hint.maxInjectionChars": "トークン数ではなく文字数の上限です。自動注入予算には推定トークンも表示します。",
       "settings.label.injectionBudgetExtraChars": "追加記憶予算の上限（chars）",
       "settings.hint.injectionBudgetExtraChars": "自動注入予算の上に許可する追加文字数です。トークン数ではなく文字数です。関連する記憶がなければ無理に埋めません。",
+      "settings.label.primaryCanonBaseMaxChars": "単独モード Canon Base 予算（chars）",
+      "settings.hint.primaryCanonBaseMaxChars": "0で無効化します。単独（primary）原作モードで、原作参照の総予算内にある Canon Base の下位上限です。",
       "settings.label.narrativeGuideMode": "ナラティブガイド（AI自動）",
       "settings.label.narrativeGuideMode.help": "自動判定は直近入力、場面圧、感情強度、戦闘/関係シグナルを合わせて見て、最終モードをtraceとダッシュボードに表示します。",
       "settings.label.narrativeGuideStrength": "ナラティブガイド強度",
@@ -10305,6 +10312,7 @@
     // Sprint 3-B: injection budget
     merged.maxInjectionChars = sanitizeNumber(merged.maxInjectionChars, DEFAULT_SETTINGS.maxInjectionChars, 500, 10000);
     merged.injectionBudgetExtraChars = sanitizeNumber(merged.injectionBudgetExtraChars, 0, 0, 15000);
+    merged.primaryCanonBaseMaxChars = sanitizeNumber(merged.primaryCanonBaseMaxChars, DEFAULT_SETTINGS.primaryCanonBaseMaxChars, 0, 30000);
     merged.auxiliaryInjectionPlacement = normalizeAuxiliaryInjectionPlacement(merged.auxiliaryInjectionPlacement);
     merged.auxiliaryInjectionAnchorMarker = normalizeAuxiliaryInjectionAnchorMarker(merged.auxiliaryInjectionAnchorMarker);
     merged.llmRetryCount = sanitizeNumber(merged.llmRetryCount, 3, 0, 10);
@@ -11941,6 +11949,9 @@
           injection_enabled: !freshFirstTurnLightMode,
           input_context_enabled: freshFirstTurnLightMode ? false : !!settings.inputContextEnabled,
           max_injection_chars: freshFirstTurnLightMode ? 0 : (settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars),
+          reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,
+          reference_injection_enabled: settings.injectionEnabled !== false,
+          primary_canon_base_max_chars: settings.primaryCanonBaseMaxChars,
           max_input_context_chars: freshFirstTurnLightMode ? 0 : (settings.maxInputContextChars || 800),
           episode_interval_turns: settings.episodeIntervalTurns || DEFAULT_SETTINGS.episodeIntervalTurns,
           supervisor_enabled: true,
@@ -12034,6 +12045,7 @@
           // memory_text / kg_text / episode_text / fallback_text (조건부)
           // + Plugin Main 계약 placeholder: effective_user_input / apply_verdict (M-3b에서 채워짐)
           injectionPack:      result.injection_pack       || null,
+          referenceInjection: result.reference_injection  || null,
           inputTransparencyModel: result.input_transparency_model || null,
           effectiveInputPreview:  result.effective_input_preview  || null,
           weakInputPlanner:   result.weak_input_planner   || null,
@@ -17506,13 +17518,26 @@
         return '<div class="mo-note">' + t('dash.transparency.noData') + '</div>';
       }
       const finalInput = composeEffectiveInputFromTransparency(tr._inputTransparency);
+      const injectionPreview = tr._inputTransparency.injection && typeof tr._inputTransparency.injection === "object"
+        ? tr._inputTransparency.injection
+        : null;
+      const hasSplitAuxiliaryPreview = !!(injectionPreview && (
+        Object.prototype.hasOwnProperty.call(injectionPreview, "mainInjectionPreview") ||
+        Object.prototype.hasOwnProperty.call(injectionPreview, "referenceInjectionPreview")
+      ));
+      const mainAuxiliaryContext = hasSplitAuxiliaryPreview
+        ? String(injectionPreview.mainInjectionPreview || "").trim()
+        : finalInput;
+      const originalWorkReferenceContext = hasSplitAuxiliaryPreview
+        ? String(injectionPreview.referenceInjectionPreview || "").trim()
+        : "";
       const imp = tr.inputImprovement && typeof tr.inputImprovement === "object" ? tr.inputImprovement : null;
       const improvedInputText = imp && typeof imp.finalInput === "string" ? imp.finalInput.trim() : "";
       const fp = tr.finalPayloadParity || (tr._inputTransparency && tr._inputTransparency.finalPayloadParity) || null;
       const languageContextText = formatLanguageContextBlock(tr._inputTransparency.languageContext);
       const backendPreviewBlock = renderBackendEffectiveInputPreviewBlock(tr._inputTransparency);
 
-      if (!finalInput && !improvedInputText && !fp && !languageContextText && !backendPreviewBlock) {
+      if (!mainAuxiliaryContext && !originalWorkReferenceContext && !improvedInputText && !fp && !languageContextText && !backendPreviewBlock) {
         return '<div class="mo-note">' + t('dash.preview.notApplied') + '</div>';
       }
 
@@ -17538,8 +17563,11 @@
       if (improvedInputText) {
         parts.push(renderItBlock("Improved User Input", improvedInputText, false));
       }
-      if (finalInput) {
-        parts.push(renderItBlock("Assembled Auxiliary Context", finalInput, false));
+      if (mainAuxiliaryContext) {
+        parts.push(renderItBlock("Assembled Auxiliary Context", mainAuxiliaryContext, false));
+      }
+      if (originalWorkReferenceContext) {
+        parts.push(renderItBlock("Original Work Reference Context", originalWorkReferenceContext, false));
       }
       return parts.join("");
     } catch {
@@ -25446,7 +25474,7 @@
         trace.applyMode && trace.applyMode.payloadReplaced
       );
 
-      return { searchResult, wakeUpContext, supervisorResult, kgRecallResult, activeStatesResult, episodeRecallResult, storylineResult, characterResult, worldRulesResult, pendingThreadsResult, locationContextResult, continuityPackResult: continuityPackRequested ? continuityPackResult : null, continuityInfo, _trace: trace, _chatSessionId: chatSessionId, _improvementTrace, _injectionPack: (preparedBundle && preparedBundle.injectionPack) || null, _effectiveUserInput: userInput, _effectiveUserInputChanged: _effectiveUserInputChanged, timestamp: Date.now() };
+      return { searchResult, wakeUpContext, supervisorResult, kgRecallResult, activeStatesResult, episodeRecallResult, storylineResult, characterResult, worldRulesResult, pendingThreadsResult, locationContextResult, continuityPackResult: continuityPackRequested ? continuityPackResult : null, continuityInfo, _trace: trace, _chatSessionId: chatSessionId, _improvementTrace, _injectionPack: (preparedBundle && preparedBundle.injectionPack) || null, _referenceInjection: (preparedBundle && preparedBundle.referenceInjection) || null, _effectiveUserInput: userInput, _effectiveUserInputChanged: _effectiveUserInputChanged, timestamp: Date.now() };
     } catch (err) {
       warnLog("orchestrateTurnHelpers failed:", err.message);
       updateRuntimeState("lastError", "error", { detail: err.message });
@@ -32359,6 +32387,10 @@
    */
   function applyContextInjection(payload, orchResult) {
     const emptyResult = { applied: false, memoriesUsed: 0, referenceIncluded: false, referenceSelectedCount: 0, fallbackUsed: false, directiveIncluded: false, authorIncluded: false, directorIncluded: false, sectionWorldIncluded: false, storylineIncluded: false, characterIncluded: false, speechStyleIncluded: false, worldRulesIncluded: false, kgIncluded: false, activeStateIncluded: false, canonicalStateLayerIncluded: false, canonicalStateLayerDelivered: false, canonicalStateHardFloorSlotEnabled: false, canonicalConflictGuardApplied: false, canonicalConflictSuppressedBlocks: [], latestDirectEvidenceIncluded: false, recentRawTurnIncluded: false, episodeIncluded: false, chapterIncluded: false, arcIncluded: false, sagaIncluded: false, chapterDelivered: false, arcDelivered: false, sagaDelivered: false, hierarchyEscalation: null, budgetPolicy: null, adaptiveGovernor: null, protection: { text: "", userPriorityIncluded: false, baseRulesIncluded: false, reliabilityGuardIncluded: false, guardTriggerReasons: [], preview: "" }, verbatimSupport: null, hierarchyEscapeHatch: null, trimmedCount: 0, totalChars: 0, budgetLimit: 0, auxiliaryPreview: "", blocks: [], trimmed: [] };
+    emptyResult.primaryCanonBaseIncluded = false;
+    emptyResult.primaryCanonBaseStatus = null;
+    emptyResult.primaryCanonBaseUsedChars = 0;
+    emptyResult.primaryCanonBaseConfiguredBudget = Number(settings.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars);
     try {
       if (!orchResult) return { payload, injectionResult: emptyResult };
       if (!settings.enabled) {
@@ -32416,7 +32448,6 @@
       // M-3a: memory/KG/episode 텍스트 — bundle 있으면 재사용, 없으면 로컬 포맷
       const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult, sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK));
       const referenceText = (_ip && _ip.reference_text) ? String(_ip.reference_text).trim() : "";
-      const memoryTextWithReference = [memoryText, referenceText].filter(Boolean).join("\n\n");
       const kgText = (_ip && _ip.kg_text) ? _ip.kg_text : formatKGBlock(kgRecallResult);
       const wakeUpText = (wakeUpContext || "").trim();
 
@@ -32462,6 +32493,7 @@
       const recentRawTurnText = (_ip && _ip.recent_raw_turn_text) ? String(_ip.recent_raw_turn_text) : "";
       const canonicalStateLayerText = (_ip && _ip.canon_text) ? String(_ip.canon_text) : "";
       const continuityCorrectionText = (_ip && _ip.continuity_correction_text) ? String(_ip.continuity_correction_text).trim() : "";
+      const primaryCanonBaseText = (_ip && _ip.primary_canon_base_text) ? String(_ip.primary_canon_base_text).trim() : "";
       const verbatimSupport = (_ip && _ip.verbatim_support && typeof _ip.verbatim_support === "object") ? {
         active: !!_ip.verbatim_support.active,
         count: Number(_ip.verbatim_support.count || _ip.scoped_verbatim_support_count || 0),
@@ -32508,7 +32540,7 @@
         activeStateText,
         authorText,
         directorText,
-        memoryTextWithReference,
+        memoryText,
         wakeUpText,
         fallbackText,
         kgText,
@@ -32582,8 +32614,15 @@
         ? continuityCorrectionText
         : "";
       const fullInjectionText = [baseInjectionText, continuityCorrectionForInjection].filter(Boolean).join("\n\n");
+      // Backend owns the original-work budget and ordering. The host adapter keeps
+      // that lane additive so it cannot consume or retrim the main memory budget.
+      const referenceInjectionText = [primaryCanonBaseText, referenceText].filter(Boolean).join("\n\n");
+      const effectiveAuxiliaryText = [referenceInjectionText, fullInjectionText].filter(Boolean).join("\n\n");
+      const referenceBudgetPolicy = orchResult && orchResult._referenceInjection && orchResult._referenceInjection.budget_policy
+        ? orchResult._referenceInjection.budget_policy
+        : null;
 
-      if (!fullInjectionText) {
+      if (!effectiveAuxiliaryText) {
         const noContentResult = { ...emptyResult, status: "skipped", reason: "budget_trimmed_to_empty" };
         updateRuntimeState("lastInjectionStatus", "skipped", { applied: false, detail: "budget_trimmed_to_empty" });
         restoreGlobalContinuityTrace();
@@ -32591,13 +32630,21 @@
       }
 
       // payload 주입
-      const { payload: modifiedPayload, injected, placement: auxiliaryPlacement } = injectAuxiliaryBlock(payload, fullInjectionText);
+      const { payload: modifiedPayload, injected, placement: auxiliaryPlacement } = injectAuxiliaryBlock(payload, effectiveAuxiliaryText);
 
       const injectionResult = {
         applied: injected,
         memoriesUsed: memoryCount,
-        referenceIncluded: referenceText.length > 0,
+        referenceIncluded: referenceInjectionText.length > 0,
         referenceSelectedCount: Number(_ip && _ip.reference_selected_count || 0),
+        primaryCanonBaseIncluded: injected && primaryCanonBaseText.length > 0,
+        primaryCanonBaseStatus: (_ip && _ip.primary_canon_base_status) ? String(_ip.primary_canon_base_status) : null,
+        primaryCanonBaseUsedChars: injected && referenceBudgetPolicy && referenceBudgetPolicy.primary_canon_base
+          ? Number(referenceBudgetPolicy.primary_canon_base.used_chars || 0)
+          : 0,
+        primaryCanonBaseConfiguredBudget: Number(settings.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars),
+        referenceInjectionChars: injected && referenceBudgetPolicy ? Number(referenceBudgetPolicy.used_chars || 0) : 0,
+        referenceBudgetPolicy: referenceBudgetPolicy,
         vectorMemoriesUsed: injectionMemoryLaneCounts.vectorRelevant,
         vectorMemoryHitCount: injectionMemoryLaneCounts.vectorHits,
         vectorMemoryHydratedCount: injectionMemoryLaneCounts.vectorHydrated,
@@ -32657,8 +32704,12 @@
         activeStateTrimmed: activeStateFormatted.trimmedSections || [],
         trimmedCount: budgetResult.trimmed.length,
         totalChars: fullInjectionText.length,
+        mainInjectionChars: fullInjectionText.length,
+        effectiveAuxiliaryChars: effectiveAuxiliaryText.length,
         budgetLimit: hardLimit,
-        auxiliaryPreview: fullInjectionText,
+        auxiliaryPreview: effectiveAuxiliaryText,
+        mainInjectionPreview: fullInjectionText,
+        referenceInjectionPreview: referenceInjectionText,
         auxiliaryPlacement: auxiliaryPlacement || null,
         blocks: budgetResult.blocks.map(b => ({ label: b.label, chars: b.chars })),
         trimmed: budgetResult.trimmed,
@@ -34508,6 +34559,8 @@
             lastOrchResult._trace._inputTransparency.injection = {
               applied: injectionResult.applied,
               auxiliaryPreview: injectionResult.auxiliaryPreview || "",
+              mainInjectionPreview: injectionResult.mainInjectionPreview || "",
+              referenceInjectionPreview: injectionResult.referenceInjectionPreview || "",
               blocks: injectionResult.blocks || [],
               trimmed: injectionResult.trimmed || [],
               totalChars: injectionResult.totalChars,
@@ -45230,6 +45283,16 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         queueOk: "저장소 정상",
         localOnly: "아직 로컬 상태",
         synced: "동기화됨",
+        referenceVectorLabel: "원작 벡터 검색",
+        referenceBindingReadFailed: "원작 바인딩 정보를 읽지 못함",
+        referenceVectorOpenFailed: "원작 벡터 DB를 열지 못함",
+        referenceVectorUnavailable: "원작 벡터 DB를 사용할 수 없음",
+        referenceVectorHealthFailed: "원작 벡터 DB 상태 확인 실패",
+        referenceVectorHealthNotReady: "원작 벡터 DB가 준비되지 않음",
+        referenceVectorExactQueryUnavailable: "원작 벡터 DB의 정확 조회 기능을 사용할 수 없음",
+        referenceVectorListingUnavailable: "원작 벡터 DB의 문서 확인 기능을 사용할 수 없음",
+        referenceEmbeddingConfigMissing: "원작 검색용 임베딩 설정이 없음",
+        referenceReady: "원작 검색 준비 완료",
       },
       en: {
         duplicateExisting: "Using existing saved turn (duplicate save prevented)",
@@ -45250,6 +45313,16 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         queueOk: "Queue storage OK",
         localOnly: "Local state only so far",
         synced: "Synced",
+        referenceVectorLabel: "Original-work vector search",
+        referenceBindingReadFailed: "Could not read original-work bindings",
+        referenceVectorOpenFailed: "Could not open the original-work vector database",
+        referenceVectorUnavailable: "Original-work vector database is unavailable",
+        referenceVectorHealthFailed: "Original-work vector database health check failed",
+        referenceVectorHealthNotReady: "Original-work vector database is not ready",
+        referenceVectorExactQueryUnavailable: "Exact original-work vector queries are unavailable",
+        referenceVectorListingUnavailable: "Original-work vector document inspection is unavailable",
+        referenceEmbeddingConfigMissing: "Embedding settings for original-work search are missing",
+        referenceReady: "Original-work search is ready",
       },
       ja: {
         duplicateExisting: "既存の保存済みターンを使用 (重複保存を防止)",
@@ -45270,6 +45343,16 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         queueOk: "キュー保存正常",
         localOnly: "まだローカル状態",
         synced: "同期済み",
+        referenceVectorLabel: "原作ベクトル検索",
+        referenceBindingReadFailed: "原作バインド情報を読み込めません",
+        referenceVectorOpenFailed: "原作ベクトルDBを開けません",
+        referenceVectorUnavailable: "原作ベクトルDBを利用できません",
+        referenceVectorHealthFailed: "原作ベクトルDBの状態確認に失敗しました",
+        referenceVectorHealthNotReady: "原作ベクトルDBの準備が完了していません",
+        referenceVectorExactQueryUnavailable: "原作ベクトルDBの正確検索を利用できません",
+        referenceVectorListingUnavailable: "原作ベクトルDBの文書確認を利用できません",
+        referenceEmbeddingConfigMissing: "原作検索用の埋め込み設定がありません",
+        referenceReady: "原作検索の準備完了",
       },
     };
     return (table[lang] && table[lang][key]) || (table.en && table.en[key]) || key;
@@ -47065,6 +47148,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       vectorUpsert: "Vector Upsert",
       prepareTiming: "Turn Prepare",
       completeTiming: "Save / Memory Build",
+      referenceVector: dashboardSimpleText("referenceVectorLabel"),
     };
     return labels[key] || String(key || "");
   }
@@ -49078,6 +49162,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <input class="mo-range" type="range" id="mo-injectionBudgetExtraCharsRange" data-sync-input="mo-injectionBudgetExtraChars" value="${s.injectionBudgetExtraChars ?? 0}" min="0" max="15000" step="500">
           <small>${t('settings.hint.injectionBudgetExtraChars')}</small>
         </div>
+        <div class="mo-row mo-range-row">
+          <label>${t('settings.label.primaryCanonBaseMaxChars')}</label>
+          <input type="number" id="mo-primaryCanonBaseMaxChars" value="${s.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars}" min="0" max="30000" step="500">
+          <small>${t('settings.hint.primaryCanonBaseMaxChars')}</small>
+        </div>
         <div class="mo-row">
           <label>${t('settings.label.auxiliaryInjectionPlacement')}</label>
           <select id="mo-auxiliaryInjectionPlacement">
@@ -50073,6 +50162,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             topK: $("mo-topK").value,
             llmRetryCount: $("mo-llmRetryCount").value,
             injectionBudgetExtraChars: $("mo-injectionBudgetExtraChars").value,
+            primaryCanonBaseMaxChars: $("mo-primaryCanonBaseMaxChars").value,
             auxiliaryInjectionPlacement: readValue("mo-auxiliaryInjectionPlacement", settings.auxiliaryInjectionPlacement, true),
             auxiliaryInjectionAnchorMarker: readValue("mo-auxiliaryInjectionAnchorMarker", settings.auxiliaryInjectionAnchorMarker, true),
             pluginMainApiKey: $("mo-pluginMainApiKey").value,
@@ -50162,6 +50252,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           setValueIfPresent("mo-subLlmVertexFlexMode", settings.subLlmVertexFlexMode || "off");
           setValueIfPresent("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson || "");
           setValueIfPresent("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson || "");
+          setValueIfPresent("mo-primaryCanonBaseMaxChars", settings.primaryCanonBaseMaxChars);
           for (let i = 0; i < reasoningSyncRunners.length; i++) reasoningSyncRunners[i]();
           $("mo-topK").value = settings.topK;
           $("mo-llmRetryCount").value = settings.llmRetryCount;

@@ -17,13 +17,16 @@ import (
 )
 
 type referenceVectorTestStore struct {
-	docs         []vector.VectorDocument
-	upserted     []vector.VectorDocument
-	deletedIDs   []string
-	exactQuery   vector.ExactQuery
-	exactResults []vector.ExactQueryResult
-	exactErr     error
-	upsertErr    error
+	docs               []vector.VectorDocument
+	upserted           []vector.VectorDocument
+	deletedIDs         []string
+	exactQuery         vector.ExactQuery
+	exactQueries       []vector.ExactQuery
+	exactResults       []vector.ExactQueryResult
+	exactErr           error
+	exactResultsByCall [][]vector.ExactQueryResult
+	exactErrsByCall    []error
+	upsertErr          error
 }
 
 func (f *referenceVectorTestStore) Search(context.Context, string, []float32, int, string) ([]vector.VectorDocument, error) {
@@ -32,6 +35,15 @@ func (f *referenceVectorTestStore) Search(context.Context, string, []float32, in
 
 func (f *referenceVectorTestStore) QueryExact(_ context.Context, query vector.ExactQuery) ([]vector.ExactQueryResult, error) {
 	f.exactQuery = query
+	callIndex := len(f.exactQueries)
+	f.exactQueries = append(f.exactQueries, query)
+	if callIndex < len(f.exactResultsByCall) {
+		var err error
+		if callIndex < len(f.exactErrsByCall) {
+			err = f.exactErrsByCall[callIndex]
+		}
+		return append([]vector.ExactQueryResult(nil), f.exactResultsByCall[callIndex]...), err
+	}
 	return append([]vector.ExactQueryResult(nil), f.exactResults...), f.exactErr
 }
 

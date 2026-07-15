@@ -76,7 +76,7 @@
 | PatchStorylineRequest | 11 | 0 | 0 | 1 |
 | PatchWorldRuleRequest | 6 | 0 | 0 | 1 |
 | PrepareTurnRequest | 9 | 1 | 0 | 1 |
-| PrepareTurnSettings | 11 | 0 | 0 | 0 |
+| PrepareTurnSettings | 14 | 0 | 0 | 0 |
 | PromptUpdateRequest | 1 | 0 | 0 | 1 |
 | ProxyPluginMainRequest | 14 | 1 | 1 | 1 |
 | ReindexRequest | 4 | 1 | 0 | 1 |
@@ -936,6 +936,9 @@
 | `injection_enabled,omitempty` | InjectionEnabled | No | No | Yes | true | `bool` | direct | - | Optional non-null scalar bool: absent vs zero-value distinction requir... | Optional field with default (true): Go handler must apply default when... |
 | `input_context_enabled,omitempty` | InputContextEnabled | No | No | Yes | true | `bool` | direct | - | Optional non-null scalar bool: absent vs zero-value distinction requir... | Optional field with default (true): Go handler must apply default when... |
 | `max_injection_chars,omitempty` | MaxInjectionChars | No | No | Yes | 3000 | `int` | direct | - | Optional non-null scalar int: absent vs zero-value distinction require... | Optional field with default (3000): Go handler must apply default when... |
+| `reference_injection_budget_basis_chars,omitempty` | ReferenceInjectionBudgetBasisChars | No | No | No | null | `int` | direct | - | Configured memory cap used as the independent reference budget basis. | Absent callers use effective max_injection_chars; host sends the configured value across first-turn suppression. |
+| `reference_injection_enabled,omitempty` | ReferenceInjectionEnabled | No | No | No | null | `bool` | direct | - | Controls only the independent reference lane. | Absent callers inherit injection_enabled; host sends the user setting independently from per-turn main suppression. |
+| `primary_canon_base_max_chars,omitempty` | PrimaryCanonBaseMaxChars | No | No | No | null | `int` | direct | - | Optional non-null scalar int; positive values cap a subbudget within the resolved reference total. | Absent and explicit zero disable Canon Base and never increase the reference total. |
 | `max_input_context_chars,omitempty` | MaxInputContextChars | No | No | Yes | 800 | `int` | direct | - | Optional non-null scalar int: absent vs zero-value distinction require... | Optional field with default (800): Go handler must apply default when ... |
 | `narrative_stance,omitempty` | NarrativeStance | No | No | Yes | "balanced" | `string` | direct | - | Optional non-null scalar string: absent vs zero-value distinction requ... | Optional field with default ("balanced"): Go handler must apply defaul... |
 | `supervisor_enabled,omitempty` | SupervisorEnabled | No | No | Yes | true | `bool` | direct | - | Optional non-null scalar bool: absent vs zero-value distinction requir... | Optional field with default (true): Go handler must apply default when... |

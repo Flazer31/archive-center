@@ -11,6 +11,7 @@ import (
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
+	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
 func setupTestServer() *Server {
@@ -193,6 +194,11 @@ func TestHandleReadyWithDependencies(t *testing.T) {
 
 	mux := http.NewServeMux()
 	srv := NewServer(cfg)
+	health := vector.HealthSnapshot{Status: "ok", ModelReady: true}
+	srv.Vector = &fakeVectorStore{healthSnapshot: health}
+	srv.VectorOpenError = nil
+	srv.ReferenceVector = &fakeVectorStore{healthSnapshot: health}
+	srv.ReferenceVectorOpenError = nil
 	srv.RegisterRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
@@ -216,6 +222,9 @@ func TestHandleReadyWithDependencies(t *testing.T) {
 	}
 	if resp.Checks["chromadb_vector"] != "enabled" {
 		t.Errorf("chromadb_vector check = %q, want %q", resp.Checks["chromadb_vector"], "enabled")
+	}
+	if !resp.ReferenceVectorReady || resp.ReferenceVectorDegraded || resp.Checks["reference_chromadb_vector"] != "enabled" {
+		t.Errorf("reference vector readiness = ready:%t degraded:%t checks:%#v", resp.ReferenceVectorReady, resp.ReferenceVectorDegraded, resp.Checks)
 	}
 	if resp.Checks["live_cutover"] != "disabled" {
 		t.Errorf("live_cutover check = %q, want %q", resp.Checks["live_cutover"], "disabled")

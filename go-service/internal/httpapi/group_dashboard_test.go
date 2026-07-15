@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/risulongmemory/archive-center-go/internal/store"
+	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
 func TestBuildDashboardViewModelOwnsStatusAndLaneCalculation(t *testing.T) {
@@ -88,6 +91,101 @@ func TestDashboardViewModelRoute(t *testing.T) {
 	if vm.ContractVersion != dashboardViewModelContractVersion || len(vm.Cards) < 3 {
 		t.Fatalf("response=%+v", vm)
 	}
+}
+
+func TestDashboardReferenceCardRequiresBinding(t *testing.T) {
+	fake := newReferenceBindingHTTPStore()
+	server := &Server{Store: fake}
+	vm := requestDashboardViewModel(t, server, "session-1")
+	if findDashboardCard(vm, "reference") != nil {
+		t.Fatalf("reference card must be absent without a binding: %+v", vm.Cards)
+	}
+	if vm.Summary.Fail != 0 {
+		t.Fatalf("unexpected summary without reference binding: %+v", vm.Summary)
+	}
+}
+
+func TestDashboardReferenceCardFailsWhenVectorUnavailable(t *testing.T) {
+	fake := dashboardReferenceBindingStore("session-1")
+	server := &Server{Store: fake}
+	vm := requestDashboardViewModel(t, server, "session-1")
+	card := requireDashboardCard(t, vm, "reference")
+	row := requireDashboardRow(t, card, "referenceVector")
+	if row.Status != "fail" || row.DetailCode != "referenceVectorUnavailable" || row.ItemCount != float64(1) {
+		t.Fatalf("reference row=%+v", row)
+	}
+}
+
+func TestDashboardReferenceCardFailsWhenCapabilityMissing(t *testing.T) {
+	fake := dashboardReferenceBindingStore("session-1")
+	server := &Server{
+		Store:           fake,
+		ReferenceVector: &dashboardCoreVector{VectorStore: &referenceVectorTestStore{}},
+	}
+	vm := requestDashboardViewModel(t, server, "session-1")
+	row := requireDashboardRow(t, requireDashboardCard(t, vm, "reference"), "referenceVector")
+	if row.Status != "fail" || row.DetailCode != "referenceVectorExactQueryUnavailable" {
+		t.Fatalf("reference row=%+v", row)
+	}
+}
+
+func TestDashboardReferenceCardOKWhenRuntimeIsReady(t *testing.T) {
+	fake := dashboardReferenceBindingStore("session-1")
+	server := &Server{
+		Store:           fake,
+		ReferenceVector: &referenceVectorTestStore{},
+		RuntimeConfig: RuntimeConfig{
+			Synced:            true,
+			EmbeddingProvider: "openai",
+			EmbeddingAPIKey:   "test-key",
+			EmbeddingEndpoint: "https://embedding.invalid/v1",
+			EmbeddingModel:    "test-embedding",
+		},
+	}
+	vm := requestDashboardViewModel(t, server, "session-1")
+	card := requireDashboardCard(t, vm, "reference")
+	row := requireDashboardRow(t, card, "referenceVector")
+	if row.Status != "ok" || row.DetailCode != "referenceReady" || card.Severity != "ok" {
+		t.Fatalf("reference card=%+v row=%+v", card, row)
+	}
+}
+
+type dashboardCoreVector struct {
+	vector.VectorStore
+}
+
+func dashboardReferenceBindingStore(sessionID string) *referenceBindingHTTPStore {
+	fake := newReferenceBindingHTTPStore()
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: sessionID}}
+	return fake
+}
+
+func requestDashboardViewModel(t *testing.T, server *Server, sessionID string) dashboardViewModel {
+	t.Helper()
+	body, err := json.Marshal(dashboardViewModelRequest{PluginEnabled: true, CurrentSessionID: sessionID, RuntimeState: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/view-model", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.handleDashboardViewModel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var vm dashboardViewModel
+	if err := json.Unmarshal(rec.Body.Bytes(), &vm); err != nil {
+		t.Fatal(err)
+	}
+	return vm
+}
+
+func findDashboardCard(vm dashboardViewModel, id string) *dashboardCard {
+	for i := range vm.Cards {
+		if vm.Cards[i].ID == id {
+			return &vm.Cards[i]
+		}
+	}
+	return nil
 }
 
 func requireDashboardCard(t *testing.T, vm dashboardViewModel, id string) dashboardCard {

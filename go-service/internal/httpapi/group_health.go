@@ -81,16 +81,20 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 type readyResponse struct {
-	Ready          bool              `json:"ready"`
-	StoreReady     bool              `json:"store_ready"`
-	VectorReady    bool              `json:"vector_ready"`
-	RuntimeProfile string            `json:"runtime_profile"`
-	VectorMode     string            `json:"vector_mode"`
-	Degraded       bool              `json:"degraded"`
-	Mode           string            `json:"mode"`
-	Checks         map[string]string `json:"checks"`
-	Timestamp      string            `json:"timestamp"`
+	Ready                   bool              `json:"ready"`
+	StoreReady              bool              `json:"store_ready"`
+	VectorReady             bool              `json:"vector_ready"`
+	ReferenceVectorReady    bool              `json:"reference_vector_ready"`
+	ReferenceVectorDegraded bool              `json:"reference_vector_degraded"`
+	RuntimeProfile          string            `json:"runtime_profile"`
+	VectorMode              string            `json:"vector_mode"`
+	Degraded                bool              `json:"degraded"`
+	Mode                    string            `json:"mode"`
+	Checks                  map[string]string `json:"checks"`
+	Timestamp               string            `json:"timestamp"`
 }
+
+const referenceReadinessProbeTimeout = 500 * time.Millisecond
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	checks := map[string]string{}
@@ -182,6 +186,43 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		checks["vector_engine_policy"] = "fallback"
 	}
 
+	referenceVectorReady := false
+	referenceVectorDegraded := false
+	switch {
+	case s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.ReferenceVectorOpenError != nil:
+		checks["reference_chromadb_vector"] = "open_error"
+		checks["reference_chromadb_vector_error"] = s.ReferenceVectorOpenError.Error()
+		referenceVectorDegraded = true
+	case s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.ReferenceVector == nil:
+		checks["reference_chromadb_vector"] = "unavailable"
+		checks["reference_chromadb_vector_error"] = "reference vector store is not initialized"
+		referenceVectorDegraded = true
+	case s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "":
+		probeCtx, cancelProbe := context.WithTimeout(r.Context(), referenceReadinessProbeTimeout)
+		health, healthErr := s.ReferenceVector.Health(probeCtx)
+		cancelProbe()
+		if healthErr == nil && strings.TrimSpace(health.Status) == "ok" && health.ModelReady {
+			checks["reference_chromadb_vector"] = "enabled"
+			checks["reference_chromadb_vector_error"] = "none"
+			referenceVectorReady = true
+		} else {
+			checks["reference_chromadb_vector"] = "health_error"
+			if healthErr != nil {
+				checks["reference_chromadb_vector_error"] = healthErr.Error()
+			} else {
+				checks["reference_chromadb_vector_error"] = fmt.Sprintf("status=%s model_ready=%t", health.Status, health.ModelReady)
+			}
+			referenceVectorDegraded = true
+		}
+	case s.Cfg.VectorMode == config.VectorModeOff:
+		checks["reference_chromadb_vector"] = "disabled"
+		checks["reference_chromadb_vector_error"] = "none"
+	default:
+		checks["reference_chromadb_vector"] = "degraded_fallback"
+		checks["reference_chromadb_vector_error"] = "not_configured"
+		referenceVectorDegraded = true
+	}
+
 	if rep, ok := s.Store.(store.ShadowStatusReporter); ok {
 		checks["store_shadow"] = "active"
 		failures, lastErr := rep.ShadowStatus()
@@ -200,15 +241,17 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	if s.StoreOpenError != nil {
 		checks["ready_blocker"] = "store_open_error"
 		writeJSON(w, http.StatusServiceUnavailable, readyResponse{
-			Ready:          false,
-			StoreReady:     false,
-			VectorReady:    vectorReady,
-			RuntimeProfile: string(s.Cfg.RuntimeProfile),
-			VectorMode:     string(s.Cfg.VectorMode),
-			Degraded:       true,
-			Mode:           string(s.Cfg.Mode),
-			Checks:         checks,
-			Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			Ready:                   false,
+			StoreReady:              false,
+			VectorReady:             vectorReady,
+			ReferenceVectorReady:    referenceVectorReady,
+			ReferenceVectorDegraded: referenceVectorDegraded,
+			RuntimeProfile:          string(s.Cfg.RuntimeProfile),
+			VectorMode:              string(s.Cfg.VectorMode),
+			Degraded:                true,
+			Mode:                    string(s.Cfg.Mode),
+			Checks:                  checks,
+			Timestamp:               time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}
@@ -217,15 +260,17 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		checks["shadow_mode"] = "inactive"
 		checks["mode_guard"] = fmt.Sprintf("mode %q requires MariaDB authority and the selected vector policy to be satisfied", s.Cfg.Mode)
 		writeJSON(w, http.StatusServiceUnavailable, readyResponse{
-			Ready:          false,
-			StoreReady:     true,
-			VectorReady:    vectorReady,
-			RuntimeProfile: string(s.Cfg.RuntimeProfile),
-			VectorMode:     string(s.Cfg.VectorMode),
-			Degraded:       true,
-			Mode:           string(s.Cfg.Mode),
-			Checks:         checks,
-			Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			Ready:                   false,
+			StoreReady:              true,
+			VectorReady:             vectorReady,
+			ReferenceVectorReady:    referenceVectorReady,
+			ReferenceVectorDegraded: referenceVectorDegraded,
+			RuntimeProfile:          string(s.Cfg.RuntimeProfile),
+			VectorMode:              string(s.Cfg.VectorMode),
+			Degraded:                true,
+			Mode:                    string(s.Cfg.Mode),
+			Checks:                  checks,
+			Timestamp:               time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}
@@ -238,15 +283,17 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		checks["product_mode"] = "active"
 	}
 	writeJSON(w, http.StatusOK, readyResponse{
-		Ready:          true,
-		StoreReady:     true,
-		VectorReady:    vectorReady,
-		RuntimeProfile: string(s.Cfg.RuntimeProfile),
-		VectorMode:     string(s.Cfg.VectorMode),
-		Degraded:       vectorDegraded,
-		Mode:           string(s.Cfg.Mode),
-		Checks:         checks,
-		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		Ready:                   true,
+		StoreReady:              true,
+		VectorReady:             vectorReady,
+		ReferenceVectorReady:    referenceVectorReady,
+		ReferenceVectorDegraded: referenceVectorDegraded,
+		RuntimeProfile:          string(s.Cfg.RuntimeProfile),
+		VectorMode:              string(s.Cfg.VectorMode),
+		Degraded:                vectorDegraded,
+		Mode:                    string(s.Cfg.Mode),
+		Checks:                  checks,
+		Timestamp:               time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

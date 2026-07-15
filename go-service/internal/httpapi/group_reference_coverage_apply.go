@@ -65,7 +65,7 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 	summary.RawCandidateCount = len(selected)
 	summary.NeededSourceCount = len(fieldIndex.NeededSourceItems)
 	if limit <= 0 {
-		limit = 8
+		return []referenceInjectionItem{}, summary
 	}
 
 	neededByKey := map[string]referenceCoverageNeededSource{}
@@ -82,37 +82,31 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 
 	items := make([]referenceInjectionItem, 0, limit)
 	applied := map[string]bool{}
-	directLimit := limit
-	if len(relationCompanions) > 0 && directLimit > 1 {
-		reserve := len(relationCompanions)
-		if reserve > 2 {
-			reserve = 2
-		}
-		if reserve >= directLimit {
-			reserve = directLimit - 1
-		}
-		directLimit -= reserve
-	}
-	for _, candidate := range selected {
-		if len(items) >= directLimit {
-			break
+	attemptedDirect := map[string]bool{}
+	appendDirect := func(candidate referenceRecallItem) bool {
+		if len(items) >= limit {
+			return false
 		}
 		key := referenceCoverageSourceKey(candidate.BindingID, candidate.ReferenceKind, candidate.SourceID)
+		if attemptedDirect[key] || applied[key] {
+			return false
+		}
+		attemptedDirect[key] = true
 		needed, neededFound := neededByKey[key]
 		scope, scopeFound := scopes[candidate.BindingID]
 		if !scopeFound {
-			continue
+			return false
 		}
 		referenceMode := referenceBindingMode(scope.binding)
 		if referenceMode == referenceModeUnknown {
 			summary.SkippedUnknownMode++
-			continue
+			return false
 		}
 		text := ""
 		selectionSource := "chroma_candidate"
 		if neededFound {
 			if !referenceCoverageStatusInjectable(needed.CoverageStatus) || !needed.Eligible {
-				continue
+				return false
 			}
 			text = referenceCoverageMissingFieldText(scope, needed)
 		} else if referenceMode == referenceModePrimary && referencePrimaryCandidateApplicable(candidate) {
@@ -131,11 +125,11 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 			selectionSource = "primary_chroma_candidate"
 		} else {
 			summary.SkippedNoSceneNeed++
-			continue
+			return false
 		}
 		if text == "" {
 			summary.SkippedEmptyContent++
-			continue
+			return false
 		}
 		rank := candidate.ChromaRank
 		item := referenceInjectionItem{
@@ -160,27 +154,25 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 		summary.ModeCounts[referenceMode]++
 		applied[key] = true
 		summary.ChromaAppliedCount++
-		if len(items) == directLimit {
-			break
-		}
+		return true
 	}
 
-	for _, candidate := range relationCompanions {
-		if len(items) == limit {
-			break
+	appendRelation := func(candidate referenceRecallItem) {
+		if len(items) >= limit {
+			return
 		}
 		key := referenceCoverageSourceKey(candidate.BindingID, candidate.ReferenceKind, candidate.SourceID)
 		if applied[key] || !candidate.Eligible || !referenceCoverageStatusInjectable(candidate.CoverageStatus) {
-			continue
+			return
 		}
 		scope, ok := scopes[candidate.BindingID]
 		if !ok || referenceBindingMode(scope.binding) != referenceModePrimary {
-			continue
+			return
 		}
 		text := strings.TrimSpace(candidate.Text)
 		if text == "" {
 			summary.SkippedEmptyContent++
-			continue
+			return
 		}
 		needed := referenceRelationCompanionNeededSource(candidate)
 		item := referenceInjectionItem{
@@ -203,6 +195,25 @@ func buildReferenceCoverageInjectionItems(bindings []store.SessionReferenceBindi
 		applied[key] = true
 	}
 
+	// Let relation companions compete inside the same total item limit without
+	// assigning them synthetic vector scores. First preserve the best direct
+	// Chroma candidate from each binding, then consider companions and remaining
+	// direct candidates in their existing deterministic order.
+	preservedDirectBindings := map[string]bool{}
+	for _, candidate := range selected {
+		if preservedDirectBindings[candidate.BindingID] {
+			continue
+		}
+		if appendDirect(candidate) {
+			preservedDirectBindings[candidate.BindingID] = true
+		}
+	}
+	for _, companion := range relationCompanions {
+		appendRelation(companion)
+	}
+	for _, candidate := range selected {
+		appendDirect(candidate)
+	}
 	structural := make([]referenceCoverageNeededSource, 0, len(fieldIndex.NeededSourceItems))
 	for _, needed := range fieldIndex.NeededSourceItems {
 		key := referenceCoverageSourceKey(needed.BindingID, needed.ReferenceKind, needed.SourceID)

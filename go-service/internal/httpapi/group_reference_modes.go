@@ -35,25 +35,6 @@ func referenceBindingModeCounts(bindings []store.SessionReferenceBinding) map[st
 	return counts
 }
 
-func referenceRecallModeAwareLimit(bindings []store.SessionReferenceBinding, requested int) int {
-	if requested <= 0 {
-		requested = 8
-	}
-	if requested > 30 {
-		requested = 30
-	}
-	for _, binding := range bindings {
-		if referenceBindingMode(binding) == referenceModePrimary {
-			requested += 4
-			if requested > 30 {
-				requested = 30
-			}
-			break
-		}
-	}
-	return requested
-}
-
 func referencePrimaryCandidateApplicable(item referenceRecallItem) bool {
 	if !item.Eligible || !referenceCoverageStatusInjectable(item.CoverageStatus) {
 		return false

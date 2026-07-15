@@ -54,6 +54,88 @@ func TestArchiveCenterJSReferenceLibraryUIMarkers(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSConsumesReferenceLaneOutsideMainInjectionBudget(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,`,
+		`reference_injection_enabled: settings.injectionEnabled !== false,`,
+		`const primaryCanonBaseText = (_ip && _ip.primary_canon_base_text) ? String(_ip.primary_canon_base_text).trim() : "";`,
+		`const referenceInjectionText = [primaryCanonBaseText, referenceText].filter(Boolean).join("\n\n");`,
+		`const effectiveAuxiliaryText = [referenceInjectionText, fullInjectionText].filter(Boolean).join("\n\n");`,
+		`injectAuxiliaryBlock(payload, effectiveAuxiliaryText)`,
+		`primaryCanonBaseIncluded: injected && primaryCanonBaseText.length > 0`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing primary Canon Base host-consumption marker %q", marker)
+		}
+	}
+	budgetStart := strings.Index(src, `const budgetResult = assembleInjectionWithBudget(`)
+	if budgetStart < 0 {
+		t.Fatal("Archive Center.js main injection budget assembly start missing")
+	}
+	budgetEnd := strings.Index(src[budgetStart:], `const chapterDelivered =`)
+	if budgetEnd < 0 {
+		t.Fatal("Archive Center.js main injection budget assembly end missing")
+	}
+	budgetCall := src[budgetStart : budgetStart+budgetEnd]
+	if strings.Contains(budgetCall, "primaryCanonBaseText") || strings.Contains(budgetCall, "referenceText") {
+		t.Fatal("the reference lane must remain outside assembleInjectionWithBudget")
+	}
+	if strings.Contains(src, "trimBySections(primaryCanonBaseText") || strings.Contains(src, "trimBySections(referenceText") {
+		t.Fatal("the reference lane must not be re-trimmed by the host adapter")
+	}
+}
+
+func TestArchiveCenterJSEffectiveInputRendersMainAndReferencePreviewsSeparately(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Effective Input preview runtime smoke")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	script := extractJSFunctionBlockForTest(t, src, "function renderEffectiveInputSection()") + `
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+let currentTrace = null;
+let _effectiveInputAwaitingNewTurn = false;
+let lastOrchResult = null;
+function resolveLatestTransparencyTrace() { return currentTrace; }
+function composeEffectiveInputFromTransparency() { return "REFERENCE\n\nMAIN"; }
+function renderBackendEffectiveInputPreviewBlock() { return ""; }
+function formatLanguageContextBlock() { return ""; }
+function t(key) { return key; }
+function escapeAttr(value) { return String(value == null ? "" : value); }
+function truncPreview(value) { return String(value == null ? "" : value); }
+function renderItBlockRaw(title, html) { return '<RAW title="' + title + '">' + html + '</RAW>'; }
+function renderItBlock(title, text) { return '<BLOCK title="' + title + '">' + text + '</BLOCK>'; }
+
+currentTrace = {_inputTransparency: {injection: {
+  mainInjectionPreview: "MAIN",
+  referenceInjectionPreview: "REFERENCE",
+  auxiliaryPreview: "REFERENCE\n\nMAIN"
+}}};
+let html = renderEffectiveInputSection();
+assert(html.includes('<BLOCK title="Assembled Auxiliary Context">MAIN</BLOCK>'), "main context pane is not isolated");
+assert(html.includes('<BLOCK title="Original Work Reference Context">REFERENCE</BLOCK>'), "reference context pane is not isolated");
+assert(!html.includes('<BLOCK title="Assembled Auxiliary Context">REFERENCE\n\nMAIN</BLOCK>'), "combined context leaked into main pane");
+
+currentTrace = {_inputTransparency: {injection: {
+  mainInjectionPreview: "",
+  referenceInjectionPreview: "REFERENCE_ONLY"
+}}};
+html = renderEffectiveInputSection();
+assert(!html.includes('title="Assembled Auxiliary Context"'), "empty main pane was rendered");
+assert(html.includes('<BLOCK title="Original Work Reference Context">REFERENCE_ONLY</BLOCK>'), "reference-only pane is missing");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Effective Input preview runtime smoke failed: %v\n%s", err, out)
+	}
+}
+
 func archiveCenterRoot(t *testing.T) string {
 	t.Helper()
 	candidates := []string{

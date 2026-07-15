@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -60,7 +61,22 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	// Resolve settings from the request/default DTO contract.
 	defaultSettings := dto.PrepareTurnSettings{}
 	defaultSettings.ApplyDefaults()
-	maxInjectionChars := prepareTurnIntSetting(req.Settings.MaxInjectionChars, defaultSettings.MaxInjectionChars)
+	maxInjectionChars := 0
+	if req.Settings.MaxInjectionChars != nil {
+		maxInjectionChars = *req.Settings.MaxInjectionChars
+	} else if defaultSettings.MaxInjectionChars != nil {
+		maxInjectionChars = *defaultSettings.MaxInjectionChars
+	}
+	if maxInjectionChars < 0 {
+		maxInjectionChars = 0
+	}
+	referenceBudgetBasisChars := maxInjectionChars
+	if req.Settings.ReferenceInjectionBudgetBasisChars != nil {
+		referenceBudgetBasisChars = *req.Settings.ReferenceInjectionBudgetBasisChars
+		if referenceBudgetBasisChars < 0 {
+			referenceBudgetBasisChars = 0
+		}
+	}
 	maxInputContextChars := prepareTurnIntSetting(req.Settings.MaxInputContextChars, defaultSettings.MaxInputContextChars)
 	injectionEnabled := true
 	inputContextEnabled := true
@@ -69,6 +85,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 
 	if req.Settings.InjectionEnabled != nil {
 		injectionEnabled = *req.Settings.InjectionEnabled
+	}
+	referenceInjectionSettingEnabled := injectionEnabled
+	if req.Settings.ReferenceInjectionEnabled != nil {
+		referenceInjectionSettingEnabled = *req.Settings.ReferenceInjectionEnabled
 	}
 	if req.Settings.InputContextEnabled != nil {
 		inputContextEnabled = *req.Settings.InputContextEnabled
@@ -232,6 +252,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	timing.addElapsed("recollection_filter", recollectionStartedAt)
 
 	degraded := readsOK == 0
+	referenceOperationalEnabled := referenceInjectionSettingEnabled && !degraded
 	fallbackReason := ""
 	if degraded {
 		fallbackReason = "store_unavailable"
@@ -269,24 +290,44 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	referenceSceneContext := buildReferenceCoverageSceneContext(chatLogs, activeStates, canonicalLayers, worldRules, supportRecallLimit)
 	referenceSceneContext.ActiveRules = referenceCoverageRenderedActiveRules(injectionAssembly.WorldRulesText)
 	referenceRecall := s.buildSessionReferenceRecallWithSceneContext(r.Context(), sid, rawUserInput, memoryTopK, req.ClientMeta, req.Messages, referenceSceneContext)
-	referenceInjectionEnabled := referenceRecall.LiveBindingCount > 0
+	referenceBudgetPolicy := resolveReferenceInjectionBudget(maxInjectionChars, referenceBudgetBasisChars, referenceOperationalEnabled, referenceRecall.BindingCount, referenceRecall.ReferenceModes, req.Settings.PrimaryCanonBaseMaxChars)
+	primaryCanonBase := newPrimaryCanonBaseResult("not_applicable")
+	switch {
+	case referenceRecall.ReferenceModes[referenceModePrimary] > 0:
+		primaryCanonBase = s.buildPrimaryCanonBase(r.Context(), sid, rawUserInput, req.Settings.PrimaryCanonBaseMaxChars, referenceBudgetPolicy.TotalCapChars, referenceOperationalEnabled, req.ClientMeta)
+	case referenceRecall.Status == "failed":
+		primaryCanonBase.Status = "failed"
+		primaryCanonBase.MissingFields = append(primaryCanonBase.MissingFields, "reference_recall")
+	case referenceRecall.BindingCount == 0:
+		primaryCanonBase.Status = "empty"
+	}
+	referenceRecall.InjectionItems = removePrimaryCanonBaseDuplicates(referenceRecall.InjectionItems, primaryCanonBase.selectedSourceKeys)
+	referenceBudgetPolicy.PrimaryCanonBase.UsedChars = primaryCanonBase.UsedChars
+	referenceInjectionEnabled := referenceBudgetPolicy.Status == "resolved" && referenceBudgetPolicy.TotalCapChars > 0 && referenceRecall.LiveBindingCount > 0
 	referenceInjectionText := ""
+	referenceInjectedCount := 0
 	if referenceInjectionEnabled {
-		referenceBudget := maxInjectionChars
-		if referenceBudget <= 0 {
-			referenceBudget = 3000
+		remaining := referenceBudgetPolicy.TotalCapChars - primaryCanonBase.UsedChars
+		if primaryCanonBase.Text != "" && remaining > 0 {
+			remaining -= 2
 		}
-		remaining := referenceBudget - len(injectionAssembly.Text)
 		if remaining > 0 {
-			referenceInjectionText = formatReferenceRecallInjection(referenceRecall, remaining)
-			if referenceInjectionText != "" {
-				injectionAssembly.Text = strings.TrimSpace(injectionAssembly.Text + "\n\n" + referenceInjectionText)
-			}
+			formatted := formatReferenceRecallInjection(referenceRecall, remaining)
+			referenceInjectionText = formatted.Text
+			referenceInjectedCount = formatted.IncludedCount
 		}
 	}
 	timing.addElapsed("reference_recall", referenceRecallStartedAt)
-	referenceInjectedCount := strings.Count(referenceInjectionText, "\n- [")
-	injectionText := injectionAssembly.Text
+	referenceSceneUsedChars := utf8.RuneCountInString(referenceInjectionText)
+	referenceSeparatorChars := 0
+	if primaryCanonBase.Text != "" && referenceInjectionText != "" {
+		referenceSeparatorChars = 2
+	}
+	referenceBudgetPolicy.UsedChars = primaryCanonBase.UsedChars + referenceSeparatorChars + referenceSceneUsedChars
+	referenceBudgetPolicy.RemainingChars = referenceBudgetPolicy.TotalCapChars - referenceBudgetPolicy.UsedChars
+	referenceBudgetPolicy.Truncated = primaryCanonBase.Truncated || (referenceInjectionEnabled && referenceInjectedCount < len(referenceRecall.InjectionItems))
+	referenceText := strings.Join(nonEmptyStrings([]string{primaryCanonBase.Text, referenceInjectionText}), "\n\n")
+	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, injectionAssembly.Text}), "\n\n")
 	injectionTruncated := injectionAssembly.Truncated
 
 	var inputContextText string
@@ -309,7 +350,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	evidenceCounts["storyline_selected_count"] = len(storylineSelection.Selected)
 	evidenceCounts["storyline_dropped_count"] = len(storylineSelection.Dropped)
 	evidenceCounts["storyline_stale_dropped_count"] = storylineSelectionSummary(storylineSelection)["stale_dropped_count"]
-	sectionSummary := prepareTurnSectionSummary(injectionText, inputContextText, injectionTruncated, inputContextTruncated)
+	sectionSummary := prepareTurnSectionSummary(injectionAssembly.Text, inputContextText, injectionTruncated, inputContextTruncated)
 	guideStrength := normalizeNarrativeGuideStrength(stringPtrValue(req.Settings.GuideStrength, "weak"))
 	supervisorInputPack := buildSupervisorInputPack(
 		sid,
@@ -329,10 +370,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		languageContext,
 	)
 	criticInputPack := buildCriticInputPack(sid, turnIndex, rawUserInput, promptAssembly, evidenceCounts, sectionSummary, degraded)
-	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled || referenceInjectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
+	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
 	injectionPack["reference_text"] = nilIfEmpty(referenceInjectionText)
 	injectionPack["reference_applied"] = referenceInjectionText != ""
 	injectionPack["reference_selected_count"] = referenceInjectedCount
+	injectionPack["primary_canon_base_text"] = nilIfEmpty(primaryCanonBase.Text)
+	injectionPack["primary_canon_base_status"] = primaryCanonBase.Status
+	injectionPack["injection_text"] = nilIfEmpty(injectionText)
 
 	queryPreview := rawUserInput
 
@@ -513,13 +557,17 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"trace_preview":            tracePreview,
 		"recall_result":            recallResult,
 		"reference_recall":         referenceRecall,
+		"primary_canon_base":       primaryCanonBase,
 		"reference_injection": map[string]any{
-			"enabled":         referenceInjectionEnabled,
-			"applied":         referenceInjectionText != "",
-			"selected_count":  len(referenceRecall.InjectionItems),
-			"injected_count":  referenceInjectedCount,
-			"mode":            map[bool]string{true: "live", false: "shadow"}[referenceInjectionEnabled],
-			"reference_modes": referenceRecall.ReferenceModes,
+			"enabled":          referenceInjectionEnabled,
+			"applied":          referenceText != "",
+			"scene_applied":    referenceInjectionText != "",
+			"selected_count":   len(referenceRecall.InjectionItems),
+			"injected_count":   referenceInjectedCount,
+			"mode":             map[bool]string{true: "live", false: "shadow"}[referenceInjectionEnabled],
+			"reference_modes":  referenceRecall.ReferenceModes,
+			"scene_used_chars": referenceSceneUsedChars,
+			"budget_policy":    referenceBudgetPolicy,
 		},
 		"session_state":                                 sessionState,
 		"narrative_control":                             narrativeControl,

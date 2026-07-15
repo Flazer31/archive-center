@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,14 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
+
+type referenceVectorWithoutExact struct{ vector.VectorStore }
+
+type failingReferenceCoverageStore struct{ *referenceBindingHTTPStore }
+
+func (f *failingReferenceCoverageStore) ReplaceSessionReferenceCoverageSnapshot(context.Context, *store.SessionReferenceCoverageSnapshot, []store.SessionReferenceCoverageField) (bool, error) {
+	return false, errors.New("coverage persistence unavailable")
+}
 
 func TestReferenceRecallUsesExactChromaOrderThenHardFiltersTimelineBranchAndDisclosure(t *testing.T) {
 	fake := newReferenceBindingHTTPStore()
@@ -49,8 +59,9 @@ func TestReferenceRecallUsesExactChromaOrderThenHardFiltersTimelineBranchAndDisc
 	if len(result.Excluded) != 2 || result.Excluded[0].Reason != "spoiler_above_reveal_ceiling" || result.Excluded[1].Reason != "branch_mismatch" {
 		t.Fatalf("excluded = %#v", result.Excluded)
 	}
-	if vectorStore.exactQuery.Limit != 50 {
-		t.Fatalf("query limit = %d, want expanded hard-filter candidate window 50", vectorStore.exactQuery.Limit)
+	approvedCount := len(fake.timeline) + len(fake.claims)
+	if vectorStore.exactQuery.Limit != approvedCount {
+		t.Fatalf("query limit = %d, want approved source count %d", vectorStore.exactQuery.Limit, approvedCount)
 	}
 }
 
@@ -72,18 +83,22 @@ func TestReferenceRecallPrivateClaimRequiresCurrentSceneKnower(t *testing.T) {
 
 func TestReferenceRecallSupplementInjectionKeepsSessionFactsHigherPriority(t *testing.T) {
 	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModeSupplement, Text: "Canon fact"}}}
-	text := formatReferenceRecallInjection(result, 500)
+	formatted := formatReferenceRecallInjection(result, 500)
+	text := formatted.Text
 	if text == "" || !containsAll(text, "[Original Work Reference]", "Current user input and session-established facts override", "Canon fact") {
 		t.Fatalf("injection = %q", text)
 	}
-	if text := formatReferenceRecallInjection(result, 20); text != "" {
-		t.Fatalf("tiny budget must not emit a partial header: %q", text)
+	if formatted.IncludedCount != len(result.InjectionItems) {
+		t.Fatalf("included count = %d, want %d", formatted.IncludedCount, len(result.InjectionItems))
+	}
+	if tiny := formatReferenceRecallInjection(result, 20); tiny.Text != "" || tiny.IncludedCount != 0 {
+		t.Fatalf("tiny budget must not emit a partial header: %#v", tiny)
 	}
 }
 
 func TestReferenceRecallPrimaryInjectionOverridesUnsupportedSessionInvention(t *testing.T) {
 	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, Text: "HUNTR/X consists of Rumi, Mira, and Zoey."}}}
-	text := formatReferenceRecallInjection(result, 900)
+	text := formatReferenceRecallInjection(result, 900).Text
 	if !containsAll(text,
 		"user-authored divergence override",
 		"Approved primary canon overrides unsupported model-invented or session-derived claims",
@@ -94,6 +109,192 @@ func TestReferenceRecallPrimaryInjectionOverridesUnsupportedSessionInvention(t *
 	}
 	if strings.Contains(text, "session-established facts override this reference") {
 		t.Fatalf("primary mode still lets generated session claims override canon: %q", text)
+	}
+}
+
+func TestReferenceRecallDegradedFormatterIncludesItemsAndReportsExactCount(t *testing.T) {
+	result := referenceRecallResult{Status: "degraded", InjectionItems: []referenceInjectionItem{
+		{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, Text: "First fact."},
+		{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, Text: "Second fact."},
+	}}
+	formatted := formatReferenceRecallInjection(result, 900)
+	if formatted.IncludedCount != len(result.InjectionItems) || !containsAll(formatted.Text, "First fact.", "Second fact.") {
+		t.Fatalf("degraded formatter = %#v", formatted)
+	}
+}
+
+func TestReferenceRecallStatusDistinguishesFailedDegradedEmptyAndReady(t *testing.T) {
+	newFixture := func(bindingCount int, vectorStore *referenceVectorTestStore) *Server {
+		fake := newReferenceBindingHTTPStore()
+		fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
+		fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 1, BranchKey: "main", ReviewStatus: "approved"}}
+		fake.claims = []store.ReferenceClaim{{ClaimID: "claim-1", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "The archive opens at dusk.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"}}
+		for i := 0; i < bindingCount; i++ {
+			fake.bindings = append(fake.bindings, store.SessionReferenceBinding{BindingID: fmt.Sprintf("binding-%d", i), ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", CurrentNodeID: "node-current", ReferenceMode: referenceModePrimary})
+		}
+		embeddingServer, _ := referenceVectorEmbeddingServer(t)
+		t.Cleanup(embeddingServer.Close)
+		return referenceRecallTestServer(fake, vectorStore, embeddingServer.URL)
+	}
+	doc := vector.ExactQueryResult{Document: referenceRecallVectorDocument("claim", "claim-1"), ChromaRank: 1}
+
+	missingInput := (&Server{Store: store.NewNoopStore()}).buildSessionReferenceRecall(context.Background(), "session-1", "", 1, nil)
+	if missingInput.Status != "skipped" {
+		t.Fatalf("missing query status = %q", missingInput.Status)
+	}
+	missingStore := (&Server{Store: store.NewNoopStore()}).buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if missingStore.Status != "failed" || !containsAll(strings.Join(missingStore.Warnings, "\n"), "reference_store_unavailable") {
+		t.Fatalf("missing reference store = %#v", missingStore)
+	}
+
+	missingExactServer := newFixture(1, &referenceVectorTestStore{})
+	missingExactServer.ReferenceVector = &referenceVectorWithoutExact{VectorStore: vector.NewFakeVectorStore()}
+	missingExact := missingExactServer.buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if missingExact.Status != "failed" || !containsAll(strings.Join(missingExact.Warnings, "\n"), "reference_vector_exact_query_unavailable") {
+		t.Fatalf("missing exact metadata querier = %#v", missingExact)
+	}
+
+	missingEmbeddingServer := newFixture(1, &referenceVectorTestStore{})
+	missingEmbeddingServer.RuntimeConfig.EmbeddingAPIKey = ""
+	missingEmbedding := missingEmbeddingServer.buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if missingEmbedding.Status != "failed" || !containsAll(strings.Join(missingEmbedding.Warnings, "\n"), "embedding_config_missing") {
+		t.Fatalf("missing embedding config = %#v", missingEmbedding)
+	}
+
+	failed := newFixture(1, &referenceVectorTestStore{exactErr: errors.New("query unavailable")}).buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if failed.Status != "failed" {
+		t.Fatalf("all query failures status = %q warnings=%#v", failed.Status, failed.Warnings)
+	}
+
+	degradedStore := &referenceVectorTestStore{exactResultsByCall: [][]vector.ExactQueryResult{{doc}, nil}, exactErrsByCall: []error{nil, errors.New("second query unavailable")}}
+	degraded := newFixture(2, degradedStore).buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if degraded.Status != "degraded" || len(degraded.Selected) != 1 {
+		t.Fatalf("partial query status=%q selected=%#v warnings=%#v", degraded.Status, degraded.Selected, degraded.Warnings)
+	}
+
+	empty := newFixture(1, &referenceVectorTestStore{}).buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if empty.Status != "empty" || len(empty.Selected) != 0 {
+		t.Fatalf("successful empty query = %#v", empty)
+	}
+
+	ready := newFixture(1, &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{doc}}).buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if ready.Status != "ready" || len(ready.Selected) != 1 || len(ready.InjectionItems) > 1 {
+		t.Fatalf("successful valid query = %#v", ready)
+	}
+
+	degradedCoverageServer := newFixture(1, &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{doc}})
+	degradedCoverageServer.Store = &failingReferenceCoverageStore{referenceBindingHTTPStore: degradedCoverageServer.Store.(*referenceBindingHTTPStore)}
+	degradedCoverage := degradedCoverageServer.buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	if degradedCoverage.Status != "degraded" || degradedCoverage.CoverageShadow.FieldIndex.Status != "degraded" {
+		t.Fatalf("coverage persistence failure status=%q field_index=%#v warnings=%#v", degradedCoverage.Status, degradedCoverage.CoverageShadow.FieldIndex, degradedCoverage.Warnings)
+	}
+}
+
+func TestReferenceRecallReportsOpenFailureWithoutBreakingPrepareTurn(t *testing.T) {
+	fake := newReferenceBindingHTTPStore()
+	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1"}}
+	embeddingServer, _ := referenceVectorEmbeddingServer(t)
+	defer embeddingServer.Close()
+	srv := referenceRecallTestServer(fake, &referenceVectorTestStore{}, embeddingServer.URL)
+	srv.ReferenceVectorOpenError = errors.New("reference collection cannot open")
+
+	recall := srv.buildSessionReferenceRecall(context.Background(), "session-1", "continue", 1, nil)
+	if recall.Status != "failed" || !stringSliceContains(recall.Warnings, "reference_vector_open_failed") {
+		t.Fatalf("reference open failure = %#v", recall)
+	}
+	srv.ReferenceVectorOpenError = nil
+	srv.ReferenceVector = nil
+	unavailable := srv.buildSessionReferenceRecall(context.Background(), "session-1", "continue", 1, nil)
+	if unavailable.Status != "failed" || !stringSliceContains(unavailable.Warnings, "reference_vector_unavailable") {
+		t.Fatalf("missing reference vector = %#v", unavailable)
+	}
+	srv.ReferenceVectorOpenError = errors.New("reference collection cannot open")
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	prepared := prepareTurnReferenceResponse(t, mux)
+	preparedRecall := prepared["reference_recall"].(map[string]any)
+	if preparedRecall["status"] != "failed" {
+		t.Fatalf("prepare reference recall = %#v", preparedRecall)
+	}
+	if prepared["status"] != "ok" || prepared["injection_text"] != nil {
+		t.Fatalf("reference failure changed main prepare result: %#v", prepared)
+	}
+	referenceInjection := prepared["reference_injection"].(map[string]any)
+	if referenceInjection["applied"] != false || referenceInjection["injected_count"] != float64(0) {
+		t.Fatalf("reference failure injected content: %#v", referenceInjection)
+	}
+}
+
+func TestReferenceRecallPrimaryPreservesRequestedItemLimit(t *testing.T) {
+	fake := newReferenceBindingHTTPStore()
+	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
+	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 1, BranchKey: "main", ReviewStatus: "approved"}}
+	fake.claims = []store.ReferenceClaim{
+		{ClaimID: "claim-1", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "First fact.", TemporalScope: "timeless", BranchKey: "main", ReviewStatus: "approved"},
+		{ClaimID: "claim-2", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "Second fact.", TemporalScope: "timeless", BranchKey: "main", ReviewStatus: "approved"},
+	}
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", CurrentNodeID: "node-current", ReferenceMode: referenceModePrimary}}
+	embeddingServer, _ := referenceVectorEmbeddingServer(t)
+	defer embeddingServer.Close()
+	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{
+		{Document: referenceRecallVectorDocument("claim", "claim-1"), ChromaRank: 1},
+		{Document: referenceRecallVectorDocument("claim", "claim-2"), ChromaRank: 2},
+	}}
+	result := referenceRecallTestServer(fake, vectorStore, embeddingServer.URL).buildSessionReferenceRecall(context.Background(), "session-1", "fact", 1, nil)
+	if len(result.Selected) != 1 || len(result.InjectionItems) > 1 {
+		t.Fatalf("primary expanded requested limit: selected=%d injection=%d", len(result.Selected), len(result.InjectionItems))
+	}
+	if vectorStore.exactQuery.Limit != len(fake.timeline)+len(fake.claims) {
+		t.Fatalf("query limit = %d, want approved ID count %d", vectorStore.exactQuery.Limit, len(fake.timeline)+len(fake.claims))
+	}
+}
+
+func TestReferenceRecallPreviewDistinguishesOmittedLimitFromExplicitZero(t *testing.T) {
+	fake := newReferenceBindingHTTPStore()
+	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
+	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 1, BranchKey: "main", ReviewStatus: "approved"}}
+	fake.claims = []store.ReferenceClaim{
+		{ClaimID: "claim-1", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "First fact.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"},
+		{ClaimID: "claim-2", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "Second fact.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"},
+	}
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", CurrentNodeID: "node-current", ReferenceMode: referenceModePrimary}}
+	embeddingServer, _ := referenceVectorEmbeddingServer(t)
+	defer embeddingServer.Close()
+	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{
+		{Document: referenceRecallVectorDocument("claim", "claim-1"), ChromaRank: 1},
+		{Document: referenceRecallVectorDocument("claim", "claim-2"), ChromaRank: 2},
+	}}
+	srv := referenceRecallTestServer(fake, vectorStore, embeddingServer.URL)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	call := func(body map[string]any) map[string]any {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/sessions/session-1/reference-recall/preview", bytes.NewReader(raw))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		result := map[string]any{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	omitted := call(map[string]any{"query": "fact"})
+	queryCountAfterOmitted := len(vectorStore.exactQueries)
+	explicitZero := call(map[string]any{"query": "fact", "limit": 0})
+	if len(omitted["selected"].([]any)) != len(vectorStore.exactResults) {
+		t.Fatalf("omitted limit did not derive from approved inventory: %#v", omitted)
+	}
+	if len(explicitZero["selected"].([]any)) != 0 || len(explicitZero["injection_items"].([]any)) != 0 {
+		t.Fatalf("explicit zero limit was replaced: %#v", explicitZero)
+	}
+	if len(vectorStore.exactQueries) != queryCountAfterOmitted {
+		t.Fatalf("explicit zero limit performed a vector query: before=%d after=%d", queryCountAfterOmitted, len(vectorStore.exactQueries))
 	}
 }
 
@@ -120,6 +321,18 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	if liveState["applied"] != true || liveState["mode"] != "live" {
 		t.Fatalf("live state = %#v", liveState)
 	}
+	policy := liveState["budget_policy"].(map[string]any)
+	if policy["contract_version"] != referenceInjectionBudgetContractVersion || policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(600) || policy["relationship_to_main"] != "additive_non_displacing" {
+		t.Fatalf("supplement budget contract = %#v", policy)
+	}
+	pack := live["injection_pack"].(map[string]any)
+	referenceText, _ := pack["reference_text"].(string)
+	if policy["used_chars"] != float64(len([]rune(referenceText))) || policy["used_chars"].(float64) > policy["total_cap_chars"].(float64) {
+		t.Fatalf("supplement budget usage = policy:%#v text:%q", policy, referenceText)
+	}
+	if memoryText, _ := pack["memory_text"].(string); strings.Contains(memoryText, "[Original Work Reference]") {
+		t.Fatalf("reference entered the main memory lane: %q", memoryText)
+	}
 	if live["effective_user_input"] != "Open the gate" {
 		t.Fatalf("reference recall rewrote user input: %#v", live["effective_user_input"])
 	}
@@ -138,12 +351,28 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	}
 
 	firstTurn := prepareTurnReferenceFirstTurnResponse(t, mux)
-	if text, _ := firstTurn["injection_text"].(string); !containsAll(text, "[Original Work Reference]", "The gate opens only at night") {
-		t.Fatalf("first-turn reference injection missing: %q", text)
+	if firstTurn["injection_text"] != nil {
+		t.Fatalf("disabled first-turn reference injection = %#v", firstTurn["injection_text"])
 	}
-	pack := firstTurn["injection_pack"].(map[string]any)
-	if pack["reference_applied"] != true || pack["reference_selected_count"] != float64(2) {
+	pack = firstTurn["injection_pack"].(map[string]any)
+	if pack["reference_applied"] != false || pack["reference_selected_count"] != float64(0) || pack["reference_text"] != nil {
 		t.Fatalf("first-turn reference pack = %#v", pack)
+	}
+	firstTurnState := firstTurn["reference_injection"].(map[string]any)
+	firstTurnSelected := len(firstTurn["reference_recall"].(map[string]any)["injection_items"].([]any))
+	if firstTurnState["enabled"] != false || firstTurnState["applied"] != false || firstTurnState["selected_count"] != float64(firstTurnSelected) || firstTurnState["injected_count"] != float64(0) {
+		t.Fatalf("disabled first-turn reference state = %#v", firstTurnState)
+	}
+
+	zeroBudget := prepareTurnReferenceSettingsResponse(t, mux, true, 0)
+	if zeroBudget["injection_text"] != nil {
+		t.Fatalf("zero-budget reference injection = %#v", zeroBudget["injection_text"])
+	}
+	zeroBudgetPack := zeroBudget["injection_pack"].(map[string]any)
+	zeroBudgetState := zeroBudget["reference_injection"].(map[string]any)
+	zeroBudgetSelected := len(zeroBudget["reference_recall"].(map[string]any)["injection_items"].([]any))
+	if zeroBudgetPack["reference_applied"] != false || zeroBudgetPack["reference_selected_count"] != float64(0) || zeroBudgetPack["reference_text"] != nil || zeroBudgetState["enabled"] != false || zeroBudgetState["selected_count"] != float64(zeroBudgetSelected) || zeroBudgetState["injected_count"] != float64(0) {
+		t.Fatalf("zero-budget reference surfaces: pack=%#v state=%#v", zeroBudgetPack, zeroBudgetState)
 	}
 
 	covered := prepareTurnReferenceResponseWithSystem(t, mux, "The gate opens only at night.")
@@ -167,6 +396,36 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	unlinkedState := unlinked["reference_injection"].(map[string]any)
 	if unlinkedState["applied"] != false {
 		t.Fatalf("unlinked state = %#v", unlinkedState)
+	}
+}
+
+func TestPrepareTurnReferenceCountsSelectedSeparatelyFromCharacterBudgetInclusion(t *testing.T) {
+	fake := newReferenceBindingHTTPStore()
+	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
+	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 1, BranchKey: "main", ReviewStatus: "approved"}}
+	fake.claims = []store.ReferenceClaim{
+		{ClaimID: "claim-short", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "A short relevant fact.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"},
+		{ClaimID: "claim-long", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: strings.Repeat("A longer relevant fact. ", 60), TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"},
+	}
+	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", CurrentNodeID: "node-current", ReferenceMode: referenceModePrimary}}
+	embeddingServer, _ := referenceVectorEmbeddingServer(t)
+	defer embeddingServer.Close()
+	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{
+		{Document: referenceRecallVectorDocument("claim", "claim-short"), ChromaRank: 1},
+		{Document: referenceRecallVectorDocument("claim", "claim-long"), ChromaRank: 2},
+	}}
+	srv := referenceRecallTestServer(fake, vectorStore, embeddingServer.URL)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	response := prepareTurnReferenceSettingsResponse(t, mux, true, 650)
+	state := response["reference_injection"].(map[string]any)
+	pack := response["injection_pack"].(map[string]any)
+	if state["selected_count"] != float64(len(vectorStore.exactResults)) || state["injected_count"] != float64(1) {
+		t.Fatalf("selected/injected counts = %#v", state)
+	}
+	if pack["reference_selected_count"] != state["injected_count"] {
+		t.Fatalf("pack included count diverged from formatter count: pack=%#v state=%#v", pack, state)
 	}
 }
 
@@ -248,6 +507,32 @@ func prepareTurnReferenceFirstTurnResponse(t *testing.T, handler http.Handler) m
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("first-turn prepare status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	result := map[string]any{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func prepareTurnReferenceSettingsResponse(t *testing.T, handler http.Handler, injectionEnabled bool, maxInjectionChars int) map[string]any {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"chat_session_id": "session-1",
+		"turn_index":      2,
+		"raw_user_input":  "Open the gate",
+		"messages":        []map[string]any{{"role": "user", "content": "Open the gate"}},
+		"settings": map[string]any{
+			"injection_enabled":   injectionEnabled,
+			"max_injection_chars": maxInjectionChars,
+			"top_k":               3,
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prepare-turn settings status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	result := map[string]any{}
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {

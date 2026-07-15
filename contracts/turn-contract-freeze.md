@@ -93,6 +93,9 @@ Both routes are registered in `group_turn.go` and MUST remain R2 guards until li
 | `injection_enabled` | bool | `true` | Enable memory injection |
 | `input_context_enabled` | bool | `true` | Enable input context |
 | `max_injection_chars` | int | `3000` | Injection length cap |
+| `reference_injection_budget_basis_chars` | int | none | Configured memory cap used as the independent reference budget basis; remains stable when a turn temporarily suppresses main memory injection |
+| `reference_injection_enabled` | bool | none | Controls only the independent reference lane; absent callers inherit `injection_enabled` |
+| `primary_canon_base_max_chars` | int | none | Primary Canon Base subbudget inside the resolved reference total; absent/0 disables the base |
 | `max_input_context_chars` | int | `800` | Context length cap |
 | `episode_interval_turns` | int | `10` | Episode generation interval |
 | `supervisor_enabled` | bool | `true` | Enable supervisor pass |
@@ -131,6 +134,21 @@ Both routes are registered in `group_turn.go` and MUST remain R2 guards until li
 | `injection_pack` | dict | null | Injection assembly |
 | `packet_composition` | dict | null | Packet composition metadata |
 | `long_session_health` | dict | null | Long-session health snapshot |
+
+`reference_injection.budget_policy` uses contract `reference_injection_budget.v1`.
+Let `M = max(0, reference_injection_budget_basis_chars)` when supplied, otherwise
+fall back to the effective `max_injection_chars`. The host supplies the configured
+memory cap and `reference_injection_enabled` separately, so first-turn main
+suppression (`injection_enabled=false`, `max_injection_chars=0`) does not disable
+the independent reference lane. With reference injection disabled, no
+binding, an unknown-only binding set, or `M=0`, the reference total `R` is 0.
+Supplement-only bindings resolve `R=floor(M/2)`. If any primary binding is
+present (including mixed binding sets), primary wins and `R=M`. The reference
+lane is additive and non-displacing: it never reduces or retrims the main
+memory lane. Primary Canon Base is assembled first with effective subbudget
+`min(max(0, primary_canon_base_max_chars), R)`; scene reference uses the
+remaining `R-primary_used`, so unused base capacity is reusable. The invariant
+is `primary_used + scene_used <= R`.
 
 **Go DTO**: `internal/dto.PrepareTurnResponse` (auto-generated from OpenAPI)
 

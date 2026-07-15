@@ -1940,6 +1940,21 @@
           "title": "Max Injection Chars",
           "default": 3000
         },
+        "reference_injection_budget_basis_chars": {
+          "type": "integer",
+          "title": "Reference Injection Budget Basis Chars",
+          "description": "Configured memory injection cap used only as the basis for resolving the independent reference budget. This remains stable when a turn temporarily disables main memory injection."
+        },
+        "reference_injection_enabled": {
+          "type": "boolean",
+          "title": "Reference Injection Enabled",
+          "description": "Controls the independent reference lane without re-enabling a main memory lane suppressed for the current turn."
+        },
+        "primary_canon_base_max_chars": {
+          "type": "integer",
+          "title": "Primary Canon Base Max Chars",
+          "description": "Optional Primary Canon Base subbudget within the resolved reference injection total. Absent or 0 disables the base; it is never an additional independent budget."
+        },
         "max_input_context_chars": {
           "type": "integer",
           "title": "Max Input Context Chars",

@@ -69,8 +69,8 @@ func TestPrimaryReferenceRecallBundlesApprovedRelationshipWithoutFakeChromaScore
 		t.Fatalf("relation companion fabricated Chroma provenance: %#v", related)
 	}
 	formatted := formatReferenceRecallInjection(referenceRecallResult{Status: "ready", InjectionItems: items}, 4000)
-	if !containsAll(formatted, "preserve exact memberships", "HUNTR/X consists of Rumi, Mira, and Zoey") {
-		t.Fatalf("relationship instruction or fact missing: %q", formatted)
+	if !containsAll(formatted.Text, "preserve exact memberships", "HUNTR/X consists of Rumi, Mira, and Zoey") {
+		t.Fatalf("relationship instruction or fact missing: %#v", formatted)
 	}
 }
 

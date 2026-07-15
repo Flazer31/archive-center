@@ -175,7 +175,7 @@ func TestReferenceCoverageFieldIndexDoesNotRequireVectorOrEmbedding(t *testing.T
 	if result.CoverageShadow.FieldIndex.Status != "ready" || fake.coverageWrites != 1 {
 		t.Fatalf("field index depended on vector runtime: %#v writes=%d", result.CoverageShadow.FieldIndex, fake.coverageWrites)
 	}
-	if !referenceCoverageTestContainsString(result.Warnings, "reference_vector_exact_query_unavailable") {
+	if !referenceCoverageTestContainsString(result.Warnings, "reference_vector_unavailable") {
 		t.Fatalf("expected vector warning without losing field index: %#v", result.Warnings)
 	}
 }

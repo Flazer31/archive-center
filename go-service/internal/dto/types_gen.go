@@ -985,6 +985,15 @@ type PrepareTurnSettings struct {
 	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (3000): Go handler must apply default when field is absent in request.
 	MaxInjectionChars *int `json:"max_injection_chars,omitempty"`
+	// PRESENCE: Optional non-null scalar int carrying the configured memory cap as the reference budget basis.
+	// DEFAULT: No default: absent callers use the effective max_injection_chars for compatibility.
+	ReferenceInjectionBudgetBasisChars *int `json:"reference_injection_budget_basis_chars,omitempty"`
+	// PRESENCE: Optional non-null scalar bool controlling only the independent reference lane.
+	// DEFAULT: No default: absent callers inherit injection_enabled for compatibility.
+	ReferenceInjectionEnabled *bool `json:"reference_injection_enabled,omitempty"`
+	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type because zero disables Primary Canon Base.
+	// DEFAULT: No default: absent and explicit zero remain disabled and must not borrow another injection budget.
+	PrimaryCanonBaseMaxChars *int `json:"primary_canon_base_max_chars,omitempty"`
 	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (800): Go handler must apply default when field is absent in request.
 	MaxInputContextChars *int `json:"max_input_context_chars,omitempty"`

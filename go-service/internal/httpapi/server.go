@@ -54,19 +54,9 @@ func (s *Server) ValidateRuntimeDependencies(ctx context.Context) error {
 	if strings.TrimSpace(health.Status) != "ok" || !health.ModelReady {
 		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): status=%s model_ready=%t", s.Cfg.ChromaAPIPath, health.Status, health.ModelReady)
 	}
-	if s.ReferenceVectorOpenError != nil {
-		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s api_path=%s): %w", s.Cfg.ReferenceChromaCollection, s.Cfg.ChromaAPIPath, s.ReferenceVectorOpenError)
-	}
-	if s.ReferenceVector == nil {
-		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s): vector store is not initialized", s.Cfg.ReferenceChromaCollection)
-	}
-	referenceHealth, err := s.ReferenceVector.Health(ctx)
-	if err != nil {
-		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s api_path=%s): %w", s.Cfg.ReferenceChromaCollection, s.Cfg.ChromaAPIPath, err)
-	}
-	if strings.TrimSpace(referenceHealth.Status) != "ok" || !referenceHealth.ModelReady {
-		return fmt.Errorf("reference chromadb startup preflight failed (collection=%s api_path=%s): status=%s model_ready=%t", s.Cfg.ReferenceChromaCollection, s.Cfg.ChromaAPIPath, referenceHealth.Status, referenceHealth.ModelReady)
-	}
+	// Original-work reference retrieval is an optional capability. Its separate
+	// collection health is reported by /ready and must not block the main store,
+	// session-memory vector lane, or turn runtime from starting.
 	return nil
 }
 
