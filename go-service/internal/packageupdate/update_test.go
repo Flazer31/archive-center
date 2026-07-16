@@ -45,6 +45,53 @@ func TestApplyPendingValidPackage(t *testing.T) {
 	}
 }
 
+func TestApplyPendingUpdatesManagedEnvironmentTemplatesAndPreservesLocalEnvironment(t *testing.T) {
+	root := newFixture(t,
+		map[string]string{
+			".env.full.example":   "FULL=old",
+			".env.source.example": "SOURCE=old",
+			"bin/app.exe":         "old",
+		},
+		map[string]string{
+			".env.full.example":   "FULL=new",
+			".env.source.example": "SOURCE=new",
+			"bin/app.exe":         "new",
+		}, nil)
+	mustWrite(t, filepath.Join(root, ".env.full.local"), "SECRET=keep")
+
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, ".env.full.example"), "FULL=new")
+	assertFile(t, filepath.Join(root, ".env.source.example"), "SOURCE=new")
+	assertFile(t, filepath.Join(root, ".env.full.local"), "SECRET=keep")
+}
+
+func TestApplyPendingRejectsProtectedEnvironmentFiles(t *testing.T) {
+	for _, rel := range []string{
+		".env",
+		".env.local",
+		".env.full.local",
+		".env.full.local.protected",
+		".env.example.key",
+		".env.other.example",
+		"config/.env.full.example",
+	} {
+		t.Run(strings.ReplaceAll(rel, "/", "_"), func(t *testing.T) {
+			root := newFixture(t,
+				map[string]string{"bin/app.exe": "old"},
+				map[string]string{"bin/app.exe": "new", rel: "forbidden"}, nil)
+			_, err := ApplyPending(root)
+			assertUpdateCode(t, err, "pending_invalid")
+			assertFile(t, filepath.Join(root, "bin/app.exe"), "old")
+			if _, statErr := os.Stat(filepath.Join(root, ".updates", "update-state.json")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("state written before protected environment rejection: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestApplyPendingAcceptsUTF8BOMCandidateManifest(t *testing.T) {
 	root := newFixtureWithManifestPrefixes(t,
 		map[string]string{"bin/app.exe": "old"},

@@ -376,18 +376,24 @@ func parseSHA256SUMS(text string) map[string]string {
 
 func selectUpdateAsset(platform string, assets []githubAssetRecord, shaMap map[string]string) *updateAssetInfo {
 	platform = normalizeUpdatePlatform(platform)
-	for _, asset := range assets {
-		if !strings.HasSuffix(strings.ToLower(asset.Name), ".zip") {
-			continue
-		}
-		if !assetMatchesPlatform(asset.Name, platform) {
-			continue
-		}
-		return &updateAssetInfo{
-			Name:        asset.Name,
-			Size:        asset.Size,
-			SHA256:      lookupSHA256ForAsset(shaMap, asset.Name),
-			DownloadURL: asset.BrowserDownloadURL,
+	for _, preferUpdatePayload := range []bool{true, false} {
+		for _, asset := range assets {
+			if !strings.HasSuffix(strings.ToLower(asset.Name), ".zip") {
+				continue
+			}
+			if !assetMatchesPlatform(asset.Name, platform) {
+				continue
+			}
+			isUpdatePayload := strings.Contains(comparableAssetName(asset.Name), "update package")
+			if isUpdatePayload != preferUpdatePayload {
+				continue
+			}
+			return &updateAssetInfo{
+				Name:        asset.Name,
+				Size:        asset.Size,
+				SHA256:      lookupSHA256ForAsset(shaMap, asset.Name),
+				DownloadURL: asset.BrowserDownloadURL,
+			}
 		}
 	}
 	return nil
@@ -516,8 +522,8 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 			AssetPath:       target,
 			SHA256:          actual,
 			RequiredFiles: []string{
-				"PACKAGE_FILE_MANIFEST.json",
 				"bin/archive-center-go.exe",
+				"bin/archive-center-updater.exe",
 				"Archive Center.js",
 			},
 			PreparedAt: time.Now().UTC().Format(time.RFC3339Nano),

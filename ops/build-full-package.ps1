@@ -9,6 +9,7 @@ param(
     [string]$TimestampServer = "http://timestamp.digicert.com",
     [switch]$AllowMissingRuntimePayloads,
     [switch]$Zip,
+    [switch]$UpdateZip,
     [switch]$ForceRefresh
 )
 
@@ -241,7 +242,7 @@ function Write-PackageTrustEvidence([string]$Root) {
         "PACKAGE_FILE_MANIFEST.json",
         "SHA256SUMS.txt"
     )
-    $excludedRoots = @(".runtime", ".runtime-cache", ".updates")
+    $excludedRoots = @(".runtime", ".runtime-cache", ".updates", "runtime")
     $excludedLocalFiles = @(".env.full.local", ".env.full.local.protected")
     $files = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
@@ -535,11 +536,38 @@ $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $targe
 
 $zipPath = ""
 $zipChecksumPath = ""
-if ($Zip) {
+$zipSource = $targetFull
+$updateZipStagingRoot = ""
+if ($Zip -and $UpdateZip) {
+    throw "Use either -Zip for the full installation archive or -UpdateZip for the managed automatic-update archive, not both."
+}
+if ($UpdateZip) {
+    $updatePackageName = $PackageName -replace '(?i)Windows Package$', 'Windows Update Package'
+    if ($updatePackageName -eq $PackageName) {
+        $updatePackageName = "$PackageName Update"
+    }
+    $updateZipStagingRoot = Join-Path $outputRootFull (".update-payload-" + [guid]::NewGuid().ToString("N"))
+    $zipSource = Join-Path $updateZipStagingRoot $updatePackageName
+    New-Item -ItemType Directory -Force -Path $zipSource | Out-Null
+    $managedManifestPath = Join-Path $targetFull "PACKAGE_FILE_MANIFEST.json"
+    $managedManifest = Get-Content -LiteralPath $managedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($entry in @($managedManifest.files)) {
+        $relative = ([string]$entry.path).Replace('/', '\')
+        $sourcePath = Join-Path $targetFull $relative
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "Managed update payload source is missing: $sourcePath"
+        }
+        $destinationPath = Join-Path $zipSource $relative
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destinationPath) | Out-Null
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+    }
+    Copy-Item -LiteralPath $managedManifestPath -Destination (Join-Path $zipSource "PACKAGE_FILE_MANIFEST.json") -Force
+}
+if ($Zip -or $UpdateZip) {
     if (-not $releaseReady -and -not $AllowMissingRuntimePayloads) {
         throw "Refusing to zip a non-ready package."
     }
-    $zipPath = Join-Path $outputRootFull ($PackageName + ".zip")
+    $zipPath = Join-Path $outputRootFull ((Split-Path -Leaf $zipSource) + ".zip")
     $zipChecksumName = "SHA256SUMS-$PackageVersion.txt"
     if ([System.IO.Path]::GetFileName($zipChecksumName) -ne $zipChecksumName) {
         throw "PackageVersion cannot be used safely in the external checksum filename: $PackageVersion"
@@ -557,7 +585,7 @@ if ($Zip) {
     $checksumInstalled = $false
     $cleanupReplacementBackups = $false
     try {
-        Compress-Archive -LiteralPath $targetFull -DestinationPath $tempZipPath
+        Compress-Archive -LiteralPath $zipSource -DestinationPath $tempZipPath
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $archive = [System.IO.Compression.ZipFile]::OpenRead($tempZipPath)
@@ -686,6 +714,9 @@ if ($Zip) {
                     Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
                 }
             }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($updateZipStagingRoot) -and (Test-Path -LiteralPath $updateZipStagingRoot -PathType Container)) {
+            Remove-Item -LiteralPath $updateZipStagingRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
     if (-not $zipInstalled -or -not $checksumInstalled) {

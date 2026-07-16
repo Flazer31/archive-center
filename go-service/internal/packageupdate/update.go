@@ -736,7 +736,8 @@ func validateManagedPath(rel string) error {
 		return fmt.Errorf("protected path")
 	}
 	base := strings.ToLower(parts[len(parts)-1])
-	if base == ".env" || strings.HasPrefix(base, ".env.") {
+	managedEnvironmentTemplate := len(parts) == 1 && (base == ".env.full.example" || base == ".env.source.example")
+	if !managedEnvironmentTemplate && (base == ".env" || strings.HasPrefix(base, ".env.")) {
 		return fmt.Errorf("protected environment file")
 	}
 	for _, s := range []string{".db", ".sqlite", ".sqlite3", ".pem", ".key"} {

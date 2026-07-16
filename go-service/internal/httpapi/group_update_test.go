@@ -156,6 +156,10 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if pending.ContractVersion != "archive-center.pending-update.v1" || pending.CurrentVersion != "2.2.0" || pending.TargetVersion != "2.3.0" || pending.AssetPath != stagedPath || pending.SHA256 != sha {
 		t.Fatalf("pending update mismatch: %+v", pending)
 	}
+	wantRequired := []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js"}
+	if strings.Join(pending.RequiredFiles, "\n") != strings.Join(wantRequired, "\n") {
+		t.Fatalf("pending required_files = %v, want %v", pending.RequiredFiles, wantRequired)
+	}
 	statusReq := httptest.NewRequest(http.MethodGet, "/update/status", nil)
 	statusRec := httptest.NewRecorder()
 	mux.ServeHTTP(statusRec, statusReq)
@@ -330,6 +334,28 @@ func TestUpdateVersionComparisonDistinguishesPrereleaseFromFinal(t *testing.T) {
 		if got := compareVersions(tc.left, tc.right); got != tc.want {
 			t.Fatalf("compareVersions(%q, %q)=%d want %d", tc.left, tc.right, got, tc.want)
 		}
+	}
+}
+
+func TestSelectUpdateAssetPrefersManagedUpdatePackageOverFullInstallPackage(t *testing.T) {
+	assets := []githubAssetRecord{
+		{Name: "Archive Center 3.0.1 Windows Package.zip", BrowserDownloadURL: "https://example.test/full.zip", Size: 1000},
+		{Name: "Archive Center 3.0.1 Windows Update Package.zip", BrowserDownloadURL: "https://example.test/update.zip", Size: 100},
+	}
+	shaMap := map[string]string{
+		"Archive Center 3.0.1 Windows Package.zip":        strings.Repeat("a", 64),
+		"Archive Center 3.0.1 Windows Update Package.zip": strings.Repeat("b", 64),
+	}
+
+	asset := selectUpdateAsset("windows-x64", assets, shaMap)
+	if asset == nil {
+		t.Fatal("expected a Windows update asset")
+	}
+	if asset.Name != "Archive Center 3.0.1 Windows Update Package.zip" || asset.DownloadURL != "https://example.test/update.zip" {
+		t.Fatalf("selected asset = %+v, want managed update package", asset)
+	}
+	if asset.SHA256 != strings.Repeat("b", 64) {
+		t.Fatalf("selected asset sha256 = %q", asset.SHA256)
 	}
 }
 
