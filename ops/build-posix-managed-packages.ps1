@@ -54,11 +54,59 @@ function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
             $text = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
             $next = $text.Replace("Archive Center 2.1", "Archive Center $version")
             $next = $next.Replace("archivecenter2.1", $suffix)
+            $next = $next.Replace("__ARCHIVE_CENTER_PACKAGE_VERSION__", $version)
             if ($next -ne $text) {
                 [System.IO.File]::WriteAllText($_.FullName, $next, $utf8NoBom)
             }
         }
     }
+}
+
+function Get-RelativePackagePath([string]$Path, [string]$Root) {
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $pathFull = [System.IO.Path]::GetFullPath($Path)
+    return $pathFull.Substring($rootFull.Length).TrimStart([char[]]@('\', '/')).Replace('\', '/')
+}
+
+function Write-ManagedPackageManifest([string]$Root) {
+    $selfFiles = @("PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")
+    $excludedRoots = @(".runtime", ".runtime-cache", ".updates", "runtime")
+    $excludedLocalFiles = @(".env.full.local", ".env.full.local.protected")
+    $files = Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            $rel = Get-RelativePackagePath $_.FullName $Root
+            $top = ($rel -split '/', 2)[0]
+            ($selfFiles -notcontains $rel) -and
+                ($excludedRoots -notcontains $top) -and
+                ($excludedLocalFiles -notcontains $rel)
+        } |
+        Sort-Object FullName
+    $items = @()
+    $sumLines = @()
+    foreach ($file in $files) {
+        $rel = Get-RelativePackagePath $file.FullName $Root
+        $sha = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        $items += [ordered]@{ path = $rel; size_bytes = [int64]$file.Length; sha256 = $sha }
+        $sumLines += "$sha  $rel"
+    }
+    $manifest = [ordered]@{
+        schema_version = "archive-center.package-file-manifest.v1"
+        generated_at = [DateTimeOffset]::UtcNow.ToString("o")
+        scope = "managed_package_payloads"
+        excluded_runtime_roots = $excludedRoots
+        excluded_local_files = $excludedLocalFiles
+        files = $items
+    }
+    [System.IO.File]::WriteAllText(
+        (Join-Path $Root "PACKAGE_FILE_MANIFEST.json"),
+        ($manifest | ConvertTo-Json -Depth 6) + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    [System.IO.File]::WriteAllLines(
+        (Join-Path $Root "SHA256SUMS.txt"),
+        $sumLines,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
 }
 
 function Set-RuntimeDefaultsInEnvExample([string]$Path, [string]$RuntimeProfile, [string]$VectorMode) {
@@ -263,6 +311,7 @@ foreach ($target in $targets) {
 
     New-Item -ItemType Directory -Force -Path (Join-Path $targetRoot "bin") | Out-Null
     Build-GoBinary $goServiceRoot $target.Goos $target.Goarch "./cmd/archive-center-go" (Join-Path $targetRoot "bin\archive-center-go")
+    Build-GoBinary $goServiceRoot $target.Goos $target.Goarch "./cmd/archive-center-updater" (Join-Path $targetRoot "bin\archive-center-updater")
     Build-GoBinary $goServiceRoot $target.Goos $target.Goarch "./cmd/mariadb-schema" (Join-Path $targetRoot "bin\mariadb-schema")
     $migrationTools = @(
         "sqlite-export",
@@ -329,6 +378,8 @@ foreach ($target in $targets) {
         normal_user_manual_mariadb_required = $false
         normal_user_manual_chromadb_required = $false
         real_device_proof_required = $true
+        automatic_update_apply = $true
+        automatic_update_timing = "next_start"
         one_click_entry = $target.Launcher
         managed_scripts = @(
             "scripts/start-full-posix.sh",
@@ -338,6 +389,7 @@ foreach ($target in $targets) {
         )
         included = @(
             "bin/archive-center-go",
+            "bin/archive-center-updater",
             "bin/mariadb-schema",
             "bin/legacy10-migrate",
             "bin/sqlite-export",
@@ -367,6 +419,7 @@ foreach ($target in $targets) {
         )
     }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $targetRoot "PLATFORM_PACKAGE_MANIFEST.json") -Encoding UTF8
+    Write-ManagedPackageManifest $targetRoot
 
     if ($Zip) {
         $zipPath = Join-Path $outputRootFull ($target.PackageName + ".zip")

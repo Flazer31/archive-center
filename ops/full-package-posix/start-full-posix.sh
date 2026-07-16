@@ -7,6 +7,8 @@ set -eu
 # manually install MariaDB or ChromaDB. The script uses the platform package
 # manager when bundled POSIX runtimes are not present.
 
+PACKAGE_BUILD_VERSION="__ARCHIVE_CENTER_PACKAGE_VERSION__"
+
 usage() {
 	cat <<'EOF'
 Usage:
@@ -169,6 +171,164 @@ PY
 		tail -n 80 "$LOG_DIR/chromadb.err.log" >&2 || true
 	fi
 	die "$label did not become ready on 127.0.0.1:$port"
+}
+
+json_string_field() {
+	field=$1
+	printf '%s' "$2" | sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
+}
+
+updater_safe_baseline_status() {
+	case "$1" in
+		no_pending|no_state|committed|rolled_back|nothing_to_rollback) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+run_archive_updater() {
+	action=$1
+	UPDATER_OUTPUT=
+	UPDATER_STATUS=
+	UPDATER_CURRENT_VERSION=
+	UPDATER_TARGET_VERSION=
+	if UPDATER_OUTPUT=$("$UPDATER_RUNNER" "$action" --root "$PACKAGE_ROOT" 2>&1); then
+		UPDATER_EXIT=0
+	else
+		UPDATER_EXIT=$?
+	fi
+	UPDATER_STATUS=$(json_string_field status "$UPDATER_OUTPUT")
+	UPDATER_CURRENT_VERSION=$(json_string_field current_version "$UPDATER_OUTPUT")
+	UPDATER_TARGET_VERSION=$(json_string_field target_version "$UPDATER_OUTPUT")
+	return "$UPDATER_EXIT"
+}
+
+prepare_updater_runner() {
+	UPDATER_RUNNER=
+	updater_source="$PACKAGE_ROOT/bin/archive-center-updater"
+	if [ ! -f "$updater_source" ]; then
+		if [ -f "$PACKAGE_ROOT/.updates/pending-update.json" ] || [ -f "$PACKAGE_ROOT/.updates/update-state.json" ]; then
+			die "pending update state exists but bin/archive-center-updater is missing"
+		fi
+		return
+	fi
+	mkdir -p "$EXEC_BIN_DIR"
+	UPDATER_RUNNER="$EXEC_BIN_DIR/archive-center-updater-runner-$$"
+	cp "$updater_source" "$UPDATER_RUNNER"
+	chmod 700 "$UPDATER_RUNNER" 2>/dev/null || true
+	[ -x "$UPDATER_RUNNER" ] || die "archive-center-updater runner is not executable: $UPDATER_RUNNER"
+	export UPDATER_RUNNER
+}
+
+apply_pending_update() {
+	PENDING_UPDATE_APPLIED=false
+	PENDING_CURRENT_VERSION=
+	PENDING_TARGET_VERSION=
+	if [ -z "${UPDATER_RUNNER:-}" ]; then
+		AC_BUILD_VERSION=${AC_BUILD_VERSION:-$PACKAGE_BUILD_VERSION}
+		export AC_BUILD_VERSION
+		return
+	fi
+	if ! run_archive_updater apply-pending; then
+		apply_error=$UPDATER_OUTPUT
+		if run_archive_updater status && updater_safe_baseline_status "$UPDATER_STATUS"; then
+			log "Updater rejected the pending package before mutation; continuing the verified current package."
+			AC_BUILD_VERSION=${AC_BUILD_VERSION:-$PACKAGE_BUILD_VERSION}
+			export AC_BUILD_VERSION
+			return
+		fi
+		die "updater apply-pending failed and a safe baseline could not be proven: $apply_error"
+	fi
+	case "$UPDATER_STATUS" in
+		applied_pending_health)
+			[ -n "$UPDATER_TARGET_VERSION" ] || die "updater applied a package without target_version"
+			PENDING_UPDATE_APPLIED=true
+			PENDING_CURRENT_VERSION=$UPDATER_CURRENT_VERSION
+			PENDING_TARGET_VERSION=$UPDATER_TARGET_VERSION
+			AC_BUILD_VERSION=$PENDING_TARGET_VERSION
+			export PENDING_UPDATE_APPLIED PENDING_CURRENT_VERSION PENDING_TARGET_VERSION AC_BUILD_VERSION
+			log "Applied a verified pending package. Main readiness will be checked before commit."
+			;;
+		no_pending|no_state|committed|rolled_back|nothing_to_rollback)
+			AC_BUILD_VERSION=${AC_BUILD_VERSION:-$PACKAGE_BUILD_VERSION}
+			export AC_BUILD_VERSION
+			;;
+		*)
+			die "updater returned unsupported apply status: $UPDATER_STATUS"
+			;;
+	esac
+}
+
+stop_candidate_backend() {
+	pid=${1:-}
+	if [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1; then
+		kill "$pid" >/dev/null 2>&1 || true
+		wait "$pid" >/dev/null 2>&1 || true
+	fi
+}
+
+wait_candidate_backend_ready() {
+	pid=$1
+	target=$2
+	port=$(printf '%s' "$AC_BIND_ADDR" | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')
+	[ -n "$port" ] || port=28080
+	i=0
+	while [ "$i" -lt 60 ]; do
+		if ! kill -0 "$pid" >/dev/null 2>&1; then
+			return 1
+		fi
+		ready_body=$(curl -fsS "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+		version_body=$(curl -fsS "http://127.0.0.1:$port/version" 2>/dev/null || true)
+		ready_status=$(json_string_field status "$ready_body")
+		observed_version=$(json_string_field version "$version_body")
+		if [ "$ready_status" = "ready" ] && [ "$observed_version" = "$target" ]; then
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
+
+finalize_pending_update() {
+	if [ "${PENDING_UPDATE_APPLIED:-false}" != "true" ]; then
+		return
+	fi
+	mkdir -p "$LOG_DIR"
+	"$ARCHIVE_CENTER_GO_RUN" >"$LOG_DIR/update-candidate.out.log" 2>"$LOG_DIR/update-candidate.err.log" &
+	candidate_pid=$!
+	if wait_candidate_backend_ready "$candidate_pid" "$PENDING_TARGET_VERSION"; then
+		if run_archive_updater commit && [ "$UPDATER_STATUS" = "committed" ]; then
+			stop_candidate_backend "$candidate_pid"
+			log "Pending Archive Center package committed after main readiness passed."
+			return
+		fi
+		commit_error=$UPDATER_OUTPUT
+		stop_candidate_backend "$candidate_pid"
+		if run_archive_updater status && [ "$UPDATER_STATUS" = "committed" ]; then
+			log "Update commit is durable; cleanup will be retried on the next start."
+			return
+		fi
+		if ! run_archive_updater rollback || ! updater_safe_baseline_status "$UPDATER_STATUS"; then
+			die "update commit failed ($commit_error) and rollback was not proven safe"
+		fi
+	else
+		stop_candidate_backend "$candidate_pid"
+		if ! run_archive_updater rollback || ! updater_safe_baseline_status "$UPDATER_STATUS"; then
+			die "updated backend failed /ready or version verification and rollback was not proven safe"
+		fi
+	fi
+	if [ -n "$PENDING_CURRENT_VERSION" ]; then
+		AC_BUILD_VERSION=$PENDING_CURRENT_VERSION
+		export AC_BUILD_VERSION
+	fi
+	prepare_package_binaries
+	log "Update was rolled back. Starting the verified previous backend."
+}
+
+cleanup_updater_runner() {
+	if [ -n "${UPDATER_RUNNER:-}" ]; then
+		rm -f -- "$UPDATER_RUNNER" >/dev/null 2>&1 || true
+	fi
 }
 
 prepare_package_binaries() {
@@ -545,6 +705,7 @@ PY
 }
 
 cleanup() {
+	cleanup_updater_runner
 	if [ "$KEEP_SERVICES" = "true" ]; then
 		return
 	fi
@@ -765,7 +926,6 @@ case "$PLATFORM" in
 esac
 
 ensure_python
-prepare_package_binaries
 if local_chromadb_requested; then
 	ensure_chromadb
 fi
@@ -775,6 +935,10 @@ if [ "$INSTALL_ONLY" = "true" ]; then
 	log "Install/bootstrap completed. Run this script again without --install-only to start Archive Center."
 	exit 0
 fi
+
+prepare_updater_runner
+apply_pending_update
+prepare_package_binaries
 
 trap cleanup EXIT INT TERM
 
@@ -786,6 +950,8 @@ export AC_MODE=live
 export AC_STORE_MODE=mariadb_authority
 export AC_PROMPT_DIR="$PACKAGE_ROOT/prompts"
 export AC_PRUNE_POLICY=${AC_PRUNE_POLICY:-soft}
+
+finalize_pending_update
 
 log "Starting Archive Center 2.1"
 log "  Backend:  http://$AC_BIND_ADDR"
@@ -800,4 +966,5 @@ log "  Vector:   $AC_VECTOR_MODE"
 log "  Package:  $PACKAGE_PROFILE"
 log "Stop with Ctrl+C."
 
+cleanup_updater_runner
 exec "$ARCHIVE_CENTER_GO_RUN"

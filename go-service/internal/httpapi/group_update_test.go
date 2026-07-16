@@ -192,6 +192,26 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	}
 }
 
+func TestRequiredUpdatePackageFilesArePlatformSpecific(t *testing.T) {
+	tests := []struct {
+		goos string
+		want []string
+	}{
+		{goos: "windows", want: []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js"}},
+		{goos: "linux", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}},
+		{goos: "darwin", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}},
+		{goos: "android", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.goos, func(t *testing.T) {
+			got := requiredUpdatePackageFiles(tc.goos)
+			if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+				t.Fatalf("required files = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
 	zipBytes := []byte("verified release asset")
 	sum := sha256.Sum256(zipBytes)

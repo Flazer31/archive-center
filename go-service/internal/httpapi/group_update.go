@@ -521,12 +521,8 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 			TargetVersion:   strings.TrimSpace(latestVersion),
 			AssetPath:       target,
 			SHA256:          actual,
-			RequiredFiles: []string{
-				"bin/archive-center-go.exe",
-				"bin/archive-center-updater.exe",
-				"Archive Center.js",
-			},
-			PreparedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			RequiredFiles:   requiredUpdatePackageFiles(runtime.GOOS),
+			PreparedAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		}
 		pendingPath = filepath.Join(root, "pending-update.json")
 		if err := writePendingPackageUpdate(pendingPath, pending); err != nil {
@@ -547,6 +543,13 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 		"next_step":         map[bool]string{true: "restart_archive_center_to_apply", false: "manual_apply_or_install_updater_helper"}[applySupported],
 		"staging_directory": targetDir,
 	}, nil
+}
+
+func requiredUpdatePackageFiles(goos string) []string {
+	if strings.EqualFold(strings.TrimSpace(goos), "windows") {
+		return []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js"}
+	}
+	return []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}
 }
 
 func (s *Server) updateStagingRoot() (string, error) {

@@ -369,6 +369,29 @@ func TestApplyPendingRejectsDatabaseMigrationChanges(t *testing.T) {
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
 }
 
+func TestPOSIXDatabaseMigrationToolIsProtected(t *testing.T) {
+	current := map[string]string{"bin/archive-center-go": "one", "bin/mariadb-schema": "schema-tool"}
+	next := map[string]string{"bin/archive-center-go": "two", "bin/mariadb-schema": "changed-schema-tool"}
+	root := newFixture(t, current, next, nil)
+	_, err := ApplyPending(root)
+	assertUpdateCode(t, err, "database_migration_update_unsupported")
+	assertFile(t, filepath.Join(root, "bin/archive-center-go"), "one")
+}
+
+func TestManagedInstallModePreservesPOSIXExecutables(t *testing.T) {
+	for _, rel := range []string{"bin/archive-center-go", "bin/archive-center-updater", "scripts/start-full-posix.sh", "Start Archive Center macOS.command"} {
+		if got := managedInstallMode(rel, 0o644, "linux"); got != 0o755 {
+			t.Fatalf("managedInstallMode(%q) = %#o, want 0755", rel, got)
+		}
+	}
+	if got := managedInstallMode("prompts/critic_system.txt", 0, "linux"); got != 0o644 {
+		t.Fatalf("regular POSIX mode = %#o, want 0644", got)
+	}
+	if got := managedInstallMode("bin/archive-center-go.exe", 0o640, "windows"); got != 0o640 {
+		t.Fatalf("Windows mode = %#o, want archived 0640", got)
+	}
+}
+
 type zipEntry struct {
 	name, body string
 	mode       os.FileMode

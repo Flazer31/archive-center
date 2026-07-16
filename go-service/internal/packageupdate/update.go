@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -655,7 +656,7 @@ func verifyNewPackage(root string, m packageManifest, required []string) ([]inst
 		if err := verifyFile(path, mf.SizeBytes, mf.SHA256); err != nil {
 			return nil, fmt.Errorf("%s: %w", rel, err)
 		}
-		files = append(files, installFile{Rel: rel, Src: path, Mode: info.Mode().Perm()})
+		files = append(files, installFile{Rel: rel, Src: path, Mode: managedInstallMode(rel, info.Mode().Perm(), runtime.GOOS)})
 	}
 	for _, req := range required {
 		if !seen[strings.ToLower(canonicalRelativePath(req))] {
@@ -713,7 +714,21 @@ func validateInstallTarget(root, rel string) error {
 
 func isDatabaseMigrationPath(rel string) bool {
 	rel = strings.ToLower(canonicalRelativePath(rel))
-	return rel == "bin/mariadb-schema.exe" || strings.HasPrefix(rel, "migrations/")
+	return rel == "bin/mariadb-schema.exe" || rel == "bin/mariadb-schema" || strings.HasPrefix(rel, "migrations/")
+}
+
+func managedInstallMode(rel string, archived fs.FileMode, goos string) fs.FileMode {
+	if strings.EqualFold(strings.TrimSpace(goos), "windows") {
+		return archived.Perm()
+	}
+	rel = strings.ToLower(canonicalRelativePath(rel))
+	if strings.HasPrefix(rel, "bin/") || strings.HasSuffix(rel, ".sh") || strings.HasSuffix(rel, ".command") {
+		return 0o755
+	}
+	if archived.Perm() == 0 {
+		return 0o644
+	}
+	return archived.Perm()
 }
 
 func validateManagedPath(rel string) error {
