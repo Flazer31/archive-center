@@ -103,6 +103,8 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	pendingExists := false
 	stateStatus := ""
+	var pendingValue map[string]any
+	var stateValue map[string]any
 	for _, item := range []struct {
 		name string
 		path string
@@ -123,18 +125,31 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, _ *http.Request) {
 			out[item.name] = value
 			if item.name == "pending" {
 				pendingExists = true
+				pendingValue = value
 			}
-			if item.name == "state" && strings.TrimSpace(fmt.Sprint(value["status"])) != "" {
-				stateStatus = strings.TrimSpace(fmt.Sprint(value["status"]))
+			if item.name == "state" {
+				stateValue = value
+				if status, ok := value["status"].(string); ok {
+					stateStatus = strings.TrimSpace(status)
+				}
 			}
 		}
 	}
+	var versionSource map[string]any
 	if stateStatus == "applying" || stateStatus == "applied_pending_health" {
 		out["status"] = stateStatus
+		versionSource = stateValue
 	} else if pendingExists {
 		out["status"] = "pending_next_start"
+		versionSource = pendingValue
 	} else if stateStatus != "" {
 		out["status"] = stateStatus
+		versionSource = stateValue
+	}
+	for _, key := range []string{"current_version", "target_version"} {
+		if value, ok := versionSource[key].(string); ok && strings.TrimSpace(value) != "" {
+			out[key] = strings.TrimSpace(value)
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

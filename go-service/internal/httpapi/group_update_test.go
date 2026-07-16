@@ -162,13 +162,29 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if statusRec.Code != http.StatusOK || !strings.Contains(statusRec.Body.String(), `"status":"pending_next_start"`) {
 		t.Fatalf("update status=%d body=%s", statusRec.Code, statusRec.Body.String())
 	}
-	if err := os.WriteFile(filepath.Join(packageRoot, ".updates", "update-state.json"), []byte(`{"status":"committed"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(packageRoot, ".updates", "update-state.json"), []byte(`{"status":"committed","current_version":"1.9.0","target_version":"2.0.0"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	statusRec = httptest.NewRecorder()
 	mux.ServeHTTP(statusRec, statusReq)
-	if statusRec.Code != http.StatusOK || !strings.Contains(statusRec.Body.String(), `"status":"pending_next_start"`) {
+	var statusResp map[string]any
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusResp); err != nil {
+		t.Fatalf("decode update status: %v", err)
+	}
+	if statusRec.Code != http.StatusOK || statusResp["status"] != "pending_next_start" || statusResp["current_version"] != "2.2.0" || statusResp["target_version"] != "2.3.0" {
 		t.Fatalf("pending must override old committed state: status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(packageRoot, ".updates", "update-state.json"), []byte(`{"status":"applied_pending_health","current_version":"2.3.0","target_version":"2.4.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statusRec = httptest.NewRecorder()
+	mux.ServeHTTP(statusRec, statusReq)
+	statusResp = nil
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusResp); err != nil {
+		t.Fatalf("decode active update status: %v", err)
+	}
+	if statusRec.Code != http.StatusOK || statusResp["status"] != "applied_pending_health" || statusResp["current_version"] != "2.3.0" || statusResp["target_version"] != "2.4.0" {
+		t.Fatalf("active state must provide versions: status=%d body=%s", statusRec.Code, statusRec.Body.String())
 	}
 }
 

@@ -383,6 +383,19 @@
       "settings.btn.updateDownload": "다운로드 후 다음 시작에 적용",
       "settings.update.confirmTitle": "Archive Center 업데이트",
       "settings.update.confirmBody": "검증된 패키지를 지금 다운로드하고, 다음 실행에서 Archive Center 서비스가 시작되기 전에 적용합니다. 런타임 데이터, 데이터베이스, 로컬 환경 파일은 업데이트 대상이 아닙니다. 계속할까요?",
+      "settings.update.statusLabel": "업데이트 상태",
+      "settings.update.status.idle": "대기 중",
+      "settings.update.status.pending_next_start": "다음 시작에 적용 대기",
+      "settings.update.status.applying": "적용 중",
+      "settings.update.status.applied_pending_health": "적용 후 상태 확인 대기",
+      "settings.update.status.committed": "적용 완료",
+      "settings.update.status.rolled_back": "이전 버전으로 복원됨",
+      "settings.update.applySupported": "자동 적용 지원",
+      "settings.update.supported": "지원",
+      "settings.update.unsupported": "미지원",
+      "settings.update.currentVersion": "현재 버전",
+      "settings.update.targetVersion": "대상 버전",
+      "settings.update.statusUnavailable": "업데이트 상태를 확인할 수 없습니다.",
       "settings.placeholder.sameAsMain": "비어 있으면 미설정",
       "settings.btn.save": "💾 저장",
       "settings.btn.resetDefaults": "↩ 기본값 복원",
@@ -1434,6 +1447,19 @@
       "settings.btn.updateDownload": "Download and Apply on Next Start",
       "settings.update.confirmTitle": "Archive Center Update",
       "settings.update.confirmBody": "The verified package will be downloaded now and applied before Archive Center services start the next time you launch the package. Runtime data, databases, and local environment files are not update targets. Continue?",
+      "settings.update.statusLabel": "Update status",
+      "settings.update.status.idle": "Idle",
+      "settings.update.status.pending_next_start": "Pending next start",
+      "settings.update.status.applying": "Applying",
+      "settings.update.status.applied_pending_health": "Applied; awaiting health check",
+      "settings.update.status.committed": "Committed",
+      "settings.update.status.rolled_back": "Rolled back",
+      "settings.update.applySupported": "Automatic apply supported",
+      "settings.update.supported": "Supported",
+      "settings.update.unsupported": "Unsupported",
+      "settings.update.currentVersion": "Current version",
+      "settings.update.targetVersion": "Target version",
+      "settings.update.statusUnavailable": "Update status is unavailable.",
       "settings.placeholder.sameAsMain": "Empty = not configured",
       "settings.btn.save": "💾 Save",
       "settings.btn.resetDefaults": "↩ Restore Defaults",
@@ -2294,6 +2320,19 @@
       "settings.btn.testCriticCall": "✍ クリティック LLM テスト",
       "settings.btn.updateCheck": "アップデート確認",
       "settings.btn.updateDownload": "アップデート取得",
+      "settings.update.statusLabel": "アップデート状態",
+      "settings.update.status.idle": "待機中",
+      "settings.update.status.pending_next_start": "次回起動時の適用待ち",
+      "settings.update.status.applying": "適用中",
+      "settings.update.status.applied_pending_health": "適用後の状態確認待ち",
+      "settings.update.status.committed": "適用完了",
+      "settings.update.status.rolled_back": "以前のバージョンに復元済み",
+      "settings.update.applySupported": "自動適用対応",
+      "settings.update.supported": "対応",
+      "settings.update.unsupported": "非対応",
+      "settings.update.currentVersion": "現在のバージョン",
+      "settings.update.targetVersion": "対象バージョン",
+      "settings.update.statusUnavailable": "アップデート状態を確認できません。",
       "settings.placeholder.sameAsMain": "空欄は未設定",
       "settings.btn.save": "💾 保存",
       "settings.btn.resetDefaults": "↩ デフォルトに戻す",
@@ -11755,6 +11794,7 @@
   const archiveUpdateState = {
     lastCheck: null,
     lastDownload: null,
+    lastStatus: null,
   };
 
   function formatArchiveUpdateResult(data, mode) {
@@ -11806,6 +11846,59 @@
     });
     archiveUpdateState.lastCheck = data || null;
     return data;
+  }
+
+  async function fetchArchiveCenterUpdateStatus() {
+    const data = await bridgeFetch("/update/status", {
+      method: "GET",
+      timeoutMs: getRequestTimeoutSettingMs(),
+    });
+    archiveUpdateState.lastStatus = data || null;
+    return data;
+  }
+
+  function formatArchiveCenterUpdateStatus(data) {
+    if (!data) {
+      return '<div class="mo-status mo-status-wait">' + escapeAttr(t("settings.update.statusUnavailable")) + '</div>';
+    }
+    const rawStatus = String(data.status || "").trim();
+    const statusKeys = {
+      idle: "settings.update.status.idle",
+      pending_next_start: "settings.update.status.pending_next_start",
+      applying: "settings.update.status.applying",
+      applied_pending_health: "settings.update.status.applied_pending_health",
+      committed: "settings.update.status.committed",
+      rolled_back: "settings.update.status.rolled_back",
+    };
+    const currentVersion = data.current_version;
+    const targetVersion = data.target_version;
+    const lines = [
+      t("settings.update.statusLabel") + ": " + (statusKeys[rawStatus] ? t(statusKeys[rawStatus]) : (rawStatus || t("settings.update.status.idle"))),
+    ];
+    if (Object.prototype.hasOwnProperty.call(data, "apply_supported")) {
+      lines.push(t("settings.update.applySupported") + ": " + t(data.apply_supported ? "settings.update.supported" : "settings.update.unsupported"));
+    }
+    if (currentVersion != null && String(currentVersion).trim()) {
+      lines.push(t("settings.update.currentVersion") + ": " + String(currentVersion));
+    }
+    if (targetVersion != null && String(targetVersion).trim()) {
+      lines.push(t("settings.update.targetVersion") + ": " + String(targetVersion));
+    }
+    return '<div class="mo-status mo-status-wait">' + lines.map((line) => escapeAttr(line)).join('<br>') + '</div>';
+  }
+
+  async function refreshArchiveCenterUpdateStatus() {
+    const statusEl = $("mo-update-status");
+    if (!statusEl) return null;
+    try {
+      const data = await withUiBridgeSettings(() => fetchArchiveCenterUpdateStatus());
+      statusEl.innerHTML = formatArchiveCenterUpdateStatus(data);
+      return data;
+    } catch (_) {
+      archiveUpdateState.lastStatus = null;
+      statusEl.innerHTML = formatArchiveCenterUpdateStatus(null);
+      return null;
+    }
   }
 
   async function downloadArchiveCenterUpdate() {
@@ -48870,6 +48963,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <button class="mo-btn mo-btn-info" id="mo-update-check">${t('settings.btn.updateCheck')}</button>
           <button class="mo-btn mo-btn-success" id="mo-update-download">${t('settings.btn.updateDownload')}</button>
         </div>
+        <div id="mo-update-status" style="margin-top:6px"></div>
       </div>
     </div>
     <div id="mo-test-result"></div>
@@ -50491,6 +50585,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             resultEl.innerHTML = '<div class="mo-status mo-status-fail">Update check failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
           } finally {
             updateCheckBtn.disabled = false;
+            void refreshArchiveCenterUpdateStatus();
           }
         });
       }
@@ -50514,9 +50609,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             resultEl.innerHTML = '<div class="mo-status mo-status-fail">Update download failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
           } finally {
             updateDownloadBtn.disabled = false;
+            void refreshArchiveCenterUpdateStatus();
           }
         });
       }
+
+      void refreshArchiveCenterUpdateStatus();
 
       document.querySelectorAll("[data-critic-ledger-probe]").forEach((btn) => {
         btn.addEventListener("click", async (event) => {
