@@ -1,7 +1,7 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string]$PackageVersion = "2.3",
+    [string]$PackageVersion = "3.0.0",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -46,7 +46,7 @@ function Write-TextFile([string]$Path, [string]$Value) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "2.3" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.0" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -219,7 +219,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "2.3" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.0" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }
