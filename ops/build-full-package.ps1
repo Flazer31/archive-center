@@ -529,15 +529,163 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $targetFull "FULL_PACKAGE_MANIFEST.json") -Encoding UTF8
 
 $zipPath = ""
+$zipChecksumPath = ""
 if ($Zip) {
     if (-not $releaseReady -and -not $AllowMissingRuntimePayloads) {
         throw "Refusing to zip a non-ready package."
     }
     $zipPath = Join-Path $outputRootFull ($PackageName + ".zip")
-    if (Test-Path -LiteralPath $zipPath) {
-        Remove-Item -LiteralPath $zipPath -Force
+    $zipChecksumName = "SHA256SUMS-$PackageVersion.txt"
+    if ([System.IO.Path]::GetFileName($zipChecksumName) -ne $zipChecksumName) {
+        throw "PackageVersion cannot be used safely in the external checksum filename: $PackageVersion"
     }
-    Compress-Archive -LiteralPath $targetFull -DestinationPath $zipPath -Force
+    $zipChecksumPath = Join-Path $outputRootFull $zipChecksumName
+    $stagingID = [guid]::NewGuid().ToString("N")
+    $zipBaseName = [System.IO.Path]::GetFileName($zipPath)
+    $tempZipPath = Join-Path $outputRootFull (".{0}.{1}.tmp.zip" -f $zipBaseName, $stagingID)
+    $tempChecksumPath = Join-Path $outputRootFull (".{0}.{1}.tmp" -f $zipChecksumName, $stagingID)
+    $zipBackupPath = Join-Path $outputRootFull (".{0}.{1}.backup" -f $zipBaseName, $stagingID)
+    $checksumBackupPath = Join-Path $outputRootFull (".{0}.{1}.backup" -f $zipChecksumName, $stagingID)
+    $zipHadPrevious = Test-Path -LiteralPath $zipPath -PathType Leaf
+    $checksumHadPrevious = Test-Path -LiteralPath $zipChecksumPath -PathType Leaf
+    $zipInstalled = $false
+    $checksumInstalled = $false
+    $cleanupReplacementBackups = $false
+    try {
+        Compress-Archive -LiteralPath $targetFull -DestinationPath $tempZipPath
+
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($tempZipPath)
+        try {
+            $entryMap = @{}
+            foreach ($entry in $archive.Entries) {
+                $rawEntryName = ([string]$entry.FullName).Replace('\', '/')
+                $normalized = $rawEntryName.TrimStart('/')
+                if ([string]::IsNullOrWhiteSpace($normalized)) { continue }
+                $segments = $normalized -split '/'
+                if ($rawEntryName.StartsWith('/') -or $normalized -match '^[A-Za-z]:' -or $segments -contains '..') {
+                    throw "Generated ZIP contains an unsafe entry name: $($entry.FullName)"
+                }
+                if ($entryMap.ContainsKey($normalized)) {
+                    throw "Generated ZIP contains a duplicate normalized entry: $normalized"
+                }
+                $entryMap[$normalized] = $entry
+            }
+
+            $manifestEntries = @($entryMap.Keys | Where-Object { $_ -eq "PACKAGE_FILE_MANIFEST.json" -or $_ -match '^[^/]+/PACKAGE_FILE_MANIFEST\.json$' })
+            if ($manifestEntries.Count -ne 1) {
+                throw "Generated ZIP must contain exactly one package manifest at the archive root or beneath one package-root directory."
+            }
+            $manifestEntry = $manifestEntries[0]
+            $packagePrefix = $manifestEntry.Substring(0, $manifestEntry.Length - "PACKAGE_FILE_MANIFEST.json".Length)
+            foreach ($requiredEntry in @("PACKAGE_FILE_MANIFEST.json", "bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js")) {
+                $expectedEntry = $packagePrefix + $requiredEntry
+                if (-not $entryMap.ContainsKey($expectedEntry) -or $entryMap[$expectedEntry].Length -le 0) {
+                    throw "Generated ZIP is missing required package entry: $expectedEntry"
+                }
+            }
+        } finally {
+            $archive.Dispose()
+        }
+
+        $zipSHA256 = (Get-FileHash -LiteralPath $tempZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $checksumRecord = "$zipSHA256  $zipBaseName"
+        [System.IO.File]::WriteAllText($tempChecksumPath, $checksumRecord + "`n", [System.Text.Encoding]::ASCII)
+
+        $checksumBytes = [System.IO.File]::ReadAllBytes($tempChecksumPath)
+        if ($checksumBytes.Length -lt 1 -or $checksumBytes[$checksumBytes.Length - 1] -ne 10 -or ($checksumBytes.Length -gt 1 -and $checksumBytes[$checksumBytes.Length - 2] -eq 13)) {
+            throw "External ZIP checksum must end with a single ASCII LF newline."
+        }
+        $records = @([System.IO.File]::ReadAllLines($tempChecksumPath, [System.Text.Encoding]::ASCII) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($records.Count -ne 1) {
+            throw "External ZIP checksum must contain exactly one nonempty record: $tempChecksumPath"
+        }
+        if ($records[0] -notmatch '^([0-9a-f]{64})  (.+)$') {
+            throw "External ZIP checksum record has an invalid format: $($records[0])"
+        }
+        if ($Matches[1] -ne $zipSHA256) {
+            throw "External ZIP checksum digest does not match the generated ZIP."
+        }
+        if ($Matches[2] -cne $zipBaseName) {
+            throw "External ZIP checksum filename does not exactly match the generated ZIP basename."
+        }
+
+        if ($zipHadPrevious) {
+            [System.IO.File]::Replace($tempZipPath, $zipPath, $zipBackupPath, $true)
+        } else {
+            Move-Item -LiteralPath $tempZipPath -Destination $zipPath
+        }
+        $zipInstalled = $true
+
+        try {
+            if ($checksumHadPrevious) {
+                [System.IO.File]::Replace($tempChecksumPath, $zipChecksumPath, $checksumBackupPath, $true)
+            } else {
+                Move-Item -LiteralPath $tempChecksumPath -Destination $zipChecksumPath
+            }
+            $checksumInstalled = $true
+            $cleanupReplacementBackups = $true
+        } catch {
+            $installError = $_.Exception.Message
+            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+            if ($checksumHadPrevious -and (Test-Path -LiteralPath $checksumBackupPath -PathType Leaf)) {
+                try {
+                    [System.IO.File]::Replace($checksumBackupPath, $zipChecksumPath, $null, $true)
+                } catch {
+                    try {
+                        Copy-Item -LiteralPath $checksumBackupPath -Destination $zipChecksumPath -Force
+                    } catch {
+                        [void]$rollbackErrors.Add("checksum restore: $($_.Exception.Message)")
+                    }
+                }
+            } elseif (-not $checksumHadPrevious -and (Test-Path -LiteralPath $zipChecksumPath -PathType Leaf)) {
+                try {
+                    Remove-Item -LiteralPath $zipChecksumPath -Force
+                } catch {
+                    [void]$rollbackErrors.Add("new checksum removal: $($_.Exception.Message)")
+                }
+            }
+            if ($zipHadPrevious -and (Test-Path -LiteralPath $zipBackupPath -PathType Leaf)) {
+                try {
+                    [System.IO.File]::Replace($zipBackupPath, $zipPath, $null, $true)
+                } catch {
+                    try {
+                        Copy-Item -LiteralPath $zipBackupPath -Destination $zipPath -Force
+                    } catch {
+                        [void]$rollbackErrors.Add("ZIP restore: $($_.Exception.Message)")
+                    }
+                }
+            } elseif (-not $zipHadPrevious -and (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+                try {
+                    Remove-Item -LiteralPath $zipPath -Force
+                } catch {
+                    [void]$rollbackErrors.Add("new ZIP removal: $($_.Exception.Message)")
+                }
+            }
+            $zipInstalled = $false
+            if ($rollbackErrors.Count -gt 0) {
+                throw "External checksum install failed ($installError), and release-pair restoration was incomplete: $($rollbackErrors -join '; '). Replacement backups were retained."
+            }
+            $cleanupReplacementBackups = $true
+            throw "External checksum install failed; the previous release pair was restored: $installError"
+        }
+    } finally {
+        foreach ($temporaryPath in @($tempZipPath, $tempChecksumPath)) {
+            if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+                Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($cleanupReplacementBackups) {
+            foreach ($backupPath in @($zipBackupPath, $checksumBackupPath)) {
+                if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+                    Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+    if (-not $zipInstalled -or -not $checksumInstalled) {
+        throw "ZIP and external checksum were not installed as one validated release pair."
+    }
 }
 
 Write-Host "Windows package staging created:"
@@ -547,6 +695,8 @@ Write-Host "Status: $($manifest.status)"
 if ($zipPath -ne "") {
     Write-Host "Zip:"
     Write-Host "  $zipPath"
+    Write-Host "Checksum:"
+    Write-Host "  $zipChecksumPath"
 }
 if ($missing.Count -gt 0) {
     Write-Host ""
