@@ -2,6 +2,8 @@ package packageupdate
 
 import (
 	"archive/zip"
+	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -610,7 +612,14 @@ func readPackageManifest(path string) (packageManifest, error) {
 		return m, err
 	}
 	defer f.Close()
-	if err := json.NewDecoder(io.LimitReader(f, 16*1024*1024)).Decode(&m); err != nil {
+	reader := bufio.NewReader(io.LimitReader(f, 16*1024*1024))
+	prefix, _ := reader.Peek(3)
+	if bytes.Equal(prefix, []byte{0xef, 0xbb, 0xbf}) {
+		if _, err := reader.Discard(3); err != nil {
+			return m, err
+		}
+	}
+	if err := json.NewDecoder(reader).Decode(&m); err != nil {
 		return m, err
 	}
 	if m.SchemaVersion != "archive-center.package-file-manifest.v1" {

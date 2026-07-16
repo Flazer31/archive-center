@@ -45,6 +45,40 @@ func TestApplyPendingValidPackage(t *testing.T) {
 	}
 }
 
+func TestApplyPendingAcceptsUTF8BOMCandidateManifest(t *testing.T) {
+	root := newFixtureWithManifestPrefixes(t,
+		map[string]string{"bin/app.exe": "old"},
+		map[string]string{"bin/app.exe": "new"},
+		nil, []byte{0xef, 0xbb, 0xbf})
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
+}
+
+func TestApplyPendingAcceptsUTF8BOMCurrentManifest(t *testing.T) {
+	root := newFixtureWithManifestPrefixes(t,
+		map[string]string{"bin/app.exe": "old"},
+		map[string]string{"bin/app.exe": "new"},
+		[]byte{0xef, 0xbb, 0xbf}, nil)
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
+}
+
+func TestApplyPendingRejectsCorruptedManifestPrefix(t *testing.T) {
+	root := newFixtureWithManifestPrefixes(t,
+		map[string]string{"bin/app.exe": "old"},
+		map[string]string{"bin/app.exe": "new"},
+		nil, []byte{0xef, 0xbb, 0x00})
+	_, err := ApplyPending(root)
+	assertUpdateCode(t, err, "package_manifest_invalid")
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "old")
+}
+
 func TestApplyPendingResumesExistingPendingHealthWithoutReapplying(t *testing.T) {
 	root := newFixture(t, map[string]string{"bin/app.exe": "old"}, map[string]string{"bin/app.exe": "new"}, nil)
 	if _, err := ApplyPending(root); err != nil {
@@ -294,17 +328,24 @@ type zipEntry struct {
 }
 
 func newFixture(t *testing.T, current, next map[string]string, extras []zipEntry) string {
+	return newFixtureWithManifestPrefixes(t, current, next, nil, nil, extras...)
+}
+
+func newFixtureWithManifestPrefixes(t *testing.T, current, next map[string]string, currentPrefix, candidatePrefix []byte, extras ...zipEntry) string {
 	t.Helper()
 	root := t.TempDir()
 	for rel, body := range current {
 		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
 	}
 	writeManifest(t, filepath.Join(root, ManifestName), current)
+	if len(currentPrefix) > 0 {
+		prependFile(t, filepath.Join(root, ManifestName), currentPrefix)
+	}
 	updates := filepath.Join(root, ".updates")
 	if err := os.MkdirAll(updates, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	stagePendingWithExtras(t, root, "1", "2", next, extras)
+	stagePendingWithManifestPrefix(t, root, "1", "2", next, candidatePrefix, extras)
 	return root
 }
 
@@ -314,11 +355,15 @@ func stagePending(t *testing.T, root, currentVersion, targetVersion string, file
 }
 
 func stagePendingWithExtras(t *testing.T, root, currentVersion, targetVersion string, files map[string]string, extras []zipEntry) {
+	stagePendingWithManifestPrefix(t, root, currentVersion, targetVersion, files, nil, extras)
+}
+
+func stagePendingWithManifestPrefix(t *testing.T, root, currentVersion, targetVersion string, files map[string]string, manifestPrefix []byte, extras []zipEntry) {
 	t.Helper()
 	updates := filepath.Join(root, ".updates")
 	assetName := "staged-" + targetVersion + ".zip"
 	asset := filepath.Join(updates, assetName)
-	writePackageZip(t, asset, files, extras)
+	writePackageZipWithManifestPrefix(t, asset, files, manifestPrefix, extras)
 	h := fileSHA(t, asset)
 	required := make([]string, 0, len(files))
 	for rel := range files {
@@ -329,6 +374,10 @@ func stagePendingWithExtras(t *testing.T, root, currentVersion, targetVersion st
 }
 
 func writePackageZip(t *testing.T, path string, files map[string]string, extras []zipEntry) {
+	writePackageZipWithManifestPrefix(t, path, files, nil, extras)
+}
+
+func writePackageZipWithManifestPrefix(t *testing.T, path string, files map[string]string, manifestPrefix []byte, extras []zipEntry) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -343,7 +392,7 @@ func writePackageZip(t *testing.T, path string, files map[string]string, extras 
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := []zipEntry{{name: "release/" + ManifestName, body: string(data)}}
+	entries := []zipEntry{{name: "release/" + ManifestName, body: string(append(append([]byte{}, manifestPrefix...), data...))}}
 	keys := make([]string, 0, len(files))
 	for k := range files {
 		keys = append(keys, k)
@@ -377,6 +426,16 @@ func writePackageZip(t *testing.T, path string, files map[string]string, extras 
 func writeManifest(t *testing.T, path string, files map[string]string) {
 	t.Helper()
 	writeJSON(t, path, manifestFor(files))
+}
+func prependFile(t *testing.T, path string, prefix []byte) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append([]byte{}, prefix...), data...), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 func manifestFor(files map[string]string) packageManifest {
 	m := packageManifest{SchemaVersion: "archive-center.package-file-manifest.v1"}

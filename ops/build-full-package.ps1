@@ -293,7 +293,12 @@ function Write-PackageTrustEvidence([string]$Root) {
         self_excluded_files = $selfFiles
         files = $items
     }
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Root "PACKAGE_FILE_MANIFEST.json") -Encoding UTF8
+    $manifestJson = $manifest | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText(
+        (Join-Path $Root "PACKAGE_FILE_MANIFEST.json"),
+        $manifestJson + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
     $sumLines | Set-Content -LiteralPath (Join-Path $Root "SHA256SUMS.txt") -Encoding ASCII
     return [ordered]@{
         file_manifest = "PACKAGE_FILE_MANIFEST.json"
