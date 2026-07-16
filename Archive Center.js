@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 2.5.0 RC4
+//@display-name Archive Center 3.0.0
 //@author memory-scaffold
 //@api 3.0
-//@version 2.5.0
+//@version 3.0.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,8 +37,8 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "2.5.0";
-  const BUILD_ID = "3.0-dev-reference-mode-policy.20260714-1";
+  const VERSION = "3.0.0";
+  const BUILD_ID = "3.0-next-start-updater.20260716-1";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-14 KST";
   const BUILD_NOTES = "Explicit supplement and primary reference modes";
@@ -250,7 +250,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 2.5.0 RC3 설정",
+      "settings.title": "🗂️ Archive Center 3.0.0 설정",
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -380,7 +380,9 @@
       "settings.btn.testPublisherCall": "📝 출판사 LLM 테스트",
       "settings.btn.testCriticCall": "✍ 평론가 LLM 테스트",
       "settings.btn.updateCheck": "업데이트 확인",
-      "settings.btn.updateDownload": "업데이트 다운로드",
+      "settings.btn.updateDownload": "다운로드 후 다음 시작에 적용",
+      "settings.update.confirmTitle": "Archive Center 업데이트",
+      "settings.update.confirmBody": "검증된 패키지를 지금 다운로드하고, 다음 실행에서 Archive Center 서비스가 시작되기 전에 적용합니다. 런타임 데이터, 데이터베이스, 로컬 환경 파일은 업데이트 대상이 아닙니다. 계속할까요?",
       "settings.placeholder.sameAsMain": "비어 있으면 미설정",
       "settings.btn.save": "💾 저장",
       "settings.btn.resetDefaults": "↩ 기본값 복원",
@@ -1145,7 +1147,7 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 2.5.0 RC3 Settings",
+      "settings.title": "🗂️ Archive Center 3.0.0 Settings",
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -1429,7 +1431,9 @@
       "settings.btn.testPublisherCall": "📝 Publisher LLM Test",
       "settings.btn.testCriticCall": "✍ Critic LLM Test",
       "settings.btn.updateCheck": "Check Update",
-      "settings.btn.updateDownload": "Download Update",
+      "settings.btn.updateDownload": "Download and Apply on Next Start",
+      "settings.update.confirmTitle": "Archive Center Update",
+      "settings.update.confirmBody": "The verified package will be downloaded now and applied before Archive Center services start the next time you launch the package. Runtime data, databases, and local environment files are not update targets. Continue?",
       "settings.placeholder.sameAsMain": "Empty = not configured",
       "settings.btn.save": "💾 Save",
       "settings.btn.resetDefaults": "↩ Restore Defaults",
@@ -2040,7 +2044,7 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 2.5.0 RC3 設定",
+      "settings.title": "🗂️ Archive Center 3.0.0 設定",
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -11768,10 +11772,12 @@
         "bytes: " + String(data.bytes || 0),
         "sha256: " + String(data.sha256 || ""),
         "staged: " + String(data.staged_path || ""),
-        "apply: " + (data.apply_supported ? "supported" : "manual package apply required"),
+        "apply: " + (data.apply_supported ? "scheduled for next start" : "manual package apply required"),
+        data.pending_path ? "pending: " + String(data.pending_path) : "",
+        data.next_step ? "next: " + String(data.next_step) : "",
       ];
       return '<div class="mo-status ' + (ok ? "mo-status-ok" : "mo-status-fail") + '">'
-        + lines.map((line) => escapeAttr(line)).join('<br>')
+        + lines.filter(Boolean).map((line) => escapeAttr(line)).join('<br>')
         + '</div>';
     }
     const selected = data.selected_asset || {};
@@ -50494,6 +50500,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         updateDownloadBtn.addEventListener("click", async () => {
           const resultEl = $("mo-test-result");
           if (!resultEl) return;
+          const confirmed = await showConfirmModal(
+            t("settings.update.confirmTitle"),
+            t("settings.update.confirmBody")
+          );
+          if (!confirmed) return;
           updateDownloadBtn.disabled = true;
           resultEl.innerHTML = '<div class="mo-status mo-status-wait">Downloading update package through backend...</div>';
           try {
@@ -50931,7 +50942,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
     step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
     pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 2.5.0 Release",
+    pre_release_bundle_authority: "Archive Center 3.0.0 Release",
     pre_release_smoke_checks: [
       "scoped_verbatim_recall",
       "hybrid_baseline",

@@ -5,6 +5,7 @@ This is the Windows package for Archive Center 2.1.
 It includes:
 
 - Go backend
+- next-start package updater
 - MariaDB runtime
 - ChromaDB/Python runtime
 - Archive Center.js
@@ -25,6 +26,35 @@ The launcher binds the backend to `0.0.0.0:28080`, so the same file works for bo
 It creates `.env.full.local` if it does not exist, starts bundled MariaDB, starts bundled ChromaDB, applies schema migrations, and starts the Go backend.
 
 Leave the console window open while using Archive Center.
+
+## Updates are applied on the next start
+
+The Archive Center settings UI can check for an update and download a verified
+package into `.updates/`. It does not apply packages in the background and does
+not interrupt a running story session.
+
+On the next launcher start, before the env file, MariaDB, ChromaDB, or backend
+is opened, the launcher runs a temporary copy of `archive-center-updater.exe`.
+If no verified pending package exists, startup follows the normal path without
+changing package files. If a package is pending, the updater verifies the
+managed payload manifest, stages an atomic replacement, and keeps the old
+managed files available for rollback.
+
+After the existing local runtime services and additive schema migrations are
+ready, the launcher starts the updated backend and checks `/ready`. Only the
+main `ready` result is the update gate; an optional original-work reference
+vector degradation does not reject an otherwise healthy backend. A successful
+check commits the package. A failed check stops the candidate backend, restores
+the previous managed files, and starts the previous backend. If the updater
+cannot prove either `no_mutation` or a safe rollback, startup stops with a
+recovery error instead of running a mixed package.
+
+Updates do not move, replace, or copy `.runtime/`, `.updates/`,
+`.env.full.local`, or `.env.full.local.protected`. MariaDB and ChromaDB keep
+using their existing package-local data directories. The v1 automatic updater
+rejects a package that adds or changes managed migration SQL or
+`mariadb-schema.exe`; database-changing releases require a separately reviewed
+manual migration path.
 
 ## RisuAI setup
 

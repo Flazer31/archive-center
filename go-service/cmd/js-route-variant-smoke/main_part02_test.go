@@ -577,8 +577,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 2.5.0",
-		`const VERSION = "2.5.0";`,
+		"//@version 3.0.0",
+		`const VERSION = "3.0.0";`,
 		`const VERSION_STR = typeof VERSION !== "undefined" ? String(VERSION) : "unknown";`,
 		"source_version:    VERSION_STR",
 	}

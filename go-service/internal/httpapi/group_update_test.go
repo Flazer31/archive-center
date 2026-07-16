@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -107,7 +108,14 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.BuildVersion = "2.2.0"
-	cfg.UpdateStagingDir = t.TempDir()
+	packageRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(packageRoot, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageRoot, "bin", "archive-center-updater.exe"), []byte("test helper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
 	srv := NewServer(cfg)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
@@ -123,7 +131,7 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp["status"] != "ok" || resp["sha256"] != sha || resp["apply_supported"] != false {
+	if resp["status"] != "ok" || resp["sha256"] != sha || resp["apply_supported"] != true || resp["next_step"] != "restart_archive_center_to_apply" {
 		t.Fatalf("unexpected download response: %+v", resp)
 	}
 	stagedPath, _ := resp["staged_path"].(string)
@@ -136,6 +144,106 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	}
 	if string(got) != string(zipBytes) {
 		t.Fatalf("staged bytes mismatch")
+	}
+	pendingBytes, err := os.ReadFile(filepath.Join(packageRoot, ".updates", "pending-update.json"))
+	if err != nil {
+		t.Fatalf("read pending update: %v", err)
+	}
+	var pending pendingPackageUpdate
+	if err := json.Unmarshal(pendingBytes, &pending); err != nil {
+		t.Fatalf("decode pending update: %v", err)
+	}
+	if pending.ContractVersion != "archive-center.pending-update.v1" || pending.CurrentVersion != "2.2.0" || pending.TargetVersion != "2.3.0" || pending.AssetPath != stagedPath || pending.SHA256 != sha {
+		t.Fatalf("pending update mismatch: %+v", pending)
+	}
+	statusReq := httptest.NewRequest(http.MethodGet, "/update/status", nil)
+	statusRec := httptest.NewRecorder()
+	mux.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK || !strings.Contains(statusRec.Body.String(), `"status":"pending_next_start"`) {
+		t.Fatalf("update status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(packageRoot, ".updates", "update-state.json"), []byte(`{"status":"committed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statusRec = httptest.NewRecorder()
+	mux.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK || !strings.Contains(statusRec.Body.String(), `"status":"pending_next_start"`) {
+		t.Fatalf("pending must override old committed state: status=%d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+}
+
+func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
+	zipBytes := []byte("verified release asset")
+	sum := sha256.Sum256(zipBytes)
+	sha := hex.EncodeToString(sum[:])
+	restore := updateHTTPClient
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
+			return textResponse(http.StatusOK, `{"tag_name":"v3.1.0","assets":[{"name":"Archive Center 3.1 Windows Package.zip","browser_download_url":"https://example.test/windows.zip"},{"name":"SHA256SUMS-3.1.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
+		case "https://example.test/sums.txt":
+			return textResponse(http.StatusOK, sha+"  Archive Center 3.1 Windows Package.zip\n")
+		default:
+			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+	defer func() { updateHTTPClient = restore }()
+
+	cfg := config.Default()
+	cfg.BuildVersion = "3.0.0"
+	srv := NewServer(cfg)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.0.0","platform":"windows-x64","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "must match") {
+		t.Fatalf("override status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateDownloadRejectsReleaseThatIsNotNewer(t *testing.T) {
+	restore := updateHTTPClient
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
+			return textResponse(http.StatusOK, `{"tag_name":"v3.0.0","assets":[]}`)
+		default:
+			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+	defer func() { updateHTTPClient = restore }()
+
+	cfg := config.Default()
+	cfg.BuildVersion = "3.0.0"
+	srv := NewServer(cfg)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.0.0","platform":"windows-x64"}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "update_not_newer") {
+		t.Fatalf("same-version status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateRejectsClientCurrentVersionOverride(t *testing.T) {
+	cfg := config.Default()
+	cfg.BuildVersion = "3.0.0"
+	srv := NewServer(cfg)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/update/check?current_version=0.1.0", nil),
+		httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"0.1.0"}`)),
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "must match") {
+			t.Fatalf("%s %s status=%d body=%s", req.Method, req.URL.Path, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -189,6 +297,23 @@ func TestUpdateCheckMatchesDottedGitHubAssetNameAndSpacedSHAName(t *testing.T) {
 	}
 	if resp["download_supported"] != true {
 		t.Fatalf("download_supported unexpected: %+v", resp)
+	}
+}
+
+func TestUpdateVersionComparisonDistinguishesPrereleaseFromFinal(t *testing.T) {
+	for _, tc := range []struct {
+		left  string
+		right string
+		want  int
+	}{
+		{left: "3.0.0", right: "3.0.0-rc2", want: 1},
+		{left: "3.0.0-rc10", right: "3.0.0-rc2", want: 1},
+		{left: "3.0.0-rc2", right: "3.0.0", want: -1},
+		{left: "v3.1.0", right: "3.0.9", want: 1},
+	} {
+		if got := compareVersions(tc.left, tc.right); got != tc.want {
+			t.Fatalf("compareVersions(%q, %q)=%d want %d", tc.left, tc.right, got, tc.want)
+		}
 	}
 }
 

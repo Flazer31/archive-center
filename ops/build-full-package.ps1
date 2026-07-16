@@ -2,7 +2,7 @@ param(
     [string]$OutputRoot,
     [string]$PackageName = "",
     [string]$PackageKind = "full",
-    [string]$PackageVersion = "2.3",
+    [string]$PackageVersion = "3.0.0",
     [string]$MariaDBRuntime = "",
     [string]$ChromaRuntime = "",
     [string]$CodeSigningCertThumbprint = "",
@@ -99,13 +99,14 @@ function Find-ChromaRuntime([string]$Root) {
     return ""
 }
 
-function Set-RuntimeDefaultsInEnvExample([string]$Path, [string]$RuntimeProfile, [string]$VectorMode) {
+function Set-RuntimeDefaultsInEnvExample([string]$Path, [string]$RuntimeProfile, [string]$VectorMode, [string]$PackageVersion) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Missing env example file: $Path"
     }
     $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
     $text = [regex]::Replace($text, '(?m)^AC_RUNTIME_PROFILE=.*$', "AC_RUNTIME_PROFILE=$RuntimeProfile")
     $text = [regex]::Replace($text, '(?m)^AC_VECTOR_MODE=.*$', "AC_VECTOR_MODE=$VectorMode")
+    $text = [regex]::Replace($text, '(?m)^AC_BUILD_VERSION=.*$', "AC_BUILD_VERSION=$PackageVersion")
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($Path, $text, $utf8NoBom)
 }
@@ -114,7 +115,7 @@ function Set-CopiedPackageKindText([string]$Path, [string]$PackageKind, [string]
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return
     }
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "2.3" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.0" } else { $PackageVersion.Trim() }
     $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
     $text = $text.Replace("Archive Center 2.1 Windows Full Package", "Archive Center $version Windows Package")
     $text = $text.Replace("Starting Archive Center 2.1 full package", "Starting Archive Center $version package")
@@ -123,7 +124,7 @@ function Set-CopiedPackageKindText([string]$Path, [string]$PackageKind, [string]
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "2.3" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.0" } else { $PackageVersion.Trim() }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $patterns = @("*.md", "*.txt", "*.bat", "*.cmd", "*.ps1", "*.sh", "*.command")
     foreach ($pattern in $patterns) {
@@ -131,6 +132,7 @@ function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
             $text = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
             $next = $text.Replace("Archive Center 2.1", "Archive Center $version")
             $next = $next.Replace("archivecenter2.1", ("archivecenter" + ($version -replace '\s+', '').ToLowerInvariant()))
+            $next = $next.Replace("__ARCHIVE_CENTER_PACKAGE_VERSION__", $version)
             if ($next -ne $text) {
                 [System.IO.File]::WriteAllText($_.FullName, $next, $utf8NoBom)
             }
@@ -239,10 +241,15 @@ function Write-PackageTrustEvidence([string]$Root) {
         "PACKAGE_FILE_MANIFEST.json",
         "SHA256SUMS.txt"
     )
+    $excludedRoots = @(".runtime", ".runtime-cache", ".updates")
+    $excludedLocalFiles = @(".env.full.local", ".env.full.local.protected")
     $files = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
             $rel = Get-RelativePackagePath $_.FullName $Root
-            ($payloadExts -contains $_.Extension.ToLowerInvariant()) -and ($selfFiles -notcontains $rel)
+            $top = ($rel -split '/', 2)[0]
+            ($selfFiles -notcontains $rel) -and
+                ($excludedRoots -notcontains $top) -and
+                ($excludedLocalFiles -notcontains $rel)
         } |
         Sort-Object FullName
 
@@ -253,7 +260,11 @@ function Write-PackageTrustEvidence([string]$Root) {
         $ext = $file.Extension.ToLowerInvariant()
         $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
         $sha = $hash.Hash.ToUpperInvariant()
-        $signature = Get-PackageSignatureSummary $file.FullName $ext
+        $signature = if ($payloadExts -contains $ext) {
+            Get-PackageSignatureSummary $file.FullName $ext
+        } else {
+            [ordered]@{ checked = $false; status = "not_applicable"; signer = ""; thumbprint = "" }
+        }
         $items += [ordered]@{
             path = $rel
             extension = $ext
@@ -269,11 +280,17 @@ function Write-PackageTrustEvidence([string]$Root) {
     $manifest = [ordered]@{
         schema_version = "archive-center.package-file-manifest.v1"
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
-        scope = "executable_and_script_payloads"
+        scope = "managed_package_payloads"
+        signature_scope = "executable_and_script_payloads"
         package_root = $Root
         automatic_defender_exclusions = $false
         checked_files = $items.Count
+        managed_file_count = $items.Count
+        signature_checked_file_count = @($items | Where-Object { $_.signature.checked }).Count
         unsigned_or_untrusted_signature_count = $unsigned.Count
+        excluded_runtime_roots = $excludedRoots
+        excluded_local_files = $excludedLocalFiles
+        self_excluded_files = $selfFiles
         files = $items
     }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Root "PACKAGE_FILE_MANIFEST.json") -Encoding UTF8
@@ -281,8 +298,11 @@ function Write-PackageTrustEvidence([string]$Root) {
     return [ordered]@{
         file_manifest = "PACKAGE_FILE_MANIFEST.json"
         sha256sums = "SHA256SUMS.txt"
-        scope = "executable_and_script_payloads"
+        scope = "managed_package_payloads"
+        signature_scope = "executable_and_script_payloads"
         checked_files = $items.Count
+        managed_file_count = $items.Count
+        signature_checked_file_count = @($items | Where-Object { $_.signature.checked }).Count
         unsigned_or_untrusted_signature_count = $unsigned.Count
     }
 }
@@ -344,6 +364,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "go build archive-center-go failed."
     }
+    & go build -buildvcs=false -trimpath -ldflags "-s -w" -o (Join-Path $targetFull "bin\archive-center-updater.exe") ./cmd/archive-center-updater
+    if ($LASTEXITCODE -ne 0) {
+        throw "go build archive-center-updater failed."
+    }
     & go build -buildvcs=false -trimpath -ldflags "-s -w" -o (Join-Path $targetFull "bin\mariadb-schema.exe") ./cmd/mariadb-schema
     if ($LASTEXITCODE -ne 0) {
         throw "go build mariadb-schema failed."
@@ -384,7 +408,7 @@ Copy-File "ops/full-package/06_migrate_1_0_to_2_0_windows.bat" "06_migrate_1_0_t
 Copy-File "ops/full-package/.env.full.example" ".env.full.example"
 Copy-Directory "ops/full-package/scripts" "scripts"
 Copy-File "ops/install-windows.ps1" "tools/install-windows.ps1"
-Set-RuntimeDefaultsInEnvExample (Join-Path $targetFull ".env.full.example") $runtimeProfileDefault $vectorModeDefault
+Set-RuntimeDefaultsInEnvExample (Join-Path $targetFull ".env.full.example") $runtimeProfileDefault $vectorModeDefault $PackageVersion
 Set-CopiedPackageKindText (Join-Path $targetFull "01_start_archive_center_windows.bat") $PackageKind $PackageVersion
 Set-CopiedPackageKindText (Join-Path $targetFull "scripts\start-full-windows.ps1") $PackageKind $PackageVersion
 Set-CopiedPackageVersionText $targetFull $PackageVersion
@@ -467,6 +491,7 @@ $manifest = [ordered]@{
     }
     included = @(
         "bin/archive-center-go.exe",
+        "bin/archive-center-updater.exe",
         "bin/mariadb-schema.exe",
         "bin/legacy10-migrate.exe",
         "bin/sqlite-export.exe",

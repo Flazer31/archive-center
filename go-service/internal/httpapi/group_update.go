@@ -6,15 +6,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var updateHTTPClient = http.DefaultClient
@@ -71,9 +74,69 @@ type updateDownloadRequest struct {
 	ExpectedSHA256 string `json:"expected_sha256"`
 }
 
+type pendingPackageUpdate struct {
+	ContractVersion string   `json:"contract_version"`
+	CurrentVersion  string   `json:"current_version"`
+	TargetVersion   string   `json:"target_version"`
+	AssetPath       string   `json:"asset_path"`
+	SHA256          string   `json:"sha256"`
+	RequiredFiles   []string `json:"required_files,omitempty"`
+	PreparedAt      string   `json:"prepared_at"`
+}
+
 func (s *Server) registerUpdateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /update/check", s.handleUpdateCheck)
 	mux.HandleFunc("POST /update/download", s.handleUpdateDownload)
+	mux.HandleFunc("GET /update/status", s.handleUpdateStatus)
+}
+
+func (s *Server) handleUpdateStatus(w http.ResponseWriter, _ *http.Request) {
+	root, err := s.updateStagingRoot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update_staging_invalid", err.Error())
+		return
+	}
+	out := map[string]any{
+		"status":          "idle",
+		"policy_version":  "update-status.v1",
+		"apply_supported": updateApplyHelperAvailable(root),
+	}
+	pendingExists := false
+	stateStatus := ""
+	for _, item := range []struct {
+		name string
+		path string
+	}{
+		{name: "pending", path: filepath.Join(root, "pending-update.json")},
+		{name: "state", path: filepath.Join(root, "update-state.json")},
+	} {
+		data, readErr := os.ReadFile(item.path)
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if readErr != nil {
+			writeError(w, http.StatusInternalServerError, "update_status_read_failed", readErr.Error())
+			return
+		}
+		var value map[string]any
+		if json.Unmarshal(data, &value) == nil {
+			out[item.name] = value
+			if item.name == "pending" {
+				pendingExists = true
+			}
+			if item.name == "state" && strings.TrimSpace(fmt.Sprint(value["status"])) != "" {
+				stateStatus = strings.TrimSpace(fmt.Sprint(value["status"]))
+			}
+		}
+	}
+	if stateStatus == "applying" || stateStatus == "applied_pending_health" {
+		out["status"] = stateStatus
+	} else if pendingExists {
+		out["status"] = "pending_next_start"
+	} else if stateStatus != "" {
+		out["status"] = stateStatus
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
@@ -81,9 +144,10 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "update_disabled", "update checks are disabled")
 		return
 	}
-	current := strings.TrimSpace(r.URL.Query().Get("current_version"))
-	if current == "" {
-		current = s.Cfg.BuildVersion
+	current := strings.TrimSpace(s.Cfg.BuildVersion)
+	if supplied := strings.TrimSpace(r.URL.Query().Get("current_version")); supplied != "" && !strings.EqualFold(supplied, current) {
+		writeBadRequest(w, "current_version must match the running backend version")
+		return
 	}
 	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
 	result, err := s.resolveLatestUpdate(r.Context(), current, platform)
@@ -105,13 +169,18 @@ func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "invalid update download request: "+err.Error())
 		return
 	}
-	current := strings.TrimSpace(req.CurrentVersion)
-	if current == "" {
-		current = s.Cfg.BuildVersion
+	current := strings.TrimSpace(s.Cfg.BuildVersion)
+	if supplied := strings.TrimSpace(req.CurrentVersion); supplied != "" && !strings.EqualFold(supplied, current) {
+		writeBadRequest(w, "current_version must match the running backend version")
+		return
 	}
 	result, err := s.resolveLatestUpdate(r.Context(), current, strings.TrimSpace(req.Platform))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "update_check_failed", err.Error())
+		return
+	}
+	if !result.UpdateAvailable {
+		writeError(w, http.StatusConflict, "update_not_newer", "the selected release is not newer than the current version")
 		return
 	}
 	asset := result.SelectedAsset
@@ -133,15 +202,19 @@ func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "update_asset_not_found", "no compatible update asset was found")
 		return
 	}
-	expected := normalizeSHA256(req.ExpectedSHA256)
-	if expected == "" {
-		expected = normalizeSHA256(asset.SHA256)
-	}
+	expected := normalizeSHA256(asset.SHA256)
 	if expected == "" {
 		writeError(w, http.StatusBadGateway, "update_sha256_missing", "selected update asset has no SHA256 entry")
 		return
 	}
-	staged, err := s.downloadAndStageUpdateAsset(r.Context(), result.LatestVersion, *asset, expected)
+	if supplied := strings.TrimSpace(req.ExpectedSHA256); supplied != "" {
+		clientExpected := normalizeSHA256(supplied)
+		if clientExpected == "" || !strings.EqualFold(clientExpected, expected) {
+			writeBadRequest(w, "expected_sha256 must match the selected release SHA256SUMS entry")
+			return
+		}
+	}
+	staged, err := s.downloadAndStageUpdateAsset(r.Context(), current, result.LatestVersion, *asset, expected)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "update_download_failed", err.Error())
 		return
@@ -178,7 +251,7 @@ func (s *Server) resolveLatestUpdate(ctx context.Context, currentVersion, platfo
 		Platform:           platform,
 		SelectedAsset:      selected,
 		SHA256Source:       shaSource,
-		ApplySupported:     false,
+		ApplySupported:     s.updateApplySupported(),
 		DownloadSupported:  selected != nil && selected.SHA256 != "",
 		ReleaseTag:         release.TagName,
 		ReleaseName:        release.Name,
@@ -236,6 +309,9 @@ func fetchReleaseSHA256Map(ctx context.Context, assets []githubAssetRecord) (map
 		}
 	}
 	if sumsAsset == nil || strings.TrimSpace(sumsAsset.BrowserDownloadURL) == "" {
+		return map[string]string{}, ""
+	}
+	if validateUpdateDownloadURL(sumsAsset.BrowserDownloadURL) != nil {
 		return map[string]string{}, ""
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumsAsset.BrowserDownloadURL, nil)
@@ -307,6 +383,8 @@ func assetMatchesPlatform(name, platform string) bool {
 	switch normalizeUpdatePlatform(platform) {
 	case "windows-x64":
 		return strings.Contains(comparable, "windows") && strings.Contains(comparable, "package zip")
+	case "windows-arm64":
+		return strings.Contains(comparable, "windows arm64") && strings.Contains(comparable, "package zip")
 	case "linux-x64":
 		return strings.Contains(comparable, "linux x64")
 	case "linux-arm64":
@@ -341,7 +419,10 @@ func comparableAssetName(name string) string {
 	return strings.Join(strings.Fields(normalized), " ")
 }
 
-func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, latestVersion string, asset updateAssetInfo, expectedSHA256 string) (map[string]any, error) {
+func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion, latestVersion string, asset updateAssetInfo, expectedSHA256 string) (map[string]any, error) {
+	if err := validateUpdateDownloadURL(asset.DownloadURL); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.DownloadURL, nil)
 	if err != nil {
 		return nil, err
@@ -360,7 +441,7 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, latestVersion 
 	if maxBytes <= 0 {
 		maxBytes = 1024 * 1024 * 1024
 	}
-	root, err := filepath.Abs(s.Cfg.UpdateStagingDir)
+	root, err := s.updateStagingRoot()
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +491,27 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, latestVersion 
 		_ = os.Remove(tmp)
 		return nil, err
 	}
+	applySupported := updateApplyHelperAvailable(root)
+	pendingPath := ""
+	if applySupported {
+		pending := pendingPackageUpdate{
+			ContractVersion: "archive-center.pending-update.v1",
+			CurrentVersion:  strings.TrimSpace(currentVersion),
+			TargetVersion:   strings.TrimSpace(latestVersion),
+			AssetPath:       target,
+			SHA256:          actual,
+			RequiredFiles: []string{
+				"PACKAGE_FILE_MANIFEST.json",
+				"bin/archive-center-go.exe",
+				"Archive Center.js",
+			},
+			PreparedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		pendingPath = filepath.Join(root, "pending-update.json")
+		if err := writePendingPackageUpdate(pendingPath, pending); err != nil {
+			return nil, err
+		}
+	}
 	return map[string]any{
 		"status":            "ok",
 		"policy_version":    "update-download.v1",
@@ -418,10 +520,69 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, latestVersion 
 		"bytes":             n,
 		"sha256":            actual,
 		"staged_path":       target,
-		"apply_supported":   false,
-		"next_step":         "manual_apply_or_future_helper",
+		"apply_supported":   applySupported,
+		"apply_timing":      "next_start",
+		"pending_path":      pendingPath,
+		"next_step":         map[bool]string{true: "restart_archive_center_to_apply", false: "manual_apply_or_install_updater_helper"}[applySupported],
 		"staging_directory": targetDir,
 	}, nil
+}
+
+func (s *Server) updateStagingRoot() (string, error) {
+	root := strings.TrimSpace(s.Cfg.UpdateStagingDir)
+	if root == "" {
+		root = ".updates"
+	}
+	return filepath.Abs(root)
+}
+
+func (s *Server) updateApplySupported() bool {
+	root, err := s.updateStagingRoot()
+	return err == nil && updateApplyHelperAvailable(root)
+}
+
+func updateApplyHelperAvailable(stagingRoot string) bool {
+	root := filepath.Dir(filepath.Clean(stagingRoot))
+	if !strings.EqualFold(filepath.Base(filepath.Clean(stagingRoot)), ".updates") {
+		return false
+	}
+	for _, name := range []string{"archive-center-updater.exe", "archive-center-updater"} {
+		info, err := os.Stat(filepath.Join(root, "bin", name))
+		if err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+func writePendingPackageUpdate(path string, pending pendingPackageUpdate) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(pending, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	previous := path + ".previous"
+	_ = os.Remove(previous)
+	if _, err := os.Stat(path); err == nil {
+		if err := os.Rename(path, previous); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Rename(previous, path)
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Remove(previous)
+	return nil
 }
 
 func isSafeGitHubRepo(repo string) bool {
@@ -433,7 +594,7 @@ func detectUpdatePlatform(goos, goarch string) string {
 	case "windows/amd64":
 		return "windows-x64"
 	case "windows/arm64":
-		return "windows-x64"
+		return "windows-arm64"
 	case "linux/amd64":
 		return "linux-x64"
 	case "linux/arm64":
@@ -455,6 +616,8 @@ func normalizeUpdatePlatform(platform string) string {
 	switch p {
 	case "", "windows", "win", "win32", "win64", "windows-amd64", "windows-x86-64":
 		return "windows-x64"
+	case "windows-aarch64":
+		return "windows-arm64"
 	case "linux", "linux-amd64", "linux-x86-64":
 		return "linux-x64"
 	case "linux-aarch64":
@@ -478,8 +641,8 @@ func versionFromTag(tag string) string {
 }
 
 func compareVersions(a, b string) int {
-	ap := parseVersionParts(a)
-	bp := parseVersionParts(b)
+	ap, apre := parseVersion(a)
+	bp, bpre := parseVersion(b)
 	for i := 0; i < 3; i++ {
 		if ap[i] > bp[i] {
 			return 1
@@ -488,12 +651,25 @@ func compareVersions(a, b string) int {
 			return -1
 		}
 	}
-	return 0
+	if apre == "" && bpre != "" {
+		return 1
+	}
+	if apre != "" && bpre == "" {
+		return -1
+	}
+	return comparePrerelease(apre, bpre)
 }
 
-func parseVersionParts(version string) [3]int {
+func parseVersion(version string) ([3]int, string) {
 	clean := versionFromTag(version)
+	pre := ""
 	if idx := strings.IndexAny(clean, "-+ "); idx >= 0 {
+		if clean[idx] == '-' {
+			pre = strings.TrimSpace(clean[idx+1:])
+			if plus := strings.Index(pre, "+"); plus >= 0 {
+				pre = pre[:plus]
+			}
+		}
 		clean = clean[:idx]
 	}
 	parts := strings.Split(clean, ".")
@@ -502,7 +678,54 @@ func parseVersionParts(version string) [3]int {
 		n, _ := strconv.Atoi(regexp.MustCompile(`[^0-9]`).ReplaceAllString(parts[i], ""))
 		out[i] = n
 	}
-	return out
+	return out, strings.ToLower(pre)
+}
+
+func comparePrerelease(a, b string) int {
+	if a == b {
+		return 0
+	}
+	left, right := prereleaseParts(a), prereleaseParts(b)
+	for i := 0; i < len(left) || i < len(right); i++ {
+		if i >= len(left) {
+			return -1
+		}
+		if i >= len(right) {
+			return 1
+		}
+		ln, lnum := strconv.Atoi(left[i])
+		rn, rnum := strconv.Atoi(right[i])
+		switch {
+		case lnum == nil && rnum == nil && ln != rn:
+			if ln < rn {
+				return -1
+			}
+			return 1
+		case lnum == nil && rnum != nil:
+			return -1
+		case lnum != nil && rnum == nil:
+			return 1
+		case left[i] != right[i]:
+			if left[i] < right[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}
+
+func prereleaseParts(value string) []string {
+	value = regexp.MustCompile(`([A-Za-z]+)([0-9]+)`).ReplaceAllString(value, `$1.$2`)
+	return strings.FieldsFunc(value, func(r rune) bool { return r == '.' || r == '-' || r == '_' })
+}
+
+func validateUpdateDownloadURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || strings.TrimSpace(parsed.Hostname()) == "" {
+		return fmt.Errorf("update download URL must use HTTPS")
+	}
+	return nil
 }
 
 func normalizeSHA256(value string) string {

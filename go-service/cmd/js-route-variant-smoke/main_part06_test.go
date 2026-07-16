@@ -1137,7 +1137,7 @@ func TestArchiveCenterJSSeq18P373ToP392PreReleaseMarkers(t *testing.T) {
 		"pre_release_1_0_0_marker",
 		"1.0.0-pre",
 		"pre_release_bundle_authority",
-		"Archive Center 2.5.0 Release",
+		"Archive Center 3.0.0 Release",
 		"pre_release_smoke_checks",
 		"scoped_verbatim_recall",
 		"hybrid_baseline",

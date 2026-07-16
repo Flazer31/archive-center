@@ -39,10 +39,58 @@ $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $failures = [System.Collections.Generic.List[string]]::new()
 $warnings = [System.Collections.Generic.List[string]]::new()
 
-foreach ($rel in @("bin\archive-center-go.exe", "bin\mariadb-schema.exe", "Archive Center.js", "migrations", "prompts", "scripts")) {
+foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "Archive Center.js", "migrations", "prompts", "scripts", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
     $path = Join-Path $packRoot $rel
     if (-not (Test-Path -LiteralPath $path)) {
         [void]$failures.Add("missing:$rel")
+    }
+}
+
+$managedManifestPath = Join-Path $packRoot "PACKAGE_FILE_MANIFEST.json"
+if (Test-Path -LiteralPath $managedManifestPath -PathType Leaf) {
+    try {
+        $managedManifest = Get-Content -LiteralPath $managedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($managedManifest.scope -ne "managed_package_payloads") {
+            [void]$failures.Add("managed_manifest_scope_invalid:$($managedManifest.scope)")
+        }
+        $managedPaths = @($managedManifest.files | ForEach-Object { ([string]$_.path).Replace('\', '/') })
+        foreach ($requiredManagedPath in @("bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js")) {
+            if ($managedPaths -notcontains $requiredManagedPath) {
+                [void]$failures.Add("managed_manifest_missing:$requiredManagedPath")
+            }
+        }
+        foreach ($requiredPrefix in @("migrations/", "prompts/", "scripts/")) {
+            if (@($managedPaths | Where-Object { $_.StartsWith($requiredPrefix, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+                [void]$failures.Add("managed_manifest_missing_prefix:$requiredPrefix")
+            }
+        }
+        foreach ($managedPath in $managedPaths) {
+            if ($managedPath -match '^(?i)(\.runtime|\.runtime-cache|\.updates)/' -or $managedPath -in @(".env.full.local", ".env.full.local.protected")) {
+                [void]$failures.Add("managed_manifest_contains_user_data:$managedPath")
+            }
+        }
+    } catch {
+        [void]$failures.Add("managed_manifest_invalid:$($_.Exception.Message)")
+    }
+}
+
+$launcherScriptPath = Join-Path $packRoot "scripts\start-full-windows.ps1"
+if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
+    $launcherScriptText = Get-Content -LiteralPath $launcherScriptPath -Raw -Encoding UTF8
+    $unstampedVersionToken = "__ARCHIVE_CENTER_" + "PACKAGE_VERSION__"
+    if ($launcherScriptText.Contains($unstampedVersionToken)) {
+        [void]$failures.Add("launcher_package_version_not_stamped")
+    }
+    foreach ($marker in @("archive-center-updater.exe", "apply-pending", "applied_pending_health", "Wait-BackendMainReady", "/version", "statePreviousMarker", "Using preserved updater recovery runner", 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "status"', 'safety.Status -in @("no_state", "rolled_back", "nothing_to_rollback")', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "commit"', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback"', 'Warning: Archive Center updater is not installed. No pending state exists, so normal startup will continue.')) {
+        if (-not $launcherScriptText.Contains($marker)) {
+            [void]$failures.Add("launcher_update_marker_missing:$marker")
+        }
+    }
+    if ($launcherScriptText.Contains("archive-center-go.new.exe")) {
+        [void]$failures.Add("launcher_legacy_partial_update_path_present")
+    }
+    if ($launcherScriptText -notmatch '(?s)if \(\$pendingApplyStatus -eq "applied_pending_health"\).*?\}\s*else\s*\{\s*& \$backendExe\s*\}') {
+        [void]$failures.Add("launcher_no_pending_direct_backend_path_missing")
     }
 }
 
