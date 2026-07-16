@@ -577,14 +577,24 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.0.0",
-		`const VERSION = "3.0.0";`,
+		"//@version 3.0.1",
+		`const VERSION = "3.0.1";`,
 		`const VERSION_STR = typeof VERSION !== "undefined" ? String(VERSION) : "unknown";`,
 		"source_version:    VERSION_STR",
+		`bridgeFetch("/update/check", {`,
+		"const body = {};",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing plugin version marker %q", needle)
+		}
+	}
+	for _, staleClientVersion := range []string{
+		`params.set("current_version", VERSION)`,
+		`const body = { current_version: VERSION }`,
+	} {
+		if strings.Contains(src, staleClientVersion) {
+			t.Fatalf("Archive Center.js must not override backend update version with %q", staleClientVersion)
 		}
 	}
 }
