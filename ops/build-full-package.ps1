@@ -2,7 +2,7 @@ param(
     [string]$OutputRoot,
     [string]$PackageName = "",
     [string]$PackageKind = "full",
-    [string]$PackageVersion = "3.0.0",
+    [string]$PackageVersion = "3.0.2",
     [string]$ChromaRuntime = "",
     [string]$CodeSigningCertThumbprint = "",
     [string]$TimestampServer = "http://timestamp.digicert.com",
@@ -134,7 +134,7 @@ function Set-CopiedPackageKindText([string]$Path, [string]$PackageKind, [string]
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return
     }
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.0" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.2" } else { $PackageVersion.Trim() }
     $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
     $text = $text.Replace("Archive Center 2.1 Windows Full Package", "Archive Center $version Windows Package")
     $text = $text.Replace("Starting Archive Center 2.1 full package", "Starting Archive Center $version package")
@@ -143,7 +143,7 @@ function Set-CopiedPackageKindText([string]$Path, [string]$PackageKind, [string]
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.0" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.2" } else { $PackageVersion.Trim() }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $patterns = @("*.md", "*.txt", "*.bat", "*.cmd", "*.ps1", "*.sh", "*.command")
     foreach ($pattern in $patterns) {

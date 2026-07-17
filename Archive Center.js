@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 3.0.1
+//@display-name Archive Center 3.0.2
 //@author memory-scaffold
 //@api 3.0
-//@version 3.0.1
+//@version 3.0.2
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,7 +37,7 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "3.0.1";
+  const VERSION = "3.0.2";
   const BUILD_ID = "3.0-next-start-updater.20260716-1";
   const BUILD_CHANNEL = "3.0-dev";
   const BUILD_TIME = "2026-07-14 KST";
