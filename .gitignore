@@ -34,6 +34,10 @@ __pycache__/
 # Logs and temp
 *.log
 *.tmp
+.tmp-*/
+.vt-scan-*/
+_codex_recovery/
+_security-audit/
 temp/
 tmp/
 _tmp/
@@ -72,6 +76,12 @@ _2.3_build_paths.json
 _rc7_build_paths.json
 Archive Center.js.codex-backup-*
 Risu Output Quality Layer 2.5.js
+Risu Recomposer*.js
+AGENTS.md
+.github/copilot-instructions.md
+prompts/*복사본*.txt
+docs/**/_ui_slice_*.txt
+home.webp
 *.bak
 *.backup
 

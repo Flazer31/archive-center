@@ -107,7 +107,7 @@ For release gates, prefer an absolute root path to avoid shell/cwd ambiguity:
 
 ```powershell
 cd "Archive Center 2.0\go-service"
-go run -buildvcs=false ./cmd/artifact-scan/main.go -root "M:\risulongmemory\Archive Center 2.0"
+go run -buildvcs=false ./cmd/artifact-scan/main.go -root "<archive-center-source-root>"
 ```
 
 The tool:

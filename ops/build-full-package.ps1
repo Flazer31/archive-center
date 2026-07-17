@@ -413,7 +413,8 @@ try {
 Copy-File "Archive Center.js" "Archive Center.js"
 Copy-File ".env.example" ".env.source.example"
 Copy-Directory "migrations" "migrations"
-Copy-Directory "prompts" "prompts"
+Copy-File "prompts/critic_system.txt" "prompts/critic_system.txt"
+Copy-File "prompts/supervisor_system.txt" "prompts/supervisor_system.txt"
 
 Copy-File "ops/full-package/README_FULL_PACKAGE.md" "README.md"
 Copy-File "ops/full-package/README_FULL_PACKAGE.md" "README_FULL_PACKAGE.md"

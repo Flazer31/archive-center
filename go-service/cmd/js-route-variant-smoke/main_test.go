@@ -146,9 +146,6 @@ func archiveCenterRoot(t *testing.T) string {
 	if root := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_ROOT")); root != "" {
 		candidates = append([]string{filepath.Join(root, "Archive Center.js")}, candidates...)
 	}
-	if runtime.GOOS == "windows" {
-		candidates = append(candidates, filepath.Join(`M:\risulongmemory`, "Archive Center 2.0", "Archive Center.js"))
-	}
 	if _, file, _, ok := runtime.Caller(0); ok {
 		candidates = append(candidates, filepath.Join(filepath.Dir(file), "..", "..", "..", "Archive Center.js"))
 	}

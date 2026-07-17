@@ -42,7 +42,7 @@ The `tools/extract_openapi_contract.py` script produces a **summary**, not a ful
 PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --format markdown
 ```
 
-Default source root is `M:\risulongmemory\Archive Center Beta 0.8(fix)`. Override with `--source-root`.
+Pass the legacy backend checkout explicitly with `--source-root <legacy-source-root>`.
 
 The tool:
 - Sets dummy API key env vars in-process only.

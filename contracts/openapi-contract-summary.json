@@ -1743,7 +1743,7 @@
   "openapi_warnings": [
     {
       "category": "UserWarning",
-      "message": "Duplicate Operation ID get_retrieval_index_runtime_config_retrieval_index_runtime_config_get for function get_retrieval_index_runtime_config at M:\\risulongmemory\\Archive Center Beta 0.8(fix)\\backend\\main.py"
+      "message": "Duplicate Operation ID get_retrieval_index_runtime_config_retrieval_index_runtime_config_get for function get_retrieval_index_runtime_config at <legacy-source-root>\\backend\\main.py"
     }
   ]
 }

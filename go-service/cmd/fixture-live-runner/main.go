@@ -20,9 +20,9 @@ const defaultFixtureExportDirName = "sqlite-export-r1-52-2026-05-26-a"
 var (
 	pythonPort   = flag.Int("python-port", 18093, "Python backend port")
 	goPort       = flag.Int("go-port", 28293, "Go backend port")
-	srcDir       = flag.String("src-dir", `M:\risulongmemory\Archive Center Beta 0.8(fix)`, "Python 0.8 source directory")
-	goServiceDir = flag.String("go-service-dir", `M:\risulongmemory\Archive Center 2.0\go-service`, "Go service directory")
-	benchmarkDir = flag.String("benchmark-dir", `M:\risulongmemory\Archive Center 2.0\benchmarks`, "Benchmark output directory")
+	srcDir       = flag.String("src-dir", "", "Python 0.8 source directory (required)")
+	goServiceDir = flag.String("go-service-dir", ".", "Go service directory")
+	benchmarkDir = flag.String("benchmark-dir", "benchmarks", "Benchmark output directory")
 	fixtureDir   = flag.String("fixture-dir", "", "Go fixture NDJSON export directory; defaults to benchmarks/sqlite-export-r1-52-2026-05-26-a")
 	r1Tag        = flag.String("r1-tag", "r1-77-fixture-live", "Report R1 tag")
 	maxDiffs     = flag.Int("max-diffs", 80, "Max diffs for shadow-value-report")
@@ -60,6 +60,9 @@ func main() {
 
 func run() error {
 	ctx := context.Background()
+	if strings.TrimSpace(*srcDir) == "" {
+		return fmt.Errorf("--src-dir is required")
+	}
 
 	tempDir, err := os.MkdirTemp("", "fixture-live-runner-0.8-*")
 	if err != nil {

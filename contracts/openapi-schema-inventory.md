@@ -454,4 +454,4 @@
 | POST | `/prepare-turn` | prepare_turn_prepare_turn_post | #/components/schemas/PrepareTurnRequest | #/components/schemas/HTTPValidationError |
 
 ## OpenAPI Warnings (1)
-- **UserWarning**: Duplicate Operation ID get_retrieval_index_runtime_config_retrieval_index_runtime_config_get for function get_retrieval_index_runtime_config at M:\risulongmemory\Archive Center Beta 0.8(fix)\backend\main.py
+- **UserWarning**: Duplicate Operation ID get_retrieval_index_runtime_config_retrieval_index_runtime_config_get for function get_retrieval_index_runtime_config at `<legacy-source-root>\backend\main.py`

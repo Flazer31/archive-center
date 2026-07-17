@@ -323,18 +323,6 @@ foreach ($target in $targets) {
     Build-GoBinary $goServiceRoot $target.Goos $target.Goarch "./cmd/archive-center-go" (Join-Path $targetRoot "bin\archive-center-go")
     Build-GoBinary $goServiceRoot $target.Goos $target.Goarch "./cmd/archive-center-updater" (Join-Path $targetRoot "bin\archive-center-updater")
     Build-GoBinary $goServiceRoot $target.Goos $target.Goarch "./cmd/mariadb-schema" (Join-Path $targetRoot "bin\mariadb-schema")
-    $migrationTools = @(
-        "sqlite-export",
-        "dry-run-validator",
-        "compare-dry-run",
-        "mariadb-dry-run-import",
-        "mariadb-import",
-        "legacy10-migrate"
-    )
-    foreach ($tool in $migrationTools) {
-        Build-GoBinary $goServiceRoot $target.Goos $target.Goarch "./cmd/$tool" (Join-Path $targetRoot "bin\$tool")
-    }
-
     Copy-File (Join-Path $repoRoot "Archive Center.js") (Join-Path $targetRoot "Archive Center.js")
     Copy-File (Join-Path $repoRoot "LICENSE") (Join-Path $targetRoot "LICENSE")
     Copy-File (Join-Path $repoRoot "NOTICE") (Join-Path $targetRoot "NOTICE")
@@ -347,7 +335,8 @@ foreach ($target in $targets) {
     Copy-File (Join-Path $repoRoot "ops\full-package\.env.full.example") (Join-Path $targetRoot ".env.full.example")
     Set-RuntimeDefaultsInEnvExample (Join-Path $targetRoot ".env.full.example") $target.RuntimeProfileDefault $target.VectorModeDefault
     Copy-DirectoryContents (Join-Path $repoRoot "migrations") (Join-Path $targetRoot "migrations")
-    Copy-DirectoryContents (Join-Path $repoRoot "prompts") (Join-Path $targetRoot "prompts")
+    Copy-File (Join-Path $repoRoot "prompts\critic_system.txt") (Join-Path $targetRoot "prompts\critic_system.txt")
+    Copy-File (Join-Path $repoRoot "prompts\supervisor_system.txt") (Join-Path $targetRoot "prompts\supervisor_system.txt")
     Copy-DirectoryContents (Join-Path $repoRoot "ops\full-package-posix") (Join-Path $targetRoot "scripts")
     Get-ChildItem -LiteralPath (Join-Path $targetRoot "scripts") -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -like "README_POSIX_*PACKAGE.md" -or $_.Name -like "00_README_FIRST_POSIX*.md" } |
@@ -405,12 +394,6 @@ foreach ($target in $targets) {
             "bin/archive-center-go",
             "bin/archive-center-updater",
             "bin/mariadb-schema",
-            "bin/legacy10-migrate",
-            "bin/sqlite-export",
-            "bin/dry-run-validator",
-            "bin/compare-dry-run",
-            "bin/mariadb-dry-run-import",
-            "bin/mariadb-import",
             "Archive Center.js",
             "LICENSE",
             "NOTICE",

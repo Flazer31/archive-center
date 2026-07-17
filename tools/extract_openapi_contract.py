@@ -6,10 +6,10 @@ report of routes, schemas, and operation counts. It is safe to run against
 the current runtime because it does not send traffic or mutate state.
 
 Usage:
-    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py
-    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --format markdown
-    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --format json --out openapi.json
-    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --schema-out schema-freeze.json --inventory-out inventory.md
+    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --source-root <legacy-source-root>
+    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --source-root <legacy-source-root> --format markdown
+    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --source-root <legacy-source-root> --format json --out openapi.json
+    PYTHONDONTWRITEBYTECODE=1 python tools/extract_openapi_contract.py --source-root <legacy-source-root> --schema-out schema-freeze.json --inventory-out inventory.md
 """
 
 import argparse
@@ -34,9 +34,6 @@ _DUMMY_API_KEYS = [
 
 # Environment variable that must NOT be set because it triggers .env mutation.
 _RECOVERY_ENV_KEY = "RISUAI_ALLOW_ENCRYPTED_KEY_RECOVERY"
-
-_DEFAULT_SOURCE_ROOT = r"M:\risulongmemory\Archive Center Beta 0.8(fix)"
-
 
 def _normalize_message(msg: str) -> str:
     """Collapse whitespace and newlines into a single line."""
@@ -463,7 +460,7 @@ def main():
     )
     parser.add_argument(
         "--source-root",
-        default=_DEFAULT_SOURCE_ROOT,
+        required=True,
         help="Path to the Archive Center Beta 0.8(fix) directory containing the backend package.",
     )
     parser.add_argument(
