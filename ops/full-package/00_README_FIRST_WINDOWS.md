@@ -1,45 +1,45 @@
-# Archive Center 2.1 Windows - 먼저 읽기
+# Archive Center Windows 시작 안내
 
-이 패키지는 Windows용 풀패키지입니다.
-
-MariaDB, ChromaDB, Go 백엔드, Archive Center.js, migrations, prompts가 함께 들어 있습니다.
-일반 사용자는 MariaDB나 ChromaDB를 따로 설치하지 않아도 됩니다.
+이 패키지에는 Go 백엔드, ChromaDB/Python 런타임, `Archive Center.js`,
+migrations, prompts가 들어 있습니다. MariaDB 실행 파일은 Archive Center
+패키지에 포함하지 않습니다.
 
 ## 처음 실행
 
-1. `01_start_archive_center_windows.bat`를 더블클릭하세요.
-2. 검은 콘솔 창이 열린 상태로 유지되면 서버가 실행 중인 것입니다.
-3. RisuAI에 이 폴더의 `Archive Center.js`를 플러그인으로 등록하세요.
-4. 같은 PC에서는 Bridge URL 기본값 `http://127.0.0.1:28080`을 사용하세요.
-5. 다른 PC/모바일에서는 `localhost`가 아니라 브라우저가 접근 가능한 서버 PC의 IP 또는 도메인을 Bridge URL에 넣으세요.
+1. `01_start_archive_center_windows.bat`를 더블클릭합니다.
+2. MariaDB가 없으면 공식 MariaDB 11.4.10 ZIP을 직접 다운로드합니다.
+3. SHA-256 검증에 성공한 파일만
+   `%LOCALAPPDATA%\ArchiveCenter\runtime\MariaDB`에 설치합니다.
+4. MariaDB 설치에는 관리자 권한이나 Windows 서비스 등록이 필요하지 않습니다.
+5. 검은 콘솔 창을 열어 둔 상태로 사용합니다.
+6. RisuAI에 이 폴더의 `Archive Center.js`를 플러그인으로 등록합니다.
 
-## 정상 동작 확인
+같은 PC에서는 Bridge URL로 `http://127.0.0.1:28080`을 사용합니다. 다른
+PC나 모바일에서는 서버 PC의 LAN IP, Tailscale 주소 또는 HTTPS 프록시
+주소를 사용합니다.
 
-서버가 켜진 상태에서 `02_smoke_test_windows.bat`를 더블클릭하면 기본 동작 검사를 실행합니다.
+## 기존 사용자 데이터
 
-## env 보호
+Archive Center의 `.runtime` 데이터 폴더는 그대로 사용합니다. 이번 변경은
+MariaDB 실행 파일의 배포 위치만 분리하며 기존 MariaDB 데이터나 Archive
+Center DB를 이동하거나 초기화하지 않습니다.
 
-`.env.full.local`에 API 키를 넣었다면 `04_protect_env_windows.bat`를 더블클릭하세요.
-이 파일은 `.env.full.local`을 Windows 현재 사용자 계정 전용 DPAPI 암호화 파일인 `.env.full.local.protected`로 바꾸고, 평문 `.env.full.local`을 제거합니다.
+## 선택 설정
 
-설정을 다시 수정해야 할 때만 `05_unprotect_env_windows.bat`로 임시 복호화한 뒤, 수정 후 다시 `04_protect_env_windows.bat`를 실행하세요.
-
-## 다른 PC에서 접속할 때
-
-`01_start_archive_center_windows.bat` 하나로 같은 PC와 다른 PC/모바일 접속을 모두 처리합니다.
-Go backend는 `0.0.0.0:28080`으로 열리므로 원격 브라우저도 접근할 수 있습니다.
-
-원격 RisuAI의 Archive Center Bridge URL 예:
+이미 별도로 설치한 MariaDB ZIP 런타임을 사용하려면 `.env.full.local`에
+다음을 지정할 수 있습니다.
 
 ```text
-http://서버_PC_IP_또는_도메인:28080
+AC_MARIADB_RUNTIME_DIR=C:\path\to\MariaDB
 ```
 
-서버 주소는 같은 공유기/LAN IP, 직접 연결 IP, VPN/Tailscale IP, 포트포워딩된 공인 IP, 도메인 중 브라우저에서 실제로 접근 가능한 값을 사용하세요.
-RisuAI 페이지가 HTTPS라면 브라우저가 HTTP 요청을 막을 수 있습니다. 그 경우에는 Tailscale Serve나 프록시로 28080을 HTTPS URL에 연결한 뒤 그 HTTPS 주소를 Bridge URL로 사용하세요.
+해당 폴더에는 `mariadbd.exe`, `mariadb-install-db.exe`, `mariadb.exe`,
+`mariadb-admin.exe`가 있어야 합니다.
 
 ## 주의
 
-- `.runtime` 폴더는 사용자 PC에 생성되는 로컬 DB/런타임 데이터입니다.
-- 배포 zip에는 사용자 DB, ChromaDB persist data, API 키가 들어 있으면 안 됩니다.
-- `.env.full.local.protected`는 같은 Windows 사용자 계정에서만 복호화됩니다. 다른 PC나 다른 계정으로 복사하면 그대로 사용할 수 없습니다.
+- 배포 ZIP에 MariaDB 실행 파일, 사용자 DB, ChromaDB persist data, API 키를
+  넣지 마세요.
+- 최초 MariaDB 설치 시 인터넷 연결이 필요합니다.
+- 다운로드 파일의 SHA-256이 다르면 설치를 중단합니다.
+- `.env.full.local.protected`는 같은 Windows 사용자 계정에서만 복호화됩니다.

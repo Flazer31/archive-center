@@ -3,7 +3,6 @@ param(
     [string]$PackageName = "",
     [string]$PackageKind = "full",
     [string]$PackageVersion = "3.0.0",
-    [string]$MariaDBRuntime = "",
     [string]$ChromaRuntime = "",
     [string]$CodeSigningCertThumbprint = "",
     [string]$TimestampServer = "http://timestamp.digicert.com",
@@ -69,17 +68,6 @@ function Copy-RuntimePayload([string]$Source, [string]$DestRelative) {
         Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
     }
     return $true
-}
-
-function Find-MariaDBProvider([string]$Root) {
-    $hits = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ieq "mariadbd.exe" -or $_.Name -ieq "mysqld.exe" } |
-        Sort-Object FullName |
-        Select-Object -First 1
-    if ($null -eq $hits) {
-        return ""
-    }
-    return $hits.FullName
 }
 
 function Find-ChromaRuntime([string]$Root) {
@@ -341,7 +329,7 @@ $runtimeProfileDefault = "full_local"
 $vectorModeDefault = "bundled"
 $packageProfile = "windows_full_local"
 $vectorEngine = "chromadb"
-$requiredRuntimePayloads = @("mariadb", "chromadb")
+$requiredRuntimePayloads = @("chromadb")
 
 $outputRootFull = Resolve-FullPath $OutputRoot
 $targetFull = Resolve-FullPath (Join-Path $outputRootFull $PackageName)
@@ -424,23 +412,20 @@ Copy-File "ops/full-package/06_migrate_1_0_to_2_0_windows.bat" "06_migrate_1_0_t
 Copy-File "ops/full-package/.env.full.example" ".env.full.example"
 Copy-Directory "ops/full-package/scripts" "scripts"
 Copy-File "ops/install-windows.ps1" "tools/install-windows.ps1"
+Copy-File "NOTICE" "NOTICE"
+Copy-File "THIRD_PARTY_NOTICES.md" "THIRD_PARTY_NOTICES.md"
 Set-RuntimeDefaultsInEnvExample (Join-Path $targetFull ".env.full.example") $runtimeProfileDefault $vectorModeDefault $PackageVersion
 Set-CopiedPackageKindText (Join-Path $targetFull "01_start_archive_center_windows.bat") $PackageKind $PackageVersion
 Set-CopiedPackageKindText (Join-Path $targetFull "scripts\start-full-windows.ps1") $PackageKind $PackageVersion
 Set-CopiedPackageVersionText $targetFull $PackageVersion
 
-$mariadbCopied = Copy-RuntimePayload $MariaDBRuntime "runtime\MariaDB"
 $chromaCopied = Copy-RuntimePayload $ChromaRuntime "runtime\ChromaDB"
 
 $runtimeRoot = Join-Path $targetFull "runtime"
-$mariadbProvider = Find-MariaDBProvider $runtimeRoot
 $chromaRuntimeFound = Find-ChromaRuntime $runtimeRoot
 $codeSigning = Set-OwnPayloadSignatures $targetFull $CodeSigningCertThumbprint $TimestampServer
 $trustEvidence = Write-PackageTrustEvidence $targetFull
 $missing = @()
-if ([string]::IsNullOrWhiteSpace($mariadbProvider)) {
-    $missing += "mariadb_runtime"
-}
 if ([string]::IsNullOrWhiteSpace($chromaRuntimeFound)) {
     $missing += "chromadb_runtime"
 }
@@ -484,6 +469,7 @@ $manifest = [ordered]@{
     canonical_store = "mariadb"
     vector_engine = $vectorEngine
     includes_runtime_binaries = $releaseReady
+    mariadb_distribution = "separate_official_runtime_install"
     runtime_profile_default = $runtimeProfileDefault
     vector_mode_default = $vectorModeDefault
     go_toolchain = $goVersionText
@@ -491,9 +477,9 @@ $manifest = [ordered]@{
     chromadb_api_path = "/api/v2"
     required_runtime_payloads = $requiredRuntimePayloads
     runtime_payloads = [ordered]@{
-        mariadb_copied_from = $MariaDBRuntime
-        mariadb_payload_copied = [bool]$mariadbCopied
-        mariadb_provider_path = $mariadbProvider
+        mariadb_payload_copied = $false
+        mariadb_install_tool = "tools/install-windows.ps1"
+        mariadb_external_runtime_root = "%LOCALAPPDATA%\ArchiveCenter\runtime\MariaDB"
         chromadb_copied_from = $ChromaRuntime
         chromadb_payload_copied = [bool]$chromaCopied
         chromadb_runtime_path = $chromaRuntimeFound
@@ -516,6 +502,8 @@ $manifest = [ordered]@{
         "bin/mariadb-dry-run-import.exe",
         "bin/mariadb-import.exe",
         "Archive Center.js",
+        "NOTICE",
+        "THIRD_PARTY_NOTICES.md",
         "WINDOWS_TRUST_AND_DEFENDER.md",
         "PACKAGE_FILE_MANIFEST.json",
         "SHA256SUMS.txt",
@@ -537,6 +525,7 @@ $manifest = [ordered]@{
         "go-service source",
         "test binaries",
         "database files",
+        "MariaDB runtime binaries",
         "ChromaDB persist data",
         "backup/release/deploy outputs"
     )

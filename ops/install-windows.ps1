@@ -1,12 +1,16 @@
 ﻿param(
     [switch]$Preflight,
+    [switch]$InstallMariaDBRuntime,
     [switch]$StageMariaDBProvider,
     [switch]$VerifyBundle,
     [string]$Out = "",
     [string]$DataDir = "",
     [string]$InstallDir = "",
     [string]$ProviderArchive = "",
-    [string]$BundlePath = ""
+    [string]$BundlePath = "",
+    [string]$MariaDBVersion = "11.4.10",
+    [string]$MariaDBDownloadUrl = "https://dlm.mariadb.com/4566977/MariaDB/mariadb-11.4.10/winx64-packages/mariadb-11.4.10-winx64.zip",
+    [string]$MariaDBSha256 = "fb7c76f0804321ee373daa49145f2056d2d88f321b614130adeb05a1644ea003"
 )
 
 Set-StrictMode -Version 3.0
@@ -292,39 +296,49 @@ function Invoke-Preflight {
     }
     $goToolAvailable = [bool](Get-Command go -ErrorAction SilentlyContinue)
 
-    $bundledProvider = Find-ExtractedMariaDBProvider $effectiveInstallDir
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        $localAppData = $env:LOCALAPPDATA
+    }
+    $defaultMariaDBInstallRoot = Join-Path $localAppData "ArchiveCenter"
+    $mariaDBSearchRoot = if (-not [string]::IsNullOrWhiteSpace($env:AC_MARIADB_RUNTIME_DIR)) {
+        Resolve-ExistingPathOrRaw $env:AC_MARIADB_RUNTIME_DIR
+    } else {
+        $defaultMariaDBInstallRoot
+    }
+    $separateProvider = Find-ExtractedMariaDBProvider $mariaDBSearchRoot
     $bundleEmbeddedArchive = Find-BundledProviderArchive $effectiveInstallDir
     $providerArchivePresent = -not [string]::IsNullOrWhiteSpace($ProviderArchive) -and (Test-Path -LiteralPath $ProviderArchive -PathType Leaf)
     if (-not $providerArchivePresent -and -not [string]::IsNullOrWhiteSpace($bundleEmbeddedArchive)) {
         $providerArchivePresent = $true
     }
     $systemProvider = Find-CommandPath @("mariadbd.exe", "mysqld.exe", "mariadbd", "mysqld")
-    $providerMode = "installer_bundle_required"
+    $providerMode = "official_download_required"
     $providerPath = ""
     $installerManagedRequired = $true
-    $requiredAction = "installer must stage a bundled MariaDB runtime under runtime/MariaDB; normal users must not install MariaDB manually"
+    $requiredAction = "installer downloads the verified official MariaDB runtime into the per-user ArchiveCenter runtime directory"
 
-    if (-not [string]::IsNullOrWhiteSpace($bundledProvider)) {
-        $providerMode = "bundled_runtime"
-        $providerPath = $bundledProvider
+    if (-not [string]::IsNullOrWhiteSpace($separateProvider)) {
+        $providerMode = "separate_runtime"
+        $providerPath = $separateProvider
         $installerManagedRequired = $false
-        $requiredAction = "use bundled MariaDB provider"
+        $requiredAction = "use the installed separate MariaDB runtime"
     } elseif (-not [string]::IsNullOrWhiteSpace($bundleEmbeddedArchive)) {
-        $providerMode = "bundle_embedded"
+        $providerMode = "legacy_embedded_archive"
         $providerPath = $bundleEmbeddedArchive
-        $requiredAction = "auto-stage embedded MariaDB provider on first run"
+        $requiredAction = "migrate the legacy embedded archive to the separate runtime directory"
         $installerManagedRequired = $false
     } elseif (-not [string]::IsNullOrWhiteSpace($systemProvider)) {
         $providerMode = "system_command"
         $providerPath = $systemProvider
         $installerManagedRequired = $false
-        $requiredAction = "use detected MariaDB server command for validation; packaged normal path should still prefer bundled runtime"
+        $requiredAction = "use the detected system MariaDB provider"
     } elseif ($providerArchivePresent) {
         $providerMode = "installer_bundle_available"
         $providerPath = Resolve-ExistingPathOrRaw $ProviderArchive
         $requiredAction = "run -StageMariaDBProvider with this archive into a non-source install directory"
     } else {
-        Add-ListItem $warnings "mariadb_provider_bundle_required"
+        Add-ListItem $warnings "mariadb_separate_runtime_install_required"
     }
 
     $chromaRuntime = Find-ChromaDBRuntime $effectiveInstallDir
@@ -342,7 +356,7 @@ function Invoke-Preflight {
     } elseif ($installerManagedRequired -or -not $goBinaryPresent -or -not $chromaRuntimePresent) {
         $supportLevel = "yellow"
         $preflightStatus = "degraded"
-        $fallbackProfile = "windows_full_package_runtime_required"
+        $fallbackProfile = "windows_separate_runtime_install_required"
     }
 
     return [ordered]@{
@@ -438,6 +452,75 @@ function Invoke-StageMariaDBProvider {
     }
 }
 
+function Invoke-InstallMariaDBRuntime {
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..")).Path
+    $effectiveInstallDir = $InstallDir
+    if ([string]::IsNullOrWhiteSpace($effectiveInstallDir)) {
+        $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+        if ([string]::IsNullOrWhiteSpace($localAppData)) {
+            $localAppData = Join-Path $env:USERPROFILE "AppData\Local"
+        }
+        $effectiveInstallDir = Join-Path $localAppData "ArchiveCenter"
+    }
+    $effectiveInstallDir = Resolve-ExistingPathOrRaw $effectiveInstallDir
+    if (Test-PathInside $effectiveInstallDir $repoRoot) {
+        throw "Refusing to install the separate MariaDB runtime inside the Archive Center package or source tree."
+    }
+
+    $existing = Find-ExtractedMariaDBProvider $effectiveInstallDir
+    if (-not [string]::IsNullOrWhiteSpace($existing)) {
+        return [ordered]@{
+            schema_version = "archive-center.mariadb-runtime-install.v1"
+            status = "already_installed"
+            version = $MariaDBVersion
+            install_dir = $effectiveInstallDir
+            provider_path = $existing
+            downloaded_by_archive_center = $false
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($MariaDBDownloadUrl) -or [string]::IsNullOrWhiteSpace($MariaDBSha256)) {
+        throw "MariaDB download URL and SHA-256 are required."
+    }
+
+    $runtimeRoot = Join-Path $effectiveInstallDir "runtime\MariaDB"
+    $versionRoot = Join-Path $runtimeRoot $MariaDBVersion
+    New-Item -ItemType Directory -Force -Path $versionRoot | Out-Null
+    $archivePath = Join-Path ([System.IO.Path]::GetTempPath()) ("archive-center-mariadb-$MariaDBVersion-$PID.zip")
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "Downloading MariaDB $MariaDBVersion from the official MariaDB distribution service."
+        Invoke-WebRequest -UseBasicParsing -Uri $MariaDBDownloadUrl -OutFile $archivePath
+        $actualSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedSha256 = $MariaDBSha256.Trim().ToLowerInvariant()
+        if ($actualSha256 -ne $expectedSha256) {
+            throw "MariaDB archive SHA-256 mismatch. Expected $expectedSha256, got $actualSha256."
+        }
+        Expand-Archive -LiteralPath $archivePath -DestinationPath $versionRoot -Force
+        $provider = Find-ExtractedMariaDBProvider $effectiveInstallDir
+        if ([string]::IsNullOrWhiteSpace($provider)) {
+            throw "MariaDB archive was verified and extracted, but mariadbd.exe/mysqld.exe was not found."
+        }
+        return [ordered]@{
+            schema_version = "archive-center.mariadb-runtime-install.v1"
+            status = "installed"
+            version = $MariaDBVersion
+            install_dir = $effectiveInstallDir
+            runtime_root = $runtimeRoot
+            provider_path = $provider
+            source_url = $MariaDBDownloadUrl
+            sha256 = $actualSha256
+            downloaded_by_archive_center = $true
+            package_bundled = $false
+        }
+    } finally {
+        if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
+            Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-VerifyBundle {
     if ([string]::IsNullOrWhiteSpace($BundlePath)) {
         throw "BundlePath is required for -VerifyBundle"
@@ -463,8 +546,8 @@ function Invoke-VerifyBundle {
         if ([string]::IsNullOrWhiteSpace($goBinary)) {
             Add-ListItem $failures "go_backend_binary_missing"
         }
-        if ([string]::IsNullOrWhiteSpace($mariadbProvider)) {
-            Add-ListItem $failures "mariadb_bundled_provider_missing"
+        if (-not [string]::IsNullOrWhiteSpace($mariadbProvider)) {
+            Add-ListItem $failures "mariadb_runtime_must_not_be_bundled"
         }
         if ([string]::IsNullOrWhiteSpace($chromaRuntime)) {
             Add-ListItem $failures "chromadb_runtime_missing"
@@ -488,6 +571,7 @@ function Invoke-VerifyBundle {
             bundle_path = $bundleFull
             single_file_bundle = $true
             extracted_to_temp = $true
+            mariadb_distribution = "separate_official_runtime_install"
             normal_user_manual_mariadb_required = $false
             normal_user_manual_chromadb_required = $false
             authority_switch = $false
@@ -495,8 +579,8 @@ function Invoke-VerifyBundle {
             components = [ordered]@{
                 go_backend_binary_present = -not [string]::IsNullOrWhiteSpace($goBinary)
                 go_backend_binary_path = $goBinary
-                mariadb_provider_present = -not [string]::IsNullOrWhiteSpace($mariadbProvider)
-                mariadb_provider_path = $mariadbProvider
+                mariadb_provider_present = $false
+                mariadb_provider_path = ""
                 chromadb_runtime_present = -not [string]::IsNullOrWhiteSpace($chromaRuntime)
                 chromadb_runtime_path = $chromaRuntime
             }
@@ -510,8 +594,8 @@ function Invoke-VerifyBundle {
     }
 }
 
-if (-not $Preflight -and -not $StageMariaDBProvider -and -not $VerifyBundle) {
-    throw "Use -Preflight, -StageMariaDBProvider, or -VerifyBundle"
+if (-not $Preflight -and -not $InstallMariaDBRuntime -and -not $StageMariaDBProvider -and -not $VerifyBundle) {
+    throw "Use -Preflight, -InstallMariaDBRuntime, -StageMariaDBProvider, or -VerifyBundle"
 }
 
 if ($Preflight) {
@@ -521,6 +605,11 @@ if ($Preflight) {
 
 if ($VerifyBundle) {
     Write-JsonReport (Invoke-VerifyBundle) $Out
+    exit 0
+}
+
+if ($InstallMariaDBRuntime) {
+    Write-JsonReport (Invoke-InstallMariaDBRuntime) $Out
     exit 0
 }
 

@@ -519,14 +519,41 @@ if ($env:AC_RUNTIME_PROFILE -eq "client_only") {
 }
 Normalize-ProcessPathForStartProcess
 
-$runtimeRoot = Join-Path $packRoot "runtime"
-$mariadbd = Find-MariaDBTool $runtimeRoot @("mariadbd.exe", "mysqld.exe")
-$installDb = Find-MariaDBTool $runtimeRoot @("mariadb-install-db.exe", "mysql_install_db.exe")
-$client = Find-MariaDBTool $runtimeRoot @("mariadb.exe", "mysql.exe")
-$admin = Find-MariaDBTool $runtimeRoot @("mariadb-admin.exe", "mysqladmin.exe")
+$localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+if ([string]::IsNullOrWhiteSpace($localAppData)) {
+    $localAppData = Join-Path $env:USERPROFILE "AppData\Local"
+}
+$mariaInstallRoot = Join-Path $localAppData "ArchiveCenter"
+$mariaRuntimeRoot = Join-Path $mariaInstallRoot "runtime\MariaDB"
+if (-not [string]::IsNullOrWhiteSpace($env:AC_MARIADB_RUNTIME_DIR)) {
+    $mariaRuntimeRoot = [System.IO.Path]::GetFullPath($env:AC_MARIADB_RUNTIME_DIR)
+}
+
+$mariadbd = Find-MariaDBTool $mariaRuntimeRoot @("mariadbd.exe", "mysqld.exe")
+$installDb = Find-MariaDBTool $mariaRuntimeRoot @("mariadb-install-db.exe", "mysql_install_db.exe")
+$client = Find-MariaDBTool $mariaRuntimeRoot @("mariadb.exe", "mysql.exe")
+$admin = Find-MariaDBTool $mariaRuntimeRoot @("mariadb-admin.exe", "mysqladmin.exe")
+if (@($mariadbd, $installDb, $client, $admin) | Where-Object { [string]::IsNullOrWhiteSpace($_) }) {
+    if (-not [string]::IsNullOrWhiteSpace($env:AC_MARIADB_RUNTIME_DIR)) {
+        throw "AC_MARIADB_RUNTIME_DIR does not contain a complete MariaDB runtime: $mariaRuntimeRoot"
+    }
+    $runtimeInstaller = Join-Path $packRoot "tools\install-windows.ps1"
+    if (-not (Test-Path -LiteralPath $runtimeInstaller -PathType Leaf)) {
+        throw "Separate MariaDB runtime is missing and the installer was not found: $runtimeInstaller"
+    }
+    Write-Host "MariaDB is not bundled with Archive Center. Installing the verified official runtime for this user."
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller -InstallMariaDBRuntime -InstallDir $mariaInstallRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Separate MariaDB runtime installation failed. Check the download connection and retry."
+    }
+    $mariadbd = Find-MariaDBTool $mariaRuntimeRoot @("mariadbd.exe", "mysqld.exe")
+    $installDb = Find-MariaDBTool $mariaRuntimeRoot @("mariadb-install-db.exe", "mysql_install_db.exe")
+    $client = Find-MariaDBTool $mariaRuntimeRoot @("mariadb.exe", "mysql.exe")
+    $admin = Find-MariaDBTool $mariaRuntimeRoot @("mariadb-admin.exe", "mysqladmin.exe")
+}
 foreach ($tool in @($mariadbd, $installDb, $client, $admin)) {
     if ([string]::IsNullOrWhiteSpace($tool) -or -not (Test-Path -LiteralPath $tool -PathType Leaf)) {
-        throw "Bundled MariaDB runtime is incomplete."
+        throw "Separate MariaDB runtime is incomplete: $mariaRuntimeRoot"
     }
     Unblock-PackageFile $tool
 }

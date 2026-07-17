@@ -39,7 +39,7 @@ $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $failures = [System.Collections.Generic.List[string]]::new()
 $warnings = [System.Collections.Generic.List[string]]::new()
 
-foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "Archive Center.js", "migrations", "prompts", "scripts", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
+foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "Archive Center.js", "NOTICE", "THIRD_PARTY_NOTICES.md", "migrations", "prompts", "scripts", "tools\install-windows.ps1", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
     $path = Join-Path $packRoot $rel
     if (-not (Test-Path -LiteralPath $path)) {
         [void]$failures.Add("missing:$rel")
@@ -89,14 +89,35 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     if ($launcherScriptText.Contains("archive-center-go.new.exe")) {
         [void]$failures.Add("launcher_legacy_partial_update_path_present")
     }
+    foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "LocalApplicationData")) {
+        if (-not $launcherScriptText.Contains($marker)) {
+            [void]$failures.Add("launcher_separate_mariadb_marker_missing:$marker")
+        }
+    }
     if ($launcherScriptText -notmatch '(?s)if \(\$pendingApplyStatus -eq "applied_pending_health"\).*?\}\s*else\s*\{\s*& \$backendExe\s*\}') {
         [void]$failures.Add("launcher_no_pending_direct_backend_path_missing")
     }
 }
 
+$installerScriptPath = Join-Path $packRoot "tools\install-windows.ps1"
+if (Test-Path -LiteralPath $installerScriptPath -PathType Leaf) {
+    $installerScriptText = Get-Content -LiteralPath $installerScriptPath -Raw -Encoding UTF8
+    foreach ($marker in @(
+        "-InstallMariaDBRuntime",
+        "https://dlm.mariadb.com/4566977/MariaDB/mariadb-11.4.10/winx64-packages/mariadb-11.4.10-winx64.zip",
+        "fb7c76f0804321ee373daa49145f2056d2d88f321b614130adeb05a1644ea003",
+        "MariaDB archive SHA-256 mismatch",
+        "package_bundled = `$false"
+    )) {
+        if (-not $installerScriptText.Contains($marker)) {
+            [void]$failures.Add("installer_separate_mariadb_marker_missing:$marker")
+        }
+    }
+}
+
 if (-not $SkipRuntimePayloadCheck) {
-    if ([string]::IsNullOrWhiteSpace((Find-MariaDBProvider (Join-Path $packRoot "runtime")))) {
-        [void]$failures.Add("missing:mariadb_runtime")
+    if (-not [string]::IsNullOrWhiteSpace((Find-MariaDBProvider (Join-Path $packRoot "runtime")))) {
+        [void]$failures.Add("forbidden_payload:mariadb_runtime")
     }
     if ([string]::IsNullOrWhiteSpace((Find-ChromaRuntime (Join-Path $packRoot "runtime")))) {
         [void]$failures.Add("missing:chromadb_runtime")

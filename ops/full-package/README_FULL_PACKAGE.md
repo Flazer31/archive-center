@@ -6,13 +6,16 @@ It includes:
 
 - Go backend
 - next-start package updater
-- MariaDB runtime
+- per-user MariaDB runtime installer
 - ChromaDB/Python runtime
 - Archive Center.js
 - migrations
 - prompts
 
-Normal users do not need to install MariaDB or ChromaDB manually.
+Normal users do not need to install MariaDB or ChromaDB manually. MariaDB is
+not contained in the Archive Center ZIP. On first start, the launcher downloads
+the pinned official MariaDB ZIP, verifies its SHA-256, and installs it under
+`%LOCALAPPDATA%\ArchiveCenter\runtime\MariaDB`.
 
 ## Start
 
@@ -23,7 +26,9 @@ Double-click:
 ```
 
 The launcher binds the backend to `0.0.0.0:28080`, so the same file works for both same-PC and remote-browser use.
-It creates `.env.full.local` if it does not exist, starts bundled MariaDB, starts bundled ChromaDB, applies schema migrations, and starts the Go backend.
+It creates `.env.full.local` if it does not exist, prepares or starts the
+separate per-user MariaDB runtime, starts bundled ChromaDB, applies schema
+migrations, and starts the Go backend.
 
 Leave the console window open while using Archive Center.
 
@@ -51,7 +56,8 @@ recovery error instead of running a mixed package.
 
 Updates do not move, replace, or copy `.runtime/`, `.updates/`,
 `.env.full.local`, or `.env.full.local.protected`. MariaDB and ChromaDB keep
-using their existing package-local data directories. The v1 automatic updater
+using their existing data directories. The MariaDB executable runtime remains
+outside the versioned package under `%LOCALAPPDATA%\ArchiveCenter`. The v1 automatic updater
 rejects a package that adds or changes managed migration SQL or
 `mariadb-schema.exe`; database-changing releases require a separately reviewed
 manual migration path.

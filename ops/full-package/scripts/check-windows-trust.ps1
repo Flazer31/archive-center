@@ -97,7 +97,7 @@ $report = [ordered]@{
     note = "Read-only diagnostic report. This script does not disable Defender, add exclusions, or change package files."
     local_services = [ordered]@{
         backend = "archive-center-go.exe on 0.0.0.0:28080 by default"
-        mariadb = "bundled MariaDB on 127.0.0.1:3307 by default"
+        mariadb = "separate per-user MariaDB runtime on 127.0.0.1:3307 by default"
         chromadb = "bundled ChromaDB on 127.0.0.1:8000 only for full_local/bundled vector mode"
     }
     summary = [ordered]@{
