@@ -37,7 +37,7 @@ function Copy-File([string]$Source, [string]$DestRelative) {
     Copy-Item -LiteralPath $src -Destination $dest -Force
 }
 
-function Copy-Directory([string]$Source, [string]$DestRelative) {
+function Copy-Directory([string]$Source, [string]$DestRelative, [string[]]$ExcludeNames = @()) {
     $src = Join-Path $repoRoot $Source
     if (-not (Test-Path -LiteralPath $src -PathType Container)) {
         throw "Missing source directory: $src"
@@ -45,7 +45,9 @@ function Copy-Directory([string]$Source, [string]$DestRelative) {
     $dest = Join-Path $targetFull $DestRelative
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Get-ChildItem -LiteralPath $src -Force | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
+        if ($ExcludeNames -notcontains $_.Name) {
+            Copy-Item -LiteralPath $_.FullName -Destination $dest -Recurse -Force
+        }
     }
 }
 
@@ -376,20 +378,6 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "go build mariadb-schema failed."
     }
-    $migrationTools = @(
-        "sqlite-export",
-        "dry-run-validator",
-        "compare-dry-run",
-        "mariadb-dry-run-import",
-        "mariadb-import",
-        "legacy10-migrate"
-    )
-    foreach ($tool in $migrationTools) {
-        & go build -buildvcs=false -trimpath -ldflags "-s -w" -o (Join-Path $targetFull "bin\$tool.exe") "./cmd/$tool"
-        if ($LASTEXITCODE -ne 0) {
-            throw "go build $tool failed."
-        }
-    }
 } finally {
     Pop-Location
 }
@@ -408,9 +396,8 @@ Copy-File "ops/full-package/02_smoke_test_windows.bat" "02_smoke_test_windows.ba
 Copy-File "ops/full-package/03_run_backend.bat" "03_run_backend.bat"
 Copy-File "ops/full-package/04_protect_env_windows.bat" "04_protect_env_windows.bat"
 Copy-File "ops/full-package/05_unprotect_env_windows.bat" "05_unprotect_env_windows.bat"
-Copy-File "ops/full-package/06_migrate_1_0_to_2_0_windows.bat" "06_migrate_1_0_to_2_0_windows.bat"
 Copy-File "ops/full-package/.env.full.example" ".env.full.example"
-Copy-Directory "ops/full-package/scripts" "scripts"
+Copy-Directory "ops/full-package/scripts" "scripts" @("migrate-legacy-1.0-windows.ps1")
 Copy-File "ops/install-windows.ps1" "tools/install-windows.ps1"
 Copy-File "NOTICE" "NOTICE"
 Copy-File "THIRD_PARTY_NOTICES.md" "THIRD_PARTY_NOTICES.md"
@@ -495,12 +482,6 @@ $manifest = [ordered]@{
         "bin/archive-center-go.exe",
         "bin/archive-center-updater.exe",
         "bin/mariadb-schema.exe",
-        "bin/legacy10-migrate.exe",
-        "bin/sqlite-export.exe",
-        "bin/dry-run-validator.exe",
-        "bin/compare-dry-run.exe",
-        "bin/mariadb-dry-run-import.exe",
-        "bin/mariadb-import.exe",
         "Archive Center.js",
         "NOTICE",
         "THIRD_PARTY_NOTICES.md",
@@ -514,7 +495,6 @@ $manifest = [ordered]@{
         "03_run_backend.bat",
         "04_protect_env_windows.bat",
         "05_unprotect_env_windows.bat",
-        "06_migrate_1_0_to_2_0_windows.bat",
         "scripts",
         "tools/install-windows.ps1"
     )
@@ -526,6 +506,7 @@ $manifest = [ordered]@{
         "test binaries",
         "database files",
         "MariaDB runtime binaries",
+        "legacy 1.0 migration tools and launcher",
         "ChromaDB persist data",
         "backup/release/deploy outputs"
     )

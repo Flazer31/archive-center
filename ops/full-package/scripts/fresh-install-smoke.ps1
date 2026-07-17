@@ -99,6 +99,21 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     }
 }
 
+foreach ($rel in @(
+    "bin\sqlite-export.exe",
+    "bin\dry-run-validator.exe",
+    "bin\compare-dry-run.exe",
+    "bin\mariadb-dry-run-import.exe",
+    "bin\mariadb-import.exe",
+    "bin\legacy10-migrate.exe",
+    "06_migrate_1_0_to_2_0_windows.bat",
+    "scripts\migrate-legacy-1.0-windows.ps1"
+)) {
+    if (Test-Path -LiteralPath (Join-Path $packRoot $rel)) {
+        [void]$failures.Add("forbidden_legacy_migration_payload:$rel")
+    }
+}
+
 $installerScriptPath = Join-Path $packRoot "tools\install-windows.ps1"
 if (Test-Path -LiteralPath $installerScriptPath -PathType Leaf) {
     $installerScriptText = Get-Content -LiteralPath $installerScriptPath -Raw -Encoding UTF8

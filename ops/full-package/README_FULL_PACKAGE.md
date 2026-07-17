@@ -106,20 +106,10 @@ See `WINDOWS_TRUST_AND_DEFENDER.md` for the submission checklist.
 
 ## Optional 1.0 DB migration
 
-If you have an old Archive Center 1.0 `memory.db`, start Archive Center 2.1 first,
-then double-click:
-
-```text
-06_migrate_1_0_to_2_0_windows.bat
-```
-
-The first pass is a dry-run only. It reads the old SQLite DB in read-only mode,
-exports recognized tables, validates the export, and writes a report under
-`.runtime/legacy-migration/`. It imports into MariaDB only after you type `YES`.
-
-After importing, open the Archive Center UI and confirm sessions/timeline data.
-Run vector reindex if imported memories should become searchable through
-ChromaDB.
+Legacy 1.0 migration executables are not part of the normal Windows package.
+They are offline migration utilities, not normal startup dependencies. Users
+who still need to migrate an old `memory.db` must use the separately published
+Legacy Migration Tools package that matches this Archive Center release.
 
 ## Protect local env secrets
 
