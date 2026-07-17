@@ -945,7 +945,7 @@ func TestSeq215P738RouteLevelTests(t *testing.T) {
 	if proxyRec.Code != http.StatusBadRequest {
 		t.Fatalf("proxy missing endpoint status=%d, want 400: %s", proxyRec.Code, proxyRec.Body.String())
 	}
-	secret := "test-seq215-p738-secret"
+	secret := "fixture-secret-value"
 	configReq := httptest.NewRequest(http.MethodPost, "/config/update", strings.NewReader(`{
 		"mainProvider":"openai",
 		"mainApiKey":"`+secret+`",
