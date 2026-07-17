@@ -464,9 +464,9 @@ func TestReferenceExtractionLinksExistingAliasesAndTimeline(t *testing.T) {
 func TestReferenceExtractionStoresOnlyGroundedOriginalExcerpts(t *testing.T) {
 	fake := newReferenceLibraryHTTPStore()
 	doc := &store.ReferenceDocument{DocumentID: "doc-1", WorkID: "work-1", ContinuityID: "continuity-1"}
-	source := "Rumi is the\nleader of HUNTR/X.\nThe stage is quiet."
+	source := "Arin is the\nleader of Aster Unit.\nThe stage is quiet."
 	parsed := map[string]any{"claims": []any{
-		map[string]any{"claim_type": "character", "claim_text": "Rumi leads HUNTR/X.", "evidence_excerpt": "Rumi is the leader of HUNTR/X.", "temporal_scope": "timeless"},
+		map[string]any{"claim_type": "character", "claim_text": "Arin leads Aster Unit.", "evidence_excerpt": "Arin is the leader of Aster Unit.", "temporal_scope": "timeless"},
 		map[string]any{"claim_type": "event", "claim_text": "An invented event occurred.", "evidence_excerpt": "This sentence is not in the source.", "temporal_scope": "timeless"},
 	}}
 	counts, warnings, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, parsed, source, 2)
@@ -476,7 +476,7 @@ func TestReferenceExtractionStoresOnlyGroundedOriginalExcerpts(t *testing.T) {
 	if counts["claims"] != 2 || len(fake.claims) != 2 {
 		t.Fatalf("claim extraction counts=%#v claims=%#v", counts, fake.claims)
 	}
-	if fake.claims[0].EvidenceExcerpt != "Rumi is the\nleader of HUNTR/X." {
+	if fake.claims[0].EvidenceExcerpt != "Arin is the\nleader of Aster Unit." {
 		t.Fatalf("grounded excerpt did not preserve original text: %q", fake.claims[0].EvidenceExcerpt)
 	}
 	metadata := map[string]any{}
@@ -489,7 +489,7 @@ func TestReferenceExtractionStoresOnlyGroundedOriginalExcerpts(t *testing.T) {
 }
 
 func TestReferenceGroundedSourceExcerptRejectsParaphrase(t *testing.T) {
-	if got := referenceGroundedSourceExcerpt("Mira guards the sealed gate.", "Mira protects a gate."); got != "" {
+	if got := referenceGroundedSourceExcerpt("Bera guards the sealed gate.", "Bera protects a gate."); got != "" {
 		t.Fatalf("paraphrase was accepted as original evidence: %q", got)
 	}
 }
@@ -503,7 +503,7 @@ func TestReferenceAutoReviewApprovesSupportedAndLeavesAmbiguousPending(t *testin
 
 	fake := newReferenceLibraryHTTPStore()
 	fake.entities = append(fake.entities,
-		store.ReferenceEntity{EntityID: "entity-supported", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "HUNTR/X", EntityType: "faction", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"direct source sentence"}`},
+		store.ReferenceEntity{EntityID: "entity-supported", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "Aster Unit", EntityType: "faction", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"direct source sentence"}`},
 		store.ReferenceEntity{EntityID: "entity-ambiguous", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "1930s Hunters", EntityType: "faction", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"1930s heading"}`},
 	)
 	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}

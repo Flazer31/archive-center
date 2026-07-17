@@ -72,6 +72,34 @@ function Copy-RuntimePayload([string]$Source, [string]$DestRelative) {
     return $true
 }
 
+function Install-ChromaRuntimeLicenseFiles([string]$RuntimeRoot) {
+    $apacheLicense = Join-Path $repoRoot "licenses\Apache-2.0.txt"
+    if (-not (Test-Path -LiteralPath $apacheLicense -PathType Leaf)) {
+        throw "Missing required Apache-2.0 license text: $apacheLicense"
+    }
+
+    $required = @(
+        [ordered]@{ Package = "flatbuffers"; Version = "25.12.19" },
+        [ordered]@{ Package = "tokenizers"; Version = "0.23.1" }
+    )
+    foreach ($item in $required) {
+        $distInfoName = "$($item.Package)-$($item.Version).dist-info"
+        $distInfo = Get-ChildItem -LiteralPath $RuntimeRoot -Recurse -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ieq $distInfoName } |
+            Select-Object -First 1
+        if ($null -eq $distInfo) {
+            throw "Required ChromaDB dependency metadata was not found: $distInfoName"
+        }
+        $licenseDir = Join-Path $distInfo.FullName "licenses"
+        New-Item -ItemType Directory -Force -Path $licenseDir | Out-Null
+        $destination = Join-Path $licenseDir "LICENSE.Apache-2.0"
+        Copy-Item -LiteralPath $apacheLicense -Destination $destination -Force
+        if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or (Get-Item -LiteralPath $destination).Length -eq 0) {
+            throw "Failed to install required license text: $destination"
+        }
+    }
+}
+
 function Find-ChromaRuntime([string]$Root) {
     $python = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ieq "python.exe" } |
@@ -399,8 +427,10 @@ Copy-File "ops/full-package/05_unprotect_env_windows.bat" "05_unprotect_env_wind
 Copy-File "ops/full-package/.env.full.example" ".env.full.example"
 Copy-Directory "ops/full-package/scripts" "scripts" @("migrate-legacy-1.0-windows.ps1")
 Copy-File "ops/install-windows.ps1" "tools/install-windows.ps1"
+Copy-File "LICENSE" "LICENSE"
 Copy-File "NOTICE" "NOTICE"
 Copy-File "THIRD_PARTY_NOTICES.md" "THIRD_PARTY_NOTICES.md"
+Copy-Directory "licenses" "licenses"
 Set-RuntimeDefaultsInEnvExample (Join-Path $targetFull ".env.full.example") $runtimeProfileDefault $vectorModeDefault $PackageVersion
 Set-CopiedPackageKindText (Join-Path $targetFull "01_start_archive_center_windows.bat") $PackageKind $PackageVersion
 Set-CopiedPackageKindText (Join-Path $targetFull "scripts\start-full-windows.ps1") $PackageKind $PackageVersion
@@ -410,6 +440,9 @@ $chromaCopied = Copy-RuntimePayload $ChromaRuntime "runtime\ChromaDB"
 
 $runtimeRoot = Join-Path $targetFull "runtime"
 $chromaRuntimeFound = Find-ChromaRuntime $runtimeRoot
+if ($chromaCopied) {
+    Install-ChromaRuntimeLicenseFiles (Join-Path $runtimeRoot "ChromaDB")
+}
 $codeSigning = Set-OwnPayloadSignatures $targetFull $CodeSigningCertThumbprint $TimestampServer
 $trustEvidence = Write-PackageTrustEvidence $targetFull
 $missing = @()
@@ -483,8 +516,10 @@ $manifest = [ordered]@{
         "bin/archive-center-updater.exe",
         "bin/mariadb-schema.exe",
         "Archive Center.js",
+        "LICENSE",
         "NOTICE",
         "THIRD_PARTY_NOTICES.md",
+        "licenses",
         "WINDOWS_TRUST_AND_DEFENDER.md",
         "PACKAGE_FILE_MANIFEST.json",
         "SHA256SUMS.txt",
@@ -591,7 +626,7 @@ if ($Zip -or $UpdateZip) {
             }
             $manifestEntry = $manifestEntries[0]
             $packagePrefix = $manifestEntry.Substring(0, $manifestEntry.Length - "PACKAGE_FILE_MANIFEST.json".Length)
-            foreach ($requiredEntry in @("PACKAGE_FILE_MANIFEST.json", "bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js")) {
+            foreach ($requiredEntry in @("PACKAGE_FILE_MANIFEST.json", "bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/Apache-2.0.txt")) {
                 $expectedEntry = $packagePrefix + $requiredEntry
                 if (-not $entryMap.ContainsKey($expectedEntry) -or $entryMap[$expectedEntry].Length -le 0) {
                     throw "Generated ZIP is missing required package entry: $expectedEntry"

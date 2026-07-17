@@ -9,34 +9,34 @@ import (
 func TestReferenceCoverageShadowClassifiesExactPartialMissingAndUnrelatedWithoutFiltering(t *testing.T) {
 	scope := referenceRecallScope{
 		entities: map[string]store.ReferenceEntity{
-			"rumi": {EntityID: "rumi", CanonicalName: "Rumi", EntityType: "character", DescriptionText: "Huntrix's leader and lead singer."},
+			"arin": {EntityID: "arin", CanonicalName: "Arin", EntityType: "character", DescriptionText: "Aster Unit's leader and lead singer."},
 		},
 		claims: map[string]store.ReferenceClaim{
-			"claim-role": {ClaimID: "claim-role", SubjectEntityID: "rumi", ClaimType: "role", ClaimText: "Rumi leads Huntrix."},
+			"claim-role": {ClaimID: "claim-role", SubjectEntityID: "arin", ClaimType: "role", ClaimText: "Arin leads Aster Unit."},
 		},
 		nodes:         map[string]store.ReferenceTimelineNode{},
 		sceneEntities: map[string]bool{},
 	}
 
-	entityItem := referenceRecallItem{ReferenceKind: "entity", SourceID: "rumi", Text: "Rumi: Huntrix's leader and lead singer.", Eligible: true, Reason: "eligible", Metadata: map[string]any{"aliases": []string{"루미"}}}
-	exact := applyReferenceCoverageShadow(entityItem, scope, "루미가 어떻게 대답해?", []map[string]any{
-		{"role": "system", "content": "Rumi: Huntrix's leader and lead singer."},
-		{"role": "user", "content": "루미가 어떻게 대답해?"},
+	entityItem := referenceRecallItem{ReferenceKind: "entity", SourceID: "arin", Text: "Arin: Aster Unit's leader and lead singer.", Eligible: true, Reason: "eligible", Metadata: map[string]any{"aliases": []string{"아린"}}}
+	exact := applyReferenceCoverageShadow(entityItem, scope, "아린가 어떻게 대답해?", []map[string]any{
+		{"role": "system", "content": "Arin: Aster Unit's leader and lead singer."},
+		{"role": "user", "content": "아린가 어떻게 대답해?"},
 	}, referenceCoverageSceneContext{})
 	if !exact.Needed || exact.CoverageStatus != "covered" || exact.DecisionReason != "exact_reference_text_present" {
 		t.Fatalf("exact coverage = %#v", exact)
 	}
 
-	partial := applyReferenceCoverageShadow(entityItem, scope, "루미가 어떻게 대답해?", []map[string]any{
-		{"role": "system", "content": "이번 장면에는 루미가 등장한다."},
-		{"role": "user", "content": "루미가 어떻게 대답해?"},
+	partial := applyReferenceCoverageShadow(entityItem, scope, "아린가 어떻게 대답해?", []map[string]any{
+		{"role": "system", "content": "이번 장면에는 아린가 등장한다."},
+		{"role": "user", "content": "아린가 어떻게 대답해?"},
 	}, referenceCoverageSceneContext{})
 	if !partial.Needed || partial.CoverageStatus != "partial" || len(partial.MissingFields) != 1 || partial.MissingFields[0] != "description" {
 		t.Fatalf("partial coverage = %#v", partial)
 	}
 
-	scope.sceneEntities["rumi"] = true
-	claimItem := referenceRecallItem{ReferenceKind: "claim", SourceID: "claim-role", Text: "Rumi leads Huntrix.", Eligible: true, Reason: "eligible"}
+	scope.sceneEntities["arin"] = true
+	claimItem := referenceRecallItem{ReferenceKind: "claim", SourceID: "claim-role", Text: "Arin leads Aster Unit.", Eligible: true, Reason: "eligible"}
 	missing := applyReferenceCoverageShadow(claimItem, scope, "Continue the current scene.", []map[string]any{
 		{"role": "user", "content": "Continue the current scene."},
 	}, referenceCoverageSceneContext{})
@@ -44,7 +44,7 @@ func TestReferenceCoverageShadowClassifiesExactPartialMissingAndUnrelatedWithout
 		t.Fatalf("missing coverage = %#v", missing)
 	}
 
-	delete(scope.sceneEntities, "rumi")
+	delete(scope.sceneEntities, "arin")
 	unrelated := applyReferenceCoverageShadow(entityItem, scope, "문을 열고 복도로 나간다.", []map[string]any{
 		{"role": "user", "content": "문을 열고 복도로 나간다."},
 	}, referenceCoverageSceneContext{})
@@ -57,16 +57,16 @@ func TestReferenceCoveragePrimaryModeChecksExistingLoreBeforeAddingChromaContext
 	scope := referenceRecallScope{
 		binding: store.SessionReferenceBinding{ReferenceMode: referenceModePrimary},
 		claims: map[string]store.ReferenceClaim{
-			"claim-role": {ClaimID: "claim-role", ClaimType: "role", ClaimText: "Rumi leads Huntrix."},
+			"claim-role": {ClaimID: "claim-role", ClaimType: "role", ClaimText: "Arin leads Aster Unit."},
 		},
 		entities:      map[string]store.ReferenceEntity{},
 		nodes:         map[string]store.ReferenceTimelineNode{},
 		sceneEntities: map[string]bool{},
 	}
-	item := referenceRecallItem{ReferenceKind: "claim", SourceID: "claim-role", Text: "Rumi leads Huntrix.", Eligible: true, Reason: "eligible"}
+	item := referenceRecallItem{ReferenceKind: "claim", SourceID: "claim-role", Text: "Arin leads Aster Unit.", Eligible: true, Reason: "eligible"}
 
 	covered := applyReferenceCoverageShadow(item, scope, "Continue.", []map[string]any{
-		{"role": "system", "content": "Rumi leads Huntrix."},
+		{"role": "system", "content": "Arin leads Aster Unit."},
 		{"role": "user", "content": "Continue."},
 	}, referenceCoverageSceneContext{})
 	if !covered.Needed || covered.CoverageStatus != "covered" || len(covered.NeededBy) != 1 || covered.NeededBy[0] != "primary_chroma_relevance" {
@@ -85,7 +85,7 @@ func TestReferenceCoveragePrimaryModeChecksExistingLoreBeforeAddingChromaContext
 func TestReferenceCoverageShadowKeepsUnknownAndHardFilterReasonsExplicit(t *testing.T) {
 	scope := referenceRecallScope{
 		entities: map[string]store.ReferenceEntity{
-			"rumi": {EntityID: "rumi", CanonicalName: "Rumi", EntityType: "character"},
+			"arin": {EntityID: "arin", CanonicalName: "Arin", EntityType: "character"},
 		},
 		claims:        map[string]store.ReferenceClaim{},
 		nodes:         map[string]store.ReferenceTimelineNode{},
@@ -94,11 +94,11 @@ func TestReferenceCoverageShadowKeepsUnknownAndHardFilterReasonsExplicit(t *test
 
 	unknown := applyReferenceCoverageShadow(referenceRecallItem{
 		ReferenceKind: "entity",
-		SourceID:      "rumi",
-		Text:          "Rumi",
+		SourceID:      "arin",
+		Text:          "Arin",
 		Eligible:      true,
 		Reason:        "eligible",
-	}, scope, "Rumi", nil, referenceCoverageSceneContext{})
+	}, scope, "Arin", nil, referenceCoverageSceneContext{})
 	if !unknown.Needed || unknown.CoverageStatus != "unknown" || unknown.DecisionReason != "coverage_sources_unavailable" {
 		t.Fatalf("unknown coverage = %#v", unknown)
 	}
@@ -122,19 +122,19 @@ func TestReferenceCoverageShadowKeepsUnknownAndHardFilterReasonsExplicit(t *test
 
 func TestReferenceCoverageShadowIgnoresItsOwnPriorInjectionBlock(t *testing.T) {
 	scope := referenceRecallScope{
-		entities:      map[string]store.ReferenceEntity{"rumi": {EntityID: "rumi", CanonicalName: "Rumi"}},
+		entities:      map[string]store.ReferenceEntity{"arin": {EntityID: "arin", CanonicalName: "Arin"}},
 		claims:        map[string]store.ReferenceClaim{},
 		nodes:         map[string]store.ReferenceTimelineNode{},
-		sceneEntities: map[string]bool{"rumi": true},
+		sceneEntities: map[string]bool{"arin": true},
 	}
 	item := applyReferenceCoverageShadow(referenceRecallItem{
 		ReferenceKind: "entity",
-		SourceID:      "rumi",
-		Text:          "Rumi: Huntrix's leader.",
+		SourceID:      "arin",
+		Text:          "Arin: Aster Unit's leader.",
 		Eligible:      true,
 		Reason:        "eligible",
 	}, scope, "Continue.", []map[string]any{
-		{"role": "system", "content": "[Original Work Reference]\n- Rumi: Huntrix's leader."},
+		{"role": "system", "content": "[Original Work Reference]\n- Arin: Aster Unit's leader."},
 		{"role": "user", "content": "Continue."},
 	}, referenceCoverageSceneContext{})
 	if item.CoverageStatus != "missing" {
@@ -145,8 +145,8 @@ func TestReferenceCoverageShadowIgnoresItsOwnPriorInjectionBlock(t *testing.T) {
 func TestReferenceCoverageSceneContextUsesLatestCompletedTurnAndLatestLocation(t *testing.T) {
 	context := buildReferenceCoverageSceneContext(
 		[]store.ChatLog{
-			{ID: 1, TurnIndex: 4, Role: "user", Content: "Rumi enters the rehearsal room."},
-			{ID: 2, TurnIndex: 4, Role: "assistant", Content: "Rumi checks the stage marks."},
+			{ID: 1, TurnIndex: 4, Role: "user", Content: "Arin enters the rehearsal room."},
+			{ID: 2, TurnIndex: 4, Role: "assistant", Content: "Arin checks the stage marks."},
 			{ID: 3, TurnIndex: 5, Role: "user", Content: "Continue."},
 		},
 		[]store.ActiveState{
@@ -169,7 +169,7 @@ func TestReferenceCoverageSceneContextUsesLatestCompletedTurnAndLatestLocation(t
 
 	scope := referenceRecallScope{
 		entities: map[string]store.ReferenceEntity{
-			"rumi": {EntityID: "rumi", CanonicalName: "Rumi", EntityType: "character"},
+			"arin": {EntityID: "arin", CanonicalName: "Arin", EntityType: "character"},
 			"bath": {EntityID: "bath", CanonicalName: "Neon Bathhouse", EntityType: "location"},
 		},
 		claims:        map[string]store.ReferenceClaim{},
@@ -177,18 +177,18 @@ func TestReferenceCoverageSceneContextUsesLatestCompletedTurnAndLatestLocation(t
 		sceneEntities: map[string]bool{},
 	}
 
-	rumi := applyReferenceCoverageShadow(referenceRecallItem{
+	arin := applyReferenceCoverageShadow(referenceRecallItem{
 		ReferenceKind: "entity",
-		SourceID:      "rumi",
-		Text:          "Rumi: Huntrix's leader.",
+		SourceID:      "arin",
+		Text:          "Arin: Aster Unit's leader.",
 		Eligible:      true,
 		Reason:        "eligible",
 	}, scope, "Continue.", []map[string]any{{"role": "user", "content": "Continue."}}, context)
-	if !rumi.Needed || !stringSliceContains(rumi.NeededBy, "recent_completed_dialogue") || rumi.CoverageStatus != "partial" {
-		t.Fatalf("recent dialogue coverage = %#v", rumi)
+	if !arin.Needed || !stringSliceContains(arin.NeededBy, "recent_completed_dialogue") || arin.CoverageStatus != "partial" {
+		t.Fatalf("recent dialogue coverage = %#v", arin)
 	}
-	if len(rumi.MatchedContextLocations) == 0 || len(rumi.MatchedRequestLocations) != 0 {
-		t.Fatalf("recent dialogue locations = %#v", rumi)
+	if len(arin.MatchedContextLocations) == 0 || len(arin.MatchedRequestLocations) != 0 {
+		t.Fatalf("recent dialogue locations = %#v", arin)
 	}
 
 	bath := applyReferenceCoverageShadow(referenceRecallItem{
@@ -210,7 +210,7 @@ func TestReferenceCoverageSceneContextUsesOnlyUnsuppressedActiveRules(t *testing
 		nil,
 		[]store.WorldRule{
 			{ID: 30, Key: "demon_gate", ValueJSON: `{"rule":"Only marked gates open at night."}`},
-			{ID: 31, Key: "suppressed_rule", ValueJSON: `{"rule":"Rumi leads Huntrix."}`, Suppressed: true},
+			{ID: 31, Key: "suppressed_rule", ValueJSON: `{"rule":"Arin leads Aster Unit."}`, Suppressed: true},
 		},
 		8,
 	)

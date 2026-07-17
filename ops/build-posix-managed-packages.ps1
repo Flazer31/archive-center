@@ -336,6 +336,10 @@ foreach ($target in $targets) {
     }
 
     Copy-File (Join-Path $repoRoot "Archive Center.js") (Join-Path $targetRoot "Archive Center.js")
+    Copy-File (Join-Path $repoRoot "LICENSE") (Join-Path $targetRoot "LICENSE")
+    Copy-File (Join-Path $repoRoot "NOTICE") (Join-Path $targetRoot "NOTICE")
+    Copy-File (Join-Path $repoRoot "THIRD_PARTY_NOTICES.md") (Join-Path $targetRoot "THIRD_PARTY_NOTICES.md")
+    Copy-DirectoryContents (Join-Path $repoRoot "licenses") (Join-Path $targetRoot "licenses")
     $readmeSource = "ops\full-package-posix\README_POSIX_FULL_PACKAGE.md"
     $readFirstSource = "ops\full-package-posix\00_README_FIRST_POSIX_FULL.md"
     Copy-File (Join-Path $repoRoot $readmeSource) (Join-Path $targetRoot "README.md")
@@ -408,6 +412,10 @@ foreach ($target in $targets) {
             "bin/mariadb-dry-run-import",
             "bin/mariadb-import",
             "Archive Center.js",
+            "LICENSE",
+            "NOTICE",
+            "THIRD_PARTY_NOTICES.md",
+            "licenses",
             "migrations",
             "prompts",
             "scripts",

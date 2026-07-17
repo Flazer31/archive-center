@@ -183,7 +183,7 @@ func TestListReferenceEntitiesReturnsReviewAudit(t *testing.T) {
 			"entity_id", "work_id", "continuity_id", "entity_type", "canonical_name",
 			"description_text", "metadata_json", "review_status", "review_source",
 			"review_reason", "reviewed_at", "created_at", "updated_at",
-		}).AddRow("entity-1", "work-1", "continuity-1", "faction", "HUNTR/X", "Hunters", nil,
+		}).AddRow("entity-1", "work-1", "continuity-1", "faction", "Aster Unit", "Hunters", nil,
 			"approved", "critic_auto", "direct evidence", now, now, now))
 	items, err := store.ListReferenceEntities(context.Background(), "work-1", "continuity-1", "")
 	if err != nil {

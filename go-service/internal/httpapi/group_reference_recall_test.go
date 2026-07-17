@@ -97,13 +97,13 @@ func TestReferenceRecallSupplementInjectionKeepsSessionFactsHigherPriority(t *te
 }
 
 func TestReferenceRecallPrimaryInjectionOverridesUnsupportedSessionInvention(t *testing.T) {
-	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, Text: "HUNTR/X consists of Rumi, Mira, and Zoey."}}}
+	result := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{{WorkTitle: "Example", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, Text: "Aster Unit consists of Arin, Bera, and Ciel."}}}
 	text := formatReferenceRecallInjection(result, 900).Text
 	if !containsAll(text,
 		"user-authored divergence override",
 		"Approved primary canon overrides unsupported model-invented or session-derived claims",
 		"Preserve session-original additions only when they do not conflict",
-		"HUNTR/X consists of Rumi, Mira, and Zoey.",
+		"Aster Unit consists of Arin, Bera, and Ciel.",
 	) {
 		t.Fatalf("primary precedence missing: %q", text)
 	}
@@ -568,17 +568,17 @@ func TestPrepareTurnReferenceCountsSelectedSeparatelyFromCharacterBudgetInclusio
 func TestPrepareTurnReferenceCoverageUsesStoreSceneSignals(t *testing.T) {
 	fake := newReferenceBindingHTTPStore()
 	fake.referenceLibraryHTTPStore.Store = &turnRecordingStore{returnChatLogs: []store.ChatLog{
-		{ID: 1, ChatSessionID: "session-1", TurnIndex: 3, Role: "user", Content: "Rumi steps onto the stage."},
-		{ID: 2, ChatSessionID: "session-1", TurnIndex: 3, Role: "assistant", Content: "Rumi checks the rehearsal marks."},
+		{ID: 1, ChatSessionID: "session-1", TurnIndex: 3, Role: "user", Content: "Arin steps onto the stage."},
+		{ID: 2, ChatSessionID: "session-1", TurnIndex: 3, Role: "assistant", Content: "Arin checks the rehearsal marks."},
 	}}
 	fake.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Example", Status: "ready"}}
 	fake.continuities = []store.ReferenceContinuity{{ContinuityID: "continuity-1", WorkID: "work-1", Status: "active"}}
 	fake.timeline = []store.ReferenceTimelineNode{{NodeID: "node-current", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 10, BranchKey: "main", ReviewStatus: "approved"}}
-	fake.entities = []store.ReferenceEntity{{EntityID: "entity-rumi", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "Rumi", EntityType: "character", DescriptionText: "Huntrix's leader.", ReviewStatus: "approved"}}
+	fake.entities = []store.ReferenceEntity{{EntityID: "entity-arin", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "Arin", EntityType: "character", DescriptionText: "Aster Unit's leader.", ReviewStatus: "approved"}}
 	fake.bindings = []store.SessionReferenceBinding{{BindingID: "binding-1", ChatSessionID: "session-1", WorkID: "work-1", ContinuityID: "continuity-1", CurrentNodeID: "node-current", Priority: 10}}
 	embeddingServer, _ := referenceVectorEmbeddingServer(t)
 	defer embeddingServer.Close()
-	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{{Document: referenceRecallVectorDocument("entity", "entity-rumi"), ChromaRank: 1, CosineSimilarity: 0.9, CosineAvailable: true}}}
+	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{{Document: referenceRecallVectorDocument("entity", "entity-arin"), ChromaRank: 1, CosineSimilarity: 0.9, CosineAvailable: true}}}
 	srv := referenceRecallTestServer(fake, vectorStore, embeddingServer.URL)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)

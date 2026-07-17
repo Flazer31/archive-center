@@ -7,6 +7,7 @@ third-party components. Third-party components remain governed by their own
 licenses. See THIRD_PARTY_NOTICES.md and the license files distributed with
 each bundled runtime.
 
-No project-wide open-source license is granted by this notice alone. The
-project-wide license will be stated in the repository LICENSE file when the
-licensing decision is finalized.
+Except where a file or third-party notice states otherwise, Archive Center
+source code is made available under the Mozilla Public License Version 2.0.
+See LICENSE. This license does not grant rights to project names, logos,
+user-provided data, or third-party fictional works.

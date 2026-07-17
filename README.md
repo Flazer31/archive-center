@@ -1,5 +1,18 @@
 # Archive Center 2.0
 
+## License
+
+Except where a file or third-party notice states otherwise, Archive Center
+source code is licensed under the Mozilla Public License Version 2.0. See
+[`LICENSE`](LICENSE) for the complete terms and
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for separately licensed
+dependencies and bundled runtimes.
+
+Binary releases provide the corresponding Archive Center source through the
+matching GitHub release tag. User `.env` files, databases, vector collections,
+original-work documents, secrets, and other user-provided data are not part of
+the project license or source release.
+
 ## GitHub Install/Update
 
 For normal installs and updates, use the GitHub Release package helpers instead

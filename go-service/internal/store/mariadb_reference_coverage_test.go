@@ -24,7 +24,7 @@ func TestReplaceSessionReferenceCoverageSnapshotWritesOneCurrentGeneration(t *te
 	prepared := mock.ExpectPrepare("INSERT INTO session_reference_coverage_fields")
 	prepared.ExpectExec().WithArgs(
 		"binding-1", "field-key", "work-1", "continuity-1", "entity", "entity-1",
-		"canonical_name", "Mira", "mira", `["Mira"]`, true, `["system#0"]`, true, "eligible",
+		"canonical_name", "Bera", "bera", `["Bera"]`, true, `["system#0"]`, true, "eligible",
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -35,7 +35,7 @@ func TestReplaceSessionReferenceCoverageSnapshotWritesOneCurrentGeneration(t *te
 	}, []SessionReferenceCoverageField{{
 		FieldKey: "field-key", WorkID: "work-1", ContinuityID: "continuity-1",
 		ReferenceKind: "entity", SourceID: "entity-1", FieldName: "canonical_name",
-		FieldValue: "Mira", NormalizedValue: "mira", MatchValuesJSON: `["Mira"]`,
+		FieldValue: "Bera", NormalizedValue: "bera", MatchValuesJSON: `["Bera"]`,
 		PresentInContext: true, MatchedLocationsJSON: `["system#0"]`, Eligible: true, EligibilityReason: "eligible",
 	}})
 	if err != nil || !changed {
@@ -73,9 +73,9 @@ func TestListReferenceEntityAliasesByScopeUsesOneScopedQuery(t *testing.T) {
 		WithArgs("work-1", "continuity-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"alias_id", "work_id", "continuity_id", "entity_id", "alias_text", "normalized_alias", "language_code", "created_at",
-		}).AddRow(1, "work-1", "continuity-1", "entity-1", "미라", "미라", "ko", now))
+		}).AddRow(1, "work-1", "continuity-1", "entity-1", "베라", "베라", "ko", now))
 	items, err := store.ListReferenceEntityAliasesByScope(context.Background(), "work-1", "continuity-1")
-	if err != nil || len(items) != 1 || items[0].AliasText != "미라" {
+	if err != nil || len(items) != 1 || items[0].AliasText != "베라" {
 		t.Fatalf("aliases=%#v err=%v", items, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

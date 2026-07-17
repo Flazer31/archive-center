@@ -38,12 +38,13 @@ runtime contained 79 `*.dist-info` package records and 109 package-level
 license or notice files. Those embedded files are authoritative for the exact
 runtime build.
 
-The audit found two packages whose installed metadata identifies an Apache
-License 2.0 license but whose installed `*.dist-info` directories did not
-contain a package-local license file: `flatbuffers` 25.12.19 and `tokenizers`
-0.23.1. A public package must add the applicable upstream license text for
-these exact versions before distribution. This notice does not substitute for
-those missing license files.
+The audited upstream runtime omitted package-local license files for
+`flatbuffers` 25.12.19 and `tokenizers` 0.23.1 even though their installed
+metadata identifies the Apache License 2.0. Archive Center retains the
+unmodified Apache License 2.0 text at `licenses/Apache-2.0.txt`. The Windows
+package builder copies that text into both exact `*.dist-info/licenses`
+directories and stops the build if either dependency metadata directory or
+the license text is missing.
 
 ### CPython runtime
 

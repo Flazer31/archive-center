@@ -14,7 +14,7 @@ func TestReferenceCoverageApplicationInjectsOnlyPartialAndMissingWithoutSyntheti
 			binding: store.SessionReferenceBinding{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", Priority: 10},
 			work:    &store.ReferenceWork{WorkID: "work-1", Title: "Example"},
 			entities: map[string]store.ReferenceEntity{
-				"entity-mira": {EntityID: "entity-mira", CanonicalName: "Mira", DescriptionText: "Leader of HUNTR/X."},
+				"entity-bera": {EntityID: "entity-bera", CanonicalName: "Bera", DescriptionText: "Leader of Aster Unit."},
 			},
 			claims: map[string]store.ReferenceClaim{
 				"claim-gate": {ClaimID: "claim-gate", DocumentID: "doc-1", ClaimText: "The gate opens only at night.", EvidenceExcerpt: "At midnight, the eastern gate opened.", MetadataJSON: `{"chunk_index":2,"evidence_grounded":true}`},
@@ -29,7 +29,7 @@ func TestReferenceCoverageApplicationInjectsOnlyPartialAndMissingWithoutSyntheti
 	fieldIndex := newReferenceCoverageFieldIndexSummary()
 	fieldIndex.NeededSourceItems = []referenceCoverageNeededSource{
 		{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceKind: "claim", SourceID: "claim-gate", CoverageStatus: "partial", MissingFields: []string{"claim_text"}, NeededBy: []string{"explicit_user_subject_mention"}, Eligible: true},
-		{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceKind: "entity", SourceID: "entity-mira", CoverageStatus: "missing", MissingFields: []string{"identity_name", "description_text"}, NeededBy: []string{"recent_completed_dialogue"}, Eligible: true},
+		{BindingID: "binding-1", WorkID: "work-1", ContinuityID: "continuity-1", ReferenceKind: "entity", SourceID: "entity-bera", CoverageStatus: "missing", MissingFields: []string{"identity_name", "description_text"}, NeededBy: []string{"recent_completed_dialogue"}, Eligible: true},
 		{BindingID: "binding-1", ReferenceKind: "claim", SourceID: "covered", CoverageStatus: "covered", Eligible: true},
 		{BindingID: "binding-1", ReferenceKind: "claim", SourceID: "conflict", CoverageStatus: "conflict", Eligible: true},
 		{BindingID: "binding-1", ReferenceKind: "claim", SourceID: "unknown", CoverageStatus: "unknown", Eligible: true},
@@ -52,7 +52,7 @@ func TestReferenceCoverageApplicationInjectsOnlyPartialAndMissingWithoutSyntheti
 	if !containsAll(formatted.Text, "Structured: The gate opens only at night.", "Original excerpt: At midnight, the eastern gate opened.") || formatted.IncludedCount != 1 {
 		t.Fatalf("combined source injection = %#v", formatted)
 	}
-	if items[1].SourceID != "entity-mira" || items[1].SelectionSource != "coverage_field_index" || items[1].ChromaRank != nil || items[1].Distance != nil || items[1].CosineSimilarity != nil {
+	if items[1].SourceID != "entity-bera" || items[1].SelectionSource != "coverage_field_index" || items[1].ChromaRank != nil || items[1].Distance != nil || items[1].CosineSimilarity != nil {
 		t.Fatalf("field index item received a synthetic Chroma score: %#v", items[1])
 	}
 	if summary.SkippedStatusCounts["covered"] != 1 || summary.SkippedStatusCounts["conflict"] != 1 || summary.SkippedStatusCounts["unknown"] != 1 || summary.SkippedNoSceneNeed != 1 {
