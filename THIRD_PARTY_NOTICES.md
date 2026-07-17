@@ -38,6 +38,13 @@ runtime contained 79 `*.dist-info` package records and 109 package-level
 license or notice files. Those embedded files are authoritative for the exact
 runtime build.
 
+The audit found two packages whose installed metadata identifies an Apache
+License 2.0 license but whose installed `*.dist-info` directories did not
+contain a package-local license file: `flatbuffers` 25.12.19 and `tokenizers`
+0.23.1. A public package must add the applicable upstream license text for
+these exact versions before distribution. This notice does not substitute for
+those missing license files.
+
 ### CPython runtime
 
 - Project: https://www.python.org/
@@ -45,10 +52,21 @@ runtime build.
   historical licenses included with CPython
 - License retained at: `runtime/ChromaDB/LICENSE.txt`
 
-## Go modules compiled into Archive Center binaries
+## Go modules used by Archive Center source and release tools
 
 The precise versions are declared in `go-service/go.mod` and
-`go-service/go.sum`.
+`go-service/go.sum`. The table is an inventory of the source module graph; it
+does not mean that every module is linked into every release executable.
+
+The standard Windows package executables audited for this release
+(`archive-center-go`, `archive-center-updater`, and `mariadb-schema`) use the
+following external modules: `filippo.io/edwards25519`,
+`github.com/go-ole/go-ole`, `github.com/go-sql-driver/mysql`,
+`github.com/shirou/gopsutil/v3`, `github.com/yusufpapurcu/wmi`, and
+`golang.org/x/sys`. Their upstream license files were present in the Go module
+cache used for the audit. Other entries below are used by tests, transitive
+source dependencies, or optional migration tools and may not be present in a
+standard release binary.
 
 | Module | Version | License |
 | --- | --- | --- |
