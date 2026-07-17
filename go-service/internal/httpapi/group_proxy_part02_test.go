@@ -480,9 +480,9 @@ func TestConfigUpdateProjectGUISettingsTraceMasksSecrets(t *testing.T) {
 	srv := setupTestServer()
 	srv.RegisterRoutes(mux)
 
-	const mainKey = "sk-main-secret-seq02"
-	const criticKey = "sk-critic-secret-seq02"
-	const embeddingKey = "sk-embedding-secret-seq02"
+	const mainKey = "test-main-secret-seq02"
+	const criticKey = "test-critic-secret-seq02"
+	const embeddingKey = "test-embedding-secret-seq02"
 	updateReq := httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader([]byte(`{
 		"mainProvider":"ollama",
 		"mainApiKey":"`+mainKey+`",
