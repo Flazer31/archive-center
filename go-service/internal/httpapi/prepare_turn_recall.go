@@ -1880,6 +1880,40 @@ func prepareTurnVectorSourceRowID(hit map[string]any) int64 {
 	return 0
 }
 
+func prepareTurnVectorHistoryRowIDs(vectorShadow map[string]any) ([]int64, []int64) {
+	memoryIDs := []int64{}
+	evidenceIDs := []int64{}
+	seenMemory := map[int64]bool{}
+	seenEvidence := map[int64]bool{}
+	for _, hit := range prepareTurnVectorSearchResultMaps(vectorShadow["search_results"]) {
+		score, ok := prepareTurnVectorHitSimilarity(hit)
+		if !ok || !prepareTurnVectorSimilarityEligible(score, stringFromMap(hit, "similarity_source")) {
+			continue
+		}
+		id := prepareTurnVectorSourceRowID(hit)
+		if id <= 0 {
+			continue
+		}
+		if prepareTurnVectorHitLooksLikeMemory(hit) {
+			if !seenMemory[id] {
+				seenMemory[id] = true
+				memoryIDs = append(memoryIDs, id)
+			}
+			continue
+		}
+		sourceTable := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "source_table")))
+		tier := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "tier")))
+		hitID := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "id")))
+		if sourceTable == "direct_evidence_records" || tier == "evidence" || strings.HasPrefix(hitID, "evidence:") {
+			if !seenEvidence[id] {
+				seenEvidence[id] = true
+				evidenceIDs = append(evidenceIDs, id)
+			}
+		}
+	}
+	return memoryIDs, evidenceIDs
+}
+
 func mergePrepareTurnVectorArtifactCounters(counts map[string]any, hydration prepareTurnVectorArtifactHydration, directEvidenceInjected bool, directEvidenceLineCount, worldRuleLineCount int) {
 	if counts == nil {
 		return

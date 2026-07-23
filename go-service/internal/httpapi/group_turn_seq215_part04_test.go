@@ -28,20 +28,20 @@ func TestSeq215P778JSInjectionBudgetOwner(t *testing.T) {
 	if s["version"] != "s215-p778.v1" {
 		t.Fatalf("version=%v, want s215-p778.v1", s["version"])
 	}
-	if s["owner"] != "js_runtime" {
-		t.Fatalf("owner=%v, want js_runtime", s["owner"])
+	if s["owner"] != "go_backend" {
+		t.Fatalf("owner=%v, want go_backend", s["owner"])
 	}
-	if s["responsibility"] != "injection_budget_application" {
-		t.Fatalf("responsibility=%v, want injection_budget_application", s["responsibility"])
+	if s["responsibility"] != "payload_application_plan_budget_decision" {
+		t.Fatalf("responsibility=%v, want payload_application_plan_budget_decision", s["responsibility"])
 	}
 	source := seq215ArchiveCenterJSSource(t)
 	seq215RequireJSSourceContains(t, source,
-		"function assembleInjectionWithBudget(",
-		"const budgetResult = backendMemoryDeliveryPlan ? {",
-		"} : assembleInjectionWithBudget(",
+		"return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);",
+		"plan.apply_rule === \"apply_exact_text_without_reassembly\"",
+		"injectionTextSource: \"go_payload_application_plan.v1\"",
 	)
-	if s["mode"] != "seq215_js_injection_budget_owner_definition" {
-		t.Fatalf("mode=%v, want seq215_js_injection_budget_owner_definition", s["mode"])
+	if s["mode"] != "go_payload_application_plan_owner" {
+		t.Fatalf("mode=%v, want go_payload_application_plan_owner", s["mode"])
 	}
 }
 
@@ -65,20 +65,20 @@ func TestSeq215P779JSInputContextSlottingOwner(t *testing.T) {
 	if s["version"] != "s215-p779.v1" {
 		t.Fatalf("version=%v, want s215-p779.v1", s["version"])
 	}
-	if s["owner"] != "js_runtime" {
-		t.Fatalf("owner=%v, want js_runtime", s["owner"])
+	if s["owner"] != "go_backend" {
+		t.Fatalf("owner=%v, want go_backend", s["owner"])
 	}
-	if s["responsibility"] != "input_context_slotting" {
-		t.Fatalf("responsibility=%v, want input_context_slotting", s["responsibility"])
+	if s["responsibility"] != "input_context_text_decision" {
+		t.Fatalf("responsibility=%v, want input_context_text_decision", s["responsibility"])
 	}
 	source := seq215ArchiveCenterJSSource(t)
 	seq215RequireJSSourceContains(t, source,
-		"function buildInputContext(",
-		"_ip.input_context_text",
-		"inputCtx = buildInputContext(",
+		"const inputContextText = String(plan.input_context_text || \"\")",
+		"injectInputContextBeforeUser(finalPayload, inputContextText)",
+		"source: \"go_payload_application_plan.v1\"",
 	)
-	if s["mode"] != "seq215_js_input_context_slotting_owner_definition" {
-		t.Fatalf("mode=%v, want seq215_js_input_context_slotting_owner_definition", s["mode"])
+	if s["mode"] != "go_input_context_owner" {
+		t.Fatalf("mode=%v, want go_input_context_owner", s["mode"])
 	}
 }
 
@@ -102,20 +102,20 @@ func TestSeq215P780JSProtectionBlocksOwner(t *testing.T) {
 	if s["version"] != "s215-p780.v1" {
 		t.Fatalf("version=%v, want s215-p780.v1", s["version"])
 	}
-	if s["owner"] != "js_runtime" {
-		t.Fatalf("owner=%v, want js_runtime", s["owner"])
+	if s["owner"] != "go_backend" {
+		t.Fatalf("owner=%v, want go_backend", s["owner"])
 	}
-	if s["responsibility"] != "protection_blocks" {
-		t.Fatalf("responsibility=%v, want protection_blocks", s["responsibility"])
+	if s["responsibility"] != "protection_text_assembly" {
+		t.Fatalf("responsibility=%v, want protection_text_assembly", s["responsibility"])
 	}
 	source := seq215ArchiveCenterJSSource(t)
 	seq215RequireJSSourceContains(t, source,
-		"protection: protection",
-		"baseRulesIncluded",
-		"reliabilityGuardIncluded",
+		"payload_application_plan",
+		"apply_exact_text_without_reassembly",
+		"return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);",
 	)
-	if s["mode"] != "seq215_js_protection_blocks_owner_definition" {
-		t.Fatalf("mode=%v, want seq215_js_protection_blocks_owner_definition", s["mode"])
+	if s["mode"] != "go_protection_text_owner" {
+		t.Fatalf("mode=%v, want go_protection_text_owner", s["mode"])
 	}
 }
 

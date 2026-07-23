@@ -61,16 +61,11 @@ func TestArchiveCenterJSSeq165P143TransparencyPreviewRuntimeTraceExtendMarkers(t
 func TestArchiveCenterJSSeq165P144HandoffAnchorMetadataAlignmentMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"buildInputContext(orchResult._userInput || \"\", orchResult, _ip ? (_ip.input_context_text || \"\") : \"\"",
-		"inputCtx = buildInputContext(orchResult._userInput || \"\", orchResult, _ip ? (_ip.input_context_text || \"\") : \"\", {",
-		"injectionTextSource: _ip ? \"bundle\" : \"local\"",
-		"const _ip = orchResult._injectionPack || null",
-		"const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult, sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK))",
-		"const kgText = (_ip && _ip.kg_text) ? _ip.kg_text : formatKGBlock(kgRecallResult)",
-		"const fallbackText = (_ip && _ip.fallback_text) ? _ip.fallback_text : (includeFallback ? formatFallbackBlock(searchResult) : \"\")",
-		"const latestDirectEvidenceText = (_ip && _ip.latest_direct_evidence_text) ? String(_ip.latest_direct_evidence_text) : \"\"",
-		"const recentRawTurnText = (_ip && _ip.recent_raw_turn_text) ? String(_ip.recent_raw_turn_text) : \"\"",
-		"const canonicalStateLayerText = (_ip && _ip.canon_text) ? String(_ip.canon_text) : \"\"",
+		"const inputContextText = String(plan.input_context_text || \"\")",
+		"injectInputContextBeforeUser(finalPayload, inputContextText)",
+		"injectionTextSource: \"go_payload_application_plan.v1\"",
+		"input_context_hash",
+		"apply_exact_text_without_reassembly",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {

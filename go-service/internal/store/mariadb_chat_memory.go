@@ -76,6 +76,21 @@ func (m *mariadbStore) ListChatLogs(ctx context.Context, chatSessionID string, f
 	return out, rows.Err()
 }
 
+func (m *mariadbStore) LatestSessionTurnIndex(ctx context.Context, chatSessionID string) (int, error) {
+	if err := m.ensureDB(); err != nil {
+		return 0, err
+	}
+	var latest int
+	if err := m.db.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(turn_index), 0)
+		FROM chat_logs
+		WHERE chat_session_id = ?
+	`, chatSessionID).Scan(&latest); err != nil {
+		return 0, err
+	}
+	return latest, nil
+}
+
 func (m *mariadbStore) SaveEffectiveInput(ctx context.Context, in *EffectiveInput) error {
 	if err := m.ensureDB(); err != nil {
 		return err
@@ -169,6 +184,62 @@ func (m *mariadbStore) ListMemories(ctx context.Context, chatSessionID string, f
 		WHERE chat_session_id = ? AND (? <= 0 OR turn_index >= ?) AND (? <= 0 OR turn_index <= ?)
 		ORDER BY turn_index ASC, id ASC
 	`, chatSessionID, fromTurn, fromTurn, toTurn, toTurn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Memory
+	for rows.Next() {
+		var item Memory
+		var summaryJSON, embedding, embeddingModel, evidence, placeWing, placeRoom sql.NullString
+		if err := rows.Scan(
+			&item.ID, &item.ChatSessionID, &item.TurnIndex, &summaryJSON, &embedding,
+			&embeddingModel, &item.Importance, &item.EmotionalBoost, &evidence,
+			&item.EmotionalIntensity, &item.NarrativeSignificance, &placeWing,
+			&placeRoom, &item.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.SummaryJSON = stringFromNull(summaryJSON)
+		item.Embedding = stringFromNull(embedding)
+		item.EmbeddingModel = stringFromNull(embeddingModel)
+		item.Evidence = stringFromNull(evidence)
+		item.PlaceWing = stringFromNull(placeWing)
+		item.PlaceRoom = stringFromNull(placeRoom)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) ListMemoriesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]Memory, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	idClause := ""
+	args := []any{chatSessionID, fromTurn, fromTurn, toTurn, toTurn}
+	if len(includeIDs) > 0 {
+		placeholders := make([]string, 0, len(includeIDs))
+		for _, id := range includeIDs {
+			if id <= 0 {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		if len(placeholders) > 0 {
+			idClause = " OR id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id, chat_session_id, turn_index, summary_json, embedding, embedding_model,
+			importance, emotional_boost, evidence, emotional_intensity,
+			narrative_significance, place_wing, place_room, created_at
+		FROM memories
+		WHERE chat_session_id = ?
+			AND (((? <= 0 OR turn_index >= ?) AND (? <= 0 OR turn_index <= ?))`+idClause+`)
+		ORDER BY turn_index ASC, id ASC
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -460,6 +531,68 @@ func (m *mariadbStore) ListEvidence(ctx context.Context, chatSessionID string) (
 	return out, rows.Err()
 }
 
+func (m *mariadbStore) ListEvidenceRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]DirectEvidence, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	idClause := ""
+	args := []any{chatSessionID, fromTurn, fromTurn, toTurn, toTurn}
+	if len(includeIDs) > 0 {
+		placeholders := make([]string, 0, len(includeIDs))
+		for _, id := range includeIDs {
+			if id <= 0 {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		if len(placeholders) > 0 {
+			idClause = " OR id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id, chat_session_id, evidence_kind, evidence_text, source_turn_start, source_turn_end,
+			turn_anchor, source_message_ids_json, source_hash, archive_state, capture_stage,
+			capture_verification, committed_gate, lineage_json, repair_needed, tombstoned,
+			superseded_by_id, created_at
+		FROM direct_evidence_records
+		WHERE chat_session_id = ?
+			AND (
+				((? <= 0 OR GREATEST(source_turn_start, source_turn_end, COALESCE(turn_anchor, 0)) >= ?)
+			 AND (? <= 0 OR GREATEST(source_turn_start, source_turn_end, COALESCE(turn_anchor, 0)) <= ?))`+idClause+`
+			)
+		ORDER BY source_turn_start ASC, id ASC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DirectEvidence
+	for rows.Next() {
+		var item DirectEvidence
+		var turnAnchor, supersededByID sql.NullInt64
+		var sourceMessageIDsJSON, sourceHash, committedGate, lineageJSON sql.NullString
+		if err := rows.Scan(
+			&item.ID, &item.ChatSessionID, &item.EvidenceKind, &item.EvidenceText,
+			&item.SourceTurnStart, &item.SourceTurnEnd, &turnAnchor,
+			&sourceMessageIDsJSON, &sourceHash, &item.ArchiveState, &item.CaptureStage,
+			&item.CaptureVerification, &committedGate, &lineageJSON, &item.RepairNeeded,
+			&item.Tombstoned, &supersededByID, &item.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.TurnAnchor = intFromNull(turnAnchor)
+		item.SourceMessageIDsJSON = stringFromNull(sourceMessageIDsJSON)
+		item.SourceHash = stringFromNull(sourceHash)
+		item.CommittedGate = stringFromNull(committedGate)
+		item.LineageJSON = stringFromNull(lineageJSON)
+		item.SupersededByID = int64FromNull(supersededByID)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (m *mariadbStore) SaveKGTriple(ctx context.Context, t *KGTriple) error {
 	if err := m.ensureDB(); err != nil {
 		return err
@@ -481,6 +614,41 @@ func (m *mariadbStore) ListKGTriples(ctx context.Context, chatSessionID string) 
 		WHERE chat_session_id = ?
 		ORDER BY id ASC
 	`, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []KGTriple
+	for rows.Next() {
+		var item KGTriple
+		var validFrom, validTo, sourceTurn sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.ChatSessionID, &item.Subject, &item.Predicate,
+			&item.Object, &validFrom, &validTo, &sourceTurn, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.ValidFrom = intFromNull(validFrom)
+		item.ValidTo = intFromNull(validTo)
+		item.SourceTurn = intFromNull(sourceTurn)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) ListKGTriplesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]KGTriple, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id, chat_session_id, subject, predicate, object, valid_from, valid_to, source_turn, created_at
+		FROM kg_triples
+		WHERE chat_session_id = ?
+			AND (
+				valid_to IS NULL OR valid_to = 0
+				OR ((? <= 0 OR source_turn >= ?) AND (? <= 0 OR source_turn <= ?))
+			)
+		ORDER BY id ASC
+	`, chatSessionID, fromTurn, fromTurn, toTurn, toTurn)
 	if err != nil {
 		return nil, err
 	}

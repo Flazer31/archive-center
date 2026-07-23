@@ -709,7 +709,7 @@ func TestHandleSupervisorFailOpenOnRuntimeLLMError(t *testing.T) {
 		t.Fatalf("config/update status = %d, body=%s", updateRec.Code, updateRec.Body.String())
 	}
 
-	body := `{"chat_session_id":"sess-sv-fail","guide_mode":"strict","narrative_stance":"immersive","auto_advance_trigger":"none","wake_up_context":"hello","persistent_guidance":"be kind","context_messages":[{"role":"user","content":"move forward"}]}`
+	body := `{"chat_session_id":"sess-sv-fail","guide_mode":"standard","guide_strength":"weak","narrative_stance":"immersive","auto_advance_trigger":"none","wake_up_context":"hello","persistent_guidance":"be kind","response_execution_contract":{"contract_version":"response_execution_contract.v1","status":"ready","active":true,"source_refs":{"all":["input:test"],"current_input":["input:test"],"native_system":[]}},"context_messages":[{"role":"user","content":"move forward"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/supervisor", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -734,6 +734,66 @@ func TestHandleSupervisorFailOpenOnRuntimeLLMError(t *testing.T) {
 	}
 	if trace["llm_call"] != "failed" || trace["fail_open"] != true {
 		t.Fatalf("trace did not expose failed fail-open call: %+v", trace)
+	}
+}
+
+func TestHandleSupervisorSkipsRuntimeLLMWithoutExecutionContract(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.RegisterRoutes(mux)
+
+	callCount := 0
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		callCount++
+		t.Fatalf("supervisor upstream must not be called without a ready execution contract")
+		return nil, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader([]byte(`{
+		"supervisorProvider":"openai",
+		"supervisorApiKey":"sk-supervisor-gated",
+		"supervisorEndpoint":"https://api.example.com/v1",
+		"supervisorModel":"supervisor-model",
+		"supervisorTimeout":30
+	}`)))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRec := httptest.NewRecorder()
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("config/update status = %d, body=%s", updateRec.Code, updateRec.Body.String())
+	}
+
+	body := `{"chat_session_id":"sess-sv-gated","guide_mode":"standard","guide_strength":"strong","context_messages":[{"role":"user","content":"move forward"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/supervisor", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected gated status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if callCount != 0 {
+		t.Fatalf("supervisor upstream call count = %d, want 0", callCount)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode gated response: %v", err)
+	}
+	if resp["source"] != "execution_contract_gate" || resp["would_call_llm"] != false {
+		t.Fatalf("unexpected execution-contract gate response: %+v", resp)
+	}
+	result := mapFromAny(resp["supervisor_result"])
+	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+	if proposal["status"] != "degraded_missing_execution_contract" ||
+		proposal["reason_code"] != "supervisor_execution_contract_missing" {
+		t.Fatalf("missing execution contract did not produce bounded degraded result: %+v", proposal)
+	}
+	if len(anySliceFromAny(proposal["fidelity_warnings"])) != 0 ||
+		len(anySliceFromAny(proposal["portrayal_notes"])) != 0 ||
+		len(anySliceFromAny(proposal["may_advance"])) != 0 {
+		t.Fatalf("gated proposal delivered unsupported items: %+v", proposal)
 	}
 }
 

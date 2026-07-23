@@ -166,30 +166,17 @@ func TestArchiveCenterJSConsumesReferenceLaneOutsideMainInjectionBudget(t *testi
 		`reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,`,
 		`reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),`,
 		`reference_injection_enabled: settings.injectionEnabled !== false,`,
-		`const primaryCanonBaseText = (_ip && _ip.primary_canon_base_text) ? String(_ip.primary_canon_base_text).trim() : "";`,
-		`const referenceInjectionText = [primaryCanonBaseText, referenceText].filter(Boolean).join("\n\n");`,
-		`const effectiveAuxiliaryText = [referenceInjectionText, fullInjectionText].filter(Boolean).join("\n\n");`,
-		`injectAuxiliaryBlock(payload, effectiveAuxiliaryText)`,
-		`primaryCanonBaseIncluded: injected && primaryCanonBaseText.length > 0`,
+		`payloadApplicationPlan: result.payload_application_plan`,
+		`const auxiliaryText = String(plan.auxiliary_text || "")`,
+		`injectAuxiliaryBlock(finalPayload, auxiliaryText)`,
+		`referenceIncluded: !!(laneByKey.original_work && laneByKey.original_work.applied)`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing primary Canon Base host-consumption marker %q", marker)
 		}
 	}
-	budgetStart := strings.Index(src, `const backendMemoryDeliveryPlan =`)
-	if budgetStart < 0 {
-		t.Fatal("Archive Center.js Go memory delivery plan consumption start missing")
-	}
-	budgetEnd := strings.Index(src[budgetStart:], `const chapterDelivered =`)
-	if budgetEnd < 0 {
-		t.Fatal("Archive Center.js main injection budget assembly end missing")
-	}
-	budgetCall := src[budgetStart : budgetStart+budgetEnd]
-	if strings.Contains(budgetCall, "primaryCanonBaseText") || strings.Contains(budgetCall, "referenceText") {
-		t.Fatal("the reference lane must remain outside the Go memory delivery plan")
-	}
-	if strings.Contains(src, "trimBySections(primaryCanonBaseText") || strings.Contains(src, "trimBySections(referenceText") {
-		t.Fatal("the reference lane must not be re-trimmed by the host adapter")
+	if strings.Contains(src, "await runSupervisor(") {
+		t.Fatal("host adapter must not create a second supervisor path")
 	}
 }
 
@@ -547,7 +534,7 @@ func TestSeq01NarrativeGuideAutoTraceDashboardAndLegacyCleanupMarkers(t *testing
 		`narrativeGuideMode: "auto"`,
 		`"settings.label.narrativeGuideMode.help": "Auto mode combines recent input, scene pressure, emotional intensity, combat, and relationship signals, then exposes the resolved mode in trace and dashboard."`,
 		`let _guideModeRuntimeCache = { lastMode: null, lastProbe: "", consecutiveSame: 0 };`,
-		`result._guideModeBasis = "auto_inferred";`,
+		`const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)`,
 		`guideModeBasis: (supervisorResult && supervisorResult._guideModeBasis) || "manual"`,
 		`const guideModeDashboardState = lastGuideSupervisor && lastGuideSupervisor.guideMode`,
 		`guide_mode_state: guideModeDashboardState`,

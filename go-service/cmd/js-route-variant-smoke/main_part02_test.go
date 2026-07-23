@@ -276,10 +276,10 @@ func TestArchiveCenterJSFinalPayloadParityMarkers(t *testing.T) {
 func TestArchiveCenterJSBackendOwnsInputContextAndVerifiedPreview(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, needle := range []string{
-		"backendOwned: !!_ip",
-		"helperContext.backendOwned === true",
-		`slotGovernorPolicyVersion: "go_owned_input_context.v1"`,
-		`slotGovernorMode: "backend_verbatim_apply"`,
+		"return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);",
+		`plan.owner === "go"`,
+		`plan.apply_rule === "apply_exact_text_without_reassembly"`,
+		`injectInputContextBeforeUser(finalPayload, inputContextText)`,
 		"pre_request_payload_verification_missing_or_mismatch",
 	} {
 		if !strings.Contains(src, needle) {
@@ -421,21 +421,25 @@ func TestArchiveCenterJSPrepareTurnInjectionPackMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"function applyContextInjection(payload, orchResult)",
-		"const _ip = orchResult._injectionPack || null",
-		"const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult, sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK))",
-		"const kgText = (_ip && _ip.kg_text) ? _ip.kg_text : formatKGBlock(kgRecallResult)",
-		"const fallbackText = (_ip && _ip.fallback_text) ? _ip.fallback_text : (includeFallback ? formatFallbackBlock(searchResult) : \"\")",
-		"const latestDirectEvidenceText = (_ip && _ip.latest_direct_evidence_text) ? String(_ip.latest_direct_evidence_text) : \"\"",
-		"const recentRawTurnText = (_ip && _ip.recent_raw_turn_text) ? String(_ip.recent_raw_turn_text) : \"\"",
-		"const canonicalStateLayerText = (_ip && _ip.canon_text) ? String(_ip.canon_text) : \"\"",
-		"assembleInjectionWithBudget(",
-		"injectionTextSource: _ip ? \"bundle\" : \"local\"",
-		"buildInputContext(orchResult._userInput || \"\", orchResult, _ip ? (_ip.input_context_text || \"\") : \"\"",
+		"return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);",
+		"function applyGoPayloadApplicationPlan(payload, orchResult, emptyResult)",
+		"plan.apply_rule === \"apply_exact_text_without_reassembly\"",
+		"injectionTextSource: \"go_payload_application_plan.v1\"",
+		"const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)",
+		"payloadApplicationPlan: result.payload_application_plan",
+		"narrative_support_max_chars:",
+		"const injectionPack = orchResult && orchResult._injectionPack",
+		`response_projection: "prepare_turn.production_compact.v1"`,
+		`responseProjection: result.response_projection || ""`,
+		`source: "prepare_turn.production_compact.v1"`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing prepare-turn injection pack marker %q", needle)
 		}
+	}
+	if strings.Contains(src, "await runSupervisor(") {
+		t.Fatal("Archive Center.js still performs a separate supervisor call after /prepare-turn")
 	}
 }
 
@@ -754,9 +758,9 @@ func TestArchiveCenterJSInitiativeControlLatestEquivalentMarkers(t *testing.T) {
 		`$("mo-storyNarrativeStance").value = settings.storyNarrativeStance || "balanced";`,
 		"function buildInitiativeModeSuffix(mode)",
 		"function buildInitiativeModeBounds(mode)",
-		`narrative_stance: narrativeStance`,
-		`narrative_stance_suffix: initiativeSuffix || ""`,
-		"narrative_stance_bounds: initiativeBounds",
+		`narrative_stance: settings.storyNarrativeStance || "balanced"`,
+		"supervisorResult:   result.supervisor_result",
+		"const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)",
 		"extractNarrativeStanceSummary(_narrativeStance)",
 		"initiativeSummaryRaw",
 		"initiativeSuffixRaw",
@@ -830,7 +834,7 @@ func TestArchiveCenterJSSeq07PersistentGuidanceMaintenanceMarkers(t *testing.T) 
 		"guidanceTransitionRaw:",
 		"[DEBUG] Guidance Transition (K-4d)",
 		"[DEBUG] Auto-advance Hint (L-4b)",
-		"auto_advance_trigger: autoAdvanceTrigger || \"none\"",
+		"continuity_trigger_mode: (continuityInfo && continuityInfo.triggerMode)",
 		"autoAdvanceHintApplied: !!_autoAdvanceHint",
 		"Treat this as a gentle nudge only",
 		"never override explicit user input",
@@ -1033,9 +1037,9 @@ func TestArchiveCenterJSReusesCompletePreparedStoreSections(t *testing.T) {
 		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "storylines")`,
 		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "characters")`,
 		`sessionSnapshotSectionIsComplete(_aggregateSnapshot, "pending_threads")`,
-		"const storylineText = formatStorylineBlock(storylineResult);",
-		"const characterBaseText = formatCharacterBlock(characterResult);",
-		"const pendingThreadText = formatPendingThreadBlock(pendingThreadsResult",
+		"payloadApplicationPlan: result.payload_application_plan",
+		"supervisorResult:   result.supervisor_result",
+		"return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);",
 	}
 	for _, marker := range required {
 		if !strings.Contains(src, marker) {
@@ -1180,12 +1184,10 @@ func TestArchiveCenterJSMomentumPacketSupervisorAndTraceMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"// M-2c: supervisor input pack (persistent guidance + guide/initiative + momentum)",
-		"// I-2c: momentum packet 조건부 fetch",
-		"momentumPacket   = optSupervisorPack.momentum_packet   || null;",
-		`bridgeFetch("/momentum-packet/" + encodeURIComponent(sessionId)`,
-		"momentum_packet: momentumPacket || null",
-		"result._momentumApplied = true;",
-		"result._momentumPacketStatus = momentumPacket.packet_status || null;",
+		"supervisorInputPack: result.supervisor_input_pack",
+		"supervisorResult:   result.supervisor_result",
+		"const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)",
+		"payloadApplicationPlan: result.payload_application_plan",
 		"trace.momentum = {",
 		"packetStatus: (supervisorResult && supervisorResult._momentumPacketStatus) || null",
 		`rows.push(r("Momentum"`,

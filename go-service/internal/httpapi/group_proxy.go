@@ -101,6 +101,27 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 	trace["would_write"] = false
 	llmCfg := s.supervisorLLMConfig()
 	if llmCfg.hasConfig() {
+		if ready, reasonCode := supervisorExecutionContractReady(supervisorPack); !ready {
+			result, proposalTrace := buildBoundedSupervisorResult(nil, supervisorPack)
+			trace["llm_call"] = "skipped"
+			trace["fail_open"] = true
+			trace["reason_code"] = reasonCode
+			trace["proposal_contract"] = proposalTrace
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":                "partial",
+				"source":                "execution_contract_gate",
+				"note":                  "POST /supervisor skipped the LLM because no ready source-backed execution contract was available",
+				"chat_session_id":       sid,
+				"supervisor_input_pack": supervisorPack,
+				"would_call_llm":        false,
+				"would_write":           false,
+				"upstream_write":        "disabled",
+				"supervisor_result":     result,
+				"fail_open":             true,
+				"trace_summary":         trace,
+			})
+			return
+		}
 		result, llmTrace, err := s.runSupervisorLLM(r.Context(), sid, supervisorPack, req.SupervisorRequest, llmCfg)
 		trace["would_call_llm"] = true
 		trace["llm_call"] = "executed"
@@ -278,9 +299,6 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	strength := normalizeNarrativeGuideStrength(extractionStringFromAny(supervisorPack["guide_strength"]))
 	coverage := supervisorProposalCoverage(strength)
 	executionContract := mapFromAny(supervisorPack["response_execution_contract"])
-	contractReady := extractionStringFromAny(executionContract["contract_version"]) == "response_execution_contract.v1" &&
-		extractionStringFromAny(executionContract["status"]) == "ready" &&
-		boolFromAny(executionContract["active"])
 
 	sourceRefs := mapFromAny(executionContract["source_refs"])
 	allowedRefList := append([]string{}, stringSliceFromAny(sourceRefs["all"])...)
@@ -292,6 +310,7 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 			allowedRefs[ref] = struct{}{}
 		}
 	}
+	contractReady, contractReasonCode := supervisorExecutionContractReady(supervisorPack)
 
 	proposal := map[string]any{
 		"contract_version":   "supervisor_scene_proposal.v2",
@@ -325,8 +344,8 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	}
 	if !contractReady {
 		proposal["status"] = "degraded_missing_execution_contract"
-		proposal["reason_code"] = "supervisor_execution_contract_missing"
-		trace["reason_code"] = "supervisor_execution_contract_missing"
+		proposal["reason_code"] = contractReasonCode
+		trace["reason_code"] = contractReasonCode
 		return boundedSupervisorEnvelope(proposal), trace
 	}
 	if strength == "none" {
@@ -372,6 +391,25 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	trace["rejected_items"] = rejectedTotal
 	trace["raw_legacy_fields_discarded"] = len(rawProposal) == 0
 	return boundedSupervisorEnvelope(proposal), trace
+}
+
+func supervisorExecutionContractReady(supervisorPack map[string]any) (bool, string) {
+	executionContract := mapFromAny(supervisorPack["response_execution_contract"])
+	if extractionStringFromAny(executionContract["contract_version"]) != "response_execution_contract.v1" ||
+		extractionStringFromAny(executionContract["status"]) != "ready" ||
+		!boolFromAny(executionContract["active"]) {
+		return false, "supervisor_execution_contract_missing"
+	}
+	sourceRefs := mapFromAny(executionContract["source_refs"])
+	refs := append([]string{}, stringSliceFromAny(sourceRefs["all"])...)
+	refs = appendUniqueStringValues(refs, stringSliceFromAny(sourceRefs["current_input"])...)
+	refs = appendUniqueStringValues(refs, stringSliceFromAny(sourceRefs["native_system"])...)
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) != "" {
+			return true, ""
+		}
+	}
+	return false, "supervisor_execution_contract_has_no_source_refs"
 }
 
 func boundedSupervisorEnvelope(proposal map[string]any) map[string]any {

@@ -129,6 +129,33 @@ func TestBuildBoundedSupervisorResultRequiresExecutionContract(t *testing.T) {
 	}
 }
 
+func TestBuildBoundedSupervisorResultRequiresAtLeastOneExecutionSourceRef(t *testing.T) {
+	pack := supervisorBoundaryTestPack("strong")
+	contract := mapFromAny(pack["response_execution_contract"])
+	contract["source_refs"] = map[string]any{
+		"all":           []string{},
+		"current_input": []string{},
+		"native_system": []string{},
+	}
+	result, trace := buildBoundedSupervisorResult(
+		map[string]any{"supervisor_scene_proposal": map[string]any{
+			"fidelity_warnings": []any{map[string]any{"text": "must not pass", "source_refs": []any{"input:latest"}}},
+		}},
+		pack,
+	)
+	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+	if proposal["status"] != "degraded_missing_execution_contract" ||
+		proposal["reason_code"] != "supervisor_execution_contract_has_no_source_refs" {
+		t.Fatalf("empty execution refs did not degrade: %#v", proposal)
+	}
+	if got := len(anySliceFromAny(proposal["fidelity_warnings"])); got != 0 {
+		t.Fatalf("unsupported proposal passed without execution refs: %#v", proposal)
+	}
+	if trace["contract_ready"] != false {
+		t.Fatalf("contract trace = %#v, want not ready", trace)
+	}
+}
+
 func supervisorBoundaryTestPack(strength string) map[string]any {
 	return map[string]any{
 		"guide_strength": strength,

@@ -555,6 +555,19 @@ type CharacterStateHistoryStore interface {
 	ListCharacterStateHistory(ctx context.Context, chatSessionID, characterName string, limit, offset int) ([]CharacterState, error)
 }
 
+// PrepareTurnRangeStore is an optional bounded-read extension used by the
+// production prepare-turn projection. The normal Store methods remain the
+// compatibility contract for callers that need a complete export.
+type PrepareTurnRangeStore interface {
+	LatestSessionTurnIndex(ctx context.Context, chatSessionID string) (int, error)
+	ListMemoriesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]Memory, error)
+	ListEvidenceRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]DirectEvidence, error)
+	ListKGTriplesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]KGTriple, error)
+	ListCharacterStatesCurrent(ctx context.Context, chatSessionID string) ([]CharacterState, error)
+	ListActiveStatesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ActiveState, error)
+	ListCanonicalStateLayersRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]CanonicalStateLayer, error)
+}
+
 // RollbackStore is an optional extension for stores that support
 // rollback, reroll, and session delete mutations.
 type RollbackStore interface {

@@ -30,51 +30,54 @@ func buildSeq215P777JSPayloadMutationOwner() map[string]any {
 	}
 }
 
-// buildSeq215P778JSInjectionBudgetOwner exposes the evidence that JS remains
-// owner of injection budget application for SEQ-21.5-P778.
+// buildSeq215P778JSInjectionBudgetOwner preserves the legacy response key while
+// reporting the current Go-owned budget and exact-application boundary.
 func buildSeq215P778JSInjectionBudgetOwner() map[string]any {
 	return map[string]any{
-		"version":         "s215-p778.v1",
-		"role":            "seq215_js_injection_budget_owner",
-		"truth_authority": false,
-		"sub_step":        "21.5-js-ownership-boundary",
-		"owner":           "js_runtime",
-		"responsibility":  "injection_budget_application",
-		"note":            "JS remains owner of injection budget application; backend does not enforce injection budgets.",
-		"policy_version":  "s215-sc.v1",
-		"mode":            "seq215_js_injection_budget_owner_definition",
+		"version":           "s215-p778.v1",
+		"role":              "seq215_js_injection_budget_owner",
+		"truth_authority":   false,
+		"sub_step":          "21.5-js-ownership-boundary",
+		"owner":             "go_backend",
+		"responsibility":    "payload_application_plan_budget_decision",
+		"js_responsibility": "apply_exact_text_without_reassembly",
+		"note":              "Go owns injection budgets and final lane text; JS applies payload_application_plan.v1 exactly.",
+		"policy_version":    "payload_application_plan.v1",
+		"mode":              "go_payload_application_plan_owner",
 	}
 }
 
-// buildSeq215P779JSInputContextSlottingOwner exposes the evidence that JS remains
-// owner of input-context slotting for SEQ-21.5-P779.
+// buildSeq215P779JSInputContextSlottingOwner preserves the legacy response key
+// while reporting the current Go-owned input-context decision.
 func buildSeq215P779JSInputContextSlottingOwner() map[string]any {
 	return map[string]any{
-		"version":         "s215-p779.v1",
-		"role":            "seq215_js_input_context_slotting_owner",
-		"truth_authority": false,
-		"sub_step":        "21.5-js-ownership-boundary",
-		"owner":           "js_runtime",
-		"responsibility":  "input_context_slotting",
-		"note":            "JS remains owner of input-context slotting; backend provides continuity data, JS decides slotting.",
-		"policy_version":  "s215-sc.v1",
-		"mode":            "seq215_js_input_context_slotting_owner_definition",
+		"version":           "s215-p779.v1",
+		"role":              "seq215_js_input_context_slotting_owner",
+		"truth_authority":   false,
+		"sub_step":          "21.5-js-ownership-boundary",
+		"owner":             "go_backend",
+		"responsibility":    "input_context_text_decision",
+		"js_responsibility": "insert_exact_text_before_latest_user",
+		"note":              "Go owns input-context selection and text; JS performs only the RisuAI payload insertion.",
+		"policy_version":    "payload_application_plan.v1",
+		"mode":              "go_input_context_owner",
 	}
 }
 
-// buildSeq215P780JSProtectionBlocksOwner exposes the evidence that JS remains
-// owner of protection blocks for SEQ-21.5-P780.
+// buildSeq215P780JSProtectionBlocksOwner preserves the legacy response key
+// while reporting that protection text is part of the Go-owned plan.
 func buildSeq215P780JSProtectionBlocksOwner() map[string]any {
 	return map[string]any{
-		"version":         "s215-p780.v1",
-		"role":            "seq215_js_protection_blocks_owner",
-		"truth_authority": false,
-		"sub_step":        "21.5-js-ownership-boundary",
-		"owner":           "js_runtime",
-		"responsibility":  "protection_blocks",
-		"note":            "JS remains owner of protection blocks; backend does not implement UI-level protection logic.",
-		"policy_version":  "s215-sc.v1",
-		"mode":            "seq215_js_protection_blocks_owner_definition",
+		"version":           "s215-p780.v1",
+		"role":              "seq215_js_protection_blocks_owner",
+		"truth_authority":   false,
+		"sub_step":          "21.5-js-ownership-boundary",
+		"owner":             "go_backend",
+		"responsibility":    "protection_text_assembly",
+		"js_responsibility": "none_beyond_exact_plan_application",
+		"note":              "Protection guidance is assembled and budgeted by Go inside the final payload plan.",
+		"policy_version":    "payload_application_plan.v1",
+		"mode":              "go_protection_text_owner",
 	}
 }
 

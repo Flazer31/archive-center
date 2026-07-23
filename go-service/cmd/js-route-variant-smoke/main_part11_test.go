@@ -30,36 +30,18 @@ func TestSourceDiscoveryRendersRecordedBridgeFailure(t *testing.T) {
 }
 
 func TestGuideNoneSkipsSupervisorCallRuntime(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for guide-off runtime fixture")
-		}
-	}
 	src := readArchiveCenterJS(t)
-	fn := extractArchiveCenterJSAsyncFunction(t, src, "runSupervisor")
-	script := fn + `
-const settings = {enabled:true,narrativeGuideStrength:"none",narrativeGuideMode:"auto"};
-let _lastSupervisorFailureReason = "old";
-let bridgeCalls = 0;
-let status = null;
-function normalizeNarrativeGuideStrength(value) { return value; }
-async function getCurrentChatSessionId() { return "session-guide-off"; }
-function updateRuntimeState(key, nextStatus, detail) { status = {key,nextStatus,detail}; }
-async function bridgeFetch() { bridgeCalls++; throw new Error("guide off called supervisor"); }
-(async function() {
-  const result = await runSupervisor([], "", "session-guide-off", "", "none", null);
-  if (result !== null || bridgeCalls !== 0) throw new Error("guide off executed supervisor transport");
-  if (!status || status.nextStatus !== "skipped" || status.detail.detail !== "guide_off") throw new Error("guide off status mismatch: "+JSON.stringify(status));
-})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("guide-off supervisor JS fixture failed: %v\n%s", err, out)
+	if strings.Contains(src, "await runSupervisor(") || strings.Contains(src, `bridgeFetch("/supervisor"`) {
+		t.Fatal("JavaScript must not perform a supervisor call outside /prepare-turn")
+	}
+	for _, marker := range []string{
+		`const guideDisabled = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength) === "none";`,
+		`supervisor_enabled: !guideDisabled`,
+		`guide_strength: settings.narrativeGuideStrength || "weak"`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("guide-off /prepare-turn gate marker missing %q", marker)
+		}
 	}
 }
 

@@ -12,6 +12,11 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
+const (
+	prepareTurnProductionProjectionV1 = "prepare_turn.production_compact.v1"
+	prepareTurnHistoryWindowTurns     = 300
+)
+
 func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	timing := newBackendTimingTrace("prepare_turn.backend_timing.v1")
 	decodeStartedAt := time.Now()
@@ -33,6 +38,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	sessionBootstrap := buildPrepareTurnSessionBootstrap(request, sid)
 	hostContextSnapshot := buildPrepareTurnRisuHostContextSnapshot(request, sid)
 	hostContextReferenceEvidence := buildPrepareTurnHostContextReferenceEvidence(hostContextSnapshot)
+	responseProjection := strings.TrimSpace(request.ResponseProjection)
 	if request.SourceDecisionOnly {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"source_contract":                 prepareSourceContract,
@@ -174,6 +180,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	turnIndex := intPtrValue(req.TurnIndex, 0)
 	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	perspectiveContext := prepareTurnPerspectiveContextFromRequest(req)
+	vectorStartedAt := time.Now()
+	vectorShadow := s.prepareTurnVectorShadow(r.Context(), req, memoryTopK)
+	timing.addElapsed("vector_recall", vectorStartedAt)
+	vectorMemoryIDs, vectorEvidenceIDs := prepareTurnVectorHistoryRowIDs(vectorShadow)
 
 	// Read assembly from Store (no writes, no LLM).
 	var memories []store.Memory
@@ -200,29 +210,66 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	readErrs := []error{}
 	readsOK := 0
 	sessionStateReads := map[string]bool{}
+	historyFromTurn := 0
+	historyToTurn := 0
+	boundedHistoryRead := false
+	materializationTrace := map[string]any{
+		"contract_version":              "prepare_turn.materialization_trace.v1",
+		"history_window_turns":          prepareTurnHistoryWindowTurns,
+		"bounded_history_store":         false,
+		"vector_memory_include_count":   len(vectorMemoryIDs),
+		"vector_evidence_include_count": len(vectorEvidenceIDs),
+	}
 
 	storeReadsStartedAt := time.Now()
 	if s.Store != nil {
 		ctx := r.Context()
-		if m, err := s.Store.ListMemories(ctx, sid, 0, 0); err == nil {
-			memories = m
-			readsOK++
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		rangeStore, hasRangeStore := s.Store.(store.PrepareTurnRangeStore)
+		if hasRangeStore {
+			if latest, err := rangeStore.LatestSessionTurnIndex(ctx, sid); err == nil {
+				historyFromTurn, historyToTurn = prepareTurnHistoryBounds(latest)
+				boundedHistoryRead = true
+				materializationTrace["bounded_history_store"] = true
+				materializationTrace["history_from_turn"] = historyFromTurn
+				materializationTrace["history_to_turn"] = historyToTurn
+			} else if !errors.Is(err, store.ErrNotEnabled) {
+				readErrs = append(readErrs, err)
+			}
 		}
-		if k, err := s.Store.ListKGTriples(ctx, sid); err == nil {
-			kgTriples = k
-			readsOK++
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		var memoryReadErr error
+		if boundedHistoryRead {
+			memories, memoryReadErr = rangeStore.ListMemoriesRange(ctx, sid, historyFromTurn, historyToTurn, vectorMemoryIDs)
+		} else {
+			memories, memoryReadErr = s.Store.ListMemories(ctx, sid, 0, 0)
 		}
-		if e, err := s.Store.ListEvidence(ctx, sid); err == nil {
-			evidence = e
+		if memoryReadErr == nil {
 			readsOK++
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		} else if !errors.Is(memoryReadErr, store.ErrNotEnabled) {
+			readErrs = append(readErrs, memoryReadErr)
 		}
-		if c, err := s.Store.ListChatLogs(ctx, sid, 0, 0); err == nil {
+		var kgReadErr error
+		if boundedHistoryRead {
+			kgTriples, kgReadErr = rangeStore.ListKGTriplesRange(ctx, sid, historyFromTurn, historyToTurn)
+		} else {
+			kgTriples, kgReadErr = s.Store.ListKGTriples(ctx, sid)
+		}
+		if kgReadErr == nil {
+			readsOK++
+		} else if !errors.Is(kgReadErr, store.ErrNotEnabled) {
+			readErrs = append(readErrs, kgReadErr)
+		}
+		var evidenceReadErr error
+		if boundedHistoryRead {
+			evidence, evidenceReadErr = rangeStore.ListEvidenceRange(ctx, sid, historyFromTurn, historyToTurn, vectorEvidenceIDs)
+		} else {
+			evidence, evidenceReadErr = s.Store.ListEvidence(ctx, sid)
+		}
+		if evidenceReadErr == nil {
+			readsOK++
+		} else if !errors.Is(evidenceReadErr, store.ErrNotEnabled) {
+			readErrs = append(readErrs, evidenceReadErr)
+		}
+		if c, err := s.Store.ListChatLogs(ctx, sid, historyFromTurn, historyToTurn); err == nil {
 			chatLogs = c
 			readsOK++
 			sessionStateReads["chat_logs"] = true
@@ -248,18 +295,25 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
-		if cs, err := s.Store.ListCharacterStates(ctx, sid); err == nil {
-			charStates = cs
+		var characterStateReadErr error
+		if boundedHistoryRead {
+			charStates, characterStateReadErr = rangeStore.ListCharacterStatesCurrent(ctx, sid)
+		} else {
+			charStates, characterStateReadErr = s.Store.ListCharacterStates(ctx, sid)
+		}
+		if characterStateReadErr == nil {
 			readsOK++
 			sessionStateReads["character_states"] = true
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		} else if !errors.Is(characterStateReadErr, store.ErrNotEnabled) {
+			readErrs = append(readErrs, characterStateReadErr)
 		}
-		if ce, err := s.Store.ListCharacterEvents(ctx, sid, ""); err == nil {
-			charEvents = ce
-			sessionStateReads["character_events"] = true
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		if responseProjection != prepareTurnProductionProjectionV1 {
+			if ce, err := s.Store.ListCharacterEvents(ctx, sid, ""); err == nil {
+				charEvents = ce
+				sessionStateReads["character_events"] = true
+			} else if !errors.Is(err, store.ErrNotEnabled) {
+				readErrs = append(readErrs, err)
+			}
 		}
 		if pt, err := s.Store.ListPendingThreads(ctx, sid, ""); err == nil {
 			pendingThreads = pt
@@ -268,18 +322,28 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
-		if as, err := s.Store.ListActiveStates(ctx, sid, ""); err == nil {
-			activeStates = as
+		var activeStateReadErr error
+		if boundedHistoryRead {
+			activeStates, activeStateReadErr = rangeStore.ListActiveStatesRange(ctx, sid, historyFromTurn, historyToTurn)
+		} else {
+			activeStates, activeStateReadErr = s.Store.ListActiveStates(ctx, sid, "")
+		}
+		if activeStateReadErr == nil {
 			readsOK++
 			sessionStateReads["active_states"] = true
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		} else if !errors.Is(activeStateReadErr, store.ErrNotEnabled) {
+			readErrs = append(readErrs, activeStateReadErr)
 		}
-		if cl, err := s.Store.ListCanonicalStateLayers(ctx, sid, ""); err == nil {
-			canonicalLayers = cl
+		var canonicalStateReadErr error
+		if boundedHistoryRead {
+			canonicalLayers, canonicalStateReadErr = rangeStore.ListCanonicalStateLayersRange(ctx, sid, historyFromTurn, historyToTurn)
+		} else {
+			canonicalLayers, canonicalStateReadErr = s.Store.ListCanonicalStateLayers(ctx, sid, "")
+		}
+		if canonicalStateReadErr == nil {
 			readsOK++
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		} else if !errors.Is(canonicalStateReadErr, store.ErrNotEnabled) {
+			readErrs = append(readErrs, canonicalStateReadErr)
 		}
 		if es, err := s.Store.ListEpisodeSummaries(ctx, sid, supportRecallLimit, 0, 0); err == nil {
 			episodeSums = es
@@ -353,6 +417,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	materializationTrace["memory_rows"] = len(memories)
+	materializationTrace["kg_rows"] = len(kgTriples)
+	materializationTrace["evidence_rows"] = len(evidence)
+	materializationTrace["chat_log_rows"] = len(chatLogs)
+	materializationTrace["character_state_rows"] = len(charStates)
+	materializationTrace["active_state_rows"] = len(activeStates)
+	materializationTrace["canonical_state_rows"] = len(canonicalLayers)
+	materializationTrace["character_event_rows"] = len(charEvents)
+	materializationTrace["total_history_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs)
+	materializationTrace["total_materialized_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(charStates) + len(activeStates) + len(canonicalLayers) + len(charEvents)
 	timing.addElapsed("store_reads", storeReadsStartedAt)
 
 	recollectionStartedAt := time.Now()
@@ -397,9 +471,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	injectionAssembly := prepareTurnInjectionAssembly{}
 	documents := []map[string]any{}
-	vectorStartedAt := time.Now()
-	vectorShadow := s.prepareTurnVectorShadow(r.Context(), req, memoryTopK)
-	timing.addElapsed("vector_recall", vectorStartedAt)
 	injectionStartedAt := time.Now()
 	if !degraded {
 		documents = buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, chatLogs)
@@ -510,23 +581,26 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 
 	queryPreview := rawUserInput
 
-	recallResult := buildRecallResult(
-		sid,
-		queryPreview,
-		degraded,
-		memories,
-		evidence,
-		kgTriples,
-		episodeSums,
-		chatLogs,
-		resumePack,
-		vectorShadow,
-		storylines,
-		worldRules,
-		pendingThreads,
-		profile,
-		memoryTopK,
-	)
+	recallResult := map[string]any{}
+	if responseProjection != prepareTurnProductionProjectionV1 {
+		recallResult = buildRecallResult(
+			sid,
+			queryPreview,
+			degraded,
+			memories,
+			evidence,
+			kgTriples,
+			episodeSums,
+			chatLogs,
+			resumePack,
+			vectorShadow,
+			storylines,
+			worldRules,
+			pendingThreads,
+			profile,
+			memoryTopK,
+		)
+	}
 
 	packetMode := "store_backed_shadow"
 	if degraded {
@@ -542,57 +616,63 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		inputContextOut = inputContextText
 	}
 
-	sessionState := buildSessionState(sid, degraded, activeStates, storylines, charStates, charEvents, chatLogs, worldRules, pendingThreads, sessionStateReads)
-	narrativeControl := buildNarrativeControl(degraded, storylines, worldRules, pendingThreads, charStates)
-	continuityPack := buildContinuityPack(sid, queryPreview, degraded, resumePack, episodeSums, chatLogs, activeStates, canonicalLayers, supportRecallLimit)
+	sessionState := map[string]any{}
+	narrativeControl := map[string]any{}
+	continuityPack := map[string]any{}
 	progressionLedger := buildProgressionLedger(sid, degraded, storylines, worldRules, pendingThreads, episodeSums, supportRecallLimit)
-	personaRecollection := buildPersonaRecollectionSurface(sid, personaEntries, injectionAssembly.PersonaText, supportRecallLimit)
-	characterPrivateRecollection := buildCharacterPrivateRecollectionSurface(sid, characterPrivateMemories, injectionAssembly.CharacterPrivateText, supportRecallLimit)
+	personaRecollection := map[string]any{}
+	characterPrivateRecollection := map[string]any{}
+	if responseProjection != prepareTurnProductionProjectionV1 {
+		sessionState = buildSessionState(sid, degraded, activeStates, storylines, charStates, charEvents, chatLogs, worldRules, pendingThreads, sessionStateReads)
+		narrativeControl = buildNarrativeControl(degraded, storylines, worldRules, pendingThreads, charStates)
+		continuityPack = buildContinuityPack(sid, queryPreview, degraded, resumePack, episodeSums, chatLogs, activeStates, canonicalLayers, supportRecallLimit)
+		personaRecollection = buildPersonaRecollectionSurface(sid, personaEntries, injectionAssembly.PersonaText, supportRecallLimit)
+		characterPrivateRecollection = buildCharacterPrivateRecollectionSurface(sid, characterPrivateMemories, injectionAssembly.CharacterPrivateText, supportRecallLimit)
+	}
 
-	// SEQ-16-P164/P165/P167/P168 contract surfaces.
-	retrievalRoleBoundary := buildRetrievalRoleBoundary(sid, storylines, worldRules, charStates, activeStates, pendingThreads, chatLogs)
-	retrievalIndexIR := buildRetrievalIndexIRSupportOnly(recallResult, memories, evidence, kgTriples, chatLogs, resumePack)
-	retrievalExtendAuthority := buildRetrievalExtendAuthority(retrievalRoleBoundary)
-	temporalReadValidityFirst := buildTemporalReadValidityFirst(chatLogs, episodeSums, len(chatLogs))
-
-	// SEQ-16-P172~P175 contract surfaces.
-	sessionMemoryBoundary := buildSessionMemoryBoundary(sid, activeStates, pendingThreads, chatLogs, storylines, worldRules, charStates)
-	bridgePromotionEntry := buildBridgePromotionEntry(sid, pendingThreads, canonicalLayers)
-	sessionFirstPermanentFallbackReadRule := buildSessionFirstPermanentFallbackReadRule(sid, sessionMemoryBoundary, retrievalRoleBoundary)
-	promotionWaitVisibility := buildPromotionWaitVisibility(sid, pendingThreads, canonicalLayers, chatLogs)
-
-	// SEQ-16-P179~P182 contract surfaces (IR normalized retrieval unit schema).
-	retrievalUnitsIR := buildRetrievalUnitsIR(sid, memories, evidence, kgTriples, chatLogs, resumePack)
-	directEvidenceDualRepresentation := buildDirectEvidenceDualRepresentation(evidence)
-	sourceTaggedRetrievalUnitSurface := buildSourceTaggedRetrievalUnitSurface(memories, evidence, kgTriples, chatLogs, resumePack)
-	rawTurnSpanMetadata := buildRawTurnSpanMetadata(chatLogs, episodeSums, memories, evidence, resumePack)
-
-	// SEQ-16-P186~P189 contract surfaces (MS Multi-Signal Retrieval Contract).
-	signalMixContract := buildSignalMixContract(sid, memories, evidence, kgTriples, chatLogs, episodeSums)
-	queryClassRouting := buildQueryClassRouting(sid, memories, evidence, kgTriples, chatLogs, episodeSums)
-	retrievalResultInspection := buildRetrievalResultInspection(sid, memories, evidence, kgTriples, chatLogs, episodeSums, supportRecallLimit)
-	sparseTailRecall := buildSparseTailRecall(sid, memories, evidence, kgTriples, chatLogs, episodeSums)
-
-	// SEQ-16-P193~P196 contract surfaces (TM Temporal Read Surface).
-	validityWindowReading := buildValidityWindowReading(sid, chatLogs, episodeSums, evidence, memories)
-	truthCoexistenceRules := buildTruthCoexistenceRules(sid, evidence, memories, chatLogs)
-	temporalDisambiguationContract := buildTemporalDisambiguationContract(sid, chatLogs, episodeSums, evidence, memories)
-	promotionLagInvisibilitySplit := buildPromotionLagInvisibilitySplit(sid, pendingThreads, canonicalLayers, chatLogs, evidence)
-
-	// SEQ-16-P200~P205 contract surfaces (VX verify + replay).
-	sessionPermanentAuthorityReplay := buildSessionPermanentAuthorityReplay(sid, retrievalRoleBoundary)
-	normalizedUnitSupportOnlyReplay := buildNormalizedUnitSupportOnlyReplay(sid, retrievalUnitsIR)
-	multiSignalRetrievalInspectionReplay := buildMultiSignalRetrievalInspectionReplay(sid, signalMixContract, retrievalResultInspection)
-	validityWindowTemporalReplay := buildValidityWindowTemporalReplay(sid, temporalReadValidityFirst, validityWindowReading)
-	sourceTaggedAuthorityAwareAssemblyReplay := buildSourceTaggedAuthorityAwareAssemblyReplay(sid, sourceTaggedRetrievalUnitSurface, retrievalRoleBoundary)
-	criticTruncationSpilloverReplay := buildCriticTruncationSpilloverReplay(sid, rawTurnSpanMetadata, sparseTailRecall, retrievalUnitsIR)
-
-	// SEQ-16-P209~P212 contract surfaces (backend test remigration evidence).
-	indexSnapshot := retrievalIndexSnapshotFromDocuments(sid, documents)
-	sessionPartitionedIndex := buildSessionPartitionedIndex(sid, documents, indexSnapshot)
-	indexLifecycle := buildIndexLifecycle(sid, vectorShadow)
-	sourceLookupAudit := buildSourceLookupAudit(sid, evidence, memories, kgTriples, chatLogs)
-	runtimeToggle := buildRuntimeToggle(sid, degraded, injectionEnabled, inputContextEnabled, maxInjectionChars, maxInputContextChars)
+	// Historical migration/debug surfaces are excluded from the production
+	// compact projection. They remain available to explicit legacy callers.
+	var retrievalRoleBoundary, retrievalIndexIR, retrievalExtendAuthority, temporalReadValidityFirst map[string]any
+	var sessionMemoryBoundary, bridgePromotionEntry, sessionFirstPermanentFallbackReadRule, promotionWaitVisibility map[string]any
+	var retrievalUnitsIR, directEvidenceDualRepresentation, sourceTaggedRetrievalUnitSurface, rawTurnSpanMetadata map[string]any
+	var signalMixContract, queryClassRouting, retrievalResultInspection, sparseTailRecall map[string]any
+	var validityWindowReading, truthCoexistenceRules, temporalDisambiguationContract, promotionLagInvisibilitySplit map[string]any
+	var sessionPermanentAuthorityReplay, normalizedUnitSupportOnlyReplay, multiSignalRetrievalInspectionReplay map[string]any
+	var validityWindowTemporalReplay, sourceTaggedAuthorityAwareAssemblyReplay, criticTruncationSpilloverReplay map[string]any
+	var indexSnapshot, sessionPartitionedIndex, indexLifecycle, sourceLookupAudit, runtimeToggle map[string]any
+	if responseProjection != prepareTurnProductionProjectionV1 {
+		retrievalRoleBoundary = buildRetrievalRoleBoundary(sid, storylines, worldRules, charStates, activeStates, pendingThreads, chatLogs)
+		retrievalIndexIR = buildRetrievalIndexIRSupportOnly(recallResult, memories, evidence, kgTriples, chatLogs, resumePack)
+		retrievalExtendAuthority = buildRetrievalExtendAuthority(retrievalRoleBoundary)
+		temporalReadValidityFirst = buildTemporalReadValidityFirst(chatLogs, episodeSums, len(chatLogs))
+		sessionMemoryBoundary = buildSessionMemoryBoundary(sid, activeStates, pendingThreads, chatLogs, storylines, worldRules, charStates)
+		bridgePromotionEntry = buildBridgePromotionEntry(sid, pendingThreads, canonicalLayers)
+		sessionFirstPermanentFallbackReadRule = buildSessionFirstPermanentFallbackReadRule(sid, sessionMemoryBoundary, retrievalRoleBoundary)
+		promotionWaitVisibility = buildPromotionWaitVisibility(sid, pendingThreads, canonicalLayers, chatLogs)
+		retrievalUnitsIR = buildRetrievalUnitsIR(sid, memories, evidence, kgTriples, chatLogs, resumePack)
+		directEvidenceDualRepresentation = buildDirectEvidenceDualRepresentation(evidence)
+		sourceTaggedRetrievalUnitSurface = buildSourceTaggedRetrievalUnitSurface(memories, evidence, kgTriples, chatLogs, resumePack)
+		rawTurnSpanMetadata = buildRawTurnSpanMetadata(chatLogs, episodeSums, memories, evidence, resumePack)
+		signalMixContract = buildSignalMixContract(sid, memories, evidence, kgTriples, chatLogs, episodeSums)
+		queryClassRouting = buildQueryClassRouting(sid, memories, evidence, kgTriples, chatLogs, episodeSums)
+		retrievalResultInspection = buildRetrievalResultInspection(sid, memories, evidence, kgTriples, chatLogs, episodeSums, supportRecallLimit)
+		sparseTailRecall = buildSparseTailRecall(sid, memories, evidence, kgTriples, chatLogs, episodeSums)
+		validityWindowReading = buildValidityWindowReading(sid, chatLogs, episodeSums, evidence, memories)
+		truthCoexistenceRules = buildTruthCoexistenceRules(sid, evidence, memories, chatLogs)
+		temporalDisambiguationContract = buildTemporalDisambiguationContract(sid, chatLogs, episodeSums, evidence, memories)
+		promotionLagInvisibilitySplit = buildPromotionLagInvisibilitySplit(sid, pendingThreads, canonicalLayers, chatLogs, evidence)
+		sessionPermanentAuthorityReplay = buildSessionPermanentAuthorityReplay(sid, retrievalRoleBoundary)
+		normalizedUnitSupportOnlyReplay = buildNormalizedUnitSupportOnlyReplay(sid, retrievalUnitsIR)
+		multiSignalRetrievalInspectionReplay = buildMultiSignalRetrievalInspectionReplay(sid, signalMixContract, retrievalResultInspection)
+		validityWindowTemporalReplay = buildValidityWindowTemporalReplay(sid, temporalReadValidityFirst, validityWindowReading)
+		sourceTaggedAuthorityAwareAssemblyReplay = buildSourceTaggedAuthorityAwareAssemblyReplay(sid, sourceTaggedRetrievalUnitSurface, retrievalRoleBoundary)
+		criticTruncationSpilloverReplay = buildCriticTruncationSpilloverReplay(sid, rawTurnSpanMetadata, sparseTailRecall, retrievalUnitsIR)
+		indexSnapshot = retrievalIndexSnapshotFromDocuments(sid, documents)
+		sessionPartitionedIndex = buildSessionPartitionedIndex(sid, documents, indexSnapshot)
+		indexLifecycle = buildIndexLifecycle(sid, vectorShadow)
+		sourceLookupAudit = buildSourceLookupAudit(sid, evidence, memories, kgTriples, chatLogs)
+		runtimeToggle = buildRuntimeToggle(sid, degraded, injectionEnabled, inputContextEnabled, maxInjectionChars, maxInputContextChars)
+	}
 	inputAnchorGovernor := buildInputAnchorGovernor(rawUserInput, inputContextText, inputContextTruncated, maxInputContextChars, chatLogs, resumePack, activeStates, canonicalLayers, episodeSums, pendingThreads, storylines)
 	weakInputPlanner := buildWeakInputPlannerContract(rawUserInput, inputAnchorGovernor, languageContext, maxInputContextChars)
 	responseExecutionContract := buildResponseExecutionContract(rawUserInput, narrativeStance, guideMode, guideStrength, inputAnchorGovernor, weakInputPlanner, selectedStorylines, pendingThreads, activeStates, canonicalLayers, worldRules, injectionAssembly, languageContext, currentInputDecision, hostContextReferenceEvidence)
@@ -763,6 +843,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"supervisor_status":   supervisorInputPack["status"],
 		"critic_status":       criticInputPack["status"],
 		"storyline_selection": supervisorInputPack["storyline_selection"],
+		"materialization":     materializationTrace,
 	}
 	for k, v := range progressionLedgerTracePreviewFields(progressionLedger) {
 		tracePreview[k] = v
@@ -774,6 +855,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	writebackPreview := buildWritebackPreview(degraded)
 	shadowCompareRecord := buildGenerationPacketShadowCompareRecord(injectionAssembly, inputContextText)
 	inputTransparencyModel := buildPrepareTurnInputTransparencyRenderModel(sid, turnIndex, rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded, fallbackReason, injectionAssembly)
+	inputTransparencyModel["payload_application_plan"] = payloadApplicationPlan
+	if counts := mapFromAny(inputTransparencyModel["counts"]); len(counts) > 0 {
+		counts["auxiliary_context_chars"] = intFromAny(payloadApplicationPlan["auxiliary_chars"], 0)
+		counts["input_context_chars"] = intFromAny(payloadApplicationPlan["input_context_chars"], 0)
+	}
 	effectiveInputPreview := buildPrepareTurnEffectiveInputPreview(sid, turnIndex, rawUserInput, stringPtrValue(currentInputDecision.SelectedObservationRef, "go_current_input_decision"), requestType, applyMode, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded, fallbackReason, injectionAssembly)
 	effectiveInputPreview["capture_stage"] = "prepare_turn_before_request"
 	effectiveInputPreview["post_generation_data_included"] = false
@@ -783,6 +869,54 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	effectiveInputPreview["input_context_chars"] = len([]rune(inputContextText))
 	timing.addElapsed("response_assembly", responseAssemblyStartedAt)
 	backendTiming := timing.snapshot()
+
+	if responseProjection == prepareTurnProductionProjectionV1 {
+		tracePreview["response_projection"] = map[string]any{
+			"contract_version": prepareTurnProductionProjectionV1,
+			"status":           "ready",
+			"legacy_surfaces":  "omitted",
+		}
+		compactInjectionPack := map[string]any{
+			"contract_version":         "prepare_turn.compact_injection_pack.v1",
+			"payload_application_plan": payloadApplicationPlan,
+			"memory_delivery_plan":     injectionPack["memory_delivery_plan"],
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":                          "ok",
+			"source":                          "shadow",
+			"response_projection":             prepareTurnProductionProjectionV1,
+			"chat_session_id":                 sid,
+			"generated_at":                    time.Now().UTC().Format(time.RFC3339),
+			"request_type":                    requestType,
+			"fallback_reason":                 fallbackReason,
+			"supervisor_result":               supervisorResult,
+			"injection_pack":                  compactInjectionPack,
+			"payload_application_plan":        payloadApplicationPlan,
+			"memory_budget_resolution":        memoryBudgetResolution,
+			"language_context":                languageContext,
+			"input_transparency_model":        inputTransparencyModel,
+			"backend_timing":                  backendTiming,
+			"source_contract":                 prepareSourceContract,
+			"current_input_decision":          currentInputDecision,
+			"message_source_envelope":         currentInputDecision.Envelope,
+			"session_bootstrap":               sessionBootstrap,
+			"host_context_reference_evidence": hostContextReferenceEvidence,
+			"response_execution_contract":     responseExecutionContract,
+			"weak_input_planner":              weakInputPlanner,
+			"progression_choice_ledger":       progressionChoiceLedger,
+			"step25_validation_gate":          step25ValidationGate,
+			"trace_preview":                   tracePreview,
+			"reference_injection": map[string]any{
+				"enabled":          referenceInjectionEnabled,
+				"applied":          referenceText != "",
+				"selected_count":   len(referenceRecall.InjectionItems),
+				"injected_count":   referenceInjectedCount,
+				"scene_used_chars": referenceSceneUsedChars,
+				"budget_policy":    referenceBudgetPolicy,
+			},
+		})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                          "ok",
@@ -1598,6 +1732,17 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		},
 		"note": "prepare-turn is a store-backed shadow assembly; no writes performed",
 	})
+}
+
+func prepareTurnHistoryBounds(latestTurn int) (int, int) {
+	if latestTurn <= 0 {
+		return 0, 0
+	}
+	fromTurn := latestTurn - prepareTurnHistoryWindowTurns + 1
+	if fromTurn < 1 {
+		fromTurn = 1
+	}
+	return fromTurn, latestTurn
 }
 
 func (s *Server) handleEffectiveInputs(w http.ResponseWriter, r *http.Request) {

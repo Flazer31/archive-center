@@ -26,6 +26,62 @@ func (r *readOnlyStore) ListChatLogs(ctx context.Context, chatSessionID string, 
 	return r.delegate.ListChatLogs(ctx, chatSessionID, fromTurn, toTurn)
 }
 
+func (r *readOnlyStore) LatestSessionTurnIndex(ctx context.Context, chatSessionID string) (int, error) {
+	reader, ok := r.delegate.(PrepareTurnRangeStore)
+	if !ok {
+		return 0, ErrNotEnabled
+	}
+	return reader.LatestSessionTurnIndex(ctx, chatSessionID)
+}
+
+func (r *readOnlyStore) ListMemoriesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]Memory, error) {
+	reader, ok := r.delegate.(PrepareTurnRangeStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListMemoriesRange(ctx, chatSessionID, fromTurn, toTurn, includeIDs)
+}
+
+func (r *readOnlyStore) ListEvidenceRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]DirectEvidence, error) {
+	reader, ok := r.delegate.(PrepareTurnRangeStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListEvidenceRange(ctx, chatSessionID, fromTurn, toTurn, includeIDs)
+}
+
+func (r *readOnlyStore) ListKGTriplesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]KGTriple, error) {
+	reader, ok := r.delegate.(PrepareTurnRangeStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListKGTriplesRange(ctx, chatSessionID, fromTurn, toTurn)
+}
+
+func (r *readOnlyStore) ListCharacterStatesCurrent(ctx context.Context, chatSessionID string) ([]CharacterState, error) {
+	reader, ok := r.delegate.(PrepareTurnRangeStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListCharacterStatesCurrent(ctx, chatSessionID)
+}
+
+func (r *readOnlyStore) ListActiveStatesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ActiveState, error) {
+	reader, ok := r.delegate.(PrepareTurnRangeStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListActiveStatesRange(ctx, chatSessionID, fromTurn, toTurn)
+}
+
+func (r *readOnlyStore) ListCanonicalStateLayersRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]CanonicalStateLayer, error) {
+	reader, ok := r.delegate.(PrepareTurnRangeStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListCanonicalStateLayersRange(ctx, chatSessionID, fromTurn, toTurn)
+}
+
 // ReadSessionStateSnapshot delegates to the underlying read store when
 // available. This keeps read-only MariaDB shadow mode eligible for I-1
 // aggregate session-state reads.

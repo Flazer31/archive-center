@@ -45,6 +45,7 @@ type PrepareTurnCapabilityObservationV1 struct {
 type PrepareTurnContractRequest struct {
 	PrepareTurnRequest
 	SourceDecisionOnly       bool                                `json:"source_decision_only,omitempty"`
+	ResponseProjection       string                              `json:"response_projection,omitempty"`
 	NarrativeSupportMaxChars *int                                `json:"narrative_support_max_chars,omitempty"`
 	SourceObservation        *PrepareTurnSourceObservationV1     `json:"source_observation,omitempty"`
 	CapabilityObservation    *PrepareTurnCapabilityObservationV1 `json:"capability_observation,omitempty"`

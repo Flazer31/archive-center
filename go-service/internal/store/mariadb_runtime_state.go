@@ -107,6 +107,54 @@ func (m *mariadbStore) ListCharacterStates(ctx context.Context, chatSessionID st
 	return mariaListCharacterStates(ctx, m.db, chatSessionID)
 }
 
+func (m *mariadbStore) ListCharacterStatesCurrent(ctx context.Context, chatSessionID string) ([]CharacterState, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT state.id, state.chat_session_id, state.character_name, state.appearance_json,
+			   state.personality_json, state.status_json, state.relationships_json,
+			   state.speech_style_json, state.turn_index, state.created_at, state.updated_at
+		FROM character_states state
+		WHERE state.chat_session_id = ?
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM character_states newer
+			WHERE newer.chat_session_id = state.chat_session_id
+			  AND newer.character_name = state.character_name
+			  AND (COALESCE(newer.turn_index, 0) > COALESCE(state.turn_index, 0)
+			       OR (COALESCE(newer.turn_index, 0) = COALESCE(state.turn_index, 0) AND newer.id > state.id))
+		  )
+		ORDER BY state.turn_index DESC, state.id DESC
+	`, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CharacterState
+	for rows.Next() {
+		var item CharacterState
+		var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON sql.NullString
+		var turnIndex sql.NullInt64
+		if err := rows.Scan(
+			&item.ID, &item.ChatSessionID, &item.CharacterName, &appearanceJSON,
+			&personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON,
+			&turnIndex, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.AppearanceJSON = stringFromNull(appearanceJSON)
+		item.PersonalityJSON = stringFromNull(personalityJSON)
+		item.StatusJSON = stringFromNull(statusJSON)
+		item.RelationshipsJSON = stringFromNull(relationshipsJSON)
+		item.SpeechStyleJSON = stringFromNull(speechStyleJSON)
+		item.TurnIndex = intFromNull(turnIndex)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (m *mariadbStore) ListCharacterStateHistory(ctx context.Context, chatSessionID, characterName string, limit, offset int) ([]CharacterState, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
@@ -463,6 +511,44 @@ func (m *mariadbStore) ListActiveStates(ctx context.Context, chatSessionID, stat
 	return out, rows.Err()
 }
 
+func (m *mariadbStore) ListActiveStatesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ActiveState, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT state.id, state.chat_session_id, state.state_type, state.content,
+			   state.turn_index, state.created_at
+		FROM active_states state
+		WHERE state.chat_session_id = ?
+		  AND (
+			((? <= 0 OR state.turn_index >= ?) AND (? <= 0 OR state.turn_index <= ?))
+			OR NOT EXISTS (
+				SELECT 1
+				FROM active_states newer
+				WHERE newer.chat_session_id = state.chat_session_id
+				  AND newer.state_type = state.state_type
+				  AND (COALESCE(newer.turn_index, 0) > COALESCE(state.turn_index, 0)
+				       OR (COALESCE(newer.turn_index, 0) = COALESCE(state.turn_index, 0) AND newer.id > state.id))
+			)
+		  )
+		ORDER BY state.turn_index DESC, state.id DESC
+	`, chatSessionID, fromTurn, fromTurn, toTurn, toTurn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ActiveState
+	for rows.Next() {
+		var item ActiveState
+		if err := rows.Scan(&item.ID, &item.ChatSessionID, &item.StateType, &item.Content, &item.TurnIndex, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func (m *mariadbStore) ListCanonicalStateLayers(ctx context.Context, chatSessionID, layerType string) ([]CanonicalStateLayer, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
@@ -489,6 +575,58 @@ func (m *mariadbStore) ListCanonicalStateLayers(ctx context.Context, chatSession
 		if err := rows.Scan(&item.ID, &item.ChatSessionID, &item.LayerType, &item.Content,
 			&sourceStateType, &item.TurnIndex, &sourceTurn, &sourceRecord, &lastVerifiedTurn,
 			&confidence, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		item.SourceStateType = stringFromNull(sourceStateType)
+		item.SourceTurn = intFromNull(sourceTurn)
+		item.SourceRecord = int64FromNull(sourceRecord)
+		item.LastVerifiedTurn = intFromNull(lastVerifiedTurn)
+		item.Confidence = float64FromNull(confidence)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) ListCanonicalStateLayersRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]CanonicalStateLayer, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT layer.id, layer.chat_session_id, layer.layer_type, layer.content,
+			   layer.source_state_type, layer.turn_index, layer.source_turn,
+			   layer.source_record, layer.last_verified_turn, layer.confidence,
+			   layer.created_at
+		FROM canonical_state_layers layer
+		WHERE layer.chat_session_id = ?
+		  AND (
+			((? <= 0 OR layer.turn_index >= ?) AND (? <= 0 OR layer.turn_index <= ?))
+			OR NOT EXISTS (
+				SELECT 1
+				FROM canonical_state_layers newer
+				WHERE newer.chat_session_id = layer.chat_session_id
+				  AND newer.layer_type = layer.layer_type
+				  AND (COALESCE(newer.turn_index, 0) > COALESCE(layer.turn_index, 0)
+				       OR (COALESCE(newer.turn_index, 0) = COALESCE(layer.turn_index, 0) AND newer.id > layer.id))
+			)
+		  )
+		ORDER BY layer.turn_index DESC, layer.id DESC
+	`, chatSessionID, fromTurn, fromTurn, toTurn, toTurn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CanonicalStateLayer
+	for rows.Next() {
+		var item CanonicalStateLayer
+		var sourceStateType sql.NullString
+		var sourceTurn, sourceRecord, lastVerifiedTurn sql.NullInt64
+		var confidence sql.NullFloat64
+		if err := rows.Scan(
+			&item.ID, &item.ChatSessionID, &item.LayerType, &item.Content,
+			&sourceStateType, &item.TurnIndex, &sourceTurn, &sourceRecord,
+			&lastVerifiedTurn, &confidence, &item.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		item.SourceStateType = stringFromNull(sourceStateType)

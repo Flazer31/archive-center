@@ -238,6 +238,7 @@
     // ── E-5: Narrative Guide Mode ──
     narrativeGuideMode: "auto",      // auto / off / standard / romantic / action / mature_soft / mature_direct
     narrativeGuideStrength: "weak",  // none / weak / medium / strong
+    narrativeSupportMaxChars: 3000,  // 서사 안내 전용 문자 예산
     // ── H-3a: Initiative Control contract only (behavior wired in H-3c) ──
     storyNarrativeStance: "balanced", // reactive / balanced / proactive
     // ── J-3a: Plugin Main Apply Mode ──
@@ -1052,6 +1053,8 @@
       "settings.label.narrativeGuideMode.help": "Auto 모드는 최근 입력, 장면 압력, 감정 강도, 전투, 관계 신호를 조합하고 결정된 모드를 trace와 대시보드에 표시합니다.",
       "settings.label.narrativeGuideStrength": "서사 가이드 강도",
       "settings.label.narrativeGuideStrength.help": "None은 서사 가이드 접미사와 보조 강조를 끕니다. Weak는 거의 보이지 않게, Medium은 균형 있게, Strong은 더 적극적으로 페이스/연속성을 지원합니다.",
+      "settings.label.narrativeSupportMaxChars": "서사 안내 예산 (chars)",
+      "settings.hint.narrativeSupportMaxChars": "감독관 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
       "settings.label.publisherMaxCompletionTokens": "출판사 Max Completion Tokens",
       "settings.label.publisherProvider": "출판사 Provider",
       "settings.label.publisherReasoningEffort": "출판사 Reasoning Effort",
@@ -1232,6 +1235,8 @@
       "settings.label.narrativeGuideMode.help": "Auto mode combines recent input, scene pressure, emotional intensity, combat, and relationship signals, then exposes the resolved mode in trace and dashboard.",
       "settings.label.narrativeGuideStrength": "Narrative Guide Strength",
       "settings.label.narrativeGuideStrength.help": "None disables narrative guide suffixes and helper emphasis. Weak stays almost invisible, Medium gives balanced support, Strong gives more active pacing/continuity support.",
+      "settings.label.narrativeSupportMaxChars": "Narrative guidance budget (chars)",
+      "settings.hint.narrativeSupportMaxChars": "Independent budget for supervisor proposals and response execution guidance. It does not borrow from memory, original-work, or user-input budgets.",
       "settings.label.auxiliaryInjectionPlacement": "Memory Injection Placement",
       "settings.hint.auxiliaryInjectionPlacement": "Controls where the large Archive Center memory block is inserted. Use legacy mode if a preset depends on the old prompt order.",
       "settings.label.auxiliaryInjectionAnchorMarker": "Memory Anchor Marker",
@@ -2133,6 +2138,8 @@
       "settings.label.narrativeGuideMode.help": "自動判定は直近入力、場面圧、感情強度、戦闘/関係シグナルを合わせて見て、最終モードをtraceとダッシュボードに表示します。",
       "settings.label.narrativeGuideStrength": "ナラティブガイド強度",
       "settings.label.narrativeGuideStrength.help": "なしはナラティブガイドsuffix/補助強調を無効化します。弱はほぼ目立たず、中はバランス補助、強はペーシング/連続性をより積極的に補助します。",
+      "settings.label.narrativeSupportMaxChars": "ナラティブ案内予算（chars）",
+      "settings.hint.narrativeSupportMaxChars": "監督提案と応答実行ガイド専用の独立予算です。長期記憶・原作資料・ユーザー入力の予算は使用しません。",
       "settings.label.auxiliaryInjectionPlacement": "記憶の注入位置",
       "settings.hint.auxiliaryInjectionPlacement": "Archive Centerの大きな記憶ブロックをどこに入れるかを指定します。古いプロンプト順に依存するプリセットでは従来方式を使ってください。",
       "settings.label.auxiliaryInjectionAnchorMarker": "記憶アンカーマーカー",
@@ -9997,6 +10004,12 @@
       DEFAULT_SETTINGS.narrativeGuideStrength,
       NARRATIVE_GUIDE_STRENGTH_OPTIONS,
     );
+    merged.narrativeSupportMaxChars = sanitizeNumber(
+      merged.narrativeSupportMaxChars,
+      DEFAULT_SETTINGS.narrativeSupportMaxChars,
+      0,
+      12000,
+    );
     merged.storyNarrativeStance = sanitizeEnumValue(
       merged.storyNarrativeStance,
       DEFAULT_SETTINGS.storyNarrativeStance,
@@ -12586,7 +12599,9 @@
       const body = {
         chat_session_id: sessionId || "",
         request_type: type || "model",
+        response_projection: "prepare_turn.production_compact.v1",
         raw_user_input: String(userInput || ""),
+        narrative_support_max_chars: Number(settings.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars),
         messages: (messages || []).map(function(m) {
           const parsed = getPayloadMessageRoleAndText(m);
           return {
@@ -12697,6 +12712,7 @@
         // fallback_reason: "" (reads_ok==5 완전 성공) 을 falsy 처리하지 않도록 ?? 사용
         fallback_reason: result.fallback_reason != null ? result.fallback_reason : "skeleton_only",
         status: result.status || "ok",
+        responseProjection: result.response_projection || "",
         generated_at: result.generated_at || "",
         warnings: result.warnings || [],
         backendTiming: result.backend_timing || null,
@@ -12725,6 +12741,9 @@
           // memory_text / kg_text / episode_text / fallback_text (조건부)
           // + Plugin Main 계약 placeholder: effective_user_input / apply_verdict (M-3b에서 채워짐)
           injectionPack:      result.injection_pack       || null,
+          payloadApplicationPlan: result.payload_application_plan || (result.injection_pack && result.injection_pack.payload_application_plan) || null,
+          supervisorResult:   result.supervisor_result    || null,
+          memoryBudgetResolution: result.memory_budget_resolution || null,
           referenceInjection: result.reference_injection  || null,
           inputTransparencyModel: result.input_transparency_model || null,
           effectiveInputPreview:  result.effective_input_preview  || null,
@@ -12735,6 +12754,7 @@
           // M-2d: writeback_preview + trace_preview (H-4 non-debug groundwork)
           writebackPreview:   result.writeback_preview    || null,
           tracePreview:       result.trace_preview        || null,
+          performanceProjection: result.trace_preview && result.trace_preview.response_projection || null,
           sourceContract:     result.source_contract      || null,
           risuHostContextSnapshot: result.risu_host_context_snapshot || null,
           hostContextReferenceEvidence: result.host_context_reference_evidence || null,
@@ -18090,6 +18110,28 @@
       header += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">policy</span><span class="mo-it-dir-val">' + escapeAttr(String(model.secret_display_policy || "counts_only_no_secret_text")) + '</span></div>';
       header += renderBackendRenderCountsSummary(counts);
       parts.push(renderItBlockRaw("Backend Input Transparency Render Model", header, false));
+      const payloadPlan = model.payload_application_plan && typeof model.payload_application_plan === "object"
+        ? model.payload_application_plan
+        : null;
+      if (payloadPlan && payloadPlan.contract_version === "payload_application_plan.v1") {
+        let planMeta = "";
+        planMeta += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">owner</span><span class="mo-it-dir-val">' + escapeAttr(String(payloadPlan.owner || "go")) + '</span></div>';
+        planMeta += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">chars</span><span class="mo-it-dir-val">' + escapeAttr(String(Number(payloadPlan.auxiliary_chars || 0))) + '</span></div>';
+        planMeta += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">hash</span><span class="mo-it-dir-val">' + escapeAttr(String(payloadPlan.auxiliary_hash || "")) + '</span></div>';
+        parts.push(renderItBlockRaw("Final Payload Application Plan", planMeta, false));
+        (Array.isArray(payloadPlan.lanes) ? payloadPlan.lanes : []).forEach(function(lane, index) {
+          if (!lane || typeof lane !== "object") return;
+          const title = String(lane.title || lane.key || ("lane " + (index + 1)));
+          const status = String(lane.status || "empty");
+          const text = typeof lane.text === "string" ? lane.text : "";
+          let laneMeta = '<div class="mo-it-dir-row"><span class="mo-it-dir-key">usage</span><span class="mo-it-dir-val">' + escapeAttr(
+            status + " / " + Number(lane.used_chars || 0) + " / " + Number(lane.budget_chars || 0) + " chars"
+          ) + '</span></div>';
+          laneMeta += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">hash</span><span class="mo-it-dir-val">' + escapeAttr(String(lane.content_hash || "")) + '</span></div>';
+          if (text) laneMeta += '<div class="mo-it-content" style="margin-top:6px">' + escapeAttr(text) + '</div>';
+          parts.push(renderItBlockRaw("Final " + title, laneMeta, status !== "applied" || text.length > 1200));
+        });
+      }
       model.blocks.forEach(function(block, index) {
         if (!block || typeof block !== "object") return;
         const title = String(block.title || block.key || ("block " + (index + 1)));
@@ -21762,94 +21804,6 @@
   }
   // ── end J-4a ──────────────────────────────────────────────────────────────
 
-  async function runSupervisor(contextMessages, wakeUpContext, chatSessionId, persistentGuidance, autoAdvanceTrigger, optSupervisorPack) {
-    if (!settings.enabled) {
-      updateRuntimeState("lastSupervisorStatus", "skipped", { detail: "disabled" });
-      _lastSupervisorFailureReason = "disabled";
-      return null;
-    }
-    const sessionId = chatSessionId || await getCurrentChatSessionId();
-    // E-5: guide mode suffix
-    const guideStrength = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength);
-    if (guideStrength === "none") {
-      _lastSupervisorFailureReason = "";
-      updateRuntimeState("lastSupervisorStatus", "skipped", { detail: "guide_off" });
-      return null;
-    }
-    const guideMode = guideStrength === "none"
-      ? "off"
-      : resolveNarrativeGuideMode(settings.narrativeGuideMode, contextMessages, wakeUpContext);
-    const narrativeStance = settings.storyNarrativeStance || "balanced";
-
-    let guideSuffix, initiativeSuffix, initiativeBounds, momentumPacket;
-
-    if (optSupervisorPack) {
-      // M-2c: prepare-turn 번들에서 미리 조립된 inputs 사용 → momentum HTTP 라운드트립 skip
-      guideSuffix      = guideMode === "off" ? "" : (optSupervisorPack.guide_suffix || buildGuideModeSuffix(guideMode, guideStrength));
-      initiativeSuffix = optSupervisorPack.narrative_stance_suffix || buildInitiativeModeSuffix(narrativeStance);
-      initiativeBounds = optSupervisorPack.narrative_stance_bounds || buildInitiativeModeBounds(narrativeStance);
-      momentumPacket   = optSupervisorPack.momentum_packet   || null;
-      debugLog("M-2c: runSupervisor using bundled inputs (momentum:", !!momentumPacket, ")");
-    } else {
-      guideSuffix      = buildGuideModeSuffix(guideMode, guideStrength);
-      initiativeSuffix = buildInitiativeModeSuffix(narrativeStance);
-      initiativeBounds = buildInitiativeModeBounds(narrativeStance);
-
-      // I-2c: momentum packet 조건부 fetch — db가 켜져 있을 때만, 실패해도 supervisor는 계속
-      momentumPacket = null;
-      if (settings.dbEnabled && sessionId) {
-        try {
-          // I-2c: fetchSessionState 대신 /momentum-packet 전용 엔드포인트 직접 호출
-          const _mpRaw = await safeCall(
-            () => bridgeFetch("/momentum-packet/" + encodeURIComponent(sessionId), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }),
-            null, "fetchMomentumPacket"
-          );
-          if (_mpRaw && (_mpRaw.packet_status === "ready" || _mpRaw.packet_status === "partial")) {
-            momentumPacket = _mpRaw;
-          }
-        } catch (_mpErr) {
-          warnLog("momentum-packet fetch failed (non-fatal):", _mpErr.message);
-        }
-      }
-    }
-
-    const result = normalizeSupervisorEnvelope(await safeCall(
-      () => bridgeFetch("/supervisor", { method: "POST", body: {
-        context_messages: contextMessages,
-        wake_up_context: wakeUpContext || "",
-        chat_session_id: sessionId,
-        guide_mode: guideMode,
-        guide_suffix: guideSuffix || "",
-        narrative_stance: narrativeStance,
-        narrative_stance_suffix: initiativeSuffix || "",
-        narrative_stance_bounds: initiativeBounds,
-        momentum_packet: momentumPacket || null,
-        persistent_guidance: (typeof persistentGuidance === "string" && persistentGuidance.trim()) ? persistentGuidance : "",
-        auto_advance_trigger: autoAdvanceTrigger || "none",
-      }, timeoutMs: getSupervisorTimeoutMs() }),
-      null, "runSupervisor"
-    ));
-    if (result) {
-      _lastSupervisorFailureReason = "";
-      updateRuntimeState("lastSupervisorStatus", "ok", { detail: "directive received" });
-      result._guideModeResolved = guideMode;
-      result._guideModeBasis = "auto_inferred";
-      // I-2d: trace용 플래그 — momentum packet이 실제 주입되었으면 true
-      if (momentumPacket) {
-        result._momentumApplied = true;
-        result._momentumPacketStatus = momentumPacket.packet_status || null;
-      }
-    } else {
-      const bf = _lastBridgeFailureByPath.get("/supervisor");
-      const reasonText = (bf && bf.detail) ? String(bf.detail) : t("warning.llmReason.supervisorUnavailable");
-      const classified = classifyLlmFailureReason(reasonText);
-      _lastSupervisorFailureReason = classified.detail || reasonText;
-      updateRuntimeState("lastSupervisorStatus", "fail", { detail: classified.userMessage || "null response" });
-      notifyLlmFailure(t("settings.model.supervisorLlm"), classified.userMessage || t("warning.llmReason.supervisorUnavailable"));
-    }
-    return result;
-  }
-
   async function runMandatoryCriticProbe() {
     if (!subLlmHasConfig()) {
       return {
@@ -24930,6 +24884,94 @@
       trace.chatSessionId = chatSessionId;
       debugLog("session:", chatSessionId, continuityInfo ? "(continuity trigger: " + (continuityInfo.triggerMode || "unknown") + ")" : "");
 
+      const compactPlan = preparedBundle && preparedBundle.payloadApplicationPlan;
+      if (compactPlan
+        && compactPlan.contract_version === "payload_application_plan.v1"
+        && compactPlan.owner === "go"
+        && compactPlan.apply_rule === "apply_exact_text_without_reassembly") {
+        const compactSearchResult = {
+          status: "ok",
+          source: "prepare_turn.production_compact.v1",
+          items: [],
+          paths: [],
+          dedupeStats: { before: 0, after: 0, removed: 0 },
+          continuityUsed: false,
+          pathBUsed: false,
+          multiMatchCount: 0,
+        };
+        const compactSupervisorResult = preparedBundle.supervisorResult || null;
+        trace.search = {
+          status: "ok",
+          source: "prepare_turn.production_compact.v1",
+          itemCount: 0,
+          memoryCount: 0,
+          fallbackCount: 0,
+          paths: [],
+          dedupeStats: compactSearchResult.dedupeStats,
+          pathBUsed: false,
+          multiMatchCount: 0,
+        };
+        trace.supervisor = {
+          status: compactSupervisorResult ? "ok" : "skipped",
+          source: "prepare_turn.production_compact.v1",
+        };
+        trace.injection = { status: "pending", applied: false };
+        trace._inputTransparency = buildInputTransparency(
+          userInput,
+          recentContext,
+          compactSearchResult,
+          "",
+          compactSupervisorResult,
+          continuityInfo,
+          { items: [], count: 0 },
+          [],
+          { states: [], count: 0, fetched: false },
+          { items: [], count: 0 },
+          [],
+          languageContext,
+          preparedBundle.inputTransparencyModel,
+          preparedBundle.effectiveInputPreview,
+          trace.weakInputPlanner,
+          trace.responseExecutionContract,
+          trace.progressionChoice,
+          trace.step25ValidationGate
+        );
+        _effectiveInputAwaitingNewTurn = false;
+        _lastActivitySnapshot = {
+          runId: Date.now().toString(36),
+          startedAt: Date.now(),
+          duration_ms: 0,
+          totalMs: 0,
+          stages: { compactProjection: 0 },
+          counts: { memories: 0, kgTriples: 0, episodes: 0, activeStates: 0, storylines: 0, characters: 0, worldRules: 0, pendingThreads: 0, locationContext: 0 },
+          llmCalls: { supervisor: compactSupervisorResult ? 1 : 0, supervisorLatencyMs: 0 },
+          flags: { compactPrepareTurnProjection: true },
+        };
+        return {
+          searchResult: compactSearchResult,
+          wakeUpContext: "",
+          supervisorResult: compactSupervisorResult,
+          kgRecallResult: { items: [], count: 0 },
+          activeStatesResult: { states: [], count: 0, fetched: false },
+          episodeRecallResult: { items: [], count: 0 },
+          storylineResult: { items: [], count: 0 },
+          characterResult: { items: [], count: 0 },
+          worldRulesResult: { items: [], count: 0 },
+          pendingThreadsResult: { items: [], count: 0 },
+          locationContextResult: { items: [], count: 0 },
+          continuityPackResult: null,
+          continuityInfo,
+          _trace: trace,
+          _chatSessionId: chatSessionId,
+          _improvementTrace: null,
+          _injectionPack: preparedBundle.injectionPack || { payload_application_plan: compactPlan },
+          _referenceInjection: preparedBundle.referenceInjection || null,
+          _effectiveUserInput: userInput,
+          _effectiveUserInputChanged: false,
+          timestamp: Date.now(),
+        };
+      }
+
       let continuityPackResult = null;
       let continuityPackRequested = false;
       async function loadContinuityPackOnce() {
@@ -25362,7 +25404,11 @@
       if (_autoAdvanceHint) {
         debugLog("L-4b: auto-advance hint injected (trigger:", _autoAdvanceTrigger, ")");
       }
-      const supervisorResult = await runSupervisor(recentContext, wakeUpContext, chatSessionId, _finalGuidanceSuffix, _autoAdvanceTrigger, _supervisorPack);
+      // 3.4-D: 감독관은 같은 /prepare-turn 안에서 Go가 한 번만 호출한다.
+      // JavaScript는 이미 제한된 결과를 관찰·전달할 뿐 별도 /supervisor 호출을 만들지 않는다.
+      const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)
+        ? preparedBundle.supervisorResult
+        : null;
       const _supervisorLatencyMs = Date.now() - _supervisorCallStart;
       const _svDir = supervisorResult && (supervisorResult.directive || supervisorResult);
       const _storylineSelection = extractStorylineSelectionSummary(supervisorResult);
@@ -28003,7 +28049,7 @@
     }
   }
 
-  function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {
+ function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {
     try {
       const budgetPolicy = (budgetResult && budgetResult.budgetPolicy && typeof budgetResult.budgetPolicy === "object")
         ? budgetResult.budgetPolicy
@@ -32877,417 +32923,113 @@
     emptyResult.primaryCanonBaseStatus = null;
     emptyResult.primaryCanonBaseUsedChars = 0;
     emptyResult.primaryCanonBaseConfiguredBudget = Number(settings.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars);
+    // 3.4-D/E: Go가 확정한 payload_application_plan.v1만 적용한다.
+    // 계획이 없거나 준비되지 않았으면 기존 RisuAI payload를 그대로 통과시키며
+    // JavaScript가 기억·원작·안내·Input Context를 다시 조립하지 않는다.
+    return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);
+  }
+  function applyGoPayloadApplicationPlan(payload, orchResult, emptyResult) {
     try {
-      if (!orchResult) return { payload, injectionResult: emptyResult };
-      if (!settings.enabled) {
-        emptyResult.applied = false;
-        return { payload, injectionResult: { ...emptyResult, reason: "injection_disabled" } };
-      }
-
-      const { searchResult, wakeUpContext, supervisorResult, kgRecallResult, activeStatesResult, episodeRecallResult, storylineResult, characterResult, worldRulesResult, pendingThreadsResult } = orchResult;
-
-      // M-3a: injection pack이 있으면 backend에서 조립된 텍스트 블록을 사용 (로컬 포맷 skip)
-      // pack이 없거나 필드가 빈 문자열이면 기존 로컬 포맷 함수로 fallback
-      const _ip = orchResult._injectionPack || null;
-      const continuityTrace = orchResult && orchResult._trace && orchResult._trace.continuity && typeof orchResult._trace.continuity === "object"
-        ? orchResult._trace.continuity
+      const injectionPack = orchResult && orchResult._injectionPack && typeof orchResult._injectionPack === "object"
+        ? orchResult._injectionPack
         : null;
-      const hasGlobalContinuityTrace = typeof globalThis === "object" && Object.prototype.hasOwnProperty.call(globalThis, "continuityTrace");
-      const previousGlobalContinuityTrace = hasGlobalContinuityTrace && typeof globalThis === "object"
-        ? globalThis.continuityTrace
-        : undefined;
-      const restoreGlobalContinuityTrace = function() {
-        if (typeof globalThis !== "object") return;
-        if (hasGlobalContinuityTrace) globalThis.continuityTrace = previousGlobalContinuityTrace;
-        else {
-          try { delete globalThis.continuityTrace; } catch { globalThis.continuityTrace = undefined; }
-        }
-      };
-      if (typeof globalThis === "object") globalThis.continuityTrace = continuityTrace;
-
-      // M-3c: apply_mode semantics guard — bundle에서 effective_user_input이 오더라도
-      // 현재 apply_mode 설정이 허용할 때만 plugin이 소비한다.
-      // apply_verdict_rule 값:
-      //   "no_apply"        → mode=off  — effective_user_input 절대 소비 안 함
-      //   "trace_only"      → mode=shadow — trace 기록 전용, payload 교체 안 함
-      //   "apply_if_approved" → mode=reviewed_apply — apply_verdict가 approve/partial일 때만 교체
-      // 현재 backend는 항상 effective_user_input=null을 반환하므로 guard는 미래 경로 전용.
-      const _ipApplyRule = (_ip && _ip.apply_verdict_rule) || null;
-      const _ipApplyModeReflected = (_ip && _ip.apply_mode_reflected) || null;
-      const _currentApplyMode = settings.pluginMainApplyMode || "shadow";
-      // 정렬 체크: backend 에코와 plugin 설정이 다르면 로그 (비-blocking)
-      if (_ipApplyModeReflected && _ipApplyModeReflected !== _currentApplyMode) {
-        debugLog("[M-3c] apply_mode mismatch: bundle=" + _ipApplyModeReflected + " local=" + _currentApplyMode + " — local takes precedence");
+      const plan = injectionPack && injectionPack.payload_application_plan && typeof injectionPack.payload_application_plan === "object"
+        ? injectionPack.payload_application_plan
+        : null;
+      const planReady = !!(plan
+        && plan.contract_version === "payload_application_plan.v1"
+        && plan.owner === "go"
+        && plan.apply_rule === "apply_exact_text_without_reassembly"
+        && (plan.status === "ready" || plan.status === "empty"));
+      if (!planReady) {
+        const result = { ...emptyResult, status: "skipped", reason: "go_payload_application_plan_unavailable", injectionTextSource: "none" };
+        updateRuntimeState("lastInjectionStatus", "skipped", {
+          applied: false,
+          detail: "go_payload_application_plan_unavailable",
+        });
+        return { payload, injectionResult: result };
       }
 
-      // Phase 2-3: active state 블록 생성
-      const budgetLimit = Math.max(500, settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars);
-      const asMaxChars = Math.floor(budgetLimit * (settings.activeStateBudgetRatio || 0.20));
-      const activeStateFormatted = formatActiveStateBlock(activeStatesResult, asMaxChars);
-      const activeStateText = activeStateFormatted.text || "";
+      const auxiliaryText = String(plan.auxiliary_text || "");
+      const inputContextText = String(plan.input_context_text || "");
+      let finalPayload = payload;
+      let injected = false;
+      let placement = null;
+      if (auxiliaryText) {
+        const applied = injectAuxiliaryBlock(finalPayload, auxiliaryText);
+        finalPayload = applied.payload;
+        injected = !!applied.injected;
+        placement = applied.placement || null;
+      }
+      let inputContextApplied = false;
+      if (inputContextText) {
+        finalPayload = injectInputContextBeforeUser(finalPayload, inputContextText);
+        inputContextApplied = true;
+      }
 
-      // 각 블록 텍스트 생성 — Phase 4-1: author + director 분리
-      const authorText = formatAuthorBlock(supervisorResult);
-      const directorText = formatDirectorBlock(supervisorResult);
-      // Phase 4-3: section world 블록 생성
-      const sectionWorldText = formatSectionWorldBlock(supervisorResult);
-      // M-3a: memory/KG/episode 텍스트 — bundle 있으면 재사용, 없으면 로컬 포맷
-      const memoryText = (_ip && _ip.memory_text) ? _ip.memory_text : formatMemoryBlock(searchResult, sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK));
-      const referenceText = (_ip && _ip.reference_text) ? String(_ip.reference_text).trim() : "";
-      const kgText = (_ip && _ip.kg_text) ? _ip.kg_text : formatKGBlock(kgRecallResult);
-      const wakeUpText = (wakeUpContext || "").trim();
-
-      // fallback은 memory가 부족할 때만 포함
-      // M-3a: bundle fallback_text 있으면 재사용, 없으면 로컬 포맷
-      const memoryCount = searchResult ? (searchResult.items || []).filter(it => it && it.source === "memory").length : 0;
-      const hasFallback = searchResult ? (searchResult.items || []).some(it => it && it.source === "chat_log") : false;
-      const includeFallback = hasFallback && memoryCount < 2; // memory 부족 시에만
-      const fallbackText = (_ip && _ip.fallback_text) ? _ip.fallback_text : (includeFallback ? formatFallbackBlock(searchResult) : "");
-      const injectionPackCounts = (_ip && _ip.counts && typeof _ip.counts === "object") ? _ip.counts : {};
-      const injectionMemoryLaneCounts = buildMemoryLaneCounts({
-        preferInjected: true,
-        counts: injectionPackCounts,
-        recallLanes: searchResult ? (searchResult.recallLanes || searchResult.recall_lanes || null) : null,
-        recallLaneTrace: searchResult ? (searchResult.recallLaneTrace || searchResult.recall_lane_trace || null) : null,
-        memoryCount,
-        fallbackCount: includeFallback && fallbackText.length > 0 ? 1 : 0,
+      const lanes = Array.isArray(plan.lanes) ? plan.lanes : [];
+      const laneByKey = {};
+      lanes.forEach(function(lane) {
+        if (lane && lane.key) laneByKey[String(lane.key)] = lane;
       });
-
-      // Phase 3-3: episode 블록 생성 — M-3a: bundle episode_text 있으면 재사용
-      const episodeText = (_ip && _ip.episode_text) ? _ip.episode_text : buildEpisodeBlock(episodeRecallResult);
-      const chapterText = (_ip && _ip.chapter_text) ? _ip.chapter_text : "";
-
-      // RisuAI 표시명 정리와 현재 턴 overlay는 host adapter가 소유한다.
-      // 백엔드 묶음은 조회 결과만 재사용하고 최종 표시 문자열은 기존 formatter로 만든다.
-      const storylineText = formatStorylineBlock(storylineResult);
-
-      // E-2: character state 블록 생성
-      const characterBaseText = formatCharacterBlock(characterResult);
-      // E-3: speech style을 character 블록에 병합
-      const speechStyleText = formatSpeechStyleBlock(characterResult);
-      const characterText = [characterBaseText, speechStyleText ? "[말투 지시]\n" + speechStyleText : ""].filter(Boolean).join("\n");
-
-      // E-4: world rules 블록 생성
-      const locationContextText = formatLocationContextBlock((orchResult && orchResult.locationContextResult) || { items: [], count: 0 });
-      const worldRulesText = formatWorldRulesBlock(worldRulesResult);
-
-      // H-5d: continuity hooks 블록 생성
-      const pendingThreadText = formatPendingThreadBlock(pendingThreadsResult || { items: [], count: 0 });
-      const personaRecollectionText = (_ip && _ip.persona_recollection_text) ? String(_ip.persona_recollection_text) : "";
-      const characterPrivateRecollectionText = (_ip && _ip.character_private_recollection_text) ? String(_ip.character_private_recollection_text) : "";
-      const latestDirectEvidenceText = (_ip && _ip.latest_direct_evidence_text) ? String(_ip.latest_direct_evidence_text) : "";
-      const recentRawTurnText = (_ip && _ip.recent_raw_turn_text) ? String(_ip.recent_raw_turn_text) : "";
-      const canonicalStateLayerText = (_ip && _ip.canon_text) ? String(_ip.canon_text) : "";
-      const continuityCorrectionText = (_ip && _ip.continuity_correction_text) ? String(_ip.continuity_correction_text).trim() : "";
-      const primaryCanonBaseText = (_ip && _ip.primary_canon_base_text) ? String(_ip.primary_canon_base_text).trim() : "";
-      const verbatimSupport = (_ip && _ip.verbatim_support && typeof _ip.verbatim_support === "object") ? {
-        active: !!_ip.verbatim_support.active,
-        count: Number(_ip.verbatim_support.count || _ip.scoped_verbatim_support_count || 0),
-        policyVersion: _ip.verbatim_support.policy_version || null,
-        surfaceLabel: _ip.verbatim_support.surface_label || "Scoped Verbatim Recall (support surface)",
-        supportSurfaceFirst: !!_ip.verbatim_support.support_surface_first,
-        promptInjectionStrategy: _ip.verbatim_support.prompt_injection_strategy || "latest_anchor_only",
-        surfaceRoute: _ip.verbatim_support.surface_route || "scoped_verbatim_support",
-        text: (_ip.scoped_verbatim_support_text || _ip.verbatim_support.text || ""),
-        items: Array.isArray(_ip.scoped_verbatim_support_items) ? _ip.scoped_verbatim_support_items.map(function(item) {
-          return {
-            sourceTag: item && item.source_tag ? String(item.source_tag) : "",
-            excerpt: item && item.excerpt ? String(item.excerpt) : "",
-            scope: item && item.scope ? String(item.scope) : "turn_window",
-            turns: item && item.turns ? String(item.turns) : "?",
-            anchorTurn: item && item.anchor_turn != null ? Number(item.anchor_turn) : null,
-            evidenceKind: item && item.evidence_kind ? String(item.evidence_kind) : "fact_event",
-          };
-        }) : [],
-      } : null;
-      const hierarchyEscapeHatch = (_ip && _ip.hierarchy_escape_hatch && typeof _ip.hierarchy_escape_hatch === "object") ? {
-        status: _ip.hierarchy_escape_hatch.status || "inactive",
-        route: _ip.hierarchy_escape_hatch.route || "scoped_verbatim_support",
-        reason: _ip.hierarchy_escape_hatch.reason || "support_route_available",
-        promptInjectionStrategy: _ip.hierarchy_escape_hatch.prompt_injection_strategy || "latest_anchor_only",
-        supportSurfaceFirst: !!_ip.hierarchy_escape_hatch.support_surface_first,
-        latestDirectEvidenceAvailable: !!_ip.hierarchy_escape_hatch.latest_direct_evidence_available,
-        supportCount: Number(_ip.hierarchy_escape_hatch.support_count || 0),
-        canonDriftRatio: Number(_ip.hierarchy_escape_hatch.canon_drift_ratio || 0),
-        policyVersion: _ip.hierarchy_escape_hatch.policy_version || null,
-      } : null;
-
-            // V-0a: arc/saga text from injection pack (ultra/extreme profile only)
-      const arcText = (_ip && _ip.arc_text) ? _ip.arc_text : "";
-      const sagaText = (_ip && _ip.saga_text) ? _ip.saga_text : "";
-
-      // budget 조립 (Phase 4-3: author + director + section_world 분리)
-      const contextProfileHint = (_ip && _ip.context_window_profile) ? _ip.context_window_profile : "";
-      const runtimeTokenInfo = (orchResult && orchResult._runtimeTokenInfo && typeof orchResult._runtimeTokenInfo === "object")
-        ? orchResult._runtimeTokenInfo
-        : { currentChatTokens: null, source: "none" };
-      const runtimeTokenHint = Number(runtimeTokenInfo.currentChatTokens);
-      const backendMemoryDeliveryPlan = (_ip && _ip.memory_delivery_plan && typeof _ip.memory_delivery_plan === "object")
-        ? _ip.memory_delivery_plan
+      const blocks = lanes.filter(function(lane) {
+        return lane && lane.applied && String(lane.text || "");
+      }).map(function(lane) {
+        return {
+          label: String(lane.key || ""),
+          chars: Number(lane.used_chars || String(lane.text || "").length),
+          budget: Number(lane.budget_chars || 0),
+          contentHash: lane.content_hash || null,
+        };
+      });
+      const deferred = lanes.filter(function(lane) {
+        return lane && lane.status && lane.status !== "applied" && lane.status !== "empty" && lane.status !== "disabled";
+      }).map(function(lane) {
+        return { label: String(lane.key || ""), reason: String(lane.status || "deferred") };
+      });
+      const guidanceTrace = plan.guidance_application_trace && typeof plan.guidance_application_trace === "object"
+        ? plan.guidance_application_trace
         : null;
-      const budgetResult = backendMemoryDeliveryPlan ? {
-        finalText: String(backendMemoryDeliveryPlan.final_text || _ip.injection_text || "").trim(),
-        budgetLimit: Number(backendMemoryDeliveryPlan.global_cap_chars || settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars),
-        blocks: Array.isArray(backendMemoryDeliveryPlan.classes) ? backendMemoryDeliveryPlan.classes.map(function(item) {
-          return { label: String(item && item.key || "memory_delivery"), chars: Number(item && item.used_chars || 0) };
-        }) : [],
-        trimmed: Array.isArray(backendMemoryDeliveryPlan.classes) ? backendMemoryDeliveryPlan.classes.filter(function(item) {
-          return Number(item && item.deferred_count || 0) > 0;
-        }).map(function(item) {
-          return { label: String(item.key || "memory_delivery"), reason: "class_budget", count: Number(item.deferred_count || 0) };
-        }) : [],
-        budgetPolicy: backendMemoryDeliveryPlan,
-      } : assembleInjectionWithBudget(
-        activeStateText,
-        authorText,
-        directorText,
-        memoryText,
-        wakeUpText,
-        fallbackText,
-        kgText,
-        episodeText,
-        chapterText,
-        arcText,
-        sagaText,
-        sectionWorldText,
-        storylineText,
-        characterText,
-        locationContextText,
-        worldRulesText,
-        pendingThreadText,
-        personaRecollectionText,
-        characterPrivateRecollectionText,
-        contextProfileHint,
-        Number.isFinite(runtimeTokenHint) ? runtimeTokenHint : null,
-        runtimeTokenInfo.source || null,
-        (orchResult && orchResult._chatSessionId) ? orchResult._chatSessionId : null,
-        latestDirectEvidenceText,
-        recentRawTurnText,
-        canonicalStateLayerText,
-        {
-          userInput: orchResult && orchResult._userInput ? orchResult._userInput : "",
-          continuity: continuityTrace,
-          idleGapMs: continuityTrace ? continuityTrace.idleGapMs || 0 : 0,
-          triggerMode: continuityTrace ? continuityTrace.triggerMode || null : null,
-          searchResult: searchResult,
-          activeStatesResult: activeStatesResult,
-          kgRecallResult: kgRecallResult,
-          storylineResult: storylineResult,
-          pendingThreadsResult: pendingThreadsResult,
-          characterResult: characterResult,
-          worldRulesResult: worldRulesResult,
+      const result = {
+        ...emptyResult,
+        status: injected || inputContextApplied ? "applied" : "empty",
+        applied: injected || inputContextApplied,
+        injectionTextSource: "go_payload_application_plan.v1",
+        totalChars: Number(plan.auxiliary_chars || auxiliaryText.length),
+        budgetLimit: lanes.reduce(function(total, lane) { return total + Number(lane && lane.budget_chars || 0); }, 0),
+        auxiliaryPreview: auxiliaryText.slice(0, 500),
+        blocks,
+        trimmed: deferred,
+        trimmedCount: deferred.length,
+        referenceIncluded: !!(laneByKey.original_work && laneByKey.original_work.applied),
+        directiveIncluded: !!(laneByKey.output_guidance && laneByKey.output_guidance.applied),
+        inputContext: {
+          applied: inputContextApplied,
+          text: inputContextText,
+          chars: Number(plan.input_context_chars || inputContextText.length),
+          source: "go_payload_application_plan.v1",
+          contentHash: plan.input_context_hash || null,
         },
-      );
-      const chapterDelivered = (budgetResult.blocks || []).some(function(b) { return b && b.label === "chapter" && Number(b.chars || 0) > 0; });
-      const arcDelivered = (budgetResult.blocks || []).some(function(b) { return b && b.label === "arc" && Number(b.chars || 0) > 0; });
-      const sagaDelivered = (budgetResult.blocks || []).some(function(b) { return b && b.label === "saga" && Number(b.chars || 0) > 0; });
-      const canonicalStateLayerDelivered = (budgetResult.blocks || []).some(function(b) { return b && b.label === "canonical_state_layer" && Number(b.chars || 0) > 0; });
-      const hierarchyEscalationTrace = (_ip && _ip.counts && _ip.counts.hierarchy_escalation && typeof _ip.counts.hierarchy_escalation === "object")
-        ? _ip.counts.hierarchy_escalation
-        : null;
-
-      // Phase 4-2: 보호적 주입 패턴 — User Priority + Base Rules + Reliability Guard
-      const protection = buildProtectionBlocks(orchResult);
-      const protectionText = protection.text || "";
-
-      // 보호 블록 + budget 블록 최종 결합 시에도 섹션 단위 하드리밋을 적용한다.
-      const hardLimit = Math.max(500, Math.floor(Number(budgetResult.budgetLimit || settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars)));
-      function trimBySections(text, limit) {
-        const src = String(text || "").trim();
-        const cap = Math.max(0, Math.floor(Number(limit || 0)));
-        if (!src || cap <= 0) return "";
-        if (src.length <= cap) return src;
-        const sections = src.split(/\n{2,}/).map(function(s) { return s.trim(); }).filter(Boolean);
-        let out = "";
-        for (const section of sections) {
-          const next = out.length + (out ? 2 : 0) + section.length;
-          if (next > cap) break;
-          out += (out ? "\n\n" : "") + section;
-        }
-        return out;
-      }
-      const baseInjectionSource = [String(protectionText || "").trim(), String(budgetResult.finalText || "").trim()].filter(Boolean).join("\n\n");
-      const correctionReserve = !backendMemoryDeliveryPlan && continuityCorrectionText
-        ? Math.min(continuityCorrectionText.length + 2, Math.max(200, Math.floor(hardLimit * 0.18)))
-        : 0;
-      const baseInjectionText = trimBySections(baseInjectionSource, Math.max(0, hardLimit - correctionReserve));
-      const continuityCorrectionForInjection = !backendMemoryDeliveryPlan && continuityCorrectionText && continuityCorrectionText.length <= correctionReserve
-        ? continuityCorrectionText
-        : "";
-      const fullInjectionText = [baseInjectionText, continuityCorrectionForInjection].filter(Boolean).join("\n\n");
-      // Backend owns the original-work budget and ordering. The host adapter keeps
-      // that lane additive so it cannot consume or retrim the main memory budget.
-      const referenceInjectionText = [primaryCanonBaseText, referenceText].filter(Boolean).join("\n\n");
-      const effectiveAuxiliaryText = [referenceInjectionText, fullInjectionText].filter(Boolean).join("\n\n");
-      const referenceBudgetPolicy = orchResult && orchResult._referenceInjection && orchResult._referenceInjection.budget_policy
-        ? orchResult._referenceInjection.budget_policy
-        : null;
-
-      if (!effectiveAuxiliaryText) {
-        const noContentResult = { ...emptyResult, status: "skipped", reason: "budget_trimmed_to_empty" };
-        updateRuntimeState("lastInjectionStatus", "skipped", { applied: false, detail: "budget_trimmed_to_empty" });
-        restoreGlobalContinuityTrace();
-        return { payload, injectionResult: noContentResult };
-      }
-
-      // payload 주입
-      const { payload: modifiedPayload, injected, placement: auxiliaryPlacement } = injectAuxiliaryBlock(payload, effectiveAuxiliaryText);
-
-      const injectionResult = {
-        applied: injected,
-        memoriesUsed: memoryCount,
-        referenceIncluded: referenceInjectionText.length > 0,
-        referenceSelectedCount: Number(_ip && _ip.reference_selected_count || 0),
-        primaryCanonBaseIncluded: injected && primaryCanonBaseText.length > 0,
-        primaryCanonBaseStatus: (_ip && _ip.primary_canon_base_status) ? String(_ip.primary_canon_base_status) : null,
-        primaryCanonBaseUsedChars: injected && referenceBudgetPolicy && referenceBudgetPolicy.primary_canon_base
-          ? Number(referenceBudgetPolicy.primary_canon_base.used_chars || 0)
-          : 0,
-        primaryCanonBaseConfiguredBudget: Number(settings.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars),
-        referenceInjectionChars: injected && referenceBudgetPolicy ? Number(referenceBudgetPolicy.used_chars || 0) : 0,
-        referenceBudgetPolicy: referenceBudgetPolicy,
-        vectorMemoriesUsed: injectionMemoryLaneCounts.vectorRelevant,
-        vectorMemoryHitCount: injectionMemoryLaneCounts.vectorHits,
-        vectorMemoryHydratedCount: injectionMemoryLaneCounts.vectorHydrated,
-        vectorMemoryInjectedCount: injectionMemoryLaneCounts.vectorInjected,
-        memoryLaneCounts: injectionMemoryLaneCounts,
-        vectorRecallStatus: injectionPackCounts.vector_memory_recall_status || null,
-        vectorRecallReason: injectionPackCounts.vector_memory_recall_reason || null,
-        fallbackUsed: includeFallback && fallbackText.length > 0,
-        directiveIncluded: authorText.length > 0 || directorText.length > 0,
-        authorIncluded: authorText.length > 0,
-        directorIncluded: directorText.length > 0,
-        sectionWorldIncluded: sectionWorldText.length > 0,
-        storylineIncluded: storylineText.length > 0,
-        characterIncluded: characterText.length > 0,
-        locationContextIncluded: locationContextText.length > 0,
-        speechStyleIncluded: speechStyleText.length > 0,
-        worldRulesIncluded: worldRulesText.length > 0,
-        pendingThreadIncluded: pendingThreadText.length > 0,
-        kgIncluded: kgText.length > 0,
-                activeStateIncluded: activeStateText.length > 0,
-        canonicalStateLayerIncluded: canonicalStateLayerText.length > 0,
-        canonicalStateLayerDelivered: canonicalStateLayerDelivered,
-        continuityCorrectionIncluded: continuityCorrectionText.length > 0,
-        continuityCorrectionDelivered: continuityCorrectionForInjection.length > 0,
-        continuityCorrectionChars: continuityCorrectionForInjection.length,
-        canonicalStateHardFloorSlotEnabled: !!(budgetResult.budgetPolicy && budgetResult.budgetPolicy.canonicalStateLayerHardFloorEnabled),
-                canonicalConflictGuardApplied: !!(budgetResult.budgetPolicy && Number(budgetResult.budgetPolicy.canonicalConflictGuardSuppressedCount || 0) > 0),
-                canonicalConflictSuppressedBlocks: budgetResult.budgetPolicy && Array.isArray(budgetResult.budgetPolicy.canonicalConflictGuardSuppressedBlocks)
-                  ? budgetResult.budgetPolicy.canonicalConflictGuardSuppressedBlocks.slice()
-                  : [],
-        latestDirectEvidenceIncluded: latestDirectEvidenceText.length > 0,
-        recentRawTurnIncluded: recentRawTurnText.length > 0,
-        episodeIncluded: episodeText.length > 0,
-        chapterIncluded: chapterText.length > 0,
-        arcIncluded: arcText.length > 0,
-        sagaIncluded: sagaText.length > 0,
-        chapterDelivered: chapterDelivered,
-        arcDelivered: arcDelivered,
-        sagaDelivered: sagaDelivered,
-        hierarchyEscalation: hierarchyEscalationTrace,
-        budgetPolicy: budgetResult.budgetPolicy || null,
-        precedencePolicyVersion: budgetResult.budgetPolicy ? budgetResult.budgetPolicy.precedencePolicyVersion || null : null,
-        precedenceOrder: budgetResult.budgetPolicy && Array.isArray(budgetResult.budgetPolicy.precedenceOrder)
-          ? budgetResult.budgetPolicy.precedenceOrder.slice()
-          : [],
-        // M-3a: injection 텍스트 소스 — bundle(backend) vs local
-        injectionTextSource: _ip ? "bundle" : "local",
-        // M-3c: apply_mode semantics guard 상태 기록
-        applyModeReflected: _ipApplyModeReflected || _currentApplyMode,
-        applyVerdictRule: _ipApplyRule || (_currentApplyMode === "off" ? "no_apply" : _currentApplyMode === "reviewed_apply" ? "apply_if_approved" : "trace_only"),
-        // Phase 4-2: 보호적 주입 패턴 상태
-        protection: protection,
-        verbatimSupport: verbatimSupport,
-        hierarchyEscapeHatch: hierarchyEscapeHatch,
-        memoryDeliveryPlan: backendMemoryDeliveryPlan,
-        // Phase 2-3: active state trimming 세부 사항
-        activeStateSections: activeStateFormatted.sections || [],
-        activeStateTrimmed: activeStateFormatted.trimmedSections || [],
-        trimmedCount: budgetResult.trimmed.length,
-        totalChars: fullInjectionText.length,
-        mainInjectionChars: fullInjectionText.length,
-        effectiveAuxiliaryChars: effectiveAuxiliaryText.length,
-        budgetLimit: hardLimit,
-        auxiliaryPreview: effectiveAuxiliaryText,
-        mainInjectionPreview: fullInjectionText,
-        referenceInjectionPreview: referenceInjectionText,
-        auxiliaryPlacement: auxiliaryPlacement || null,
-        blocks: budgetResult.blocks.map(b => ({ label: b.label, chars: b.chars })),
-        trimmed: budgetResult.trimmed,
-        // Sprint 4-B-2 placeholder
-        inputContext: { applied: false, sections: [], dropped: [], chars: 0, budget: 0, maxSlots: 0, slotCount: 0, slotGovernorPolicyVersion: null, slotGovernorMode: null, adaptiveProfile: "empty", signals: null, needs: [], risks: [], sources: [], staleArcDemotionApplied: false, helperOverlapSuppressionApplied: false, helperOverlapLabels: [], resumeAnchor: null, supportLaneNote: "Support-only anchor lane; does not overwrite canonical state." },
+        payloadApplicationPlan: plan,
+        guidanceApplicationTrace: guidanceTrace,
+        budgetPolicy: {
+          owner: "go",
+          contractVersion: plan.contract_version,
+          laneOrder: Array.isArray(plan.lane_order) ? plan.lane_order.slice() : [],
+          auxiliaryHash: plan.auxiliary_hash || null,
+        },
       };
-
-      // Sprint 4-B-2: Input Context 주입 — 마지막 user 메시지 직전에 삽입
-      let finalPayload = modifiedPayload;
-      let inputCtx = injectionResult.inputContext;
-      if (settings.inputContextEnabled !== false && injected) {
-        try {
-          // M-3b: bundle input_context_text가 있으면 연속성 앵커로 사전 포함
-          // buildInputContext가 여전히 active_state/KG/supervisor/userInput 섹션을 로컬에서 보완함
-          inputCtx = buildInputContext(orchResult._userInput || "", orchResult, _ip ? (_ip.input_context_text || "") : "", {
-			backendOwned: !!_ip,
-            helperBlocks: budgetResult.blocks || [],
-            continuity: continuityTrace,
-            idleGapMs: continuityTrace ? continuityTrace.idleGapMs || 0 : 0,
-            triggerMode: continuityTrace ? continuityTrace.triggerMode || null : null,
-            sagaText: sagaText,
-          });
-          const resumeAnchorResult = applySessionRoutingResumeAnchorToInputContext(
-            inputCtx,
-            (orchResult && orchResult._chatSessionId) ? orchResult._chatSessionId : null,
-          );
-          inputCtx = resumeAnchorResult.inputContext || inputCtx;
-          injectionResult.inputContext = {
-            applied: inputCtx.applied,
-            sections: inputCtx.sections || [],
-            dropped: inputCtx.dropped || [],
-            text: inputCtx.text || "",
-            chars: inputCtx.chars || 0,
-            budget: inputCtx.budget || 0,
-            maxSlots: inputCtx.maxSlots || 0,
-            slotCount: inputCtx.slotCount || 0,
-            slotGovernorPolicyVersion: inputCtx.slotGovernorPolicyVersion || null,
-            slotGovernorMode: inputCtx.slotGovernorMode || null,
-            adaptiveProfile: inputCtx.adaptiveProfile || "empty",
-            signals: inputCtx.signals || null,
-            needs: inputCtx.needs || [],
-            risks: inputCtx.risks || [],
-            sources: inputCtx.sources || [],
-            staleArcDemotionApplied: !!inputCtx.staleArcDemotionApplied,
-            helperOverlapSuppressionApplied: !!inputCtx.helperOverlapSuppressionApplied,
-            helperOverlapLabels: inputCtx.helperOverlapLabels || [],
-            resumeAnchor: inputCtx.resumeAnchor || resumeAnchorResult.resumeAnchor || null,
-            supportLaneNote: inputCtx.supportLaneNote || "Support-only anchor lane; does not overwrite canonical state.",
-            source: Array.isArray(inputCtx.sources) && inputCtx.sources.length > 0
-              ? Array.from(new Set(inputCtx.sources)).join("+")
-              : ((_ip && _ip.input_context_text) ? "bundle+local" : "local"),
-          };
-          if (inputCtx.applied && inputCtx.text) {
-            finalPayload = injectInputContextBeforeUser(finalPayload, inputCtx.text);
-          }
-        } catch { /* Input Context 실패해도 기존 injection 유지 */ }
-      }
-      injectionResult.adaptiveGovernor = buildAdaptiveInjectionGovernorTrace(orchResult._userInput || "", orchResult, budgetResult, inputCtx);
-
-      updateRuntimeState("lastInjectionStatus", injected ? "ok" : "fail", {
-        applied: injected,
-        detail: injected
-          ? `${budgetResult.blocks.length} blocks, ${fullInjectionText.length}/${hardLimit} chars; ${formatMemoryLaneCountsDetail(injectionMemoryLaneCounts)}` + (referenceText ? `; reference:${Number(_ip && _ip.reference_selected_count || 0)}` : "") + (activeStateText ? " (active_state✓)" : "")
-          : "injection failed",
-        placement: auxiliaryPlacement || null,
+      updateRuntimeState("lastInjectionStatus", result.applied ? "ok" : "skipped", {
+        applied: result.applied,
+        detail: `${result.totalChars} chars from Go payload plan`,
+        placement,
+        guidanceApplicationTrace: guidanceTrace,
       });
-
-      restoreGlobalContinuityTrace();
-      return { payload: finalPayload, injectionResult };
+      return { payload: finalPayload, injectionResult: result };
     } catch (err) {
-      warnLog("applyContextInjection failed:", err.message);
-      updateRuntimeState("lastInjectionStatus", "error", { detail: err.message });
-      try {
-        if (typeof restoreGlobalContinuityTrace === "function") restoreGlobalContinuityTrace();
-      } catch { /* no-op */ }
-      return { payload, injectionResult: emptyResult };
+      warnLog("applyGoPayloadApplicationPlan failed:", err && err.message ? err.message : String(err || "unknown"));
+      updateRuntimeState("lastInjectionStatus", "error", { detail: "go_payload_application_plan_apply_failed" });
+      return { payload, injectionResult: { ...emptyResult, status: "error", reason: "go_payload_application_plan_apply_failed" } };
     }
   }
 
@@ -34359,7 +34101,7 @@
                 original_payload_preserved: !!ptLaneStatus.original_payload_preserved,
               } : null,
             });
-            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.progressionLedger || b.autonomyPlan || b.microBeatProposal || b.sceneStepProposal || b.combinedProposal || b.generationPacket || b.continuityPack || b.recallResult || b.supervisorInputPack || b.injectionPack || b.referenceInjection || b.inputTransparencyModel || b.effectiveInputPreview || b.weakInputPlanner || b.responseExecutionContract || b.progressionChoiceLedger || b.step25ValidationGate || b.writebackPreview || b.tracePreview || b.sourceContract)) ? b : null;
+            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.progressionLedger || b.autonomyPlan || b.microBeatProposal || b.sceneStepProposal || b.combinedProposal || b.generationPacket || b.continuityPack || b.recallResult || b.supervisorInputPack || b.supervisorResult || b.injectionPack || b.payloadApplicationPlan || b.referenceInjection || b.inputTransparencyModel || b.effectiveInputPreview || b.weakInputPlanner || b.responseExecutionContract || b.progressionChoiceLedger || b.step25ValidationGate || b.writebackPreview || b.tracePreview || b.sourceContract)) ? b : null;
           } else {
             _lastPrepareTurnSource = "backend-off";
             _lastPrepareTurnFallbackReason = "backend_off";
@@ -49484,6 +49226,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           </select>
           <small>${t('settings.label.narrativeGuideStrength.help')}</small>
         </div>
+        <div class="mo-row mo-range-row">
+          <label>${t('settings.label.narrativeSupportMaxChars')}</label>
+          <input type="number" id="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
+          <input class="mo-range" type="range" id="mo-narrativeSupportMaxCharsRange" data-sync-input="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
+          <small>${t('settings.hint.narrativeSupportMaxChars')}</small>
+        </div>
         <div class="mo-row">
           <label>${t('settings.label.storyNarrativeStance')}</label>
           <select id="mo-storyNarrativeStance"${s.pluginMainApplyMode === "off" ? " disabled" : ""}>
@@ -50519,6 +50267,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             failedQueueMaxAgeDays: $("mo-failedQueueMaxAgeDays").value,
             // H-3b: Initiative mode persistence only
             narrativeGuideStrength: $("mo-narrativeGuideStrength").value,
+            narrativeSupportMaxChars: $("mo-narrativeSupportMaxChars").value,
             storyNarrativeStance: $("mo-storyNarrativeStance").value,
             // J-3a: Plugin Main Apply Mode
             pluginMainApplyMode: $("mo-pluginMainApplyMode").value,
