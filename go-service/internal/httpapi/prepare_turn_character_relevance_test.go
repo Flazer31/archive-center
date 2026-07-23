@@ -58,7 +58,7 @@ func TestPrepareTurnPrivateRecollectionAcceptsUniqueObservedShortName(t *testing
 	}
 	trace := filterPrepareTurnEntityRecollections(
 		"윤기는 딸 슬아에게 한얼을 지탱해 달라고 말했다.",
-		nil, nil, nil, nil, &memories,
+		nil, nil, nil, nil, nil, &memories,
 	)
 	if len(memories) != 1 || memories[0].OwnerEntityName != "윤슬아" {
 		t.Fatalf("unique short-name owner was not selected: %#v trace=%#v", memories, trace)
@@ -113,7 +113,7 @@ func TestPrepareTurnPrivateRecollectionDoesNotLetRecencyOverrideDurableEmotion(t
 		{ID: 2, OwnerEntityKey: "owner", OwnerEntityName: "가나다", OwnerEntityRole: "npc", SourceTurn: 90, MemoryText: "최근의 평범한 관찰", Importance10: 5, EmotionalWeight: 0.1},
 		{ID: 1, OwnerEntityKey: "owner", OwnerEntityName: "가나다", OwnerEntityRole: "npc", SourceTurn: 10, MemoryText: "오래된 핵심 관계 기억", Importance10: 8, EmotionalWeight: 0.9},
 	}
-	filterPrepareTurnEntityRecollections("가나다가 찾아왔다.", nil, nil, nil, nil, &items)
+	filterPrepareTurnEntityRecollections("가나다가 찾아왔다.", nil, nil, nil, nil, nil, &items)
 	if len(items) != 1 || items[0].ID != 1 {
 		t.Fatalf("selected = %#v, want durable high-emotion memory instead of newest row", items)
 	}

@@ -536,11 +536,25 @@ func prepareTurnMemoryRecallEvidence(query string, item store.Memory) prepareTur
 			evidence.OverlapTerms = append(evidence.OverlapTerms, term)
 		}
 	}
-	// A structured entity/place/item match is an explicit scene link. For free
-	// text, require corroboration by more than one content term; a lone generic
-	// word is not enough to spend recall budget.
-	evidence.Eligible = len(evidence.StructuredAnchors) > 0 || len(evidence.OverlapTerms) > 1
+	// A character name by itself is not enough to spend the event-memory lane:
+	// long sessions commonly attach the protagonist to almost every row. Keep
+	// structured anchors for ranking and diagnostics, but require at least one
+	// additional scene term before a non-vector event refill can enter. Protected
+	// continuity is the exception: a current protected owner/subject must retain
+	// its guard even when the secret text itself cannot overlap the public scene.
+	parsed := parseJSONMap(item.SummaryJSON)
+	protected := len(sliceFromAny(parsed["protected_secrets"])) > 0 ||
+		len(sliceFromAny(parsed["character_identity_accuracy"])) > 0
+	evidence.Eligible = len(evidence.OverlapTerms) >= prepareTurnRecallRequiredOverlap(query) ||
+		(protected && len(evidence.StructuredAnchors) > 0)
 	return evidence
+}
+
+func prepareTurnRecallRequiredOverlap(query string) int {
+	if len(prepareTurnRecallTerms(query)) > 24 {
+		return 3
+	}
+	return 2
 }
 
 func prepareTurnSupportRecallEligible(query, text string, anchors ...string) bool {
@@ -559,10 +573,11 @@ func prepareTurnSupportRecallEligible(query, text string, anchors ...string) boo
 		textTerms[term] = true
 	}
 	overlap := 0
+	requiredOverlap := prepareTurnRecallRequiredOverlap(query)
 	for _, term := range prepareTurnRecallTerms(query) {
 		if textTerms[term] {
 			overlap++
-			if overlap > 1 {
+			if overlap >= requiredOverlap {
 				return true
 			}
 		}

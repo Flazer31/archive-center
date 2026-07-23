@@ -430,7 +430,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	timing.addElapsed("store_reads", storeReadsStartedAt)
 
 	recollectionStartedAt := time.Now()
-	recollectionRelevance := filterPrepareTurnEntityRecollections(rawUserInput, chatLogs, activeStates, canonicalLayers, personaEntries, &characterPrivateMemories)
+	recollectionRelevance := filterPrepareTurnEntityRecollections(rawUserInput, chatLogs, activeStates, canonicalLayers, memories, personaEntries, &characterPrivateMemories)
 	recollectionRelevance["candidate_read_limit"] = entityRecollectionReadLimit
 	recollectionRelevance["relevance_before_delivery_cap"] = true
 	recollectionRelevance["owner_index_count"] = directEntityOwnerIndexCount

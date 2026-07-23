@@ -899,8 +899,8 @@ func TestPrepareTurnCharCapsAndTruncation(t *testing.T) {
 
 	fake := &turnRecordingStore{
 		returnMemories: []store.Memory{
-			{ID: 1, ChatSessionID: "sess-cap", TurnIndex: 1, SummaryJSON: `{"turn_summary":"` + strings.Repeat("x", 300) + `","entities":[{"name":"test"}]}`, Importance: 0.5},
-			{ID: 2, ChatSessionID: "sess-cap", TurnIndex: 2, SummaryJSON: `{"turn_summary":"` + strings.Repeat("y", 300) + `","entities":[{"name":"test"}]}`, Importance: 0.5},
+			{ID: 1, ChatSessionID: "sess-cap", TurnIndex: 1, SummaryJSON: `{"turn_summary":"test calibration ` + strings.Repeat("x", 300) + `","entities":[{"name":"test"}]}`, Importance: 0.5},
+			{ID: 2, ChatSessionID: "sess-cap", TurnIndex: 2, SummaryJSON: `{"turn_summary":"test calibration ` + strings.Repeat("y", 300) + `","entities":[{"name":"test"}]}`, Importance: 0.5},
 		},
 		returnKGTriples: []store.KGTriple{
 			{ID: 1, ChatSessionID: "sess-cap", Subject: "A", Predicate: "B", Object: "C"},
@@ -925,7 +925,7 @@ func TestPrepareTurnCharCapsAndTruncation(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-cap","turn_index":3,"raw_user_input":"test","settings":{"max_injection_chars":50,"max_input_context_chars":50,"injection_enabled":true,"input_context_enabled":true,"top_k":10}}`
+	body := `{"chat_session_id":"sess-cap","turn_index":3,"raw_user_input":"test calibration","settings":{"max_injection_chars":50,"max_input_context_chars":50,"injection_enabled":true,"input_context_enabled":true,"top_k":10}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

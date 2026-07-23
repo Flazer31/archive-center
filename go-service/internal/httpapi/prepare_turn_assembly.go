@@ -117,9 +117,14 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.KGText = makePrepareTurnSection("[Knowledge Graph]", kgLines)
 
 	directEvidenceLines := make([]string, 0, len(artifactHydration.Evidence))
+	directEvidenceIrrelevantDropped := 0
 	for _, ev := range artifactHydration.Evidence {
 		text := compactPrepareTurnLine(ev.EvidenceText, 320)
 		if text == "" {
+			continue
+		}
+		if !prepareTurnCurrentSceneRelevant(supportQuery, text) {
+			directEvidenceIrrelevantDropped++
 			continue
 		}
 		meta := []string{"vector"}
@@ -161,7 +166,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		}
 		desc = compactPrepareTurnLine(desc, 170)
 		if desc != "" {
-			if !prepareTurnSupportRecallEligible(supportQuery, desc, sl.Name) {
+			if !prepareTurnSupportRecallEligible(supportQuery, desc) {
 				storylineIrrelevantDropped++
 				continue
 			}
@@ -325,7 +330,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			desc = compactPrepareTurnLine("status="+status+"; "+desc, 190)
 		}
 		if desc != "" {
-			if !prepareTurnSupportRecallEligible(supportQuery, desc, pt.ThreadKey, pt.Owner, pt.Target, pt.Title) {
+			if !prepareTurnSupportRecallEligible(supportQuery, desc) {
 				pendingIrrelevantDropped++
 				continue
 			}
@@ -384,6 +389,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	canonWorldLines := []string{}
 	canonFiltered := 0
 	canonIrrelevant := 0
+	canonCharacterRosterOnlyDropped := 0
 	canonTypeCounts := map[string]int{}
 	for _, cl := range canonicalLayers {
 		if len(canonLines) >= recallLimit {
@@ -425,7 +431,13 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 					*target = append(*target, "- entity_state: "+compactPrepareTurnLine(string(encoded), 320))
 				}
 				appendCanonicalSubset(&canonEventLines, "events")
-				appendCanonicalSubset(&canonCharacterLines, "characters")
+				if characters, ok := entity["characters"]; ok {
+					if prepareTurnCanonicalCharacterStateHasDetails(characters) {
+						appendCanonicalSubset(&canonCharacterLines, "characters")
+					} else {
+						canonCharacterRosterOnlyDropped++
+					}
+				}
 				appendCanonicalSubset(&canonWorldLines, "background", "items", "locations")
 			} else {
 				canonCharacterLines = append(canonCharacterLines, line)
@@ -521,6 +533,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["pending_thread_irrelevant_dropped"] = pendingIrrelevantDropped
 	out.Counts["episode_irrelevant_dropped"] = episodeIrrelevantDropped
 	out.Counts["direct_evidence_bound"] = len(directEvidenceLines)
+	out.Counts["direct_evidence_irrelevant_dropped"] = directEvidenceIrrelevantDropped
 	out.Counts["fallback_bound"] = len(fallbackLines)
 	out.Counts["fallback_count"] = len(fallbackLines)
 	out.Counts["episode_bound"] = len(episodeLines)
@@ -543,6 +556,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["canonical_state_world_layers_count"] = canonTypeCounts["world_state"]
 	out.Counts["canonical_state_scene_layers_count"] = canonTypeCounts["scene_state"]
 	out.Counts["canonical_state_entity_layers_count"] = canonTypeCounts["entity_state"]
+	out.Counts["canonical_character_roster_only_dropped"] = canonCharacterRosterOnlyDropped
 	out.Counts["storyline_collapsed_count"] = maxInt(len(storylines)-len(storylinesForInjection), 0)
 	out.Counts["world_rule_collapsed_count"] = maxInt(len(worldRules)-len(worldRulesForInjection), 0)
 	out.Counts["block_count"] = len(out.Blocks)
@@ -820,6 +834,40 @@ func prepareTurnSurfaceText(value any) string {
 		return compactPrepareTurnJSON(v)
 	default:
 		return compactPrepareTurnJSON(v)
+	}
+}
+
+func prepareTurnCanonicalCharacterStateHasDetails(value any) bool {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			if prepareTurnCanonicalCharacterStateHasDetails(item) {
+				return true
+			}
+		}
+		return false
+	case map[string]any:
+		identityOnly := map[string]bool{
+			"name": true, "character_name": true, "display_name": true,
+			"id": true, "key": true, "aliases": true,
+		}
+		for key, item := range typed {
+			normalizedKey := strings.ToLower(strings.TrimSpace(key))
+			if !identityOnly[normalizedKey] {
+				if nested, ok := item.(map[string]any); ok {
+					if len(nested) > 0 {
+						return true
+					}
+				} else if prepareTurnSurfaceText(item) != "" {
+					return true
+				}
+			}
+		}
+		return false
+	default:
+		// A string or scalar under "characters" is only a roster entry, not a
+		// current character state.
+		return false
 	}
 }
 

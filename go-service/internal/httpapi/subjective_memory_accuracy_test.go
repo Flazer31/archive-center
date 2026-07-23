@@ -81,6 +81,7 @@ func TestPrepareTurnCharacterPrivateRecollectionUsesOneMemoryPerCurrentOwner(t *
 		nil,
 		nil,
 		nil,
+		nil,
 		&memories,
 	)
 	if len(memories) != 3 {
@@ -136,7 +137,7 @@ func TestPrepareTurnCharacterPrivateRecollectionRejectsNonNPCOwner(t *testing.T)
 	}
 	trace := filterPrepareTurnEntityRecollections(
 		"Mira meets Juno in the garden.",
-		nil, nil, nil, nil, &memories,
+		nil, nil, nil, nil, nil, &memories,
 	)
 	if len(memories) != 1 || memories[0].OwnerEntityKey != "juno" {
 		t.Fatalf("NPC-private selection = %#v, want only Juno; trace=%#v", memories, trace)

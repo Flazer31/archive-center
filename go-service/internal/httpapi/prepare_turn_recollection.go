@@ -305,6 +305,59 @@ func characterPrivateMemoryHasProtagonistRole(entry store.ProtagonistEntityMemor
 	return tagRole == "protagonist" || tagRole == "player" || tagRole == "user" || tagRole == "persona"
 }
 
+func prepareTurnProtectedMemoryOwnsPrivateGuard(memories []store.Memory, entry store.ProtagonistEntityMemory) bool {
+	var tags []string
+	if json.Unmarshal([]byte(strings.TrimSpace(entry.TagsJSON)), &tags) == nil {
+		for _, tag := range tags {
+			switch strings.ToLower(strings.TrimSpace(tag)) {
+			case "derived_from_protected_secret", "derived_from_identity_accuracy":
+				return true
+			}
+		}
+	}
+	if entry.SourceTurn <= 0 {
+		return false
+	}
+	ownerKeys := map[string]bool{}
+	for _, owner := range []string{entry.OwnerEntityKey, entry.OwnerEntityName, entry.PersonaEntityKey, entry.PersonaEntityName} {
+		if key := normalizeCharacterKey(owner); key != "" {
+			ownerKeys[key] = true
+		}
+	}
+	if len(ownerKeys) == 0 {
+		return false
+	}
+	matchesOwner := func(value string) bool {
+		return ownerKeys[normalizeCharacterKey(value)]
+	}
+	for _, memory := range memories {
+		if memory.TurnIndex != entry.SourceTurn {
+			continue
+		}
+		parsed := parseJSONMap(memory.SummaryJSON)
+		for _, raw := range sliceFromAny(parsed["protected_secrets"]) {
+			secret := mapFromAny(raw)
+			if matchesOwner(stringFromMap(secret, "owner")) {
+				return true
+			}
+			for _, subject := range stringsFromAny(secret["subject"]) {
+				if matchesOwner(subject) {
+					return true
+				}
+			}
+		}
+		for _, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
+			identity := mapFromAny(raw)
+			for _, key := range []string{"canonical_entity_name", "true_identity_name", "real_identity_name", "surface_identity_name", "public_identity_name", "alias_name"} {
+				if matchesOwner(stringFromMap(identity, key)) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func personaMemoryEntryAsCharacterPrivateMemory(entry store.PersonaMemoryEntry, targetSID string) store.ProtagonistEntityMemory {
 	tags := personaMemoryEntryTags(entry)
 	ownerKey := personaMemoryEntryTagValue(tags, "owner_entity_key")
@@ -454,7 +507,7 @@ func mergePrepareTurnEntityMemories(priority, fallback []store.ProtagonistEntity
 	return out
 }
 
-func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.ChatLog, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories *[]store.ProtagonistEntityMemory) map[string]any {
+func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.ChatLog, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, memories []store.Memory, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories *[]store.ProtagonistEntityMemory) map[string]any {
 	ctx := buildPrepareTurnRecollectionContext(rawUserInput, chatLogs, activeStates, canonicalLayers)
 	beforePrivate := len(*characterPrivateMemories)
 	filteredPrivate := make([]store.ProtagonistEntityMemory, 0, beforePrivate)
@@ -522,6 +575,15 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 				"owner_entity_key":  item.OwnerEntityKey,
 				"owner_entity_name": item.OwnerEntityName,
 				"reason":            "non_npc_memory_domain",
+			})
+			continue
+		}
+		if item.SecretGuard && prepareTurnProtectedMemoryOwnsPrivateGuard(memories, item) {
+			dropped = append(dropped, map[string]any{
+				"id":                item.ID,
+				"owner_entity_key":  item.OwnerEntityKey,
+				"owner_entity_name": item.OwnerEntityName,
+				"reason":            "protected_secret_owned_by_protected_lane",
 			})
 			continue
 		}
