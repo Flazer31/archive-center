@@ -50,14 +50,25 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	}
 
 	protectedPerspectiveContext := prepareTurnProtectedPerspectiveContext(perspectiveContext, memories, charStates)
-	memoryQuery := prepareTurnMemorySelectionQuery(rawUserInput, chatLogs, protectedPerspectiveContext)
+	recollectionContext := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads)
+	memoryQuery := prepareTurnMemorySelectionQuery(recollectionContext, protectedPerspectiveContext)
+	out.Counts["recall_query_sources"] = []string{"current_user_input", "previous_stored_event_summary", "latest_scene_state", "unresolved_goals", "confirmed_current_entities", "confirmed_current_pov"}
+	out.Counts["previous_assistant_raw_used_for_search"] = false
+	out.Counts["previous_assistant_raw_delivery_owner"] = "input_context_only"
 	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow)
 	memorySelection = collapsePrepareTurnMemoryLaneSelection(memorySelection)
-	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, rawUserInput, chatLogs, protectedPerspectiveContext)
-	// Other material lanes may use only the current request and immediate scene
-	// context. A selected historical memory must not make unrelated world,
-	// character, relationship, or evidence rows appear current.
-	supportQuery := memoryQuery
+	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, recollectionContext, protectedPerspectiveContext)
+	// Material support lanes use only the current request, current scene,
+	// already-relevant open goals, confirmed current entities, and confirmed
+	// POV. The previous stored event summary may retrieve event memories, but a
+	// selected memory must not recursively activate unrelated support lanes.
+	supportQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
+		recollectionContext.rawUserInput,
+		recollectionContext.currentSceneStates,
+		recollectionContext.unresolvedGoals,
+		recollectionContext.currentEntities,
+		extractionStringFromAny(protectedPerspectiveContext["current_pov"]),
+	}), "\n"))
 	out.ContinuityCorrectionText, out.Counts["continuity_correction"] = buildNarrativeContinuityCorrection(
 		narrativeCurrentValues,
 		rawUserInput,
@@ -324,12 +335,17 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if len(pendingLines) >= recallLimit {
 			break
 		}
-		desc := compactPrepareTurnLine(pt.Description, 170)
+		rawDescription := strings.TrimSpace(pt.Description)
+		desc := compactPrepareTurnLine(rawDescription, 170)
 		status := strings.TrimSpace(pt.Status)
 		if status != "" && desc != "" {
 			desc = compactPrepareTurnLine("status="+status+"; "+desc, 190)
 		}
 		if desc != "" {
+			if rawDescription == "" || !strings.Contains(recollectionContext.unresolvedGoals, rawDescription) {
+				pendingIrrelevantDropped++
+				continue
+			}
 			if !prepareTurnSupportRecallEligible(supportQuery, desc) {
 				pendingIrrelevantDropped++
 				continue

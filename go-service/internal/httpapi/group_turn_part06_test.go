@@ -387,7 +387,7 @@ func TestPrepareTurnStorylineSelectionPreventsStaleAmplification(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnBundleIncludesFallbackChatLogsWhenMemoriesAreThin(t *testing.T) {
+func TestPrepareTurnBundleKeepsEligibleMemoryWithoutChatLogFallback(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnMemories: []store.Memory{
 			{ID: 1, ChatSessionID: "sess-fallback", TurnIndex: 1, SummaryJSON: `{"turn_summary":"Only one brass key memory is available","items":["brass key"]}`, Importance: 0.5},
@@ -409,7 +409,7 @@ func TestPrepareTurnBundleIncludesFallbackChatLogsWhenMemoriesAreThin(t *testing
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-fallback","turn_index":2,"raw_user_input":"Use the key","settings":{"max_injection_chars":900,"max_input_context_chars":400,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
+	body := `{"chat_session_id":"sess-fallback","turn_index":2,"raw_user_input":"Use the brass key","settings":{"max_injection_chars":900,"max_input_context_chars":400,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -458,23 +458,23 @@ func TestPrepareTurnBundleIncludesFallbackChatLogsWhenMemoriesAreThin(t *testing
 	if !ok {
 		t.Fatalf("recall_result.items is not an array")
 	}
-	foundFallbackItem := false
+	foundMemoryItem := false
 	for _, item := range items {
 		m, _ := item.(map[string]any)
-		if m["source"] == "chat_log" && strings.Contains(fmt.Sprint(m["content"]), "brass key") {
-			foundFallbackItem = true
+		if m["source"] == "memory" && strings.Contains(fmt.Sprint(m["summary"]), "brass key") {
+			foundMemoryItem = true
 			break
 		}
 	}
-	if !foundFallbackItem {
-		t.Fatalf("recall_result.items missing source=chat_log fallback item: %#v", items)
+	if !foundMemoryItem {
+		t.Fatalf("recall_result.items missing eligible memory item: %#v", items)
 	}
 	recallCounts, ok := recall["counts"].(map[string]any)
 	if !ok {
 		t.Fatalf("recall_result.counts is not an object")
 	}
-	if recallCounts["memory_count"] != float64(0) || recallCounts["fallback_count"] != float64(2) {
-		t.Errorf("recall_result counts memory/fallback = %v/%v, want 0/2", recallCounts["memory_count"], recallCounts["fallback_count"])
+	if recallCounts["memory_count"] != float64(1) || recallCounts["fallback_count"] != float64(0) {
+		t.Errorf("recall_result counts memory/fallback = %v/%v, want 1/0", recallCounts["memory_count"], recallCounts["fallback_count"])
 	}
 }
 

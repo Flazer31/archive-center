@@ -12662,6 +12662,7 @@
           body.output_language_override = normalizedLanguageContext.output_language_override;
         }
       }
+      body.client_meta.risu_persona_observation = await observeRisuPersona();
       body.client_meta.embedding = {
         api_key: String(settings.embeddingApiKey || "").trim(),
         endpoint: String(settings.embeddingEndpoint || "").trim(),
@@ -24271,6 +24272,61 @@
     return observation;
   }
 
+  async function observeRisuPersona() {
+    const unobserved = function(reason) {
+      return {
+        contract_version: "risu_persona_observation.v1",
+        observation_state: "unobserved",
+        source: "not_exposed",
+        persona_id: null,
+        persona_name: null,
+        reason,
+      };
+    };
+    if (!R || typeof R.getDatabase !== "function") {
+      return unobserved("risu_database_api_not_exposed");
+    }
+    try {
+      const db = await R.getDatabase(["personas", "selectedPersona"]);
+      if (!db || typeof db !== "object") {
+        return unobserved("risu_database_access_unavailable");
+      }
+      const personas = Array.isArray(db.personas) ? db.personas : [];
+      let boundPersonaID = "";
+      if (
+        typeof R.getCurrentCharacterIndex === "function" &&
+        typeof R.getCurrentChatIndex === "function" &&
+        typeof R.getChatFromIndex === "function"
+      ) {
+        const [characterIndex, chatIndex] = await Promise.all([
+          R.getCurrentCharacterIndex(),
+          R.getCurrentChatIndex(),
+        ]);
+        const chat = await R.getChatFromIndex(characterIndex, chatIndex);
+        boundPersonaID = String((chat && chat.bindedPersona) || "").trim();
+      }
+      const selectedIndex = Number(db.selectedPersona);
+      const boundPersona = boundPersonaID
+        ? personas.find(function(item) { return String((item && item.id) || "").trim() === boundPersonaID; })
+        : null;
+      const persona = boundPersona || (Number.isInteger(selectedIndex) && selectedIndex >= 0 ? personas[selectedIndex] : null);
+      if (!persona) {
+        return unobserved("active_persona_not_resolved");
+      }
+      const personaName = String(persona.name || "").trim();
+      if (!personaName) return unobserved("active_persona_name_missing");
+      return {
+        contract_version: "risu_persona_observation.v1",
+        observation_state: "observed",
+        source: boundPersona ? "chat.bindedPersona" : "database.selectedPersona",
+        persona_id: String(persona.id || "").trim() || null,
+        persona_name: personaName,
+      };
+    } catch {
+      return unobserved("risu_persona_observation_failed");
+    }
+  }
+
   async function buildCompleteTurnRequestBody(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, sourceObservationOptions) {
     try {
       const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride();
@@ -24295,6 +24351,7 @@
         assistantContent,
         Object.assign({}, sourceObservationOptions || {}, { userInput: String(userInput || "") })
       );
+      const risuPersonaObservation = await observeRisuPersona();
       const idempotencyKey = [
         "complete_turn",
         String(chatSessionId || ""),
@@ -24304,6 +24361,7 @@
         String(sourceAcceptanceObservation.generation_id || "unobserved"),
         String(sourceAcceptanceObservation.message_chat_id || "unobserved"),
         String(sourceAcceptanceObservation.observed_content_hash || "unobserved"),
+        String(risuPersonaObservation.persona_id || risuPersonaObservation.persona_name || "unobserved"),
       ].join(":");
       const body = {
         chat_session_id: chatSessionId,
@@ -24328,6 +24386,7 @@
           user_input_kind: actualEmptyUserInput ? "auto_continue" : "normal",
           source_acceptance_required: true,
           source_acceptance_observation: sourceAcceptanceObservation,
+          risu_persona_observation: risuPersonaObservation,
           critic: {
             api_key: effectiveCritic.apiKey || "",
             endpoint: effectiveCritic.endpoint || "",
@@ -24377,6 +24436,9 @@
       if (meta.source_acceptance_required === true) safeClientMeta.source_acceptance_required = true;
       if (meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object") {
         safeClientMeta.source_acceptance_observation = Object.assign({}, meta.source_acceptance_observation);
+      }
+      if (meta.risu_persona_observation && typeof meta.risu_persona_observation === "object") {
+        safeClientMeta.risu_persona_observation = Object.assign({}, meta.risu_persona_observation);
       }
       if (meta.active_chat_backfill && typeof meta.active_chat_backfill === "object") {
         safeClientMeta.active_chat_backfill = Object.assign({}, meta.active_chat_backfill);
@@ -24445,6 +24507,9 @@
       }
       if (meta.active_chat_backfill) rebuilt.client_meta.active_chat_backfill = meta.active_chat_backfill;
       if (meta.preserve_requested_turn_index === true) rebuilt.client_meta.preserve_requested_turn_index = true;
+      if (meta.risu_persona_observation && typeof meta.risu_persona_observation === "object") {
+        rebuilt.client_meta.risu_persona_observation = Object.assign({}, meta.risu_persona_observation);
+      }
       const refreshedPayload = buildCompleteTurnQueuePayload(rebuilt);
       if (!refreshedPayload) return false;
       Object.assign(payload, refreshedPayload);

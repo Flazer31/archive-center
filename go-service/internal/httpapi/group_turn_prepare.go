@@ -201,7 +201,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var episodeSums []store.EpisodeSummary
 	var personaEntries []store.PersonaMemoryEntry
 	var characterPrivateMemories []store.ProtagonistEntityMemory
-	ambiguousPrivatePersonaEntriesDeferred := 0
 	directEntityOwnerIndexCount := 0
 	directEntityOwnerMatchCount := 0
 	directEntityMemoryReadCount := 0
@@ -354,10 +353,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		if personaStore, ok := s.Store.(store.PersonaCapsuleStore); ok {
 			if entries, err := personaStore.ListAttachedPersonaMemoryEntries(ctx, sid, entityRecollectionReadLimit); err == nil {
 				for _, entry := range entries {
-					if personaMemoryEntryHasUnresolvedPrivateRole(entry) {
-						ambiguousPrivatePersonaEntriesDeferred++
-						continue
-					}
 					if personaMemoryEntryIsCharacterPrivate(entry) {
 						characterPrivateMemories = append(characterPrivateMemories, personaMemoryEntryAsCharacterPrivateMemory(entry, sid))
 						continue
@@ -430,14 +425,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	timing.addElapsed("store_reads", storeReadsStartedAt)
 
 	recollectionStartedAt := time.Now()
-	recollectionRelevance := filterPrepareTurnEntityRecollections(rawUserInput, chatLogs, activeStates, canonicalLayers, memories, personaEntries, &characterPrivateMemories)
+	var personaRoleTrace map[string]any
+	characterPrivateMemories, personaRoleTrace = excludeRisuPersonaFromStoredNPCMemories(characterPrivateMemories, req.ClientMeta)
+	recollectionRelevance := filterPrepareTurnEntityRecollections(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, personaEntries, &characterPrivateMemories)
+	recollectionRelevance["risu_persona_role_resolution"] = personaRoleTrace
 	recollectionRelevance["candidate_read_limit"] = entityRecollectionReadLimit
 	recollectionRelevance["relevance_before_delivery_cap"] = true
 	recollectionRelevance["owner_index_count"] = directEntityOwnerIndexCount
 	recollectionRelevance["direct_owner_match_count"] = directEntityOwnerMatchCount
 	recollectionRelevance["direct_owner_memory_read_count"] = directEntityMemoryReadCount
 	recollectionRelevance["direct_owner_batch_query"] = directEntityOwnerMatchCount > 0
-	recollectionRelevance["ambiguous_private_persona_entries_deferred"] = ambiguousPrivatePersonaEntriesDeferred
 	timing.addElapsed("recollection_filter", recollectionStartedAt)
 
 	degraded := readsOK == 0

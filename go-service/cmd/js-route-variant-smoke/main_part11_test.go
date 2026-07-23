@@ -372,8 +372,15 @@ func TestPrepareTurnSourceCapabilityContractRuntime(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "adaptiveInjectionAutomaticCap") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "estimateContextGrowthInjectionBudget") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "estimateAdaptiveInjectionBudgetParts") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "observeRisuPersona") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "tryPrepareTurn")
 	script := fn + `
+const R = {
+  getDatabase: async () => ({selectedPersona: 0, personas: [{id: "persona-a", name: "Mira"}]}),
+  getCurrentCharacterIndex: async () => 0,
+  getCurrentChatIndex: async () => 0,
+  getChatFromIndex: async () => ({bindedPersona: "persona-a"})
+};
 const settings = {
   narrativeGuideMode: "off", narrativeGuideStrength: "weak", storyNarrativeStance: "balanced",
   pluginMainApplyMode: "shadow", inputContextEnabled: true, maxInjectionChars: 1000, injectionBudgetExtraChars: 0,
@@ -432,6 +439,9 @@ async function bridgeFetch(path, options) {
     }
     if (capturedBody.host_observations !== hostObservations || capturedBody.bootstrap_observation !== bootstrapObservation) {
       throw new Error("3.3-D host/bootstrap observations were not forwarded unchanged");
+    }
+    if (!capturedBody.client_meta || capturedBody.client_meta.risu_persona_observation.persona_name !== "Mira") {
+      throw new Error("official RisuAI persona observation was not forwarded");
     }
     for (const forbidden of ["authority", "stable_identity", "canonical_truth", "lifecycle_acceptance", "persistence"]) {
       if (Object.prototype.hasOwnProperty.call(capturedBody.source_observation, forbidden)) throw new Error("forbidden inference " + forbidden);

@@ -407,7 +407,7 @@ func TestPrepareTurnCharacterPrivateRecollectionBlocksStaleOwnerMention(t *testi
 	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(1) {
 		t.Fatalf("unexpected stale-owner relevance counts: %+v", relevance)
 	}
-	if relevance["character_private_gate"] != "owner_entity_must_match_current_user_input_immediate_chat_or_current_scene_state" {
+	if relevance["character_private_gate"] != "owner_entity_must_match_current_user_input_previous_event_summary_current_scene_unresolved_goal_or_current_entity" {
 		t.Fatalf("unexpected private recollection gate: %+v", relevance)
 	}
 }
@@ -987,21 +987,67 @@ func TestPrepareTurnVectorReadyLeavesUnusedTopKEmptyInsteadOfInjectingUnrelatedR
 	}
 }
 
-func TestPrepareTurnMemorySelectionQueryUsesCurrentInputAndOnlyPreviousAssistantOutput(t *testing.T) {
-	query := prepareTurnMemorySelectionQuery("current forge work", []store.ChatLog{
-		{TurnIndex: 1, Role: "assistant", Content: "old market topic"},
-		{TurnIndex: 2, Role: "user", Content: "old clinic topic"},
-		{TurnIndex: 2, Role: "assistant", Content: "previous workshop output"},
-	}, nil)
-	for _, wanted := range []string{"current forge work", "previous workshop output"} {
+func TestPrepareTurnMemorySelectionQueryUsesStructuredStoredContext(t *testing.T) {
+	ctx := buildPrepareTurnRecollectionContext(
+		"current forge work",
+		[]store.Memory{
+			{TurnIndex: 4, SummaryJSON: `{"turn_summary":"older market event"}`},
+			{TurnIndex: 5, SummaryJSON: `{"turn_summary":"previous stored forge work event"}`},
+		},
+		[]store.ActiveState{{TurnIndex: 5, Content: `{"location":"royal forge","status":"inspection ready","present_entities":["Mira"]}`}},
+		nil,
+		[]store.PendingThread{{Status: "open", Description: "complete the royal inspection"}},
+	)
+	query := prepareTurnMemorySelectionQuery(ctx, nil)
+	for _, wanted := range []string{"current forge work", "previous stored forge work event", "royal forge", "complete the royal inspection", "Mira"} {
 		if !strings.Contains(query, wanted) {
 			t.Fatalf("query missing %q: %q", wanted, query)
 		}
 	}
-	for _, unwanted := range []string{"old market topic", "old clinic topic"} {
+	for _, unwanted := range []string{"older market event", "previous assistant full output"} {
 		if strings.Contains(query, unwanted) {
 			t.Fatalf("query retained unrelated history %q: %q", unwanted, query)
 		}
+	}
+}
+
+func TestPreviousAssistantRawStaysInInputContextButCannotActivateSupportRecall(t *testing.T) {
+	const assistantOnlyAnchor = "obsolete-passport-token"
+	assistantOutput := assistantOnlyAnchor + strings.Repeat(" x", (6718-len(assistantOnlyAnchor))/2)
+	chatLogs := []store.ChatLog{{TurnIndex: 5, Role: "assistant", Content: assistantOutput}}
+
+	inputContext, _ := buildInputContextText(chatLogs, 8000)
+	if !strings.Contains(inputContext, assistantOnlyAnchor) {
+		t.Fatalf("previous assistant raw missing from Input Context: %q", inputContext)
+	}
+
+	assembly := buildPrepareTurnInjectionAssembly(
+		[]store.Memory{{ID: 1, TurnIndex: 5, SummaryJSON: `{"turn_summary":"Mira completed the forge inspection."}`}},
+		nil,
+		nil,
+		chatLogs,
+		nil,
+		[]store.WorldRule{{ID: 9, Key: assistantOnlyAnchor, ValueJSON: `{"rule":"unrelated old passport rule"}`}},
+		[]store.CharacterState{{TurnIndex: 5, CharacterName: "Mira", StatusJSON: `{"location":"forge"}`}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		5,
+		9000,
+		"Mira rests after the forge inspection.",
+		"default",
+		nil,
+		nil,
+		nil,
+	)
+	if strings.Contains(assembly.WorldRulesText, assistantOnlyAnchor) || strings.Contains(assembly.Text, "unrelated old passport rule") {
+		t.Fatalf("previous assistant raw activated unrelated support recall: %q", assembly.WorldRulesText)
+	}
+	if assembly.Counts["previous_assistant_raw_used_for_search"] != false || assembly.Counts["previous_assistant_raw_delivery_owner"] != "input_context_only" {
+		t.Fatalf("previous assistant ownership trace mismatch: %#v", assembly.Counts)
 	}
 }
 

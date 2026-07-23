@@ -522,8 +522,8 @@ func narrativeCurrentStateViews(values []store.StatusCurrentValue) []narrativeCu
 }
 
 func filterNarrativeCurrentStateViews(values []store.StatusCurrentValue, rawUserInput string, chatLogs []store.ChatLog, activeStates []store.ActiveState) (facts, perceptions []narrativeCurrentStateView, dropped int) {
-	context := buildPrepareTurnRecollectionContext(rawUserInput, chatLogs, activeStates, nil)
-	relevanceText := strings.Join([]string{context.rawUserInput, context.immediateChatText, context.currentSceneStates}, "\n")
+	context := buildPrepareTurnRecollectionContext(rawUserInput, nil, activeStates, nil, nil)
+	relevanceText := context.relevanceText()
 	for _, view := range narrativeCurrentStateViews(values) {
 		subjectType := strings.TrimSpace(extractionStringFromAny(view.Payload["subject_type"]))
 		global := subjectType == "world" || subjectType == "session"
@@ -589,8 +589,8 @@ func narrativeCorrectionTransitionNeedsCarry(payload map[string]any) bool {
 
 func buildNarrativeContinuityCorrection(values []store.StatusCurrentValue, rawUserInput string, chatLogs []store.ChatLog, activeStates []store.ActiveState, selection prepareTurnMemoryLaneSelection, limit int) (string, map[string]any) {
 	limit = prepareTurnRecallLimit(limit)
-	ctx := buildPrepareTurnRecollectionContext(rawUserInput, chatLogs, activeStates, nil)
-	recentText := strings.Join([]string{ctx.rawUserInput, ctx.immediateChatText, ctx.currentSceneStates}, "\n")
+	ctx := buildPrepareTurnRecollectionContext(rawUserInput, nil, activeStates, nil, nil)
+	recentText := ctx.relevanceText()
 	memoryText := narrativeCorrectionMemoryText(selection)
 	facts, perceptions, irrelevantDropped := filterNarrativeCurrentStateViews(values, rawUserInput, chatLogs, activeStates)
 	lines := []string{

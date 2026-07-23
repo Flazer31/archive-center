@@ -484,27 +484,16 @@ type prepareTurnMemoryLaneSelection struct {
 	Trace                   map[string]any
 }
 
-func prepareTurnMemorySelectionQuery(rawUserInput string, chatLogs []store.ChatLog, perspectiveContext map[string]any) string {
-	parts := []string{}
-	if text := strings.TrimSpace(rawUserInput); text != "" {
-		parts = append(parts, text)
-	}
+func prepareTurnMemorySelectionQuery(ctx prepareTurnRecollectionContext, perspectiveContext map[string]any) string {
+	parts := nonEmptyStrings([]string{
+		ctx.rawUserInput,
+		ctx.previousEventSummary,
+		ctx.currentSceneStates,
+		ctx.unresolvedGoals,
+		ctx.currentEntities,
+	})
 	if pov := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"])); pov != "" {
 		parts = append(parts, "current_pov: "+pov)
-	}
-	// Relevance follows the current user input and the immediately preceding
-	// assistant output. Feeding an arbitrary top-K chat tail into the query made
-	// old scene vocabulary revive unrelated memories merely because budget was
-	// available.
-	for i := len(chatLogs) - 1; i >= 0; i-- {
-		cl := chatLogs[i]
-		if !strings.EqualFold(strings.TrimSpace(cl.Role), "assistant") {
-			continue
-		}
-		if text := strings.TrimSpace(cl.Content); text != "" {
-			parts = append(parts, text)
-		}
-		break
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
@@ -1371,8 +1360,7 @@ func collapsePrepareTurnMemoryLaneSelection(selection prepareTurnMemoryLaneSelec
 	return selection
 }
 
-func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLaneSelection, rawUserInput string, chatLogs []store.ChatLog, perspectiveContext map[string]any) prepareTurnMemoryLaneSelection {
-	ctx := buildPrepareTurnRecollectionContext(rawUserInput, chatLogs, nil, nil)
+func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLaneSelection, ctx prepareTurnRecollectionContext, perspectiveContext map[string]any) prepareTurnMemoryLaneSelection {
 	before := prepareTurnSelectedMemoryCount(selection)
 	dropped := []map[string]any{}
 	selectedKeys := map[string]bool{}
@@ -1421,7 +1409,7 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 	selection.Trace["protected_memory_before_filter"] = before
 	selection.Trace["protected_memory_after_filter"] = prepareTurnSelectedMemoryCount(selection)
 	selection.Trace["protected_memory_dropped_count"] = len(dropped)
-	selection.Trace["protected_memory_gate"] = "protected_owner_subject_knowledge_scope_or_current_pov_must_match_current_user_input_immediate_chat_or_pov"
+	selection.Trace["protected_memory_gate"] = "protected_owner_subject_knowledge_scope_or_current_pov_must_match_structured_current_context_or_pov"
 	selection.Trace["protected_memory_dropped"] = dropped
 	return selection
 }
@@ -1440,13 +1428,13 @@ func prepareTurnProtectedMemoryRelevant(item store.Memory, ctx prepareTurnRecoll
 	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.rawUserInput) {
 		return true, "explicit_current_user_input"
 	}
-	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.immediateChatText) {
-		return true, "immediate_chat_mention"
+	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.relevanceText()) {
+		return true, "structured_current_context_mention"
 	}
 	if pov := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"])); pov != "" && prepareTurnAnyOwnerTokenMatches(tokens, pov) {
 		return true, "current_pov_match"
 	}
-	return false, "protected_entity_not_in_current_input_or_immediate_chat"
+	return false, "protected_entity_not_in_structured_current_context"
 }
 
 func prepareTurnProtectedMemoryEntityTokens(item store.Memory) ([]string, bool) {

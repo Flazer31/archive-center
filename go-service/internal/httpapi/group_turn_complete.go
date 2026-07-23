@@ -411,8 +411,10 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 					}
 				} else {
 					criticTriggered = true
-					criticResult = result
+					var personaRoleTrace map[string]any
+					criticResult, personaRoleTrace = applyRisuPersonaSubjectiveMemoryRoles(result, req.ClientMeta)
 					criticTrace = trace
+					criticTrace["risu_persona_role_resolution"] = personaRoleTrace
 				}
 			}
 		} else {

@@ -18,7 +18,7 @@ func TestPrepareTurnDropsLegacySecretDuplicateOwnedByProtectedLane(t *testing.T)
 	}
 	trace := filterPrepareTurnEntityRecollections(
 		"Mira and Juno meet at the forge.",
-		nil, nil, nil, sourceMemories, nil, &private,
+		sourceMemories, nil, nil, nil, nil, &private,
 	)
 	if len(private) != 1 || private[0].OwnerEntityKey != "juno" {
 		t.Fatalf("protected-lane duplicate survived private lane: %#v trace=%#v", private, trace)

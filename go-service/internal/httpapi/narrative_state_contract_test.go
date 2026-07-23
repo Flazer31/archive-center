@@ -171,7 +171,7 @@ func TestPrepareTurnAssemblyAppendsOnlyNeededContinuityCorrection(t *testing.T) 
 	}
 }
 
-func TestContinuityCorrectionSkipsCurrentValueAlreadyPresentInRecentChat(t *testing.T) {
+func TestContinuityCorrectionDoesNotUsePreviousAssistantRawAsSearchEvidence(t *testing.T) {
 	values := []store.StatusCurrentValue{
 		narrativeTestCurrentValueWithPrevious("A", "life_status", "alive", "dead", "objective", "", "reversal", 20),
 	}
@@ -181,11 +181,11 @@ func TestContinuityCorrectionSkipsCurrentValueAlreadyPresentInRecentChat(t *test
 		nil, nil, []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "A is alive and standing at the gate."}}, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		5, 9000, "B watches A.", "default", nil, nil, nil, perspective,
 	)
-	if assembly.ContinuityCorrectionText != "" {
-		t.Fatalf("recent chat already carries current truth; correction must stay empty:\n%s", assembly.ContinuityCorrectionText)
+	if !strings.Contains(assembly.ContinuityCorrectionText, "A / life_status: alive") {
+		t.Fatalf("stored current state correction was suppressed by previous assistant raw:\n%s", assembly.ContinuityCorrectionText)
 	}
 	trace := mapFromAny(assembly.Counts["continuity_correction"])
-	if intFromAny(trace["already_present_dropped"], 0) != 1 {
+	if intFromAny(trace["already_present_dropped"], 0) != 0 {
 		t.Fatalf("trace=%v", trace)
 	}
 }

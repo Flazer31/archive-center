@@ -124,16 +124,13 @@ func TestPersonaPrivateClassificationKeepsProtagonistAndNPCDomainsSeparate(t *te
 	if personaMemoryEntryIsCharacterPrivate(ambiguous) {
 		t.Fatal("role-unobserved memory entered the NPC-private domain")
 	}
-	if !personaMemoryEntryHasUnresolvedPrivateRole(ambiguous) {
-		t.Fatal("role-unobserved private memory was not deferred")
-	}
 }
 
 func TestPrepareTurnCharacterPrivateRecollectionRejectsNonNPCOwner(t *testing.T) {
 	memories := []store.ProtagonistEntityMemory{
 		{ID: 1, OwnerEntityKey: "mira", OwnerEntityName: "Mira", OwnerEntityRole: "protagonist", OwnerVisibility: "player_known", MemoryText: "Mira remembers the garden."},
 		{ID: 2, OwnerEntityKey: "juno", OwnerEntityName: "Juno", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", MemoryText: "Juno privately remembers the garden."},
-		{ID: 3, OwnerEntityKey: "mira_legacy", OwnerEntityName: "Mira", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", TagsJSON: `["owner_entity_role:protagonist"]`, MemoryText: "Conflicting legacy role must not enter the NPC-private lane."},
+		{ID: 3, OwnerEntityKey: "mira_legacy", OwnerEntityName: "Mira", OwnerEntityRole: "protagonist", OwnerVisibility: "player_known", TagsJSON: `["owner_entity_role:npc"]`, MemoryText: "Stored role remains the single read-time authority."},
 	}
 	trace := filterPrepareTurnEntityRecollections(
 		"Mira meets Juno in the garden.",
@@ -141,6 +138,89 @@ func TestPrepareTurnCharacterPrivateRecollectionRejectsNonNPCOwner(t *testing.T)
 	)
 	if len(memories) != 1 || memories[0].OwnerEntityKey != "juno" {
 		t.Fatalf("NPC-private selection = %#v, want only Juno; trace=%#v", memories, trace)
+	}
+}
+
+func TestRisuPersonaObservationOwnsSubjectiveMemoryRoles(t *testing.T) {
+	extraction := map[string]any{
+		"subjective_entity_memories": []any{
+			map[string]any{
+				"owner_entity_key":  "entity-17",
+				"owner_entity_name": "Mira",
+				"owner_entity_role": "npc",
+				"owner_visibility":  "owner_private",
+				"portability":       "npc_private_recollection",
+				"tags":              []string{"owner_entity_role:npc", "secret_guard"},
+			},
+			map[string]any{
+				"owner_entity_key":  "juno",
+				"owner_entity_name": "Juno",
+				"owner_entity_role": "protagonist",
+				"owner_visibility":  "player_known",
+				"tags":              []string{"owner_entity_role:protagonist"},
+			},
+		},
+	}
+	meta := map[string]any{
+		"risu_persona_observation": map[string]any{
+			"contract_version":  "risu_persona_observation.v1",
+			"observation_state": "observed",
+			"source":            "database.selectedPersona",
+			"persona_name":      "Mira",
+		},
+	}
+
+	resolved, trace := applyRisuPersonaSubjectiveMemoryRoles(extraction, meta)
+	items := sliceFromAny(resolved["subjective_entity_memories"])
+	mira := mapFromAny(items[0])
+	juno := mapFromAny(items[1])
+	if mira["owner_entity_role"] != "protagonist" || mira["portability"] != "portable_subjective_entity_recollection" {
+		t.Fatalf("persona memory role = %#v, want protagonist persona lane", mira)
+	}
+	if juno["owner_entity_role"] != "npc" || juno["owner_visibility"] != "owner_private" || juno["portability"] != "npc_private_recollection" {
+		t.Fatalf("non-persona memory role = %#v, want NPC-private lane", juno)
+	}
+	if trace["protagonist_count"] != 1 || trace["npc_count"] != 1 {
+		t.Fatalf("role trace = %#v", trace)
+	}
+}
+
+func TestRisuPersonaObservationRemovesMisclassifiedStoredPersonaFromNPCLane(t *testing.T) {
+	memories := []store.ProtagonistEntityMemory{
+		{ID: 17, OwnerEntityKey: "entity-17", OwnerEntityName: "Mira", OwnerEntityRole: "npc", MemoryText: "older misclassified row"},
+		{ID: 18, OwnerEntityKey: "mira", OwnerEntityName: "Mira", OwnerEntityRole: "npc", MemoryText: "duplicate misclassified row"},
+		{ID: 19, OwnerEntityKey: "juno", OwnerEntityName: "Juno", OwnerEntityRole: "protagonist", MemoryText: "real NPC memory"},
+	}
+	meta := map[string]any{
+		"risu_persona_observation": map[string]any{
+			"contract_version":  "risu_persona_observation.v1",
+			"observation_state": "observed",
+			"source":            "chat.bindedPersona",
+			"persona_name":      "Mira",
+		},
+	}
+	filtered, trace := excludeRisuPersonaFromStoredNPCMemories(memories, meta)
+	if len(filtered) != 1 || filtered[0].ID != 19 || filtered[0].OwnerEntityRole != "npc" {
+		t.Fatalf("stored persona exclusion = %#v, want only real NPC row", filtered)
+	}
+	if trace["blocked_misclassified_persona_rows"] != 2 || trace["npc_candidate_count"] != 1 {
+		t.Fatalf("stored persona exclusion trace = %#v", trace)
+	}
+	blockedIDs, ok := trace["blocked_row_ids"].([]int64)
+	if !ok || len(blockedIDs) != 2 || blockedIDs[0] != 17 || blockedIDs[1] != 18 {
+		t.Fatalf("blocked row ids = %#v, want [17 18]", trace["blocked_row_ids"])
+	}
+	filterPrepareTurnEntityRecollections(
+		"Juno enters the room.",
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		&filtered,
+	)
+	if len(filtered) != 1 || filtered[0].ID != 19 {
+		t.Fatalf("prepare-turn NPC delivery candidates = %#v, want only Juno row", filtered)
 	}
 }
 

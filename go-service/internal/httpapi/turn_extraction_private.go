@@ -44,7 +44,7 @@ func normalizeSubjectiveEntityMemories(raw any) []any {
 			role = normalizeSubjectiveEntityRoleFilter(stringFromMap(memory, "entity_role"))
 		}
 		if role == "" {
-			role = "protagonist"
+			role = "npc"
 		}
 		visibility := normalizeSubjectiveEntityVisibilityFilter(stringFromMap(memory, "owner_visibility"))
 		if visibility == "" {
@@ -499,6 +499,101 @@ func appendSubjectiveMemoryIfMissing(items []any, next map[string]any) []any {
 	return append(items, next)
 }
 
+func risuPersonaNameFromClientMeta(clientMeta map[string]any) (string, map[string]any) {
+	observation := mapFromAny(clientMeta["risu_persona_observation"])
+	personaName := strings.TrimSpace(stringFromMap(observation, "persona_name"))
+	if stringFromMap(observation, "contract_version") != "risu_persona_observation.v1" ||
+		stringFromMap(observation, "observation_state") != "observed" ||
+		personaName == "" {
+		return "", map[string]any{
+			"status": "unobserved",
+			"source": stringFromMap(observation, "source"),
+		}
+	}
+	return personaName, map[string]any{
+		"status":       "applied",
+		"source":       stringFromMap(observation, "source"),
+		"persona_name": personaName,
+	}
+}
+
+func applyRisuPersonaSubjectiveMemoryRoles(extraction map[string]any, clientMeta map[string]any) (map[string]any, map[string]any) {
+	personaName, trace := risuPersonaNameFromClientMeta(clientMeta)
+	if personaName == "" {
+		return extraction, trace
+	}
+	personaKey := normalizeCharacterKey(personaName)
+	items := sliceFromAny(extraction["subjective_entity_memories"])
+	protagonistCount := 0
+	npcCount := 0
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		ownerName := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "owner_entity_name"),
+			stringFromMap(item, "persona_entity_name"),
+		))
+		ownerKey := normalizeCharacterKey(extractionFirstNonEmpty(
+			stringFromMap(item, "owner_entity_key"),
+			stringFromMap(item, "persona_entity_key"),
+		))
+		ownerNameKey := normalizeCharacterKey(ownerName)
+		isPersona := personaKey != "" && (ownerKey == personaKey || ownerNameKey == personaKey)
+		role := "npc"
+		if isPersona {
+			role = "protagonist"
+			protagonistCount++
+			if strings.TrimSpace(stringFromMap(item, "portability")) == "npc_private_recollection" {
+				item["portability"] = "portable_subjective_entity_recollection"
+			}
+		} else {
+			npcCount++
+			item["owner_visibility"] = "owner_private"
+			item["portability"] = "npc_private_recollection"
+			if strings.TrimSpace(stringFromMap(item, "target_reveal_policy")) == "" {
+				item["target_reveal_policy"] = "owner_private_until_revealed"
+			}
+		}
+		item["owner_entity_role"] = role
+		tags := []string{}
+		for _, tag := range stringsFromAny(item["tags"]) {
+			lower := strings.ToLower(strings.TrimSpace(tag))
+			if strings.HasPrefix(lower, "owner_entity_role:") || strings.HasPrefix(lower, "owner_visibility:") {
+				continue
+			}
+			tags = append(tags, tag)
+		}
+		item["tags"] = tags
+	}
+	extraction["subjective_entity_memories"] = items
+	trace["protagonist_count"] = protagonistCount
+	trace["npc_count"] = npcCount
+	return extraction, trace
+}
+
+func excludeRisuPersonaFromStoredNPCMemories(memories []store.ProtagonistEntityMemory, clientMeta map[string]any) ([]store.ProtagonistEntityMemory, map[string]any) {
+	personaName, trace := risuPersonaNameFromClientMeta(clientMeta)
+	if personaName == "" {
+		return memories, trace
+	}
+	personaKey := normalizeCharacterKey(personaName)
+	filtered := make([]store.ProtagonistEntityMemory, 0, len(memories))
+	blockedIDs := make([]int64, 0)
+	for _, memory := range memories {
+		ownerKey := normalizeCharacterKey(memory.OwnerEntityKey)
+		ownerNameKey := normalizeCharacterKey(memory.OwnerEntityName)
+		if personaKey != "" && (ownerKey == personaKey || ownerNameKey == personaKey) {
+			blockedIDs = append(blockedIDs, memory.ID)
+			continue
+		}
+		memory.OwnerEntityRole = "npc"
+		filtered = append(filtered, memory)
+	}
+	trace["blocked_misclassified_persona_rows"] = len(blockedIDs)
+	trace["blocked_row_ids"] = blockedIDs
+	trace["npc_candidate_count"] = len(filtered)
+	return filtered, trace
+}
+
 func normalizeProtectedSecretKnowledgeScope(raw any, owner string) map[string]any {
 	scope := mapFromAny(raw)
 	out := map[string]any{
@@ -826,7 +921,7 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 		}
 		ownerRole := normalizeSubjectiveEntityRoleFilter(stringFromMap(item, "owner_entity_role"))
 		if ownerRole == "" {
-			ownerRole = "protagonist"
+			ownerRole = "npc"
 		}
 		ownerVisibility := normalizeSubjectiveEntityVisibilityFilter(stringFromMap(item, "owner_visibility"))
 		if ownerVisibility == "" && ownerRole == "npc" {
