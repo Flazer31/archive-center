@@ -18318,7 +18318,8 @@
         : null;
       const hasSplitAuxiliaryPreview = !!(injectionPreview && (
         Object.prototype.hasOwnProperty.call(injectionPreview, "mainInjectionPreview") ||
-        Object.prototype.hasOwnProperty.call(injectionPreview, "referenceInjectionPreview")
+        Object.prototype.hasOwnProperty.call(injectionPreview, "referenceInjectionPreview") ||
+        Object.prototype.hasOwnProperty.call(injectionPreview, "guidanceInjectionPreview")
       ));
       const mainAuxiliaryContext = hasSplitAuxiliaryPreview
         ? String(injectionPreview.mainInjectionPreview || "").trim()
@@ -18328,6 +18329,9 @@
         : null;
       const originalWorkReferenceContext = hasSplitAuxiliaryPreview
         ? String(injectionPreview.referenceInjectionPreview || "").trim()
+        : "";
+      const outputGuidanceContext = hasSplitAuxiliaryPreview
+        ? String(injectionPreview.guidanceInjectionPreview || "").trim()
         : "";
       const imp = tr.inputImprovement && typeof tr.inputImprovement === "object" ? tr.inputImprovement : null;
       const improvedInputText = imp && typeof imp.finalInput === "string" ? imp.finalInput.trim() : "";
@@ -18400,6 +18404,9 @@
       }
       if (originalWorkReferenceContext) {
         parts.push(renderItBlock("Original Work Reference Context", originalWorkReferenceContext, false));
+      }
+      if (outputGuidanceContext) {
+        parts.push(renderItBlock("Output Guidance Context", outputGuidanceContext, false));
       }
       if (inputContextText) {
         parts.push(renderItBlock("Input Context", inputContextText, false));
@@ -32990,6 +32997,15 @@
       const guidanceTrace = plan.guidance_application_trace && typeof plan.guidance_application_trace === "object"
         ? plan.guidance_application_trace
         : null;
+      const originalWorkLane = laneByKey.original_work && typeof laneByKey.original_work === "object"
+        ? laneByKey.original_work
+        : null;
+      const longTermMemoryLane = laneByKey.long_term_memory && typeof laneByKey.long_term_memory === "object"
+        ? laneByKey.long_term_memory
+        : null;
+      const outputGuidanceLane = laneByKey.output_guidance && typeof laneByKey.output_guidance === "object"
+        ? laneByKey.output_guidance
+        : null;
       const result = {
         ...emptyResult,
         status: injected || inputContextApplied ? "applied" : "empty",
@@ -32998,6 +33014,12 @@
         totalChars: Number(plan.auxiliary_chars || auxiliaryText.length),
         budgetLimit: lanes.reduce(function(total, lane) { return total + Number(lane && lane.budget_chars || 0); }, 0),
         auxiliaryPreview: auxiliaryText.slice(0, 500),
+        mainInjectionPreview: String(longTermMemoryLane && longTermMemoryLane.text || ""),
+        referenceInjectionPreview: String(originalWorkLane && originalWorkLane.text || ""),
+        guidanceInjectionPreview: String(outputGuidanceLane && outputGuidanceLane.text || ""),
+        memoryDeliveryPlan: injectionPack.memory_delivery_plan && typeof injectionPack.memory_delivery_plan === "object"
+          ? injectionPack.memory_delivery_plan
+          : null,
         blocks,
         trimmed: deferred,
         trimmedCount: deferred.length,
@@ -34567,6 +34589,7 @@
               auxiliaryPreview: injectionResult.auxiliaryPreview || "",
               mainInjectionPreview: injectionResult.mainInjectionPreview || "",
               referenceInjectionPreview: injectionResult.referenceInjectionPreview || "",
+              guidanceInjectionPreview: injectionResult.guidanceInjectionPreview || "",
               memoryDeliveryPlan: injectionResult.memoryDeliveryPlan || null,
               blocks: injectionResult.blocks || [],
               trimmed: injectionResult.trimmed || [],

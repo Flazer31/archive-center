@@ -208,11 +208,13 @@ function renderItBlock(title, text) { return '<BLOCK title="' + title + '">' + t
 currentTrace = {_inputTransparency: {injection: {
   mainInjectionPreview: "MAIN",
   referenceInjectionPreview: "REFERENCE",
+  guidanceInjectionPreview: "GUIDANCE",
   auxiliaryPreview: "REFERENCE\n\nMAIN"
 }}};
 let html = renderEffectiveInputSection();
 assert(html.includes('<BLOCK title="Assembled Auxiliary Context">MAIN</BLOCK>'), "main context pane is not isolated");
 assert(html.includes('<BLOCK title="Original Work Reference Context">REFERENCE</BLOCK>'), "reference context pane is not isolated");
+assert(html.includes('<BLOCK title="Output Guidance Context">GUIDANCE</BLOCK>'), "guidance context pane is not isolated");
 assert(!html.includes('<BLOCK title="Assembled Auxiliary Context">REFERENCE\n\nMAIN</BLOCK>'), "combined context leaked into main pane");
 
 currentTrace = {_inputTransparency: {
@@ -250,6 +252,62 @@ assert(html.includes('<BLOCK title="Original Work Reference Context">REFERENCE_O
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Effective Input preview runtime smoke failed: %v\n%s", err, out)
+	}
+}
+
+func TestArchiveCenterJSGoPayloadPlanPreservesLanePreviewsForTransparency(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Go payload plan runtime smoke")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	script := extractJSFunctionBlockForTest(t, src, "function applyGoPayloadApplicationPlan(payload, orchResult, emptyResult)") + `
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+function injectAuxiliaryBlock(payload, text) {
+  return {payload: {...payload, auxiliary: text}, injected: true, placement: {kind: "test"}};
+}
+function injectInputContextBeforeUser(payload, text) {
+  return {...payload, inputContext: text};
+}
+function updateRuntimeState() {}
+function warnLog() {}
+const memoryDeliveryPlan = {
+  contract_version: "memory_delivery_plan.v1",
+  classes: [{key: "event_recent", text: "MEMORY"}]
+};
+const plan = {
+  contract_version: "payload_application_plan.v1",
+  owner: "go",
+  apply_rule: "apply_exact_text_without_reassembly",
+  status: "ready",
+  auxiliary_text: "REFERENCE\n\nMEMORY\n\nGUIDANCE",
+  input_context_text: "INPUT",
+  lanes: [
+    {key: "original_work", text: "REFERENCE", applied: true, status: "applied"},
+    {key: "long_term_memory", text: "MEMORY", applied: true, status: "applied"},
+    {key: "output_guidance", text: "GUIDANCE", applied: true, status: "applied"}
+  ]
+};
+const applied = applyGoPayloadApplicationPlan(
+  {messages: []},
+  {_injectionPack: {payload_application_plan: plan, memory_delivery_plan: memoryDeliveryPlan}},
+  {}
+);
+assert(applied.injectionResult.mainInjectionPreview === "MEMORY", "long-term memory preview was not preserved");
+assert(applied.injectionResult.referenceInjectionPreview === "REFERENCE", "original-work preview was not preserved");
+assert(applied.injectionResult.guidanceInjectionPreview === "GUIDANCE", "output-guidance preview was not preserved");
+assert(applied.injectionResult.memoryDeliveryPlan === memoryDeliveryPlan, "memory delivery plan was not preserved");
+assert(applied.payload.auxiliary === plan.auxiliary_text, "Go-owned auxiliary text was not applied exactly");
+assert(applied.payload.inputContext === plan.input_context_text, "Go-owned input context was not applied exactly");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Go payload plan transparency runtime smoke failed: %v\n%s", err, out)
 	}
 }
 
