@@ -155,3 +155,52 @@ func TestPrepareTurnPendingThreadNeedsDescriptionOverlapNotOwnerNameOnly(t *test
 		t.Fatalf("owner-name-only pending thread survived: %q", assembly.PendingThreadText)
 	}
 }
+
+func TestPrepareTurnRelationshipSurfacesDoNotLeakOffSceneMarriageBundle(t *testing.T) {
+	const rawInput = "한얼은 월하방에서 세종의 판단을 듣는다."
+	perspective := prepareTurnPerspectiveWithNarrativeState(
+		map[string]any{},
+		nil,
+		[]store.ActiveState{{
+			StateType: "scene",
+			TurnIndex: 51,
+			Content:   `{"location":"월하방","present_entities":["강한얼","세종"],"status":"감시 중"}`,
+		}},
+	)
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil,
+		[]store.WorldRule{{ID: 1, Key: "월하방 감시", ValueJSON: `{"rule":"월하방의 감시는 강한얼 주변에서 계속된다."}`}},
+		[]store.CharacterState{
+			{
+				CharacterName: "강한얼",
+				TurnIndex:     51,
+				RelationshipsJSON: `{
+				"민서현":{"summary":"오래된 혼사 제안이 아직 남아 있다"},
+				"세종":{"summary":"세종이 현재 강한얼의 시연을 판단한다"},
+				"legacy_bundle":"강한얼은 세종의 판단을 생각하면서 민서현의 오래된 혼사 제안도 떠올린다"
+			}`,
+			},
+			{CharacterName: "민서현", TurnIndex: 40},
+			{CharacterName: "세종", TurnIndex: 51},
+		},
+		nil,
+		[]store.CanonicalStateLayer{
+			{ID: 10, LayerType: "relationship_state", Content: `{"pair":["강한얼","민서현"],"target_name":"민서현","bond_and_distance":"오래된 혼사 제안이 아직 남아 있다"}`, TurnIndex: 40, Confidence: 0.9},
+			{ID: 11, LayerType: "relationship_state", Content: `{"pair":["강한얼","세종"],"target_name":"세종","bond_and_distance":"세종이 현재 강한얼의 시연을 판단한다"}`, TurnIndex: 51, Confidence: 0.9},
+			{ID: 12, LayerType: "relationship_state", Content: `강한얼은 세종의 판단을 생각하면서 민서현의 오래된 혼사 제안도 떠올린다.`, TurnIndex: 41, Confidence: 0.9},
+		},
+		nil, nil, nil, nil,
+		5, 9000, rawInput, "default", nil, nil, nil, perspective,
+	)
+
+	relationshipText := assembly.CharacterRelationshipText + "\n" + assembly.CanonRelationshipText
+	if strings.Contains(relationshipText, "민서현") || strings.Contains(relationshipText, "혼사") {
+		t.Fatalf("off-scene marriage relationship leaked through a related bundle: %q", relationshipText)
+	}
+	if !strings.Contains(relationshipText, "세종") || !strings.Contains(relationshipText, "판단") {
+		t.Fatalf("current-scene judgment relationship was lost: %q", relationshipText)
+	}
+	if !strings.Contains(assembly.WorldRulesText, "월하방 감시") {
+		t.Fatalf("current-scene surveillance support was lost: %q", assembly.WorldRulesText)
+	}
+}

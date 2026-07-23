@@ -548,7 +548,7 @@ func TestPrepareTurnThreeHundredTurnRelationshipRecallKeepsCurrentState(t *testi
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-rel300","turn_index":301,"raw_user_input":"Continue the current relationship scene with Chloe.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":900,"max_input_context_chars":500,"top_k":5}}`
+	body := `{"chat_session_id":"sess-rel300","turn_index":301,"raw_user_input":"Continue the current relationship scene with Chloe and Hero.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":900,"max_input_context_chars":500,"top_k":5}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

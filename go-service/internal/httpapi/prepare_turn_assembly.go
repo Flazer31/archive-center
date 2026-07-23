@@ -242,6 +242,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		currentEntityNames = append(currentEntityNames, prepareTurnMemoryOwnerLabel(memory.OwnerEntityKey, memory.OwnerEntityName))
 	}
 	currentEntityAliases := prepareTurnObservedShortNameAliases(currentEntityNames)
+	currentSceneEntityNames := nonEmptyStrings(strings.Split(recollectionContext.currentEntities, "\n"))
 	currentEntityCanonicalNames := make([]string, 0)
 	for _, rawName := range currentEntityNames {
 		name := strings.TrimSpace(rawName)
@@ -253,7 +254,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	for sourceOrder, cs := range charStates {
 		name := strings.TrimSpace(cs.CharacterName)
 		state := prepareTurnSurfaceText(parseSurfacePayload(cs.StatusJSON))
-		relationships, relationshipDropped := prepareTurnRelevantRelationshipSurface(cs.RelationshipsJSON, name, characterSupportQuery)
+		relationships, relationshipDropped := prepareTurnRelevantRelationshipSurface(cs.RelationshipsJSON, name, rawUserInput, currentSceneEntityNames, currentEntityNames)
 		characterRelationshipIrrelevantDropped += relationshipDropped
 		speechStyle := prepareTurnSurfaceText(parseSurfacePayload(cs.SpeechStyleJSON))
 		parts := []string{}
@@ -405,6 +406,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	canonWorldLines := []string{}
 	canonFiltered := 0
 	canonIrrelevant := 0
+	canonRelationshipIrrelevant := 0
 	canonCharacterRosterOnlyDropped := 0
 	canonTypeCounts := map[string]int{}
 	for _, cl := range canonicalLayers {
@@ -419,13 +421,26 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if content == "" {
 			continue
 		}
-		if !prepareTurnCurrentSceneRelevant(characterSupportQuery, content) {
-			canonIrrelevant++
-			continue
-		}
 		layer := strings.TrimSpace(cl.LayerType)
 		if layer == "" {
 			layer = "state"
+		}
+		if layer == "relationship_state" {
+			filtered, dropped := prepareTurnRelevantCanonicalRelationshipSurface(cl.Content, rawUserInput, currentSceneEntityNames, currentEntityNames)
+			canonRelationshipIrrelevant += dropped
+			if filtered == "" {
+				canonIrrelevant++
+				continue
+			}
+			line := fmt.Sprintf("- %s: %s", layer, filtered)
+			canonLines = append(canonLines, line)
+			canonRelationshipLines = append(canonRelationshipLines, line)
+			canonTypeCounts[layer]++
+			continue
+		}
+		if !prepareTurnCurrentSceneRelevant(characterSupportQuery, content) {
+			canonIrrelevant++
+			continue
 		}
 		line := fmt.Sprintf("- %s: %s", layer, content)
 		canonLines = append(canonLines, line)
@@ -458,8 +473,6 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			} else {
 				canonCharacterLines = append(canonCharacterLines, line)
 			}
-		case "relationship_state":
-			canonRelationshipLines = append(canonRelationshipLines, line)
 		case "world_state", "scene_state":
 			canonWorldLines = append(canonWorldLines, line)
 		default:
@@ -568,6 +581,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["verbatim_support_active"] = out.ScopedVerbatimSupport.Active
 	out.Counts["canonical_state_layers_filtered_count"] = canonFiltered
 	out.Counts["canonical_state_layers_irrelevant_count"] = canonIrrelevant
+	out.Counts["canonical_relationship_irrelevant_dropped"] = canonRelationshipIrrelevant
 	out.Counts["canonical_state_relationship_layers_count"] = canonTypeCounts["relationship_state"]
 	out.Counts["canonical_state_world_layers_count"] = canonTypeCounts["world_state"]
 	out.Counts["canonical_state_scene_layers_count"] = canonTypeCounts["scene_state"]
@@ -880,23 +894,33 @@ func prepareTurnCanonicalCharacterStateHasDetails(value any) bool {
 	}
 }
 
-func prepareTurnRelevantRelationshipSurface(raw, owner, query string) (string, int) {
+func prepareTurnRelevantRelationshipSurface(raw, owner, rawUserInput string, currentSceneEntities, knownEntities []string) (string, int) {
 	value := parseSurfacePayload(raw)
-	filtered, dropped, ok := prepareTurnFilterRelationshipSurface(value, owner, query)
+	filtered, dropped, ok := prepareTurnFilterRelationshipSurface(value, owner, rawUserInput, currentSceneEntities, knownEntities)
 	if !ok {
 		return "", dropped
 	}
 	return prepareTurnSurfaceText(filtered), dropped
 }
 
-func prepareTurnFilterRelationshipSurface(value any, owner, query string) (any, int, bool) {
+func prepareTurnFilterRelationshipSurface(value any, owner, rawUserInput string, currentSceneEntities, knownEntities []string) (any, int, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		kept := map[string]any{}
 		dropped := 0
 		for target, detail := range typed {
-			entryText := strings.TrimSpace(target + " " + prepareTurnSurfaceText(detail))
-			if prepareTurnSupportRecallEligible(query, entryText, target) {
+			detailText := prepareTurnSurfaceText(detail)
+			if prepareTurnRelationshipNameInList(target, knownEntities) ||
+				prepareTurnRecallContainsAnchor(rawUserInput, target) ||
+				prepareTurnRelationshipNameInList(target, currentSceneEntities) {
+				if prepareTurnStructuredRelationshipRelevant(owner, target, detailText, rawUserInput, currentSceneEntities, knownEntities) {
+					kept[target] = detail
+				} else {
+					dropped++
+				}
+				continue
+			}
+			if prepareTurnFreeRelationshipRelevant(detailText, owner, rawUserInput, currentSceneEntities, knownEntities) {
 				kept[target] = detail
 			} else {
 				dropped++
@@ -908,7 +932,15 @@ func prepareTurnFilterRelationshipSurface(value any, owner, query string) (any, 
 		dropped := 0
 		for _, detail := range typed {
 			entryText := strings.TrimSpace(prepareTurnSurfaceText(detail))
-			if prepareTurnSupportRecallEligible(query, entryText) {
+			payload := mapFromAny(detail)
+			left, right := prepareTurnStoredRelationshipActors(payload)
+			relevant := false
+			if left != "" || right != "" {
+				relevant = prepareTurnStructuredRelationshipRelevant(left, right, entryText, rawUserInput, currentSceneEntities, knownEntities)
+			} else {
+				relevant = prepareTurnFreeRelationshipRelevant(entryText, owner, rawUserInput, currentSceneEntities, knownEntities)
+			}
+			if relevant {
 				kept = append(kept, detail)
 			} else {
 				dropped++
@@ -920,7 +952,7 @@ func prepareTurnFilterRelationshipSurface(value any, owner, query string) (any, 
 		if text == "" {
 			return nil, 0, false
 		}
-		if prepareTurnSupportRecallEligible(query, text) {
+		if prepareTurnFreeRelationshipRelevant(text, owner, rawUserInput, currentSceneEntities, knownEntities) {
 			return text, 0, true
 		}
 		return nil, 1, false
@@ -928,11 +960,142 @@ func prepareTurnFilterRelationshipSurface(value any, owner, query string) (any, 
 		return nil, 0, false
 	default:
 		text := prepareTurnSurfaceText(typed)
-		if text != "" && prepareTurnSupportRecallEligible(query, text) {
+		if text != "" && prepareTurnFreeRelationshipRelevant(text, owner, rawUserInput, currentSceneEntities, knownEntities) {
 			return typed, 0, true
 		}
 		return nil, boolToInt(text != ""), false
 	}
+}
+
+func prepareTurnRelevantCanonicalRelationshipSurface(raw, rawUserInput string, currentSceneEntities, knownEntities []string) (string, int) {
+	value := parseSurfacePayload(raw)
+	payload := mapFromAny(value)
+	if len(payload) > 0 {
+		left, right := prepareTurnStoredRelationshipActors(payload)
+		if left != "" || right != "" {
+			text := prepareTurnSurfaceText(payload)
+			if prepareTurnStructuredRelationshipRelevant(left, right, text, rawUserInput, currentSceneEntities, knownEntities) {
+				return text, 0
+			}
+			return "", 1
+		}
+	}
+	text := prepareTurnSurfaceText(value)
+	if prepareTurnFreeRelationshipRelevant(text, "", rawUserInput, currentSceneEntities, knownEntities) {
+		return text, 0
+	}
+	return "", boolToInt(strings.TrimSpace(text) != "")
+}
+
+func prepareTurnStoredRelationshipActors(payload map[string]any) (string, string) {
+	left, right := relationshipChangeActors(payload)
+	if left == "" {
+		left = extractionFirstNonEmpty(
+			stringFromMap(payload, "owner_name"),
+			stringFromMap(payload, "source_name"),
+			stringFromMap(payload, "subject"),
+		)
+	}
+	if right == "" {
+		right = extractionFirstNonEmpty(
+			stringFromMap(payload, "target_name"),
+			stringFromMap(payload, "object"),
+		)
+	}
+	if left == "" || right == "" {
+		for _, pair := range stringsFromAny(payload["pair"]) {
+			for _, part := range relationshipPairParts(pair) {
+				if left == "" {
+					left = part
+				} else if right == "" && normalizePrepareTurnEntityNeedle(part) != normalizePrepareTurnEntityNeedle(left) {
+					right = part
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(left), strings.TrimSpace(right)
+}
+
+func prepareTurnStructuredRelationshipRelevant(owner, target, detailText, rawUserInput string, currentSceneEntities, knownEntities []string) bool {
+	owner = strings.TrimSpace(owner)
+	target = strings.TrimSpace(target)
+	if target != "" && prepareTurnRelationshipDirectMention(rawUserInput, target, knownEntities) {
+		return !prepareTurnRelationshipContainsThirdEntity(detailText, owner, target, knownEntities)
+	}
+	if owner != "" && target != "" &&
+		prepareTurnRelationshipNameInList(owner, currentSceneEntities) &&
+		prepareTurnRelationshipNameInList(target, currentSceneEntities) {
+		return !prepareTurnRelationshipContainsThirdEntity(detailText, owner, target, knownEntities)
+	}
+	if detailText != "" && prepareTurnSupportRecallEligible(rawUserInput, detailText) {
+		return !prepareTurnRelationshipContainsThirdEntity(detailText, owner, target, knownEntities)
+	}
+	return false
+}
+
+func prepareTurnFreeRelationshipRelevant(text, owner, rawUserInput string, currentSceneEntities, knownEntities []string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	if len(knownEntities) == 0 {
+		return prepareTurnSupportRecallEligible(rawUserInput, text)
+	}
+	mentioned := []string{}
+	for _, name := range knownEntities {
+		if name != "" && prepareTurnRecallContainsAnchor(text, name) && !prepareTurnRelationshipNameInList(name, mentioned) {
+			mentioned = append(mentioned, name)
+		}
+	}
+	if owner != "" && !prepareTurnRelationshipNameInList(owner, mentioned) {
+		mentioned = append(mentioned, owner)
+	}
+	if len(mentioned) < 2 {
+		return false
+	}
+	directCounterpart := false
+	for _, name := range mentioned {
+		if owner != "" && normalizePrepareTurnEntityNeedle(name) == normalizePrepareTurnEntityNeedle(owner) {
+			continue
+		}
+		if !prepareTurnRelationshipDirectMention(rawUserInput, name, knownEntities) && !prepareTurnRelationshipNameInList(name, currentSceneEntities) {
+			return false
+		}
+		if prepareTurnRelationshipDirectMention(rawUserInput, name, knownEntities) {
+			directCounterpart = true
+		}
+	}
+	return directCounterpart
+}
+
+func prepareTurnRelationshipDirectMention(rawUserInput, name string, knownEntities []string) bool {
+	return prepareTurnDirectEntityMentionRank(rawUserInput, name, prepareTurnObservedShortNameAliases(knownEntities)) > 0
+}
+
+func prepareTurnRelationshipContainsThirdEntity(text, owner, target string, knownEntities []string) bool {
+	for _, name := range knownEntities {
+		if name == "" || !prepareTurnRecallContainsAnchor(text, name) {
+			continue
+		}
+		normalized := normalizePrepareTurnEntityNeedle(name)
+		if normalized != normalizePrepareTurnEntityNeedle(owner) && normalized != normalizePrepareTurnEntityNeedle(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func prepareTurnRelationshipNameInList(name string, items []string) bool {
+	normalized := normalizePrepareTurnEntityNeedle(name)
+	if normalized == "" {
+		return false
+	}
+	for _, item := range items {
+		if normalizePrepareTurnEntityNeedle(item) == normalized {
+			return true
+		}
+	}
+	return false
 }
 
 func compactPrepareTurnJSON(value any) string {

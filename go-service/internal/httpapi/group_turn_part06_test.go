@@ -628,7 +628,7 @@ func TestPrepareTurnRelationshipRecallRejectsSingleEndpointHistory(t *testing.T)
 	}
 
 	raw := `{"Eve":{"trust":74},"Rowan":{"trust":20}}`
-	text, dropped := prepareTurnRelevantRelationshipSurface(raw, "Alice", query)
+	text, dropped := prepareTurnRelevantRelationshipSurface(raw, "Alice", query, []string{"Alice", "Eve"}, []string{"Alice", "Eve", "Rowan"})
 	if !strings.Contains(text, "Eve") || strings.Contains(text, "Rowan") {
 		t.Fatalf("relationship surface did not retain only the current counterpart: %q", text)
 	}
