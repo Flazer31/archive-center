@@ -38,9 +38,9 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.4.0-dev";
-  const BUILD_ID = "3.4-mem-f-test.20260722-1";
+  const BUILD_ID = "3.4-relationship-filter-test.20260723-1";
   const BUILD_CHANNEL = "3.4-mem-f-test";
-  const BUILD_TIME = "2026-07-22 KST";
+  const BUILD_TIME = "2026-07-23 KST";
   const BUILD_NOTES = "MEM-D/E seven-class Go delivery budgets; MEM-F live validation build";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
