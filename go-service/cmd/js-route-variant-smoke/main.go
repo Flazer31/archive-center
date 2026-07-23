@@ -334,7 +334,7 @@ func buildRouteCases(sessionID string) []routeCase {
 		{31, "storyline-delete", http.MethodDelete, "/storylines/1", "", "R2-guarded", []string{"status", "code"}, false},
 		{32, "world-rules-get", http.MethodGet, "/world-rules/" + sid, "", "R1-read", []string{"status"}, false},
 		{33, "world-rules-inherited", http.MethodGet, "/world-rules/" + sid + "/inherited", "", "R1-read", []string{"status"}, false},
-		{34, "world-rules-sync", http.MethodPost, "/world-rules/sync", fmt.Sprintf(`{"chat_session_id":%q,"turn_index":1,"supervisor_response":{"section_world":{"rules":[]}}}`, sid), "E-4-live-sync", []string{"status", "mode", "candidate_count"}, false},
+		{34, "world-rules-sync", http.MethodPost, "/world-rules/sync", fmt.Sprintf(`{"chat_session_id":%q,"turn_index":1,"mode":"dry_run","supervisor_response":{"section_world":{"rules":[]}}}`, sid), "E-4-dry-run", []string{"status", "mode", "candidate_count"}, false},
 		{35, "world-rule-patch", http.MethodPatch, "/world-rules/1", patchBody, "R2-guarded", []string{"status", "code"}, false},
 		{36, "world-rule-trust", http.MethodPatch, "/world-rules/1/trust", trustBody, "R2-guarded", []string{"status", "code"}, false},
 		{37, "world-rule-delete", http.MethodDelete, "/world-rules/1", "", "R2-guarded", []string{"status", "code"}, false},

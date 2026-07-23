@@ -37,7 +37,8 @@ func TestSeq215P778JSInjectionBudgetOwner(t *testing.T) {
 	source := seq215ArchiveCenterJSSource(t)
 	seq215RequireJSSourceContains(t, source,
 		"function assembleInjectionWithBudget(",
-		"const budgetResult = assembleInjectionWithBudget(",
+		"const budgetResult = backendMemoryDeliveryPlan ? {",
+		"} : assembleInjectionWithBudget(",
 	)
 	if s["mode"] != "seq215_js_injection_budget_owner_definition" {
 		t.Fatalf("mode=%v, want seq215_js_injection_budget_owner_definition", s["mode"])

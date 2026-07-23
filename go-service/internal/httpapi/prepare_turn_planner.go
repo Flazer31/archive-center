@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
@@ -261,7 +262,70 @@ func formatWeakInputPlannerGuidance(contract map[string]any) string {
 	}, "\n")
 }
 
-func buildPlannerExecutionContract(rawUserInput, narrativeStance, guideMode, guideStrength string, inputAnchorGovernor, weakInputPlanner map[string]any, selectedStorylines []store.Storyline, pendingThreads []store.PendingThread, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, worldRules []store.WorldRule, assembly prepareTurnInjectionAssembly, languageContext map[string]any) map[string]any {
+func buildResponseExecutionSourceRules(currentInput dto.PrepareTurnCurrentInputDecisionV1, hostEvidence dto.PrepareTurnHostContextReferenceEvidenceV1) map[string]any {
+	currentInputRefs := []string{}
+	if currentInput.SelectedObservationRef != nil && strings.TrimSpace(*currentInput.SelectedObservationRef) != "" {
+		currentInputRefs = append(currentInputRefs, strings.TrimSpace(*currentInput.SelectedObservationRef))
+	} else if currentInput.Envelope != nil && strings.TrimSpace(currentInput.Envelope.ObservationRef) != "" {
+		currentInputRefs = append(currentInputRefs, strings.TrimSpace(currentInput.Envelope.ObservationRef))
+	}
+
+	hostRefs := make([]string, 0, len(hostEvidence.Items))
+	for _, item := range hostEvidence.Items {
+		if ref := strings.TrimSpace(item.EvidenceRef); ref != "" {
+			hostRefs = appendUniqueMemorySearchText(hostRefs, ref)
+		}
+	}
+	allRefs := append([]string{}, currentInputRefs...)
+	for _, ref := range hostRefs {
+		allRefs = appendUniqueMemorySearchText(allRefs, ref)
+	}
+
+	mustPreserve := []map[string]any{}
+	if len(hostRefs) > 0 {
+		mustPreserve = append(mustPreserve, map[string]any{
+			"instruction":    "Preserve every native system constraint already present in this request; use the linked spans in place and do not restate their source text.",
+			"source_refs":    hostRefs,
+			"native_present": true,
+		})
+	}
+	mustRespond := []map[string]any{}
+	mustAccount := []map[string]any{}
+	if len(currentInputRefs) > 0 {
+		mustRespond = append(mustRespond, map[string]any{
+			"instruction": "Respond directly to the latest observed user input without rewriting or replacing it.",
+			"source_refs": currentInputRefs,
+		})
+		mustAccount = append(mustAccount, map[string]any{
+			"instruction": "Account for effects explicitly established by the latest observed user input; do not invent an unstated effect.",
+			"source_refs": currentInputRefs,
+		})
+	}
+	mustNotAssert := []map[string]any{}
+	if len(allRefs) > 0 {
+		mustNotAssert = append(mustNotAssert, map[string]any{
+			"instruction": "Do not assert unsupported facts, hidden knowledge, user decisions, relationship changes, or final closure beyond the linked request evidence.",
+			"source_refs": allRefs,
+		})
+	}
+
+	return map[string]any{
+		"must_preserve": map[string]any{"items": mustPreserve, "count": len(mustPreserve)},
+		"must_respond":  map[string]any{"items": mustRespond, "count": len(mustRespond)},
+		"must_account":  map[string]any{"items": mustAccount, "count": len(mustAccount)},
+		"must_not_assert": map[string]any{
+			"items": mustNotAssert,
+			"count": len(mustNotAssert),
+		},
+		"source_refs": map[string]any{
+			"current_input": currentInputRefs,
+			"native_system": hostRefs,
+			"all":           allRefs,
+		},
+	}
+}
+
+func buildResponseExecutionContract(rawUserInput, narrativeStance, guideMode, guideStrength string, inputAnchorGovernor, weakInputPlanner map[string]any, selectedStorylines []store.Storyline, pendingThreads []store.PendingThread, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, worldRules []store.WorldRule, assembly prepareTurnInjectionAssembly, languageContext map[string]any, currentInput dto.PrepareTurnCurrentInputDecisionV1, hostEvidence dto.PrepareTurnHostContextReferenceEvidenceV1) map[string]any {
 	stanceBounds := buildNarrativeStanceBounds(narrativeStance)
 	maxNewBeats := intFromAny(stanceBounds["max_new_beats"], 0)
 	allowSceneJump := boolFromAny(stanceBounds["allow_scene_jump"])
@@ -342,9 +406,10 @@ func buildPlannerExecutionContract(rawUserInput, narrativeStance, guideMode, gui
 		pacingLevel = "bounded_forward"
 	}
 	targetLanguage := prepareTurnSessionOutputLanguage(languageContext)
+	sourceRules := buildResponseExecutionSourceRules(currentInput, hostEvidence)
 
 	return map[string]any{
-		"contract_version":            "step25_planner_execution_contract.v1",
+		"contract_version":            "response_execution_contract.v1",
 		"status":                      "ready",
 		"active":                      true,
 		"current_user_input_priority": "highest",
@@ -380,7 +445,7 @@ func buildPlannerExecutionContract(rawUserInput, narrativeStance, guideMode, gui
 		"consume_rule": map[string]any{
 			"allowed_usage":  []string{"next_turn_guidance", "continuity_guard", "pacing_guard", "secret_leak_guard"},
 			"blocked_usage":  []string{"truth_write", "canonical_override", "user_intent_override", "raw_memory_dump", "hidden_knowledge_reveal"},
-			"priority_order": []string{"current_user_input", "explicit_user_correction", "direct_evidence", "canonical_state", "retrieved_support", "planner_execution_contract"},
+			"priority_order": []string{"current_user_input", "explicit_user_correction", "direct_evidence", "canonical_state", "retrieved_support", "response_execution_contract"},
 		},
 		"read_surface_alignment": map[string]any{
 			"selected_anchor_count":       len(selectedAnchors),
@@ -407,10 +472,23 @@ func buildPlannerExecutionContract(rawUserInput, narrativeStance, guideMode, gui
 			"npc_lens":    "visible or directly relevant known-state boundary only",
 			"critic_lens": "over-injection, secret leak, stale replay, flat interpretation, and user override guard only",
 		},
+		"must_preserve":   sourceRules["must_preserve"],
+		"must_respond":    sourceRules["must_respond"],
+		"must_account":    sourceRules["must_account"],
+		"must_not_assert": sourceRules["must_not_assert"],
+		"source_refs":     sourceRules["source_refs"],
+		"host_context_observation": map[string]any{
+			"contract_version": hostEvidence.ContractVersion,
+			"status":           hostEvidence.Status,
+			"reason_code":      hostEvidence.ReasonCode,
+			"selected_count":   hostEvidence.SelectedCount,
+			"duplicate_count":  hostEvidence.DuplicateCount,
+			"deferred_count":   hostEvidence.DeferredCount,
+		},
 	}
 }
 
-func formatPlannerExecutionContractGuidance(contract map[string]any) string {
+func formatResponseExecutionContractGuidance(contract map[string]any) string {
 	if contract == nil || !boolFromAny(contract["active"]) {
 		return ""
 	}
@@ -421,9 +499,16 @@ func formatPlannerExecutionContractGuidance(contract map[string]any) string {
 	ending := mapFromAny(contract["ending_requirement"])
 	requiredItems := limitStringSlice(stringSliceFromAny(required["items"]), 3)
 	forbiddenItems := limitStringSlice(stringSliceFromAny(forbidden["items"]), 3)
+	sourceRefs := mapFromAny(contract["source_refs"])
+	nativeRefs := stringSliceFromAny(sourceRefs["native_system"])
+	currentRefs := stringSliceFromAny(sourceRefs["current_input"])
 	return strings.Join([]string{
-		"[Planner Execution Contract]",
+		"[Response Execution Contract]",
 		"mode=support_only; truth_authority=false; current_user_input_priority=highest",
+		fmt.Sprintf("must_preserve=honor native system constraints in place; source_refs:%s", strings.Join(nativeRefs, ",")),
+		fmt.Sprintf("must_respond=answer the latest observed user input directly; source_refs:%s", strings.Join(currentRefs, ",")),
+		fmt.Sprintf("must_account=account only for effects established by the latest observed input; source_refs:%s", strings.Join(currentRefs, ",")),
+		"must_not_assert=do not add unsupported facts, hidden knowledge, user decisions, relationship changes, or final closure",
 		"scene_mandate=" + extractionStringFromAny(sceneMandate["value"]),
 		"required_outcome=" + strings.Join(requiredItems, " / "),
 		"forbidden_move=" + strings.Join(forbiddenItems, " / "),
@@ -432,7 +517,7 @@ func formatPlannerExecutionContractGuidance(contract map[string]any) string {
 	}, "\n")
 }
 
-func buildProgressionChoiceLedger(sid string, turnIndex int, rawUserInput string, chatLogs []store.ChatLog, storylines []store.Storyline, pendingThreads []store.PendingThread, episodeSums []store.EpisodeSummary, inputAnchorGovernor, weakInputPlanner, plannerExecutionContract, progressionLedger map[string]any) map[string]any {
+func buildProgressionChoiceLedger(sid string, turnIndex int, rawUserInput string, chatLogs []store.ChatLog, storylines []store.Storyline, pendingThreads []store.PendingThread, episodeSums []store.EpisodeSummary, inputAnchorGovernor, weakInputPlanner, responseExecutionContract, progressionLedger map[string]any) map[string]any {
 	trimmed := strings.TrimSpace(rawUserInput)
 	selectedAnchors := stringSliceFromAny(inputAnchorGovernor["selected_slot_names"])
 	explicitRedirection := false
@@ -473,7 +558,7 @@ func buildProgressionChoiceLedger(sid string, turnIndex int, rawUserInput string
 		reasons = []string{"stale_callback_suppressed_without_current_scene_alignment"}
 	}
 
-	pacing := mapFromAny(plannerExecutionContract["pacing_pressure"])
+	pacing := mapFromAny(responseExecutionContract["pacing_pressure"])
 	return map[string]any{
 		"contract_version":            "step25_progression_choice_ledger.v1",
 		"status":                      "ready",
@@ -519,7 +604,7 @@ func buildProgressionChoiceLedger(sid string, turnIndex int, rawUserInput string
 		"consume_rule": map[string]any{
 			"allowed_usage":  []string{"next_turn_progression_hint", "stall_guard", "callback_alignment_guard"},
 			"blocked_usage":  []string{"truth_write", "canonical_state_change", "forced_scene_jump", "user_intent_override"},
-			"priority_order": []string{"current_user_input", "explicit_user_correction", "planner_execution_contract", "progression_choice_ledger"},
+			"priority_order": []string{"current_user_input", "explicit_user_correction", "response_execution_contract", "progression_choice_ledger"},
 		},
 		"ledger_alignment": map[string]any{
 			"progression_ledger_status": extractionStringFromAny(progressionLedger["status"]),
@@ -604,7 +689,7 @@ func formatProgressionChoiceGuidance(contract map[string]any) string {
 	}, "\n")
 }
 
-func buildStep25ValidationGate(rawUserInput string, weakInputPlanner, plannerExecutionContract, progressionChoiceLedger map[string]any) map[string]any {
+func buildStep25ValidationGate(rawUserInput string, weakInputPlanner, responseExecutionContract, progressionChoiceLedger map[string]any) map[string]any {
 	type checkDef struct {
 		id     string
 		name   string
@@ -612,8 +697,8 @@ func buildStep25ValidationGate(rawUserInput string, weakInputPlanner, plannerExe
 		reason string
 	}
 	weakBoundary := mapFromAny(weakInputPlanner["initiative_boundary"])
-	execConsume := mapFromAny(plannerExecutionContract["consume_rule"])
-	roleLens := mapFromAny(plannerExecutionContract["role_lens_consumption"])
+	execConsume := mapFromAny(responseExecutionContract["consume_rule"])
+	roleLens := mapFromAny(responseExecutionContract["role_lens_consumption"])
 	progressionReplay := mapFromAny(progressionChoiceLedger["inspection_replay_surface"])
 	callbackEval := mapFromAny(progressionChoiceLedger["callback_evaluation"])
 	stall := mapFromAny(progressionChoiceLedger["same_incident_stall_detection"])
@@ -622,7 +707,7 @@ func buildStep25ValidationGate(rawUserInput string, weakInputPlanner, plannerExe
 	replayCases := stringSliceFromAny(progressionReplay["cases"])
 	blockedUsage := stringSliceFromAny(execConsume["blocked_usage"])
 	contractVersionsPresent := extractionStringFromAny(weakInputPlanner["contract_version"]) == "step25_weak_input_planner.v1" &&
-		extractionStringFromAny(plannerExecutionContract["contract_version"]) == "step25_planner_execution_contract.v1" &&
+		extractionStringFromAny(responseExecutionContract["contract_version"]) == "response_execution_contract.v1" &&
 		extractionStringFromAny(progressionChoiceLedger["contract_version"]) == "step25_progression_choice_ledger.v1"
 
 	checks := []checkDef{
@@ -641,7 +726,7 @@ func buildStep25ValidationGate(rawUserInput string, weakInputPlanner, plannerExe
 		{
 			id:     "25-5c",
 			name:   "planner slot truth boundary",
-			pass:   plannerExecutionContract["truth_authority"] == false && plannerExecutionContract["would_write"] == false && len(blockedUsage) > 0,
+			pass:   responseExecutionContract["truth_authority"] == false && responseExecutionContract["would_write"] == false && len(blockedUsage) > 0,
 			reason: "execution slots cannot write truth or override user intent",
 		},
 		{
@@ -809,11 +894,11 @@ func narrativeGuideStrengthLine(strength string) string {
 	case "none":
 		return ""
 	case "strong":
-		return "Strength: strong. Be more active about pacing, continuity repair, and callback suggestions, but never override user input or force outcomes."
+		return "Coverage: strong. In addition to fidelity warnings and portrayal notes, you may offer reversible next possibilities; this grants no truth, relationship, user-action, or closure authority."
 	case "medium":
-		return "Strength: medium. Give visible pacing and continuity support when the scene has room, but avoid forcing outcomes."
+		return "Coverage: medium. You may offer fidelity warnings and portrayal notes, but no next-action, relationship-change, or closure proposal."
 	default:
-		return "Strength: weak. Keep this nearly invisible; only prevent continuity breaks or obvious tone drift."
+		return "Coverage: weak. Use fidelity warnings only; do not propose new beats, actions, relationships, or conclusions."
 	}
 }
 

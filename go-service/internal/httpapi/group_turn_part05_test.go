@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,8 +74,8 @@ func TestPrepareTurnCharacterPrivateRecollectionLane(t *testing.T) {
 		t.Fatalf("NPC private recollection missing protected hint wording: %q", injectionText)
 	}
 	inputContextText, _ := resp["input_context_text"].(string)
-	if !strings.Contains(inputContextText, "[Character Private Recollection]") || !strings.Contains(inputContextText, "not player knowledge") {
-		t.Fatalf("input_context_text missing NPC private lane guard: %q", inputContextText)
+	if strings.Contains(inputContextText, "[Character Private Recollection]") || strings.Contains(inputContextText, "not player knowledge") {
+		t.Fatalf("NPC private recollection bypassed its dedicated injection lane: %q", inputContextText)
 	}
 	ip, ok := resp["injection_pack"].(map[string]any)
 	if !ok {
@@ -99,6 +100,43 @@ func TestPrepareTurnCharacterPrivateRecollectionLane(t *testing.T) {
 	}
 	if len(fake.savedMemories) != 0 || len(fake.savedKGTriples) != 0 || len(fake.savedEvidence) != 0 {
 		t.Fatalf("prepare-turn character private recollection must not write canonical rows: mem=%d kg=%d evi=%d", len(fake.savedMemories), len(fake.savedKGTriples), len(fake.savedEvidence))
+	}
+}
+
+func TestPrepareTurnBatchesCurrentNPCMemoryOwnersIntoOneRead(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnEntityOwners: []store.ProtagonistEntityMemoryOwner{
+			{OwnerEntityKey: "mina", OwnerEntityName: "Mina"},
+			{OwnerEntityKey: "rowan", OwnerEntityName: "Rowan"},
+			{OwnerEntityKey: "juno", OwnerEntityName: "Juno"},
+		},
+		returnEntityMemories: []store.ProtagonistEntityMemory{
+			{ID: 1, OwnerEntityKey: "mina", OwnerEntityName: "Mina", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: "sess-owner-batch", MemoryText: "Mina remembers Rowan's promise."},
+			{ID: 2, OwnerEntityKey: "rowan", OwnerEntityName: "Rowan", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: "sess-owner-batch", MemoryText: "Rowan worries about Mina."},
+			{ID: 3, OwnerEntityKey: "juno", OwnerEntityName: "Juno", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: "sess-owner-batch", MemoryText: "Juno watches the harbor."},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-owner-batch","turn_index":4,"raw_user_input":"Mina asks Rowan about the promise.","settings":{"injection_enabled":true,"input_context_enabled":false,"max_injection_chars":9000,"top_k":2}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.entityMemoryReadCount != 1 {
+		t.Fatalf("subjective memory read count=%d, want one batched read", fake.entityMemoryReadCount)
+	}
+	if len(fake.entityMemoryFilters) != 1 || len(fake.entityMemoryFilters[0].OwnerEntityKeys) != 2 {
+		t.Fatalf("owner batch filter=%#v, want Mina and Rowan in one filter", fake.entityMemoryFilters)
+	}
+	keys := strings.Join(fake.entityMemoryFilters[0].OwnerEntityKeys, ",")
+	if !strings.Contains(keys, "mina") || !strings.Contains(keys, "rowan") || strings.Contains(keys, "juno") {
+		t.Fatalf("unexpected owner batch keys=%q", keys)
 	}
 }
 
@@ -613,6 +651,21 @@ func TestPrepareTurnEpisodeDenseAnchorsSurviveSummaryText(t *testing.T) {
 	}
 }
 
+func TestPrepareTurnEpisodeDoesNotRepeatSummaryAsKeyEvent(t *testing.T) {
+	episodes := []store.EpisodeSummary{{
+		ID: 43, ChatSessionID: "sess-ds1b", FromTurn: 1, ToTurn: 5,
+		SummaryText: "memory: Alice opens the sealed gate",
+		KeyEvents:   `["memory: Alice opens the sealed gate"]`,
+	}}
+	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "", "wide_context_700k", nil, nil, nil)
+	if strings.Contains(assembly.EpisodeText, "key_event=memory: Alice opens the sealed gate") {
+		t.Fatalf("episode summary repeated as key event: %s", assembly.EpisodeText)
+	}
+	if strings.Count(assembly.EpisodeText, "memory: Alice opens the sealed gate") != 1 {
+		t.Fatalf("episode fact count=%d, want 1: %s", strings.Count(assembly.EpisodeText, "memory: Alice opens the sealed gate"), assembly.EpisodeText)
+	}
+}
+
 func TestUnifiedRetrievalDocumentsEpisodeDenseAnchors(t *testing.T) {
 	episodes := []store.EpisodeSummary{
 		{
@@ -764,7 +817,7 @@ func TestPrepareTurnNarrativeGuideAutoModeBundle(t *testing.T) {
 	if pack["guide_strength"] != "strong" {
 		t.Fatalf("guide_strength = %v, want strong", pack["guide_strength"])
 	}
-	if suffix, _ := pack["guide_suffix"].(string); !strings.Contains(suffix, "Narrative Guide") || !strings.Contains(suffix, "Action") || !strings.Contains(suffix, "Strength: strong") {
+	if suffix, _ := pack["guide_suffix"].(string); !strings.Contains(suffix, "Narrative Guide") || !strings.Contains(suffix, "Action") || !strings.Contains(suffix, "Coverage: strong") {
 		t.Fatalf("guide_suffix missing action suffix: %q", suffix)
 	}
 	if guidance, _ := pack["persistent_guidance"].(string); !strings.Contains(guidance, "Narrative Guide") || !strings.Contains(guidance, "combat/chase") {
@@ -792,7 +845,7 @@ func TestNarrativeGuideModeSuffixAndDirectorOverrides(t *testing.T) {
 	if got := resolveNarrativeGuideMode("auto", []map[string]any{{"role": "user", "content": "The romantic mood deepens and the scene moves closer."}}, "", ""); got != "romantic" {
 		t.Fatalf("resolveNarrativeGuideMode(auto romantic) = %q, want romantic", got)
 	}
-	if suffix := buildGuideModeSuffix("mature_soft", "medium"); !strings.Contains(suffix, "Mature (Sensual)") || !strings.Contains(suffix, "story-appropriate") || !strings.Contains(suffix, "Strength: medium") {
+	if suffix := buildGuideModeSuffix("mature_soft", "medium"); !strings.Contains(suffix, "Mature (Sensual)") || !strings.Contains(suffix, "story-appropriate") || !strings.Contains(suffix, "Coverage: medium") {
 		t.Fatalf("mature_soft suffix mismatch: %q", suffix)
 	}
 	overrides := buildGuideModeDirectorOverrides("mature_direct")
@@ -906,7 +959,7 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnVectorReadyFillsUnusedTopKWithLexicalRecent(t *testing.T) {
+func TestPrepareTurnVectorReadyLeavesUnusedTopKEmptyInsteadOfInjectingUnrelatedRecent(t *testing.T) {
 	memories := []store.Memory{
 		{ID: 1, TurnIndex: 1, SummaryJSON: `{"turn_summary":"Mina hid the brass key under the old shrine."}`, Importance: 5},
 		{ID: 2, TurnIndex: 9, SummaryJSON: `{"turn_summary":"Recent unrelated market conversation."}`, Importance: 9},
@@ -923,14 +976,102 @@ func TestPrepareTurnVectorReadyFillsUnusedTopKWithLexicalRecent(t *testing.T) {
 	if len(selection.VectorRelevant) != 1 {
 		t.Fatalf("vector relevant count = %d, want 1", len(selection.VectorRelevant))
 	}
-	if len(selection.Relevant)+len(selection.Deep)+len(selection.Recent) != 2 {
-		t.Fatalf("Chroma-ready recall should fill unused topK slots: %#v", selection)
+	if len(selection.Relevant)+len(selection.Deep)+len(selection.Recent) != 0 {
+		t.Fatalf("unrelated memories must not fill unused topK slots: %#v", selection)
 	}
-	if got := prepareTurnSelectedMemoryCount(selection); got != 3 {
-		t.Fatalf("selected count = %d, want vector hit plus two fallback memories", got)
+	if got := prepareTurnSelectedMemoryCount(selection); got != 1 {
+		t.Fatalf("selected count = %d, want only the supported vector hit", got)
 	}
 	if selection.Trace["lexical_fill_enabled"] != true || selection.Trace["vector_recall_ready"] != true {
 		t.Fatalf("vector-ready trace mismatch: %#v", selection.Trace)
+	}
+}
+
+func TestPrepareTurnMemorySelectionQueryUsesCurrentInputAndOnlyPreviousAssistantOutput(t *testing.T) {
+	query := prepareTurnMemorySelectionQuery("current forge work", []store.ChatLog{
+		{TurnIndex: 1, Role: "assistant", Content: "old market topic"},
+		{TurnIndex: 2, Role: "user", Content: "old clinic topic"},
+		{TurnIndex: 2, Role: "assistant", Content: "previous workshop output"},
+	}, nil)
+	for _, wanted := range []string{"current forge work", "previous workshop output"} {
+		if !strings.Contains(query, wanted) {
+			t.Fatalf("query missing %q: %q", wanted, query)
+		}
+	}
+	for _, unwanted := range []string{"old market topic", "old clinic topic"} {
+		if strings.Contains(query, unwanted) {
+			t.Fatalf("query retained unrelated history %q: %q", unwanted, query)
+		}
+	}
+}
+
+func TestPrepareTurnLexicalRecallRequiresCurrentEvidenceAndDoesNotSpendCapacity(t *testing.T) {
+	selection := selectPrepareTurnMemoryLanes([]store.Memory{
+		{ID: 1, TurnIndex: 10, SummaryJSON: `{"turn_summary":"The current forge prepares royal inspection supplies.","entities":[{"name":"Han-eol","location":"forge"}]}`},
+		{ID: 2, TurnIndex: 11, SummaryJSON: `{"turn_summary":"A previous political conversation happened elsewhere."}`},
+		{ID: 3, TurnIndex: 12, SummaryJSON: `{"turn_summary":"An unrelated market visit happened previously."}`},
+	}, "Han-eol checks the royal inspection supplies at the forge.", 5)
+	if len(selection.Relevant) != 1 || selection.Relevant[0].ID != 1 {
+		t.Fatalf("relevant=%#v, want only the current-scene memory", selection.Relevant)
+	}
+	if len(selection.Recent) != 0 {
+		t.Fatalf("query-present recall filled unused capacity with recent rows: %#v", selection.Recent)
+	}
+	if got := intFromAny(selection.Trace["actual_memory_refill_gap"], 0); got != 2 {
+		t.Fatalf("unused candidate capacity=%d, want 2; trace=%#v", got, selection.Trace)
+	}
+}
+
+func TestPrepareTurnSupportLanesDropUnrelatedRowsAndKeepLatestEpisodeAnchor(t *testing.T) {
+	assembly := buildPrepareTurnInjectionAssembly(
+		[]store.Memory{{ID: 1, TurnIndex: 20, SummaryJSON: `{"turn_summary":"Alice opens the sealed gate.","entities":[{"name":"Alice"}]}`}},
+		[]store.KGTriple{
+			{ID: 1, Subject: "Alice", Predicate: "carries", Object: "sealed key"},
+			{ID: 2, Subject: "Bob", Predicate: "visits", Object: "market"},
+		},
+		nil, nil,
+		[]store.Storyline{
+			{ID: 1, Name: "Sealed Gate", CurrentContext: "Alice opens the sealed gate"},
+			{ID: 2, Name: "Market Rumor", CurrentContext: "Bob repeats a market rumor"},
+		},
+		nil,
+		[]store.CharacterState{
+			{ID: 1, CharacterName: "Alice", StatusJSON: `{"location":"sealed gate"}`},
+			{ID: 2, CharacterName: "Bob", StatusJSON: `{"location":"market"}`},
+		},
+		[]store.PendingThread{
+			{ID: 1, ThreadKey: "sealed_gate", Description: "Alice must open the sealed gate", Status: "open", Owner: "Alice"},
+			{ID: 2, ThreadKey: "market_rumor", Description: "Bob must verify the market rumor", Status: "open", Owner: "Bob"},
+		},
+		nil,
+		[]store.EpisodeSummary{
+			{ID: 1, FromTurn: 1, ToTurn: 5, SummaryText: "Alice discovered the sealed gate"},
+			{ID: 2, FromTurn: 6, ToTurn: 10, SummaryText: "Bob traded cloth at the market"},
+			{ID: 3, FromTurn: 11, ToTurn: 15, SummaryText: "The latest episode closes at night"},
+		},
+		nil, nil, nil,
+		5, 12000, "Alice opens the sealed gate.", "default", nil, nil, nil,
+	)
+	for _, text := range []string{assembly.KGText, assembly.StorylineText, assembly.CharacterText, assembly.PendingThreadText, assembly.EpisodeText} {
+		if strings.Contains(text, "Bob") || strings.Contains(text, "market") {
+			t.Fatalf("unrelated support row survived relevance gate: %q", text)
+		}
+	}
+	for _, wanted := range []string{"Alice --carries--> sealed key", "Alice opens the sealed gate", "Alice: state=", "Alice must open", "turns 1-5"} {
+		if !strings.Contains(assembly.Text, wanted) {
+			t.Fatalf("assembly missing supported continuity %q: %s", wanted, assembly.Text)
+		}
+	}
+	for key, want := range map[string]int{
+		"kg_irrelevant_dropped":              1,
+		"storyline_irrelevant_dropped":       1,
+		"character_state_irrelevant_dropped": 1,
+		"pending_thread_irrelevant_dropped":  1,
+		"episode_irrelevant_dropped":         2,
+	} {
+		if got := intFromAny(assembly.Counts[key], 0); got != want {
+			t.Fatalf("%s=%d, want %d; counts=%#v", key, got, want, assembly.Counts)
+		}
 	}
 }
 
@@ -1069,7 +1210,7 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 				}`,
 				Importance: 0.95,
 			},
-			{ID: 2, ChatSessionID: "sess-247a-render", TurnIndex: 8, SummaryJSON: `{"turn_summary":"Recent unrelated market note."}`, Importance: 0.9},
+			{ID: 2, ChatSessionID: "sess-247a-render", TurnIndex: 8, SummaryJSON: `{"turn_summary":"Gloria continues the private scene carefully at the market."}`, Importance: 0.9},
 		},
 	}
 	cfg := config.Default()
@@ -1120,7 +1261,9 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 		"vector_found":                   1,
 		"vector_hydrated":                1,
 		"vector_injected":                1,
-		"memory_injected":                1,
+		"memory_injected":                2,
+		"actual_memory_selected_count":   1,
+		"protected_guard_selected_count": 1,
 		"protected_secret_count":         1,
 		"identity_accuracy_count":        1,
 		"protected_memory_guarded_count": 1,
@@ -1130,19 +1273,25 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 		}
 	}
 	related := map[string]any(nil)
+	protected := map[string]any(nil)
 	for _, raw := range sliceFromAny(model["blocks"]) {
 		block := mapFromAny(raw)
 		if block["key"] == "related_memories" {
 			related = block
-			break
+		}
+		if block["key"] == "protected_memory_guidance" {
+			protected = block
 		}
 	}
 	if related == nil || related["status"] != "included" {
 		t.Fatalf("related_memories block missing or not included: %#v", model["blocks"])
 	}
-	relatedText := extractionStringFromAny(related["text"])
-	if !strings.Contains(relatedText, "Protected identity continuity") || !strings.Contains(relatedText, "kind=cover_identity") {
-		t.Fatalf("related memory block should contain protected guard text, got %q", relatedText)
+	if protected == nil || protected["status"] != "included" {
+		t.Fatalf("protected_memory_guidance block missing or not included: %#v", model["blocks"])
+	}
+	protectedText := extractionStringFromAny(protected["text"])
+	if !strings.Contains(protectedText, "Protected identity continuity") || !strings.Contains(protectedText, "kind=cover_identity") {
+		t.Fatalf("protected guidance block should contain protected guard text, got %q", protectedText)
 	}
 	modelJSON := mustCompactJSON(model)
 	for _, leaked := range []string{"Gloria privately inherited the sealed crest", "secret_summary", "true_identity_name", "surface_identity_name"} {
@@ -1156,5 +1305,150 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 	}
 	if intFromAny(preview["auxiliary_context_chars"], 0) <= 0 {
 		t.Fatalf("effective_input_preview auxiliary_context_chars not populated: %#v", preview)
+	}
+}
+
+func TestPrepareTurnEffectiveInputPreviewReportsGoSelectedSource(t *testing.T) {
+	preview := buildPrepareTurnEffectiveInputPreview(
+		"sess-source-preview", 3, "실제 사용자 입력", "active_chat:4", "model", "shadow", "",
+		true, false, false, false, "", prepareTurnInjectionAssembly{},
+	)
+	if preview["final_user_source"] != "active_chat:4" || preview["final_user_text"] != "실제 사용자 입력" {
+		t.Fatalf("effective input preview did not preserve Go-selected source: %#v", preview)
+	}
+}
+
+func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *testing.T) {
+	const sid = "sess-mem-a-lineage"
+	identityJSON := func(summary string) string {
+		return fmt.Sprintf(`{
+			"turn_summary":%q,
+			"character_identity_accuracy":[{
+				"surface_identity_name":"Faust",
+				"true_identity_name":"Mina",
+				"canonical_entity_name":"Mina",
+				"identity_kind":"cover_identity",
+				"same_entity":true,
+				"reveal_policy":"owner_private_until_revealed",
+				"knowledge_scope":{"known_by":["Mina"]}
+			}]
+		}`, summary)
+	}
+	secretJSON := func(summary, kind string) string {
+		return fmt.Sprintf(`{
+			"turn_summary":%q,
+			"protected_secrets":[{
+				"owner":"Mina",
+				"secret_kind":%q,
+				"secret_summary":%q,
+				"disclosure_policy":"owner_private_until_revealed",
+				"knowledge_scope":{"known_by":["Mina"]}
+			}]
+		}`, summary, kind, summary)
+	}
+	fake := &turnRecordingStore{returnMemories: []store.Memory{
+		{ID: 11, ChatSessionID: sid, TurnIndex: 11, SummaryJSON: identityJSON("Mina still uses Faust as a private cover identity."), Importance: 0.9},
+		{ID: 9, ChatSessionID: sid, TurnIndex: 9, SummaryJSON: identityJSON("Faust remains Mina's protected cover identity."), Importance: 0.9},
+		{ID: 2, ChatSessionID: sid, TurnIndex: 2, SummaryJSON: secretJSON("Mina keeps the evacuation route hidden.", "hidden_plan"), Importance: 0.8},
+		{ID: 17, ChatSessionID: sid, TurnIndex: 17, SummaryJSON: secretJSON("Mina secretly watches the eastern gate.", "surveillance"), Importance: 0.8},
+		{ID: 12, ChatSessionID: sid, TurnIndex: 12, SummaryJSON: secretJSON("Mina has an undisclosed council allegiance.", "hidden_allegiance"), Importance: 0.8},
+		{ID: 31, ChatSessionID: sid, TurnIndex: 31, SummaryJSON: `{"turn_summary":"Mina secured the archive permit during the council hearing."}`, Importance: 0.7},
+	}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	cfg.Readiness.ChromaConfigured = true
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.Vector = &fakeVectorStore{
+		healthSnapshot: vector.HealthSnapshot{Status: "ok", TotalCount: 6, ModelReady: true},
+		searchResults: []vector.VectorDocument{
+			{ID: "memory:" + sid + ":11", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "11", Similarity: 0.91, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
+			{ID: "memory:" + sid + ":9", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "9", Similarity: 0.89, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
+			{ID: "memory:" + sid + ":2", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "2", Similarity: 0.87, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
+			{ID: "memory:" + sid + ":17", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "17", Similarity: 0.84, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
+			{ID: "memory:" + sid + ":12", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "12", Similarity: 0.81, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
+			{ID: "memory:" + sid + ":31", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "31", Similarity: 0.76, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
+		},
+	}
+	srv.VectorOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{
+		"chat_session_id":"sess-mem-a-lineage",
+		"turn_index":32,
+		"raw_user_input":"Mina reviews the hidden plan, surveillance, allegiance, identity, and council hearing.",
+		"client_meta":{"chroma_query_vector":[0.3,0.6]},
+		"settings":{"apply_mode":"shadow","max_injection_chars":9000,"injection_enabled":true,"input_context_enabled":false,"top_k":5}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	pack := mapFromAny(resp["injection_pack"])
+	lineage := mapFromAny(pack["memory_delivery_lineage"])
+	if lineage["contract_version"] != "memory_delivery_lineage.v1" {
+		t.Fatalf("lineage contract missing: %#v", lineage)
+	}
+	if lineage["status"] != "protected_guard_dominant" {
+		t.Fatalf("fixture must expose guard-dominant baseline before MEM-B/C: %#v", lineage)
+	}
+	if got := intFromAny(lineage["top_k_memory_target"], 0); got != 5 {
+		t.Fatalf("top_k target = %d, want 5", got)
+	}
+	if got := intFromAny(lineage["final_delivered_count"], 0); got != 5 {
+		t.Fatalf("final delivered = %d, want 5; lineage=%#v", got, lineage)
+	}
+	if got := intFromAny(lineage["final_protected_guard_count"], 0); got != 4 {
+		t.Fatalf("protected guard count = %d, want 4; lineage=%#v", got, lineage)
+	}
+	if got := intFromAny(lineage["final_actual_memory_count"], 0); got != 1 {
+		t.Fatalf("actual memory count = %d, want 1; lineage=%#v", got, lineage)
+	}
+	if got := intFromAny(lineage["pre_render_protected_duplicate_count"], 0); got != 1 {
+		t.Fatalf("pre-render protected duplicate count = %d, want 1; lineage=%#v", got, lineage)
+	}
+	duplicates := sliceFromAny(lineage["pre_render_protected_duplicates"])
+	if len(duplicates) != 1 || intFromAny(mapFromAny(duplicates[0])["source_row_id"], 0) != 9 {
+		t.Fatalf("row 9 must be traced as the duplicate protected identity: %#v", duplicates)
+	}
+	issues := strings.Join(stringsFromAny(lineage["known_issue_codes"]), ",")
+	if !strings.Contains(issues, "protected_guard_dominates_final_memory_lines") {
+		t.Fatalf("known failure code missing: %#v", lineage["known_issue_codes"])
+	}
+	memoryText := extractionStringFromAny(pack["memory_text"])
+	if !strings.Contains(memoryText, "Mina secured the archive permit during the council hearing") {
+		t.Fatalf("actual event row must survive into final memory text: %q", memoryText)
+	}
+	for _, leaked := range []string{"evacuation route", "watches the eastern gate", "council allegiance"} {
+		if strings.Contains(memoryText, leaked) {
+			t.Fatalf("protected source detail leaked into final text (%s): %q", leaked, memoryText)
+		}
+	}
+	deliveredRows := map[int]bool{}
+	for _, raw := range sliceFromAny(lineage["items"]) {
+		item := mapFromAny(raw)
+		if boolFromAny(item["delivered"]) {
+			deliveredRows[intFromAny(item["source_row_id"], 0)] = true
+			if item["source_table"] != "memories" || item["vector_hit"] != true {
+				t.Fatalf("delivered lineage item lost store/vector provenance: %#v", item)
+			}
+		}
+	}
+	for _, id := range []int{11, 2, 17, 12, 31} {
+		if !deliveredRows[id] {
+			t.Fatalf("source row %d missing from final delivery lineage: %#v", id, lineage["items"])
+		}
+	}
+	if deliveredRows[9] {
+		t.Fatalf("duplicate identity row 9 must not consume a final slot: %#v", lineage["items"])
 	}
 }

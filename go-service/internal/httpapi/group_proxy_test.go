@@ -181,6 +181,55 @@ func TestHandleProxyPluginMainValidEndpointCallsUpstream(t *testing.T) {
 	}
 }
 
+func TestHandleProxyPluginMainOllamaLoopbackWithoutAPIKey(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.RegisterRoutes(mux)
+
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "http://127.0.0.1:11434/v1/chat/completions" {
+			t.Fatalf("upstream URL = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want omitted", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"local-model","choices":[{"message":{"content":"ok"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	body := `{"provider":"ollama","endpoint":"http://127.0.0.1:11434/v1","model":"local-model","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/plugin-main", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+}
+
+func TestOllamaRuntimeLLMConfigDoesNotRequireAPIKey(t *testing.T) {
+	cfg := completeTurnLLMConfig{
+		Provider: "ollama",
+		Endpoint: "http://127.0.0.1:11434/v1",
+		Model:    "local-model",
+	}
+	if !cfg.hasConfig() {
+		t.Fatalf("local Ollama config should be complete without an API key; missing=%v", cfg.missingFields())
+	}
+
+	openAI := cfg
+	openAI.Provider = "openai"
+	if openAI.hasConfig() || !strings.Contains(strings.Join(openAI.missingFields(), ","), "api_key") {
+		t.Fatalf("non-Ollama providers must still require an API key; missing=%v", openAI.missingFields())
+	}
+}
+
 func TestHandleProxyPluginMainMissingProviderReturns400WithoutFallback(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := setupTestServer()
@@ -921,7 +970,7 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{
 				"model":"supervisor-model",
-				"choices":[{"message":{"content":"{\"directive\":{\"director\":{\"pressure_level\":\"normal\"}}}"}}]
+				"choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the current request boundary\",\"source_refs\":[\"input:test\"]}],\"portrayal_notes\":[],\"may_advance\":[]}}"}}]
 			}`)),
 		}, nil
 	})}
@@ -972,7 +1021,7 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		t.Fatalf("unexpected direct generation trace: %+v", directGeneration)
 	}
 
-	body := `{"chat_session_id":"sess-sv-live","guide_mode":"romantic","narrative_stance":"proactive","auto_advance_trigger":"none","wake_up_context":"hello","persistent_guidance":"be kind","context_messages":[{"role":"user","content":"move forward"}]}`
+	body := `{"chat_session_id":"sess-sv-live","guide_mode":"romantic","guide_strength":"weak","narrative_stance":"proactive","auto_advance_trigger":"none","wake_up_context":"hello","persistent_guidance":"be kind","response_execution_contract":{"contract_version":"response_execution_contract.v1","status":"ready","active":true,"source_refs":{"all":["input:test"],"current_input":["input:test"],"native_system":[]}},"context_messages":[{"role":"user","content":"move forward"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/supervisor", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -996,9 +1045,13 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		t.Fatalf("supervisor_result is not an object: %+v", resp)
 	}
 	directive, _ := result["directive"].(map[string]any)
-	director, _ := directive["director"].(map[string]any)
-	if director["pressure_level"] != "normal" {
-		t.Fatalf("pressure_level = %v, want normal", director["pressure_level"])
+	proposal, _ := directive["supervisor_scene_proposal"].(map[string]any)
+	if proposal["authority"] != "proposal_only" || proposal["truth_authority"] != false {
+		t.Fatalf("supervisor proposal authority = %+v, want proposal_only/non-truth", proposal)
+	}
+	warnings, _ := proposal["fidelity_warnings"].([]any)
+	if len(warnings) != 1 {
+		t.Fatalf("fidelity_warnings = %+v, want one source-linked warning", warnings)
 	}
 	traceSummary, ok := resp["trace_summary"].(map[string]any)
 	if !ok {

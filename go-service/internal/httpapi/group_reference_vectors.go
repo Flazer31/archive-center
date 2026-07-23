@@ -122,17 +122,18 @@ func (s *Server) handleReferenceVectorSearch(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadGateway, "reference_query_embedding_empty", "embedding provider returned an empty vector")
 		return
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 8
-	}
-	if limit > 50 {
-		limit = 50
-	}
 	approvedIDs, err := loadApprovedReferenceVectorIDs(r.Context(), ref, workID, continuityID)
 	if err != nil {
 		writeReferenceStoreError(w, err)
 		return
+	}
+	if len(approvedIDs) == 0 {
+		writeJSON(w, http.StatusOK, referenceVectorSearchResponse(workID, continuityID, model, len(queryVector), nil, 0))
+		return
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > len(approvedIDs) {
+		limit = len(approvedIDs)
 	}
 	if err := validateReferenceQueryEmbeddingSpace(r.Context(), vectorStore, workID, continuityID, approvedIDs, embedder.Provider, model); err != nil {
 		writeError(w, http.StatusConflict, "reference_embedding_model_mismatch", err.Error())

@@ -17,6 +17,15 @@ type durableRoutingBaselineStore struct {
 	baseline *store.SessionRoutingBaseline
 }
 
+type rollbackDecisionChatLogStore struct {
+	store.Store
+	logs []store.ChatLog
+}
+
+func (s *rollbackDecisionChatLogStore) ListChatLogs(_ context.Context, _ string, _, _ int) ([]store.ChatLog, error) {
+	return s.logs, nil
+}
+
 func (s *durableRoutingBaselineStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
 	return s.baseline, nil
 }
@@ -173,6 +182,95 @@ func TestVerifiedTailDeleteWithoutClientBaselineExecutesOnlyBackendTail(t *testi
 	}
 }
 
+func TestRollbackDecisionHandlerVerifiesIncompleteUserOnlyBackendTail(t *testing.T) {
+	const sid = "char_1_cid_user_only_tail"
+	server := &Server{Store: &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		logs:  []store.ChatLog{{ChatSessionID: sid, TurnIndex: 9, Role: "user", Content: "saved input only"}},
+	}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"auto",
+		"candidate_from_turn":9,
+		"removed_assistant_count":0,
+		"removed_user_count":1,
+		"removed_message_count":1,
+		"visible_completed_turns":8,
+		"backend_latest_turn":9,
+		"deletion_observed":true,
+		"incomplete_tail_candidate":true
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Allowed || response.FromTurn != 9 || response.DecisionToken == "" {
+		t.Fatalf("user-only tail decision=%+v", response)
+	}
+}
+
+func TestRollbackDecisionRejectsUnverifiedIncompleteTailCandidate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		logs []store.ChatLog
+	}{
+		{name: "no backend rows"},
+		{name: "assistant row exists", logs: []store.ChatLog{
+			{ChatSessionID: "s", TurnIndex: 4, Role: "user", Content: "u"},
+			{ChatSessionID: "s", TurnIndex: 4, Role: "assistant", Content: "a"},
+		}},
+		{name: "candidate is not actual backend tail", logs: []store.ChatLog{
+			{ChatSessionID: "s", TurnIndex: 4, Role: "user", Content: "old incomplete"},
+			{ChatSessionID: "s", TurnIndex: 5, Role: "user", Content: "newer"},
+			{ChatSessionID: "s", TurnIndex: 5, Role: "assistant", Content: "newer answer"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := &Server{Store: &rollbackDecisionChatLogStore{Store: store.NewNoopStore(), logs: tc.logs}}
+			mux := http.NewServeMux()
+			server.RegisterRoutes(mux)
+			req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+				"chat_session_id":"s",
+				"request_source":"auto",
+				"candidate_from_turn":4,
+				"removed_user_count":1,
+				"removed_message_count":1,
+				"backend_latest_turn":4,
+				"deletion_observed":true,
+				"incomplete_tail_candidate":true
+			}`))
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			var response rollbackDecisionResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Allowed || response.Reason != "incomplete_tail_not_verified" || response.DecisionToken != "" {
+				t.Fatalf("unverified incomplete tail decision=%+v", response)
+			}
+		})
+	}
+}
+
+func TestRollbackDecisionHistoryTrimGuardBlocksVerifiedIncompleteTail(t *testing.T) {
+	response := calculateRollbackDecision(rollbackDecisionRequest{
+		ChatSessionID: "s", CandidateFromTurn: 4, BackendLatestTurn: 4,
+		DeletionObserved: true, IncompleteTailCandidate: true, BackendIncompleteTailVerified: true,
+		HistoryTrimGuard: true,
+	})
+	if response.Allowed || response.Reason != "history_trim_guard" {
+		t.Fatalf("history trim decision=%+v", response)
+	}
+}
+
 func TestCopiedSessionSevenPlusTwoDeletesOnlyTurnNine(t *testing.T) {
 	baseline := &routingTurnBaseline{BackendTurnAtRoute: 7, LocalPairsAtRoute: 0, Reason: "timeline_copy"}
 	resp := calculateRollbackDecision(rollbackDecisionRequest{
@@ -207,6 +305,35 @@ func TestRollbackDecisionBlocksHistoryTrimAndOutOfRange(t *testing.T) {
 	out := calculateRollbackDecision(rollbackDecisionRequest{ChatSessionID: "s", DeletionObserved: true, CandidateFromTurn: 9, BackendLatestTurn: 8})
 	if out.Allowed || out.Reason != "delete_anchor_after_backend_tail" {
 		t.Fatalf("out=%+v", out)
+	}
+}
+
+func TestRollbackDecisionDefersPocketRisuStyleTailRemovalDuringGeneration(t *testing.T) {
+	for _, observation := range []string{"before_request_observed", "generation_watch_active"} {
+		t.Run(observation, func(t *testing.T) {
+			resp := calculateRollbackDecision(rollbackDecisionRequest{
+				ChatSessionID: "session-1", RequestSource: "auto",
+				CandidateFromTurn: 4, PreviousTurnIndex: 4,
+				RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
+				BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
+				HostLifecycleObservation: observation,
+			})
+			if resp.Allowed || resp.Reason != "pending_output_guard" || resp.DecisionToken != "" {
+				t.Fatalf("pending generation tail removal must not authorize rollback: %+v", resp)
+			}
+		})
+	}
+}
+
+func TestRollbackDecisionStillAllowsVerifiedIdleTailDeletion(t *testing.T) {
+	resp := calculateRollbackDecision(rollbackDecisionRequest{
+		ChatSessionID: "session-1", RequestSource: "auto",
+		CandidateFromTurn: 4, PreviousTurnIndex: 4,
+		RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
+		BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
+	})
+	if !resp.Allowed || resp.FromTurn != 4 {
+		t.Fatalf("verified idle deletion should retain existing rollback behavior: %+v", resp)
 	}
 }
 

@@ -176,7 +176,11 @@ func (m *mariadbStore) DeleteReferenceWork(ctx context.Context, workID string) e
 	}
 	result, err := tx.ExecContext(ctx, "DELETE FROM reference_works WHERE work_id = ?", strings.TrimSpace(workID))
 	if err != nil {
-		return referenceStoreError(err)
+		mapped := referenceStoreError(err)
+		if errors.Is(mapped, ErrInvalidReference) {
+			return fmt.Errorf("%w: remove session links, local overlays, and installed Canon Packs first", ErrReferenceConflict)
+		}
+		return mapped
 	}
 	if err := referenceRowsChanged(result); err != nil {
 		return err
@@ -284,6 +288,26 @@ func (m *mariadbStore) SaveReferenceDocument(ctx context.Context, item *Referenc
 		defaultString(item.RawRetention, "full"), referenceNullable(item.RawText), defaultString(item.ImportStatus, "pending"),
 		referenceJSON(item.ProvenanceJSON))
 	return referenceStoreError(err)
+}
+
+func (m *mariadbStore) UpdateReferenceDocumentSource(ctx context.Context, item *ReferenceDocument) error {
+	if item == nil || referenceRequired(item.DocumentID, item.WorkID, item.ContinuityID, item.ContentHash, item.RawText) != nil {
+		return ErrInvalidReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE reference_documents
+		SET source_type = ?, source_uri = ?, raw_retention = 'full', raw_text = ?, provenance_json = ?
+		WHERE document_id = ? AND work_id = ? AND continuity_id = ? AND content_hash = ?
+	`, defaultString(item.SourceType, "community_wiki"), referenceNullable(item.SourceURI), item.RawText,
+		referenceJSON(item.ProvenanceJSON), strings.TrimSpace(item.DocumentID), strings.TrimSpace(item.WorkID),
+		strings.TrimSpace(item.ContinuityID), strings.TrimSpace(item.ContentHash))
+	if err != nil {
+		return referenceStoreError(err)
+	}
+	return referenceRowsChanged(result)
 }
 
 func (m *mariadbStore) GetReferenceDocument(ctx context.Context, documentID string) (*ReferenceDocument, error) {
@@ -427,7 +451,7 @@ func (m *mariadbStore) UpsertReferenceTimelineNode(ctx context.Context, item *Re
 	return referenceStoreError(err)
 }
 
-func (m *mariadbStore) ListReferenceTimelineNodes(ctx context.Context, workID, continuityID, branchKey string) ([]ReferenceTimelineNode, error) {
+func (m *mariadbStore) ListReferenceTimelineNodes(ctx context.Context, workID, continuityID, reviewStatus string) ([]ReferenceTimelineNode, error) {
 	if referenceRequired(workID) != nil {
 		return nil, ErrInvalidReference
 	}
@@ -437,15 +461,24 @@ func (m *mariadbStore) ListReferenceTimelineNodes(ctx context.Context, workID, c
 	query := `SELECT node_id, work_id, continuity_id, node_key, label, ordinal_value,
 		                 parent_node_id, branch_key, node_kind, metadata_json, review_status,
 		                 review_source, review_reason, reviewed_at, created_at, updated_at
-	          FROM reference_timeline_nodes WHERE work_id = ?`
+	          FROM reference_timeline_nodes item WHERE work_id = ?`
 	args := []any{strings.TrimSpace(workID)}
 	if strings.TrimSpace(continuityID) != "" {
 		query += " AND continuity_id = ?"
 		args = append(args, strings.TrimSpace(continuityID))
 	}
-	if strings.TrimSpace(branchKey) != "" {
-		query += " AND branch_key = ?"
-		args = append(args, strings.TrimSpace(branchKey))
+	if strings.TrimSpace(reviewStatus) != "" {
+		query += " AND review_status = ?"
+		args = append(args, strings.TrimSpace(reviewStatus))
+	}
+	if strings.TrimSpace(reviewStatus) == "approved" {
+		query += canonPackActiveOriginClause("timeline", "node_id", "item.node_id")
+		query += ` AND NOT EXISTS (
+			SELECT 1 FROM reference_overlay_rules overlay_rule
+			WHERE overlay_rule.target_node_id = item.node_id AND overlay_rule.rule_status = 'active'
+			  AND overlay_rule.overlay_action IN ('suppress_for_retrieval', 'override')
+			  AND (overlay_rule.overlay_action <> 'override' OR overlay_rule.replacement_node_id <> item.node_id)
+		)`
 	}
 	query += " ORDER BY continuity_id, branch_key, ordinal_value, node_key"
 	rows, err := m.db.QueryContext(ctx, query, args...)
@@ -612,7 +645,7 @@ func (m *mariadbStore) UpsertReferenceEntity(ctx context.Context, item *Referenc
 	return referenceStoreError(err)
 }
 
-func (m *mariadbStore) ListReferenceEntities(ctx context.Context, workID, continuityID, entityType string) ([]ReferenceEntity, error) {
+func (m *mariadbStore) ListReferenceEntities(ctx context.Context, workID, continuityID, reviewStatus string) ([]ReferenceEntity, error) {
 	if referenceRequired(workID) != nil {
 		return nil, ErrInvalidReference
 	}
@@ -622,15 +655,24 @@ func (m *mariadbStore) ListReferenceEntities(ctx context.Context, workID, contin
 	query := `SELECT entity_id, work_id, continuity_id, entity_type, canonical_name,
 	                 description_text, metadata_json, review_status, review_source,
 	                 review_reason, reviewed_at, created_at, updated_at
-	          FROM reference_entities WHERE work_id = ?`
+	          FROM reference_entities item WHERE work_id = ?`
 	args := []any{strings.TrimSpace(workID)}
 	if strings.TrimSpace(continuityID) != "" {
 		query += " AND continuity_id = ?"
 		args = append(args, strings.TrimSpace(continuityID))
 	}
-	if strings.TrimSpace(entityType) != "" {
-		query += " AND entity_type = ?"
-		args = append(args, strings.TrimSpace(entityType))
+	if strings.TrimSpace(reviewStatus) != "" {
+		query += " AND review_status = ?"
+		args = append(args, strings.TrimSpace(reviewStatus))
+	}
+	if strings.TrimSpace(reviewStatus) == "approved" {
+		query += canonPackActiveOriginClause("entity", "entity_id", "item.entity_id")
+		query += ` AND NOT EXISTS (
+			SELECT 1 FROM reference_overlay_rules overlay_rule
+			WHERE overlay_rule.target_entity_id = item.entity_id AND overlay_rule.rule_status = 'active'
+			  AND overlay_rule.overlay_action IN ('suppress_for_retrieval', 'override')
+			  AND (overlay_rule.overlay_action <> 'override' OR overlay_rule.replacement_entity_id <> item.entity_id)
+		)`
 	}
 	query += " ORDER BY canonical_name, entity_id"
 	rows, err := m.db.QueryContext(ctx, query, args...)
@@ -763,7 +805,7 @@ func (m *mariadbStore) ListReferenceClaims(ctx context.Context, workID, continui
 	                 claim_text, evidence_excerpt, temporal_scope, valid_from_node_id, valid_to_node_id,
 	                 reveal_from_node_id, branch_key, knowledge_scope, confidence, review_status,
 	                 review_source, review_reason, reviewed_at, metadata_json, created_at, updated_at
-	          FROM reference_claims WHERE work_id = ?`
+	          FROM reference_claims item WHERE work_id = ?`
 	args := []any{strings.TrimSpace(workID)}
 	if strings.TrimSpace(continuityID) != "" {
 		query += " AND continuity_id = ?"
@@ -772,6 +814,17 @@ func (m *mariadbStore) ListReferenceClaims(ctx context.Context, workID, continui
 	if strings.TrimSpace(reviewStatus) != "" {
 		query += " AND review_status = ?"
 		args = append(args, strings.TrimSpace(reviewStatus))
+	}
+	if strings.TrimSpace(reviewStatus) == "approved" {
+		query += canonPackActiveOriginClause("claim", "claim_id", "item.claim_id")
+		query += ` AND NOT EXISTS (
+			SELECT 1 FROM reference_fact_identities fact_identity
+			JOIN reference_overlay_rules overlay_rule
+			  ON overlay_rule.target_logical_fact_id = fact_identity.logical_fact_id
+			WHERE fact_identity.claim_id = item.claim_id AND overlay_rule.rule_status = 'active'
+			  AND overlay_rule.overlay_action IN ('suppress_for_retrieval', 'override')
+			  AND (overlay_rule.overlay_action <> 'override' OR overlay_rule.replacement_claim_id <> item.claim_id)
+		)`
 	}
 	if strings.TrimSpace(branchKey) != "" {
 		query += " AND branch_key = ?"

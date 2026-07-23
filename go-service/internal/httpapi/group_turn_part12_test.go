@@ -34,7 +34,7 @@ func TestPrepareTurnRelationshipAndWorldStateTraceSurface(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-trace","turn_index":32,"raw_user_input":"Continue","settings":{"max_injection_chars":900,"max_input_context_chars":300,"injection_enabled":true,"input_context_enabled":true}}`
+	body := `{"chat_session_id":"sess-trace","turn_index":32,"raw_user_input":"Mina trusts Rowan while the north faction keeps rising.","settings":{"max_injection_chars":900,"max_input_context_chars":300,"injection_enabled":true,"input_context_enabled":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -113,7 +113,7 @@ func TestPrepareTurnTM1aCanonicalConsistencyRecallDocumentsSurface(t *testing.T)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-tm1a","turn_index":4,"raw_user_input":"Continue","settings":{"max_injection_chars":900,"max_input_context_chars":400,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
+	body := `{"chat_session_id":"sess-tm1a","turn_index":4,"raw_user_input":"Continue Mina and Rowan's archive plan","settings":{"max_injection_chars":900,"max_input_context_chars":400,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

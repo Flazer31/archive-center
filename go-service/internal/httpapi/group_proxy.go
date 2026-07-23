@@ -21,7 +21,7 @@ func (s *Server) registerProxyRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
-	var req dto.SupervisorRequest
+	var req dto.SupervisorContractRequest
 	if err := dto.DecodeWithDefaults(r.Body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -34,6 +34,7 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	guideMode := resolveNarrativeGuideMode(stringPtrValue(req.GuideMode, "off"), req.ContextMessages, stringPtrValue(req.WakeUpContext, ""), "")
+	guideStrength := normalizeNarrativeGuideStrength(stringPtrValue(req.GuideStrength, "weak"))
 	narrativeStance := stringPtrValue(req.NarrativeStance, "balanced")
 	autoAdvanceTrigger := stringPtrValue(req.AutoAdvanceTrigger, "none")
 	wakeUpContext := stringPtrValue(req.WakeUpContext, "")
@@ -75,9 +76,15 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 			"sources":   []string{"store.storylines"},
 		},
 	}
-	supervisorPack := buildSupervisorInputPack(sid, 0, "", guideMode, "weak", narrativeStance, autoAdvanceTrigger, wakeUpContext, promptTrace, evidenceCounts, sectionSummary, storylineSelection, false, "", nil)
+	supervisorPack := buildSupervisorInputPack(sid, 0, "", guideMode, guideStrength, narrativeStance, autoAdvanceTrigger, wakeUpContext, promptTrace, evidenceCounts, sectionSummary, storylineSelection, false, "", nil)
+	if len(req.ResponseExecutionContract) > 0 {
+		supervisorPack["response_execution_contract"] = req.ResponseExecutionContract
+	}
 	trace := buildPromptAssemblyTrace(s.Cfg.PromptDir)
 	trace["guide_mode"] = guideMode
+	trace["guide_strength"] = guideStrength
+	trace["supervisor_proposal_coverage"] = supervisorProposalCoverage(guideStrength)
+	trace["response_execution_contract_present"] = len(req.ResponseExecutionContract) > 0
 	trace["guide_suffix_present"] = supervisorPack["guide_suffix"] != ""
 	trace["director_overrides"] = supervisorPack["director_overrides"]
 	trace["narrative_stance"] = narrativeStance
@@ -94,7 +101,7 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 	trace["would_write"] = false
 	llmCfg := s.supervisorLLMConfig()
 	if llmCfg.hasConfig() {
-		result, llmTrace, err := s.runSupervisorLLM(r.Context(), sid, supervisorPack, req, llmCfg)
+		result, llmTrace, err := s.runSupervisorLLM(r.Context(), sid, supervisorPack, req.SupervisorRequest, llmCfg)
 		trace["would_call_llm"] = true
 		trace["llm_call"] = "executed"
 		trace["llm_trace"] = llmTrace
@@ -184,20 +191,24 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		systemPromptForCall = strings.TrimRight(systemPromptForCall, "\n") + "\n" + momentumSuffix
 	}
 	payload := map[string]any{
-		"chat_session_id":         sid,
-		"guide_mode":              guideMode,
-		"narrative_stance":        narrativeStance,
-		"auto_advance_trigger":    stringPtrValue(req.AutoAdvanceTrigger, "none"),
-		"wake_up_context":         stringPtrValue(req.WakeUpContext, ""),
-		"persistent_guidance":     stringPtrValue(req.PersistentGuidance, ""),
-		"context_messages":        req.ContextMessages,
-		"momentum_packet":         req.MomentumPacket,
-		"narrative_stance_bounds": narrativeStanceBounds,
-		"narrative_stance_suffix": narrativeStanceSuffix,
-		"guide_suffix":            guideSuffix,
-		"director_overrides":      supervisorPack["director_overrides"],
-		"supervisor_input_pack":   supervisorPack,
-		"required_output":         "Return only JSON. Include directive/director/book_author/section_world fields when applicable.",
+		"chat_session_id":              sid,
+		"guide_mode":                   guideMode,
+		"guide_strength":               extractionStringFromAny(supervisorPack["guide_strength"]),
+		"narrative_stance":             narrativeStance,
+		"auto_advance_trigger":         stringPtrValue(req.AutoAdvanceTrigger, "none"),
+		"wake_up_context":              stringPtrValue(req.WakeUpContext, ""),
+		"persistent_guidance":          stringPtrValue(req.PersistentGuidance, ""),
+		"context_messages":             req.ContextMessages,
+		"momentum_packet":              req.MomentumPacket,
+		"narrative_stance_bounds":      narrativeStanceBounds,
+		"narrative_stance_suffix":      narrativeStanceSuffix,
+		"guide_suffix":                 guideSuffix,
+		"director_overrides":           supervisorPack["director_overrides"],
+		"supervisor_input_pack":        supervisorPack,
+		"response_execution_contract":  supervisorPack["response_execution_contract"],
+		"supervisor_proposal_coverage": supervisorProposalCoverage(extractionStringFromAny(supervisorPack["guide_strength"])),
+		"required_output": "Return only JSON with supervisor_scene_proposal. Every proposal item must be an object with text and source_refs copied from response_execution_contract.source_refs. " +
+			"Use only fidelity_warnings, portrayal_notes, and may_advance fields allowed by supervisor_proposal_coverage. Proposals are optional and may not assert facts, change relationships, decide user actions, or close unresolved events.",
 	}
 	userPromptBytes, _ := json.MarshalIndent(payload, "", "  ")
 	maxTokens := cfg.MaxTokens
@@ -233,7 +244,218 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 		trace["request_overrides"] = requestOverrides
 	}
-	return parsed, trace, nil
+	bounded, proposalTrace := buildBoundedSupervisorResult(parsed, supervisorPack)
+	trace["proposal_contract"] = proposalTrace
+	return bounded, trace, nil
+}
+
+func supervisorProposalCoverage(strength string) map[string]any {
+	switch normalizeNarrativeGuideStrength(strength) {
+	case "none":
+		return map[string]any{
+			"profile":       "disabled",
+			"allowed_roles": []string{},
+		}
+	case "strong":
+		return map[string]any{
+			"profile":       "bounded_direction",
+			"allowed_roles": []string{"fidelity_warning", "portrayal_note", "may_advance"},
+		}
+	case "medium":
+		return map[string]any{
+			"profile":       "guard_and_portrayal",
+			"allowed_roles": []string{"fidelity_warning", "portrayal_note"},
+		}
+	default:
+		return map[string]any{
+			"profile":       "guard_only",
+			"allowed_roles": []string{"fidelity_warning"},
+		}
+	}
+}
+
+func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[string]any, map[string]any) {
+	strength := normalizeNarrativeGuideStrength(extractionStringFromAny(supervisorPack["guide_strength"]))
+	coverage := supervisorProposalCoverage(strength)
+	executionContract := mapFromAny(supervisorPack["response_execution_contract"])
+	contractReady := extractionStringFromAny(executionContract["contract_version"]) == "response_execution_contract.v1" &&
+		extractionStringFromAny(executionContract["status"]) == "ready" &&
+		boolFromAny(executionContract["active"])
+
+	sourceRefs := mapFromAny(executionContract["source_refs"])
+	allowedRefList := append([]string{}, stringSliceFromAny(sourceRefs["all"])...)
+	allowedRefList = appendUniqueStringValues(allowedRefList, stringSliceFromAny(sourceRefs["current_input"])...)
+	allowedRefList = appendUniqueStringValues(allowedRefList, stringSliceFromAny(sourceRefs["native_system"])...)
+	allowedRefs := make(map[string]struct{}, len(allowedRefList))
+	for _, ref := range allowedRefList {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			allowedRefs[ref] = struct{}{}
+		}
+	}
+
+	proposal := map[string]any{
+		"contract_version":   "supervisor_scene_proposal.v2",
+		"status":             "ready",
+		"authority":          "proposal_only",
+		"truth_authority":    false,
+		"would_write":        false,
+		"guide_strength":     strength,
+		"coverage":           coverage,
+		"verification_state": "source_refs_required",
+		"application_rule":   "Treat every item as optional support. Apply it only when it remains compatible with the current user input and linked request evidence; never use it as story truth or permission to decide user actions, relationship changes, or event closure.",
+		"blocked_authority": []string{
+			"new_fact",
+			"unverified_relationship_change",
+			"user_protagonist_action",
+			"unresolved_event_closure",
+			"canonical_write",
+		},
+		"source_refs": map[string]any{
+			"allowed": allowedRefList,
+		},
+		"fidelity_warnings": []map[string]any{},
+		"portrayal_notes":   []map[string]any{},
+		"may_advance":       []map[string]any{},
+	}
+	trace := map[string]any{
+		"contract_ready": contractReady,
+		"allowed_refs":   len(allowedRefs),
+		"guide_strength": strength,
+		"coverage":       coverage,
+	}
+	if !contractReady {
+		proposal["status"] = "degraded_missing_execution_contract"
+		proposal["reason_code"] = "supervisor_execution_contract_missing"
+		trace["reason_code"] = "supervisor_execution_contract_missing"
+		return boundedSupervisorEnvelope(proposal), trace
+	}
+	if strength == "none" {
+		proposal["status"] = "disabled"
+		proposal["reason_code"] = "narrative_guide_disabled"
+		trace["reason_code"] = "narrative_guide_disabled"
+		return boundedSupervisorEnvelope(proposal), trace
+	}
+
+	rawProposal := mapFromAny(parsed["supervisor_scene_proposal"])
+	if len(rawProposal) == 0 {
+		rawDirective := mapFromAny(parsed["directive"])
+		rawProposal = mapFromAny(rawDirective["supervisor_scene_proposal"])
+	}
+	allowedRoles := make(map[string]struct{})
+	for _, role := range stringSliceFromAny(coverage["allowed_roles"]) {
+		allowedRoles[role] = struct{}{}
+	}
+
+	acceptedTotal := 0
+	rejectedTotal := 0
+	for _, lane := range []struct {
+		field string
+		role  string
+	}{
+		{field: "fidelity_warnings", role: "fidelity_warning"},
+		{field: "portrayal_notes", role: "portrayal_note"},
+		{field: "may_advance", role: "may_advance"},
+	} {
+		if _, allowed := allowedRoles[lane.role]; !allowed {
+			rejectedTotal += anySliceLength(rawProposal[lane.field])
+			continue
+		}
+		items, rejected := normalizeSupervisorProposalItems(rawProposal[lane.field], allowedRefs)
+		proposal[lane.field] = items
+		acceptedTotal += len(items)
+		rejectedTotal += rejected
+	}
+	if acceptedTotal == 0 {
+		proposal["status"] = "ready_no_supported_proposal"
+	}
+	trace["accepted_items"] = acceptedTotal
+	trace["rejected_items"] = rejectedTotal
+	trace["raw_legacy_fields_discarded"] = len(rawProposal) == 0
+	return boundedSupervisorEnvelope(proposal), trace
+}
+
+func boundedSupervisorEnvelope(proposal map[string]any) map[string]any {
+	return map[string]any{
+		"contract_version": "supervisor_scene_proposal.v2",
+		"authority":        "proposal_only",
+		"truth_authority":  false,
+		"would_write":      false,
+		"directive": map[string]any{
+			"supervisor_scene_proposal": proposal,
+		},
+	}
+}
+
+func normalizeSupervisorProposalItems(raw any, allowedRefs map[string]struct{}) ([]map[string]any, int) {
+	values, ok := raw.([]any)
+	if !ok {
+		return []map[string]any{}, anySliceLength(raw)
+	}
+	accepted := make([]map[string]any, 0, len(values))
+	rejected := 0
+	seenText := map[string]struct{}{}
+	for _, value := range values {
+		item := mapFromAny(value)
+		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
+		refs := stringSliceFromAny(item["source_refs"])
+		if text == "" || len(refs) == 0 {
+			rejected++
+			continue
+		}
+		validRefs := make([]string, 0, len(refs))
+		valid := true
+		for _, ref := range refs {
+			ref = strings.TrimSpace(ref)
+			if _, exists := allowedRefs[ref]; !exists {
+				valid = false
+				break
+			}
+			validRefs = appendUniqueStringValues(validRefs, ref)
+		}
+		key := strings.ToLower(text)
+		if !valid || len(validRefs) == 0 {
+			rejected++
+			continue
+		}
+		if _, duplicate := seenText[key]; duplicate {
+			rejected++
+			continue
+		}
+		seenText[key] = struct{}{}
+		accepted = append(accepted, map[string]any{
+			"text":               text,
+			"source_refs":        validRefs,
+			"verification_state": "source_linked_proposal",
+		})
+	}
+	return accepted, rejected
+}
+
+func appendUniqueStringValues(base []string, values ...string) []string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		found := false
+		for _, current := range base {
+			if current == value {
+				found = true
+				break
+			}
+		}
+		if !found {
+			base = append(base, value)
+		}
+	}
+	return base
+}
+
+func anySliceLength(value any) int {
+	if values, ok := value.([]any); ok {
+		return len(values)
+	}
+	return 0
 }
 
 func formatMomentumSuffix(packet *map[string]any) string {
@@ -262,7 +484,7 @@ func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := ValidateProxyEndpoint(endpoint); err != nil {
+	if err := ValidateProxyEndpointForProvider(endpoint, stringPtrValue(req.Provider, "")); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_endpoint", err.Error())
 		return
 	}

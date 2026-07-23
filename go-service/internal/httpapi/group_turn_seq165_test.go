@@ -264,8 +264,8 @@ func TestSeq165P93TraceBudgetInspectable(t *testing.T) {
 			t.Fatalf("budget_decisions missing %q", k)
 		}
 	}
-	if bd["final_budget_owner"] != "archive_center_js_assembleInjectionWithBudget" {
-		t.Fatalf("final_budget_owner=%v, want archive_center_js_assembleInjectionWithBudget", bd["final_budget_owner"])
+	if bd["final_budget_owner"] != "go_memory_delivery_plan" {
+		t.Fatalf("final_budget_owner=%v, want go_memory_delivery_plan", bd["final_budget_owner"])
 	}
 }
 
@@ -1026,8 +1026,8 @@ func TestSeq165P114MandatoryAnchorSlot(t *testing.T) {
 	if !strings.Contains(ict, "[Recent Chat]") {
 		t.Fatalf("input_context_text missing [Recent Chat] mandatory slot")
 	}
-	if !strings.Contains(ict, "[Resume Pack]") {
-		t.Fatalf("input_context_text missing [Resume Pack] mandatory slot")
+	if strings.Contains(ict, "[Resume Pack]") {
+		t.Fatalf("resume pack bypassed its dedicated continuity lane")
 	}
 
 	cp, ok := resp["continuity_pack"].(map[string]any)

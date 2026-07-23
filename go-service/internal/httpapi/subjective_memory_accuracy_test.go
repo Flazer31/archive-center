@@ -67,11 +67,12 @@ func TestSubjectiveEntityMemoryDuplicateReasonIsConservative(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnCharacterPrivateRecollectionCapsTotalOwners(t *testing.T) {
+func TestPrepareTurnCharacterPrivateRecollectionUsesOneMemoryPerCurrentOwner(t *testing.T) {
 	memories := []store.ProtagonistEntityMemory{
-		{ID: 1, OwnerEntityKey: "niv", OwnerEntityName: "Niv", MemoryText: "Niv privately remembers the garden promise."},
-		{ID: 2, OwnerEntityKey: "ingrid", OwnerEntityName: "Ingrid", MemoryText: "Ingrid privately doubts the garden promise."},
-		{ID: 3, OwnerEntityKey: "ashley", OwnerEntityName: "Ashley", MemoryText: "Ashley privately fears being overheard."},
+		{ID: 1, OwnerEntityKey: "niv", OwnerEntityName: "Niv", OwnerEntityRole: "npc", MemoryText: "Niv privately remembers the garden promise."},
+		{ID: 4, OwnerEntityKey: "niv", OwnerEntityName: "Niv", OwnerEntityRole: "npc", SourceTurn: 2, MemoryText: "Niv has an older duplicate owner memory."},
+		{ID: 2, OwnerEntityKey: "ingrid", OwnerEntityName: "Ingrid", OwnerEntityRole: "npc", MemoryText: "Ingrid privately doubts the garden promise."},
+		{ID: 3, OwnerEntityKey: "ashley", OwnerEntityName: "Ashley", OwnerEntityRole: "npc", MemoryText: "Ashley privately fears being overheard."},
 	}
 
 	trace := filterPrepareTurnEntityRecollections(
@@ -82,21 +83,63 @@ func TestPrepareTurnCharacterPrivateRecollectionCapsTotalOwners(t *testing.T) {
 		nil,
 		&memories,
 	)
-	if len(memories) != 2 {
-		t.Fatalf("selected private recollections = %d, want 2: %#v", len(memories), memories)
+	if len(memories) != 3 {
+		t.Fatalf("selected private recollections = %d, want one for each of three current owners: %#v", len(memories), memories)
 	}
-	if memories[0].OwnerEntityKey != "niv" || memories[1].OwnerEntityKey != "ingrid" {
+	if memories[0].OwnerEntityKey != "niv" || memories[1].OwnerEntityKey != "ingrid" || memories[2].OwnerEntityKey != "ashley" {
 		t.Fatalf("private recollection ordering changed unexpectedly: %#v", memories)
 	}
-	if trace["character_private_total_cap"] != 2 {
-		t.Fatalf("character_private_total_cap = %#v, want 2", trace["character_private_total_cap"])
+	if trace["character_private_total_cap"] != "final_subjective_relationship_char_budget" {
+		t.Fatalf("character_private_total_cap = %#v, want final char budget ownership", trace["character_private_total_cap"])
 	}
 	dropped, ok := trace["dropped"].([]map[string]any)
 	if !ok || len(dropped) != 1 {
-		t.Fatalf("dropped trace = %#v, want one capped owner", trace["dropped"])
+		t.Fatalf("dropped trace = %#v, want one repeated owner memory", trace["dropped"])
 	}
-	if dropped[0]["owner_entity_key"] != "ashley" || dropped[0]["reason"] != "private_recollection_total_capped" {
-		t.Fatalf("unexpected total-cap trace: %#v", dropped[0])
+	if dropped[0]["owner_entity_key"] != "niv" || dropped[0]["reason"] != "owner_repetition_capped" {
+		t.Fatalf("unexpected owner-cap trace: %#v", dropped[0])
+	}
+}
+
+func TestPersonaPrivateClassificationKeepsProtagonistAndNPCDomainsSeparate(t *testing.T) {
+	protagonist := store.PersonaMemoryEntry{
+		Portability: "npc_private_recollection",
+		TagsJSON:    `["owner_entity_role:protagonist","character_private_recollection"]`,
+	}
+	npc := store.PersonaMemoryEntry{
+		Portability: "npc_private_recollection",
+		TagsJSON:    `["owner_entity_role:npc","character_private_recollection"]`,
+	}
+	ambiguous := store.PersonaMemoryEntry{
+		Portability: "npc_private_recollection",
+		TagsJSON:    `["character_private_recollection"]`,
+	}
+	if personaMemoryEntryIsCharacterPrivate(protagonist) {
+		t.Fatal("explicit protagonist memory entered the NPC-private domain")
+	}
+	if !personaMemoryEntryIsCharacterPrivate(npc) {
+		t.Fatal("explicit NPC-private memory was not classified into its domain")
+	}
+	if personaMemoryEntryIsCharacterPrivate(ambiguous) {
+		t.Fatal("role-unobserved memory entered the NPC-private domain")
+	}
+	if !personaMemoryEntryHasUnresolvedPrivateRole(ambiguous) {
+		t.Fatal("role-unobserved private memory was not deferred")
+	}
+}
+
+func TestPrepareTurnCharacterPrivateRecollectionRejectsNonNPCOwner(t *testing.T) {
+	memories := []store.ProtagonistEntityMemory{
+		{ID: 1, OwnerEntityKey: "mira", OwnerEntityName: "Mira", OwnerEntityRole: "protagonist", OwnerVisibility: "player_known", MemoryText: "Mira remembers the garden."},
+		{ID: 2, OwnerEntityKey: "juno", OwnerEntityName: "Juno", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", MemoryText: "Juno privately remembers the garden."},
+		{ID: 3, OwnerEntityKey: "mira_legacy", OwnerEntityName: "Mira", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", TagsJSON: `["owner_entity_role:protagonist"]`, MemoryText: "Conflicting legacy role must not enter the NPC-private lane."},
+	}
+	trace := filterPrepareTurnEntityRecollections(
+		"Mira meets Juno in the garden.",
+		nil, nil, nil, nil, &memories,
+	)
+	if len(memories) != 1 || memories[0].OwnerEntityKey != "juno" {
+		t.Fatalf("NPC-private selection = %#v, want only Juno; trace=%#v", memories, trace)
 	}
 }
 

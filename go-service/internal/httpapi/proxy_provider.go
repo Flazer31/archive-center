@@ -33,7 +33,7 @@ func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map
 	apiKey := strings.TrimSpace(stringPtrValue(req.APIKey, ""))
 	model := strings.TrimSpace(stringPtrValue(req.Model, ""))
 	provider := strings.ToLower(strings.TrimSpace(stringPtrValue(req.Provider, "")))
-	if provider == "" || endpoint == "" || apiKey == "" || model == "" {
+	if provider == "" || endpoint == "" || model == "" || (apiKey == "" && provider != "ollama") {
 		return nil, http.StatusBadRequest, fmt.Errorf("provider / endpoint / api_key / model is required")
 	}
 
@@ -71,9 +71,11 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	}
 
 	headers := map[string]string{
-		"Content-Type":  "application/json",
-		"Accept":        "application/json",
-		"Authorization": "Bearer " + authToken,
+		"Content-Type": "application/json",
+		"Accept":       "application/json",
+	}
+	if authToken != "" {
+		headers["Authorization"] = "Bearer " + authToken
 	}
 	if provider == "openrouter" {
 		headers["HTTP-Referer"] = "https://risuai.xyz"

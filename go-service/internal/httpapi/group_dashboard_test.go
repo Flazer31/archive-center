@@ -93,6 +93,86 @@ func TestDashboardViewModelRoute(t *testing.T) {
 	}
 }
 
+func TestDashboardViewModelRouteStableSourceLaneSeverity(t *testing.T) {
+	tests := []struct {
+		status   string
+		severity string
+	}{
+		{status: "eligible", severity: "ok"},
+		{status: "empty", severity: "neutral"},
+		{status: "not_applicable", severity: "neutral"},
+		{status: "degraded", severity: "warn"},
+		{status: "deferred", severity: "warn"},
+		{status: "failed", severity: "fail"},
+		{status: "incompatible", severity: "fail"},
+	}
+	for _, test := range tests {
+		t.Run(test.status, func(t *testing.T) {
+			body, err := json.Marshal(dashboardViewModelRequest{
+				PluginEnabled:            true,
+				CurrentSessionID:         "session-source-contract",
+				PrepareTurnEverContacted: true,
+				GuideModeState:           map[string]any{"status": "ok"},
+				RuntimeState: map[string]any{
+					"lastBridgeHealth":     map[string]any{"status": "ok"},
+					"lastSupervisorWakeup": map[string]any{"status": "ok"},
+					"lastSearchStatus":     map[string]any{"status": "ok"},
+					"lastSupervisorStatus": map[string]any{"status": "ok"},
+					"prepareTurnStatus":    map[string]any{"status": test.status, "detail": map[string]any{"reason_code": "fixture_reason"}},
+					"lastInjectionStatus":  map[string]any{"status": "ok"},
+					"lastSaveStatus":       map[string]any{"status": "ok"},
+					"lastCompleteStatus":   map[string]any{"status": "ok"},
+					"queuePersistence": map[string]any{
+						"lastLoad": map[string]any{"status": "ok"},
+						"lastSave": map[string]any{"status": "ok"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := &Server{}
+			mux := http.NewServeMux()
+			server.registerDashboardRoutes(mux)
+			recorder := httptest.NewRecorder()
+			mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/dashboard/view-model", bytes.NewReader(body)))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var viewModel dashboardViewModel
+			if err := json.Unmarshal(recorder.Body.Bytes(), &viewModel); err != nil {
+				t.Fatal(err)
+			}
+			engine := requireDashboardCard(t, viewModel, "engine")
+			row := requireDashboardRow(t, engine, "turnEngine")
+			if row.Status != test.status {
+				t.Fatalf("stable row status=%q, want %q", row.Status, test.status)
+			}
+			if test.severity != "neutral" && engine.Severity != test.severity {
+				t.Fatalf("engine severity=%q, want %q: %+v", engine.Severity, test.severity, engine)
+			}
+			switch test.severity {
+			case "fail":
+				if engine.Summary.Fail == 0 || viewModel.Summary.Fail == 0 {
+					t.Fatalf("%s must fail both card and global summary: card=%+v global=%+v", test.status, engine.Summary, viewModel.Summary)
+				}
+			case "warn":
+				if engine.Summary.Warn == 0 || viewModel.Summary.Warn == 0 {
+					t.Fatalf("%s must warn both card and global summary: card=%+v global=%+v", test.status, engine.Summary, viewModel.Summary)
+				}
+			case "neutral":
+				if engine.Summary.Neutral == 0 || viewModel.Summary.Neutral == 0 || engine.Summary.Fail != 0 || engine.Summary.Warn != 0 {
+					t.Fatalf("%s must remain neutral: card=%+v global=%+v", test.status, engine.Summary, viewModel.Summary)
+				}
+			default:
+				if engine.Summary.Fail != 0 || engine.Summary.Warn != 0 {
+					t.Fatalf("%s must remain non-error: %+v", test.status, engine.Summary)
+				}
+			}
+		})
+	}
+}
+
 func TestDashboardReferenceCardRequiresBinding(t *testing.T) {
 	fake := newReferenceBindingHTTPStore()
 	server := &Server{Store: fake}

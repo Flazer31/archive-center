@@ -214,7 +214,7 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 		}
 	})
 
-	t.Run("pov_scoped_identity_replay_infers_hidden_spoiler_pov_from_raw_input", func(t *testing.T) {
+	t.Run("pov_scoped_identity_replay_does_not_infer_pov_authority_from_raw_input", func(t *testing.T) {
 		extraction := normalizeCriticExtraction(map[string]any{
 			"turn_summary":     "Gloria uses Lia as a protected cover identity.",
 			"importance_score": 9,
@@ -268,18 +268,12 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 		}
 		injectionPack := mapFromAny(resp["injection_pack"])
 		memoryText := extractionStringFromAny(injectionPack["memory_text"])
-		for _, needle := range []string{
-			"POV-scoped identity continuity",
-			"current_pov=글로리아",
-			"treat Lia and Gloria as the same internal person",
-		} {
-			if !strings.Contains(memoryText, needle) {
-				t.Fatalf("inferred POV identity replay missing %q: %q", needle, memoryText)
-			}
+		if strings.Contains(memoryText, "POV-scoped identity continuity") || strings.Contains(memoryText, "current_pov=글로리아") {
+			t.Fatalf("raw prompt POV wording must not become protected-memory authority: %q", memoryText)
 		}
 		perspective := mapFromAny(injectionPack["perspective_context"])
-		if perspective["current_pov"] != "글로리아" || !strings.Contains(extractionStringFromAny(perspective["source"]), "inferred_raw_user_input") {
-			t.Fatalf("inferred perspective context mismatch: %#v", perspective)
+		if len(perspective) != 0 {
+			t.Fatalf("raw prompt POV wording must not create perspective context: %#v", perspective)
 		}
 	})
 

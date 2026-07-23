@@ -118,3 +118,52 @@ func TestDecodeWithDefaults_EmptyReader(t *testing.T) {
 		t.Fatal("expected error for empty reader, got nil")
 	}
 }
+
+func TestDecodeWithDefaults_PrepareTurnContractPreservesObservationPresence(t *testing.T) {
+	body := strings.NewReader(`{
+		"chat_session_id":"session-a",
+		"source_observation":{
+			"contract_version":"message_source_observation.v99",
+			"session_id":"session-a",
+			"request_id":"request-a",
+			"message_index":0,
+			"observable":false,
+			"evidence_state":"unknown",
+			"future_optional_field":{"kept_by_newer_peers":true}
+		},
+		"capability_observation":{
+			"contract_version":"host_source_capabilities.v1",
+			"capabilities":{"future_capability":"not_exposed"},
+			"future_optional_field":true
+		}
+	}`)
+	var request PrepareTurnContractRequest
+	if err := DecodeWithDefaults(body, &request); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if request.SourceObservation == nil || request.SourceObservation.ContractVersion != "message_source_observation.v99" {
+		t.Fatalf("unsupported source version must reach handler validation: %+v", request.SourceObservation)
+	}
+	if request.SourceObservation.Observable == nil || *request.SourceObservation.Observable {
+		t.Fatalf("explicit observable=false was not preserved: %+v", request.SourceObservation.Observable)
+	}
+	if request.SourceObservation.EvidenceState != "unknown" {
+		t.Fatalf("evidence_state = %q, want unknown", request.SourceObservation.EvidenceState)
+	}
+	if got := request.CapabilityObservation.Capabilities["future_capability"]; got != "not_exposed" {
+		t.Fatalf("future capability = %q, want not_exposed", got)
+	}
+	if request.RawUserInput == nil || request.RequestType == nil {
+		t.Fatal("embedded legacy PrepareTurnRequest defaults were not applied")
+	}
+}
+
+func TestDecodeWithDefaults_PrepareTurnContractKeepsAbsentObservationsNil(t *testing.T) {
+	var request PrepareTurnContractRequest
+	if err := DecodeWithDefaults(strings.NewReader(`{"chat_session_id":"session-a"}`), &request); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if request.SourceObservation != nil || request.CapabilityObservation != nil {
+		t.Fatalf("absent observations must remain nil: source=%+v capabilities=%+v", request.SourceObservation, request.CapabilityObservation)
+	}
+}

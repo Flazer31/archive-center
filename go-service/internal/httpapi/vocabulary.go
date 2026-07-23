@@ -79,16 +79,17 @@ const (
 
 // Common error codes used across handlers.
 const (
-	CodeBadRequest     = "bad_request"
-	CodeMissingParam   = "missing_param"
-	CodeNotFound       = "not_found"
-	CodeForbidden      = "forbidden"
-	CodeUnauthorized   = "unauthorized"
-	CodeRateLimit      = "rate_limit_exceeded"
-	CodeInternalError  = "internal_error"
-	CodeBadGateway     = "bad_gateway"
-	CodeGatewayTimeout = "gateway_timeout"
-	CodeShadowGuard    = "shadow_guard"
+	CodeBadRequest                        = "bad_request"
+	CodeMissingParam                      = "missing_param"
+	CodeNotFound                          = "not_found"
+	CodeForbidden                         = "forbidden"
+	CodeUnauthorized                      = "unauthorized"
+	CodeRateLimit                         = "rate_limit_exceeded"
+	CodeInternalError                     = "internal_error"
+	CodeBadGateway                        = "bad_gateway"
+	CodeGatewayTimeout                    = "gateway_timeout"
+	CodeShadowGuard                       = "shadow_guard"
+	CodeSupervisorCanonicalWriteForbidden = "supervisor_canonical_write_forbidden"
 )
 
 // TraceField is a common field name for trace/audit metadata.

@@ -730,12 +730,22 @@ func TestArchiveCenterJSCompleteTurnQueueUsesLiveEndpointMarkers(t *testing.T) {
 		"getCompleteTurnTimeoutMs",
 		"buildCompleteTurnRequestBody",
 		"buildCompleteTurnQueuePayload",
+		"buildCompleteTurnSourceAcceptanceObservation",
+		"refreshQueuedCompleteTurnSourceObservation",
+		`contract_version: "source_acceptance_observation.v1"`,
+		`revision_state: "not_exposed_by_risuai"`,
+		`typeof chat.isStreaming === "boolean"`,
+		`typeof message.chatId === "string"`,
+		`typeof generationInfo.generationId === "string"`,
+		`user_message_index: -1`,
+		`user_observed_content_hash: ""`,
+		`user_persistence_content_hash:`,
+		`rollbackParams.set("host_observed_at_ms", String(Date.now()))`,
 		"serializeCompleteTurnRecoveryPayload",
 		"complete_turn_raw_recovery_v1",
 		"complete_turn_write_ahead_recovery_v1",
 		"removeQueuedItem",
-		`user_input: String(p.user_input || "").slice(0, 120000)`,
-		`assistant_content: String(p.assistant_content || "").slice(0, 120000)`,
+		`return buildCompleteTurnQueuePayload(p);`,
 		"flushQueueSave().catch(function() {})",
 		"complete_turn",
 		"legacy /turns disabled; use complete-turn",
@@ -894,35 +904,32 @@ func TestArchiveCenterJSEntityMemoryBrowserMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSStartupMessageTurnZeroMarkers(t *testing.T) {
+func TestArchiveCenterJSBootstrapIsObservationOnly(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"STARTUP_MESSAGE_LEDGER_KEY",
-		"STARTUP_MESSAGE_TURN_INDEX = 0",
-		"function buildStartupMessageTurnZeroCandidate",
-		"function ensureStartupMessageTurnZeroSaved",
-		"function saveStartupMessageTurnZeroToBackend",
-		"risu_starting_message_turn0",
-		`"/canonical/" + encodeURIComponent(sid) + "/chat-logs"`,
-		`enqueue("chat_log", body)`,
-		"serializeChatLogRecoveryPayload",
-		`item.type === "chat_log"`,
-		"Starting Message",
-		"removeStartupMessageLedgerForSession(sid)",
-		`existingTurnZero = await fetchCanonicalChatLogsForTurn(sid, STARTUP_MESSAGE_TURN_INDEX)`,
-		"function getCurrentStartupMessageTurnZeroCandidate",
-		"STARTUP_MESSAGE_FIELD_KEYS",
-		"first_mes",
-		"greetingMessage",
-		"hasLiveComparableMessages",
-		"activeChatResolved",
-		"active_chat_selected_starting_message_turn0_only",
-		"they often contain the first creator starter",
-		"risu_character_starting_message_field_unambiguous",
+		"async function observePrepareTurnBootstrap(sessionId, requestId, activeChatMessages, chatId)",
+		`contract_version: "session_bootstrap_observation.v1"`,
+		`leading_messages: leadingMessages`,
+		`selected_greeting_index: selectedGreetingIndex`,
+		`selection_exposed: selectionExposed`,
+		`first_greeting: firstGreeting`,
+		`alternate_greetings: alternateGreetings`,
+		`body.bootstrap_observation = prepareOptions.bootstrapObservation`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing startup message turn zero marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		"STARTUP_MESSAGE_LEDGER_KEY",
+		"function buildStartupMessageTurnZeroCandidate",
+		"function ensureStartupMessageTurnZeroSaved",
+		"function saveStartupMessageTurnZeroToBackend",
+		"function getCurrentStartupMessageTurnZeroCandidate",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains removed bootstrap policy %q", forbidden)
 		}
 	}
 }
@@ -967,9 +974,9 @@ func TestArchiveCenterJSAutoContinueEmptyInputMarkers(t *testing.T) {
 	required := []string{
 		"AUTO_CONTINUE_USER_INPUT_MARKER",
 		"actualEmptyInput",
-		"function resolveLastNonMetaChatMessageRole",
 		"function peekActualEmptyRawInputForSession",
-		"messages.assistant_tail_auto_continue",
+		`current_user_input_backend_unavailable`,
+		"recoverCurrentUserInputFromActiveChatTail",
 		"function shouldAllowActiveChatAssistantPairUserReplace",
 		"active_chat_user_replace_blocked",
 		"input_hook_empty",
@@ -984,6 +991,21 @@ func TestArchiveCenterJSAutoContinueEmptyInputMarkers(t *testing.T) {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing auto-continue empty-input marker %q", needle)
 		}
+	}
+}
+
+func TestArchiveCenterJSActiveChatInputPrecedesAutoContinueFallback(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	activePair := strings.Index(src, `userInputRecoverySource = "active_chat_pair"`)
+	autoContinue := strings.Index(src, `userInput = AUTO_CONTINUE_USER_INPUT_MARKER`)
+	if activePair < 0 || autoContinue < 0 || activePair >= autoContinue {
+		t.Fatalf("Active Chat user recovery must run before auto-continue fallback: active=%d auto=%d", activePair, autoContinue)
+	}
+	if !strings.Contains(src, `(Date.now() - (actualEmptyRawInput.capturedAt || 0)) <= RAW_INPUT_STRONG_MAX_AGE_MS`) {
+		t.Fatal("empty input fallback must require a fresh input-hook observation")
+	}
+	if !strings.Contains(src, `let safeSavedUserInput = isCanonicalHostUserInputText(userInput) ? userInput : ""`) {
+		t.Fatal("save-layer user input must preserve verified host text without prompt-content classification")
 	}
 }
 
@@ -1114,23 +1136,33 @@ func TestArchiveCenterJSCompleteTurnRawChatLogRepairMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSTableReadOutputEnhanceStorageConsistencyMarkers(t *testing.T) {
+func TestArchiveCenterJSLegacyTableReadRemoved(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	required := []string{
+	forbidden := []string{
 		"TABLE_READ_POLISH_STORAGE_LEDGER_KEY",
 		"function rememberTableReadPolishStorage",
 		"function applyTableReadPolishStorageToBackfillPair",
 		"function buildTableReadPolishCompleteTurnMeta",
-		"after_request_table_read_polish",
-		"tr_polish_5.single_final_output.v1",
-		"originalPairHash",
-		"finalPairHash",
 		"table_read_output_polish",
-		`pair.hash !== entry.originalPairHash`,
+		`"/table-read/`,
 	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing table-read output storage consistency marker %q", needle)
+	for _, needle := range forbidden {
+		if strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js still contains removed Table Read marker %q", needle)
 		}
+	}
+}
+
+func TestArchiveCenterJSCompleteTurnQueueDoesNotTreatRawAsDerivedCompletion(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	if strings.Contains(src, "isCompleteTurnPayloadAlreadySaved") {
+		t.Fatal("complete-turn queue must not treat raw chat rows as full pipeline completion")
+	}
+	if !strings.Contains(src, `"/complete-turn/request-status?idempotency_key="`) {
+		t.Fatal("complete-turn queue is missing backend idempotency status check")
+	}
+	if !strings.Contains(src, "res.derived_retry_required !== true") ||
+		!strings.Contains(src, "_ctResult.derived_retry_required === true") {
+		t.Fatal("complete-turn queue must retain raw-success responses that still require derived retry")
 	}
 }

@@ -11,7 +11,13 @@
       "name": "risu_adapter_input_output",
       "package": "./cmd/js-route-variant-smoke",
       "expected_tests": 9,
-      "run": "^(TestCoreRegressionInputOwnershipAndCanonicalOutputRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelPayloadIsNotBlockedByPromptMarkersOrTailMismatch|TestArchiveCenterJSRerollRollbackPath|TestArchiveCenterJSSeq13P181VX1bCopiedSessionDeletionReplayMarkers|TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter|TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure|TestCopiedEightPlusOneDeletionKeepsImportedEightTurns|TestPostprocessorReplacementRebuildsDeletionSnapshot)$"
+      "run": "^(TestActualInputAndBootstrapProductionObservationRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelSourceOwnershipComesFromGo|TestArchiveCenterJSRerollRollbackPath|TestArchiveCenterJSSeq13P181VX1bCopiedSessionDeletionReplayMarkers|TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter|TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure|TestCopiedEightPlusOneDeletionKeepsImportedEightTurns|TestPostprocessorReplacementRebuildsDeletionSnapshot)$"
+    },
+    {
+      "name": "source_and_bootstrap_contract",
+      "package": "./internal/httpapi",
+      "expected_tests": 4,
+      "run": "^(TestPrepareTurnCurrentInputDecisionUsesLifecycleFacts|TestPrepareTurnSessionBootstrapPreservesOrderedSources|TestPrepareTurnProductionRouteSuppressesUnverifiedInputBeforeStoreReads|TestPrepareTurnProductionRouteCarriesSourceContractWithoutWrites)$"
     },
     {
       "name": "persistence_and_partial_success",

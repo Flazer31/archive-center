@@ -47,6 +47,24 @@ func TestCreateReferenceWorkAndDuplicateDocumentGuard(t *testing.T) {
 	}
 }
 
+func TestUpdateReferenceDocumentSourceUpgradesRetainedBodyWithoutChangingStatus(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectExec("UPDATE reference_documents").
+		WithArgs("community_wiki", "https://reference.example/wiki", "full body", `{"origin_kind":"source_discovery"}`, "doc-1", "work-1", "continuity-1", "hash-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	err := store.UpdateReferenceDocumentSource(context.Background(), &ReferenceDocument{
+		DocumentID: "doc-1", WorkID: "work-1", ContinuityID: "continuity-1", ContentHash: "hash-1",
+		SourceType: "community_wiki", SourceURI: "https://reference.example/wiki", RawText: "full body",
+		ProvenanceJSON: `{"origin_kind":"source_discovery"}`,
+	})
+	if err != nil {
+		t.Fatalf("UpdateReferenceDocumentSource: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeleteReferenceWorkBlocksLinkedSession(t *testing.T) {
 	store, mock := newReferenceLibraryMock(t)
 	mock.ExpectBegin()
@@ -78,6 +96,26 @@ func TestDeleteReferenceWorkAfterUnlink(t *testing.T) {
 
 	if err := store.DeleteReferenceWork(context.Background(), "work-1"); err != nil {
 		t.Fatalf("DeleteReferenceWork: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteReferenceWorkBlocksCanonPackOrOverlayDependency(t *testing.T) {
+	store, mock := newReferenceLibraryMock(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT binding_id FROM session_reference_bindings").
+		WithArgs("work-1").
+		WillReturnRows(sqlmock.NewRows([]string{"binding_id"}))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM reference_works WHERE work_id = ?")).
+		WithArgs("work-1").
+		WillReturnError(&mysql.MySQLError{Number: 1451, Message: "referenced by canon pack"})
+	mock.ExpectRollback()
+
+	err := store.DeleteReferenceWork(context.Background(), "work-1")
+	if !errors.Is(err, ErrReferenceConflict) {
+		t.Fatalf("DeleteReferenceWork error = %v, want ErrReferenceConflict", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -199,8 +237,12 @@ func TestListReferenceEntitiesReturnsReviewAudit(t *testing.T) {
 
 func TestAdminResetIncludesReferenceTablesChildFirst(t *testing.T) {
 	wantOrder := []string{
+		"source_discovery_jobs",
 		"session_reference_coverage_fields", "session_reference_coverage_snapshots",
-		"session_reference_runtime", "session_reference_bindings", "reference_claim_knowers",
+		"session_reference_runtime", "session_reference_bindings",
+		"reference_overlay_rules", "reference_item_evidence", "reference_item_origins",
+		"reference_fact_identities", "reference_logical_facts", "reference_source_observations",
+		"reference_work_titles", "canon_pack_installs", "reference_work_editions", "reference_claim_knowers",
 		"reference_claims", "reference_entity_aliases", "reference_entities",
 		"reference_timeline_nodes", "reference_documents", "reference_continuities", "reference_works",
 	}

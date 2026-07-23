@@ -210,8 +210,8 @@ func TestCurrentQueryDoesNotPromoteOldUnrelatedMemoryByImportanceAlone(t *testin
 	if len(selection.Deep) != 0 {
 		t.Fatalf("query-present selection must not promote old memory by importance: %#v", selection.Deep)
 	}
-	if len(selection.Recent) != 1 || selection.Recent[0].ID != 2 {
-		t.Fatalf("recent fallback=%#v, want newest memory id 2", selection.Recent)
+	if len(selection.Recent) != 0 {
+		t.Fatalf("current query must leave unrelated recent memory out: %#v", selection.Recent)
 	}
 }
 

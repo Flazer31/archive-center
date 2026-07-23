@@ -23,12 +23,21 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	acceptance := s.beginCompleteTurnSourceAcceptance(r.Context(), req)
+	if acceptance.Enabled && !acceptance.Accepted {
+		writeCompleteTurnSourceAcceptanceRejection(w, req, acceptance)
+		return
+	}
+	if acceptance.Enabled && acceptance.BoundTurn > 0 {
+		req.TurnIndex = acceptance.BoundTurn
+	}
+
 	s.executeCompleteTurnIdempotent(r.Context(), w, completeTurnIdempotencyKey(req.ClientMeta), func(target http.ResponseWriter) {
-		s.handleCompleteTurnDecoded(target, r, req)
+		s.handleCompleteTurnDecoded(target, r, req, acceptance)
 	})
 }
 
-func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Request, req dto.M4CompleteTurnRequest) {
+func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Request, req dto.M4CompleteTurnRequest, sourceAcceptance completeTurnSourceAcceptanceDecision) {
 	timing := newBackendTimingTrace("complete_turn.backend_timing.v1")
 	preflightStartedAt := time.Now()
 	sid := strings.TrimSpace(req.ChatSessionID)
@@ -98,7 +107,26 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	rawAssistantAlreadyPersisted := false
 	requestedTurnHasAnyRaw := false
 	rawTurnContentConflict := false
-	if s.usesShadowWriteStore() && req.TurnIndex > 0 {
+	if sourceAcceptance.Enabled && sourceAcceptance.Accepted && sourceAcceptance.ReplaceExisting {
+		now := time.Now().UTC()
+		if !s.completeTurnSourceAcceptanceStillCurrent(sourceAcceptance, sid, req.TurnIndex) {
+			writeCompleteTurnSourceAcceptanceRejection(w, req, rejectedCompleteTurnSourceAcceptance("source_acceptance_revision_superseded_before_replacement", false, sourceAcceptance.Observation))
+			return
+		}
+		if err := s.replaceCompleteTurnLogicalTail(ctx, sid, req.TurnIndex, userText, assistantText, now); err != nil {
+			writeInternalError(w, "logical_turn_replace_failed: "+err.Error())
+			return
+		}
+		// ReplaceLogicalTurn committed both canonical raw roles atomically. Shadow
+		// mode reads from its no-op primary, so a follow-up ListChatLogs cannot be
+		// used to rediscover those rows and must not trigger duplicate raw writes.
+		rawTurnAlreadyPersisted = true
+		rawUserAlreadyPersisted = true
+		rawAssistantAlreadyPersisted = true
+		requestedTurnHasAnyRaw = true
+		s.completeTurnSourceReplacementCompleted(ctx, sourceAcceptance, sid, req.TurnIndex)
+	}
+	if s.usesShadowWriteStore() && req.TurnIndex > 0 && !rawTurnAlreadyPersisted {
 		if existingLogs, err := s.Store.ListChatLogs(ctx, sid, req.TurnIndex, req.TurnIndex); err == nil {
 			rawUserAlreadyPersisted, rawAssistantAlreadyPersisted = completeTurnRawRolePresence(existingLogs, sid, req.TurnIndex)
 			requestedTurnHasAnyRaw = rawUserAlreadyPersisted || rawAssistantAlreadyPersisted
@@ -255,6 +283,11 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		rawTurnAlreadyPersisted = false
 		requestedTurnHasAnyRaw = false
 	}
+	sourceAcceptance = s.rebindCompleteTurnSourceAcceptance(ctx, sourceAcceptance, sid, sourceAcceptance.BoundTurn, turnIndex)
+	if sourceAcceptance.Enabled && !sourceAcceptance.Accepted {
+		writeCompleteTurnSourceAcceptanceRejection(w, req, sourceAcceptance)
+		return
+	}
 	if shouldApplyCompleteTurnOOCGuard(userText, assistantText, req.ContextMessages) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":               "ok",
@@ -324,15 +357,45 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		})
 		return
 	}
+	timing.addElapsed("preflight", preflightStartedAt)
+
+	// Once a validated turn reaches the persistence boundary, an HTTP client or
+	// reverse-proxy disconnect must not cancel canonical writes. Provider and
+	// embedding calls still apply their configured child deadlines.
+	ctx = context.WithoutCancel(ctx)
+	ctx, releaseSourceAcceptanceWorker := s.completeTurnSourceAcceptanceProcessingContext(ctx, sourceAcceptance, sid, turnIndex)
+	defer releaseSourceAcceptanceWorker()
+	if !s.completeTurnSourceAcceptanceStillCurrent(sourceAcceptance, sid, turnIndex) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "rejected", "code": "source_acceptance_revision_superseded_before_persistence",
+			"chat_session_id": sid, "turn_index": turnIndex, "save_ok": false,
+			"chat_logs_saved": 0, "derived_artifacts_saved": 0, "vectors_upserted": 0,
+			"critic_triggered": false, "derived_retry_required": false, "queue_action": "discard",
+			"fail_reasons": []string{"source_acceptance_revision_superseded_before_persistence"},
+			"source_acceptance": completeTurnSourceAcceptancePayload(completeTurnSourceAcceptanceDecision{
+				Enabled: true, Accepted: false, Status: "rejected", Reason: "source_acceptance_revision_superseded_before_persistence",
+				QueueAction: "discard", Revision: sourceAcceptance.Revision, Previous: sourceAcceptance.Previous,
+				Observation: sourceAcceptance.Observation,
+			}),
+		})
+		return
+	}
+	now := time.Now().UTC()
+	rawStoreStartedAt := time.Now()
+	rawSave := s.persistCompleteTurnRaw(ctx, sid, turnIndex, userText, assistantText, now, rawTurnAlreadyPersisted, rawUserAlreadyPersisted, rawAssistantAlreadyPersisted)
+	timing.addElapsed("raw_and_audit_store", rawStoreStartedAt)
+	rawTurnDurable := rawSave.UserDurable && rawSave.AssistantDurable
+
 	var criticResult map[string]any
 	criticTrace := map[string]any{}
 	criticTriggered := false
 	criticFailureReason := ""
 	var criticFailureTrace map[string]any
 	failReasons := []string{}
-	timing.addElapsed("preflight", preflightStartedAt)
 	if s.usesShadowWriteStore() && content != "" {
-		if extractionCfg.Critic.hasConfig() {
+		if !rawTurnDurable {
+			failReasons = append(failReasons, "critic_skipped: raw_chat_logs_not_durable")
+		} else if extractionCfg.Critic.hasConfig() {
 			if assistantText == "" {
 				failReasons = append(failReasons, "critic_skipped: assistant_content_missing")
 			} else {
@@ -356,11 +419,26 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			failReasons = append(failReasons, "critic_config_missing")
 		}
 	}
+	if !s.completeTurnSourceAcceptanceStillCurrent(sourceAcceptance, sid, turnIndex) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "rejected", "code": "source_acceptance_revision_superseded_during_processing",
+			"chat_session_id": sid, "turn_index": turnIndex, "save_ok": rawTurnDurable,
+			"chat_logs_saved": rawSave.ChatLogsSaved, "derived_artifacts_saved": 0, "vectors_upserted": 0,
+			"critic_triggered": criticTriggered, "derived_retry_required": false, "queue_action": "discard",
+			"fail_reasons": []string{"source_acceptance_revision_superseded_during_processing"},
+			"source_acceptance": completeTurnSourceAcceptancePayload(completeTurnSourceAcceptanceDecision{
+				Enabled: true, Accepted: false, Status: "rejected", Reason: "source_acceptance_revision_superseded_during_processing",
+				QueueAction: "discard", Revision: sourceAcceptance.Revision, Previous: sourceAcceptance.Previous,
+				Observation: sourceAcceptance.Observation,
+			}),
+		})
+		return
+	}
 
 	// Store save boundary: active only when the configured mode allows writes.
 	saveOK := false
 	saveErr := "shadow_mode: save disabled in R0/R1"
-	chatLogsSaved := 0
+	chatLogsSaved := rawSave.ChatLogsSaved
 	effectiveInputSaved := 0
 	auditSaved := 0
 	criticFeedbackSaved := 0
@@ -388,60 +466,19 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	vectorsMemoryUpserted := 0
 	vectorsEvidenceUpserted := 0
 	vectorsWorldRuleUpserted := 0
-	storeWriteAttempted := 0
-	storeWriteErrors := 0
-	storeWriteErrorDetails := []string{}
-	artifactWarnings := []string{}
+	storeWriteAttempted := rawSave.Attempted
+	storeWriteErrors := rawSave.Errors
+	storeWriteErrorDetails := append([]string(nil), rawSave.ErrorDetails...)
+	artifactWarnings := append([]string(nil), rawSave.Warnings...)
 	conflictResolutions := []map[string]any{}
 	retentionDecisions := []map[string]any{}
 	var canonicalStateWriteCost any
 	embeddingStatus := "not_requested"
 	vectorStatus := "not_requested"
 
-	rawStoreStartedAt := time.Now()
-	now := time.Now().UTC()
+	auditStoreStartedAt := time.Now()
 	writeSource := s.storeWriteSource()
 	if s.usesShadowWriteStore() {
-		if rawTurnAlreadyPersisted {
-			artifactWarnings = append(artifactWarnings, "raw_chat_logs_already_persisted: duplicate raw save skipped")
-		} else {
-			if rawUserAlreadyPersisted {
-				artifactWarnings = append(artifactWarnings, "raw_user_chat_log_already_persisted: duplicate user raw save skipped")
-			} else {
-				storeWriteAttempted++
-				if err := s.Store.SaveChatLog(ctx, &store.ChatLog{
-					ChatSessionID: sid,
-					TurnIndex:     turnIndex,
-					Role:          "user",
-					Content:       userText,
-					CreatedAt:     now,
-				}); err != nil {
-					storeWriteErrors++
-					storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveChatLog(user): "+err.Error())
-				} else {
-					chatLogsSaved++
-				}
-			}
-
-			if rawAssistantAlreadyPersisted {
-				artifactWarnings = append(artifactWarnings, "raw_assistant_chat_log_already_persisted: duplicate assistant raw save skipped")
-			} else {
-				storeWriteAttempted++
-				if err := s.Store.SaveChatLog(ctx, &store.ChatLog{
-					ChatSessionID: sid,
-					TurnIndex:     turnIndex,
-					Role:          "assistant",
-					Content:       assistantText,
-					CreatedAt:     now,
-				}); err != nil {
-					storeWriteErrors++
-					storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveChatLog(assistant): "+err.Error())
-				} else {
-					chatLogsSaved++
-				}
-			}
-		}
-
 		if content != "" {
 			skipEffectiveInputSave := false
 			if rawTurnAlreadyPersisted {
@@ -531,7 +568,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		if s.Store != nil {
 			existingEvidence, _ = s.Store.ListEvidence(ctx, sid)
 		}
-		timing.addElapsed("raw_and_audit_store", rawStoreStartedAt)
+		timing.addElapsed("raw_and_audit_store", auditStoreStartedAt)
 		if criticResult != nil {
 			artifactStartedAt := time.Now()
 			artifactResult := s.saveCriticExtractionArtifacts(ctx, sid, turnIndex, criticResult, content, extractionCfg.Embedder, now, existingEvidence)
@@ -588,7 +625,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if !s.usesShadowWriteStore() {
-		timing.addElapsed("raw_and_audit_store", rawStoreStartedAt)
+		timing.addElapsed("raw_and_audit_store", auditStoreStartedAt)
 	}
 
 	note := "complete-turn is a shadow skeleton; no mutations performed"
@@ -701,6 +738,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		},
 	}
 	backendTiming := timing.snapshot()
+	derivedRetryRequired := saveOK && rawTurnDurable && criticFailureReason != ""
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                           "ok",
@@ -746,6 +784,8 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"language_context":                 languageContext,
 		"llm_config_trace":                 llmConfigTrace,
 		"derived_artifacts_saved":          derivedArtifactsSaved,
+		"derived_retry_required":           derivedRetryRequired,
+		"source_acceptance":                completeTurnSourceAcceptancePayload(sourceAcceptance),
 		"episode_result":                   episodeResult,
 		"chapter_result":                   nil,
 		"hierarchy_promotion_result":       hierarchyPromotionResult,
@@ -761,6 +801,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"critic_triggered":                         criticTriggered,
 			"llm_config_trace":                         llmConfigTrace,
 			"derived_artifacts_saved":                  derivedArtifactsSaved,
+			"derived_retry_required":                   derivedRetryRequired,
 			"critic_trace":                             criticTrace,
 			"critic_pipeline_version":                  completeTurnCriticPipelineVersion,
 			"language_context":                         languageContext,
@@ -1077,6 +1118,69 @@ func completeTurnRemoveTaggedBlocks(text, tagName string) string {
 	}
 	re := regexp.MustCompile(`(?is)<\s*` + regexp.QuoteMeta(tag) + `\b[^>]*>.*?<\s*/\s*` + regexp.QuoteMeta(tag) + `\s*>`)
 	return strings.TrimSpace(re.ReplaceAllString(text, ""))
+}
+
+type completeTurnRawSaveResult struct {
+	ChatLogsSaved    int
+	Attempted        int
+	Errors           int
+	ErrorDetails     []string
+	Warnings         []string
+	UserDurable      bool
+	AssistantDurable bool
+}
+
+func (s *Server) persistCompleteTurnRaw(ctx context.Context, sid string, turnIndex int, userText, assistantText string, now time.Time, pairAlreadyPersisted, userAlreadyPersisted, assistantAlreadyPersisted bool) completeTurnRawSaveResult {
+	result := completeTurnRawSaveResult{
+		UserDurable:      userAlreadyPersisted,
+		AssistantDurable: assistantAlreadyPersisted,
+	}
+	if !s.usesShadowWriteStore() {
+		return result
+	}
+	if pairAlreadyPersisted {
+		result.UserDurable = true
+		result.AssistantDurable = true
+		result.Warnings = append(result.Warnings, "raw_chat_logs_already_persisted: duplicate raw save skipped")
+		return result
+	}
+	if userAlreadyPersisted {
+		result.Warnings = append(result.Warnings, "raw_user_chat_log_already_persisted: duplicate user raw save skipped")
+	} else {
+		result.Attempted++
+		if err := s.Store.SaveChatLog(ctx, &store.ChatLog{
+			ChatSessionID: sid,
+			TurnIndex:     turnIndex,
+			Role:          "user",
+			Content:       userText,
+			CreatedAt:     now,
+		}); err != nil {
+			result.Errors++
+			result.ErrorDetails = append(result.ErrorDetails, "SaveChatLog(user): "+err.Error())
+		} else {
+			result.ChatLogsSaved++
+			result.UserDurable = true
+		}
+	}
+	if assistantAlreadyPersisted {
+		result.Warnings = append(result.Warnings, "raw_assistant_chat_log_already_persisted: duplicate assistant raw save skipped")
+	} else {
+		result.Attempted++
+		if err := s.Store.SaveChatLog(ctx, &store.ChatLog{
+			ChatSessionID: sid,
+			TurnIndex:     turnIndex,
+			Role:          "assistant",
+			Content:       assistantText,
+			CreatedAt:     now,
+		}); err != nil {
+			result.Errors++
+			result.ErrorDetails = append(result.ErrorDetails, "SaveChatLog(assistant): "+err.Error())
+		} else {
+			result.ChatLogsSaved++
+			result.AssistantDurable = true
+		}
+	}
+	return result
 }
 
 func completeTurnRawRolePresence(logs []store.ChatLog, sid string, turnIndex int) (bool, bool) {

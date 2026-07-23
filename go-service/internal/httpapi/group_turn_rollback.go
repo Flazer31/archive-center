@@ -29,6 +29,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	if reqSource == "" {
 		reqSource = "unknown"
 	}
+	hostObservedAtMS, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("host_observed_at_ms")), 10, 64)
 	decisionToken := strings.TrimSpace(r.URL.Query().Get("decision_token"))
 	decisionVerified := false
 	if decisionToken != "" {
@@ -202,6 +203,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		deletions["rollback_audit"] = map[string]any{"ok": true, "source": reqSource}
 	}
+	s.invalidateCompleteTurnSourceAcceptances(ctx, sid, turnIndex, reqSource, hostObservedAtMS)
 
 	status := "ok"
 	note := "rollback executed"

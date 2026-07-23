@@ -52,7 +52,7 @@ func buildUnifiedRetrievalDocuments(
 	}
 	for _, es := range episodeSums {
 		summary := strings.Join(strings.Fields(q1FirstNonEmptyString(es.SummaryText, fmt.Sprintf("Episode %d-%d", es.FromTurn, es.ToTurn))), " ")
-		if anchors := episodeDenseAnchorPreview(es, 420); anchors != "" {
+		if anchors := episodeDenseAnchorPreview(es, summary, 420); anchors != "" {
 			summary = strings.Join(strings.Fields(summary+" "+anchors), " ")
 		}
 		meta := map[string]any{

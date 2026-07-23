@@ -82,6 +82,47 @@ func TestCompleteTurnServerErrorAllowsLaterRetry(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnFailedSaveAllowsLaterRetry(t *testing.T) {
+	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
+	var calls atomic.Int32
+	run := func(w http.ResponseWriter) {
+		saveOK := calls.Add(1) > 1
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "save_ok": saveOK})
+	}
+
+	server.executeCompleteTurnIdempotent(context.Background(), httptest.NewRecorder(), "retry-save-key", run)
+	second := httptest.NewRecorder()
+	server.executeCompleteTurnIdempotent(context.Background(), second, "retry-save-key", run)
+
+	if calls.Load() != 2 {
+		t.Fatalf("writer calls=%d, want 2 after save_ok=false", calls.Load())
+	}
+	if !strings.Contains(second.Body.String(), `"save_ok":true`) {
+		t.Fatalf("retry response did not report successful save: %s", second.Body.String())
+	}
+}
+
+func TestCompleteTurnSemanticSuccessChecksSaveOK(t *testing.T) {
+	response := completeTurnRecordedResponse{status: http.StatusOK, body: []byte(`{"status":"error","save_ok":false}`)}
+	if completeTurnRecordedResponseSuccessful(response) {
+		t.Fatal("HTTP 200 with save_ok=false must not be a successful completion")
+	}
+}
+
+func TestCompleteTurnDerivedRetryRequirementAllowsLaterRetry(t *testing.T) {
+	ledger := newCompleteTurnRequestLedger()
+	if _, owner := ledger.begin("retry-derived-key", time.Now().UTC()); !owner {
+		t.Fatal("first request did not acquire key")
+	}
+	ledger.finish("retry-derived-key", completeTurnRecordedResponse{
+		status: http.StatusOK,
+		body:   []byte(`{"status":"ok","save_ok":true,"derived_retry_required":true}`),
+	})
+	if _, owner := ledger.begin("retry-derived-key", time.Now().UTC()); !owner {
+		t.Fatal("derived-retry request key must be available for retry")
+	}
+}
+
 func TestCompleteTurnResponseBufferKeepsFirstStatus(t *testing.T) {
 	buffer := newCompleteTurnResponseBuffer()
 	buffer.WriteHeader(http.StatusBadRequest)

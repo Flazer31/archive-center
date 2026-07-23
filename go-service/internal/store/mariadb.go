@@ -56,10 +56,20 @@ func (m *mariadbStore) Ping(ctx context.Context) error {
 }
 
 var mariaAdminResetTables = []string{
+	"source_discovery_jobs",
 	"session_reference_coverage_fields",
 	"session_reference_coverage_snapshots",
 	"session_reference_runtime",
 	"session_reference_bindings",
+	"reference_overlay_rules",
+	"reference_item_evidence",
+	"reference_item_origins",
+	"reference_fact_identities",
+	"reference_logical_facts",
+	"reference_source_observations",
+	"reference_work_titles",
+	"canon_pack_installs",
+	"reference_work_editions",
 	"reference_claim_knowers",
 	"reference_claims",
 	"reference_entity_aliases",

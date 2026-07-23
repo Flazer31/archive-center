@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
@@ -177,13 +176,6 @@ func (s *Server) handleStorylineDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStorylinesSync(w http.ResponseWriter, r *http.Request) {
-	saver, ok := s.Store.(interface {
-		SaveStoryline(context.Context, *store.Storyline) error
-	})
-	if !ok {
-		writeShadowGuard(w, "POST /storylines/sync")
-		return
-	}
 	var req storylineSyncRequest
 	dec := json.NewDecoder(r.Body)
 	dec.UseNumber()
@@ -197,8 +189,17 @@ func (s *Server) handleStorylinesSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mode := strings.TrimSpace(req.Mode)
-	if mode != "apply" {
+	if mode == "" {
 		mode = "dry_run"
+	}
+	if mode != "apply" && mode != "dry_run" {
+		writeBadRequest(w, "mode must be apply or dry_run")
+		return
+	}
+	if mode == "apply" {
+		writeError(w, http.StatusConflict, CodeSupervisorCanonicalWriteForbidden,
+			"supervisor proposals are proposal-only and cannot write canonical storylines")
+		return
 	}
 	candidates := parseStorylineCandidatesFromSupervisor(req.SupervisorResult)
 	validated := make([]storylineSyncCandidate, 0, len(candidates))
@@ -214,71 +215,12 @@ func (s *Server) handleStorylinesSync(w http.ResponseWriter, r *http.Request) {
 		}
 		validated = append(validated, normalized)
 	}
-	if mode == "dry_run" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":            "ok",
-			"mode":              "dry_run",
-			"parsed_count":      len(candidates),
-			"valid_count":       len(validated),
-			"candidates":        storylineCandidatesPreview(validated),
-			"validation_errors": validationErrors,
-		})
-		return
-	}
-	if len(validated) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":            "ok",
-			"mode":              "apply",
-			"parsed_count":      len(candidates),
-			"applied_count":     0,
-			"results":           []any{},
-			"validation_errors": validationErrors,
-		})
-		return
-	}
-
-	existingRows, err := s.Store.ListStorylines(r.Context(), sid)
-	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-		writeInternalError(w, err.Error())
-		return
-	}
-	existingByName := make(map[string]store.Storyline)
-	for _, row := range existingRows {
-		existingByName[row.Name] = row
-	}
-	now := time.Now().UTC()
-	results := make([]map[string]any, 0, len(validated))
-	for _, candidate := range validated {
-		existing, hadExisting := existingByName[candidate.Name]
-		item := candidate.toStoreStoryline(sid, req.TurnIndex, now, existing, hadExisting)
-		if err := saver.SaveStoryline(r.Context(), &item); err != nil {
-			if errors.Is(err, store.ErrNotEnabled) {
-				writeShadowGuard(w, "POST /storylines/sync")
-				return
-			}
-			writeInternalError(w, err.Error())
-			return
-		}
-		action := "created"
-		if hadExisting {
-			action = "updated"
-		}
-		results = append(results, map[string]any{
-			"action":             action,
-			"id":                 nullableInt64(item.ID),
-			"name":               item.Name,
-			"confidence":         item.Confidence,
-			"evidence_count":     nullableInt(item.EvidenceCount),
-			"last_evidence_turn": nullableInt(item.LastEvidenceTurn),
-		})
-		existingByName[candidate.Name] = item
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":            "ok",
-		"mode":              "apply",
+		"mode":              "dry_run",
 		"parsed_count":      len(candidates),
-		"applied_count":     len(results),
-		"results":           results,
+		"valid_count":       len(validated),
+		"candidates":        storylineCandidatesPreview(validated),
 		"validation_errors": validationErrors,
 	})
 }
@@ -695,94 +637,4 @@ func storylineCandidatesPreview(items []storylineSyncCandidate) []map[string]any
 		out = append(out, preview)
 	}
 	return out
-}
-
-func (c storylineSyncCandidate) toStoreStoryline(sid string, turnIndex *int, now time.Time, existing store.Storyline, hadExisting bool) store.Storyline {
-	item := existing
-	if !hadExisting {
-		item = store.Storyline{
-			ChatSessionID: sid,
-			CreatedAt:     now,
-		}
-	}
-	item.ChatSessionID = sid
-	item.Name = c.Name
-	if status, ok := c.Fields["status"].(string); ok && status != "" {
-		item.Status = status
-	}
-	if item.Status == "" {
-		item.Status = "active"
-	}
-	if val, ok := c.Fields["entities_json"].(string); ok {
-		item.EntitiesJSON = val
-	} else if val, ok := c.Fields["entities_json"]; ok && val == nil {
-		item.EntitiesJSON = ""
-	}
-	if val, ok := c.Fields["current_context"].(string); ok {
-		item.CurrentContext = val
-	} else if val, ok := c.Fields["current_context"]; ok && val == nil {
-		item.CurrentContext = ""
-	}
-	if val, ok := c.Fields["key_points_json"].(string); ok {
-		item.KeyPointsJSON = val
-	} else if val, ok := c.Fields["key_points_json"]; ok && val == nil {
-		item.KeyPointsJSON = ""
-	}
-	if val, ok := c.Fields["ongoing_tensions_json"].(string); ok {
-		item.OngoingTensionsJSON = val
-	} else if val, ok := c.Fields["ongoing_tensions_json"]; ok && val == nil {
-		item.OngoingTensionsJSON = ""
-	}
-	if val, ok := c.Fields["confidence"].(float64); ok {
-		item.Confidence = val
-	}
-	item.EvidenceCount, item.LastEvidenceTurn = resolveStorylineEvidenceUpdate(existing, hadExisting, c.Fields, turnIndex)
-	if turnIndex != nil {
-		if item.FirstTurn == 0 {
-			item.FirstTurn = *turnIndex
-		}
-		item.LastTurn = *turnIndex
-	}
-	item.UpdatedAt = now
-	return item
-}
-
-func resolveStorylineEvidenceUpdate(existing store.Storyline, hadExisting bool, fields map[string]any, turnIndex *int) (int, int) {
-	currentCount := 0
-	currentLastTurn := 0
-	if hadExisting {
-		currentCount = existing.EvidenceCount
-		currentLastTurn = existing.LastEvidenceTurn
-	}
-	increment, hasIncrement := fields["evidence_count"].(int)
-	explicitTurn, hasExplicitTurn := fields["last_evidence_turn"].(int)
-	hasPayload := false
-	for _, key := range []string{"current_context", "key_points_json", "ongoing_tensions_json", "entities_json"} {
-		val, ok := fields[key]
-		if !ok || val == nil {
-			continue
-		}
-		if text, ok := val.(string); !ok || strings.TrimSpace(text) != "" {
-			hasPayload = true
-			break
-		}
-	}
-	if !hasIncrement {
-		if hasPayload || hasExplicitTurn {
-			increment = 1
-		}
-	}
-	observedTurn := 0
-	if hasExplicitTurn {
-		observedTurn = explicitTurn
-	} else if increment > 0 && turnIndex != nil {
-		observedTurn = *turnIndex
-	}
-	if observedTurn != 0 && currentLastTurn == observedTurn {
-		return currentCount, currentLastTurn
-	}
-	if increment <= 0 {
-		return currentCount, currentLastTurn
-	}
-	return currentCount + increment, observedTurn
 }

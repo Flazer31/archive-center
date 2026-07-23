@@ -31,6 +31,7 @@ type Server struct {
 	RuntimeConfigMu          sync.RWMutex
 	AdminJobs                *adminJobManager
 	CompleteTurns            *completeTurnRequestLedger
+	SourceAcceptances        *completeTurnSourceAcceptanceLedger
 	RollbackDecisions        *rollbackDecisionLedger
 }
 
@@ -92,6 +93,7 @@ func NewServer(cfg config.Config) *Server {
 		ReferenceVectorOpenError: referenceVectorErr,
 		AdminJobs:                newAdminJobManager(),
 		CompleteTurns:            newCompleteTurnRequestLedger(),
+		SourceAcceptances:        newCompleteTurnSourceAcceptanceLedger(),
 		RollbackDecisions:        newRollbackDecisionLedger(),
 	}
 }
@@ -175,7 +177,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	s.registerSessionMigrationRoutes(sub)
 	s.registerNarrativeRoutes(sub) // R1 read + R2 write
 	s.registerPersonaRoutes(sub)   // R1 read + R2 write
-	s.registerTableReadRoutes(sub) // R1 read-only planning
 	s.registerCriticLedgerRoutes(sub)
 	s.registerStep22ValidationRoutes(sub)
 	s.registerStep23ConsequenceRoutes(sub)
@@ -185,6 +186,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	s.registerStep23CaptureVerificationRoutes(sub)
 	s.registerStatusSchemaRoutes(sub)
 	s.registerReferenceLibraryRoutes(sub)
+	s.registerCanonPackPreviewRoutes(sub)
+	s.registerSourceDiscoveryRoutes(sub)
 	s.registerUpdateRoutes(sub)
 	mux.Handle("/", s.corsMiddleware(s.authMiddleware(s.reverseProxyBasePathMiddleware(sub))))
 }
@@ -274,7 +277,6 @@ func isArchiveRouteRoot(segment string) bool {
 		"storylines",
 		"subjective-entity-memories",
 		"supervisor",
-		"table-read",
 		"timeline",
 		"turns",
 		"update",

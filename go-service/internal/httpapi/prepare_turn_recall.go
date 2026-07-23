@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -110,6 +111,10 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 		shadow["note"] = "R2 bounded recall read drill: ChromaDB vector search remains support-only until endpoint readiness is configured"
 	}
 	limit = prepareTurnRecallLimit(limit)
+	candidateLimit := limit * 3
+	if candidateLimit < limit {
+		candidateLimit = limit
+	}
 	filter := strings.TrimSpace(clientMetaString(req.ClientMeta, "chroma_filter"))
 	if filter == "" {
 		filter = fmt.Sprintf("chat_session_id == %q", req.ChatSessionID)
@@ -118,8 +123,10 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	shadow["query_vector_key"] = queryKey
 	shadow["query_vector_dim"] = len(queryVector)
 	shadow["limit"] = limit
+	shadow["candidate_limit"] = candidateLimit
+	shadow["candidate_policy"] = "bounded_oversampling_for_post_vector_diversity"
 	shadow["filter"] = filter
-	results, err := s.Vector.Search(ctx, req.ChatSessionID, queryVector, limit, filter)
+	results, err := s.Vector.Search(ctx, req.ChatSessionID, queryVector, candidateLimit, filter)
 	switch {
 	case err == nil:
 		shadow["search_result"] = "ok"
@@ -289,35 +296,6 @@ func prepareTurnPerspectiveContextFromRequest(req dto.PrepareTurnRequest) map[st
 	if ctx := prepareTurnPerspectiveContextFromClientMeta(req.ClientMeta); len(ctx) > 0 {
 		return ctx
 	}
-	sources := []struct {
-		source string
-		text   string
-	}{
-		{source: "raw_user_input", text: stringPtrValue(req.RawUserInput, "")},
-	}
-	for i := len(req.Messages) - 1; i >= 0 && len(sources) < 8; i-- {
-		msg := req.Messages[i]
-		text := strings.TrimSpace(extractionStringFromAny(msg["content"]))
-		if text == "" {
-			continue
-		}
-		role := strings.TrimSpace(extractionStringFromAny(msg["role"]))
-		if role == "" {
-			role = "message"
-		}
-		sources = append(sources, struct {
-			source string
-			text   string
-		}{source: "message." + role, text: text})
-	}
-	for _, source := range sources {
-		if pov := inferPrepareTurnPerspectiveName(source.text); pov != "" {
-			return normalizePrepareTurnPerspectiveContext(map[string]any{
-				"current_pov": pov,
-				"source":      "inferred_" + source.source,
-			})
-		}
-	}
 	return nil
 }
 
@@ -479,8 +457,11 @@ func prepareTurnRecallLimit(topK int) int {
 	return 1
 }
 
-func prepareTurnSupportRecallLimit(topK int) int {
-	return prepareTurnRecallLimit(topK)
+func prepareTurnSupportCandidateLimit(maxChars int) int {
+	if maxChars <= 0 {
+		return 128
+	}
+	return minInt(512, maxInt(64, maxChars/64))
 }
 
 func prepareTurnTextBudget(maxChars int) int {
@@ -491,16 +472,19 @@ func prepareTurnTextBudget(maxChars int) int {
 }
 
 type prepareTurnMemoryLaneSelection struct {
-	VectorRelevant []store.Memory
-	Recent         []store.Memory
-	Relevant       []store.Memory
-	Deep           []store.Memory
-	VectorScores   map[string]float64
-	RelevantScores map[string]float64
-	Trace          map[string]any
+	VectorRelevant          []store.Memory
+	Recent                  []store.Memory
+	Relevant                []store.Memory
+	Deep                    []store.Memory
+	ProtectedCandidates     []store.Memory
+	ProtectedAliasCanonical map[string]string
+	ProtectedAmbiguousAlias map[string]bool
+	VectorScores            map[string]float64
+	RelevantScores          map[string]float64
+	Trace                   map[string]any
 }
 
-func prepareTurnMemorySelectionQuery(rawUserInput string, chatLogs []store.ChatLog, perspectiveContext map[string]any, topK int) string {
+func prepareTurnMemorySelectionQuery(rawUserInput string, chatLogs []store.ChatLog, perspectiveContext map[string]any) string {
 	parts := []string{}
 	if text := strings.TrimSpace(rawUserInput); text != "" {
 		parts = append(parts, text)
@@ -508,12 +492,265 @@ func prepareTurnMemorySelectionQuery(rawUserInput string, chatLogs []store.ChatL
 	if pov := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"])); pov != "" {
 		parts = append(parts, "current_pov: "+pov)
 	}
-	for _, cl := range selectRecentChatLogsByTurn(chatLogs, prepareTurnRecallLimit(topK)) {
+	// Relevance follows the current user input and the immediately preceding
+	// assistant output. Feeding an arbitrary top-K chat tail into the query made
+	// old scene vocabulary revive unrelated memories merely because budget was
+	// available.
+	for i := len(chatLogs) - 1; i >= 0; i-- {
+		cl := chatLogs[i]
+		if !strings.EqualFold(strings.TrimSpace(cl.Role), "assistant") {
+			continue
+		}
 		if text := strings.TrimSpace(cl.Content); text != "" {
 			parts = append(parts, text)
 		}
+		break
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+type prepareTurnRecallEvidence struct {
+	Eligible          bool
+	StructuredAnchors []string
+	OverlapTerms      []string
+}
+
+func prepareTurnMemoryRecallEvidence(query string, item store.Memory) prepareTurnRecallEvidence {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return prepareTurnRecallEvidence{}
+	}
+	evidence := prepareTurnRecallEvidence{}
+	for _, anchor := range prepareTurnMemoryStructuredAnchors(item) {
+		if prepareTurnRecallContainsAnchor(query, anchor) {
+			evidence.StructuredAnchors = append(evidence.StructuredAnchors, anchor)
+		}
+	}
+	queryTerms := prepareTurnRecallTerms(query)
+	memoryTerms := map[string]bool{}
+	for _, term := range prepareTurnRecallTerms(prepareTurnMemoryRelevanceText(item)) {
+		memoryTerms[term] = true
+	}
+	for _, term := range queryTerms {
+		if memoryTerms[term] {
+			evidence.OverlapTerms = append(evidence.OverlapTerms, term)
+		}
+	}
+	// A structured entity/place/item match is an explicit scene link. For free
+	// text, require corroboration by more than one content term; a lone generic
+	// word is not enough to spend recall budget.
+	evidence.Eligible = len(evidence.StructuredAnchors) > 0 || len(evidence.OverlapTerms) > 1
+	return evidence
+}
+
+func prepareTurnSupportRecallEligible(query, text string, anchors ...string) bool {
+	query = strings.TrimSpace(query)
+	text = strings.TrimSpace(text)
+	if query == "" || text == "" {
+		return query == "" && text != ""
+	}
+	for _, anchor := range anchors {
+		if prepareTurnRecallContainsAnchor(query, anchor) {
+			return true
+		}
+	}
+	textTerms := map[string]bool{}
+	for _, term := range prepareTurnRecallTerms(text) {
+		textTerms[term] = true
+	}
+	overlap := 0
+	for _, term := range prepareTurnRecallTerms(query) {
+		if textTerms[term] {
+			overlap++
+			if overlap > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func prepareTurnCurrentSceneRelevant(query, text string, anchors ...string) bool {
+	return prepareTurnSupportRecallEligible(query, text, anchors...)
+}
+
+func prepareTurnRecallOverlapCount(query, text string) int {
+	textTerms := map[string]bool{}
+	for _, term := range prepareTurnRecallTerms(text) {
+		textTerms[term] = true
+	}
+	overlap := 0
+	for _, term := range prepareTurnRecallTerms(query) {
+		if textTerms[term] {
+			overlap++
+		}
+	}
+	return overlap
+}
+
+// prepareTurnObservedShortEntityAliases recognizes only a request-local,
+// unambiguous suffix already grounded by stored character names. This covers
+// surname-elided forms such as a two-rune given name without creating a
+// persistent alias or merging entity rows. ASCII names and ambiguous suffixes
+// are deliberately excluded.
+func prepareTurnObservedShortEntityAliases(states []store.CharacterState) map[string][]string {
+	names := make([]string, 0, len(states))
+	for _, state := range states {
+		names = append(names, state.CharacterName)
+	}
+	return prepareTurnObservedShortNameAliases(names)
+}
+
+func prepareTurnObservedShortNameAliases(names []string) map[string][]string {
+	type ownerSet map[string]bool
+	suffixOwners := map[string]ownerSet{}
+	for _, rawName := range names {
+		name := strings.TrimSpace(rawName)
+		runes := []rune(name)
+		if len(runes) < 3 {
+			continue
+		}
+		nonASCIIName := true
+		for _, r := range runes {
+			if r <= 127 || !unicode.IsLetter(r) {
+				nonASCIIName = false
+				break
+			}
+		}
+		if !nonASCIIName {
+			continue
+		}
+		canonical := normalizePrepareTurnEntityNeedle(name)
+		alias := normalizePrepareTurnEntityNeedle(string(runes[len(runes)-2:]))
+		if canonical == "" || alias == "" || alias == canonical {
+			continue
+		}
+		if suffixOwners[alias] == nil {
+			suffixOwners[alias] = ownerSet{}
+		}
+		suffixOwners[alias][canonical] = true
+	}
+	out := map[string][]string{}
+	for alias, owners := range suffixOwners {
+		if len(owners) != 1 {
+			continue
+		}
+		for canonical := range owners {
+			out[canonical] = append(out[canonical], alias)
+		}
+	}
+	return out
+}
+
+func prepareTurnDirectEntityMentionRank(rawUserInput, characterName string, aliases map[string][]string) int {
+	if prepareTurnRecallContainsAnchor(rawUserInput, characterName) {
+		return 3
+	}
+	canonical := normalizePrepareTurnEntityNeedle(characterName)
+	for _, alias := range aliases[canonical] {
+		if prepareTurnRecallContainsAnchor(rawUserInput, alias) {
+			return 2
+		}
+	}
+	return 0
+}
+
+// A knowledge-graph edge is not current merely because one endpoint appears in
+// the scene. It needs both endpoints, or an endpoint plus corroborating relation
+// or event terms. This prevents every historical edge of a current character
+// from consuming the relationship budget.
+func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, string) {
+	subjectMatched := prepareTurnRecallContainsAnchor(query, triple.Subject)
+	objectMatched := prepareTurnRecallContainsAnchor(query, triple.Object)
+	if subjectMatched && objectMatched {
+		return true, "both_endpoints_current"
+	}
+	line := strings.TrimSpace(triple.Subject + " " + triple.Predicate + " " + triple.Object)
+	if prepareTurnSupportRecallEligible(query, line) {
+		if subjectMatched || objectMatched {
+			return true, "endpoint_plus_relation_evidence"
+		}
+		return true, "relation_event_evidence"
+	}
+	if subjectMatched || objectMatched {
+		return false, "single_endpoint_only"
+	}
+	return false, "unrelated"
+}
+
+func prepareTurnRecallTerms(text string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, term := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
+	}) {
+		term = strings.TrimSpace(term)
+		if len([]rune(term)) < 2 || seen[term] || hybridKeywordStopwords[term] || prepareTurnRecallStopword(term) {
+			continue
+		}
+		seen[term] = true
+		out = append(out, term)
+	}
+	return out
+}
+
+func prepareTurnRecallStopword(term string) bool {
+	switch term {
+	case "그리고", "그러나", "하지만", "또한", "그저", "다시", "바로", "이미", "아직", "매우", "정말", "생각", "모습", "상태", "내용", "이후", "이전", "현재", "했다", "하였다", "있다", "있었다", "없다", "없었다", "되는", "되어", "위한", "대한":
+		return true
+	default:
+		return false
+	}
+}
+
+func prepareTurnRecallContainsAnchor(text, anchor string) bool {
+	anchor = strings.TrimSpace(anchor)
+	if len([]rune(anchor)) < 2 {
+		return false
+	}
+	return strings.Contains(normalizePrepareTurnEntityNeedle(text), normalizePrepareTurnEntityNeedle(anchor))
+}
+
+func prepareTurnMemoryStructuredAnchors(item store.Memory) []string {
+	parsed := parseJSONMap(item.SummaryJSON)
+	out := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || len([]rune(value)) < 2 || stringSliceContains(out, value) {
+			return
+		}
+		out = append(out, value)
+	}
+	for _, key := range []string{"characters", "character_names", "people", "places", "locations", "items", "factions"} {
+		for _, value := range memorySearchStringValues(parsed[key]) {
+			add(value)
+		}
+	}
+	for _, entry := range memorySearchMapItems(parsed["entities"]) {
+		for _, key := range []string{"name", "canonical_name", "display_name", "location"} {
+			add(stringFromMap(entry, key))
+		}
+	}
+	for _, entry := range memorySearchMapItems(parsed["character_states"]) {
+		add(stringFromMap(entry, "name"))
+		add(stringFromMap(entry, "location"))
+	}
+	for _, entry := range memorySearchMapItems(parsed["kg_triples"]) {
+		add(stringFromMap(entry, "subject"))
+		add(stringFromMap(entry, "object"))
+	}
+	for _, entry := range memorySearchMapItems(parsed["protected_secrets"]) {
+		add(stringFromMap(entry, "owner"))
+		for _, value := range memorySearchStringValues(entry["subject"]) {
+			add(value)
+		}
+	}
+	for _, entry := range memorySearchMapItems(parsed["character_identity_accuracy"]) {
+		for _, key := range []string{"canonical_entity_name", "surface_identity_name", "true_identity_name", "public_identity_name", "alias_name", "real_identity_name"} {
+			add(stringFromMap(entry, key))
+		}
+	}
+	return out
 }
 
 func selectPrepareTurnMemoryLanes(memories []store.Memory, query string, topK int) prepareTurnMemoryLaneSelection {
@@ -521,8 +758,7 @@ func selectPrepareTurnMemoryLanes(memories []store.Memory, query string, topK in
 }
 
 func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query string, topK int, vectorShadow map[string]any) prepareTurnMemoryLaneSelection {
-	topK = prepareTurnRecallLimit(topK)
-	totalLimit := topK
+	vectorLimit := prepareTurnRecallLimit(topK)
 	clean := make([]store.Memory, 0, len(memories))
 	for _, item := range memories {
 		if strings.TrimSpace(prepareTurnMemorySummary(item)) == "" {
@@ -530,6 +766,10 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		}
 		clean = append(clean, item)
 	}
+	// The vector setting controls only ChromaDB memory hits. Lexical/current-
+	// scene candidates are not a transmission quota; the final per-category
+	// character budgets decide how many eligible facts reach the host.
+	totalLimit := maxInt(len(clean), 1)
 	query = strings.TrimSpace(query)
 	queryPresent := query != ""
 	maxTurn := 0
@@ -560,10 +800,10 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		RelevantScores: map[string]float64{},
 		Trace: map[string]any{
 			"version":                     "r3.recall_lanes.v1",
-			"top_k_definition":            "semantic_memory_recall_limit",
-			"top_k_memory_target":         totalLimit,
+			"top_k_definition":            "vector_memory_search_limit_only",
+			"top_k_memory_target":         vectorLimit,
 			"vector_memory_policy":        "chromadb_hits_hydrated_to_mariadb_memory_before_injection",
-			"relevant_memory_limit":       totalLimit,
+			"relevant_memory_limit":       "final_category_char_budget",
 			"deep_memory_policy":          "importance_only_when_no_current_query",
 			"input_memory_count":          len(memories),
 			"eligible_memory_count":       len(clean),
@@ -578,14 +818,93 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			"selection_reason_visibility": true,
 		},
 	}
-	vectorHydration := prepareTurnHydrateVectorMemoryHits(clean, vectorShadow, totalLimit)
+	protectedAliasCanonical, protectedAmbiguousAliases := prepareTurnProtectedAliasResolution(clean)
+	out.ProtectedAliasCanonical = protectedAliasCanonical
+	out.ProtectedAmbiguousAlias = protectedAmbiguousAliases
+	selectedProtectedCoverage := map[string]bool{}
+	protectedDuplicateMemories := map[string]bool{}
+	protectedDuplicateCandidates := []map[string]any{}
+	protectedCandidateMemories := map[string]bool{}
+	for _, item := range clean {
+		if !prepareTurnProtectedMemoryGuard(item).Active {
+			continue
+		}
+		key := prepareTurnMemoryLaneKey(item)
+		protectedCandidateMemories[key] = true
+		out.ProtectedCandidates = append(out.ProtectedCandidates, item)
+	}
+	protectedSelectedCount := 0
+	actualMemorySelectedCount := 0
+	actualMemoryVectorSelectedCount := 0
+	actualMemoryRelevantRefillSelectedCount := 0
+	actualMemoryDeepRefillSelectedCount := 0
+	actualMemoryRecentRefillSelectedCount := 0
+	acceptProtectedCoverage := func(item store.Memory) (bool, bool) {
+		if !prepareTurnProtectedMemoryGuard(item).Active {
+			return true, false
+		}
+		memoryKey := prepareTurnMemoryLaneKey(item)
+		if !protectedCandidateMemories[memoryKey] {
+			protectedCandidateMemories[memoryKey] = true
+			out.ProtectedCandidates = append(out.ProtectedCandidates, item)
+		}
+		keys := prepareTurnProtectedMemoryCoverageKeys(item, protectedAliasCanonical, protectedAmbiguousAliases)
+		if len(keys) == 0 {
+			return true, true
+		}
+		hasNewCoverage := false
+		for _, key := range keys {
+			if !selectedProtectedCoverage[key] {
+				hasNewCoverage = true
+				break
+			}
+		}
+		if !hasNewCoverage {
+			if !protectedDuplicateMemories[memoryKey] {
+				protectedDuplicateMemories[memoryKey] = true
+				protectedDuplicateCandidates = append(protectedDuplicateCandidates, map[string]any{
+					"source_table":  "memories",
+					"source_row_id": prepareTurnMemorySourceRowID(item),
+					"turn_index":    item.TurnIndex,
+					"reason":        "protected_coverage_duplicate",
+					"coverage_keys": keys,
+				})
+			}
+			return false, true
+		}
+		if protectedSelectedCount >= totalLimit {
+			return false, true
+		}
+		for _, key := range keys {
+			selectedProtectedCoverage[key] = true
+		}
+		return true, true
+	}
+	vectorCandidateLimit := vectorLimit * 3
+	if vectorCandidateLimit > len(clean) {
+		vectorCandidateLimit = len(clean)
+	}
+	if vectorCandidateLimit < vectorLimit {
+		vectorCandidateLimit = vectorLimit
+	}
+	vectorHydration := prepareTurnHydrateVectorMemoryHits(clean, vectorShadow, vectorCandidateLimit)
 	vectorRecallReady := prepareTurnVectorRecallReady(vectorHydration.Trace)
 	vectorRecallAttempted := prepareTurnVectorSearchAttempted(vectorShadow)
 	for _, item := range vectorHydration.Items {
-		if prepareTurnSelectedMemoryCount(out) >= totalLimit {
+		if len(out.VectorRelevant) >= vectorLimit {
 			break
 		}
+		accepted, protected := acceptProtectedCoverage(item)
+		if !accepted || (!protected && actualMemorySelectedCount >= totalLimit) {
+			continue
+		}
 		out.VectorRelevant = append(out.VectorRelevant, item)
+		if protected {
+			protectedSelectedCount++
+		} else {
+			actualMemorySelectedCount++
+			actualMemoryVectorSelectedCount++
+		}
 		key := prepareTurnMemoryLaneKey(item)
 		if score := vectorHydration.Scores[key]; score > 0 {
 			out.VectorScores[key] = score
@@ -594,36 +913,44 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["vector_recall"] = vectorHydration.Trace
 	out.Trace["vector_recall_ready"] = vectorRecallReady
 	out.Trace["vector_recall_attempted"] = vectorRecallAttempted
-	out.Trace["lexical_fill_enabled"] = prepareTurnSelectedMemoryCount(out) < totalLimit
-	if vectorRecallReady && prepareTurnSelectedMemoryCount(out) >= totalLimit {
-		out.Trace["vector_selected"] = len(out.VectorRelevant)
-		out.Trace["recent_selected"] = 0
-		out.Trace["relevant_selected"] = 0
-		out.Trace["deep_selected"] = 0
-		out.Trace["selected_total"] = prepareTurnSelectedMemoryCount(out)
-		out.Trace["relevant_candidates"] = 0
-		out.Trace["memory_budget_remaining"] = maxInt(totalLimit-prepareTurnSelectedMemoryCount(out), 0)
-		out.Trace["average_importance"] = avgImportance
-		out.Trace["relevant_degraded_reason"] = nilIfEmpty(relevantDegradedReason(query, len(out.Relevant), 0))
-		return out
+	out.Trace["lexical_fill_enabled"] = actualMemorySelectedCount < totalLimit
+	finalizeActualMemoryRefillTrace := func() {
+		refillSelected := actualMemoryRelevantRefillSelectedCount + actualMemoryDeepRefillSelectedCount + actualMemoryRecentRefillSelectedCount
+		out.Trace["actual_memory_target"] = totalLimit
+		out.Trace["actual_memory_target_kind"] = "eligible_candidate_pool_not_delivery_budget"
+		out.Trace["actual_memory_vector_selected"] = actualMemoryVectorSelectedCount
+		out.Trace["actual_memory_relevant_refill_selected"] = actualMemoryRelevantRefillSelectedCount
+		out.Trace["actual_memory_deep_refill_selected"] = actualMemoryDeepRefillSelectedCount
+		out.Trace["actual_memory_recent_refill_selected"] = actualMemoryRecentRefillSelectedCount
+		out.Trace["actual_memory_refill_selected"] = refillSelected
+		out.Trace["actual_memory_refill_gap"] = maxInt(totalLimit-actualMemorySelectedCount, 0)
+		out.Trace["protected_candidates_consume_actual_memory_target"] = false
+		out.Trace["actual_memory_refill_policy"] = "vector_actual_then_evidence_linked_mariadb; recent_fill_only_without_current_query; unused_capacity_remains_empty"
+		out.Trace["vector_candidate_limit"] = vectorCandidateLimit
+		out.Trace["vector_candidate_policy"] = "bounded_oversampling_then_mariadb_canonical_refill"
 	}
-
 	type scoredMemory struct {
 		item       store.Memory
 		key        string
 		relevance  float64
+		evidence   prepareTurnRecallEvidence
 		importance float64
 		recency    float64
 	}
 	scored := []scoredMemory{}
 	relevantCandidates := 0
+	lexicalRejectedCandidates := 0
 	for _, item := range clean {
 		key := prepareTurnMemoryLaneKey(item)
 		relevance := 0.0
+		evidence := prepareTurnRecallEvidence{}
 		if queryPresent {
-			relevance = simpleTokenSimilarity(query, prepareTurnMemoryRelevanceText(item))
-			if relevance > 0 {
+			evidence = prepareTurnMemoryRecallEvidence(query, item)
+			if evidence.Eligible {
+				relevance = simpleTokenSimilarity(query, prepareTurnMemoryRelevanceText(item))
 				relevantCandidates++
+			} else {
+				lexicalRejectedCandidates++
 			}
 		}
 		recency := 0.0
@@ -638,6 +965,7 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			item:       item,
 			key:        key,
 			relevance:  relevance,
+			evidence:   evidence,
 			importance: item.Importance,
 			recency:    recency,
 		})
@@ -677,22 +1005,42 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	})
 
 	for _, candidate := range scored {
-		if prepareTurnSelectedMemoryCount(out) >= totalLimit {
-			break
-		}
 		if prepareTurnMemoryAlreadySelected(out, candidate.item) {
 			continue
 		}
-		if candidate.relevance > 0 {
+		if queryPresent && !candidate.evidence.Eligible {
+			continue
+		}
+		accepted, protected := acceptProtectedCoverage(candidate.item)
+		if !accepted || (!protected && actualMemorySelectedCount >= totalLimit) {
+			continue
+		}
+		if protected {
+			protectedSelectedCount++
+		} else {
+			actualMemorySelectedCount++
+		}
+		if candidate.evidence.Eligible {
 			out.Relevant = append(out.Relevant, candidate.item)
 			out.RelevantScores[candidate.key] = candidate.relevance
+			if !protected {
+				actualMemoryRelevantRefillSelectedCount++
+			}
 			continue
 		}
 		if !queryPresent && avgImportance > 0 && candidate.importance >= avgImportance {
 			out.Deep = append(out.Deep, candidate.item)
+			if !protected {
+				actualMemoryDeepRefillSelectedCount++
+			}
 			continue
 		}
-		out.Recent = append(out.Recent, candidate.item)
+		if !queryPresent {
+			out.Recent = append(out.Recent, candidate.item)
+			if !protected {
+				actualMemoryRecentRefillSelectedCount++
+			}
+		}
 	}
 	out.Trace["vector_selected"] = len(out.VectorRelevant)
 	out.Trace["recent_selected"] = len(out.Recent)
@@ -700,10 +1048,203 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["deep_selected"] = len(out.Deep)
 	out.Trace["selected_total"] = prepareTurnSelectedMemoryCount(out)
 	out.Trace["relevant_candidates"] = relevantCandidates
-	out.Trace["memory_budget_remaining"] = maxInt(totalLimit-prepareTurnSelectedMemoryCount(out), 0)
+	out.Trace["lexical_rejected_candidate_count"] = lexicalRejectedCandidates
+	out.Trace["query_present_recent_fill_disabled"] = queryPresent
+	out.Trace["candidate_capacity_remaining"] = maxInt(totalLimit-actualMemorySelectedCount, 0)
 	out.Trace["average_importance"] = avgImportance
 	out.Trace["relevant_degraded_reason"] = nilIfEmpty(relevantDegradedReason(query, len(out.Relevant), relevantCandidates))
+	out.Trace["protected_duplicate_candidate_count"] = len(protectedDuplicateMemories)
+	out.Trace["protected_duplicate_candidates"] = protectedDuplicateCandidates
+	out.Trace["protected_coverage_key_count"] = len(selectedProtectedCoverage)
+	out.Trace["actual_memory_selected"] = actualMemorySelectedCount
+	out.Trace["protected_guard_selected"] = protectedSelectedCount
+	out.Trace["protected_guard_budget"] = totalLimit
+	finalizeActualMemoryRefillTrace()
 	return out
+}
+
+func prepareTurnProtectedAliasResolution(memories []store.Memory) (map[string]string, map[string]bool) {
+	candidates := map[string]map[string]bool{}
+	add := func(alias, canonical string) {
+		aliasKey := normalizeCharacterKey(alias)
+		canonicalKey := normalizeCharacterKey(canonical)
+		if aliasKey == "" || canonicalKey == "" {
+			return
+		}
+		if candidates[aliasKey] == nil {
+			candidates[aliasKey] = map[string]bool{}
+		}
+		candidates[aliasKey][canonicalKey] = true
+	}
+	for _, item := range memories {
+		parsed := parseJSONMap(item.SummaryJSON)
+		for _, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
+			identity := mapFromAny(raw)
+			canonical := extractionFirstNonEmpty(
+				stringFromMap(identity, "canonical_entity_name"),
+				stringFromMap(identity, "true_identity_name"),
+				stringFromMap(identity, "real_identity_name"),
+			)
+			if canonical == "" {
+				continue
+			}
+			add(canonical, canonical)
+			if !boolFromAny(identity["same_entity"]) {
+				continue
+			}
+			for _, key := range []string{"surface_identity_name", "public_identity_name", "alias_name"} {
+				add(stringFromMap(identity, key), canonical)
+			}
+			for _, alias := range stringsFromAny(identity["aliases"]) {
+				add(alias, canonical)
+			}
+		}
+	}
+	out := map[string]string{}
+	ambiguous := map[string]bool{}
+	for alias, canonicalSet := range candidates {
+		if len(canonicalSet) != 1 {
+			ambiguous[alias] = true
+			continue
+		}
+		for canonical := range canonicalSet {
+			out[alias] = canonical
+		}
+	}
+	return out, ambiguous
+}
+
+func prepareTurnProtectedAliasCanonicalMap(memories []store.Memory) map[string]string {
+	canonical, _ := prepareTurnProtectedAliasResolution(memories)
+	return canonical
+}
+
+func prepareTurnProtectedMemoryCoverageKeys(item store.Memory, aliasCanonical map[string]string, ambiguousAliases ...map[string]bool) []string {
+	parsed := parseJSONMap(item.SummaryJSON)
+	keys := []string{}
+	ambiguous := map[string]bool{}
+	if len(ambiguousAliases) > 0 && ambiguousAliases[0] != nil {
+		ambiguous = ambiguousAliases[0]
+	}
+	canonicalPerson := func(value string) string {
+		key := normalizeCharacterKey(value)
+		if ambiguous[key] {
+			return fmt.Sprintf("ambiguous:%s:%v", key, prepareTurnMemorySourceRowID(item))
+		}
+		if canonical := aliasCanonical[key]; canonical != "" {
+			return canonical
+		}
+		return key
+	}
+	add := func(kind, person, category string) {
+		kind = normalizeProtectedSecretToken(kind)
+		if kind == "" {
+			kind = category
+		}
+		person = canonicalPerson(person)
+		if person == "" {
+			return
+		}
+		key := category + "|" + person + "|" + kind
+		if !stringSliceContains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	for _, raw := range sliceFromAny(parsed["protected_secrets"]) {
+		secret := mapFromAny(raw)
+		kind := stringFromMap(secret, "secret_kind")
+		owner := stringFromMap(secret, "owner")
+		if strings.TrimSpace(owner) != "" {
+			add(kind, owner, "secret")
+			continue
+		}
+		subjects := stringsFromAny(secret["subject"])
+		if len(subjects) == 0 {
+			unscopedKind := normalizeProtectedSecretToken(kind)
+			if unscopedKind == "" {
+				unscopedKind = "secret"
+			}
+			key := "secret|unscoped|" + unscopedKind
+			if !stringSliceContains(keys, key) {
+				keys = append(keys, key)
+			}
+			continue
+		}
+		subjectKeys := []string{}
+		for _, subject := range subjects {
+			if key := canonicalPerson(subject); key != "" && !stringSliceContains(subjectKeys, key) {
+				subjectKeys = append(subjectKeys, key)
+			}
+		}
+		sort.Strings(subjectKeys)
+		if len(subjectKeys) > 0 {
+			add(kind, "subjects:"+strings.Join(subjectKeys, "+"), "secret")
+		}
+	}
+	for _, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
+		identity := mapFromAny(raw)
+		person := extractionFirstNonEmpty(
+			stringFromMap(identity, "canonical_entity_name"),
+			stringFromMap(identity, "true_identity_name"),
+			stringFromMap(identity, "real_identity_name"),
+			stringFromMap(identity, "surface_identity_name"),
+			stringFromMap(identity, "public_identity_name"),
+			stringFromMap(identity, "alias_name"),
+		)
+		add(stringFromMap(identity, "identity_kind"), person, "identity")
+	}
+	return keys
+}
+
+func prepareTurnProtectedPerspectiveContext(perspectiveContext map[string]any, memories []store.Memory, charStates []store.CharacterState) map[string]any {
+	perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContext)
+	povKey := normalizeCharacterKey(extractionStringFromAny(perspectiveContext["current_pov"]))
+	if povKey == "" {
+		return nil
+	}
+	known := map[string]bool{}
+	add := func(value string) {
+		if key := normalizeCharacterKey(value); key != "" {
+			known[key] = true
+		}
+	}
+	for _, state := range charStates {
+		add(state.CharacterName)
+	}
+	for _, item := range memories {
+		parsed := parseJSONMap(item.SummaryJSON)
+		for _, key := range []string{"characters", "character_names", "people"} {
+			for _, value := range memorySearchStringValues(parsed[key]) {
+				add(value)
+			}
+		}
+		for _, entity := range memorySearchMapItems(parsed["entities"]) {
+			for _, key := range []string{"name", "canonical_name", "display_name"} {
+				add(stringFromMap(entity, key))
+			}
+			for _, alias := range memorySearchStringValues(entity["aliases"]) {
+				add(alias)
+			}
+		}
+		for _, secret := range memorySearchMapItems(parsed["protected_secrets"]) {
+			add(stringFromMap(secret, "owner"))
+			for _, subject := range memorySearchStringValues(secret["subject"]) {
+				add(subject)
+			}
+		}
+		for _, identity := range memorySearchMapItems(parsed["character_identity_accuracy"]) {
+			for _, key := range []string{"canonical_entity_name", "surface_identity_name", "true_identity_name", "public_identity_name", "alias_name", "real_identity_name"} {
+				add(stringFromMap(identity, key))
+			}
+			for _, alias := range memorySearchStringValues(identity["aliases"]) {
+				add(alias)
+			}
+		}
+	}
+	if !known[povKey] {
+		return nil
+	}
+	return perspectiveContext
 }
 
 func prepareTurnVectorRecallReady(trace map[string]any) bool {
@@ -722,6 +1263,18 @@ func prepareTurnVectorSearchAttempted(vectorShadow map[string]any) bool {
 
 func prepareTurnSelectedMemoryCount(selection prepareTurnMemoryLaneSelection) int {
 	return len(selection.VectorRelevant) + len(selection.Recent) + len(selection.Relevant) + len(selection.Deep)
+}
+
+func prepareTurnRecallMemoryCount(selection prepareTurnMemoryLaneSelection) int {
+	count := 0
+	for _, lane := range [][]store.Memory{selection.VectorRelevant, selection.Relevant, selection.Deep, selection.Recent} {
+		for _, item := range lane {
+			if !prepareTurnProtectedMemoryGuard(item).Active {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func prepareTurnMemoryLaneCounters(selection prepareTurnMemoryLaneSelection, injected bool) map[string]any {
@@ -753,6 +1306,9 @@ func prepareTurnMemoryLaneCounters(selection prepareTurnMemoryLaneSelection, inj
 		"protected_memory_dropped_count":                intFromAny(selection.Trace["protected_memory_dropped_count"], 0),
 		"protected_memory_gate":                         stringFromMap(selection.Trace, "protected_memory_gate"),
 		"selected_memory_total_count":                   prepareTurnSelectedMemoryCount(selection),
+		"actual_memory_selected_count":                  prepareTurnRecallMemoryCount(selection),
+		"protected_guard_selected_count":                intFromAny(selection.Trace["protected_guard_selected"], 0),
+		"protected_guard_budget":                        intFromAny(selection.Trace["protected_guard_budget"], 0),
 		"selected_memory_total_target":                  intFromAny(selection.Trace["top_k_memory_target"], 0),
 		"selected_memory_top_k_contract":                stringFromMap(selection.Trace, "top_k_definition"),
 	}
@@ -804,6 +1360,12 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 	ctx := buildPrepareTurnRecollectionContext(rawUserInput, chatLogs, nil, nil)
 	before := prepareTurnSelectedMemoryCount(selection)
 	dropped := []map[string]any{}
+	selectedKeys := map[string]bool{}
+	for _, lane := range [][]store.Memory{selection.VectorRelevant, selection.Relevant, selection.Deep, selection.Recent} {
+		for _, item := range lane {
+			selectedKeys[prepareTurnMemoryLaneKey(item)] = true
+		}
+	}
 	filterLane := func(lane string, items []store.Memory) []store.Memory {
 		out := make([]store.Memory, 0, len(items))
 		for _, item := range items {
@@ -825,6 +1387,19 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 	selection.Relevant = filterLane("relevant", selection.Relevant)
 	selection.Deep = filterLane("deep", selection.Deep)
 	selection.Recent = filterLane("recent", selection.Recent)
+	for _, item := range selection.ProtectedCandidates {
+		if selectedKeys[prepareTurnMemoryLaneKey(item)] {
+			continue
+		}
+		if ok, reason := prepareTurnProtectedMemoryRelevant(item, ctx, perspectiveContext); !ok {
+			dropped = append(dropped, map[string]any{
+				"lane":       "preselection",
+				"id":         item.ID,
+				"turn_index": item.TurnIndex,
+				"reason":     reason,
+			})
+		}
+	}
 	if selection.Trace == nil {
 		selection.Trace = map[string]any{}
 	}
@@ -1444,14 +2019,14 @@ func prepareTurnMemoryAlreadySelected(selection prepareTurnMemoryLaneSelection, 
 	return false
 }
 
-func prepareTurnNeedsRawFallback(selection prepareTurnMemoryLaneSelection, topK int) bool {
+func prepareTurnNeedsRawFallback(selection prepareTurnMemoryLaneSelection) bool {
 	if boolFromAny(selection.Trace["vector_recall_ready"]) {
 		return false
 	}
 	if boolFromAny(selection.Trace["vector_recall_attempted"]) {
 		return false
 	}
-	return prepareTurnSelectedMemoryCount(selection) < prepareTurnRecallLimit(topK)
+	return prepareTurnRecallMemoryCount(selection) == 0
 }
 
 func relevantDegradedReason(query string, selected, candidates int) string {

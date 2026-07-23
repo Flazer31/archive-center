@@ -17,7 +17,7 @@ func TestPrepareTurnGenerationPacketShadowCompareRecordIncludesChapterFields(t *
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	fake := &turnRecordingStore{
 		returnMemories: []store.Memory{
-			{ID: 1, ChatSessionID: "sess-ch", TurnIndex: 2, SummaryJSON: `{"turn_summary":"chapter one"}`, Importance: 0.9},
+			{ID: 1, ChatSessionID: "sess-ch", TurnIndex: 2, SummaryJSON: `{"turn_summary":"What happens next in chapter one"}`, Importance: 0.9},
 		},
 		returnResumePack: &store.ResumePack{
 			PackStatus:    "ready",
@@ -76,8 +76,8 @@ func TestPrepareTurnGenerationPacketShadowCompareRecordIncludesChapterFields(t *
 	if scr["new_chapter_chars"].(float64) <= 0 {
 		t.Fatalf("new_chapter_chars = %v, want > 0", scr["new_chapter_chars"])
 	}
-	if scr["new_has_chapter_input"] != true {
-		t.Fatalf("new_has_chapter_input = %v, want true", scr["new_has_chapter_input"])
+	if scr["new_has_chapter_input"] != false {
+		t.Fatalf("new_has_chapter_input = %v, want false because chapter has a dedicated lane", scr["new_has_chapter_input"])
 	}
 	if scr["old_has_chapter"] != false {
 		t.Fatalf("old_has_chapter = %v, want false", scr["old_has_chapter"])
@@ -91,8 +91,8 @@ func TestPrepareTurnGenerationPacketShadowCompareRecordIncludesChapterFields(t *
 	if scr["divergence_chapter"] != true {
 		t.Fatalf("divergence_chapter = %v, want true", scr["divergence_chapter"])
 	}
-	if scr["divergence_chapter_input"] != true {
-		t.Fatalf("divergence_chapter_input = %v, want true", scr["divergence_chapter_input"])
+	if scr["divergence_chapter_input"] != false {
+		t.Fatalf("divergence_chapter_input = %v, want false", scr["divergence_chapter_input"])
 	}
 }
 
@@ -113,7 +113,7 @@ func TestPrepareTurnCanonicalStateHardFloorFiltersStaleLayers(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-hs-prep","turn_index":22,"raw_user_input":"Continue","settings":{"max_injection_chars":900,"max_input_context_chars":300,"injection_enabled":true,"input_context_enabled":true}}`
+	body := `{"chat_session_id":"sess-hs-prep","turn_index":22,"raw_user_input":"Mina and Rowan continue at the archive gate.","settings":{"max_injection_chars":900,"max_input_context_chars":300,"injection_enabled":true,"input_context_enabled":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -155,7 +155,7 @@ func TestPrepareTurnTM1aCanonicalConsistencyInputsSurface(t *testing.T) {
 			ID:            1,
 			ChatSessionID: "sess-tm1a",
 			TurnIndex:     96,
-			SummaryJSON:   `{"turn_summary":"Mina waits in the reading alcove after Rowan's promise."}`,
+			SummaryJSON:   `{"turn_summary":"Mina waits in the reading alcove after Rowan's promise.","locations":["archive room"]}`,
 			Importance:    0.88,
 			PlaceWing:     "North Wing",
 			PlaceRoom:     "Scene Room",
@@ -194,7 +194,7 @@ func TestPrepareTurnTM1aCanonicalConsistencyInputsSurface(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-tm1a","turn_index":98,"raw_user_input":"Continue from the archive room.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":1200,"max_input_context_chars":500,"top_k":5}}`
+	body := `{"chat_session_id":"sess-tm1a","turn_index":98,"raw_user_input":"Mina and Rowan continue from the North Wing archive room while Rowan still owes Mina an answer.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":1200,"max_input_context_chars":500,"top_k":5}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

@@ -104,7 +104,7 @@ func (s *Server) handleSessionReferenceRecallPreview(w http.ResponseWriter, r *h
 	}
 	ruleLimit := 0
 	if limit >= 0 {
-		ruleLimit = prepareTurnSupportRecallLimit(prepareTurnRecallLimit(limit))
+		ruleLimit = prepareTurnRecallLimit(limit)
 	}
 	sceneContext := s.loadReferenceCoverageSceneContext(r.Context(), sid, ruleLimit)
 	result := s.buildSessionReferenceRecallWithSceneContext(r.Context(), sid, req.Query, limit, req.ClientMeta, req.Messages, sceneContext)

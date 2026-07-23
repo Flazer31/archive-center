@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
@@ -58,7 +59,7 @@ func (l *completeTurnRequestLedger) finish(key string, response completeTurnReco
 	entry.response = response
 	entry.finished = true
 	close(entry.done)
-	if response.status >= http.StatusInternalServerError {
+	if response.status >= http.StatusInternalServerError || completeTurnRecordedResponseHasFailedSave(response) {
 		delete(l.entries, key)
 	}
 }
@@ -146,6 +147,27 @@ func writeCompleteTurnRecordedResponse(w http.ResponseWriter, response completeT
 	_, _ = w.Write(response.body)
 }
 
+func completeTurnRecordedResponseHasFailedSave(response completeTurnRecordedResponse) bool {
+	if response.status < http.StatusOK || response.status >= http.StatusMultipleChoices {
+		return false
+	}
+	var payload struct {
+		SaveOK               *bool `json:"save_ok"`
+		DerivedRetryRequired bool  `json:"derived_retry_required"`
+	}
+	if json.Unmarshal(response.body, &payload) != nil {
+		return false
+	}
+	return (payload.SaveOK != nil && !*payload.SaveOK) || payload.DerivedRetryRequired
+}
+
+func completeTurnRecordedResponseSuccessful(response completeTurnRecordedResponse) bool {
+	if response.status < http.StatusOK || response.status >= http.StatusMultipleChoices {
+		return false
+	}
+	return !completeTurnRecordedResponseHasFailedSave(response)
+}
+
 func completeTurnIdempotencyKey(clientMeta map[string]any) string {
 	key := strings.TrimSpace(stringFromAny(clientMeta["idempotency_key"]))
 	if len(key) > 240 {
@@ -198,7 +220,7 @@ func (s *Server) handleCompleteTurnRequestStatus(w http.ResponseWriter, r *http.
 	}
 	if found && status == "completed" {
 		payload["http_status"] = response.status
-		payload["success"] = response.status >= http.StatusOK && response.status < http.StatusMultipleChoices
+		payload["success"] = completeTurnRecordedResponseSuccessful(response)
 	}
 	writeJSON(w, http.StatusOK, payload)
 }

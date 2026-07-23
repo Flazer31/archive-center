@@ -382,7 +382,23 @@ func (m *mariadbStore) ListProtagonistEntityMemories(ctx context.Context, filter
 		FROM protagonist_entity_memories
 		WHERE 1 = 1`
 	args := []any{}
-	if strings.TrimSpace(filter.OwnerEntityKey) != "" {
+	ownerKeys := make([]string, 0, len(filter.OwnerEntityKeys))
+	seenOwnerKeys := map[string]bool{}
+	for _, rawKey := range filter.OwnerEntityKeys {
+		key := strings.TrimSpace(rawKey)
+		if key == "" || seenOwnerKeys[key] {
+			continue
+		}
+		seenOwnerKeys[key] = true
+		ownerKeys = append(ownerKeys, key)
+	}
+	if len(ownerKeys) > 0 {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ownerKeys)), ",")
+		query += " AND COALESCE(NULLIF(TRIM(owner_entity_key), ''), TRIM(persona_entity_key)) IN (" + placeholders + ")"
+		for _, key := range ownerKeys {
+			args = append(args, key)
+		}
+	} else if strings.TrimSpace(filter.OwnerEntityKey) != "" {
 		query += " AND (owner_entity_key = ? OR (owner_entity_key = '' AND persona_entity_key = ?))"
 		key := strings.TrimSpace(filter.OwnerEntityKey)
 		args = append(args, key, key)
@@ -425,6 +441,52 @@ func (m *mariadbStore) ListProtagonistEntityMemories(ctx context.Context, filter
 			return nil, err
 		}
 		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) ListProtagonistEntityMemoryOwners(ctx context.Context, filter ProtagonistEntityMemoryFilter) ([]ProtagonistEntityMemoryOwner, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	query := `
+		SELECT
+			COALESCE(NULLIF(TRIM(owner_entity_key), ''), TRIM(persona_entity_key)) AS resolved_owner_key,
+			COALESCE(NULLIF(TRIM(owner_entity_name), ''), NULLIF(TRIM(persona_entity_name), ''), COALESCE(NULLIF(TRIM(owner_entity_key), ''), TRIM(persona_entity_key))) AS resolved_owner_name,
+			MAX(updated_at) AS latest_update
+		FROM protagonist_entity_memories
+		WHERE 1 = 1`
+	args := []any{}
+	if strings.TrimSpace(filter.OwnerEntityRole) != "" {
+		query += " AND owner_entity_role = ?"
+		args = append(args, strings.TrimSpace(filter.OwnerEntityRole))
+	}
+	if strings.TrimSpace(filter.OwnerVisibility) != "" {
+		query += " AND owner_visibility = ?"
+		args = append(args, strings.TrimSpace(filter.OwnerVisibility))
+	}
+	if strings.TrimSpace(filter.SourceChatSessionID) != "" {
+		query += " AND source_chat_session_id = ?"
+		args = append(args, strings.TrimSpace(filter.SourceChatSessionID))
+	}
+	query += " GROUP BY resolved_owner_key, resolved_owner_name ORDER BY latest_update DESC"
+
+	rows, err := m.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ProtagonistEntityMemoryOwner{}
+	for rows.Next() {
+		var owner ProtagonistEntityMemoryOwner
+		var latest time.Time
+		if err := rows.Scan(&owner.OwnerEntityKey, &owner.OwnerEntityName, &latest); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(owner.OwnerEntityKey) == "" && strings.TrimSpace(owner.OwnerEntityName) == "" {
+			continue
+		}
+		out = append(out, owner)
 	}
 	return out, rows.Err()
 }

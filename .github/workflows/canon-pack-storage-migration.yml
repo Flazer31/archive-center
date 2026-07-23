@@ -1,0 +1,80 @@
+name: Canon Pack Storage Migration Proof
+
+on:
+  push:
+    paths:
+      - "migrations/001_schema.sql"
+      - "migrations/002_canon_pack_storage.sql"
+      - "go-service/cmd/mariadb-schema/**"
+      - "go-service/internal/canonpack/**"
+      - "go-service/internal/store/canon_pack.go"
+      - "go-service/internal/store/mariadb_canon_pack.go"
+      - "go-service/internal/store/mariadb_canon_registry.go"
+      - "go-service/internal/store/source_discovery.go"
+      - "go-service/internal/store/mariadb_source_discovery.go"
+      - "go-service/internal/store/mariadb.go"
+      - "go-service/internal/store/mariadb_reference_library.go"
+      - "go-service/internal/store/mariadb_reference_library_test.go"
+      - "go-service/internal/httpapi/server.go"
+      - "go-service/internal/httpapi/group_canon_pack_preview.go"
+      - "go-service/internal/httpapi/group_canon_pack_preview_test.go"
+      - "go-service/internal/httpapi/group_source_discovery.go"
+      - "go-service/internal/httpapi/group_source_discovery_test.go"
+      - ".github/workflows/canon-pack-storage-migration.yml"
+  pull_request:
+    paths:
+      - "migrations/001_schema.sql"
+      - "migrations/002_canon_pack_storage.sql"
+      - "go-service/cmd/mariadb-schema/**"
+      - "go-service/internal/canonpack/**"
+      - "go-service/internal/store/canon_pack.go"
+      - "go-service/internal/store/mariadb_canon_pack.go"
+      - "go-service/internal/store/mariadb_canon_registry.go"
+      - "go-service/internal/store/source_discovery.go"
+      - "go-service/internal/store/mariadb_source_discovery.go"
+      - "go-service/internal/store/mariadb.go"
+      - "go-service/internal/store/mariadb_reference_library.go"
+      - "go-service/internal/store/mariadb_reference_library_test.go"
+      - "go-service/internal/httpapi/server.go"
+      - "go-service/internal/httpapi/group_canon_pack_preview.go"
+      - "go-service/internal/httpapi/group_canon_pack_preview_test.go"
+      - "go-service/internal/httpapi/group_source_discovery.go"
+      - "go-service/internal/httpapi/group_source_discovery_test.go"
+      - ".github/workflows/canon-pack-storage-migration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  disposable-mariadb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "1"
+          MARIADB_DATABASE: archive_center_canon_pack_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-service/go.mod
+          cache: true
+          cache-dependency-path: go-service/go.sum
+
+      - name: Verify migration and production registration on disposable MariaDB
+        working-directory: go-service
+        env:
+          AC_CANON_PACK_MIGRATION_TEST_DISPOSABLE: "YES"
+          AC_CANON_PACK_MIGRATION_TEST_DSN: "root@tcp(127.0.0.1:3306)/archive_center_canon_pack_test?parseTime=true"
+        run: go test ./cmd/mariadb-schema -run 'TestCanonPackStorage.*MariaDBIntegration' -count=1 -v

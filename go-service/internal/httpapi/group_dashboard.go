@@ -39,6 +39,7 @@ type dashboardViewModel struct {
 
 type dashboardCounts struct {
 	OK      int `json:"ok"`
+	Neutral int `json:"neutral"`
 	Warn    int `json:"warn"`
 	Fail    int `json:"fail"`
 	Unknown int `json:"unknown"`
@@ -246,6 +247,7 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 	summary := dashboardCounts{}
 	for _, card := range cards {
 		summary.OK += card.Summary.OK
+		summary.Neutral += card.Summary.Neutral
 		summary.Warn += card.Summary.Warn
 		summary.Fail += card.Summary.Fail
 		summary.Unknown += card.Summary.Unknown
@@ -345,6 +347,8 @@ func buildCompleteTurnDashboardCard(complete map[string]any) dashboardCard {
 	switch card.Severity {
 	case "ok":
 		card.Summary.OK = 1
+	case "neutral":
+		card.Summary.Neutral = 1
 	case "warn":
 		card.Summary.Warn = 1
 	case "fail":
@@ -442,6 +446,8 @@ func newDashboardCard(id, icon, title string, rows []dashboardRow) dashboardCard
 			counts.Warn++
 		case "ok":
 			counts.OK++
+		case "neutral":
+			counts.Neutral++
 		default:
 			counts.Unknown++
 		}
@@ -451,6 +457,8 @@ func newDashboardCard(id, icon, title string, rows []dashboardRow) dashboardCard
 		severity = "fail"
 	} else if counts.Warn > 0 {
 		severity = "warn"
+	} else if counts.OK == 0 && counts.Neutral > 0 {
+		severity = "neutral"
 	} else if counts.OK == 0 {
 		severity = "unknown"
 	}
@@ -514,11 +522,13 @@ func isDuplicateDashboardDetail(value any) bool {
 }
 func dashboardSeverity(status string) string {
 	switch strings.ToLower(status) {
-	case "ok":
+	case "ok", "eligible":
 		return "ok"
-	case "warn":
+	case "empty", "not_applicable":
+		return "neutral"
+	case "warn", "degraded", "deferred":
 		return "warn"
-	case "fail", "error":
+	case "fail", "error", "failed", "incompatible":
 		return "fail"
 	default:
 		return "unknown"

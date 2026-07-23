@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -19,15 +20,16 @@ import (
 type referenceLibraryHTTPStore struct {
 	store.Store
 	store.ReferenceLibraryStore
-	mu           sync.Mutex
-	works        []store.ReferenceWork
-	continuities []store.ReferenceContinuity
-	documents    []store.ReferenceDocument
-	timeline     []store.ReferenceTimelineNode
-	entities     []store.ReferenceEntity
-	aliases      map[string][]store.ReferenceEntityAlias
-	claims       []store.ReferenceClaim
-	reviews      []referenceReviewCall
+	mu            sync.Mutex
+	works         []store.ReferenceWork
+	continuities  []store.ReferenceContinuity
+	documents     []store.ReferenceDocument
+	timeline      []store.ReferenceTimelineNode
+	entities      []store.ReferenceEntity
+	aliases       map[string][]store.ReferenceEntityAlias
+	claims        []store.ReferenceClaim
+	reviews       []referenceReviewCall
+	deleteWorkErr error
 }
 
 type referenceReviewCall struct {
@@ -41,6 +43,36 @@ type referenceReviewCall struct {
 
 func newReferenceLibraryHTTPStore() *referenceLibraryHTTPStore {
 	return &referenceLibraryHTTPStore{Store: store.NewNoopStore(), aliases: map[string][]store.ReferenceEntityAlias{}}
+}
+
+func TestReferenceDocumentSourceViewsExposeLocalRetentionWithoutRawBody(t *testing.T) {
+	views := referenceDocumentSourceViews([]store.ReferenceDocument{{
+		DocumentID: "doc-1", SourceURI: "https://reference.example/wiki/page",
+		ContentHash: "hash-1", RawRetention: "full", RawText: `<html><head><title>Archive Guide</title></head><body><h1>Fallback Heading</h1></body></html>`, ImportStatus: "pending",
+	}})
+	if len(views) != 1 || views[0]["raw_retention"] != "full" || views[0]["raw_text_length"] != len([]rune(`<html><head><title>Archive Guide</title></head><body><h1>Fallback Heading</h1></body></html>`)) {
+		t.Fatalf("views=%#v", views)
+	}
+	if views[0]["document_title"] != "Archive Guide" {
+		t.Fatalf("document_title=%#v", views[0]["document_title"])
+	}
+	if _, exposed := views[0]["raw_text"]; exposed {
+		t.Fatalf("raw source body must remain in the local DB, not the library list response: %#v", views[0])
+	}
+}
+
+func TestReferenceDocumentTitlePrefersProvenanceAndFallsBackToReadableURL(t *testing.T) {
+	items := []store.ReferenceDocument{
+		{ProvenanceJSON: `{"document_title":"  Stored   Document Title "}`, SourceURI: "https://reference.example/wiki/ignored"},
+		{SourceURI: "https://reference.example/wiki/Readable_Page_Name"},
+		{SourceURI: "https://reference.example/"},
+	}
+	want := []string{"Stored Document Title", "Readable Page Name", "reference.example"}
+	for index, item := range items {
+		if got := referenceDocumentTitle(item); got != want[index] {
+			t.Fatalf("index %d: got %q want %q", index, got, want[index])
+		}
+	}
 }
 
 func (f *referenceLibraryHTTPStore) CreateReferenceWork(_ context.Context, item *store.ReferenceWork) error {
@@ -66,6 +98,38 @@ func (f *referenceLibraryHTTPStore) ListReferenceWorks(_ context.Context, _ stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]store.ReferenceWork(nil), f.works...), nil
+}
+
+func (f *referenceLibraryHTTPStore) UpdateReferenceWork(_ context.Context, item *store.ReferenceWork, expectedRevision int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.works {
+		if f.works[i].WorkID != item.WorkID {
+			continue
+		}
+		if f.works[i].Revision != expectedRevision {
+			return store.ErrReferenceConflict
+		}
+		item.Revision = expectedRevision + 1
+		f.works[i] = *item
+		return nil
+	}
+	return store.ErrNotFound
+}
+
+func (f *referenceLibraryHTTPStore) DeleteReferenceWork(_ context.Context, workID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleteWorkErr != nil {
+		return f.deleteWorkErr
+	}
+	for i := range f.works {
+		if f.works[i].WorkID == workID {
+			f.works = append(f.works[:i], f.works[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func (f *referenceLibraryHTTPStore) UpsertReferenceContinuity(_ context.Context, item *store.ReferenceContinuity) error {
@@ -284,6 +348,18 @@ func (f *referenceLibraryHTTPStore) UpdateReferenceCandidateReview(_ context.Con
 	return nil
 }
 
+func TestReferenceMetadataStringDoesNotTurnMissingValueIntoNilText(t *testing.T) {
+	if got := referenceMetadataString(`{"origin_kind":"source_discovery"}`, "fact_key"); got != "" {
+		t.Fatalf("missing fact_key=%q", got)
+	}
+	if got := referenceMetadataString(`{"fact_key":null}`, "fact_key"); got != "" {
+		t.Fatalf("null fact_key=%q", got)
+	}
+	if got := referenceMetadataString(`{"fact_key":"character.role"}`, "fact_key"); got != "character.role" {
+		t.Fatalf("fact_key=%q", got)
+	}
+}
+
 func (f *referenceLibraryHTTPStore) UpdateReferenceLibraryItem(_ context.Context, item *store.ReferenceLibraryItemUpdate) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -343,6 +419,45 @@ func referenceLibraryTestRequest(t *testing.T, mux http.Handler, method, path st
 	return out
 }
 
+func TestReferenceWorkUpdateAndDeleteRoutes(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	fake.works = append(fake.works, store.ReferenceWork{
+		WorkID: "work-1", Title: "Old title", WorkType: "novel", DefaultLanguage: "ko", Status: "draft", Revision: 3,
+	})
+	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	updated := referenceLibraryTestRequest(t, mux, http.MethodPatch, "/reference-works/work-1", map[string]any{
+		"title": "New title", "work_type": "comic", "default_language": "ja", "expected_revision": 3,
+	})
+	work := updated["work"].(map[string]any)
+	if work["title"] != "New title" || work["work_type"] != "comic" || work["default_language"] != "ja" || intFromAny(work["revision"], 0) != 4 {
+		t.Fatalf("unexpected updated work: %#v", work)
+	}
+
+	deleted := referenceLibraryTestRequest(t, mux, http.MethodDelete, "/reference-works/work-1", nil)
+	if deleted["deleted"] != true || len(fake.works) != 0 {
+		t.Fatalf("work was not deleted: response=%#v works=%#v", deleted, fake.works)
+	}
+}
+
+func TestReferenceWorkDeleteRoutePreservesDependencyGuard(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	fake.works = append(fake.works, store.ReferenceWork{WorkID: "work-1", Title: "Linked", Revision: 1})
+	fake.deleteWorkErr = store.ErrReferenceWorkInUse
+	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodDelete, "/reference-works/work-1", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "reference_work_in_use") || len(fake.works) != 1 {
+		t.Fatalf("dependency guard response=%d %s works=%#v", rec.Code, rec.Body.String(), fake.works)
+	}
+}
+
 func TestReferenceLibraryFileToReviewRoutes(t *testing.T) {
 	fake := newReferenceLibraryHTTPStore()
 	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
@@ -373,6 +488,22 @@ func TestReferenceLibraryFileToReviewRoutes(t *testing.T) {
 	}
 }
 
+func TestReferenceLibraryBrowseReturnsPendingItemsSeparately(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	fake.works = append(fake.works, store.ReferenceWork{WorkID: "work-1", Title: "Neutral"})
+	fake.entities = append(fake.entities, store.ReferenceEntity{EntityID: "entity-pending", WorkID: "work-1", ContinuityID: "continuity-1", EntityType: "character", CanonicalName: "Mina", ReviewStatus: "pending"})
+	fake.claims = append(fake.claims, store.ReferenceClaim{ClaimID: "claim-pending", WorkID: "work-1", ContinuityID: "continuity-1", ClaimType: "event", ClaimText: "Mina arrives.", ReviewStatus: "pending"})
+	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	result := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
+	pending := result["pending"].(map[string]any)
+	if result["count"] != float64(0) || pending["count"] != float64(2) || len(pending["entities"].([]any)) != 1 || len(pending["claims"].([]any)) != 1 {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
 func TestReferenceExtractionQueueReusesRunningDocumentJob(t *testing.T) {
 	release := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -390,9 +521,9 @@ func TestReferenceExtractionQueueReusesRunningDocumentJob(t *testing.T) {
 	body := map[string]any{"client_meta": map[string]any{"critic": map[string]any{"provider": "openai", "api_key": "test", "endpoint": upstream.URL, "model": "test", "timeout_ms": 30000}}}
 	first := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/documents/doc-1/extract", body)
 	second := referenceLibraryTestRequest(t, mux, http.MethodPost, "/reference-works/work-1/documents/doc-1/extract", body)
-	if request, ok := first["request"].(map[string]any); !ok || request["auto_review"] != true {
+	if request, ok := first["request"].(map[string]any); !ok || request["auto_review"] != false {
 		close(release)
-		t.Fatalf("reference extraction did not default to automatic review: %#v", first)
+		t.Fatalf("reference extraction did not default to manual review: %#v", first)
 	}
 	if first["job_id"] != second["job_id"] || second["reused_running_job"] != true {
 		close(release)
@@ -403,6 +534,11 @@ func TestReferenceExtractionQueueReusesRunningDocumentJob(t *testing.T) {
 	for time.Now().Before(deadline) {
 		job, ok := srv.AdminJobs.get(first["job_id"].(string))
 		if ok && job["status"] == "completed" {
+			result := job["result"].(map[string]any)
+			vectorIndex := result["vector_index"].(map[string]any)
+			if vectorIndex["status"] != "skipped" || vectorIndex["reason"] != "manual_approval_required" {
+				t.Fatalf("extraction claimed an automatic vector index: %#v", result)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -433,6 +569,52 @@ func TestReferenceExtractorUsesEvidenceGroundedGeneralFactionRule(t *testing.T) 
 	}
 	if strings.Contains(systemPrompt, "1930s hunters") || !containsAll(systemPrompt, "faction", "distinct in-world organization", "evidence_excerpt", "directly supports") {
 		t.Fatalf("extractor faction rule = %q", systemPrompt)
+	}
+}
+
+func TestSplitReferenceDocumentDoesNotCapChunkCount(t *testing.T) {
+	raw := strings.Repeat("x", 65*16)
+	chunks := splitReferenceDocument(raw, 16)
+	if len(chunks) != 65 {
+		t.Fatalf("chunks=%d", len(chunks))
+	}
+	if strings.Join(chunks, "") != raw {
+		t.Fatal("chunking changed document content")
+	}
+}
+
+func TestReferenceLLMCallsPreserveConfiguredGenerationValues(t *testing.T) {
+	requests := []map[string]any{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, request)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{}"}}]}`))
+	}))
+	defer upstream.Close()
+	cfg := completeTurnLLMConfig{
+		APIKey: "test", Endpoint: upstream.URL, Model: "test", Provider: "openai", TimeoutMs: 30000,
+		Temperature: 0.87, MaxTokens: 777, MaxCompletionTokens: 777,
+	}
+	if _, err := callReferenceExtractor(context.Background(), cfg, &store.ReferenceDocument{WorkID: "work-1", ContinuityID: "continuity-1", SourceURI: "source.txt"}, "A source chunk.", 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callReferenceAutoReviewer(context.Background(), cfg, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callReferenceTimelineChronology(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("request count=%d", len(requests))
+	}
+	for i, request := range requests {
+		if request["temperature"] != 0.87 || request["max_tokens"] != float64(777) {
+			t.Fatalf("request[%d] changed configured generation values: %#v", i, request)
+		}
 	}
 }
 
@@ -494,16 +676,17 @@ func TestReferenceGroundedSourceExcerptRejectsParaphrase(t *testing.T) {
 	}
 }
 
-func TestReferenceAutoReviewApprovesSupportedAndLeavesAmbiguousPending(t *testing.T) {
+func TestReferenceAutoReviewRecordsRecommendationsWithoutApprovingCandidates(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"decisions\":[{\"kind\":\"entity\",\"id\":\"entity-supported\",\"decision\":\"approved\",\"reason\":\"direct evidence\"},{\"kind\":\"entity\",\"id\":\"entity-ambiguous\",\"decision\":\"pending\",\"reason\":\"heading may not be an organization\"}]}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"decisions\":[{\"kind\":\"entity\",\"id\":\"entity-supported\",\"decision\":\"approved\",\"reason\":\"direct evidence\"},{\"kind\":\"entity\",\"id\":\"entity-rejected\",\"decision\":\"rejected\",\"reason\":\"production trivia\"},{\"kind\":\"entity\",\"id\":\"entity-ambiguous\",\"decision\":\"pending\",\"reason\":\"heading may not be an organization\"}]}"}}]}`))
 	}))
 	defer upstream.Close()
 
 	fake := newReferenceLibraryHTTPStore()
 	fake.entities = append(fake.entities,
 		store.ReferenceEntity{EntityID: "entity-supported", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "Aster Unit", EntityType: "faction", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"direct source sentence"}`},
+		store.ReferenceEntity{EntityID: "entity-rejected", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "Actor Notes", EntityType: "other", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"production trivia"}`},
 		store.ReferenceEntity{EntityID: "entity-ambiguous", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "1930s Hunters", EntityType: "faction", ReviewStatus: "pending", MetadataJSON: `{"evidence_excerpt":"1930s heading"}`},
 	)
 	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
@@ -519,41 +702,112 @@ func TestReferenceAutoReviewApprovesSupportedAndLeavesAmbiguousPending(t *testin
 	for time.Now().Before(deadline) {
 		job, ok := srv.AdminJobs.get(jobID)
 		if ok && job["status"] == "completed" {
-			if fake.entities[0].ReviewStatus != "approved" || fake.entities[1].ReviewStatus != "pending" {
+			if fake.entities[0].ReviewStatus != "pending" || fake.entities[1].ReviewStatus != "pending" || fake.entities[2].ReviewStatus != "pending" {
 				t.Fatalf("unexpected review statuses: %#v", fake.entities)
 			}
-			if fake.entities[0].ReviewSource != "critic_auto" || fake.entities[0].ReviewReason != "direct evidence" || fake.entities[0].ReviewedAt == nil {
-				t.Fatalf("automatic review audit was not recorded: %#v", fake.entities[0])
+			if fake.entities[0].ReviewSource != "machine_recommended_approved" || fake.entities[0].ReviewReason != "direct evidence" || fake.entities[0].ReviewedAt == nil {
+				t.Fatalf("approval recommendation was not recorded: %#v", fake.entities[0])
 			}
-			if fake.entities[1].ReviewSource != "critic_auto" || fake.entities[1].ReviewReason == "" || fake.entities[1].ReviewedAt == nil {
-				t.Fatalf("pending review reason was not recorded: %#v", fake.entities[1])
+			if fake.entities[1].ReviewSource != "machine_recommended_rejected" || fake.entities[1].ReviewReason != "production trivia" || fake.entities[1].ReviewedAt == nil {
+				t.Fatalf("rejection recommendation was not recorded: %#v", fake.entities[1])
+			}
+			if fake.entities[2].ReviewSource != "machine_recommended_pending" || fake.entities[2].ReviewReason == "" || fake.entities[2].ReviewedAt == nil {
+				t.Fatalf("pending recommendation was not recorded: %#v", fake.entities[2])
 			}
 			result := job["result"].(map[string]any)
-			if intFromAny(result["approved"], 0) != 1 || intFromAny(result["remaining_pending"], 0) != 1 {
+			if result["mode"] != "recommendation_only" || intFromAny(result["approved"], -1) != 0 || intFromAny(result["rejected"], -1) != 0 || intFromAny(result["recommended_approved"], 0) != 1 || intFromAny(result["recommended_rejected"], 0) != 1 || intFromAny(result["recommended_pending"], 0) != 1 || intFromAny(result["remaining_pending"], 0) != 3 {
 				t.Fatalf("unexpected auto review result: %#v", result)
+			}
+			vectorIndex := result["vector_index"].(map[string]any)
+			if vectorIndex["status"] != "skipped" || vectorIndex["reason"] != "manual_approval_required" {
+				t.Fatalf("recommendation job claimed an automatic vector index: %#v", result)
 			}
 			listed := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/review-candidates?continuity_id=continuity-1&review_status=all", nil)
 			summary := listed["summary"].(map[string]any)
-			if intFromAny(summary["approved"], 0) != 1 || intFromAny(summary["pending"], 0) != 1 || intFromAny(summary["total"], 0) != 2 {
+			if intFromAny(summary["approved"], -1) != 0 || intFromAny(summary["rejected"], -1) != 0 || intFromAny(summary["pending"], 0) != 3 || intFromAny(summary["total"], 0) != 3 {
 				t.Fatalf("unexpected review summary: %#v", summary)
 			}
 			library := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
-			if intFromAny(library["count"], 0) != 1 {
-				t.Fatalf("generated library did not contain exactly the approved item: %#v", library)
-			}
-			entities := library["entities"].([]any)
-			if len(entities) != 1 || entities[0].(map[string]any)["entity_id"] != "entity-supported" {
-				t.Fatalf("generated library exposed a pending item: %#v", entities)
-			}
-			typeCounts := library["type_counts"].(map[string]any)
-			if intFromAny(typeCounts["entity_faction"], 0) != 1 {
-				t.Fatalf("generated library type counts were incorrect: %#v", typeCounts)
+			if intFromAny(library["count"], -1) != 0 || len(library["entities"].([]any)) != 0 {
+				t.Fatalf("generated library exposed recommendation-only candidates: %#v", library)
 			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("reference auto review job did not complete")
+}
+
+func TestReferenceLibraryLegacyAutoReviewPreviewIsReadOnlyAndEvidenceAware(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	fake.timeline = append(fake.timeline,
+		store.ReferenceTimelineNode{NodeID: "legacy-timeline", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Legacy Event", ReviewStatus: "approved", ReviewSource: "critic_auto", ReviewReason: "model approved", MetadataJSON: `{"evidence_grounded":true,"evidence_excerpt":"direct timeline evidence"}`},
+	)
+	fake.entities = append(fake.entities,
+		store.ReferenceEntity{EntityID: "legacy-entity", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "Legacy Entity", EntityType: "character", ReviewStatus: "rejected", ReviewSource: "critic_auto", ReviewReason: "model rejected", MetadataJSON: `{"evidence_grounded":false,"evidence_excerpt":"unverified entity evidence"}`},
+		store.ReferenceEntity{EntityID: "new-recommendation", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "New Recommendation", EntityType: "character", ReviewStatus: "pending", ReviewSource: "machine_recommended_approved", MetadataJSON: `{"evidence_grounded":true,"evidence_excerpt":"new evidence"}`},
+		store.ReferenceEntity{EntityID: "user-approved", WorkID: "work-1", ContinuityID: "continuity-1", CanonicalName: "User Approved", EntityType: "character", ReviewStatus: "approved", ReviewSource: "manual", MetadataJSON: `{"evidence_grounded":true,"evidence_excerpt":"user evidence"}`},
+	)
+	fake.claims = append(fake.claims,
+		store.ReferenceClaim{ClaimID: "legacy-claim", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "Legacy claim without evidence", ClaimType: "event", ReviewStatus: "pending", ReviewSource: "critic_auto", ReviewReason: "model pending", MetadataJSON: `{}`},
+	)
+	srv := &Server{Cfg: config.Config{}, Store: fake, AdminJobs: newAdminJobManager()}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	result := referenceLibraryTestRequest(t, mux, http.MethodGet, "/reference-works/work-1/library?continuity_id=continuity-1", nil)
+	preview := result["legacy_auto_review_preview"].(map[string]any)
+	if preview["contract_version"] != referenceLegacyAutoReviewPreviewContractVersion || preview["mode"] != "read_only" || preview["mutation_allowed"] != false || preview["truncated"] != false {
+		t.Fatalf("legacy preview contract = %#v", preview)
+	}
+	summary := preview["summary"].(map[string]any)
+	for key, want := range map[string]int{
+		"total": 3, "approved": 1, "rejected": 1, "pending": 1,
+		"potentially_active": 1, "evidence_grounded": 1,
+		"evidence_present_unverified": 1, "evidence_missing": 1,
+		"timeline": 1, "entity": 1, "claim": 1,
+	} {
+		if got := intFromAny(summary[key], -1); got != want {
+			t.Fatalf("legacy preview summary %s=%d want=%d: %#v", key, got, want, summary)
+		}
+	}
+	items := preview["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("legacy preview items = %#v", items)
+	}
+	evidenceStatuses := map[string]bool{}
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		if item["review_source"] != "critic_auto" {
+			t.Fatalf("non-legacy recommendation leaked into preview: %#v", item)
+		}
+		evidenceStatuses[item["evidence_status"].(string)] = true
+	}
+	if !evidenceStatuses["grounded"] || !evidenceStatuses["present_unverified"] || !evidenceStatuses["missing"] {
+		t.Fatalf("legacy evidence classes = %#v", evidenceStatuses)
+	}
+	if intFromAny(result["count"], -1) != 2 {
+		t.Fatalf("read-only preview changed approved library behavior: %#v", result)
+	}
+	if fake.timeline[0].ReviewStatus != "approved" || fake.entities[0].ReviewStatus != "rejected" || fake.claims[0].ReviewStatus != "pending" || len(fake.reviews) != 0 {
+		t.Fatalf("legacy preview mutated review state: timeline=%#v entities=%#v claims=%#v reviews=%#v", fake.timeline, fake.entities, fake.claims, fake.reviews)
+	}
+}
+
+func TestReferenceLegacyAutoReviewPreviewIncludesAllItems(t *testing.T) {
+	const itemCount = 103
+	entities := make([]store.ReferenceEntity, 0, itemCount)
+	for i := 0; i < itemCount; i++ {
+		entities = append(entities, store.ReferenceEntity{EntityID: fmt.Sprintf("entity-%d", i), CanonicalName: fmt.Sprintf("Entity %d", i), ReviewStatus: "approved", ReviewSource: "critic_auto"})
+	}
+	preview := buildReferenceLegacyAutoReviewPreview("work-1", "continuity-1", nil, entities, nil)
+	if preview["truncated"] != false || len(preview["items"].([]map[string]any)) != itemCount {
+		t.Fatalf("complete legacy preview = %#v", preview)
+	}
+	summary := preview["summary"].(map[string]int)
+	if summary["total"] != itemCount || summary["potentially_active"] != itemCount {
+		t.Fatalf("complete legacy preview lost counts: %#v", summary)
+	}
 }
 
 func TestReferenceLibraryManageEditExcludeAndRestore(t *testing.T) {
@@ -607,6 +861,52 @@ func TestReferenceClaimStableIDIgnoresChunkAndCandidateOrder(t *testing.T) {
 	}
 	if fake.claims[0].ClaimID != fake.claims[2].ClaimID {
 		t.Fatalf("same semantic claim received different IDs: %q != %q", fake.claims[0].ClaimID, fake.claims[2].ClaimID)
+	}
+}
+
+func TestReferenceDocumentExtractionTextPreservesStructuredContent(t *testing.T) {
+	raw := `<!doctype html><html><body><nav>Site navigation</nav><main><h1>Characters</h1><ul><li>Mina - captain</li><li>Rin - scout</li></ul><h2>Locations</h2><table><tr><th>Name</th><th>Type</th></tr><tr><td>Citadel</td><td>Fortress</td></tr></table></main><script>ignoreMe()</script></body></html>`
+	got := referenceDocumentExtractionText(raw)
+	for _, expected := range []string{"Characters", "Mina", "Rin", "Locations", "Citadel", "Fortress"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("structured extraction text omitted %q: %s", expected, got)
+		}
+	}
+	for _, excluded := range []string{"Site navigation", "ignoreMe"} {
+		if strings.Contains(got, excluded) {
+			t.Fatalf("structured extraction text retained excluded page chrome %q: %s", excluded, got)
+		}
+	}
+}
+
+func TestReferenceExtractionReusesExistingCanonicalRecordIDs(t *testing.T) {
+	fake := newReferenceLibraryHTTPStore()
+	fake.timeline = append(fake.timeline, store.ReferenceTimelineNode{
+		NodeID: "timeline-existing", WorkID: "work-1", ContinuityID: "continuity-1", NodeKey: "arrival", ReviewStatus: "pending",
+	})
+	fake.entities = append(fake.entities, store.ReferenceEntity{
+		EntityID: "entity-existing", WorkID: "work-1", ContinuityID: "continuity-1", EntityType: "character", CanonicalName: "Mina", ReviewStatus: "pending",
+	})
+	fake.claims = append(fake.claims, store.ReferenceClaim{
+		ClaimID: "claim-existing", WorkID: "work-1", ContinuityID: "continuity-1", ClaimType: "world_rule", ClaimText: "Magic requires names.", ReviewStatus: "pending",
+	})
+	doc := &store.ReferenceDocument{DocumentID: "doc-2", WorkID: "work-1", ContinuityID: "continuity-1", SourceURI: "https://example.test/wiki"}
+	parsed := map[string]any{
+		"timeline": []any{map[string]any{"node_key": "arrival", "label": "Arrival"}},
+		"entities": []any{map[string]any{"entity_type": "character", "canonical_name": "Mina"}},
+		"claims":   []any{map[string]any{"claim_type": "world_rule", "claim_text": "Magic requires names."}},
+	}
+	if _, _, err := saveReferenceExtractionCandidates(context.Background(), fake, doc, parsed, "Mina arrived. Magic requires names.", 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.timeline[len(fake.timeline)-1].NodeID; got != "timeline-existing" {
+		t.Fatalf("timeline ID was not reused: %q", got)
+	}
+	if got := fake.entities[len(fake.entities)-1].EntityID; got != "entity-existing" {
+		t.Fatalf("entity ID was not reused: %q", got)
+	}
+	if got := fake.claims[len(fake.claims)-1].ClaimID; got != "claim-existing" {
+		t.Fatalf("claim ID was not reused: %q", got)
 	}
 }
 

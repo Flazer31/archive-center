@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,36 +11,70 @@ import (
 func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, languageContext map[string]any, perspectiveContextArg ...map[string]any) ([]string, map[string]any) {
 	lines := []string{}
 	trace := newPrepareTurnMemoryLanguageTrace(languageContext)
+	seenFinalText := map[string]bool{}
+	seenFinalSource := map[string]any{}
+	finalRenderDuplicates := 0
+	lineageItems := []map[string]any{}
+	actualLines := []string{}
+	protectedLines := []string{}
 	perspectiveContext := map[string]any(nil)
 	if len(perspectiveContextArg) > 0 {
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
 	}
+	protectedGroups, protectedGroupMembers := buildPrepareTurnProtectedDeliveryGroups(selection)
 	appendLane := func(label string, items []store.Memory) {
-		for _, item := range items {
+		for laneRank, item := range items {
 			summary := prepareTurnMemorySummary(item)
 			if summary == "" {
 				continue
 			}
-			lineText, lineTrace := prepareTurnMemoryInjectionLineText(item, summary, languageContext, perspectiveContext)
-			updatePrepareTurnMemoryLanguageTrace(trace, lineTrace)
-			meta := []string{label}
-			if item.TurnIndex > 0 {
-				meta = append(meta, fmt.Sprintf("turn %d", item.TurnIndex))
+			groups := protectedGroups[prepareTurnMemoryLaneKey(item)]
+			if len(groups) == 0 && protectedGroupMembers[prepareTurnMemoryLaneKey(item)] {
+				finalRenderDuplicates++
+				continue
 			}
-			if label == "vector_relevant" {
-				if score := selection.VectorScores[prepareTurnMemoryLaneKey(item)]; score > 0 {
-					meta = append(meta, fmt.Sprintf("vector %.2f", score))
+			if len(groups) == 0 {
+				groups = []prepareTurnProtectedDeliveryGroup{{Memory: item}}
+			}
+			for _, group := range groups {
+				renderItem := group.Memory
+				lineText, lineTrace := prepareTurnMemoryInjectionLineText(renderItem, summary, languageContext, perspectiveContext)
+				updatePrepareTurnMemoryLanguageTrace(trace, lineTrace)
+				finalKey := collapseTextKey(lineText)
+				if group.CoverageKey != "" {
+					finalKey = "protected:" + group.CoverageKey
 				}
-			}
-			if label == "relevant" {
-				if score := selection.RelevantScores[prepareTurnMemoryLaneKey(item)]; score > 0 {
-					meta = append(meta, fmt.Sprintf("score %.2f", score))
+				lineage := prepareTurnMemoryDeliveryLineageItem(
+					item, label, laneRank, selection, lineText, finalKey, true,
+					"delivered", nil, perspectiveContext,
+				)
+				if group.CoverageKey != "" {
+					lineage["protected_coverage_key"] = group.CoverageKey
+					lineage["merged_source_row_ids"] = group.SourceRowIDs
+					lineage["merged_source_count"] = len(group.SourceRowIDs)
 				}
+				if finalKey != "" && seenFinalText[finalKey] {
+					finalRenderDuplicates++
+					lineage["delivered"] = false
+					lineage["delivery_status"] = "dropped_final_render_duplicate"
+					lineage["duplicate_of_source_row_id"] = seenFinalSource[finalKey]
+					lineageItems = append(lineageItems, lineage)
+					continue
+				}
+				if finalKey != "" {
+					seenFinalText[finalKey] = true
+					seenFinalSource[finalKey] = prepareTurnMemorySourceRowID(item)
+				}
+				meta := prepareTurnMemoryLineMeta(item, label, selection)
+				renderedLine := fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), lineText)
+				lines = append(lines, renderedLine)
+				if group.CoverageKey != "" {
+					protectedLines = append(protectedLines, renderedLine)
+				} else {
+					actualLines = append(actualLines, renderedLine)
+				}
+				lineageItems = append(lineageItems, lineage)
 			}
-			if label == "deep" && item.Importance > 0 {
-				meta = append(meta, fmt.Sprintf("imp %.2f", item.Importance))
-			}
-			lines = append(lines, fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), lineText))
 		}
 	}
 	appendLane("vector_relevant", selection.VectorRelevant)
@@ -47,7 +82,246 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 	appendLane("deep", selection.Deep)
 	appendLane("recent", selection.Recent)
 	trace["line_count"] = len(lines)
+	trace["final_render_duplicate_count"] = finalRenderDuplicates
+	trace["final_render_dedup_applied"] = true
+	trace["delivery_lineage_items"] = lineageItems
+	trace["actual_lines"] = actualLines
+	trace["protected_lines"] = protectedLines
 	return lines, trace
+}
+
+type prepareTurnProtectedDeliveryGroup struct {
+	CoverageKey     string
+	Representative  string
+	Memory          store.Memory
+	SourceRowIDs    []any
+	ProtectedItems  []any
+	ProtectionField string
+}
+
+func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSelection) (map[string][]prepareTurnProtectedDeliveryGroup, map[string]bool) {
+	selected := map[string]bool{}
+	selectedItems := []store.Memory{}
+	for _, lane := range [][]store.Memory{selection.VectorRelevant, selection.Relevant, selection.Deep, selection.Recent} {
+		for _, item := range lane {
+			selected[prepareTurnMemoryLaneKey(item)] = true
+			selectedItems = append(selectedItems, item)
+		}
+	}
+	candidates := selection.ProtectedCandidates
+	if len(candidates) == 0 {
+		candidates = selectedItems
+	}
+	aliasCanonical := selection.ProtectedAliasCanonical
+	ambiguousAliases := selection.ProtectedAmbiguousAlias
+	if aliasCanonical == nil || ambiguousAliases == nil {
+		aliasCanonical, ambiguousAliases = prepareTurnProtectedAliasResolution(candidates)
+	}
+	groups := map[string]*prepareTurnProtectedDeliveryGroup{}
+	members := map[string]bool{}
+	order := []string{}
+	add := func(item store.Memory, field string, protectedItem map[string]any) {
+		payload := map[string]any{"turn_summary": prepareTurnMemorySummary(item), field: []any{protectedItem}}
+		encoded, _ := json.Marshal(payload)
+		probe := item
+		probe.SummaryJSON = string(encoded)
+		keys := prepareTurnProtectedMemoryCoverageKeys(probe, aliasCanonical, ambiguousAliases)
+		coverageKey := ""
+		if len(keys) > 0 {
+			coverageKey = keys[0]
+		}
+		if coverageKey == "" {
+			coverageKey = fmt.Sprintf("%s|source:%v", field, prepareTurnMemorySourceRowID(item))
+		}
+		group := groups[coverageKey]
+		if group == nil {
+			group = &prepareTurnProtectedDeliveryGroup{CoverageKey: coverageKey, ProtectionField: field}
+			groups[coverageKey] = group
+			order = append(order, coverageKey)
+		}
+		group.ProtectedItems = append(group.ProtectedItems, protectedItem)
+		group.SourceRowIDs = appendUniquePrepareTurnSourceRowID(group.SourceRowIDs, prepareTurnMemorySourceRowID(item))
+		itemKey := prepareTurnMemoryLaneKey(item)
+		if selected[itemKey] {
+			members[itemKey] = true
+		}
+		if group.Representative == "" && selected[itemKey] {
+			group.Representative = itemKey
+			group.Memory = item
+		}
+	}
+	for _, item := range candidates {
+		parsed := parseJSONMap(item.SummaryJSON)
+		for _, raw := range sliceFromAny(parsed["protected_secrets"]) {
+			secret := mapFromAny(raw)
+			if protectedSecretRequiresGuard(secret, "disclosure_policy") {
+				add(item, "protected_secrets", secret)
+			}
+		}
+		for _, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
+			identity := mapFromAny(raw)
+			if protectedSecretRequiresGuard(identity, "reveal_policy") {
+				add(item, "character_identity_accuracy", identity)
+			}
+		}
+	}
+	out := map[string][]prepareTurnProtectedDeliveryGroup{}
+	for _, key := range order {
+		group := groups[key]
+		if group == nil || group.Representative == "" || len(group.ProtectedItems) == 0 {
+			continue
+		}
+		parsed := parseJSONMap(group.Memory.SummaryJSON)
+		delete(parsed, "protected_secrets")
+		delete(parsed, "character_identity_accuracy")
+		parsed[group.ProtectionField] = group.ProtectedItems
+		encoded, err := json.Marshal(parsed)
+		if err != nil {
+			continue
+		}
+		group.Memory.SummaryJSON = string(encoded)
+		out[group.Representative] = append(out[group.Representative], *group)
+	}
+	return out, members
+}
+
+func appendUniquePrepareTurnSourceRowID(items []any, value any) []any {
+	needle := fmt.Sprint(value)
+	for _, item := range items {
+		if fmt.Sprint(item) == needle {
+			return items
+		}
+	}
+	return append(items, value)
+}
+
+func prepareTurnMemoryLineMeta(item store.Memory, label string, selection prepareTurnMemoryLaneSelection) []string {
+	meta := []string{label}
+	if item.TurnIndex > 0 {
+		meta = append(meta, fmt.Sprintf("turn %d", item.TurnIndex))
+	}
+	if label == "vector_relevant" {
+		if score := selection.VectorScores[prepareTurnMemoryLaneKey(item)]; score > 0 {
+			meta = append(meta, fmt.Sprintf("vector %.2f", score))
+		}
+	}
+	if label == "relevant" {
+		if score := selection.RelevantScores[prepareTurnMemoryLaneKey(item)]; score > 0 {
+			meta = append(meta, fmt.Sprintf("score %.2f", score))
+		}
+	}
+	if label == "deep" && item.Importance > 0 {
+		meta = append(meta, fmt.Sprintf("imp %.2f", item.Importance))
+	}
+	return meta
+}
+
+func prepareTurnMemorySourceRowID(item store.Memory) any {
+	if item.ID > 0 {
+		return item.ID
+	}
+	return prepareTurnMemoryLaneKey(item)
+}
+
+func prepareTurnMemoryDeliveryLineageItem(item store.Memory, lane string, laneRank int, selection prepareTurnMemoryLaneSelection, finalText, finalKey string, delivered bool, status string, duplicateOf any, perspectiveContext map[string]any) map[string]any {
+	guard := prepareTurnProtectedMemoryGuard(item, perspectiveContext)
+	score := 0.0
+	if lane == "vector_relevant" {
+		score = selection.VectorScores[prepareTurnMemoryLaneKey(item)]
+	} else if lane == "relevant" {
+		score = selection.RelevantScores[prepareTurnMemoryLaneKey(item)]
+	}
+	itemTrace := map[string]any{
+		"source_table":                 "memories",
+		"source_row_id":                prepareTurnMemorySourceRowID(item),
+		"turn_index":                   item.TurnIndex,
+		"selection_lane":               lane,
+		"lane_rank":                    laneRank + 1,
+		"selection_score":              score,
+		"vector_hit":                   lane == "vector_relevant",
+		"protected_guard":              guard.Active,
+		"protected_identity_pov_scope": guard.POVScoped,
+		"top_k_consumption":            "actual_memory_slot",
+		"delivered":                    delivered,
+		"delivery_status":              status,
+		"final_text":                   finalText,
+		"final_text_chars":             len([]rune(finalText)),
+		"final_render_key":             finalKey,
+	}
+	if guard.Active {
+		itemTrace["top_k_consumption"] = "protected_guard_slot"
+	}
+	if duplicateOf != nil {
+		itemTrace["duplicate_of_source_row_id"] = duplicateOf
+	}
+	return itemTrace
+}
+
+func buildPrepareTurnMemoryDeliveryLineage(selection prepareTurnMemoryLaneSelection, renderTrace map[string]any) map[string]any {
+	items := prepareTurnMemoryLineageSlice(renderTrace["delivery_lineage_items"])
+	deliveredActual := 0
+	deliveredProtected := 0
+	deliveredTotal := 0
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		if !boolFromAny(item["delivered"]) {
+			continue
+		}
+		deliveredTotal++
+		if boolFromAny(item["protected_guard"]) {
+			deliveredProtected++
+		} else {
+			deliveredActual++
+		}
+	}
+	coverageStatus := "empty"
+	issueCodes := []string{}
+	if deliveredTotal > 0 {
+		coverageStatus = "mixed"
+	}
+	if deliveredProtected == 0 && deliveredActual > 0 {
+		coverageStatus = "actual_memory_only"
+	} else if deliveredProtected > 0 && deliveredActual == 0 {
+		coverageStatus = "protected_guard_only"
+		issueCodes = append(issueCodes, "actual_memory_absent")
+	} else if deliveredProtected > deliveredActual {
+		coverageStatus = "protected_guard_dominant"
+		issueCodes = append(issueCodes, "protected_guard_dominates_final_memory_lines")
+	}
+	vectorTrace := mapFromAny(selection.Trace["vector_recall"])
+	return map[string]any{
+		"contract_version":                     "memory_delivery_lineage.v1",
+		"status":                               coverageStatus,
+		"source_chain":                         []string{"store.memories", "vector_or_lexical_selection", "protected_guard_render", "final_memory_text"},
+		"top_k_memory_target":                  intFromAny(selection.Trace["top_k_memory_target"], 0),
+		"input_memory_count":                   intFromAny(selection.Trace["input_memory_count"], 0),
+		"eligible_memory_count":                intFromAny(selection.Trace["eligible_memory_count"], 0),
+		"vector_memory_hit_count":              intFromAny(vectorTrace["memory_hit_count"], 0),
+		"vector_memory_hydrated_count":         intFromAny(vectorTrace["hydrated_count"], 0),
+		"final_delivered_count":                deliveredTotal,
+		"final_actual_memory_count":            deliveredActual,
+		"final_protected_guard_count":          deliveredProtected,
+		"pre_render_protected_duplicate_count": intFromAny(selection.Trace["protected_duplicate_candidate_count"], 0),
+		"pre_render_protected_duplicates":      prepareTurnMemoryLineageSlice(selection.Trace["protected_duplicate_candidates"]),
+		"protected_relevance_dropped":          prepareTurnMemoryLineageSlice(selection.Trace["protected_memory_dropped"]),
+		"final_render_duplicate_count":         intFromAny(renderTrace["final_render_duplicate_count"], 0),
+		"known_issue_codes":                    issueCodes,
+		"items":                                items,
+	}
+}
+
+func prepareTurnMemoryLineageSlice(value any) []any {
+	if items, ok := value.([]any); ok {
+		return items
+	}
+	if items, ok := value.([]map[string]any); ok {
+		out := make([]any, 0, len(items))
+		for _, item := range items {
+			out = append(out, item)
+		}
+		return out
+	}
+	return []any{}
 }
 
 func newPrepareTurnMemoryLanguageTrace(languageContext map[string]any) map[string]any {
@@ -213,8 +487,16 @@ func prepareTurnProtectedMemoryGuard(item store.Memory, perspectiveContextArg ..
 	}
 	kinds := []string{}
 	policies := []string{}
-	knownByCount := 0
-	suspectedByCount := 0
+	knownBy := map[string]bool{}
+	suspectedBy := map[string]bool{}
+	addScope := func(scope map[string]any) {
+		for _, value := range stringsFromAny(scope["known_by"]) {
+			knownBy[normalizeCharacterKey(value)] = true
+		}
+		for _, value := range stringsFromAny(scope["suspected_by"]) {
+			suspectedBy[normalizeCharacterKey(value)] = true
+		}
+	}
 	for _, raw := range protectedSecrets {
 		secret := mapFromAny(raw)
 		if !protectedSecretRequiresGuard(secret, "disclosure_policy") {
@@ -226,9 +508,7 @@ func prepareTurnProtectedMemoryGuard(item store.Memory, perspectiveContextArg ..
 		if policy := normalizeTargetRevealPolicy(stringFromMap(secret, "disclosure_policy")); policy != "" {
 			policies = appendUniqueMemorySearchText(policies, policy)
 		}
-		scope := mapFromAny(secret["knowledge_scope"])
-		knownByCount += len(stringsFromAny(scope["known_by"]))
-		suspectedByCount += len(stringsFromAny(scope["suspected_by"]))
+		addScope(mapFromAny(secret["knowledge_scope"]))
 	}
 	for _, raw := range identityAccuracy {
 		identity := mapFromAny(raw)
@@ -241,9 +521,7 @@ func prepareTurnProtectedMemoryGuard(item store.Memory, perspectiveContextArg ..
 		if policy := normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy")); policy != "" {
 			policies = appendUniqueMemorySearchText(policies, policy)
 		}
-		scope := mapFromAny(identity["knowledge_scope"])
-		knownByCount += len(stringsFromAny(scope["known_by"]))
-		suspectedByCount += len(stringsFromAny(scope["suspected_by"]))
+		addScope(mapFromAny(identity["knowledge_scope"]))
 	}
 	if len(kinds) == 0 && len(policies) == 0 {
 		return prepareTurnProtectedMemoryGuardResult{}
@@ -258,8 +536,8 @@ func prepareTurnProtectedMemoryGuard(item store.Memory, perspectiveContextArg ..
 	if len(policies) > 0 {
 		parts = append(parts, "policy="+strings.Join(policies, ","))
 	}
-	if knownByCount > 0 || suspectedByCount > 0 {
-		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", knownByCount, suspectedByCount))
+	if len(knownBy) > 0 || len(suspectedBy) > 0 {
+		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", len(knownBy), len(suspectedBy)))
 	}
 	return prepareTurnProtectedMemoryGuardResult{
 		Active:   true,
@@ -271,8 +549,8 @@ func prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy []any) str
 	relations := []string{}
 	kinds := []string{}
 	policies := []string{}
-	knownByCount := 0
-	suspectedByCount := 0
+	knownBy := map[string]bool{}
+	suspectedBy := map[string]bool{}
 	for _, raw := range identityAccuracy {
 		identity := mapFromAny(raw)
 		if !protectedSecretRequiresGuard(identity, "reveal_policy") {
@@ -303,8 +581,12 @@ func prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy []any) str
 			policies = appendUniqueMemorySearchText(policies, policy)
 		}
 		scope := mapFromAny(identity["knowledge_scope"])
-		knownByCount += len(stringsFromAny(scope["known_by"]))
-		suspectedByCount += len(stringsFromAny(scope["suspected_by"]))
+		for _, value := range stringsFromAny(scope["known_by"]) {
+			knownBy[normalizeCharacterKey(value)] = true
+		}
+		for _, value := range stringsFromAny(scope["suspected_by"]) {
+			suspectedBy[normalizeCharacterKey(value)] = true
+		}
 	}
 	if len(relations) == 0 {
 		return ""
@@ -321,8 +603,8 @@ func prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy []any) str
 	if len(policies) > 0 {
 		parts = append(parts, "policy="+strings.Join(policies, ","))
 	}
-	if knownByCount > 0 || suspectedByCount > 0 {
-		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", knownByCount, suspectedByCount))
+	if len(knownBy) > 0 || len(suspectedBy) > 0 {
+		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", len(knownBy), len(suspectedBy)))
 	}
 	return strings.Join(parts, " | ")
 }
@@ -333,6 +615,12 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 	if povName == "" && povKey == "" {
 		return ""
 	}
+	relations := []string{}
+	samePersonRules := []string{}
+	kinds := []string{}
+	policies := []string{}
+	knownBy := map[string]bool{}
+	suspectedBy := map[string]bool{}
 	for _, raw := range identityAccuracy {
 		identity := mapFromAny(raw)
 		if !protectedSecretRequiresGuard(identity, "reveal_policy") {
@@ -354,24 +642,42 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 		if surface == "" || trueName == "" || normalizeCharacterKey(surface) == normalizeCharacterKey(trueName) {
 			continue
 		}
-		kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind"))
-		if kind == "" {
-			kind = "identity"
+		relations = appendUniqueMemorySearchText(relations, fmt.Sprintf("%s is %s's own protected surface identity/persona", surface, trueName))
+		samePersonRules = appendUniqueMemorySearchText(samePersonRules, fmt.Sprintf("treat %s and %s as the same internal person, not two separate characters", surface, trueName))
+		if kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind")); kind != "" {
+			kinds = appendUniqueMemorySearchText(kinds, kind)
 		}
-		policy := normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy"))
-		parts := []string{
-			fmt.Sprintf("POV-scoped identity continuity: %s is %s's own protected surface identity/persona.", surface, trueName),
-			fmt.Sprintf("For current_pov=%s, treat %s and %s as the same internal person, not two separate characters.", povName, surface, trueName),
-			"If this POV references the surface identity, read it as self/cover-role continuity rather than a separate external character.",
-			"Keep this as POV/private knowledge; do not reveal it to characters outside knowledge_scope without current reveal evidence.",
-			"kind=" + kind,
+		if policy := normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy")); policy != "" {
+			policies = appendUniqueMemorySearchText(policies, policy)
 		}
-		if policy != "" {
-			parts = append(parts, "policy="+policy)
+		scope := mapFromAny(identity["knowledge_scope"])
+		for _, value := range stringsFromAny(scope["known_by"]) {
+			knownBy[normalizeCharacterKey(value)] = true
 		}
-		return strings.Join(parts, " | ")
+		for _, value := range stringsFromAny(scope["suspected_by"]) {
+			suspectedBy[normalizeCharacterKey(value)] = true
+		}
 	}
-	return ""
+	if len(relations) == 0 {
+		return ""
+	}
+	parts := []string{
+		"POV-scoped identity continuity: " + strings.Join(relations, "; ") + ".",
+		fmt.Sprintf("For current_pov=%s, %s.", povName, strings.Join(samePersonRules, "; ")),
+		"If this POV references the surface identity, read it as self/cover-role continuity rather than a separate external character.",
+		"Keep this as POV/private knowledge; do not reveal it to characters outside knowledge_scope without current reveal evidence.",
+	}
+	if len(kinds) == 0 {
+		kinds = append(kinds, "identity")
+	}
+	parts = append(parts, "kind="+strings.Join(kinds, ","))
+	if len(policies) > 0 {
+		parts = append(parts, "policy="+strings.Join(policies, ","))
+	}
+	if len(knownBy) > 0 || len(suspectedBy) > 0 {
+		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", len(knownBy), len(suspectedBy)))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func prepareTurnPerspectiveKnowsIdentity(identity map[string]any, povName, povKey string) bool {
@@ -453,7 +759,7 @@ type prepareTurnHierarchyEscalation struct {
 	Trace       map[string]any
 }
 
-func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs []store.ChatLog, memorySelection prepareTurnMemoryLaneSelection, topK int, rawUserInput, profile string) prepareTurnHierarchyEscalation {
+func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs []store.ChatLog, memorySelection prepareTurnMemoryLaneSelection, rawUserInput, profile string) prepareTurnHierarchyEscalation {
 	trace := map[string]any{
 		"version":                     "r2.hierarchy_escalation.v1",
 		"status":                      "off",
@@ -468,8 +774,6 @@ func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs 
 		"saga_mode":                   "omitted",
 		"priority":                    "current_user_input_and_direct_evidence_remain_higher_priority",
 		"truth_boundary":              "hierarchy_summaries_are_support_only",
-		"top_k_memory_target":         topK,
-		"top_k_definition":            "semantic_memory_recall_limit",
 		"recent_memory_bound":         len(memorySelection.Recent),
 		"selected_memory_bound":       prepareTurnSelectedMemoryCount(memorySelection),
 		"selection_reason_visibility": true,
@@ -479,11 +783,9 @@ func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs 
 		trace["reason"] = "no_resume_pack"
 		return out
 	}
-	topK = prepareTurnRecallLimit(topK)
-
 	maxTurn := prepareTurnMaxObservedTurn(chatLogs, resumePack)
 	resumeCue := prepareTurnQuerySuggestsResume(rawUserInput)
-	thinMemoryRecall := prepareTurnNeedsRawFallback(memorySelection, topK)
+	thinMemoryRecall := prepareTurnNeedsRawFallback(memorySelection)
 	longSession := maxTurn >= 50 || prepareTurnProfileWide(profile)
 	trace["status"] = "ready"
 	trace["max_observed_turn"] = maxTurn

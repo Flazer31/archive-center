@@ -15,12 +15,16 @@ func TestArchiveCenterJSSameTurnOverlayInjectionAndTraceRuntime(t *testing.T) {
 	}
 	src := readArchiveCenterJS(t)
 	helpersStart := strings.Index(src, "function normalizeStorylineStatus")
-	helpersEnd := strings.Index(src, "// E-1d: Storyline Sync")
+	helpersEnd := strings.Index(src, "function makeEmptyContinuityPackResult")
 	if helpersStart < 0 || helpersEnd < 0 || helpersEnd <= helpersStart {
 		t.Fatalf("Archive Center.js missing same-turn overlay helper block")
 	}
 
 	script := src[helpersStart:helpersEnd] + "\n" +
+		extractJSFunctionBlockForTest(t, src, "function normalizeStorylineDetailCompareText") + "\n" +
+		extractJSFunctionBlockForTest(t, src, "function isStorylineSelfEchoDetail") + "\n" +
+		extractJSFunctionBlockForTest(t, src, "function appendStorylineDetailLine") + "\n" +
+		extractJSFunctionBlockForTest(t, src, "function appendStorylineDetailLines") + "\n" +
 		extractJSFunctionBlockForTest(t, src, "function formatStorylineBlock") + "\n" +
 		extractJSFunctionBlockForTest(t, src, "function formatWorldRulesBlock") + "\n" +
 		extractJSFunctionBlockForTest(t, src, "function renderTurnTraceRows") + `
@@ -134,12 +138,10 @@ console.log(JSON.stringify({ storylineText, worldRulesText, ok: true }));
 	}
 }
 
-func TestArchiveCenterJSSameTurnOverlaySyncFailureIsolationMarkers(t *testing.T) {
+func TestArchiveCenterJSSameTurnOverlayDoesNotPersistSupervisorProposals(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`postStorylineSync(supervisorResult, chatSessionId, predictedTurnIndex, "apply").catch`,
 		"const predictedTurnIndex = peekNextTurnIndex(chatSessionId);",
-		"postWorldRulesSync(supervisorResult, chatSessionId, predictedTurnIndex).catch",
 		"storylineResult = mergeStorylineOverlay(storylineBaseResult, storylineOverlay);",
 		"worldRulesResult = mergeWorldRuleOverlay(worldRulesBaseResult, worldRuleOverlay);",
 		"storylineSelectionRaw: supervisorResult && supervisorResult.storyline_selection",
@@ -149,6 +151,26 @@ func TestArchiveCenterJSSameTurnOverlaySyncFailureIsolationMarkers(t *testing.T)
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing same-turn sync isolation marker %q", needle)
+		}
+	}
+	if strings.Contains(src, "sourceAcceptanceActiveChatQueueDrain") {
+		t.Fatal("native afterRequest confirmation must persist from the confirmed RisuAI chat, not retry the premature queue item")
+	}
+	for _, officialAPI := range []string{"getCurrentCharacterIndex", "getCurrentChatIndex", "getChatFromIndex"} {
+		if !strings.Contains(src, `typeof R.`+officialAPI+` === "function"`) {
+			t.Fatalf("active-chat confirmation must require official RisuAI API %s", officialAPI)
+		}
+	}
+	for _, forbidden := range []string{
+		"async function postStorylineSync(",
+		"async function postWorldRulesSync(",
+		`bridgeFetch("/storylines/sync"`,
+		`bridgeFetch("/world-rules/sync"`,
+		`postStorylineSync(supervisorResult, chatSessionId, predictedTurnIndex, "apply").catch`,
+		"postWorldRulesSync(supervisorResult, chatSessionId, predictedTurnIndex).catch",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js still persists supervisor proposal through %q", forbidden)
 		}
 	}
 }
@@ -232,18 +254,63 @@ func TestArchiveCenterJSFinalPayloadParityMarkers(t *testing.T) {
 		"function attachFinalPayloadParityTrace(trace, originalPayload, finalPayload, meta)",
 		`source: "js_host_adapter"`,
 		"finalPayloadParity",
-		"SEQ-02 / RMG-22 Final Payload Parity",
 		"payloadMutated",
 		"beforeMessageCount",
 		"afterMessageCount",
 		"finalUserInputPreview",
 		"assembledPreview",
+		"capturedBeforeRequestReturn",
+		"effectiveInputHash",
+		"outboundPayloadHash",
+		"payloadContentMatch",
 		"attachFinalPayloadParityTrace(lastOrchResult && lastOrchResult._trace, payload, outgoingPayload",
 		"attachFinalPayloadParityTrace(lastOrchResult && lastOrchResult._trace, payload, payload",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing final payload parity marker %q", needle)
+		}
+	}
+}
+
+func TestArchiveCenterJSBackendOwnsInputContextAndVerifiedPreview(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, needle := range []string{
+		"backendOwned: !!_ip",
+		"helperContext.backendOwned === true",
+		`slotGovernorPolicyVersion: "go_owned_input_context.v1"`,
+		`slotGovernorMode: "backend_verbatim_apply"`,
+		"pre_request_payload_verification_missing_or_mismatch",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing backend-owned input/parity marker %q", needle)
+		}
+	}
+}
+
+func TestArchiveCenterJSMemoryDeliveryBudgetsUseSynchronizedSliders(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	ids := []string{
+		"mo-memoryBudgetEventRecent",
+		"mo-memoryBudgetCharacterObjective",
+		"mo-memoryBudgetSubjectiveRelationship",
+		"mo-memoryBudgetWorldState",
+		"mo-memoryBudgetProtectedSecret",
+		"mo-memoryBudgetUnresolvedGoal",
+		"mo-memoryBudgetDirectEvidence",
+	}
+	for _, id := range ids {
+		if !strings.Contains(src, `data-sync-input="`+id+`"`) {
+			t.Fatalf("missing synchronized range for %s", id)
+		}
+	}
+	for _, marker := range []string{
+		"function syncMemoryDeliveryBudgetControls()",
+		`document.querySelectorAll("[data-memory-budget-control]")`,
+		`el.disabled = !custom`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("missing memory budget slider mode marker %q", marker)
 		}
 	}
 }
@@ -449,22 +516,41 @@ func TestArchiveCenterJSEA1PrecedenceAndHybridBudgetMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSPromptTemplateScaffoldSanitizeRuntime(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function looksLikePromptTemplateScaffold(text)",
-		"function isPromptTemplateScaffoldLine(line)",
-		"function sanitizeForCritic(text)",
-		"response template|template guidelines",
-		"return !isPromptTemplateScaffoldLine(line);",
-		`if (looksLikePromptTemplateScaffold(clean)) return "";`,
-		`stage.scaffoldLineDetected ? "template-scaffold" : null`,
-		"scaffoldLineDetected,",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing prompt-template scaffold sanitize marker %q", needle)
+func TestArchiveCenterJSStructuredOutputSanitizeRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for JS output sanitizer runtime behavior")
 		}
+	}
+	src := readArchiveCenterJS(t)
+	names := []string{
+		"normalizeReasoningEnvelopeName",
+		"isReasoningEnvelopeName",
+		"stripHiddenReasoningEnvelopes",
+		"sanitizeForCritic",
+		"sanitizeNarrativeOutputForDisplay",
+	}
+	functions := make([]string, 0, len(names))
+	for _, name := range names {
+		functions = append(functions, extractArchiveCenterJSFunction(t, src, name))
+	}
+	script := strings.Join(functions, "\n\n") + `
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
+}
+assertEqual(sanitizeNarrativeOutputForDisplay("<analysis>private plan</analysis>Visible narrative."), "Visible narrative.", "closed structured envelope");
+assertEqual(sanitizeNarrativeOutputForDisplay("<internal-deliberation>private plan</internal-deliberation>Visible narrative."), "Visible narrative.", "provider-neutral structured envelope");
+assertEqual(sanitizeNarrativeOutputForDisplay("<Thoughts\nprivate plan only"), "", "malformed unclosed structured envelope");
+assertEqual(sanitizeNarrativeOutputForDisplay("<scene>I need the user to see this ordinary narrative.</scene>"), "<scene>I need the user to see this ordinary narrative.</scene>", "ordinary creator output is not prose-classified");
+assertEqual(sanitizeNarrativeOutputForDisplay("I need to decide what happens next in this scene."), "I need to decide what happens next in this scene.", "ordinary prose remains output");
+assertEqual(sanitizeForCritic("<reasoning>private</reasoning>Final text"), "Final text", "critic receives the same structured output boundary");
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("structured output sanitizer runtime fixture failed: %v\n%s", err, output)
 	}
 }
 
@@ -552,22 +638,33 @@ func TestArchiveCenterJSRG1fToRG1iAuthorityGuardMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSRG1jPresetTemplateContaminationMarkers(t *testing.T) {
+func TestArchiveCenterJSRG1jRisuLifecycleOutputBoundaryMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"function looksLikePromptTemplateScaffold(text)",
-		"function isPromptTemplateScaffoldLine(line)",
+		"function stripHiddenReasoningEnvelopes(text)",
 		"function sanitizeForCritic(text)",
 		"function sanitizeNarrativeOutputForDisplay(text)",
-		`"template-scaffold"`,
-		"scaffoldLineDetected",
+		`responseReturnContent = typeof displayContent === "string" ? displayContent : content;`,
+		`await R.addRisuReplacer("beforeRequest", onBeforeRequest);`,
+		`await R.addRisuReplacer("afterRequest", onAfterRequest);`,
 		"sanitizeForCritic(rawSeed)",
 		"sanitizeForCritic(safeUserContent)",
 		"sanitizeForCritic(String(assistantContent || \"\"))",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing RG-1j preset/template contamination marker %q", needle)
+			t.Fatalf("Archive Center.js missing RG-1j lifecycle output boundary marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		"function looksLikeHiddenReasoningBody(text)",
+		"function looksLikePromptTemplateScaffold(text)",
+		"function isPromptTemplateScaffoldLine(line)",
+		"function findVisibleOutputBoundaryAfterReasoningPreamble(text)",
+		"function isLikelyEffectiveInputScaffoldText(text)",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js must not classify RisuAI output from creator-specific prose: %q", forbidden)
 		}
 	}
 }
@@ -577,8 +674,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.0.2",
-		`const VERSION = "3.0.2";`,
+		"//@version 3.4.0-dev",
+		`const VERSION = "3.4.0-dev";`,
 		`const VERSION_STR = typeof VERSION !== "undefined" ? String(VERSION) : "unknown";`,
 		"source_version:    VERSION_STR",
 		`bridgeFetch("/update/check", {`,
@@ -699,10 +796,11 @@ func TestArchiveCenterJSContinuityPackLatestEquivalentMarkers(t *testing.T) {
 		"const _rawInputBySession = new Map();",
 		"async function onInputHook(rawInput)",
 		"cacheRawInputForSession(sessionId, rawInput)",
-		"function resolveCurrentTurnUserInputInfo(payload, messages, sessionId)",
-		`source: "input_hook"`,
-		`source: "messages.meta_only"`,
-		"shouldRejectLowTrustCurrentInput(auxiliaryMessageContentText(lastUserMsg.content))",
+		"function buildPrepareTurnHostObservations(sessionId, requestId, type, rawInputObservation",
+		`source_kind: String(sourceKind || "host")`,
+		`currentInputDecision.selected_observation_ref`,
+		`policy: "go_current_input_decision.v1"`,
+		"recoverCurrentUserInputFromActiveChatTail",
 		"metaOnlyInput: !!userInputInfo.metaOnly",
 		"t('settings.debug.forceIdleBtn')",
 		"debugForced: true",
@@ -754,9 +852,10 @@ func TestArchiveCenterJSSeq08BackendTurnEngineFailOpenMarkers(t *testing.T) {
 		`bridgeFetch("/prepare-turn"`,
 		`return { source: "backend-off", fallback_reason: "backend_off", status: "error" }`,
 		`return { source: "backend-error", fallback_reason: "backend_error", status: "error" }`,
-		"const prepareTurnBackendUnavailable = _lastPrepareTurnSource === \"backend-off\"",
-		`updateRuntimeState("lastBridgeHealth", "fail"`,
-		`debugLog("prepare-turn unavailable - local fallback continues:"`,
+		`let currentInputDecision = sourceDecisionResult && sourceDecisionResult.currentInputDecision`,
+		`const fullCurrentInputDecision = preparedTurnResult && preparedTurnResult.currentInputDecision`,
+		`current_user_input_backend_unavailable`,
+		`original_payload_preserved: true`,
 		`updateRuntimeState("lastBridgeHealth", "ok"`,
 		"async function tryCompleteTurn(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, prebuiltBody)",
 		`bridgeFetchWithRetry("/complete-turn"`,
@@ -793,7 +892,7 @@ func TestArchiveCenterJSOnlyModelTypeEntersPersistence(t *testing.T) {
 		"function isSaveType(type)",
 		"function isContextInjectionType(type)",
 		`return !type || type === "model";`,
-		"archive_center_ignores_non_model_risu_requests",
+		`request_type: String(type || "model")`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -802,25 +901,28 @@ func TestArchiveCenterJSOnlyModelTypeEntersPersistence(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSModelPayloadIsNotBlockedByPromptMarkersOrTailMismatch(t *testing.T) {
+func TestArchiveCenterJSModelSourceOwnershipComesFromGo(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
-		`reason: "model_request_auxiliary_marker_trace_only"`,
-		`policy: "risu_model_type_is_authoritative_marker_does_not_block"`,
-		`reason: "model_payload_tail_authoritative"`,
-		`policy: "risu_model_type_and_latest_payload_user_are_authoritative"`,
-		`reason: "post_output_secondary_request"`,
+		`let currentInputDecision = sourceDecisionResult && sourceDecisionResult.currentInputDecision`,
+		`const fullCurrentInputDecision = preparedTurnResult && preparedTurnResult.currentInputDecision`,
+		`allowed: !!currentInputDecision.context_injection_eligible`,
+		`policy: "go_current_input_decision.v1"`,
+		`hostObservations,`,
+		`bootstrapObservation,`,
 	} {
 		if !strings.Contains(src, marker) {
-			t.Fatalf("Archive Center.js missing model ownership contract %q", marker)
+			t.Fatalf("Archive Center.js missing Go-owned source contract %q", marker)
 		}
 	}
 	for _, obsolete := range []string{
-		`reason: "auxiliary_module_request"`,
-		`reason: "payload_user_tail_mismatch_active_tail_block"`,
+		"function buildMainRequestOwnershipDecision(",
+		"function matchAuxiliaryModuleRequestMarker(",
+		"function isSubstantiveUserPayloadText(",
+		"function refreshMainRequestActiveChatForNewUser(",
 	} {
 		if strings.Contains(src, obsolete) {
-			t.Fatalf("Archive Center.js still blocks model requests with obsolete content classifier %q", obsolete)
+			t.Fatalf("Archive Center.js retains obsolete JavaScript source policy %q", obsolete)
 		}
 	}
 }
@@ -853,15 +955,30 @@ func TestArchiveCenterJSStreamingAfterRequestPollerMarkers(t *testing.T) {
 		"function pollStreamingAfterRequestWatch(sessionId)",
 		"function markNativeAfterRequestObserved(sessionId, type)",
 		"function stopStreamingAfterRequestWatch(sessionId, detail)",
-		"native afterRequest missing; recovered from active chat",
+		"native afterRequest missing; recovered from RisuAI active chat",
 		"late native afterRequest ignored after poller recovery",
+		"RisuAI active chat is still streaming",
+		"persistence deferred until RisuAI active chat confirmation",
 		"armStreamingAfterRequestWatch(orchSessionId, type, orchRequestId);",
+		`hostLifecycleObservation: "before_request_observed"`,
+		`host_lifecycle_observation: String(observed.hostLifecycleObservation || "")`,
+		`? "generation_watch_active"`,
 		"Streaming Hook",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing streaming afterRequest poller marker %q", needle)
 		}
+	}
+	onBeforeRequestAt := strings.Index(src, "async function onBeforeRequest")
+	if onBeforeRequestAt < 0 {
+		t.Fatal("Archive Center.js missing onBeforeRequest")
+	}
+	onBeforeRequest := src[onBeforeRequestAt:]
+	armAt := strings.Index(onBeforeRequest, "armStreamingAfterRequestWatch(orchSessionId, type, orchRequestId);")
+	rollbackAt := strings.Index(onBeforeRequest, "await checkAndAutoRollback(orchSessionId, rollbackComparable.messages")
+	if armAt < 0 || rollbackAt < 0 || armAt > rollbackAt {
+		t.Fatal("generation watch must start before PocketRisu-style removed tail is evaluated")
 	}
 }
 

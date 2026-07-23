@@ -1,0 +1,340 @@
+{
+  "contract": "canon-pack-manifest.v1",
+  "pack": {
+    "id": "example.publisher:glass-harbor-core",
+    "version": "1.0.0",
+    "status": "published",
+    "built_at": "2026-07-18T03:00:00Z"
+  },
+  "work": {
+    "stable_id": "example.work:glass-harbor",
+    "original_title": {
+      "text": "Glass Harbor",
+      "language": "en"
+    },
+    "translated_titles": [
+      {
+        "text": "유리 항구",
+        "language": "ko"
+      }
+    ],
+    "aliases": [
+      {
+        "text": "Harbor of Glass",
+        "language": "en"
+      }
+    ],
+    "original_language": "en",
+    "content_languages": [
+      "en",
+      "ko"
+    ],
+    "edition": {
+      "edition_id": "example.edition:glass-harbor-first",
+      "label": "Fictional first edition",
+      "language": "en",
+      "publication_date": "2026-01-15",
+      "region": "ZZ",
+      "identifiers": [
+        {
+          "scheme": "example-catalog",
+          "value": "GH-001"
+        }
+      ],
+      "scope_note": "Neutral fictional fixture edition; not based on a copyrighted work."
+    },
+    "continuity_ids": [
+      "example.continuity:glass-harbor-main"
+    ]
+  },
+  "production": {
+    "method": "machine_assisted",
+    "created_at": "2026-07-18T02:00:00Z",
+    "producer": {
+      "id": "example.publisher:fixture-lab",
+      "display_name": "Fixture Lab"
+    },
+    "toolchain_note": "Fictional metadata was reviewed against the two declared fixture sources."
+  },
+  "review": {
+    "status": "approved",
+    "procedure_id": "example.review:fixture-pack-review-v1",
+    "reviewed_at": "2026-07-18T02:45:00Z",
+    "admission_basis": "evidence_validated_batch",
+    "notes": "The evidence-validated batch was admitted automatically; the unresolved inspection hour remains an explicit exception."
+  },
+  "trust": {
+    "status": "unsigned_local",
+    "publisher": {
+      "id": "example.publisher:fixture-lab",
+      "display_name": "Fixture Lab"
+    }
+  },
+  "sources": [
+    {
+      "id": "official-guide",
+      "title": "Glass Harbor Fictional Setting Guide",
+      "source_type": "official_primary",
+      "uri": "https://example.invalid/glass-harbor/setting-guide",
+      "license": {
+        "identifier": "CC0-1.0",
+        "name": "CC0 1.0 Universal",
+        "uri": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "redistribution_allowed": true
+      },
+      "access_class": "open_license",
+      "retrieved_at": "2026-07-17T12:00:00Z",
+      "document_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "id": "event-ledger",
+      "title": "Glass Harbor Fictional Event Ledger",
+      "source_type": "licensed_dataset",
+      "uri": "https://example.invalid/glass-harbor/event-ledger",
+      "license": {
+        "identifier": "CC0-1.0",
+        "name": "CC0 1.0 Universal",
+        "redistribution_allowed": true
+      },
+      "access_class": "open_license",
+      "retrieved_at": "2026-07-17T12:05:00Z",
+      "document_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "content": {
+    "entities": [
+      {
+        "id": "mira-vale",
+        "name": {
+          "text": "Mira Vale",
+          "language": "en"
+        },
+        "aliases": [],
+        "summary": "A fictional harbor surveyor responsible for recording beacon conditions.",
+        "continuity_ids": [
+          "example.continuity:glass-harbor-main"
+        ],
+        "review_state": "approved",
+        "evidence": [
+          {
+            "source_id": "official-guide",
+            "document_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "locator": {
+              "type": "section",
+              "value": "people/mira-vale",
+              "label": "People: Mira Vale"
+            }
+          }
+        ],
+        "kind": "person"
+      }
+    ],
+    "locations": [
+      {
+        "id": "north-beacon",
+        "name": {
+          "text": "North Beacon",
+          "language": "en"
+        },
+        "aliases": [],
+        "summary": "A fictional navigation beacon at the northern harbor entrance.",
+        "continuity_ids": [
+          "example.continuity:glass-harbor-main"
+        ],
+        "review_state": "approved",
+        "evidence": [
+          {
+            "source_id": "official-guide",
+            "document_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "locator": {
+              "type": "section",
+              "value": "places/north-beacon"
+            }
+          }
+        ]
+      }
+    ],
+    "factions": [
+      {
+        "id": "harbor-survey",
+        "name": {
+          "text": "Harbor Survey",
+          "language": "en"
+        },
+        "aliases": [],
+        "summary": "A fictional civic group that maintains navigation records.",
+        "continuity_ids": [
+          "example.continuity:glass-harbor-main"
+        ],
+        "review_state": "approved",
+        "evidence": [
+          {
+            "source_id": "official-guide",
+            "document_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "locator": {
+              "type": "section",
+              "value": "groups/harbor-survey"
+            }
+          }
+        ]
+      }
+    ],
+    "settings": [
+      {
+        "id": "tide-clock-rule",
+        "name": {
+          "text": "Tide Clock Rule",
+          "language": "en"
+        },
+        "aliases": [],
+        "summary": "A fictional setting rule in which harbor access follows the public tide clock.",
+        "continuity_ids": [
+          "example.continuity:glass-harbor-main"
+        ],
+        "review_state": "approved",
+        "evidence": [
+          {
+            "source_id": "official-guide",
+            "document_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "locator": {
+              "type": "section",
+              "value": "rules/tide-clock"
+            }
+          }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "id": "beacon-inspection",
+        "name": {
+          "text": "North Beacon Inspection",
+          "language": "en"
+        },
+        "aliases": [],
+        "summary": "Mira records the North Beacon during a scheduled fictional inspection.",
+        "continuity_ids": [
+          "example.continuity:glass-harbor-main"
+        ],
+        "review_state": "approved",
+        "evidence": [
+          {
+            "source_id": "event-ledger",
+            "document_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "locator": {
+              "type": "record",
+              "value": "event-0007"
+            }
+          }
+        ],
+        "sequence_label": "after-event-0006",
+        "participant_ids": [
+          "mira-vale"
+        ],
+        "location_ids": [
+          "north-beacon"
+        ]
+      }
+    ],
+    "relations": [
+      {
+        "id": "mira-member-survey",
+        "subject_id": "mira-vale",
+        "predicate": "member_of",
+        "object_id": "harbor-survey",
+        "continuity_ids": [
+          "example.continuity:glass-harbor-main"
+        ],
+        "review_state": "approved",
+        "evidence": [
+          {
+            "source_id": "official-guide",
+            "document_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "locator": {
+              "type": "section",
+              "value": "people/mira-vale"
+            }
+          }
+        ]
+      }
+    ],
+    "claims": [
+      {
+        "id": "claim-beacon-inspected",
+        "statement": "Mira Vale participates in the recorded North Beacon inspection.",
+        "claim_type": "event_participation",
+        "subject_ids": [
+          "mira-vale",
+          "beacon-inspection"
+        ],
+        "continuity_ids": [
+          "example.continuity:glass-harbor-main"
+        ],
+        "review_state": "approved",
+        "evidence": [
+          {
+            "source_id": "event-ledger",
+            "document_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "locator": {
+              "type": "record",
+              "value": "event-0007"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "conflicts": [],
+  "uncertainties": [
+    {
+      "id": "uncertain-inspection-hour",
+      "item_ids": [
+        "beacon-inspection"
+      ],
+      "reason": "The fixture ledger identifies the inspection order but not an exact hour.",
+      "status": "open",
+      "evidence": [
+        {
+          "source_id": "event-ledger",
+          "document_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "locator": {
+            "type": "record",
+            "value": "event-0007"
+          }
+        }
+      ]
+    }
+  ],
+  "coverage_report": {
+    "generated_at": "2026-07-18T02:40:00Z",
+    "saturation": "insufficient_sources",
+    "domains": [
+      {
+        "domain": "entities",
+        "status": "partial",
+        "missing_topics": [
+          "Other harbor staff are not assessed by the fixture sources."
+        ]
+      },
+      {
+        "domain": "timeline",
+        "status": "insufficient",
+        "missing_topics": [
+          "Exact event times"
+        ],
+        "note": "The pack preserves the missing detail instead of assigning a quality score."
+      }
+    ]
+  },
+  "compatibility": {
+    "archive_center": {
+      "minimum_version": "3.1.0",
+      "maximum_version_exclusive": "4.0.0"
+    },
+    "schema": {
+      "name": "canon-pack-manifest",
+      "version": "1.0.0"
+    }
+  },
+  "files": []
+}

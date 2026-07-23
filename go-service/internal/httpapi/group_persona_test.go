@@ -1222,8 +1222,8 @@ func TestPersonaCapsuleLiveSmokeCreateAttachPrepareTurnSupportOnly(t *testing.T)
 		t.Fatalf("prepare-turn did not inject persona secret guard: %q", injectionText)
 	}
 	inputContextText, _ := prepareResp["input_context_text"].(string)
-	if !strings.Contains(inputContextText, "[Persona Recollection]") || !strings.Contains(inputContextText, "support-only private recollection") {
-		t.Fatalf("input_context_text missing support-only persona lane: %q", inputContextText)
+	if strings.Contains(inputContextText, "[Persona Recollection]") || strings.Contains(inputContextText, "support-only private recollection") {
+		t.Fatalf("persona recollection bypassed its dedicated injection lane through input_context_text: %q", inputContextText)
 	}
 	ip, ok := prepareResp["injection_pack"].(map[string]any)
 	if !ok || ip["persona_recollection_active"] != true {

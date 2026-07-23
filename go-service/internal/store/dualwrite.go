@@ -60,6 +60,28 @@ func (d *dualWriteStore) SaveChatLog(ctx context.Context, log *ChatLog) error {
 	return nil
 }
 
+func (d *dualWriteStore) ReplaceLogicalTurn(ctx context.Context, replacement LogicalTurnReplacement) error {
+	primary, primaryOK := d.primary.(LogicalTurnReplacementStore)
+	shadow, shadowOK := d.shadow.(LogicalTurnReplacementStore)
+	if !primaryOK && !shadowOK {
+		return ErrNotEnabled
+	}
+	if primaryOK {
+		if err := primary.ReplaceLogicalTurn(ctx, replacement); err != nil {
+			return err
+		}
+	}
+	if shadowOK {
+		if err := shadow.ReplaceLogicalTurn(ctx, replacement); err != nil {
+			d.recordShadowErr(err)
+			if !primaryOK {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ListChatLogs reads from primary only.
 func (d *dualWriteStore) ListChatLogs(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ChatLog, error) {
 	return d.primary.ListChatLogs(ctx, chatSessionID, fromTurn, toTurn)

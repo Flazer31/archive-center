@@ -88,11 +88,6 @@ func (s *Server) handleWorldRulesInherited(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleWorldRulesSync(w http.ResponseWriter, r *http.Request) {
-	saver, ok := s.Store.(worldRuleSaver)
-	if !ok {
-		writeShadowGuard(w, "POST /world-rules/sync")
-		return
-	}
 	payload, err := decodeNarrativeJSONMap(r)
 	if err != nil {
 		writeBadRequest(w, "invalid JSON body")
@@ -111,36 +106,19 @@ func (s *Server) handleWorldRulesSync(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "mode must be apply or dry_run")
 		return
 	}
-	turnIndex := intFromAny(payload["turn_index"], 0)
-	candidates := buildWorldRuleSyncCandidates(sid, turnIndex, mapFromAny(payload["supervisor_response"]))
-	if mode == "dry_run" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":          "ok",
-			"mode":            mode,
-			"chat_session_id": sid,
-			"candidate_count": len(candidates),
-			"would_write":     false,
-		})
+	if mode == "apply" {
+		writeError(w, http.StatusConflict, CodeSupervisorCanonicalWriteForbidden,
+			"supervisor proposals are proposal-only and cannot write canonical world rules")
 		return
 	}
-	applied := 0
-	for i := range candidates {
-		if err := saver.SaveWorldRule(r.Context(), &candidates[i]); err != nil {
-			if errors.Is(err, store.ErrNotEnabled) {
-				writeShadowGuard(w, "POST /world-rules/sync")
-				return
-			}
-			writeInternalError(w, err.Error())
-			return
-		}
-		applied++
-	}
+	turnIndex := intFromAny(payload["turn_index"], 0)
+	candidates := buildWorldRuleSyncCandidates(sid, turnIndex, mapFromAny(payload["supervisor_response"]))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":          "ok",
 		"mode":            mode,
 		"chat_session_id": sid,
 		"candidate_count": len(candidates),
-		"applied_count":   applied,
+		"would_write":     false,
 	})
 }
 

@@ -33,7 +33,7 @@ func buildRecallResult(
 		status = "degraded"
 	}
 	topK = prepareTurnRecallLimit(topK)
-	recallLimit := prepareTurnSupportRecallLimit(topK)
+	recallLimit := prepareTurnSupportCandidateLimit(0)
 
 	var items []map[string]any
 	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, queryPreview, topK, vectorShadow)
@@ -94,7 +94,7 @@ func buildRecallResult(
 		vectorReadinessStatus != "disabled" &&
 		vectorReadinessStatus != "vector_store_disabled" &&
 		vectorReadinessStatus != "chromadb_unconfigured"
-	rawFallbackActive := prepareTurnNeedsRawFallback(memorySelection, topK) || vectorFallbackApplies
+	rawFallbackActive := prepareTurnNeedsRawFallback(memorySelection) || vectorFallbackApplies
 	if rawFallbackActive && len(chatLogs) > 0 {
 		rawFallbackLogs = selectRecentChatLogsByTurn(chatLogs, recallLimit)
 		for _, cl := range rawFallbackLogs {
@@ -146,27 +146,27 @@ func buildRecallResult(
 	}
 
 	counts := map[string]any{
-		"memories_total":        len(memories),
-		"memories_bound":        prepareTurnSelectedMemoryCount(memorySelection),
-		"memory_count":          prepareTurnSelectedMemoryCount(memorySelection),
-		"top_k_memory_target":   topK,
-		"support_recall_limit":  recallLimit,
-		"top_k_definition":      "semantic_memory_recall_limit",
-		"vector_memory_bound":   len(memorySelection.VectorRelevant),
-		"recent_memory_bound":   len(memorySelection.Recent),
-		"relevant_memory_bound": len(memorySelection.Relevant),
-		"deep_memory_bound":     len(memorySelection.Deep),
-		"evidence_total":        len(evidence),
-		"evidence_bound":        minInt(len(evidence), recallLimit),
-		"kg_total":              len(kgTriples),
-		"kg_bound":              minInt(len(kgTriples), recallLimit),
-		"episodes_total":        len(episodeSums),
-		"episodes_bound":        minInt(len(episodeSums), recallLimit),
-		"chat_logs_total":       len(chatLogs),
-		"fallback_total":        len(chatLogs),
-		"fallback_bound":        fallbackBound,
-		"fallback_count":        fallbackBound,
-		"has_fallback":          fallbackBound > 0,
+		"memories_total":          len(memories),
+		"memories_bound":          prepareTurnSelectedMemoryCount(memorySelection),
+		"memory_count":            prepareTurnSelectedMemoryCount(memorySelection),
+		"top_k_memory_target":     topK,
+		"support_candidate_limit": recallLimit,
+		"top_k_definition":        "vector_memory_search_limit_only",
+		"vector_memory_bound":     len(memorySelection.VectorRelevant),
+		"recent_memory_bound":     len(memorySelection.Recent),
+		"relevant_memory_bound":   len(memorySelection.Relevant),
+		"deep_memory_bound":       len(memorySelection.Deep),
+		"evidence_total":          len(evidence),
+		"evidence_bound":          minInt(len(evidence), recallLimit),
+		"kg_total":                len(kgTriples),
+		"kg_bound":                minInt(len(kgTriples), recallLimit),
+		"episodes_total":          len(episodeSums),
+		"episodes_bound":          minInt(len(episodeSums), recallLimit),
+		"chat_logs_total":         len(chatLogs),
+		"fallback_total":          len(chatLogs),
+		"fallback_bound":          fallbackBound,
+		"fallback_count":          fallbackBound,
+		"has_fallback":            fallbackBound > 0,
 	}
 	mergePrepareTurnMemoryLaneCounters(counts, memorySelection, false)
 	recallLanes := buildPrepareTurnRecallLanes(memorySelection, rawFallbackLogs, vectorReadiness, topK)
@@ -487,7 +487,7 @@ func buildRecallResult(
 			},
 			"r2_recall_lanes": map[string]any{
 				"top_k_memory_target":     topK,
-				"top_k_definition":        "semantic_memory_recall_limit",
+				"top_k_definition":        "vector_memory_search_limit_only",
 				"vector_memory_count":     len(memorySelection.VectorRelevant),
 				"recent_memory_count":     len(memorySelection.Recent),
 				"relevant_memory_count":   len(memorySelection.Relevant),
@@ -549,7 +549,7 @@ func buildPrepareTurnRecallLanes(selection prepareTurnMemoryLaneSelection, rawFa
 	}
 	return map[string]any{
 		"version":             "r3.recall_lanes.v1",
-		"top_k_definition":    "semantic_memory_recall_limit",
+		"top_k_definition":    "vector_memory_search_limit_only",
 		"top_k_memory_target": topK,
 		"vector_relevant": map[string]any{
 			"count":      len(selection.VectorRelevant),
@@ -565,7 +565,7 @@ func buildPrepareTurnRecallLanes(selection prepareTurnMemoryLaneSelection, rawFa
 		"relevant": map[string]any{
 			"count":  len(selection.Relevant),
 			"items":  laneItems("relevant", selection.Relevant),
-			"policy": "keyword_overlap_first_within_top_k_memory_target",
+			"policy": "current_scene_keyword_overlap_then_final_category_char_budget",
 		},
 		"deep": map[string]any{
 			"count":  len(selection.Deep),

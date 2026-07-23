@@ -57,14 +57,10 @@ func TestSeq165P115OptionalAnchorSlot(t *testing.T) {
 		t.Fatalf("input_context_text missing or empty")
 	}
 
-	if !strings.Contains(ict, "[Active States]") {
-		t.Fatalf("input_context_text missing [Active States] optional slot")
-	}
-	if !strings.Contains(ict, "[Canonical State Layers]") {
-		t.Fatalf("input_context_text missing [Canonical State Layers] optional slot")
-	}
-	if !strings.Contains(ict, "[Episode Summaries]") {
-		t.Fatalf("input_context_text missing [Episode Summaries] optional slot")
+	for _, forbidden := range []string{"[Active States]", "[Canonical State Layers]", "[Episode Summaries]"} {
+		if strings.Contains(ict, forbidden) {
+			t.Fatalf("dedicated continuity class bypassed through input_context_text: %s", forbidden)
+		}
 	}
 
 	cp, ok := resp["continuity_pack"].(map[string]any)
@@ -950,8 +946,8 @@ func TestSeq165P133LongGapResumeReplay(t *testing.T) {
 	if !ok || ict == "" {
 		t.Fatalf("input_context_text missing or empty")
 	}
-	if !strings.Contains(ict, "[Resume Pack]") {
-		t.Fatalf("input_context_text missing [Resume Pack]")
+	if strings.Contains(ict, "[Resume Pack]") {
+		t.Fatalf("resume pack bypassed its dedicated continuity lane")
 	}
 
 	cp, ok := resp["continuity_pack"].(map[string]any)

@@ -403,8 +403,8 @@ func TestEffectiveInputsDualShadowHasTransparency(t *testing.T) {
 func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnMemories: []store.Memory{
-			{ID: 1, ChatSessionID: "sess-prep", TurnIndex: 2, SummaryJSON: `{"turn_summary":"A warm evening in the garden"}`, Importance: 0.9},
-			{ID: 2, ChatSessionID: "sess-prep", TurnIndex: 3, SummaryJSON: `{"turn_summary":"A confrontation at the gate"}`, Importance: 0.8},
+			{ID: 1, ChatSessionID: "sess-prep", TurnIndex: 2, SummaryJSON: `{"turn_summary":"Alice and Bob open the old manor door"}`, Importance: 0.9},
+			{ID: 2, ChatSessionID: "sess-prep", TurnIndex: 3, SummaryJSON: `{"turn_summary":"Alice and Bob open the manor door"}`, Importance: 0.8},
 		},
 		returnKGTriples: []store.KGTriple{
 			{ID: 10, ChatSessionID: "sess-prep", Subject: "Alice", Predicate: "knows", Object: "Bob"},
@@ -424,13 +424,13 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 			{ID: 1, ChatSessionID: "sess-prep", Name: "The Manor Mystery", CurrentContext: "Alice investigates the old manor"},
 		},
 		returnWorldRules: []store.WorldRule{
-			{ID: 1, ChatSessionID: "sess-prep", Key: "magic_requires_blood", Scope: "session"},
+			{ID: 1, ChatSessionID: "sess-prep", Key: "magic_requires_blood", Scope: "session", ValueJSON: `{"rule":"Magic requires blood"}`},
 		},
 		returnCharStates: []store.CharacterState{
 			{ID: 1, ChatSessionID: "sess-prep", CharacterName: "Alice", StatusJSON: `{"health":"injured","mood":"determined"}`},
 		},
 		returnPendingThreads: []store.PendingThread{
-			{ID: 1, ChatSessionID: "sess-prep", Description: "Who sent the letter?"},
+			{ID: 1, ChatSessionID: "sess-prep", Description: "Who sent the sealed letter?"},
 		},
 		returnActiveStates: []store.ActiveState{
 			{ID: 1, ChatSessionID: "sess-prep", StateType: "location", Content: "Old manor library"},
@@ -451,7 +451,7 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-prep","turn_index":6,"raw_user_input":"Open the door","settings":{"max_injection_chars":500,"max_input_context_chars":400,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
+	body := `{"chat_session_id":"sess-prep","turn_index":6,"raw_user_input":"Alice and Bob open the old manor library door and inspect the sealed red wax letter under the magic blood rule.","settings":{"max_injection_chars":5000,"max_input_context_chars":400,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -487,8 +487,8 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if injection == "" {
 		t.Error("injection_text is empty")
 	}
-	if len(injection) > 500 {
-		t.Errorf("injection_text length %d exceeds cap 500", len(injection))
+	if len(injection) > 5000 {
+		t.Errorf("injection_text length %d exceeds cap 5000", len(injection))
 	}
 
 	ict, _ := resp["input_context_text"].(string)
@@ -574,23 +574,13 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 		t.Error("injection_text missing [Pending Threads] section")
 	}
 
-	if !strings.Contains(ict, "[Resume Pack]") {
-		t.Error("input_context_text missing [Resume Pack] section")
-	}
-	if !strings.Contains(ict, "[Direct Evidence]") {
-		t.Error("input_context_text missing [Direct Evidence] section")
-	}
 	if !strings.Contains(ict, "[Recent Chat]") {
 		t.Error("input_context_text missing [Recent Chat] section")
 	}
-	if !strings.Contains(ict, "[Active States]") {
-		t.Error("input_context_text missing [Active States] section")
-	}
-	if !strings.Contains(ict, "[Canonical State Layers]") {
-		t.Error("input_context_text missing [Canonical State Layers] section")
-	}
-	if !strings.Contains(ict, "[Episode Summaries]") {
-		t.Error("input_context_text missing [Episode Summaries] section")
+	for _, forbidden := range []string{"[Resume Pack]", "[Direct Evidence]", "[Active States]", "[Canonical State Layers]", "[Episode Summaries]"} {
+		if strings.Contains(ict, forbidden) {
+			t.Errorf("dedicated delivery class bypassed through input_context_text: %s", forbidden)
+		}
 	}
 
 	supervisorPack, ok := resp["supervisor_input_pack"].(map[string]any)
@@ -637,13 +627,13 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if injectionPack["would_write"] != false {
 		t.Errorf("injection_pack.would_write = %v, want false", injectionPack["would_write"])
 	}
-	if injectionPack["final_budget_owner"] != "archive_center_js_assembleInjectionWithBudget" {
-		t.Errorf("final_budget_owner = %v, want JS budget owner", injectionPack["final_budget_owner"])
+	if injectionPack["final_budget_owner"] != "go_memory_delivery_plan" {
+		t.Errorf("final_budget_owner = %v, want Go memory delivery owner", injectionPack["final_budget_owner"])
 	}
 	if _, ok := injectionPack["budget_decisions"].(map[string]any); !ok {
 		t.Fatalf("injection_pack.budget_decisions is not an object")
 	}
-	if memoryText, _ := injectionPack["memory_text"].(string); !strings.Contains(memoryText, "A warm evening in the garden") {
+	if memoryText, _ := injectionPack["memory_text"].(string); !strings.Contains(memoryText, "Alice and Bob open the old manor door") {
 		t.Errorf("memory_text missing readable memory summary: %q", memoryText)
 	}
 	if kgText, _ := injectionPack["kg_text"].(string); !strings.Contains(kgText, "Alice --knows--> Bob") {
@@ -934,8 +924,8 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 		t.Errorf("scene_step_proposal.status = %v, want ready", sceneStep["status"])
 	}
 	steps, _ := sceneStep["steps"].([]any)
-	if len(steps) != 2 {
-		t.Errorf("scene_step_proposal.steps len = %d, want topK 2", len(steps))
+	if len(steps) != 3 {
+		t.Errorf("scene_step_proposal.steps len = %d, want all 3 relevant non-vector candidates", len(steps))
 	}
 	if sceneStep["would_call_llm"] != false {
 		t.Errorf("scene_step_proposal.would_call_llm = %v, want false", sceneStep["would_call_llm"])
@@ -954,8 +944,8 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if combinedProposal["micro_beat_count"] != float64(2) {
 		t.Errorf("combined_proposal.micro_beat_count = %v, want 2", combinedProposal["micro_beat_count"])
 	}
-	if combinedProposal["scene_step_count"] != float64(2) {
-		t.Errorf("combined_proposal.scene_step_count = %v, want topK 2", combinedProposal["scene_step_count"])
+	if combinedProposal["scene_step_count"] != float64(3) {
+		t.Errorf("combined_proposal.scene_step_count = %v, want 3 relevant non-vector candidates", combinedProposal["scene_step_count"])
 	}
 	if combinedProposal["source"] != "go_r1_read_shadow" {
 		t.Errorf("combined_proposal.source = %v, want go_r1_read_shadow", combinedProposal["source"])
@@ -977,6 +967,43 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	}
 	if writebackPreview["would_write"] != false {
 		t.Errorf("writeback_preview.would_write = %v, want false", writebackPreview["would_write"])
+	}
+}
+
+func TestPrepareTurnGuideNoneSuppressesStorylineGuidance(t *testing.T) {
+	fake := &turnRecordingStore{returnStorylines: []store.Storyline{{
+		ID: 1, ChatSessionID: "sess-guide-none", Name: "Political pressure",
+		CurrentContext: "Tell the model what must happen next",
+	}}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"sess-guide-none","turn_index":2,"raw_user_input":"한얼은 손을 다쳤다.","settings":{"guide_mode":"auto","guide_strength":"none","max_injection_chars":2000,"injection_enabled":true,"input_context_enabled":false,"top_k":3}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if injection := extractionStringFromAny(response["injection_text"]); strings.Contains(injection, "[Storylines]") || strings.Contains(injection, "what must happen next") {
+		t.Fatalf("guide none leaked storyline guidance into injection: %q", injection)
+	}
+	pack := mapFromAny(response["supervisor_input_pack"])
+	if pack["guide_mode"] != "off" || pack["guide_strength"] != "none" {
+		t.Fatalf("guide-none supervisor pack mismatch: %#v", pack)
+	}
+	selection := mapFromAny(pack["storyline_selection"])
+	if intFromAny(selection["selected_count"], -1) != 0 {
+		t.Fatalf("guide none selected storyline guidance: %#v", selection)
 	}
 }
 
@@ -1037,8 +1064,8 @@ func TestPrepareTurnPersonaRecollectionSupportLane(t *testing.T) {
 		t.Fatalf("injection_text missing masked persona secret hint: %q", injectionText)
 	}
 	inputContextText, _ := resp["input_context_text"].(string)
-	if !strings.Contains(inputContextText, "[Persona Recollection]") || !strings.Contains(inputContextText, "support-only private recollection") {
-		t.Fatalf("input_context_text missing support-only persona lane: %q", inputContextText)
+	if strings.Contains(inputContextText, "[Persona Recollection]") || strings.Contains(inputContextText, "support-only private recollection") {
+		t.Fatalf("persona recollection bypassed its dedicated injection lane: %q", inputContextText)
 	}
 	ip, ok := resp["injection_pack"].(map[string]any)
 	if !ok {

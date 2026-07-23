@@ -61,12 +61,17 @@ func TestPrepareTurnWeakInputPlannerContract(t *testing.T) {
 	if len(stringSliceFromAny(planner["selected_anchor_names"])) == 0 {
 		t.Fatalf("expected selected anchor trace, got %#v", planner["selected_anchor_names"])
 	}
-	execContract, ok := resp["planner_execution_contract"].(map[string]any)
+	execContract, ok := resp["response_execution_contract"].(map[string]any)
 	if !ok {
-		t.Fatalf("planner_execution_contract missing: %#v", resp["planner_execution_contract"])
+		t.Fatalf("response_execution_contract missing: %#v", resp["response_execution_contract"])
 	}
-	if execContract["contract_version"] != "step25_planner_execution_contract.v1" || execContract["status"] != "ready" || execContract["truth_authority"] != false {
+	if execContract["contract_version"] != "response_execution_contract.v1" || execContract["status"] != "ready" || execContract["truth_authority"] != false {
 		t.Fatalf("unexpected execution contract: %#v", execContract)
+	}
+	for _, key := range []string{"must_preserve", "must_respond", "must_account", "must_not_assert", "source_refs"} {
+		if _, ok := execContract[key].(map[string]any); !ok {
+			t.Fatalf("response execution contract missing %s: %#v", key, execContract[key])
+		}
 	}
 	sceneMandate, ok := execContract["scene_mandate"].(map[string]any)
 	if !ok || extractionStringFromAny(sceneMandate["value"]) == "" {
@@ -130,8 +135,8 @@ func TestPrepareTurnWeakInputPlannerContract(t *testing.T) {
 	if _, ok := supervisor["weak_input_planner"].(map[string]any); !ok {
 		t.Fatalf("supervisor pack missing weak planner contract: %#v", supervisor["weak_input_planner"])
 	}
-	if _, ok := supervisor["planner_execution_contract"].(map[string]any); !ok {
-		t.Fatalf("supervisor pack missing planner execution contract: %#v", supervisor["planner_execution_contract"])
+	if _, ok := supervisor["response_execution_contract"].(map[string]any); !ok {
+		t.Fatalf("supervisor pack missing response execution contract: %#v", supervisor["response_execution_contract"])
 	}
 	if _, ok := supervisor["progression_choice_ledger"].(map[string]any); !ok {
 		t.Fatalf("supervisor pack missing progression choice ledger: %#v", supervisor["progression_choice_ledger"])
@@ -141,7 +146,7 @@ func TestPrepareTurnWeakInputPlannerContract(t *testing.T) {
 	}
 	guidance := extractionStringFromAny(supervisor["final_guidance_suffix"])
 	if !strings.Contains(guidance, "[Weak Input Planner]") ||
-		!strings.Contains(guidance, "[Planner Execution Contract]") ||
+		!strings.Contains(guidance, "[Response Execution Contract]") ||
 		!strings.Contains(guidance, "[Progression Choice Ledger]") ||
 		!strings.Contains(guidance, "current_user_input_priority=highest") ||
 		!strings.Contains(guidance, "truth_authority=false") {

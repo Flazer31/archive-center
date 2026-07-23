@@ -26,24 +26,28 @@ type routingTurnBaseline struct {
 }
 
 type rollbackDecisionRequest struct {
-	ChatSessionID         string               `json:"chat_session_id"`
-	RequestSource         string               `json:"request_source"`
-	Reason                string               `json:"reason"`
-	CandidateFromTurn     int                  `json:"candidate_from_turn"`
-	PreviousTurnIndex     int                  `json:"previous_turn_index"`
-	FirstRemovedTurn      int                  `json:"first_removed_turn"`
-	LedgerAnchorTurn      int                  `json:"ledger_anchor_turn"`
-	RemovedAssistantCount int                  `json:"removed_assistant_count"`
-	RemovedMessageCount   int                  `json:"removed_message_count"`
-	VisibleCompletedTurns int                  `json:"visible_completed_turns"`
-	BackendLatestTurn     int                  `json:"backend_latest_turn"`
-	DeletionObserved      bool                 `json:"deletion_observed"`
-	LedgerVerified        bool                 `json:"ledger_verified"`
-	HistoryTrimGuard      bool                 `json:"history_trim_guard"`
-	DuplicateBlocked      bool                 `json:"duplicate_blocked"`
-	PendingOutputGuard    bool                 `json:"pending_output_guard"`
-	AllowManualCandidate  bool                 `json:"allow_manual_candidate"`
-	Baseline              *routingTurnBaseline `json:"baseline,omitempty"`
+	ChatSessionID                 string               `json:"chat_session_id"`
+	RequestSource                 string               `json:"request_source"`
+	Reason                        string               `json:"reason"`
+	CandidateFromTurn             int                  `json:"candidate_from_turn"`
+	PreviousTurnIndex             int                  `json:"previous_turn_index"`
+	FirstRemovedTurn              int                  `json:"first_removed_turn"`
+	LedgerAnchorTurn              int                  `json:"ledger_anchor_turn"`
+	RemovedAssistantCount         int                  `json:"removed_assistant_count"`
+	RemovedUserCount              int                  `json:"removed_user_count"`
+	RemovedMessageCount           int                  `json:"removed_message_count"`
+	VisibleCompletedTurns         int                  `json:"visible_completed_turns"`
+	BackendLatestTurn             int                  `json:"backend_latest_turn"`
+	DeletionObserved              bool                 `json:"deletion_observed"`
+	LedgerVerified                bool                 `json:"ledger_verified"`
+	IncompleteTailCandidate       bool                 `json:"incomplete_tail_candidate"`
+	BackendIncompleteTailVerified bool                 `json:"-"`
+	HistoryTrimGuard              bool                 `json:"history_trim_guard"`
+	DuplicateBlocked              bool                 `json:"duplicate_blocked"`
+	PendingOutputGuard            bool                 `json:"pending_output_guard"`
+	HostLifecycleObservation      string               `json:"host_lifecycle_observation"`
+	AllowManualCandidate          bool                 `json:"allow_manual_candidate"`
+	Baseline                      *routingTurnBaseline `json:"baseline,omitempty"`
 }
 
 type rollbackDecisionResponse struct {
@@ -127,6 +131,36 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
+	if req.IncompleteTailCandidate &&
+		req.DeletionObserved &&
+		req.RemovedAssistantCount == 0 &&
+		req.RemovedUserCount == 1 &&
+		req.RemovedMessageCount == 1 &&
+		req.BackendLatestTurn > 0 &&
+		req.CandidateFromTurn == req.BackendLatestTurn &&
+		s.Store != nil {
+		logs, err := s.Store.ListChatLogs(r.Context(), strings.TrimSpace(req.ChatSessionID), 0, 0)
+		if err == nil && len(logs) > 0 {
+			actualLatestTurn := 0
+			for _, item := range logs {
+				if item.TurnIndex > actualLatestTurn {
+					actualLatestTurn = item.TurnIndex
+				}
+			}
+			userRowsOnly := actualLatestTurn == req.BackendLatestTurn
+			latestRows := 0
+			for _, item := range logs {
+				if item.TurnIndex != actualLatestTurn {
+					continue
+				}
+				latestRows++
+				if !strings.EqualFold(strings.TrimSpace(item.Role), "user") {
+					userRowsOnly = false
+				}
+			}
+			req.BackendIncompleteTailVerified = userRowsOnly && latestRows > 0
+		}
+	}
 	resp := calculateRollbackDecision(req)
 	if resp.Allowed {
 		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, req.RequestSource)
@@ -155,12 +189,16 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 		resp.Reason = "duplicate_rollback_blocked"
 		return resp
 	}
-	if req.PendingOutputGuard {
+	if req.PendingOutputGuard || rollbackObservationHasPendingGeneration(req.HostLifecycleObservation) {
 		resp.Reason = "pending_output_guard"
 		return resp
 	}
 	manual := strings.EqualFold(strings.TrimSpace(req.RequestSource), "manual")
 	if !req.DeletionObserved && !(manual && req.AllowManualCandidate) {
+		return resp
+	}
+	if req.IncompleteTailCandidate && !req.BackendIncompleteTailVerified {
+		resp.Reason = "incomplete_tail_not_verified"
 		return resp
 	}
 
@@ -175,7 +213,9 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 	}
 
 	fromTurn := 0
-	if req.LedgerVerified && req.RemovedAssistantCount > 0 && req.BackendLatestTurn > 0 {
+	if req.BackendIncompleteTailVerified && req.BackendLatestTurn > 0 {
+		fromTurn = req.BackendLatestTurn
+	} else if req.LedgerVerified && req.RemovedAssistantCount > 0 && req.BackendLatestTurn > 0 {
 		if req.RemovedAssistantCount > req.BackendLatestTurn {
 			resp.Reason = "ledger_removed_count_exceeds_backend_tail"
 			return resp
@@ -217,6 +257,15 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 	resp.EffectiveCompleted = effectiveCompleted
 	resp.BaselineApplied = baselineApplied
 	return resp
+}
+
+func rollbackObservationHasPendingGeneration(observation string) bool {
+	switch strings.ToLower(strings.TrimSpace(observation)) {
+	case "before_request_observed", "generation_watch_active":
+		return true
+	default:
+		return false
+	}
 }
 
 type sessionRoutingTurnResolutionRequest struct {

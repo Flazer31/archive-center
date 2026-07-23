@@ -30,6 +30,13 @@ var (
 // ValidateProxyEndpoint returns an error if the endpoint URL is disallowed.
 // This replicates the 0.8 _proxy_validate_endpoint behavior.
 func ValidateProxyEndpoint(endpoint string) error {
+	return ValidateProxyEndpointForProvider(endpoint, "")
+}
+
+// ValidateProxyEndpointForProvider permits an explicitly configured Ollama
+// provider to reach a same-host Ollama process while retaining the proxy's
+// local-network guard for every other provider.
+func ValidateProxyEndpointForProvider(endpoint, provider string) error {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		return fmt.Errorf("endpoint is required")
@@ -46,7 +53,8 @@ func ValidateProxyEndpoint(endpoint string) error {
 	if hostname == "" {
 		return fmt.Errorf("invalid endpoint URL")
 	}
-	if _, ok := blockedLocalHosts[hostname]; ok {
+	allowOllamaLoopback := strings.EqualFold(strings.TrimSpace(provider), "ollama")
+	if _, ok := blockedLocalHosts[hostname]; ok && !allowOllamaLoopback {
 		return fmt.Errorf("endpoint host is not allowed")
 	}
 	if strings.HasPrefix(hostname, "localhost.") {
@@ -56,7 +64,7 @@ func ValidateProxyEndpoint(endpoint string) error {
 		return fmt.Errorf("endpoint host is not allowed")
 	}
 	if addr, err := netip.ParseAddr(hostname); err == nil {
-		if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		if (addr.IsLoopback() && !allowOllamaLoopback) || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
 			addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
 			return fmt.Errorf("endpoint host is not allowed")
 		}

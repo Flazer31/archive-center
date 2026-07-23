@@ -1,11 +1,247 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/httpapi"
+	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func TestSourceDiscoveryRendersRecordedBridgeFailure(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "referenceDiscoveryRunFromUI")
+	for _, expected := range []string{
+		`_lastBridgeFailureByPath.get("/source-discovery/preview/v1")`,
+		`_lastBridgeFailureByPath.get("/source-discovery/jobs/v1")`,
+		`String(failure.detail`,
+	} {
+		if !strings.Contains(fn, expected) {
+			t.Fatalf("source discovery transport failure detail missing %q", expected)
+		}
+	}
+}
+
+func TestGuideNoneSkipsSupervisorCallRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for guide-off runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "runSupervisor")
+	script := fn + `
+const settings = {enabled:true,narrativeGuideStrength:"none",narrativeGuideMode:"auto"};
+let _lastSupervisorFailureReason = "old";
+let bridgeCalls = 0;
+let status = null;
+function normalizeNarrativeGuideStrength(value) { return value; }
+async function getCurrentChatSessionId() { return "session-guide-off"; }
+function updateRuntimeState(key, nextStatus, detail) { status = {key,nextStatus,detail}; }
+async function bridgeFetch() { bridgeCalls++; throw new Error("guide off called supervisor"); }
+(async function() {
+  const result = await runSupervisor([], "", "session-guide-off", "", "none", null);
+  if (result !== null || bridgeCalls !== 0) throw new Error("guide off executed supervisor transport");
+  if (!status || status.nextStatus !== "skipped" || status.detail.detail !== "guide_off") throw new Error("guide off status mismatch: "+JSON.stringify(status));
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("guide-off supervisor JS fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestLanguageContextIgnoresRisuPromptScaffoldAssistantRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for language-source runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	script := extractArchiveCenterJSFunction(t, src, "normalizeLanguageCodeForTrace") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "detectTextLanguageForTrace") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "detectRecentAssistantOutputLanguage") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "isSupportedMemoryLanguageCode") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "buildLanguageFallbackChain") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "buildLanguageContextTrace") + `
+const LANGUAGE_MEMORY_CONTRACT_VERSION = "language_memory.v1";
+const LANGUAGE_MEMORY_SEARCH_TEXT_POLICY = "summary_plus_raw_plus_aliases";
+const settings = {uiLanguage:"en"};
+function getPayloadMessageRoleAndText(message) { return {role:String(message.role||""),text:String(message.content||"")}; }
+function isMetaPromptLikeMessage(text) { return /^system\s*:/i.test(String(text||"").trim()); }
+async function resolveRuntimeOutputLanguageOverride() { return ""; }
+function normalizeLanguageContextTrace(value) { return value; }
+(async function() {
+  const scaffoldOnly = await buildLanguageContextTrace({
+    userInput:"한얼은 숯불에 손을 다쳤다.",
+    messages:[{role:"assistant",content:"system: POV instructions. Respond in Korean after reviewing these English instructions."}],
+    stage:"beforeRequest"
+  });
+  if (scaffoldOnly.session_output_language !== "ko" || scaffoldOnly.output_language_source !== "current_user") {
+    throw new Error("Risu scaffold contaminated language source: "+JSON.stringify(scaffoldOnly));
+  }
+  const realAssistant = await buildLanguageContextTrace({
+    userInput:"한국어로 쓴 입력",
+    messages:[{role:"assistant",content:"The previous actual assistant response remains in English."}],
+    stage:"beforeRequest"
+  });
+  if (realAssistant.session_output_language !== "en" || realAssistant.output_language_source !== "recent_assistant") {
+    throw new Error("real assistant continuity language was not preserved: "+JSON.stringify(realAssistant));
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("language-source JS fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFinalPayloadParitySeparatesActualUserFromRisuPromptTailRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for final-payload parity runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	hashFn := extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c")
+	fn := extractArchiveCenterJSFunction(t, src, "buildFinalPayloadParityTrace")
+	script := hashFn + "\n" + fn + `
+const settings = {pluginMainApplyMode:"shadow",pluginMainRewriteLegacyOptIn:false};
+function extractMessages(payload) { return {messages:payload.messages||[]}; }
+function findLastPayloadMessage(messages, role) { for (let i=messages.length-1;i>=0;i--) if (!role || messages[i].role===role) return messages[i]; return null; }
+function truncPreview(value, limit) { return String(value||"").slice(0,limit); }
+function isMetaUserMessage(value) { return /^system\s*:/i.test(String(value||"").trim()); }
+const payload = {messages:[{role:"user",content:"system: POV instructions and host prompt"}]};
+const trace = buildFinalPayloadParityTrace(payload, payload, {
+  chatSessionId:"session-copy", userInputSource:"active_chat:0", effectiveUserInput:"한얼은 숯불에 손을 다쳤다.",
+  applyMode:{mode:"shadow",payloadReplaced:false},payloadMutated:false
+});
+if (trace.finalUserInputPreview !== "한얼은 숯불에 손을 다쳤다.") throw new Error("actual user preview was replaced by host prompt: "+JSON.stringify(trace));
+if (trace.payloadUserRoleTailKind !== "risu_host_prompt_scaffold") throw new Error("Risu payload tail was not classified separately: "+JSON.stringify(trace));
+if (!trace.capturedBeforeRequestReturn || !trace.outboundPayloadHash) throw new Error("pre-request fingerprint missing: "+JSON.stringify(trace));
+const mismatch = buildFinalPayloadParityTrace(payload, payload, {
+  effectiveInputText:"required auxiliary", injectionResult:{mainInjectionPreview:"required auxiliary"}
+});
+if (mismatch.status !== "mismatch" || mismatch.payloadContentMatch !== false) throw new Error("missing payload component was accepted: "+JSON.stringify(mismatch));
+const matchedPayload = {messages:[{role:"system",content:"host scaffold\nrequired auxiliary"}]};
+const matched = buildFinalPayloadParityTrace(payload, matchedPayload, {
+  effectiveInputText:"required auxiliary", injectionResult:{mainInjectionPreview:"required auxiliary"}
+});
+if (matched.status !== "ready" || matched.payloadContentMatch !== true) throw new Error("present payload component was rejected: "+JSON.stringify(matched));
+if (!matched.effectiveInputHash || !matched.outboundPayloadHash) throw new Error("non-empty verified input fingerprint missing: "+JSON.stringify(matched));
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("final-payload parity JS fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestSourceDiscoveryUsesSelectedWorkWithoutDuplicateTitleInput(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	remember := extractArchiveCenterJSFunction(t, src, "referenceDiscoveryRememberDraft")
+	panel := extractArchiveCenterJSFunction(t, src, "renderReferenceCanonPackPanel")
+	library := extractArchiveCenterJSFunction(t, src, "renderReferenceLibrarySection")
+	timeout := extractArchiveCenterJSFunction(t, src, "getSourceDiscoveryRequestTimeoutMs")
+	if !strings.Contains(remember, `state.works.find`) || strings.Contains(remember, `mo-discovery-work-query`) {
+		t.Fatalf("discovery draft must derive the title from the selected work: %s", remember)
+	}
+	if !strings.Contains(panel, `대상 작품`) || strings.Contains(panel, `id="mo-discovery-work-query"`) {
+		t.Fatalf("discovery panel still exposes a duplicate title input: %s", panel)
+	}
+	if !strings.Contains(library, `tabs + selector + renderReferenceCanonPackPanel()`) {
+		t.Fatalf("work selector is missing from the discovery panel")
+	}
+	if !strings.Contains(timeout, `resolveRequestTimeoutMs(600000)`) {
+		t.Fatalf("source discovery transport must outlive the bounded backend pipeline: %s", timeout)
+	}
+}
+
+func TestSourceDiscoveryDisplaysRetainedDocumentsAndDoesNotHidePartialCandidates(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	run := extractArchiveCenterJSAsyncFunction(t, src, "referenceDiscoveryRunFromUI")
+	render := extractArchiveCenterJSFunction(t, src, "renderReferenceLibrarySection")
+	if !strings.Contains(run, `else if (candidateCount === 0)`) || strings.Contains(run, `insufficient_source_coverage" || candidateCount === 0`) {
+		t.Fatalf("partial discovery candidates are still hidden by coverage state: %s", run)
+	}
+	for _, expected := range []string{"원문 문서", "raw_retention", "raw_text_length", `libraryView === "documents"`} {
+		if !strings.Contains(render, expected) {
+			t.Fatalf("retained source document UI missing %q", expected)
+		}
+	}
+	panel := extractArchiveCenterJSFunction(t, src, "renderReferenceCanonPackPanel")
+	for _, expected := range []string{`documents_retained`, `documents_upgraded`, `원문 DB 저장 실패`} {
+		if !strings.Contains(panel, expected) {
+			t.Fatalf("source body staging diagnostics missing %q", expected)
+		}
+	}
+}
+
+func TestRetainedDocumentsExposeIndependentCriticActions(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	render := extractArchiveCenterJSFunction(t, src, "renderReferenceLibrarySection")
+	start := extractArchiveCenterJSAsyncFunction(t, src, "referenceLibraryStartExtraction")
+	for _, expected := range []string{`data-reference-document-extract`, `mo-reference-document`, `mo-reference-document-action`, `평론가 정밀 분석`, `평론가 다시 분석`} {
+		if !strings.Contains(render, expected) {
+			t.Fatalf("per-document critic UI missing %q", expected)
+		}
+	}
+	for _, expected := range []string{`selectedDocumentId`, `"/documents/" + referenceLibraryPath(documentId) + "/extract"`, `reference_document_extract`} {
+		if !strings.Contains(start, expected) {
+			t.Fatalf("per-document extraction request missing %q", expected)
+		}
+	}
+	if !strings.Contains(src, `referenceLibraryStartExtraction(button.getAttribute("data-reference-document-extract"))`) {
+		t.Fatalf("per-document critic button is not connected to its document ID")
+	}
+}
+
+func TestSourceDiscoveryResumesStoredAnalysisWithoutStartingAnotherSearch(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	loadLatest := extractArchiveCenterJSAsyncFunction(t, src, "referenceDiscoveryLoadLatestJob")
+	resume := extractArchiveCenterJSAsyncFunction(t, src, "referenceDiscoveryResumeFromUI")
+	render := extractArchiveCenterJSFunction(t, src, "renderReferenceCanonPackPanel")
+	if !strings.Contains(loadLatest, `/source-discovery/latest-job/v1`) || !strings.Contains(loadLatest, `state.discoveryJob = data && data.job_id ? data : null`) {
+		t.Fatalf("latest discovery job is not restored after plugin reload: %s", loadLatest)
+	}
+	for _, expected := range []string{`/complete/v1`, `source_discovery_corpus_analysis`, `referenceLibraryPollJob`} {
+		if !strings.Contains(resume, expected) {
+			t.Fatalf("source discovery resume adapter missing %q", expected)
+		}
+	}
+	for _, expected := range []string{`mo-discovery-resume`, `remaining_document_count`, `duplicate_analysis_sections`} {
+		if !strings.Contains(render, expected) {
+			t.Fatalf("source discovery resume UI missing %q", expected)
+		}
+	}
+	if !strings.Contains(render, `남은 원문 통합 분석`) || !strings.Contains(render, `원문 수집 완료 · 통합 분석 대기`) || !strings.Contains(render, `discoveryPlannedBatches`) {
+		t.Fatalf("source discovery does not expose one-click corpus analysis: %s", render)
+	}
+	if strings.Contains(resume, `/source-discovery/jobs/v1`) {
+		t.Fatalf("resume must not start another search job: %s", resume)
+	}
+}
 
 func extractArchiveCenterJSFunction(t *testing.T, src, name string) string {
 	t.Helper()
@@ -14,12 +250,110 @@ func extractArchiveCenterJSFunction(t *testing.T, src, name string) string {
 	if start < 0 {
 		t.Fatalf("Archive Center.js function %s not found", name)
 	}
-	next := strings.Index(src[start+len(marker):], "\n  function ")
+	nextFunction := strings.Index(src[start+len(marker):], "\n  function ")
+	nextAsyncFunction := strings.Index(src[start+len(marker):], "\n  async function ")
+	next := nextFunction
+	if next < 0 || (nextAsyncFunction >= 0 && nextAsyncFunction < next) {
+		next = nextAsyncFunction
+	}
 	if next < 0 {
 		t.Fatalf("Archive Center.js function %s has no following function boundary", name)
 	}
 	end := start + len(marker) + next
 	return strings.TrimSpace(src[start:end])
+}
+
+func TestPrepareTurnEmptyObservationProductionJSAndGoRoute(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Archive Center prepare-turn observation runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	hashFunction := extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c")
+	observationFunction := extractArchiveCenterJSFunction(t, src, "buildPrepareTurnSourceObservations")
+	script := hashFunction + "\n" + observationFunction + `
+const result = {
+  empty: buildPrepareTurnSourceObservations("session-a", "request-empty", 0, "user", "", '["messages"]', "chat-a"),
+  non_empty: buildPrepareTurnSourceObservations("session-a", "request-non-empty", 0, "user", "hello", '["messages"]', "chat-a")
+};
+process.stdout.write(JSON.stringify(result));
+`
+	command := exec.Command(nodePath, "-e", script)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prepare-turn observation runtime fixture failed: %v\n%s", err, output)
+	}
+	var observations map[string]map[string]any
+	if err := json.Unmarshal(output, &observations); err != nil {
+		t.Fatalf("decode production JS observations: %v\n%s", err, output)
+	}
+	emptySource := observations["empty"]["sourceObservation"].(map[string]any)
+	emptyCapabilities := observations["empty"]["capabilityObservation"].(map[string]any)
+	if _, exists := emptySource["raw_input_hash"]; exists {
+		t.Fatalf("empty observation must omit raw_input_hash: %+v", emptySource)
+	}
+	if got := emptyCapabilities["capabilities"].(map[string]any)["raw_input_hash"]; got != "unavailable" {
+		t.Fatalf("empty hash capability=%v, want unavailable", got)
+	}
+	nonEmptySource := observations["non_empty"]["sourceObservation"].(map[string]any)
+	nonEmptyCapabilities := observations["non_empty"]["capabilityObservation"].(map[string]any)
+	if hash, _ := nonEmptySource["raw_input_hash"].(string); hash == "" {
+		t.Fatalf("non-empty observation lost hash: %+v", nonEmptySource)
+	}
+	if got := nonEmptyCapabilities["capabilities"].(map[string]any)["raw_input_hash"]; got != "observed" {
+		t.Fatalf("non-empty hash capability=%v, want observed", got)
+	}
+
+	server := httpapi.NewServer(config.Default())
+	server.Store = store.NewNoopStore()
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	requestPrepare := func(t *testing.T, rawInput string, observation map[string]any) map[string]any {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"chat_session_id":        "session-a",
+			"raw_user_input":         rawInput,
+			"messages":               []map[string]any{{"role": "user", "content": rawInput}},
+			"source_observation":     observation["sourceObservation"],
+			"capability_observation": observation["capabilityObservation"],
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body)))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("prepare-turn status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		var response map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response["source_contract"].(map[string]any)["lane_status"].(map[string]any)
+	}
+	if lane := requestPrepare(t, "", observations["empty"]); lane["status"] != "empty" || lane["reason_code"] != "source_observation_empty" {
+		t.Fatalf("empty production lane=%+v", lane)
+	}
+	if lane := requestPrepare(t, "hello", observations["non_empty"]); lane["status"] != "eligible" || lane["reason_code"] != "source_observation_eligible" {
+		t.Fatalf("non-empty production lane=%+v", lane)
+	}
+	malformed := map[string]any{}
+	encodedEmpty, err := json.Marshal(observations["empty"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encodedEmpty, &malformed); err != nil {
+		t.Fatal(err)
+	}
+	malformedCapabilities := malformed["capabilityObservation"].(map[string]any)["capabilities"].(map[string]any)
+	malformedCapabilities["raw_input_hash"] = "observed"
+	if lane := requestPrepare(t, "", malformed); lane["status"] != "failed" || lane["reason_code"] != "source_observation_malformed" {
+		t.Fatalf("malformed observed-hash lane=%+v", lane)
+	}
 }
 
 func extractArchiveCenterJSAsyncFunction(t *testing.T, src, name string) string {
@@ -40,6 +374,502 @@ func extractArchiveCenterJSAsyncFunction(t *testing.T, src, name string) string 
 	}
 	end := start + len(marker) + next
 	return strings.TrimSpace(src[start:end])
+}
+
+func TestPrepareTurnSourceCapabilityContractRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Archive Center prepare-turn runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSFunction(t, src, "adaptiveInjectionBudgetProfileLimits") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "adaptiveInjectionAutomaticCap") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "estimateContextGrowthInjectionBudget") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "estimateAdaptiveInjectionBudgetParts") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "tryPrepareTurn")
+	script := fn + `
+const settings = {
+  narrativeGuideMode: "off", narrativeGuideStrength: "weak", storyNarrativeStance: "balanced",
+  pluginMainApplyMode: "shadow", inputContextEnabled: true, maxInjectionChars: 1000, injectionBudgetExtraChars: 0,
+  topK: 3, injectionEnabled: true, primaryCanonBaseMaxChars: 1000,
+  maxInputContextChars: 800, episodeIntervalTurns: 10,
+  embeddingApiKey: "", embeddingEndpoint: "", embeddingModel: "", embeddingProvider: "off", embeddingTimeout: 1
+};
+const DEFAULT_SETTINGS = {maxInjectionChars: 1000, topK: 3, episodeIntervalTurns: 10, embeddingProvider: "off"};
+function resolveNarrativeGuideMode() { return "off"; }
+function normalizeNarrativeGuideStrength(value) { return value === "none" ? "none" : "weak"; }
+function getPayloadMessageRoleAndText(message) { return {role: message.role || "", text: message.content || ""}; }
+function sanitizeTopKSetting(value) { return Number(value || 0); }
+function normalizeLanguageContextTrace(value) { return value || null; }
+function normalizeEmbeddingProvider(value) { return value; }
+function getEmbeddingTimeoutMs() { return 1000; }
+function getRequestTimeoutSettingMs() { return 1000; }
+function debugLog() {}
+let capturedBody = null;
+const capturedBodies = [];
+let expectedLane = {
+  status: "degraded", reason_code: "source_observation_optional_capability_missing",
+  retryable: false, affected_lane: "source_observation", original_payload_preserved: true,
+  contract_version: "source_lane_status.v1", capability_coverage: {}, request_correlation_id: "request-a"
+};
+async function bridgeFetch(path, options) {
+  if (path !== "/prepare-turn") throw new Error("unexpected path " + path);
+  capturedBody = options.body;
+  capturedBodies.push(options.body);
+  return {
+    status: "ok", source: "shadow", fallback_reason: "",
+    source_contract: {contract_version: "prepare_source_projection.v1", lane_status: expectedLane},
+    current_input_decision: {status: "eligible", reason_code: "current_user_input_observed"},
+    session_bootstrap: {status: "preserved", reason_code: "bootstrap_sources_preserved"}
+  };
+}
+
+(async function() {
+  const sourceObservation = {
+    contract_version: "message_source_observation.v1", session_id: "session-a", request_id: "request-a",
+    message_index: 0, observed_role: "user", observable: true, evidence_state: "observed"
+  };
+  const capabilityObservation = {
+    contract_version: "host_source_capabilities.v1",
+    capabilities: {session_identity: "observed", request_correlation: "observed", message_position: "observed", message_role: "observed"}
+  };
+  const hostObservations = {contract_version: "prepare_host_observations.v1", session_id: "session-a", request_id: "request-a"};
+  const bootstrapObservation = {contract_version: "session_bootstrap_observation.v1", session_id: "session-a", request_id: "request-a", leading_messages: []};
+  for (const status of ["degraded", "failed", "incompatible"]) {
+    expectedLane = Object.assign({}, expectedLane, {status, reason_code: "source_observation_" + status});
+    const result = await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
+      sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+    });
+    if (!capturedBody) throw new Error("request body not captured");
+    if (capturedBody.source_observation !== sourceObservation || capturedBody.capability_observation !== capabilityObservation) {
+      throw new Error("host observations were not forwarded unchanged");
+    }
+    if (capturedBody.host_observations !== hostObservations || capturedBody.bootstrap_observation !== bootstrapObservation) {
+      throw new Error("3.3-D host/bootstrap observations were not forwarded unchanged");
+    }
+    for (const forbidden of ["authority", "stable_identity", "canonical_truth", "lifecycle_acceptance", "persistence"]) {
+      if (Object.prototype.hasOwnProperty.call(capturedBody.source_observation, forbidden)) throw new Error("forbidden inference " + forbidden);
+    }
+    if (!result.sourceContract || result.sourceContract.lane_status.status !== status) {
+      throw new Error("stable " + status + " status was not preserved");
+    }
+    if (!result.bundle.sourceContract || result.bundle.sourceContract.lane_status.reason_code !== expectedLane.reason_code) {
+      throw new Error("stable reason code was not preserved in bundle");
+    }
+    if (!result.currentInputDecision || result.currentInputDecision.status !== "eligible" || !result.sessionBootstrap || result.sessionBootstrap.status !== "preserved") {
+      throw new Error("Go-owned 3.3-D decisions were not returned to the adapter");
+    }
+  }
+  const decisionResult = await tryPrepareTurn("session-a", "", [{role: "user", content: "hello"}], null, "model", null, {
+    sourceDecisionOnly: true, sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+  });
+  const decisionBody = capturedBodies[capturedBodies.length - 1];
+  if (decisionBody.source_decision_only !== true || decisionBody.host_observations !== hostObservations) {
+    throw new Error("read-free source decision phase was not transported with the same host observations");
+  }
+  if (!decisionResult.currentInputDecision || decisionResult.currentInputDecision.status !== "eligible") {
+    throw new Error("source decision response was not returned to the production adapter");
+  }
+  const languageContext = {session_output_language: "ko", output_language_override: "ko"};
+  await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], {
+    triggerMode: "manual_resume", query: "continue the unresolved thread"
+  }, "model", languageContext, {
+    freshFirstTurnLightMode: true,
+    freshFirstTurnLightModeMeta: {activeCompletedPairs: 0, latestBackendTurn: 0, routingBaselineBackendTurn: 0},
+    sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+  });
+  const fullBody = capturedBodies[capturedBodies.length - 1];
+  if (fullBody.source_decision_only === true) throw new Error("full prepare was mislabeled as decision-only");
+  if (fullBody.continuity_trigger_mode !== "manual_resume" || fullBody.continuity_query !== "continue the unresolved thread") {
+    throw new Error("continuityInfo was not delivered to full prepare");
+  }
+  if (!fullBody.client_meta || fullBody.client_meta.language_context !== languageContext || fullBody.output_language_override !== "ko") {
+    throw new Error("languageContext was not delivered to full prepare");
+  }
+  if (fullBody.host_observations !== hostObservations || fullBody.bootstrap_observation !== bootstrapObservation) {
+    throw new Error("full prepare did not repeat the correlated host observations");
+  }
+  if (fullBody.settings.top_k !== 0 || fullBody.settings.max_injection_chars !== 0 || fullBody.settings.max_input_context_chars !== 0 || fullBody.settings.input_context_enabled !== false) {
+    throw new Error("fresh-first-turn memory budgets were not suppressed");
+  }
+  await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
+    sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+  });
+  const existingSessionBody = capturedBodies[capturedBodies.length - 1];
+  if (existingSessionBody.settings.top_k !== 3 || existingSessionBody.settings.max_injection_chars !== 1000 || existingSessionBody.settings.input_context_enabled !== true) {
+    throw new Error("existing-session prepare budget regressed");
+  }
+  settings.injectionBudgetExtraChars = 2500;
+  await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
+    runtimeTokenInfo: {currentChatTokens: 9135, source: "message_char_estimate"},
+    sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+  });
+  const adaptiveBudgetBody = capturedBodies[capturedBodies.length - 1];
+  if (adaptiveBudgetBody.settings.max_injection_chars !== 11500) {
+    throw new Error("adaptive plus extra budget was not forwarded to Go: " + adaptiveBudgetBody.settings.max_injection_chars);
+  }
+  settings.narrativeGuideMode = "auto";
+  settings.narrativeGuideStrength = "none";
+  await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
+    sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+  });
+  const guideOffBody = capturedBodies[capturedBodies.length - 1];
+  if (guideOffBody.settings.guide_mode !== "off" || guideOffBody.settings.guide_strength !== "none" || guideOffBody.settings.supervisor_enabled !== false) {
+    throw new Error("guide none was not transported as an explicit OFF contract: "+JSON.stringify(guideOffBody.settings));
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("prepare-turn source/capability runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestLegacyAutomaticInjectionBudgetMigratesOnceToCurrentBase(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for injection budget migration runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSFunction(t, src, "migrateLegacyInjectionBudgetSettings")
+	script := "const DEFAULT_SETTINGS = {injectionBudgetProfileVersion: \"p34_9000_base_v1\"};\n" + fn + `
+const legacy = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 6000});
+if (legacy.maxInjectionChars !== 9000) throw new Error("legacy default was not migrated: " + JSON.stringify(legacy));
+const custom = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 7500});
+if (custom.maxInjectionChars !== 7500) throw new Error("non-default user value was overwritten: " + JSON.stringify(custom));
+const versioned = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 6000, injectionBudgetProfileVersion: "p34_9000_base_v1"});
+if (versioned.maxInjectionChars !== 6000) throw new Error("versioned user value was migrated repeatedly: " + JSON.stringify(versioned));
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("injection budget migration runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestBeforeRequestNonModelSkipsPrepareTurnRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	script := fn + `
+const settings = {enabled: true};
+function debugLog() {}
+function isSaveType(type) { return type === "model"; }
+let prepareCalls = 0;
+async function tryPrepareTurn() { prepareCalls++; throw new Error("prepare-turn must not run"); }
+(async function() {
+  const payload = {messages: [{role: "user", content: "auxiliary"}]};
+  const result = await onBeforeRequest(payload, "submodel");
+  if (result !== payload) throw new Error("non-model payload identity changed");
+  if (prepareCalls !== 0) throw new Error("non-model prepare calls=" + prepareCalls);
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("non-model beforeRequest runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestBeforeRequestModelRunsDecisionThenFullWithContextRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	script := fn + `
+const settings = {enabled: true, debug: false};
+const ACTIVE_CHAT_BACKFILL_MAX_PAIRS = 20;
+let _sessionCache = null;
+let _effectiveInputAwaitingNewTurn = false;
+const _pendingPersistenceSkipBySession = new Map();
+let activePairs = 0;
+let latestBackendTurn = 0;
+let prepareCalls = [];
+let preFullSideEffects = 0;
+const hostObservationsFixture = {request_id: "request-runtime", payload: [{role: "user", raw_content: "actual input", message_index: 1}]};
+const bootstrapObservationFixture = {request_id: "request-runtime"};
+const languageContextFixture = {session_output_language: "ko", output_language_override: "ko"};
+const continuityFixture = {triggerMode: "manual_resume", query: "unresolved thread"};
+let currentContinuity = null;
+function debugLog() {}
+function warnLog() {}
+function isSaveType(type) { return type === "model"; }
+function extractMessages(payload) { return {messages: payload.messages, path: ["messages"], hasMessageSlot: true}; }
+function normalizeMessagesForOrchestration(messages) { return messages; }
+function extractRuntimeCurrentChatTokenInfo() { return {}; }
+async function getCurrentChatSessionId() { return "session-runtime"; }
+async function resolveCanonicalWriteSessionId(value) { return value; }
+async function getCurrentActiveChatSourceObservationMessages() { return [{role: "user", content: "actual input", risuMessageIndex: 1}]; }
+function peekRawInputForSession() { return {text: "actual input", capturedAt: 1}; }
+function makeOrchRequestId() { return "request-runtime"; }
+function buildPrepareTurnHostObservations() { return hostObservationsFixture; }
+async function observePrepareTurnBootstrap() { return bootstrapObservationFixture; }
+function buildPrepareTurnSourceObservations() { return {sourceObservation: {request_id: "request-runtime"}, capabilityObservation: {capabilities: {}}}; }
+function updateRuntimeState() {}
+function ensureActiveChatCompletedTurnsBackfilled() { preFullSideEffects++; return Promise.resolve(); }
+async function captureAssistantPrefillSeedForSession() { preFullSideEffects++; }
+async function resolveRollbackComparableMessages() { preFullSideEffects++; return {messages: null, source: "fixture"}; }
+function scrubOocDirectivesFromUserInput(text) { return {fullyOoc: false, changed: false, text}; }
+function detectCurrentTurnOocInfo() { return {isOoc: false}; }
+async function buildLanguageContextTrace() { return languageContextFixture; }
+async function resolveContinuityTriggerInfo() { return currentContinuity; }
+function getSessionRoutingTurnBaseline() { return {backendTurnAtRoute: 0}; }
+async function safeCall(call, fallback) { try { return await call(); } catch { return fallback; } }
+async function resolveActiveChatCompletedTurnsForRoutingBaseline() { return activePairs; }
+async function fetchBackendLatestTurnIndexForSession() { return latestBackendTurn; }
+async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext, options) {
+  prepareCalls.push({sessionId, userInput, messages, continuityInfo, type, languageContext, options});
+  if (options && options.sourceDecisionOnly === true) {
+    return {source: "backend-source-decision", currentInputDecision: {
+      status: "eligible", reason_code: "current_user_input_observed", effective_user_input: "actual input",
+      selected_observation_ref: "input-hook:request-runtime", context_injection_eligible: true, memory_reads_allowed: true
+    }, sessionBootstrap: {status: "preserved"}};
+  }
+  return null;
+}
+async function runFixture(expectedFresh, expectedContinuity) {
+  prepareCalls = [];
+  preFullSideEffects = 0;
+  const payload = {messages: [{role: "system", content: "preset"}, {role: "user", content: "actual input"}, {role: "user", content: "later host prompt"}]};
+  const result = await onBeforeRequest(payload, "model");
+  if (result !== payload) throw new Error("fixture stop did not preserve original payload");
+  if (prepareCalls.length !== 2) throw new Error("model prepare calls=" + prepareCalls.length + ", want 2");
+  if (preFullSideEffects !== 0) throw new Error("full source failure allowed pre-validation side effects=" + preFullSideEffects);
+  const decision = prepareCalls[0];
+  const full = prepareCalls[1];
+  if (!decision.options.sourceDecisionOnly || decision.userInput !== "" || decision.continuityInfo !== null || decision.languageContext !== null) {
+    throw new Error("first call was not a source-decision-only phase");
+  }
+  if (full.options.sourceDecisionOnly === true || full.userInput !== "actual input") throw new Error("full call did not use Go effective input");
+  if (full.continuityInfo !== expectedContinuity) throw new Error("onBeforeRequest did not pass continuityInfo to full prepare");
+  if (full.languageContext !== languageContextFixture) throw new Error("onBeforeRequest did not pass languageContext to full prepare");
+  if (!!full.options.freshFirstTurnLightMode !== expectedFresh) throw new Error("fresh mode=" + full.options.freshFirstTurnLightMode + ", want " + expectedFresh);
+  if (full.options.hostObservations !== decision.options.hostObservations || full.options.bootstrapObservation !== decision.options.bootstrapObservation) {
+    throw new Error("decision/full calls did not repeat identical correlated observations");
+  }
+}
+(async function() {
+  activePairs = 0; latestBackendTurn = 0; currentContinuity = null;
+  await runFixture(true, null);
+  activePairs = 2; latestBackendTurn = 2; currentContinuity = continuityFixture;
+  await runFixture(false, continuityFixture);
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("model beforeRequest two-phase runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestBeforeRequestBuildsObservationOnlySourceEnvelope(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	observationFunction := extractArchiveCenterJSFunction(t, src, "buildPrepareTurnSourceObservations")
+	dotClass := extractArchiveCenterJSFunction(t, src, "statusDotClass")
+	for _, required := range []string{
+		`if (!settings.enabled || !isSaveType(type)) return payload;`,
+		`sourceDecisionOnly: true`,
+		`const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext, {`,
+		`freshFirstTurnLightMode,`,
+		`freshFirstTurnLightModeMeta,`,
+		`const prepareSourceObservations = buildPrepareTurnSourceObservations(`,
+		`const hostObservations = buildPrepareTurnHostObservations(`,
+		`const bootstrapObservation = await observePrepareTurnBootstrap(`,
+		`sourceObservation: prepareSourceObservations.sourceObservation`,
+		`capabilityObservation: prepareSourceObservations.capabilityObservation`,
+		`hostObservations,`,
+		`bootstrapObservation,`,
+	} {
+		if !strings.Contains(fn, required) {
+			t.Fatalf("beforeRequest source observation missing %q", required)
+		}
+	}
+	if count := strings.Count(fn, "await tryPrepareTurn("); count != 2 {
+		t.Fatalf("model beforeRequest must contain exactly decision-only + full prepare calls, got %d", count)
+	}
+	for _, forbidden := range []string{"scrubOocDirectivesFromUserInput(userInput)", "detectCurrentTurnOocInfo(payload, messages"} {
+		if strings.Contains(fn, forbidden) {
+			t.Fatalf("JavaScript changed or classified Go effective input before full prepare: %q", forbidden)
+		}
+	}
+	for _, forbidden := range []string{"source_authority", "stable_identity", "canonical_truth", "lifecycle_acceptance", "persistence"} {
+		if strings.Contains(observationFunction, forbidden) {
+			t.Fatalf("JavaScript inferred forbidden source policy %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		`contract_version: "message_source_observation.v1"`,
+		`contract_version: "host_source_capabilities.v1"`,
+		`raw_input_hash: observedRawInputHash`,
+		`raw_input_hash: observedRawInputHash ? "observed" : "unavailable"`,
+	} {
+		if !strings.Contains(observationFunction, required) {
+			t.Fatalf("production observation helper missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`const observedSourcePath = !beforeRequestRecoveredForRead`,
+		`const ptStatus = _prepareTurnEverContacted`,
+		`? String(ptLaneStatus && ptLaneStatus.status || ptResult.status || "ok")`,
+		`reason_code: ptLaneStatus && ptLaneStatus.reason_code || null`,
+		`original_payload_preserved: ptLaneStatus ? !!ptLaneStatus.original_payload_preserved : null`,
+		`detail: ptLaneStatus ? {`,
+	} {
+		if !strings.Contains(fn, required) {
+			t.Fatalf("beforeRequest stable lane projection missing %q", required)
+		}
+	}
+	for _, status := range []string{"eligible", "not_applicable", "empty", "deferred", "degraded", "failed", "incompatible"} {
+		if !strings.Contains(dotClass, status) {
+			t.Fatalf("stable source lane status %q is not represented by the UI adapter", status)
+		}
+	}
+}
+
+func TestActualInputAndBootstrapProductionObservationRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	hashFn := extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c")
+	messageFn := extractArchiveCenterJSFunction(t, src, "buildPrepareMessageObservation")
+	hostFn := extractArchiveCenterJSFunction(t, src, "buildPrepareTurnHostObservations")
+	bootstrapFn := extractArchiveCenterJSAsyncFunction(t, src, "observePrepareTurnBootstrap")
+	script := `
+"use strict";
+const R = {
+  getCharacter: async () => ({
+    firstMessage: "first greeting",
+    alternateGreetings: ["alternate zero", "alternate one"],
+  }),
+};
+async function resolveCurrentActiveChatObject() { return { chat: { fmIndex: 1, data: {} } }; }
+function getPayloadMessageRoleAndText(message) {
+  return { role: String(message && message.role || ""), text: String(message && message.content || "") };
+}
+` + hashFn + "\n" + messageFn + "\n" + hostFn + "\n" + bootstrapFn + `
+(async function() {
+  const actual = '{"supervisor":"return JSON only","npc":"list"}';
+  const active = [
+    { role: "assistant", content: "start A", risuMessageIndex: 0, raw: { role: "char", data: "start A", chatId: "risu-start-0", time: 101, generationInfo: { generationId: "gen-start-0" } } },
+    { role: "assistant", content: "start A", risuMessageIndex: 1, raw: { role: "char", data: "start A", chatId: "risu-start-1", time: 102 } },
+    { role: "user", content: actual, risuMessageIndex: 2, raw: { role: "user", data: actual, chatId: "risu-user-2", time: 103, id: "unsupported-id", revision: "unsupported-revision" } },
+  ];
+  const payload = [
+    { role: "system", content: "preset" },
+    { role: "user", content: actual },
+    { role: "system", content: "host suffix" },
+  ];
+  const host = buildPrepareTurnHostObservations(
+    "session-d", "request-d", "model",
+    { text: actual, capturedAt: 123456 }, active, payload,
+    '["messages"]', true, "chat-d"
+  );
+  if (!host.input_hook || host.input_hook.raw_content !== actual || host.input_hook.role !== "user") {
+    throw new Error("input-hook observation was classified or changed");
+  }
+  if (host.input_hook.source_kind !== "input_hook_intermediate" || host.input_hook.observation_stage !== "input_script_handler" || host.input_hook.lifecycle_kind !== "user_input_hook_intermediate") {
+    throw new Error("input hook was presented as a raw/final host observation");
+  }
+  if (host.payload_observation_stage !== "before_request_replacer" || host.final_payload_observation !== "not_exposed") {
+    throw new Error("beforeRequest payload was presented as the final sent payload");
+  }
+  if (host.active_chat[2].message_id !== "risu-user-2" || host.active_chat[2].message_time !== 103 || host.active_chat[2].observed_revision !== null) {
+    throw new Error("official Risu message identity was not preserved exactly");
+  }
+  if (host.active_chat[0].generation_id !== "gen-start-0" || host.active_chat[0].message_id !== "risu-start-0") {
+    throw new Error("official Risu generation identity was not observed");
+  }
+  if (host.input_hook.content_hash !== computeOrchestrationDirtyHashOr1c(actual)) {
+    throw new Error("input-hook hash mismatch");
+  }
+  if (host.payload.length !== 3 || host.payload[2].role !== "system") {
+    throw new Error("payload lifecycle observations were collapsed");
+  }
+  const bootstrap = await observePrepareTurnBootstrap("session-d", "request-d", active, "chat-d");
+  if (bootstrap.leading_messages.length !== 2) throw new Error("multiple starts were not preserved");
+  if (bootstrap.leading_messages[0].message_index !== 0 || bootstrap.leading_messages[1].message_index !== 1) {
+    throw new Error("bootstrap order/boundaries changed");
+  }
+  if (bootstrap.leading_messages[0].raw_content !== "start A" || bootstrap.leading_messages[1].raw_content !== "start A") {
+    throw new Error("duplicate bootstrap text was deduplicated");
+  }
+  if (!bootstrap.selection_exposed || bootstrap.selected_greeting_index !== 1) {
+    throw new Error("selected greeting observation missing");
+  }
+  if (bootstrap.first_greeting !== "first greeting" || bootstrap.alternate_greetings[1] !== "alternate one") {
+    throw new Error("host greeting fields were selected or normalized in JavaScript");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("actual-input/bootstrap production observation runtime failed: %v\n%s", err, output)
+	}
+}
+
+func TestActiveChatSourceObservationUsesOfficialRisuMessageShape(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "getCurrentActiveChatSourceObservationMessages")
+	script := fn + `
+const active = {message: [
+  {role: "user", data: "official user", chatId: "u-1", time: 10},
+  {role: "char", data: "official character", chatId: "c-1", time: 11, generationInfo: {generationId: "g-1"}},
+  {role: "assistant", content: "generic compatibility shape"},
+  {role: "user", data: 42},
+]};
+async function resolveCurrentActiveChatObject() { return {chat: active}; }
+function extractActiveChatMessageList(chat) { return chat.message; }
+(async function() {
+  const observed = await getCurrentActiveChatSourceObservationMessages("session-risu");
+  if (observed.length !== 2) throw new Error("non-official message shape was inferred");
+  if (observed[0].role !== "user" || observed[0].content !== "official user" || observed[0].raw.chatId !== "u-1") {
+    throw new Error("official user message was not preserved");
+  }
+  if (observed[1].role !== "assistant" || observed[1].content !== "official character" || observed[1].raw.generationInfo.generationId !== "g-1") {
+    throw new Error("official character message was not preserved");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("official Risu active-chat observation fixture failed: %v\n%s", err, output)
+	}
 }
 
 func TestRollbackRequestPreservesZeroVisibleTurnsAfterCopiedSessionDelete(t *testing.T) {
@@ -117,268 +947,6 @@ function debugLog() {}
 	cmd := exec.Command(nodePath, "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("copied-session final output recovery fixture failed: %v\n%s", err, output)
-	}
-}
-
-func TestCoreRegressionInputOwnershipAndCanonicalOutputRuntime(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for Archive Center core regression runtime fixtures")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	names := []string{
-		"extractGigaTransCanonicalAssistantText",
-		"extractAssistantTaggedBlocks",
-		"removeAssistantTaggedBlocks",
-		"extractPostprocessorCanonicalAssistantText",
-		"canonicalizeAssistantTranslationDisplayForPersistence",
-		"canonicalizeAssistantOutputForPersistence",
-		"resolveCurrentTurnUserInputInfo",
-		"buildMainRequestOwnershipDecision",
-		"rememberNonMainRequestSkip",
-	}
-	functions := make([]string, 0, len(names))
-	for _, name := range names {
-		functions = append(functions, extractArchiveCenterJSFunction(t, src, name))
-	}
-
-	script := strings.Join(functions, "\n\n") + `
-function attachTranslationDisplayCanonicalizationTrace() {}
-function attachPostprocessorCanonicalizationTrace() {}
-let fixtureRawCached = null;
-let fixturePayloadCandidate = null;
-let fixtureMessageInput = "";
-function peekRawInputForSession() { return fixtureRawCached; }
-function extractPayloadUserInputCandidate() { return fixturePayloadCandidate; }
-function resolveCurrentTurnUserInput() { return fixtureMessageInput; }
-function requestHasCurrentInputCandidate(payloadCandidate, messageInput) { return !!((payloadCandidate && payloadCandidate.text) || messageInput); }
-function rawInputCacheMatchesCurrentCandidates(rawCached, payloadCandidate, messageInput) {
-  if (!rawCached || !rawCached.text) return false;
-  return !!((payloadCandidate && payloadCandidate.text === rawCached.text) || messageInput === rawCached.text);
-}
-
-function isFreshStrongRawInput(rawCached) { return !!(rawCached && rawCached.text && rawCached.strong); }
-function isRisuPromptScaffoldMessage(text) { return /Sealed\. Conduct|cached context control/i.test(String(text || "")); }
-function isMetaPromptLikeMessage(text) { return isRisuPromptScaffoldMessage(text); }
-function resolveLastNonMetaChatMessageRole() { return "user"; }
-function extractCurrentInputBeyondAssistant() { return null; }
-function shouldRejectLowTrustCurrentInput(text) { return isRisuPromptScaffoldMessage(text); }
-function auxiliaryMessageContentText(content) { return String(content || ""); }
-function extractManualResumeTrigger() { return {matched:false}; }
-function warnLog() {}
-function isNarrativeType(type) { return !type || type === "model"; }
-function getLastPayloadUserText(messages) {
-  for (let i = (messages || []).length - 1; i >= 0; i--) {
-    if (messages[i] && messages[i].role === "user") return String(messages[i].content || "");
-  }
-  return "";
-}
-function normalizeMainTurnCompareText(text) { return String(text || "").trim().replace(/\s+/g, " "); }
-function matchAuxiliaryModuleRequestMarker(messages) {
-  return (messages || []).some(m => /AUXILIARY_MODULE_MARKER/.test(String(m && m.content || ""))) ? "fixture_auxiliary" : "";
-}
-let fixturePostOutputContext = null;
-function buildPostOutputSecondaryRequestContext() { return fixturePostOutputContext; }
-function mainTurnTextMatchesOriginal(left, right) {
-  return left === right || (!!left && !!right && (left.startsWith(right) || right.startsWith(left)));
-}
-function isSubstantiveUserPayloadText(text) { return normalizeMainTurnCompareText(text).length >= 2; }
-function truncPreview(text, limit) { return String(text || "").slice(0, limit || 120); }
-function assertEqual(actual, expected, label) {
-  if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
-}
-function assertTrue(value, label) { if (!value) throw new Error(label); }
-const _nonMainRequestSkipBySession = new Map();
-const NON_MAIN_REQUEST_SKIP_TTL_MS = 30000;
-let restoredRawInput = null;
-function cacheRawInputForSession(sessionId, text) { restoredRawInput = {sessionId, text}; }
-function getPluginMainTimeoutSettingMs() { return 15000; }
-
-const giga = "<GT-SEP/>번역 표시<GigaTrans>Original narrative only.</GigaTrans><GT-CTRL/>";
-assertEqual(canonicalizeAssistantOutputForPersistence(giga, {}, "fixture"), "Original narrative only.", "gigatrans canonical original");
-const malformed = "번역 표시<GigaTrans>closing tag missing";
-assertEqual(canonicalizeAssistantOutputForPersistence(malformed, {}, "fixture"), malformed, "malformed gigatrans fail-open");
-const ordinary = "ordinary assistant output";
-assertEqual(canonicalizeAssistantOutputForPersistence(ordinary, {}, "fixture"), ordinary, "ordinary output unchanged");
-
-const contract = "draft<ArchiveCenterFinalOutput>polished final</ArchiveCenterFinalOutput>";
-assertEqual(canonicalizeAssistantOutputForPersistence(contract, {}, "fixture"), "polished final", "postprocessor contract final");
-const reko = "<ReKoCompare><ReKoBefore>draft</ReKoBefore><ReKoAfter>reko final</ReKoAfter><ReKoMeta>mode=KR</ReKoMeta></ReKoCompare>";
-assertEqual(canonicalizeAssistantOutputForPersistence(reko, {}, "fixture"), "reko final", "legacy compare final");
-const nested = "<ArchiveCenterFinalOutput>번역<GigaTrans>nested original</GigaTrans></ArchiveCenterFinalOutput>";
-assertEqual(canonicalizeAssistantOutputForPersistence(nested, {}, "fixture"), "nested original", "postprocessor then translation canonicalization");
-
-fixtureRawCached = null;
-fixturePayloadCandidate = {text:"actual player input", source:"payload.input"};
-fixtureMessageInput = "Sealed. Conduct the next bar.";
-let inputInfo = resolveCurrentTurnUserInputInfo({}, [{role:"user",content:fixtureMessageInput}], "fixture-session");
-assertEqual(inputInfo.text, "actual player input", "user-role scaffold must not replace actual input");
-assertEqual(inputInfo.source, "payload.input", "user-role scaffold input source");
-
-fixturePayloadCandidate = {text:"actual cached-turn input", source:"payload.current_input"};
-fixtureMessageInput = "cached context control payload";
-inputInfo = resolveCurrentTurnUserInputInfo({}, [{role:"user",content:fixtureMessageInput}], "fixture-session");
-assertEqual(inputInfo.text, "actual cached-turn input", "cache-control tail must not replace actual input");
-
-fixturePayloadCandidate = null;
-fixtureMessageInput = "선택지로 생성된 실제 입력";
-inputInfo = resolveCurrentTurnUserInputInfo({}, [{role:"user",content:fixtureMessageInput}], "fixture-session");
-assertEqual(inputInfo.text, "선택지로 생성된 실제 입력", "selection-generated input preserved");
-assertEqual(inputInfo.source, "messages.tail", "selection-generated input source");
-
-const nonModel = buildMainRequestOwnershipDecision("submodel", [{role:"user", content:"hello"}], "hello", "hello", []);
-assertEqual(nonModel.allowed, false, "non-model excluded");
-
-const userRolePrompt = buildMainRequestOwnershipDecision("model", [
-  {role:"user", content:"actual player input"},
-  {role:"user", content:"Sealed. Conduct the next bar."}
-], "actual player input", "actual player input", []);
-assertTrue(userRolePrompt.allowed, "user-role prompt must not block model request");
-assertTrue(userRolePrompt.reason !== "auxiliary_module_request" && userRolePrompt.reason !== "payload_user_tail_mismatch_active_tail_block", "obsolete user-role block reason returned");
-
-const cachingPayload = buildMainRequestOwnershipDecision("model", [
-  {role:"user", content:"actual player input"},
-  {role:"user", content:"cached context control payload"}
-], "actual player input", "actual player input", []);
-assertTrue(cachingPayload.allowed, "context-caching shaped model request must remain allowed");
-
-const selectedInput = buildMainRequestOwnershipDecision("model", [
-  {role:"system", content:"AUXILIARY_MODULE_MARKER"},
-  {role:"user", content:"선택지로 생성된 실제 입력"}
-], "", "", []);
-assertEqual(selectedInput.allowed, true, "selected input allowed");
-assertEqual(selectedInput.contextInjectionAllowed, true, "selected input injectable");
-
-const auxiliaryOnly = buildMainRequestOwnershipDecision("model", [
-  {role:"user", content:"AUXILIARY_MODULE_MARKER"}
-], "", "", []);
-assertEqual(auxiliaryOnly.allowed, true, "model marker is trace-only");
-assertEqual(auxiliaryOnly.contextInjectionAllowed, false, "auxiliary-only marker not injected");
-
-fixturePostOutputContext = {
-  userContent: "previous player input",
-  assistantContent: "previous assistant output",
-  contextMessages: []
-};
-const genuineNextTurn = buildMainRequestOwnershipDecision("model", [
-  {role:"user", content:"genuine next player input"}
-], "genuine next player input", "genuine next player input", [
-  {role:"user", content:"previous player input"},
-  {role:"assistant", content:"previous assistant output"},
-  {role:"user", content:"genuine next player input"}
-]);
-assertEqual(genuineNextTurn.allowed, true, "new raw input must win over stale post-output context");
-assertEqual(genuineNextTurn.reason, "active_tail_match", "new active-chat user input ownership reason");
-
-const realPostprocessor = buildMainRequestOwnershipDecision("model", [
-  {role:"user", content:"rewrite the previous assistant output"}
-], "previous player input", "", [
-  {role:"user", content:"previous player input"},
-  {role:"assistant", content:"previous assistant output"}
-]);
-assertEqual(realPostprocessor.allowed, false, "postprocessor request remains excluded from a new turn");
-assertEqual(realPostprocessor.reason, "post_output_secondary_request", "postprocessor ownership reason");
-
-const postprocessorInputHookReplay = buildMainRequestOwnershipDecision("model", [
-  {role:"user", content:"rewrite the previous assistant output"}
-], "previous player input", "rewrite the previous assistant output", [
-  {role:"user", content:"previous player input"},
-  {role:"assistant", content:"previous assistant output"}
-]);
-assertEqual(postprocessorInputHookReplay.allowed, false, "postprocessor input hook must not create a new user turn");
-assertEqual(postprocessorInputHookReplay.reason, "post_output_secondary_request", "completed active-chat pair wins over postprocessor raw cache");
-rememberNonMainRequestSkip("fixture-session", postprocessorInputHookReplay, "beforeRequest");
-assertEqual(restoredRawInput && restoredRawInput.text, "previous player input", "postprocessor prompt must restore the pinned player input");
-assertEqual(_nonMainRequestSkipBySession.get("fixture-session").reason, "post_output_secondary_request", "postprocessor skip remains paired with afterRequest");
-`
-
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Archive Center core regression JS runtime fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestPostprocessorOwnershipWaitsForCanonicalNewUserMessage(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for postprocessor ownership runtime fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "refreshMainRequestActiveChatForNewUser")
-	script := functionBody + `
-function getLastPayloadUserText(messages) {
-  for (let i = (messages || []).length - 1; i >= 0; i--) {
-    if (messages[i] && messages[i].role === "user") return String(messages[i].content || "");
-  }
-  return "";
-}
-function normalizeMainTurnCompareText(text) { return String(text || "").trim(); }
-function mainTurnTextMatchesOriginal(left, right) { return normalizeMainTurnCompareText(left) === normalizeMainTurnCompareText(right); }
-function getLastNonEmptyComparableMessage(messages) {
-  for (let i = (messages || []).length - 1; i >= 0; i--) {
-    if (messages[i] && String(messages[i].content || "").trim()) return messages[i];
-  }
-  return null;
-}
-function buildPostOutputSecondaryRequestContext(messages) {
-  const latest = getLastNonEmptyComparableMessage(messages);
-  return latest && latest.role === "assistant"
-    ? {userContent:"previous player input", assistantContent:latest.content, contextMessages:messages}
-    : null;
-}
-const previousPair = [
-  {role:"user",content:"previous player input"},
-  {role:"assistant",content:"previous assistant output"},
-];
-let reads = 0;
-async function getCurrentActiveChatComparableMessages() {
-  reads++;
-  return reads < 2 ? previousPair : previousPair.concat([{role:"user",content:"genuine next player input"}]);
-}
-(async function() {
-  let result = await refreshMainRequestActiveChatForNewUser(
-    "fixture-session",
-    [{role:"user",content:"genuine next player input"}],
-    "genuine next player input",
-    previousPair
-  );
-  let latest = getLastNonEmptyComparableMessage(result);
-  if (!latest || latest.role !== "user" || latest.content !== "genuine next player input") {
-    throw new Error("delayed canonical user message was not recovered: " + JSON.stringify(result));
-  }
-
-  reads = 0;
-  getCurrentActiveChatComparableMessages = async function() { return previousPair; };
-  result = await refreshMainRequestActiveChatForNewUser(
-    "fixture-session",
-    [{role:"user",content:"rewrite the previous assistant output"}],
-    "rewrite the previous assistant output",
-    previousPair
-  );
-  latest = getLastNonEmptyComparableMessage(result);
-  if (!latest || latest.role !== "assistant") {
-    throw new Error("postprocessor request must remain anchored to the completed pair: " + JSON.stringify(result));
-  }
-})().catch(function(err) {
-  console.error(err && err.stack || err);
-  process.exit(1);
-});
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("postprocessor ownership JS runtime fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -657,7 +1225,7 @@ assertEqual(JSON.stringify(result.pairs.map(p => p.risuUserMessageIndex)), JSON.
 	}
 }
 
-func TestSessionNormalizeRepairEntriesRestoreTurnZeroAndEveryMissingPair(t *testing.T) {
+func TestSessionNormalizeRepairEntriesPreserveExistingTurnZeroAndRepairMissingPairs(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -669,8 +1237,6 @@ func TestSessionNormalizeRepairEntriesRestoreTurnZeroAndEveryMissingPair(t *test
 	src := readArchiveCenterJS(t)
 	script := extractArchiveCenterJSFunction(t, src, "sanitizeChatLogRepairEntry") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "buildSessionNormalizeRepairEntriesFromDryRunPlan") + `
-const STARTUP_MESSAGE_TURN_INDEX = 0;
-const STARTUP_MESSAGE_MAX_CHARS = 100000;
 function assertEqual(actual, expected, label) {
   if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
 }
@@ -679,103 +1245,16 @@ const plan = {
   rawMissingTurns: [1,2,3,4],
   pairs: [1,2,3,4].map(turn => ({turnIndex:turn,userContent:"user "+turn,assistantContent:"assistant "+turn})),
 };
-let entries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan, {content:"opening story",source:"selected greeting"});
-assertEqual(JSON.stringify(entries.map(entry => entry.turn_index)), JSON.stringify([0,1,2,3,4]), "turn zero and all missing visible turns");
-assertEqual(entries[0].assistant_content, "opening story", "starter content");
-entries = buildSessionNormalizeRepairEntriesFromDryRunPlan({...plan, dbRows:[{turn_index:0,role:"assistant",content:"already stored"}]}, {content:"opening story"});
-assertEqual(JSON.stringify(entries.map(entry => entry.turn_index)), JSON.stringify([1,2,3,4]), "existing starter must not be replayed");
+let entries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan);
+assertEqual(JSON.stringify(entries.map(entry => entry.turn_index)), JSON.stringify([1,2,3,4]), "bootstrap must not be fabricated as canonical turn zero");
+entries = buildSessionNormalizeRepairEntriesFromDryRunPlan({...plan, dbRows:[{turn_index:0,role:"assistant",content:"already stored"}]});
+assertEqual(JSON.stringify(entries.map(entry => entry.turn_index)), JSON.stringify([1,2,3,4]), "existing turn zero must remain untouched");
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("session-normalize repair JS fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestSelectedRisuGreetingBecomesTurnZero(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for Risu starter runtime fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	functions := []string{
-		extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c"),
-		extractArchiveCenterJSFunction(t, src, "normalizeStartupMessageContent"),
-		extractArchiveCenterJSFunction(t, src, "buildStartupMessageTurnZeroCandidate"),
-		extractArchiveCenterJSFunction(t, src, "getStringFieldValue"),
-		extractArchiveCenterJSFunction(t, src, "buildStartupMessageTurnZeroCandidateFromText"),
-		extractArchiveCenterJSFunction(t, src, "resolveSelectedStartupMessageTurnZeroCandidate"),
-	}
-	script := strings.Join(functions, "\n\n") + `
-const STARTUP_MESSAGE_TURN_INDEX = 0;
-const STARTUP_MESSAGE_MAX_CHARS = 20000;
-function assertEqual(actual, expected, label) {
-  if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
-}
-const character = {firstMessage:"default starter", alternateGreetings:["alternate zero", "alternate one"]};
-let candidate = resolveSelectedStartupMessageTurnZeroCandidate(character, {fmIndex:1, message:[]});
-assertEqual(candidate.turnIndex, 0, "starter turn index");
-assertEqual(candidate.content, "alternate one", "selected alternate greeting");
-candidate = resolveSelectedStartupMessageTurnZeroCandidate(character, {fmIndex:-1, message:[]});
-assertEqual(candidate.content, "default starter", "default first message");
-candidate = buildStartupMessageTurnZeroCandidate([
-  {role:"assistant",content:"candidate one"},
-  {role:"assistant",content:"candidate two"},
-  {role:"user",content:"first user"},
-]);
-assertEqual(candidate, null, "multiple leading assistant candidates must not be concatenated");
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Risu selected starter JS runtime fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestExistingMigratedTurnZeroSuppressesAutomaticStarterAppend(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for migrated starter runtime fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	script := extractArchiveCenterJSFunction(t, src, "chatLogItemsContainRole") + "\n" +
-		extractArchiveCenterJSAsyncFunction(t, src, "ensureStartupMessageTurnZeroSaved") + `
-const settings = {enabled:true,dbEnabled:true};
-const SESSION_FALLBACK = "default";
-const STARTUP_MESSAGE_TURN_INDEX = 0;
-const _startupMessageSaveInFlight = new Set();
-let marked = 0;
-let saved = 0;
-async function getCurrentStartupMessageTurnZeroCandidate() { return {content:"target visible starter",hash:"target-hash"}; }
-async function loadStartupMessageLedger() { return {entries:{}}; }
-async function fetchCanonicalChatLogsForTurn() { return [{turn_index:0,role:"assistant",content:"copied source starter"}]; }
-async function markStartupMessageLedgerSaved() { marked++; }
-async function saveStartupMessageTurnZeroToBackend() { saved++; return true; }
-function assertEqual(actual, expected, label) {
-  if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
-}
-(async function() {
-  const result = await ensureStartupMessageTurnZeroSaved("target-session", []);
-  assertEqual(result, false, "existing migrated turn zero result");
-  assertEqual(marked, 1, "existing migrated turn zero marks local ledger");
-  assertEqual(saved, 0, "target visible starter must not append over migrated turn zero");
-})().catch(err => { console.error(err); process.exit(1); });
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("migrated starter JS fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -793,7 +1272,6 @@ func TestRisuLogicalTurnReservationUsesImportedSessionBaseline(t *testing.T) {
 	script := functionBody + `
 let exactTurn = 0;
 let fixture = null;
-let rollbackCall = null;
 const lastOrchResult = null;
 async function safeCall(fn, fallback) { try { return await fn(); } catch { return fallback; } }
 async function fetchBackendLatestTurnIndexForSession() { return fixture.backendLatest; }
@@ -802,6 +1280,7 @@ function peekNextTurnIndex() { return fixture.backendLatest + 1; }
 async function findActiveChatCompletedTurnPairForContent() {
   return {observedPairOrdinal:fixture.ordinal || 1,pairCount:fixture.ordinal || 1,userContent:fixture.user,assistantContent:fixture.assistant,risuUserMessageIndex:fixture.userIndex || 0,risuAssistantMessageIndex:(fixture.userIndex || 0)+1,source:"active_chat_user_assistant_pair"};
 }
+
 function normalizeTurnPairCompareText(text) { return String(text || "").trim(); }
 async function findActiveChatCompletedTurnPairForUserContent() { return null; }
 async function findLatestActiveChatCompletedTurnPair() { return null; }
@@ -811,9 +1290,7 @@ async function requestBackendSessionRoutingTurnResolution(_sid, mode, observatio
   }
   return fixture.routing || {status:"backend_unavailable",turnIndex:0,baseline:null};
 }
-async function fetchCanonicalChatLogsForTurn() { return fixture.existing || null; }
-function chatLogItemsContainRoleContent(items, role, content) { return items.some(item => item.role === role && item.content === content); }
-async function executeAutoRollback(sid, turn, reason) { rollbackCall = {sid,turn,reason}; return true; }
+
 function setTurnCounterExact(_sid, turn) { exactTurn = turn; }
 function nextTurnIndex() { return 99; }
 function debugLog() {}
@@ -836,13 +1313,9 @@ function debugLog() {}
     routing:{status:"normal",turnIndex:3,localTurnIndex:3,baseline:null},
     existing:[{role:"user",content:"rerolled user"},{role:"assistant",content:"old assistant"}],
   };
-  rollbackCall = null;
   exactTurn = 0;
   const rerolledTurn = await reserveAfterRequestPersistenceTurnIndex("s", fixture.user, fixture.assistant);
   if (rerolledTurn !== 3 || exactTurn !== 3) throw new Error("reroll must reuse backend turn 3");
-  if (!rollbackCall || rollbackCall.turn !== 3 || rollbackCall.reason !== "risu_message_index_turn_replaced") {
-    throw new Error("changed content must reconcile the existing logical turn: "+JSON.stringify(rollbackCall));
-  }
 })().catch(function(err) {
   console.error(err && err.stack || err);
   process.exit(1);
@@ -853,6 +1326,254 @@ function debugLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Risu imported baseline JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestCompleteTurnObservationUsesRealUserAnchorForAppendStyleReroll(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for source acceptance observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	script := functionBody + `
+const _streamingAfterRequestSyntheticCallDepth = 0;
+const chat = {id:"chat-1",isStreaming:false,message:[
+  {role:"user",data:"same user",chatId:"user-1",time:100},
+  {role:"char",data:"old answer",chatId:"assistant-old",time:200,generationInfo:{generationId:"generation-old"}},
+  {role:"char",data:"new answer",chatId:"assistant-new",time:300,generationInfo:{generationId:"generation-new"}},
+  {role:"comment",data:"host metadata",disabled:true},
+]};
+function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").trim(); }
+async function resolveCurrentActiveChatObject() { return {chat}; }
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function isSameAssistantComparableText(a,b) { return a === b; }
+function getSessionSnapshot() { return {msgCount:0}; }
+function debugLog() {}
+(async function() {
+  const oldObservation = await buildCompleteTurnSourceAcceptanceObservation("session-1", "old answer", {allowExistingActiveMessage:true,userInput:"same user"});
+  const newObservation = await buildCompleteTurnSourceAcceptanceObservation("session-1", "new answer", {allowExistingActiveMessage:true,userInput:"same user"});
+  if (oldObservation.user_message_index !== 0 || newObservation.user_message_index !== 0) throw new Error("reroll candidates must share user anchor");
+  if (oldObservation.user_message_chat_id !== "user-1" || newObservation.user_message_chat_id !== "user-1") throw new Error("host user id must be observed without synthesis");
+  if (oldObservation.user_observed_content_hash !== newObservation.user_observed_content_hash) throw new Error("user anchor hashes differ");
+  if (newObservation.position_observation !== "current_active_assistant_tail") throw new Error("new final is not active assistant tail");
+  if (newObservation.later_active_turn_message_count !== 0 || newObservation.later_non_turn_message_count !== 1) throw new Error("later host metadata observation is wrong");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("source acceptance observation JS fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestLateNativeAfterRequestRearmsExpiredActiveChatWatcher(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for streaming watcher fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "markNativeAfterRequestObserved")
+	script := functionBody + `
+const _streamingAfterRequestWatchers = new Map();
+let armCalls = 0;
+function armStreamingAfterRequestWatch(sessionId, type, requestId) {
+  armCalls++;
+  if (requestId !== "late_native_after_request") throw new Error("unexpected rearm reason");
+  _streamingAfterRequestWatchers.set(sessionId, {nativeAfterRequestObserved:false,nativeAfterRequestObservedAt:0,type});
+}
+function updateRuntimeState() {}
+markNativeAfterRequestObserved("session-1", "model");
+const watcher = _streamingAfterRequestWatchers.get("session-1");
+if (armCalls !== 1 || !watcher || watcher.nativeAfterRequestObserved !== true || watcher.nativeAfterRequestObservedAt <= 0) {
+  throw new Error("late native afterRequest did not rearm active chat confirmation");
+}
+markNativeAfterRequestObserved("session-1", "model");
+if (armCalls !== 1) throw new Error("live watcher was unnecessarily rearmed");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("late native afterRequest watcher fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRollbackDecisionForwardsObservedHostGenerationLifecycle(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for rollback observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "requestBackendRollbackDecision")
+	script := functionBody + `
+let capturedBody = null;
+function getRequestTimeoutSettingMs() { return 90000; }
+function serializeSessionRoutingBaselineForBackend() { return null; }
+async function bridgeFetch(path, options) {
+  if (path !== "/rollback/decision") throw new Error("unexpected path");
+  capturedBody = options.body;
+  return {status:"ok",contract_version:"rollback.decision.v1",allowed:false,reason:"pending_output_guard"};
+}
+
+(async function() {
+  await requestBackendRollbackDecision("session-1", 4, "active_chat_tail_missing_from_runtime", {
+    backendLatestTurnIndex:4,
+    hostLifecycleObservation:"before_request_observed",
+  }, "auto");
+  if (!capturedBody || capturedBody.host_lifecycle_observation !== "before_request_observed") {
+    throw new Error("observed host generation lifecycle was not forwarded");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rollback host lifecycle observation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestQueuedCompleteTurnRebuildsFromSameTurnActiveHostFinal(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for queued active-final fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "refreshQueuedCompleteTurnSourceObservation")
+	script := functionBody + `
+let buildAssistant = "";
+let buildOptions = null;
+let resolvedTurn = 15;
+async function findActiveChatCompletedTurnPairForContent() { return null; }
+async function findActiveChatCompletedTurnPairForUserContent() {
+  return {observedPairOrdinal:15,userContent:"user",assistantContent:"host final",pairCount:15};
+}
+async function requestBackendSessionRoutingTurnResolution() { return {turnIndex:resolvedTurn,status:"normal"}; }
+async function buildCompleteTurnRequestBody(turn,user,assistant,context,sid,trace,options) {
+  buildAssistant = assistant;
+  buildOptions = options;
+  return {chat_session_id:sid,turn_index:turn,user_input:user,assistant_content:assistant,context_messages:context,
+    improvement_trace:trace,request_type:"model",client_meta:{idempotency_key:"host-final-key",source_acceptance_observation:{
+      observed_content_hash:"host-final-hash",position_observation:"current_active_chat_tail"
+    }}};
+}
+function buildCompleteTurnQueuePayload(body) { return JSON.parse(JSON.stringify(body)); }
+(async function() {
+  const payload={chat_session_id:"session-1",turn_index:15,user_input:"user",assistant_content:"native before host apply",context_messages:[],client_meta:{
+    idempotency_key:"old-key",source_acceptance_observation:{active_message_count:151}
+  }};
+  const ok=await refreshQueuedCompleteTurnSourceObservation(payload);
+  if(!ok) throw new Error("same-turn active host final did not refresh");
+  if(buildAssistant!=="host final" || payload.assistant_content!=="host final") throw new Error("queued assistant was not replaced by host final");
+  if(!buildOptions || buildOptions.allowExistingActiveMessage!==true) throw new Error("retry did not allow live existing message observation");
+  if(payload.client_meta.idempotency_key!=="host-final-key") throw new Error("idempotency key was not rebuilt");
+  resolvedTurn = 16;
+  const wrongTurn={chat_session_id:"session-1",turn_index:15,user_input:"user",assistant_content:"native before host apply",context_messages:[],client_meta:{}};
+  if(await refreshQueuedCompleteTurnSourceObservation(wrongTurn)) throw new Error("different logical turn was adopted");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("queued active host final fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestPersistedCompleteTurnQueueKeepsSourceFenceWithoutCredentials(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for complete-turn queue fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := extractArchiveCenterJSFunction(t, src, "buildCompleteTurnQueuePayload") +
+		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload")
+	script := functions + `
+function normalizeLanguageContextTrace(value) { return value; }
+const sourceObservation = {contract_version:"source_acceptance_observation.v1",observed_at_ms:123,message_index:4,active_message_count:5};
+const saved = serializeCompleteTurnRecoveryPayload({
+  chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],
+  client_meta:{source_acceptance_required:true,source_acceptance_observation:sourceObservation,idempotency_key:"key-1",critic:{api_key:"secret"}}
+});
+if (!saved || saved.client_meta.source_acceptance_required !== true) throw new Error("source fence requirement was lost");
+if (!saved.client_meta.source_acceptance_observation || saved.client_meta.source_acceptance_observation.message_index !== 4) throw new Error("source observation was lost");
+if (saved.client_meta.idempotency_key !== "key-1") throw new Error("idempotency key was lost");
+if (saved.client_meta.critic || JSON.stringify(saved).includes("secret")) throw new Error("credential-bearing critic config was persisted");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("persisted complete-turn source fence fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRestoredCompleteTurnQueueRebuildsLiveConfigAndSourceObservation(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for restored complete-turn queue fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "refreshQueuedCompleteTurnSourceObservation")
+	script := functionBody + `
+async function findActiveChatCompletedTurnPairForContent(session, user, assistant) {
+  return {observedPairOrdinal:3,userContent:user,assistantContent:assistant,pairCount:3};
+}
+async function findActiveChatCompletedTurnPairForUserContent() { return null; }
+async function requestBackendSessionRoutingTurnResolution() { return {turnIndex:3,status:"normal"}; }
+async function buildCompleteTurnRequestBody(turn, user, assistant, context, session) {
+  if (turn !== 3 || user !== "user" || assistant !== "assistant" || session !== "session-1") throw new Error("queue payload was not rebuilt");
+  return {chat_session_id:session,turn_index:turn,user_input:user,assistant_content:assistant,context_messages:context,request_type:"model",client_meta:{
+    source_acceptance_required:true,
+    source_acceptance_observation:{observed_content_hash:"hash-final",host_chat_id:"chat-1",generation_id:"generation-final",message_chat_id:"message-final",message_time_state:"observed",message_time_ms:300},
+    critic:{api_key:"current-live-key"},
+    idempotency_key:"rebuilt-key",
+    request_id:"rebuilt-key"
+  }};
+}
+function buildCompleteTurnQueuePayload(body) { return JSON.parse(JSON.stringify(body)); }
+function debugLog() {}
+(async function() {
+  const restored = {chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],client_meta:{}};
+  if (!await refreshQueuedCompleteTurnSourceObservation(restored)) throw new Error("restored queue was not refreshed");
+  if (restored.client_meta.source_acceptance_required !== true || restored.client_meta.idempotency_key !== "rebuilt-key") throw new Error("source fence or request key was not rebuilt");
+  if (!restored.client_meta.critic || restored.client_meta.critic.api_key !== "current-live-key") throw new Error("current live critic config was not restored in memory");
+
+  const stale = {chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],client_meta:{source_acceptance_observation:{observed_content_hash:"old",host_chat_id:"chat-1",generation_id:"generation-old"}}};
+  if (await refreshQueuedCompleteTurnSourceObservation(stale)) throw new Error("stale generation was refreshed as current");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restored complete-turn queue refresh fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -885,6 +1606,87 @@ if (!result || result.status !== "verified_tail_delete" || result.rollbackFrom !
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("empty active chat rollback JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestEmptyActiveChatRecognizesIncompleteUserOnlyTailCandidate(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for incomplete tail rollback fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "buildLedgerVerifiedTailRollback")
+	script := functionBody + `
+let fixture = {trackedTurnIndex:1,entries:[{role:"user",turnIndex:1,fingerprint:"u1"}]};
+function loadRollbackTurnLedgerOr1f() { return fixture; }
+function compactSnapshotMessages(messages) { return Array.isArray(messages) ? messages : []; }
+function computeLedgerCurrentPrefixLengthOr1f(_ledger, current) { return current.length; }
+function computeTailHash() { return "empty"; }
+function debugLog() {}
+let result = buildLedgerVerifiedTailRollback("s", [], 0, 1);
+if (!result || result.status !== "incomplete_user_only_tail_candidate" || result.rollbackFrom !== 1 || result.removedUserCount !== 1 || result.removedAssistantCount !== 0) {
+  throw new Error("user-only tail was not recognized: " + JSON.stringify(result));
+}
+fixture = {trackedTurnIndex:2,entries:[{role:"user",turnIndex:1},{role:"user",turnIndex:2}]};
+result = buildLedgerVerifiedTailRollback("s", [], 0, 2);
+if (result !== null) throw new Error("multi-message deletion must not become an incomplete-tail candidate: " + JSON.stringify(result));
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("incomplete user-only tail JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRollbackDecisionTransportIncludesNestedLedgerCounts(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for rollback decision transport fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "requestBackendRollbackDecision")
+	script := functionBody + `
+let sentBody = null;
+function getRequestTimeoutSettingMs() { return 1000; }
+async function fetchBackendLatestTurnIndexForSession() { return 9; }
+async function bridgeFetch(path, options) {
+  if (path !== "/rollback/decision") throw new Error("unexpected path " + path);
+  sentBody = options.body;
+  return {status:"ok",contract_version:"rollback.decision.v1"};
+}
+function serializeSessionRoutingBaselineForBackend() { return null; }
+(async function() {
+  await requestBackendRollbackDecision("s", 9, "delete", {
+    backendLatestTurnIndex:9,
+    tailReconcileVerification:{
+      status:"incomplete_user_only_tail_candidate",
+      removedAssistantCount:0,
+      removedUserCount:1,
+      removedMessageCount:1
+    }
+  }, "auto");
+  if (!sentBody || sentBody.removed_user_count !== 1 || sentBody.removed_message_count !== 1 || sentBody.removed_assistant_count !== 0 || sentBody.incomplete_tail_candidate !== true || sentBody.ledger_verified !== false) {
+    throw new Error("nested rollback verification was not transported: " + JSON.stringify(sentBody));
+  }
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rollback decision transport JS runtime fixture failed: %v\n%s", err, out)
 	}
 }
 

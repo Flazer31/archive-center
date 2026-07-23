@@ -55,20 +55,48 @@ type turnRecordingStore struct {
 	returnEpisodeSums       []store.EpisodeSummary
 	returnPersonaEntries    []store.PersonaMemoryEntry
 	returnEntityMemories    []store.ProtagonistEntityMemory
+	returnEntityOwners      []store.ProtagonistEntityMemoryOwner
 	lastEpisodeLimit        int
 	lastPersonaLimit        int
 	lastEntityMemoryLimit   int
+	entityMemoryReadCount   int
+	entityMemoryFilters     []store.ProtagonistEntityMemoryFilter
 	savedEntityMemories     []*store.ProtagonistEntityMemory
 	createdPersonaCapsules  []*store.PersonaMemoryCapsule
 	createdPersonaEntries   []store.PersonaMemoryEntry
 	deletedStorylineIDs     []int64
 	deletedWorldRuleIDs     []int64
+	logicalTurnReplacements []store.LogicalTurnReplacement
+}
+
+func (f *turnRecordingStore) ReplaceLogicalTurn(ctx context.Context, replacement store.LogicalTurnReplacement) error {
+	f.logicalTurnReplacements = append(f.logicalTurnReplacements, replacement)
+	f.returnChatLogs = []store.ChatLog{
+		{ChatSessionID: replacement.ChatSessionID, TurnIndex: replacement.TurnIndex, Role: "user", Content: replacement.UserContent, CreatedAt: replacement.CreatedAt},
+		{ChatSessionID: replacement.ChatSessionID, TurnIndex: replacement.TurnIndex, Role: "assistant", Content: replacement.AssistantContent, CreatedAt: replacement.CreatedAt},
+	}
+	f.returnMemories = nil
+	f.returnEvidence = nil
+	f.returnKGTriples = nil
+	f.returnStorylines = nil
+	f.returnWorldRules = nil
+	f.returnCharStates = nil
+	f.returnPendingThreads = nil
+	f.returnActiveStates = nil
+	f.returnCanonicalLayers = nil
+	f.returnEpisodeSums = nil
+	f.returnEntityMemories = nil
+	return nil
 }
 
 type turnRecordingVectorStore struct {
-	docs               []vector.VectorDocument
-	deletedDocumentIDs []string
-	upsertErr          error
+	docs                []vector.VectorDocument
+	deletedDocumentIDs  []string
+	upsertErr           error
+	upsertCalls         int
+	deleteSessionCalls  int
+	deleteDocumentCalls int
+	rebuildCalls        int
 }
 
 func (f *turnRecordingVectorStore) Search(ctx context.Context, sessionID string, query []float32, limit int, filter string) ([]vector.VectorDocument, error) {
@@ -76,6 +104,7 @@ func (f *turnRecordingVectorStore) Search(ctx context.Context, sessionID string,
 }
 
 func (f *turnRecordingVectorStore) Upsert(ctx context.Context, sessionID string, docs []vector.VectorDocument) error {
+	f.upsertCalls++
 	if f.upsertErr != nil {
 		return f.upsertErr
 	}
@@ -84,10 +113,12 @@ func (f *turnRecordingVectorStore) Upsert(ctx context.Context, sessionID string,
 }
 
 func (f *turnRecordingVectorStore) DeleteSession(ctx context.Context, sessionID string) error {
+	f.deleteSessionCalls++
 	return nil
 }
 
 func (f *turnRecordingVectorStore) DeleteDocuments(ctx context.Context, ids []string) error {
+	f.deleteDocumentCalls++
 	f.deletedDocumentIDs = append(f.deletedDocumentIDs, ids...)
 	remove := map[string]bool{}
 	for _, id := range ids {
@@ -103,7 +134,10 @@ func (f *turnRecordingVectorStore) DeleteDocuments(ctx context.Context, ids []st
 	return nil
 }
 
-func (f *turnRecordingVectorStore) Rebuild(ctx context.Context, sessionID string) error { return nil }
+func (f *turnRecordingVectorStore) Rebuild(ctx context.Context, sessionID string) error {
+	f.rebuildCalls++
+	return nil
+}
 
 func (f *turnRecordingVectorStore) Health(ctx context.Context) (vector.HealthSnapshot, error) {
 	return vector.HealthSnapshot{Status: "ok", Collection: "test"}, nil
@@ -302,6 +336,12 @@ func (f *turnRecordingStore) CreateProtagonistEntityMemory(ctx context.Context, 
 
 func (f *turnRecordingStore) ListProtagonistEntityMemories(ctx context.Context, filter store.ProtagonistEntityMemoryFilter) ([]store.ProtagonistEntityMemory, error) {
 	f.lastEntityMemoryLimit = filter.Limit
+	f.entityMemoryReadCount++
+	f.entityMemoryFilters = append(f.entityMemoryFilters, filter)
+	ownerKeys := map[string]bool{}
+	for _, key := range filter.OwnerEntityKeys {
+		ownerKeys[strings.TrimSpace(key)] = true
+	}
 	out := []store.ProtagonistEntityMemory{}
 	for _, item := range f.returnEntityMemories {
 		if filter.SourceChatSessionID != "" && item.SourceChatSessionID != filter.SourceChatSessionID {
@@ -316,9 +356,16 @@ func (f *turnRecordingStore) ListProtagonistEntityMemories(ctx context.Context, 
 		if filter.OwnerEntityKey != "" && item.OwnerEntityKey != filter.OwnerEntityKey {
 			continue
 		}
+		if len(ownerKeys) > 0 && !ownerKeys[item.OwnerEntityKey] {
+			continue
+		}
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+func (f *turnRecordingStore) ListProtagonistEntityMemoryOwners(ctx context.Context, filter store.ProtagonistEntityMemoryFilter) ([]store.ProtagonistEntityMemoryOwner, error) {
+	return append([]store.ProtagonistEntityMemoryOwner(nil), f.returnEntityOwners...), nil
 }
 
 func (f *turnRecordingStore) SaveMemory(ctx context.Context, m *store.Memory) error {

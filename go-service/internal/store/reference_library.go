@@ -234,6 +234,7 @@ type ReferenceLibraryStore interface {
 	DeleteReferenceContinuity(context.Context, string) error
 
 	SaveReferenceDocument(context.Context, *ReferenceDocument) error
+	UpdateReferenceDocumentSource(context.Context, *ReferenceDocument) error
 	GetReferenceDocument(context.Context, string) (*ReferenceDocument, error)
 	ListReferenceDocuments(context.Context, string, string, string) ([]ReferenceDocument, error)
 	UpdateReferenceDocumentStatus(context.Context, string, string) error

@@ -38,7 +38,7 @@ func TestSeq16P222FocusedValidationAggregateEquivalent(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"seq16-p222","turn_index":1,"raw_user_input":"hello","settings":{"injection_enabled":true,"input_context_enabled":true}}`
+	body := `{"chat_session_id":"seq16-p222","turn_index":1,"raw_user_input":"Iris found the key, unlocked the door, and opened the chest while the world remains stable.","settings":{"injection_enabled":true,"input_context_enabled":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -272,8 +272,8 @@ func TestSeq16P222FocusedValidationAggregateEquivalent(t *testing.T) {
 	}
 	passed++
 
-	if ip["final_budget_owner"] != "archive_center_js_assembleInjectionWithBudget" {
-		fail(fmt.Sprintf("injection_pack.final_budget_owner=%v, want archive_center_js_assembleInjectionWithBudget", ip["final_budget_owner"]))
+	if ip["final_budget_owner"] != "go_memory_delivery_plan" {
+		fail(fmt.Sprintf("injection_pack.final_budget_owner=%v, want go_memory_delivery_plan", ip["final_budget_owner"]))
 	}
 	passed++
 

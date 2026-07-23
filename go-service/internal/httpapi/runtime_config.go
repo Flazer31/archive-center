@@ -8,52 +8,62 @@ import (
 // RuntimeConfig mirrors the 0.8 /config/update runtime settings that the JS
 // bridge sends after the user saves the settings panel.
 type RuntimeConfig struct {
-	Synced                     bool
-	MainProvider               string
-	MainAPIKey                 string
-	MainEndpoint               string
-	MainModel                  string
-	MainTimeoutSec             int64
-	MainTemperature            *float64
-	MainMaxTokens              *int64
-	MainReasoningPreset        string
-	MainReasoningEffort        string
-	MainReasoningBudget        *int64
-	MainExtraHeadersJSON       string
-	MainExtraBodyJSON          string
-	MainVertexFlexMode         string
-	CriticProvider             string
-	CriticAPIKey               string
-	CriticEndpoint             string
-	CriticModel                string
-	CriticTimeoutSec           int64
-	CriticTemperature          *float64
-	CriticMaxTokens            *int64
-	CriticReasoningPreset      string
-	CriticReasoningEffort      string
-	CriticReasoningBudget      *int64
-	CriticExtraHeadersJSON     string
-	CriticExtraBodyJSON        string
-	CriticVertexFlexMode       string
-	SupervisorProvider         string
-	SupervisorAPIKey           string
-	SupervisorEndpoint         string
-	SupervisorModel            string
-	SupervisorTimeoutSec       int64
-	SupervisorTemperature      *float64
-	SupervisorMaxTokens        *int64
-	SupervisorReasoningPreset  string
-	SupervisorReasoningEffort  string
-	SupervisorReasoningBudget  *int64
-	SupervisorExtraHeadersJSON string
-	SupervisorExtraBodyJSON    string
-	SupervisorVertexFlexMode   string
-	EmbeddingProvider          string
-	EmbeddingAPIKey            string
-	EmbeddingEndpoint          string
-	EmbeddingModel             string
-	EmbeddingTimeoutSec        int64
-	TopK                       int64
+	Synced                             bool
+	MainProvider                       string
+	MainAPIKey                         string
+	MainEndpoint                       string
+	MainModel                          string
+	MainTimeoutSec                     int64
+	MainTemperature                    *float64
+	MainMaxTokens                      *int64
+	MainReasoningPreset                string
+	MainReasoningEffort                string
+	MainReasoningBudget                *int64
+	MainExtraHeadersJSON               string
+	MainExtraBodyJSON                  string
+	MainVertexFlexMode                 string
+	CriticProvider                     string
+	CriticAPIKey                       string
+	CriticEndpoint                     string
+	CriticModel                        string
+	CriticTimeoutSec                   int64
+	CriticTemperature                  *float64
+	CriticMaxTokens                    *int64
+	CriticReasoningPreset              string
+	CriticReasoningEffort              string
+	CriticReasoningBudget              *int64
+	CriticExtraHeadersJSON             string
+	CriticExtraBodyJSON                string
+	CriticVertexFlexMode               string
+	SupervisorProvider                 string
+	SupervisorAPIKey                   string
+	SupervisorEndpoint                 string
+	SupervisorModel                    string
+	SupervisorTimeoutSec               int64
+	SupervisorTemperature              *float64
+	SupervisorMaxTokens                *int64
+	SupervisorReasoningPreset          string
+	SupervisorReasoningEffort          string
+	SupervisorReasoningBudget          *int64
+	SupervisorExtraHeadersJSON         string
+	SupervisorExtraBodyJSON            string
+	SupervisorVertexFlexMode           string
+	EmbeddingProvider                  string
+	EmbeddingAPIKey                    string
+	EmbeddingEndpoint                  string
+	EmbeddingModel                     string
+	EmbeddingTimeoutSec                int64
+	SourceSearchPlannerProvider        string
+	SourceSearchPlannerAPIKey          string
+	SourceSearchPlannerEndpoint        string
+	SourceSearchPlannerModel           string
+	SourceSearchPlannerTimeoutSec      int64
+	SourceSearchPlannerTemperature     *float64
+	SourceSearchPlannerMaxTokens       *int64
+	SourceSearchPlannerReasoningPreset string
+	SourceSearchPlannerReasoningEffort string
+	SourceSearchPlannerReasoningBudget *int64
+	TopK                               int64
 }
 
 type embeddingModelIdentity struct {
@@ -217,6 +227,16 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("embeddingEndpoint", &s.RuntimeConfig.EmbeddingEndpoint)
 	setString("embeddingModel", &s.RuntimeConfig.EmbeddingModel)
 	setInt("embeddingTimeout", &s.RuntimeConfig.EmbeddingTimeoutSec)
+	setString("sourceSearchPlannerProvider", &s.RuntimeConfig.SourceSearchPlannerProvider)
+	setString("sourceSearchPlannerApiKey", &s.RuntimeConfig.SourceSearchPlannerAPIKey)
+	setString("sourceSearchPlannerEndpoint", &s.RuntimeConfig.SourceSearchPlannerEndpoint)
+	setString("sourceSearchPlannerModel", &s.RuntimeConfig.SourceSearchPlannerModel)
+	setInt("sourceSearchPlannerTimeout", &s.RuntimeConfig.SourceSearchPlannerTimeoutSec)
+	setFloatPtr("sourceSearchPlannerTemperature", &s.RuntimeConfig.SourceSearchPlannerTemperature)
+	setIntPtr("sourceSearchPlannerMaxCompletionTokens", &s.RuntimeConfig.SourceSearchPlannerMaxTokens)
+	setString("sourceSearchPlannerReasoningPreset", &s.RuntimeConfig.SourceSearchPlannerReasoningPreset)
+	setString("sourceSearchPlannerReasoningEffort", &s.RuntimeConfig.SourceSearchPlannerReasoningEffort)
+	setIntPtr("sourceSearchPlannerReasoningBudgetTokens", &s.RuntimeConfig.SourceSearchPlannerReasoningBudget)
 	setInt("topK", &s.RuntimeConfig.TopK)
 
 	return updated
@@ -262,6 +282,35 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 	}
 }
 
+func (s *Server) sourceSearchPlannerLLMConfig() completeTurnLLMConfig {
+	rt := s.runtimeConfigSnapshot()
+	temperature := 0.1
+	if rt.SourceSearchPlannerTemperature != nil {
+		temperature = *rt.SourceSearchPlannerTemperature
+	}
+	maxTokens := int64(512)
+	if rt.SourceSearchPlannerMaxTokens != nil && *rt.SourceSearchPlannerMaxTokens > 0 {
+		maxTokens = *rt.SourceSearchPlannerMaxTokens
+	}
+	reasoningPreset := strings.TrimSpace(rt.SourceSearchPlannerReasoningPreset)
+	if reasoningPreset == "" {
+		reasoningPreset = "auto"
+	}
+	reasoningEffort := strings.TrimSpace(rt.SourceSearchPlannerReasoningEffort)
+	if reasoningEffort == "" {
+		reasoningEffort = "none"
+	}
+	return completeTurnLLMConfig{
+		APIKey: rt.SourceSearchPlannerAPIKey, Endpoint: rt.SourceSearchPlannerEndpoint,
+		Model: rt.SourceSearchPlannerModel, Provider: rt.SourceSearchPlannerProvider,
+		TimeoutMs:   runtimeTimeoutMs(rt.SourceSearchPlannerTimeoutSec, 60000),
+		Temperature: temperature, MaxTokens: maxTokens,
+		ReasoningPreset:       reasoningPreset,
+		ReasoningEffort:       reasoningEffort,
+		ReasoningBudgetTokens: int64PtrValue(rt.SourceSearchPlannerReasoningBudget, 0),
+	}
+}
+
 func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 	rt := s.runtimeConfigSnapshot()
 	temperature := 0.3
@@ -289,9 +338,13 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 	}
 }
 
-func configMissingFields(apiKey, endpoint, model string) []string {
+func configMissingFieldsWithProvider(provider, apiKey, endpoint, model string) []string {
 	missing := []string{}
-	if strings.TrimSpace(apiKey) == "" {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		missing = append(missing, "provider")
+	}
+	if strings.TrimSpace(apiKey) == "" && !strings.EqualFold(provider, "ollama") {
 		missing = append(missing, "api_key")
 	}
 	if strings.TrimSpace(endpoint) == "" {
@@ -300,15 +353,6 @@ func configMissingFields(apiKey, endpoint, model string) []string {
 	if strings.TrimSpace(model) == "" {
 		missing = append(missing, "model")
 	}
-	return missing
-}
-
-func configMissingFieldsWithProvider(provider, apiKey, endpoint, model string) []string {
-	missing := []string{}
-	if strings.TrimSpace(provider) == "" {
-		missing = append(missing, "provider")
-	}
-	missing = append(missing, configMissingFields(apiKey, endpoint, model)...)
 	return missing
 }
 
@@ -387,6 +431,10 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	embeddingProviderID := firstRuntimeSourceValue(runtimeSourceValue{Value: rt.EmbeddingProvider, Source: "runtime.embeddingProvider"})
 	embeddingAPIKeyID := firstRuntimeSourceValue(runtimeSourceValue{Value: rt.EmbeddingAPIKey, Source: "runtime.embeddingApiKey"})
 	embeddingEndpointID := firstRuntimeSourceValue(runtimeSourceValue{Value: rt.EmbeddingEndpoint, Source: "runtime.embeddingEndpoint"})
+	sourceSearchPlannerProviderID := firstRuntimeSourceValue(runtimeSourceValue{Value: rt.SourceSearchPlannerProvider, Source: "runtime.sourceSearchPlannerProvider"})
+	sourceSearchPlannerAPIKeyID := firstRuntimeSourceValue(runtimeSourceValue{Value: rt.SourceSearchPlannerAPIKey, Source: "runtime.sourceSearchPlannerApiKey"})
+	sourceSearchPlannerEndpointID := firstRuntimeSourceValue(runtimeSourceValue{Value: rt.SourceSearchPlannerEndpoint, Source: "runtime.sourceSearchPlannerEndpoint"})
+	sourceSearchPlannerModelID := firstRuntimeSourceValue(runtimeSourceValue{Value: rt.SourceSearchPlannerModel, Source: "runtime.sourceSearchPlannerModel"})
 	if !rt.Synced {
 		embeddingProviderID = firstRuntimeSourceValue(
 			embeddingProviderID,
@@ -444,12 +492,23 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 		rt.EmbeddingTimeoutSec,
 	)
 	addRuntimeSourceTrace(embeddingTrace, embeddingProviderID, embeddingAPIKeyID, embeddingEndpointID, embeddingModelID)
+	sourceSearchPlannerTrace := configuredTrace(
+		sourceSearchPlannerProviderID.Value,
+		sourceSearchPlannerAPIKeyID.Value,
+		sourceSearchPlannerEndpointID.Value,
+		sourceSearchPlannerModelID.Value,
+		rt.SourceSearchPlannerTimeoutSec,
+	)
+	addRuntimeSourceTrace(sourceSearchPlannerTrace, sourceSearchPlannerProviderID, sourceSearchPlannerAPIKeyID, sourceSearchPlannerEndpointID, sourceSearchPlannerModelID)
+	addOptionalRuntimeTraceFields(sourceSearchPlannerTrace, rt.SourceSearchPlannerTemperature, rt.SourceSearchPlannerMaxTokens)
+	addOptionalReasoningTraceFields(sourceSearchPlannerTrace, rt.SourceSearchPlannerReasoningPreset, rt.SourceSearchPlannerReasoningEffort, rt.SourceSearchPlannerReasoningBudget)
 	return map[string]any{
-		"main":       mainTrace,
-		"supervisor": supervisorTrace,
-		"critic":     criticTrace,
-		"embedding":  embeddingTrace,
-		"top_k":      rt.TopK,
+		"main":              mainTrace,
+		"supervisor":        supervisorTrace,
+		"critic":            criticTrace,
+		"embedding":         embeddingTrace,
+		"source_search_llm": sourceSearchPlannerTrace,
+		"top_k":             rt.TopK,
 	}
 }
 

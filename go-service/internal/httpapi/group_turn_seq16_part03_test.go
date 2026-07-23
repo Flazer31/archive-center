@@ -846,7 +846,7 @@ func TestSeq16P221R1dCanonFirstInjectionContract(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"seq16-p221","turn_index":1,"raw_user_input":"hello","settings":{"injection_enabled":true,"input_context_enabled":true}}`
+	body := `{"chat_session_id":"seq16-p221","turn_index":1,"raw_user_input":"The world remains stable as the door is unlocked.","settings":{"injection_enabled":true,"input_context_enabled":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

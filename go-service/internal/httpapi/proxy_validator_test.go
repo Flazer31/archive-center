@@ -86,6 +86,33 @@ func TestValidateProxyEndpointLoopbackIP(t *testing.T) {
 	}
 }
 
+func TestValidateProxyEndpointForOllamaAllowsExplicitLoopback(t *testing.T) {
+	allowed := []string{
+		"http://localhost:11434",
+		"http://127.0.0.1:11434/v1",
+		"http://[::1]:11434",
+	}
+	for _, endpoint := range allowed {
+		if err := ValidateProxyEndpointForProvider(endpoint, "ollama"); err != nil {
+			t.Errorf("Ollama loopback endpoint %s was rejected: %v", endpoint, err)
+		}
+	}
+}
+
+func TestValidateProxyEndpointForOllamaStillBlocksOtherLocalNetworks(t *testing.T) {
+	blocked := []string{
+		"http://192.168.1.20:11434",
+		"http://169.254.169.254/latest/meta-data",
+		"http://0.0.0.0:11434",
+		"http://localhost.internal:11434",
+	}
+	for _, endpoint := range blocked {
+		if err := ValidateProxyEndpointForProvider(endpoint, "ollama"); err == nil {
+			t.Errorf("Ollama endpoint %s should remain blocked", endpoint)
+		}
+	}
+}
+
 func TestValidateProxyEndpointPrivateIP(t *testing.T) {
 	blocked := []string{
 		"https://10.0.0.1/v1",

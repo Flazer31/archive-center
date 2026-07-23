@@ -218,10 +218,25 @@ type ProtagonistEntityMemory struct {
 type ProtagonistEntityMemoryFilter struct {
 	PersonaEntityKey    string
 	OwnerEntityKey      string
+	OwnerEntityKeys     []string
 	OwnerEntityRole     string
 	OwnerVisibility     string
 	SourceChatSessionID string
 	Limit               int
+}
+
+// ProtagonistEntityMemoryOwner is a lightweight session-local owner identity.
+// It lets prepare-turn resolve an explicitly mentioned owner before applying a
+// row limit to that owner's memories.
+type ProtagonistEntityMemoryOwner struct {
+	OwnerEntityKey  string
+	OwnerEntityName string
+}
+
+// ProtagonistEntityMemoryOwnerIndexStore returns identities only, not memory
+// text. Implementations may expose it as an optional read optimization.
+type ProtagonistEntityMemoryOwnerIndexStore interface {
+	ListProtagonistEntityMemoryOwners(ctx context.Context, filter ProtagonistEntityMemoryFilter) ([]ProtagonistEntityMemoryOwner, error)
 }
 
 // ProtagonistEntityMemoryOwnerUpdate rewrites only the owner/persona identity
@@ -646,6 +661,21 @@ type ChatLog struct {
 	Role          string
 	Content       string
 	CreatedAt     time.Time
+}
+
+// LogicalTurnReplacementStore atomically replaces the canonical tail turn and
+// removes every MariaDB-derived artifact whose provenance reaches that turn.
+// Host adapters only report observations; this mutation remains store-owned.
+type LogicalTurnReplacementStore interface {
+	ReplaceLogicalTurn(ctx context.Context, replacement LogicalTurnReplacement) error
+}
+
+type LogicalTurnReplacement struct {
+	ChatSessionID    string
+	TurnIndex        int
+	UserContent      string
+	AssistantContent string
+	CreatedAt        time.Time
 }
 
 // EffectiveInput is the processed user intent per turn.

@@ -7,6 +7,51 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
+func resolvePrepareTurnMemoryBudget(manualMax int, clientMeta map[string]any) (int, map[string]any) {
+	if manualMax < 0 {
+		manualMax = 0
+	}
+	observation := mapFromAny(clientMeta["memory_budget_observation"])
+	extra := intFromAny(observation["extra_chars"], 0)
+	if extra < 0 {
+		extra = 0
+	}
+	if extra > 15000 {
+		extra = 15000
+	}
+	tokens := intFromAny(observation["current_chat_tokens"], 0)
+	tokenSource := strings.TrimSpace(extractionStringFromAny(observation["token_source"]))
+
+	automatic := manualMax
+	profile := "manual"
+	if tokens > 0 {
+		switch {
+		case tokens >= 1700000:
+			automatic, profile = maxInt(manualMax, 36000), "extreme_long_2m_plus"
+		case tokens >= 900000:
+			automatic, profile = maxInt(manualMax, 27000), "ultra_long_1m_plus"
+		case tokens >= 300000:
+			automatic, profile = maxInt(manualMax, 18000), "wide_context_500k"
+		default:
+			automatic, profile = maxInt(manualMax, 9000), "mid_context_300k"
+		}
+	}
+	automatic = minInt(36000, maxInt(0, automatic))
+	effective := minInt(51000, automatic+extra)
+	return effective, map[string]any{
+		"contract_version":          "memory_budget_resolution.v1",
+		"owner":                     "go",
+		"manual_max_chars":          manualMax,
+		"automatic_budget_chars":    automatic,
+		"extra_chars":               extra,
+		"effective_budget_chars":    effective,
+		"current_chat_tokens":       tokens,
+		"token_source":              nilIfEmpty(tokenSource),
+		"context_profile":           profile,
+		"calculation_in_javascript": false,
+	}
+}
+
 func buildInputAnchorGovernor(rawUserInput, inputContextText string, inputContextTruncated bool, maxChars int, chatLogs []store.ChatLog, resumePack *store.ResumePack, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, pendingThreads []store.PendingThread, storylines []store.Storyline) map[string]any {
 	type slotDef struct {
 		name           string

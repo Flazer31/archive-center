@@ -985,6 +985,10 @@ type PrepareTurnSettings struct {
 	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (3000): Go handler must apply default when field is absent in request.
 	MaxInjectionChars *int `json:"max_injection_chars,omitempty"`
+	// MemoryDeliveryBudgetMode selects automatic profile budgets or user-supplied per-class reservations.
+	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
+	// MemoryDeliveryBudgets carries character reservations for the seven Go-owned delivery classes.
+	MemoryDeliveryBudgets map[string]int `json:"memory_delivery_budgets,omitempty"`
 	// PRESENCE: Optional non-null scalar int carrying the configured memory cap as the reference budget basis.
 	// DEFAULT: No default: absent callers use the effective max_injection_chars for compatibility.
 	ReferenceInjectionBudgetBasisChars *int `json:"reference_injection_budget_basis_chars,omitempty"`

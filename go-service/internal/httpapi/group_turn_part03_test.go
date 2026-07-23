@@ -1029,6 +1029,9 @@ func TestCompleteTurnCriticProviderFailurePreservesRawTurnAndReportsReason(t *te
 	if resp["save_ok"] != true || resp["critic_triggered"] != false {
 		t.Fatalf("expected raw save with critic failure, got %+v", resp)
 	}
+	if resp["derived_retry_required"] != true {
+		t.Fatalf("critic failure must keep derived retry eligible: %+v", resp)
+	}
 	if resp["chat_logs_saved"] != float64(2) || resp["derived_artifacts_saved"] != float64(0) {
 		t.Fatalf("unexpected save counters: %+v", resp)
 	}
@@ -1047,5 +1050,73 @@ func TestCompleteTurnCriticProviderFailurePreservesRawTurnAndReportsReason(t *te
 	}
 	if !hasAuditEvent(fake.savedAuditLogs, "critic_extract_failed") {
 		t.Fatalf("expected critic_extract_failed audit log, got %#v", fake.savedAuditLogs)
+	}
+}
+
+func TestCompleteTurnClientCancellationDoesNotCancelRawPersistenceOrConfiguredCritic(t *testing.T) {
+	fake := &turnRecordingStore{}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	rawWasDurableBeforeCritic := false
+	providerContextCanceled := false
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		rawWasDurableBeforeCritic = len(fake.savedChatLogs) == 2
+		cancelParent()
+		select {
+		case <-r.Context().Done():
+			providerContextCanceled = true
+		case <-time.After(25 * time.Millisecond):
+		}
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"bad key"}}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := map[string]any{
+		"chat_session_id":   "sess-client-cancel",
+		"turn_index":        1,
+		"user_input":        "Mina asks Rowan to remember the blue key.",
+		"assistant_content": "Rowan promises to keep the blue key safe.",
+		"client_meta": map[string]any{"critic": map[string]any{
+			"api_key":    "sk-client-cancel",
+			"endpoint":   "https://api.example.com/v1",
+			"model":      "critic-model",
+			"provider":   "openai",
+			"timeout_ms": 90000,
+		}},
+	}
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(raw)).WithContext(parentCtx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if !rawWasDurableBeforeCritic {
+		t.Fatalf("critic started before both raw rows were durable: logs=%d", len(fake.savedChatLogs))
+	}
+	if providerContextCanceled {
+		t.Fatal("configured critic context inherited the canceled HTTP request context")
+	}
+	if len(fake.savedChatLogs) != 2 {
+		t.Fatalf("client cancellation lost raw rows: logs=%d", len(fake.savedChatLogs))
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if resp["save_ok"] != true || resp["chat_logs_saved"] != float64(2) {
+		t.Fatalf("client cancellation did not preserve raw save result: %+v", resp)
 	}
 }

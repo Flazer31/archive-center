@@ -379,7 +379,7 @@ func TestContinuityPackEmptySessionKeepsHooksAlias(t *testing.T) {
 	}
 }
 
-func TestWorldRulesSyncPatchTrustDeleteUseLiveStore(t *testing.T) {
+func TestWorldRulesSyncApplyBlockedWhileManualCRUDUsesLiveStore(t *testing.T) {
 	fake := &narrativeFakeStore{}
 	mux := http.NewServeMux()
 	srv := setupTestServer()
@@ -388,7 +388,7 @@ func TestWorldRulesSyncPatchTrustDeleteUseLiveStore(t *testing.T) {
 
 	syncBody := `{
 		"chat_session_id":"sess-world",
-		"mode":"apply",
+		"mode":"dry_run",
 		"turn_index":9,
 		"supervisor_response":{
 			"section_world":{
@@ -405,22 +405,36 @@ func TestWorldRulesSyncPatchTrustDeleteUseLiveStore(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("sync status = %d, want 200: %s", rec.Code, rec.Body.String())
+		t.Fatalf("dry-run status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if len(fake.savedWorldRules) != 4 {
-		t.Fatalf("saved world rules = %d, want 4: %#v", len(fake.savedWorldRules), fake.savedWorldRules)
+	if len(fake.savedWorldRules) != 0 {
+		t.Fatalf("dry-run saved world rules = %d, want 0", len(fake.savedWorldRules))
 	}
-	if got := fake.savedWorldRules[0]; got.ChatSessionID != "sess-world" || got.Scope != "root" || got.Category != "physics" || got.Key != "sealed_gate" || got.Genre != "mystery" || got.SourceTurn != 9 || !strings.Contains(got.ValueJSON, "brass_key") {
-		t.Fatalf("constant world rule = %#v", got)
+	var dryResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &dryResp); err != nil {
+		t.Fatalf("decode dry-run response: %v", err)
 	}
-	if got := fake.savedWorldRules[1]; got.Scope != "root" || got.Category != "custom" || got.Key != "The archive cellar stays locked after midnight." || got.ValueJSON != "" {
-		t.Fatalf("string world rule = %#v", got)
+	if dryResp["mode"] != "dry_run" || dryResp["candidate_count"] != float64(4) || dryResp["would_write"] != false {
+		t.Fatalf("dry-run response = %#v", dryResp)
 	}
-	if got := fake.savedWorldRules[2]; got.Scope != "root" || got.Category != "custom" || got.Key != "Legacy fallback rule is still accepted." {
-		t.Fatalf("world_rules fallback rule = %#v", got)
+
+	applyBody := strings.Replace(syncBody, `"mode":"dry_run"`, `"mode":"apply"`, 1)
+	req = httptest.NewRequest(http.MethodPost, "/world-rules/sync", strings.NewReader(applyBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("apply status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
-	if got := fake.savedWorldRules[3]; got.Scope != "root" || got.Category != "custom" || got.Key != "Confidence note fallback is still accepted." {
-		t.Fatalf("confidence_notes fallback rule = %#v", got)
+	if len(fake.savedWorldRules) != 0 {
+		t.Fatalf("blocked apply saved world rules = %d, want 0", len(fake.savedWorldRules))
+	}
+	var blockedResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &blockedResp); err != nil {
+		t.Fatalf("decode blocked apply response: %v", err)
+	}
+	if blockedResp["code"] != CodeSupervisorCanonicalWriteForbidden || blockedResp["status"] != "error" {
+		t.Fatalf("blocked apply response = %#v", blockedResp)
 	}
 
 	req = httptest.NewRequest(http.MethodPatch, "/world-rules/7", strings.NewReader(`{"scope":"location","scope_name":"Archive","value":"The cellar rule changed.","source_turn":10}`))
@@ -453,6 +467,88 @@ func TestWorldRulesSyncPatchTrustDeleteUseLiveStore(t *testing.T) {
 	}
 	if fake.deletedWorldRuleID != 7 {
 		t.Fatalf("deletedWorldRuleID = %d, want 7", fake.deletedWorldRuleID)
+	}
+}
+
+type worldRuleSyncWriterlessStore struct {
+	store.Store
+}
+
+func TestWorldRulesSyncDoesNotRequireWriterCapability(t *testing.T) {
+	base := &narrativeFakeStore{}
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.Store = &worldRuleSyncWriterlessStore{Store: base}
+	srv.RegisterRoutes(mux)
+
+	dryBody := `{"chat_session_id":"sess-world-writerless","mode":"dry_run","turn_index":3,"supervisor_response":{"section_world":{"rules":["Writerless rule candidate"]}}}`
+	req := httptest.NewRequest(http.MethodPost, "/world-rules/sync", strings.NewReader(dryBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("writerless dry-run status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var dryResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &dryResp); err != nil {
+		t.Fatalf("decode writerless dry-run: %v", err)
+	}
+	if dryResp["mode"] != "dry_run" || dryResp["candidate_count"] != float64(1) || dryResp["would_write"] != false {
+		t.Fatalf("writerless dry-run response = %#v", dryResp)
+	}
+	if len(base.savedWorldRules) != 0 {
+		t.Fatalf("writerless dry-run saved world rules = %d, want 0", len(base.savedWorldRules))
+	}
+
+	applyBody := strings.Replace(dryBody, `"mode":"dry_run"`, `"mode":"apply"`, 1)
+	req = httptest.NewRequest(http.MethodPost, "/world-rules/sync", strings.NewReader(applyBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("writerless apply status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	var blockedResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &blockedResp); err != nil {
+		t.Fatalf("decode writerless apply: %v", err)
+	}
+	if blockedResp["status"] != "error" || blockedResp["code"] != CodeSupervisorCanonicalWriteForbidden {
+		t.Fatalf("writerless apply response = %#v", blockedResp)
+	}
+	if len(base.savedWorldRules) != 0 {
+		t.Fatalf("writerless apply saved world rules = %d, want 0", len(base.savedWorldRules))
+	}
+
+	defaultBody := strings.Replace(dryBody, `"mode":"dry_run",`, "", 1)
+	req = httptest.NewRequest(http.MethodPost, "/world-rules/sync", strings.NewReader(defaultBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("writerless default-mode status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	var defaultResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &defaultResp); err != nil {
+		t.Fatalf("decode writerless default-mode response: %v", err)
+	}
+	if defaultResp["status"] != "error" || defaultResp["code"] != CodeSupervisorCanonicalWriteForbidden {
+		t.Fatalf("writerless default-mode response = %#v", defaultResp)
+	}
+
+	for name, body := range map[string]string{
+		"invalid_json":    `{`,
+		"missing_session": `{"mode":"dry_run","supervisor_response":{}}`,
+		"invalid_mode":    `{"chat_session_id":"sess-world-writerless","mode":"unexpected","supervisor_response":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/world-rules/sync", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

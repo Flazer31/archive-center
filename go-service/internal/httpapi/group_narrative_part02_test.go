@@ -505,7 +505,7 @@ func TestMomentumPacketBuildsStorylineHookRules(t *testing.T) {
 	}
 }
 
-func TestStorylineRegistrySyncDryRunAndApply(t *testing.T) {
+func TestStorylineRegistrySyncDryRunAndApplyBlocked(t *testing.T) {
 	fake := &narrativeFakeStore{
 		storylines: []store.Storyline{
 			{ID: 3, ChatSessionID: "sess-1", Name: "Rooftop Promise", Status: "active", EvidenceCount: 1, LastEvidenceTurn: 2, FirstTurn: 1, LastTurn: 2},
@@ -548,107 +548,131 @@ func TestStorylineRegistrySyncDryRunAndApply(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("apply status = %d, want 200: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("apply status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
-	if len(fake.savedStorylines) != 1 {
-		t.Fatalf("apply saved storylines = %d, want 1", len(fake.savedStorylines))
+	if len(fake.savedStorylines) != 0 {
+		t.Fatalf("blocked apply saved storylines = %d, want 0", len(fake.savedStorylines))
 	}
-	saved := fake.savedStorylines[0]
-	if saved.EvidenceCount != 2 || saved.LastEvidenceTurn != 4 || saved.FirstTurn != 1 || saved.LastTurn != 4 {
-		t.Fatalf("saved storyline evidence/turns = %#v", saved)
-	}
-	var applyResp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &applyResp); err != nil {
+	var blockedResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &blockedResp); err != nil {
 		t.Fatalf("decode apply response: %v", err)
 	}
-	results := applyResp["results"].([]any)
-	result := results[0].(map[string]any)
-	if result["confidence"] != float64(0.8) || result["evidence_count"] != float64(2) || result["last_evidence_turn"] != float64(4) {
-		t.Fatalf("apply result missing quality fields: %#v", result)
+	if blockedResp["code"] != CodeSupervisorCanonicalWriteForbidden || blockedResp["status"] != "error" {
+		t.Fatalf("blocked apply response = %#v", blockedResp)
+	}
+}
+
+type storylineSyncWriterlessStore struct {
+	store.Store
+}
+
+func TestStorylineRegistrySyncDoesNotRequireWriterCapability(t *testing.T) {
+	base := &narrativeFakeStore{}
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.Store = &storylineSyncWriterlessStore{Store: base}
+	srv.RegisterRoutes(mux)
+
+	dryBody := `{"chat_session_id":"sess-writerless","mode":"dry_run","supervisor_result":{"storylines":[{"name":"Writerless candidate","status":"active","key_points":["first","first"],"confidence":0.7}]}}`
+	req := httptest.NewRequest(http.MethodPost, "/storylines/sync", strings.NewReader(dryBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("writerless dry-run status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var dryResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &dryResp); err != nil {
+		t.Fatalf("decode writerless dry-run: %v", err)
+	}
+	if dryResp["mode"] != "dry_run" || dryResp["parsed_count"] != float64(1) || dryResp["valid_count"] != float64(1) {
+		t.Fatalf("writerless dry-run response = %#v", dryResp)
+	}
+	candidates, ok := dryResp["candidates"].([]any)
+	if !ok || len(candidates) != 1 {
+		t.Fatalf("writerless dry-run candidates = %#v", dryResp["candidates"])
+	}
+	if len(base.savedStorylines) != 0 {
+		t.Fatalf("writerless dry-run saved storylines = %d, want 0", len(base.savedStorylines))
 	}
 
-	duplicateBody := `{"chat_session_id":"sess-1","mode":"apply","turn_index":4,"supervisor_result":{"storylines":[{"name":"Rooftop Promise","status":"active","current_context":"She still waits.","last_evidence_turn":4}]}}`
-	req = httptest.NewRequest(http.MethodPost, "/storylines/sync", strings.NewReader(duplicateBody))
+	defaultBody := strings.Replace(dryBody, `"mode":"dry_run",`, "", 1)
+	req = httptest.NewRequest(http.MethodPost, "/storylines/sync", strings.NewReader(defaultBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("duplicate status = %d, want 200: %s", rec.Code, rec.Body.String())
+		t.Fatalf("writerless default-mode status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if len(fake.savedStorylines) != 2 {
-		t.Fatalf("duplicate saved storylines = %d, want 2", len(fake.savedStorylines))
+	var defaultResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &defaultResp); err != nil {
+		t.Fatalf("decode writerless default-mode response: %v", err)
 	}
-	duplicateSaved := fake.savedStorylines[1]
-	if duplicateSaved.EvidenceCount != 2 || duplicateSaved.LastEvidenceTurn != 4 {
-		t.Fatalf("duplicate sync double-counted evidence: %#v", duplicateSaved)
+	if defaultResp["mode"] != "dry_run" || defaultResp["valid_count"] != float64(1) {
+		t.Fatalf("writerless default-mode response = %#v", defaultResp)
 	}
 
-	explicitBody := `{"chat_session_id":"sess-1","mode":"apply","turn_index":6,"supervisor_result":{"storylines":[{"name":"Rooftop Promise","status":"active","current_context":"The answer lands.","evidence_count":3,"last_evidence_turn":6}]}}`
-	req = httptest.NewRequest(http.MethodPost, "/storylines/sync", strings.NewReader(explicitBody))
+	applyBody := strings.Replace(dryBody, `"mode":"dry_run"`, `"mode":"apply"`, 1)
+	req = httptest.NewRequest(http.MethodPost, "/storylines/sync", strings.NewReader(applyBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("explicit status = %d, want 200: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("writerless apply status = %d, want 409: %s", rec.Code, rec.Body.String())
 	}
-	if len(fake.savedStorylines) != 3 {
-		t.Fatalf("explicit saved storylines = %d, want 3", len(fake.savedStorylines))
+	var blockedResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &blockedResp); err != nil {
+		t.Fatalf("decode writerless apply: %v", err)
 	}
-	explicitSaved := fake.savedStorylines[2]
-	if explicitSaved.EvidenceCount != 5 || explicitSaved.LastEvidenceTurn != 6 {
-		t.Fatalf("explicit quality fields were not applied as increment/current turn: %#v", explicitSaved)
+	if blockedResp["status"] != "error" || blockedResp["code"] != CodeSupervisorCanonicalWriteForbidden {
+		t.Fatalf("writerless apply response = %#v", blockedResp)
+	}
+	if len(base.savedStorylines) != 0 {
+		t.Fatalf("writerless apply saved storylines = %d, want 0", len(base.savedStorylines))
+	}
+
+	for name, body := range map[string]string{
+		"invalid_json":    `{`,
+		"missing_session": `{"mode":"dry_run","supervisor_result":{}}`,
+		"invalid_mode":    `{"chat_session_id":"sess-writerless","mode":"unexpected","supervisor_result":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/storylines/sync", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
 func TestStorylineQualityGateFiveTurnReplayEvidenceAndSelection(t *testing.T) {
 	const sid = "sess-h2-five-turn"
+	freshStoryline := store.Storyline{
+		ID:                  1,
+		ChatSessionID:       sid,
+		Name:                "Rooftop Promise",
+		Status:              "active",
+		CurrentContext:      "Turn 5 keeps the same promise active.",
+		KeyPointsJSON:       `["shared vow","turn 5 evidence"]`,
+		OngoingTensionsJSON: `["answer pending"]`,
+		Confidence:          0.8,
+		EvidenceCount:       5,
+		LastEvidenceTurn:    5,
+		FirstTurn:           1,
+		LastTurn:            5,
+	}
 	fake := &narrativeFakeStore{}
 	mux := http.NewServeMux()
 	srv := setupTestServer()
 	srv.Store = fake
 	srv.RegisterRoutes(mux)
 
-	var current *store.Storyline
-	postSync := func(turn int) store.Storyline {
-		if current != nil {
-			fake.storylines = []store.Storyline{*current}
-		}
-		body := fmt.Sprintf(`{"chat_session_id":%q,"mode":"apply","turn_index":%d,"supervisor_result":{"storylines":[{"name":"Rooftop Promise","status":"active","current_context":"Turn %d keeps the same promise active.","key_points":["shared vow","shared vow","turn %d evidence"],"ongoing_tensions":["answer pending","answer pending"],"confidence":0.8}]}}`, sid, turn, turn, turn)
-		req := httptest.NewRequest(http.MethodPost, "/storylines/sync", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("sync turn %d status = %d, want 200: %s", turn, rec.Code, rec.Body.String())
-		}
-		if len(fake.savedStorylines) == 0 {
-			t.Fatalf("sync turn %d saved no storyline", turn)
-		}
-		saved := fake.savedStorylines[len(fake.savedStorylines)-1]
-		current = &saved
-		return saved
-	}
-
-	for turn := 1; turn <= 5; turn++ {
-		saved := postSync(turn)
-		if saved.LastEvidenceTurn != turn || saved.LastTurn != turn {
-			t.Fatalf("turn %d saved turns = %#v", turn, saved)
-		}
-	}
-	if current == nil || current.EvidenceCount != 5 || current.LastEvidenceTurn != 5 {
-		t.Fatalf("five-turn evidence accumulation = %#v, want evidence=5 last_evidence_turn=5", current)
-	}
-
-	duplicateBefore := *current
-	duplicate := postSync(5)
-	if duplicate.EvidenceCount != duplicateBefore.EvidenceCount || duplicate.LastEvidenceTurn != duplicateBefore.LastEvidenceTurn {
-		t.Fatalf("duplicate same-turn sync double-counted evidence: before=%#v after=%#v", duplicateBefore, duplicate)
-	}
-	current = &duplicateBefore
-
 	fake.storylines = []store.Storyline{
-		*current,
+		freshStoryline,
 		{
 			ID:               99,
 			ChatSessionID:    sid,

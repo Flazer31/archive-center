@@ -13,6 +13,41 @@ server, or persistence runtime.
 This contract is permanent. Version-specific plans may describe how to migrate
 existing code, but they may not weaken this boundary.
 
+## Official RisuAI Conformance Baseline
+
+Every current and future Archive Center feature must be designed against the
+official RisuAI frontend contract actually supported by the release. Before
+changing input, request, streaming, message, reroll, deletion, branch, or final
+display behavior, inspect the corresponding official RisuAI documentation and
+upstream source/types for the supported version. Record the inspected upstream
+commit or tag, date, hook/type names, and any capability that is not exposed.
+
+- Use only fields, roles, hooks, and lifecycle ordering that official RisuAI
+  exposes for the supported version. A convenient generic field, old plugin
+  shape, DOM coincidence, prompt phrase, or model output is not host evidence.
+- Preserve the difference between an input-handler observation, stored chat
+  message, `beforeRequest` payload, streaming candidate, successful response,
+  and final displayed output. Do not present an earlier observation as a later
+  or final lifecycle fact.
+- If RisuAI does not expose a value, transmit `unobserved`/`not_exposed` or omit
+  it according to the versioned contract. Do not substitute `false`, `true`, a
+  generated revision, or a content-based guess.
+- JavaScript may translate the official RisuAI shape into a small versioned
+  observation packet. Go owns the meaning, authority, selection, acceptance,
+  revision/generation fences, and persistence consequences of those facts.
+- Compatibility with another RisuAI version requires a reproduced version
+  difference, an explicit supported-version gate, fixtures from that official
+  shape, and a removal or maintenance condition. Do not grow a generic
+  best-effort parser merely because unofficial shapes might exist.
+- A fixture-only or source-string test is not live compatibility evidence.
+  Before `release_gate_verified`, run the production adapter against the exact
+  supported official shape and complete the applicable live RisuAI lifecycle
+  checks. Report any lifecycle that remains unverified.
+
+When official RisuAI changes, repair the existing adapter and its versioned
+observation contract. Do not preserve the old behavior by adding a second
+watcher, policy path, or parallel persistence route.
+
 ## Minimal-Addition Rule
 
 This rule applies to the whole repository, not only JavaScript. Do not add a
@@ -151,7 +186,13 @@ A feature or repair is not complete unless:
 - JavaScript contains only the minimum host adapter change;
 - no duplicate policy path remains without an approved compatibility window;
 - no prompt-specific hard coding was introduced;
+- the supported official RisuAI commit or tag, inspection date, and relevant
+  hook/type locations are recorded;
+- values not exposed by official RisuAI remain `unobserved`/`not_exposed`
+  instead of inferred booleans, revisions, or generated identities;
 - tests cover the versioned contract and RisuAI adapter behavior;
+- the applicable official-shape and live RisuAI lifecycle checks are complete,
+  or the feature remains explicitly `implemented_unverified`;
 - raw RisuAI message indexes are forwarded by JavaScript and logical turn or
   migration-baseline calculations are performed by the backend;
 - the final report includes JavaScript lines added and removed and names any
