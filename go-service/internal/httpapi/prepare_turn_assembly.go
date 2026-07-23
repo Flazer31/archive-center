@@ -847,20 +847,13 @@ func prepareTurnCanonicalCharacterStateHasDetails(value any) bool {
 		}
 		return false
 	case map[string]any:
-		identityOnly := map[string]bool{
-			"name": true, "character_name": true, "display_name": true,
-			"id": true, "key": true, "aliases": true,
-		}
 		for key, item := range typed {
-			normalizedKey := strings.ToLower(strings.TrimSpace(key))
-			if !identityOnly[normalizedKey] {
-				if nested, ok := item.(map[string]any); ok {
-					if len(nested) > 0 {
-						return true
-					}
-				} else if prepareTurnSurfaceText(item) != "" {
-					return true
-				}
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "name", "character_name", "display_name", "id", "key", "aliases":
+				continue
+			}
+			if _, ok := prunePrepareTurnEmptySurface(item); ok {
+				return true
 			}
 		}
 		return false

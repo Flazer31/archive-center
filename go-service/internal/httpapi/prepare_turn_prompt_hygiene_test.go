@@ -25,6 +25,43 @@ func TestPrepareTurnDropsLegacySecretDuplicateOwnedByProtectedLane(t *testing.T)
 	}
 }
 
+func TestPrepareTurnProtectedLaneDoesNotDropDifferentPrivateMemoryFromSameTurn(t *testing.T) {
+	identity := map[string]any{
+		"canonical_entity_name": "Juno",
+		"surface_identity_name": "The Courier",
+		"same_entity":           true,
+	}
+	identityJSON := compactPrepareTurnJSON(identity)
+	index := prepareTurnProtectedPrivateGuardIndex([]store.Memory{
+		{
+			TurnIndex:   6,
+			SummaryJSON: `{"protected_secrets":[{"owner":"Mira","summary":"Mira hides the brass key."}]}`,
+		},
+		{
+			TurnIndex:   7,
+			SummaryJSON: `{"character_identity_accuracy":[` + identityJSON + `]}`,
+		},
+	})
+	exactDuplicate := store.ProtagonistEntityMemory{
+		OwnerEntityName: "Mira", SourceTurn: 6, MemoryText: "Mira hides the brass key.",
+	}
+	differentMemory := store.ProtagonistEntityMemory{
+		OwnerEntityName: "Mira", SourceTurn: 6, MemoryText: "Mira privately remembers the forge promise.",
+	}
+	if !prepareTurnProtectedMemoryOwnsPrivateGuard(index, exactDuplicate) {
+		t.Fatal("exact protected-lane duplicate was not recognized")
+	}
+	if prepareTurnProtectedMemoryOwnsPrivateGuard(index, differentMemory) {
+		t.Fatal("different private memory from the same owner and turn was over-filtered")
+	}
+	identityDuplicate := store.ProtagonistEntityMemory{
+		OwnerEntityName: "Juno", SourceTurn: 7, MemoryText: protectedIdentityGuardSummary(identity),
+	}
+	if !prepareTurnProtectedMemoryOwnsPrivateGuard(index, identityDuplicate) {
+		t.Fatal("exact identity-guard duplicate was not recognized")
+	}
+}
+
 func TestPrepareTurnCanonicalCharacterRosterDoesNotConsumeStateBudget(t *testing.T) {
 	assembly := buildPrepareTurnInjectionAssembly(
 		nil, nil, nil, nil, nil, nil, nil, nil,

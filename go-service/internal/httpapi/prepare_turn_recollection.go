@@ -305,7 +305,42 @@ func characterPrivateMemoryHasProtagonistRole(entry store.ProtagonistEntityMemor
 	return tagRole == "protagonist" || tagRole == "player" || tagRole == "user" || tagRole == "persona"
 }
 
-func prepareTurnProtectedMemoryOwnsPrivateGuard(memories []store.Memory, entry store.ProtagonistEntityMemory) bool {
+func prepareTurnProtectedPrivateGuardKey(turn int, owner, text string) string {
+	owner = normalizeCharacterKey(owner)
+	text = normalizeSubjectiveMemoryDuplicateText(text)
+	if turn <= 0 || owner == "" || text == "" {
+		return ""
+	}
+	return fmt.Sprintf("%d|%s|%s", turn, owner, text)
+}
+
+func prepareTurnProtectedPrivateGuardIndex(memories []store.Memory) map[string]bool {
+	index := map[string]bool{}
+	add := func(turn int, owner, text string) {
+		if key := prepareTurnProtectedPrivateGuardKey(turn, owner, text); key != "" {
+			index[key] = true
+		}
+	}
+	for _, memory := range memories {
+		parsed := parseJSONMap(memory.SummaryJSON)
+		for _, raw := range sliceFromAny(parsed["protected_secrets"]) {
+			secret := mapFromAny(raw)
+			add(memory.TurnIndex, stringFromMap(secret, "owner"), stringFromMap(secret, "summary"))
+		}
+		for _, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
+			identity := mapFromAny(raw)
+			owner := extractionFirstNonEmpty(
+				stringFromMap(identity, "canonical_entity_name"),
+				stringFromMap(identity, "true_identity_name"),
+				stringFromMap(identity, "surface_identity_name"),
+			)
+			add(memory.TurnIndex, owner, protectedIdentityGuardSummary(identity))
+		}
+	}
+	return index
+}
+
+func prepareTurnProtectedMemoryOwnsPrivateGuard(index map[string]bool, entry store.ProtagonistEntityMemory) bool {
 	var tags []string
 	if json.Unmarshal([]byte(strings.TrimSpace(entry.TagsJSON)), &tags) == nil {
 		for _, tag := range tags {
@@ -315,44 +350,9 @@ func prepareTurnProtectedMemoryOwnsPrivateGuard(memories []store.Memory, entry s
 			}
 		}
 	}
-	if entry.SourceTurn <= 0 {
-		return false
-	}
-	ownerKeys := map[string]bool{}
 	for _, owner := range []string{entry.OwnerEntityKey, entry.OwnerEntityName, entry.PersonaEntityKey, entry.PersonaEntityName} {
-		if key := normalizeCharacterKey(owner); key != "" {
-			ownerKeys[key] = true
-		}
-	}
-	if len(ownerKeys) == 0 {
-		return false
-	}
-	matchesOwner := func(value string) bool {
-		return ownerKeys[normalizeCharacterKey(value)]
-	}
-	for _, memory := range memories {
-		if memory.TurnIndex != entry.SourceTurn {
-			continue
-		}
-		parsed := parseJSONMap(memory.SummaryJSON)
-		for _, raw := range sliceFromAny(parsed["protected_secrets"]) {
-			secret := mapFromAny(raw)
-			if matchesOwner(stringFromMap(secret, "owner")) {
-				return true
-			}
-			for _, subject := range stringsFromAny(secret["subject"]) {
-				if matchesOwner(subject) {
-					return true
-				}
-			}
-		}
-		for _, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
-			identity := mapFromAny(raw)
-			for _, key := range []string{"canonical_entity_name", "true_identity_name", "real_identity_name", "surface_identity_name", "public_identity_name", "alias_name"} {
-				if matchesOwner(stringFromMap(identity, key)) {
-					return true
-				}
-			}
+		if index[prepareTurnProtectedPrivateGuardKey(entry.SourceTurn, owner, entry.MemoryText)] {
+			return true
 		}
 	}
 	return false
@@ -566,6 +566,7 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 	selectedOwnerKeys := map[string]bool{}
 	droppedOwners := []string{}
 	dropped := []map[string]any{}
+	protectedPrivateGuardIndex := prepareTurnProtectedPrivateGuardIndex(memories)
 	for _, item := range *characterPrivateMemories {
 		ownerKey := prepareTurnMemoryOwnerIdentity(item.OwnerEntityKey, item.OwnerEntityName)
 		ownerRole := strings.ToLower(strings.TrimSpace(item.OwnerEntityRole))
@@ -578,7 +579,7 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, chatLogs []store.
 			})
 			continue
 		}
-		if item.SecretGuard && prepareTurnProtectedMemoryOwnsPrivateGuard(memories, item) {
+		if item.SecretGuard && prepareTurnProtectedMemoryOwnsPrivateGuard(protectedPrivateGuardIndex, item) {
 			dropped = append(dropped, map[string]any{
 				"id":                item.ID,
 				"owner_entity_key":  item.OwnerEntityKey,
