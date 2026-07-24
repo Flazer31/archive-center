@@ -50,24 +50,47 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	}
 
 	protectedPerspectiveContext := prepareTurnProtectedPerspectiveContext(perspectiveContext, memories, charStates)
-	recollectionContext := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads)
-	memoryQuery := prepareTurnMemorySelectionQuery(recollectionContext, protectedPerspectiveContext)
-	out.Counts["recall_query_sources"] = []string{"current_user_input", "previous_stored_event_summary", "latest_scene_state", "unresolved_goals", "confirmed_current_entities", "confirmed_current_pov"}
+	recollectionContext := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogs)
+	knownCharacterNames := make([]string, 0, len(charStates)+len(characterPrivateMemories))
+	for _, state := range charStates {
+		knownCharacterNames = append(knownCharacterNames, state.CharacterName)
+	}
+	for _, memory := range characterPrivateMemories {
+		knownCharacterNames = append(knownCharacterNames, prepareTurnMemoryOwnerLabel(memory.OwnerEntityKey, memory.OwnerEntityName))
+	}
+	for _, memory := range memories {
+		knownCharacterNames = append(knownCharacterNames, prepareTurnMemoryCharacterAnchors(memory)...)
+	}
+	knownCharacterNames = append(knownCharacterNames, prepareTurnCanonicalKnownCharacterNames(canonicalLayers)...)
+	entityScope := buildPrepareTurnRequestEntityScope(rawUserInput, recollectionContext.currentEntities, knownCharacterNames)
+	objectiveEntityNames := entityScope.Scene
+	objectiveEntitySource := "stored_active_scene_state"
+	if len(objectiveEntityNames) == 0 {
+		objectiveEntitySource = "unobserved_no_objective_state_delivery"
+	}
+	memoryQuery := prepareTurnEventMemoryQuery(recollectionContext, entityScope.Direct)
+	out.Counts["recall_query_sources"] = []string{"current_user_input", "directly_referenced_entities", "relevant_previous_stored_event_summary"}
+	out.Counts["directly_referenced_entities"] = entityScope.Direct
+	out.Counts["stored_active_scene_entities"] = entityScope.Scene
+	out.Counts["objective_entity_source"] = objectiveEntitySource
 	out.Counts["previous_assistant_raw_used_for_search"] = false
 	out.Counts["previous_assistant_raw_delivery_owner"] = "input_context_only"
-	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow)
+	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow, entityScope.Direct, entityScope.Scene)
 	memorySelection = collapsePrepareTurnMemoryLaneSelection(memorySelection)
 	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, recollectionContext, protectedPerspectiveContext)
-	// Material support lanes use only the current request, current scene,
-	// already-relevant open goals, confirmed current entities, and confirmed
-	// POV. The previous stored event summary may retrieve event memories, but a
-	// selected memory must not recursively activate unrelated support lanes.
-	supportQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
-		recollectionContext.rawUserInput,
+	// Each support lane owns its request-scoped evidence. A prior event may help
+	// retrieve event memory, but cannot activate state, relationship, world,
+	// evidence, or goal lanes.
+	relationshipQuery := prepareTurnEntityScopeQuery(rawUserInput, entityScope.Direct, entityScope.Scene)
+	rawSupportQuery := prepareTurnEntityScopeQuery(rawUserInput, entityScope.Direct)
+	objectiveQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
 		recollectionContext.currentSceneStates,
+		strings.Join(objectiveEntityNames, "\n"),
+	}), "\n"))
+	worldQuery := strings.TrimSpace(recollectionContext.currentSceneStates)
+	goalQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
+		prepareTurnEntityScopeQuery(rawUserInput, entityScope.Direct, entityScope.Scene),
 		recollectionContext.unresolvedGoals,
-		recollectionContext.currentEntities,
-		extractionStringFromAny(protectedPerspectiveContext["current_pov"]),
 	}), "\n"))
 	out.ContinuityCorrectionText, out.Counts["continuity_correction"] = buildNarrativeContinuityCorrection(
 		narrativeCurrentValues,
@@ -115,7 +138,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if line == "-->" {
 			continue
 		}
-		eligible, reason := prepareTurnKGRecallEligible(supportQuery, t)
+		eligible, reason := prepareTurnKGRecallEligible(relationshipQuery, t)
 		if !eligible {
 			kgIrrelevantDropped++
 			if reason == "single_endpoint_only" {
@@ -134,7 +157,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if text == "" {
 			continue
 		}
-		if !prepareTurnCurrentSceneRelevant(supportQuery, text) {
+		if !prepareTurnRequestFirstRelevant(rawSupportQuery, objectiveQuery, text) {
 			directEvidenceIrrelevantDropped++
 			continue
 		}
@@ -177,7 +200,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		}
 		desc = compactPrepareTurnLine(desc, 170)
 		if desc != "" {
-			if !prepareTurnSupportRecallEligible(supportQuery, desc) {
+			if !prepareTurnRequestFirstRelevant(rawSupportQuery, goalQuery, desc) {
 				storylineIrrelevantDropped++
 				continue
 			}
@@ -187,15 +210,24 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.StorylineText = makePrepareTurnSection("[Storylines]", storylineLines)
 
 	worldRulesForInjection := collapsePrepareTurnWorldRules(mergePrepareTurnWorldRulesForInjection(artifactHydration.WorldRules, worldRules))
-	worldRuleLines := make([]string, 0, minInt(len(worldRulesForInjection), recallLimit))
-	vectorWorldRuleIDs := map[int64]bool{}
-	for _, wr := range artifactHydration.WorldRules {
-		if wr.ID > 0 {
-			vectorWorldRuleIDs[wr.ID] = true
+	prioritizedWorldRules := make([]store.WorldRule, 0, len(worldRulesForInjection))
+	for _, wr := range worldRulesForInjection {
+		scope := strings.ToLower(strings.TrimSpace(wr.Scope))
+		if wr.Pinned || scope == "root" || scope == "session" || scope == "global" {
+			prioritizedWorldRules = append(prioritizedWorldRules, wr)
 		}
 	}
-	worldRuleIrrelevantDropped := 0
 	for _, wr := range worldRulesForInjection {
+		scope := strings.ToLower(strings.TrimSpace(wr.Scope))
+		if wr.Pinned || scope == "root" || scope == "session" || scope == "global" {
+			continue
+		}
+		prioritizedWorldRules = append(prioritizedWorldRules, wr)
+	}
+	worldRuleLines := make([]string, 0, minInt(len(worldRulesForInjection), recallLimit))
+	worldRuleIrrelevantDropped := 0
+	worldRulePersistentSelected := 0
+	for _, wr := range prioritizedWorldRules {
 		if len(worldRuleLines) >= recallLimit {
 			break
 		}
@@ -208,9 +240,24 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		}
 		desc = compactPrepareTurnLine(desc, 180)
 		if desc != "" {
-			if !vectorWorldRuleIDs[wr.ID] && !prepareTurnCurrentSceneRelevant(supportQuery, desc, wr.ScopeName, wr.Key) {
+			worldAnchors := []string{wr.ScopeName, wr.Key}
+			scope := strings.ToLower(strings.TrimSpace(wr.Scope))
+			persistent := wr.Pinned || scope == "root" || scope == "session" || scope == "global"
+			sceneScoped := scope == "location" || scope == "region" || scope == "area" || scope == "place"
+			relevant := persistent
+			if !relevant && sceneScoped {
+				relevant = strings.TrimSpace(wr.ScopeName) != "" &&
+					prepareTurnSupportRecallEligible(worldQuery, desc, wr.ScopeName)
+			}
+			if !relevant && !sceneScoped {
+				relevant = prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, desc, worldAnchors...)
+			}
+			if !relevant {
 				worldRuleIrrelevantDropped++
 				continue
+			}
+			if persistent {
+				worldRulePersistentSelected++
 			}
 			worldRuleLines = append(worldRuleLines, "- "+desc)
 		}
@@ -229,34 +276,26 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		relationships     string
 		speechStyle       string
 		detail            string
+		sceneActive       bool
 		directMentionRank int
 		supportOverlap    int
 		sourceOrder       int
 	}
 	characterCandidates := make([]characterCandidate, 0, len(charStates))
-	currentEntityNames := make([]string, 0, len(charStates)+len(characterPrivateMemories))
-	for _, state := range charStates {
-		currentEntityNames = append(currentEntityNames, state.CharacterName)
-	}
-	for _, memory := range characterPrivateMemories {
-		currentEntityNames = append(currentEntityNames, prepareTurnMemoryOwnerLabel(memory.OwnerEntityKey, memory.OwnerEntityName))
-	}
+	currentEntityNames := entityScope.Known
 	currentEntityAliases := prepareTurnObservedShortNameAliases(currentEntityNames)
-	currentSceneEntityNames := nonEmptyStrings(strings.Split(recollectionContext.currentEntities, "\n"))
-	currentEntityCanonicalNames := make([]string, 0)
-	for _, rawName := range currentEntityNames {
-		name := strings.TrimSpace(rawName)
-		if name != "" && prepareTurnDirectEntityMentionRank(rawUserInput, name, currentEntityAliases) > 0 && !stringSliceContains(currentEntityCanonicalNames, name) {
-			currentEntityCanonicalNames = append(currentEntityCanonicalNames, name)
-		}
-	}
-	characterSupportQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{supportQuery, strings.Join(currentEntityCanonicalNames, "\n")}), "\n"))
+	currentSceneEntityNames := entityScope.Scene
 	for sourceOrder, cs := range charStates {
 		name := strings.TrimSpace(cs.CharacterName)
-		state := prepareTurnSurfaceText(parseSurfacePayload(cs.StatusJSON))
+		sceneActive := prepareTurnRelationshipNameInList(name, objectiveEntityNames)
+		state := ""
+		speechStyle := ""
+		if sceneActive {
+			state = prepareTurnSurfaceText(parseSurfacePayload(cs.StatusJSON))
+			speechStyle = prepareTurnSurfaceText(parseSurfacePayload(cs.SpeechStyleJSON))
+		}
 		relationships, relationshipDropped := prepareTurnRelevantRelationshipSurface(cs.RelationshipsJSON, name, rawUserInput, currentSceneEntityNames, currentEntityNames)
 		characterRelationshipIrrelevantDropped += relationshipDropped
-		speechStyle := prepareTurnSurfaceText(parseSurfacePayload(cs.SpeechStyleJSON))
 		parts := []string{}
 		if state != "" {
 			parts = append(parts, "state="+state)
@@ -272,7 +311,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			continue
 		}
 		directMentionRank := prepareTurnDirectEntityMentionRank(rawUserInput, name, currentEntityAliases)
-		if directMentionRank == 0 && !prepareTurnSupportRecallEligible(characterSupportQuery, name+" "+detail, name) {
+		if !sceneActive && relationships == "" {
 			characterIrrelevantDropped++
 			continue
 		}
@@ -283,8 +322,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			relationships:     relationships,
 			speechStyle:       speechStyle,
 			detail:            detail,
+			sceneActive:       sceneActive,
 			directMentionRank: directMentionRank,
-			supportOverlap:    prepareTurnRecallOverlapCount(characterSupportQuery, name+" "+detail),
+			supportOverlap:    prepareTurnRecallOverlapCount(relationshipQuery, name+" "+detail),
 			sourceOrder:       sourceOrder,
 		})
 	}
@@ -319,8 +359,10 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if speechStyle != "" {
 			objectiveParts = append(objectiveParts, "speech_style="+speechStyle)
 		}
-		if objective := compactPrepareTurnLine(strings.Join(objectiveParts, "; "), 420); objective != "" {
-			charObjectiveLines = append(charObjectiveLines, fmt.Sprintf("- %s: %s", name, objective))
+		if candidate.sceneActive {
+			if objective := compactPrepareTurnLine(strings.Join(objectiveParts, "; "), 420); objective != "" {
+				charObjectiveLines = append(charObjectiveLines, fmt.Sprintf("- %s: %s", name, objective))
+			}
 		}
 		if relationships != "" {
 			charRelationshipLines = append(charRelationshipLines, fmt.Sprintf("- %s: relationships=%s", name, compactPrepareTurnLine(relationships, 360)))
@@ -347,7 +389,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				pendingIrrelevantDropped++
 				continue
 			}
-			if !prepareTurnSupportRecallEligible(supportQuery, desc) {
+			if !prepareTurnRequestFirstRelevant(rawSupportQuery, goalQuery, desc) {
 				pendingIrrelevantDropped++
 				continue
 			}
@@ -369,7 +411,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if anchors := episodeDenseAnchorPreview(es, summary, 260); anchors != "" {
 			summary = compactPrepareTurnLine(summary+"; "+anchors, 360)
 		}
-		if !prepareTurnCurrentSceneRelevant(supportQuery, summary) {
+		if !prepareTurnSupportRecallEligible(memoryQuery, summary) {
 			episodeIrrelevantDropped++
 			continue
 		}
@@ -388,7 +430,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if item.Tombstoned || item.RepairNeeded || item.SupersededByID != 0 {
 			continue
 		}
-		if prepareTurnCurrentSceneRelevant(supportQuery, item.EvidenceText) {
+		if prepareTurnRequestFirstRelevant(rawSupportQuery, objectiveQuery, item.EvidenceText) {
 			relevantEvidence = append(relevantEvidence, item)
 		}
 	}
@@ -438,45 +480,63 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			canonTypeCounts[layer]++
 			continue
 		}
-		if !prepareTurnCurrentSceneRelevant(characterSupportQuery, content) {
-			canonIrrelevant++
-			continue
-		}
-		line := fmt.Sprintf("- %s: %s", layer, content)
-		canonLines = append(canonLines, line)
+		selectedLayer := false
 		switch layer {
 		case "entity_state":
 			var entity map[string]any
-			if json.Unmarshal([]byte(cl.Content), &entity) == nil && len(entity) > 0 {
-				appendCanonicalSubset := func(target *[]string, keys ...string) {
-					subset := map[string]any{}
-					for _, key := range keys {
-						if value, ok := entity[key]; ok {
-							subset[key] = value
-						}
-					}
-					if len(subset) == 0 {
-						return
-					}
-					encoded, _ := json.Marshal(subset)
-					*target = append(*target, "- entity_state: "+compactPrepareTurnLine(string(encoded), 320))
-				}
-				appendCanonicalSubset(&canonEventLines, "events")
-				if characters, ok := entity["characters"]; ok {
-					if prepareTurnCanonicalCharacterStateHasDetails(characters) {
-						appendCanonicalSubset(&canonCharacterLines, "characters")
-					} else {
-						canonCharacterRosterOnlyDropped++
-					}
-				}
-				appendCanonicalSubset(&canonWorldLines, "background", "items", "locations")
-			} else {
-				canonCharacterLines = append(canonCharacterLines, line)
+			if json.Unmarshal([]byte(cl.Content), &entity) != nil || len(entity) == 0 {
+				canonIrrelevant++
+				continue
 			}
+			appendCanonicalSubset := func(target *[]string, rawQuery, fallbackQuery string, subset map[string]any) {
+				if len(subset) == 0 {
+					return
+				}
+				encoded, _ := json.Marshal(subset)
+				text := compactPrepareTurnLine(string(encoded), 320)
+				if text == "" || !prepareTurnRequestFirstRelevant(rawQuery, fallbackQuery, text) {
+					return
+				}
+				line := "- entity_state: " + text
+				*target = append(*target, line)
+				canonLines = append(canonLines, line)
+				selectedLayer = true
+			}
+			if value, ok := entity["events"]; ok {
+				appendCanonicalSubset(&canonEventLines, memoryQuery, "", map[string]any{"events": value})
+			}
+			if characters, ok := entity["characters"]; ok {
+				if filtered, ok := prepareTurnCanonicalCharactersForScene(characters, objectiveEntityNames); ok {
+					appendCanonicalSubset(&canonCharacterLines, objectiveQuery, "", map[string]any{"characters": filtered})
+				} else {
+					canonCharacterRosterOnlyDropped++
+				}
+			}
+			worldSubset := map[string]any{}
+			for _, key := range []string{"background", "items", "locations"} {
+				if value, ok := entity[key]; ok {
+					worldSubset[key] = value
+				}
+			}
+			appendCanonicalSubset(&canonWorldLines, rawSupportQuery, worldQuery, worldSubset)
 		case "world_state", "scene_state":
-			canonWorldLines = append(canonWorldLines, line)
+			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
+				line := fmt.Sprintf("- %s: %s", layer, content)
+				canonLines = append(canonLines, line)
+				canonWorldLines = append(canonWorldLines, line)
+				selectedLayer = true
+			}
 		default:
-			canonWorldLines = append(canonWorldLines, line)
+			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
+				line := fmt.Sprintf("- %s: %s", layer, content)
+				canonLines = append(canonLines, line)
+				canonWorldLines = append(canonWorldLines, line)
+				selectedLayer = true
+			}
+		}
+		if !selectedLayer {
+			canonIrrelevant++
+			continue
 		}
 		canonTypeCounts[layer]++
 	}
@@ -553,6 +613,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["kg_single_endpoint_only_dropped"] = kgSingleEndpointDropped
 	out.Counts["storyline_irrelevant_dropped"] = storylineIrrelevantDropped
 	out.Counts["world_rule_irrelevant_dropped"] = worldRuleIrrelevantDropped
+	out.Counts["world_rule_persistent_selected"] = worldRulePersistentSelected
 	out.Counts["character_state_irrelevant_dropped"] = characterIrrelevantDropped
 	out.Counts["character_state_candidate_capped"] = characterCandidateCapped
 	out.Counts["character_state_relevance_before_cap"] = true
@@ -894,6 +955,93 @@ func prepareTurnCanonicalCharacterStateHasDetails(value any) bool {
 	}
 }
 
+func prepareTurnCanonicalKnownCharacterNames(layers []store.CanonicalStateLayer) []string {
+	out := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value != "" && !prepareTurnRelationshipNameInList(value, out) {
+			out = append(out, value)
+		}
+	}
+	for _, layer := range layers {
+		payload := parseJSONMap(layer.Content)
+		switch strings.TrimSpace(layer.LayerType) {
+		case "relationship_state":
+			left, right := prepareTurnStoredRelationshipActors(payload)
+			add(left)
+			add(right)
+		case "entity_state":
+			characters, ok := payload["characters"]
+			if !ok {
+				continue
+			}
+			switch typed := characters.(type) {
+			case []any:
+				for _, item := range typed {
+					if name, ok := item.(string); ok {
+						add(name)
+						continue
+					}
+					entry := mapFromAny(item)
+					add(extractionFirstNonEmpty(stringFromMap(entry, "name"), stringFromMap(entry, "character_name"), stringFromMap(entry, "display_name")))
+				}
+			case map[string]any:
+				if name := extractionFirstNonEmpty(stringFromMap(typed, "name"), stringFromMap(typed, "character_name"), stringFromMap(typed, "display_name")); name != "" {
+					add(name)
+					continue
+				}
+				for name := range typed {
+					add(name)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func prepareTurnCanonicalCharactersForScene(value any, sceneEntities []string) (any, bool) {
+	if len(sceneEntities) == 0 {
+		return nil, false
+	}
+	nameFrom := func(payload map[string]any) string {
+		return extractionFirstNonEmpty(
+			stringFromMap(payload, "name"),
+			stringFromMap(payload, "character_name"),
+			stringFromMap(payload, "display_name"),
+		)
+	}
+	switch typed := value.(type) {
+	case []any:
+		kept := make([]any, 0, len(typed))
+		for _, item := range typed {
+			payload := mapFromAny(item)
+			name := nameFrom(payload)
+			if name == "" || !prepareTurnRelationshipNameInList(name, sceneEntities) || !prepareTurnCanonicalCharacterStateHasDetails(payload) {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		return kept, len(kept) > 0
+	case map[string]any:
+		if name := nameFrom(typed); name != "" {
+			if prepareTurnRelationshipNameInList(name, sceneEntities) && prepareTurnCanonicalCharacterStateHasDetails(typed) {
+				return typed, true
+			}
+			return nil, false
+		}
+		kept := map[string]any{}
+		for name, detail := range typed {
+			if !prepareTurnRelationshipNameInList(name, sceneEntities) || !prepareTurnCanonicalCharacterStateHasDetails(detail) {
+				continue
+			}
+			kept[name] = detail
+		}
+		return kept, len(kept) > 0
+	default:
+		return nil, false
+	}
+}
+
 func prepareTurnRelevantRelationshipSurface(raw, owner, rawUserInput string, currentSceneEntities, knownEntities []string) (string, int) {
 	value := parseSurfacePayload(raw)
 	filtered, dropped, ok := prepareTurnFilterRelationshipSurface(value, owner, rawUserInput, currentSceneEntities, knownEntities)
@@ -1027,9 +1175,6 @@ func prepareTurnStructuredRelationshipRelevant(owner, target, detailText, rawUse
 		prepareTurnRelationshipNameInList(target, currentSceneEntities) {
 		return !prepareTurnRelationshipContainsThirdEntity(detailText, owner, target, knownEntities)
 	}
-	if detailText != "" && prepareTurnSupportRecallEligible(rawUserInput, detailText) {
-		return !prepareTurnRelationshipContainsThirdEntity(detailText, owner, target, knownEntities)
-	}
 	return false
 }
 
@@ -1039,7 +1184,12 @@ func prepareTurnFreeRelationshipRelevant(text, owner, rawUserInput string, curre
 		return false
 	}
 	if len(knownEntities) == 0 {
-		return prepareTurnSupportRecallEligible(rawUserInput, text)
+		// Some verified legacy relationship_state rows predate structured actor
+		// fields. Preserve them only when the current request shares at least two
+		// substantive terms with the relationship itself; a single character
+		// name is never enough.
+		return prepareTurnRecallOverlapCount(rawUserInput, text) >= 2 &&
+			prepareTurnSupportRecallEligible(rawUserInput, text)
 	}
 	mentioned := []string{}
 	for _, name := range knownEntities {

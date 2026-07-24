@@ -316,6 +316,26 @@ func TestCompleteTurnSourceAcceptanceAdoptsLegacyTailWithMatchingUserAnchor(t *t
 	}
 }
 
+func TestCompleteTurnSourceAcceptanceRejectsLowerObservedTurnInsteadOfAppendingAfterWrongTail(t *testing.T) {
+	storage := &turnRecordingStore{returnChatLogs: []store.ChatLog{
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "user", Content: "wrong old user"},
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "assistant", Content: "wrong old assistant"},
+	}}
+	server := &Server{
+		Cfg:               config.Config{StoreMode: config.StoreModeMariaDBAuthority},
+		Store:             storage,
+		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(),
+	}
+	req := completeTurnAnchoredAcceptanceTestRequest("session-1", 35, "actual user", "actual assistant", 2000, "generation-35", "not_streaming", 68, 69, 70)
+	decision := server.beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if decision.Accepted || decision.Reason != "source_acceptance_session_tail_conflict" || !decision.Retryable {
+		t.Fatalf("lower active-chat turn must force rerouting, not become turn 52: %+v", decision)
+	}
+	if decision.BoundTurn != 35 {
+		t.Fatalf("observed turn was rewritten: %+v", decision)
+	}
+}
+
 func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *testing.T) {
 	storage := &turnRecordingStore{
 		returnChatLogs: []store.ChatLog{

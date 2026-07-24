@@ -147,6 +147,9 @@ func TestSpeechStylePatchFlowsIntoPrepareTurnPromptWithDistinctTone(t *testing.T
 		characterStates: []store.CharacterState{
 			{ID: 9, ChatSessionID: "sess-speech-flow", CharacterName: "Chloe", StatusJSON: `{"emotion":"focused"}`, TurnIndex: 11},
 		},
+		activeStates: []store.ActiveState{
+			{ID: 10, ChatSessionID: "sess-speech-flow", StateType: "scene", Content: `{"present_entities":["Chloe"]}`, TurnIndex: 11},
+		},
 	}
 	mux := http.NewServeMux()
 	srv := setupTestServer()

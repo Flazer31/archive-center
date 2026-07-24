@@ -22,14 +22,21 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
 	}
 	protectedGroups, protectedGroupMembers := buildPrepareTurnProtectedDeliveryGroups(selection)
-	appendLane := func(label string, items []store.Memory) {
+	emittedMemories := map[string]bool{}
+	appendLane := func(label string, items []store.Memory) bool {
+		appendedAny := false
 		for laneRank, item := range items {
+			memoryKey := prepareTurnMemoryLaneKey(item)
+			if emittedMemories[memoryKey] {
+				continue
+			}
 			summary := prepareTurnMemorySummary(item)
 			if summary == "" {
 				continue
 			}
-			groups := protectedGroups[prepareTurnMemoryLaneKey(item)]
-			if len(groups) == 0 && protectedGroupMembers[prepareTurnMemoryLaneKey(item)] {
+			emittedMemories[memoryKey] = true
+			groups := protectedGroups[memoryKey]
+			if len(groups) == 0 && protectedGroupMembers[memoryKey] {
 				finalRenderDuplicates++
 				continue
 			}
@@ -73,15 +80,58 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 				} else {
 					actualLines = append(actualLines, renderedLine)
 				}
+				appendedAny = true
 				lineageItems = append(lineageItems, lineage)
 			}
 		}
+		return appendedAny
 	}
-	appendLane("vector_relevant", selection.VectorRelevant)
-	appendLane("relevant", selection.Relevant)
-	appendLane("deep", selection.Deep)
-	appendLane("recent", selection.Recent)
+	lanes := []struct {
+		label string
+		items []store.Memory
+	}{
+		{label: "vector_relevant", items: selection.VectorRelevant},
+		{label: "relevant", items: selection.Relevant},
+		{label: "deep", items: selection.Deep},
+		{label: "recent", items: selection.Recent},
+	}
+	coveredDirectEntities := map[string]bool{}
+	for _, entity := range selection.DirectlyReferenced {
+		entityKey := normalizePrepareTurnEntityNeedle(entity)
+		if entityKey == "" || coveredDirectEntities[entityKey] {
+			continue
+		}
+		selected := false
+		for _, lane := range lanes {
+			for _, item := range lane.items {
+				if prepareTurnProtectedMemoryGuard(item).Active {
+					continue
+				}
+				matches := prepareTurnMemoryDirectEntityMatches(item, selection.DirectlyReferenced)
+				if !prepareTurnRelationshipNameInList(entity, matches) {
+					continue
+				}
+				if !appendLane(lane.label, []store.Memory{item}) {
+					continue
+				}
+				for _, matched := range matches {
+					coveredDirectEntities[normalizePrepareTurnEntityNeedle(matched)] = true
+				}
+				selected = true
+				break
+			}
+			if selected {
+				break
+			}
+		}
+	}
+	for _, lane := range lanes {
+		appendLane(lane.label, lane.items)
+	}
 	trace["line_count"] = len(lines)
+	trace["direct_entity_render_requested_count"] = len(selection.DirectlyReferenced)
+	trace["direct_entity_render_covered_count"] = len(coveredDirectEntities)
+	trace["direct_entity_render_gap"] = maxInt(len(selection.DirectlyReferenced)-len(coveredDirectEntities), 0)
 	trace["final_render_duplicate_count"] = finalRenderDuplicates
 	trace["final_render_dedup_applied"] = true
 	trace["delivery_lineage_items"] = lineageItems

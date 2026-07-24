@@ -260,6 +260,26 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 	ledger.mu.Lock()
 	defer ledger.mu.Unlock()
 	ledger.loadDurableStateLocked(ctx, s.Store, sid)
+	latestCanonicalTurn := 0
+	if s.Store != nil {
+		if logs, err := s.Store.ListChatLogs(ctx, sid, 0, 0); err == nil {
+			for _, log := range logs {
+				if log.ChatSessionID == sid && log.TurnIndex > latestCanonicalTurn {
+					latestCanonicalTurn = log.TurnIndex
+				}
+			}
+		}
+	}
+	// A lower observed turn cannot belong to this canonical tail. Do not turn
+	// an active-chat turn 35 into backend turn 52: that would preserve the
+	// routing mistake and contaminate the wrong session. The host must resolve
+	// the active RisuAI chat identity again before retrying.
+	if latestCanonicalTurn > 0 && turnIndex < latestCanonicalTurn {
+		conflict := rejectedCompleteTurnSourceAcceptance("source_acceptance_session_tail_conflict", true, observation)
+		conflict.LogicalTurnID = decision.LogicalTurnID
+		conflict.BoundTurn = turnIndex
+		return conflict
+	}
 	for _, candidate := range ledger.current {
 		if decision.LogicalTurnID == "" {
 			break

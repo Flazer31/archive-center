@@ -271,12 +271,17 @@ func rollbackObservationHasPendingGeneration(observation string) bool {
 type sessionRoutingTurnResolutionRequest struct {
 	ChatSessionID         string                   `json:"chat_session_id"`
 	Mode                  string                   `json:"mode"`
+	HostChatID            string                   `json:"host_chat_id,omitempty"`
+	HostChatIDState       string                   `json:"host_chat_id_state,omitempty"`
+	LatestUserHash        string                   `json:"latest_user_hash,omitempty"`
+	LatestAssistantHash   string                   `json:"latest_assistant_hash,omitempty"`
 	LocalTurnIndex        int                      `json:"local_turn_index"`
 	VisibleCompletedTurns int                      `json:"visible_completed_turns"`
 	RisuUserMessageIndex  *int                     `json:"risu_user_message_index,omitempty"`
 	ObservedPairOrdinal   int                      `json:"observed_pair_ordinal,omitempty"`
 	Observations          []routingTurnObservation `json:"observations,omitempty"`
 	Baseline              *routingTurnBaseline     `json:"baseline,omitempty"`
+	canonicalTailAligned  bool
 }
 
 type routingTurnObservation struct {
@@ -298,6 +303,8 @@ type routingTurnResolvedObservation struct {
 type sessionRoutingTurnResolutionResponse struct {
 	Status               string                           `json:"status"`
 	ContractVersion      string                           `json:"contract_version"`
+	ChatSessionID        string                           `json:"chat_session_id,omitempty"`
+	IdentityResolution   string                           `json:"identity_resolution,omitempty"`
 	Resolution           string                           `json:"resolution"`
 	TurnIndex            int                              `json:"turn_index"`
 	CompletedTurns       int                              `json:"completed_turns"`
@@ -315,8 +322,115 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "code": "invalid_session_routing_observation"})
 		return
 	}
+	canonicalSessionID, identityResolution, canonicalTailAligned := s.resolveObservedRisuSessionIdentity(r.Context(), req)
+	if canonicalSessionID != "" {
+		req.ChatSessionID = canonicalSessionID
+	}
+	req.canonicalTailAligned = canonicalTailAligned
 	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
-	writeJSON(w, http.StatusOK, calculateSessionRoutingTurnResolution(req))
+	resp := calculateSessionRoutingTurnResolution(req)
+	resp.ChatSessionID = strings.TrimSpace(req.ChatSessionID)
+	resp.IdentityResolution = identityResolution
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) resolveObservedRisuSessionIdentity(ctx context.Context, req sessionRoutingTurnResolutionRequest) (string, string, bool) {
+	requested := strings.TrimSpace(req.ChatSessionID)
+	hostChatID := strings.TrimSpace(req.HostChatID)
+	if req.HostChatIDState != "observed" || hostChatID == "" || s.Store == nil {
+		return requested, "host_chat_id_unobserved", false
+	}
+	sessions, err := s.Store.ListSessions(ctx)
+	if err != nil {
+		return requested, "session_list_unavailable", false
+	}
+	suffix := "_cid_" + hostChatID
+	candidates := make([]store.SessionSummary, 0, 2)
+	for _, session := range sessions {
+		sid := strings.TrimSpace(session.ChatSessionID)
+		if sid == "cid_"+hostChatID || strings.HasSuffix(sid, suffix) {
+			candidates = append(candidates, session)
+		}
+	}
+	if len(candidates) == 0 {
+		return requested, "new_host_chat_id", false
+	}
+
+	userHash := strings.TrimSpace(req.LatestUserHash)
+	assistantHash := strings.TrimSpace(req.LatestAssistantHash)
+	turnMismatchObserved := false
+	if userHash != "" || assistantHash != "" {
+		matched := make([]store.SessionSummary, 0, len(candidates))
+		for _, candidate := range candidates {
+			logs, listErr := s.Store.ListChatLogs(ctx, candidate.ChatSessionID, 0, 0)
+			if listErr != nil {
+				continue
+			}
+			latestTurn := 0
+			latestUser, latestAssistant := "", ""
+			for _, log := range logs {
+				if log.TurnIndex > latestTurn {
+					latestTurn = log.TurnIndex
+					latestUser, latestAssistant = "", ""
+				}
+				if log.TurnIndex != latestTurn {
+					continue
+				}
+				switch strings.ToLower(strings.TrimSpace(log.Role)) {
+				case "user":
+					latestUser = log.Content
+				case "assistant":
+					latestAssistant = log.Content
+				}
+			}
+			userMatches := userHash == "" || prepareOR1CHash(strings.TrimSpace(latestUser)) == userHash
+			assistantMatches := assistantHash == "" || prepareOR1CHash(strings.TrimSpace(latestAssistant)) == assistantHash
+			if userMatches && assistantMatches {
+				if req.VisibleCompletedTurns > 0 && latestTurn != req.VisibleCompletedTurns {
+					turnMismatchObserved = true
+					continue
+				}
+				matched = append(matched, candidate)
+			}
+		}
+		if len(matched) == 1 {
+			return strings.TrimSpace(matched[0].ChatSessionID), "existing_host_chat_tail_match", true
+		}
+		if len(matched) > 1 {
+			candidates = matched
+		} else if len(candidates) == 1 {
+			// A matching CID alone is not enough to reconnect an index alias.
+			// Copy/cold-start damage can leave that CID attached to a backend
+			// tail that is not the chat RisuAI is currently showing.
+			if turnMismatchObserved {
+				return requested, "existing_host_chat_turn_mismatch", false
+			}
+			return requested, "existing_host_chat_tail_mismatch", false
+		}
+	}
+	if len(candidates) == 1 {
+		return strings.TrimSpace(candidates[0].ChatSessionID), "existing_host_chat_id", false
+	}
+
+	best := candidates[0]
+	bestTied := false
+	for _, candidate := range candidates[1:] {
+		if candidate.ChatLogsCount > best.ChatLogsCount {
+			best = candidate
+			bestTied = false
+		} else if candidate.ChatLogsCount == best.ChatLogsCount {
+			bestTied = true
+		}
+	}
+	if !bestTied {
+		return strings.TrimSpace(best.ChatSessionID), "existing_host_chat_most_complete", false
+	}
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.ChatSessionID) == requested {
+			return requested, "existing_host_chat_requested_alias", false
+		}
+	}
+	return requested, "host_chat_id_ambiguous", false
 }
 
 func (s *Server) resolveDurableSessionRoutingBaseline(ctx context.Context, sessionID string, clientBaseline *routingTurnBaseline) *routingTurnBaseline {
@@ -390,6 +504,10 @@ func calculateSessionRoutingTurnResolution(req sessionRoutingTurnResolutionReque
 		resp.TurnIndex = localTurn
 	}
 	baseline := req.Baseline
+	if req.canonicalTailAligned {
+		resp.Resolution = "canonical_tail_aligned"
+		return resp
+	}
 	if baseline == nil || !routingBaselineReasonSupported(baseline.Reason) || baseline.BackendTurnAtRoute <= 0 {
 		return resp
 	}

@@ -22,6 +22,25 @@ type rollbackDecisionChatLogStore struct {
 	logs []store.ChatLog
 }
 
+type sessionIdentityRoutingStore struct {
+	store.Store
+	sessions []store.SessionSummary
+	logs     map[string][]store.ChatLog
+	baseline *store.SessionRoutingBaseline
+}
+
+func (s *sessionIdentityRoutingStore) ListSessions(context.Context) ([]store.SessionSummary, error) {
+	return s.sessions, nil
+}
+
+func (s *sessionIdentityRoutingStore) ListChatLogs(_ context.Context, sid string, _, _ int) ([]store.ChatLog, error) {
+	return s.logs[sid], nil
+}
+
+func (s *sessionIdentityRoutingStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
+	return s.baseline, nil
+}
+
 func (s *rollbackDecisionChatLogStore) ListChatLogs(_ context.Context, _ string, _, _ int) ([]store.ChatLog, error) {
 	return s.logs, nil
 }
@@ -72,6 +91,196 @@ func TestSessionRoutingHandlerUsesDurableCopiedBaselineWhenClientBaselineIsMissi
 	}
 	if !response.BaselineApplied || response.TurnIndex != 9 || response.ProtectedBeforeTurn != 8 || response.MinFromTurn != 9 {
 		t.Fatalf("durable copied baseline was not applied: %+v", response)
+	}
+}
+
+func TestSessionRoutingIdentityKeepsExistingCIDWhenCharacterIndexChanges(t *testing.T) {
+	const (
+		hostChatID = "76eff0e5-8439-446f-a164-1271a7cc2089"
+		existingID = "char_1_cid_" + hostChatID
+		requested  = "char_0_cid_" + hostChatID
+	)
+	server := &Server{Store: &sessionIdentityRoutingStore{
+		Store:    store.NewNoopStore(),
+		sessions: []store.SessionSummary{{ChatSessionID: existingID, ChatLogsCount: 68}},
+		logs:     map[string][]store.ChatLog{},
+	}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"`+requested+`",
+		"mode":"identity",
+		"host_chat_id":"`+hostChatID+`",
+		"host_chat_id_state":"observed"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ChatSessionID != existingID || response.IdentityResolution != "existing_host_chat_id" {
+		t.Fatalf("same observed CID was split by character index: %+v", response)
+	}
+}
+
+func TestSessionRoutingIdentityUsesObservedTailAcrossExistingIndexAliases(t *testing.T) {
+	const hostChatID = "same-host-chat"
+	oldID, currentID := "char_0_cid_"+hostChatID, "char_1_cid_"+hostChatID
+	server := &Server{Store: &sessionIdentityRoutingStore{
+		Store: store.NewNoopStore(),
+		sessions: []store.SessionSummary{
+			{ChatSessionID: oldID, ChatLogsCount: 8},
+			{ChatSessionID: currentID, ChatLogsCount: 68},
+		},
+		logs: map[string][]store.ChatLog{
+			oldID: {
+				{ChatSessionID: oldID, TurnIndex: 4, Role: "user", Content: "old user"},
+				{ChatSessionID: oldID, TurnIndex: 4, Role: "assistant", Content: "old assistant"},
+			},
+			currentID: {
+				{ChatSessionID: currentID, TurnIndex: 51, Role: "user", Content: "current user"},
+				{ChatSessionID: currentID, TurnIndex: 51, Role: "assistant", Content: "current assistant"},
+			},
+		},
+	}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"`+oldID+`",
+		"mode":"identity",
+		"host_chat_id":"`+hostChatID+`",
+		"host_chat_id_state":"observed",
+		"latest_user_hash":"`+prepareOR1CHash("current user")+`",
+		"latest_assistant_hash":"`+prepareOR1CHash("current assistant")+`"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ChatSessionID != currentID || response.IdentityResolution != "existing_host_chat_tail_match" {
+		t.Fatalf("observed active tail did not select the matching session: %+v", response)
+	}
+}
+
+func TestSessionRoutingIdentityDoesNotReuseMismatchedCIDTail(t *testing.T) {
+	const hostChatID = "same-host-chat"
+	existingID, requestedID := "char_1_cid_"+hostChatID, "char_0_cid_"+hostChatID
+	server := &Server{Store: &sessionIdentityRoutingStore{
+		Store:    store.NewNoopStore(),
+		sessions: []store.SessionSummary{{ChatSessionID: existingID, ChatLogsCount: 68}},
+		logs: map[string][]store.ChatLog{
+			existingID: {
+				{ChatSessionID: existingID, TurnIndex: 51, Role: "user", Content: "wrong old user"},
+				{ChatSessionID: existingID, TurnIndex: 51, Role: "assistant", Content: "wrong old assistant"},
+			},
+		},
+	}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"`+requestedID+`",
+		"mode":"identity",
+		"host_chat_id":"`+hostChatID+`",
+		"host_chat_id_state":"observed",
+		"latest_user_hash":"`+prepareOR1CHash("actual turn 35 user")+`",
+		"latest_assistant_hash":"`+prepareOR1CHash("actual turn 35 assistant")+`"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ChatSessionID != requestedID || response.IdentityResolution != "existing_host_chat_tail_mismatch" {
+		t.Fatalf("mismatched backend tail was reused: %+v", response)
+	}
+}
+
+func TestSessionRoutingIdentityRejectsMatchingContentAtWrongTurnNumber(t *testing.T) {
+	const hostChatID = "same-host-chat"
+	existingID, requestedID := "char_1_cid_"+hostChatID, "char_0_cid_"+hostChatID
+	server := &Server{Store: &sessionIdentityRoutingStore{
+		Store:    store.NewNoopStore(),
+		sessions: []store.SessionSummary{{ChatSessionID: existingID, ChatLogsCount: 68}},
+		logs: map[string][]store.ChatLog{
+			existingID: {
+				{ChatSessionID: existingID, TurnIndex: 51, Role: "user", Content: "actual turn 35 user"},
+				{ChatSessionID: existingID, TurnIndex: 51, Role: "assistant", Content: "actual turn 35 assistant"},
+			},
+		},
+	}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"`+requestedID+`",
+		"mode":"identity",
+		"host_chat_id":"`+hostChatID+`",
+		"host_chat_id_state":"observed",
+		"visible_completed_turns":35,
+		"latest_user_hash":"`+prepareOR1CHash("actual turn 35 user")+`",
+		"latest_assistant_hash":"`+prepareOR1CHash("actual turn 35 assistant")+`"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ChatSessionID != requestedID || response.IdentityResolution != "existing_host_chat_turn_mismatch" {
+		t.Fatalf("matching content at backend turn 51 was mistaken for RisuAI turn 35: %+v", response)
+	}
+}
+
+func TestSessionRoutingMatchingCanonicalTailDisablesLostCopyOffset(t *testing.T) {
+	const (
+		hostChatID = "copy-target"
+		sid        = "char_1_cid_" + hostChatID
+	)
+	server := &Server{Store: &sessionIdentityRoutingStore{
+		Store:    store.NewNoopStore(),
+		sessions: []store.SessionSummary{{ChatSessionID: sid, ChatLogsCount: 38}},
+		logs: map[string][]store.ChatLog{
+			sid: {
+				{ChatSessionID: sid, TurnIndex: 19, Role: "user", Content: "turn 19 user"},
+				{ChatSessionID: sid, TurnIndex: 19, Role: "assistant", Content: "turn 19 assistant"},
+			},
+		},
+		baseline: &store.SessionRoutingBaseline{
+			Mode: store.SessionMigrationModeCopyKeepSource, ImportedThroughTurn: 17,
+		},
+	}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"mode":"pair",
+		"host_chat_id":"`+hostChatID+`",
+		"host_chat_id_state":"observed",
+		"visible_completed_turns":19,
+		"risu_user_message_index":38,
+		"observed_pair_ordinal":20,
+		"latest_user_hash":"`+prepareOR1CHash("turn 19 user")+`",
+		"latest_assistant_hash":"`+prepareOR1CHash("turn 19 assistant")+`"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.TurnIndex != 20 || response.Resolution != "canonical_tail_aligned" || response.BaselineApplied {
+		t.Fatalf("lost local copy baseline added 17 turns again: %+v", response)
 	}
 }
 

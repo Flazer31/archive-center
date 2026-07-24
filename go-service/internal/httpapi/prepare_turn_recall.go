@@ -476,6 +476,7 @@ type prepareTurnMemoryLaneSelection struct {
 	Recent                  []store.Memory
 	Relevant                []store.Memory
 	Deep                    []store.Memory
+	DirectlyReferenced      []string
 	ProtectedCandidates     []store.Memory
 	ProtectedAliasCanonical map[string]string
 	ProtectedAmbiguousAlias map[string]bool
@@ -484,18 +485,12 @@ type prepareTurnMemoryLaneSelection struct {
 	Trace                   map[string]any
 }
 
-func prepareTurnMemorySelectionQuery(ctx prepareTurnRecollectionContext, perspectiveContext map[string]any) string {
-	parts := nonEmptyStrings([]string{
+func prepareTurnEventMemoryQuery(ctx prepareTurnRecollectionContext, directlyReferencedEntities []string) string {
+	return strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
 		ctx.rawUserInput,
 		ctx.previousEventSummary,
-		ctx.currentSceneStates,
-		ctx.unresolvedGoals,
-		ctx.currentEntities,
-	})
-	if pov := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"])); pov != "" {
-		parts = append(parts, "current_pov: "+pov)
-	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+		strings.Join(directlyReferencedEntities, "\n"),
+	}), "\n"))
 }
 
 type prepareTurnRecallEvidence struct {
@@ -574,8 +569,15 @@ func prepareTurnSupportRecallEligible(query, text string, anchors ...string) boo
 	return false
 }
 
-func prepareTurnCurrentSceneRelevant(query, text string, anchors ...string) bool {
-	return prepareTurnSupportRecallEligible(query, text, anchors...)
+func prepareTurnRequestFirstRelevant(rawQuery, fallbackQuery, text string, anchors ...string) bool {
+	rawQuery = strings.TrimSpace(rawQuery)
+	if rawQuery != "" && prepareTurnSupportRecallEligible(rawQuery, text, anchors...) {
+		return true
+	}
+	if strings.TrimSpace(fallbackQuery) == "" {
+		return false
+	}
+	return prepareTurnSupportRecallEligible(fallbackQuery, text, anchors...)
 }
 
 func prepareTurnRecallOverlapCount(query, text string) int {
@@ -757,12 +759,79 @@ func prepareTurnMemoryStructuredAnchors(item store.Memory) []string {
 	return out
 }
 
+func prepareTurnMemoryCharacterAnchors(item store.Memory) []string {
+	parsed := parseJSONMap(item.SummaryJSON)
+	out := []string{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || len([]rune(value)) < 2 || prepareTurnRelationshipNameInList(value, out) {
+			return
+		}
+		out = append(out, value)
+	}
+	for _, key := range []string{"characters", "character_names", "people"} {
+		for _, value := range memorySearchStringValues(parsed[key]) {
+			add(value)
+		}
+	}
+	for _, entry := range memorySearchMapItems(parsed["entities"]) {
+		add(extractionFirstNonEmpty(
+			stringFromMap(entry, "name"),
+			stringFromMap(entry, "canonical_name"),
+			stringFromMap(entry, "display_name"),
+		))
+	}
+	for _, entry := range memorySearchMapItems(parsed["character_states"]) {
+		add(extractionFirstNonEmpty(
+			stringFromMap(entry, "name"),
+			stringFromMap(entry, "character_name"),
+		))
+	}
+	return out
+}
+
+func prepareTurnMemoryDirectEntityMatches(item store.Memory, directlyReferencedEntities []string) []string {
+	anchors := prepareTurnMemoryStructuredAnchors(item)
+	summary := prepareTurnMemorySummary(item)
+	out := []string{}
+	for _, entity := range directlyReferencedEntities {
+		matched := prepareTurnRecallContainsAnchor(summary, entity)
+		for _, anchor := range anchors {
+			if normalizePrepareTurnEntityNeedle(entity) != normalizePrepareTurnEntityNeedle(anchor) {
+				continue
+			}
+			matched = true
+			break
+		}
+		if matched {
+			if !prepareTurnRelationshipNameInList(entity, out) {
+				out = append(out, entity)
+			}
+		}
+	}
+	return out
+}
+
 func selectPrepareTurnMemoryLanes(memories []store.Memory, query string, topK int) prepareTurnMemoryLaneSelection {
 	return selectPrepareTurnMemoryLanesWithVector(memories, query, topK, nil)
 }
 
-func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query string, topK int, vectorShadow map[string]any) prepareTurnMemoryLaneSelection {
+func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query string, topK int, vectorShadow map[string]any, directlyReferencedEntityGroups ...[]string) prepareTurnMemoryLaneSelection {
 	vectorLimit := prepareTurnRecallLimit(topK)
+	directlyReferencedEntities := []string{}
+	if len(directlyReferencedEntityGroups) > 0 {
+		directlyReferencedEntities = directlyReferencedEntityGroups[0]
+	}
+	storedSceneEntities := []string{}
+	if len(directlyReferencedEntityGroups) > 1 {
+		storedSceneEntities = directlyReferencedEntityGroups[1]
+	}
+	directEntitiesOutsideStoredScene := []string{}
+	for _, entity := range directlyReferencedEntities {
+		if !prepareTurnRelationshipNameInList(entity, storedSceneEntities) {
+			directEntitiesOutsideStoredScene = append(directEntitiesOutsideStoredScene, entity)
+		}
+	}
 	clean := make([]store.Memory, 0, len(memories))
 	for _, item := range memories {
 		if strings.TrimSpace(prepareTurnMemorySummary(item)) == "" {
@@ -770,10 +839,10 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		}
 		clean = append(clean, item)
 	}
-	// The vector setting controls only ChromaDB memory hits. Lexical/current-
-	// scene candidates are not a transmission quota; the final per-category
-	// character budgets decide how many eligible facts reach the host.
-	totalLimit := maxInt(len(clean), 1)
+	candidateLimit := minInt(
+		len(clean),
+		minInt(512, maxInt(128, vectorLimit+len(directlyReferencedEntities)*2)),
+	)
 	query = strings.TrimSpace(query)
 	queryPresent := query != ""
 	maxTurn := 0
@@ -800,12 +869,14 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	}
 
 	out := prepareTurnMemoryLaneSelection{
-		VectorScores:   map[string]float64{},
-		RelevantScores: map[string]float64{},
+		DirectlyReferenced: append([]string(nil), directlyReferencedEntities...),
+		VectorScores:       map[string]float64{},
+		RelevantScores:     map[string]float64{},
 		Trace: map[string]any{
 			"version":                     "r3.recall_lanes.v1",
 			"top_k_definition":            "vector_memory_search_limit_only",
 			"top_k_memory_target":         vectorLimit,
+			"candidate_safety_limit":      candidateLimit,
 			"vector_memory_policy":        "chromadb_hits_hydrated_to_mariadb_memory_before_injection",
 			"relevant_memory_limit":       "final_category_char_budget",
 			"deep_memory_policy":          "importance_only_when_no_current_query",
@@ -838,6 +909,7 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		out.ProtectedCandidates = append(out.ProtectedCandidates, item)
 	}
 	protectedSelectedCount := 0
+	candidateLimitRejected := 0
 	actualMemorySelectedCount := 0
 	actualMemoryVectorSelectedCount := 0
 	actualMemoryRelevantRefillSelectedCount := 0
@@ -876,7 +948,8 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			}
 			return false, true
 		}
-		if protectedSelectedCount >= totalLimit {
+		if protectedSelectedCount >= candidateLimit {
+			candidateLimitRejected++
 			return false, true
 		}
 		for _, key := range keys {
@@ -894,12 +967,26 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	vectorHydration := prepareTurnHydrateVectorMemoryHits(clean, vectorShadow, vectorCandidateLimit)
 	vectorRecallReady := prepareTurnVectorRecallReady(vectorHydration.Trace)
 	vectorRecallAttempted := prepareTurnVectorSearchAttempted(vectorShadow)
+	vectorScopeRejected := 0
 	for _, item := range vectorHydration.Items {
 		if len(out.VectorRelevant) >= vectorLimit {
 			break
 		}
+		protected := prepareTurnProtectedMemoryGuard(item).Active
+		if queryPresent && !protected && len(directEntitiesOutsideStoredScene) > 0 {
+			evidence := prepareTurnMemoryRecallEvidence(query, item)
+			matchesDirectEntity := len(prepareTurnMemoryDirectEntityMatches(item, directEntitiesOutsideStoredScene)) > 0
+			if !evidence.Eligible && !matchesDirectEntity {
+				vectorScopeRejected++
+				continue
+			}
+		}
 		accepted, protected := acceptProtectedCoverage(item)
-		if !accepted || (!protected && actualMemorySelectedCount >= totalLimit) {
+		if !accepted {
+			continue
+		}
+		if !protected && actualMemorySelectedCount >= candidateLimit {
+			candidateLimitRejected++
 			continue
 		}
 		out.VectorRelevant = append(out.VectorRelevant, item)
@@ -917,21 +1004,28 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["vector_recall"] = vectorHydration.Trace
 	out.Trace["vector_recall_ready"] = vectorRecallReady
 	out.Trace["vector_recall_attempted"] = vectorRecallAttempted
-	out.Trace["lexical_fill_enabled"] = actualMemorySelectedCount < totalLimit
+	out.Trace["vector_scope_rejected_count"] = vectorScopeRejected
+	out.Trace["lexical_fill_enabled"] = actualMemorySelectedCount < candidateLimit
+	coveredDirectEntities := map[string]bool{}
 	finalizeActualMemoryRefillTrace := func() {
 		refillSelected := actualMemoryRelevantRefillSelectedCount + actualMemoryDeepRefillSelectedCount + actualMemoryRecentRefillSelectedCount
-		out.Trace["actual_memory_target"] = totalLimit
-		out.Trace["actual_memory_target_kind"] = "eligible_candidate_pool_not_delivery_budget"
+		directCoverageGap := maxInt(len(directlyReferencedEntities)-len(coveredDirectEntities), 0)
+		out.Trace["actual_memory_candidate_safety_limit"] = candidateLimit
+		out.Trace["actual_memory_target_kind"] = "no_fill_target_final_category_budget_owns_delivery"
 		out.Trace["actual_memory_vector_selected"] = actualMemoryVectorSelectedCount
 		out.Trace["actual_memory_relevant_refill_selected"] = actualMemoryRelevantRefillSelectedCount
 		out.Trace["actual_memory_deep_refill_selected"] = actualMemoryDeepRefillSelectedCount
 		out.Trace["actual_memory_recent_refill_selected"] = actualMemoryRecentRefillSelectedCount
 		out.Trace["actual_memory_refill_selected"] = refillSelected
-		out.Trace["actual_memory_refill_gap"] = maxInt(totalLimit-actualMemorySelectedCount, 0)
+		out.Trace["actual_memory_refill_gap"] = directCoverageGap
 		out.Trace["protected_candidates_consume_actual_memory_target"] = false
-		out.Trace["actual_memory_refill_policy"] = "vector_actual_then_evidence_linked_mariadb; recent_fill_only_without_current_query; unused_capacity_remains_empty"
+		out.Trace["actual_memory_refill_policy"] = "vector_actual_then_evidence_linked_mariadb; no_target_fill; unused_budget_remains_empty"
 		out.Trace["vector_candidate_limit"] = vectorCandidateLimit
 		out.Trace["vector_candidate_policy"] = "bounded_oversampling_then_mariadb_canonical_refill"
+		out.Trace["actual_memory_refill_gap_stage"] = "selector_candidate_coverage_before_render_and_final_budget"
+		out.Trace["candidate_safety_limit_reached"] = candidateLimitRejected > 0
+		out.Trace["candidate_safety_truncated"] = candidateLimitRejected > 0
+		out.Trace["candidate_safety_rejected_count"] = candidateLimitRejected
 	}
 	type scoredMemory struct {
 		item       store.Memory
@@ -1008,21 +1102,30 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		return ia.item.ID > ja.item.ID
 	})
 
-	for _, candidate := range scored {
+	selectCandidate := func(candidate scoredMemory) bool {
 		if prepareTurnMemoryAlreadySelected(out, candidate.item) {
-			continue
+			return false
 		}
-		if queryPresent && !candidate.evidence.Eligible {
-			continue
+		protectedCandidate := prepareTurnProtectedMemoryGuard(candidate.item).Active
+		if queryPresent && !candidate.evidence.Eligible && !protectedCandidate {
+			return false
 		}
 		accepted, protected := acceptProtectedCoverage(candidate.item)
-		if !accepted || (!protected && actualMemorySelectedCount >= totalLimit) {
-			continue
+		if !accepted {
+			return false
+		}
+		if !protected && actualMemorySelectedCount >= candidateLimit {
+			candidateLimitRejected++
+			return false
 		}
 		if protected {
 			protectedSelectedCount++
 		} else {
 			actualMemorySelectedCount++
+		}
+		if protected && queryPresent && !candidate.evidence.Eligible {
+			out.Relevant = append(out.Relevant, candidate.item)
+			return true
 		}
 		if candidate.evidence.Eligible {
 			out.Relevant = append(out.Relevant, candidate.item)
@@ -1030,20 +1133,58 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			if !protected {
 				actualMemoryRelevantRefillSelectedCount++
 			}
-			continue
+			return true
 		}
 		if !queryPresent && avgImportance > 0 && candidate.importance >= avgImportance {
 			out.Deep = append(out.Deep, candidate.item)
 			if !protected {
 				actualMemoryDeepRefillSelectedCount++
 			}
-			continue
+			return true
 		}
 		if !queryPresent {
 			out.Recent = append(out.Recent, candidate.item)
 			if !protected {
 				actualMemoryRecentRefillSelectedCount++
 			}
+			return true
+		}
+		return false
+	}
+	markDirectCoverage := func(item store.Memory) {
+		for _, entity := range prepareTurnMemoryDirectEntityMatches(item, directlyReferencedEntities) {
+			coveredDirectEntities[normalizePrepareTurnEntityNeedle(entity)] = true
+		}
+	}
+	for _, item := range out.VectorRelevant {
+		if !prepareTurnProtectedMemoryGuard(item).Active {
+			markDirectCoverage(item)
+		}
+	}
+	if queryPresent {
+		for _, entity := range directlyReferencedEntities {
+			entityKey := normalizePrepareTurnEntityNeedle(entity)
+			if entityKey == "" || coveredDirectEntities[entityKey] {
+				continue
+			}
+			for _, candidate := range scored {
+				if !candidate.evidence.Eligible || prepareTurnProtectedMemoryGuard(candidate.item).Active {
+					continue
+				}
+				matches := prepareTurnMemoryDirectEntityMatches(candidate.item, directlyReferencedEntities)
+				if !prepareTurnRelationshipNameInList(entity, matches) {
+					continue
+				}
+				if selectCandidate(candidate) {
+					markDirectCoverage(candidate.item)
+					break
+				}
+			}
+		}
+	}
+	for _, candidate := range scored {
+		if selectCandidate(candidate) {
+			markDirectCoverage(candidate.item)
 		}
 	}
 	out.Trace["vector_selected"] = len(out.VectorRelevant)
@@ -1054,7 +1195,6 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["relevant_candidates"] = relevantCandidates
 	out.Trace["lexical_rejected_candidate_count"] = lexicalRejectedCandidates
 	out.Trace["query_present_recent_fill_disabled"] = queryPresent
-	out.Trace["candidate_capacity_remaining"] = maxInt(totalLimit-actualMemorySelectedCount, 0)
 	out.Trace["average_importance"] = avgImportance
 	out.Trace["relevant_degraded_reason"] = nilIfEmpty(relevantDegradedReason(query, len(out.Relevant), relevantCandidates))
 	out.Trace["protected_duplicate_candidate_count"] = len(protectedDuplicateMemories)
@@ -1062,7 +1202,10 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["protected_coverage_key_count"] = len(selectedProtectedCoverage)
 	out.Trace["actual_memory_selected"] = actualMemorySelectedCount
 	out.Trace["protected_guard_selected"] = protectedSelectedCount
-	out.Trace["protected_guard_budget"] = totalLimit
+	out.Trace["protected_guard_candidate_safety_limit"] = candidateLimit
+	out.Trace["direct_entity_requested_count"] = len(directlyReferencedEntities)
+	out.Trace["direct_entity_outside_stored_scene_count"] = len(directEntitiesOutsideStoredScene)
+	out.Trace["direct_entity_memory_covered_count"] = len(coveredDirectEntities)
 	finalizeActualMemoryRefillTrace()
 	return out
 }
@@ -1409,7 +1552,7 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 	selection.Trace["protected_memory_before_filter"] = before
 	selection.Trace["protected_memory_after_filter"] = prepareTurnSelectedMemoryCount(selection)
 	selection.Trace["protected_memory_dropped_count"] = len(dropped)
-	selection.Trace["protected_memory_gate"] = "protected_owner_subject_knowledge_scope_or_current_pov_must_match_structured_current_context_or_pov"
+	selection.Trace["protected_memory_gate"] = "protected_owner_subject_knowledge_scope_or_current_pov_must_match_current_input_stored_active_scene_relevant_previous_event_open_goal_or_pov"
 	selection.Trace["protected_memory_dropped"] = dropped
 	return selection
 }
@@ -1428,13 +1571,19 @@ func prepareTurnProtectedMemoryRelevant(item store.Memory, ctx prepareTurnRecoll
 	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.rawUserInput) {
 		return true, "explicit_current_user_input"
 	}
-	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.relevanceText()) {
-		return true, "structured_current_context_mention"
+	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.currentEntities) {
+		return true, "stored_active_scene_entity"
+	}
+	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.previousEventGuardSummary) {
+		return true, "previous_final_event_guard"
+	}
+	if prepareTurnAnyOwnerTokenMatches(tokens, ctx.unresolvedGoals) {
+		return true, "relevant_open_goal_guard"
 	}
 	if pov := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"])); pov != "" && prepareTurnAnyOwnerTokenMatches(tokens, pov) {
 		return true, "current_pov_match"
 	}
-	return false, "protected_entity_not_in_structured_current_context"
+	return false, "protected_entity_not_in_current_input_stored_active_scene_relevant_previous_event_open_goal_or_pov"
 }
 
 func prepareTurnProtectedMemoryEntityTokens(item store.Memory) ([]string, bool) {

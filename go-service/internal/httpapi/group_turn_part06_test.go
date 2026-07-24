@@ -173,7 +173,7 @@ func TestMEMCProtectedVectorDominanceRefillsOnlyEvidenceLinkedCanonicalMemories(
 		"actual_memory_relevant_refill_selected": 1,
 		"actual_memory_recent_refill_selected":   0,
 		"actual_memory_refill_selected":          1,
-		"actual_memory_refill_gap":               11,
+		"actual_memory_refill_gap":               0,
 	} {
 		if got := intFromAny(policy[key], -1); got != want {
 			t.Fatalf("%s = %d, want %d: %#v", key, got, want, policy)

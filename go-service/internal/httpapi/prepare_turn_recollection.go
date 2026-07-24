@@ -398,11 +398,12 @@ func personaMemoryEntryHasTag(tags []string, needle string) bool {
 }
 
 type prepareTurnRecollectionContext struct {
-	rawUserInput         string
-	previousEventSummary string
-	currentSceneStates   string
-	unresolvedGoals      string
-	currentEntities      string
+	rawUserInput              string
+	previousEventSummary      string
+	previousEventGuardSummary string
+	currentSceneStates        string
+	unresolvedGoals           string
+	currentEntities           string
 }
 
 func (ctx prepareTurnRecollectionContext) relevanceText() string {
@@ -413,6 +414,51 @@ func (ctx prepareTurnRecollectionContext) relevanceText() string {
 		ctx.unresolvedGoals,
 		ctx.currentEntities,
 	}), "\n"))
+}
+
+type prepareTurnRequestEntityScope struct {
+	Direct []string
+	Scene  []string
+	Known  []string
+}
+
+func buildPrepareTurnRequestEntityScope(rawUserInput, currentSceneEntities string, knownNames []string) prepareTurnRequestEntityScope {
+	scope := prepareTurnRequestEntityScope{}
+	addUnique := func(target *[]string, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || prepareTurnRelationshipNameInList(value, *target) {
+			return
+		}
+		*target = append(*target, value)
+	}
+	for _, name := range knownNames {
+		addUnique(&scope.Known, name)
+	}
+	aliases := prepareTurnObservedShortNameAliases(scope.Known)
+	for _, name := range scope.Known {
+		if prepareTurnDirectEntityMentionRank(rawUserInput, name, aliases) > 0 {
+			addUnique(&scope.Direct, name)
+		}
+	}
+	for _, observed := range nonEmptyStrings(strings.Split(currentSceneEntities, "\n")) {
+		canonical := observed
+		for _, known := range scope.Known {
+			if normalizePrepareTurnEntityNeedle(known) == normalizePrepareTurnEntityNeedle(observed) {
+				canonical = known
+				break
+			}
+		}
+		addUnique(&scope.Scene, canonical)
+	}
+	return scope
+}
+
+func prepareTurnEntityScopeQuery(rawUserInput string, names ...[]string) string {
+	parts := []string{strings.TrimSpace(rawUserInput)}
+	for _, group := range names {
+		parts = append(parts, strings.Join(group, "\n"))
+	}
+	return strings.TrimSpace(strings.Join(nonEmptyStrings(parts), "\n"))
 }
 
 func prepareTurnEntityRecollectionCandidateLimit(deliveryLimit int) int {
@@ -498,7 +544,7 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.
 			directOwnerKeys[prepareTurnMemoryOwnerIdentity(item.OwnerEntityKey, item.OwnerEntityName)] = true
 		}
 	}
-	relevanceQuery := ctx.relevanceText()
+	relevanceQuery := prepareTurnEntityScopeQuery(ctx.rawUserInput, nonEmptyStrings(strings.Split(ctx.currentEntities, "\n")))
 	sort.SliceStable(*characterPrivateMemories, func(i, j int) bool {
 		left := (*characterPrivateMemories)[i]
 		right := (*characterPrivateMemories)[j]
@@ -620,7 +666,7 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.
 		"character_private_before_filter":         beforePrivate,
 		"character_private_after_filter":          len(filteredPrivate),
 		"character_private_dropped_count":         beforePrivate - len(filteredPrivate),
-		"character_private_gate":                  "owner_entity_must_match_current_user_input_previous_event_summary_current_scene_unresolved_goal_or_current_entity",
+		"character_private_gate":                  "owner_entity_must_match_current_user_input_or_observed_current_scene_entity",
 		"character_private_owner_cap":             1,
 		"character_private_total_cap":             "final_subjective_relationship_char_budget",
 		"character_private_unique_short_aliases":  len(ownerAliases),
@@ -635,11 +681,11 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.
 		"blocks_unrelated_entity_memory":          true,
 		"truth_authority":                         false,
 		"canonical_write":                         false,
-		"context_sources":                         []string{"current_user_input", "previous_stored_event_summary", "latest_scene_state", "unresolved_goals", "confirmed_current_entities"},
+		"context_sources":                         []string{"current_user_input", "confirmed_current_entities"},
 	}
 }
 
-func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.Memory, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, pendingThreads []store.PendingThread) prepareTurnRecollectionContext {
+func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.Memory, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, pendingThreads []store.PendingThread, chatLogGroups ...[]store.ChatLog) prepareTurnRecollectionContext {
 	previousEventTurn := 0
 	for _, item := range memories {
 		if item.TurnIndex > previousEventTurn {
@@ -657,6 +703,18 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 				break
 			}
 		}
+	}
+	latestAssistantTurn := 0
+	if len(chatLogGroups) > 0 {
+		for _, item := range chatLogGroups[0] {
+			if strings.EqualFold(strings.TrimSpace(item.Role), "assistant") && item.TurnIndex > latestAssistantTurn {
+				latestAssistantTurn = item.TurnIndex
+			}
+		}
+	}
+	previousEventGuardSummary := ""
+	if previousEventTurn > 0 && previousEventTurn == latestAssistantTurn {
+		previousEventGuardSummary = strings.Join(previousEventCandidates, "\n")
 	}
 	state := []string{}
 	currentEntities := []string{}
@@ -706,27 +764,31 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 			}
 		}
 	}
-	baseQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
+	sceneQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
 		strings.TrimSpace(rawUserInput),
 		strings.Join(state, "\n"),
 		strings.Join(currentEntities, "\n"),
 	}), "\n"))
-	sparseCurrentContext := len(prepareTurnRecallTerms(baseQuery)) < 2
+	previousEventQuery := strings.TrimSpace(rawUserInput)
+	if len(prepareTurnRecallTerms(previousEventQuery)) < 2 {
+		previousEventQuery = sceneQuery
+	}
+	sparseCurrentContext := len(prepareTurnRecallTerms(previousEventQuery)) < 2
 	previousEvents := []string{}
 	for _, summary := range previousEventCandidates {
-		if !sparseCurrentContext && !prepareTurnCurrentSceneRelevant(baseQuery, summary) {
+		if !sparseCurrentContext && !prepareTurnSupportRecallEligible(previousEventQuery, summary) {
 			continue
 		}
 		previousEvents = append(previousEvents, summary)
 	}
-	goalQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{baseQuery, strings.Join(previousEvents, "\n")}), "\n"))
+	goalQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{sceneQuery, strings.Join(previousEvents, "\n")}), "\n"))
 	goals := []string{}
 	for _, item := range openNarrativeThreads(pendingThreads) {
 		goal := strings.TrimSpace(firstNonEmpty(item.Description, item.Title, item.ThreadKey))
 		if goal == "" {
 			continue
 		}
-		if !prepareTurnCurrentSceneRelevant(goalQuery, goal) {
+		if !prepareTurnSupportRecallEligible(goalQuery, goal) {
 			continue
 		}
 		goals = append(goals, compactPrepareTurnLine(goal, 240))
@@ -735,11 +797,12 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 		}
 	}
 	return prepareTurnRecollectionContext{
-		rawUserInput:         strings.TrimSpace(rawUserInput),
-		previousEventSummary: strings.Join(previousEvents, "\n"),
-		currentSceneStates:   strings.Join(state, "\n"),
-		unresolvedGoals:      strings.Join(goals, "\n"),
-		currentEntities:      strings.Join(currentEntities, "\n"),
+		rawUserInput:              strings.TrimSpace(rawUserInput),
+		previousEventSummary:      strings.Join(previousEvents, "\n"),
+		previousEventGuardSummary: previousEventGuardSummary,
+		currentSceneStates:        strings.Join(state, "\n"),
+		unresolvedGoals:           strings.Join(goals, "\n"),
+		currentEntities:           strings.Join(currentEntities, "\n"),
 	}
 }
 
@@ -765,13 +828,13 @@ func prepareTurnCharacterPrivateMemoryRelevant(item store.ProtagonistEntityMemor
 	if prepareTurnAnyOwnerTokenMatches(aliases, ctx.rawUserInput) {
 		return true, "explicit_current_user_input_unique_short_alias"
 	}
-	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.relevanceText()) {
-		return true, "structured_current_context_mention"
+	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.currentEntities) {
+		return true, "observed_current_scene_entity"
 	}
-	if prepareTurnAnyOwnerTokenMatches(aliases, ctx.relevanceText()) {
-		return true, "structured_current_context_unique_short_alias"
+	if prepareTurnAnyOwnerTokenMatches(aliases, ctx.currentEntities) {
+		return true, "observed_current_scene_entity_unique_short_alias"
 	}
-	return false, "owner_not_in_structured_current_context"
+	return false, "owner_not_in_current_input_or_observed_scene"
 }
 
 func prepareTurnOwnerTokens(ownerKey, ownerName string) []string {

@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.4.0-dev";
-  const BUILD_ID = "3.4-relationship-filter-test.20260723-1";
+  const BUILD_ID = "3.4-session-routing-test.20260723-2";
   const BUILD_CHANNEL = "3.4-mem-f-test";
   const BUILD_TIME = "2026-07-23 KST";
-  const BUILD_NOTES = "MEM-D/E seven-class Go delivery budgets; MEM-F live validation build";
+  const BUILD_NOTES = "RisuAI session tail alignment; copied-turn baseline replay and wrong-turn append blocked";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -5206,8 +5206,9 @@
     }
   }
 
-  // Active RisuAI chats are keyed by their stable UUID when available.
-  // The fallback is used only while the host has not resolved that identity.
+  // RisuAI chat.id is forwarded as an observed opaque host identifier. The
+  // backend resolves it to an existing Archive Center session; char/chat
+  // indexes remain transient lookup coordinates, not canonical identity.
   const SESSION_FALLBACK = "default";
   const SESSION_ID_PIN_PREFIX = `${PLUGIN_ID}_session_id_pin_v1`;
   const SESSION_PIN_RECORD_VERSION = "v2";
@@ -6974,6 +6975,9 @@
   async function getActiveChatSessionIdentity(charIdx, chatIdx) {
     const identity = {
       chatUniqueId: "",
+      latestUserHash: "",
+      latestAssistantHash: "",
+      completedTurnCount: 0,
       messageCount: 0,
       isFreshChat: false,
       characterName: "",
@@ -6997,6 +7001,25 @@
         identity.chatUniqueId = String(activeChat.id || "").trim();
       }
       identity.messageCount = extractActiveChatMessageCount(activeChat);
+      if (Array.isArray(activeChat.message)) {
+        identity.completedTurnCount = buildCompletedTurnPairsFromActiveChatMessages(
+          extractActiveChatComparableMessages(activeChat)
+        ).length;
+        let assistantIndex = -1;
+        for (let index = activeChat.message.length - 1; index >= 0; index--) {
+          const message = activeChat.message[index];
+          if (!message || message.disabled === true || message.role !== "char" || typeof message.data !== "string") continue;
+          identity.latestAssistantHash = computeOrchestrationDirtyHashOr1c(String(message.data || "").trim());
+          assistantIndex = index;
+          break;
+        }
+        for (let index = assistantIndex - 1; index >= 0; index--) {
+          const message = activeChat.message[index];
+          if (!message || message.disabled === true || message.role !== "user" || typeof message.data !== "string") continue;
+          identity.latestUserHash = computeOrchestrationDirtyHashOr1c(String(message.data || "").trim());
+          break;
+        }
+      }
       identity.isFreshChat = identity.messageCount <= SESSION_NEW_CHAT_HISTORY_MAX;
       storeSessionDisplayLookupEntry(charIdx, chatIdx, identity.characterName, identity.chatName, identity.chatUniqueId);
       return identity;
@@ -8015,6 +8038,9 @@
           (!chatUniqueId || !_sessionCache.observedChatUniqueId || _sessionCache.observedChatUniqueId === chatUniqueId)) {
         const expectedCid = (charIdx != null && chatUniqueId) ? `char_${charIdx}_cid_${chatUniqueId}` : "";
         if (!chatUniqueId || !expectedCid || _sessionCache.sessionId === expectedCid) {
+          _sessionCache.latestUserHash = activeChatIdentity.latestUserHash;
+          _sessionCache.latestAssistantHash = activeChatIdentity.latestAssistantHash;
+          _sessionCache.completedTurnCount = activeChatIdentity.completedTurnCount;
           return _sessionCache.sessionId;
         }
       }
@@ -8065,6 +8091,19 @@
         sessionId = SESSION_FALLBACK;
       }
 
+      if (chatUniqueId && sessionId && sessionId !== SESSION_FALLBACK) {
+        const identityResolution = await requestBackendSessionRoutingTurnResolution(sessionId, "identity", {
+          hostChatId: chatUniqueId,
+          hostChatIdState: "observed",
+          latestUserHash: activeChatIdentity.latestUserHash,
+          latestAssistantHash: activeChatIdentity.latestAssistantHash,
+          visibleCompletedTurns: activeChatIdentity.completedTurnCount,
+        });
+        if (identityResolution && identityResolution.canonicalSessionId) {
+          sessionId = identityResolution.canonicalSessionId;
+        }
+      }
+
       if (chatUniqueId && charIdx != null && chatIdx != null) {
         const previousObservedChatUniqueId = pinnedObservedChatUniqueId
           || String(_sessionCache && _sessionCache.observedChatUniqueId || "").trim();
@@ -8089,7 +8128,15 @@
         await savePinnedSessionId(charIdx, chatIdx, sessionId, chatUniqueId);
       }
 
-      _sessionCache = { charIdx, chatIdx, sessionId, observedChatUniqueId: chatUniqueId };
+      _sessionCache = {
+        charIdx,
+        chatIdx,
+        sessionId,
+        observedChatUniqueId: chatUniqueId,
+        latestUserHash: activeChatIdentity.latestUserHash,
+        latestAssistantHash: activeChatIdentity.latestAssistantHash,
+        completedTurnCount: activeChatIdentity.completedTurnCount,
+      };
       recordActiveSessionForDeleteSync(sessionId, {
         charIdx,
         chatIdx,
@@ -15491,14 +15538,32 @@
       ? observation
       : {};
     const observations = Array.isArray(observation) ? observation : [];
+    const cachedIdentity = typeof _sessionCache !== "undefined"
+      && _sessionCache
+      && String(_sessionCache.sessionId || "") === String(sessionId || "")
+      ? _sessionCache
+      : null;
+    const visibleCompletedTurns = observed.visibleCompletedTurns != null
+      ? observed.visibleCompletedTurns
+      : (cachedIdentity && cachedIdentity.completedTurnCount != null ? cachedIdentity.completedTurnCount : null);
     const result = await bridgeFetch("/session-routing/turn-resolution", {
       method: "POST",
       timeoutMs: getRequestTimeoutSettingMs(),
       body: {
         chat_session_id: String(sessionId || ""),
         mode: String(mode || "pair"),
+        host_chat_id: String(observed.hostChatId || (cachedIdentity && cachedIdentity.observedChatUniqueId) || ""),
+        host_chat_id_state: String(
+          observed.hostChatIdState
+          || ((cachedIdentity && cachedIdentity.observedChatUniqueId) ? "observed" : "unobserved")
+        ),
+        latest_user_hash: String(observed.latestUserHash || (cachedIdentity && cachedIdentity.latestUserHash) || ""),
+        latest_assistant_hash: String(observed.latestAssistantHash || (cachedIdentity && cachedIdentity.latestAssistantHash) || ""),
         risu_user_message_index: Number.isInteger(observed.risuUserMessageIndex) ? observed.risuUserMessageIndex : null,
         observed_pair_ordinal: Math.max(0, Math.floor(Number(observed.observedPairOrdinal || 0))),
+        ...(visibleCompletedTurns != null ? {
+          visible_completed_turns: Math.max(0, Math.floor(Number(visibleCompletedTurns || 0))),
+        } : {}),
         observations: observations.map(function(pair, index) {
           return {
             observation_index: index,
@@ -15514,6 +15579,8 @@
     }
     return {
       status: String(result.resolution || "normal"),
+      canonicalSessionId: String(result.chat_session_id || ""),
+      identityResolution: String(result.identity_resolution || ""),
       turnIndex: Number(result.turn_index || 0),
       completedTurnCount: Number(result.completed_turns || 0),
       localTurnIndex: Number(result.local_turn_index || 0),

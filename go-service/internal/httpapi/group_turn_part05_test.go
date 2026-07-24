@@ -140,6 +140,133 @@ func TestPrepareTurnBatchesCurrentNPCMemoryOwnersIntoOneRead(t *testing.T) {
 	}
 }
 
+func TestPrepareTurnHTTPPrioritizesEachDirectlyRecalledCharacterWithoutPromotingOffSceneState(t *testing.T) {
+	const sid = "sess-direct-character-coverage"
+	fake := &turnRecordingStore{
+		returnMemories: []store.Memory{
+			{ID: 1, ChatSessionID: sid, TurnIndex: 12, SummaryJSON: `{"turn_summary":"Ava and Ren shared an honest harbor conversation.","characters":["Ava","Ren"],"locations":["harbor"]}`, Importance: 0.8},
+			{ID: 2, ChatSessionID: sid, TurnIndex: 15, SummaryJSON: `{"turn_summary":"Bella gave Ren medicine as a caring gift.","characters":["Bella","Ren"],"items":["medicine"]}`, Importance: 0.8},
+			{ID: 3, ChatSessionID: sid, TurnIndex: 40, SummaryJSON: `{"turn_summary":"Cora sent Ren an honest letter about her feelings.","characters":["Cora","Ren"],"items":["letter"]}`, Importance: 0.8},
+			{ID: 4, ChatSessionID: sid, TurnIndex: 49, SummaryJSON: `{"turn_summary":"Ren calibrated the lathe flywheel and steel axle.","characters":["Ren"],"items":["lathe","flywheel","steel axle"]}`, Importance: 0.99},
+		},
+		returnCharStates: []store.CharacterState{
+			{CharacterName: "Ren", TurnIndex: 49, StatusJSON: `{"health":"tired","location":"workshop"}`},
+			{CharacterName: "Ava", TurnIndex: 12, StatusJSON: `{"health":"well","location":"harbor"}`},
+			{CharacterName: "Bella", TurnIndex: 15, StatusJSON: `{"health":"well","location":"clinic"}`},
+			{CharacterName: "Cora", TurnIndex: 40, StatusJSON: `{"health":"well","location":"estate"}`},
+		},
+		returnActiveStates: []store.ActiveState{{
+			ChatSessionID: sid,
+			StateType:     "scene",
+			TurnIndex:     49,
+			Content:       `{"location":"workshop","present_entities":["Ren"],"items":["lathe","flywheel"]}`,
+		}},
+		returnEntityOwners: []store.ProtagonistEntityMemoryOwner{
+			{OwnerEntityKey: "ava", OwnerEntityName: "Ava"},
+			{OwnerEntityKey: "bella", OwnerEntityName: "Bella"},
+			{OwnerEntityKey: "cora", OwnerEntityName: "Cora"},
+			{OwnerEntityKey: "dax", OwnerEntityName: "Dax"},
+		},
+		returnEntityMemories: []store.ProtagonistEntityMemory{
+			{ID: 11, OwnerEntityKey: "ava", OwnerEntityName: "Ava", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: sid, SourceTurn: 12, MemoryText: "Ava privately remembers the honest harbor conversation.", Importance10: 7},
+			{ID: 12, OwnerEntityKey: "bella", OwnerEntityName: "Bella", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: sid, SourceTurn: 15, MemoryText: "Bella privately remembers giving Ren medicine.", Importance10: 7},
+			{ID: 13, OwnerEntityKey: "cora", OwnerEntityName: "Cora", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: sid, SourceTurn: 40, MemoryText: "Cora privately remembers sending the honest letter.", Importance10: 7},
+			{ID: 14, OwnerEntityKey: "dax", OwnerEntityName: "Dax", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: sid, SourceTurn: 48, MemoryText: "Dax privately remembers the steel axle.", Importance10: 10},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{
+		"chat_session_id":"sess-direct-character-coverage",
+		"turn_index":50,
+		"raw_user_input":"Ren remembers Ava's honest harbor conversation, Bella's caring medicine gift, and Cora's honest letter about her feelings.",
+		"settings":{"apply_mode":"shadow","max_injection_chars":9000,"injection_enabled":true,"input_context_enabled":false,"top_k":2}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	pack := mapFromAny(resp["injection_pack"])
+	if pack["final_budget_owner"] != "go_memory_delivery_plan" {
+		t.Fatalf("final budget owner=%v, want Go-owned delivery plan", pack["final_budget_owner"])
+	}
+	memoryText, _ := pack["memory_text"].(string)
+	for _, want := range []string{"Ava", "Bella", "Cora"} {
+		if !strings.Contains(memoryText, want) {
+			t.Fatalf("directly recalled character %q lost in HTTP prepare-turn: %q", want, memoryText)
+		}
+	}
+	for _, unwanted := range []string{"lathe", "flywheel", "steel axle"} {
+		if strings.Contains(memoryText, unwanted) {
+			t.Fatalf("unrelated technical memory %q filled direct-character budget: %q", unwanted, memoryText)
+		}
+	}
+	characterText, _ := pack["character_text"].(string)
+	if !strings.Contains(characterText, "Ren") {
+		t.Fatalf("observed scene character state was lost: %q", characterText)
+	}
+	for _, offScene := range []string{"Ava", "Bella", "Cora"} {
+		if strings.Contains(characterText, offScene) {
+			t.Fatalf("off-scene recalled character %q was promoted to objective state: %q", offScene, characterText)
+		}
+	}
+	plan := mapFromAny(pack["memory_delivery_plan"])
+	finalText, _ := plan["final_text"].(string)
+	for _, want := range []string{"Ava", "Bella", "Cora"} {
+		if !strings.Contains(finalText, want) {
+			t.Fatalf("directly recalled character %q was lost after final budget selection: %q", want, finalText)
+		}
+	}
+	for _, unwanted := range []string{"lathe", "flywheel", "steel axle", "Dax"} {
+		if strings.Contains(finalText, unwanted) {
+			t.Fatalf("unrelated final delivery %q survived: %q", unwanted, finalText)
+		}
+	}
+	if used := intFromAny(plan["used_chars"], -1); used < 0 || used > intFromAny(plan["delivery_cap_chars"], 0) {
+		t.Fatalf("final delivery budget mismatch: %#v", plan)
+	}
+	if gap := intFromAny(plan["direct_entity_memory_gap"], -1); gap != 0 {
+		t.Fatalf("final direct-entity memory gap=%d, want 0: %#v", gap, plan)
+	}
+	classText := map[string]string{}
+	for _, rawClass := range sliceFromAny(plan["classes"]) {
+		class := mapFromAny(rawClass)
+		classText[stringFromMap(class, "key")] = stringFromMap(class, "text")
+	}
+	for _, want := range []string{"Ava", "Bella", "Cora"} {
+		if !strings.Contains(classText["event_recent"], want) {
+			t.Fatalf("event_recent final class lost %q: %q", want, classText["event_recent"])
+		}
+		if !strings.Contains(classText["subjective_relationship"], want) {
+			t.Fatalf("subjective final class lost %q: %q", want, classText["subjective_relationship"])
+		}
+	}
+	if strings.Contains(classText["subjective_relationship"], "Dax") {
+		t.Fatalf("unmentioned private-memory owner entered final class: %q", classText["subjective_relationship"])
+	}
+	if !strings.Contains(classText["character_objective"], "Ren") {
+		t.Fatalf("stored active-scene objective state was lost: %q", classText["character_objective"])
+	}
+	for _, offScene := range []string{"Ava", "Bella", "Cora"} {
+		if strings.Contains(classText["character_objective"], offScene) {
+			t.Fatalf("off-scene objective state %q entered final class: %q", offScene, classText["character_objective"])
+		}
+	}
+}
+
 func TestPrepareTurnCharacterPrivateRecollectionTreatsMisunderstandingAsInterpretation(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnChatLogs: []store.ChatLog{
@@ -407,7 +534,7 @@ func TestPrepareTurnCharacterPrivateRecollectionBlocksStaleOwnerMention(t *testi
 	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(1) {
 		t.Fatalf("unexpected stale-owner relevance counts: %+v", relevance)
 	}
-	if relevance["character_private_gate"] != "owner_entity_must_match_current_user_input_previous_event_summary_current_scene_unresolved_goal_or_current_entity" {
+	if relevance["character_private_gate"] != "owner_entity_must_match_current_user_input_or_observed_current_scene_entity" {
 		t.Fatalf("unexpected private recollection gate: %+v", relevance)
 	}
 }
@@ -859,6 +986,9 @@ func TestNarrativeGuideModeSuffixAndDirectorOverrides(t *testing.T) {
 }
 
 func TestPrepareTurnCharacterBlockIncludesSpeechStyle(t *testing.T) {
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene", Content: `{"present_entities":["Chloe"]}`,
+	}})
 	assembly := buildPrepareTurnInjectionAssembly(
 		nil, nil, nil, nil, nil, nil,
 		[]store.CharacterState{{
@@ -873,11 +1003,12 @@ func TestPrepareTurnCharacterBlockIncludesSpeechStyle(t *testing.T) {
 		nil,
 		nil,
 		3, 1000,
-		"",
+		"How does Chloe answer?",
 		"default",
 		nil,
 		nil,
 		nil,
+		perspective,
 	)
 	if !strings.Contains(assembly.CharacterText, "speech_style") || !strings.Contains(assembly.CharacterText, "dry") || !strings.Contains(assembly.CharacterText, "short replies") {
 		t.Fatalf("character block should include speech style guidance, got %q", assembly.CharacterText)
@@ -987,7 +1118,7 @@ func TestPrepareTurnVectorReadyLeavesUnusedTopKEmptyInsteadOfInjectingUnrelatedR
 	}
 }
 
-func TestPrepareTurnMemorySelectionQueryUsesStructuredStoredContext(t *testing.T) {
+func TestPrepareTurnEventMemoryQueryDoesNotBorrowOtherLaneContext(t *testing.T) {
 	ctx := buildPrepareTurnRecollectionContext(
 		"current forge work",
 		[]store.Memory{
@@ -998,15 +1129,15 @@ func TestPrepareTurnMemorySelectionQueryUsesStructuredStoredContext(t *testing.T
 		nil,
 		[]store.PendingThread{{Status: "open", Description: "complete the royal inspection"}},
 	)
-	query := prepareTurnMemorySelectionQuery(ctx, nil)
-	for _, wanted := range []string{"current forge work", "previous stored forge work event", "royal forge", "complete the royal inspection", "Mira"} {
+	query := prepareTurnEventMemoryQuery(ctx, []string{"Mira"})
+	for _, wanted := range []string{"current forge work", "previous stored forge work event", "Mira"} {
 		if !strings.Contains(query, wanted) {
 			t.Fatalf("query missing %q: %q", wanted, query)
 		}
 	}
-	for _, unwanted := range []string{"older market event", "previous assistant full output"} {
+	for _, unwanted := range []string{"older market event", "previous assistant full output", "royal forge", "complete the royal inspection"} {
 		if strings.Contains(query, unwanted) {
-			t.Fatalf("query retained unrelated history %q: %q", unwanted, query)
+			t.Fatalf("event query borrowed another lane %q: %q", unwanted, query)
 		}
 	}
 }
@@ -1063,12 +1194,15 @@ func TestPrepareTurnLexicalRecallRequiresCurrentEvidenceAndDoesNotSpendCapacity(
 	if len(selection.Recent) != 0 {
 		t.Fatalf("query-present recall filled unused capacity with recent rows: %#v", selection.Recent)
 	}
-	if got := intFromAny(selection.Trace["actual_memory_refill_gap"], 0); got != 2 {
-		t.Fatalf("unused candidate capacity=%d, want 2; trace=%#v", got, selection.Trace)
+	if got := intFromAny(selection.Trace["actual_memory_refill_gap"], -1); got != 0 {
+		t.Fatalf("unused budget was reported as a fill target gap=%d; trace=%#v", got, selection.Trace)
 	}
 }
 
 func TestPrepareTurnSupportLanesDropUnrelatedRowsAndKeepLatestEpisodeAnchor(t *testing.T) {
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene", Content: `{"location":"sealed gate","present_entities":["Alice"]}`,
+	}})
 	assembly := buildPrepareTurnInjectionAssembly(
 		[]store.Memory{{ID: 1, TurnIndex: 20, SummaryJSON: `{"turn_summary":"Alice opens the sealed gate.","entities":[{"name":"Alice"}]}`}},
 		[]store.KGTriple{
@@ -1096,7 +1230,7 @@ func TestPrepareTurnSupportLanesDropUnrelatedRowsAndKeepLatestEpisodeAnchor(t *t
 			{ID: 3, FromTurn: 11, ToTurn: 15, SummaryText: "The latest episode closes at night"},
 		},
 		nil, nil, nil,
-		5, 12000, "Alice opens the sealed gate.", "default", nil, nil, nil,
+		5, 12000, "Alice opens the sealed gate.", "default", nil, nil, nil, perspective,
 	)
 	for _, text := range []string{assembly.KGText, assembly.StorylineText, assembly.CharacterText, assembly.PendingThreadText, assembly.EpisodeText} {
 		if strings.Contains(text, "Bob") || strings.Contains(text, "market") {

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -63,6 +64,9 @@ func TestPrepareTurnProtectedLaneDoesNotDropDifferentPrivateMemoryFromSameTurn(t
 }
 
 func TestPrepareTurnCanonicalCharacterRosterDoesNotConsumeStateBudget(t *testing.T) {
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene", Content: `{"location":"forge","present_entities":["Mira"]}`,
+	}})
 	assembly := buildPrepareTurnInjectionAssembly(
 		nil, nil, nil, nil, nil, nil, nil, nil,
 		[]store.CanonicalStateLayer{
@@ -70,7 +74,7 @@ func TestPrepareTurnCanonicalCharacterRosterDoesNotConsumeStateBudget(t *testing
 			{ID: 2, LayerType: "entity_state", Content: `{"characters":[{"name":"Mira","emotion":"tense","location":"forge"}]}`, Confidence: 0.9},
 		},
 		nil, nil, nil, nil,
-		5, 9000, "Mira waits tensely at the forge.", "default", nil, nil, nil,
+		5, 9000, "Mira waits tensely at the forge.", "default", nil, nil, nil, perspective,
 	)
 	if strings.Contains(assembly.CanonCharacterText, `["Mira","Juno"]`) {
 		t.Fatalf("roster-only character array consumed state lane: %q", assembly.CanonCharacterText)
@@ -202,5 +206,192 @@ func TestPrepareTurnRelationshipSurfacesDoNotLeakOffSceneMarriageBundle(t *testi
 	}
 	if !strings.Contains(assembly.WorldRulesText, "월하방 감시") {
 		t.Fatalf("current-scene surveillance support was lost: %q", assembly.WorldRulesText)
+	}
+}
+
+func TestPrepareTurnRecollectionDoesNotLetTechnicalSceneReactivateUnrelatedHistory(t *testing.T) {
+	const rawInput = "소월, 슬아, 서현까지 떠올려보니 하나같이 예쁘고 참된 여성 같아 자신에게 과분하다고 한얼은 생각했다."
+	memories := []store.Memory{
+		{ID: 1, TurnIndex: 12, SummaryJSON: `{"turn_summary":"이소월은 강한얼과 술자리에서 속 깊은 대화를 나누었다.","characters":["이소월","강한얼"]}`, Importance: 0.8},
+		{ID: 2, TurnIndex: 15, SummaryJSON: `{"turn_summary":"윤슬아는 강한얼의 건강을 걱정해 약재를 건넸다.","characters":["윤슬아","강한얼"]}`, Importance: 0.8},
+		{ID: 3, TurnIndex: 40, SummaryJSON: `{"turn_summary":"민서현은 강한얼의 신념과 솔직함에 호감을 품었다.","characters":["민서현","강한얼"]}`, Importance: 0.8},
+		{ID: 4, TurnIndex: 48, SummaryJSON: `{"turn_summary":"강한얼은 화승총의 격발 구조와 강철 가공법을 다시 계산했다.","characters":["강한얼"],"items":["화승총","강철"]}`, Importance: 0.9},
+		{ID: 5, TurnIndex: 49, SummaryJSON: `{"turn_summary":"강한얼과 장영실은 연삭기 편심 축과 플라이휠 무게를 보정했다.","characters":["강한얼","장영실"],"items":["연삭기","플라이휠"]}`, Importance: 0.9},
+	}
+	activeStates := []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 49,
+		Content:   `{"location":"서운관 공작소","present_entities":["강한얼","장영실"],"items":["연삭기","플라이휠"],"status":"기계 점검 완료"}`,
+	}}
+	vectorShadow := map[string]any{
+		"search_result": "ok",
+		"search_results": []map[string]any{
+			{"source_table": "memories", "source_row_id": "5", "similarity": 0.99},
+			{"source_table": "memories", "source_row_id": "4", "similarity": 0.98},
+			{"source_table": "memories", "source_row_id": "1", "similarity": 0.90},
+			{"source_table": "memories", "source_row_id": "2", "similarity": 0.89},
+			{"source_table": "memories", "source_row_id": "3", "similarity": 0.88},
+		},
+	}
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, activeStates)
+	assembly := buildPrepareTurnInjectionAssembly(
+		memories,
+		nil,
+		[]store.DirectEvidence{
+			{EvidenceText: "강한얼과 장영실은 연삭기 편심 축과 플라이휠을 보정했다.", TurnAnchor: 49},
+			{EvidenceText: "윤슬아는 강한얼의 건강을 걱정해 약재를 건넸다.", TurnAnchor: 15},
+		},
+		nil,
+		nil,
+		[]store.WorldRule{{Key: "연삭기 영점 보정", ValueJSON: `{"rule":"플라이휠은 납 무게로 보정한다."}`}},
+		[]store.CharacterState{
+			{CharacterName: "강한얼", TurnIndex: 49},
+			{CharacterName: "이소월", TurnIndex: 12},
+			{CharacterName: "윤슬아", TurnIndex: 15},
+			{CharacterName: "민서현", TurnIndex: 40},
+			{CharacterName: "장영실", TurnIndex: 49},
+		},
+		nil,
+		[]store.CanonicalStateLayer{
+			{LayerType: "world_state", Content: `{"rule":"연삭기 플라이휠 영점 보정"}`},
+			{LayerType: "entity_state", Content: `{"events":{"main_plot":"장영실과 연삭기 편심 축을 보정했다"},"characters":["강한얼","장영실"]}`},
+		},
+		nil, nil, nil, nil,
+		5, 12000, rawInput, "default", nil, vectorShadow, nil, perspective,
+	)
+	for _, want := range []string{"이소월", "윤슬아", "민서현"} {
+		if !strings.Contains(assembly.ActualMemoryText, want) {
+			t.Fatalf("explicitly recalled character event %q was omitted: %q", want, assembly.ActualMemoryText)
+		}
+	}
+	for _, unwanted := range []string{"화승총", "강철 가공", "연삭기", "플라이휠", "장영실"} {
+		if strings.Contains(assembly.ActualMemoryText, unwanted) {
+			t.Fatalf("unrelated technical history %q was reactivated by stale scene context: %q", unwanted, assembly.ActualMemoryText)
+		}
+	}
+	for _, unwanted := range []string{"연삭기", "플라이휠", "장영실"} {
+		if strings.Contains(assembly.CanonEventText, unwanted) {
+			t.Fatalf("stale canonical event %q bypassed the event-memory query: %q", unwanted, assembly.CanonEventText)
+		}
+	}
+}
+
+func TestPrepareTurnWorldRuleDoesNotUseOneCharacterNameAsRelevanceProof(t *testing.T) {
+	const rawInput = "강한얼은 서운관에서 있었던 일을 지나간 기억으로 두고 소월과 슬아와 서현의 호의를 차례로 떠올렸다."
+	perspective := prepareTurnPerspectiveWithNarrativeState(
+		map[string]any{},
+		nil,
+		[]store.ActiveState{{
+			StateType: "scene",
+			TurnIndex: 50,
+			Content:   `{"location":"월하방","present_entities":["강한얼"]}`,
+		}},
+	)
+	worldRules := []store.WorldRule{
+		{
+			Key:       "강한얼 연삭기 안전 규칙",
+			ScopeName: "강한얼 공작소",
+			ValueJSON: `{"rule":"플라이휠의 강철 축은 납 무게로 보정한다."}`,
+		},
+		{Scope: "location", ScopeName: "월하방", Key: "월하방 예법", ValueJSON: `{"rule":"목소리를 낮춘다."}`},
+		{Scope: "location", ScopeName: "서운관", Key: "서운관 화기", ValueJSON: `{"rule":"화기를 멀리한다."}`},
+	}
+	for i := 0; i < 70; i++ {
+		worldRules = append(worldRules, store.WorldRule{
+			Scope: "location", ScopeName: "월하방",
+			Key: fmt.Sprintf("월하방 일반 규칙 %02d", i), ValueJSON: `{"rule":"현재 장소에만 적용한다."}`,
+		})
+	}
+	worldRules = append(worldRules,
+		store.WorldRule{Key: "시대 어휘 제한", ValueJSON: `{"rule":"현대식 어휘를 사용하지 않는다."}`, Pinned: true},
+		store.WorldRule{Scope: "root", Key: "세계 중력", ValueJSON: `{"rule":"중력은 항상 작용한다."}`},
+		store.WorldRule{Scope: "session", Key: "장르 지속", ValueJSON: `{"rule":"역사극의 시대감을 유지한다."}`},
+		store.WorldRule{Scope: "root", Key: "억제된 규칙", ValueJSON: `{"rule":"전달되면 안 된다."}`, Pinned: true, Suppressed: true},
+	)
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil,
+		worldRules,
+		[]store.CharacterState{
+			{CharacterName: "강한얼"},
+			{CharacterName: "이소월"},
+			{CharacterName: "윤슬아"},
+			{CharacterName: "민서현"},
+		},
+		nil, nil, nil, nil, nil, nil,
+		5, 2000, rawInput, "default", nil, nil, nil, perspective,
+	)
+	if strings.Contains(assembly.WorldRulesText, "연삭기") || strings.Contains(assembly.WorldRulesText, "플라이휠") {
+		t.Fatalf("one shared character name activated an unrelated world rule: %q", assembly.WorldRulesText)
+	}
+	for _, persistent := range []string{"시대 어휘 제한", "세계 중력", "장르 지속", "월하방 예법"} {
+		if !strings.Contains(assembly.WorldRulesText, persistent) {
+			t.Fatalf("persistent/current-scope world rule %q was lost: %q", persistent, assembly.WorldRulesText)
+		}
+	}
+	for _, unwanted := range []string{"서운관 화기", "억제된 규칙"} {
+		if strings.Contains(assembly.WorldRulesText, unwanted) {
+			t.Fatalf("inactive or suppressed world rule %q survived: %q", unwanted, assembly.WorldRulesText)
+		}
+	}
+}
+
+func TestPrepareTurnProtectedGuardSurvivesPronounContinuationFromRelevantPreviousEvent(t *testing.T) {
+	protectedMina := store.Memory{
+		SummaryJSON: `{
+			"turn_summary":"Mina keeps the route private.",
+			"protected_secrets":[{
+				"owner":"Mina",
+				"secret_kind":"mina_hidden_route",
+				"secret_summary":"The route is private.",
+				"disclosure_policy":"owner_private_until_revealed",
+				"knowledge_scope":{"known_by":["Mina"]}
+			}]
+		}`,
+	}
+	protectedDax := store.Memory{
+		SummaryJSON: `{
+			"turn_summary":"Dax keeps another route private.",
+			"protected_secrets":[{
+				"owner":"Dax",
+				"secret_kind":"dax_hidden_route",
+				"secret_summary":"Another route is private.",
+				"disclosure_policy":"owner_private_until_revealed",
+				"knowledge_scope":{"known_by":["Dax"]}
+			}]
+		}`,
+	}
+	ctx := buildPrepareTurnRecollectionContext(
+		"She hesitates before answering.",
+		[]store.Memory{{
+			TurnIndex:   10,
+			SummaryJSON: `{"turn_summary":"Mina was asked about the route.","characters":["Mina"]}`,
+		}},
+		nil, nil, nil,
+		[]store.ChatLog{{TurnIndex: 10, Role: "assistant", Content: "Mina pauses after the question."}},
+	)
+	if ctx.previousEventSummary != "" {
+		t.Fatalf("pronoun-only input must not reactivate the prior event as ordinary recall: %q", ctx.previousEventSummary)
+	}
+	relevant, reason := prepareTurnProtectedMemoryRelevant(protectedMina, ctx, nil)
+	if !relevant || reason != "previous_final_event_guard" {
+		t.Fatalf("pronoun continuation lost its existing secret guard: relevant=%v reason=%q", relevant, reason)
+	}
+	if relevant, reason := prepareTurnProtectedMemoryRelevant(protectedDax, ctx, nil); relevant {
+		t.Fatalf("unrelated prior owner received a secret guard: reason=%q", reason)
+	}
+	protectedMina.TurnIndex = 10
+	protectedDax.TurnIndex = 9
+	assembly := buildPrepareTurnInjectionAssembly(
+		[]store.Memory{protectedMina, protectedDax},
+		nil, nil,
+		[]store.ChatLog{{TurnIndex: 10, Role: "assistant", Content: "Mina pauses after the question."}},
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		2, 9000, "She hesitates before answering.", "default", nil, nil, nil,
+	)
+	if !strings.Contains(assembly.ProtectedMemoryText, "mina_hidden_route") {
+		t.Fatalf("production assembly lost the previous-final secret guard: %q", assembly.ProtectedMemoryText)
+	}
+	if strings.Contains(assembly.ProtectedMemoryText, "dax_hidden_route") {
+		t.Fatalf("production assembly admitted an unrelated prior-owner guard: %q", assembly.ProtectedMemoryText)
 	}
 }

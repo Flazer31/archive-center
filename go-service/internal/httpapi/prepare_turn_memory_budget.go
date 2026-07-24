@@ -197,13 +197,38 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 	}
 	finalText := strings.Join(parts, "\n\n")
 	finalHash := fmt.Sprintf("%x", sha256.Sum256([]byte(finalText)))
+	directEntities := stringsFromAny(out.Counts["directly_referenced_entities"])
+	directMemoryFactKeys := map[string]bool{}
+	for _, item := range prepareTurnDeliveryItems(out.ActualMemoryText, out.CharacterPrivateText) {
+		if key := prepareTurnDeliveryFactKey(item); key != "" {
+			directMemoryFactKeys[key] = true
+		}
+	}
+	deliveredDirectMemoryLines := []string{}
+	for _, key := range []string{"event_recent", "subjective_relationship"} {
+		for _, item := range selected[key] {
+			if directMemoryFactKeys[prepareTurnDeliveryFactKey(item)] {
+				deliveredDirectMemoryLines = append(deliveredDirectMemoryLines, item)
+			}
+		}
+	}
+	directMemoryText := strings.Join(deliveredDirectMemoryLines, "\n")
+	deliveredDirectEntities := 0
+	for _, entity := range directEntities {
+		if prepareTurnRecallContainsAnchor(directMemoryText, entity) {
+			deliveredDirectEntities++
+		}
+	}
 	return map[string]any{
 		"contract_version": prepareTurnMemoryDeliveryPlanVersion, "status": "ready", "mode": mode,
 		"final_budget_owner": "go_memory_delivery_plan", "global_cap_chars": maxChars,
 		"delivery_cap_chars": deliveryCap, "host_envelope_reserved_chars": hostEnvelopeReserve,
 		"used_chars": len([]rune(finalText)), "order": prepareTurnMemoryDeliveryOrder,
-		"final_text_sha256": finalHash,
-		"borrowing_policy":  "disabled_without_item_relevance_provenance", "classes": classes, "final_text": nilIfEmpty(finalText),
+		"final_text_sha256":                    finalHash,
+		"direct_entity_memory_requested_count": len(directEntities),
+		"direct_entity_memory_delivered_count": deliveredDirectEntities,
+		"direct_entity_memory_gap":             maxInt(len(directEntities)-deliveredDirectEntities, 0),
+		"borrowing_policy":                     "disabled_without_item_relevance_provenance", "classes": classes, "final_text": nilIfEmpty(finalText),
 		"historical_chat_authority_policy": "previous_logical_turn_owned_by_input_context_not_direct_evidence",
 		"recent_raw_turn_delivery":         "excluded_from_final_memory_delivery",
 		"raw_chat_fallback_delivery":       "diagnostic_only_excluded_from_final_memory_delivery",

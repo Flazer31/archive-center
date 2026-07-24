@@ -433,7 +433,7 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 			{ID: 1, ChatSessionID: "sess-prep", Description: "Who sent the sealed letter?"},
 		},
 		returnActiveStates: []store.ActiveState{
-			{ID: 1, ChatSessionID: "sess-prep", StateType: "location", Content: "Old manor library"},
+			{ID: 1, ChatSessionID: "sess-prep", StateType: "scene", Content: `{"location":"Old manor library","present_entities":["Alice","Bob"]}`},
 		},
 		returnCanonicalLayers: []store.CanonicalStateLayer{
 			{ID: 1, ChatSessionID: "sess-prep", LayerType: "location", Content: "The library smells of old books"},

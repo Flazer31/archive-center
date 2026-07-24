@@ -17,9 +17,12 @@ func TestPrepareTurnCurrentCharacterRanksBeforeCharacterCap(t *testing.T) {
 		{CharacterName: "윤슬아", StatusJSON: `{"emotion":"한얼에 대한 풋풋한 호감","location":"윤기 저택"}`, RelationshipsJSON: `{"강한얼":{"type":"호감","description":"혼인 제안 이후 서로를 알아가는 중"}}`, TurnIndex: 15},
 	}
 	raw := "밤 기계를 고민하는 한얼을 보던 윤기는 딸 슬아에게 한얼을 지탱해 달라고 말했다."
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene", Content: `{"present_entities":["강한얼","윤기","윤슬아"]}`,
+	}})
 	assembly := buildPrepareTurnInjectionAssembly(
 		nil, nil, nil, nil, nil, nil, states, nil, nil, nil, nil, nil, nil,
-		5, 12000, raw, "default", nil, nil, nil,
+		5, 12000, raw, "default", nil, nil, nil, perspective,
 	)
 	if !strings.Contains(assembly.CharacterObjectiveText, "윤슬아") {
 		t.Fatalf("current short-name character was capped before relevance ranking: %q", assembly.CharacterObjectiveText)
@@ -32,6 +35,26 @@ func TestPrepareTurnCurrentCharacterRanksBeforeCharacterCap(t *testing.T) {
 	}
 	if assembly.Counts["character_state_relevance_before_cap"] != true || assembly.Counts["character_state_unique_short_alias_priority"] != true {
 		t.Fatalf("missing relevance-order trace: %#v", assembly.Counts)
+	}
+}
+
+func TestPrepareTurnUnobservedSceneDoesNotPromoteDirectRecollectionsToObjectiveState(t *testing.T) {
+	const rawInput = "소월, 슬아, 서현까지 떠올려보니 하나같이 자신에게 과분하다고 한얼은 생각했다."
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil, nil,
+		[]store.CharacterState{
+			{CharacterName: "이소월", StatusJSON: `{"emotion":"여유","location":"월하방"}`},
+			{CharacterName: "윤슬아", StatusJSON: `{"emotion":"연정","location":"윤기의 사저"}`},
+			{CharacterName: "민서현", StatusJSON: `{"emotion":"호감","location":"민정호 사저"}`},
+		},
+		nil, nil, nil, nil, nil, nil,
+		5, 12000, rawInput, "default", nil, nil, nil,
+	)
+	if strings.TrimSpace(assembly.CharacterObjectiveText) != "" {
+		t.Fatalf("unobserved scene promoted recalled characters to objective state: %q", assembly.CharacterObjectiveText)
+	}
+	if assembly.Counts["objective_entity_source"] != "unobserved_no_objective_state_delivery" {
+		t.Fatalf("unobserved objective source was not exposed: %#v", assembly.Counts)
 	}
 }
 
@@ -116,6 +139,64 @@ func TestPrepareTurnPrivateRecollectionDoesNotLetRecencyOverrideDurableEmotion(t
 	filterPrepareTurnEntityRecollections("가나다가 찾아왔다.", nil, nil, nil, nil, nil, &items)
 	if len(items) != 1 || items[0].ID != 1 {
 		t.Fatalf("selected = %#v, want durable high-emotion memory instead of newest row", items)
+	}
+}
+
+func TestPrepareTurnExplicitRecollectionsDoNotBecomeOffSceneObjectiveState(t *testing.T) {
+	const rawInput = "소월, 슬아, 서현까지 떠올려보니 하나같이 예쁘고 참된 여성 같아 자신에게 과분하다고 한얼은 생각했다."
+	activeStates := []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 51,
+		Content:   `{"location":"한얼의 방","present_entities":["강한얼"],"status":"혼자 쉬는 중"}`,
+	}}
+	privateMemories := []store.ProtagonistEntityMemory{
+		{ID: 1, OwnerEntityKey: "lee_sowol", OwnerEntityName: "이소월", OwnerEntityRole: "npc", MemoryText: "이소월은 한얼과 나눈 술자리 대화를 흥미롭게 기억한다.", Importance10: 8},
+		{ID: 2, OwnerEntityKey: "yun_seula", OwnerEntityName: "윤슬아", OwnerEntityRole: "npc", MemoryText: "윤슬아는 한얼을 걱정하며 약재를 건넨 일을 소중히 여긴다.", Importance10: 8},
+		{ID: 3, OwnerEntityKey: "min_seohyeon", OwnerEntityName: "민서현", OwnerEntityRole: "npc", MemoryText: "민서현은 한얼의 신념과 솔직함에 호감을 느꼈다.", Importance10: 8},
+		{ID: 4, OwnerEntityKey: "unrelated", OwnerEntityName: "배상문", OwnerEntityRole: "npc", MemoryText: "배상문은 연삭기 제작을 기억한다.", Importance10: 9},
+	}
+	trace := filterPrepareTurnEntityRecollections(rawInput, nil, activeStates, nil, nil, nil, &privateMemories)
+	if len(privateMemories) != 3 {
+		t.Fatalf("explicit recollection coverage = %d, want 3: memories=%#v trace=%#v", len(privateMemories), privateMemories, trace)
+	}
+	for _, want := range []string{"이소월", "윤슬아", "민서현"} {
+		found := false
+		for _, item := range privateMemories {
+			if item.OwnerEntityName == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("explicit owner %q was omitted: memories=%#v trace=%#v", want, privateMemories, trace)
+		}
+	}
+
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, activeStates)
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil, nil,
+		[]store.CharacterState{
+			{CharacterName: "강한얼", StatusJSON: `{"emotion":"휴식하며 회상 중","location":"한얼의 방"}`, TurnIndex: 51},
+			{CharacterName: "이소월", StatusJSON: `{"emotion":"여유","location":"월하방"}`, TurnIndex: 49},
+			{CharacterName: "윤슬아", StatusJSON: `{"emotion":"연정","location":"윤기의 사저"}`, TurnIndex: 45},
+			{CharacterName: "민서현", StatusJSON: `{"emotion":"호감","location":"민정호 사저"}`, TurnIndex: 40},
+		},
+		nil, nil, nil, nil, nil, privateMemories,
+		5, 12000, rawInput, "default", nil, nil, nil, perspective,
+	)
+	if !strings.Contains(assembly.CharacterObjectiveText, "강한얼") {
+		t.Fatalf("actual scene character objective state was lost: %q", assembly.CharacterObjectiveText)
+	}
+	for _, offScene := range []string{"이소월", "윤슬아", "민서현"} {
+		if strings.Contains(assembly.CharacterObjectiveText, offScene) {
+			t.Fatalf("recalled off-scene character %q was promoted to objective current state: %q", offScene, assembly.CharacterObjectiveText)
+		}
+		if !strings.Contains(assembly.CharacterPrivateText, offScene) {
+			t.Fatalf("recalled character %q lost subjective recollection: %q", offScene, assembly.CharacterPrivateText)
+		}
+	}
+	if strings.Contains(assembly.CharacterPrivateText, "배상문") {
+		t.Fatalf("unmentioned private owner leaked into recollection: %q", assembly.CharacterPrivateText)
 	}
 }
 
