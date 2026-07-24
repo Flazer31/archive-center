@@ -75,6 +75,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["objective_entity_source"] = objectiveEntitySource
 	out.Counts["previous_assistant_raw_used_for_search"] = false
 	out.Counts["previous_assistant_raw_delivery_owner"] = "input_context_only"
+	out.Counts["current_scene_state_turn"] = recollectionContext.currentSceneTurn
+	out.Counts["latest_assistant_turn"] = recollectionContext.latestAssistantTurn
+	out.Counts["current_scene_state_is_current"] = recollectionContext.currentSceneIsCurrent
 	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryQuery, topK, vectorShadow, entityScope.Direct, entityScope.Scene)
 	memorySelection = collapsePrepareTurnMemoryLaneSelection(memorySelection)
 	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, recollectionContext, protectedPerspectiveContext)
@@ -483,6 +486,10 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		selectedLayer := false
 		switch layer {
 		case "entity_state":
+			if cl.TurnIndex > 0 && recollectionContext.latestAssistantTurn > 0 && cl.TurnIndex < recollectionContext.latestAssistantTurn {
+				canonIrrelevant++
+				continue
+			}
 			var entity map[string]any
 			if json.Unmarshal([]byte(cl.Content), &entity) != nil || len(entity) == 0 {
 				canonIrrelevant++
@@ -519,7 +526,18 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				}
 			}
 			appendCanonicalSubset(&canonWorldLines, rawSupportQuery, worldQuery, worldSubset)
-		case "world_state", "scene_state":
+		case "scene_state":
+			if cl.TurnIndex > 0 && recollectionContext.latestAssistantTurn > 0 && cl.TurnIndex < recollectionContext.latestAssistantTurn {
+				canonIrrelevant++
+				continue
+			}
+			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
+				line := fmt.Sprintf("- %s: %s", layer, content)
+				canonLines = append(canonLines, line)
+				canonWorldLines = append(canonWorldLines, line)
+				selectedLayer = true
+			}
+		case "world_state":
 			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
 				line := fmt.Sprintf("- %s: %s", layer, content)
 				canonLines = append(canonLines, line)
@@ -545,6 +563,25 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.CanonCharacterText = makePrepareTurnSection("[Canonical Character States]", canonCharacterLines)
 	out.CanonRelationshipText = makePrepareTurnSection("[Canonical Relationships]", canonRelationshipLines)
 	out.CanonWorldText = makePrepareTurnSection("[Canonical World States]", canonWorldLines)
+	subjectiveRelationshipActive := false
+	for _, text := range []string{
+		out.CharacterPrivateText,
+		out.CharacterRelationshipText,
+		out.PersonaText,
+		out.CanonRelationshipText,
+		out.KGText,
+	} {
+		if strings.TrimSpace(text) != "" {
+			subjectiveRelationshipActive = true
+			break
+		}
+	}
+	out.Counts["subjective_relationship_lane_active"] = subjectiveRelationshipActive
+	if subjectiveRelationshipActive {
+		out.Counts["subjective_relationship_lane_reason"] = "request_or_current_scene_evidence_selected"
+	} else {
+		out.Counts["subjective_relationship_lane_reason"] = "no_request_or_current_scene_evidence_selected"
+	}
 	deliveryBudgetContext := map[string]any{
 		"_memory_delivery_budget_mode": memoryDeliveryBudgetMode,
 		"_memory_delivery_budgets":     memoryDeliveryBudgets,
@@ -1167,12 +1204,11 @@ func prepareTurnStoredRelationshipActors(payload map[string]any) (string, string
 func prepareTurnStructuredRelationshipRelevant(owner, target, detailText, rawUserInput string, currentSceneEntities, knownEntities []string) bool {
 	owner = strings.TrimSpace(owner)
 	target = strings.TrimSpace(target)
-	if target != "" && prepareTurnRelationshipDirectMention(rawUserInput, target, knownEntities) {
-		return !prepareTurnRelationshipContainsThirdEntity(detailText, owner, target, knownEntities)
-	}
-	if owner != "" && target != "" &&
-		prepareTurnRelationshipNameInList(owner, currentSceneEntities) &&
-		prepareTurnRelationshipNameInList(target, currentSceneEntities) {
+	ownerCurrent := owner != "" && (prepareTurnRelationshipDirectMention(rawUserInput, owner, knownEntities) ||
+		prepareTurnRelationshipNameInList(owner, currentSceneEntities))
+	targetCurrent := target != "" && (prepareTurnRelationshipDirectMention(rawUserInput, target, knownEntities) ||
+		prepareTurnRelationshipNameInList(target, currentSceneEntities))
+	if ownerCurrent && targetCurrent {
 		return !prepareTurnRelationshipContainsThirdEntity(detailText, owner, target, knownEntities)
 	}
 	return false

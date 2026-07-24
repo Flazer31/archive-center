@@ -395,3 +395,81 @@ func TestPrepareTurnProtectedGuardSurvivesPronounContinuationFromRelevantPreviou
 		t.Fatalf("production assembly admitted an unrelated prior-owner guard: %q", assembly.ProtectedMemoryText)
 	}
 }
+
+func TestPrepareTurnStaleSceneCannotActivateRelationshipOrVolatileWorldLanes(t *testing.T) {
+	rawInput := "Han-eol looks beyond the grinder and considers roads and maritime transport."
+	chatLogs := []store.ChatLog{{TurnIndex: 39, Role: "assistant", Content: "Han-eol leaves the oil shop."}}
+	activeStates := []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 38,
+		Content:   `{"location":"old workshop","present_entities":["Han-eol","Jang","Bae"]}`,
+	}}
+	private := []store.ProtagonistEntityMemory{
+		{ID: 1, OwnerEntityKey: "jang", OwnerEntityName: "Jang", OwnerEntityRole: "npc", MemoryText: "Jang admires Han-eol's old machine.", SourceTurn: 8},
+		{ID: 2, OwnerEntityKey: "bae", OwnerEntityName: "Bae", OwnerEntityRole: "npc", MemoryText: "Bae remembers the old bellows.", SourceTurn: 4},
+	}
+	filterPrepareTurnEntityRecollections(rawInput, nil, activeStates, nil, nil, nil, &private, chatLogs)
+	if len(private) != 0 {
+		t.Fatalf("stale scene activated NPC recollections: %#v", private)
+	}
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, activeStates)
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil,
+		[]store.KGTriple{{Subject: "Han-eol", Predicate: "demonstrated_to", Object: "Bae"}},
+		nil, chatLogs, nil, nil,
+		[]store.CharacterState{
+			{CharacterName: "Jang", RelationshipsJSON: `{"Han-eol":{"summary":"admires his old machine"}}`},
+			{CharacterName: "Bae", RelationshipsJSON: `{"Han-eol":{"summary":"remembers the old bellows"}}`},
+		},
+		nil,
+		[]store.CanonicalStateLayer{
+			{LayerType: "relationship_state", TurnIndex: 38, Content: `{"pair":["Han-eol","Bae"],"bond_and_distance":"old workshop trust"}`, Confidence: 0.9},
+			{LayerType: "scene_state", TurnIndex: 38, Content: `{"location":"old workshop"}`, Confidence: 0.9},
+			{LayerType: "entity_state", TurnIndex: 38, Content: `{"items":["old bellows"],"locations":["old workshop"]}`, Confidence: 0.9},
+		},
+		nil, nil, nil, private,
+		5, 9000, rawInput, "default", nil, nil, nil, perspective,
+	)
+	if assembly.CharacterRelationshipText != "" || assembly.CanonRelationshipText != "" || assembly.KGText != "" {
+		t.Fatalf("stale relationship lane survived: character=%q canonical=%q kg=%q",
+			assembly.CharacterRelationshipText, assembly.CanonRelationshipText, assembly.KGText)
+	}
+	if strings.Contains(assembly.CanonWorldText, "old workshop") || strings.Contains(assembly.CanonWorldText, "old bellows") {
+		t.Fatalf("stale volatile world state survived: %q", assembly.CanonWorldText)
+	}
+	if boolFromAny(assembly.Counts["current_scene_state_is_current"]) {
+		t.Fatalf("stale scene was marked current: %#v", assembly.Counts)
+	}
+}
+
+func TestPrepareTurnVectorSuccessDoesNotFillEventBudgetWithLexicalHistory(t *testing.T) {
+	memories := []store.Memory{
+		{ID: 1, TurnIndex: 38, SummaryJSON: `{"turn_summary":"Han-eol repaired the grinder with whale oil.","items":["grinder","whale oil"]}`},
+		{ID: 2, TurnIndex: 7, SummaryJSON: `{"turn_summary":"Han-eol showed an escapement at the old workshop.","items":["machine"]}`},
+		{ID: 3, TurnIndex: 3, SummaryJSON: `{"turn_summary":"Han-eol demonstrated old bellows machinery.","items":["machine"]}`},
+	}
+	vectorShadow := map[string]any{
+		"search_attempted": true,
+		"search_result":    "ok",
+		"search_results": []map[string]any{
+			{"source_table": "memories", "source_row_id": "1", "similarity": 0.8},
+		},
+	}
+	selection := selectPrepareTurnMemoryLanesWithVector(
+		memories,
+		"Han-eol looks beyond the grinder and considers roads and maritime transport.",
+		5,
+		vectorShadow,
+		[]string{"Han-eol"},
+		nil,
+	)
+	if len(selection.VectorRelevant) != 1 || selection.VectorRelevant[0].ID != 1 {
+		t.Fatalf("vector result was not retained: %#v", selection.VectorRelevant)
+	}
+	if len(selection.Relevant) != 0 {
+		t.Fatalf("successful vector recall was padded with lexical history: %#v", selection.Relevant)
+	}
+	if !boolFromAny(selection.Trace["general_lexical_refill_skipped_after_vector_success"]) {
+		t.Fatalf("vector-success no-fill decision missing: %#v", selection.Trace)
+	}
+}

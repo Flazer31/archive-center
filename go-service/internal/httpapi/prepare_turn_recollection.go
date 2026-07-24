@@ -404,6 +404,9 @@ type prepareTurnRecollectionContext struct {
 	currentSceneStates        string
 	unresolvedGoals           string
 	currentEntities           string
+	latestAssistantTurn       int
+	currentSceneTurn          int
+	currentSceneIsCurrent     bool
 }
 
 func (ctx prepareTurnRecollectionContext) relevanceText() string {
@@ -528,8 +531,8 @@ func mergePrepareTurnEntityMemories(priority, fallback []store.ProtagonistEntity
 	return out
 }
 
-func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.Memory, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, pendingThreads []store.PendingThread, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories *[]store.ProtagonistEntityMemory) map[string]any {
-	ctx := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads)
+func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.Memory, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, pendingThreads []store.PendingThread, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories *[]store.ProtagonistEntityMemory, chatLogGroups ...[]store.ChatLog) map[string]any {
+	ctx := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogGroups...)
 	beforePrivate := len(*characterPrivateMemories)
 	filteredPrivate := make([]store.ProtagonistEntityMemory, 0, beforePrivate)
 	ownerNames := make([]string, 0, beforePrivate)
@@ -735,13 +738,21 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 			latestStateTurn = item.TurnIndex
 		}
 	}
-	for _, item := range activeStates {
-		if latestStateTurn > 0 && item.TurnIndex != latestStateTurn {
-			continue
-		}
-		addSceneEntities(item.Content)
-		if text := compactPrepareTurnLine(item.Content, 420); text != "" && !stringSliceContains(state, text) {
-			state = append(state, text)
+	// Active-state rows are the current-state owner. Older databases may not
+	// have a turn index on that row, so zero remains an explicit unversioned
+	// current value; a positive turn can be rejected when it trails the latest
+	// completed assistant turn.
+	activeStateIsCurrent := len(activeStates) > 0 &&
+		(latestStateTurn == 0 || latestAssistantTurn == 0 || latestStateTurn >= latestAssistantTurn)
+	if activeStateIsCurrent {
+		for _, item := range activeStates {
+			if item.TurnIndex != latestStateTurn {
+				continue
+			}
+			addSceneEntities(item.Content)
+			if text := compactPrepareTurnLine(item.Content, 420); text != "" && !stringSliceContains(state, text) {
+				state = append(state, text)
+			}
 		}
 	}
 	if len(state) == 0 {
@@ -754,13 +765,24 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 				latestCanonicalTurn = item.TurnIndex
 			}
 		}
+		canonicalSceneCount := 0
 		for _, item := range canonicalLayers {
-			if item.TurnIndex != latestCanonicalTurn || item.LayerType != "scene_state" {
-				continue
+			if item.LayerType == "scene_state" && item.TurnIndex == latestCanonicalTurn {
+				canonicalSceneCount++
 			}
-			addSceneEntities(item.Content)
-			if text := compactPrepareTurnLine(prepareTurnSurfaceText(parseSurfacePayload(item.Content)), 420); text != "" && !stringSliceContains(state, text) {
-				state = append(state, text)
+		}
+		canonicalStateIsCurrent := canonicalSceneCount > 0 &&
+			(latestCanonicalTurn == 0 || latestAssistantTurn == 0 || latestCanonicalTurn >= latestAssistantTurn)
+		if canonicalStateIsCurrent {
+			latestStateTurn = latestCanonicalTurn
+			for _, item := range canonicalLayers {
+				if item.TurnIndex != latestCanonicalTurn || item.LayerType != "scene_state" {
+					continue
+				}
+				addSceneEntities(item.Content)
+				if text := compactPrepareTurnLine(prepareTurnSurfaceText(parseSurfacePayload(item.Content)), 420); text != "" && !stringSliceContains(state, text) {
+					state = append(state, text)
+				}
 			}
 		}
 	}
@@ -803,6 +825,9 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 		currentSceneStates:        strings.Join(state, "\n"),
 		unresolvedGoals:           strings.Join(goals, "\n"),
 		currentEntities:           strings.Join(currentEntities, "\n"),
+		latestAssistantTurn:       latestAssistantTurn,
+		currentSceneTurn:          latestStateTurn,
+		currentSceneIsCurrent:     len(state) > 0,
 	}
 }
 

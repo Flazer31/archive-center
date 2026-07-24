@@ -1005,6 +1005,7 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	out.Trace["vector_recall_ready"] = vectorRecallReady
 	out.Trace["vector_recall_attempted"] = vectorRecallAttempted
 	out.Trace["vector_scope_rejected_count"] = vectorScopeRejected
+	vectorActualReady := vectorRecallReady && actualMemoryVectorSelectedCount > 0
 	out.Trace["lexical_fill_enabled"] = actualMemorySelectedCount < candidateLimit
 	coveredDirectEntities := map[string]bool{}
 	finalizeActualMemoryRefillTrace := func() {
@@ -1182,11 +1183,14 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			}
 		}
 	}
-	for _, candidate := range scored {
-		if selectCandidate(candidate) {
-			markDirectCoverage(candidate.item)
+	if !vectorActualReady {
+		for _, candidate := range scored {
+			if selectCandidate(candidate) {
+				markDirectCoverage(candidate.item)
+			}
 		}
 	}
+	out.Trace["general_lexical_refill_skipped_after_vector_success"] = vectorActualReady
 	out.Trace["vector_selected"] = len(out.VectorRelevant)
 	out.Trace["recent_selected"] = len(out.Recent)
 	out.Trace["relevant_selected"] = len(out.Relevant)
