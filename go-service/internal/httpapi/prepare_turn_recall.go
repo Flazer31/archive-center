@@ -610,31 +610,52 @@ func prepareTurnObservedShortEntityAliases(states []store.CharacterState) map[st
 func prepareTurnObservedShortNameAliases(names []string) map[string][]string {
 	type ownerSet map[string]bool
 	suffixOwners := map[string]ownerSet{}
+	addAlias := func(canonical, alias string) {
+		canonical = normalizePrepareTurnEntityNeedle(canonical)
+		alias = normalizePrepareTurnEntityNeedle(alias)
+		if canonical == "" || alias == "" || alias == canonical {
+			return
+		}
+		if suffixOwners[alias] == nil {
+			suffixOwners[alias] = ownerSet{}
+		}
+		suffixOwners[alias][canonical] = true
+	}
+	isNonASCIIName := func(value string) bool {
+		runes := []rune(value)
+		if len(runes) == 0 {
+			return false
+		}
+		for _, r := range runes {
+			if r <= 127 || !unicode.IsLetter(r) {
+				return false
+			}
+		}
+		return true
+	}
 	for _, rawName := range names {
 		name := strings.TrimSpace(rawName)
 		runes := []rune(name)
 		if len(runes) < 3 {
 			continue
 		}
-		nonASCIIName := true
-		for _, r := range runes {
-			if r <= 127 || !unicode.IsLetter(r) {
-				nonASCIIName = false
-				break
+		if isNonASCIIName(name) {
+			addAlias(name, string(runes[len(runes)-2:]))
+		}
+
+		// Critic-era rows can contain a qualified display name such as
+		// "minister's daughter Min Seohyeon". Accept the final Korean name
+		// component only when it is a unique 3-4 letter component across the
+		// observed owner set. This does not create or persist an alias.
+		parts := strings.FieldsFunc(name, func(r rune) bool {
+			return !unicode.IsLetter(r)
+		})
+		if len(parts) > 1 {
+			tailRunes := []rune(parts[len(parts)-1])
+			if len(tailRunes) >= 3 && len(tailRunes) <= 4 && isNonASCIIName(parts[len(parts)-1]) {
+				addAlias(name, parts[len(parts)-1])
 			}
 		}
-		if !nonASCIIName {
-			continue
-		}
-		canonical := normalizePrepareTurnEntityNeedle(name)
-		alias := normalizePrepareTurnEntityNeedle(string(runes[len(runes)-2:]))
-		if canonical == "" || alias == "" || alias == canonical {
-			continue
-		}
-		if suffixOwners[alias] == nil {
-			suffixOwners[alias] = ownerSet{}
-		}
-		suffixOwners[alias][canonical] = true
 	}
 	out := map[string][]string{}
 	for alias, owners := range suffixOwners {
@@ -1157,15 +1178,43 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			coveredDirectEntities[normalizePrepareTurnEntityNeedle(entity)] = true
 		}
 	}
+	currentPairEntities := append(append([]string{}, directlyReferencedEntities...), storedSceneEntities...)
+	coveredDirectPairEntities := map[string]bool{}
 	for _, item := range out.VectorRelevant {
 		if !prepareTurnProtectedMemoryGuard(item).Active {
 			markDirectCoverage(item)
+			matches := prepareTurnMemoryDirectEntityMatches(item, currentPairEntities)
+			if len(matches) >= 2 {
+				for _, entity := range directlyReferencedEntities {
+					if prepareTurnRelationshipNameInList(entity, matches) {
+						coveredDirectPairEntities[normalizePrepareTurnEntityNeedle(entity)] = true
+					}
+				}
+			}
 		}
 	}
 	if queryPresent {
 		for _, entity := range directlyReferencedEntities {
 			entityKey := normalizePrepareTurnEntityNeedle(entity)
-			if entityKey == "" || coveredDirectEntities[entityKey] {
+			if entityKey == "" || coveredDirectPairEntities[entityKey] {
+				continue
+			}
+			pairSelected := false
+			for _, candidate := range scored {
+				matches := prepareTurnMemoryDirectEntityMatches(candidate.item, currentPairEntities)
+				if len(matches) < 2 ||
+					!prepareTurnRelationshipNameInList(entity, matches) ||
+					prepareTurnProtectedMemoryGuard(candidate.item).Active {
+					continue
+				}
+				candidate.evidence.Eligible = true
+				if prepareTurnMemoryAlreadySelected(out, candidate.item) || selectCandidate(candidate) {
+					markDirectCoverage(candidate.item)
+					pairSelected = true
+					break
+				}
+			}
+			if pairSelected || coveredDirectEntities[entityKey] {
 				continue
 			}
 			for _, candidate := range scored {

@@ -91,10 +91,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		strings.Join(objectiveEntityNames, "\n"),
 	}), "\n"))
 	worldQuery := strings.TrimSpace(recollectionContext.currentSceneStates)
-	goalQuery := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
-		prepareTurnEntityScopeQuery(rawUserInput, entityScope.Direct, entityScope.Scene),
-		recollectionContext.unresolvedGoals,
-	}), "\n"))
+	goalQuery := prepareTurnEntityScopeQuery(rawUserInput, entityScope.Direct, entityScope.Scene)
 	out.ContinuityCorrectionText, out.Counts["continuity_correction"] = buildNarrativeContinuityCorrection(
 		narrativeCurrentValues,
 		rawUserInput,
@@ -103,7 +100,6 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		memorySelection,
 		recallLimit,
 	)
-	memorySelection = filterMemorySelectionAgainstNarrativeCurrentState(memorySelection, narrativeCurrentValues)
 	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, protectedPerspectiveContext)
 	actualMemoryLines := stringsFromAny(memoryLanguageTrace["actual_lines"])
 	protectedMemoryLines := stringsFromAny(memoryLanguageTrace["protected_lines"])
@@ -531,12 +527,20 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				canonIrrelevant++
 				continue
 			}
+			content = prepareTurnSceneStateWithoutUnresolvedThreads(cl.Content)
+			if content == "" {
+				canonIrrelevant++
+				continue
+			}
 			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
 				line := fmt.Sprintf("- %s: %s", layer, content)
 				canonLines = append(canonLines, line)
 				canonWorldLines = append(canonWorldLines, line)
 				selectedLayer = true
 			}
+		case "unresolved_threads":
+			canonIrrelevant++
+			continue
 		case "world_state":
 			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
 				line := fmt.Sprintf("- %s: %s", layer, content)
@@ -1121,6 +1125,9 @@ func prepareTurnFilterRelationshipSurface(value any, owner, rawUserInput string,
 			left, right := prepareTurnStoredRelationshipActors(payload)
 			relevant := false
 			if left != "" || right != "" {
+				if left == "" {
+					left = owner
+				}
 				relevant = prepareTurnStructuredRelationshipRelevant(left, right, entryText, rawUserInput, currentSceneEntities, knownEntities)
 			} else {
 				relevant = prepareTurnFreeRelationshipRelevant(entryText, owner, rawUserInput, currentSceneEntities, knownEntities)
@@ -1173,7 +1180,13 @@ func prepareTurnRelevantCanonicalRelationshipSurface(raw, rawUserInput string, c
 }
 
 func prepareTurnStoredRelationshipActors(payload map[string]any) (string, string) {
-	left, right := relationshipChangeActors(payload)
+	pairValues := stringsFromAny(payload["pair"])
+	left, right := "", ""
+	if len(pairValues) >= 2 {
+		left, right = pairValues[0], pairValues[1]
+	} else {
+		left, right = relationshipChangeActors(payload)
+	}
 	if left == "" {
 		left = extractionFirstNonEmpty(
 			stringFromMap(payload, "owner_name"),
@@ -1189,7 +1202,11 @@ func prepareTurnStoredRelationshipActors(payload map[string]any) (string, string
 	}
 	if left == "" || right == "" {
 		for _, pair := range stringsFromAny(payload["pair"]) {
-			for _, part := range relationshipPairParts(pair) {
+			parts := relationshipPairParts(pair)
+			if len(parts) == 0 && strings.TrimSpace(pair) != "" {
+				parts = []string{strings.TrimSpace(pair)}
+			}
+			for _, part := range parts {
 				if left == "" {
 					left = part
 				} else if right == "" && normalizePrepareTurnEntityNeedle(part) != normalizePrepareTurnEntityNeedle(left) {

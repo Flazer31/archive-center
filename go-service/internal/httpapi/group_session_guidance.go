@@ -676,7 +676,7 @@ func openNarrativeThreads(items []store.PendingThread) []store.PendingThread {
 			continue
 		}
 		status := strings.TrimSpace(item.Status)
-		if status != "" && status != "open" && status != "paused" {
+		if status != "" && status != "open" {
 			continue
 		}
 		out = append(out, item)

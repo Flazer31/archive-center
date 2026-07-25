@@ -126,74 +126,10 @@ func TestPrepareTurnPromptAssemblyNotConfigured(t *testing.T) {
 		t.Errorf("progression_ledger.would_write = %v, want false", pl["would_write"])
 	}
 
-	ap, ok := resp["autonomy_plan"].(map[string]any)
-	if !ok {
-		t.Fatalf("autonomy_plan is not an object")
-	}
-	if ap["status"] != "degraded" {
-		t.Errorf("autonomy_plan.status = %v, want degraded", ap["status"])
-	}
-	if ap["suggested_action"] != "continue" {
-		t.Errorf("autonomy_plan.suggested_action = %v, want continue", ap["suggested_action"])
-	}
-	if ap["would_call_llm"] != false {
-		t.Errorf("autonomy_plan.would_call_llm = %v, want false", ap["would_call_llm"])
-	}
-	if ap["would_write"] != false {
-		t.Errorf("autonomy_plan.would_write = %v, want false", ap["would_write"])
-	}
-
-	mb, ok := resp["micro_beat_proposal"].(map[string]any)
-	if !ok {
-		t.Fatalf("micro_beat_proposal is not an object")
-	}
-	if mb["status"] != "degraded" {
-		t.Errorf("micro_beat_proposal.status = %v, want degraded", mb["status"])
-	}
-	mbBeats, _ := mb["beats"].([]any)
-	if len(mbBeats) != 0 {
-		t.Errorf("micro_beat_proposal.beats len = %d, want 0", len(mbBeats))
-	}
-	if mb["would_call_llm"] != false {
-		t.Errorf("micro_beat_proposal.would_call_llm = %v, want false", mb["would_call_llm"])
-	}
-
-	sp, ok := resp["scene_step_proposal"].(map[string]any)
-	if !ok {
-		t.Fatalf("scene_step_proposal is not an object")
-	}
-	if sp["status"] != "degraded" {
-		t.Errorf("scene_step_proposal.status = %v, want degraded", sp["status"])
-	}
-	spSteps, _ := sp["steps"].([]any)
-	if len(spSteps) != 0 {
-		t.Errorf("scene_step_proposal.steps len = %d, want 0", len(spSteps))
-	}
-	if sp["would_call_llm"] != false {
-		t.Errorf("scene_step_proposal.would_call_llm = %v, want false", sp["would_call_llm"])
-	}
-
-	cp2, ok := resp["combined_proposal"].(map[string]any)
-	if !ok {
-		t.Fatalf("combined_proposal is not an object")
-	}
-	if cp2["status"] != "degraded" {
-		t.Errorf("combined_proposal.status = %v, want degraded", cp2["status"])
-	}
-	if cp2["micro_beat_count"] != float64(0) {
-		t.Errorf("combined_proposal.micro_beat_count = %v, want 0", cp2["micro_beat_count"])
-	}
-	if cp2["scene_step_count"] != float64(0) {
-		t.Errorf("combined_proposal.scene_step_count = %v, want 0", cp2["scene_step_count"])
-	}
-	if cp2["source"] != "go_r1_read_shadow" {
-		t.Errorf("combined_proposal.source = %v, want go_r1_read_shadow", cp2["source"])
-	}
-	if cp2["would_call_llm"] != false {
-		t.Errorf("combined_proposal.would_call_llm = %v, want false", cp2["would_call_llm"])
-	}
-	if cp2["would_write"] != false {
-		t.Errorf("combined_proposal.would_write = %v, want false", cp2["would_write"])
+	for _, key := range []string{"autonomy_plan", "micro_beat_proposal", "scene_step_proposal", "combined_proposal"} {
+		if _, exists := resp[key]; exists {
+			t.Fatalf("degraded prepare-turn exposes story-composition surface %q: %#v", key, resp[key])
+		}
 	}
 
 	wp, ok := resp["writeback_preview"].(map[string]any)

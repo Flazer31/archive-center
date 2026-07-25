@@ -343,19 +343,6 @@ func (s *Server) handlePatchProtagonistEntityMemory(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, CodeMissingParam, "memory_text is required")
 		return
 	}
-	if req.SourceChatSessionID != "" {
-		canonicalOwner := s.canonicalSubjectiveEntityOwner(r.Context(), req.SourceChatSessionID, req.OwnerEntityKey, req.OwnerEntityName)
-		req.OwnerEntityKey = canonicalOwner.Key
-		req.PersonaEntityKey = canonicalOwner.Key
-		if canonicalOwner.Name != "" {
-			req.OwnerEntityName = canonicalOwner.Name
-			req.PersonaEntityName = canonicalOwner.Name
-		}
-		req.Tags = append(req.Tags, canonicalOwner.AliasTags...)
-		if canonicalOwner.Changed {
-			req.Tags = append(req.Tags, "entity_alias_canonicalized")
-		}
-	}
 	tagsJSON := strings.TrimSpace(req.TagsJSON)
 	if tagsJSON == "" {
 		encoded, err := json.Marshal(req.Tags)
@@ -368,6 +355,7 @@ func (s *Server) handlePatchProtagonistEntityMemory(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "tags_json must be valid JSON")
 		return
 	}
+	tagsJSON = subjectiveEntityManualEditTags(tagsJSON, req.OwnerEntityKey, req.OwnerEntityName)
 	portability := strings.TrimSpace(req.Portability)
 	if portability == "" {
 		portability = "portable_persona_recollection"

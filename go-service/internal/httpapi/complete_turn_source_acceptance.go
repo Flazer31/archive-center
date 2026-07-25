@@ -564,7 +564,8 @@ func writeCompleteTurnSourceAcceptanceRejection(w http.ResponseWriter, req dto.M
 		"turn_index": req.TurnIndex, "save_ok": false, "chat_logs_saved": 0, "derived_artifacts_saved": 0,
 		"vectors_upserted": 0, "critic_triggered": false, "derived_retry_required": false,
 		"queue_action": decision.QueueAction, "fail_reasons": []string{decision.Reason},
-		"source_acceptance": completeTurnSourceAcceptancePayload(decision),
+		"source_acceptance":       completeTurnSourceAcceptancePayload(decision),
+		"source_to_final_lineage": buildSourceToFinalLineage(req, decision),
 	})
 }
 
@@ -580,5 +581,11 @@ func completeTurnSourceAcceptancePayload(decision completeTurnSourceAcceptanceDe
 		"logical_turn_id": decision.LogicalTurnID, "replace_existing": decision.ReplaceExisting,
 		"host_revision_capability": decision.Observation.RevisionState,
 		"lifecycle":                lifecycle,
+		"generation_id":            nilIfEmpty(decision.Observation.GenerationID),
+		"generation_id_state":      decision.Observation.GenerationIDState,
+		"message_index":            decision.Observation.MessageIndex,
+		"observed_content_hash":    nilIfEmpty(decision.Observation.ObservedContentHash),
+		"persistence_content_hash": nilIfEmpty(decision.Observation.PersistenceContentHash),
+		"hash_algorithm":           nilIfEmpty(decision.Observation.HashAlgorithm),
 	}
 }

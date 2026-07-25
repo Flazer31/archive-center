@@ -36,11 +36,19 @@ func TestMEMDSevenClassPlanSeparatesProtectedGuidanceFromActualMemory(t *testing
 	}
 	eventText := extractionStringFromAny(byKey["event_recent"]["text"])
 	protectedText := extractionStringFromAny(byKey["protected_secret"]["text"])
+	subjectiveText := extractionStringFromAny(byKey["subjective_relationship"]["text"])
 	if !strings.Contains(eventText, "actual event memory") || strings.Contains(eventText, "protected continuity guard") {
 		t.Fatalf("event class mixed protected guidance: %q", eventText)
 	}
 	if !strings.Contains(protectedText, "protected continuity guard") || strings.Contains(protectedText, "actual event memory") {
 		t.Fatalf("protected class mixed actual memory: %q", protectedText)
+	}
+	if !strings.Contains(subjectiveText, "Mina trusts Lia") ||
+		!strings.Contains(subjectiveText, "Mina --trusts--> Lia") {
+		t.Fatalf("stored relationship evidence missing: %q", subjectiveText)
+	}
+	if got := intFromAny(byKey["subjective_relationship"]["selected_count"], 0); got != 2 {
+		t.Fatalf("subjective relationship selected count=%d, want only the two stored evidence rows: %q", got, subjectiveText)
 	}
 }
 
@@ -60,6 +68,24 @@ func TestMEMDRemovesObjectiveFactDuplicatesAcrossDeliveryClasses(t *testing.T) {
 	for _, class := range classes {
 		if class["key"] == "world_state" && intFromAny(class["deduplicated_count"], 0) == 0 {
 			t.Fatalf("world-state duplicate was not traced: %#v", class)
+		}
+	}
+}
+
+func TestMEMDRemovesExactGoalDuplicateFromDirectEvidence(t *testing.T) {
+	out := prepareTurnInjectionAssembly{
+		LatestDirectEvidenceText: "Restore the observatory clock",
+		PendingThreadText:        "[Pending Threads]\n- Restore the observatory clock",
+	}
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	finalText := extractionStringFromAny(plan["final_text"])
+	if strings.Count(finalText, "Restore the observatory clock") != 1 {
+		t.Fatalf("exact goal evidence was delivered through two classes: %q", finalText)
+	}
+	classes, _ := plan["classes"].([]map[string]any)
+	for _, class := range classes {
+		if class["key"] == "unresolved_goal" && intFromAny(class["deduplicated_count"], 0) == 0 {
+			t.Fatalf("unresolved-goal duplicate was not traced: %#v", class)
 		}
 	}
 }
@@ -112,12 +138,12 @@ func TestInputContextContainsOnlyThePreviousCompletedTurn(t *testing.T) {
 	}
 }
 
-func TestMEMDDoesNotBorrowUnusedBudgetForDeferredLeftovers(t *testing.T) {
+func TestMEMDDoesNotBorrowUnusedBudgetForUnprovenEventLeftovers(t *testing.T) {
 	out := prepareTurnInjectionAssembly{
 		EpisodeText: "[Episode Summaries]\n- " + strings.Repeat("old unrelated episode ", 90),
 	}
 	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
-	if plan["borrowing_policy"] != "disabled_without_item_relevance_provenance" {
+	if plan["borrowing_policy"] != "current_entity_relevance_selected_classes_only" {
 		t.Fatalf("borrowing policy=%v", plan["borrowing_policy"])
 	}
 	classes, _ := plan["classes"].([]map[string]any)

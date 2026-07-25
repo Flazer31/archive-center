@@ -485,6 +485,7 @@ func readSupervisorSystemPrompt(configuredDir string) (string, string) {
 		filepath.Join("..", "prompts", "supervisor_system.txt"),
 		filepath.Join("prompts", "supervisor_system.txt"),
 		filepath.Join("..", "..", "prompts", "supervisor_system.txt"),
+		filepath.Join("..", "..", "..", "prompts", "supervisor_system.txt"),
 	)
 	for _, path := range candidates {
 		data, err := os.ReadFile(path)
@@ -492,7 +493,7 @@ func readSupervisorSystemPrompt(configuredDir string) (string, string) {
 			return string(data), path
 		}
 	}
-	return "You are Archive Center's supervisor. Return only valid JSON with a directive object.", "fallback_builtin"
+	return "You are Archive Center's memory fidelity reviewer. Use guide_focus only as an optional rudder for supported memory emphasis. Every item must cite at least one exact response_execution_contract.source_refs.memory reference; current-input or native-system references cannot support an item alone. Never prescribe story structure, pacing, scenes, transitions, endings, or next actions. Return only valid JSON matching supervisor_scene_proposal with fidelity_warnings and portrayal_notes.", "fallback_builtin"
 }
 
 func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, previewPass map[string]any, archiveLedger ...map[string]any) string {
@@ -532,7 +533,10 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- relationship_memory may include target_name or pair when trust changes. If no target exists, leave it empty.",
 		"- character_deltas should capture named character status, location, emotional posture, relationship changes, injuries, intentions, or role/authority changes seen in the latest turn.",
 		"- Separate narrative_events (what happened), state_claims (objective current facts), and belief_updates (one character's current perception). Do not promote beliefs to objective truth.",
-		"- state_claims and belief_updates use stable state_slot keys and transition=set|reaffirm|change|reversal|recovery|correction|reveal|resolve|uncertain|clear. Turn is audit order, not semantic authority.",
+		"- state_claims and belief_updates use stable state_slot keys and transition=set|reaffirm|change|reversal|recovery|correction|reveal|resolve|uncertain|clear|defer|abandon|complete|supersede|reopen|resume. Turn is audit order, not semantic authority.",
+		"- For goal or thread lifecycle state_claims, use the exact goal or thread title as subject, subject_type=entity, and state_slot=goal_status. Do not use goal_status for another entity-state dimension.",
+		"- When that goal or thread is also emitted in pending_threads or state_deltas unresolved_threads.opened, include the same exact title and subject plus state_slot=goal_status in that open record.",
+		"- Use reopen or resume only when the latest completed turn explicitly reactivates a state previously deferred, abandoned, completed, superseded, resolved, or cleared. Use reversal only for a directly evidenced state inversion. A suggestion, condition, possibility, or proposal is uncertain and must not replace an existing current value.",
 		"- Every narrative_events/state_claims/belief_updates item requires a short exact evidence_excerpt from the latest completed turn. Omit unsupported items.",
 		"- Also repeat each accepted event/state/belief evidence_excerpt in top-level evidence_excerpts so current values and change events can link to direct evidence.",
 		"- physical_conditions is for evidence-bound body/health continuity that can affect roleplay: illness, fever, cold, pregnancy, menstruation, poisoning, fracture, accident/fall injury, body damage, impairment, missing body part, recovery, worsening, or cleared condition.",
@@ -556,8 +560,8 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Early-session setup counts. Do not wait for many turns: a 1-7 turn session can already establish foundational world rules such as randomized acquisition, progression currency exchange, challenge reward loops, environment/base constraints, access gates, or upgrade/item progression.",
 		"- Extract the abstract invariant behind the session's surface nouns. Do not copy these instruction examples as setting facts; use the session's own evidence and names.",
 		"- Do not leave world_rules empty for confirmed public facts, institutional rules, class/company policies, social obligations, access permissions, hierarchy/authority rules, special-world mechanics, supernatural/technology rules, recurring resource constraints, or implicit norms that remain true beyond this single exchange.",
-		"- Accepted plans, procedures, methods, route/access decisions, chain-of-command decisions, class/club/company rules, household rules, contracts, recurring social obligations, and tacit survival codes are world_rules when they remain actionable after this turn.",
-		"- If the latest turn confirms a named operation, tactical doctrine, world mechanic, setting law, or unspoken social/legal norm, emit at least one scoped world_rule unless it is only a rejected idea or unverified speculation.",
+		"- A proposal, temporary strategy, one-off plan, implementation method, named operation, or unresolved objective is not a world_rule merely because characters accept or intend it. Keep it in pending_threads or goal_status.",
+		"- Emit a world_rule only when the latest completed turn establishes an enacted, continuing institutional or setting constraint beyond the current objective. A procedure or tactical doctrine qualifies only when evidence shows that it is a recurring durable rule rather than a one-off objective.",
 		"- Each world rule must include key and value; prefer scope, scope_name, category, confidence, and verification/evidence when available. Use world_state.rules for the same durable rules when they shape the current world state.",
 		"- subjective_entity_memories is for each named in-story entity's subjective recollection or interpretation of the latest turn. It is not canonical truth.",
 		"- Each subjective_entity_memories item must include owner_entity_key or owner_entity_name, memory_text, and may include owner_entity_role, owner_visibility, source_turn_index, importance_10, emotional_weight, evidence_excerpt, secret_guard, target_reveal_policy, tags, and portability.",

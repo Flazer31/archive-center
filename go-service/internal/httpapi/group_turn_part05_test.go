@@ -61,10 +61,10 @@ func TestPrepareTurnCharacterPrivateRecollectionLane(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	injectionText, _ := resp["injection_text"].(string)
-	if !strings.Contains(injectionText, "[Character Private Recollection]") || !strings.Contains(injectionText, "owner Chloe") {
+	if !strings.Contains(injectionText, "[Subjective Memories and Relationships]") || !strings.Contains(injectionText, "owner Chloe") {
 		t.Fatalf("injection_text missing character private recollection: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "[Persona Recollection]") {
+	if strings.Contains(injectionText, "support-only private recollection") {
 		t.Fatalf("NPC private recollection leaked into persona lane: %q", injectionText)
 	}
 	if strings.Contains(injectionText, "previous loop") {
@@ -74,7 +74,7 @@ func TestPrepareTurnCharacterPrivateRecollectionLane(t *testing.T) {
 		t.Fatalf("NPC private recollection missing protected hint wording: %q", injectionText)
 	}
 	inputContextText, _ := resp["input_context_text"].(string)
-	if strings.Contains(inputContextText, "[Character Private Recollection]") || strings.Contains(inputContextText, "not player knowledge") {
+	if strings.Contains(inputContextText, "[Subjective Memories and Relationships]") || strings.Contains(inputContextText, "not player knowledge") {
 		t.Fatalf("NPC private recollection bypassed its dedicated injection lane: %q", inputContextText)
 	}
 	ip, ok := resp["injection_pack"].(map[string]any)
@@ -312,13 +312,13 @@ func TestPrepareTurnCharacterPrivateRecollectionTreatsMisunderstandingAsInterpre
 		t.Fatalf("decode: %v", err)
 	}
 	injectionText, _ := resp["injection_text"].(string)
-	if !strings.Contains(injectionText, "[Character Private Recollection]") || !strings.Contains(injectionText, "Private interpretation") {
+	if !strings.Contains(injectionText, "[Subjective Memories and Relationships]") || !strings.Contains(injectionText, "Private interpretation") {
 		t.Fatalf("injection_text missing private interpretation lane: %q", injectionText)
 	}
 	if !strings.Contains(injectionText, "owning NPC's interpretation") || !strings.Contains(injectionText, "do not present it as objective fact") {
 		t.Fatalf("injection_text missing interpretation-not-fact guard: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "[Persona Recollection]") {
+	if strings.Contains(injectionText, "support-only private recollection") {
 		t.Fatalf("NPC private recollection leaked into persona lane: %q", injectionText)
 	}
 	ip, ok := resp["injection_pack"].(map[string]any)
@@ -432,7 +432,7 @@ func TestPrepareTurnEntityRecollectionRelevanceFiltersUnrelatedNPCMemory(t *test
 		t.Fatalf("decode: %v", err)
 	}
 	injectionText, _ := resp["injection_text"].(string)
-	if !strings.Contains(injectionText, "[Character Private Recollection]") || !strings.Contains(injectionText, "owner Chloe") {
+	if !strings.Contains(injectionText, "[Subjective Memories and Relationships]") || !strings.Contains(injectionText, "owner Chloe") {
 		t.Fatalf("expected Chloe private recollection in injection text: %q", injectionText)
 	}
 	if strings.Contains(injectionText, "Saori") || strings.Contains(injectionText, "kitchen promise") || strings.Contains(injectionText, "kitchen confession") {
@@ -722,10 +722,10 @@ func TestPrepareTurnAttachedNPCPrivateCapsuleUsesCharacterPrivateLane(t *testing
 		t.Fatalf("decode: %v", err)
 	}
 	injectionText, _ := resp["injection_text"].(string)
-	if !strings.Contains(injectionText, "[Character Private Recollection]") || !strings.Contains(injectionText, "owner Chloe") {
+	if !strings.Contains(injectionText, "[Subjective Memories and Relationships]") || !strings.Contains(injectionText, "owner Chloe") {
 		t.Fatalf("attached NPC capsule did not enter character private lane: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "[Persona Recollection]") {
+	if strings.Contains(injectionText, "support-only private recollection") {
 		t.Fatalf("attached NPC capsule leaked into persona lane: %q", injectionText)
 	}
 	if strings.Contains(injectionText, "previous loop") {
@@ -944,44 +944,32 @@ func TestPrepareTurnNarrativeGuideAutoModeBundle(t *testing.T) {
 	if pack["guide_strength"] != "strong" {
 		t.Fatalf("guide_strength = %v, want strong", pack["guide_strength"])
 	}
-	if suffix, _ := pack["guide_suffix"].(string); !strings.Contains(suffix, "Narrative Guide") || !strings.Contains(suffix, "Action") || !strings.Contains(suffix, "Coverage: strong") {
-		t.Fatalf("guide_suffix missing action suffix: %q", suffix)
+	focus := stringSliceFromAny(pack["guide_focus"])
+	if len(focus) == 0 || focus[0] != "clear cause and effect" {
+		t.Fatalf("guide_focus = %#v, want optional action presentation focus", focus)
 	}
-	if guidance, _ := pack["persistent_guidance"].(string); !strings.Contains(guidance, "Narrative Guide") || !strings.Contains(guidance, "combat/chase") {
-		t.Fatalf("persistent_guidance missing guide suffix: %q", guidance)
+	for _, key := range []string{"guide_suffix", "director_overrides", "narrative_stance_bounds", "auto_advance_hint"} {
+		if _, exists := pack[key]; exists {
+			t.Fatalf("guide pack exposes story-control field %q: %#v", key, pack[key])
+		}
 	}
-	overrides, ok := pack["director_overrides"].(map[string]any)
-	if !ok {
-		t.Fatalf("director_overrides is not an object: %+v", pack["director_overrides"])
-	}
-	emphasis, _ := overrides["emphasis"].([]any)
-	if len(emphasis) == 0 {
-		t.Fatalf("director_overrides.emphasis is empty: %+v", overrides)
-	}
-
-	autonomyPlan, ok := resp["autonomy_plan"].(map[string]any)
-	if !ok {
-		t.Fatalf("autonomy_plan is not an object")
-	}
-	if autonomyPlan["guide_mode"] != "action" {
-		t.Fatalf("autonomy_plan.guide_mode = %v, want action", autonomyPlan["guide_mode"])
+	for _, key := range []string{"autonomy_plan", "micro_beat_proposal", "scene_step_proposal", "combined_proposal"} {
+		if _, exists := resp[key]; exists {
+			t.Fatalf("prepare-turn exposes story planner %q: %#v", key, resp[key])
+		}
 	}
 }
 
-func TestNarrativeGuideModeSuffixAndDirectorOverrides(t *testing.T) {
+func TestNarrativeGuideFocusIsDirectionalOnly(t *testing.T) {
 	if got := resolveNarrativeGuideMode("auto", []map[string]any{{"role": "user", "content": "The romantic mood deepens and the scene moves closer."}}, "", ""); got != "romantic" {
 		t.Fatalf("resolveNarrativeGuideMode(auto romantic) = %q, want romantic", got)
 	}
-	if suffix := buildGuideModeSuffix("mature_soft", "medium"); !strings.Contains(suffix, "Mature (Sensual)") || !strings.Contains(suffix, "story-appropriate") || !strings.Contains(suffix, "Coverage: medium") {
-		t.Fatalf("mature_soft suffix mismatch: %q", suffix)
+	focus := buildNarrativeGuideFocus("mature_soft")
+	if len(focus) != 2 || focus[0] != "sensory atmosphere" {
+		t.Fatalf("mature_soft guide focus mismatch: %#v", focus)
 	}
-	overrides := buildGuideModeDirectorOverrides("mature_direct")
-	forbidden, _ := overrides["forbidden_moves"].([]string)
-	if len(forbidden) == 0 || forbidden[0] != "dehumanizing portrayals" {
-		t.Fatalf("mature_direct forbidden overrides mismatch: %+v", overrides)
-	}
-	if suffix := buildGuideModeSuffix("strict"); suffix != "" {
-		t.Fatalf("unknown guide mode should not create suffix, got %q", suffix)
+	if focus := buildNarrativeGuideFocus("strict"); len(focus) != 0 {
+		t.Fatalf("unknown guide mode should not create focus, got %#v", focus)
 	}
 }
 

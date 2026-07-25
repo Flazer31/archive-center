@@ -147,13 +147,14 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 	selected := map[string][]string{}
 	remaining := map[string][]string{}
 	deduplicated := map[string]int{}
+	borrowedChars := map[string]int{}
 	seenFacts := map[string]bool{}
 	usedGlobal := 0
 	appendWithin := func(key string, candidates []string, cap int) []string {
 		deferred := []string{}
 		for _, item := range candidates {
 			factKey := ""
-			if key != "protected_secret" && key != "subjective_relationship" && key != "unresolved_goal" {
+			if key != "protected_secret" && key != "subjective_relationship" {
 				factKey = prepareTurnDeliveryFactKey(item)
 				if factKey != "" && seenFacts[factKey] {
 					deduplicated[key]++
@@ -179,8 +180,15 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 	for _, key := range prepareTurnMemoryDeliveryOrder {
 		remaining[key] = appendWithin(key, items[key], budgets[key])
 	}
-	// Do not fill unused reservations with provenance-free leftovers. Borrowing
-	// resumes only when each item carries an explicit relevance decision.
+	// These classes already passed current-input, entity, privacy, and memory
+	// relevance selection before delivery budgeting. Let their deferred items
+	// use otherwise idle global space so a short policy line cannot crowd out
+	// the actual event or recollection it protects.
+	for _, key := range []string{"character_objective", "subjective_relationship"} {
+		before := usedGlobal
+		remaining[key] = appendWithin(key, remaining[key], deliveryCap)
+		borrowedChars[key] = usedGlobal - before
+	}
 	classes := []map[string]any{}
 	parts := []string{}
 	for _, key := range prepareTurnMemoryDeliveryOrder {
@@ -191,7 +199,7 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		}
 		classes = append(classes, map[string]any{
 			"key": key, "title": prepareTurnMemoryDeliveryTitles[key], "reserved_chars": budgets[key], "configured_reserved_chars": configuredBudgets[key],
-			"used_chars": usedChars, "borrowed_chars": 0, "unused_chars": maxInt(budgets[key]-usedChars, 0), "eligible_count": len(items[key]), "selected_count": len(selected[key]),
+			"used_chars": usedChars, "borrowed_chars": borrowedChars[key], "unused_chars": maxInt(budgets[key]-usedChars+borrowedChars[key], 0), "eligible_count": len(items[key]), "selected_count": len(selected[key]),
 			"deduplicated_count": deduplicated[key], "deferred_count": len(remaining[key]), "text": nilIfEmpty(text),
 		})
 	}
@@ -228,7 +236,7 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		"direct_entity_memory_requested_count": len(directEntities),
 		"direct_entity_memory_delivered_count": deliveredDirectEntities,
 		"direct_entity_memory_gap":             maxInt(len(directEntities)-deliveredDirectEntities, 0),
-		"borrowing_policy":                     "disabled_without_item_relevance_provenance", "classes": classes, "final_text": nilIfEmpty(finalText),
+		"borrowing_policy":                     "current_entity_relevance_selected_classes_only", "classes": classes, "final_text": nilIfEmpty(finalText),
 		"historical_chat_authority_policy": "previous_logical_turn_owned_by_input_context_not_direct_evidence",
 		"recent_raw_turn_delivery":         "excluded_from_final_memory_delivery",
 		"raw_chat_fallback_delivery":       "diagnostic_only_excluded_from_final_memory_delivery",

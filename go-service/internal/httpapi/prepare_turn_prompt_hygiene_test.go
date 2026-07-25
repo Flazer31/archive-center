@@ -473,3 +473,60 @@ func TestPrepareTurnVectorSuccessDoesNotFillEventBudgetWithLexicalHistory(t *tes
 		t.Fatalf("vector-success no-fill decision missing: %#v", selection.Trace)
 	}
 }
+
+func TestPrepareTurnOpenGoalCannotSelfActivateThroughSceneState(t *testing.T) {
+	const goal = "Restore the observatory clock"
+	ctx := buildPrepareTurnRecollectionContext(
+		"Mira asks Rowan whether their trust has changed.",
+		nil,
+		[]store.ActiveState{{
+			StateType: "scene_state",
+			TurnIndex: 20,
+			Content:   `{"scene_state":{"location":"library","present_entities":["Mira","Rowan"]},"unresolved_threads":{"opened":["Restore the observatory clock"]}}`,
+		}},
+		nil,
+		[]store.PendingThread{{
+			Title:       goal,
+			Description: goal,
+			Status:      "open",
+			SourceTurn:  20,
+		}},
+	)
+	if strings.Contains(ctx.currentSceneStates, goal) || strings.Contains(ctx.currentSceneStates, "unresolved_threads") {
+		t.Fatalf("open goal leaked into the scene/world relevance query: %q", ctx.currentSceneStates)
+	}
+	if strings.Contains(ctx.unresolvedGoals, goal) {
+		t.Fatalf("open goal selected itself without current-request support: %q", ctx.unresolvedGoals)
+	}
+}
+
+func TestPrepareTurnRelevantOpenGoalIsDeliveredOnceOutsideWorldState(t *testing.T) {
+	const goal = "Restore the observatory clock"
+	const rawInput = "Mira postpones the observatory clock repair and speaks with Rowan in the library."
+	pending := []store.PendingThread{{
+		Title:       goal,
+		Description: goal,
+		Status:      "open",
+		SourceTurn:  20,
+	}}
+	canonical := []store.CanonicalStateLayer{{
+		LayerType: "scene_state",
+		TurnIndex: 20,
+		Content:   `{"scene_state":{"location":"library","present_entities":["Mira","Rowan"]},"unresolved_threads":{"opened":["Restore the observatory clock"]}}`,
+	}}
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil, nil, nil, pending, canonical,
+		nil, nil, nil, nil,
+		5, 9000, rawInput, "default", nil, nil, nil,
+	)
+	if !strings.Contains(assembly.PendingThreadText, goal) {
+		t.Fatalf("request-relevant open goal was not delivered in its owner lane: %q", assembly.PendingThreadText)
+	}
+	if strings.Contains(assembly.CanonWorldText, goal) || strings.Contains(assembly.CanonWorldText, "unresolved_threads") {
+		t.Fatalf("open goal leaked into world-state delivery: %q", assembly.CanonWorldText)
+	}
+	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	if strings.Count(finalText, goal) != 1 {
+		t.Fatalf("goal should be delivered once, got %d copies: %q", strings.Count(finalText, goal), finalText)
+	}
+}

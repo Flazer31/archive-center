@@ -35,7 +35,7 @@ func TestArchiveCenterJSSeq165P142InputContextSlotGovernorMarkers(t *testing.T) 
 func TestArchiveCenterJSSeq165P143TransparencyPreviewRuntimeTraceExtendMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview, weakInputPlanner, responseExecutionContract, progressionChoice, step25ValidationGate) {",
+		"function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview, responseExecutionContract) {",
 		"function logTurnTraceSummary() {",
 		"function renderTurnTraceRows() {",
 		"_inputTransparency = buildInputTransparency(",
@@ -52,6 +52,11 @@ func TestArchiveCenterJSSeq165P143TransparencyPreviewRuntimeTraceExtendMarkers(t
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-16.5-P143 transparency/preview/runtime trace marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{"weakInputPlanner", "progressionChoiceLedger", "step25ValidationGate"} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains removed story-control transparency marker %q", forbidden)
 		}
 	}
 }

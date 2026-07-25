@@ -101,19 +101,30 @@ func TestFinalPayloadParitySeparatesActualUserFromRisuPromptTailRuntime(t *testi
 		var err error
 		nodePath, err = exec.LookPath("node")
 		if err != nil {
-			t.Skip("node is required for final-payload parity runtime fixture")
+			t.Fatalf("node is required for final-payload parity runtime fixture; set ARCHIVE_CENTER_NODE_BINARY: %v", err)
 		}
 	}
 	src := readArchiveCenterJS(t)
-	hashFn := extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c")
-	fn := extractArchiveCenterJSFunction(t, src, "buildFinalPayloadParityTrace")
-	script := hashFn + "\n" + fn + `
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c"),
+		extractArchiveCenterJSFunction(t, src, "truncPreview"),
+		extractArchiveCenterJSFunction(t, src, "isBoundaryOnlyUserInput"),
+		extractArchiveCenterJSFunction(t, src, "isMetaUserMessage"),
+		extractArchiveCenterJSFunction(t, src, "normalizeRollbackMessageRole"),
+		extractArchiveCenterJSFunction(t, src, "extractMessageContentCandidate"),
+		extractArchiveCenterJSFunction(t, src, "extractComparableMessageRoleAndContent"),
+		extractArchiveCenterJSFunction(t, src, "isChatMessageLike"),
+		extractArchiveCenterJSFunction(t, src, "isChatMessageArray"),
+		extractArchiveCenterJSFunction(t, src, "getPayloadPathValue"),
+		extractArchiveCenterJSFunction(t, src, "buildPayloadPathRebuilder"),
+		extractArchiveCenterJSFunction(t, src, "findPayloadMessagesPath"),
+		extractArchiveCenterJSFunction(t, src, "extractMessages"),
+		extractArchiveCenterJSFunction(t, src, "findLastPayloadMessage"),
+		extractArchiveCenterJSFunction(t, src, "buildFinalPayloadParityTrace"),
+	}, "\n")
+	script := functions + `
 const settings = {pluginMainApplyMode:"shadow",pluginMainRewriteLegacyOptIn:false};
-function extractMessages(payload) { return {messages:payload.messages||[]}; }
-function findLastPayloadMessage(messages, role) { for (let i=messages.length-1;i>=0;i--) if (!role || messages[i].role===role) return messages[i]; return null; }
-function truncPreview(value, limit) { return String(value||"").slice(0,limit); }
-function isMetaUserMessage(value) { return /^system\s*:/i.test(String(value||"").trim()); }
-const payload = {messages:[{role:"user",content:"system: POV instructions and host prompt"}]};
+const payload = [{role:"user",content:"system: POV instructions and host prompt"}];
 const trace = buildFinalPayloadParityTrace(payload, payload, {
   chatSessionId:"session-copy", userInputSource:"active_chat:0", effectiveUserInput:"한얼은 숯불에 손을 다쳤다.",
   applyMode:{mode:"shadow",payloadReplaced:false},payloadMutated:false
@@ -125,7 +136,7 @@ const mismatch = buildFinalPayloadParityTrace(payload, payload, {
   effectiveInputText:"required auxiliary", injectionResult:{mainInjectionPreview:"required auxiliary"}
 });
 if (mismatch.status !== "mismatch" || mismatch.payloadContentMatch !== false) throw new Error("missing payload component was accepted: "+JSON.stringify(mismatch));
-const matchedPayload = {messages:[{role:"system",content:"host scaffold\nrequired auxiliary"}]};
+const matchedPayload = [{role:"system",content:"host scaffold\nrequired auxiliary"}];
 const matched = buildFinalPayloadParityTrace(payload, matchedPayload, {
   effectiveInputText:"required auxiliary", injectionResult:{mainInjectionPreview:"required auxiliary"}
 });
@@ -1464,19 +1475,33 @@ async function buildCompleteTurnRequestBody(turn,user,assistant,context,sid,trac
   buildOptions = options;
   return {chat_session_id:sid,turn_index:turn,user_input:user,assistant_content:assistant,context_messages:context,
     improvement_trace:trace,request_type:"model",client_meta:{idempotency_key:"host-final-key",source_acceptance_observation:{
-      observed_content_hash:"host-final-hash",position_observation:"current_active_chat_tail"
+      observed_content_hash:"host-final-hash",hash_algorithm:"or1c_utf16_djb2.v1",generation_id:"generation-host-final",
+      generation_id_state:"observed",position_observation:"current_active_chat_tail"
     }}};
 }
 function buildCompleteTurnQueuePayload(body) { return JSON.parse(JSON.stringify(body)); }
 (async function() {
   const payload={chat_session_id:"session-1",turn_index:15,user_input:"user",assistant_content:"native before host apply",context_messages:[],client_meta:{
-    idempotency_key:"old-key",source_acceptance_observation:{active_message_count:151}
+    idempotency_key:"old-key",source_acceptance_observation:{active_message_count:151},
+    source_to_final_lineage_observation:{contract_version:"source_to_final_lineage_observation.v1",status:"ready",
+      archive_center_request_correlation_id:"correlation-original",prepare_lineage_id:"stl_original",
+      payload_plan_id:"stp_original",generation_id_state:"unobserved",payload_application_status:"applied",
+      payload_observation_stage:"archive_center_before_request_return",final_provider_payload_state:"not_exposed",
+      source_refs:["memory:session-1:41"],semantic_outcome:"unobserved"}
   }};
   const ok=await refreshQueuedCompleteTurnSourceObservation(payload);
   if(!ok) throw new Error("same-turn active host final did not refresh");
   if(buildAssistant!=="host final" || payload.assistant_content!=="host final") throw new Error("queued assistant was not replaced by host final");
   if(!buildOptions || buildOptions.allowExistingActiveMessage!==true) throw new Error("retry did not allow live existing message observation");
   if(payload.client_meta.idempotency_key!=="host-final-key") throw new Error("idempotency key was not rebuilt");
+  const lineage=payload.client_meta.source_to_final_lineage_observation;
+  if(!lineage || lineage.archive_center_request_correlation_id!=="correlation-original" ||
+    lineage.prepare_lineage_id!=="stl_original" || lineage.payload_plan_id!=="stp_original") {
+    throw new Error("queued source lineage correlation was replaced");
+  }
+  if(lineage.generation_id!=="generation-host-final" || lineage.final_observed_content_hash!=="host-final-hash") {
+    throw new Error("queued source lineage did not refresh only the active-final observation");
+  }
   resolvedTurn = 16;
   const wrongTurn={chat_session_id:"session-1",turn_index:15,user_input:"user",assistant_content:"native before host apply",context_messages:[],client_meta:{}};
   if(await refreshQueuedCompleteTurnSourceObservation(wrongTurn)) throw new Error("different logical turn was adopted");
@@ -1505,20 +1530,158 @@ func TestPersistedCompleteTurnQueueKeepsSourceFenceWithoutCredentials(t *testing
 	script := functions + `
 function normalizeLanguageContextTrace(value) { return value; }
 const sourceObservation = {contract_version:"source_acceptance_observation.v1",observed_at_ms:123,message_index:4,active_message_count:5};
+const sourceLineage = {contract_version:"source_to_final_lineage_observation.v1",status:"ready",
+  archive_center_request_correlation_id:"correlation-1",prepare_lineage_id:"stl_1",payload_plan_id:"stp_1",
+  generation_id:"generation-1",generation_id_state:"observed",source_refs:["memory:session-1:41"],
+  payload_application_status:"applied",payload_observation_stage:"archive_center_before_request_return",
+  final_provider_payload_state:"not_exposed",semantic_outcome:"unobserved"};
 const saved = serializeCompleteTurnRecoveryPayload({
   chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],
-  client_meta:{source_acceptance_required:true,source_acceptance_observation:sourceObservation,idempotency_key:"key-1",critic:{api_key:"secret"}}
+  client_meta:{source_acceptance_required:true,source_acceptance_observation:sourceObservation,
+    source_to_final_lineage_observation:sourceLineage,idempotency_key:"key-1",
+    critic:{api_key:"secret"},authorization:"Bearer secret"}
 });
 if (!saved || saved.client_meta.source_acceptance_required !== true) throw new Error("source fence requirement was lost");
 if (!saved.client_meta.source_acceptance_observation || saved.client_meta.source_acceptance_observation.message_index !== 4) throw new Error("source observation was lost");
 if (saved.client_meta.idempotency_key !== "key-1") throw new Error("idempotency key was lost");
-if (saved.client_meta.critic || JSON.stringify(saved).includes("secret")) throw new Error("credential-bearing critic config was persisted");
+const savedLineage=saved.client_meta.source_to_final_lineage_observation;
+if (!savedLineage || savedLineage.archive_center_request_correlation_id!=="correlation-1" ||
+  savedLineage.prepare_lineage_id!=="stl_1" || savedLineage.payload_plan_id!=="stp_1" ||
+  savedLineage.status!=="ready" || savedLineage.payload_observation_stage!=="archive_center_before_request_return" ||
+  savedLineage.final_provider_payload_state!=="not_exposed") throw new Error("source lineage fence was lost");
+if (saved.client_meta.critic || JSON.stringify(saved).includes("secret") || JSON.stringify(saved).includes("Bearer")) throw new Error("credential-bearing config was persisted");
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("persisted complete-turn source fence fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestOutputFidelity35BProductionJSLineageBoundaries(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Fatalf("node is required for output-fidelity lineage fixture; set ARCHIVE_CENTER_NODE_BINARY: %v", err)
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c"),
+		extractArchiveCenterJSFunction(t, src, "resolvePendingSourceLineageOwnership"),
+		extractArchiveCenterJSFunction(t, src, "normalizeRollbackMessageRole"),
+		extractArchiveCenterJSFunction(t, src, "extractMessageContentCandidate"),
+		extractArchiveCenterJSFunction(t, src, "extractComparableMessageRoleAndContent"),
+		extractArchiveCenterJSFunction(t, src, "auxiliaryMessageContentText"),
+		extractArchiveCenterJSFunction(t, src, "getPayloadMessageRoleAndText"),
+		extractArchiveCenterJSFunction(t, src, "isChatMessageLike"),
+		extractArchiveCenterJSFunction(t, src, "isChatMessageArray"),
+		extractArchiveCenterJSFunction(t, src, "getPayloadPathValue"),
+		extractArchiveCenterJSFunction(t, src, "buildPayloadPathRebuilder"),
+		extractArchiveCenterJSFunction(t, src, "findPayloadMessagesPath"),
+		extractArchiveCenterJSFunction(t, src, "extractMessages"),
+		extractArchiveCenterJSFunction(t, src, "injectInputContextBeforeUser"),
+		extractArchiveCenterJSFunction(t, src, "observeGoPayloadApplication"),
+		extractArchiveCenterJSFunction(t, src, "applyGoPayloadApplicationPlan"),
+		extractArchiveCenterJSFunction(t, src, "buildSourceToFinalLineageObservation"),
+	}, "\n")
+	script := functions + `
+const runtimeUpdates=[];
+function updateRuntimeState(key,status,detail) { runtimeUpdates.push({key,status,detail}); }
+function warnLog() { throw new Error("unexpected production warning"); }
+const exact="[Archive Center — Auxiliary Context]\n\nmemory guidance";
+const plan={auxiliary_text:"memory guidance",input_context_text:"",
+  auxiliary_observation_hash:computeOrchestrationDirtyHashOr1c(exact),payload_plan_id:"stp_1",
+  guidance_application_trace:{final_hash:"sha256:guidance"}};
+const lineage={archive_center_request_correlation_id:"correlation-1",lineage_id:"stl_1",payload_plan_id:"stp_1",
+  source_refs:["memory:session-1:41"],execution_items:[{item_id:"ei_1"}]};
+const activeChatAlias=getPayloadMessageRoleAndText({role:"char",content:"active chat assistant"});
+if(activeChatAlias.role!=="assistant" || activeChatAlias.text!=="active chat assistant") {
+  throw new Error("active-chat role normalization was bypassed by official payload parsing");
+}
+const good=observeGoPayloadApplication([{role:"system",content:exact}],plan,lineage);
+if(good.status!=="ready" || good.payload_application_status!=="applied" || good.blocks[0].hash_match!==true) {
+  throw new Error("exact returned message block was not observed");
+}
+if(good.final_provider_payload_state!=="not_exposed") throw new Error("provider payload boundary was overstated");
+if(JSON.stringify(good).includes("memory guidance")) throw new Error("raw injected text leaked into lineage observation");
+const mismatch=observeGoPayloadApplication([{role:"system",content:exact}],
+  Object.assign({},plan,{auxiliary_observation_hash:"or1c_wrong"}),lineage);
+if(mismatch.status!=="ambiguous" || mismatch.reason_code!=="injected_block_hash_mismatch") {
+  throw new Error("payload hash mismatch was not left ambiguous");
+}
+const duplicate=observeGoPayloadApplication([{role:"system",content:exact},{role:"system",content:exact}],plan,lineage);
+if(duplicate.status!=="ambiguous" || duplicate.reason_code!=="injected_block_position_ambiguous") {
+  throw new Error("duplicate injected blocks were not left ambiguous");
+}
+const inputText="current scene continuity";
+const exactInput="[Archive Center — Input Context]\n\n"+inputText;
+const applyPlan={
+  contract_version:"payload_application_plan.v1",owner:"go",
+  apply_rule:"apply_exact_text_without_reassembly",status:"ready",
+  auxiliary_text:"",input_context_text:inputText,
+  input_context_observation_hash:computeOrchestrationDirtyHashOr1c(exactInput),
+  input_context_chars:inputText.length,payload_plan_id:"stp_input",lanes:[]
+};
+const applyLineage={archive_center_request_correlation_id:"correlation-input",
+  lineage_id:"stl_input",payload_plan_id:"stp_input",source_refs:[],execution_items:[]};
+const originalPayload=[{role:"system",content:"host preset"},{role:"user",content:"continue"}];
+const applied=applyGoPayloadApplicationPlan(originalPayload,{
+  _injectionPack:{payload_application_plan:applyPlan},
+  _sourceToPayloadLineage:applyLineage,_trace:{}
+},{});
+if(!applied.injectionResult.applied || !applied.injectionResult.inputContext.applied) {
+  throw new Error("production Go payload plan did not report the official-array input context as applied");
+}
+if(originalPayload.length!==2 || originalPayload.some(function(message){ return message.content===exactInput; })) {
+  throw new Error("production payload application mutated the original RisuAI array");
+}
+const returnedMessages=extractMessages(applied.payload).messages;
+const exactInputMatches=returnedMessages.filter(function(message) {
+  const parsed=getPayloadMessageRoleAndText(message);
+  return parsed.role==="system" && parsed.text===exactInput;
+});
+if(exactInputMatches.length!==1 || returnedMessages[returnedMessages.length-1].content!=="continue") {
+  throw new Error("production payload application did not return exactly one system input block before the user");
+}
+if(!applied.injectionResult.payloadApplicationObservation ||
+  applied.injectionResult.payloadApplicationObservation.payload_application_status!=="applied") {
+  throw new Error("production payload observation did not confirm the returned official RisuAI array");
+}
+if(runtimeUpdates.length!==1 || runtimeUpdates[0].key!=="lastInjectionStatus" || runtimeUpdates[0].status!=="ok") {
+  throw new Error("production payload application did not publish one successful runtime state");
+}
+const pending={requestId:"request-1",sourceLineageAmbiguous:true};
+const sticky=resolvePendingSourceLineageOwnership(pending,"request-1",false);
+if(!sticky.ownsPending || !sticky.ambiguous) throw new Error("running-overlap ambiguity was lost");
+const replaced=resolvePendingSourceLineageOwnership({requestId:"request-2"},"request-1",false);
+if(replaced.ownsPending || replaced.ambiguous) throw new Error("replaced pending request retained ownership");
+const orch={_sourceToPayloadLineage:lineage,_payloadApplicationObservation:good};
+const finalReady=buildSourceToFinalLineageObservation({
+  generation_id:"generation-1",generation_id_state:"observed",observed_content_hash:"or1c_final",
+  hash_algorithm:"or1c_utf16_djb2.v1"
+},orch);
+if(!finalReady || finalReady.status!=="ready" ||
+  finalReady.payload_observation_stage!=="archive_center_before_request_return" ||
+  finalReady.final_provider_payload_state!=="not_exposed" || finalReady.semantic_outcome!=="unobserved") {
+  throw new Error("ready final lineage boundary was not preserved");
+}
+orch._sourceLineageAmbiguous=true;
+const finalOverlap=buildSourceToFinalLineageObservation({
+  generation_id:"generation-1",generation_id_state:"observed"
+},orch);
+if(finalOverlap.status!=="ambiguous" || finalOverlap.reason_code!=="overlapping_main_request_lineage_ambiguous") {
+  throw new Error("overlapping request attached to final output");
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("output-fidelity production JS lineage fixture failed: %v\n%s", err, out)
 	}
 }
 

@@ -3,12 +3,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
-	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
 var proxyHTTPClient = http.DefaultClient
@@ -40,25 +38,11 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 	wakeUpContext := stringPtrValue(req.WakeUpContext, "")
 	persistentGuidance := stringPtrValue(req.PersistentGuidance, "")
 	promptTrace := buildPromptAssemblyTrace(s.Cfg.PromptDir)
-	var storylines []store.Storyline
-	storylineReadStatus := "unavailable"
-	if s.Store != nil {
-		if rows, err := s.Store.ListStorylines(r.Context(), sid); err == nil {
-			storylines = rows
-			storylineReadStatus = "ok"
-		} else if errors.Is(err, store.ErrNotEnabled) {
-			storylineReadStatus = "disabled"
-		} else {
-			storylineReadStatus = "error"
-		}
-	}
-	storylineSelection := selectStorylinesForSupervisor(storylines, nil, 5)
+	storylineSelection := storylineSupervisorSelection{}
 	evidenceCounts := map[string]any{
 		"context_messages":            len(req.ContextMessages),
 		"wake_up_context_present":     wakeUpContext != "",
 		"persistent_guidance_present": persistentGuidance != "",
-		"storyline_count":             len(storylines),
-		"storyline_selected_count":    len(storylineSelection.Selected),
 	}
 	sectionSummary := []map[string]any{
 		{
@@ -67,13 +51,6 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 			"available": wakeUpContext != "" || persistentGuidance != "" || len(req.ContextMessages) > 0,
 			"truncated": false,
 			"sources":   []string{"context_messages", "wake_up_context", "persistent_guidance"},
-		},
-		{
-			"name":      "storyline_selection",
-			"chars":     len([]rune(formatStorylinesForSupervisor(storylineSelection))),
-			"available": len(storylineSelection.Selected) > 0,
-			"truncated": false,
-			"sources":   []string{"store.storylines"},
 		},
 	}
 	supervisorPack := buildSupervisorInputPack(sid, 0, "", guideMode, guideStrength, narrativeStance, autoAdvanceTrigger, wakeUpContext, promptTrace, evidenceCounts, sectionSummary, storylineSelection, false, "", nil)
@@ -85,18 +62,10 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 	trace["guide_strength"] = guideStrength
 	trace["supervisor_proposal_coverage"] = supervisorProposalCoverage(guideStrength)
 	trace["response_execution_contract_present"] = len(req.ResponseExecutionContract) > 0
-	trace["guide_suffix_present"] = supervisorPack["guide_suffix"] != ""
-	trace["director_overrides"] = supervisorPack["director_overrides"]
-	trace["narrative_stance"] = narrativeStance
-	trace["narrative_stance_summary"] = supervisorPack["narrative_stance_summary"]
-	trace["narrative_stance_suffix_present"] = supervisorPack["narrative_stance_suffix"] != ""
-	trace["narrative_stance_bounds_present"] = supervisorPack["narrative_stance_bounds"] != nil
-	trace["auto_advance_trigger"] = autoAdvanceTrigger
+	trace["guide_focus"] = supervisorPack["guide_focus"]
 	trace["wake_up_context_present"] = wakeUpContext != ""
 	trace["persistent_guidance_present"] = persistentGuidance != ""
 	trace["context_messages_count"] = len(req.ContextMessages)
-	trace["storyline_read_status"] = storylineReadStatus
-	trace["storyline_selection"] = supervisorPack["storyline_selection"]
 	trace["would_call_llm"] = false
 	trace["would_write"] = false
 	llmCfg := s.supervisorLLMConfig()
@@ -178,58 +147,16 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPack map[string]any, req dto.SupervisorRequest, cfg completeTurnLLMConfig) (map[string]any, map[string]any, error) {
 	systemPrompt, promptSource := readSupervisorSystemPrompt(s.Cfg.PromptDir)
 	guideMode := resolveNarrativeGuideMode(stringPtrValue(req.GuideMode, "off"), req.ContextMessages, stringPtrValue(req.WakeUpContext, ""), "")
-	guideSuffix := stringPtrValue(req.GuideSuffix, "")
-	if guideSuffix == "" {
-		if v, ok := supervisorPack["guide_suffix"].(string); ok {
-			guideSuffix = v
-		}
-	}
-	systemPromptForCall := systemPrompt
-	if strings.TrimSpace(guideSuffix) != "" {
-		systemPromptForCall = strings.TrimRight(systemPromptForCall, "\n") + "\n" + guideSuffix
-	}
-	narrativeStance := stringPtrValue(req.NarrativeStance, "balanced")
-	narrativeStanceSuffix := stringPtrValue(req.NarrativeStanceSuffix, "")
-	if narrativeStanceSuffix == "" {
-		if v, ok := supervisorPack["narrative_stance_suffix"].(string); ok {
-			narrativeStanceSuffix = v
-		}
-	}
-	narrativeStanceBounds := req.NarrativeStanceBounds
-	if len(narrativeStanceBounds) == 0 {
-		if v, ok := supervisorPack["narrative_stance_bounds"].(map[string]any); ok {
-			narrativeStanceBounds = v
-		}
-	}
-	if strings.TrimSpace(narrativeStanceSuffix) != "" {
-		systemPromptForCall = strings.TrimRight(systemPromptForCall, "\n") + "\n" + narrativeStanceSuffix
-	}
-	if len(narrativeStanceBounds) > 0 {
-		systemPromptForCall = strings.TrimRight(systemPromptForCall, "\n") + "\n[Story Initiative Bounds]\n" + compactJSONForShadow(narrativeStanceBounds, 600)
-	}
-	momentumSuffix := formatMomentumSuffix(req.MomentumPacket)
-	if strings.TrimSpace(momentumSuffix) != "" {
-		systemPromptForCall = strings.TrimRight(systemPromptForCall, "\n") + "\n" + momentumSuffix
-	}
 	payload := map[string]any{
 		"chat_session_id":              sid,
 		"guide_mode":                   guideMode,
 		"guide_strength":               extractionStringFromAny(supervisorPack["guide_strength"]),
-		"narrative_stance":             narrativeStance,
-		"auto_advance_trigger":         stringPtrValue(req.AutoAdvanceTrigger, "none"),
-		"wake_up_context":              stringPtrValue(req.WakeUpContext, ""),
-		"persistent_guidance":          stringPtrValue(req.PersistentGuidance, ""),
+		"guide_focus":                  supervisorPack["guide_focus"],
 		"context_messages":             req.ContextMessages,
-		"momentum_packet":              req.MomentumPacket,
-		"narrative_stance_bounds":      narrativeStanceBounds,
-		"narrative_stance_suffix":      narrativeStanceSuffix,
-		"guide_suffix":                 guideSuffix,
-		"director_overrides":           supervisorPack["director_overrides"],
-		"supervisor_input_pack":        supervisorPack,
 		"response_execution_contract":  supervisorPack["response_execution_contract"],
 		"supervisor_proposal_coverage": supervisorProposalCoverage(extractionStringFromAny(supervisorPack["guide_strength"])),
-		"required_output": "Return only JSON with supervisor_scene_proposal. Every proposal item must be an object with text and source_refs copied from response_execution_contract.source_refs. " +
-			"Use only fidelity_warnings, portrayal_notes, and may_advance fields allowed by supervisor_proposal_coverage. Proposals are optional and may not assert facts, change relationships, decide user actions, or close unresolved events.",
+		"required_output": "Return only JSON with supervisor_scene_proposal. Every proposal item must be an object with text and source_refs, including at least one exact ref copied from response_execution_contract.source_refs.memory. " +
+			"Use only fidelity_warnings and portrayal_notes fields allowed by supervisor_proposal_coverage. Proposals may preserve supported memory, relationship, knowledge, and privacy continuity, but may not prescribe story structure, pacing, scene count, transitions, endings, or user actions.",
 	}
 	userPromptBytes, _ := json.MarshalIndent(payload, "", "  ")
 	maxTokens := cfg.MaxTokens
@@ -242,7 +169,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		Endpoint:    &cfg.Endpoint,
 		Model:       &cfg.Model,
 		Provider:    &cfg.Provider,
-		Messages:    []any{map[string]any{"role": "system", "content": systemPromptForCall}, map[string]any{"role": "user", "content": string(userPromptBytes)}},
+		Messages:    []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": string(userPromptBytes)}},
 		MaxTokens:   &maxTokens,
 		Temperature: &temp,
 		TimeoutMs:   &cfg.TimeoutMs,
@@ -279,8 +206,8 @@ func supervisorProposalCoverage(strength string) map[string]any {
 		}
 	case "strong":
 		return map[string]any{
-			"profile":       "bounded_direction",
-			"allowed_roles": []string{"fidelity_warning", "portrayal_note", "may_advance"},
+			"profile":       "guard_and_portrayal",
+			"allowed_roles": []string{"fidelity_warning", "portrayal_note"},
 		}
 	case "medium":
 		return map[string]any{
@@ -304,10 +231,17 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	allowedRefList := append([]string{}, stringSliceFromAny(sourceRefs["all"])...)
 	allowedRefList = appendUniqueStringValues(allowedRefList, stringSliceFromAny(sourceRefs["current_input"])...)
 	allowedRefList = appendUniqueStringValues(allowedRefList, stringSliceFromAny(sourceRefs["native_system"])...)
+	memoryRefList := appendUniqueStringValues([]string{}, stringSliceFromAny(sourceRefs["memory"])...)
 	allowedRefs := make(map[string]struct{}, len(allowedRefList))
 	for _, ref := range allowedRefList {
 		if ref = strings.TrimSpace(ref); ref != "" {
 			allowedRefs[ref] = struct{}{}
+		}
+	}
+	memoryRefs := make(map[string]struct{}, len(memoryRefList))
+	for _, ref := range memoryRefList {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			memoryRefs[ref] = struct{}{}
 		}
 	}
 	contractReady, contractReasonCode := supervisorExecutionContractReady(supervisorPack)
@@ -320,8 +254,8 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 		"would_write":        false,
 		"guide_strength":     strength,
 		"coverage":           coverage,
-		"verification_state": "source_refs_required",
-		"application_rule":   "Treat every item as optional support. Apply it only when it remains compatible with the current user input and linked request evidence; never use it as story truth or permission to decide user actions, relationship changes, or event closure.",
+		"verification_state": "delivered_memory_ref_required_per_item",
+		"application_rule":   "Treat every item as optional support. Apply it only when it cites at least one delivered memory source and remains compatible with the current user input; never use it as story truth or permission to decide user actions, relationship changes, event closure, scene structure, pacing, transitions, endings, or next actions.",
 		"blocked_authority": []string{
 			"new_fact",
 			"unverified_relationship_change",
@@ -330,15 +264,16 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 			"canonical_write",
 		},
 		"source_refs": map[string]any{
-			"allowed": allowedRefList,
+			"allowed":                  allowedRefList,
+			"required_memory_evidence": memoryRefList,
 		},
 		"fidelity_warnings": []map[string]any{},
 		"portrayal_notes":   []map[string]any{},
-		"may_advance":       []map[string]any{},
 	}
 	trace := map[string]any{
 		"contract_ready": contractReady,
 		"allowed_refs":   len(allowedRefs),
+		"memory_refs":    len(memoryRefs),
 		"guide_strength": strength,
 		"coverage":       coverage,
 	}
@@ -373,13 +308,12 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	}{
 		{field: "fidelity_warnings", role: "fidelity_warning"},
 		{field: "portrayal_notes", role: "portrayal_note"},
-		{field: "may_advance", role: "may_advance"},
 	} {
 		if _, allowed := allowedRoles[lane.role]; !allowed {
 			rejectedTotal += anySliceLength(rawProposal[lane.field])
 			continue
 		}
-		items, rejected := normalizeSupervisorProposalItems(rawProposal[lane.field], allowedRefs)
+		items, rejected := normalizeSupervisorProposalItems(rawProposal[lane.field], allowedRefs, memoryRefs)
 		proposal[lane.field] = items
 		acceptedTotal += len(items)
 		rejectedTotal += rejected
@@ -401,15 +335,12 @@ func supervisorExecutionContractReady(supervisorPack map[string]any) (bool, stri
 		return false, "supervisor_execution_contract_missing"
 	}
 	sourceRefs := mapFromAny(executionContract["source_refs"])
-	refs := append([]string{}, stringSliceFromAny(sourceRefs["all"])...)
-	refs = appendUniqueStringValues(refs, stringSliceFromAny(sourceRefs["current_input"])...)
-	refs = appendUniqueStringValues(refs, stringSliceFromAny(sourceRefs["native_system"])...)
-	for _, ref := range refs {
+	for _, ref := range stringSliceFromAny(sourceRefs["memory"]) {
 		if strings.TrimSpace(ref) != "" {
 			return true, ""
 		}
 	}
-	return false, "supervisor_execution_contract_has_no_source_refs"
+	return false, "supervisor_execution_contract_has_no_memory_refs"
 }
 
 func boundedSupervisorEnvelope(proposal map[string]any) map[string]any {
@@ -424,7 +355,7 @@ func boundedSupervisorEnvelope(proposal map[string]any) map[string]any {
 	}
 }
 
-func normalizeSupervisorProposalItems(raw any, allowedRefs map[string]struct{}) ([]map[string]any, int) {
+func normalizeSupervisorProposalItems(raw any, allowedRefs, memoryRefs map[string]struct{}) ([]map[string]any, int) {
 	values, ok := raw.([]any)
 	if !ok {
 		return []map[string]any{}, anySliceLength(raw)
@@ -442,16 +373,20 @@ func normalizeSupervisorProposalItems(raw any, allowedRefs map[string]struct{}) 
 		}
 		validRefs := make([]string, 0, len(refs))
 		valid := true
+		hasMemoryEvidence := false
 		for _, ref := range refs {
 			ref = strings.TrimSpace(ref)
 			if _, exists := allowedRefs[ref]; !exists {
 				valid = false
 				break
 			}
+			if _, exists := memoryRefs[ref]; exists {
+				hasMemoryEvidence = true
+			}
 			validRefs = appendUniqueStringValues(validRefs, ref)
 		}
 		key := strings.ToLower(text)
-		if !valid || len(validRefs) == 0 {
+		if !valid || len(validRefs) == 0 || !hasMemoryEvidence {
 			rejected++
 			continue
 		}
@@ -463,7 +398,7 @@ func normalizeSupervisorProposalItems(raw any, allowedRefs map[string]struct{}) 
 		accepted = append(accepted, map[string]any{
 			"text":               text,
 			"source_refs":        validRefs,
-			"verification_state": "source_linked_proposal",
+			"verification_state": "delivered_memory_linked_proposal",
 		})
 	}
 	return accepted, rejected

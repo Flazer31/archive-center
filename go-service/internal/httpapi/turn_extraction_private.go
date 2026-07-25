@@ -759,6 +759,9 @@ func (s *Server) canonicalSubjectiveEntityOwner(ctx context.Context, sid, rawKey
 }
 
 func (s *Server) canonicalizeSubjectiveEntityMemoryForRead(ctx context.Context, sid string, memory store.ProtagonistEntityMemory) store.ProtagonistEntityMemory {
+	if subjectiveEntityMemoryHasAnyTag(memory, "entity_manual_owner_edit", "entity_force_merged") {
+		return memory
+	}
 	owner := s.canonicalSubjectiveEntityOwner(ctx, sid, firstNonEmpty(memory.OwnerEntityKey, memory.PersonaEntityKey), firstNonEmpty(memory.OwnerEntityName, memory.PersonaEntityName))
 	if owner.Key == "" {
 		return memory

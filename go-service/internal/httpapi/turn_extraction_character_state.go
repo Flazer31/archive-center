@@ -275,6 +275,14 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			"confidence":  confidence,
 			"source_turn": turnIndex,
 		}
+		subject := strings.TrimSpace(stringFromMap(thread, "subject"))
+		stateSlot := normalizeNarrativeStateSlot(stringFromMap(thread, "state_slot"))
+		if subject != "" &&
+			normalizeArtifactDedupeText(subject) == normalizeArtifactDedupeText(title) &&
+			stateSlot == "goal_status" {
+			threadState["subject"] = subject
+			threadState["state_slot"] = stateSlot
+		}
 		if saver, ok := s.Store.(activeStateSaver); ok {
 			result.trySave("SaveActiveState(unresolved_threads)", func() error {
 				return saver.SaveActiveState(ctx, &store.ActiveState{

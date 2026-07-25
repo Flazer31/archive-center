@@ -412,6 +412,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	storylines, pendingThreads, activeStates, canonicalLayers, supersededOpenGoalTrace := filterPrepareTurnSupersededOpenGoals(
+		narrativeCurrentValues,
+		storylines,
+		pendingThreads,
+		activeStates,
+		canonicalLayers,
+	)
+	materializationTrace["superseded_open_goals"] = supersededOpenGoalTrace
 	materializationTrace["memory_rows"] = len(memories)
 	materializationTrace["kg_rows"] = len(kgTriples)
 	materializationTrace["evidence_rows"] = len(evidence)
@@ -463,8 +471,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	guideDisabled := guideStrength == "none"
 	if guideDisabled {
 		guideMode = "off"
-		storylineSelection.Selected = nil
-		selectedStorylines = nil
 	}
 	injectionAssembly := prepareTurnInjectionAssembly{}
 	documents := []map[string]any{}
@@ -476,6 +482,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, maxInjectionChars, rawUserInput, profile, documents, vectorShadow, languageContext, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext)
 		}
 	}
+	memoryDeliveryText := extractionStringFromAny(injectionAssembly.MemoryDeliveryPlan["final_text"])
 	timing.addElapsed("injection_assembly", injectionStartedAt)
 	referenceRecallStartedAt := time.Now()
 	referenceSceneContext := buildReferenceCoverageSceneContext(chatLogs, activeStates, canonicalLayers, worldRules, supportRecallLimit)
@@ -518,7 +525,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	referenceBudgetPolicy.RemainingChars = referenceBudgetPolicy.TotalCapChars - referenceBudgetPolicy.UsedChars
 	referenceBudgetPolicy.Truncated = primaryCanonBase.Truncated || (referenceInjectionEnabled && referenceInjectedCount < len(referenceRecall.InjectionItems))
 	referenceText := strings.Join(nonEmptyStrings([]string{primaryCanonBase.Text, referenceInjectionText}), "\n\n")
-	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, injectionAssembly.Text}), "\n\n")
+	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryDeliveryText}), "\n\n")
 	injectionTruncated := injectionAssembly.Truncated
 
 	var inputContextText string
@@ -549,7 +556,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	evidenceCounts["storyline_selected_count"] = len(storylineSelection.Selected)
 	evidenceCounts["storyline_dropped_count"] = len(storylineSelection.Dropped)
 	evidenceCounts["storyline_stale_dropped_count"] = storylineSelectionSummary(storylineSelection)["stale_dropped_count"]
-	sectionSummary := prepareTurnSectionSummary(injectionAssembly.Text, inputContextText, injectionTruncated, inputContextTruncated)
+	sectionSummary := prepareTurnSectionSummary(memoryDeliveryText, inputContextText, injectionTruncated, inputContextTruncated)
 	supervisorInputPack := buildSupervisorInputPack(
 		sid,
 		turnIndex,
@@ -671,85 +678,45 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		runtimeToggle = buildRuntimeToggle(sid, degraded, injectionEnabled, inputContextEnabled, maxInjectionChars, maxInputContextChars)
 	}
 	inputAnchorGovernor := buildInputAnchorGovernor(rawUserInput, inputContextText, inputContextTruncated, maxInputContextChars, chatLogs, resumePack, activeStates, canonicalLayers, episodeSums, pendingThreads, storylines)
-	weakInputPlanner := buildWeakInputPlannerContract(rawUserInput, inputAnchorGovernor, languageContext, maxInputContextChars)
-	responseExecutionContract := buildResponseExecutionContract(rawUserInput, narrativeStance, guideMode, guideStrength, inputAnchorGovernor, weakInputPlanner, selectedStorylines, pendingThreads, activeStates, canonicalLayers, worldRules, injectionAssembly, languageContext, currentInputDecision, hostContextReferenceEvidence)
-	progressionChoiceLedger := buildProgressionChoiceLedger(sid, turnIndex, rawUserInput, chatLogs, selectedStorylines, pendingThreads, episodeSums, inputAnchorGovernor, weakInputPlanner, responseExecutionContract, progressionLedger)
-	progressionLedger["progression_choice"] = progressionChoiceLedger
-	step25ValidationGate := buildStep25ValidationGate(rawUserInput, weakInputPlanner, responseExecutionContract, progressionChoiceLedger)
-	supervisorInputPack["step25_validation_gate"] = step25ValidationGate
-	if guidance := formatWeakInputPlannerGuidance(weakInputPlanner); guidance != "" {
-		supervisorInputPack["weak_input_planner"] = weakInputPlanner
-		if existing, _ := supervisorInputPack["persistent_guidance"].(string); strings.TrimSpace(existing) != "" {
-			supervisorInputPack["persistent_guidance"] = existing + "\n" + guidance
-		} else {
-			supervisorInputPack["persistent_guidance"] = guidance
-		}
-		if existing, _ := supervisorInputPack["final_guidance_suffix"].(string); strings.TrimSpace(existing) != "" {
-			supervisorInputPack["final_guidance_suffix"] = existing + "\n" + guidance
-		} else {
-			supervisorInputPack["final_guidance_suffix"] = guidance
-		}
-	}
-	if guidance := formatResponseExecutionContractGuidance(responseExecutionContract); guidance != "" {
-		supervisorInputPack["response_execution_contract"] = responseExecutionContract
-		if existing, _ := supervisorInputPack["persistent_guidance"].(string); strings.TrimSpace(existing) != "" {
-			supervisorInputPack["persistent_guidance"] = existing + "\n" + guidance
-		} else {
-			supervisorInputPack["persistent_guidance"] = guidance
-		}
-		if existing, _ := supervisorInputPack["final_guidance_suffix"].(string); strings.TrimSpace(existing) != "" {
-			supervisorInputPack["final_guidance_suffix"] = existing + "\n" + guidance
-		} else {
-			supervisorInputPack["final_guidance_suffix"] = guidance
-		}
-	}
-	if guidance := formatProgressionChoiceGuidance(progressionChoiceLedger); guidance != "" {
-		supervisorInputPack["progression_choice_ledger"] = progressionChoiceLedger
-		if existing, _ := supervisorInputPack["persistent_guidance"].(string); strings.TrimSpace(existing) != "" {
-			supervisorInputPack["persistent_guidance"] = existing + "\n" + guidance
-		} else {
-			supervisorInputPack["persistent_guidance"] = guidance
-		}
-		if existing, _ := supervisorInputPack["final_guidance_suffix"].(string); strings.TrimSpace(existing) != "" {
-			supervisorInputPack["final_guidance_suffix"] = existing + "\n" + guidance
-		} else {
-			supervisorInputPack["final_guidance_suffix"] = guidance
-		}
-	}
-	guidanceSourceRefs := stringSliceFromAny(mapFromAny(responseExecutionContract["source_refs"])["all"])
+	boundedMemoryDeliveryLineage := boundedPrepareTurnMemoryDeliveryLineage(sid, injectionAssembly.MemoryDeliveryLineage, chatLogs)
+	responseExecutionContract := buildResponseExecutionContractWithMemoryLineage(sid, inputAnchorGovernor, selectedStorylines, pendingThreads, activeStates, canonicalLayers, worldRules, injectionAssembly, languageContext, currentInputDecision, hostContextReferenceEvidence)
+	guideEligibility := buildPrepareTurnGuideEligibility(guideMode, guideStrength, injectionEnabled, narrativeSupportMaxChars, responseExecutionContract)
+	responseExecutionContract["guide_eligibility"] = guideEligibility
+	supervisorInputPack["guide_eligibility"] = guideEligibility
+	guideEligible := extractionStringFromAny(guideEligibility["status"]) == "eligible"
+	supervisorInputPack["response_execution_contract"] = responseExecutionContract
 	guidanceItems := []prepareTurnGuidanceItem{}
-	if !guideDisabled && guideMode != "off" {
-		guidanceItems = append(guidanceItems,
-			prepareTurnGuidanceItem{
-				Key:        "response_execution_contract",
-				Title:      "Response Execution Contract",
-				Text:       formatResponseExecutionContractGuidance(responseExecutionContract),
-				SourceRefs: guidanceSourceRefs,
-			},
-			prepareTurnGuidanceItem{
-				Key:        "progression_choice",
-				Title:      "Progression Choice",
-				Text:       formatProgressionChoiceGuidance(progressionChoiceLedger),
-				SourceRefs: guidanceSourceRefs,
-			},
-			prepareTurnGuidanceItem{
-				Key:        "weak_input_planner",
-				Title:      "Input Boundary",
-				Text:       formatWeakInputPlannerGuidance(weakInputPlanner),
-				SourceRefs: guidanceSourceRefs,
-			},
-		)
+	if guideEligible {
+		if guidance := formatResponseExecutionFidelityGuidance(responseExecutionContract); guidance != "" {
+			guidanceItems = append(guidanceItems, prepareTurnGuidanceItem{
+				Key:        "fidelity_preservation",
+				Title:      "Source-backed Fidelity Preservation",
+				Text:       guidance,
+				SourceRefs: responseExecutionRuleSourceRefs(responseExecutionContract, "must_preserve", "must_not_assert"),
+			})
+		}
 	}
 	supervisorCallStatus := "disabled"
 	var supervisorResult map[string]any
 	supervisorEnabled := req.Settings.SupervisorEnabled == nil || *req.Settings.SupervisorEnabled
+	guideDeliveryReady := guideEligible &&
+		len(guidanceItems) > 0 &&
+		len([]rune(strings.TrimSpace(guidanceItems[0].Text))) <= narrativeSupportMaxChars
 	executionContractReady := extractionStringFromAny(responseExecutionContract["contract_version"]) == "response_execution_contract.v1" &&
 		extractionStringFromAny(responseExecutionContract["status"]) == "ready" &&
 		boolFromAny(responseExecutionContract["active"]) &&
-		len(guidanceSourceRefs) > 0
+		guideEligible
 	switch {
 	case guideDisabled || guideMode == "off" || !supervisorEnabled:
 		supervisorCallStatus = "disabled"
+	case extractionStringFromAny(guideEligibility["status"]) == "injection_disabled":
+		supervisorCallStatus = "deferred_injection_disabled"
+	case extractionStringFromAny(guideEligibility["status"]) == "budget_disabled":
+		supervisorCallStatus = "deferred_budget_disabled"
+	case !guideEligible:
+		supervisorCallStatus = "deferred_no_guide_support"
+	case !guideDeliveryReady:
+		supervisorCallStatus = "deferred_insufficient_narrative_budget"
 	case !executionContractReady:
 		supervisorCallStatus = "deferred_no_execution_evidence"
 	default:
@@ -801,20 +768,45 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			ReasonCode: "supervisor_llm_failed_open",
 		})
 	}
+	effectiveNarrativeSupportMaxChars := 0
+	if guideEligible {
+		effectiveNarrativeSupportMaxChars = narrativeSupportMaxChars
+	}
 	payloadApplicationPlan := buildPrepareTurnPayloadApplicationPlan(
 		rawUserInput,
 		referenceText,
-		injectionAssembly.Text,
+		memoryDeliveryText,
 		inputContextText,
 		injectionEnabled,
 		inputContextEnabled,
 		maxInjectionChars,
 		referenceBudgetPolicy.TotalCapChars,
-		narrativeSupportMaxChars,
+		effectiveNarrativeSupportMaxChars,
 		guidanceItems,
 		supervisorCallStatus,
 	)
+	payloadApplicationPlan["guide_eligibility"] = guideEligibility
+	guidanceApplicationTrace := mapFromAny(payloadApplicationPlan["guidance_application_trace"])
+	guidanceApplicationTrace["eligibility"] = guideEligibility["status"]
+	guidanceApplicationTrace["eligibility_reason"] = guideEligibility["reason_code"]
+	guidanceApplicationTrace["guide_mode"] = guideEligibility["guide_mode"]
+	guidanceApplicationTrace["guide_strength"] = guideEligibility["guide_strength"]
+	guidanceApplicationTrace["requested_budget_chars"] = narrativeSupportMaxChars
+	guidanceApplicationTrace["guide_eligibility"] = guideEligibility
+	payloadApplicationPlan["guidance_application_trace"] = guidanceApplicationTrace
+	requestCorrelationID := stringPtrValue(prepareSourceContract.LaneStatus.RequestCorrelationID, "")
+	if strings.TrimSpace(requestCorrelationID) == "" {
+		requestCorrelationID = extractionStringFromAny(req.ClientMeta["archive_center_request_correlation_id"])
+	}
+	sourceToPayloadLineage := attachPrepareTurnOutputFidelityLineage(
+		requestCorrelationID,
+		payloadApplicationPlan,
+		responseExecutionContract,
+		boundedMemoryDeliveryLineage,
+	)
 	injectionPack["payload_application_plan"] = payloadApplicationPlan
+	injectionPack["memory_delivery_lineage"] = boundedMemoryDeliveryLineage
+	injectionPack["source_to_payload_lineage"] = sourceToPayloadLineage
 	injectionPack["memory_budget_resolution"] = memoryBudgetResolution
 	injectionText = extractionStringFromAny(payloadApplicationPlan["auxiliary_text"])
 	inputContextText = extractionStringFromAny(payloadApplicationPlan["input_context_text"])
@@ -845,10 +837,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	for k, v := range progressionLedgerTracePreviewFields(progressionLedger) {
 		tracePreview[k] = v
 	}
-	autonomyPlan := buildAutonomyPlan(degraded, guideMode, narrativeStance)
-	microBeatProposal := buildMicroBeatProposal(degraded, pendingThreads, storylines, supportRecallLimit)
-	sceneStepProposal := buildSceneStepProposal(degraded, activeStates, canonicalLayers, episodeSums, supportRecallLimit)
-	combinedProposal := buildCombinedProposal(degraded, microBeatProposal, sceneStepProposal)
 	writebackPreview := buildWritebackPreview(degraded)
 	shadowCompareRecord := buildGenerationPacketShadowCompareRecord(injectionAssembly, inputContextText)
 	inputTransparencyModel := buildPrepareTurnInputTransparencyRenderModel(sid, turnIndex, rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded, fallbackReason, injectionAssembly)
@@ -874,9 +862,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"legacy_surfaces":  "omitted",
 		}
 		compactInjectionPack := map[string]any{
-			"contract_version":         "prepare_turn.compact_injection_pack.v1",
-			"payload_application_plan": payloadApplicationPlan,
-			"memory_delivery_plan":     injectionPack["memory_delivery_plan"],
+			"contract_version":          "prepare_turn.compact_injection_pack.v1",
+			"payload_application_plan":  payloadApplicationPlan,
+			"memory_delivery_plan":      injectionPack["memory_delivery_plan"],
+			"memory_delivery_lineage":   boundedMemoryDeliveryLineage,
+			"source_to_payload_lineage": sourceToPayloadLineage,
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",
@@ -889,6 +879,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"supervisor_result":               supervisorResult,
 			"injection_pack":                  compactInjectionPack,
 			"payload_application_plan":        payloadApplicationPlan,
+			"source_to_payload_lineage":       sourceToPayloadLineage,
 			"memory_budget_resolution":        memoryBudgetResolution,
 			"language_context":                languageContext,
 			"input_transparency_model":        inputTransparencyModel,
@@ -899,9 +890,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"session_bootstrap":               sessionBootstrap,
 			"host_context_reference_evidence": hostContextReferenceEvidence,
 			"response_execution_contract":     responseExecutionContract,
-			"weak_input_planner":              weakInputPlanner,
-			"progression_choice_ledger":       progressionChoiceLedger,
-			"step25_validation_gate":          step25ValidationGate,
 			"trace_preview":                   tracePreview,
 			"reference_injection": map[string]any{
 				"enabled":          referenceInjectionEnabled,
@@ -929,6 +917,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"critic_input_pack":               criticInputPack,
 		"injection_pack":                  injectionPack,
 		"payload_application_plan":        payloadApplicationPlan,
+		"source_to_payload_lineage":       sourceToPayloadLineage,
 		"supervisor_result":               supervisorResult,
 		"memory_budget_resolution":        memoryBudgetResolution,
 		"language_context":                languageContext,
@@ -991,10 +980,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"source_lookup_audit":                           sourceLookupAudit,
 		"runtime_toggle":                                runtimeToggle,
 		"input_anchor_governor":                         inputAnchorGovernor,
-		"weak_input_planner":                            weakInputPlanner,
 		"response_execution_contract":                   responseExecutionContract,
-		"progression_choice_ledger":                     progressionChoiceLedger,
-		"step25_validation_gate":                        step25ValidationGate,
 		"helper_budget_governor_trace":                  helperBudgetGovernorTrace,
 		"helper_injection_budget_manager":               buildStep165HelperInjectionBudgetManager(maxInjectionChars, injectionAssembly),
 		"input_context_slot_governor":                   buildStep165InputContextSlotGovernor(maxInputContextChars, inputContextTruncated),
@@ -1656,10 +1642,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"seq215_js_backend_offload_plugin_only":           buildSeq215P881JSBackendOffloadPluginOnly(),
 		"seq215_master_checklist_open_zero":               buildSeq215P882MasterChecklistOpenZero(),
 		"seq215_step_complete_p883":                       buildSeq215P883StepComplete(),
-		"autonomy_plan":                                   autonomyPlan,
-		"micro_beat_proposal":                             microBeatProposal,
-		"scene_step_proposal":                             sceneStepProposal,
-		"combined_proposal":                               combinedProposal,
 		"writeback_preview":                               writebackPreview,
 		"continuity_pack":                                 continuityPack,
 		"persona_recollection":                            personaRecollection,

@@ -22,12 +22,18 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 	if narrativeBudget < 0 {
 		narrativeBudget = 0
 	}
+	if !injectionEnabled {
+		narrativeBudget = 0
+		guidanceItems = nil
+	}
 	remaining := narrativeBudget
 	appliedGuidance := make([]string, 0, len(guidanceItems))
+	appliedGuidanceRefs := []string{}
 	guidanceTrace := make([]map[string]any, 0, len(guidanceItems))
 	appliedCount := 0
 	deferredCount := 0
 	failedCount := 0
+	guidanceBlocked := false
 	for _, item := range guidanceItems {
 		text := strings.TrimSpace(item.Text)
 		status := strings.TrimSpace(item.Status)
@@ -39,16 +45,24 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 		switch {
 		case status == "failed":
 			failedCount++
+		case guidanceBlocked:
+			status = "deferred"
+			if reason == "" {
+				reason = "prior_guidance_not_applied"
+			}
+			deferredCount++
 		case text == "":
 			status = "deferred"
 			if reason == "" {
 				reason = "empty_guidance"
 			}
 			deferredCount++
+			guidanceBlocked = true
 		case chars+map[bool]int{true: 2, false: 0}[len(appliedGuidance) > 0] > remaining:
 			status = "deferred"
 			reason = "narrative_support_budget_exhausted"
 			deferredCount++
+			guidanceBlocked = true
 		default:
 			status = "applied"
 			if len(appliedGuidance) > 0 {
@@ -56,6 +70,9 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 			}
 			remaining -= chars
 			appliedGuidance = append(appliedGuidance, text)
+			for _, ref := range item.SourceRefs {
+				appliedGuidanceRefs = appendUniqueMemorySearchText(appliedGuidanceRefs, ref)
+			}
 			appliedCount++
 		}
 		guidanceTrace = append(guidanceTrace, map[string]any{
@@ -70,9 +87,9 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 	}
 	narrativeText := strings.Join(appliedGuidance, "\n\n")
 	lanes := []map[string]any{
-		prepareTurnPayloadLane("original_work", "Original Work Context", referenceText, referenceBudget, referenceText != ""),
-		prepareTurnPayloadLane("long_term_memory", "Long-term Memory Context", memoryText, memoryBudget, injectionEnabled && memoryText != ""),
-		prepareTurnPayloadLane("output_guidance", "Output Guidance Context", narrativeText, narrativeBudget, narrativeText != ""),
+		prepareTurnPayloadLane("original_work", "Original Work Context", referenceText, referenceBudget, injectionEnabled && referenceText != "", nil),
+		prepareTurnPayloadLane("long_term_memory", "Long-term Memory Context", memoryText, memoryBudget, injectionEnabled && memoryText != "", nil),
+		prepareTurnPayloadLane("output_guidance", "Output Guidance Context", narrativeText, narrativeBudget, injectionEnabled && narrativeText != "", appliedGuidanceRefs),
 	}
 	auxiliaryParts := []string{}
 	for _, lane := range lanes {
@@ -132,7 +149,7 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 	}
 }
 
-func prepareTurnPayloadLane(key, title, text string, budget int, enabled bool) map[string]any {
+func prepareTurnPayloadLane(key, title, text string, budget int, enabled bool, sourceRefs []string) map[string]any {
 	text = strings.TrimSpace(text)
 	applied := enabled && text != ""
 	if !enabled {
@@ -156,6 +173,7 @@ func prepareTurnPayloadLane(key, title, text string, budget int, enabled bool) m
 		"failed_chars":   0,
 		"text":           text,
 		"content_hash":   prepareTurnTextHash(text),
+		"source_refs":    sourceRefs,
 	}
 }
 
@@ -177,7 +195,6 @@ func formatSupervisorSceneProposalGuidance(result map[string]any) (string, []str
 	}{
 		{"fidelity_warnings", "Fidelity"},
 		{"portrayal_notes", "Portrayal"},
-		{"may_advance", "May advance"},
 	} {
 		for _, raw := range sliceFromAny(proposal[lane.key]) {
 			item := mapFromAny(raw)

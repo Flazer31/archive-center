@@ -122,6 +122,222 @@ func TestPrepareTurnDirectEntityMemoryOwnersRejectsAmbiguousShortName(t *testing
 	}
 }
 
+func TestPrepareTurnQualifiedOwnerTailMatchesOnlyWhenUnique(t *testing.T) {
+	owners := []store.ProtagonistEntityMemoryOwner{
+		{OwnerEntityKey: "min_seohyeon", OwnerEntityName: "예조판서 민정호의 딸 민서현"},
+		{OwnerEntityKey: "yun_seula", OwnerEntityName: "윤슬아"},
+	}
+	selected := prepareTurnDirectEntityMemoryOwners("윤슬아 앞에 민서현이 나타났다.", owners)
+	if len(selected) != 2 {
+		t.Fatalf("qualified owner tail was not matched: %#v", selected)
+	}
+
+	ambiguous := []store.ProtagonistEntityMemoryOwner{
+		{OwnerEntityKey: "first", OwnerEntityName: "첫 번째 기록의 민서현"},
+		{OwnerEntityKey: "second", OwnerEntityName: "두 번째 기록의 민서현"},
+	}
+	if selected := prepareTurnDirectEntityMemoryOwners("민서현이 나타났다.", ambiguous); len(selected) != 0 {
+		t.Fatalf("ambiguous qualified owner tail was accepted: %#v", selected)
+	}
+
+	private := []store.ProtagonistEntityMemory{
+		{ID: 1, OwnerEntityKey: "min_seohyeon", OwnerEntityName: "예조판서 민정호의 딸 민서현", OwnerEntityRole: "npc", MemoryText: "민서현은 강한얼을 마음에 둔 사내로 여긴다."},
+		{ID: 2, OwnerEntityKey: "yun_seula", OwnerEntityName: "윤슬아", OwnerEntityRole: "npc", MemoryText: "윤슬아는 강한얼에게 호감을 품고 있다."},
+	}
+	filterPrepareTurnEntityRecollections("윤슬아 앞에 민서현이 나타났다.", nil, nil, nil, nil, nil, &private)
+	if len(private) != 2 {
+		t.Fatalf("qualified owner memory was dropped after indexed read: %#v", private)
+	}
+}
+
+func TestPrepareTurnOneDirectNameDoesNotExpandUnrelatedRelationships(t *testing.T) {
+	const rawInput = "비가 그친 저녁, 베라가 문을 열고 들어왔다."
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 41,
+		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
+	}})
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil, nil,
+		[]store.CharacterState{
+			{
+				CharacterName:     "베라",
+				RelationshipsJSON: `{"주인공":{"type":"trust","description":"둘이 함께 겪은 사건에서 생긴 신뢰"},"행인 C":{"type":"one_time_trade"}}`,
+			},
+			{CharacterName: "주인공"},
+			{CharacterName: "행인 C"},
+		},
+		nil, nil, nil, nil, nil, nil,
+		1, 9000, rawInput, "default", nil, nil, nil, perspective,
+	)
+
+	if !strings.Contains(assembly.CharacterRelationshipText, "둘이 함께 겪은 사건") {
+		t.Fatalf("current-pair relationship was lost: %q", assembly.CharacterRelationshipText)
+	}
+	if strings.Contains(assembly.CharacterRelationshipText, "행인 C") ||
+		strings.Contains(assembly.CharacterRelationshipText, "one_time_trade") {
+		t.Fatalf("one direct name expanded an unrelated relationship: %q", assembly.CharacterRelationshipText)
+	}
+}
+
+func TestPrepareTurnDirectReencounterDeliversOldCurrentPairEvent(t *testing.T) {
+	const rawInput = "비가 그친 저녁, 베라가 문을 열고 다시 들어왔다."
+	memories := []store.Memory{
+		{
+			ID:          1,
+			TurnIndex:   4,
+			SummaryJSON: `{"turn_summary":"베라와 주인공은 돌다리에서 서로를 구하고 신뢰하기 시작했다.","characters":["베라","주인공"],"locations":["돌다리"]}`,
+			Importance:  0.7,
+		},
+		{
+			ID:          2,
+			TurnIndex:   39,
+			SummaryJSON: `{"turn_summary":"베라는 시장에서 행인 C와 값을 흥정했다.","characters":["베라","행인 C"],"locations":["시장"]}`,
+			Importance:  0.95,
+		},
+		{
+			ID:          4,
+			TurnIndex:   40,
+			SummaryJSON: `{"turn_summary":"베라 홀로 창가에서 빗소리를 들었다.","characters":["베라"],"locations":["객실"]}`,
+			Importance:  0.99,
+		},
+	}
+	states := []store.CharacterState{
+		{
+			CharacterName:     "베라",
+			RelationshipsJSON: `{"주인공":{"type":"trust","description":"돌다리 사건에서 서로를 구하며 생긴 신뢰"}}`,
+		},
+		{CharacterName: "주인공"},
+		{
+			CharacterName:     "행인 C",
+			RelationshipsJSON: `{"베라":{"type":"one_time_trade"}}`,
+		},
+	}
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 41,
+		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
+	}})
+	assembly := buildPrepareTurnInjectionAssembly(
+		memories, nil, nil, nil, nil, nil, states, nil, nil, nil, nil, nil, nil,
+		1, 9000, rawInput, "default", nil, nil, nil, perspective,
+	)
+
+	if !strings.Contains(assembly.ActualMemoryText, "돌다리에서 서로를 구하고 신뢰하기 시작했다") {
+		t.Fatalf("old current-pair event was not delivered for the reencounter: %q", assembly.ActualMemoryText)
+	}
+	if !strings.Contains(assembly.CharacterRelationshipText, "돌다리 사건") {
+		t.Fatalf("stored relationship state was not accompanied by its event evidence: %q", assembly.CharacterRelationshipText)
+	}
+	planText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	if !strings.Contains(planText, "돌다리에서 서로를 구하고 신뢰하기 시작했다") {
+		t.Fatalf("old current-pair event was lost from final memory delivery: %q", planText)
+	}
+	for _, unrelated := range []string{"행인 C", "값을 흥정", "홀로 창가"} {
+		if strings.Contains(assembly.ActualMemoryText, unrelated) || strings.Contains(planText, unrelated) {
+			t.Fatalf("non-pair memory %q was selected as reencounter evidence: actual=%q final=%q", unrelated, assembly.ActualMemoryText, planText)
+		}
+	}
+}
+
+func TestPrepareTurnVectorCurrentPairDoesNotAddSecondPairMemory(t *testing.T) {
+	memories := []store.Memory{
+		{ID: 1, TurnIndex: 4, SummaryJSON: `{"turn_summary":"베라와 주인공의 오래된 사건","characters":["베라","주인공"]}`, Importance: 1},
+		{ID: 2, TurnIndex: 40, SummaryJSON: `{"turn_summary":"베라와 주인공의 최근 사건","characters":["베라","주인공"]}`, Importance: 0.5},
+	}
+	vectorShadow := map[string]any{
+		"search_result": "ok",
+		"search_results": []map[string]any{{
+			"id": "memory:test:2", "tier": "memory", "similarity": 0.9,
+			"similarity_source": "cosine_from_query_and_stored_embedding",
+		}},
+	}
+	selection := selectPrepareTurnMemoryLanesWithVector(
+		memories, "베라가 돌아왔다.", 3, vectorShadow, []string{"베라"}, []string{"주인공", "베라"},
+	)
+	if len(selection.VectorRelevant) != 1 || selection.VectorRelevant[0].ID != 2 ||
+		prepareTurnSelectedMemoryCount(selection) != 1 {
+		t.Fatalf("vector current-pair coverage added a semantic duplicate: %#v", selection)
+	}
+}
+
+func TestPrepareTurnDirectReencounterDoesNotInventUnsupportedFamiliarity(t *testing.T) {
+	const rawInput = "비가 그친 저녁, 베라가 문을 열고 들어왔다."
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 41,
+		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
+	}})
+	assembly := buildPrepareTurnInjectionAssembly(
+		[]store.Memory{{
+			ID:          2,
+			TurnIndex:   39,
+			SummaryJSON: `{"turn_summary":"베라는 시장에서 행인 C와 값을 흥정했다.","characters":["베라","행인 C"],"locations":["시장"]}`,
+			Importance:  0.95,
+		}},
+		nil, nil, nil, nil, nil,
+		[]store.CharacterState{{CharacterName: "베라"}, {CharacterName: "주인공"}, {CharacterName: "행인 C"}},
+		nil, nil, nil, nil, nil, nil,
+		1, 9000, rawInput, "default", nil, nil, nil, perspective,
+	)
+
+	for _, unsupported := range []string{"행인 C", "값을 흥정"} {
+		if strings.Contains(assembly.Text, unsupported) {
+			t.Fatalf("unsupported familiarity or unrelated event was delivered %q: %q", unsupported, assembly.Text)
+		}
+	}
+	if strings.TrimSpace(assembly.ActualMemoryText) != "" ||
+		strings.TrimSpace(assembly.CharacterRelationshipText) != "" {
+		t.Fatalf("no-support reencounter synthesized continuity: memory=%q relationship=%q", assembly.ActualMemoryText, assembly.CharacterRelationshipText)
+	}
+	classes, _ := assembly.MemoryDeliveryPlan["classes"].([]map[string]any)
+	for _, class := range classes {
+		if class["key"] == "subjective_relationship" && intFromAny(class["selected_count"], -1) != 0 {
+			t.Fatalf("no-support reencounter synthesized subjective relationship items: %#v", class)
+		}
+	}
+}
+
+func TestPrepareTurnDirectPairProtectedEventNeverBecomesActualMemory(t *testing.T) {
+	const rawInput = "비가 그친 저녁, 베라가 문을 열고 들어왔다."
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 41,
+		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
+	}})
+	assembly := buildPrepareTurnInjectionAssembly(
+		[]store.Memory{{
+			ID:        9,
+			TurnIndex: 4,
+			SummaryJSON: `{
+				"turn_summary":"RAW_PAIR_SECRET 베라와 주인공의 숨겨진 맹세",
+				"characters":["베라","주인공"],
+				"relationship_changes":[{"pair":["베라","주인공"],"type":"secret_oath"}],
+				"protected_secrets":[{
+					"owner":"베라",
+					"secret_kind":"hidden_oath",
+					"secret_summary":"RAW_PAIR_SECRET",
+					"disclosure_policy":"owner_private_until_revealed",
+					"knowledge_scope":{"known_by":["베라"]}
+				}]
+			}`,
+			Importance: 0.9,
+		}},
+		nil, nil, nil, nil, nil,
+		[]store.CharacterState{{CharacterName: "베라"}, {CharacterName: "주인공"}},
+		nil, nil, nil, nil, nil, nil,
+		1, 9000, rawInput, "default", nil, nil, nil, perspective,
+	)
+
+	if strings.Contains(assembly.ActualMemoryText, "RAW_PAIR_SECRET") {
+		t.Fatalf("protected current-pair memory bypassed into actual memory: %q", assembly.ActualMemoryText)
+	}
+	if strings.TrimSpace(assembly.ProtectedMemoryText) == "" ||
+		strings.Contains(assembly.ProtectedMemoryText, "RAW_PAIR_SECRET") {
+		t.Fatalf("protected pair memory was lost or exposed raw: %q", assembly.ProtectedMemoryText)
+	}
+}
+
 func TestMergePrepareTurnEntityMemoriesKeepsDirectOwnerFirst(t *testing.T) {
 	direct := []store.ProtagonistEntityMemory{{ID: 30, OwnerEntityName: "현재 인물"}}
 	recent := []store.ProtagonistEntityMemory{{ID: 10, OwnerEntityName: "최근 인물"}, {ID: 30, OwnerEntityName: "현재 인물"}}

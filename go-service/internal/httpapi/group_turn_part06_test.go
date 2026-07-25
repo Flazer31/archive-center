@@ -367,14 +367,8 @@ func TestPrepareTurnStorylineSelectionPreventsStaleAmplification(t *testing.T) {
 		t.Fatalf("suppressed_count = %v, want 1: %#v", selection["suppressed_count"], selection)
 	}
 
-	contextText, _ := pack["storylines_context"].(string)
-	if !strings.Contains(contextText, "Fresh confrontation") {
-		t.Fatalf("storylines_context missing fresh storyline: %q", contextText)
-	}
-	for _, forbidden := range []string{"Old corridor rumor repeats", "Suppressed detour must not enter prompt"} {
-		if strings.Contains(contextText, forbidden) {
-			t.Fatalf("storylines_context contains forbidden stale/suppressed text %q: %q", forbidden, contextText)
-		}
+	if _, exists := pack["storylines_context"]; exists {
+		t.Fatalf("supervisor pack must not receive storyline prose as story guidance: %#v", pack["storylines_context"])
 	}
 
 	injectionPack := resp["injection_pack"].(map[string]any)

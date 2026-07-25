@@ -289,6 +289,46 @@ func subjectiveEntityForceMergeTags(before store.ProtagonistEntityMemory, req su
 	return mustCompactJSON(tags)
 }
 
+func subjectiveEntityManualEditTags(rawJSON, ownerKey, ownerName string) string {
+	ownerKey = strings.TrimSpace(ownerKey)
+	ownerName = strings.TrimSpace(ownerName)
+	seen := map[string]bool{}
+	tags := []string{}
+	add := func(tag string) {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[tag] {
+			return
+		}
+		seen[tag] = true
+		tags = append(tags, tag)
+	}
+	var existing []string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rawJSON)), &existing); err == nil {
+		for _, tag := range existing {
+			tag = strings.TrimSpace(tag)
+			switch {
+			case strings.HasPrefix(tag, "owner_entity_key:"):
+				old := strings.TrimSpace(strings.TrimPrefix(tag, "owner_entity_key:"))
+				if old != "" && old != ownerKey {
+					add("owner_entity_alias_key:" + old)
+				}
+			case strings.HasPrefix(tag, "owner_entity_name:"):
+				old := strings.TrimSpace(strings.TrimPrefix(tag, "owner_entity_name:"))
+				if old != "" && old != ownerName {
+					add("owner_entity_alias:" + old)
+				}
+			default:
+				add(tag)
+			}
+		}
+	}
+	add("subjective_entity_memory")
+	add("entity_manual_owner_edit")
+	add("owner_entity_key:" + ownerKey)
+	add("owner_entity_name:" + ownerName)
+	return mustCompactJSON(tags)
+}
+
 func subjectiveEntityForceMergePolicy() map[string]any {
 	return map[string]any{
 		"surface":                 "subjective_entity_force_merge",

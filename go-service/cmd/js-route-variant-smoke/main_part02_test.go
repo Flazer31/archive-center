@@ -678,8 +678,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.4.0-dev",
-		`const VERSION = "3.4.0-dev";`,
+		"//@version 3.5.0-dev",
+		`const VERSION = "3.5.0-dev";`,
 		`const VERSION_STR = typeof VERSION !== "undefined" ? String(VERSION) : "unknown";`,
 		"source_version:    VERSION_STR",
 		`bridgeFetch("/update/check", {`,
@@ -865,10 +865,6 @@ func TestArchiveCenterJSSeq08BackendTurnEngineFailOpenMarkers(t *testing.T) {
 		`bridgeFetchWithRetry("/complete-turn"`,
 		"function fireMaintenancePass(turnIdx, chatSessionId, assistantContent, traceRef, recentResponses, supervisorResult)",
 		"`/maintenance/enqueue`",
-		"trace.autonomyPlan = {",
-		"trace.microBeatProposal =",
-		"trace.sceneStepProposal =",
-		"trace.combinedProposal =",
 		"ShadowCmp",
 		"divergence_injection",
 		"default_takeover",
@@ -879,6 +875,16 @@ func TestArchiveCenterJSSeq08BackendTurnEngineFailOpenMarkers(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-08 backend turn-engine marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		"trace.autonomyPlan",
+		"trace.microBeatProposal",
+		"trace.sceneStepProposal",
+		"trace.combinedProposal",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains removed story-control trace marker %q", forbidden)
 		}
 	}
 	if strings.Contains(src, "return buildBlockedPayload(payload, backendBlock.userMessage || backendBlock.reason)") {

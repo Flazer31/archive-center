@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 3.4.0-dev
+//@display-name Archive Center 3.5.0-dev
 //@author memory-scaffold
 //@api 3.0
-//@version 3.4.0-dev
+//@version 3.5.0-dev
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "3.4.0-dev";
-  const BUILD_ID = "3.4-session-routing-test.20260723-2";
-  const BUILD_CHANNEL = "3.4-mem-f-test";
-  const BUILD_TIME = "2026-07-23 KST";
-  const BUILD_NOTES = "RisuAI session tail alignment; copied-turn baseline replay and wrong-turn append blocked";
+  const VERSION = "3.5.0-dev";
+  const BUILD_ID = "3.5-memory-fidelity.20260725-2";
+  const BUILD_CHANNEL = "3.5-local-test";
+  const BUILD_TIME = "2026-07-25 KST";
+  const BUILD_NOTES = "3.5 memory relevance, output fidelity, dormant-goal lifecycle, and duplicate-goal thinning";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -4853,10 +4853,6 @@
         "session_state",
         "narrative_control",
         "progression_ledger",
-        "autonomy_plan",
-        "micro_beat_proposal",
-        "scene_step_proposal",
-        "combined_proposal",
         "generation_packet",
         "continuity_pack",
         "recall_result",
@@ -4916,10 +4912,6 @@
       sessionState: "session_state",
       narrativeControl: "narrative_control",
       progressionLedger: "progression_ledger",
-      autonomyPlan: "autonomy_plan",
-      microBeatProposal: "micro_beat_proposal",
-      sceneStepProposal: "scene_step_proposal",
-      combinedProposal: "combined_proposal",
       generationPacket: "generation_packet",
       continuityPack: "continuity_pack",
       recallResult: "recall_result",
@@ -12775,10 +12767,6 @@
           sessionState:       bundledSessionState,
           narrativeControl:   result.narrative_control    || null,
           progressionLedger:  result.progression_ledger   || null,
-          autonomyPlan:       result.autonomy_plan        || null,
-          microBeatProposal:  result.micro_beat_proposal  || null,  // N-3a
-          sceneStepProposal:  result.scene_step_proposal  || null,  // N-3b
-          combinedProposal:   result.combined_proposal    || null,  // N-3c
           generationPacket:   result.generation_packet    || null,  // O-1a
           continuityPack:     result.continuity_pack      || null,
           // M-2b: recall bundle (search + KG + episode)
@@ -12790,15 +12778,13 @@
           // + Plugin Main 계약 placeholder: effective_user_input / apply_verdict (M-3b에서 채워짐)
           injectionPack:      result.injection_pack       || null,
           payloadApplicationPlan: result.payload_application_plan || (result.injection_pack && result.injection_pack.payload_application_plan) || null,
+          sourceToPayloadLineage: result.source_to_payload_lineage || (result.injection_pack && result.injection_pack.source_to_payload_lineage) || null,
           supervisorResult:   result.supervisor_result    || null,
           memoryBudgetResolution: result.memory_budget_resolution || null,
           referenceInjection: result.reference_injection  || null,
           inputTransparencyModel: result.input_transparency_model || null,
           effectiveInputPreview:  result.effective_input_preview  || null,
-          weakInputPlanner:   result.weak_input_planner   || null,
           responseExecutionContract: result.response_execution_contract || null,
-          progressionChoiceLedger: result.progression_choice_ledger || null,
-          step25ValidationGate: result.step25_validation_gate || null,
           // M-2d: writeback_preview + trace_preview (H-4 non-debug groundwork)
           writebackPreview:   result.writeback_preview    || null,
           tracePreview:       result.trace_preview        || null,
@@ -16238,10 +16224,7 @@
       complete: { status: "pending" },
       critic: { memoryAttempted: false, memorySaved: false, kgAttempted: false, kgSaved: false, detail: "" },
       languageContext: null,
-      weakInputPlanner: { status: "pending", active: false, taxonomy: "", maxNewBeats: 0, allowSceneJump: false, strategy: "", selectedAnchors: [] },
-      responseExecutionContract: { status: "pending", active: false, sceneMandate: "", requiredCount: 0, forbiddenCount: 0, maxNewBeats: 0, allowSceneJump: false, protectedLaneActive: false },
-      progressionChoice: { status: "pending", choice: "", reasons: [], maxNewBeats: 0, allowSceneJump: false, callbackCandidate: false, callbackAligned: false, staleSuppressed: false, sameIncident: false },
-      step25ValidationGate: { status: "pending", gateStatus: "", adoptionReady: false, passedCount: 0, totalCount: 0, blockingIds: [] },
+      responseExecutionContract: { status: "pending", active: false, sourceRefCount: 0, protectedLaneActive: false },
       momentum: { status: "pending", applied: false, packetStatus: null },
       // Sprint 2-D: Input Transparency 데이터
       _inputTransparency: null,
@@ -16319,18 +16302,6 @@
       narrativeControl: { status: "pending", fetched: false, stateStatus: "skeleton", arc: "", beatsCount: 0, requiredCount: 0, forbiddenCount: 0, pressureLevel: "steady", skeletonOnly: true, lastAdvancedTurn: null, lastValidatedTurn: null, consumedBeatsCount: 0, pendingBeatsCount: 0 },
       // K-4d: guidance state 요약 (source / state transition / arbitration)
       guidanceState: { source: "fallback", stateStatus: "none", activeArc: "", activeRequired: 0, activeForbidden: 0, resolvedCount: 0, expiredCount: 0, suppressedCount: 0, arbitrationNotes: "no-nc" },
-      // N-2b: autonomy planner 결합 (ledger → mode/suggested_beat/gate_reason)
-      autonomyPlan: { mode: "pass", suggestedBeat: null, blockedBeatsCount: 0, gateReason: "no_plan" },
-      // N-3a: micro-beat proposal (mode=assist 시만 채워짐)
-      microBeatProposal: { ready: false, hintText: null, sourceBeat: null, blockedBy: [] },
-      // N-3b: bounded scene-step proposal
-      sceneStepProposal: { ready: false, scopeBeats: [], maxStep: 2, excludedCount: 0, gateReason: "no_proposal" },
-      // N-3c: combined planner (story plan + director + maintenance signal)
-      combinedProposal: { ready: false, combinedHintText: null, confidence: "none", planSignals: [] },
-      // N-3d: proposal source/bound summary for dashboard
-      proposalSource: "none",
-      proposalMaxStep: 2,
-      proposalForbiddenCount: 0,
       // O-1c: generation packet apply 결과 / O-2b: shadow compare record
       generationPacket: { packetMode: "off", applied: false, degraded: false, fallbackReason: "", degradedCount: 0, shadowCompareRecord: null, takeoverSource: null, verbatimSupport: null, hierarchyEscapeHatch: null, hierarchyEscalation: null, chapterDelivered: false, chapterConsumed: false, arcDelivered: false, arcConsumed: false, sagaDelivered: false, sagaConsumed: false },
     };
@@ -16488,111 +16459,28 @@
     }
   }
 
-  function normalizeWeakInputPlannerTrace(rawPlanner) {
-    try {
-      const p = rawPlanner && typeof rawPlanner === "object" ? rawPlanner : null;
-      if (!p) return { status: "skipped", active: false, taxonomy: "", maxNewBeats: 0, allowSceneJump: false, strategy: "", selectedAnchors: [] };
-      const boundary = p.initiative_boundary && typeof p.initiative_boundary === "object" ? p.initiative_boundary : {};
-      const brief = p.acting_brief && typeof p.acting_brief === "object" ? p.acting_brief : {};
-      return {
-        status: String(p.status || "unknown"),
-        active: !!p.active,
-        taxonomy: String(p.taxonomy || ""),
-        maxNewBeats: Number(boundary.max_new_beats || 0),
-        allowSceneJump: !!boundary.allow_scene_jump,
-        strategy: String(brief.reply_strategy || ""),
-        selectedAnchors: Array.isArray(p.selected_anchor_names) ? p.selected_anchor_names.slice(0, 5).map(String) : [],
-      };
-    } catch {
-      return { status: "error", active: false, taxonomy: "", maxNewBeats: 0, allowSceneJump: false, strategy: "", selectedAnchors: [] };
-    }
-  }
-
   function normalizeResponseExecutionContractTrace(rawContract) {
     try {
       const c = rawContract && typeof rawContract === "object" ? rawContract : null;
-      if (!c) return { status: "skipped", active: false, sceneMandate: "", requiredCount: 0, forbiddenCount: 0, maxNewBeats: 0, allowSceneJump: false, protectedLaneActive: false };
-      const scene = c.scene_mandate && typeof c.scene_mandate === "object" ? c.scene_mandate : {};
-      const required = c.required_outcome && typeof c.required_outcome === "object" ? c.required_outcome : {};
-      const forbidden = c.forbidden_move && typeof c.forbidden_move === "object" ? c.forbidden_move : {};
+      if (!c) return { status: "skipped", active: false, sourceRefCount: 0, protectedLaneActive: false, mustPreserveCount: 0, mustRespondCount: 0, mustAccountCount: 0, mustNotAssertCount: 0 };
+      const sourceRefs = c.source_refs && typeof c.source_refs === "object" ? c.source_refs : {};
+      const concealment = c.concealment_guard && typeof c.concealment_guard === "object" ? c.concealment_guard : {};
       const mustPreserve = c.must_preserve && typeof c.must_preserve === "object" ? c.must_preserve : {};
       const mustRespond = c.must_respond && typeof c.must_respond === "object" ? c.must_respond : {};
       const mustAccount = c.must_account && typeof c.must_account === "object" ? c.must_account : {};
       const mustNotAssert = c.must_not_assert && typeof c.must_not_assert === "object" ? c.must_not_assert : {};
-      const pacing = c.pacing_pressure && typeof c.pacing_pressure === "object" ? c.pacing_pressure : {};
-      const ending = c.ending_requirement && typeof c.ending_requirement === "object" ? c.ending_requirement : {};
       return {
         status: String(c.status || "unknown"),
         active: !!c.active,
-        sceneMandate: String(scene.value || ""),
-        requiredItems: Array.isArray(required.items) ? required.items.slice(0, 5).map(String) : [],
-        requiredCount: Number(required.count || (Array.isArray(required.items) ? required.items.length : 0) || 0),
-        forbiddenItems: Array.isArray(forbidden.items) ? forbidden.items.slice(0, 5).map(String) : [],
-        forbiddenCount: Number(forbidden.count || (Array.isArray(forbidden.items) ? forbidden.items.length : 0) || 0),
-        maxNewBeats: Number(pacing.max_new_beats || 0),
-        allowSceneJump: !!pacing.allow_scene_jump,
-        pacingLevel: String(pacing.level || ""),
-        endingRequirement: String(ending.instruction || ""),
-        protectedLaneActive: !!forbidden.protected_lane_active,
+        sourceRefCount: Array.isArray(sourceRefs.all) ? sourceRefs.all.length : 0,
+        protectedLaneActive: !!concealment.active,
         mustPreserveCount: Number(mustPreserve.count || 0),
         mustRespondCount: Number(mustRespond.count || 0),
         mustAccountCount: Number(mustAccount.count || 0),
         mustNotAssertCount: Number(mustNotAssert.count || 0),
       };
     } catch {
-      return { status: "error", active: false, sceneMandate: "", requiredCount: 0, forbiddenCount: 0, maxNewBeats: 0, allowSceneJump: false, protectedLaneActive: false };
-    }
-  }
-
-  function normalizeProgressionChoiceTrace(rawChoice) {
-    try {
-      const c = rawChoice && typeof rawChoice === "object" ? rawChoice : null;
-      if (!c) return { status: "skipped", choice: "", reasons: [], maxNewBeats: 0, allowSceneJump: false, callbackCandidate: false, callbackAligned: false, staleSuppressed: false, sameIncident: false };
-      const ledger = c.scene_advancement_ledger && typeof c.scene_advancement_ledger === "object" ? c.scene_advancement_ledger : {};
-      const callback = c.callback_evaluation && typeof c.callback_evaluation === "object" ? c.callback_evaluation : {};
-      const stall = c.same_incident_stall_detection && typeof c.same_incident_stall_detection === "object" ? c.same_incident_stall_detection : {};
-      return {
-        status: String(c.status || "unknown"),
-        choice: String(c.choice || ledger.decision || ""),
-        reasons: Array.isArray(c.reasons) ? c.reasons.slice(0, 5).map(String) : [],
-        maxNewBeats: Number(ledger.max_new_beats || 0),
-        allowSceneJump: !!ledger.allow_scene_jump,
-        selectedAnchorCount: Number(ledger.selected_anchor_count || 0),
-        activeStorylineCount: Number(ledger.active_storyline_count || 0),
-        activeThreadCount: Number(ledger.active_thread_count || 0),
-        callbackCandidate: !!callback.candidate,
-        callbackAligned: !!callback.aligned_with_active_thread,
-        staleSuppressed: !!callback.stale_revival_suppressed,
-        sameIncident: !!stall.detected,
-      };
-    } catch {
-      return { status: "error", choice: "", reasons: [], maxNewBeats: 0, allowSceneJump: false, callbackCandidate: false, callbackAligned: false, staleSuppressed: false, sameIncident: false };
-    }
-  }
-
-  function normalizeStep25ValidationGateTrace(rawGate) {
-    try {
-      const g = rawGate && typeof rawGate === "object" ? rawGate : null;
-      if (!g) return { status: "skipped", gateStatus: "", adoptionReady: false, passedCount: 0, totalCount: 0, blockingIds: [], checks: [] };
-      return {
-        status: String(g.status || "unknown"),
-        gateStatus: String(g.gate_status || ""),
-        adoptionReady: !!g.adoption_ready,
-        passedCount: Number(g.passed_count || 0),
-        totalCount: Number(g.total_count || 0),
-        blockingIds: Array.isArray(g.blocking_check_ids) ? g.blocking_check_ids.slice(0, 8).map(String) : [],
-        checks: Array.isArray(g.checks) ? g.checks.slice(0, 8).map(function(item) {
-          const row = item && typeof item === "object" ? item : {};
-          return {
-            id: String(row.id || ""),
-            name: String(row.name || ""),
-            status: String(row.status || ""),
-            reason: String(row.reason || ""),
-          };
-        }) : [],
-      };
-    } catch {
-      return { status: "error", gateStatus: "", adoptionReady: false, passedCount: 0, totalCount: 0, blockingIds: [], checks: [] };
+      return { status: "error", active: false, sourceRefCount: 0, protectedLaneActive: false, mustPreserveCount: 0, mustRespondCount: 0, mustAccountCount: 0, mustNotAssertCount: 0 };
     }
   }
 
@@ -17211,7 +17099,7 @@
   }
 
   /** orchestration 중간 결과로부터 _inputTransparency 객체를 생성 */
-  function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview, weakInputPlanner, responseExecutionContract, progressionChoice, step25ValidationGate) {
+  function buildInputTransparency(userInput, recentContext, searchResult, wakeUpContext, supervisorResult, continuityInfo, kgRecallResult, extractedEntities, activeStatesResult, episodeRecallResult, expandedEntities, languageContext, backendInputTransparencyModel, backendEffectiveInputPreview, responseExecutionContract) {
     try {
       const isContinuity = !!(continuityInfo && continuityInfo.query);
       const retrievedMemories = extractMemoryItems(searchResult, 10);
@@ -17226,10 +17114,7 @@
         languageContext: normalizeLanguageContextTrace(languageContext || (backendRenderModel && backendRenderModel.language_context)),
         backendRenderModel,
         backendEffectiveInputPreview: effectiveInputPreview,
-        weakInputPlanner: weakInputPlanner || null,
         responseExecutionContract: responseExecutionContract || null,
-        progressionChoice: progressionChoice || null,
-        step25ValidationGate: step25ValidationGate || null,
         backendRenderAdopted: !!backendRenderModel,
         hybridRetrieval: buildHybridRetrievalInspection(retrievedMemories, 3),
         fallbackChatLogs: extractFallbackItems(searchResult, 5),
@@ -17449,47 +17334,16 @@
         const initStatus = tr.supervisor.status === "ok" ? "ok" : (tr.supervisor.status === "skipped" ? "skipped" : "fail");
         rows.push(r("Initiative", initStatus, initParts.join(" · ")));
       }
-      const wp = tr.weakInputPlanner || {};
-      if (wp.status && wp.status !== "pending" && wp.status !== "skipped") {
-        const wpParts = [];
-        if (wp.taxonomy) wpParts.push(wp.taxonomy);
-        wpParts.push(wp.active ? "active" : "inactive");
-        if (typeof wp.maxNewBeats === "number") wpParts.push("beats<=" + wp.maxNewBeats);
-        wpParts.push(wp.allowSceneJump ? "sceneJump:yes" : "sceneJump:no");
-        if (Array.isArray(wp.selectedAnchors) && wp.selectedAnchors.length > 0) wpParts.push("anchors:" + wp.selectedAnchors.join("/"));
-        rows.push(r("Weak Planner", wp.active ? "ok" : "skipped", wpParts.join(" · ")));
-      }
       const pec = tr.responseExecutionContract || {};
       if (pec.status && pec.status !== "pending" && pec.status !== "skipped") {
         const pecParts = [];
-        if (pec.sceneMandate) pecParts.push(truncPreview(pec.sceneMandate, 80));
-        if (typeof pec.requiredCount === "number") pecParts.push("req:" + pec.requiredCount);
-        if (typeof pec.forbiddenCount === "number") pecParts.push("ban:" + pec.forbiddenCount);
-        if (typeof pec.maxNewBeats === "number") pecParts.push("beats<=" + pec.maxNewBeats);
-        pecParts.push(pec.allowSceneJump ? "sceneJump:yes" : "sceneJump:no");
+        if (typeof pec.sourceRefCount === "number") pecParts.push("sources:" + pec.sourceRefCount);
+        if (typeof pec.mustPreserveCount === "number") pecParts.push("preserve:" + pec.mustPreserveCount);
+        if (typeof pec.mustRespondCount === "number") pecParts.push("respond:" + pec.mustRespondCount);
+        if (typeof pec.mustAccountCount === "number") pecParts.push("account:" + pec.mustAccountCount);
+        if (typeof pec.mustNotAssertCount === "number") pecParts.push("conceal:" + pec.mustNotAssertCount);
         if (pec.protectedLaneActive) pecParts.push("protected");
         rows.push(r("Exec Contract", pec.active ? "ok" : "skipped", pecParts.join(" · ")));
-      }
-      const pcg = tr.progressionChoice || {};
-      if (pcg.status && pcg.status !== "pending" && pcg.status !== "skipped") {
-        const pcgParts = [];
-        if (pcg.choice) pcgParts.push(pcg.choice);
-        if (Array.isArray(pcg.reasons) && pcg.reasons.length > 0) pcgParts.push(truncPreview(pcg.reasons.join("/"), 60));
-        if (typeof pcg.maxNewBeats === "number") pcgParts.push("beats<=" + pcg.maxNewBeats);
-        pcgParts.push(pcg.allowSceneJump ? "sceneJump:yes" : "sceneJump:no");
-        if (pcg.callbackCandidate) pcgParts.push(pcg.callbackAligned ? "callback:aligned" : "callback:candidate");
-        if (pcg.staleSuppressed) pcgParts.push("staleSuppressed");
-        if (pcg.sameIncident) pcgParts.push("sameIncident");
-        rows.push(r("Progression Choice", pcg.choice === "hold" ? "skipped" : "ok", pcgParts.join(" · ")));
-      }
-      const vx25 = tr.step25ValidationGate || {};
-      if (vx25.status && vx25.status !== "pending" && vx25.status !== "skipped") {
-        const vxParts = [];
-        if (vx25.gateStatus) vxParts.push(vx25.gateStatus);
-        vxParts.push(String(vx25.passedCount || 0) + "/" + String(vx25.totalCount || 0));
-        vxParts.push(vx25.adoptionReady ? "adoptionReady" : "hold");
-        if (Array.isArray(vx25.blockingIds) && vx25.blockingIds.length > 0) vxParts.push("block:" + vx25.blockingIds.join("/"));
-        rows.push(r("Step25 Gate", vx25.adoptionReady ? "ok" : "warn", vxParts.join(" · ")));
       }
       const sl = tr.storylines || {};
       if (sl.status && sl.status !== "pending") {
@@ -17564,53 +17418,6 @@
         if ((ncTrace.pendingBeatsCount || 0) > 0) plParts.push("pending:" + ncTrace.pendingBeatsCount);
         const plStatus = ncTrace.status === "ok" ? "ok" : (ncTrace.status === "fail" ? "fail" : "empty");
         rows.push(r("Progression", plStatus, plParts.join(" · ") || "skeleton"));
-      }
-      // N-2b: Autonomy plan row (mode / suggested beat / gate reason)
-      const ap = tr.autonomyPlan || {};
-      if (ap.mode && ap.mode !== "pass") {
-        const apParts = [ap.mode];
-        if (ap.suggestedBeat) apParts.push("→\"" + truncPreview(ap.suggestedBeat, 30) + "\"");
-        if ((ap.blockedBeatsCount || 0) > 0) apParts.push("blocked:" + ap.blockedBeatsCount);
-        if (ap.gateReason && ap.gateReason !== "ok") apParts.push("gate:" + ap.gateReason);
-        const apStatus = ap.mode === "assist" ? "ok" : "skipped";
-        rows.push(r("Autonomy", apStatus, apParts.join(" · ")));
-      }
-      // N-3a: MicroBeat proposal row (hint ready / source beat / blocked)
-      const mbp = tr.microBeatProposal || {};
-      if (mbp.ready || (mbp.sourceBeat && mbp.blockedBy && mbp.blockedBy.length > 0)) {
-        const mbParts = [];
-        if (mbp.ready && mbp.hintText) {
-          mbParts.push("\"" + truncPreview(mbp.hintText, 40) + "\"");
-        } else if (mbp.sourceBeat) {
-          mbParts.push("blocked: \"" + truncPreview(mbp.sourceBeat, 30) + "\"");
-          if (mbp.blockedBy && mbp.blockedBy.length > 0) mbParts.push("by:" + mbp.blockedBy.slice(0, 2).join(","));
-        }
-        const mbStatus = mbp.ready ? "ok" : "skipped";
-        rows.push(r("MicroBeat", mbStatus, mbParts.join(" · ")));
-      }
-      // N-3b: SceneStep proposal row (scope_beats / max_step / excluded)
-      const ssp = tr.sceneStepProposal || {};
-      if (ssp.ready || (ssp.gateReason && ssp.gateReason !== "no_proposal")) {
-        const sspParts = [];
-        if (ssp.ready && ssp.scopeBeats && ssp.scopeBeats.length > 0) {
-          sspParts.push("scope:" + ssp.scopeBeats.length + " beat" + (ssp.scopeBeats.length > 1 ? "s" : ""));
-          sspParts.push("\"" + truncPreview(ssp.scopeBeats[0], 30) + "\"");
-        } else {
-          sspParts.push("gate:" + (ssp.gateReason || "?"));
-        }
-        if ((ssp.excludedCount || 0) > 0) sspParts.push("excluded:" + ssp.excludedCount);
-        const sspStatus = ssp.ready ? "ok" : "skipped";
-        rows.push(r("SceneStep", sspStatus, sspParts.join(" · ")));
-      }
-      // N-3c/N-3d: Combined proposal row (source / confidence / plan_signals / bound)
-      const cpm = tr.combinedProposal || {};
-      if (cpm.ready || (cpm.confidence && cpm.confidence !== "none")) {
-        const cpmParts = ["src:" + (tr.proposalSource || "?"), cpm.confidence || "?"];
-        if (cpm.planSignals && cpm.planSignals.length > 0) cpmParts.push("signals:" + cpm.planSignals.join("+"));
-        if (tr.proposalMaxStep != null && tr.proposalMaxStep !== 2) cpmParts.push("max:" + tr.proposalMaxStep);
-        if ((tr.proposalForbiddenCount || 0) > 0) cpmParts.push("excl:" + tr.proposalForbiddenCount);
-        if (cpm.combinedHintText) cpmParts.push("\"" + truncPreview(cpm.combinedHintText, 40) + "\"");
-        rows.push(r("Combined", cpm.ready ? "ok" : "skipped", cpmParts.join(" · ")));
       }
       // O-1c/O-2b/O-3a: Generation Packet apply + shadow compare row
       const gpTr = tr.generationPacket || {};
@@ -18826,65 +18633,13 @@
       const hierarchyHtml = renderHierarchyEscalationTraceBlock(it, tr);
       if (hierarchyHtml) parts.push(hierarchyHtml);
 
-      if (it.weakInputPlanner && it.weakInputPlanner.status && it.weakInputPlanner.status !== "skipped") {
-        const wp = it.weakInputPlanner;
-        let wpHtml = '';
-        wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(wp.status || "unknown") + (wp.active ? " / active" : " / inactive")) + '</span></div>';
-        if (wp.taxonomy) wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">taxonomy</span><span class="mo-it-dir-val">' + escapeAttr(String(wp.taxonomy)) + '</span></div>';
-        wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">initiative</span><span class="mo-it-dir-val">' + escapeAttr("beats<=" + String(wp.maxNewBeats || 0) + " / sceneJump:" + (wp.allowSceneJump ? "yes" : "no")) + '</span></div>';
-        if (wp.strategy) wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">strategy</span><span class="mo-it-dir-val">' + escapeAttr(String(wp.strategy)) + '</span></div>';
-        if (Array.isArray(wp.selectedAnchors) && wp.selectedAnchors.length > 0) {
-          wpHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">anchors</span><span class="mo-it-dir-val">' + escapeAttr(wp.selectedAnchors.join(" / ")) + '</span></div>';
-        }
-        parts.push(renderItBlockRaw("1.8. Weak Input Planner", wpHtml, false));
-      }
-
       if (it.responseExecutionContract && it.responseExecutionContract.status && it.responseExecutionContract.status !== "skipped") {
         const pc = it.responseExecutionContract;
         let pcHtml = '';
         pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(pc.status || "unknown") + (pc.active ? " / active" : " / inactive")) + '</span></div>';
-        if (pc.sceneMandate) pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">scene mandate</span><span class="mo-it-dir-val">' + escapeAttr(String(pc.sceneMandate)) + '</span></div>';
-        pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">pacing</span><span class="mo-it-dir-val">' + escapeAttr("beats<=" + String(pc.maxNewBeats || 0) + " / sceneJump:" + (pc.allowSceneJump ? "yes" : "no") + (pc.pacingLevel ? " / " + pc.pacingLevel : "")) + '</span></div>';
-        if (Array.isArray(pc.requiredItems) && pc.requiredItems.length > 0) {
-          pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">required</span><span class="mo-it-dir-val">' + escapeAttr(pc.requiredItems.join(" / ")) + '</span></div>';
-        }
-        if (Array.isArray(pc.forbiddenItems) && pc.forbiddenItems.length > 0) {
-          pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">forbidden</span><span class="mo-it-dir-val">' + escapeAttr(pc.forbiddenItems.join(" / ")) + '</span></div>';
-        }
-        if (pc.endingRequirement) pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">ending</span><span class="mo-it-dir-val">' + escapeAttr(String(pc.endingRequirement)) + '</span></div>';
-        pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">source-backed rules</span><span class="mo-it-dir-val">' + escapeAttr("preserve:" + String(pc.mustPreserveCount || 0) + " / respond:" + String(pc.mustRespondCount || 0) + " / account:" + String(pc.mustAccountCount || 0) + " / do-not-assert:" + String(pc.mustNotAssertCount || 0)) + '</span></div>';
+        pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">source-backed rules</span><span class="mo-it-dir-val">' + escapeAttr("sources:" + String(pc.sourceRefCount || 0) + " / preserve:" + String(pc.mustPreserveCount || 0) + " / respond:" + String(pc.mustRespondCount || 0) + " / account:" + String(pc.mustAccountCount || 0) + " / do-not-assert:" + String(pc.mustNotAssertCount || 0)) + '</span></div>';
         pcHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">protected lane</span><span class="mo-it-dir-val">' + escapeAttr(pc.protectedLaneActive ? "active / counts only" : "inactive") + '</span></div>';
         parts.push(renderItBlockRaw("1.9. Response Execution Contract", pcHtml, false));
-      }
-
-      if (it.progressionChoice && it.progressionChoice.status && it.progressionChoice.status !== "skipped") {
-        const pg = it.progressionChoice;
-        let pgHtml = '';
-        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">status</span><span class="mo-it-dir-val">' + escapeAttr(String(pg.status || "unknown")) + '</span></div>';
-        if (pg.choice) pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">choice</span><span class="mo-it-dir-val">' + escapeAttr(String(pg.choice)) + '</span></div>';
-        if (Array.isArray(pg.reasons) && pg.reasons.length > 0) {
-          pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">reason</span><span class="mo-it-dir-val">' + escapeAttr(pg.reasons.join(" / ")) + '</span></div>';
-        }
-        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">ledger</span><span class="mo-it-dir-val">' + escapeAttr("beats<=" + String(pg.maxNewBeats || 0) + " / sceneJump:" + (pg.allowSceneJump ? "yes" : "no") + " / anchors:" + String(pg.selectedAnchorCount || 0)) + '</span></div>';
-        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">callback</span><span class="mo-it-dir-val">' + escapeAttr("candidate:" + (pg.callbackCandidate ? "yes" : "no") + " / aligned:" + (pg.callbackAligned ? "yes" : "no") + " / staleSuppressed:" + (pg.staleSuppressed ? "yes" : "no")) + '</span></div>';
-        pgHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">same incident</span><span class="mo-it-dir-val">' + escapeAttr(pg.sameIncident ? "exact repeat detected" : "not detected") + '</span></div>';
-        parts.push(renderItBlockRaw("1.10. Progression Choice Ledger", pgHtml, false));
-      }
-
-      if (it.step25ValidationGate && it.step25ValidationGate.status && it.step25ValidationGate.status !== "skipped") {
-        const gate = it.step25ValidationGate;
-        let gateHtml = '';
-        gateHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">gate</span><span class="mo-it-dir-val">' + escapeAttr(String(gate.gateStatus || "unknown") + " / " + String(gate.passedCount || 0) + "/" + String(gate.totalCount || 0) + (gate.adoptionReady ? " / adoption ready" : " / hold")) + '</span></div>';
-        if (Array.isArray(gate.blockingIds) && gate.blockingIds.length > 0) {
-          gateHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">blocking</span><span class="mo-it-dir-val">' + escapeAttr(gate.blockingIds.join(" / ")) + '</span></div>';
-        }
-        if (Array.isArray(gate.checks) && gate.checks.length > 0) {
-          gate.checks.forEach(function(row) {
-            const label = [row.id, row.status].filter(Boolean).join(" ");
-            gateHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">' + escapeAttr(label) + '</span><span class="mo-it-dir-val">' + escapeAttr(String(row.name || "") + (row.reason ? " — " + row.reason : "")) + '</span></div>';
-          });
-        }
-        parts.push(renderItBlockRaw("1.11. Step 25 Validation Gate", gateHtml, false));
       }
 
       // 2. Recent Context
@@ -24394,6 +24149,59 @@
     }
   }
 
+  function buildSourceToFinalLineageObservation(sourceAcceptanceObservation, orchResult) {
+    try {
+      const result = orchResult && typeof orchResult === "object" ? orchResult : null;
+      const lineage = result && result._sourceToPayloadLineage && typeof result._sourceToPayloadLineage === "object"
+        ? result._sourceToPayloadLineage
+        : null;
+      const payloadObservation = result && result._payloadApplicationObservation && typeof result._payloadApplicationObservation === "object"
+        ? result._payloadApplicationObservation
+        : null;
+      if (!lineage || !payloadObservation) return null;
+      const generationID = String(sourceAcceptanceObservation && sourceAcceptanceObservation.generation_id || "").trim();
+      const generationState = String(sourceAcceptanceObservation && sourceAcceptanceObservation.generation_id_state || "unobserved");
+      let status = "ready";
+      let reasonCode = "source_to_final_observation_ready";
+      if (result._sourceLineageAmbiguous) {
+        status = "ambiguous";
+        reasonCode = "overlapping_main_request_lineage_ambiguous";
+      } else if (payloadObservation.status !== "ready" ||
+        (payloadObservation.payload_application_status !== "applied" && payloadObservation.payload_application_status !== "empty")) {
+        status = "ambiguous";
+        reasonCode = payloadObservation.reason_code || "payload_application_not_observed";
+      } else if (generationState !== "observed" || !generationID) {
+        status = "ambiguous";
+        reasonCode = "final_generation_unobserved";
+      }
+      return {
+        contract_version: "source_to_final_lineage_observation.v1",
+        status,
+        reason_code: reasonCode,
+        archive_center_request_correlation_id: lineage.archive_center_request_correlation_id || null,
+        prepare_lineage_id: lineage.lineage_id || payloadObservation.prepare_lineage_id || null,
+        payload_plan_id: lineage.payload_plan_id || payloadObservation.payload_plan_id || null,
+        request_id_state: "official_risu_request_id_not_exposed",
+        generation_id: generationID || null,
+        generation_id_state: generationState,
+        source_refs: Array.isArray(lineage.source_refs) ? lineage.source_refs.slice(0, 128) : [],
+        execution_item_refs: Array.isArray(payloadObservation.execution_item_refs)
+          ? payloadObservation.execution_item_refs.slice(0, 128)
+          : [],
+        payload_application_status: payloadObservation.payload_application_status || "ambiguous",
+        payload_observation_stage: payloadObservation.observation_stage || "unobserved",
+        final_provider_payload_state: payloadObservation.final_provider_payload_state || "not_exposed",
+        payload_guidance_hash: payloadObservation.payload_guidance_hash || null,
+        hash_algorithm: "sha256_utf8.v1",
+        final_observed_content_hash: sourceAcceptanceObservation && sourceAcceptanceObservation.observed_content_hash || null,
+        final_hash_algorithm: sourceAcceptanceObservation && sourceAcceptanceObservation.hash_algorithm || null,
+        semantic_outcome: "unobserved",
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async function buildCompleteTurnRequestBody(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, sourceObservationOptions) {
     try {
       const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride();
@@ -24419,6 +24227,10 @@
         Object.assign({}, sourceObservationOptions || {}, { userInput: String(userInput || "") })
       );
       const risuPersonaObservation = await observeRisuPersona();
+      const sourceToFinalLineageObservation = buildSourceToFinalLineageObservation(
+        sourceAcceptanceObservation,
+        lastOrchResult
+      );
       const idempotencyKey = [
         "complete_turn",
         String(chatSessionId || ""),
@@ -24476,6 +24288,9 @@
           },
         },
       };
+      if (sourceToFinalLineageObservation) {
+        body.client_meta.source_to_final_lineage_observation = sourceToFinalLineageObservation;
+      }
       return body;
     } catch (err) {
       debugLog("[M-4c] buildCompleteTurnRequestBody error:", err.message);
@@ -24503,6 +24318,30 @@
       if (meta.source_acceptance_required === true) safeClientMeta.source_acceptance_required = true;
       if (meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object") {
         safeClientMeta.source_acceptance_observation = Object.assign({}, meta.source_acceptance_observation);
+      }
+      if (meta.source_to_final_lineage_observation && typeof meta.source_to_final_lineage_observation === "object") {
+        const lineage = meta.source_to_final_lineage_observation;
+        safeClientMeta.source_to_final_lineage_observation = {
+          contract_version: lineage.contract_version,
+          status: lineage.status,
+          reason_code: lineage.reason_code,
+          archive_center_request_correlation_id: lineage.archive_center_request_correlation_id || null,
+          prepare_lineage_id: lineage.prepare_lineage_id || null,
+          payload_plan_id: lineage.payload_plan_id || null,
+          request_id_state: "official_risu_request_id_not_exposed",
+          generation_id: lineage.generation_id || null,
+          generation_id_state: lineage.generation_id_state || "unobserved",
+          source_refs: Array.isArray(lineage.source_refs) ? lineage.source_refs.slice(0, 128) : [],
+          execution_item_refs: Array.isArray(lineage.execution_item_refs) ? lineage.execution_item_refs.slice(0, 128) : [],
+          payload_application_status: lineage.payload_application_status || "ambiguous",
+          payload_observation_stage: lineage.payload_observation_stage || "unobserved",
+          final_provider_payload_state: lineage.final_provider_payload_state || "not_exposed",
+          payload_guidance_hash: lineage.payload_guidance_hash || null,
+          hash_algorithm: lineage.hash_algorithm || "sha256_utf8.v1",
+          final_observed_content_hash: lineage.final_observed_content_hash || null,
+          final_hash_algorithm: lineage.final_hash_algorithm || null,
+          semantic_outcome: "unobserved",
+        };
       }
       if (meta.risu_persona_observation && typeof meta.risu_persona_observation === "object") {
         safeClientMeta.risu_persona_observation = Object.assign({}, meta.risu_persona_observation);
@@ -24535,6 +24374,9 @@
       const meta = payload.client_meta && typeof payload.client_meta === "object" ? payload.client_meta : {};
       const previous = meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object"
         ? meta.source_acceptance_observation
+        : null;
+      const previousLineage = meta.source_to_final_lineage_observation && typeof meta.source_to_final_lineage_observation === "object"
+        ? Object.assign({}, meta.source_to_final_lineage_observation)
         : null;
       let observedAssistantContent = String(payload.assistant_content || "");
       let activePair = await findActiveChatCompletedTurnPairForContent(
@@ -24576,6 +24418,17 @@
       if (meta.preserve_requested_turn_index === true) rebuilt.client_meta.preserve_requested_turn_index = true;
       if (meta.risu_persona_observation && typeof meta.risu_persona_observation === "object") {
         rebuilt.client_meta.risu_persona_observation = Object.assign({}, meta.risu_persona_observation);
+      }
+      if (previousLineage) {
+        previousLineage.generation_id = observation.generation_id || null;
+        previousLineage.generation_id_state = observation.generation_id_state || "unobserved";
+        previousLineage.final_observed_content_hash = observation.observed_content_hash || null;
+        previousLineage.final_hash_algorithm = observation.hash_algorithm || null;
+        if (previousLineage.status === "ready" && previousLineage.generation_id_state !== "observed") {
+          previousLineage.status = "ambiguous";
+          previousLineage.reason_code = "final_generation_unobserved_after_queue_refresh";
+        }
+        rebuilt.client_meta.source_to_final_lineage_observation = previousLineage;
       }
       const refreshedPayload = buildCompleteTurnQueuePayload(rebuilt);
       if (!refreshedPayload) return false;
@@ -24869,13 +24722,11 @@
     const currentGenerationPacketTrace = (options && options.currentGenerationPacketTrace && typeof options.currentGenerationPacketTrace === "object")
       ? options.currentGenerationPacketTrace
       : {};
-    const currentCombinedHintText = options ? options.currentCombinedHintText : null;
     const traceSummary = generationPacket && generationPacket.trace_summary && typeof generationPacket.trace_summary === "object"
       ? generationPacket.trace_summary
       : null;
 
     if (generationPacket && generationPacket.packet_mode !== "off" && !generationPacket.degraded) {
-      const guidanceMetadata = generationPacket.guidance_metadata || null;
       let shadowCompareRecord = currentGenerationPacketTrace.shadowCompareRecord || null;
       if (generationPacket.shadow_compare_record && typeof generationPacket.shadow_compare_record === "object") {
         shadowCompareRecord = Object.assign({}, generationPacket.shadow_compare_record);
@@ -24915,9 +24766,6 @@
         arcConsumed: !!(traceSummary && traceSummary.arc_consumed),
         sagaDelivered: !!(traceSummary && traceSummary.saga_delivered),
         sagaConsumed: !!(traceSummary && traceSummary.saga_consumed),
-        combinedHintText: guidanceMetadata && guidanceMetadata.combined_hint_text && !currentCombinedHintText
-          ? guidanceMetadata.combined_hint_text
-          : null,
         debugLogArgs: ["[O-2c] takeover disabled: packet kept as trace-only"],
       };
     }
@@ -24940,7 +24788,6 @@
         arcConsumed: !!currentGenerationPacketTrace.arcConsumed,
         sagaDelivered: !!currentGenerationPacketTrace.sagaDelivered,
         sagaConsumed: !!currentGenerationPacketTrace.sagaConsumed,
-        combinedHintText: null,
         debugLogArgs: ["[O-2d] generation_packet degraded — fallback to local path:", generationPacket.fallback_reason],
       };
     }
@@ -24962,7 +24809,6 @@
       arcConsumed: !!currentGenerationPacketTrace.arcConsumed,
       sagaDelivered: !!currentGenerationPacketTrace.sagaDelivered,
       sagaConsumed: !!currentGenerationPacketTrace.sagaConsumed,
-      combinedHintText: null,
       debugLogArgs: null,
     };
   }
@@ -24972,19 +24818,13 @@
     const currentGenerationPacketTrace = (options && options.currentGenerationPacketTrace && typeof options.currentGenerationPacketTrace === "object")
       ? options.currentGenerationPacketTrace
       : {};
-    const currentCombinedHintText = options ? options.currentCombinedHintText : null;
     const generationPacketTraceState = resolveGenerationPacketTraceStateStep215({
       generationPacket,
       currentGenerationPacketTrace,
-      currentCombinedHintText,
     });
     const generationPacketTrace = Object.assign({}, generationPacketTraceState);
-    delete generationPacketTrace.combinedHintText;
     delete generationPacketTrace.debugLogArgs;
-    return {
-      generationPacketTrace,
-      combinedHintText: generationPacketTraceState.combinedHintText,
-    };
+    return { generationPacketTrace };
   }
 
   async function orchestrateTurnHelpers(userInput, recentContext, continuityInfo, preparedBundle, languageContext, options = {}) {
@@ -25002,10 +24842,7 @@
         supervisorOnly: freshFirstTurnLightMode,
         meta: orchestrationOptions.freshFirstTurnLightModeMeta || null,
       };
-      trace.weakInputPlanner = normalizeWeakInputPlannerTrace(preparedBundle && preparedBundle.weakInputPlanner);
       trace.responseExecutionContract = normalizeResponseExecutionContractTrace(preparedBundle && preparedBundle.responseExecutionContract);
-      trace.progressionChoice = normalizeProgressionChoiceTrace(preparedBundle && preparedBundle.progressionChoiceLedger);
-      trace.step25ValidationGate = normalizeStep25ValidationGateTrace(preparedBundle && preparedBundle.step25ValidationGate);
       applyOrchestrationModuleTransportTraceOr1e(trace, buildOrchestrationModuleTransportStateOr1e({
         prepareTurnSource: _lastPrepareTurnSource,
         preparedBundle: preparedBundle,
@@ -25070,10 +24907,7 @@
           languageContext,
           preparedBundle.inputTransparencyModel,
           preparedBundle.effectiveInputPreview,
-          trace.weakInputPlanner,
-          trace.responseExecutionContract,
-          trace.progressionChoice,
-          trace.step25ValidationGate
+          trace.responseExecutionContract
         );
         _effectiveInputAwaitingNewTurn = false;
         _lastActivitySnapshot = {
@@ -25104,6 +24938,7 @@
           _chatSessionId: chatSessionId,
           _improvementTrace: null,
           _injectionPack: preparedBundle.injectionPack || { payload_application_plan: compactPlan },
+          _sourceToPayloadLineage: preparedBundle.sourceToPayloadLineage || null,
           _referenceInjection: preparedBundle.referenceInjection || null,
           _effectiveUserInput: userInput,
           _effectiveUserInputChanged: false,
@@ -25277,54 +25112,6 @@
           suppressedCount: 0,        // arbitration 이후 업데이트
           arbitrationNotes: "pending", // arbitration 이후 업데이트
         };
-        // N-2b: autonomy plan from prepare-turn bundle
-        if (preparedBundle && preparedBundle.autonomyPlan) {
-          const ap = preparedBundle.autonomyPlan;
-          trace.autonomyPlan = {
-            mode: ap.mode || "pass",
-            suggestedBeat: ap.suggested_beat || null,
-            blockedBeatsCount: Array.isArray(ap.blocked_beats) ? ap.blocked_beats.length : 0,
-            gateReason: ap.gate_reason || "no_plan",
-          };
-        }
-        // N-3a: micro-beat proposal from prepare-turn bundle
-        if (preparedBundle && preparedBundle.microBeatProposal) {
-          const mbp = preparedBundle.microBeatProposal;
-          trace.microBeatProposal = {
-            ready: !!(mbp.hint_text),
-            hintText: mbp.hint_text || null,
-            sourceBeat: mbp.source_beat || null,
-            blockedBy: Array.isArray(mbp.blocked_by) ? mbp.blocked_by : [],
-          };
-        }
-        // N-3b: scene-step proposal from prepare-turn bundle
-        if (preparedBundle && preparedBundle.sceneStepProposal) {
-          const ssp = preparedBundle.sceneStepProposal;
-          trace.sceneStepProposal = {
-            ready: ssp.gate_reason === "ok" && Array.isArray(ssp.scope_beats) && ssp.scope_beats.length > 0,
-            scopeBeats: Array.isArray(ssp.scope_beats) ? ssp.scope_beats : [],
-            maxStep: ssp.max_step || 2,
-            excludedCount: Array.isArray(ssp.excluded_beats) ? ssp.excluded_beats.length : 0,
-            gateReason: ssp.gate_reason || "no_proposal",
-          };
-        }
-        // N-3c: combined proposal from prepare-turn bundle
-        if (preparedBundle && preparedBundle.combinedProposal) {
-          const cp = preparedBundle.combinedProposal;
-          trace.combinedProposal = {
-            ready: !!(cp.combined_hint_text),
-            combinedHintText: cp.combined_hint_text || null,
-            confidence: cp.proposal_confidence || "none",
-            planSignals: Array.isArray(cp.plan_signals) ? cp.plan_signals : [],
-          };
-        }
-        // N-3d: proposal source/bound summary from trace_preview
-        if (preparedBundle && preparedBundle.tracePreview) {
-          const tp = preparedBundle.tracePreview;
-          trace.proposalSource = tp.proposal_source || "none";
-          trace.proposalMaxStep = tp.proposal_max_step != null ? tp.proposal_max_step : 2;
-          trace.proposalForbiddenCount = tp.proposal_forbidden_count || 0;
-        }
       } catch (ncErr) {
         warnLog("narrativeControl fetch failed (non-fatal):", ncErr.message);
         trace.narrativeControl.status = "fail";
@@ -25739,17 +25526,12 @@
       const generationPacketTraceState = resolveGenerationPacketTraceStateStep215({
         generationPacket,
         currentGenerationPacketTrace: trace.generationPacket,
-        currentCombinedHintText: trace.combinedProposal.combinedHintText,
       });
       const _postReviewInputAndPacketState = resolvePostReviewInputAndPacketStateStep215({
         generationPacket,
         currentGenerationPacketTrace: trace.generationPacket,
-        currentCombinedHintText: trace.combinedProposal.combinedHintText,
       });
       trace.generationPacket = _postReviewInputAndPacketState.generationPacketTrace;
-      if (_postReviewInputAndPacketState.combinedHintText !== null) {
-        trace.combinedProposal.combinedHintText = _postReviewInputAndPacketState.combinedHintText;
-      }
       if (generationPacketTraceState.debugLogArgs) {
         debugLogEntries.push(generationPacketTraceState.debugLogArgs);
       }
@@ -26089,10 +25871,7 @@
         languageContext,
         preparedBundle && preparedBundle.inputTransparencyModel,
         preparedBundle && preparedBundle.effectiveInputPreview,
-        trace.weakInputPlanner,
-        trace.responseExecutionContract,
-        trace.progressionChoice,
-        trace.step25ValidationGate
+        trace.responseExecutionContract
       );
       _effectiveInputAwaitingNewTurn = false;
 
@@ -26137,7 +25916,7 @@
         trace.applyMode && trace.applyMode.payloadReplaced
       );
 
-      return { searchResult, wakeUpContext, supervisorResult, kgRecallResult, activeStatesResult, episodeRecallResult, storylineResult, characterResult, worldRulesResult, pendingThreadsResult, locationContextResult, continuityPackResult: continuityPackRequested ? continuityPackResult : null, continuityInfo, _trace: trace, _chatSessionId: chatSessionId, _improvementTrace, _injectionPack: (preparedBundle && preparedBundle.injectionPack) || null, _referenceInjection: (preparedBundle && preparedBundle.referenceInjection) || null, _effectiveUserInput: userInput, _effectiveUserInputChanged: _effectiveUserInputChanged, timestamp: Date.now() };
+      return { searchResult, wakeUpContext, supervisorResult, kgRecallResult, activeStatesResult, episodeRecallResult, storylineResult, characterResult, worldRulesResult, pendingThreadsResult, locationContextResult, continuityPackResult: continuityPackRequested ? continuityPackResult : null, continuityInfo, _trace: trace, _chatSessionId: chatSessionId, _improvementTrace, _injectionPack: (preparedBundle && preparedBundle.injectionPack) || null, _sourceToPayloadLineage: (preparedBundle && preparedBundle.sourceToPayloadLineage) || null, _referenceInjection: (preparedBundle && preparedBundle.referenceInjection) || null, _effectiveUserInput: userInput, _effectiveUserInputChanged: _effectiveUserInputChanged, timestamp: Date.now() };
     } catch (err) {
       warnLog("orchestrateTurnHelpers failed:", err.message);
       updateRuntimeState("lastError", "error", { detail: err.message });
@@ -29568,10 +29347,6 @@
       "session_state",
       "narrative_control",
       "progression_ledger",
-      "autonomy_plan",
-      "micro_beat_proposal",
-      "scene_step_proposal",
-      "combined_proposal",
       "generation_packet",
       "continuity_pack",
       "recall_result",
@@ -33067,6 +32842,103 @@
     // JavaScript가 기억·원작·안내·Input Context를 다시 조립하지 않는다.
     return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);
   }
+
+  function observeGoPayloadApplication(finalPayload, plan, sourceLineage) {
+    try {
+      const lineage = sourceLineage && typeof sourceLineage === "object" ? sourceLineage : {};
+      const extracted = extractMessages(finalPayload);
+      const messages = Array.isArray(extracted.messages) ? extracted.messages : [];
+      const expected = [];
+      const auxiliaryText = String(plan && plan.auxiliary_text || "");
+      const inputContextText = String(plan && plan.input_context_text || "");
+      if (auxiliaryText) {
+        expected.push({
+          key: "auxiliary_context",
+          text: "[Archive Center — Auxiliary Context]\n\n" + auxiliaryText,
+          plannedHash: plan.auxiliary_observation_hash || null,
+        });
+      }
+      if (inputContextText) {
+        expected.push({
+          key: "input_context",
+          text: "[Archive Center — Input Context]\n\n" + inputContextText,
+          plannedHash: plan.input_context_observation_hash || null,
+        });
+      }
+      const blocks = expected.map(function(block) {
+        const matches = [];
+        messages.forEach(function(message, index) {
+          const parsed = getPayloadMessageRoleAndText(message);
+          if (parsed.role === "system" && parsed.text === block.text) matches.push(index);
+        });
+        const observedHash = matches.length === 1 ? computeOrchestrationDirtyHashOr1c(block.text) : null;
+        const hashMatch = !!(observedHash && block.plannedHash && observedHash === block.plannedHash);
+        const status = matches.length === 1
+          ? (hashMatch ? "applied" : "ambiguous")
+          : (matches.length > 1 ? "ambiguous" : "missing");
+        return {
+          key: block.key,
+          status,
+          message_index: matches.length === 1 ? matches[0] : null,
+          message_path: matches.length === 1
+            ? (Array.isArray(extracted.path) ? extracted.path.concat([matches[0]]).join(".") : String(matches[0]))
+            : null,
+          match_count: matches.length,
+          observed_content_hash: observedHash,
+          planned_content_hash: block.plannedHash,
+          hash_match: hashMatch,
+          hash_algorithm: "or1c_utf16_djb2.v1",
+        };
+      });
+      let payloadStatus = "empty";
+      let reasonCode = "no_planned_injection_blocks";
+      if (blocks.some(function(block) { return block.match_count === 1 && block.hash_match !== true; })) {
+        payloadStatus = "ambiguous";
+        reasonCode = "injected_block_hash_mismatch";
+      } else if (blocks.some(function(block) { return block.status === "ambiguous"; })) {
+        payloadStatus = "ambiguous";
+        reasonCode = "injected_block_position_ambiguous";
+      } else if (blocks.some(function(block) { return block.status === "missing"; })) {
+        payloadStatus = "missing";
+        reasonCode = "injected_block_not_observed";
+      } else if (blocks.length > 0) {
+        payloadStatus = "applied";
+        reasonCode = "exact_injected_blocks_observed";
+      }
+      const observation = {
+        contract_version: "payload_application_observation.v1",
+        status: payloadStatus === "applied" || payloadStatus === "empty" ? "ready" : "ambiguous",
+        reason_code: reasonCode,
+        payload_application_status: payloadStatus,
+        observation_stage: "archive_center_before_request_return",
+        archive_center_request_correlation_id: lineage.archive_center_request_correlation_id || null,
+        prepare_lineage_id: lineage.lineage_id || null,
+        payload_plan_id: lineage.payload_plan_id || (plan && plan.payload_plan_id) || null,
+        request_id_state: "official_risu_request_id_not_exposed",
+        final_provider_payload_state: "not_exposed",
+        source_refs: Array.isArray(lineage.source_refs) ? lineage.source_refs.slice(0, 128) : [],
+        execution_item_refs: Array.isArray(lineage.execution_items)
+          ? lineage.execution_items.map(function(item) { return item && item.item_id; }).filter(Boolean).slice(0, 128)
+          : [],
+        payload_guidance_hash: plan && plan.guidance_application_trace
+          ? plan.guidance_application_trace.final_hash || null
+          : null,
+        blocks,
+        semantic_outcome: "unobserved",
+      };
+      return observation;
+    } catch (err) {
+      return {
+        contract_version: "payload_application_observation.v1",
+        status: "ambiguous",
+        reason_code: "payload_application_observation_failed",
+        payload_application_status: "ambiguous",
+        request_id_state: "official_risu_request_id_not_exposed",
+        semantic_outcome: "unobserved",
+      };
+    }
+  }
+
   function applyGoPayloadApplicationPlan(payload, orchResult, emptyResult) {
     try {
       const injectionPack = orchResult && orchResult._injectionPack && typeof orchResult._injectionPack === "object"
@@ -33103,7 +32975,33 @@
       let inputContextApplied = false;
       if (inputContextText) {
         finalPayload = injectInputContextBeforeUser(finalPayload, inputContextText);
-        inputContextApplied = true;
+      }
+      const payloadApplicationObservation = observeGoPayloadApplication(
+        finalPayload,
+        plan,
+        orchResult && orchResult._sourceToPayloadLineage
+      );
+      const observedBlocks = Array.isArray(payloadApplicationObservation.blocks) ? payloadApplicationObservation.blocks : [];
+      injected = auxiliaryText
+        ? observedBlocks.some(function(block) { return block && block.key === "auxiliary_context" && block.status === "applied"; })
+        : false;
+      inputContextApplied = inputContextText
+        ? observedBlocks.some(function(block) { return block && block.key === "input_context" && block.status === "applied"; })
+        : false;
+      if (orchResult && typeof orchResult === "object") {
+        orchResult._payloadApplicationObservation = payloadApplicationObservation;
+        if (orchResult._trace && typeof orchResult._trace === "object") {
+          orchResult._trace.sourceToPayloadLineage = {
+            contractVersion: orchResult._sourceToPayloadLineage && orchResult._sourceToPayloadLineage.contract_version || null,
+            status: orchResult._sourceToPayloadLineage && orchResult._sourceToPayloadLineage.status || "unobserved",
+            archiveCenterRequestCorrelationId: payloadApplicationObservation.archive_center_request_correlation_id || null,
+            prepareLineageId: payloadApplicationObservation.prepare_lineage_id || null,
+            payloadPlanId: payloadApplicationObservation.payload_plan_id || null,
+            payloadApplicationStatus: payloadApplicationObservation.payload_application_status,
+            reasonCode: payloadApplicationObservation.reason_code,
+            blocks: observedBlocks,
+          };
+        }
       }
 
       const lanes = Array.isArray(plan.lanes) ? plan.lanes : [];
@@ -33166,6 +33064,7 @@
         },
         payloadApplicationPlan: plan,
         guidanceApplicationTrace: guidanceTrace,
+        payloadApplicationObservation,
         budgetPolicy: {
           owner: "go",
           contractVersion: plan.contract_version,
@@ -33205,6 +33104,15 @@
 
   function isContextInjectionType(type) {
     return !type || type === "model";
+  }
+
+  function resolvePendingSourceLineageOwnership(pending, requestId, alreadyAmbiguous) {
+    const current = pending && typeof pending === "object" ? pending : null;
+    const ownsPending = !!(current && current.requestId === requestId);
+    return {
+      ownsPending,
+      ambiguous: !!alreadyAmbiguous || !!(ownsPending && current.sourceLineageAmbiguous),
+    };
   }
 
   const AUXILIARY_MODULE_OUTPUT_MARKERS = Object.freeze([
@@ -33278,6 +33186,16 @@
 
   function getPayloadMessageRoleAndText(message) {
     try {
+      const directRole = message && typeof message === "object"
+        ? String(message.role || "").trim().toLowerCase()
+        : "";
+      if (["system", "user", "assistant", "function"].indexOf(directRole) >= 0 &&
+          Object.prototype.hasOwnProperty.call(message, "content")) {
+        return {
+          role: directRole,
+          text: auxiliaryMessageContentText(message.content),
+        };
+      }
       const comparable = extractComparableMessageRoleAndContent(message);
       if (!comparable) return { role: "", text: "" };
       return {
@@ -34255,7 +34173,7 @@
                 original_payload_preserved: !!ptLaneStatus.original_payload_preserved,
               } : null,
             });
-            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.progressionLedger || b.autonomyPlan || b.microBeatProposal || b.sceneStepProposal || b.combinedProposal || b.generationPacket || b.continuityPack || b.recallResult || b.supervisorInputPack || b.supervisorResult || b.injectionPack || b.payloadApplicationPlan || b.referenceInjection || b.inputTransparencyModel || b.effectiveInputPreview || b.weakInputPlanner || b.responseExecutionContract || b.progressionChoiceLedger || b.step25ValidationGate || b.writebackPreview || b.tracePreview || b.sourceContract)) ? b : null;
+            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.progressionLedger || b.generationPacket || b.continuityPack || b.recallResult || b.supervisorInputPack || b.supervisorResult || b.injectionPack || b.payloadApplicationPlan || b.referenceInjection || b.inputTransparencyModel || b.effectiveInputPreview || b.responseExecutionContract || b.writebackPreview || b.tracePreview || b.sourceContract)) ? b : null;
           } else {
             _lastPrepareTurnSource = "backend-off";
             _lastPrepareTurnFallbackReason = "backend_off";
@@ -34293,6 +34211,14 @@
 
       // Sprint 4-A-1: session별 동시 실행 보호
       const existingPending = _pendingOrchBySession.get(orchSessionId);
+      let sourceLineageOverlapAmbiguous = false;
+      if (existingPending) {
+        sourceLineageOverlapAmbiguous = true;
+        existingPending.sourceLineageAmbiguous = true;
+        if (existingPending.orchResult && typeof existingPending.orchResult === "object") {
+          existingPending.orchResult._sourceLineageAmbiguous = true;
+        }
+      }
       if (existingPending && existingPending.status === "running") {
         const elapsed = Date.now() - existingPending.startedAt;
         if (elapsed < getOrchestrationTimeoutMs()) {
@@ -34322,13 +34248,19 @@
           freshFirstTurnLightModeMeta,
         });
       } catch (orchErr) {
-        _pendingOrchBySession.delete(orchSessionId);
+        const failedPending = _pendingOrchBySession.get(orchSessionId);
+        if (failedPending && failedPending.requestId === orchRequestId) {
+          _pendingOrchBySession.delete(orchSessionId);
+        }
         throw orchErr;
       }
       if (!lastOrchResult) {
         const emptyFallbackRoute = resolveOrchestrationFallbackRouteOr1b("empty_result");
         const orchBlock = buildLlmGateBlock("입력 오케스트레이션", "orchestration returned null", "orchestration_failed");
-        _pendingOrchBySession.delete(orchSessionId);
+        const emptyPending = _pendingOrchBySession.get(orchSessionId);
+        if (emptyPending && emptyPending.requestId === orchRequestId) {
+          _pendingOrchBySession.delete(orchSessionId);
+        }
 
         const orchFailTrace = newTurnTrace();
         orchFailTrace.chatSessionId = orchSessionId;
@@ -34375,6 +34307,19 @@
           failReasons: [orchBlock.code || "orchestration_failed"],
         });
         return payload;
+      }
+      const pendingLineageState = resolvePendingSourceLineageOwnership(
+        _pendingOrchBySession.get(orchSessionId),
+        orchRequestId,
+        sourceLineageOverlapAmbiguous
+      );
+      if (!pendingLineageState.ownsPending) {
+        lastOrchResult._sourceLineageAmbiguous = true;
+        return applyProtectionOnlyInjection(payload, userInput);
+      }
+      sourceLineageOverlapAmbiguous = pendingLineageState.ambiguous;
+      if (sourceLineageOverlapAmbiguous && lastOrchResult && typeof lastOrchResult === "object") {
+        lastOrchResult._sourceLineageAmbiguous = true;
       }
       if (isIntentionalOrchestrationSkipResult(lastOrchResult)) {
         const skipFallbackRoute = resolveOrchestrationFallbackRouteOr1b("intentional_skip");
@@ -34432,7 +34377,10 @@
           syncRuntimeStateFromTurnTrace(lastOrchResult._trace);
         }
         commitOrchestrationDirtySnapshotOr1c(orchSessionId, orchestrationDirtySignals);
-        _pendingOrchBySession.delete(orchSessionId);
+        const skippedPending = _pendingOrchBySession.get(orchSessionId);
+        if (skippedPending && skippedPending.requestId === orchRequestId) {
+          _pendingOrchBySession.delete(orchSessionId);
+        }
         return applyProtectionOnlyInjection(payload, userInput);
       }
       // orchestration이 스킵되었어도 최소 trace를 보장
@@ -34565,7 +34513,10 @@
 
       if (lastOrchResult._deliveryBlocked) {
         const blocked = lastOrchResult._deliveryBlocked;
-        _pendingOrchBySession.delete(orchSessionId);
+        const blockedPending = _pendingOrchBySession.get(orchSessionId);
+        if (blockedPending && blockedPending.requestId === orchRequestId) {
+          _pendingOrchBySession.delete(orchSessionId);
+        }
         if (lastOrchResult._trace) {
           lastOrchResult._trace.deliveryGate = {
             status: "warn",
@@ -34595,6 +34546,7 @@
         recentContext,
         orchResult: lastOrchResult,
         cacheDescriptor: orchestrationCacheDescriptor,
+        sourceLineageAmbiguous: !!sourceLineageOverlapAmbiguous,
       });
       if (lastOrchResult && lastOrchResult._trace) {
         lastOrchResult._trace.contextInjectionGate = { ...contextInjectionGate };
@@ -35732,6 +35684,26 @@
       const ctRaw = ctPipeline && ctPipeline.raw && typeof ctPipeline.raw === "object" ? ctPipeline.raw : null;
       const ctDerived = ctPipeline && ctPipeline.derived && typeof ctPipeline.derived === "object" ? ctPipeline.derived : null;
       const ctVector = ctPipeline && ctPipeline.vector && typeof ctPipeline.vector === "object" ? ctPipeline.vector : null;
+      const ctSourceToFinal = _ctResult && _ctResult.source_to_final_lineage && typeof _ctResult.source_to_final_lineage === "object"
+        ? _ctResult.source_to_final_lineage
+        : null;
+      const ctSourceToFinalRuntime = ctSourceToFinal ? {
+        contractVersion: ctSourceToFinal.contract_version || null,
+        status: ctSourceToFinal.status || "unattached",
+        attached: ctSourceToFinal.attached === true,
+        reasonCode: ctSourceToFinal.reason_code || null,
+        archiveCenterRequestCorrelationId: ctSourceToFinal.archive_center_request_correlation_id || null,
+        prepareLineageId: ctSourceToFinal.prepare_lineage_id || null,
+        payloadPlanId: ctSourceToFinal.payload_plan_id || null,
+        requestIdState: ctSourceToFinal.request_id_state || "official_risu_request_id_not_exposed",
+        generationId: ctSourceToFinal.generation_id || null,
+        generationIdState: ctSourceToFinal.generation_id_state || "unobserved",
+        finalContentHash: ctSourceToFinal.final_output && ctSourceToFinal.final_output.content_hash || null,
+        semanticOutcome: "unobserved",
+      } : null;
+      if (ctSourceToFinalRuntime && lastOrchResult && lastOrchResult._trace) {
+        lastOrchResult._trace.sourceToFinalLineage = ctSourceToFinalRuntime;
+      }
       // M-4d: runtimeState 업데이트 — complete-turn 결과 기록
       {
         const ctStatus = _ctResult ? _ctResult.status : "not_called";
@@ -35871,6 +35843,9 @@
           updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: "complete-turn request build failed" });
           updateRuntimeState("lastCompleteTurnStatus", "fail", { turnIndex: persistedTurnIdx, source: "backend", detail: "complete-turn request build failed", failReasons: ["complete_turn_request_build_failed"] });
         }
+      }
+      if (ctSourceToFinalRuntime && runtimeState.lastCompleteTurnStatus) {
+        runtimeState.lastCompleteTurnStatus.sourceToFinalLineage = ctSourceToFinalRuntime;
       }
 
       // ── critic complete ────────────────────────────────────────────────────
@@ -39397,6 +39372,7 @@
         setTimeout(async () => {
           explorerCancelEdit();
           await explorerLoadTab("kg_triples", true);
+          await explorerFetchEntities();
           await refreshExplorerUI();
         }, 800);
         return true;
@@ -40195,6 +40171,7 @@
           explorerCancelEdit();
           await explorerFetchTrust();
           await explorerFetchWorldGraph();
+          await explorerFetchEntities();
           await refreshExplorerUI();
         }, 800);
         return true;
@@ -43072,6 +43049,7 @@
       } else {
         sectionHtml = ent.locations.map(r => {
           const name = escapeAttr(r.scope_name || r.key || '(이름 없음)');
+          const isEditing = explorerIsEditing("wr", r.id);
           let note = '';
           try {
             const val = typeof r.value_json === 'string' ? JSON.parse(r.value_json) : (r.value_json || null);
@@ -43083,12 +43061,28 @@
               note = escapeAttr(val.slice(0, 80));
             }
           } catch (_) {}
-          const delBtn = '<button class="mo-ent-del-btn" data-ent-del-loc="' + r.id + '" title="삭제">🗑️</button>';
+          const editBtn = !isEditing && r.id != null ? '<button class="mo-ent-speech-btn" data-ent-edit-loc="' + r.id + '" title="' + escapeAttr(t('explorer.btn.editTooltip')) + '">' + escapeAttr(t('explorer.btn.editTooltip')) + '</button>' : '';
+          const delBtn = isEditing ? '' : '<button class="mo-ent-del-btn" data-ent-del-loc="' + r.id + '" title="삭제">🗑️</button>';
           const batchCheck = renderExplorerBatchDeleteCheckbox('entities', explorerBuildBatchDeleteKey('location', r.id), 'location #' + r.id + ' 선택');
+          const ef = isEditing ? (_explorer.editFields || {}) : {};
+          const editForm = isEditing
+            ? '<div class="mo-ed-form" data-edit-type="wr" data-edit-id="' + r.id + '">' +
+                '<div class="mo-ed-row">' +
+                  '<div class="mo-ed-field mo-ed-field-sm"><label>장소 이름</label><input type="text" class="mo-ed-input" data-field="scope_name" value="' + escapeAttr(ef.scope_name || "") + '"></div>' +
+                  '<div class="mo-ed-field mo-ed-field-sm"><label>규칙 이름</label><input type="text" class="mo-ed-input" data-field="key" value="' + escapeAttr(ef.key || "") + '"></div>' +
+                '</div>' +
+                '<div class="mo-ed-field"><label>내용</label><textarea class="mo-ed-textarea" data-field="value_json" rows="3">' + escapeAttr(ef.value_json || "") + '</textarea></div>' +
+                '<div class="mo-ed-actions">' +
+                  '<button class="mo-btn mo-btn-primary mo-ed-save-btn" data-save-type="wr" data-save-id="' + r.id + '">' + escapeAttr(t('explorer.edit.saveBtn')) + '</button>' +
+                  '<button class="mo-btn mo-btn-ghost mo-ed-cancel-btn">' + escapeAttr(t('explorer.edit.cancelBtn')) + '</button>' +
+                '</div>' +
+              '</div>'
+            : '';
           return '<div class="mo-ent-card">' +
             '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + name + '</span>' +
-            '<span class="mo-ent-scope">' + escapeAttr(r.scope || '') + '</span>' + delBtn + '</div>' +
+            '<span class="mo-ent-scope">' + escapeAttr(r.scope || '') + '</span>' + editBtn + delBtn + '</div>' +
             (note ? '<div class="mo-ent-detail">' + note + '</div>' : '') +
+            editForm +
             '</div>';
         }).join('');
       }
@@ -43101,17 +43095,36 @@
       } else {
         sectionHtml = ent.items.map(it => {
           const name = escapeAttr(it.item || '');
+          const isEditing = explorerIsEditing("kg", it.id);
           const meta = (it.owner ? escapeAttr(it.owner) + ' · ' : '') + escapeAttr(it.predicate || '');
           const turn = it.source_turn != null ? '<span class="mo-ent-turn">' + t('explorer.entities.turnLabel') + ' ' + it.source_turn + '</span>' : '';
-          const delBtn = it.id != null
+          const editBtn = it.id != null && !isEditing
+            ? '<button class="mo-ent-speech-btn" data-ent-edit-item="' + it.id + '" title="' + escapeAttr(t('explorer.btn.editTooltip')) + '">' + escapeAttr(t('explorer.btn.editTooltip')) + '</button>'
+            : '';
+          const delBtn = it.id != null && !isEditing
             ? '<button class="mo-ent-del-btn" data-ent-del-item="' + it.id + '" title="삭제">🗑️</button>'
             : '';
           const batchCheck = it.id != null
             ? renderExplorerBatchDeleteCheckbox('entities', explorerBuildBatchDeleteKey('item', it.id), 'item #' + it.id + ' 선택')
             : '';
+          const ef = isEditing ? (_explorer.editFields || {}) : {};
+          const editForm = isEditing
+            ? '<div class="mo-ed-form" data-edit-type="kg" data-edit-id="' + it.id + '">' +
+                '<div class="mo-ed-row">' +
+                  '<div class="mo-ed-field mo-ed-field-sm"><label>물품 이름</label><input type="text" class="mo-ed-input" data-field="object" value="' + escapeAttr(ef.object || "") + '"></div>' +
+                  '<div class="mo-ed-field mo-ed-field-sm"><label>소유자</label><input type="text" class="mo-ed-input" data-field="subject" value="' + escapeAttr(ef.subject || "") + '"></div>' +
+                  '<div class="mo-ed-field mo-ed-field-sm"><label>관계</label><input type="text" class="mo-ed-input" data-field="predicate" value="' + escapeAttr(ef.predicate || "") + '"></div>' +
+                '</div>' +
+                '<div class="mo-ed-actions">' +
+                  '<button class="mo-btn mo-btn-primary mo-ed-save-btn" data-save-type="kg" data-save-id="' + it.id + '">' + escapeAttr(t('explorer.edit.saveBtn')) + '</button>' +
+                  '<button class="mo-btn mo-btn-ghost mo-ed-cancel-btn">' + escapeAttr(t('explorer.edit.cancelBtn')) + '</button>' +
+                '</div>' +
+              '</div>'
+            : '';
           return '<div class="mo-ent-card">' +
-            '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + name + '</span>' + turn + delBtn + '</div>' +
+            '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + name + '</span>' + turn + editBtn + delBtn + '</div>' +
             '<div class="mo-ent-detail">' + meta + '</div>' +
+            editForm +
             '</div>';
         }).join('');
       }
@@ -43188,8 +43201,8 @@
               '</div>' +
               '<div class="mo-ed-form" data-edit-type="entity_memory" data-edit-id="' + escapeAttr(String(memoryId)) + '">' +
                 '<div class="mo-ed-row">' +
-                  '<div class="mo-ed-field mo-ed-field-sm"><label>owner_entity_name</label><input type="text" class="mo-ed-input" data-field="owner_entity_name" value="' + escapeAttr(ef.owner_entity_name || "") + '"></div>' +
-                  '<div class="mo-ed-field mo-ed-field-sm"><label>owner_entity_key</label><input type="text" class="mo-ed-input" data-field="owner_entity_key" value="' + escapeAttr(ef.owner_entity_key || "") + '"></div>' +
+                  '<div class="mo-ed-field mo-ed-field-sm"><label>기억 소유자 이름</label><input type="text" class="mo-ed-input" data-field="owner_entity_name" value="' + escapeAttr(ef.owner_entity_name || "") + '"></div>' +
+                  '<div class="mo-ed-field mo-ed-field-sm"><label>소유자 식별값</label><input type="text" class="mo-ed-input" data-field="owner_entity_key" value="' + escapeAttr(ef.owner_entity_key || "") + '" readonly></div>' +
                   '<div class="mo-ed-field mo-ed-field-sm"><label>' + escapeAttr(t('explorer.entities.ownerRole')) + '</label><select class="mo-ed-input mo-ed-select" data-field="owner_entity_role">' +
                     optionHtml("protagonist", t('explorer.entities.roleProtagonist'), ef.owner_entity_role) +
                     optionHtml("npc", t('explorer.entities.roleNpc'), ef.owner_entity_role) +
@@ -43231,7 +43244,7 @@
           }
           return '<div class="mo-ent-card">' +
             '<div class="mo-ent-card-header">' +
-              '<span class="mo-ent-name">#' + escapeAttr(String(memory.id || "")) + '</span>' +
+              '<span class="mo-ent-name">' + escapeAttr(formatDisplayEntityLabel(memory.owner_entity_name || memory.persona_entity_name || memory.owner_entity_key || "")) + ' · #' + escapeAttr(String(memory.id || "")) + '</span>' +
               turn +
               '<span class="mo-tl-badge">' + escapeAttr(String(memory.importance_10 ?? "")) + '/10</span>' +
               secret +
@@ -44613,6 +44626,23 @@
         });
       });
 
+      document.querySelectorAll("[data-ent-edit-loc]").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = parseInt(btn.dataset.entEditLoc, 10);
+          const loc = _explorer.entities.locations.find(r => r.id === id);
+          if (!loc) return;
+          explorerStartEdit("wr", id, {
+            key: loc.key || "",
+            value_json: typeof loc.value_json === "string" ? loc.value_json : JSON.stringify(loc.value_json ?? ""),
+            category: loc.category || "",
+            scope: loc.scope || "location",
+            scope_name: loc.scope_name || "",
+          });
+          refreshExplorerUI();
+        });
+      });
+
       // ── Entities: 아이템 삭제 ──
       document.querySelectorAll("[data-ent-del-item]").forEach(btn => {
         btn.addEventListener("click", async (e) => {
@@ -44624,6 +44654,21 @@
           if (!confirm("아이템 [" + name + "] 를 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.")) return;
           await explorerDeleteKgTriple(id);
           _explorer.entities.items = _explorer.entities.items.filter(i => i.id !== id);
+          refreshExplorerUI();
+        });
+      });
+
+      document.querySelectorAll("[data-ent-edit-item]").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = parseInt(btn.dataset.entEditItem, 10);
+          const item = _explorer.entities.items.find(it => it.id === id);
+          if (!item) return;
+          explorerStartEdit("kg", id, {
+            subject: item.owner || "",
+            predicate: item.predicate || "",
+            object: item.item || "",
+          });
           refreshExplorerUI();
         });
       });

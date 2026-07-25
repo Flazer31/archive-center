@@ -750,7 +750,7 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 				continue
 			}
 			addSceneEntities(item.Content)
-			if text := compactPrepareTurnLine(item.Content, 420); text != "" && !stringSliceContains(state, text) {
+			if text := prepareTurnSceneStateWithoutUnresolvedThreads(item.Content); text != "" && !stringSliceContains(state, text) {
 				state = append(state, text)
 			}
 		}
@@ -780,7 +780,7 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 					continue
 				}
 				addSceneEntities(item.Content)
-				if text := compactPrepareTurnLine(prepareTurnSurfaceText(parseSurfacePayload(item.Content)), 420); text != "" && !stringSliceContains(state, text) {
+				if text := prepareTurnSceneStateWithoutUnresolvedThreads(item.Content); text != "" && !stringSliceContains(state, text) {
 					state = append(state, text)
 				}
 			}
@@ -829,6 +829,37 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 		currentSceneTurn:          latestStateTurn,
 		currentSceneIsCurrent:     len(state) > 0,
 	}
+}
+
+func prepareTurnSceneStateWithoutUnresolvedThreads(content string) string {
+	surface := parseSurfacePayload(content)
+	payload, ok := surface.(map[string]any)
+	if !ok {
+		return compactPrepareTurnLine(prepareTurnSurfaceText(surface), 420)
+	}
+	cleaned := make(map[string]any, len(payload))
+	for key, value := range payload {
+		if strings.EqualFold(strings.TrimSpace(key), "unresolved_threads") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(key), "scene_state") {
+			if nested, nestedOK := value.(map[string]any); nestedOK {
+				scene := make(map[string]any, len(nested))
+				for nestedKey, nestedValue := range nested {
+					if strings.EqualFold(strings.TrimSpace(nestedKey), "unresolved_threads") {
+						continue
+					}
+					scene[nestedKey] = nestedValue
+				}
+				value = scene
+			}
+		}
+		cleaned[key] = value
+	}
+	if !hasMeaningfulPayload(cleaned) {
+		return ""
+	}
+	return compactPrepareTurnLine(prepareTurnSurfaceText(cleaned), 420)
 }
 
 func prepareTurnCharacterPrivateMemoryRelevant(item store.ProtagonistEntityMemory, ctx prepareTurnRecollectionContext, aliasMaps ...map[string][]string) (bool, string) {

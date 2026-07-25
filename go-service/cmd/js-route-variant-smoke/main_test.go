@@ -261,48 +261,95 @@ func TestArchiveCenterJSGoPayloadPlanPreservesLanePreviewsForTransparency(t *tes
 		var err error
 		nodePath, err = exec.LookPath("node")
 		if err != nil {
-			t.Skip("node is required for Go payload plan runtime smoke")
+			t.Fatalf("node is required for Go payload plan runtime smoke; set ARCHIVE_CENTER_NODE_BINARY: %v", err)
 		}
 	}
 	src := readArchiveCenterJS(t)
-	script := extractJSFunctionBlockForTest(t, src, "function applyGoPayloadApplicationPlan(payload, orchResult, emptyResult)") + `
+	functions := strings.Join([]string{
+		extractJSFunctionBlockForTest(t, src, "function computeOrchestrationDirtyHashOr1c("),
+		extractJSFunctionBlockForTest(t, src, "function sanitizeEnumValue("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeAuxiliaryInjectionPlacement("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeAuxiliaryInjectionAnchorMarker("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeRollbackMessageRole("),
+		extractJSFunctionBlockForTest(t, src, "function extractMessageContentCandidate("),
+		extractJSFunctionBlockForTest(t, src, "function extractComparableMessageRoleAndContent("),
+		extractJSFunctionBlockForTest(t, src, "function auxiliaryMessageContentText("),
+		extractJSFunctionBlockForTest(t, src, "function getPayloadMessageRoleAndText("),
+		extractJSFunctionBlockForTest(t, src, "function isChatMessageLike("),
+		extractJSFunctionBlockForTest(t, src, "function isChatMessageArray("),
+		extractJSFunctionBlockForTest(t, src, "function getPayloadPathValue("),
+		extractJSFunctionBlockForTest(t, src, "function buildPayloadPathRebuilder("),
+		extractJSFunctionBlockForTest(t, src, "function findPayloadMessagesPath("),
+		extractJSFunctionBlockForTest(t, src, "function extractMessages("),
+		extractJSFunctionBlockForTest(t, src, "function findFirstSystemInsertionIndex("),
+		extractJSFunctionBlockForTest(t, src, "function findLatestUserInsertionIndex("),
+		extractJSFunctionBlockForTest(t, src, "function findAnchorMarkerInsertionIndex("),
+		extractJSFunctionBlockForTest(t, src, "function findLastCachePointInsertionIndex("),
+		extractJSFunctionBlockForTest(t, src, "function resolveAuxiliaryInjectionPlacement("),
+		extractJSFunctionBlockForTest(t, src, "function injectAuxiliaryBlock("),
+		extractJSFunctionBlockForTest(t, src, "function injectInputContextBeforeUser("),
+		extractJSFunctionBlockForTest(t, src, "function observeGoPayloadApplication("),
+		extractJSFunctionBlockForTest(t, src, "function applyGoPayloadApplicationPlan("),
+	}, "\n")
+	script := functions + `
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
-function injectAuxiliaryBlock(payload, text) {
-  return {payload: {...payload, auxiliary: text}, injected: true, placement: {kind: "test"}};
-}
-function injectInputContextBeforeUser(payload, text) {
-  return {...payload, inputContext: text};
-}
-function updateRuntimeState() {}
-function warnLog() {}
+const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto", "before_latest_user", "after_anchor_marker", "after_last_cache_point", "after_first_system", "end"]);
+const DEFAULT_SETTINGS = {auxiliaryInjectionPlacement:"before_latest_user"};
+const settings = {auxiliaryInjectionPlacement:"before_latest_user",auxiliaryInjectionAnchorMarker:""};
+const runtimeUpdates = [];
+function updateRuntimeState(key,status,detail) { runtimeUpdates.push({key,status,detail}); }
+function warnLog() { throw new Error("unexpected production warning"); }
 const memoryDeliveryPlan = {
   contract_version: "memory_delivery_plan.v1",
   classes: [{key: "event_recent", text: "MEMORY"}]
 };
+const auxiliaryText = "REFERENCE\n\nMEMORY\n\nGUIDANCE";
+const inputContextText = "INPUT";
+const exactAuxiliary = "[Archive Center — Auxiliary Context]\n\n" + auxiliaryText;
+const exactInputContext = "[Archive Center — Input Context]\n\n" + inputContextText;
 const plan = {
   contract_version: "payload_application_plan.v1",
   owner: "go",
   apply_rule: "apply_exact_text_without_reassembly",
   status: "ready",
-  auxiliary_text: "REFERENCE\n\nMEMORY\n\nGUIDANCE",
-  input_context_text: "INPUT",
+  auxiliary_text: auxiliaryText,
+  input_context_text: inputContextText,
+  auxiliary_observation_hash: computeOrchestrationDirtyHashOr1c(exactAuxiliary),
+  input_context_observation_hash: computeOrchestrationDirtyHashOr1c(exactInputContext),
   lanes: [
     {key: "original_work", text: "REFERENCE", applied: true, status: "applied"},
     {key: "long_term_memory", text: "MEMORY", applied: true, status: "applied"},
     {key: "output_guidance", text: "GUIDANCE", applied: true, status: "applied"}
   ]
 };
+const originalPayload = [
+  {role:"system",content:"host preset"},
+  {role:"assistant",content:"previous answer"},
+  {role:"user",content:"continue"}
+];
 const applied = applyGoPayloadApplicationPlan(
-  {messages: []},
-  {_injectionPack: {payload_application_plan: plan, memory_delivery_plan: memoryDeliveryPlan}},
+  originalPayload,
+  {
+    _injectionPack: {payload_application_plan: plan, memory_delivery_plan: memoryDeliveryPlan},
+    _sourceToPayloadLineage: {lineage_id:"stl_preview",payload_plan_id:"stp_preview",source_refs:[],execution_items:[]},
+    _trace: {}
+  },
   {}
 );
+assert(applied.injectionResult.applied === true, "production payload application was not confirmed");
 assert(applied.injectionResult.mainInjectionPreview === "MEMORY", "long-term memory preview was not preserved");
 assert(applied.injectionResult.referenceInjectionPreview === "REFERENCE", "original-work preview was not preserved");
 assert(applied.injectionResult.guidanceInjectionPreview === "GUIDANCE", "output-guidance preview was not preserved");
 assert(applied.injectionResult.memoryDeliveryPlan === memoryDeliveryPlan, "memory delivery plan was not preserved");
-assert(applied.payload.auxiliary === plan.auxiliary_text, "Go-owned auxiliary text was not applied exactly");
-assert(applied.payload.inputContext === plan.input_context_text, "Go-owned input context was not applied exactly");
+assert(originalPayload.length === 3, "production payload application mutated the original array");
+const returnedMessages = extractMessages(applied.payload).messages;
+const auxiliaryMatches = returnedMessages.filter((message) => getPayloadMessageRoleAndText(message).text === exactAuxiliary);
+const inputMatches = returnedMessages.filter((message) => getPayloadMessageRoleAndText(message).text === exactInputContext);
+assert(auxiliaryMatches.length === 1, "Go-owned auxiliary text was not applied exactly once");
+assert(inputMatches.length === 1, "Go-owned input context was not applied exactly once");
+assert(returnedMessages[returnedMessages.length - 1].content === "continue", "latest user message was not preserved");
+assert(applied.injectionResult.payloadApplicationObservation.payload_application_status === "applied", "returned payload was not observed");
+assert(runtimeUpdates.length === 1 && runtimeUpdates[0].status === "ok", "successful production runtime state was not recorded once");
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)

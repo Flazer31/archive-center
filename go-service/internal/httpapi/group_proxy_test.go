@@ -901,22 +901,14 @@ func TestHandleSupervisorReadOnlyShadowEvidence(t *testing.T) {
 	if trace["guide_mode"] != "action" {
 		t.Errorf("guide_mode = %v, want action", trace["guide_mode"])
 	}
-	if trace["guide_suffix_present"] != true {
-		t.Errorf("guide_suffix_present = %v, want true", trace["guide_suffix_present"])
+	focus := stringSliceFromAny(pack["guide_focus"])
+	if len(focus) == 0 || focus[0] != "clear cause and effect" {
+		t.Errorf("guide_focus = %#v, want optional action focus", focus)
 	}
-	if suffix, _ := pack["guide_suffix"].(string); !strings.Contains(suffix, "Narrative Guide") || !strings.Contains(suffix, "Action") {
-		t.Errorf("guide_suffix missing action narrative guide: %q", suffix)
-	}
-	overrides, ok := pack["director_overrides"].(map[string]any)
-	if !ok {
-		t.Fatalf("director_overrides is not an object")
-	}
-	emphasis, _ := overrides["emphasis"].([]any)
-	if len(emphasis) == 0 {
-		t.Errorf("director_overrides.emphasis is empty: %+v", overrides)
-	}
-	if trace["narrative_stance"] != "immersive" {
-		t.Errorf("narrative_stance = %v, want immersive", trace["narrative_stance"])
+	for _, key := range []string{"guide_suffix", "director_overrides", "narrative_stance", "narrative_stance_bounds"} {
+		if _, exists := pack[key]; exists {
+			t.Fatalf("supervisor pack exposes story-control field %q: %#v", key, pack[key])
+		}
 	}
 	if trace["wake_up_context_present"] != true {
 		t.Errorf("wake_up_context_present = %v, want true", trace["wake_up_context_present"])
@@ -951,26 +943,23 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		userMsg, _ := messages[1].(map[string]any)
 		systemPrompt := extractionStringFromAny(systemMsg["content"])
 		userPrompt := extractionStringFromAny(userMsg["content"])
-		if !strings.Contains(userPrompt, "supervisor_input_pack") {
-			t.Fatalf("supervisor request body missing input pack: %s", userPrompt)
+		if !strings.Contains(userPrompt, "response_execution_contract") || !strings.Contains(userPrompt, "guide_focus") {
+			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
 		}
-		if !strings.Contains(systemPrompt, "Narrative Guide") || !strings.Contains(systemPrompt, "Romantic") {
-			t.Fatalf("supervisor system prompt missing guide mode suffix: %s", systemPrompt)
+		if !strings.Contains(systemPrompt, "memory fidelity reviewer") || !strings.Contains(systemPrompt, "optional rudder") {
+			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)
 		}
-		if !strings.Contains(systemPrompt, "Story Initiative - Proactive") || !strings.Contains(systemPrompt, "Story Initiative Bounds") {
-			t.Fatalf("supervisor system prompt missing narrative stance suffix/bounds: %s", systemPrompt)
-		}
-		if !strings.Contains(userPrompt, `"narrative_stance": "proactive"`) ||
-			!strings.Contains(userPrompt, `"narrative_stance_suffix"`) ||
-			!strings.Contains(userPrompt, `"narrative_stance_bounds"`) {
-			t.Fatalf("supervisor user prompt missing narrative stance payload: %s", userPrompt)
+		for _, forbidden := range []string{"Story Initiative", "max_new_beats", "narrative_stance", "auto_advance_trigger", "may_advance"} {
+			if strings.Contains(systemPrompt, forbidden) || strings.Contains(userPrompt, `"`+forbidden+`"`) {
+				t.Fatalf("supervisor prompt contains story-control field %q: system=%s user=%s", forbidden, systemPrompt, userPrompt)
+			}
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{
 				"model":"supervisor-model",
-				"choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the current request boundary\",\"source_refs\":[\"input:test\"]}],\"portrayal_notes\":[],\"may_advance\":[]}}"}}]
+				"choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the current request boundary\",\"source_refs\":[\"memory:test:1\"]}],\"portrayal_notes\":[]}}"}}]
 			}`)),
 		}, nil
 	})}
@@ -1021,7 +1010,7 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		t.Fatalf("unexpected direct generation trace: %+v", directGeneration)
 	}
 
-	body := `{"chat_session_id":"sess-sv-live","guide_mode":"romantic","guide_strength":"weak","narrative_stance":"proactive","auto_advance_trigger":"none","wake_up_context":"hello","persistent_guidance":"be kind","response_execution_contract":{"contract_version":"response_execution_contract.v1","status":"ready","active":true,"source_refs":{"all":["input:test"],"current_input":["input:test"],"native_system":[]}},"context_messages":[{"role":"user","content":"move forward"}]}`
+	body := `{"chat_session_id":"sess-sv-live","guide_mode":"romantic","guide_strength":"weak","narrative_stance":"proactive","auto_advance_trigger":"none","wake_up_context":"hello","persistent_guidance":"be kind","response_execution_contract":{"contract_version":"response_execution_contract.v1","status":"ready","active":true,"source_refs":{"all":["input:test","memory:test:1"],"current_input":["input:test"],"native_system":[],"memory":["memory:test:1"]}},"context_messages":[{"role":"user","content":"move forward"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/supervisor", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1057,13 +1046,9 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("trace_summary is not an object: %+v", resp)
 	}
-	if traceSummary["narrative_stance"] != "proactive" ||
-		traceSummary["narrative_stance_suffix_present"] != true ||
-		traceSummary["narrative_stance_bounds_present"] != true {
-		t.Fatalf("trace_summary missing narrative stance evidence: %+v", traceSummary)
-	}
-	summary, ok := traceSummary["narrative_stance_summary"].(map[string]any)
-	if !ok || summary["mode"] != "proactive" {
-		t.Fatalf("narrative_stance_summary = %+v, want proactive object", traceSummary["narrative_stance_summary"])
+	for _, key := range []string{"narrative_stance", "narrative_stance_suffix_present", "narrative_stance_bounds_present", "narrative_stance_summary"} {
+		if _, exists := traceSummary[key]; exists {
+			t.Fatalf("trace_summary exposes story-control field %q: %+v", key, traceSummary)
+		}
 	}
 }

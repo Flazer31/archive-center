@@ -229,6 +229,9 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			"progression currency exchange",
 			"challenge reward loops",
 			"abstract invariant",
+			"temporary strategy",
+			"not a world_rule",
+			"pending_threads or goal_status",
 		}
 		for _, needle := range required {
 			if !strings.Contains(prompt, needle) {

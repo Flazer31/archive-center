@@ -366,17 +366,19 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	ctx, releaseSourceAcceptanceWorker := s.completeTurnSourceAcceptanceProcessingContext(ctx, sourceAcceptance, sid, turnIndex)
 	defer releaseSourceAcceptanceWorker()
 	if !s.completeTurnSourceAcceptanceStillCurrent(sourceAcceptance, sid, turnIndex) {
+		rejectedDecision := completeTurnSourceAcceptanceDecision{
+			Enabled: true, Accepted: false, Status: "rejected", Reason: "source_acceptance_revision_superseded_before_persistence",
+			QueueAction: "discard", Revision: sourceAcceptance.Revision, Previous: sourceAcceptance.Previous,
+			Observation: sourceAcceptance.Observation,
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "rejected", "code": "source_acceptance_revision_superseded_before_persistence",
 			"chat_session_id": sid, "turn_index": turnIndex, "save_ok": false,
 			"chat_logs_saved": 0, "derived_artifacts_saved": 0, "vectors_upserted": 0,
 			"critic_triggered": false, "derived_retry_required": false, "queue_action": "discard",
-			"fail_reasons": []string{"source_acceptance_revision_superseded_before_persistence"},
-			"source_acceptance": completeTurnSourceAcceptancePayload(completeTurnSourceAcceptanceDecision{
-				Enabled: true, Accepted: false, Status: "rejected", Reason: "source_acceptance_revision_superseded_before_persistence",
-				QueueAction: "discard", Revision: sourceAcceptance.Revision, Previous: sourceAcceptance.Previous,
-				Observation: sourceAcceptance.Observation,
-			}),
+			"fail_reasons":            []string{"source_acceptance_revision_superseded_before_persistence"},
+			"source_acceptance":       completeTurnSourceAcceptancePayload(rejectedDecision),
+			"source_to_final_lineage": buildSourceToFinalLineage(req, rejectedDecision),
 		})
 		return
 	}
@@ -422,17 +424,19 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if !s.completeTurnSourceAcceptanceStillCurrent(sourceAcceptance, sid, turnIndex) {
+		rejectedDecision := completeTurnSourceAcceptanceDecision{
+			Enabled: true, Accepted: false, Status: "rejected", Reason: "source_acceptance_revision_superseded_during_processing",
+			QueueAction: "discard", Revision: sourceAcceptance.Revision, Previous: sourceAcceptance.Previous,
+			Observation: sourceAcceptance.Observation,
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "rejected", "code": "source_acceptance_revision_superseded_during_processing",
 			"chat_session_id": sid, "turn_index": turnIndex, "save_ok": rawTurnDurable,
 			"chat_logs_saved": rawSave.ChatLogsSaved, "derived_artifacts_saved": 0, "vectors_upserted": 0,
 			"critic_triggered": criticTriggered, "derived_retry_required": false, "queue_action": "discard",
-			"fail_reasons": []string{"source_acceptance_revision_superseded_during_processing"},
-			"source_acceptance": completeTurnSourceAcceptancePayload(completeTurnSourceAcceptanceDecision{
-				Enabled: true, Accepted: false, Status: "rejected", Reason: "source_acceptance_revision_superseded_during_processing",
-				QueueAction: "discard", Revision: sourceAcceptance.Revision, Previous: sourceAcceptance.Previous,
-				Observation: sourceAcceptance.Observation,
-			}),
+			"fail_reasons":            []string{"source_acceptance_revision_superseded_during_processing"},
+			"source_acceptance":       completeTurnSourceAcceptancePayload(rejectedDecision),
+			"source_to_final_lineage": buildSourceToFinalLineage(req, rejectedDecision),
 		})
 		return
 	}
@@ -788,6 +792,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"derived_artifacts_saved":          derivedArtifactsSaved,
 		"derived_retry_required":           derivedRetryRequired,
 		"source_acceptance":                completeTurnSourceAcceptancePayload(sourceAcceptance),
+		"source_to_final_lineage":          buildSourceToFinalLineage(req, sourceAcceptance),
 		"episode_result":                   episodeResult,
 		"chapter_result":                   nil,
 		"hierarchy_promotion_result":       hierarchyPromotionResult,

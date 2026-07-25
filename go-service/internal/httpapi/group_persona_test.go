@@ -18,14 +18,19 @@ import (
 
 type personaRouteFakeStore struct {
 	store.Store
-	nextID         int64
-	capsules       []store.PersonaMemoryCapsule
-	entries        map[int64][]store.PersonaMemoryEntry
-	attachments    []store.PersonaCapsuleAttachment
-	memories       []*store.Memory
-	evidence       []*store.DirectEvidence
-	kgTriples      []*store.KGTriple
-	entityMemories []store.ProtagonistEntityMemory
+	nextID          int64
+	capsules        []store.PersonaMemoryCapsule
+	entries         map[int64][]store.PersonaMemoryEntry
+	attachments     []store.PersonaCapsuleAttachment
+	memories        []*store.Memory
+	evidence        []*store.DirectEvidence
+	kgTriples       []*store.KGTriple
+	entityMemories  []store.ProtagonistEntityMemory
+	characterStates []store.CharacterState
+}
+
+func (f *personaRouteFakeStore) ListCharacterStates(ctx context.Context, chatSessionID string) ([]store.CharacterState, error) {
+	return append([]store.CharacterState(nil), f.characterStates...), nil
 }
 
 func newPersonaRouteFakeStore() *personaRouteFakeStore {
@@ -997,6 +1002,7 @@ func TestSubjectiveEntityMemoryForceMergeRoleVisibility(t *testing.T) {
 
 func TestSubjectiveEntityMemoryManualPatchAndDelete(t *testing.T) {
 	fake := newPersonaRouteFakeStore()
+	fake.characterStates = []store.CharacterState{{ChatSessionID: "manual-source", CharacterName: "Chloe"}}
 	created, err := fake.CreateProtagonistEntityMemory(context.Background(), &store.ProtagonistEntityMemory{
 		PersonaEntityKey:    "siwoo",
 		PersonaEntityName:   "Siwoo",
@@ -1025,9 +1031,9 @@ func TestSubjectiveEntityMemoryManualPatchAndDelete(t *testing.T) {
 
 	patchBody := []byte(`{
 		"persona_entity_key":"chloe",
-		"persona_entity_name":"Chloe",
+		"persona_entity_name":"클로에",
 		"owner_entity_key":"chloe",
-		"owner_entity_name":"Chloe",
+		"owner_entity_name":"클로에",
 		"owner_entity_role":"npc",
 		"owner_visibility":"owner_private",
 		"source_chat_session_id":"manual-source",
@@ -1051,11 +1057,26 @@ func TestSubjectiveEntityMemoryManualPatchAndDelete(t *testing.T) {
 	if updated.OwnerEntityKey != "chloe" || updated.OwnerEntityRole != "npc" || updated.OwnerVisibility != "owner_private" {
 		t.Fatalf("owner fields not patched: %+v", updated)
 	}
+	if updated.OwnerEntityName != "클로에" || updated.PersonaEntityName != "클로에" {
+		t.Fatalf("manual owner name was canonicalized back to the stored character name: %+v", updated)
+	}
+	for _, needle := range []string{"entity_manual_owner_edit", "owner_entity_name:클로에"} {
+		if !strings.Contains(updated.TagsJSON, needle) {
+			t.Fatalf("manual owner edit tag %q missing: %s", needle, updated.TagsJSON)
+		}
+	}
 	if updated.MemoryText != "Chloe privately remembers the edited route." || updated.TargetRevealPolicy != "owner_private_until_revealed" || !updated.SecretGuard {
 		t.Fatalf("memory fields not patched: %+v", updated)
 	}
 	if updated.Importance10 != 9 || updated.EmotionalWeight != 0.8 {
 		t.Fatalf("weights not patched: %+v", updated)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/subjective-entity-memories?source_chat_session_id=manual-source&owner_entity_key=chloe", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"owner_entity_name":"클로에"`) {
+		t.Fatalf("manual owner name was not preserved on the next read: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
@@ -1212,7 +1233,7 @@ func TestPersonaCapsuleLiveSmokeCreateAttachPrepareTurnSupportOnly(t *testing.T)
 		t.Fatalf("decode prepare response: %v", err)
 	}
 	injectionText, _ := prepareResp["injection_text"].(string)
-	if !strings.Contains(injectionText, "[Persona Recollection]") || !strings.Contains(injectionText, "Protected hint") || !strings.Contains(injectionText, "protected private knowledge is present") {
+	if !strings.Contains(injectionText, "[Subjective Memories and Relationships]") || !strings.Contains(injectionText, "Protected hint") || !strings.Contains(injectionText, "protected private knowledge is present") {
 		t.Fatalf("prepare-turn did not inject persona recollection: %q", injectionText)
 	}
 	if strings.Contains(injectionText, "silver locket") {
@@ -1222,7 +1243,7 @@ func TestPersonaCapsuleLiveSmokeCreateAttachPrepareTurnSupportOnly(t *testing.T)
 		t.Fatalf("prepare-turn did not inject persona secret guard: %q", injectionText)
 	}
 	inputContextText, _ := prepareResp["input_context_text"].(string)
-	if strings.Contains(inputContextText, "[Persona Recollection]") || strings.Contains(inputContextText, "support-only private recollection") {
+	if strings.Contains(inputContextText, "[Subjective Memories and Relationships]") || strings.Contains(inputContextText, "support-only private recollection") {
 		t.Fatalf("persona recollection bypassed its dedicated injection lane through input_context_text: %q", inputContextText)
 	}
 	ip, ok := prepareResp["injection_pack"].(map[string]any)
@@ -1309,7 +1330,7 @@ func TestPersonaCapsuleKoreanLoopSecretGuardPrepareTurn(t *testing.T) {
 	}
 	injectionText, _ := prepareResp["injection_text"].(string)
 	for _, needle := range []string{
-		"[Persona Recollection]",
+		"[Subjective Memories and Relationships]",
 		"support-only private recollection",
 		"Secret Guard",
 		"protagonist-only private intuition",

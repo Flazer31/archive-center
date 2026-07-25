@@ -1358,5 +1358,3 @@ func countLedgerDoNotResolvePendingPayoffs(value any) int {
 	}
 	return count
 }
-
-// buildAutonomyPlan assembles the JS-adapter-consumable autonomy_plan bundle.

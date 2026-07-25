@@ -721,12 +721,11 @@ func TestStorylineQualityGateFiveTurnReplayEvidenceAndSelection(t *testing.T) {
 	}
 	pack := supResp["supervisor_input_pack"].(map[string]any)
 	selection := pack["storyline_selection"].(map[string]any)
-	if selection["reference_turn"] != float64(5) || selection["selected_count"] != float64(1) || selection["stale_selected_count"] != float64(0) || selection["stale_dropped_count"] != float64(1) {
-		t.Fatalf("storyline selection counts = %#v", selection)
+	if selection["selected_count"] != float64(0) {
+		t.Fatalf("standalone supervisor must not select storylines for model guidance: %#v", selection)
 	}
-	contextText := extractionStringFromAny(pack["storylines_context"])
-	if !strings.Contains(contextText, "Turn 5 keeps the same promise active.") || strings.Contains(contextText, "stale high should not guide") {
-		t.Fatalf("storyline context did not select fresh-only row: %q", contextText)
+	if _, exists := pack["storylines_context"]; exists {
+		t.Fatalf("standalone supervisor exposed storyline prompt context: %#v", pack["storylines_context"])
 	}
 }
 
@@ -756,28 +755,12 @@ func TestSupervisorStorylineSelectionExposesQualityTrace(t *testing.T) {
 	}
 	pack := resp["supervisor_input_pack"].(map[string]any)
 	selection := pack["storyline_selection"].(map[string]any)
-	if selection["selected_count"] != float64(1) || selection["stale_dropped_count"] != float64(1) {
-		t.Fatalf("storyline_selection = %#v, want one selected and one stale dropped", selection)
-	}
-	if selection["resolved_summary_count"] != float64(1) {
-		t.Fatalf("resolved_summary_count = %v, want 1", selection["resolved_summary_count"])
-	}
-	contextText, _ := pack["storylines_context"].(string)
-	if !strings.Contains(contextText, "Fresh arc") {
-		t.Fatalf("storylines_context missing selected storyline: %q", contextText)
-	}
-	if strings.Contains(contextText, "Stale arc should not repeat") || strings.Contains(contextText, "stale beat") || strings.Contains(contextText, "Resolved arc stays summary-only") {
-		t.Fatalf("storylines_context leaked stale/resolved full context: %q", contextText)
-	}
-	if !strings.Contains(contextText, "[Resolved Storylines Summary]") || !strings.Contains(contextText, "Resolved arc resolved at turn 6") {
-		t.Fatalf("storylines_context missing resolved compressed summary: %q", contextText)
-	}
-	if strings.Count(contextText, "fresh beat") != 1 || strings.Count(contextText, "answer pending") != 1 {
-		t.Fatalf("storylines_context did not dedupe key/tension fields: %q", contextText)
+	if selection["selected_count"] != float64(0) {
+		t.Fatalf("standalone supervisor selected storyline guidance: %#v", selection)
 	}
 	trace := resp["trace_summary"].(map[string]any)
-	if trace["storyline_read_status"] != "ok" {
-		t.Fatalf("storyline_read_status = %v, want ok", trace["storyline_read_status"])
+	if _, exists := trace["storyline_read_status"]; exists {
+		t.Fatalf("standalone supervisor performed storyline guidance read: %#v", trace)
 	}
 }
 
@@ -848,24 +831,12 @@ func TestSupervisorStorylineManualBatchSyncShapeDropsStaleHigh(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	pack := resp["supervisor_input_pack"].(map[string]any)
-	contextText := extractionStringFromAny(pack["storylines_context"])
-	if !strings.Contains(contextText, "fresh current should guide") || strings.Contains(contextText, "stale high should not guide") {
-		t.Fatalf("manual batch-sync shape leaked stale context: %q", contextText)
+	if _, exists := pack["storylines_context"]; exists {
+		t.Fatalf("standalone supervisor exposed storyline prompt context: %#v", pack["storylines_context"])
 	}
 	selection := pack["storyline_selection"].(map[string]any)
-	if selection["selected_count"] != float64(1) || selection["stale_dropped_count"] != float64(1) || selection["stale_selected_count"] != float64(0) {
-		t.Fatalf("storyline_selection counts = %#v", selection)
-	}
-	dropped, _ := selection["dropped"].([]any)
-	if len(dropped) != 1 {
-		t.Fatalf("dropped = %#v, want one stale row", dropped)
-	}
-	staleHigh, _ := dropped[0].(map[string]any)
-	if staleHigh["name"] != "Stale High" || staleHigh["last_observed_turn"] != float64(1) || staleHigh["freshness_turn_gap"] != float64(9) || staleHigh["is_stale"] != true {
-		t.Fatalf("stale high debug fields = %#v", staleHigh)
-	}
-	if staleHigh["stale_reason"] != "low_evidence_gap" {
-		t.Fatalf("stale high reason = %#v", staleHigh["stale_reason"])
+	if selection["selected_count"] != float64(0) {
+		t.Fatalf("standalone supervisor selected storyline guidance: %#v", selection)
 	}
 }
 

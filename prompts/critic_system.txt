@@ -255,6 +255,8 @@ Return one JSON object with this shape. Unknown or unused surfaces may be empty.
 [World Rules And World State]
 - `world_rules` are durable setting facts, environmental constraints, social law, institutional rules, unspoken survival norms, magic/technology mechanics, rank/authority rules, schedule/calendar rules, economy/resource constraints, location access rules, contracts, faction norms, or other world-law equivalents.
 - Backend code must not infer world rules from keywords. You are responsible for deciding whether the latest turn establishes a durable rule.
+- A proposal, temporary strategy, one-off plan, implementation method, named operation, or unresolved objective is not a world_rule merely because characters accept or intend it. Keep it in pending_threads or goal_status.
+- Emit a world_rule only when the latest completed turn establishes an enacted, continuing institutional or setting constraint beyond the current objective. A procedure or tactical doctrine qualifies only when evidence shows that it is a recurring durable rule rather than a one-off objective.
 - Use scope exactly one of `root`, `region`, `location`, `faction`, `system`, `session`.
 - Use specific scope and `scope_name` for named regions, locations, factions, or systems. Do not put everything under `root`.
 - Always fill `world_rule_audit`.
@@ -278,8 +280,11 @@ Before returning JSON, silently run this audit:
 - Separate events, objective current state, and character belief. Do not put all three into one summary-shaped record.
 - `narrative_events` are things that happened. They are history and must not become a current value by themselves.
 - `state_claims` are evidence-bound current facts. Use a stable `state_slot` that names the state dimension, not a sentence or a turn number.
+- For a goal or thread lifecycle claim, use the exact goal or thread title as `subject`, set `subject_type` to `entity`, and set `state_slot` to `goal_status`. Do not use `goal_status` for another entity-state dimension.
+- When that goal or thread is also emitted in `pending_threads` or `state_deltas.unresolved_threads.opened`, include the same exact `title` and `subject` plus `state_slot=goal_status` in that open record.
 - `belief_updates` are what one named character currently believes, suspects, misunderstands, or knows. Set `perspective_owner`; do not promote these records to objective truth.
-- Use `transition` one of `set`, `reaffirm`, `change`, `reversal`, `recovery`, `correction`, `reveal`, `resolve`, `uncertain`, or `clear`.
+- Use `transition` one of `set`, `reaffirm`, `change`, `reversal`, `recovery`, `correction`, `reveal`, `resolve`, `uncertain`, `clear`, `defer`, `abandon`, `complete`, `supersede`, `reopen`, or `resume`.
+- Use `reopen` or `resume` only when the latest completed turn explicitly reactivates a state previously deferred, abandoned, completed, superseded, resolved, or cleared. Use `reversal` only for a directly evidenced state inversion. A suggestion, condition, possibility, or proposal is `uncertain` and must not replace an existing current value.
 - The backend treats turn index only as deterministic audit order. Do not infer that an older fact is current merely because it was important.
 - Every event/state/belief item must include a short exact `evidence_excerpt` from the latest completed turn. If no exact evidence exists, omit the item.
 - Also include each accepted event/state/belief `evidence_excerpt` in top-level `evidence_excerpts`; the backend uses that shared excerpt to link the current value and its change ledger to direct evidence.

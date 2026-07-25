@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	narrativeStateContractVersion = "narrative_state.v1"
-	narrativeStateStatusKey       = "narrative_state"
+	narrativeStateContractVersion   = "narrative_state.v1"
+	narrativeStateStatusKey         = "narrative_state"
+	narrativeStateMinimumConfidence = 0.7
 )
 
 type narrativeStateClaim struct {
@@ -137,7 +138,8 @@ func normalizeNarrativeClaimScope(raw string) string {
 
 func normalizeNarrativeTransition(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "set", "reaffirm", "change", "reversal", "recovery", "correction", "reveal", "resolve", "uncertain", "clear":
+	case "set", "reaffirm", "change", "reversal", "recovery", "correction", "reveal", "resolve", "uncertain", "clear",
+		"defer", "abandon", "complete", "supersede", "reopen", "resume":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
@@ -296,6 +298,15 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			result.addSkipReason("narrative_state", "evidence_excerpt_not_grounded", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot})
 			continue
 		}
+		goalLifecycle := claim.SubjectType == "entity" &&
+			claim.StateSlot == "goal_status" &&
+			claim.ClaimScope == "objective"
+		if goalLifecycle && claim.Confidence < narrativeStateMinimumConfidence {
+			result.addSkipReason("narrative_state", "low_confidence_current_state_change", map[string]any{
+				"subject": claim.Subject, "state_slot": claim.StateSlot, "confidence": claim.Confidence,
+			})
+			continue
+		}
 		ownerID := narrativeStateOwnerID(claim)
 		previous := currentByOwner[ownerID]
 		previousPayload := map[string]any{}
@@ -305,9 +316,46 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			result.addSkipReason("narrative_state", "older_turn_cannot_replace_current_state", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot, "current_turn": previous.SourceTurn, "incoming_turn": turnIndex})
 			continue
 		}
-		if previousValue != "" && normalizeArtifactDedupeText(previousValue) == normalizeArtifactDedupeText(claim.Value) {
+		previousTransition := normalizeNarrativeTransition(extractionStringFromAny(previousPayload["transition"]))
+		incomingClosing := false
+		switch claim.Transition {
+		case "defer", "abandon", "complete", "supersede", "resolve", "clear":
+			incomingClosing = true
+		}
+		sameValue := previousValue != "" && normalizeArtifactDedupeText(previousValue) == normalizeArtifactDedupeText(claim.Value)
+		if sameValue && (!goalLifecycle || !incomingClosing || previousTransition == claim.Transition) {
 			result.addSkipReason("narrative_state", "exact_current_value_reaffirmed", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot, "value": claim.Value})
 			continue
+		}
+		if previousValue != "" && goalLifecycle {
+			confirmedReplacement := false
+			switch claim.Transition {
+			case "change", "reversal", "recovery", "correction", "reveal", "resolve", "clear",
+				"defer", "abandon", "complete", "supersede", "reopen", "resume":
+				confirmedReplacement = true
+			}
+			if !confirmedReplacement {
+				result.addSkipReason("narrative_state", "non_final_transition_cannot_replace_current_state", map[string]any{
+					"subject": claim.Subject, "state_slot": claim.StateSlot, "transition": claim.Transition,
+				})
+				continue
+			}
+			previousClosed := false
+			switch previousTransition {
+			case "defer", "abandon", "complete", "supersede", "resolve", "clear":
+				previousClosed = true
+			}
+			explicitReactivation := claim.Transition == "reopen" ||
+				claim.Transition == "resume" ||
+				claim.Transition == "correction" ||
+				claim.Transition == "reversal"
+			if previousClosed && !incomingClosing && !explicitReactivation {
+				result.addSkipReason("narrative_state", "closed_state_requires_explicit_reactivation_transition", map[string]any{
+					"subject": claim.Subject, "state_slot": claim.StateSlot,
+					"current_transition": previousTransition, "incoming_transition": claim.Transition,
+				})
+				continue
+			}
 		}
 		evidenceIDs := narrativeStateMatchingEvidenceIDs(evidence, turnIndex, claim.EvidenceExcerpt)
 		valuePayload := narrativeStateValuePayload(claim, previousValue, turnIndex)
@@ -582,6 +630,10 @@ func narrativeCorrectionTransitionNeedsCarry(payload map[string]any) bool {
 	switch normalizeNarrativeTransition(extractionStringFromAny(payload["transition"])) {
 	case "change", "reversal", "recovery", "correction", "reveal", "resolve", "clear":
 		return true
+	case "defer", "abandon", "complete", "supersede", "reopen", "resume":
+		return normalizeNarrativeSubjectType(extractionStringFromAny(payload["subject_type"])) == "entity" &&
+			normalizeNarrativeStateSlot(extractionStringFromAny(payload["state_slot"])) == "goal_status" &&
+			normalizeNarrativeClaimScope(extractionStringFromAny(payload["claim_scope"])) == "objective"
 	default:
 		return false
 	}
@@ -666,41 +718,252 @@ func buildNarrativeContinuityCorrection(values []store.StatusCurrentValue, rawUs
 	return text, trace
 }
 
-func filterMemorySelectionAgainstNarrativeCurrentState(selection prepareTurnMemoryLaneSelection, values []store.StatusCurrentValue) prepareTurnMemoryLaneSelection {
-	views := narrativeCurrentStateViews(values)
-	dropped := 0
-	filter := func(items []store.Memory) []store.Memory {
-		out := make([]store.Memory, 0, len(items))
-		for _, memory := range items {
-			summary := normalizeArtifactDedupeText(memorySummaryText(memory))
-			conflicts := false
-			for _, view := range views {
-				if view.Previous == "" || view.Value.SourceTurn <= 0 || memory.TurnIndex >= view.Value.SourceTurn {
+func narrativeCurrentStateSupersedesOpenArtifact(values []store.StatusCurrentValue, sourceTurn int, text string) bool {
+	text = strings.TrimSpace(text)
+	if sourceTurn <= 0 || text == "" {
+		return false
+	}
+	for _, view := range narrativeCurrentStateViews(values) {
+		if view.Scope != "objective" ||
+			view.Value.SourceTurn <= sourceTurn {
+			continue
+		}
+		transition := normalizeNarrativeTransition(extractionStringFromAny(view.Payload["transition"]))
+		switch transition {
+		case "defer", "abandon", "complete", "supersede", "resolve", "clear":
+		default:
+			continue
+		}
+		subjectType := normalizeNarrativeSubjectType(extractionStringFromAny(view.Payload["subject_type"]))
+		if subjectType != "entity" ||
+			view.Slot != "goal_status" ||
+			extractionFloatFromAny(view.Payload["confidence"], 0) < narrativeStateMinimumConfidence {
+			continue
+		}
+		claim := narrativeStateClaim{
+			Subject:          view.Subject,
+			SubjectType:      subjectType,
+			StateSlot:        view.Slot,
+			ClaimScope:       view.Scope,
+			PerspectiveOwner: view.Perspective,
+		}
+		if view.Value.OwnerScope != narrativeStateOwnerScope(claim) ||
+			view.Value.OwnerID != narrativeStateOwnerID(claim) {
+			continue
+		}
+		evidencePayload := map[string]any{}
+		if json.Unmarshal([]byte(strings.TrimSpace(view.Value.EvidenceJSON)), &evidencePayload) != nil ||
+			strings.TrimSpace(extractionStringFromAny(evidencePayload["evidence_excerpt"])) == "" ||
+			intFromAny(evidencePayload["source_turn"], 0) != view.Value.SourceTurn {
+			continue
+		}
+		artifact := parseJSONMap(text)
+		if normalizeNarrativeStateSlot(extractionStringFromAny(artifact["state_slot"])) == "goal_status" &&
+			normalizeArtifactDedupeText(extractionStringFromAny(artifact["subject"])) == normalizeArtifactDedupeText(view.Subject) {
+			return true
+		}
+	}
+	return false
+}
+
+func prepareTurnOpenGoalArtifact(raw any) string {
+	payload := mapFromAny(raw)
+	if len(payload) == 0 {
+		return ""
+	}
+	subject := strings.TrimSpace(stringFromMap(payload, "subject"))
+	title := strings.TrimSpace(stringFromMap(payload, "title"))
+	if subject != "" && title != "" &&
+		normalizeArtifactDedupeText(subject) != normalizeArtifactDedupeText(title) {
+		return ""
+	}
+	identity := strings.TrimSpace(extractionFirstNonEmpty(subject, title))
+	stateSlot := normalizeNarrativeStateSlot(stringFromMap(payload, "state_slot"))
+	if identity == "" || stateSlot != "goal_status" {
+		return ""
+	}
+	return mustCompactJSON(map[string]any{
+		"subject":    identity,
+		"state_slot": stateSlot,
+	})
+}
+
+func prepareTurnOpenGoalArtifactForTitle(raw any, title string) string {
+	artifact := prepareTurnOpenGoalArtifact(raw)
+	if artifact == "" {
+		return ""
+	}
+	payload := parseJSONMap(artifact)
+	if normalizeArtifactDedupeText(extractionStringFromAny(payload["subject"])) != normalizeArtifactDedupeText(title) {
+		return ""
+	}
+	return artifact
+}
+
+func filterPrepareTurnOpenGoalContent(raw string, sourceTurn int, values []store.StatusCurrentValue) (string, bool) {
+	payload := parseJSONMap(raw)
+	if len(payload) == 0 {
+		return raw, false
+	}
+	changed := false
+	var pruneOpened func(map[string]any)
+	pruneOpened = func(node map[string]any) {
+		for key, value := range node {
+			child := mapFromAny(value)
+			if key == "unresolved_threads" && len(child) > 0 {
+				opened := sliceFromAny(child["opened"])
+				if len(opened) > 0 {
+					kept := make([]any, 0, len(opened))
+					for _, item := range opened {
+						artifact := prepareTurnOpenGoalArtifact(item)
+						if artifact != "" && narrativeCurrentStateSupersedesOpenArtifact(values, sourceTurn, artifact) {
+							changed = true
+							continue
+						}
+						kept = append(kept, item)
+					}
+					if len(kept) == 0 {
+						delete(child, "opened")
+					} else {
+						child["opened"] = kept
+					}
+				}
+				if len(child) == 0 {
+					delete(node, key)
 					continue
 				}
-				previous := normalizeArtifactDedupeText(view.Previous)
-				subject := normalizeArtifactDedupeText(view.Subject)
-				if previous != "" && strings.Contains(summary, previous) && (subject == "" || strings.Contains(summary, subject)) {
-					conflicts = true
-					break
+			}
+			if len(child) > 0 {
+				pruneOpened(child)
+				if len(child) == 0 {
+					delete(node, key)
 				}
 			}
-			if conflicts {
-				dropped++
+		}
+	}
+	pruneOpened(payload)
+	if !changed {
+		return raw, false
+	}
+	if !hasMeaningfulPayload(payload) {
+		return "", true
+	}
+	return mustCompactJSON(payload), true
+}
+
+func prepareTurnOpenLifecycleStatus(raw string, allowEmpty bool) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "active", "open", "ongoing", "pending":
+		return true
+	case "":
+		return allowEmpty
+	default:
+		return false
+	}
+}
+
+func filterPrepareTurnSupersededOpenGoals(
+	values []store.StatusCurrentValue,
+	storylines []store.Storyline,
+	pendingThreads []store.PendingThread,
+	activeStates []store.ActiveState,
+	canonicalLayers []store.CanonicalStateLayer,
+) ([]store.Storyline, []store.PendingThread, []store.ActiveState, []store.CanonicalStateLayer, map[string]any) {
+	trace := map[string]any{
+		"policy_version":             "prepare_turn.superseded_open_goals.v1",
+		"storylines_dropped":         0,
+		"pending_threads_dropped":    0,
+		"active_states_dropped":      0,
+		"canonical_layers_dropped":   0,
+		"user_owned_items_preserved": 0,
+	}
+
+	filteredStorylines := make([]store.Storyline, 0, len(storylines))
+	for _, item := range storylines {
+		if item.Pinned || item.UserCorrected {
+			trace["user_owned_items_preserved"] = intFromAny(trace["user_owned_items_preserved"], 0) + 1
+			filteredStorylines = append(filteredStorylines, item)
+			continue
+		}
+		sourceTurn := item.LastEvidenceTurn
+		if sourceTurn <= 0 {
+			sourceTurn = item.LastTurn
+		}
+		if sourceTurn <= 0 {
+			sourceTurn = item.FirstTurn
+		}
+		artifact := prepareTurnOpenGoalArtifactForTitle(parseJSONMap(item.OngoingTensionsJSON), item.Name)
+		if prepareTurnOpenLifecycleStatus(item.Status, false) &&
+			artifact != "" &&
+			narrativeCurrentStateSupersedesOpenArtifact(values, sourceTurn, artifact) {
+			trace["storylines_dropped"] = intFromAny(trace["storylines_dropped"], 0) + 1
+			continue
+		}
+		filteredStorylines = append(filteredStorylines, item)
+	}
+
+	filteredPendingThreads := make([]store.PendingThread, 0, len(pendingThreads))
+	for _, item := range pendingThreads {
+		if item.Pinned || item.UserCorrected {
+			trace["user_owned_items_preserved"] = intFromAny(trace["user_owned_items_preserved"], 0) + 1
+			filteredPendingThreads = append(filteredPendingThreads, item)
+			continue
+		}
+		sourceTurn := item.SourceTurn
+		if sourceTurn <= 0 {
+			sourceTurn = item.CreatedTurn
+		}
+		metadata := parseJSONMap(item.HookMetadataJSON)
+		if len(metadata) == 0 {
+			metadata = parseJSONMap(item.DetailsJSON)
+		}
+		artifact := prepareTurnOpenGoalArtifactForTitle(metadata, item.Title)
+		if prepareTurnOpenLifecycleStatus(item.Status, true) &&
+			artifact != "" &&
+			narrativeCurrentStateSupersedesOpenArtifact(values, sourceTurn, artifact) {
+			trace["pending_threads_dropped"] = intFromAny(trace["pending_threads_dropped"], 0) + 1
+			continue
+		}
+		filteredPendingThreads = append(filteredPendingThreads, item)
+	}
+
+	filteredActiveStates := make([]store.ActiveState, 0, len(activeStates))
+	for _, item := range activeStates {
+		if item.StateType == "unresolved_threads" &&
+			narrativeCurrentStateSupersedesOpenArtifact(values, item.TurnIndex, prepareTurnOpenGoalArtifact(parseJSONMap(item.Content))) {
+			trace["active_states_dropped"] = intFromAny(trace["active_states_dropped"], 0) + 1
+			continue
+		}
+		if content, changed := filterPrepareTurnOpenGoalContent(item.Content, item.TurnIndex, values); changed {
+			item.Content = content
+			if strings.TrimSpace(item.Content) == "" {
+				trace["active_states_dropped"] = intFromAny(trace["active_states_dropped"], 0) + 1
 				continue
 			}
-			out = append(out, memory)
 		}
-		return out
+		filteredActiveStates = append(filteredActiveStates, item)
 	}
-	selection.VectorRelevant = filter(selection.VectorRelevant)
-	selection.Relevant = filter(selection.Relevant)
-	selection.Deep = filter(selection.Deep)
-	selection.Recent = filter(selection.Recent)
-	if selection.Trace == nil {
-		selection.Trace = map[string]any{}
+
+	filteredCanonicalLayers := make([]store.CanonicalStateLayer, 0, len(canonicalLayers))
+	for _, item := range canonicalLayers {
+		sourceTurn := item.SourceTurn
+		if sourceTurn <= 0 {
+			sourceTurn = item.TurnIndex
+		}
+		if item.LayerType == "unresolved_threads" &&
+			narrativeCurrentStateSupersedesOpenArtifact(values, sourceTurn, prepareTurnOpenGoalArtifact(parseJSONMap(item.Content))) {
+			trace["canonical_layers_dropped"] = intFromAny(trace["canonical_layers_dropped"], 0) + 1
+			continue
+		}
+		if content, changed := filterPrepareTurnOpenGoalContent(item.Content, sourceTurn, values); changed {
+			item.Content = content
+			if strings.TrimSpace(item.Content) == "" {
+				trace["canonical_layers_dropped"] = intFromAny(trace["canonical_layers_dropped"], 0) + 1
+				continue
+			}
+		}
+		filteredCanonicalLayers = append(filteredCanonicalLayers, item)
 	}
-	selection.Trace["superseded_state_memory_dropped_count"] = dropped
-	selection.Trace["superseded_state_memory_gate"] = "older_memory_containing_explicit_previous_value_is_not_injected"
-	return selection
+
+	return filteredStorylines, filteredPendingThreads, filteredActiveStates, filteredCanonicalLayers, trace
 }
