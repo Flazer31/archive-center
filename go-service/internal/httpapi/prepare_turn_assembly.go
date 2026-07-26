@@ -11,10 +11,10 @@ import (
 )
 
 func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []store.KGTriple, evidence []store.DirectEvidence, chatLogs []store.ChatLog, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, resumePack *store.ResumePack, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories []store.ProtagonistEntityMemory, topK, maxChars int, rawUserInput, profile string, documents []map[string]any, vectorShadow map[string]any, languageContext map[string]any, perspectiveContextArg ...map[string]any) prepareTurnInjectionAssembly {
-	return buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, storylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, topK, maxChars, rawUserInput, profile, documents, vectorShadow, languageContext, "auto", nil, perspectiveContextArg...)
+	return buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, storylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, characterPrivateMemories, topK, maxChars, rawUserInput, profile, documents, vectorShadow, languageContext, "auto", nil, perspectiveContextArg...)
 }
 
-func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTriples []store.KGTriple, evidence []store.DirectEvidence, chatLogs []store.ChatLog, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, resumePack *store.ResumePack, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories []store.ProtagonistEntityMemory, topK, maxChars int, rawUserInput, profile string, documents []map[string]any, vectorShadow map[string]any, languageContext map[string]any, memoryDeliveryBudgetMode string, memoryDeliveryBudgets map[string]int, perspectiveContextArg ...map[string]any) prepareTurnInjectionAssembly {
+func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTriples []store.KGTriple, evidence []store.DirectEvidence, chatLogs []store.ChatLog, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, resumePack *store.ResumePack, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories, privateEvidenceMemories []store.ProtagonistEntityMemory, topK, maxChars int, rawUserInput, profile string, documents []map[string]any, vectorShadow map[string]any, languageContext map[string]any, memoryDeliveryBudgetMode string, memoryDeliveryBudgets map[string]int, perspectiveContextArg ...map[string]any) prepareTurnInjectionAssembly {
 	topK = prepareTurnRecallLimit(topK)
 	maxChars = prepareTurnTextBudget(maxChars)
 	recallLimit := prepareTurnSupportCandidateLimit(maxChars)
@@ -115,6 +115,16 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		out.Counts["protected_perspective_ignored_reason"] = "current_pov_not_recognized_as_character"
 	}
 	artifactHydration := prepareTurnHydrateVectorArtifactHits(evidence, worldRules, vectorShadow, recallLimit)
+	selectedDirectEvidence, recallLinkProjection := selectPrepareTurnDirectEvidence(
+		evidence,
+		artifactHydration.Evidence,
+		memorySelection,
+		rawSupportQuery,
+		entityScope.Direct,
+		privateEvidenceMemories,
+		recallLimit,
+	)
+	out.Counts["recall_link_projection"] = recallLinkProjection
 	out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 	out.ActualMemoryText = makePrepareTurnSection("[Memory]", actualMemoryLines)
@@ -149,18 +159,19 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	}
 	out.KGText = makePrepareTurnSection("[Knowledge Graph]", kgLines)
 
-	directEvidenceLines := make([]string, 0, len(artifactHydration.Evidence))
-	directEvidenceIrrelevantDropped := 0
-	for _, ev := range artifactHydration.Evidence {
+	directEvidenceLines := make([]string, 0, len(selectedDirectEvidence))
+	directEvidenceVectorSelected := 0
+	for _, candidate := range selectedDirectEvidence {
+		ev := candidate.Evidence
 		text := compactPrepareTurnLine(ev.EvidenceText, 320)
 		if text == "" {
 			continue
 		}
-		if !prepareTurnRequestFirstRelevant(rawSupportQuery, objectiveQuery, text) {
-			directEvidenceIrrelevantDropped++
-			continue
+		meta := []string{candidate.Reason}
+		if candidate.Vector {
+			meta = append(meta, "vector")
+			directEvidenceVectorSelected++
 		}
-		meta := []string{"vector"}
 		if ev.TurnAnchor > 0 {
 			meta = append(meta, fmt.Sprintf("turn %d", ev.TurnAnchor))
 		} else if ev.SourceTurnEnd > 0 {
@@ -212,13 +223,13 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	prioritizedWorldRules := make([]store.WorldRule, 0, len(worldRulesForInjection))
 	for _, wr := range worldRulesForInjection {
 		scope := strings.ToLower(strings.TrimSpace(wr.Scope))
-		if wr.Pinned || scope == "root" || scope == "session" || scope == "global" {
+		if wr.Pinned || scope == "root" || scope == "global" {
 			prioritizedWorldRules = append(prioritizedWorldRules, wr)
 		}
 	}
 	for _, wr := range worldRulesForInjection {
 		scope := strings.ToLower(strings.TrimSpace(wr.Scope))
-		if wr.Pinned || scope == "root" || scope == "session" || scope == "global" {
+		if wr.Pinned || scope == "root" || scope == "global" {
 			continue
 		}
 		prioritizedWorldRules = append(prioritizedWorldRules, wr)
@@ -241,7 +252,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if desc != "" {
 			worldAnchors := []string{wr.ScopeName, wr.Key}
 			scope := strings.ToLower(strings.TrimSpace(wr.Scope))
-			persistent := wr.Pinned || scope == "root" || scope == "session" || scope == "global"
+			persistent := wr.Pinned || scope == "root" || scope == "global"
 			sceneScoped := scope == "location" || scope == "region" || scope == "area" || scope == "place"
 			relevant := persistent
 			if !relevant && sceneScoped {
@@ -424,20 +435,15 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.PersonaText = buildPersonaRecollectionText(personaEntries, recallLimit, maxChars)
 	out.CharacterPrivateText = buildCharacterPrivateRecollectionText(characterPrivateMemories, recallLimit, maxChars)
 
-	relevantEvidence := make([]store.DirectEvidence, 0, len(evidence))
-	for _, item := range evidence {
-		if item.Tombstoned || item.RepairNeeded || item.SupersededByID != 0 {
-			continue
-		}
-		if prepareTurnRequestFirstRelevant(rawSupportQuery, objectiveQuery, item.EvidenceText) {
-			relevantEvidence = append(relevantEvidence, item)
-		}
+	relevantEvidence := make([]store.DirectEvidence, 0, len(selectedDirectEvidence))
+	for _, candidate := range selectedDirectEvidence {
+		relevantEvidence = append(relevantEvidence, candidate.Evidence)
 	}
-	if latest := latestPrepareTurnEvidence(relevantEvidence); latest != nil {
-		out.LatestDirectEvidenceText = compactPrepareTurnLine(latest.EvidenceText, 260)
+	if len(relevantEvidence) > 0 {
+		out.LatestDirectEvidenceText = compactPrepareTurnLine(relevantEvidence[0].EvidenceText, 260)
 	}
 	out.RecentRawTurnText = recentPrepareTurnRawTurn(chatLogs)
-	out.ScopedVerbatimSupport = archivebridge.BuildScopedVerbatimSupport(relevantEvidence)
+	out.ScopedVerbatimSupport = archivebridge.BuildScopedVerbatimSupportInOrder(relevantEvidence)
 	out.ScopedVerbatimText = out.ScopedVerbatimSupport.Text
 
 	canonLines := make([]string, 0, minInt(len(canonicalLayers), recallLimit))
@@ -516,7 +522,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				}
 			}
 			worldSubset := map[string]any{}
-			for _, key := range []string{"background", "items", "locations"} {
+			for _, key := range []string{"background", "items"} {
 				if value, ok := entity[key]; ok {
 					worldSubset[key] = value
 				}
@@ -641,7 +647,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["deep_memory_bound"] = len(memorySelection.Deep)
 	out.Counts["memory_recall_lane_policy"] = memorySelection.Trace
 	mergePrepareTurnMemoryLaneCounters(out.Counts, memorySelection, strings.TrimSpace(out.MemoryText) != "")
-	mergePrepareTurnVectorArtifactCounters(out.Counts, artifactHydration, strings.TrimSpace(out.DirectEvidenceText) != "", len(directEvidenceLines), len(worldRuleLines))
+	mergePrepareTurnVectorArtifactCounters(out.Counts, artifactHydration, directEvidenceVectorSelected > 0, directEvidenceVectorSelected, len(worldRuleLines))
 	out.Counts["language_aware_injection"] = out.LanguageInjectionTrace
 	if memoryTrace := mapFromAny(out.LanguageInjectionTrace["memory_language_trace"]); len(memoryTrace) > 0 {
 		out.Counts["memory_summary_language_match"] = intFromAny(memoryTrace["memory_summary_language_match"], 0)
@@ -664,7 +670,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["pending_thread_irrelevant_dropped"] = pendingIrrelevantDropped
 	out.Counts["episode_irrelevant_dropped"] = episodeIrrelevantDropped
 	out.Counts["direct_evidence_bound"] = len(directEvidenceLines)
-	out.Counts["direct_evidence_irrelevant_dropped"] = directEvidenceIrrelevantDropped
+	out.Counts["direct_evidence_irrelevant_dropped"] = intFromAny(recallLinkProjection["deferred_count"], 0)
 	out.Counts["fallback_bound"] = len(fallbackLines)
 	out.Counts["fallback_count"] = len(fallbackLines)
 	out.Counts["episode_bound"] = len(episodeLines)
@@ -1386,17 +1392,431 @@ func compactEpisodeJSONPreview(raw string, limit int) string {
 	return compactPrepareTurnLine(raw, limit)
 }
 
-func latestPrepareTurnEvidence(evidence []store.DirectEvidence) *store.DirectEvidence {
-	var latest *store.DirectEvidence
-	latestTurn := -1
-	for i := range evidence {
-		if evidence[i].Tombstoned || strings.TrimSpace(evidence[i].EvidenceText) == "" {
+type prepareTurnSelectedDirectEvidence struct {
+	Evidence       store.DirectEvidence
+	Vector         bool
+	Reason         string
+	rank           int
+	eventOverlap   int
+	requestOverlap int
+	entityMatches  int
+	sourceTurn     int
+	sourceOrder    int
+}
+
+func selectPrepareTurnDirectEvidence(
+	evidence []store.DirectEvidence,
+	vectorEvidence []store.DirectEvidence,
+	memorySelection prepareTurnMemoryLaneSelection,
+	rawQuery string,
+	directEntities []string,
+	privateMemories []store.ProtagonistEntityMemory,
+	candidateLimit int,
+) ([]prepareTurnSelectedDirectEvidence, map[string]any) {
+	evidenceTurn := func(item store.DirectEvidence) int {
+		return maxInt(item.TurnAnchor, maxInt(item.SourceTurnEnd, item.SourceTurnStart))
+	}
+	evidenceKey := func(item store.DirectEvidence) string {
+		if item.ID > 0 {
+			return fmt.Sprintf("id:%d", item.ID)
+		}
+		return fmt.Sprintf("turn:%d:text:%s", evidenceTurn(item), collapseTextKey(item.EvidenceText))
+	}
+	overlapWithoutEntities := func(left, right string, entities []string) int {
+		rightTerms := map[string]bool{}
+		for _, term := range prepareTurnRecallTerms(right) {
+			excluded := false
+			for _, entity := range entities {
+				if prepareTurnRecallContainsAnchor(term, entity) || prepareTurnRecallContainsAnchor(entity, term) {
+					excluded = true
+					break
+				}
+			}
+			if !excluded {
+				rightTerms[term] = true
+			}
+		}
+		overlap := 0
+		for _, term := range prepareTurnRecallTerms(left) {
+			excluded := false
+			for _, entity := range entities {
+				if prepareTurnRecallContainsAnchor(term, entity) || prepareTurnRecallContainsAnchor(entity, term) {
+					excluded = true
+					break
+				}
+			}
+			if !excluded && rightTerms[term] {
+				overlap++
+			}
+		}
+		return overlap
+	}
+	matchedEntities := func(text string, entities []string) []string {
+		out := []string{}
+		for _, entity := range entities {
+			if prepareTurnRecallContainsAnchor(text, entity) && !prepareTurnRelationshipNameInList(entity, out) {
+				out = append(out, entity)
+			}
+		}
+		return out
+	}
+	sourceContainsTurn := func(item store.DirectEvidence, turn int) bool {
+		if turn <= 0 {
+			return false
+		}
+		if item.TurnAnchor > 0 {
+			return item.TurnAnchor == turn
+		}
+		start := item.SourceTurnStart
+		end := item.SourceTurnEnd
+		if start <= 0 {
+			start = end
+		}
+		if end <= 0 {
+			end = start
+		}
+		return start > 0 && start <= turn && turn <= end
+	}
+
+	vectorKeys := map[string]bool{}
+	for _, item := range vectorEvidence {
+		vectorKeys[evidenceKey(item)] = true
+	}
+	privateExcerptKeys := map[string]bool{}
+	for _, item := range privateMemories {
+		visibility := strings.ToLower(strings.TrimSpace(item.OwnerVisibility))
+		policy := strings.ToLower(strings.TrimSpace(item.TargetRevealPolicy))
+		if !item.SecretGuard && !strings.Contains(visibility, "private") && !strings.Contains(policy, "private") &&
+			policy != "requires_explicit_attachment" {
 			continue
 		}
-		turn := maxInt(evidence[i].TurnAnchor, maxInt(evidence[i].SourceTurnEnd, evidence[i].SourceTurnStart))
-		if latest == nil || turn >= latestTurn {
-			latest = &evidence[i]
-			latestTurn = turn
+		excerptKey := collapseTextKey(item.EvidenceExcerpt)
+		if item.SourceTurn > 0 && excerptKey != "" {
+			privateExcerptKeys[fmt.Sprintf("%d:%s", item.SourceTurn, excerptKey)] = true
+		}
+	}
+	for _, item := range memorySelection.ProtectedCandidates {
+		parsed := parseJSONMap(item.SummaryJSON)
+		for _, field := range []string{"protected_secrets", "subjective_entity_memories"} {
+			for _, entry := range memorySearchMapItems(parsed[field]) {
+				excerpt := extractionFirstNonEmpty(stringFromMap(entry, "evidence_excerpt"), stringFromMap(entry, "evidence"))
+				if excerptKey := collapseTextKey(excerpt); item.TurnIndex > 0 && excerptKey != "" {
+					privateExcerptKeys[fmt.Sprintf("%d:%s", item.TurnIndex, excerptKey)] = true
+				}
+			}
+		}
+	}
+
+	type projectedEvent struct {
+		sourceTurn   int
+		participants []string
+		text         string
+		excerptKey   string
+		reason       string
+	}
+	projectedEvents := []projectedEvent{}
+	projectedTrace := []map[string]any{}
+	selectedMemorySeen := map[string]bool{}
+	selectedMemories := []store.Memory{}
+	for _, lane := range [][]store.Memory{
+		memorySelection.VectorRelevant,
+		memorySelection.Relevant,
+		memorySelection.Deep,
+		memorySelection.Recent,
+	} {
+		for _, item := range lane {
+			key := prepareTurnMemoryLaneKey(item)
+			if selectedMemorySeen[key] || prepareTurnProtectedMemoryGuard(item).Active {
+				continue
+			}
+			selectedMemorySeen[key] = true
+			selectedMemories = append(selectedMemories, item)
+		}
+	}
+	for _, memory := range selectedMemories {
+		if candidateLimit > 0 && len(projectedEvents) >= candidateLimit {
+			break
+		}
+		parsed := parseJSONMap(memory.SummaryJSON)
+		type scoredProjectedEvent struct {
+			event projectedEvent
+			score int
+		}
+		scoredEvents := []scoredProjectedEvent{}
+		for _, event := range memorySearchMapItems(parsed["narrative_events"]) {
+			summary := extractionFirstNonEmpty(stringFromMap(event, "summary"), stringFromMap(event, "event"))
+			excerpt := extractionFirstNonEmpty(stringFromMap(event, "evidence_excerpt"), stringFromMap(event, "evidence"))
+			participants := memorySearchStringValues(event["participants"])
+			eventText := strings.TrimSpace(summary + "\n" + excerpt)
+			if len(participants) == 0 {
+				participants = matchedEntities(eventText, prepareTurnMemoryCharacterAnchors(memory))
+			}
+			requestOverlap := overlapWithoutEntities(rawQuery, eventText, participants)
+			participantMatches := len(matchedEntities(rawQuery, participants))
+			requiredOverlap := prepareTurnRecallRequiredOverlap(rawQuery)
+			if requestOverlap < requiredOverlap && !(participantMatches >= 2 && requestOverlap > 0) {
+				continue
+			}
+			if len(directEntities) > 0 && len(participants) > 0 && participantMatches == 0 {
+				continue
+			}
+			score := participantMatches*100 + requestOverlap
+			scoredEvents = append(scoredEvents, scoredProjectedEvent{
+				score: score,
+				event: projectedEvent{
+					sourceTurn:   memory.TurnIndex,
+					participants: participants,
+					text:         eventText,
+					excerptKey:   collapseTextKey(excerpt),
+					reason:       "structured_narrative_event_request_match",
+				},
+			})
+		}
+		if len(scoredEvents) > 0 {
+			sort.SliceStable(scoredEvents, func(i, j int) bool {
+				return scoredEvents[i].score > scoredEvents[j].score
+			})
+			for _, candidate := range scoredEvents {
+				if candidateLimit > 0 && len(projectedEvents) >= candidateLimit {
+					continue
+				}
+				projectedEvents = append(projectedEvents, candidate.event)
+				projectedTrace = append(projectedTrace, map[string]any{
+					"source_turn":  candidate.event.sourceTurn,
+					"participants": candidate.event.participants,
+					"reason":       candidate.event.reason,
+				})
+			}
+			continue
+		}
+		if len(scoredEvents) == 0 {
+			participants := prepareTurnMemoryCharacterAnchors(memory)
+			memoryText := prepareTurnMemoryRelevanceText(memory)
+			requestOverlap := overlapWithoutEntities(rawQuery, memoryText, participants)
+			participantMatches := len(matchedEntities(rawQuery, participants))
+			requiredOverlap := prepareTurnRecallRequiredOverlap(rawQuery)
+			if (requestOverlap >= requiredOverlap || (participantMatches >= 2 && requestOverlap > 0)) &&
+				(len(directEntities) == 0 || len(participants) == 0 || participantMatches > 0) {
+				fallback := projectedEvent{
+					sourceTurn:   memory.TurnIndex,
+					participants: participants,
+					text:         memoryText,
+					reason:       "selected_memory_request_match",
+				}
+				projectedEvents = append(projectedEvents, fallback)
+				projectedTrace = append(projectedTrace, map[string]any{
+					"source_turn":  fallback.sourceTurn,
+					"participants": fallback.participants,
+					"reason":       fallback.reason,
+				})
+			}
+		}
+	}
+
+	selected := []prepareTurnSelectedDirectEvidence{}
+	deferred := []map[string]any{}
+	excluded := []map[string]any{}
+	vectorDeferred := 0
+	for sourceOrder, item := range evidence {
+		sourceTurn := evidenceTurn(item)
+		baseTrace := map[string]any{"id": item.ID, "source_turn": sourceTurn}
+		if item.Tombstoned || item.RepairNeeded || item.SupersededByID != 0 || strings.TrimSpace(item.EvidenceText) == "" {
+			reason := "invalid_or_noncanonical_evidence"
+			if item.Tombstoned {
+				reason = "tombstoned"
+			} else if item.RepairNeeded {
+				reason = "repair_needed"
+			} else if item.SupersededByID != 0 {
+				reason = "superseded"
+			}
+			baseTrace["reason"] = reason
+			excluded = append(excluded, baseTrace)
+			continue
+		}
+		if privateExcerptKeys[fmt.Sprintf("%d:%s", sourceTurn, collapseTextKey(item.EvidenceText))] {
+			baseTrace["reason"] = "structured_private_exact_excerpt"
+			excluded = append(excluded, baseTrace)
+			continue
+		}
+
+		vector := vectorKeys[evidenceKey(item)]
+		rank := 0
+		reason := ""
+		eventOverlap := 0
+		for _, event := range projectedEvents {
+			overlap := overlapWithoutEntities(item.EvidenceText, event.text, event.participants)
+			if overlap > eventOverlap {
+				eventOverlap = overlap
+			}
+			if !sourceContainsTurn(item, event.sourceTurn) {
+				if vector && overlap >= 2 && rank < 2 {
+					rank = 2
+					reason = "vector_selected_event_corroboration"
+				}
+				continue
+			}
+			if event.excerptKey != "" && collapseTextKey(item.EvidenceText) == event.excerptKey {
+				rank = 6
+				reason = "selected_event_exact_excerpt_source"
+				break
+			}
+			if vector && overlap == 0 && rank < 3 {
+				rank = 3
+				reason = "vector_selected_event_source"
+				continue
+			}
+			if overlap == 0 {
+				continue
+			}
+			participantMatches := len(matchedEntities(item.EvidenceText, event.participants))
+			switch {
+			case participantMatches >= 2 && rank < 5:
+				rank = 5
+				reason = "selected_event_source_pair"
+			case participantMatches == 1 && rank < 4:
+				rank = 4
+				reason = "selected_event_source_entity"
+			case overlap >= 2 && rank < 3:
+				rank = 3
+				reason = "selected_event_source_semantic"
+			}
+		}
+		requestOverlap := overlapWithoutEntities(rawQuery, item.EvidenceText, directEntities)
+		entityMatchCount := len(matchedEntities(item.EvidenceText, directEntities))
+		if rank == 0 {
+			switch {
+			case len(directEntities) > 0 && entityMatchCount > 0 && requestOverlap > 0:
+				rank = 1
+				reason = "request_entity_semantic_support"
+			case vector && requestOverlap >= prepareTurnRecallRequiredOverlap(rawQuery):
+				rank = 1
+				reason = "vector_request_semantic_support"
+			case requestOverlap >= prepareTurnRecallRequiredOverlap(rawQuery):
+				rank = 1
+				reason = "request_semantic_support"
+			case len(directEntities) == 0 && prepareTurnRequestFirstRelevant(rawQuery, "", item.EvidenceText):
+				rank = 1
+				reason = "request_semantic_support"
+			}
+		}
+		if rank == 0 {
+			if vector {
+				vectorDeferred++
+			}
+			baseTrace["reason"] = "insufficient_current_event_corroboration"
+			baseTrace["vector"] = vector
+			deferred = append(deferred, baseTrace)
+			continue
+		}
+		selected = append(selected, prepareTurnSelectedDirectEvidence{
+			Evidence:       item,
+			Vector:         vector,
+			Reason:         reason,
+			rank:           rank,
+			eventOverlap:   eventOverlap,
+			requestOverlap: requestOverlap,
+			entityMatches:  entityMatchCount,
+			sourceTurn:     sourceTurn,
+			sourceOrder:    sourceOrder,
+		})
+	}
+	sort.SliceStable(selected, func(i, j int) bool {
+		left, right := selected[i], selected[j]
+		if left.rank != right.rank {
+			return left.rank > right.rank
+		}
+		if left.eventOverlap != right.eventOverlap {
+			return left.eventOverlap > right.eventOverlap
+		}
+		if left.entityMatches != right.entityMatches {
+			return left.entityMatches > right.entityMatches
+		}
+		if left.requestOverlap != right.requestOverlap {
+			return left.requestOverlap > right.requestOverlap
+		}
+		if left.Vector != right.Vector {
+			return left.Vector
+		}
+		if left.sourceTurn != right.sourceTurn {
+			return left.sourceTurn > right.sourceTurn
+		}
+		return left.sourceOrder < right.sourceOrder
+	})
+	if len(selected) > 0 && selected[0].rank >= 4 {
+		kept := selected[:0]
+		for _, item := range selected {
+			if item.rank == 1 {
+				deferred = append(deferred, map[string]any{
+					"id":          item.Evidence.ID,
+					"source_turn": item.sourceTurn,
+					"reason":      "lexical_fallback_deferred_by_linked_event",
+					"vector":      item.Vector,
+				})
+				continue
+			}
+			kept = append(kept, item)
+		}
+		selected = kept
+	}
+	if candidateLimit > 0 && len(selected) > candidateLimit {
+		for _, item := range selected[candidateLimit:] {
+			deferred = append(deferred, map[string]any{
+				"id":          item.Evidence.ID,
+				"source_turn": item.sourceTurn,
+				"reason":      "support_candidate_limit",
+				"vector":      item.Vector,
+			})
+		}
+		selected = selected[:candidateLimit]
+	}
+	selectedTrace := make([]map[string]any, 0, len(selected))
+	for _, item := range selected {
+		selectedTrace = append(selectedTrace, map[string]any{
+			"id":          item.Evidence.ID,
+			"source_turn": item.sourceTurn,
+			"reason":      item.Reason,
+			"vector":      item.Vector,
+		})
+	}
+	trace := map[string]any{
+		"version":                      "recall_link_projection.v1",
+		"contract_version":             "recall_link_projection.v1",
+		"materialized_candidates_only": true,
+		"same_source_alone_authority":  false,
+		"recursive_expansion":          false,
+		"selected_events":              projectedTrace,
+		"event_count":                  len(projectedTrace),
+		"evidence_selected":            selectedTrace,
+		"evidence_deferred":            deferred,
+		"evidence_excluded":            excluded,
+		"selected_count":               len(selected),
+		"deferred_count":               len(deferred),
+		"excluded_count":               len(excluded),
+		"vector_deferred_count":        vectorDeferred,
+		"candidate_limit":              candidateLimit,
+		"known_limitations":            []string{"evidence_outside_materialized_bounded_history_is_not_linked"},
+	}
+	return selected, trace
+}
+
+// This helper remains for the legacy SEQ-16.8 diagnostic contract. Runtime
+// prepare-turn delivery uses selectPrepareTurnDirectEvidence so recency cannot
+// override the request-scoped event/evidence projection.
+func latestPrepareTurnEvidence(evidence []store.DirectEvidence) *store.DirectEvidence {
+	var latest *store.DirectEvidence
+	for i := range evidence {
+		item := &evidence[i]
+		if item.Tombstoned || item.RepairNeeded || item.SupersededByID != 0 || strings.TrimSpace(item.EvidenceText) == "" {
+			continue
+		}
+		itemTurn := maxInt(item.TurnAnchor, maxInt(item.SourceTurnEnd, item.SourceTurnStart))
+		if latest == nil {
+			latest = item
+			continue
+		}
+		latestTurn := maxInt(latest.TurnAnchor, maxInt(latest.SourceTurnEnd, latest.SourceTurnStart))
+		if itemTurn > latestTurn || (itemTurn == latestTurn && item.ID > latest.ID) {
+			latest = item
 		}
 	}
 	return latest

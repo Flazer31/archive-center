@@ -3,7 +3,20 @@
 This folder groups the 2.5 standalone MDASH/Table Read output-quality design
 documents so they do not mix with unrelated Archive Center runtime docs.
 
-## Active Anchor
+## Current Authority
+
+- `risu-recomposer-mdash-execution-plan-2026-07-24.md`
+
+This is the canonical preparatory implementation plan for the current
+`source/Risu Recomposer.js` runtime. It owns the current MDASH/Fusion/Fugu
+interpretation, implementation order, 500 KB one-file limit, call budget,
+Judge/Composer/Prover separation, and beta evidence gate.
+
+If an older dated plan, operating contract, full-flow map, strong-fusion
+roadmap, or R1-R7 worker prompt conflicts with the current sequence or limits,
+the 2026-07-24 execution plan wins.
+
+## Supporting Design Documents
 
 - `2.5-standalone-output-quality-layer-plan.md`
 - `feature-expansion-synthesis-2026-06-26.md`
@@ -19,7 +32,7 @@ documents so they do not mix with unrelated Archive Center runtime docs.
 - `long-session-subjective-memory-accuracy-gate.md`
 - `../provider-request-overrides-flex-paygo-contract.md`
 
-Use this as the active 2.5 design anchor. It defines the standalone-first
+Use these as supporting 2.5 design references. They define the standalone-first
 RisuAI output quality layer, including Input Enhance MDASH, Output Check MDASH,
 Table Read MDASH, Output Enhance MDASH, protected segment patching, verifier,
 and trace.
@@ -41,30 +54,23 @@ Use the live QA hardening note as the current record for context caps, estimated
 token trace, lore/memory matching improvements, image marker protection, and
 reader JSON recovery.
 
-Use the fusion orchestrator roadmap as the S9+ sequencing anchor for moving
+Use the fusion orchestrator roadmap as supporting S9+ design history for moving
 from audit-only readers into enhancement-first multi-model fusion: bounded
 revision, fusion composition, JS verification, and verified enhanced output
 return.
 
-Use the MDASH/Fusion operating contract as the current interpretation lock. If
-older wording makes Fugu, Fusion, MDASH, or Table Read sound broader, weaker,
-or more autonomous than intended, this contract wins: the plugin is a
-deterministic-router, specialist-reader, fusion-director, segment-composer, and
-JS-verifier pipeline for verified enhanced output.
+Use the MDASH/Fusion operating contract as supporting interpretation history.
+Its deterministic-router, specialist-reader, fusion-director,
+segment-composer, and JS-verifier concepts remain relevant, but the canonical
+execution plan owns the current stage order.
 
-Use the MDASH/Fusion/Fugu full flow document as the current end-to-end sequence
-map. It records the full operating order, the current alpha maturity snapshot,
-and the next implementation order after the first verified `fusion_enhance`
-trace: patch apply stability, reasoning-only control, segment-level fusion
-composition, full Table Read opt-in execution, router/cost profiles, and UI
-hardening.
+Use the MDASH/Fusion/Fugu full flow document as historical end-to-end sequence
+detail. It records the earlier operating order and alpha maturity snapshot.
 
-Use the strong fusion enhancement roadmap as the current direction lock for
-the next implementation pass. If older wording makes the plugin sound
-suggestion-only, too timid, or focused on weak local patches, this roadmap wins:
-specialist AIs should generate strong improvement candidates, while the
-Fusion Director, Segment Composer, and verifier decide what is safe enough to
-return.
+Use the strong fusion enhancement roadmap as supporting evidence for the
+aggressive rewrite direction. Specialist AIs still generate strong improvement
+candidates; the canonical execution plan now owns how those candidates are
+judged, composed, and verified.
 
 Use the provider request overrides and Vertex Flex PayGo contract as the shared
 provider-options contract with Archive Center. Archive Center should apply the

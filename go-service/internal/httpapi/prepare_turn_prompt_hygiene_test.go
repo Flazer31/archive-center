@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -111,6 +110,269 @@ func TestPrepareTurnVectorEvidenceStillRequiresCurrentSceneRelevance(t *testing.
 	}
 	if got := intFromAny(assembly.Counts["direct_evidence_irrelevant_dropped"], 0); got != 1 {
 		t.Fatalf("vector evidence drop count=%d, want 1", got)
+	}
+}
+
+func TestPrepareTurnSelectedEventEvidenceOutranksGenericAndSameTurnUnrelatedEvidence(t *testing.T) {
+	const rawInput = "이소월은 강한얼과 맺은 상업 약조서를 바라보며 자신과 다른 그의 모습에 자신이 어떤 협력자가 될지 생각했다."
+	memories := []store.Memory{{
+		ID:        1,
+		TurnIndex: 49,
+		SummaryJSON: `{
+			"turn_summary":"강한얼과 이소월은 상업 약조서를 체결한 뒤 천체 망원경도 점검했다.",
+			"characters":["강한얼","이소월"],
+			"items":["상업 약조서","천체 망원경"],
+			"narrative_events":[
+				{
+					"summary":"토지 매입 및 수수료 조항의 상업 약조서를 체결했다.",
+					"participants":["강한얼","이소월"],
+					"evidence_excerpt":"강한얼과 이소월은 토지 매입과 사업 수수료를 정한 상업 약조서에 서명했다."
+				},
+				{
+					"summary":"푸른 렌즈를 단 천체 망원경을 함께 점검했다.",
+					"participants":["강한얼","이소월"],
+					"evidence_excerpt":"강한얼과 이소월은 푸른 렌즈를 단 천체 망원경을 함께 점검했다."
+				}
+			]
+		}`,
+	}}
+	evidence := []store.DirectEvidence{
+		{ID: 101, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 토지 매입과 사업 수수료를 정한 상업 약조서에 서명했다."},
+		{ID: 102, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 푸른 렌즈를 단 천체 망원경을 함께 점검했다."},
+		{ID: 103, TurnAnchor: 60, EvidenceText: "민서현은 자신과 다른 그의 모습에 자신이 점점 더 빠져 들어간다는 것을 알았다."},
+		{ID: 104, TurnAnchor: 25, EvidenceText: "그 계약의 토지 수수료 조항은 두 사람의 협력 관계를 지속시켰다."},
+		{ID: 105, TurnAnchor: 49, EvidenceText: "강한얼과 이소월의 약조는 삭제된 근거다.", Tombstoned: true},
+		{ID: 106, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 상업 약조서 뒤에 비밀 수수료 조항을 숨겨 두었다."},
+	}
+	private := []store.ProtagonistEntityMemory{{
+		ID:                 901,
+		OwnerEntityKey:     "sowol",
+		OwnerEntityName:    "이소월",
+		OwnerEntityRole:    "npc",
+		OwnerVisibility:    "owner_private",
+		SourceTurn:         49,
+		MemoryText:         "이소월만 아는 비밀 수수료 조항",
+		EvidenceExcerpt:    "강한얼과 이소월은 상업 약조서 뒤에 비밀 수수료 조항을 숨겨 두었다.",
+		SecretGuard:        true,
+		TargetRevealPolicy: "owner_private_until_revealed",
+	}}
+	vectorShadow := map[string]any{
+		"search_result": "ok",
+		"search_results": []map[string]any{
+			{"source_table": "memories", "source_row_id": "1", "similarity": 0.93},
+			{"source_table": "direct_evidence_records", "source_row_id": "101", "similarity": 0.91},
+			{"source_table": "direct_evidence_records", "source_row_id": "104", "similarity": 0.83},
+			{"source_table": "direct_evidence_records", "source_row_id": "105", "similarity": 0.99},
+		},
+	}
+	assembly := buildPrepareTurnInjectionAssembly(
+		memories,
+		nil,
+		evidence,
+		nil,
+		nil,
+		nil,
+		[]store.CharacterState{{CharacterName: "강한얼"}, {CharacterName: "이소월"}, {CharacterName: "민서현"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		private,
+		2,
+		9000,
+		rawInput,
+		"default",
+		nil,
+		vectorShadow,
+		nil,
+	)
+	const selected = "토지 매입과 사업 수수료를 정한 상업 약조서"
+	if !strings.Contains(assembly.LatestDirectEvidenceText, selected) {
+		t.Fatalf("selected event evidence did not own latest evidence: %q", assembly.LatestDirectEvidenceText)
+	}
+	for _, unwanted := range []string{"천체 망원경", "민서현은 자신과 다른", "삭제된 근거", "비밀 수수료"} {
+		if strings.Contains(assembly.LatestDirectEvidenceText, unwanted) ||
+			strings.Contains(assembly.DirectEvidenceText, unwanted) ||
+			strings.Contains(assembly.ScopedVerbatimText, unwanted) {
+			t.Fatalf("unrelated or private/tombstoned evidence %q survived: latest=%q direct=%q scoped=%q",
+				unwanted, assembly.LatestDirectEvidenceText, assembly.DirectEvidenceText, assembly.ScopedVerbatimText)
+		}
+	}
+	if !strings.Contains(assembly.DirectEvidenceText, "그 계약의 토지 수수료 조항") {
+		t.Fatalf("unlinked semantic vector evidence was discarded instead of kept at lower rank: %q", assembly.DirectEvidenceText)
+	}
+	projection := mapFromAny(assembly.Counts["recall_link_projection"])
+	if stringFromMap(projection, "version") != "recall_link_projection.v1" ||
+		!boolFromAny(projection["materialized_candidates_only"]) ||
+		boolFromAny(projection["same_source_alone_authority"]) {
+		t.Fatalf("request-scoped recall-link contract missing: %#v", projection)
+	}
+	if got := intFromAny(projection["selected_count"], 0); got != 2 {
+		t.Fatalf("selected evidence count=%d, want linked+semantic vector: %#v", got, projection)
+	}
+	if got := intFromAny(projection["deferred_count"], 0); got < 2 {
+		t.Fatalf("same-turn unrelated and generic evidence were not deferred: %#v", projection)
+	}
+	if got := intFromAny(projection["excluded_count"], 0); got < 2 {
+		t.Fatalf("tombstoned and owner-private evidence were not excluded: %#v", projection)
+	}
+	if got := intFromAny(assembly.Counts["top_k_memory_target"], 0); got != 2 {
+		t.Fatalf("entity-event evidence linking changed topK: got=%d", got)
+	}
+	classes, _ := assembly.MemoryDeliveryPlan["classes"].([]map[string]any)
+	directReserved := 0
+	for _, item := range classes {
+		if stringFromMap(item, "key") == "direct_evidence" {
+			directReserved = intFromAny(item["configured_reserved_chars"], 0)
+			break
+		}
+	}
+	if directReserved != prepareTurnAutomaticMemoryBudgets(9000)["direct_evidence"] {
+		t.Fatalf("entity-event evidence linking changed direct-evidence budget: got=%d", directReserved)
+	}
+}
+
+func TestPrepareTurnRecallLinkKeepsMultipleCurrentEventsAndPrivateFence(t *testing.T) {
+	memory := store.Memory{
+		ID:        201,
+		TurnIndex: 49,
+		SummaryJSON: `{
+			"characters":["강한얼","이소월"],
+			"narrative_events":[
+				{
+					"summary":"토지 계약과 수수료 합의를 마쳤다.",
+					"participants":["강한얼","이소월"],
+					"evidence_excerpt":"강한얼과 이소월은 토지 계약과 수수료 합의에 서명했다."
+				},
+				{
+					"summary":"망원경 점검과 렌즈 교정을 마쳤다.",
+					"participants":["강한얼","이소월"],
+					"evidence_excerpt":"강한얼과 이소월은 망원경 점검과 렌즈 교정을 함께 마쳤다."
+				}
+			]
+		}`,
+	}
+	evidence := []store.DirectEvidence{
+		{ID: 201, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 토지 계약과 수수료 합의에 서명했다."},
+		{ID: 202, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 망원경 점검과 렌즈 교정을 함께 마쳤다."},
+		{ID: 203, TurnAnchor: 49, EvidenceText: "그들은 앞으로도 서로를 믿고 움직였다."},
+		{ID: 204, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 둘만 아는 비밀 보상에 합의했다."},
+	}
+	privateEvidence := []store.ProtagonistEntityMemory{{
+		OwnerEntityName:    "이소월",
+		OwnerVisibility:    "owner_private",
+		SourceTurn:         49,
+		EvidenceExcerpt:    "강한얼과 이소월은 둘만 아는 비밀 보상에 합의했다.",
+		SecretGuard:        true,
+		TargetRevealPolicy: "owner_private_until_revealed",
+	}}
+	selection := prepareTurnMemoryLaneSelection{VectorRelevant: []store.Memory{memory}}
+	selected, trace := selectPrepareTurnDirectEvidence(
+		evidence,
+		[]store.DirectEvidence{evidence[2]},
+		selection,
+		"이소월과 강한얼은 토지 계약과 수수료 합의, 망원경 점검과 렌즈 교정을 함께 되돌아봤다.",
+		[]string{"이소월", "강한얼"},
+		privateEvidence,
+		3,
+	)
+	if len(selected) != 3 {
+		t.Fatalf("selected=%d, want two linked events plus vector/source support: %#v", len(selected), trace)
+	}
+	firstTwo := map[int64]bool{selected[0].Evidence.ID: true, selected[1].Evidence.ID: true}
+	if !firstTwo[201] || !firstTwo[202] || selected[2].Evidence.ID != 203 {
+		t.Fatalf("request-linked order changed: %#v", selected)
+	}
+	if got := intFromAny(trace["event_count"], 0); got != 2 {
+		t.Fatalf("same-memory current events=%d, want 2: %#v", got, trace)
+	}
+	if got := intFromAny(trace["excluded_count"], 0); got != 1 {
+		t.Fatalf("unfiltered private evidence fence did not exclude exact excerpt: %#v", trace)
+	}
+
+	limited, limitedTrace := selectPrepareTurnDirectEvidence(
+		evidence,
+		[]store.DirectEvidence{evidence[2]},
+		selection,
+		"이소월과 강한얼은 토지 계약과 수수료 합의, 망원경 점검과 렌즈 교정을 함께 되돌아봤다.",
+		[]string{"이소월", "강한얼"},
+		privateEvidence,
+		2,
+	)
+	if len(limited) != 2 || intFromAny(limitedTrace["deferred_count"], 0) == 0 {
+		t.Fatalf("support candidate limit was not applied after ranking: selected=%#v trace=%#v", limited, limitedTrace)
+	}
+}
+
+func TestPrepareTurnAssemblyUsesPrivateFenceBeforeDeliveryFilter(t *testing.T) {
+	const rawInput = "Alice and Bob inspect the sealed red wax letter."
+	memory := store.Memory{
+		ID:        301,
+		TurnIndex: 5,
+		SummaryJSON: `{
+			"characters":["Alice","Bob"],
+			"narrative_events":[{
+				"summary":"Alice and Bob inspected the sealed red wax letter.",
+				"participants":["Alice","Bob"],
+				"evidence_excerpt":"The letter was sealed with red wax."
+			}]
+		}`,
+	}
+	evidence := []store.DirectEvidence{
+		{ID: 301, TurnAnchor: 5, EvidenceText: "The letter was sealed with red wax."},
+		{ID: 302, TurnAnchor: 5, EvidenceText: "Alice and Bob hid a private red wax bargain."},
+	}
+	privateFence := []store.ProtagonistEntityMemory{{
+		ID:                 301,
+		OwnerEntityKey:     "eve",
+		OwnerEntityName:    "Eve",
+		OwnerEntityRole:    "npc",
+		OwnerVisibility:    "owner_private",
+		SourceTurn:         5,
+		MemoryText:         "Eve privately remembers a hidden bargain.",
+		EvidenceExcerpt:    "Alice and Bob hid a private red wax bargain.",
+		SecretGuard:        true,
+		TargetRevealPolicy: "owner_private_until_revealed",
+	}}
+	deliveryPrivate := append([]store.ProtagonistEntityMemory(nil), privateFence...)
+	filterPrepareTurnEntityRecollections(rawInput, []store.Memory{memory}, nil, nil, nil, nil, &deliveryPrivate)
+	if len(deliveryPrivate) != 0 {
+		t.Fatalf("test precondition failed: off-scene private owner survived delivery filter: %#v", deliveryPrivate)
+	}
+
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(
+		[]store.Memory{memory},
+		nil,
+		evidence,
+		nil,
+		nil,
+		nil,
+		[]store.CharacterState{{CharacterName: "Alice"}, {CharacterName: "Bob"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		deliveryPrivate,
+		privateFence,
+		2,
+		9000,
+		rawInput,
+		"default",
+		nil,
+		nil,
+		nil,
+		"auto",
+		nil,
+	)
+	if !strings.Contains(assembly.DirectEvidenceText, "sealed with red wax") {
+		t.Fatalf("public current evidence was lost: %q", assembly.DirectEvidenceText)
+	}
+	for _, surface := range []string{assembly.LatestDirectEvidenceText, assembly.DirectEvidenceText, assembly.ScopedVerbatimText, assembly.CharacterPrivateText} {
+		if strings.Contains(surface, "private red wax bargain") {
+			t.Fatalf("pre-filter private evidence escaped through final assembly: %q", surface)
+		}
 	}
 }
 
@@ -276,62 +538,79 @@ func TestPrepareTurnRecollectionDoesNotLetTechnicalSceneReactivateUnrelatedHisto
 	}
 }
 
-func TestPrepareTurnWorldRuleDoesNotUseOneCharacterNameAsRelevanceProof(t *testing.T) {
-	const rawInput = "강한얼은 서운관에서 있었던 일을 지나간 기억으로 두고 소월과 슬아와 서현의 호의를 차례로 떠올렸다."
-	perspective := prepareTurnPerspectiveWithNarrativeState(
-		map[string]any{},
-		nil,
-		[]store.ActiveState{{
-			StateType: "scene",
-			TurnIndex: 50,
-			Content:   `{"location":"월하방","present_entities":["강한얼"]}`,
-		}},
-	)
-	worldRules := []store.WorldRule{
-		{
-			Key:       "강한얼 연삭기 안전 규칙",
-			ScopeName: "강한얼 공작소",
-			ValueJSON: `{"rule":"플라이휠의 강철 축은 납 무게로 보정한다."}`,
-		},
-		{Scope: "location", ScopeName: "월하방", Key: "월하방 예법", ValueJSON: `{"rule":"목소리를 낮춘다."}`},
-		{Scope: "location", ScopeName: "서운관", Key: "서운관 화기", ValueJSON: `{"rule":"화기를 멀리한다."}`},
-	}
-	for i := 0; i < 70; i++ {
-		worldRules = append(worldRules, store.WorldRule{
-			Scope: "location", ScopeName: "월하방",
-			Key: fmt.Sprintf("월하방 일반 규칙 %02d", i), ValueJSON: `{"rule":"현재 장소에만 적용한다."}`,
-		})
-	}
-	worldRules = append(worldRules,
-		store.WorldRule{Key: "시대 어휘 제한", ValueJSON: `{"rule":"현대식 어휘를 사용하지 않는다."}`, Pinned: true},
-		store.WorldRule{Scope: "root", Key: "세계 중력", ValueJSON: `{"rule":"중력은 항상 작용한다."}`},
-		store.WorldRule{Scope: "session", Key: "장르 지속", ValueJSON: `{"rule":"역사극의 시대감을 유지한다."}`},
-		store.WorldRule{Scope: "root", Key: "억제된 규칙", ValueJSON: `{"rule":"전달되면 안 된다."}`, Pinned: true, Suppressed: true},
-	)
+func TestPrepareTurnRelationshipRequestDoesNotReactivatePriorWorldState(t *testing.T) {
+	const rawInput = "Mira pauses beside Rowan and waits for him to answer her."
+	const unrelated = "turbine calibration"
+	chatLogs := []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "The turbine calibration procedure was reviewed in the old workshop."}}
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{
+		{StateType: "state_deltas", TurnIndex: 20, Content: `{"scene_state":{"location":"east library hall","present_entities":["Mira","Rowan"]},"relationship_changes":[{"summary":"turbine calibration remains active"}],"confidence":0.9,"verification":"direct turn evidence"}`},
+		{StateType: "world_state", TurnIndex: 20, Content: `{"policy":"turbine calibration remains active"}`},
+		{StateType: "entities", TurnIndex: 20, Content: `{"items":["turbine calibration gauge"],"locations":["east library hall"]}`},
+	})
 	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil,
-		worldRules,
-		[]store.CharacterState{
-			{CharacterName: "강한얼"},
-			{CharacterName: "이소월"},
-			{CharacterName: "윤슬아"},
-			{CharacterName: "민서현"},
+		[]store.Memory{{ID: 1, TurnIndex: 12, SummaryJSON: `{"turn_summary":"Mira and Rowan learned to trust each other after their first meeting.","characters":["Mira","Rowan"]}`}},
+		nil,
+		[]store.DirectEvidence{{ID: 1, TurnAnchor: 12, EvidenceText: "The turbine calibration procedure remains active in the old workshop."}},
+		chatLogs,
+		nil,
+		[]store.WorldRule{
+			{Scope: "session", Key: "turbine calibration procedure", ValueJSON: `{"rule":"keep using the old workshop gauge"}`},
+			{Scope: "session", Key: "library etiquette for Mira and Rowan", ValueJSON: `{"rule":"wait for the other person to answer"}`},
+			{Scope: "location", ScopeName: "library", Key: "library voices", ValueJSON: `{"rule":"speak softly"}`},
+			{Scope: "location", ScopeName: "old workshop", Key: "old workshop restriction", ValueJSON: `{"rule":"wear a turbine calibration gauge"}`},
+			{Key: "Mira turbine safety", ValueJSON: `{"rule":"inspect the turbine alone"}`},
+			{Key: "narrative tense", ValueJSON: `{"rule":"keep the established tense"}`, Pinned: true},
+			{Scope: "root", Key: "gravity", ValueJSON: `{"rule":"gravity always applies"}`},
+			{Scope: "root", Key: "suppressed root", ValueJSON: `{"rule":"never deliver"}`, Pinned: true, Suppressed: true},
 		},
-		nil, nil, nil, nil, nil, nil,
-		5, 2000, rawInput, "default", nil, nil, nil, perspective,
+		[]store.CharacterState{{CharacterName: "Mira", RelationshipsJSON: `{"relationships":[{"target":"Rowan","type":"trusted companion"}]}`}},
+		nil,
+		[]store.CanonicalStateLayer{
+			{LayerType: "relationship_state", TurnIndex: 20, Content: `{"pair":["Mira","Rowan"],"bond_and_distance":"mutual trust"}`, Confidence: 0.9},
+			{LayerType: "scene_state", TurnIndex: 20, Content: `{"scene_state":{"location":"east library hall","present_entities":["Mira","Rowan"]},"confidence":0.9}`, Confidence: 0.9},
+			{LayerType: "world_state", TurnIndex: 20, Content: `{"policy":"turbine calibration remains active"}`, Confidence: 0.9},
+			{LayerType: "entity_state", TurnIndex: 20, Content: `{"items":["turbine calibration gauge"],"locations":["east library hall"]}`, Confidence: 0.9},
+		},
+		nil, nil, nil, nil,
+		5, 9000, rawInput, "default", nil, nil, nil, perspective,
 	)
-	if strings.Contains(assembly.WorldRulesText, "연삭기") || strings.Contains(assembly.WorldRulesText, "플라이휠") {
-		t.Fatalf("one shared character name activated an unrelated world rule: %q", assembly.WorldRulesText)
+	if !strings.Contains(assembly.ActualMemoryText, "learned to trust") ||
+		!strings.Contains(assembly.CanonRelationshipText, "mutual trust") {
+		t.Fatalf("relationship support was lost: memory=%q canonical=%q", assembly.ActualMemoryText, assembly.CanonRelationshipText)
 	}
-	for _, persistent := range []string{"시대 어휘 제한", "세계 중력", "장르 지속", "월하방 예법"} {
-		if !strings.Contains(assembly.WorldRulesText, persistent) {
-			t.Fatalf("persistent/current-scope world rule %q was lost: %q", persistent, assembly.WorldRulesText)
+	if !strings.Contains(assembly.RecentRawTurnText, unrelated) {
+		t.Fatalf("prior technical chat must remain in Input Context only: %q", assembly.RecentRawTurnText)
+	}
+	for name, text := range map[string]string{
+		"latest direct evidence": assembly.LatestDirectEvidenceText,
+		"direct evidence":        assembly.DirectEvidenceText,
+		"world rules":            assembly.WorldRulesText,
+		"canonical world":        assembly.CanonWorldText,
+	} {
+		if strings.Contains(strings.ToLower(text), unrelated) {
+			t.Fatalf("prior world state reactivated through %s: %q", name, text)
 		}
 	}
-	for _, unwanted := range []string{"서운관 화기", "억제된 규칙"} {
+	for _, wanted := range []string{"library etiquette", "library voices", "narrative tense", "gravity"} {
+		if !strings.Contains(assembly.WorldRulesText, wanted) {
+			t.Fatalf("relevant or persistent world rule %q was lost: %q", wanted, assembly.WorldRulesText)
+		}
+	}
+	for _, unwanted := range []string{"Mira turbine safety", "old workshop restriction", "suppressed root"} {
 		if strings.Contains(assembly.WorldRulesText, unwanted) {
-			t.Fatalf("inactive or suppressed world rule %q survived: %q", unwanted, assembly.WorldRulesText)
+			t.Fatalf("irrelevant or suppressed world rule %q survived: %q", unwanted, assembly.WorldRulesText)
 		}
+	}
+	ctx := buildPrepareTurnRecollectionContext(
+		rawInput,
+		nil,
+		[]store.ActiveState{{StateType: "state_deltas", TurnIndex: 20, Content: `{"relationship_changes":[{"summary":"turbine calibration remains active"}]}`}},
+		nil,
+		nil,
+		chatLogs,
+	)
+	if strings.TrimSpace(ctx.currentSceneStates) != "" {
+		t.Fatalf("state_deltas without scene_state became scene relevance: %q", ctx.currentSceneStates)
 	}
 }
 
