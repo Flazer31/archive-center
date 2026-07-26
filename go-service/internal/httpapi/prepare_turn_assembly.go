@@ -121,6 +121,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.ProtectedMemoryText = makePrepareTurnSection("[Protected Memory Guidance]", protectedMemoryLines)
 
 	kgLines := make([]string, 0, minInt(len(kgTriples), recallLimit))
+	selectedKGTriples := make([]store.KGTriple, 0, minInt(len(kgTriples), recallLimit))
 	kgClosedDropped := 0
 	kgIrrelevantDropped := 0
 	kgSingleEndpointDropped := 0
@@ -146,6 +147,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			continue
 		}
 		kgLines = append(kgLines, line)
+		selectedKGTriples = append(selectedKGTriples, t)
 	}
 	out.KGText = makePrepareTurnSection("[Knowledge Graph]", kgLines)
 
@@ -419,12 +421,22 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.PersonaText = buildPersonaRecollectionText(personaEntries, recallLimit, maxChars)
 	out.CharacterPrivateText = buildCharacterPrivateRecollectionText(characterPrivateMemories, recallLimit, maxChars)
 
-	if latest := latestPrepareTurnEvidence(evidence); latest != nil {
-		out.LatestDirectEvidenceText = compactPrepareTurnLine(latest.EvidenceText, 260)
+	latestEvidence := latestPrepareTurnEvidence(evidence)
+	if latestEvidence != nil {
+		out.LatestDirectEvidenceText = compactPrepareTurnLine(latestEvidence.EvidenceText, 260)
 	}
 	out.RecentRawTurnText = recentPrepareTurnRawTurn(chatLogs)
 	out.ScopedVerbatimSupport = archivebridge.BuildScopedVerbatimSupport(evidence)
 	out.ScopedVerbatimText = out.ScopedVerbatimSupport.Text
+	out.Counts["support_link_projection"] = buildPrepareTurnSupportLinkProjection(
+		memorySelection,
+		artifactHydration.Evidence,
+		latestEvidence,
+		selectedKGTriples,
+		entityScope.Direct,
+		characterPrivateMemories,
+		recallLimit,
+	)
 
 	canonLines := make([]string, 0, minInt(len(canonicalLayers), recallLimit))
 	canonEventLines := []string{}
@@ -1386,6 +1398,252 @@ func latestPrepareTurnEvidence(evidence []store.DirectEvidence) *store.DirectEvi
 		}
 	}
 	return latest
+}
+
+func buildPrepareTurnSupportLinkProjection(
+	memorySelection prepareTurnMemoryLaneSelection,
+	vectorEvidence []store.DirectEvidence,
+	latestEvidence *store.DirectEvidence,
+	selectedKG []store.KGTriple,
+	directEntities []string,
+	privateMemories []store.ProtagonistEntityMemory,
+	limit int,
+) map[string]any {
+	limit = maxInt(limit, 1)
+	trace := map[string]any{
+		"contract_version":               "prepare_turn.support_links.v1",
+		"scope":                          "request_scoped_non_persistent",
+		"status":                         "empty",
+		"hop_limit":                      1,
+		"recursive_expansion":            false,
+		"persistent":                     false,
+		"influences_selection":           false,
+		"influences_delivery":            false,
+		"same_source_alone_authority":    false,
+		"semantic_similarity_used":       false,
+		"lexical_selection_used":         false,
+		"stable_entity_identity_claimed": false,
+		"private_text_emitted":           false,
+		"match_policy":                   "selected_rows_same_source_turn_and_normalized_structured_anchor",
+		"link_limit":                     limit,
+		"links":                          []map[string]any{},
+	}
+
+	type projectedMemory struct {
+		item     store.Memory
+		ref      string
+		entities map[string]bool
+	}
+	type projectedEvidence struct {
+		item store.DirectEvidence
+		ref  string
+		turn int
+	}
+	type projectedKG struct {
+		item       store.KGTriple
+		ref        string
+		subjectKey string
+		objectKey  string
+	}
+
+	entityKey := func(value string) string {
+		return normalizePrepareTurnEntityNeedle(strings.TrimSpace(value))
+	}
+	rowRef := func(kind string, id int64, turn, index int) string {
+		if id > 0 {
+			return fmt.Sprintf("%s:%d", kind, id)
+		}
+		return fmt.Sprintf("%s:turn:%d:index:%d", kind, turn, index)
+	}
+	memoryTurn := func(item store.Memory) int {
+		return item.TurnIndex
+	}
+	evidenceTurn := func(item store.DirectEvidence) int {
+		return maxInt(item.TurnAnchor, maxInt(item.SourceTurnEnd, item.SourceTurnStart))
+	}
+	sourceTurnsMatch := func(left, right int) bool {
+		return left > 0 && right > 0 && left == right
+	}
+	containsEntity := func(text, key string) bool {
+		if key == "" {
+			return false
+		}
+		return strings.Contains(normalizePrepareTurnEntityNeedle(text), key)
+	}
+
+	memories := []projectedMemory{}
+	seenMemories := map[string]bool{}
+	privateGuarded := minInt(len(privateMemories), limit)
+	for _, lane := range [][]store.Memory{
+		memorySelection.VectorRelevant,
+		memorySelection.Relevant,
+		memorySelection.Deep,
+		memorySelection.Recent,
+	} {
+		for _, item := range lane {
+			if _, protected := prepareTurnProtectedMemoryEntityTokens(item); protected {
+				privateGuarded++
+				continue
+			}
+			ref := rowRef("memory", item.ID, item.TurnIndex, len(memories))
+			if seenMemories[ref] {
+				continue
+			}
+			seenMemories[ref] = true
+			entities := map[string]bool{}
+			for _, anchor := range prepareTurnMemoryStructuredAnchors(item) {
+				if key := entityKey(anchor); key != "" {
+					entities[key] = true
+				}
+			}
+			memories = append(memories, projectedMemory{item: item, ref: ref, entities: entities})
+			if len(memories) >= limit {
+				break
+			}
+		}
+		if len(memories) >= limit {
+			break
+		}
+	}
+
+	evidenceItems := append([]store.DirectEvidence{}, vectorEvidence...)
+	if latestEvidence != nil {
+		evidenceItems = append(evidenceItems, *latestEvidence)
+	}
+	evidences := []projectedEvidence{}
+	seenEvidence := map[string]bool{}
+	for _, item := range evidenceItems {
+		turn := evidenceTurn(item)
+		ref := rowRef("evidence", item.ID, turn, len(evidences))
+		dedupeKey := ref
+		if item.ID <= 0 {
+			dedupeKey = strings.Join([]string{
+				fmt.Sprintf("%d", turn),
+				strings.TrimSpace(item.SourceHash),
+				collapseTextKey(item.EvidenceText),
+			}, "\x00")
+		}
+		if seenEvidence[dedupeKey] || strings.TrimSpace(item.EvidenceText) == "" {
+			continue
+		}
+		seenEvidence[dedupeKey] = true
+		evidences = append(evidences, projectedEvidence{item: item, ref: ref, turn: turn})
+		if len(evidences) >= limit {
+			break
+		}
+	}
+
+	kgItems := []projectedKG{}
+	for _, item := range selectedKG {
+		subjectKey := entityKey(item.Subject)
+		objectKey := entityKey(item.Object)
+		if subjectKey == "" || objectKey == "" {
+			continue
+		}
+		kgItems = append(kgItems, projectedKG{
+			item:       item,
+			ref:        rowRef("kg", item.ID, item.SourceTurn, len(kgItems)),
+			subjectKey: subjectKey,
+			objectKey:  objectKey,
+		})
+		if len(kgItems) >= limit {
+			break
+		}
+	}
+
+	directEntityKeys := []string{}
+	seenDirectEntity := map[string]bool{}
+	for _, entity := range directEntities {
+		key := entityKey(entity)
+		if key == "" || seenDirectEntity[key] {
+			continue
+		}
+		seenDirectEntity[key] = true
+		directEntityKeys = append(directEntityKeys, key)
+	}
+	sort.Strings(directEntityKeys)
+
+	links := []map[string]any{}
+	truncated := false
+	addLink := func(link map[string]any) {
+		if len(links) >= limit {
+			truncated = true
+			return
+		}
+		links = append(links, link)
+	}
+	entityKeysInEvidence := func(item projectedEvidence, candidates map[string]bool) []string {
+		keys := []string{}
+		for key := range candidates {
+			if containsEntity(item.item.EvidenceText, key) {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	sameSourceWithoutEntity := 0
+	for _, evidence := range evidences {
+		for _, memory := range memories {
+			if !sourceTurnsMatch(evidence.turn, memoryTurn(memory.item)) {
+				continue
+			}
+			keys := entityKeysInEvidence(evidence, memory.entities)
+			if len(keys) == 0 {
+				sameSourceWithoutEntity++
+				continue
+			}
+			addLink(map[string]any{
+				"from_ref":    evidence.ref,
+				"to_ref":      memory.ref,
+				"link_kind":   "evidence_memory_source_anchor_match",
+				"source_turn": evidence.turn,
+				"entity_keys": keys,
+			})
+		}
+		for _, kg := range kgItems {
+			if !sourceTurnsMatch(evidence.turn, kg.item.SourceTurn) ||
+				!containsEntity(evidence.item.EvidenceText, kg.subjectKey) ||
+				!containsEntity(evidence.item.EvidenceText, kg.objectKey) {
+				continue
+			}
+			addLink(map[string]any{
+				"from_ref":      evidence.ref,
+				"to_ref":        kg.ref,
+				"link_kind":     "evidence_kg_source_endpoint_pair_match",
+				"source_turn":   evidence.turn,
+				"entity_keys":   []string{kg.subjectKey, kg.objectKey},
+				"pair_directed": true,
+			})
+		}
+		for _, key := range directEntityKeys {
+			if !containsEntity(evidence.item.EvidenceText, key) {
+				continue
+			}
+			addLink(map[string]any{
+				"from_ref":    evidence.ref,
+				"to_ref":      "request_entity:" + key,
+				"link_kind":   "evidence_request_entity_match",
+				"source_turn": evidence.turn,
+				"entity_keys": []string{key},
+			})
+		}
+	}
+
+	trace["selected_memory_node_count"] = len(memories)
+	trace["selected_evidence_node_count"] = len(evidences)
+	trace["selected_kg_node_count"] = len(kgItems)
+	trace["direct_request_entity_count"] = len(directEntityKeys)
+	trace["private_guarded_count"] = privateGuarded
+	trace["same_source_without_entity_count"] = sameSourceWithoutEntity
+	trace["link_count"] = len(links)
+	trace["truncated"] = truncated
+	trace["links"] = links
+	if len(links) > 0 {
+		trace["status"] = "ready"
+	}
+	return trace
 }
 
 func recentPrepareTurnRawTurn(chatLogs []store.ChatLog) string {
