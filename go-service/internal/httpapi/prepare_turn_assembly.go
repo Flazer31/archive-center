@@ -428,7 +428,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.RecentRawTurnText = recentPrepareTurnRawTurn(chatLogs)
 	out.ScopedVerbatimSupport = archivebridge.BuildScopedVerbatimSupport(evidence)
 	out.ScopedVerbatimText = out.ScopedVerbatimSupport.Text
-	out.Counts["support_link_projection"] = buildPrepareTurnSupportLinkProjection(
+	supportLinkTrace, supportDeliveryGroups := buildPrepareTurnSupportLinkProjection(
 		memorySelection,
 		artifactHydration.Evidence,
 		latestEvidence,
@@ -437,6 +437,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		characterPrivateMemories,
 		recallLimit,
 	)
+	out.Counts["support_link_projection"] = supportLinkTrace
 
 	canonLines := make([]string, 0, minInt(len(canonicalLayers), recallLimit))
 	canonEventLines := []string{}
@@ -587,6 +588,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	deliveryBudgetContext := map[string]any{
 		"_memory_delivery_budget_mode": memoryDeliveryBudgetMode,
 		"_memory_delivery_budgets":     memoryDeliveryBudgets,
+	}
+	if len(supportDeliveryGroups) > 0 {
+		deliveryBudgetContext["_support_delivery_groups"] = supportDeliveryGroups
 	}
 	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, maxChars, deliveryBudgetContext)
 
@@ -1408,10 +1412,11 @@ func buildPrepareTurnSupportLinkProjection(
 	directEntities []string,
 	privateMemories []store.ProtagonistEntityMemory,
 	limit int,
-) map[string]any {
+) (map[string]any, []prepareTurnSupportDeliveryGroup) {
 	limit = maxInt(limit, 1)
 	trace := map[string]any{
-		"contract_version":               "prepare_turn.support_links.v1",
+		"contract_version":               "prepare_turn.support_links.v2",
+		"delivery_contract_version":      "prepare_turn.support_group_budget.v1",
 		"scope":                          "request_scoped_non_persistent",
 		"status":                         "empty",
 		"hop_limit":                      1,
@@ -1563,14 +1568,43 @@ func buildPrepareTurnSupportLinkProjection(
 	}
 	sort.Strings(directEntityKeys)
 
-	links := []map[string]any{}
-	truncated := false
-	addLink := func(link map[string]any) {
-		if len(links) >= limit {
-			truncated = true
+	supportGroupsByEvidence := map[string]*prepareTurnSupportDeliveryGroup{}
+	supportGroupOrder := []string{}
+	addSupportMember := func(evidence projectedEvidence, classKey, fact string) {
+		evidenceFact := prepareTurnDeliveryFactKey(evidence.item.EvidenceText)
+		memberFact := prepareTurnDeliveryFactKey(fact)
+		if evidenceFact == "" || memberFact == "" {
 			return
 		}
+		group := supportGroupsByEvidence[evidence.ref]
+		if group == nil {
+			group = &prepareTurnSupportDeliveryGroup{
+				EvidenceRef:     evidence.ref,
+				EvidenceFactKey: evidenceFact,
+			}
+			supportGroupsByEvidence[evidence.ref] = group
+			supportGroupOrder = append(supportGroupOrder, evidence.ref)
+		}
+		for _, member := range group.Members {
+			if member.ClassKey == classKey && member.FactKey == memberFact {
+				return
+			}
+		}
+		group.Members = append(group.Members, prepareTurnSupportDeliveryMember{
+			ClassKey: classKey,
+			FactKey:  memberFact,
+		})
+	}
+
+	links := []map[string]any{}
+	truncated := false
+	addLink := func(link map[string]any) bool {
+		if len(links) >= limit {
+			truncated = true
+			return false
+		}
 		links = append(links, link)
+		return true
 	}
 	entityKeysInEvidence := func(item projectedEvidence, candidates map[string]bool) []string {
 		keys := []string{}
@@ -1594,13 +1628,15 @@ func buildPrepareTurnSupportLinkProjection(
 				sameSourceWithoutEntity++
 				continue
 			}
-			addLink(map[string]any{
+			if addLink(map[string]any{
 				"from_ref":    evidence.ref,
 				"to_ref":      memory.ref,
 				"link_kind":   "evidence_memory_source_anchor_match",
 				"source_turn": evidence.turn,
 				"entity_keys": keys,
-			})
+			}) {
+				addSupportMember(evidence, "event_recent", prepareTurnMemorySummary(memory.item))
+			}
 		}
 		for _, kg := range kgItems {
 			if !sourceTurnsMatch(evidence.turn, kg.item.SourceTurn) ||
@@ -1608,14 +1644,20 @@ func buildPrepareTurnSupportLinkProjection(
 				!containsEntity(evidence.item.EvidenceText, kg.objectKey) {
 				continue
 			}
-			addLink(map[string]any{
+			if addLink(map[string]any{
 				"from_ref":      evidence.ref,
 				"to_ref":        kg.ref,
 				"link_kind":     "evidence_kg_source_endpoint_pair_match",
 				"source_turn":   evidence.turn,
 				"entity_keys":   []string{kg.subjectKey, kg.objectKey},
 				"pair_directed": true,
-			})
+			}) {
+				addSupportMember(
+					evidence,
+					"subjective_relationship",
+					fmt.Sprintf("%s --%s--> %s", kg.item.Subject, kg.item.Predicate, kg.item.Object),
+				)
+			}
 		}
 		for _, key := range directEntityKeys {
 			if !containsEntity(evidence.item.EvidenceText, key) {
@@ -1640,10 +1682,18 @@ func buildPrepareTurnSupportLinkProjection(
 	trace["link_count"] = len(links)
 	trace["truncated"] = truncated
 	trace["links"] = links
+	supportGroups := make([]prepareTurnSupportDeliveryGroup, 0, len(supportGroupOrder))
+	for _, evidenceRef := range supportGroupOrder {
+		if group := supportGroupsByEvidence[evidenceRef]; group != nil && len(group.Members) > 0 {
+			supportGroups = append(supportGroups, *group)
+		}
+	}
+	trace["delivery_group_count"] = len(supportGroups)
+	trace["influences_delivery"] = len(supportGroups) > 0
 	if len(links) > 0 {
 		trace["status"] = "ready"
 	}
-	return trace
+	return trace, supportGroups
 }
 
 func recentPrepareTurnRawTurn(chatLogs []store.ChatLog) string {

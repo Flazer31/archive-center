@@ -28,6 +28,126 @@ var prepareTurnMemoryDeliveryTitles = map[string]string{
 	"unresolved_goal":         "Unresolved Goals",
 }
 
+type prepareTurnSupportDeliveryMember struct {
+	ClassKey string
+	FactKey  string
+}
+
+type prepareTurnSupportDeliveryGroup struct {
+	EvidenceRef     string
+	EvidenceFactKey string
+	Members         []prepareTurnSupportDeliveryMember
+}
+
+func prepareTurnNormalizeSupportDeliveryGroups(value any) []prepareTurnSupportDeliveryGroup {
+	raw, ok := value.([]prepareTurnSupportDeliveryGroup)
+	if !ok {
+		return nil
+	}
+	const maxGroups = 512
+	out := make([]prepareTurnSupportDeliveryGroup, 0, minInt(len(raw), maxGroups))
+	seenGroups := map[string]bool{}
+	for _, group := range raw {
+		evidenceFact := prepareTurnDeliveryFactKey(group.EvidenceFactKey)
+		if evidenceFact == "" {
+			continue
+		}
+		ref := strings.TrimSpace(group.EvidenceRef)
+		groupKey := ref + "\x00" + evidenceFact
+		if seenGroups[groupKey] {
+			continue
+		}
+		seenGroups[groupKey] = true
+		members := []prepareTurnSupportDeliveryMember{}
+		seenMembers := map[string]bool{}
+		for _, member := range group.Members {
+			classKey := strings.TrimSpace(member.ClassKey)
+			if classKey != "event_recent" && classKey != "subjective_relationship" {
+				continue
+			}
+			factKey := prepareTurnDeliveryFactKey(member.FactKey)
+			memberKey := classKey + "\x00" + factKey
+			if factKey == "" || seenMembers[memberKey] {
+				continue
+			}
+			seenMembers[memberKey] = true
+			members = append(members, prepareTurnSupportDeliveryMember{
+				ClassKey: classKey,
+				FactKey:  factKey,
+			})
+		}
+		if len(members) == 0 {
+			continue
+		}
+		out = append(out, prepareTurnSupportDeliveryGroup{
+			EvidenceRef:     ref,
+			EvidenceFactKey: evidenceFact,
+			Members:         members,
+		})
+		if len(out) >= maxGroups {
+			break
+		}
+	}
+	return out
+}
+
+func prepareTurnDeliveryItemMatchesSupportFact(item, fact string) bool {
+	itemKey := prepareTurnDeliveryFactKey(item)
+	factKey := prepareTurnDeliveryFactKey(fact)
+	if itemKey == "" || factKey == "" {
+		return false
+	}
+	return itemKey == factKey || strings.HasPrefix(itemKey, factKey+" |")
+}
+
+func prepareTurnPrioritizeSupportDeliveryItems(items, facts []string) ([]string, int) {
+	if len(items) == 0 || len(facts) == 0 {
+		return items, 0
+	}
+	prioritized := make([]string, 0, len(items))
+	remaining := make([]string, 0, len(items))
+	count := 0
+	for _, item := range items {
+		matched := false
+		for _, fact := range facts {
+			if prepareTurnDeliveryItemMatchesSupportFact(item, fact) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			prioritized = append(prioritized, item)
+			count++
+		} else {
+			remaining = append(remaining, item)
+		}
+	}
+	return append(prioritized, remaining...), count
+}
+
+func prepareTurnPrioritizeSupportEvidenceAfterLatest(items, facts []string) ([]string, int) {
+	if len(items) == 0 {
+		return items, 0
+	}
+	tail, count := prepareTurnPrioritizeSupportDeliveryItems(items[1:], facts)
+	for _, fact := range facts {
+		if prepareTurnDeliveryItemMatchesSupportFact(items[0], fact) {
+			count++
+			break
+		}
+	}
+	return append([]string{items[0]}, tail...), count
+}
+
+func prepareTurnDeliveryContainsSupportFact(items []string, fact string) bool {
+	for _, item := range items {
+		if prepareTurnDeliveryItemMatchesSupportFact(item, fact) {
+			return true
+		}
+	}
+	return false
+}
+
 func prepareTurnAutomaticMemoryBudgets(maxChars int) map[string]int {
 	base := map[string]int{
 		"event_recent": 3500, "character_objective": 2500, "subjective_relationship": 3000,
@@ -144,10 +264,22 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		// old user instruction could regain current-request authority.
 		"direct_evidence": prepareTurnDeliveryItems(out.LatestDirectEvidenceText, out.DirectEvidenceText, out.ScopedVerbatimText, out.ContinuityCorrectionText),
 	}
+	supportGroups := prepareTurnNormalizeSupportDeliveryGroups(perspective["_support_delivery_groups"])
+	supportPriorityFacts := map[string][]string{}
+	for _, group := range supportGroups {
+		supportPriorityFacts["direct_evidence"] = append(supportPriorityFacts["direct_evidence"], group.EvidenceFactKey)
+	}
+	supportPriorityCounts := map[string]int{}
+	if len(supportGroups) > 0 {
+		items["direct_evidence"], supportPriorityCounts["direct_evidence"] =
+			prepareTurnPrioritizeSupportEvidenceAfterLatest(items["direct_evidence"], supportPriorityFacts["direct_evidence"])
+	}
 	selected := map[string][]string{}
 	remaining := map[string][]string{}
 	deduplicated := map[string]int{}
 	borrowedChars := map[string]int{}
+	supportBorrowedChars := map[string]int{}
+	supportBorrowedCounts := map[string]int{}
 	seenFacts := map[string]bool{}
 	usedGlobal := 0
 	appendWithin := func(key string, candidates []string, cap int) []string {
@@ -177,8 +309,55 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		}
 		return deferred
 	}
+	activeSupportFacts := map[string][]string{}
 	for _, key := range prepareTurnMemoryDeliveryOrder {
+		if len(supportGroups) > 0 && (key == "event_recent" || key == "subjective_relationship") {
+			items[key], supportPriorityCounts[key] =
+				prepareTurnPrioritizeSupportDeliveryItems(items[key], activeSupportFacts[key])
+		}
 		remaining[key] = appendWithin(key, items[key], budgets[key])
+		if key == "direct_evidence" {
+			for _, group := range supportGroups {
+				if !prepareTurnDeliveryContainsSupportFact(selected["direct_evidence"], group.EvidenceFactKey) {
+					continue
+				}
+				for _, member := range group.Members {
+					activeSupportFacts[member.ClassKey] = append(activeSupportFacts[member.ClassKey], member.FactKey)
+				}
+			}
+		}
+	}
+	// A support group never creates a candidate. When its already-selected
+	// Direct Evidence root survived the normal class budget, its deferred
+	// one-hop memory/KG members may use otherwise idle global delivery space.
+	// Unsupported event leftovers remain unable to borrow.
+	for _, key := range []string{"event_recent", "subjective_relationship"} {
+		supported := []string{}
+		unsupported := []string{}
+		for _, item := range remaining[key] {
+			matched := false
+			for _, fact := range activeSupportFacts[key] {
+				if prepareTurnDeliveryItemMatchesSupportFact(item, fact) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				supported = append(supported, item)
+			} else {
+				unsupported = append(unsupported, item)
+			}
+		}
+		if len(supported) == 0 {
+			continue
+		}
+		beforeUsed := usedGlobal
+		beforeSelected := len(selected[key])
+		deferredSupported := appendWithin(key, supported, deliveryCap)
+		supportBorrowedChars[key] = usedGlobal - beforeUsed
+		supportBorrowedCounts[key] = len(selected[key]) - beforeSelected
+		borrowedChars[key] += supportBorrowedChars[key]
+		remaining[key] = append(deferredSupported, unsupported...)
 	}
 	// These classes already passed current-input, entity, privacy, and memory
 	// relevance selection before delivery budgeting. Let their deferred items
@@ -187,7 +366,7 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 	for _, key := range []string{"character_objective", "subjective_relationship"} {
 		before := usedGlobal
 		remaining[key] = appendWithin(key, remaining[key], deliveryCap)
-		borrowedChars[key] = usedGlobal - before
+		borrowedChars[key] += usedGlobal - before
 	}
 	classes := []map[string]any{}
 	parts := []string{}
@@ -197,11 +376,17 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		if text != "" {
 			parts = append(parts, text)
 		}
-		classes = append(classes, map[string]any{
+		classTrace := map[string]any{
 			"key": key, "title": prepareTurnMemoryDeliveryTitles[key], "reserved_chars": budgets[key], "configured_reserved_chars": configuredBudgets[key],
 			"used_chars": usedChars, "borrowed_chars": borrowedChars[key], "unused_chars": maxInt(budgets[key]-usedChars+borrowedChars[key], 0), "eligible_count": len(items[key]), "selected_count": len(selected[key]),
 			"deduplicated_count": deduplicated[key], "deferred_count": len(remaining[key]), "text": nilIfEmpty(text),
-		})
+		}
+		if len(supportGroups) > 0 {
+			classTrace["support_prioritized_count"] = supportPriorityCounts[key]
+			classTrace["support_borrowed_count"] = supportBorrowedCounts[key]
+			classTrace["support_borrowed_chars"] = supportBorrowedChars[key]
+		}
+		classes = append(classes, classTrace)
 	}
 	finalText := strings.Join(parts, "\n\n")
 	finalHash := fmt.Sprintf("%x", sha256.Sum256([]byte(finalText)))
@@ -227,7 +412,7 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 			deliveredDirectEntities++
 		}
 	}
-	return map[string]any{
+	plan := map[string]any{
 		"contract_version": prepareTurnMemoryDeliveryPlanVersion, "status": "ready", "mode": mode,
 		"final_budget_owner": "go_memory_delivery_plan", "global_cap_chars": maxChars,
 		"delivery_cap_chars": deliveryCap, "host_envelope_reserved_chars": hostEnvelopeReserve,
@@ -241,4 +426,96 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		"recent_raw_turn_delivery":         "excluded_from_final_memory_delivery",
 		"raw_chat_fallback_delivery":       "diagnostic_only_excluded_from_final_memory_delivery",
 	}
+	if len(supportGroups) > 0 {
+		selectedAll := []string{}
+		eligibleCandidateCount := 0
+		for _, key := range prepareTurnMemoryDeliveryOrder {
+			selectedAll = append(selectedAll, selected[key]...)
+			eligibleCandidateCount += len(items[key])
+		}
+		groupTraces := []map[string]any{}
+		rootSelectedCount := 0
+		completeCount := 0
+		partialCount := 0
+		memberDeferredCount := 0
+		rootDeferredCount := 0
+		unmaterializedCount := 0
+		for _, group := range supportGroups {
+			rootSelected := prepareTurnDeliveryContainsSupportFact(selected["direct_evidence"], group.EvidenceFactKey)
+			if rootSelected {
+				rootSelectedCount++
+			}
+			eligibleMembers := 0
+			deliveredMembers := 0
+			for _, member := range group.Members {
+				if !prepareTurnDeliveryContainsSupportFact(items[member.ClassKey], member.FactKey) {
+					continue
+				}
+				eligibleMembers++
+				if prepareTurnDeliveryContainsSupportFact(selectedAll, member.FactKey) {
+					deliveredMembers++
+				}
+			}
+			status := "root_deferred"
+			switch {
+			case !rootSelected:
+				rootDeferredCount++
+			case eligibleMembers == 0:
+				status = "member_not_materialized"
+				unmaterializedCount++
+			case deliveredMembers == eligibleMembers:
+				status = "complete"
+				completeCount++
+			case deliveredMembers > 0:
+				status = "partial"
+				partialCount++
+			default:
+				status = "members_deferred"
+				memberDeferredCount++
+			}
+			groupTraces = append(groupTraces, map[string]any{
+				"evidence_ref":           nilIfEmpty(group.EvidenceRef),
+				"status":                 status,
+				"root_selected":          rootSelected,
+				"eligible_member_count":  eligibleMembers,
+				"delivered_member_count": deliveredMembers,
+			})
+		}
+		priorityCount := 0
+		borrowedCount := 0
+		borrowedSupportChars := 0
+		for _, key := range []string{"direct_evidence", "event_recent", "subjective_relationship"} {
+			priorityCount += supportPriorityCounts[key]
+			borrowedCount += supportBorrowedCounts[key]
+			borrowedSupportChars += supportBorrowedChars[key]
+		}
+		plan["support_group_budget"] = map[string]any{
+			"contract_version":                         "prepare_turn.support_group_budget.v1",
+			"status":                                   "ready",
+			"scope":                                    "already_selected_candidates_only",
+			"group_count":                              len(supportGroups),
+			"root_selected_count":                      rootSelectedCount,
+			"complete_group_count":                     completeCount,
+			"partial_group_count":                      partialCount,
+			"members_deferred_group_count":             memberDeferredCount,
+			"root_deferred_group_count":                rootDeferredCount,
+			"unmaterialized_group_count":               unmaterializedCount,
+			"eligible_candidate_count":                 eligibleCandidateCount,
+			"candidate_expansion_count":                0,
+			"support_prioritized_count":                priorityCount,
+			"support_borrowed_count":                   borrowedCount,
+			"support_borrowed_chars":                   borrowedSupportChars,
+			"root_required_for_borrow":                 true,
+			"existing_direct_evidence_first_preserved": true,
+			"borrowing_scope":                          "otherwise_idle_global_delivery_space",
+			"recursive_expansion":                      false,
+			"persistent":                               false,
+			"private_text_emitted":                     false,
+			"mid_item_truncation":                      false,
+			"influences_recall_selection":              false,
+			"influences_delivery_budgeting":            true,
+			"groups":                                   groupTraces,
+		}
+	}
+	return plan
 }

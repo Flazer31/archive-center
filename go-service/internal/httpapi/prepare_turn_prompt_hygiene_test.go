@@ -28,7 +28,7 @@ func TestPrepareTurnSupportLinkProjectionIsOneHopPrivateAndNonSelecting(t *testi
 			SummaryJSON: `{"turn_summary":"NEVER_TRACE_PRIVATE_7F2B","protected_secrets":[{"owner":"Mira","summary":"NEVER_TRACE_PRIVATE_7F2B","disclosure_policy":"owner_private_until_revealed"}]}`,
 		}},
 	}
-	trace := buildPrepareTurnSupportLinkProjection(
+	trace, groups := buildPrepareTurnSupportLinkProjection(
 		selection,
 		[]store.DirectEvidence{{
 			ID:           201,
@@ -53,14 +53,14 @@ func TestPrepareTurnSupportLinkProjectionIsOneHopPrivateAndNonSelecting(t *testi
 		16,
 	)
 
-	if got := stringFromMap(trace, "contract_version"); got != "prepare_turn.support_links.v1" {
+	if got := stringFromMap(trace, "contract_version"); got != "prepare_turn.support_links.v2" {
 		t.Fatalf("contract_version=%q", got)
 	}
 	for key, want := range map[string]bool{
 		"recursive_expansion":            false,
 		"persistent":                     false,
 		"influences_selection":           false,
-		"influences_delivery":            false,
+		"influences_delivery":            true,
 		"same_source_alone_authority":    false,
 		"semantic_similarity_used":       false,
 		"lexical_selection_used":         false,
@@ -79,6 +79,9 @@ func TestPrepareTurnSupportLinkProjectionIsOneHopPrivateAndNonSelecting(t *testi
 	}
 	if got := intFromAny(trace["private_guarded_count"], 0); got != 2 {
 		t.Fatalf("private_guarded_count=%d, want 2: %#v", got, trace)
+	}
+	if len(groups) != 1 || len(groups[0].Members) != 2 {
+		t.Fatalf("delivery support groups=%#v, want one evidence root with memory and KG members", groups)
 	}
 
 	encoded, err := json.Marshal(trace)
@@ -156,6 +159,13 @@ func TestPrepareTurnSupportLinkProjectionDoesNotChangeDelivery(t *testing.T) {
 	if intFromAny(linkedTrace["link_count"], 0) == 0 {
 		t.Fatalf("linked fixture produced no support links: %#v", linkedTrace)
 	}
+	budgetTrace := mapFromAny(linked.MemoryDeliveryPlan["support_group_budget"])
+	if stringFromMap(budgetTrace, "contract_version") != "prepare_turn.support_group_budget.v1" ||
+		intFromAny(budgetTrace["group_count"], 0) != 1 ||
+		intFromAny(budgetTrace["candidate_expansion_count"], -1) != 0 ||
+		!boolFromAny(budgetTrace["influences_delivery_budgeting"]) {
+		t.Fatalf("support group was not connected to delivery budgeting: %#v", budgetTrace)
+	}
 	unlinkedTrace := mapFromAny(sameDeliveryWithoutLinks.Counts["support_link_projection"])
 	encodedUnlinked, err := json.Marshal(unlinkedTrace)
 	if err != nil {
@@ -193,6 +203,62 @@ func TestPrepareTurnSupportLinkProjectionDoesNotChangeDelivery(t *testing.T) {
 	}
 	if !reflect.DeepEqual(linkedDelivery, unlinkedDelivery) {
 		t.Fatalf("trace-only support links changed delivery:\nlinked=%#v\nunlinked=%#v", linkedDelivery, unlinkedDelivery)
+	}
+}
+
+func TestPrepareTurnSupportGroupKeepsLinkedMemoryUnderTightDeliveryBudget(t *testing.T) {
+	memories := []store.Memory{
+		{ID: 100, TurnIndex: 6, SummaryJSON: `{"turn_summary":"Unlinked event wins only by vector order."}`},
+		{ID: 101, TurnIndex: 7, SummaryJSON: `{"turn_summary":"Linked event stays with the brass key.","characters":["Mira","Rowan"],"items":["brass key"]}`},
+	}
+	evidence := []store.DirectEvidence{{
+		ID:           201,
+		TurnAnchor:   7,
+		EvidenceText: "Mira placed the brass key beside Rowan.",
+	}}
+	vectorShadow := map[string]any{
+		"search_attempted": true,
+		"search_result":    "ok",
+		"search_results": []map[string]any{
+			{"source_table": "memories", "source_row_id": "100", "similarity": 0.95},
+			{"source_table": "memories", "source_row_id": "101", "similarity": 0.90},
+			{"source_table": "direct_evidence_records", "source_row_id": "201", "similarity": 0.90},
+		},
+	}
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(
+		memories,
+		[]store.KGTriple{{
+			ID: 301, Subject: "Mira", Predicate: "trusts", Object: "Rowan", SourceTurn: 7,
+		}},
+		evidence,
+		nil, nil, nil,
+		[]store.CharacterState{{CharacterName: "Mira"}, {CharacterName: "Rowan"}},
+		nil, nil, nil, nil, nil, nil,
+		5, 800,
+		"Mira asks Rowan about the brass key.",
+		"default",
+		nil,
+		vectorShadow,
+		nil,
+		"custom",
+		map[string]int{
+			"direct_evidence": 150, "protected_secret": 30, "event_recent": 120,
+			"character_objective": 30, "subjective_relationship": 120,
+			"world_state": 30, "unresolved_goal": 30,
+		},
+	)
+	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	if !strings.Contains(finalText, "Mira placed the brass key beside Rowan") ||
+		!strings.Contains(finalText, "Linked event stays with the brass key") {
+		t.Fatalf("linked evidence-memory group did not survive the delivery budget: %q", finalText)
+	}
+	if strings.Contains(finalText, "Unlinked event wins only by vector order") {
+		t.Fatalf("unlinked memory displaced the linked support member: %q", finalText)
+	}
+	trace := mapFromAny(assembly.MemoryDeliveryPlan["support_group_budget"])
+	if intFromAny(trace["candidate_expansion_count"], -1) != 0 ||
+		intFromAny(trace["complete_group_count"], 0) == 0 {
+		t.Fatalf("support budget trace=%#v", trace)
 	}
 }
 

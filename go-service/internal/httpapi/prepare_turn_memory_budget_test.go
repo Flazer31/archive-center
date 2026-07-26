@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -157,6 +158,183 @@ func TestMEMDDoesNotBorrowUnusedBudgetForUnprovenEventLeftovers(t *testing.T) {
 		if intFromAny(class["borrowed_chars"], -1) != 0 {
 			t.Fatalf("borrowed chars=%v, want 0", class["borrowed_chars"])
 		}
+	}
+}
+
+func TestMEMDSupportGroupPrioritizesLinkedMemberWithinExistingClass(t *testing.T) {
+	out := prepareTurnInjectionAssembly{
+		LatestDirectEvidenceText: "root evidence",
+		ActualMemoryText: strings.Join([]string{
+			"[Memory]",
+			"- unlinked event only wins by order",
+			"- linked event stays with root",
+		}, "\n"),
+	}
+	perspective := map[string]any{
+		"_memory_delivery_budget_mode": "custom",
+		"_memory_delivery_budgets": map[string]int{
+			"direct_evidence": 100, "protected_secret": 30, "event_recent": 70,
+			"character_objective": 30, "subjective_relationship": 80,
+			"world_state": 30, "unresolved_goal": 30,
+		},
+		"_support_delivery_groups": []prepareTurnSupportDeliveryGroup{{
+			EvidenceRef:     "evidence:1",
+			EvidenceFactKey: "root evidence",
+			Members: []prepareTurnSupportDeliveryMember{{
+				ClassKey: "event_recent",
+				FactKey:  "linked event stays with root",
+			}},
+		}},
+	}
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 600, perspective)
+	finalText := extractionStringFromAny(plan["final_text"])
+	if !strings.Contains(finalText, "root evidence") || !strings.Contains(finalText, "linked event stays with root") {
+		t.Fatalf("linked support group was not retained: %q", finalText)
+	}
+	if strings.Contains(finalText, "unlinked event only wins by order") {
+		t.Fatalf("unlinked peer displaced linked member under the class cap: %q", finalText)
+	}
+	trace := mapFromAny(plan["support_group_budget"])
+	if intFromAny(trace["complete_group_count"], 0) != 1 ||
+		intFromAny(trace["candidate_expansion_count"], -1) != 0 {
+		t.Fatalf("support priority trace=%#v", trace)
+	}
+
+	deferredRoot := out
+	deferredRoot.LatestDirectEvidenceText = strings.Repeat("root evidence too long ", 5)
+	deferredPerspective := map[string]any{
+		"_memory_delivery_budget_mode": perspective["_memory_delivery_budget_mode"],
+		"_memory_delivery_budgets": map[string]int{
+			"direct_evidence": 40, "protected_secret": 30, "event_recent": 70,
+			"character_objective": 30, "subjective_relationship": 80,
+			"world_state": 30, "unresolved_goal": 30,
+		},
+		"_support_delivery_groups": []prepareTurnSupportDeliveryGroup{{
+			EvidenceRef:     "evidence:1",
+			EvidenceFactKey: deferredRoot.LatestDirectEvidenceText,
+			Members: []prepareTurnSupportDeliveryMember{{
+				ClassKey: "event_recent",
+				FactKey:  "linked event stays with root",
+			}},
+		}},
+	}
+	deferredPlan := buildPrepareTurnMemoryDeliveryPlan(&deferredRoot, 600, deferredPerspective)
+	deferredFinal := extractionStringFromAny(deferredPlan["final_text"])
+	if !strings.Contains(deferredFinal, "unlinked event only wins by order") ||
+		strings.Contains(deferredFinal, "linked event stays with root") {
+		t.Fatalf("deferred root still prioritized its member: %q", deferredFinal)
+	}
+}
+
+func TestMEMDSupportGroupNeverDisplacesLatestDirectEvidence(t *testing.T) {
+	out := prepareTurnInjectionAssembly{
+		LatestDirectEvidenceText: "latest unlinked evidence",
+		DirectEvidenceText:       "[Direct Evidence]\n- [vector, turn 7] older linked root",
+		ActualMemoryText: strings.Join([]string{
+			"[Memory]",
+			"- unlinked event only wins by order",
+			"- linked event stays with root",
+		}, "\n"),
+	}
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 600, map[string]any{
+		"_memory_delivery_budget_mode": "custom",
+		"_memory_delivery_budgets": map[string]int{
+			"direct_evidence": 65, "protected_secret": 30, "event_recent": 70,
+			"character_objective": 30, "subjective_relationship": 80,
+			"world_state": 30, "unresolved_goal": 30,
+		},
+		"_support_delivery_groups": []prepareTurnSupportDeliveryGroup{{
+			EvidenceRef:     "evidence:older",
+			EvidenceFactKey: "older linked root",
+			Members: []prepareTurnSupportDeliveryMember{{
+				ClassKey: "event_recent",
+				FactKey:  "linked event stays with root",
+			}},
+		}},
+	})
+	finalText := extractionStringFromAny(plan["final_text"])
+	if !strings.Contains(finalText, "latest unlinked evidence") ||
+		!strings.Contains(finalText, "unlinked event only wins by order") {
+		t.Fatalf("latest evidence or legacy event order was displaced: %q", finalText)
+	}
+	if strings.Contains(finalText, "older linked root") ||
+		strings.Contains(finalText, "linked event stays with root") {
+		t.Fatalf("deferred older root activated its support member: %q", finalText)
+	}
+	trace := mapFromAny(plan["support_group_budget"])
+	if !boolFromAny(trace["existing_direct_evidence_first_preserved"]) ||
+		intFromAny(trace["root_deferred_group_count"], 0) != 1 {
+		t.Fatalf("latest-evidence precedence trace=%#v", trace)
+	}
+}
+
+func TestMEMDSupportGroupBorrowsIdleGlobalSpaceOnlyAfterRootDelivery(t *testing.T) {
+	const linkedEvent = "linked event " + "with enough detail to exceed its small event class reservation but fit the global cap"
+	build := func(root string, directBudget int) map[string]any {
+		out := prepareTurnInjectionAssembly{
+			LatestDirectEvidenceText: root,
+			ActualMemoryText:         "[Memory]\n- " + linkedEvent,
+		}
+		return buildPrepareTurnMemoryDeliveryPlan(&out, 600, map[string]any{
+			"_memory_delivery_budget_mode": "custom",
+			"_memory_delivery_budgets": map[string]int{
+				"direct_evidence": directBudget, "protected_secret": 20, "event_recent": 60,
+				"character_objective": 20, "subjective_relationship": 40,
+				"world_state": 20, "unresolved_goal": 20,
+			},
+			"_support_delivery_groups": []prepareTurnSupportDeliveryGroup{{
+				EvidenceRef:     "evidence:2",
+				EvidenceFactKey: root,
+				Members: []prepareTurnSupportDeliveryMember{{
+					ClassKey: "event_recent",
+					FactKey:  linkedEvent,
+				}},
+			}},
+		})
+	}
+
+	selectedRoot := build("short root", 80)
+	selectedText := extractionStringFromAny(selectedRoot["final_text"])
+	if !strings.Contains(selectedText, "short root") || !strings.Contains(selectedText, linkedEvent) {
+		t.Fatalf("linked member did not borrow idle global space: %q", selectedText)
+	}
+	selectedTrace := mapFromAny(selectedRoot["support_group_budget"])
+	if intFromAny(selectedTrace["support_borrowed_count"], 0) != 1 ||
+		intFromAny(selectedTrace["support_borrowed_chars"], 0) <= 0 {
+		t.Fatalf("supported borrow was not traced: %#v", selectedTrace)
+	}
+
+	deferredRootText := strings.Repeat("root evidence too long ", 5)
+	deferredRoot := build(deferredRootText, 40)
+	deferredText := extractionStringFromAny(deferredRoot["final_text"])
+	if strings.Contains(deferredText, linkedEvent) {
+		t.Fatalf("member borrowed without a delivered evidence root: %q", deferredText)
+	}
+	deferredTrace := mapFromAny(deferredRoot["support_group_budget"])
+	if intFromAny(deferredTrace["support_borrowed_count"], -1) != 0 ||
+		intFromAny(deferredTrace["root_deferred_group_count"], 0) != 1 {
+		t.Fatalf("root-gated borrowing trace=%#v", deferredTrace)
+	}
+}
+
+func TestMEMDEmptySupportGroupsPreserveLegacyPlanAndGlobalCap(t *testing.T) {
+	out := prepareTurnInjectionAssembly{
+		LatestDirectEvidenceText: "current evidence",
+		ActualMemoryText:         "[Memory]\n- selected event memory",
+		KGText:                   "[Knowledge Graph]\nMira --trusts--> Rowan",
+	}
+	legacy := buildPrepareTurnMemoryDeliveryPlan(&out, 300, map[string]any{})
+	empty := buildPrepareTurnMemoryDeliveryPlan(&out, 300, map[string]any{
+		"_support_delivery_groups": []prepareTurnSupportDeliveryGroup{},
+	})
+	if !reflect.DeepEqual(legacy, empty) {
+		t.Fatalf("empty support groups changed the legacy plan:\nlegacy=%#v\nempty=%#v", legacy, empty)
+	}
+	if _, exists := empty["support_group_budget"]; exists {
+		t.Fatalf("empty support groups emitted an active budget contract: %#v", empty["support_group_budget"])
+	}
+	if intFromAny(empty["used_chars"], 0) > intFromAny(empty["global_cap_chars"], 0) {
+		t.Fatalf("delivery exceeded global cap: %#v", empty)
 	}
 }
 
