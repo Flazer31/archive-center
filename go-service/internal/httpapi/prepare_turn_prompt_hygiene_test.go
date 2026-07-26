@@ -114,7 +114,7 @@ func TestPrepareTurnVectorEvidenceStillRequiresCurrentSceneRelevance(t *testing.
 }
 
 func TestPrepareTurnSelectedEventEvidenceOutranksGenericAndSameTurnUnrelatedEvidence(t *testing.T) {
-	const rawInput = "이소월은 강한얼과 맺은 상업 약조서를 바라보며 자신과 다른 그의 모습에 자신이 어떤 협력자가 될지 생각했다."
+	const rawInput = "이소월은 강한얼과 맺은 토지 매입 및 사업 수수료 조항의 상업 약조서를 바라보며 자신이 어떤 협력자가 될지 생각했다."
 	memories := []store.Memory{{
 		ID:        1,
 		TurnIndex: 49,
@@ -140,9 +140,11 @@ func TestPrepareTurnSelectedEventEvidenceOutranksGenericAndSameTurnUnrelatedEvid
 		{ID: 101, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 토지 매입과 사업 수수료를 정한 상업 약조서에 서명했다."},
 		{ID: 102, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 푸른 렌즈를 단 천체 망원경을 함께 점검했다."},
 		{ID: 103, TurnAnchor: 60, EvidenceText: "민서현은 자신과 다른 그의 모습에 자신이 점점 더 빠져 들어간다는 것을 알았다."},
-		{ID: 104, TurnAnchor: 25, EvidenceText: "그 계약의 토지 수수료 조항은 두 사람의 협력 관계를 지속시켰다."},
+		{ID: 104, TurnAnchor: 25, EvidenceText: "그 토지 매입 계약의 사업 수수료 조항은 두 사람의 상업 약조와 협력 관계를 지속시켰다."},
 		{ID: 105, TurnAnchor: 49, EvidenceText: "강한얼과 이소월의 약조는 삭제된 근거다.", Tombstoned: true},
 		{ID: 106, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 상업 약조서 뒤에 비밀 수수료 조항을 숨겨 두었다."},
+		{ID: 107, TurnAnchor: 49, EvidenceText: "강한얼과 이소월의 약조는 수리가 필요한 근거다.", RepairNeeded: true},
+		{ID: 108, TurnAnchor: 49, EvidenceText: "강한얼과 이소월의 약조는 대체된 근거다.", SupersededByID: 109},
 	}
 	private := []store.ProtagonistEntityMemory{{
 		ID:                 901,
@@ -191,7 +193,7 @@ func TestPrepareTurnSelectedEventEvidenceOutranksGenericAndSameTurnUnrelatedEvid
 	if !strings.Contains(assembly.LatestDirectEvidenceText, selected) {
 		t.Fatalf("selected event evidence did not own latest evidence: %q", assembly.LatestDirectEvidenceText)
 	}
-	for _, unwanted := range []string{"천체 망원경", "민서현은 자신과 다른", "삭제된 근거", "비밀 수수료"} {
+	for _, unwanted := range []string{"천체 망원경", "민서현은 자신과 다른", "삭제된 근거", "비밀 수수료", "수리가 필요한", "대체된 근거"} {
 		if strings.Contains(assembly.LatestDirectEvidenceText, unwanted) ||
 			strings.Contains(assembly.DirectEvidenceText, unwanted) ||
 			strings.Contains(assembly.ScopedVerbatimText, unwanted) {
@@ -199,8 +201,20 @@ func TestPrepareTurnSelectedEventEvidenceOutranksGenericAndSameTurnUnrelatedEvid
 				unwanted, assembly.LatestDirectEvidenceText, assembly.DirectEvidenceText, assembly.ScopedVerbatimText)
 		}
 	}
-	if !strings.Contains(assembly.DirectEvidenceText, "그 계약의 토지 수수료 조항") {
-		t.Fatalf("unlinked semantic vector evidence was discarded instead of kept at lower rank: %q", assembly.DirectEvidenceText)
+	if !strings.Contains(assembly.DirectEvidenceText, "토지 매입 계약의 사업 수수료 조항") {
+		t.Fatalf("distinct semantic vector corroboration was discarded: direct=%q projection=%#v",
+			assembly.DirectEvidenceText, assembly.Counts["recall_link_projection"])
+	}
+	const corroboration = "토지 매입 계약의 사업 수수료 조항"
+	for label, surface := range map[string]string{
+		"direct": assembly.DirectEvidenceText,
+		"scoped": assembly.ScopedVerbatimText,
+	} {
+		selectedIndex := strings.Index(surface, selected)
+		corroborationIndex := strings.Index(surface, corroboration)
+		if selectedIndex < 0 || corroborationIndex < 0 || selectedIndex >= corroborationIndex {
+			t.Fatalf("%s evidence order diverged from common selection: %q", label, surface)
+		}
 	}
 	projection := mapFromAny(assembly.Counts["recall_link_projection"])
 	if stringFromMap(projection, "version") != "recall_link_projection.v1" ||
@@ -214,8 +228,8 @@ func TestPrepareTurnSelectedEventEvidenceOutranksGenericAndSameTurnUnrelatedEvid
 	if got := intFromAny(projection["deferred_count"], 0); got < 2 {
 		t.Fatalf("same-turn unrelated and generic evidence were not deferred: %#v", projection)
 	}
-	if got := intFromAny(projection["excluded_count"], 0); got < 2 {
-		t.Fatalf("tombstoned and owner-private evidence were not excluded: %#v", projection)
+	if got := intFromAny(projection["excluded_count"], 0); got < 4 {
+		t.Fatalf("tombstoned, repair-needed, superseded, and owner-private evidence were not excluded: %#v", projection)
 	}
 	if got := intFromAny(assembly.Counts["top_k_memory_target"], 0); got != 2 {
 		t.Fatalf("entity-event evidence linking changed topK: got=%d", got)
@@ -230,6 +244,10 @@ func TestPrepareTurnSelectedEventEvidenceOutranksGenericAndSameTurnUnrelatedEvid
 	}
 	if directReserved != prepareTurnAutomaticMemoryBudgets(9000)["direct_evidence"] {
 		t.Fatalf("entity-event evidence linking changed direct-evidence budget: got=%d", directReserved)
+	}
+	if used := len([]rune(assembly.DirectEvidenceText)); used >= directReserved {
+		t.Fatalf("direct evidence filled its reserved budget despite complete event scope: used=%d reserved=%d text=%q",
+			used, directReserved, assembly.DirectEvidenceText)
 	}
 }
 
@@ -256,7 +274,7 @@ func TestPrepareTurnRecallLinkKeepsMultipleCurrentEventsAndPrivateFence(t *testi
 	evidence := []store.DirectEvidence{
 		{ID: 201, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 토지 계약과 수수료 합의에 서명했다."},
 		{ID: 202, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 망원경 점검과 렌즈 교정을 함께 마쳤다."},
-		{ID: 203, TurnAnchor: 49, EvidenceText: "그들은 앞으로도 서로를 믿고 움직였다."},
+		{ID: 203, TurnAnchor: 49, EvidenceText: "토지 계약과 망원경 점검은 두 사람의 수수료 합의와 렌즈 교정을 함께 보강했다."},
 		{ID: 204, TurnAnchor: 49, EvidenceText: "강한얼과 이소월은 둘만 아는 비밀 보상에 합의했다."},
 	}
 	privateEvidence := []store.ProtagonistEntityMemory{{
@@ -278,11 +296,11 @@ func TestPrepareTurnRecallLinkKeepsMultipleCurrentEventsAndPrivateFence(t *testi
 		3,
 	)
 	if len(selected) != 3 {
-		t.Fatalf("selected=%d, want two linked events plus vector/source support: %#v", len(selected), trace)
+		t.Fatalf("selected=%d, want two linked events plus distinct vector/source support: %#v", len(selected), trace)
 	}
 	firstTwo := map[int64]bool{selected[0].Evidence.ID: true, selected[1].Evidence.ID: true}
 	if !firstTwo[201] || !firstTwo[202] || selected[2].Evidence.ID != 203 {
-		t.Fatalf("request-linked order changed: %#v", selected)
+		t.Fatalf("request-linked distinct-fact order changed: %#v", selected)
 	}
 	if got := intFromAny(trace["event_count"], 0); got != 2 {
 		t.Fatalf("same-memory current events=%d, want 2: %#v", got, trace)
@@ -302,6 +320,130 @@ func TestPrepareTurnRecallLinkKeepsMultipleCurrentEventsAndPrivateFence(t *testi
 	)
 	if len(limited) != 2 || intFromAny(limitedTrace["deferred_count"], 0) == 0 {
 		t.Fatalf("support candidate limit was not applied after ranking: selected=%#v trace=%#v", limited, limitedTrace)
+	}
+}
+
+func TestPrepareTurnDirectEvidenceStopsAfterStrongCurrentEventScope(t *testing.T) {
+	const rawInput = "Mira and Rowan inspect the cedar lift after its pedal axle cracked and the hemp rope froze."
+	current := store.Memory{
+		ID:        401,
+		TurnIndex: 30,
+		SummaryJSON: `{
+			"characters":["Mira","Rowan"],
+			"narrative_events":[
+				{
+					"summary":"Mira and Rowan inspected the cedar lift after its pedal axle cracked and hemp rope froze.",
+					"participants":["Mira","Rowan"],
+					"evidence_excerpt":"Mira and Rowan inspected the cedar lift after its pedal axle cracked and hemp rope froze."
+				},
+				{
+					"summary":"Mira and Rowan calibrated a bronze grain mill pedal axle.",
+					"participants":["Mira","Rowan"],
+					"evidence_excerpt":"Mira and Rowan calibrated a bronze grain mill pedal axle."
+				}
+			]
+		}`,
+	}
+	design := store.Memory{
+		ID:        402,
+		TurnIndex: 24,
+		SummaryJSON: `{
+			"characters":["Mira","Rowan"],
+			"narrative_events":[{
+				"summary":"Mira and Rowan specified an oak axle pin and a wide pedal for the cedar lift.",
+				"participants":["Mira","Rowan"],
+				"evidence_excerpt":"The original cedar lift plan specified a durable axle pin and a wide pedal."
+			}]
+		}`,
+	}
+	oldMachine := store.Memory{
+		ID:        403,
+		TurnIndex: 8,
+		SummaryJSON: `{
+			"characters":["Mira","Rowan"],
+			"narrative_events":[{
+				"summary":"Mira and Rowan saw an iron press whose axle cracked in winter.",
+				"participants":["Mira","Rowan"],
+				"evidence_excerpt":"Mira and Rowan saw an iron press whose axle cracked in winter."
+			}]
+		}`,
+	}
+	evidence := []store.DirectEvidence{
+		{ID: 401, TurnAnchor: 30, EvidenceText: "Mira and Rowan inspected the cedar lift after its pedal axle cracked and hemp rope froze."},
+		{ID: 402, TurnAnchor: 24, EvidenceText: "The cedar lift used an oak axle pin and a wide pedal, as Mira and Rowan had specified."},
+		{ID: 403, TurnAnchor: 30, EvidenceText: "Mira and Rowan calibrated a bronze grain mill pedal axle."},
+		{ID: 404, TurnAnchor: 8, EvidenceText: "Mira and Rowan saw an iron press whose axle cracked in winter."},
+		{ID: 405, TurnAnchor: 5, EvidenceText: "Mira and Rowan mailed a passport from the harbor."},
+		{ID: 406, TurnAnchor: 6, EvidenceText: "Technicians discussed cracked axle failures in another workshop."},
+	}
+	selection := prepareTurnMemoryLaneSelection{
+		VectorRelevant: []store.Memory{current, design, oldMachine},
+	}
+	selected, trace := selectPrepareTurnDirectEvidence(
+		evidence,
+		[]store.DirectEvidence{evidence[1], evidence[3], evidence[5]},
+		selection,
+		rawInput,
+		[]string{"Mira", "Rowan"},
+		nil,
+		12,
+	)
+	if len(selected) != 2 || selected[0].Evidence.ID != 401 || selected[1].Evidence.ID != 402 {
+		t.Fatalf("selected=%#v, want current event plus distinct design corroboration only; trace=%#v", selected, trace)
+	}
+	for _, item := range selected {
+		if item.Evidence.ID == 403 || item.Evidence.ID == 404 || item.Evidence.ID == 405 || item.Evidence.ID == 406 {
+			t.Fatalf("same-source, same-person, or generic budget filler survived: %#v; trace=%#v", selected, trace)
+		}
+	}
+	if got := intFromAny(trace["deferred_count"], 0); got < 4 {
+		t.Fatalf("weak historical evidence was not deferred: %#v", trace)
+	}
+}
+
+func TestPrepareTurnDirectEvidenceKeepsExactAndDistinctCorroborationWithoutDuplicates(t *testing.T) {
+	const rawInput = "Mira and Rowan inspect the cedar lift pedal axle, oak pin, width, and stability."
+	current := store.Memory{
+		ID:        501,
+		TurnIndex: 40,
+		SummaryJSON: `{
+			"characters":["Mira","Rowan"],
+			"narrative_events":[{
+				"summary":"Mira and Rowan inspected the cedar lift pedal axle, oak pin, width, and stability.",
+				"participants":["Mira","Rowan"],
+				"evidence_excerpt":"Mira and Rowan inspected the cedar lift pedal axle, oak pin, width, and stability."
+			}]
+		}`,
+	}
+	evidence := []store.DirectEvidence{
+		{ID: 505, TurnAnchor: 10, EvidenceText: "Mira and Rowan inspected the cedar lift pedal axle, oak pin, width, and stability."},
+		{ID: 501, TurnAnchor: 40, EvidenceText: "Mira and Rowan inspected the cedar lift pedal axle, oak pin, width, and stability."},
+		{ID: 502, TurnAnchor: 19, EvidenceText: "Mira and Rowan chose an oak axle pin for the cedar lift pedal."},
+		{ID: 503, TurnAnchor: 20, EvidenceText: "Mira and Rowan widened the cedar lift pedal to stabilize the axle."},
+		{ID: 504, TurnAnchor: 19, EvidenceText: "Mira and Rowan chose an oak axle pin for the cedar lift pedal."},
+	}
+	selected, trace := selectPrepareTurnDirectEvidence(
+		evidence,
+		[]store.DirectEvidence{evidence[0], evidence[2], evidence[3], evidence[4]},
+		prepareTurnMemoryLaneSelection{Relevant: []store.Memory{current}},
+		rawInput,
+		[]string{"Mira", "Rowan"},
+		nil,
+		8,
+	)
+	if len(selected) != 3 {
+		t.Fatalf("selected=%#v, want exact low-vector source plus two distinct corroborating facts; trace=%#v", selected, trace)
+	}
+	for index, wantID := range []int64{501, 502, 503} {
+		if selected[index].Evidence.ID != wantID {
+			t.Fatalf("selected order=%#v, want IDs 501,502,503", selected)
+		}
+	}
+	if selected[0].Vector {
+		t.Fatalf("exact source/event evidence should not depend on vector selection: %#v", selected[0])
+	}
+	if got := intFromAny(trace["excluded_count"], 0); got == 0 {
+		t.Fatalf("duplicate materialized evidence was not excluded: %#v", trace)
 	}
 }
 

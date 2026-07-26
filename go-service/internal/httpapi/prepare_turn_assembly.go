@@ -1422,7 +1422,7 @@ func selectPrepareTurnDirectEvidence(
 		}
 		return fmt.Sprintf("turn:%d:text:%s", evidenceTurn(item), collapseTextKey(item.EvidenceText))
 	}
-	overlapWithoutEntities := func(left, right string, entities []string) int {
+	sharedTermsWithoutEntities := func(left, right string, entities []string) []string {
 		rightTerms := map[string]bool{}
 		for _, term := range prepareTurnRecallTerms(right) {
 			excluded := false
@@ -1436,7 +1436,7 @@ func selectPrepareTurnDirectEvidence(
 				rightTerms[term] = true
 			}
 		}
-		overlap := 0
+		shared := []string{}
 		for _, term := range prepareTurnRecallTerms(left) {
 			excluded := false
 			for _, entity := range entities {
@@ -1446,10 +1446,13 @@ func selectPrepareTurnDirectEvidence(
 				}
 			}
 			if !excluded && rightTerms[term] {
-				overlap++
+				shared = append(shared, term)
 			}
 		}
-		return overlap
+		return shared
+	}
+	overlapWithoutEntities := func(left, right string, entities []string) int {
+		return len(sharedTermsWithoutEntities(left, right, entities))
 	}
 	matchedEntities := func(text string, entities []string) []string {
 		out := []string{}
@@ -1508,11 +1511,18 @@ func selectPrepareTurnDirectEvidence(
 	}
 
 	type projectedEvent struct {
-		sourceTurn   int
-		participants []string
-		text         string
-		excerptKey   string
-		reason       string
+		sourceTurn     int
+		participants   []string
+		text           string
+		excerptKey     string
+		reason         string
+		requestTerms   []string
+		requestOverlap int
+	}
+	type scoredProjectedEvent struct {
+		event       projectedEvent
+		score       int
+		sourceOrder int
 	}
 	projectedEvents := []projectedEvent{}
 	projectedTrace := []map[string]any{}
@@ -1533,15 +1543,9 @@ func selectPrepareTurnDirectEvidence(
 			selectedMemories = append(selectedMemories, item)
 		}
 	}
-	for _, memory := range selectedMemories {
-		if candidateLimit > 0 && len(projectedEvents) >= candidateLimit {
-			break
-		}
+	scoredProjectedEvents := []scoredProjectedEvent{}
+	for memoryOrder, memory := range selectedMemories {
 		parsed := parseJSONMap(memory.SummaryJSON)
-		type scoredProjectedEvent struct {
-			event projectedEvent
-			score int
-		}
 		scoredEvents := []scoredProjectedEvent{}
 		for _, event := range memorySearchMapItems(parsed["narrative_events"]) {
 			summary := extractionFirstNonEmpty(stringFromMap(event, "summary"), stringFromMap(event, "event"))
@@ -1551,7 +1555,8 @@ func selectPrepareTurnDirectEvidence(
 			if len(participants) == 0 {
 				participants = matchedEntities(eventText, prepareTurnMemoryCharacterAnchors(memory))
 			}
-			requestOverlap := overlapWithoutEntities(rawQuery, eventText, participants)
+			requestTerms := sharedTermsWithoutEntities(rawQuery, eventText, participants)
+			requestOverlap := len(requestTerms)
 			participantMatches := len(matchedEntities(rawQuery, participants))
 			requiredOverlap := prepareTurnRecallRequiredOverlap(rawQuery)
 			if requestOverlap < requiredOverlap && !(participantMatches >= 2 && requestOverlap > 0) {
@@ -1564,59 +1569,83 @@ func selectPrepareTurnDirectEvidence(
 			scoredEvents = append(scoredEvents, scoredProjectedEvent{
 				score: score,
 				event: projectedEvent{
-					sourceTurn:   memory.TurnIndex,
-					participants: participants,
-					text:         eventText,
-					excerptKey:   collapseTextKey(excerpt),
-					reason:       "structured_narrative_event_request_match",
+					sourceTurn:     memory.TurnIndex,
+					participants:   participants,
+					text:           eventText,
+					excerptKey:     collapseTextKey(excerpt),
+					reason:         "structured_narrative_event_request_match",
+					requestTerms:   requestTerms,
+					requestOverlap: requestOverlap,
 				},
 			})
 		}
 		if len(scoredEvents) > 0 {
-			sort.SliceStable(scoredEvents, func(i, j int) bool {
-				return scoredEvents[i].score > scoredEvents[j].score
-			})
-			for _, candidate := range scoredEvents {
-				if candidateLimit > 0 && len(projectedEvents) >= candidateLimit {
-					continue
-				}
-				projectedEvents = append(projectedEvents, candidate.event)
-				projectedTrace = append(projectedTrace, map[string]any{
-					"source_turn":  candidate.event.sourceTurn,
-					"participants": candidate.event.participants,
-					"reason":       candidate.event.reason,
-				})
+			for index := range scoredEvents {
+				scoredEvents[index].sourceOrder = memoryOrder
 			}
+			scoredProjectedEvents = append(scoredProjectedEvents, scoredEvents...)
 			continue
 		}
-		if len(scoredEvents) == 0 {
-			participants := prepareTurnMemoryCharacterAnchors(memory)
-			memoryText := prepareTurnMemoryRelevanceText(memory)
-			requestOverlap := overlapWithoutEntities(rawQuery, memoryText, participants)
-			participantMatches := len(matchedEntities(rawQuery, participants))
-			requiredOverlap := prepareTurnRecallRequiredOverlap(rawQuery)
-			if (requestOverlap >= requiredOverlap || (participantMatches >= 2 && requestOverlap > 0)) &&
-				(len(directEntities) == 0 || len(participants) == 0 || participantMatches > 0) {
-				fallback := projectedEvent{
-					sourceTurn:   memory.TurnIndex,
-					participants: participants,
-					text:         memoryText,
-					reason:       "selected_memory_request_match",
-				}
-				projectedEvents = append(projectedEvents, fallback)
-				projectedTrace = append(projectedTrace, map[string]any{
-					"source_turn":  fallback.sourceTurn,
-					"participants": fallback.participants,
-					"reason":       fallback.reason,
-				})
+		participants := prepareTurnMemoryCharacterAnchors(memory)
+		memoryText := prepareTurnMemoryRelevanceText(memory)
+		requestTerms := sharedTermsWithoutEntities(rawQuery, memoryText, participants)
+		requestOverlap := len(requestTerms)
+		participantMatches := len(matchedEntities(rawQuery, participants))
+		requiredOverlap := prepareTurnRecallRequiredOverlap(rawQuery)
+		if (requestOverlap >= requiredOverlap || (participantMatches >= 2 && requestOverlap > 0)) &&
+			(len(directEntities) == 0 || len(participants) == 0 || participantMatches > 0) {
+			scoredProjectedEvents = append(scoredProjectedEvents, scoredProjectedEvent{
+				score:       participantMatches*100 + requestOverlap,
+				sourceOrder: memoryOrder,
+				event: projectedEvent{
+					sourceTurn:     memory.TurnIndex,
+					participants:   participants,
+					text:           memoryText,
+					reason:         "selected_memory_request_match",
+					requestTerms:   requestTerms,
+					requestOverlap: requestOverlap,
+				},
+			})
+		}
+	}
+	sort.SliceStable(scoredProjectedEvents, func(i, j int) bool {
+		if scoredProjectedEvents[i].score != scoredProjectedEvents[j].score {
+			return scoredProjectedEvents[i].score > scoredProjectedEvents[j].score
+		}
+		return scoredProjectedEvents[i].sourceOrder < scoredProjectedEvents[j].sourceOrder
+	})
+	coveredRequestTerms := map[string]bool{}
+	for _, candidate := range scoredProjectedEvents {
+		addsRequestScope := len(projectedEvents) == 0
+		for _, term := range candidate.event.requestTerms {
+			if !coveredRequestTerms[term] {
+				addsRequestScope = true
+				break
 			}
 		}
+		if !addsRequestScope {
+			continue
+		}
+		if candidateLimit > 0 && len(projectedEvents) >= candidateLimit {
+			continue
+		}
+		projectedEvents = append(projectedEvents, candidate.event)
+		for _, term := range candidate.event.requestTerms {
+			coveredRequestTerms[term] = true
+		}
+		projectedTrace = append(projectedTrace, map[string]any{
+			"source_turn":     candidate.event.sourceTurn,
+			"participants":    candidate.event.participants,
+			"reason":          candidate.event.reason,
+			"request_overlap": candidate.event.requestOverlap,
+		})
 	}
 
 	selected := []prepareTurnSelectedDirectEvidence{}
 	deferred := []map[string]any{}
 	excluded := []map[string]any{}
 	vectorDeferred := 0
+	requiredEvidenceOverlap := prepareTurnRecallRequiredOverlap(rawQuery)
 	for sourceOrder, item := range evidence {
 		sourceTurn := evidenceTurn(item)
 		baseTrace := map[string]any{"id": item.ID, "source_turn": sourceTurn}
@@ -1638,18 +1667,19 @@ func selectPrepareTurnDirectEvidence(
 			excluded = append(excluded, baseTrace)
 			continue
 		}
-
 		vector := vectorKeys[evidenceKey(item)]
 		rank := 0
 		reason := ""
 		eventOverlap := 0
+		requestOverlap := overlapWithoutEntities(rawQuery, item.EvidenceText, directEntities)
+		entityMatchCount := len(matchedEntities(item.EvidenceText, directEntities))
 		for _, event := range projectedEvents {
 			overlap := overlapWithoutEntities(item.EvidenceText, event.text, event.participants)
 			if overlap > eventOverlap {
 				eventOverlap = overlap
 			}
 			if !sourceContainsTurn(item, event.sourceTurn) {
-				if vector && overlap >= 2 && rank < 2 {
+				if vector && overlap >= requiredEvidenceOverlap && rank < 2 {
 					rank = 2
 					reason = "vector_selected_event_corroboration"
 				}
@@ -1660,38 +1690,42 @@ func selectPrepareTurnDirectEvidence(
 				reason = "selected_event_exact_excerpt_source"
 				break
 			}
-			if vector && overlap == 0 && rank < 3 {
-				rank = 3
-				reason = "vector_selected_event_source"
-				continue
-			}
 			if overlap == 0 {
 				continue
 			}
 			participantMatches := len(matchedEntities(item.EvidenceText, event.participants))
 			switch {
-			case participantMatches >= 2 && rank < 5:
+			case participantMatches >= 2 && overlap > requiredEvidenceOverlap &&
+				requestOverlap > requiredEvidenceOverlap && rank < 5:
 				rank = 5
 				reason = "selected_event_source_pair"
-			case participantMatches == 1 && rank < 4:
+			case participantMatches == 1 && overlap > requiredEvidenceOverlap &&
+				requestOverlap >= requiredEvidenceOverlap && rank < 4:
 				rank = 4
 				reason = "selected_event_source_entity"
-			case overlap >= 2 && rank < 3:
+			case overlap >= requiredEvidenceOverlap && rank < 3:
 				rank = 3
 				reason = "selected_event_source_semantic"
 			}
 		}
-		requestOverlap := overlapWithoutEntities(rawQuery, item.EvidenceText, directEntities)
-		entityMatchCount := len(matchedEntities(item.EvidenceText, directEntities))
+		if rank >= 2 && rank <= 3 &&
+			eventOverlap > requiredEvidenceOverlap &&
+			requestOverlap > requiredEvidenceOverlap {
+			rank = 4
+			reason = "selected_event_request_corroboration"
+			if vector {
+				reason = "vector_selected_event_request_corroboration"
+			}
+		}
 		if rank == 0 {
 			switch {
 			case len(directEntities) > 0 && entityMatchCount > 0 && requestOverlap > 0:
 				rank = 1
 				reason = "request_entity_semantic_support"
-			case vector && requestOverlap >= prepareTurnRecallRequiredOverlap(rawQuery):
+			case vector && requestOverlap >= requiredEvidenceOverlap:
 				rank = 1
 				reason = "vector_request_semantic_support"
-			case requestOverlap >= prepareTurnRecallRequiredOverlap(rawQuery):
+			case requestOverlap >= requiredEvidenceOverlap:
 				rank = 1
 				reason = "request_semantic_support"
 			case len(directEntities) == 0 && prepareTurnRequestFirstRelevant(rawQuery, "", item.EvidenceText):
@@ -1742,14 +1776,30 @@ func selectPrepareTurnDirectEvidence(
 		}
 		return left.sourceOrder < right.sourceOrder
 	})
+	deduplicated := selected[:0]
+	evidenceSeen := map[string]bool{}
+	for _, item := range selected {
+		key := collapseTextKey(item.Evidence.EvidenceText)
+		if evidenceSeen[key] {
+			excluded = append(excluded, map[string]any{
+				"id":          item.Evidence.ID,
+				"source_turn": item.sourceTurn,
+				"reason":      "duplicate_materialized_evidence",
+			})
+			continue
+		}
+		evidenceSeen[key] = true
+		deduplicated = append(deduplicated, item)
+	}
+	selected = deduplicated
 	if len(selected) > 0 && selected[0].rank >= 4 {
 		kept := selected[:0]
 		for _, item := range selected {
-			if item.rank == 1 {
+			if item.rank <= 3 {
 				deferred = append(deferred, map[string]any{
 					"id":          item.Evidence.ID,
 					"source_turn": item.sourceTurn,
-					"reason":      "lexical_fallback_deferred_by_linked_event",
+					"reason":      "weak_support_deferred_by_linked_event",
 					"vector":      item.Vector,
 				})
 				continue
