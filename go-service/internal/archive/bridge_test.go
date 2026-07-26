@@ -92,21 +92,6 @@ func TestBuildScopedVerbatimSupportMatchesVR18Surface(t *testing.T) {
 	}
 }
 
-func TestBuildScopedVerbatimSupportInOrderPreservesRequestRank(t *testing.T) {
-	evidence := []store.DirectEvidence{
-		{ID: 1, EvidenceText: "Older but request-linked evidence.", TurnAnchor: 10},
-		{ID: 2, EvidenceText: "Newer supporting evidence.", TurnAnchor: 12},
-	}
-
-	support := BuildScopedVerbatimSupportInOrder(evidence)
-	if support.Count != 2 || support.Items[0].AnchorTurn != 10 {
-		t.Fatalf("request rank was replaced by recency: %#v", support.Items)
-	}
-	if support.LatestTurnIndex != 12 {
-		t.Fatalf("latest turn metadata = %v, want 12", support.LatestTurnIndex)
-	}
-}
-
 func longText(s string, count int) string {
 	out := ""
 	for i := 0; i < count; i++ {

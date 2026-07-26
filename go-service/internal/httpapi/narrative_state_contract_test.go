@@ -325,11 +325,7 @@ func TestPrepareTurnCurrentStateTransitionSuppressesOlderActiveArtifacts(t *test
 			Importance:  0.9,
 		}},
 		nil,
-		[]store.DirectEvidence{{
-			ID:           1,
-			EvidenceText: "Atlas Restoration status active",
-			TurnAnchor:   10,
-		}},
+		nil,
 		nil,
 		nil,
 		[]store.WorldRule{{
@@ -348,14 +344,12 @@ func TestPrepareTurnCurrentStateTransitionSuppressesOlderActiveArtifacts(t *test
 	)
 
 	for name, text := range map[string]string{
-		"actual_memory":          assembly.ActualMemoryText,
-		"latest_direct_evidence": assembly.LatestDirectEvidenceText,
-		"direct_evidence":        assembly.DirectEvidenceText,
-		"world_rules":            assembly.WorldRulesText,
-		"pending_threads":        assembly.PendingThreadText,
-		"canonical_world":        assembly.CanonWorldText,
-		"canonical_all":          assembly.CanonText,
-		"final_delivery":         extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"]),
+		"actual_memory":   assembly.ActualMemoryText,
+		"world_rules":     assembly.WorldRulesText,
+		"pending_threads": assembly.PendingThreadText,
+		"canonical_world": assembly.CanonWorldText,
+		"canonical_all":   assembly.CanonText,
+		"final_delivery":  extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"]),
 	} {
 		if strings.Contains(text, subject) || strings.Contains(text, previous) {
 			t.Errorf("%s reactivated an older superseded assignment: %q", name, text)

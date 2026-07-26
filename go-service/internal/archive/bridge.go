@@ -122,33 +122,20 @@ func (b *Bridge) GetVerbatimByTurn(ctx context.Context, turnIndex int, chatSessi
 }
 
 func BuildScopedVerbatimSupport(evidence []store.DirectEvidence) ScopedVerbatimSupport {
-	return buildScopedVerbatimSupport(evidence, true)
-}
-
-// BuildScopedVerbatimSupportInOrder preserves an already-ranked request-scoped
-// evidence order. The default builder keeps its historical recency ordering for
-// other callers that do not own a stronger relevance rank.
-func BuildScopedVerbatimSupportInOrder(evidence []store.DirectEvidence) ScopedVerbatimSupport {
-	return buildScopedVerbatimSupport(evidence, false)
-}
-
-func buildScopedVerbatimSupport(evidence []store.DirectEvidence, sortByRecency bool) ScopedVerbatimSupport {
 	rows := append([]store.DirectEvidence(nil), evidence...)
-	if sortByRecency {
-		sort.SliceStable(rows, func(i, j int) bool {
-			ai := evidenceAnchorTurn(rows[i])
-			aj := evidenceAnchorTurn(rows[j])
-			if ai != aj {
-				return ai > aj
-			}
-			return rows[i].ID > rows[j].ID
-		})
-	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		ai := evidenceAnchorTurn(rows[i])
+		aj := evidenceAnchorTurn(rows[j])
+		if ai != aj {
+			return ai > aj
+		}
+		return rows[i].ID > rows[j].ID
+	})
 
 	items := make([]ScopedVerbatimItem, 0, scopedVerbatimMaxItems)
 	lines := make([]string, 0, scopedVerbatimMaxItems)
 	totalChars := 0
-	latestTurnIndex := 0
+	latestTurn := any(nil)
 
 	for _, row := range rows {
 		if len(items) >= scopedVerbatimMaxItems {
@@ -163,8 +150,8 @@ func buildScopedVerbatimSupport(evidence []store.DirectEvidence, sortByRecency b
 		}
 		excerpt = truncateRunes(excerpt, scopedVerbatimMaxExcerptChars)
 		anchor := evidenceAnchorTurn(row)
-		if anchor > latestTurnIndex {
-			latestTurnIndex = anchor
+		if latestTurn == nil && anchor > 0 {
+			latestTurn = anchor
 		}
 		scope := "turn_window"
 		turns := evidenceTurnsLabel(row)
@@ -201,10 +188,6 @@ func buildScopedVerbatimSupport(evidence []store.DirectEvidence, sortByRecency b
 		})
 	}
 
-	latestTurn := any(nil)
-	if latestTurnIndex > 0 {
-		latestTurn = latestTurnIndex
-	}
 	return ScopedVerbatimSupport{
 		Active:                  len(items) > 0,
 		PolicyVersion:           scopedVerbatimPolicyVersion,

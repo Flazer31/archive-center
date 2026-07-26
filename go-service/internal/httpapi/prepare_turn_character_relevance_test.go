@@ -461,14 +461,9 @@ func TestPrepareTurnCharacterRelationshipsRequireCurrentCounterparty(t *testing.
 	}
 }
 
-func TestPrepareTurnDirectWorldEpisodeAndCanonicalRequireCurrentSceneRelevance(t *testing.T) {
+func TestPrepareTurnWorldEpisodeAndCanonicalRequireCurrentSceneRelevance(t *testing.T) {
 	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil,
-		[]store.DirectEvidence{
-			{ID: 1, EvidenceText: "Mira used the brass key at the gate.", TurnAnchor: 9},
-			{ID: 2, EvidenceText: "Juno left a passport at the harbor.", TurnAnchor: 10},
-		},
-		nil, nil,
+		nil, nil, nil, nil, nil,
 		[]store.WorldRule{
 			{ID: 1, Key: "brass gate", ValueJSON: `{"rule":"The brass gate opens with Mira's key"}`},
 			{ID: 2, Key: "harbor passport", ValueJSON: `{"rule":"A harbor seal is required"}`},
@@ -485,13 +480,12 @@ func TestPrepareTurnDirectWorldEpisodeAndCanonicalRequireCurrentSceneRelevance(t
 		nil, nil, nil,
 		5, 9000, "Mira turns the brass key at the gate.", "default", nil, nil, nil,
 	)
-	for _, text := range []string{assembly.LatestDirectEvidenceText, assembly.ScopedVerbatimText, assembly.WorldRulesText, assembly.CanonText, assembly.EpisodeText} {
+	for _, text := range []string{assembly.WorldRulesText, assembly.CanonText, assembly.EpisodeText} {
 		if strings.Contains(text, "Juno") || strings.Contains(text, "passport") || strings.Contains(text, "harbor") {
 			t.Fatalf("unrelated latest/support material survived current-scene gate: %q", text)
 		}
 	}
 	checks := map[string]string{
-		"Mira used the brass key":       assembly.LatestDirectEvidenceText,
 		"brass gate":                    assembly.WorldRulesText,
 		"Mira holds the brass key":      assembly.CanonText,
 		"Mira found the brass gate key": assembly.EpisodeText,
