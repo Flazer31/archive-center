@@ -42,6 +42,7 @@ func (s *Server) registerTurnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /complete-turn", s.handleCompleteTurn)
 	mux.HandleFunc("GET /complete-turn/request-status", s.handleCompleteTurnRequestStatus)
 	mux.HandleFunc("POST /prepare-turn", s.handlePrepareTurn)
+	mux.HandleFunc("GET /turn-workflow/status", s.handleTurnWorkflowHUDStatus)
 	mux.HandleFunc("POST /effective-inputs", s.handleEffectiveInputs)
 	mux.HandleFunc("DELETE /rollback/{turn_index}", s.handleRollback)
 	mux.HandleFunc("POST /rollback/decision", s.handleRollbackDecision)

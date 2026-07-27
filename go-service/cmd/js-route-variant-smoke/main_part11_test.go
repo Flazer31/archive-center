@@ -369,6 +369,188 @@ func extractArchiveCenterJSAsyncFunction(t *testing.T, src, name string) string 
 	return strings.TrimSpace(src[start:end])
 }
 
+func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for turn workflow HUD runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	start := strings.Index(src, `  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v1";`)
+	if start < 0 {
+		t.Fatal("turn workflow HUD contract marker not found")
+	}
+	endMarker := "\n  function turnWorkflowHUDRequestIdFromPrepareOptions("
+	endOffset := strings.Index(src[start:], endMarker)
+	if endOffset < 0 {
+		t.Fatal("turn workflow HUD runtime boundary not found")
+	}
+	hudRuntime := strings.TrimSpace(src[start : start+endOffset])
+	script := `
+const nodesByID = new Map();
+const intervals = [];
+function setInterval(fn, ms) {
+  intervals.push({fn, ms});
+  return intervals.length;
+}
+function clearInterval() {}
+class FakeRemoteNode {
+  constructor(tag) {
+    this.tag = tag;
+    this.attributes = {};
+    this.children = [];
+    this.innerHTML = "";
+    this.styleAttribute = "";
+    this.textContent = "";
+    this.listeners = {};
+    this.card = null;
+    this.elapsed = null;
+  }
+  async setAttribute(name, value) {
+    this.attributes[name] = String(value);
+    if (name === "id") nodesByID.set(String(value), this);
+  }
+  async setStyleAttribute(value) {
+    this.styleAttribute = String(value);
+  }
+  async setInnerHTML(value) {
+    this.innerHTML = String(value);
+    this.card = this.innerHTML.includes("mo-turn-hud-card") ? new FakeRemoteNode("card") : null;
+    this.elapsed = this.innerHTML.includes("mo-turn-hud-elapsed") ? new FakeRemoteNode("elapsed") : null;
+  }
+  async setTextContent(value) {
+    this.textContent = String(value);
+  }
+  async appendChild(child) {
+    this.children.push(child);
+  }
+  async querySelector(selector) {
+    if (selector === ".mo-turn-hud-card") return this.card;
+    if (selector === ".mo-turn-hud-elapsed") return this.elapsed;
+    return null;
+  }
+  async addEventListener(name, handler) {
+    this.listeners[name] = handler;
+    return name + "-listener";
+  }
+}
+const head = new FakeRemoteNode("head");
+const body = new FakeRemoteNode("body");
+const rootDocument = {
+  async querySelector(selector) {
+    if (selector === "head") return head;
+    if (selector === "body") return body;
+    if (selector.startsWith("#")) return nodesByID.get(selector.slice(1)) || null;
+    return null;
+  },
+  async createElement(tag) {
+    return new FakeRemoteNode(tag);
+  }
+};
+const R = {getRootDocument: async () => rootDocument};
+const translations = {
+  "turn_hud.completed": "완료",
+  "turn_hud.completed_with_warning": "경고와 함께 완료",
+  "turn_hud.failed": "실패",
+  "turn_hud.tap_to_dismiss": "눌러서 닫기",
+  "turn_hud.transport_unavailable": "전송 실패",
+  "turn_hud.not_retryable": "재시도 불가",
+  "turn_hud.retryable": "재시도 가능",
+  "turn_hud.stage.prepare_source": "원문 준비",
+  "count.raw": "원문 <저장>",
+  "count.summary": "요약",
+  "count.direct": "직접 근거",
+  "count.relationship": "관계 지식",
+  "count.item": "물건",
+  "count.world": "세계",
+  "count.total": "총 생성"
+};
+function t(key) { return translations[key] || String(key || ""); }
+function tf(key, args) {
+  if (key === "turn_hud.turn") return String(args.n) + "번째 턴";
+  if (key === "turn_hud.elapsed_seconds") return String(args.n) + "초";
+  return key;
+}
+function warnLog() {}
+` + "\n" + hudRuntime + `
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+(async function() {
+  const counts = [
+    {key:"raw",label_key:"count.raw",value:1},
+    {key:"summary",label_key:"count.summary",value:2},
+    {key:"direct",label_key:"count.direct",value:3},
+    {key:"relationship",label_key:"count.relationship",value:4},
+    {key:"item",label_key:"count.item",value:5},
+    {key:"world",label_key:"count.world",value:6},
+    {key:"total_committed",label_key:"count.total",value:21}
+  ];
+  assert(consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-a",revision:1,
+    logical_turn:55,status:"completed",severity:"info",counts
+  }), "completed HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  const root = nodesByID.get("mo-turn-workflow-hud-root");
+  assert(root, "HUD root was not created in RisuAI main RootDocument");
+  assert(body.children.includes(root), "HUD root was not appended to main body");
+  assert(nodesByID.has("mo-turn-workflow-hud-style"), "HUD style was not created in main RootDocument");
+  assert(root.styleAttribute.includes("top:50%") && root.styleAttribute.includes("translateY(-50%)"), "HUD is not positioned at right center");
+  assert(root.styleAttribute.includes("right:max(8px"), "HUD right safe-area placement is missing");
+  assert(root.innerHTML.includes("원문 &lt;저장&gt;"), "dynamic HUD label was not HTML escaped");
+  for (const value of ["1","2","3","4","5","6","21"]) {
+    assert(root.innerHTML.includes(">" + value + "</span>"), "completed HUD omitted count " + value);
+  }
+  assert(root.card && typeof root.card.listeners.click === "function", "terminal click dismiss listener missing");
+  await root.card.listeners.click({type:"click"});
+  await _turnWorkflowHUDRenderChain;
+  assert(root.innerHTML === "", "terminal click did not dismiss HUD");
+
+  const startedAt = new Date(Date.now() - 2200).toISOString();
+  assert(consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"running-b",revision:1,
+    logical_turn:56,status:"running",severity:"info",
+    current_stage:{ordinal:3,total:7,label_key:"turn_hud.stage.prepare_source",llm_call:true,status:"running",started_at:startedAt}
+  }), "running HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(root.elapsed && /초$/.test(root.elapsed.textContent), "LLM elapsed seconds were not rendered");
+  assert(intervals.length === 1 && intervals[0].ms === 1000, "LLM elapsed timer is not one second");
+  await dismissTurnWorkflowHUD("running-b");
+  await _turnWorkflowHUDRenderChain;
+
+  assert(consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"failed-c",revision:1,
+    logical_turn:57,status:"failed",severity:"error",
+    error:{code:"BAD_<CODE>",message_key:"turn_hud.transport_unavailable",retryable:false}
+  }), "failed HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(root.innerHTML.includes("BAD_&lt;CODE&gt;"), "error metadata was not HTML escaped");
+  const failedCard = root.card;
+  await failedCard.listeners.keydown({type:"keydown",key:"x"});
+  await _turnWorkflowHUDRenderChain;
+  assert(root.innerHTML !== "", "unrelated key dismissed terminal HUD");
+  await failedCard.listeners.keydown({type:"keydown",key:"Enter"});
+  await _turnWorkflowHUDRenderChain;
+  assert(root.innerHTML === "", "Enter did not dismiss terminal HUD");
+  process.stdout.write("ok");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	command := exec.Command(nodePath, "-e", script)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("turn workflow HUD main RootDocument runtime fixture failed: %v\n%s", err, output)
+	}
+	if strings.TrimSpace(string(output)) != "ok" {
+		t.Fatalf("turn workflow HUD runtime fixture output=%q, want ok", output)
+	}
+}
+
 func TestPrepareTurnSourceCapabilityContractRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -409,6 +591,14 @@ function normalizeEmbeddingProvider(value) { return value; }
 function getEmbeddingTimeoutMs() { return 1000; }
 function getRequestTimeoutSettingMs() { return 1000; }
 function debugLog() {}
+const hudWatchIds = [];
+function turnWorkflowHUDRequestIdFromPrepareOptions(options) {
+  return String(options && options.sourceObservation && options.sourceObservation.request_id || "");
+}
+function startTurnWorkflowHUDWatch(requestId) { hudWatchIds.push(String(requestId || "")); }
+function consumeTurnWorkflowHUD() { return true; }
+function stopTurnWorkflowHUDWatch() {}
+function renderTurnWorkflowHUDTransportError() {}
 let capturedBody = null;
 const capturedBodies = [];
 let expectedLane = {
@@ -467,9 +657,13 @@ async function bridgeFetch(path, options) {
       throw new Error("Go-owned 3.3-D decisions were not returned to the adapter");
     }
   }
+  const hudWatchCountBeforeDecision = hudWatchIds.length;
   const decisionResult = await tryPrepareTurn("session-a", "", [{role: "user", content: "hello"}], null, "model", null, {
     sourceDecisionOnly: true, sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
   });
+  if (hudWatchIds.length !== hudWatchCountBeforeDecision) {
+    throw new Error("source-decision-only request incorrectly started the workflow HUD");
+  }
   const decisionBody = capturedBodies[capturedBodies.length - 1];
   if (decisionBody.source_decision_only !== true || decisionBody.host_observations !== hostObservations) {
     throw new Error("read-free source decision phase was not transported with the same host observations");
@@ -524,6 +718,7 @@ async function bridgeFetch(path, options) {
   if (guideOffBody.settings.guide_mode !== "off" || guideOffBody.settings.guide_strength !== "none" || guideOffBody.settings.supervisor_enabled !== false) {
     throw new Error("guide none was not transported as an explicit OFF contract: "+JSON.stringify(guideOffBody.settings));
   }
+  if (!hudWatchIds.includes("request-a")) throw new Error("full prepare did not start the correlated workflow HUD");
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-e", script)

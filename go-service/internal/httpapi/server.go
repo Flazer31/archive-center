@@ -31,6 +31,7 @@ type Server struct {
 	RuntimeConfigMu          sync.RWMutex
 	AdminJobs                *adminJobManager
 	CompleteTurns            *completeTurnRequestLedger
+	TurnWorkflows            *turnWorkflowHUDLedger
 	SourceAcceptances        *completeTurnSourceAcceptanceLedger
 	RollbackDecisions        *rollbackDecisionLedger
 }
@@ -93,6 +94,7 @@ func NewServer(cfg config.Config) *Server {
 		ReferenceVectorOpenError: referenceVectorErr,
 		AdminJobs:                newAdminJobManager(),
 		CompleteTurns:            newCompleteTurnRequestLedger(),
+		TurnWorkflows:            newTurnWorkflowHUDLedger(),
 		SourceAcceptances:        newCompleteTurnSourceAcceptanceLedger(),
 		RollbackDecisions:        newRollbackDecisionLedger(),
 	}
@@ -279,6 +281,7 @@ func isArchiveRouteRoot(segment string) bool {
 		"supervisor",
 		"timeline",
 		"turns",
+		"turn-workflow",
 		"update",
 		"validation",
 		"version",

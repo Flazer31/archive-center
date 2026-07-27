@@ -124,6 +124,12 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timing.addElapsed("migration_guard", migrationStartedAt)
+	workflowRequestID := prepareTurnWorkflowRequestID(prepareSourceContract, request)
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.begin(workflowRequestID, sid, intPtrValue(req.TurnIndex, 0))
+		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePrepareSource, "succeeded", "source_observation_eligible")
+		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageRecall)
+	}
 
 	// Resolve settings from the request/default DTO contract.
 	defaultSettings := dto.PrepareTurnSettings{}
@@ -431,6 +437,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	materializationTrace["total_history_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs)
 	materializationTrace["total_materialized_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(charStates) + len(activeStates) + len(canonicalLayers) + len(charEvents)
 	timing.addElapsed("store_reads", storeReadsStartedAt)
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.setLogicalTurn(workflowRequestID, resolvePrepareTurnWorkflowLogicalTurn(request, currentInputDecision, chatLogs))
+		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageRecall, "succeeded", "")
+		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageContext)
+	}
 
 	recollectionStartedAt := time.Now()
 	var personaRoleTrace map[string]any
@@ -706,24 +717,52 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		extractionStringFromAny(responseExecutionContract["status"]) == "ready" &&
 		boolFromAny(responseExecutionContract["active"]) &&
 		guideEligible
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageContext, "succeeded", "")
+	}
 	switch {
 	case guideDisabled || guideMode == "off" || !supervisorEnabled:
 		supervisorCallStatus = "disabled"
+		if s.TurnWorkflows != nil && workflowRequestID != "" {
+			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
+		}
 	case extractionStringFromAny(guideEligibility["status"]) == "injection_disabled":
 		supervisorCallStatus = "deferred_injection_disabled"
+		if s.TurnWorkflows != nil && workflowRequestID != "" {
+			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
+		}
 	case extractionStringFromAny(guideEligibility["status"]) == "budget_disabled":
 		supervisorCallStatus = "deferred_budget_disabled"
+		if s.TurnWorkflows != nil && workflowRequestID != "" {
+			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
+		}
 	case !guideEligible:
 		supervisorCallStatus = "deferred_no_guide_support"
+		if s.TurnWorkflows != nil && workflowRequestID != "" {
+			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
+		}
 	case !guideDeliveryReady:
 		supervisorCallStatus = "deferred_insufficient_narrative_budget"
+		if s.TurnWorkflows != nil && workflowRequestID != "" {
+			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
+		}
 	case !executionContractReady:
 		supervisorCallStatus = "deferred_no_execution_evidence"
+		if s.TurnWorkflows != nil && workflowRequestID != "" {
+			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
+		}
 	default:
 		llmCfg := s.supervisorLLMConfig()
 		if !llmCfg.hasConfig() {
 			supervisorCallStatus = "not_configured"
+			if s.TurnWorkflows != nil && workflowRequestID != "" {
+				s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
+				s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_LLM_NOT_CONFIGURED", "turn_hud.warning.publisher_llm_not_configured", turnWorkflowStagePublisherLLM)
+			}
 		} else {
+			if s.TurnWorkflows != nil && workflowRequestID != "" {
+				s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStagePublisherLLM)
+			}
 			supervisorStartedAt := time.Now()
 			sidValue := sid
 			guideModeValue := guideMode
@@ -746,9 +785,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				supervisorCallStatus = "failed_open"
 				supervisorInputPack["llm_error"] = scrubProxySecret(err.Error(), llmCfg.APIKey)
+				if s.TurnWorkflows != nil && workflowRequestID != "" {
+					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", "publisher_llm_failed_open")
+					s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_LLM_FAILED_OPEN", "turn_hud.warning.publisher_llm_failed_open", turnWorkflowStagePublisherLLM)
+				}
 			} else {
 				supervisorCallStatus = "applied"
 				supervisorResult = result
+				if s.TurnWorkflows != nil && workflowRequestID != "" {
+					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "")
+				}
 				if proposalText, proposalRefs := formatSupervisorSceneProposalGuidance(result); proposalText != "" {
 					guidanceItems = append(guidanceItems, prepareTurnGuidanceItem{
 						Key:        "supervisor_scene_proposal",
@@ -759,6 +805,9 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStagePayload)
 	}
 	if supervisorCallStatus == "failed_open" {
 		guidanceItems = append(guidanceItems, prepareTurnGuidanceItem{
@@ -854,6 +903,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	effectiveInputPreview["input_context_chars"] = len([]rune(inputContextText))
 	timing.addElapsed("response_assembly", responseAssemblyStartedAt)
 	backendTiming := timing.snapshot()
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePayload, "succeeded", "")
+		s.TurnWorkflows.awaitFinal(workflowRequestID)
+	}
+	turnWorkflowHUD := s.turnWorkflowHUDSnapshot(workflowRequestID)
 
 	if responseProjection == prepareTurnProductionProjectionV1 {
 		tracePreview["response_projection"] = map[string]any{
@@ -884,6 +938,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"language_context":                languageContext,
 			"input_transparency_model":        inputTransparencyModel,
 			"backend_timing":                  backendTiming,
+			"turn_workflow_hud":               turnWorkflowHUD,
 			"source_contract":                 prepareSourceContract,
 			"current_input_decision":          currentInputDecision,
 			"message_source_envelope":         currentInputDecision.Envelope,
@@ -925,6 +980,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"input_transparency_model":        inputTransparencyModel,
 		"effective_input_preview":         effectiveInputPreview,
 		"backend_timing":                  backendTiming,
+		"turn_workflow_hud":               turnWorkflowHUD,
 		"source_contract":                 prepareSourceContract,
 		"current_input_decision":          currentInputDecision,
 		"message_source_envelope":         currentInputDecision.Envelope,

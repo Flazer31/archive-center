@@ -1162,6 +1162,58 @@
       "timeline.session.migrateTitle": "이 DB 세션을 현재 활성 채팅으로 이동",
       "timeline.session.rollbackTitle": "ledger 기준 최근 세션 이전 롤백",
       "timeline.session.unknown": "알 수 없음",
+      "turn_hud.turn": "{n}턴",
+      "turn_hud.turn_unknown": "턴 확인 중",
+      "turn_hud.completed": "저장 완료",
+      "turn_hud.completed_with_warning": "경고와 함께 저장 완료",
+      "turn_hud.failed": "처리 오류",
+      "turn_hud.tap_to_dismiss": "눌러서 닫기",
+      "turn_hud.retryable": "다시 시도할 수 있음",
+      "turn_hud.not_retryable": "자동 재시도 불가",
+      "turn_hud.elapsed_seconds": "{n}초",
+      "turn_hud.transport_unavailable": "진행 상태 연결이 끊겼습니다.",
+      "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
+      "turn_hud.stage.recall_materialization": "기억·근거 불러오기",
+      "turn_hud.stage.context_assembly": "입력 맥락 조립",
+      "turn_hud.stage.publisher_llm": "출판사 LLM 호출",
+      "turn_hud.stage.payload_ready": "본문 요청 준비",
+      "turn_hud.stage.awaiting_final_output": "본문 응답 기다리는 중",
+      "turn_hud.stage.final_output_accepted": "최종 출력 확인",
+      "turn_hud.stage.raw_persist": "사용자·Assistant 원문 저장",
+      "turn_hud.stage.critic_llm": "평론가 LLM 호출",
+      "turn_hud.stage.derived_persist_and_index": "요약·근거·관계 저장 및 색인",
+      "turn_hud.stage.summary_checkpoints": "구간 요약 확인",
+      "turn_hud.stage.complete": "모든 처리 완료",
+      "turn_hud.count.total_committed": "총 생성·저장",
+      "turn_hud.count.raw_user": "사용자 원문",
+      "turn_hud.count.raw_assistant": "Assistant 원문",
+      "turn_hud.count.effective_input": "최종 입력",
+      "turn_hud.count.turn_summary": "턴 요약·기억",
+      "turn_hud.count.direct_evidence": "직접 근거",
+      "turn_hud.count.relationship_knowledge": "관계 지식",
+      "turn_hud.count.subjective_memory": "주관 기억",
+      "turn_hud.count.world_rule": "세계 규칙",
+      "turn_hud.count.character_state": "인물·상태",
+      "turn_hud.count.narrative_state": "서사 상태",
+      "turn_hud.count.episode_summary": "구간 요약",
+      "turn_hud.count.vector_index": "Vector 색인",
+      "turn_hud.warning.publisher_llm_not_configured": "출판사 LLM이 설정되지 않아 건너뜀",
+      "turn_hud.warning.publisher_llm_failed_open": "출판사 LLM 실패 후 본문 요청은 계속됨",
+      "turn_hud.warning.critic_llm_not_configured": "평론가 LLM이 설정되지 않아 파생 자료를 건너뜀",
+      "turn_hud.warning.vector_index_skipped": "Vector 색인을 건너뜀",
+      "turn_hud.warning.store_writes_disabled": "저장 기능이 꺼져 있음",
+      "turn_hud.warning.maintenance_handoff_failed": "후속 정리 작업 연결 실패",
+      "turn_hud.warning.ooc_turn_skipped": "OOC 턴은 저장하지 않음",
+      "turn_hud.error.logical_turn_replace_failed": "리롤 턴 교체에 실패했습니다.",
+      "turn_hud.error.user_input_missing": "저장할 사용자 원문이 없습니다.",
+      "turn_hud.error.raw_turn_persist_failed": "사용자·Assistant 원문 저장에 실패했습니다.",
+      "turn_hud.error.critic_llm_failed": "평론가 LLM 호출에 실패했습니다.",
+      "turn_hud.error.derived_persist_failed": "요약·근거·관계 저장에 실패했습니다.",
+      "turn_hud.error.embedding_failed": "Embedding 생성에 실패했습니다.",
+      "turn_hud.error.vector_index_failed": "Vector 색인에 실패했습니다.",
+      "turn_hud.error.episode_checkpoint_failed": "구간 요약 저장에 실패했습니다.",
+      "turn_hud.error.hierarchy_checkpoint_failed": "장기 요약 승격에 실패했습니다.",
+      "turn_hud.error.complete_turn_aborted": "턴 완료 처리가 끝나기 전에 중단됐습니다.",
     },
 
     en: {
@@ -2065,6 +2117,58 @@
       "dash.section.activitySnapshot": "Activity Snapshot",
       "dash.section.turnHistory": "Recent Turn History",
       "dash.section.turnTrace": "Last Turn Trace",
+      "turn_hud.turn": "Turn {n}",
+      "turn_hud.turn_unknown": "Resolving turn",
+      "turn_hud.completed": "Save complete",
+      "turn_hud.completed_with_warning": "Saved with warnings",
+      "turn_hud.failed": "Processing error",
+      "turn_hud.tap_to_dismiss": "Tap to dismiss",
+      "turn_hud.retryable": "Retry is available",
+      "turn_hud.not_retryable": "Automatic retry unavailable",
+      "turn_hud.elapsed_seconds": "{n}s",
+      "turn_hud.transport_unavailable": "The progress connection was lost.",
+      "turn_hud.stage.prepare_source": "Confirming current input and request",
+      "turn_hud.stage.recall_materialization": "Loading memory and evidence",
+      "turn_hud.stage.context_assembly": "Assembling input context",
+      "turn_hud.stage.publisher_llm": "Publisher LLM call",
+      "turn_hud.stage.payload_ready": "Preparing story request",
+      "turn_hud.stage.awaiting_final_output": "Waiting for story response",
+      "turn_hud.stage.final_output_accepted": "Confirming final output",
+      "turn_hud.stage.raw_persist": "Saving user and Assistant source",
+      "turn_hud.stage.critic_llm": "Critic LLM call",
+      "turn_hud.stage.derived_persist_and_index": "Saving and indexing derived artifacts",
+      "turn_hud.stage.summary_checkpoints": "Checking interval summaries",
+      "turn_hud.stage.complete": "All processing complete",
+      "turn_hud.count.total_committed": "Total created/saved",
+      "turn_hud.count.raw_user": "User source",
+      "turn_hud.count.raw_assistant": "Assistant source",
+      "turn_hud.count.effective_input": "Effective input",
+      "turn_hud.count.turn_summary": "Turn summaries/memory",
+      "turn_hud.count.direct_evidence": "Direct evidence",
+      "turn_hud.count.relationship_knowledge": "Relationship knowledge",
+      "turn_hud.count.subjective_memory": "Subjective memory",
+      "turn_hud.count.world_rule": "World rules",
+      "turn_hud.count.character_state": "Characters/states",
+      "turn_hud.count.narrative_state": "Narrative state",
+      "turn_hud.count.episode_summary": "Interval summaries",
+      "turn_hud.count.vector_index": "Vector index",
+      "turn_hud.warning.publisher_llm_not_configured": "Publisher LLM is not configured and was skipped",
+      "turn_hud.warning.publisher_llm_failed_open": "Publisher LLM failed; the story request continued",
+      "turn_hud.warning.critic_llm_not_configured": "Critic LLM is not configured; derived artifacts were skipped",
+      "turn_hud.warning.vector_index_skipped": "Vector indexing was skipped",
+      "turn_hud.warning.store_writes_disabled": "Storage writes are disabled",
+      "turn_hud.warning.maintenance_handoff_failed": "Follow-up maintenance handoff failed",
+      "turn_hud.warning.ooc_turn_skipped": "OOC turn was not saved",
+      "turn_hud.error.logical_turn_replace_failed": "Failed to replace the rerolled turn.",
+      "turn_hud.error.user_input_missing": "The user source required for saving is missing.",
+      "turn_hud.error.raw_turn_persist_failed": "Failed to save the user and Assistant source.",
+      "turn_hud.error.critic_llm_failed": "The Critic LLM call failed.",
+      "turn_hud.error.derived_persist_failed": "Failed to save summaries, evidence, or relationships.",
+      "turn_hud.error.embedding_failed": "Embedding generation failed.",
+      "turn_hud.error.vector_index_failed": "Vector indexing failed.",
+      "turn_hud.error.episode_checkpoint_failed": "Failed to save an interval summary.",
+      "turn_hud.error.hierarchy_checkpoint_failed": "Long-range summary promotion failed.",
+      "turn_hud.error.complete_turn_aborted": "Turn completion stopped before it finished.",
     },
 
     ja: {
@@ -2966,6 +3070,58 @@
       "timeline.session.copyTitle": "このDBセッションを現在のアクティブチャットへコピー",
       "timeline.session.migrateTitle": "このDBセッションを現在のアクティブチャットへ移動",
       "timeline.session.rollbackTitle": "ledgerに基づき最新のセッション移行をロールバック",
+      "turn_hud.turn": "ターン {n}",
+      "turn_hud.turn_unknown": "ターン確認中",
+      "turn_hud.completed": "保存完了",
+      "turn_hud.completed_with_warning": "警告付きで保存完了",
+      "turn_hud.failed": "処理エラー",
+      "turn_hud.tap_to_dismiss": "タップして閉じる",
+      "turn_hud.retryable": "再試行できます",
+      "turn_hud.not_retryable": "自動再試行はできません",
+      "turn_hud.elapsed_seconds": "{n}秒",
+      "turn_hud.transport_unavailable": "進行状況への接続が切れました。",
+      "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
+      "turn_hud.stage.recall_materialization": "記憶と根拠を読み込み",
+      "turn_hud.stage.context_assembly": "入力コンテキストを組み立て",
+      "turn_hud.stage.publisher_llm": "出版社LLMを呼び出し",
+      "turn_hud.stage.payload_ready": "本文リクエストを準備",
+      "turn_hud.stage.awaiting_final_output": "本文応答を待機中",
+      "turn_hud.stage.final_output_accepted": "最終出力を確認",
+      "turn_hud.stage.raw_persist": "ユーザー・Assistant原文を保存",
+      "turn_hud.stage.critic_llm": "批評家LLMを呼び出し",
+      "turn_hud.stage.derived_persist_and_index": "要約・根拠・関係を保存して索引化",
+      "turn_hud.stage.summary_checkpoints": "区間要約を確認",
+      "turn_hud.stage.complete": "すべての処理が完了",
+      "turn_hud.count.total_committed": "生成・保存合計",
+      "turn_hud.count.raw_user": "ユーザー原文",
+      "turn_hud.count.raw_assistant": "Assistant原文",
+      "turn_hud.count.effective_input": "最終入力",
+      "turn_hud.count.turn_summary": "ターン要約・記憶",
+      "turn_hud.count.direct_evidence": "直接根拠",
+      "turn_hud.count.relationship_knowledge": "関係知識",
+      "turn_hud.count.subjective_memory": "主観記憶",
+      "turn_hud.count.world_rule": "世界ルール",
+      "turn_hud.count.character_state": "人物・状態",
+      "turn_hud.count.narrative_state": "物語状態",
+      "turn_hud.count.episode_summary": "区間要約",
+      "turn_hud.count.vector_index": "Vector索引",
+      "turn_hud.warning.publisher_llm_not_configured": "出版社LLMが未設定のためスキップ",
+      "turn_hud.warning.publisher_llm_failed_open": "出版社LLM失敗後も本文リクエストは継続",
+      "turn_hud.warning.critic_llm_not_configured": "批評家LLMが未設定のため派生資料をスキップ",
+      "turn_hud.warning.vector_index_skipped": "Vector索引をスキップ",
+      "turn_hud.warning.store_writes_disabled": "保存機能が無効",
+      "turn_hud.warning.maintenance_handoff_failed": "後続整理処理への接続に失敗",
+      "turn_hud.warning.ooc_turn_skipped": "OOCターンは保存しません",
+      "turn_hud.error.logical_turn_replace_failed": "再生成ターンの置換に失敗しました。",
+      "turn_hud.error.user_input_missing": "保存するユーザー原文がありません。",
+      "turn_hud.error.raw_turn_persist_failed": "ユーザー・Assistant原文の保存に失敗しました。",
+      "turn_hud.error.critic_llm_failed": "批評家LLMの呼び出しに失敗しました。",
+      "turn_hud.error.derived_persist_failed": "要約・根拠・関係の保存に失敗しました。",
+      "turn_hud.error.embedding_failed": "Embedding生成に失敗しました。",
+      "turn_hud.error.vector_index_failed": "Vector索引に失敗しました。",
+      "turn_hud.error.episode_checkpoint_failed": "区間要約の保存に失敗しました。",
+      "turn_hud.error.hierarchy_checkpoint_failed": "長期要約の昇格に失敗しました。",
+      "turn_hud.error.complete_turn_aborted": "ターン完了処理が終了前に中断されました。",
     },
   };
 
@@ -12226,6 +12382,385 @@
     return null;
   }
 
+  // ──────────────────────────────────────────────────────────────
+  // [3.5-E: TURN WORKFLOW HUD — DOM/transport only]
+  // Go owns the logical turn, ordered stages, timestamps, counts, warnings,
+  // and error classification. This adapter only waits for revisions, renders
+  // the returned ViewModel, and interpolates an active LLM timer locally.
+  // ──────────────────────────────────────────────────────────────
+
+  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v1";
+  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(8px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(320px,calc(100vw - 24px));pointer-events:none;font-family:system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;color:#f7f8fa";
+  const TURN_WORKFLOW_HUD_STYLE = `
+.mo-turn-hud-card{width:100%;border:1px solid rgba(118,151,187,.7);border-radius:12px;background:rgba(14,23,34,.92);box-shadow:0 10px 32px rgba(0,0,0,.38);padding:10px 12px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);white-space:normal;overflow-wrap:anywhere}
+.mo-turn-hud-card.is-warning{border-color:rgba(236,178,72,.9);background:rgba(48,37,16,.92)}
+.mo-turn-hud-card.is-error{border-color:rgba(255,93,93,.95);background:rgba(101,18,24,.88)}
+.mo-turn-hud-card.is-terminal{pointer-events:auto;cursor:pointer;user-select:none}
+.mo-turn-hud-title{font-size:12px;font-weight:750;line-height:1.35;color:#fff}
+.mo-turn-hud-stage{margin-top:4px;font-size:12px;line-height:1.4;color:#d7e5f3}
+.mo-turn-hud-elapsed{font-variant-numeric:tabular-nums;color:#8fd2ff;font-weight:700}
+.mo-turn-hud-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}
+.mo-turn-hud-count{min-width:0;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.055);padding:6px}
+.mo-turn-hud-count.is-total{grid-column:1/-1;background:rgba(94,174,255,.13);border-color:rgba(94,174,255,.35)}
+.mo-turn-hud-count-label{display:block;font-size:10px;line-height:1.25;color:#aebdca;white-space:normal;overflow-wrap:anywhere}
+.mo-turn-hud-count-value{display:block;margin-top:2px;font-size:17px;line-height:1;font-weight:800;color:#fff;font-variant-numeric:tabular-nums}
+.mo-turn-hud-error-message{margin-top:5px;font-size:12px;line-height:1.4;color:#fff}
+.mo-turn-hud-error-meta{margin-top:5px;font-size:10px;line-height:1.35;color:#ffd5d8;white-space:normal;overflow-wrap:anywhere}
+.mo-turn-hud-dismiss{margin-top:7px;text-align:right;font-size:10px;color:#b8c4ce}
+@media(max-width:520px){.mo-turn-hud-card{padding:9px 10px}.mo-turn-hud-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.mo-turn-hud-count.is-total{grid-column:1/-1}.mo-turn-hud-count{padding:4px}.mo-turn-hud-count-label{font-size:9px}.mo-turn-hud-count-value{font-size:15px}}
+`;
+
+  let _turnWorkflowHUDActiveRequestId = "";
+  let _turnWorkflowHUDWatchToken = 0;
+  let _turnWorkflowHUDWatchRunning = false;
+  let _turnWorkflowHUDLastRevision = 0;
+  let _turnWorkflowHUDTimer = null;
+  let _turnWorkflowHUDMainDocument = null;
+  let _turnWorkflowHUDRootUnavailableLogged = false;
+  let _turnWorkflowHUDElapsedElement = null;
+  let _turnWorkflowHUDElapsedStartedAt = "";
+  let _turnWorkflowHUDRenderChain = Promise.resolve();
+
+  function queueTurnWorkflowHUDOperation(label, operation) {
+    const queued = _turnWorkflowHUDRenderChain
+      .then(operation)
+      .catch(function(err) {
+        warnLog(`turn workflow HUD ${label} failed:`, err && err.message);
+        return null;
+      });
+    _turnWorkflowHUDRenderChain = queued;
+    return queued;
+  }
+
+  async function getTurnWorkflowHUDMainDocument() {
+    if (_turnWorkflowHUDMainDocument) return _turnWorkflowHUDMainDocument;
+    if (!R || typeof R.getRootDocument !== "function") {
+      if (!_turnWorkflowHUDRootUnavailableLogged) {
+        _turnWorkflowHUDRootUnavailableLogged = true;
+        warnLog("turn workflow HUD disabled: RisuAI.getRootDocument is unavailable");
+      }
+      return null;
+    }
+    const rootDocument = await R.getRootDocument();
+    if (!rootDocument) {
+      if (!_turnWorkflowHUDRootUnavailableLogged) {
+        _turnWorkflowHUDRootUnavailableLogged = true;
+        warnLog("turn workflow HUD disabled: RisuAI main DOM permission is unavailable");
+      }
+      return null;
+    }
+    _turnWorkflowHUDMainDocument = rootDocument;
+    return rootDocument;
+  }
+
+  async function ensureTurnWorkflowHUDRoot() {
+    const rootDocument = await getTurnWorkflowHUDMainDocument();
+    if (!rootDocument) return null;
+    let style = await rootDocument.querySelector("#mo-turn-workflow-hud-style");
+    if (!style) {
+      style = await rootDocument.createElement("style");
+      await style.setAttribute("id", "mo-turn-workflow-hud-style");
+      await style.setInnerHTML(TURN_WORKFLOW_HUD_STYLE);
+      const styleTarget = await rootDocument.querySelector("head") || await rootDocument.querySelector("body");
+      if (!styleTarget) throw new Error("RisuAI main DOM style target is unavailable");
+      await styleTarget.appendChild(style);
+    }
+    let root = await rootDocument.querySelector("#mo-turn-workflow-hud-root");
+    if (!root) {
+      const body = await rootDocument.querySelector("body");
+      if (!body) throw new Error("RisuAI main DOM body is unavailable");
+      root = await rootDocument.createElement("div");
+      await root.setAttribute("id", "mo-turn-workflow-hud-root");
+      await root.setAttribute("aria-live", "polite");
+      await root.setStyleAttribute(TURN_WORKFLOW_HUD_ROOT_STYLE);
+      await body.appendChild(root);
+    }
+    return root;
+  }
+
+  function clearTurnWorkflowHUDTimer() {
+    if (_turnWorkflowHUDTimer != null) {
+      clearInterval(_turnWorkflowHUDTimer);
+      _turnWorkflowHUDTimer = null;
+    }
+    _turnWorkflowHUDElapsedElement = null;
+    _turnWorkflowHUDElapsedStartedAt = "";
+  }
+
+  async function updateTurnWorkflowHUDElapsed() {
+    try {
+      const target = _turnWorkflowHUDElapsedElement;
+      const startedAt = Date.parse(_turnWorkflowHUDElapsedStartedAt);
+      if (!target) return;
+      if (!Number.isFinite(startedAt)) return;
+      const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      await target.setTextContent(" · " + tf("turn_hud.elapsed_seconds", { n: seconds }));
+    } catch { /* UI timer is best-effort only. */ }
+  }
+
+  function turnWorkflowHUDTurnLabel(view) {
+    const turn = Number(view && view.logical_turn || 0);
+    return turn > 0 ? tf("turn_hud.turn", { n: turn }) : t("turn_hud.turn_unknown");
+  }
+
+  function escapeTurnWorkflowHUDHTML(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function(char) {
+      return char === "&" ? "&amp;"
+        : char === "<" ? "&lt;"
+        : char === ">" ? "&gt;"
+        : char === '"' ? "&quot;"
+        : "&#39;";
+    });
+  }
+
+  function dismissTurnWorkflowHUD(requestId) {
+    if (requestId && _turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
+    _turnWorkflowHUDWatchToken++;
+    _turnWorkflowHUDWatchRunning = false;
+    _turnWorkflowHUDActiveRequestId = "";
+    _turnWorkflowHUDLastRevision = 0;
+    clearTurnWorkflowHUDTimer();
+    return queueTurnWorkflowHUDOperation("dismiss", async function() {
+      const rootDocument = await getTurnWorkflowHUDMainDocument();
+      const root = rootDocument && await rootDocument.querySelector("#mo-turn-workflow-hud-root");
+      if (root) {
+        await root.setInnerHTML("");
+        await root.setAttribute("aria-live", "polite");
+      }
+    });
+  }
+
+  async function attachTurnWorkflowHUDDismiss(card, requestId) {
+    if (!card || typeof card.addEventListener !== "function") return;
+    const dismiss = async function(event) {
+      if (event && String(event.type || "") === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+      await dismissTurnWorkflowHUD(requestId);
+    };
+    await card.addEventListener("click", dismiss);
+    await card.addEventListener("keydown", dismiss);
+  }
+
+  function buildTurnWorkflowHUDPresentation(view) {
+    const severity = String(view.severity || "info");
+    if (view.status === "failed" || severity === "error") {
+      const error = view.error && typeof view.error === "object" ? view.error : {};
+      const stage = Array.isArray(view.stages)
+        ? view.stages.find(function(item) { return item && item.key === error.stage_key; })
+        : null;
+      const meta = [
+        String(error.code || "TURN_WORKFLOW_FAILED"),
+        stage && stage.label_key ? t(stage.label_key) : "",
+        error.retryable === true ? t("turn_hud.retryable") : t("turn_hud.not_retryable"),
+      ].filter(Boolean).join(" · ");
+      return {
+        ariaLive: "assertive",
+        terminal: true,
+        elapsedStartedAt: "",
+        html: `<div class="mo-turn-hud-card is-error is-terminal" role="button" tabindex="0">`
+          + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.failed"))}</div>`
+          + `<div class="mo-turn-hud-error-message">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
+          + `<div class="mo-turn-hud-error-meta">${escapeTurnWorkflowHUDHTML(meta)}</div>`
+          + `<div class="mo-turn-hud-dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+          + `</div>`,
+      };
+    }
+
+    if (view.status === "completed" || view.status === "completed_with_warning") {
+      const completionLabel = view.status === "completed_with_warning"
+        ? t("turn_hud.completed_with_warning")
+        : t("turn_hud.completed");
+      const counts = Array.isArray(view.counts) ? view.counts : [];
+      const countHTML = counts.map(function(count) {
+        if (!count || typeof count.key !== "string") return;
+        const numericValue = Number(count.value);
+        const value = String(Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0);
+        return `<div class="mo-turn-hud-count${count.key === "total_committed" ? " is-total" : ""}">`
+          + `<span class="mo-turn-hud-count-label">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
+          + `<span class="mo-turn-hud-count-value">${escapeTurnWorkflowHUDHTML(value)}</span>`
+          + `</div>`;
+      }).filter(Boolean).join("");
+      return {
+        ariaLive: "polite",
+        terminal: true,
+        elapsedStartedAt: "",
+        html: `<div class="mo-turn-hud-card${severity === "warning" ? " is-warning" : ""} is-terminal" role="button" tabindex="0">`
+          + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
+          + `<div class="mo-turn-hud-grid">${countHTML}</div>`
+          + `<div class="mo-turn-hud-dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+          + `</div>`,
+      };
+    }
+
+    const stage = view.current_stage && typeof view.current_stage === "object" ? view.current_stage : null;
+    const ordinal = stage ? Number(stage.ordinal || 0) : 0;
+    const total = stage ? Number(stage.total || 0) : 0;
+    const elapsedStartedAt = stage && stage.llm_call === true && stage.status === "running" && stage.started_at
+      ? String(stage.started_at)
+      : "";
+    return {
+      ariaLive: "polite",
+      terminal: false,
+      elapsedStartedAt,
+      html: `<div class="mo-turn-hud-card${severity === "warning" ? " is-warning" : ""}">`
+        + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + (ordinal > 0 && total > 0 ? " · " + ordinal + "/" + total : ""))}</div>`
+        + `<div class="mo-turn-hud-stage"><span>${escapeTurnWorkflowHUDHTML(stage && stage.label_key ? t(stage.label_key) : t("turn_hud.stage.prepare_source"))}</span>`
+        + (elapsedStartedAt ? `<span class="mo-turn-hud-elapsed"></span>` : "")
+        + `</div></div>`,
+    };
+  }
+
+  function renderTurnWorkflowHUD(view) {
+    if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT) return;
+    const requestId = String(view.request_id || "");
+    if (!requestId) return;
+    if (_turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
+    _turnWorkflowHUDActiveRequestId = requestId;
+    const revision = Number(view.revision || 0);
+    _turnWorkflowHUDLastRevision = Math.max(_turnWorkflowHUDLastRevision, revision);
+    if (view.status === "invalidated") {
+      dismissTurnWorkflowHUD(requestId);
+      return;
+    }
+    const presentation = buildTurnWorkflowHUDPresentation(view);
+    return queueTurnWorkflowHUDOperation("render", async function() {
+      if (requestId !== _turnWorkflowHUDActiveRequestId) return;
+      if (revision > 0 && revision < _turnWorkflowHUDLastRevision) return;
+      const root = await ensureTurnWorkflowHUDRoot();
+      if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
+      clearTurnWorkflowHUDTimer();
+      await root.setAttribute("aria-live", presentation.ariaLive);
+      await root.setInnerHTML(presentation.html);
+      if (presentation.elapsedStartedAt) {
+        _turnWorkflowHUDElapsedElement = await root.querySelector(".mo-turn-hud-elapsed");
+        _turnWorkflowHUDElapsedStartedAt = presentation.elapsedStartedAt;
+        if (_turnWorkflowHUDElapsedElement) {
+          await updateTurnWorkflowHUDElapsed();
+          _turnWorkflowHUDTimer = setInterval(function() {
+            void updateTurnWorkflowHUDElapsed();
+          }, 1000);
+        }
+      }
+      if (presentation.terminal) {
+        await attachTurnWorkflowHUDDismiss(await root.querySelector(".mo-turn-hud-card"), requestId);
+      }
+    });
+  }
+
+  // The backend cannot classify its own unreachability. This is the one
+  // transport-only error owned by the host adapter.
+  function renderTurnWorkflowHUDTransportError(requestId) {
+    if (!requestId || requestId !== _turnWorkflowHUDActiveRequestId) return;
+    clearTurnWorkflowHUDTimer();
+    return queueTurnWorkflowHUDOperation("transport error render", async function() {
+      if (requestId !== _turnWorkflowHUDActiveRequestId) return;
+      const root = await ensureTurnWorkflowHUDRoot();
+      if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
+      await root.setAttribute("aria-live", "assertive");
+      await root.setInnerHTML(
+        `<div class="mo-turn-hud-card is-error is-terminal" role="button" tabindex="0">`
+        + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
+        + `<div class="mo-turn-hud-error-message">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
+        + `<div class="mo-turn-hud-error-meta">HUD_TRANSPORT_UNAVAILABLE</div>`
+        + `<div class="mo-turn-hud-dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+        + `</div>`
+      );
+      await attachTurnWorkflowHUDDismiss(await root.querySelector(".mo-turn-hud-card"), requestId);
+    });
+  }
+
+  function consumeTurnWorkflowHUD(view) {
+    if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT || view.status === "unknown") return false;
+    const requestId = String(view.request_id || "");
+    if (!requestId || (_turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId)) return false;
+    const revision = Number(view.revision || 0);
+    if (revision > 0 && revision < _turnWorkflowHUDLastRevision) return false;
+    renderTurnWorkflowHUD(view);
+    return true;
+  }
+
+  function stopTurnWorkflowHUDWatch(requestId, removeEmpty) {
+    if (requestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
+    _turnWorkflowHUDWatchToken++;
+    _turnWorkflowHUDWatchRunning = false;
+    if (removeEmpty && _turnWorkflowHUDLastRevision <= 0) {
+      dismissTurnWorkflowHUD(requestId);
+    }
+  }
+
+  function startTurnWorkflowHUDWatch(requestId) {
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId) return;
+    if (_turnWorkflowHUDWatchRunning && _turnWorkflowHUDActiveRequestId === normalizedRequestId) return;
+    _turnWorkflowHUDWatchToken++;
+    const token = _turnWorkflowHUDWatchToken;
+    _turnWorkflowHUDWatchRunning = true;
+    _turnWorkflowHUDActiveRequestId = normalizedRequestId;
+    _turnWorkflowHUDLastRevision = 0;
+    clearTurnWorkflowHUDTimer();
+    queueTurnWorkflowHUDOperation("start", async function() {
+      const root = await ensureTurnWorkflowHUDRoot();
+      if (root && normalizedRequestId === _turnWorkflowHUDActiveRequestId) {
+        await root.setAttribute("aria-live", "polite");
+        await root.setInnerHTML("");
+      }
+    });
+    (async function() {
+      let revision = 0;
+      let transportFailures = 0;
+      while (token === _turnWorkflowHUDWatchToken && _turnWorkflowHUDActiveRequestId === normalizedRequestId) {
+        const path = "/turn-workflow/status?request_id=" + encodeURIComponent(normalizedRequestId)
+          + "&after_revision=" + encodeURIComponent(String(revision))
+          + "&wait_ms=20000";
+        const view = await bridgeFetch(path, { method: "GET", timeoutMs: 23000 });
+        if (token !== _turnWorkflowHUDWatchToken || _turnWorkflowHUDActiveRequestId !== normalizedRequestId) break;
+        if (!view) {
+          transportFailures++;
+          if (transportFailures >= 2) {
+            renderTurnWorkflowHUDTransportError(normalizedRequestId);
+            break;
+          }
+          await new Promise(function(resolve) { setTimeout(resolve, 600); });
+          continue;
+        }
+        transportFailures = 0;
+        if (view.status === "unknown") {
+          await new Promise(function(resolve) { setTimeout(resolve, 120); });
+          continue;
+        }
+        if (!consumeTurnWorkflowHUD(view)) continue;
+        revision = Math.max(revision, Number(view.revision || 0));
+        if (view.status === "completed" || view.status === "completed_with_warning" || view.status === "failed" || view.status === "invalidated") {
+          break;
+        }
+      }
+      if (token === _turnWorkflowHUDWatchToken) _turnWorkflowHUDWatchRunning = false;
+    })().catch(function(err) {
+      debugLog("turn workflow HUD watcher failed:", err && err.message);
+      if (token === _turnWorkflowHUDWatchToken) {
+        _turnWorkflowHUDWatchRunning = false;
+        renderTurnWorkflowHUDTransportError(normalizedRequestId);
+      }
+    });
+  }
+
+  function turnWorkflowHUDRequestIdFromPrepareOptions(options) {
+    const source = options && options.sourceObservation && typeof options.sourceObservation === "object"
+      ? options.sourceObservation
+      : null;
+    const host = options && options.hostObservations && typeof options.hostObservations === "object"
+      ? options.hostObservations
+      : null;
+    return String(source && source.request_id || host && host.request_id || "").trim();
+  }
+
+  function turnWorkflowHUDRequestIdFromCompleteBody(body) {
+    const meta = body && body.client_meta && typeof body.client_meta === "object" ? body.client_meta : null;
+    const lineage = meta && meta.source_to_final_lineage_observation && typeof meta.source_to_final_lineage_observation === "object"
+      ? meta.source_to_final_lineage_observation
+      : null;
+    return String(lineage && lineage.archive_center_request_correlation_id || meta && meta.turn_workflow_request_id || "").trim();
+  }
+
   const archiveUpdateState = {
     lastCheck: null,
     lastDownload: null,
@@ -12622,6 +13157,7 @@
   }
 
   async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext, options = {}) {
+    let workflowRequestId = "";
     try {
       const prepareOptions = options && typeof options === "object" ? options : {};
       const freshFirstTurnLightMode = !!prepareOptions.freshFirstTurnLightMode;
@@ -12709,6 +13245,10 @@
         provider: normalizeEmbeddingProvider(settings.embeddingProvider, DEFAULT_SETTINGS.embeddingProvider),
         timeout_ms: getEmbeddingTimeoutMs(settings.embeddingTimeout),
       };
+      if (prepareOptions.sourceDecisionOnly !== true) {
+        workflowRequestId = turnWorkflowHUDRequestIdFromPrepareOptions(prepareOptions);
+        if (workflowRequestId) startTurnWorkflowHUDWatch(workflowRequestId);
+      }
 
       const result = await bridgeFetch("/prepare-turn", {
         method: "POST",
@@ -12717,7 +13257,15 @@
       });
 
       if (!result) {
+        if (workflowRequestId) renderTurnWorkflowHUDTransportError(workflowRequestId);
         return { source: "backend-off", fallback_reason: "backend_off", status: "error" };
+      }
+      if (workflowRequestId) {
+        if (result.turn_workflow_hud) {
+          consumeTurnWorkflowHUD(result.turn_workflow_hud);
+        } else {
+          stopTurnWorkflowHUDWatch(workflowRequestId, true);
+        }
       }
 
       // 응답이 왔으면 source 필드 보정 (backend → backend-{source})
@@ -12756,6 +13304,7 @@
         generated_at: result.generated_at || "",
         warnings: result.warnings || [],
         backendTiming: result.backend_timing || null,
+        turnWorkflowHUD: result.turn_workflow_hud || null,
         sourceContract: result.source_contract || null,
         currentInputDecision: result.current_input_decision || null,
         messageSourceEnvelope: result.message_source_envelope || null,
@@ -12796,6 +13345,7 @@
       };
     } catch (err) {
       debugLog("tryPrepareTurn error (non-fatal):", err.message);
+      if (workflowRequestId) renderTurnWorkflowHUDTransportError(workflowRequestId);
       return { source: "backend-error", fallback_reason: "backend_error", status: "error" };
     }
   }
@@ -24546,18 +25096,29 @@
 
   async function tryCompleteTurn(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, prebuiltBody) {
     if (!settings.enabled || !settings.dbEnabled) return null;
+    let workflowRequestId = "";
     try {
       const body = prebuiltBody || await buildCompleteTurnRequestBody(
         turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace
       );
       if (!body) return null;
+      workflowRequestId = turnWorkflowHUDRequestIdFromCompleteBody(body);
+      if (workflowRequestId) startTurnWorkflowHUDWatch(workflowRequestId);
       const result = await safeCall(
         () => bridgeFetchWithRetry("/complete-turn", { method: "POST", body, timeoutMs: getCompleteTurnTimeoutMs() }, 1),
         null, "tryCompleteTurn"
       );
+      if (workflowRequestId) {
+        if (result && result.turn_workflow_hud) {
+          consumeTurnWorkflowHUD(result.turn_workflow_hud);
+        } else if (!result) {
+          renderTurnWorkflowHUDTransportError(workflowRequestId);
+        }
+      }
       return result;
     } catch (err) {
       debugLog("[M-4c] tryCompleteTurn error:", err.message);
+      if (workflowRequestId) renderTurnWorkflowHUDTransportError(workflowRequestId);
       return null;
     }
   }
