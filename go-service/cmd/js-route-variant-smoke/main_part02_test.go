@@ -743,6 +743,25 @@ func TestArchiveCenterJSSeq08P703UIDetailModeMarkers(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		`turnWorkflowHUDEnabled: true`,
+		`merged.turnWorkflowHUDEnabled = merged.turnWorkflowHUDEnabled !== false`,
+		`<input type="checkbox" id="mo-turnWorkflowHUDEnabled"`,
+		`turnWorkflowHUDEnabled: readChecked("mo-turnWorkflowHUDEnabled", true)`,
+		`setCheckedIfPresent("mo-turnWorkflowHUDEnabled", settings.turnWorkflowHUDEnabled !== false)`,
+		`if (prevTurnWorkflowHUDEnabled && settings.turnWorkflowHUDEnabled === false)`,
+		`function turnWorkflowHUDIsEnabled()`,
+		`if (!turnWorkflowHUDIsEnabled())`,
+	}
+	for _, needle := range required {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing turn workflow HUD setting marker %q", needle)
+		}
+	}
+}
+
 func TestArchiveCenterJSInitiativeControlLatestEquivalentMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{

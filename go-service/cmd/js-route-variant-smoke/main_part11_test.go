@@ -489,6 +489,7 @@ const rootDocument = {
   }
 };
 const R = {getRootDocument: async () => rootDocument};
+const settings = {turnWorkflowHUDEnabled:true};
 const translations = {
   "turn_hud.completed": "완료",
   "turn_hud.completed_with_warning": "경고와 함께 완료",
@@ -543,7 +544,9 @@ function assert(condition, message) {
   assert(surface.attributes.style.includes("width:min(140px"), "HUD is wider than the compact right rail");
   assert(surface.card.attributes.style.includes("background:#181C24"), "completed HUD has no opaque fintech panel");
   assert(surface.card.attributes.style.includes("font-size:10px"), "completed HUD text is not compact");
-  assert(surface.innerHTML.includes("background:#13161C"), "completed HUD count cards do not use the near-black data surface");
+  assert(surface.innerHTML.includes("ARCHIVE CENTER"), "completed HUD has no product eyebrow");
+  assert(surface.innerHTML.includes("font-size:22px"), "completed HUD does not promote the total as its primary metric");
+  assert(surface.innerHTML.includes("grid-template-columns:repeat(2,minmax(0,1fr))"), "completed HUD details are not arranged as a compact ledger");
   assert(surface.innerHTML.includes("linear-gradient(135deg,rgba(93,115,230,.18),rgba(138,85,247,.10)"), "completed HUD total does not use the restrained blue-purple selection gradient");
   assert(surface.innerHTML.includes("color:#8B909A"), "completed HUD secondary text does not use the supplied hierarchy");
   assert(surface.button, "completed HUD has no visible close button");
@@ -566,6 +569,7 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(surface.elapsed && /초$/.test(surface.elapsed.textContent), "LLM elapsed seconds were not rendered");
   assert(intervals.length === 1 && intervals[0].ms === 1000, "LLM elapsed timer is not one second");
+  assert(surface.innerHTML.includes("height:3px") && surface.innerHTML.includes("width:42.9%"), "running HUD progress bar does not reflect the backend stage ordinal");
   await dismissTurnWorkflowHUD("running-b");
   await _turnWorkflowHUDRenderChain;
 
@@ -586,6 +590,16 @@ function assert(condition, message) {
   await failedCard.listeners.keydown({type:"keydown",key:"Enter"});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "Enter did not dismiss terminal HUD");
+
+  settings.turnWorkflowHUDEnabled = false;
+  assert(!consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"disabled-d",revision:1,
+    logical_turn:58,status:"completed",severity:"info",counts
+  }), "disabled HUD accepted a backend view");
+  startTurnWorkflowHUDWatch("disabled-d");
+  await _turnWorkflowHUDRenderChain;
+  assert(_turnWorkflowHUDActiveRequestId === "", "disabled HUD started a request watch");
+  assert(surface.innerHTML === "", "disabled HUD left visible content behind");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);

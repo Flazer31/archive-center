@@ -253,6 +253,7 @@
     // ── F-1: i18n ──
     uiLanguage: "ko",                // ko / en / ja — UI 표시 언어
     uiDetailMode: "full",            // full / reduced_info / status_only
+    turnWorkflowHUDEnabled: true,    // RisuAI 우측 턴 진행 HUD 표시
   });
 
   // ──────────────────────────────────────────────────────────────
@@ -1066,6 +1067,9 @@
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
       "settings.label.uiDetailMode": "UI 상세 수준",
       "settings.label.uiLanguage": "UI 언어",
+      "settings.label.turnWorkflowHUDEnabled": "플로팅 진행 UI",
+      "settings.turnWorkflowHUDEnabled.on": "켜기",
+      "settings.hint.turnWorkflowHUDEnabled": "현재 턴 진행, LLM 호출 시간, 생성·저장 결과를 화면 오른쪽에 표시합니다. 끄면 플로팅 UI가 나타나지 않습니다.",
       "settings.option.auxiliaryInjectionPlacement.after_anchor_marker": "앵커 마커 뒤",
       "settings.option.auxiliaryInjectionPlacement.after_first_system": "기존 방식: 첫 system 뒤",
       "settings.option.auxiliaryInjectionPlacement.after_last_cache_point": "마지막 캐시 지점 뒤",
@@ -1185,8 +1189,8 @@
       "turn_hud.stage.summary_checkpoints": "구간 요약 확인",
       "turn_hud.stage.complete": "모든 처리 완료",
       "turn_hud.count.total_committed": "총 생성·저장",
-      "turn_hud.count.raw_user": "사용자 원문",
-      "turn_hud.count.raw_assistant": "Assistant 원문",
+      "turn_hud.count.raw_user": "입력 원문",
+      "turn_hud.count.raw_assistant": "응답 원문",
       "turn_hud.count.effective_input": "최종 입력",
       "turn_hud.count.turn_summary": "턴 요약·기억",
       "turn_hud.count.direct_evidence": "직접 근거",
@@ -1302,6 +1306,9 @@
       "settings.label.storyNarrativeStance": "Story Direction Style",
       "settings.label.uiLanguage": "UI Language",
       "settings.label.uiDetailMode": "UI Detail Level",
+      "settings.label.turnWorkflowHUDEnabled": "Floating Turn UI",
+      "settings.turnWorkflowHUDEnabled.on": "Enabled",
+      "settings.hint.turnWorkflowHUDEnabled": "Shows turn progress, LLM call time, and generated or saved results on the right. Disable it to hide the floating UI.",
       "settings.uiDetailMode.full": "Full",
       "settings.uiDetailMode.reduced_info": "Reduced",
       "settings.uiDetailMode.status_only": "Status only",
@@ -2140,8 +2147,8 @@
       "turn_hud.stage.summary_checkpoints": "Checking interval summaries",
       "turn_hud.stage.complete": "All processing complete",
       "turn_hud.count.total_committed": "Total created/saved",
-      "turn_hud.count.raw_user": "User source",
-      "turn_hud.count.raw_assistant": "Assistant source",
+      "turn_hud.count.raw_user": "Input source",
+      "turn_hud.count.raw_assistant": "Response source",
       "turn_hud.count.effective_input": "Effective input",
       "turn_hud.count.turn_summary": "Turn summaries/memory",
       "turn_hud.count.direct_evidence": "Direct evidence",
@@ -2257,6 +2264,9 @@
       "settings.label.storyNarrativeStance": "ストーリー進行スタイル",
       "settings.label.uiLanguage": "UI言語",
       "settings.label.uiDetailMode": "UI情報量",
+      "settings.label.turnWorkflowHUDEnabled": "フローティング進行UI",
+      "settings.turnWorkflowHUDEnabled.on": "表示する",
+      "settings.hint.turnWorkflowHUDEnabled": "現在のターン進行、LLM呼び出し時間、生成・保存結果を右側に表示します。無効にするとフローティングUIは表示されません。",
       "settings.uiDetailMode.full": "全体",
       "settings.uiDetailMode.reduced_info": "要約",
       "settings.uiDetailMode.status_only": "状態のみ",
@@ -3093,8 +3103,8 @@
       "turn_hud.stage.summary_checkpoints": "区間要約を確認",
       "turn_hud.stage.complete": "すべての処理が完了",
       "turn_hud.count.total_committed": "生成・保存合計",
-      "turn_hud.count.raw_user": "ユーザー原文",
-      "turn_hud.count.raw_assistant": "Assistant原文",
+      "turn_hud.count.raw_user": "入力原文",
+      "turn_hud.count.raw_assistant": "応答原文",
       "turn_hud.count.effective_input": "最終入力",
       "turn_hud.count.turn_summary": "ターン要約・記憶",
       "turn_hud.count.direct_evidence": "直接根拠",
@@ -10231,6 +10241,7 @@
       DEFAULT_SETTINGS.uiDetailMode,
       UI_DETAIL_MODE_OPTIONS,
     );
+    merged.turnWorkflowHUDEnabled = merged.turnWorkflowHUDEnabled !== false;
     // 입력 개선 ON/OFF는 user-input rewrite 경로만 제어한다.
     // supervisor/context injection 별도 토글 UI는 제거되었으므로 legacy false 저장값은 더 이상 신뢰하지 않는다.
     merged.injectionEnabled = true;
@@ -12396,15 +12407,21 @@
   const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#181C24;box-shadow:0 16px 40px rgba(0,0,0,.48);padding:8px;pointer-events:auto;font-size:10px;line-height:1.25;letter-spacing:-.01em;color:#F4F5F7;white-space:normal;overflow:hidden;overflow-wrap:anywhere";
   const TURN_WORKFLOW_HUD_WARNING_STYLE = ";border-color:rgba(138,85,247,.35);background:#1C1828";
   const TURN_WORKFLOW_HUD_ERROR_STYLE = ";border-color:rgba(225,88,166,.55);background:#2A151D;box-shadow:0 16px 40px rgba(0,0,0,.48),0 0 20px rgba(225,88,166,.10)";
-  const TURN_WORKFLOW_HUD_TITLE_STYLE = "padding-right:20px;font-size:10px;font-weight:600;line-height:1.25;letter-spacing:-.015em;color:#F4F5F7";
-  const TURN_WORKFLOW_HUD_STAGE_STYLE = "margin-top:4px;font-size:9px;line-height:1.35;color:#8B909A";
-  const TURN_WORKFLOW_HUD_ELAPSED_STYLE = "font-size:9px;font-weight:600;color:#8FA7FF;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_EYEBROW_STYLE = "padding-right:20px;font-size:8px;font-weight:500;line-height:1.2;letter-spacing:.12em;color:#5C626D";
+  const TURN_WORKFLOW_HUD_TITLE_STYLE = "margin-top:2px;padding-right:20px;font-size:11px;font-weight:500;line-height:1.25;letter-spacing:-.015em;color:#F4F5F7";
+  const TURN_WORKFLOW_HUD_DIVIDER_STYLE = "height:1px;margin:6px 0;background:rgba(255,255,255,.07)";
+  const TURN_WORKFLOW_HUD_STAGE_STYLE = "display:flex;align-items:center;justify-content:space-between;gap:5px;margin-top:5px;font-size:9px;line-height:1.35;color:#8B909A";
+  const TURN_WORKFLOW_HUD_ELAPSED_STYLE = "flex:none;font-size:9px;font-weight:600;color:#8FA7FF;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_PROGRESS_STYLE = "height:3px;margin-top:7px;border-radius:999px;background:#0F1116;overflow:hidden";
+  const TURN_WORKFLOW_HUD_PROGRESS_FILL_STYLE = "height:100%;border-radius:999px;background:linear-gradient(90deg,#5D73E6,#8FA7FF 55%,#8A55F7)";
   const TURN_WORKFLOW_HUD_CLOSE_STYLE = "position:absolute;top:5px;right:5px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:18px;height:18px;margin:0;padding:0;border:1px solid rgba(255,255,255,.07);border-radius:6px;background:#0F1116;color:#8B909A;font-size:13px;line-height:1;cursor:pointer";
-  const TURN_WORKFLOW_HUD_GRID_STYLE = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;margin-top:6px";
-  const TURN_WORKFLOW_HUD_COUNT_STYLE = "box-sizing:border-box;min-width:0;border:1px solid rgba(255,255,255,.07);border-radius:8px;background:#13161C;padding:4px";
-  const TURN_WORKFLOW_HUD_TOTAL_STYLE = ";grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(135deg,rgba(93,115,230,.18),rgba(138,85,247,.10) 58%,#13161C);border-color:rgba(143,167,255,.30)";
-  const TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE = "display:block;font-size:9px;line-height:1.15;letter-spacing:.01em;color:#8B909A;white-space:normal;overflow-wrap:anywhere";
-  const TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE = "display:block;margin-top:1px;font-size:12px;line-height:1;font-weight:700;color:#F4F5F7;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_TOTAL_STYLE = "display:flex;align-items:flex-end;justify-content:space-between;gap:6px;border:1px solid rgba(143,167,255,.30);border-radius:10px;background:linear-gradient(135deg,rgba(93,115,230,.18),rgba(138,85,247,.10) 58%,#13161C);padding:7px";
+  const TURN_WORKFLOW_HUD_TOTAL_LABEL_STYLE = "max-width:68px;font-size:8px;line-height:1.2;letter-spacing:.06em;color:#8B909A";
+  const TURN_WORKFLOW_HUD_TOTAL_VALUE_STYLE = "font-size:22px;line-height:.9;font-weight:500;letter-spacing:-.04em;color:#F4F5F7;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_LEDGER_STYLE = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:8px;margin-top:4px";
+  const TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE = "display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.07)";
+  const TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE = "min-width:0;font-size:8px;line-height:1.15;letter-spacing:.01em;color:#8B909A;white-space:normal;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE = "flex:none;font-size:10px;line-height:1;font-weight:600;color:#F4F5F7;font-variant-numeric:tabular-nums";
   const TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE = "margin-top:5px;font-size:9px;line-height:1.35;color:#F4F5F7";
   const TURN_WORKFLOW_HUD_ERROR_META_STYLE = "margin-top:4px;padding-right:18px;font-size:8px;line-height:1.3;color:#E158A6;white-space:normal;overflow-wrap:anywhere";
 
@@ -12559,7 +12576,9 @@
         elapsedStartedAt: "",
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
           + turnWorkflowHUDDismissButtonHTML()
+          + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
           + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.failed"))}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>`
           + `</div>`,
@@ -12571,12 +12590,19 @@
         ? t("turn_hud.completed_with_warning")
         : t("turn_hud.completed");
       const counts = Array.isArray(view.counts) ? view.counts : [];
-      const countHTML = counts.map(function(count) {
+      const totalCount = counts.find(function(count) {
+        return count && count.key === "total_committed";
+      });
+      const totalNumericValue = totalCount ? Number(totalCount.value) : 0;
+      const totalValue = String(Number.isFinite(totalNumericValue) ? Math.max(0, Math.trunc(totalNumericValue)) : 0);
+      const totalLabel = totalCount ? t(totalCount.label_key || totalCount.key) : t("turn_hud.count.total_committed");
+      const countHTML = counts.filter(function(count) {
+        return count && count.key !== "total_committed";
+      }).map(function(count) {
         if (!count || typeof count.key !== "string") return;
         const numericValue = Number(count.value);
         const value = String(Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0);
-        const totalStyle = count.key === "total_committed" ? TURN_WORKFLOW_HUD_TOTAL_STYLE : "";
-        return `<div style="${TURN_WORKFLOW_HUD_COUNT_STYLE + totalStyle}">`
+        return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
           + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
           + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(value)}</span>`
           + `</div>`;
@@ -12586,8 +12612,14 @@
         elapsedStartedAt: "",
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "")}">`
           + turnWorkflowHUDDismissButtonHTML()
+          + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
           + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_GRID_STYLE}">${countHTML}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
+          + `<div style="${TURN_WORKFLOW_HUD_TOTAL_STYLE}">`
+          + `<span style="${TURN_WORKFLOW_HUD_TOTAL_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(totalLabel)}</span>`
+          + `<span style="${TURN_WORKFLOW_HUD_TOTAL_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(totalValue)}</span>`
+          + `</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${countHTML}</div>`
           + `</div>`,
       };
     }
@@ -12595,6 +12627,9 @@
     const stage = view.current_stage && typeof view.current_stage === "object" ? view.current_stage : null;
     const ordinal = stage ? Number(stage.ordinal || 0) : 0;
     const total = stage ? Number(stage.total || 0) : 0;
+    const progressPercent = ordinal > 0 && total > 0
+      ? Math.min(100, Math.max(0, (ordinal / total) * 100))
+      : 0;
     const elapsedStartedAt = stage && stage.llm_call === true && stage.status === "running" && stage.started_at
       ? String(stage.started_at)
       : "";
@@ -12602,14 +12637,26 @@
       terminal: false,
       elapsedStartedAt,
       html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "")}">`
+        + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
         + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + (ordinal > 0 && total > 0 ? " · " + ordinal + "/" + total : ""))}</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
         + `<div style="${TURN_WORKFLOW_HUD_STAGE_STYLE}"><span>${escapeTurnWorkflowHUDHTML(stage && stage.label_key ? t(stage.label_key) : t("turn_hud.stage.prepare_source"))}</span>`
         + (elapsedStartedAt ? `<time style="${TURN_WORKFLOW_HUD_ELAPSED_STYLE}"></time>` : "")
-        + `</div></div>`,
+        + `</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_PROGRESS_STYLE}"><div style="${TURN_WORKFLOW_HUD_PROGRESS_FILL_STYLE};width:${progressPercent.toFixed(1)}%"></div></div>`
+        + `</div>`,
     };
   }
 
+  function turnWorkflowHUDIsEnabled() {
+    return !settings || settings.turnWorkflowHUDEnabled !== false;
+  }
+
   function renderTurnWorkflowHUD(view) {
+    if (!turnWorkflowHUDIsEnabled()) {
+      dismissTurnWorkflowHUD();
+      return;
+    }
     if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT) return;
     const requestId = String(view.request_id || "");
     if (!requestId) return;
@@ -12648,6 +12695,10 @@
   // The backend cannot classify its own unreachability. This is the one
   // transport-only error owned by the host adapter.
   function renderTurnWorkflowHUDTransportError(requestId) {
+    if (!turnWorkflowHUDIsEnabled()) {
+      dismissTurnWorkflowHUD();
+      return;
+    }
     if (!requestId || requestId !== _turnWorkflowHUDActiveRequestId) return;
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("transport error render", async function() {
@@ -12657,7 +12708,9 @@
       await root.setInnerHTML(
         `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
         + turnWorkflowHUDDismissButtonHTML()
+        + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
         + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
         + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
         + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">HUD_TRANSPORT_UNAVAILABLE</div>`
         + `</div>`
@@ -12667,6 +12720,7 @@
   }
 
   function consumeTurnWorkflowHUD(view) {
+    if (!turnWorkflowHUDIsEnabled()) return false;
     if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT || view.status === "unknown") return false;
     const requestId = String(view.request_id || "");
     if (!requestId || (_turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId)) return false;
@@ -12686,6 +12740,10 @@
   }
 
   function startTurnWorkflowHUDWatch(requestId) {
+    if (!turnWorkflowHUDIsEnabled()) {
+      dismissTurnWorkflowHUD();
+      return;
+    }
     const normalizedRequestId = String(requestId || "").trim();
     if (!normalizedRequestId) return;
     if (_turnWorkflowHUDWatchRunning && _turnWorkflowHUDActiveRequestId === normalizedRequestId) return;
@@ -50006,6 +50064,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             <option value="status_only"${s.uiDetailMode === "status_only" ? " selected" : ""}>${t('settings.uiDetailMode.status_only')}</option>
           </select>
         </div>
+        <div class="mo-row">
+          <label>${t('settings.label.turnWorkflowHUDEnabled')}</label>
+          <div class="mo-chk">
+            <input type="checkbox" id="mo-turnWorkflowHUDEnabled"${s.turnWorkflowHUDEnabled !== false ? " checked" : ""}>
+            <label for="mo-turnWorkflowHUDEnabled">${t('settings.turnWorkflowHUDEnabled.on')}</label>
+          </div>
+          <small>${t('settings.hint.turnWorkflowHUDEnabled')}</small>
+        </div>
       </div>
     </div>
     <!-- takeoverMode는 사용자 혼선을 줄이기 위해 UI에서 숨김 (항상 off 자동 운용) -->
@@ -50944,6 +51010,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       $("mo-save-btn").addEventListener("click", async () => {
         try {
           const prevDebug = settings.debug;
+          const prevTurnWorkflowHUDEnabled = settings.turnWorkflowHUDEnabled !== false;
           const rawBridgeUrl = $("mo-bridgeUrl").value;
           const readValue = (id, fallback = "", trim = false) => {
             const el = $(id);
@@ -51032,10 +51099,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             // F-1: UI Language
             uiLanguage: $("mo-uiLanguage").value,
             uiDetailMode: $("mo-uiDetailMode").value,
+            turnWorkflowHUDEnabled: readChecked("mo-turnWorkflowHUDEnabled", true),
           };
           // sanitizeSettings가 숫자/URL 검증을 처리
           const updated = await updateSettings(patch);
           if (!updated) throw new Error("save failed");
+          if (prevTurnWorkflowHUDEnabled && settings.turnWorkflowHUDEnabled === false) {
+            await dismissTurnWorkflowHUD();
+          }
           if (prevDebug !== settings.debug) {
             await closeSettingsPanel();
             await renderSettingsPanel();
@@ -51096,6 +51167,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           $("mo-narrativeGuideStrength").value = settings.narrativeGuideStrength || "weak";
           $("mo-storyNarrativeStance").value = settings.storyNarrativeStance || "balanced";
           $("mo-uiDetailMode").value = settings.uiDetailMode || "full";
+          setCheckedIfPresent("mo-turnWorkflowHUDEnabled", settings.turnWorkflowHUDEnabled !== false);
           syncInputImprovementDependentControls();
           syncAllRangesFromInputs();
 
