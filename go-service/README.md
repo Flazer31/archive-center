@@ -1,47 +1,57 @@
 # Go Service
 
-Status: R0/R1 shadow skeleton active.
+Status: Archive Center 3.5 live backend.
 
-This directory contains the future Go-primary backend service for Archive Center 2.0. It does not implement live behavior yet.
+This directory contains the Go-primary Archive Center backend. In the packaged
+`live` profile it owns request planning, memory and source selection, prompt
+assembly, budget calculation, canonical turn decisions, persistence,
+orchestration and backend ViewModels. `Archive Center.js` remains the thin
+RisuAI host adapter.
 
 ## Structure
 
-- `cmd/archive-center-go/` - Entry point.
-- `internal/config/` - Configuration with safe defaults and live-cutover guard.
-- `internal/httpapi/` - HTTP handlers (`/health`, `/ready`, `/version`).
+- `cmd/archive-center-go/` - Backend entry point.
+- `cmd/` - Release, migration, integrity and diagnostic tools.
+- `internal/config/` - Runtime and provider configuration.
+- `internal/httpapi/` - RisuAI bridge, turn lifecycle, memory, source and
+  diagnostic HTTP handlers.
+- `internal/store/` - MariaDB canonical persistence.
+- `migrations/` - Versioned MariaDB schema.
 
-## Endpoints (Current)
+## Runtime Boundary
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | /health | Liveness probe |
-| GET | /ready | Readiness probe with dependency state |
-| GET | /version | Build metadata |
+- MariaDB is canonical truth.
+- ChromaDB is a rebuildable vector retrieval lane, not canonical storage.
+- Raw user and assistant text is preserved before critic-derived processing.
+- JavaScript supplies host observations and applies backend decisions; it does
+  not duplicate memory policy.
+- `.env`, databases, vector collections, logs and user content stay outside the
+  release package.
 
-## Port
+The permanent boundary is defined in
+[`../docs/permanent-risu-host-backend-boundary.md`](../docs/permanent-risu-host-backend-boundary.md).
+
+## Service
 
 Default bind: `127.0.0.1:28080`
 
-## Mode
+Core operational probes include:
 
-Default mode: `shadow`
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Process liveness |
+| GET | `/ready` | Dependency and runtime readiness |
+| GET | `/version` | Build metadata |
 
-Live and cutover are explicitly disabled by `config.Validate()` and `config.IsLiveCutoverAllowed()`.
+The product runtime uses `AC_STORE_MODE=mariadb_authority`. Development and
+diagnostic modes are configuration-controlled and do not change the release
+data ownership boundary.
 
-## CLI Tools
+## Validation
 
-### Shadow Parity Report
+Use workspace-local Go cache/temp directories when the default cache is not
+writable, then run:
 
-Run read-only probes against both Python and Go backends and emit a markdown parity report:
-
-```bash
-go run ./cmd/shadow-parity-report/main.go -python-base http://127.0.0.1:8000 -go-base http://127.0.0.1:28080 -out parity-report.md
+```powershell
+go test ./... -count=1
 ```
-
-Flags: `-python-base`, `-go-base`, `-out` (empty = stdout), `-timeout`.
-
-The report is R1 evidence only. It compares status codes and top-level JSON keys for allowlisted read-only probes; it does not authorize R2 write routes, MariaDB authority, ChromaDB live reads, or Go default runtime switch.
-
-## Dependencies
-
-Stdlib only. No third-party modules.

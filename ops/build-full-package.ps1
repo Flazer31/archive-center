@@ -1,8 +1,8 @@
 param(
     [string]$OutputRoot,
     [string]$PackageName = "",
-    [string]$PackageKind = "full",
-    [string]$PackageVersion = "3.0.2",
+    [string]$PackageKind = "managed",
+    [string]$PackageVersion = "3.5.0",
     [string]$ChromaRuntime = "",
     [string]$CodeSigningCertThumbprint = "",
     [string]$TimestampServer = "http://timestamp.digicert.com",
@@ -134,16 +134,26 @@ function Set-CopiedPackageKindText([string]$Path, [string]$PackageKind, [string]
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return
     }
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.2" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.5.0" } else { $PackageVersion.Trim() }
+    $packageLabel = if ($PackageKind -eq "managed") {
+        "Archive Center $version Windows Auto Install Package"
+    } else {
+        "Archive Center $version Windows Package"
+    }
+    $startupLabel = if ($PackageKind -eq "managed") {
+        "Starting Archive Center $version Windows auto-install package"
+    } else {
+        "Starting Archive Center $version package"
+    }
     $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-    $text = $text.Replace("Archive Center 2.1 Windows Full Package", "Archive Center $version Windows Package")
-    $text = $text.Replace("Starting Archive Center 2.1 full package", "Starting Archive Center $version package")
+    $text = $text.Replace("Archive Center 2.1 Windows Full Package", $packageLabel)
+    $text = $text.Replace("Starting Archive Center 2.1 full package", $startupLabel)
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($Path, $text, $utf8NoBom)
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.2" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.5.0" } else { $PackageVersion.Trim() }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $patterns = @("*.md", "*.txt", "*.bat", "*.cmd", "*.ps1", "*.sh", "*.command")
     foreach ($pattern in $patterns) {
@@ -311,7 +321,7 @@ function Write-PackageTrustEvidence([string]$Root) {
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
         scope = "managed_package_payloads"
         signature_scope = "executable_and_script_payloads"
-        package_root = $Root
+        package_root = "."
         automatic_defender_exclusions = $false
         checked_files = $items.Count
         managed_file_count = $items.Count
@@ -347,25 +357,39 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 }
 
 $PackageKind = $PackageKind.Trim().ToLowerInvariant()
-if ($PackageKind -ne "full") {
-    throw "Unsupported PackageKind: $PackageKind. Archive Center builds the standard package only."
+if ($PackageKind -notin @("managed", "full")) {
+    throw "Unsupported PackageKind: $PackageKind. Use managed or full."
 }
 
 if ([string]::IsNullOrWhiteSpace($PackageName)) {
-    $PackageName = "Archive Center $PackageVersion Windows Package"
+    $PackageName = if ($PackageKind -eq "managed") {
+        "Archive Center $PackageVersion Windows Auto Install Package"
+    } else {
+        "Archive Center $PackageVersion Windows Package"
+    }
 }
 
-$runtimeProfileDefault = "full_local"
-$vectorModeDefault = "bundled"
-$packageProfile = "windows_full_local"
 $vectorEngine = "chromadb"
-$requiredRuntimePayloads = @("chromadb")
+if ($PackageKind -eq "managed") {
+    if (-not [string]::IsNullOrWhiteSpace($ChromaRuntime)) {
+        throw "Managed Windows packages must not bundle ChromaDB. Remove -ChromaRuntime or use -PackageKind full for an internal full build."
+    }
+    $runtimeProfileDefault = "core_lite"
+    $vectorModeDefault = "fallback"
+    $packageProfile = "windows_managed_auto_install"
+    $requiredRuntimePayloads = @()
+} else {
+    $runtimeProfileDefault = "full_local"
+    $vectorModeDefault = "bundled"
+    $packageProfile = "windows_full_local"
+    $requiredRuntimePayloads = @("chromadb")
+}
 
 $outputRootFull = Resolve-FullPath $OutputRoot
 $targetFull = Resolve-FullPath (Join-Path $outputRootFull $PackageName)
 
 if (-not (Test-PathInside $targetFull $repoRoot)) {
-    throw "Refusing to write full package outside Archive Center 2.0: $targetFull"
+    throw "Refusing to write full package outside the Archive Center workspace: $targetFull"
 }
 
 if ((Test-Path -LiteralPath $targetFull) -and -not $ForceRefresh) {
@@ -437,17 +461,24 @@ Set-CopiedPackageKindText (Join-Path $targetFull "01_start_archive_center_window
 Set-CopiedPackageKindText (Join-Path $targetFull "scripts\start-full-windows.ps1") $PackageKind $PackageVersion
 Set-CopiedPackageVersionText $targetFull $PackageVersion
 
-$chromaCopied = Copy-RuntimePayload $ChromaRuntime "runtime\ChromaDB"
+$chromaCopied = $false
+if ($PackageKind -eq "full") {
+    $chromaCopied = Copy-RuntimePayload $ChromaRuntime "runtime\ChromaDB"
+}
 
 $runtimeRoot = Join-Path $targetFull "runtime"
-$chromaRuntimeFound = Find-ChromaRuntime $runtimeRoot
+$chromaRuntimeFound = if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+    Find-ChromaRuntime $runtimeRoot
+} else {
+    ""
+}
 if ($chromaCopied) {
     Install-ChromaRuntimeLicenseFiles (Join-Path $runtimeRoot "ChromaDB")
 }
 $codeSigning = Set-OwnPayloadSignatures $targetFull $CodeSigningCertThumbprint $TimestampServer
 $trustEvidence = Write-PackageTrustEvidence $targetFull
 $missing = @()
-if ([string]::IsNullOrWhiteSpace($chromaRuntimeFound)) {
+if ($PackageKind -eq "full" -and [string]::IsNullOrWhiteSpace($chromaRuntimeFound)) {
     $missing += "chromadb_runtime"
 }
 
@@ -459,7 +490,7 @@ if (-not $releaseReady -and -not $AllowMissingRuntimePayloads) {
         package_profile = $packageProfile
         status = "blocked_missing_runtime_payloads"
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
-        target_root = $targetFull
+        target_root = "."
         runtime_profile_default = $runtimeProfileDefault
         vector_mode_default = $vectorModeDefault
         required_runtime_payloads = $requiredRuntimePayloads
@@ -482,28 +513,29 @@ $manifest = [ordered]@{
     package_kind = $PackageKind
     package_profile = $packageProfile
     generated_at = [DateTimeOffset]::UtcNow.ToString("o")
-    source_root = $repoRoot
-    target_root = $targetFull
+    source_root = "release-source"
+    target_root = "."
     release_ready = $releaseReady
     status = if ($releaseReady) { "green" } else { "red_missing_runtime_payloads" }
     size_bytes = [int64]$sizeBytes
     canonical_store = "mariadb"
     vector_engine = $vectorEngine
-    includes_runtime_binaries = $releaseReady
+    includes_runtime_binaries = [bool]$chromaCopied
     mariadb_distribution = "separate_official_runtime_install"
     runtime_profile_default = $runtimeProfileDefault
     vector_mode_default = $vectorModeDefault
     go_toolchain = $goVersionText
-    chromadb_version = "1.5.9"
+    chromadb_version = if ($chromaCopied) { "1.5.9" } else { "not_bundled" }
     chromadb_api_path = "/api/v2"
     required_runtime_payloads = $requiredRuntimePayloads
     runtime_payloads = [ordered]@{
         mariadb_payload_copied = $false
         mariadb_install_tool = "tools/install-windows.ps1"
         mariadb_external_runtime_root = "%LOCALAPPDATA%\ArchiveCenter\runtime\MariaDB"
-        chromadb_copied_from = $ChromaRuntime
+        chromadb_copied_from = if ($chromaCopied) { "release-runtime-input" } else { "" }
         chromadb_payload_copied = [bool]$chromaCopied
         chromadb_runtime_path = $chromaRuntimeFound
+        chromadb_default_behavior = if ($PackageKind -eq "managed") { "fallback; configure an external or separately installed local ChromaDB to enable vector mode" } else { "bundled" }
     }
     windows_trust = [ordered]@{
         automatic_defender_exclusions = $false
@@ -558,7 +590,8 @@ if ($Zip -and $UpdateZip) {
     throw "Use either -Zip for the full installation archive or -UpdateZip for the managed automatic-update archive, not both."
 }
 if ($UpdateZip) {
-    $updatePackageName = $PackageName -replace '(?i)Windows Package$', 'Windows Update Package'
+    $updatePackageName = $PackageName -replace '(?i)Windows Auto Install Package$', 'Windows Update Package'
+    $updatePackageName = $updatePackageName -replace '(?i)Windows Package$', 'Windows Update Package'
     if ($updatePackageName -eq $PackageName) {
         $updatePackageName = "$PackageName Update"
     }

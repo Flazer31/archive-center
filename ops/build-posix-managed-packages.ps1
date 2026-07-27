@@ -1,7 +1,7 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string]$PackageVersion = "3.0.2",
+    [string]$PackageVersion = "3.5.0",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -46,7 +46,7 @@ function Write-TextFile([string]$Path, [string]$Value) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.2" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.5.0" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -195,7 +195,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 }
 $outputRootFull = Resolve-FullPath $OutputRoot
 if (-not (Test-PathInside $outputRootFull $repoRoot)) {
-    throw "Refusing to write outside Archive Center 2.0: $outputRootFull"
+    throw "Refusing to write outside the Archive Center workspace: $outputRootFull"
 }
 
 $goServiceRoot = Join-Path $repoRoot "go-service"
@@ -277,7 +277,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.0.2" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.5.0" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }
@@ -369,8 +369,8 @@ foreach ($target in $targets) {
         status = $target.Status
         release_ready = $false
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
-        source_root = $repoRoot
-        target_root = $targetRoot
+        source_root = "release-source"
+        target_root = "."
         size_bytes = [int64]$sizeBytes
         canonical_store = "mariadb"
         vector_engine = "optional_chromadb"

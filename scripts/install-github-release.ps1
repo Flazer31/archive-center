@@ -28,7 +28,7 @@ function Get-ArchiveCenterPlatform {
 
 function Get-AssetNeedle([string]$Platform) {
     switch ($Platform) {
-        "windows-x64" { return "windows package" }
+        "windows-x64" { return "windows auto install" }
         "linux-x64" { return "linux x64" }
         "linux-arm64" { return "linux arm64" }
         "macos-intel" { return "macos intel" }

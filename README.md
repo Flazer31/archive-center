@@ -1,4 +1,22 @@
-# Archive Center 2.0
+# Archive Center 3.5
+
+Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
+관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
+
+3.5 누적 릴리스에는 Canon Pack과 Source Discovery, RisuAI source lifecycle 추적,
+자료 종류별 독립 기억 예산, 출력 계보와 플로팅 진행 HUD가 포함됩니다. 완료 범위,
+실제 UI 제공 상태, 추가 검증이 필요한 부분과 3.6 이후 인계는
+[`docs/3.1-3.5-consolidated-release.md`](docs/3.1-3.5-consolidated-release.md)에
+정리되어 있습니다.
+
+## Runtime Architecture
+
+- `Archive Center.js`: RisuAI hook 관찰, backend 통신, 실제 payload 적용과 HUD/UI
+- Go backend: 기억 선택, 예산 조립, source·turn 판정, 저장과 orchestration
+- MariaDB: canonical 원문·기억·상태
+- ChromaDB: 삭제·재구축 가능한 벡터 검색 보조 계층
+
+JavaScript는 두 번째 backend가 아니며, 기억 정책과 저장 판단은 Go가 소유합니다.
 
 ## License
 
@@ -35,48 +53,27 @@ Raw `git clone` is a source/operator path. It does not by itself configure
 MariaDB, ChromaDB, package launchers, or live service env. See
 `docs/2.3-github-install-update-contract.md`.
 
-Archive Center 2.0 is a new migration workspace for moving the existing Archive Center backend substrate toward:
+## Package and Data Safety
 
-- Go-primary backend runtime
-- MariaDB canonical truth
-- ChromaDB local-first vector retrieval lane in shadow/limited mode
+Release packages provide Windows x64, Linux x64/arm64, macOS Intel/Apple
+Silicon and Android Termux arm64 builds. Platform packages are cross-built and
+inspected here; real-device installation, update and recovery proof remains a
+separate release gate where the matching device is unavailable.
 
-The unfinished Milvus experiment has been retired. ChromaDB is the only product vector engine.
+User `.env`, API keys, MariaDB or SQLite databases, ChromaDB collections,
+original-work documents, chats, logs, caches and runtime state must never be
+included in a source or binary release. Only reviewed example configuration is
+shipped. Existing user configuration and data are preserved during update.
 
-This folder is intentionally not a copy of `Archive Center Beta 0.8(fix)`. The 0.8(fix) tree remains the current runtime baseline and compatibility reference. The goal is to migrate the completed 0.8(fix) backend feature set into the new substrate, not to reduce the feature surface. Runtime secrets, databases, vector indexes, caches, logs, backups, and release artifacts must stay outside this workspace.
+## Development Validation
 
-`Archive Center.js` remains the RisuAI-facing JavaScript host adapter. 2.0 backend migration must preserve its HTTP payload, trace, fallback, and compatibility contract instead of rewriting it.
+From the active source tree:
 
-## User Installation Burden Kill Gate
+```powershell
+node --check "Archive Center.js"
+cd go-service
+go test ./... -count=1
+```
 
-2.0 must not require normal users to manually install and operate Go, MariaDB, ChromaDB, Python fallback tools, and RisuAI artifacts as separate products. The default local-user path must be a single packaged launcher/installer or a clearly bounded one-command bootstrap. Advanced external MariaDB/ChromaDB configuration may exist as an opt-in operator path only.
-
-The current backend direction is fixed as MariaDB + ChromaDB. Release artifact checks still reject obsolete Milvus data files so historical experiments cannot leak into packages.
-
-If this packaging story cannot be made practical for low-resource local users, the 2.0 migration must pause, redesign, or cancel before any R2 cutover. Passing Go/MariaDB/ChromaDB technical tests is not enough for release adoption.
-
-## Current Phase
-
-Status: R0/R1 foundation active. The 2.0-0 readiness floor is green, Go runtime work has R1 `implemented-shadow` evidence, MariaDB is the planned canonical truth backend, and ChromaDB is the active vector/search accelerator direction. No R2/R3 cutover-ready claim is made.
-
-The current segment is not a live migration. It establishes the workspace, migration boundaries, safety gates, Go shadow service, compare tooling, and first parity evidence before any MariaDB authority, ChromaDB live/default vector switch, or Go default runtime switch.
-
-## First Build Order
-
-1. Freeze 2.0 workspace rules and artifact hygiene.
-2. Define current Python/FastAPI route and service contract from 0.8(fix).
-3. Capture baseline metrics from the current runtime.
-4. Define MariaDB truth boundary without cutover.
-5. Define ChromaDB vector/search accelerator boundary without cutover.
-6. Define Go service boundary without replacing Python.
-7. Run low-resource feasibility/shakedown before any R2 cutover.
-
-## Non-Goals For This Phase
-
-- No Go service cutover.
-- No MariaDB authority switch.
-- No ChromaDB live/default vector switch.
-- No alternate vector engine migration in the current checklist.
-- No old path retirement.
-- No `Archive Center.js` rewrite or routine 2.0 migration edits.
-- No secrets or runtime data copied into the 2.0 workspace.
+Runtime ownership rules are documented in
+[`docs/permanent-risu-host-backend-boundary.md`](docs/permanent-risu-host-backend-boundary.md).
