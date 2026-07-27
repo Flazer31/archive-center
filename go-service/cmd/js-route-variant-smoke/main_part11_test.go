@@ -541,8 +541,11 @@ function assert(condition, message) {
   assert(surface.attributes.style.includes("top:50%") && surface.attributes.style.includes("translateY(-50%)"), "HUD is not positioned at right center");
   assert(surface.attributes.style.includes("right:max(5px"), "HUD right safe-area placement is missing");
   assert(surface.attributes.style.includes("width:min(140px"), "HUD is wider than the compact right rail");
-  assert(surface.card.attributes.style.includes("background:#101722"), "completed HUD has no opaque window");
+  assert(surface.card.attributes.style.includes("background:#181C24"), "completed HUD has no opaque fintech panel");
   assert(surface.card.attributes.style.includes("font-size:10px"), "completed HUD text is not compact");
+  assert(surface.innerHTML.includes("background:#13161C"), "completed HUD count cards do not use the near-black data surface");
+  assert(surface.innerHTML.includes("linear-gradient(135deg,rgba(93,115,230,.18),rgba(138,85,247,.10)"), "completed HUD total does not use the restrained blue-purple selection gradient");
+  assert(surface.innerHTML.includes("color:#8B909A"), "completed HUD secondary text does not use the supplied hierarchy");
   assert(surface.button, "completed HUD has no visible close button");
   assert(!surface.innerHTML.includes("x-mo-turn-hud"), "rendered HUD still depends on x-* attributes stripped by RisuAI");
   assert(surface.innerHTML.includes("원문 &lt;저장&gt;"), "dynamic HUD label was not HTML escaped");
@@ -573,7 +576,8 @@ function assert(condition, message) {
   }), "failed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("BAD_&lt;CODE&gt;"), "error metadata was not HTML escaped");
-  assert(surface.card.attributes.style.includes("background:#60151b"), "failed HUD has no opaque red error window");
+  assert(surface.card.attributes.style.includes("background:#2A151D"), "failed HUD has no opaque fintech error window");
+  assert(surface.innerHTML.includes("color:#E158A6"), "failed HUD does not use the supplied pink error accent");
   assert(surface.button, "failed HUD has no visible close button");
   const failedCard = surface.card;
   await failedCard.listeners.keydown({type:"keydown",key:"x"});

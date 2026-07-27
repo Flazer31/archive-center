@@ -12390,23 +12390,23 @@
   // ──────────────────────────────────────────────────────────────
 
   const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v1";
-  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(5px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(140px,calc(100vw - 10px));pointer-events:none;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:10px;line-height:1.25;color:#eef4fa";
+  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(5px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(140px,calc(100vw - 10px));pointer-events:none;font-family:Pretendard Variable,Pretendard,Inter,Geist,system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:10px;line-height:1.25;color:#F4F5F7";
   const TURN_WORKFLOW_HUD_ROOT_SELECTOR = ".mo-turn-workflow-hud-root";
   const TURN_WORKFLOW_HUD_SURFACE_SELECTOR = ".mo-turn-workflow-hud-root > div";
-  const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;border:1px solid #425466;border-radius:8px;background:#101722;box-shadow:0 6px 18px rgba(0,0,0,.36);padding:7px;pointer-events:auto;font-size:10px;line-height:1.25;color:#eef4fa;white-space:normal;overflow-wrap:anywhere";
-  const TURN_WORKFLOW_HUD_WARNING_STYLE = ";border-color:#a97824;background:#30240f";
-  const TURN_WORKFLOW_HUD_ERROR_STYLE = ";border-color:#e35d66;background:#60151b";
-  const TURN_WORKFLOW_HUD_TITLE_STYLE = "padding-right:20px;font-size:10px;font-weight:750;line-height:1.25;color:#fff";
-  const TURN_WORKFLOW_HUD_STAGE_STYLE = "margin-top:3px;font-size:9px;line-height:1.3;color:#c9d8e6";
-  const TURN_WORKFLOW_HUD_ELAPSED_STYLE = "font-size:9px;font-weight:700;color:#86d3ff;font-variant-numeric:tabular-nums";
-  const TURN_WORKFLOW_HUD_CLOSE_STYLE = "position:absolute;top:3px;right:3px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:18px;height:18px;margin:0;padding:0;border:1px solid #526273;border-radius:5px;background:#263241;color:#fff;font-size:13px;line-height:1;cursor:pointer";
-  const TURN_WORKFLOW_HUD_GRID_STYLE = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px;margin-top:5px";
-  const TURN_WORKFLOW_HUD_COUNT_STYLE = "box-sizing:border-box;min-width:0;border:1px solid #324152;border-radius:5px;background:#1a2430;padding:3px";
-  const TURN_WORKFLOW_HUD_TOTAL_STYLE = ";grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;background:#19344e;border-color:#35658d";
-  const TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE = "display:block;font-size:9px;line-height:1.15;color:#adbdca;white-space:normal;overflow-wrap:anywhere";
-  const TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE = "display:block;margin-top:1px;font-size:12px;line-height:1;font-weight:800;color:#fff;font-variant-numeric:tabular-nums";
-  const TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE = "margin-top:4px;font-size:9px;line-height:1.3;color:#fff";
-  const TURN_WORKFLOW_HUD_ERROR_META_STYLE = "margin-top:4px;padding-right:18px;font-size:8px;line-height:1.25;color:#ffd5d8;white-space:normal;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#181C24;box-shadow:0 16px 40px rgba(0,0,0,.48);padding:8px;pointer-events:auto;font-size:10px;line-height:1.25;letter-spacing:-.01em;color:#F4F5F7;white-space:normal;overflow:hidden;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_WARNING_STYLE = ";border-color:rgba(138,85,247,.35);background:#1C1828";
+  const TURN_WORKFLOW_HUD_ERROR_STYLE = ";border-color:rgba(225,88,166,.55);background:#2A151D;box-shadow:0 16px 40px rgba(0,0,0,.48),0 0 20px rgba(225,88,166,.10)";
+  const TURN_WORKFLOW_HUD_TITLE_STYLE = "padding-right:20px;font-size:10px;font-weight:600;line-height:1.25;letter-spacing:-.015em;color:#F4F5F7";
+  const TURN_WORKFLOW_HUD_STAGE_STYLE = "margin-top:4px;font-size:9px;line-height:1.35;color:#8B909A";
+  const TURN_WORKFLOW_HUD_ELAPSED_STYLE = "font-size:9px;font-weight:600;color:#8FA7FF;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_CLOSE_STYLE = "position:absolute;top:5px;right:5px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:18px;height:18px;margin:0;padding:0;border:1px solid rgba(255,255,255,.07);border-radius:6px;background:#0F1116;color:#8B909A;font-size:13px;line-height:1;cursor:pointer";
+  const TURN_WORKFLOW_HUD_GRID_STYLE = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;margin-top:6px";
+  const TURN_WORKFLOW_HUD_COUNT_STYLE = "box-sizing:border-box;min-width:0;border:1px solid rgba(255,255,255,.07);border-radius:8px;background:#13161C;padding:4px";
+  const TURN_WORKFLOW_HUD_TOTAL_STYLE = ";grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(135deg,rgba(93,115,230,.18),rgba(138,85,247,.10) 58%,#13161C);border-color:rgba(143,167,255,.30)";
+  const TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE = "display:block;font-size:9px;line-height:1.15;letter-spacing:.01em;color:#8B909A;white-space:normal;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE = "display:block;margin-top:1px;font-size:12px;line-height:1;font-weight:700;color:#F4F5F7;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE = "margin-top:5px;font-size:9px;line-height:1.35;color:#F4F5F7";
+  const TURN_WORKFLOW_HUD_ERROR_META_STYLE = "margin-top:4px;padding-right:18px;font-size:8px;line-height:1.3;color:#E158A6;white-space:normal;overflow-wrap:anywhere";
 
   let _turnWorkflowHUDActiveRequestId = "";
   let _turnWorkflowHUDWatchToken = 0;
