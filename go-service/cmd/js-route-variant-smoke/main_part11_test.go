@@ -407,6 +407,7 @@ class FakeRemoteNode {
     this.listeners = {};
     this.card = null;
     this.elapsed = null;
+    this.button = null;
     this.surface = null;
   }
   async setAttribute(name, value) {
@@ -422,33 +423,30 @@ class FakeRemoteNode {
   }
   async setInnerHTML(value) {
     const sourceHTML = String(value);
-    this.innerHTML = sourceHTML.replace(/class="([^"]*)"/g, function(_, names) {
-      return 'class="' + names.split(/\s+/).filter(Boolean).map(function(name) {
-        return "x-risu-" + name;
-      }).join(" ") + '"';
-    });
-    if (sourceHTML.includes("mo-turn-workflow-hud-surface") || sourceHTML.includes('x-mo-turn-hud-surface="1"')) {
+    this.innerHTML = sourceHTML
+      .replace(/\s+x-[\w-]+="[^"]*"/g, "")
+      .replace(/class="([^"]*)"/g, function(_, names) {
+        return 'class="' + names.split(/\s+/).filter(Boolean).map(function(name) {
+          return "x-risu-" + name;
+        }).join(" ") + '"';
+      });
+    if (sourceHTML.includes("position:fixed;") && sourceHTML.includes('aria-live="polite"')) {
       this.surface = new FakeRemoteNode("surface");
-      this.surface.attributes.class = sourceHTML.includes("mo-turn-workflow-hud-surface")
-        ? "x-risu-mo-turn-workflow-hud-surface"
-        : "";
-      this.surface.attributes["x-mo-turn-hud-surface"] = sourceHTML.includes('x-mo-turn-hud-surface="1"') ? "1" : "";
       this.surface.attributes.style = sourceHTML.match(/style="([^"]*)"/)?.[1] || "";
     }
-    this.card = sourceHTML.includes("mo-turn-hud-card") || sourceHTML.includes('x-mo-turn-hud-role="card"')
+    this.card = this.tag === "surface" && sourceHTML.trimStart().startsWith("<div")
       ? new FakeRemoteNode("card")
       : null;
     if (this.card) {
-      this.card.attributes.class = sourceHTML.includes("mo-turn-hud-card") ? "x-risu-mo-turn-hud-card" : "";
-      this.card.attributes["x-mo-turn-hud-role"] = sourceHTML.includes('x-mo-turn-hud-role="card"') ? "card" : "";
+      this.card.attributes.style = sourceHTML.match(/^\s*<div[^>]*style="([^"]*)"/)?.[1] || "";
     }
-    this.elapsed = sourceHTML.includes("mo-turn-hud-elapsed") || sourceHTML.includes('x-mo-turn-hud-role="elapsed"')
+    this.elapsed = sourceHTML.includes("<time")
       ? new FakeRemoteNode("elapsed")
       : null;
     if (this.elapsed) {
-      this.elapsed.attributes.class = sourceHTML.includes("mo-turn-hud-elapsed") ? "x-risu-mo-turn-hud-elapsed" : "";
-      this.elapsed.attributes["x-mo-turn-hud-role"] = sourceHTML.includes('x-mo-turn-hud-role="elapsed"') ? "elapsed" : "";
+      this.elapsed.attributes.style = sourceHTML.match(/<time[^>]*style="([^"]*)"/)?.[1] || "";
     }
+    this.button = sourceHTML.includes("<button") ? new FakeRemoteNode("button") : null;
   }
   async setTextContent(value) {
     this.textContent = String(value);
@@ -457,18 +455,9 @@ class FakeRemoteNode {
     this.children.push(child);
   }
   async querySelector(selector) {
-    if (selector === ".mo-turn-hud-card") {
-      return this.card && String(this.card.attributes.class || "").split(/\s+/).includes("mo-turn-hud-card") ? this.card : null;
-    }
-    if (selector === ".mo-turn-hud-elapsed") {
-      return this.elapsed && String(this.elapsed.attributes.class || "").split(/\s+/).includes("mo-turn-hud-elapsed") ? this.elapsed : null;
-    }
-    if (selector === '[x-mo-turn-hud-role="card"]') {
-      return this.card && this.card.attributes["x-mo-turn-hud-role"] === "card" ? this.card : null;
-    }
-    if (selector === '[x-mo-turn-hud-role="elapsed"]') {
-      return this.elapsed && this.elapsed.attributes["x-mo-turn-hud-role"] === "elapsed" ? this.elapsed : null;
-    }
+    if (selector === "div") return this.card;
+    if (selector === "time") return this.elapsed;
+    if (selector === "button") return this.button;
     return null;
   }
   async addEventListener(name, handler) {
@@ -547,17 +536,15 @@ function assert(condition, message) {
   const surface = root && root.surface;
   assert(root, "HUD root was not created in RisuAI main RootDocument");
   assert(body.children.includes(root), "HUD root was not appended to main body");
-  assert(nodesByClass.has("mo-turn-workflow-hud-style"), "HUD style was not created in main RootDocument");
-  const hudStyle = nodesByClass.get("mo-turn-workflow-hud-style");
   assert(surface, "HUD surface was not created with the Yumi-compatible innerHTML path");
-  assert(surface.attributes["x-mo-turn-hud-surface"] === "1", "HUD surface does not use a Risu-preserved x-* identity");
-  assert(!root.innerHTML.includes('class="mo-turn-workflow-hud-surface"'), "HUD surface still depends on a class rewritten by RisuAI");
-  assert(hudStyle.innerHTML.includes('[x-mo-turn-hud-role="card"]'), "HUD styles do not target the Risu-preserved card identity");
-  assert(!hudStyle.innerHTML.includes(".mo-turn-hud-card"), "HUD styles still target a class rewritten by RisuAI");
+  assert(!nodesByClass.has("mo-turn-workflow-hud-style"), "HUD still injects a stylesheet that RisuAI does not activate");
   assert(surface.attributes.style.includes("top:50%") && surface.attributes.style.includes("translateY(-50%)"), "HUD is not positioned at right center");
-  assert(surface.attributes.style.includes("right:max(8px"), "HUD right safe-area placement is missing");
-  assert(surface.innerHTML.includes('x-mo-turn-hud-role="card"'), "rendered HUD card does not use a Risu-preserved x-* identity");
-  assert(!surface.innerHTML.includes("x-risu-mo-turn-hud-card"), "rendered HUD card still depends on a class rewritten by RisuAI");
+  assert(surface.attributes.style.includes("right:max(5px"), "HUD right safe-area placement is missing");
+  assert(surface.attributes.style.includes("width:min(140px"), "HUD is wider than the compact right rail");
+  assert(surface.card.attributes.style.includes("background:#101722"), "completed HUD has no opaque window");
+  assert(surface.card.attributes.style.includes("font-size:10px"), "completed HUD text is not compact");
+  assert(surface.button, "completed HUD has no visible close button");
+  assert(!surface.innerHTML.includes("x-mo-turn-hud"), "rendered HUD still depends on x-* attributes stripped by RisuAI");
   assert(surface.innerHTML.includes("원문 &lt;저장&gt;"), "dynamic HUD label was not HTML escaped");
   for (const value of ["1","2","3","4","5","6","21"]) {
     assert(surface.innerHTML.includes(">" + value + "</span>"), "completed HUD omitted count " + value);
@@ -586,6 +573,8 @@ function assert(condition, message) {
   }), "failed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("BAD_&lt;CODE&gt;"), "error metadata was not HTML escaped");
+  assert(surface.card.attributes.style.includes("background:#60151b"), "failed HUD has no opaque red error window");
+  assert(surface.button, "failed HUD has no visible close button");
   const failedCard = surface.card;
   await failedCard.listeners.keydown({type:"keydown",key:"x"});
   await _turnWorkflowHUDRenderChain;

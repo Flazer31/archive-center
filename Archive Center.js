@@ -12390,28 +12390,23 @@
   // ──────────────────────────────────────────────────────────────
 
   const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v1";
-  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(8px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(320px,calc(100vw - 24px));pointer-events:none;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#f7f8fa";
-  const TURN_WORKFLOW_HUD_STYLE_SELECTOR = ".mo-turn-workflow-hud-style";
+  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(5px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(140px,calc(100vw - 10px));pointer-events:none;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:10px;line-height:1.25;color:#eef4fa";
   const TURN_WORKFLOW_HUD_ROOT_SELECTOR = ".mo-turn-workflow-hud-root";
   const TURN_WORKFLOW_HUD_SURFACE_SELECTOR = ".mo-turn-workflow-hud-root > div";
-  const TURN_WORKFLOW_HUD_STYLE = `
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"]{width:100%;border:1px solid rgba(118,151,187,.7);border-radius:12px;background:rgba(14,23,34,.92);box-shadow:0 10px 32px rgba(0,0,0,.38);padding:10px 12px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);white-space:normal;overflow-wrap:anywhere}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"][x-mo-turn-hud-tone="warning"]{border-color:rgba(236,178,72,.9);background:rgba(48,37,16,.92)}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"][x-mo-turn-hud-tone="error"]{border-color:rgba(255,93,93,.95);background:rgba(101,18,24,.88)}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"][x-mo-turn-hud-terminal="1"]{pointer-events:auto;cursor:pointer;user-select:none}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="title"]{font-size:12px;font-weight:750;line-height:1.35;color:#fff}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="stage"]{margin-top:4px;font-size:12px;line-height:1.4;color:#d7e5f3}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="elapsed"]{font-variant-numeric:tabular-nums;color:#8fd2ff;font-weight:700}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="grid"]{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"]{min-width:0;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.055);padding:6px}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"][x-mo-turn-hud-total="1"]{grid-column:1/-1;background:rgba(94,174,255,.13);border-color:rgba(94,174,255,.35)}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-label"]{display:block;font-size:10px;line-height:1.25;color:#aebdca;white-space:normal;overflow-wrap:anywhere}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-value"]{display:block;margin-top:2px;font-size:17px;line-height:1;font-weight:800;color:#fff;font-variant-numeric:tabular-nums}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="error-message"]{margin-top:5px;font-size:12px;line-height:1.4;color:#fff}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="error-meta"]{margin-top:5px;font-size:10px;line-height:1.35;color:#ffd5d8;white-space:normal;overflow-wrap:anywhere}
-.mo-turn-workflow-hud-root [x-mo-turn-hud-role="dismiss"]{margin-top:7px;text-align:right;font-size:10px;color:#b8c4ce}
-@media(max-width:520px){.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"]{padding:9px 10px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="grid"]{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"][x-mo-turn-hud-total="1"]{grid-column:1/-1}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"]{padding:4px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-label"]{font-size:9px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-value"]{font-size:15px}}
-`;
+  const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;border:1px solid #425466;border-radius:8px;background:#101722;box-shadow:0 6px 18px rgba(0,0,0,.36);padding:7px;pointer-events:auto;font-size:10px;line-height:1.25;color:#eef4fa;white-space:normal;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_WARNING_STYLE = ";border-color:#a97824;background:#30240f";
+  const TURN_WORKFLOW_HUD_ERROR_STYLE = ";border-color:#e35d66;background:#60151b";
+  const TURN_WORKFLOW_HUD_TITLE_STYLE = "padding-right:20px;font-size:10px;font-weight:750;line-height:1.25;color:#fff";
+  const TURN_WORKFLOW_HUD_STAGE_STYLE = "margin-top:3px;font-size:9px;line-height:1.3;color:#c9d8e6";
+  const TURN_WORKFLOW_HUD_ELAPSED_STYLE = "font-size:9px;font-weight:700;color:#86d3ff;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_CLOSE_STYLE = "position:absolute;top:3px;right:3px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:18px;height:18px;margin:0;padding:0;border:1px solid #526273;border-radius:5px;background:#263241;color:#fff;font-size:13px;line-height:1;cursor:pointer";
+  const TURN_WORKFLOW_HUD_GRID_STYLE = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px;margin-top:5px";
+  const TURN_WORKFLOW_HUD_COUNT_STYLE = "box-sizing:border-box;min-width:0;border:1px solid #324152;border-radius:5px;background:#1a2430;padding:3px";
+  const TURN_WORKFLOW_HUD_TOTAL_STYLE = ";grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;background:#19344e;border-color:#35658d";
+  const TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE = "display:block;font-size:9px;line-height:1.15;color:#adbdca;white-space:normal;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE = "display:block;margin-top:1px;font-size:12px;line-height:1;font-weight:800;color:#fff;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE = "margin-top:4px;font-size:9px;line-height:1.3;color:#fff";
+  const TURN_WORKFLOW_HUD_ERROR_META_STYLE = "margin-top:4px;padding-right:18px;font-size:8px;line-height:1.25;color:#ffd5d8;white-space:normal;overflow-wrap:anywhere";
 
   let _turnWorkflowHUDActiveRequestId = "";
   let _turnWorkflowHUDWatchToken = 0;
@@ -12459,15 +12454,6 @@
   async function ensureTurnWorkflowHUDRoot() {
     const rootDocument = await getTurnWorkflowHUDMainDocument();
     if (!rootDocument) return null;
-    let style = await rootDocument.querySelector(TURN_WORKFLOW_HUD_STYLE_SELECTOR);
-    if (!style) {
-      style = await rootDocument.createElement("style");
-      await style.addClass("mo-turn-workflow-hud-style");
-      await style.setInnerHTML(TURN_WORKFLOW_HUD_STYLE);
-      const styleTarget = await rootDocument.querySelector("head") || await rootDocument.querySelector("body");
-      if (!styleTarget) throw new Error("RisuAI main DOM style target is unavailable");
-      await styleTarget.appendChild(style);
-    }
     let root = await rootDocument.querySelector(TURN_WORKFLOW_HUD_ROOT_SELECTOR);
     if (!root) {
       const body = await rootDocument.querySelector("body");
@@ -12475,14 +12461,14 @@
       root = await rootDocument.createElement("div");
       await root.addClass("mo-turn-workflow-hud-root");
       await root.setInnerHTML(
-        `<div x-mo-turn-hud-surface="1" aria-live="polite" style="${TURN_WORKFLOW_HUD_ROOT_STYLE}"></div>`
+        `<div aria-live="polite" style="${TURN_WORKFLOW_HUD_ROOT_STYLE}"></div>`
       );
       await body.appendChild(root);
     }
     let surface = await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
     if (!surface) {
       await root.setInnerHTML(
-        `<div x-mo-turn-hud-surface="1" aria-live="polite" style="${TURN_WORKFLOW_HUD_ROOT_STYLE}"></div>`
+        `<div aria-live="polite" style="${TURN_WORKFLOW_HUD_ROOT_STYLE}"></div>`
       );
       surface = await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
     }
@@ -12523,6 +12509,11 @@
         : char === '"' ? "&quot;"
         : "&#39;";
     });
+  }
+
+  function turnWorkflowHUDDismissButtonHTML() {
+    const label = escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"));
+    return `<button type="button" aria-label="${label}" title="${label}" style="${TURN_WORKFLOW_HUD_CLOSE_STYLE}">×</button>`;
   }
 
   function dismissTurnWorkflowHUD(requestId) {
@@ -12566,11 +12557,11 @@
       return {
         terminal: true,
         elapsedStartedAt: "",
-        html: `<div x-mo-turn-hud-role="card" x-mo-turn-hud-tone="error" x-mo-turn-hud-terminal="1" role="button" tabindex="0">`
-          + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.failed"))}</div>`
-          + `<div x-mo-turn-hud-role="error-message">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
-          + `<div x-mo-turn-hud-role="error-meta">${escapeTurnWorkflowHUDHTML(meta)}</div>`
-          + `<div x-mo-turn-hud-role="dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+        html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
+          + turnWorkflowHUDDismissButtonHTML()
+          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.failed"))}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>`
           + `</div>`,
       };
     }
@@ -12584,18 +12575,19 @@
         if (!count || typeof count.key !== "string") return;
         const numericValue = Number(count.value);
         const value = String(Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0);
-        return `<div x-mo-turn-hud-role="count"${count.key === "total_committed" ? ' x-mo-turn-hud-total="1"' : ""}>`
-          + `<span x-mo-turn-hud-role="count-label">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
-          + `<span x-mo-turn-hud-role="count-value">${escapeTurnWorkflowHUDHTML(value)}</span>`
+        const totalStyle = count.key === "total_committed" ? TURN_WORKFLOW_HUD_TOTAL_STYLE : "";
+        return `<div style="${TURN_WORKFLOW_HUD_COUNT_STYLE + totalStyle}">`
+          + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
+          + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(value)}</span>`
           + `</div>`;
       }).filter(Boolean).join("");
       return {
         terminal: true,
         elapsedStartedAt: "",
-        html: `<div x-mo-turn-hud-role="card"${severity === "warning" ? ' x-mo-turn-hud-tone="warning"' : ""} x-mo-turn-hud-terminal="1" role="button" tabindex="0">`
-          + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
-          + `<div x-mo-turn-hud-role="grid">${countHTML}</div>`
-          + `<div x-mo-turn-hud-role="dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+        html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "")}">`
+          + turnWorkflowHUDDismissButtonHTML()
+          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_GRID_STYLE}">${countHTML}</div>`
           + `</div>`,
       };
     }
@@ -12609,10 +12601,10 @@
     return {
       terminal: false,
       elapsedStartedAt,
-      html: `<div x-mo-turn-hud-role="card"${severity === "warning" ? ' x-mo-turn-hud-tone="warning"' : ""}>`
-        + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + (ordinal > 0 && total > 0 ? " · " + ordinal + "/" + total : ""))}</div>`
-        + `<div x-mo-turn-hud-role="stage"><span>${escapeTurnWorkflowHUDHTML(stage && stage.label_key ? t(stage.label_key) : t("turn_hud.stage.prepare_source"))}</span>`
-        + (elapsedStartedAt ? `<span x-mo-turn-hud-role="elapsed"></span>` : "")
+      html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "")}">`
+        + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + (ordinal > 0 && total > 0 ? " · " + ordinal + "/" + total : ""))}</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_STAGE_STYLE}"><span>${escapeTurnWorkflowHUDHTML(stage && stage.label_key ? t(stage.label_key) : t("turn_hud.stage.prepare_source"))}</span>`
+        + (elapsedStartedAt ? `<time style="${TURN_WORKFLOW_HUD_ELAPSED_STYLE}"></time>` : "")
         + `</div></div>`,
     };
   }
@@ -12638,7 +12630,7 @@
       clearTurnWorkflowHUDTimer();
       await root.setInnerHTML(presentation.html);
       if (presentation.elapsedStartedAt) {
-        _turnWorkflowHUDElapsedElement = await root.querySelector('[x-mo-turn-hud-role="elapsed"]');
+        _turnWorkflowHUDElapsedElement = await root.querySelector("time");
         _turnWorkflowHUDElapsedStartedAt = presentation.elapsedStartedAt;
         if (_turnWorkflowHUDElapsedElement) {
           await updateTurnWorkflowHUDElapsed();
@@ -12648,7 +12640,7 @@
         }
       }
       if (presentation.terminal) {
-        await attachTurnWorkflowHUDDismiss(await root.querySelector('[x-mo-turn-hud-role="card"]'), requestId);
+        await attachTurnWorkflowHUDDismiss(await root.querySelector("div"), requestId);
       }
     });
   }
@@ -12663,14 +12655,14 @@
       const root = await ensureTurnWorkflowHUDRoot();
       if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
       await root.setInnerHTML(
-        `<div x-mo-turn-hud-role="card" x-mo-turn-hud-tone="error" x-mo-turn-hud-terminal="1" role="button" tabindex="0">`
-        + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
-        + `<div x-mo-turn-hud-role="error-message">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
-        + `<div x-mo-turn-hud-role="error-meta">HUD_TRANSPORT_UNAVAILABLE</div>`
-        + `<div x-mo-turn-hud-role="dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+        `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
+        + turnWorkflowHUDDismissButtonHTML()
+        + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">HUD_TRANSPORT_UNAVAILABLE</div>`
         + `</div>`
       );
-      await attachTurnWorkflowHUDDismiss(await root.querySelector('[x-mo-turn-hud-role="card"]'), requestId);
+      await attachTurnWorkflowHUDDismiss(await root.querySelector("div"), requestId);
     });
   }
 
