@@ -390,7 +390,7 @@ func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
 	}
 	hudRuntime := strings.TrimSpace(src[start : start+endOffset])
 	script := `
-const nodesByID = new Map();
+const nodesByClass = new Map();
 const intervals = [];
 function setInterval(fn, ms) {
   intervals.push({fn, ms});
@@ -403,23 +403,52 @@ class FakeRemoteNode {
     this.attributes = {};
     this.children = [];
     this.innerHTML = "";
-    this.styleAttribute = "";
     this.textContent = "";
     this.listeners = {};
     this.card = null;
     this.elapsed = null;
+    this.surface = null;
   }
   async setAttribute(name, value) {
+    if (!String(name).startsWith("x-")) {
+      throw new Error("prohibited remote DOM attribute: " + name);
+    }
     this.attributes[name] = String(value);
-    if (name === "id") nodesByID.set(String(value), this);
   }
-  async setStyleAttribute(value) {
-    this.styleAttribute = String(value);
+  async addClass(name) {
+    const className = String(name);
+    this.attributes.class = [this.attributes.class || "", className].filter(Boolean).join(" ");
+    nodesByClass.set(className, this);
   }
   async setInnerHTML(value) {
-    this.innerHTML = String(value);
-    this.card = this.innerHTML.includes("mo-turn-hud-card") ? new FakeRemoteNode("card") : null;
-    this.elapsed = this.innerHTML.includes("mo-turn-hud-elapsed") ? new FakeRemoteNode("elapsed") : null;
+    const sourceHTML = String(value);
+    this.innerHTML = sourceHTML.replace(/class="([^"]*)"/g, function(_, names) {
+      return 'class="' + names.split(/\s+/).filter(Boolean).map(function(name) {
+        return "x-risu-" + name;
+      }).join(" ") + '"';
+    });
+    if (sourceHTML.includes("mo-turn-workflow-hud-surface") || sourceHTML.includes('x-mo-turn-hud-surface="1"')) {
+      this.surface = new FakeRemoteNode("surface");
+      this.surface.attributes.class = sourceHTML.includes("mo-turn-workflow-hud-surface")
+        ? "x-risu-mo-turn-workflow-hud-surface"
+        : "";
+      this.surface.attributes["x-mo-turn-hud-surface"] = sourceHTML.includes('x-mo-turn-hud-surface="1"') ? "1" : "";
+      this.surface.attributes.style = sourceHTML.match(/style="([^"]*)"/)?.[1] || "";
+    }
+    this.card = sourceHTML.includes("mo-turn-hud-card") || sourceHTML.includes('x-mo-turn-hud-role="card"')
+      ? new FakeRemoteNode("card")
+      : null;
+    if (this.card) {
+      this.card.attributes.class = sourceHTML.includes("mo-turn-hud-card") ? "x-risu-mo-turn-hud-card" : "";
+      this.card.attributes["x-mo-turn-hud-role"] = sourceHTML.includes('x-mo-turn-hud-role="card"') ? "card" : "";
+    }
+    this.elapsed = sourceHTML.includes("mo-turn-hud-elapsed") || sourceHTML.includes('x-mo-turn-hud-role="elapsed"')
+      ? new FakeRemoteNode("elapsed")
+      : null;
+    if (this.elapsed) {
+      this.elapsed.attributes.class = sourceHTML.includes("mo-turn-hud-elapsed") ? "x-risu-mo-turn-hud-elapsed" : "";
+      this.elapsed.attributes["x-mo-turn-hud-role"] = sourceHTML.includes('x-mo-turn-hud-role="elapsed"') ? "elapsed" : "";
+    }
   }
   async setTextContent(value) {
     this.textContent = String(value);
@@ -428,8 +457,18 @@ class FakeRemoteNode {
     this.children.push(child);
   }
   async querySelector(selector) {
-    if (selector === ".mo-turn-hud-card") return this.card;
-    if (selector === ".mo-turn-hud-elapsed") return this.elapsed;
+    if (selector === ".mo-turn-hud-card") {
+      return this.card && String(this.card.attributes.class || "").split(/\s+/).includes("mo-turn-hud-card") ? this.card : null;
+    }
+    if (selector === ".mo-turn-hud-elapsed") {
+      return this.elapsed && String(this.elapsed.attributes.class || "").split(/\s+/).includes("mo-turn-hud-elapsed") ? this.elapsed : null;
+    }
+    if (selector === '[x-mo-turn-hud-role="card"]') {
+      return this.card && this.card.attributes["x-mo-turn-hud-role"] === "card" ? this.card : null;
+    }
+    if (selector === '[x-mo-turn-hud-role="elapsed"]') {
+      return this.elapsed && this.elapsed.attributes["x-mo-turn-hud-role"] === "elapsed" ? this.elapsed : null;
+    }
     return null;
   }
   async addEventListener(name, handler) {
@@ -443,7 +482,17 @@ const rootDocument = {
   async querySelector(selector) {
     if (selector === "head") return head;
     if (selector === "body") return body;
-    if (selector.startsWith("#")) return nodesByID.get(selector.slice(1)) || null;
+    if (selector === ".mo-turn-workflow-hud-root > .mo-turn-workflow-hud-surface") {
+      const root = nodesByClass.get("mo-turn-workflow-hud-root");
+      return root && root.surface && root.surface.attributes.class === "mo-turn-workflow-hud-surface"
+        ? root.surface
+        : null;
+    }
+    if (selector === ".mo-turn-workflow-hud-root > div") {
+      const root = nodesByClass.get("mo-turn-workflow-hud-root");
+      return root && root.surface || null;
+    }
+    if (selector.startsWith(".")) return nodesByClass.get(selector.slice(1)) || null;
     return null;
   },
   async createElement(tag) {
@@ -494,20 +543,29 @@ function assert(condition, message) {
     logical_turn:55,status:"completed",severity:"info",counts
   }), "completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
-  const root = nodesByID.get("mo-turn-workflow-hud-root");
+  const root = nodesByClass.get("mo-turn-workflow-hud-root");
+  const surface = root && root.surface;
   assert(root, "HUD root was not created in RisuAI main RootDocument");
   assert(body.children.includes(root), "HUD root was not appended to main body");
-  assert(nodesByID.has("mo-turn-workflow-hud-style"), "HUD style was not created in main RootDocument");
-  assert(root.styleAttribute.includes("top:50%") && root.styleAttribute.includes("translateY(-50%)"), "HUD is not positioned at right center");
-  assert(root.styleAttribute.includes("right:max(8px"), "HUD right safe-area placement is missing");
-  assert(root.innerHTML.includes("원문 &lt;저장&gt;"), "dynamic HUD label was not HTML escaped");
+  assert(nodesByClass.has("mo-turn-workflow-hud-style"), "HUD style was not created in main RootDocument");
+  const hudStyle = nodesByClass.get("mo-turn-workflow-hud-style");
+  assert(surface, "HUD surface was not created with the Yumi-compatible innerHTML path");
+  assert(surface.attributes["x-mo-turn-hud-surface"] === "1", "HUD surface does not use a Risu-preserved x-* identity");
+  assert(!root.innerHTML.includes('class="mo-turn-workflow-hud-surface"'), "HUD surface still depends on a class rewritten by RisuAI");
+  assert(hudStyle.innerHTML.includes('[x-mo-turn-hud-role="card"]'), "HUD styles do not target the Risu-preserved card identity");
+  assert(!hudStyle.innerHTML.includes(".mo-turn-hud-card"), "HUD styles still target a class rewritten by RisuAI");
+  assert(surface.attributes.style.includes("top:50%") && surface.attributes.style.includes("translateY(-50%)"), "HUD is not positioned at right center");
+  assert(surface.attributes.style.includes("right:max(8px"), "HUD right safe-area placement is missing");
+  assert(surface.innerHTML.includes('x-mo-turn-hud-role="card"'), "rendered HUD card does not use a Risu-preserved x-* identity");
+  assert(!surface.innerHTML.includes("x-risu-mo-turn-hud-card"), "rendered HUD card still depends on a class rewritten by RisuAI");
+  assert(surface.innerHTML.includes("원문 &lt;저장&gt;"), "dynamic HUD label was not HTML escaped");
   for (const value of ["1","2","3","4","5","6","21"]) {
-    assert(root.innerHTML.includes(">" + value + "</span>"), "completed HUD omitted count " + value);
+    assert(surface.innerHTML.includes(">" + value + "</span>"), "completed HUD omitted count " + value);
   }
-  assert(root.card && typeof root.card.listeners.click === "function", "terminal click dismiss listener missing");
-  await root.card.listeners.click({type:"click"});
+  assert(surface.card && typeof surface.card.listeners.click === "function", "terminal click dismiss listener missing");
+  await surface.card.listeners.click({type:"click"});
   await _turnWorkflowHUDRenderChain;
-  assert(root.innerHTML === "", "terminal click did not dismiss HUD");
+  assert(surface.innerHTML === "", "terminal click did not dismiss HUD");
 
   const startedAt = new Date(Date.now() - 2200).toISOString();
   assert(consumeTurnWorkflowHUD({
@@ -516,7 +574,7 @@ function assert(condition, message) {
     current_stage:{ordinal:3,total:7,label_key:"turn_hud.stage.prepare_source",llm_call:true,status:"running",started_at:startedAt}
   }), "running HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
-  assert(root.elapsed && /초$/.test(root.elapsed.textContent), "LLM elapsed seconds were not rendered");
+  assert(surface.elapsed && /초$/.test(surface.elapsed.textContent), "LLM elapsed seconds were not rendered");
   assert(intervals.length === 1 && intervals[0].ms === 1000, "LLM elapsed timer is not one second");
   await dismissTurnWorkflowHUD("running-b");
   await _turnWorkflowHUDRenderChain;
@@ -527,14 +585,14 @@ function assert(condition, message) {
     error:{code:"BAD_<CODE>",message_key:"turn_hud.transport_unavailable",retryable:false}
   }), "failed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
-  assert(root.innerHTML.includes("BAD_&lt;CODE&gt;"), "error metadata was not HTML escaped");
-  const failedCard = root.card;
+  assert(surface.innerHTML.includes("BAD_&lt;CODE&gt;"), "error metadata was not HTML escaped");
+  const failedCard = surface.card;
   await failedCard.listeners.keydown({type:"keydown",key:"x"});
   await _turnWorkflowHUDRenderChain;
-  assert(root.innerHTML !== "", "unrelated key dismissed terminal HUD");
+  assert(surface.innerHTML !== "", "unrelated key dismissed terminal HUD");
   await failedCard.listeners.keydown({type:"keydown",key:"Enter"});
   await _turnWorkflowHUDRenderChain;
-  assert(root.innerHTML === "", "Enter did not dismiss terminal HUD");
+  assert(surface.innerHTML === "", "Enter did not dismiss terminal HUD");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);

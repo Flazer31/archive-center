@@ -12390,24 +12390,27 @@
   // ──────────────────────────────────────────────────────────────
 
   const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v1";
-  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(8px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(320px,calc(100vw - 24px));pointer-events:none;font-family:system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;color:#f7f8fa";
+  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(8px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(320px,calc(100vw - 24px));pointer-events:none;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#f7f8fa";
+  const TURN_WORKFLOW_HUD_STYLE_SELECTOR = ".mo-turn-workflow-hud-style";
+  const TURN_WORKFLOW_HUD_ROOT_SELECTOR = ".mo-turn-workflow-hud-root";
+  const TURN_WORKFLOW_HUD_SURFACE_SELECTOR = ".mo-turn-workflow-hud-root > div";
   const TURN_WORKFLOW_HUD_STYLE = `
-.mo-turn-hud-card{width:100%;border:1px solid rgba(118,151,187,.7);border-radius:12px;background:rgba(14,23,34,.92);box-shadow:0 10px 32px rgba(0,0,0,.38);padding:10px 12px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);white-space:normal;overflow-wrap:anywhere}
-.mo-turn-hud-card.is-warning{border-color:rgba(236,178,72,.9);background:rgba(48,37,16,.92)}
-.mo-turn-hud-card.is-error{border-color:rgba(255,93,93,.95);background:rgba(101,18,24,.88)}
-.mo-turn-hud-card.is-terminal{pointer-events:auto;cursor:pointer;user-select:none}
-.mo-turn-hud-title{font-size:12px;font-weight:750;line-height:1.35;color:#fff}
-.mo-turn-hud-stage{margin-top:4px;font-size:12px;line-height:1.4;color:#d7e5f3}
-.mo-turn-hud-elapsed{font-variant-numeric:tabular-nums;color:#8fd2ff;font-weight:700}
-.mo-turn-hud-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}
-.mo-turn-hud-count{min-width:0;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.055);padding:6px}
-.mo-turn-hud-count.is-total{grid-column:1/-1;background:rgba(94,174,255,.13);border-color:rgba(94,174,255,.35)}
-.mo-turn-hud-count-label{display:block;font-size:10px;line-height:1.25;color:#aebdca;white-space:normal;overflow-wrap:anywhere}
-.mo-turn-hud-count-value{display:block;margin-top:2px;font-size:17px;line-height:1;font-weight:800;color:#fff;font-variant-numeric:tabular-nums}
-.mo-turn-hud-error-message{margin-top:5px;font-size:12px;line-height:1.4;color:#fff}
-.mo-turn-hud-error-meta{margin-top:5px;font-size:10px;line-height:1.35;color:#ffd5d8;white-space:normal;overflow-wrap:anywhere}
-.mo-turn-hud-dismiss{margin-top:7px;text-align:right;font-size:10px;color:#b8c4ce}
-@media(max-width:520px){.mo-turn-hud-card{padding:9px 10px}.mo-turn-hud-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.mo-turn-hud-count.is-total{grid-column:1/-1}.mo-turn-hud-count{padding:4px}.mo-turn-hud-count-label{font-size:9px}.mo-turn-hud-count-value{font-size:15px}}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"]{width:100%;border:1px solid rgba(118,151,187,.7);border-radius:12px;background:rgba(14,23,34,.92);box-shadow:0 10px 32px rgba(0,0,0,.38);padding:10px 12px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);white-space:normal;overflow-wrap:anywhere}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"][x-mo-turn-hud-tone="warning"]{border-color:rgba(236,178,72,.9);background:rgba(48,37,16,.92)}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"][x-mo-turn-hud-tone="error"]{border-color:rgba(255,93,93,.95);background:rgba(101,18,24,.88)}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"][x-mo-turn-hud-terminal="1"]{pointer-events:auto;cursor:pointer;user-select:none}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="title"]{font-size:12px;font-weight:750;line-height:1.35;color:#fff}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="stage"]{margin-top:4px;font-size:12px;line-height:1.4;color:#d7e5f3}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="elapsed"]{font-variant-numeric:tabular-nums;color:#8fd2ff;font-weight:700}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="grid"]{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:9px}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"]{min-width:0;border:1px solid rgba(255,255,255,.12);border-radius:8px;background:rgba(255,255,255,.055);padding:6px}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"][x-mo-turn-hud-total="1"]{grid-column:1/-1;background:rgba(94,174,255,.13);border-color:rgba(94,174,255,.35)}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-label"]{display:block;font-size:10px;line-height:1.25;color:#aebdca;white-space:normal;overflow-wrap:anywhere}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-value"]{display:block;margin-top:2px;font-size:17px;line-height:1;font-weight:800;color:#fff;font-variant-numeric:tabular-nums}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="error-message"]{margin-top:5px;font-size:12px;line-height:1.4;color:#fff}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="error-meta"]{margin-top:5px;font-size:10px;line-height:1.35;color:#ffd5d8;white-space:normal;overflow-wrap:anywhere}
+.mo-turn-workflow-hud-root [x-mo-turn-hud-role="dismiss"]{margin-top:7px;text-align:right;font-size:10px;color:#b8c4ce}
+@media(max-width:520px){.mo-turn-workflow-hud-root [x-mo-turn-hud-role="card"]{padding:9px 10px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="grid"]{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"][x-mo-turn-hud-total="1"]{grid-column:1/-1}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count"]{padding:4px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-label"]{font-size:9px}.mo-turn-workflow-hud-root [x-mo-turn-hud-role="count-value"]{font-size:15px}}
 `;
 
   let _turnWorkflowHUDActiveRequestId = "";
@@ -12456,26 +12459,35 @@
   async function ensureTurnWorkflowHUDRoot() {
     const rootDocument = await getTurnWorkflowHUDMainDocument();
     if (!rootDocument) return null;
-    let style = await rootDocument.querySelector("#mo-turn-workflow-hud-style");
+    let style = await rootDocument.querySelector(TURN_WORKFLOW_HUD_STYLE_SELECTOR);
     if (!style) {
       style = await rootDocument.createElement("style");
-      await style.setAttribute("id", "mo-turn-workflow-hud-style");
+      await style.addClass("mo-turn-workflow-hud-style");
       await style.setInnerHTML(TURN_WORKFLOW_HUD_STYLE);
       const styleTarget = await rootDocument.querySelector("head") || await rootDocument.querySelector("body");
       if (!styleTarget) throw new Error("RisuAI main DOM style target is unavailable");
       await styleTarget.appendChild(style);
     }
-    let root = await rootDocument.querySelector("#mo-turn-workflow-hud-root");
+    let root = await rootDocument.querySelector(TURN_WORKFLOW_HUD_ROOT_SELECTOR);
     if (!root) {
       const body = await rootDocument.querySelector("body");
       if (!body) throw new Error("RisuAI main DOM body is unavailable");
       root = await rootDocument.createElement("div");
-      await root.setAttribute("id", "mo-turn-workflow-hud-root");
-      await root.setAttribute("aria-live", "polite");
-      await root.setStyleAttribute(TURN_WORKFLOW_HUD_ROOT_STYLE);
+      await root.addClass("mo-turn-workflow-hud-root");
+      await root.setInnerHTML(
+        `<div x-mo-turn-hud-surface="1" aria-live="polite" style="${TURN_WORKFLOW_HUD_ROOT_STYLE}"></div>`
+      );
       await body.appendChild(root);
     }
-    return root;
+    let surface = await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
+    if (!surface) {
+      await root.setInnerHTML(
+        `<div x-mo-turn-hud-surface="1" aria-live="polite" style="${TURN_WORKFLOW_HUD_ROOT_STYLE}"></div>`
+      );
+      surface = await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
+    }
+    if (!surface) throw new Error("RisuAI main DOM HUD surface is unavailable");
+    return surface;
   }
 
   function clearTurnWorkflowHUDTimer() {
@@ -12522,10 +12534,9 @@
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("dismiss", async function() {
       const rootDocument = await getTurnWorkflowHUDMainDocument();
-      const root = rootDocument && await rootDocument.querySelector("#mo-turn-workflow-hud-root");
-      if (root) {
-        await root.setInnerHTML("");
-        await root.setAttribute("aria-live", "polite");
+      const surface = rootDocument && await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
+      if (surface) {
+        await surface.setInnerHTML("");
       }
     });
   }
@@ -12553,14 +12564,13 @@
         error.retryable === true ? t("turn_hud.retryable") : t("turn_hud.not_retryable"),
       ].filter(Boolean).join(" · ");
       return {
-        ariaLive: "assertive",
         terminal: true,
         elapsedStartedAt: "",
-        html: `<div class="mo-turn-hud-card is-error is-terminal" role="button" tabindex="0">`
-          + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.failed"))}</div>`
-          + `<div class="mo-turn-hud-error-message">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
-          + `<div class="mo-turn-hud-error-meta">${escapeTurnWorkflowHUDHTML(meta)}</div>`
-          + `<div class="mo-turn-hud-dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+        html: `<div x-mo-turn-hud-role="card" x-mo-turn-hud-tone="error" x-mo-turn-hud-terminal="1" role="button" tabindex="0">`
+          + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.failed"))}</div>`
+          + `<div x-mo-turn-hud-role="error-message">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
+          + `<div x-mo-turn-hud-role="error-meta">${escapeTurnWorkflowHUDHTML(meta)}</div>`
+          + `<div x-mo-turn-hud-role="dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
           + `</div>`,
       };
     }
@@ -12574,19 +12584,18 @@
         if (!count || typeof count.key !== "string") return;
         const numericValue = Number(count.value);
         const value = String(Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0);
-        return `<div class="mo-turn-hud-count${count.key === "total_committed" ? " is-total" : ""}">`
-          + `<span class="mo-turn-hud-count-label">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
-          + `<span class="mo-turn-hud-count-value">${escapeTurnWorkflowHUDHTML(value)}</span>`
+        return `<div x-mo-turn-hud-role="count"${count.key === "total_committed" ? ' x-mo-turn-hud-total="1"' : ""}>`
+          + `<span x-mo-turn-hud-role="count-label">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
+          + `<span x-mo-turn-hud-role="count-value">${escapeTurnWorkflowHUDHTML(value)}</span>`
           + `</div>`;
       }).filter(Boolean).join("");
       return {
-        ariaLive: "polite",
         terminal: true,
         elapsedStartedAt: "",
-        html: `<div class="mo-turn-hud-card${severity === "warning" ? " is-warning" : ""} is-terminal" role="button" tabindex="0">`
-          + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
-          + `<div class="mo-turn-hud-grid">${countHTML}</div>`
-          + `<div class="mo-turn-hud-dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+        html: `<div x-mo-turn-hud-role="card"${severity === "warning" ? ' x-mo-turn-hud-tone="warning"' : ""} x-mo-turn-hud-terminal="1" role="button" tabindex="0">`
+          + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
+          + `<div x-mo-turn-hud-role="grid">${countHTML}</div>`
+          + `<div x-mo-turn-hud-role="dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
           + `</div>`,
       };
     }
@@ -12598,13 +12607,12 @@
       ? String(stage.started_at)
       : "";
     return {
-      ariaLive: "polite",
       terminal: false,
       elapsedStartedAt,
-      html: `<div class="mo-turn-hud-card${severity === "warning" ? " is-warning" : ""}">`
-        + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + (ordinal > 0 && total > 0 ? " · " + ordinal + "/" + total : ""))}</div>`
-        + `<div class="mo-turn-hud-stage"><span>${escapeTurnWorkflowHUDHTML(stage && stage.label_key ? t(stage.label_key) : t("turn_hud.stage.prepare_source"))}</span>`
-        + (elapsedStartedAt ? `<span class="mo-turn-hud-elapsed"></span>` : "")
+      html: `<div x-mo-turn-hud-role="card"${severity === "warning" ? ' x-mo-turn-hud-tone="warning"' : ""}>`
+        + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + (ordinal > 0 && total > 0 ? " · " + ordinal + "/" + total : ""))}</div>`
+        + `<div x-mo-turn-hud-role="stage"><span>${escapeTurnWorkflowHUDHTML(stage && stage.label_key ? t(stage.label_key) : t("turn_hud.stage.prepare_source"))}</span>`
+        + (elapsedStartedAt ? `<span x-mo-turn-hud-role="elapsed"></span>` : "")
         + `</div></div>`,
     };
   }
@@ -12628,10 +12636,9 @@
       const root = await ensureTurnWorkflowHUDRoot();
       if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
       clearTurnWorkflowHUDTimer();
-      await root.setAttribute("aria-live", presentation.ariaLive);
       await root.setInnerHTML(presentation.html);
       if (presentation.elapsedStartedAt) {
-        _turnWorkflowHUDElapsedElement = await root.querySelector(".mo-turn-hud-elapsed");
+        _turnWorkflowHUDElapsedElement = await root.querySelector('[x-mo-turn-hud-role="elapsed"]');
         _turnWorkflowHUDElapsedStartedAt = presentation.elapsedStartedAt;
         if (_turnWorkflowHUDElapsedElement) {
           await updateTurnWorkflowHUDElapsed();
@@ -12641,7 +12648,7 @@
         }
       }
       if (presentation.terminal) {
-        await attachTurnWorkflowHUDDismiss(await root.querySelector(".mo-turn-hud-card"), requestId);
+        await attachTurnWorkflowHUDDismiss(await root.querySelector('[x-mo-turn-hud-role="card"]'), requestId);
       }
     });
   }
@@ -12655,16 +12662,15 @@
       if (requestId !== _turnWorkflowHUDActiveRequestId) return;
       const root = await ensureTurnWorkflowHUDRoot();
       if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
-      await root.setAttribute("aria-live", "assertive");
       await root.setInnerHTML(
-        `<div class="mo-turn-hud-card is-error is-terminal" role="button" tabindex="0">`
-        + `<div class="mo-turn-hud-title">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
-        + `<div class="mo-turn-hud-error-message">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
-        + `<div class="mo-turn-hud-error-meta">HUD_TRANSPORT_UNAVAILABLE</div>`
-        + `<div class="mo-turn-hud-dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
+        `<div x-mo-turn-hud-role="card" x-mo-turn-hud-tone="error" x-mo-turn-hud-terminal="1" role="button" tabindex="0">`
+        + `<div x-mo-turn-hud-role="title">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
+        + `<div x-mo-turn-hud-role="error-message">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
+        + `<div x-mo-turn-hud-role="error-meta">HUD_TRANSPORT_UNAVAILABLE</div>`
+        + `<div x-mo-turn-hud-role="dismiss">${escapeTurnWorkflowHUDHTML(t("turn_hud.tap_to_dismiss"))}</div>`
         + `</div>`
       );
-      await attachTurnWorkflowHUDDismiss(await root.querySelector(".mo-turn-hud-card"), requestId);
+      await attachTurnWorkflowHUDDismiss(await root.querySelector('[x-mo-turn-hud-role="card"]'), requestId);
     });
   }
 
@@ -12700,7 +12706,6 @@
     queueTurnWorkflowHUDOperation("start", async function() {
       const root = await ensureTurnWorkflowHUDRoot();
       if (root && normalizedRequestId === _turnWorkflowHUDActiveRequestId) {
-        await root.setAttribute("aria-live", "polite");
         await root.setInnerHTML("");
       }
     });
