@@ -1170,16 +1170,41 @@
       "turn_hud.turn_unknown": "턴 확인 중",
       "turn_hud.completed": "저장 완료",
       "turn_hud.completed_with_warning": "경고와 함께 저장 완료",
+      "turn_hud.invalidated": "작업 중단",
       "turn_hud.failed": "처리 오류",
       "turn_hud.tap_to_dismiss": "눌러서 닫기",
       "turn_hud.retryable": "다시 시도할 수 있음",
       "turn_hud.not_retryable": "자동 재시도 불가",
       "turn_hud.elapsed_seconds": "{n}초",
+      "turn_hud.stage_ledger": "전체 작동 확인",
+      "turn_hud.stage_status.succeeded": "정상",
+      "turn_hud.stage_status.skipped": "건너뜀",
+      "turn_hud.stage_status.failed": "실패",
+      "turn_hud.stage_status.invalidated": "중단",
+      "turn_hud.stage_status.pending": "미실행",
+      "turn_hud.stage_status.running": "진행 중",
+      "turn_hud.stage_status.unknown": "미확인",
+      "turn_hud.reason.source_observation_eligible": "현재 입력 확인됨",
+      "turn_hud.reason.disabled": "기능 꺼짐",
+      "turn_hud.reason.deferred_injection_disabled": "입력 주입 꺼짐",
+      "turn_hud.reason.deferred_budget_disabled": "가이드 예산 꺼짐",
+      "turn_hud.reason.deferred_no_guide_support": "지원 근거 없음",
+      "turn_hud.reason.deferred_insufficient_narrative_budget": "서사 예산 부족",
+      "turn_hud.reason.deferred_no_execution_evidence": "실행 근거 없음",
+      "turn_hud.reason.not_configured": "LLM 설정 없음",
+      "turn_hud.reason.publisher_llm_failed_open": "호출 실패 후 본문 계속",
+      "turn_hud.reason.ooc_turn_guard": "OOC 턴 제외",
+      "turn_hud.reason.store_writes_disabled": "저장 기능 꺼짐",
+      "turn_hud.reason.raw_chat_logs_not_durable": "원문 저장 미확정",
+      "turn_hud.reason.assistant_content_missing": "응답 원문 없음",
+      "turn_hud.reason.critic_config_missing": "평론가 설정 없음",
+      "turn_hud.reason.critic_not_applicable": "평론가 적용 대상 아님",
+      "turn_hud.reason.critic_result_unavailable": "평론가 결과 없음",
       "turn_hud.transport_unavailable": "진행 상태 연결이 끊겼습니다.",
       "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
       "turn_hud.stage.recall_materialization": "기억·근거 불러오기",
       "turn_hud.stage.context_assembly": "입력 맥락 조립",
-      "turn_hud.stage.publisher_llm": "출판사 LLM 호출",
+      "turn_hud.stage.publisher_llm": "감독관 LLM 호출",
       "turn_hud.stage.payload_ready": "본문 요청 준비",
       "turn_hud.stage.awaiting_final_output": "본문 응답 기다리는 중",
       "turn_hud.stage.final_output_accepted": "최종 출력 확인",
@@ -2128,16 +2153,41 @@
       "turn_hud.turn_unknown": "Resolving turn",
       "turn_hud.completed": "Save complete",
       "turn_hud.completed_with_warning": "Saved with warnings",
+      "turn_hud.invalidated": "Operation stopped",
       "turn_hud.failed": "Processing error",
       "turn_hud.tap_to_dismiss": "Tap to dismiss",
       "turn_hud.retryable": "Retry is available",
       "turn_hud.not_retryable": "Automatic retry unavailable",
       "turn_hud.elapsed_seconds": "{n}s",
+      "turn_hud.stage_ledger": "Full operation check",
+      "turn_hud.stage_status.succeeded": "OK",
+      "turn_hud.stage_status.skipped": "Skipped",
+      "turn_hud.stage_status.failed": "Failed",
+      "turn_hud.stage_status.invalidated": "Stopped",
+      "turn_hud.stage_status.pending": "Not run",
+      "turn_hud.stage_status.running": "Running",
+      "turn_hud.stage_status.unknown": "Unknown",
+      "turn_hud.reason.source_observation_eligible": "Current input confirmed",
+      "turn_hud.reason.disabled": "Feature disabled",
+      "turn_hud.reason.deferred_injection_disabled": "Injection disabled",
+      "turn_hud.reason.deferred_budget_disabled": "Guide budget disabled",
+      "turn_hud.reason.deferred_no_guide_support": "No supporting evidence",
+      "turn_hud.reason.deferred_insufficient_narrative_budget": "Narrative budget insufficient",
+      "turn_hud.reason.deferred_no_execution_evidence": "No execution evidence",
+      "turn_hud.reason.not_configured": "LLM not configured",
+      "turn_hud.reason.publisher_llm_failed_open": "Call failed; story continued",
+      "turn_hud.reason.ooc_turn_guard": "OOC turn excluded",
+      "turn_hud.reason.store_writes_disabled": "Storage disabled",
+      "turn_hud.reason.raw_chat_logs_not_durable": "Source save unconfirmed",
+      "turn_hud.reason.assistant_content_missing": "Response source missing",
+      "turn_hud.reason.critic_config_missing": "Critic not configured",
+      "turn_hud.reason.critic_not_applicable": "Critic not applicable",
+      "turn_hud.reason.critic_result_unavailable": "Critic result unavailable",
       "turn_hud.transport_unavailable": "The progress connection was lost.",
       "turn_hud.stage.prepare_source": "Confirming current input and request",
       "turn_hud.stage.recall_materialization": "Loading memory and evidence",
       "turn_hud.stage.context_assembly": "Assembling input context",
-      "turn_hud.stage.publisher_llm": "Publisher LLM call",
+      "turn_hud.stage.publisher_llm": "Supervisor LLM call",
       "turn_hud.stage.payload_ready": "Preparing story request",
       "turn_hud.stage.awaiting_final_output": "Waiting for story response",
       "turn_hud.stage.final_output_accepted": "Confirming final output",
@@ -3084,16 +3134,41 @@
       "turn_hud.turn_unknown": "ターン確認中",
       "turn_hud.completed": "保存完了",
       "turn_hud.completed_with_warning": "警告付きで保存完了",
+      "turn_hud.invalidated": "処理中断",
       "turn_hud.failed": "処理エラー",
       "turn_hud.tap_to_dismiss": "タップして閉じる",
       "turn_hud.retryable": "再試行できます",
       "turn_hud.not_retryable": "自動再試行はできません",
       "turn_hud.elapsed_seconds": "{n}秒",
+      "turn_hud.stage_ledger": "全処理の確認",
+      "turn_hud.stage_status.succeeded": "正常",
+      "turn_hud.stage_status.skipped": "スキップ",
+      "turn_hud.stage_status.failed": "失敗",
+      "turn_hud.stage_status.invalidated": "中断",
+      "turn_hud.stage_status.pending": "未実行",
+      "turn_hud.stage_status.running": "進行中",
+      "turn_hud.stage_status.unknown": "未確認",
+      "turn_hud.reason.source_observation_eligible": "現在の入力を確認",
+      "turn_hud.reason.disabled": "機能が無効",
+      "turn_hud.reason.deferred_injection_disabled": "入力注入が無効",
+      "turn_hud.reason.deferred_budget_disabled": "ガイド予算が無効",
+      "turn_hud.reason.deferred_no_guide_support": "支援根拠なし",
+      "turn_hud.reason.deferred_insufficient_narrative_budget": "物語予算不足",
+      "turn_hud.reason.deferred_no_execution_evidence": "実行根拠なし",
+      "turn_hud.reason.not_configured": "LLM未設定",
+      "turn_hud.reason.publisher_llm_failed_open": "呼び出し失敗後も本文を継続",
+      "turn_hud.reason.ooc_turn_guard": "OOCターンを除外",
+      "turn_hud.reason.store_writes_disabled": "保存機能が無効",
+      "turn_hud.reason.raw_chat_logs_not_durable": "原文保存が未確定",
+      "turn_hud.reason.assistant_content_missing": "応答原文なし",
+      "turn_hud.reason.critic_config_missing": "批評家が未設定",
+      "turn_hud.reason.critic_not_applicable": "批評家の対象外",
+      "turn_hud.reason.critic_result_unavailable": "批評家の結果なし",
       "turn_hud.transport_unavailable": "進行状況への接続が切れました。",
       "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
       "turn_hud.stage.recall_materialization": "記憶と根拠を読み込み",
       "turn_hud.stage.context_assembly": "入力コンテキストを組み立て",
-      "turn_hud.stage.publisher_llm": "出版社LLMを呼び出し",
+      "turn_hud.stage.publisher_llm": "監督LLMを呼び出し",
       "turn_hud.stage.payload_ready": "本文リクエストを準備",
       "turn_hud.stage.awaiting_final_output": "本文応答を待機中",
       "turn_hud.stage.final_output_accepted": "最終出力を確認",
@@ -12404,7 +12479,7 @@
   const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(5px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(140px,calc(100vw - 10px));pointer-events:none;font-family:Pretendard Variable,Pretendard,Inter,Geist,system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:10px;line-height:1.25;color:#F4F5F7";
   const TURN_WORKFLOW_HUD_ROOT_SELECTOR = ".mo-turn-workflow-hud-root";
   const TURN_WORKFLOW_HUD_SURFACE_SELECTOR = ".mo-turn-workflow-hud-root > div";
-  const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#181C24;box-shadow:0 16px 40px rgba(0,0,0,.48);padding:8px;pointer-events:auto;font-size:10px;line-height:1.25;letter-spacing:-.01em;color:#F4F5F7;white-space:normal;overflow:hidden;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;max-height:calc(100vh - 20px);border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#181C24;box-shadow:0 16px 40px rgba(0,0,0,.48);padding:8px;pointer-events:auto;font-size:10px;line-height:1.25;letter-spacing:-.01em;color:#F4F5F7;white-space:normal;overflow:auto;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-width:thin";
   const TURN_WORKFLOW_HUD_WARNING_STYLE = ";border-color:rgba(138,85,247,.35);background:#1C1828";
   const TURN_WORKFLOW_HUD_ERROR_STYLE = ";border-color:rgba(225,88,166,.55);background:#2A151D;box-shadow:0 16px 40px rgba(0,0,0,.48),0 0 20px rgba(225,88,166,.10)";
   const TURN_WORKFLOW_HUD_EYEBROW_STYLE = "padding-right:20px;font-size:8px;font-weight:500;line-height:1.2;letter-spacing:.12em;color:#5C626D";
@@ -12422,6 +12497,14 @@
   const TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE = "display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.07)";
   const TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE = "min-width:0;font-size:8px;line-height:1.15;letter-spacing:.01em;color:#8B909A;white-space:normal;overflow-wrap:anywhere";
   const TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE = "flex:none;font-size:10px;line-height:1;font-weight:600;color:#F4F5F7;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE = "margin-top:6px;font-size:7px;font-weight:500;line-height:1.2;letter-spacing:.08em;color:#5C626D";
+  const TURN_WORKFLOW_HUD_STAGE_LEDGER_STYLE = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 6px;margin-top:4px";
+  const TURN_WORKFLOW_HUD_STAGE_CELL_STYLE = "min-width:0;border:1px solid rgba(255,255,255,.07);border-radius:6px;background:#13161C;padding:4px";
+  const TURN_WORKFLOW_HUD_STAGE_LABEL_STYLE = "min-width:0;font-size:7px;font-weight:500;line-height:1.2;color:#8B909A;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_STAGE_META_STYLE = "margin-top:2px;font-size:8px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums";
+  const TURN_WORKFLOW_HUD_STAGE_REASON_STYLE = "margin-top:2px;font-size:6.5px;line-height:1.15;color:#8B909A;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_WARNING_LIST_STYLE = "margin-top:5px;border:1px solid rgba(138,85,247,.28);border-radius:7px;background:rgba(138,85,247,.08);padding:4px";
+  const TURN_WORKFLOW_HUD_WARNING_ITEM_STYLE = "font-size:7px;line-height:1.25;color:#B9A4F7;overflow-wrap:anywhere";
   const TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE = "margin-top:5px;font-size:9px;line-height:1.35;color:#F4F5F7";
   const TURN_WORKFLOW_HUD_ERROR_META_STYLE = "margin-top:4px;padding-right:18px;font-size:8px;line-height:1.3;color:#E158A6;white-space:normal;overflow-wrap:anywhere";
 
@@ -12533,6 +12616,109 @@
     return `<button type="button" aria-label="${label}" title="${label}" style="${TURN_WORKFLOW_HUD_CLOSE_STYLE}">×</button>`;
   }
 
+  function turnWorkflowHUDStageStatus(status) {
+    const normalized = String(status || "unknown").toLowerCase();
+    const supported = ["succeeded", "skipped", "failed", "invalidated", "pending", "running"];
+    return supported.includes(normalized) ? normalized : "unknown";
+  }
+
+  function turnWorkflowHUDStageStatusColor(status) {
+    switch (turnWorkflowHUDStageStatus(status)) {
+      case "succeeded":
+      case "running":
+        return "#8FA7FF";
+      case "failed":
+        return "#E158A6";
+      case "invalidated":
+        return "#A983FF";
+      case "skipped":
+        return "#8B909A";
+      default:
+        return "#5C626D";
+    }
+  }
+
+  function turnWorkflowHUDStageDuration(stage) {
+    const status = turnWorkflowHUDStageStatus(stage && stage.status);
+    if (status === "pending" || status === "unknown" || status === "running") return "—";
+    const rawMilliseconds = Number(stage && stage.duration_ms);
+    const milliseconds = Number.isFinite(rawMilliseconds) ? Math.max(0, Math.trunc(rawMilliseconds)) : 0;
+    const seconds = milliseconds / 1000;
+    let value = seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2);
+    value = value.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+    return tf("turn_hud.elapsed_seconds", { n: value || "0" });
+  }
+
+  function turnWorkflowHUDStageReason(reasonCode) {
+    const code = String(reasonCode || "").trim();
+    if (!code) return "";
+    const key = "turn_hud.reason." + code;
+    const localized = String(t(key) || "");
+    return localized && localized !== key ? localized : code;
+  }
+
+  function turnWorkflowHUDStageLedgerHTML(view) {
+    const stages = Array.isArray(view && view.stages) ? view.stages : [];
+    const stageHTML = stages.map(function(stage) {
+      const item = stage && typeof stage === "object" ? stage : {};
+      const status = turnWorkflowHUDStageStatus(item.status);
+      const label = item.label_key ? t(item.label_key) : String(item.key || "");
+      const statusText = t("turn_hud.stage_status." + status);
+      const durationText = turnWorkflowHUDStageDuration(item);
+      const reasonText = turnWorkflowHUDStageReason(item.reason_code);
+      return `<div style="${TURN_WORKFLOW_HUD_STAGE_CELL_STYLE}">`
+        + `<div style="${TURN_WORKFLOW_HUD_STAGE_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(label)}</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_STAGE_META_STYLE};color:${turnWorkflowHUDStageStatusColor(status)}">${escapeTurnWorkflowHUDHTML(statusText + " · " + durationText)}</div>`
+        + (reasonText ? `<div style="${TURN_WORKFLOW_HUD_STAGE_REASON_STYLE}">${escapeTurnWorkflowHUDHTML(reasonText)}</div>` : "")
+        + `</div>`;
+    }).join("");
+    return `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.stage_ledger"))}</div>`
+      + `<div style="${TURN_WORKFLOW_HUD_STAGE_LEDGER_STYLE}">${stageHTML}</div>`;
+  }
+
+  function turnWorkflowHUDWarningListHTML(view) {
+    const warnings = Array.isArray(view && view.warnings) ? view.warnings : [];
+    if (!warnings.length) return "";
+    const warningHTML = warnings.map(function(warning) {
+      const item = warning && typeof warning === "object" ? warning : {};
+      const message = item.message_key ? t(item.message_key) : String(item.code || "");
+      const code = String(item.code || "").trim();
+      return `<div style="${TURN_WORKFLOW_HUD_WARNING_ITEM_STYLE}">${escapeTurnWorkflowHUDHTML(message + (code ? " · " + code : ""))}</div>`;
+    }).join("");
+    return `<div style="${TURN_WORKFLOW_HUD_WARNING_LIST_STYLE}">${warningHTML}</div>`;
+  }
+
+  function turnWorkflowHUDCountPresentation(counts) {
+    const safeCounts = Array.isArray(counts) ? counts : [];
+    const totalCount = safeCounts.find(function(count) {
+      return count && count.key === "total_committed";
+    });
+    const totalNumericValue = totalCount ? Number(totalCount.value) : 0;
+    const totalValue = String(Number.isFinite(totalNumericValue) ? Math.max(0, Math.trunc(totalNumericValue)) : 0);
+    const totalLabel = totalCount ? t(totalCount.label_key || totalCount.key) : t("turn_hud.count.total_committed");
+    const countHTML = safeCounts.filter(function(count) {
+      return count && count.key !== "total_committed";
+    }).map(function(count) {
+      if (!count || typeof count.key !== "string") return;
+      const numericValue = Number(count.value);
+      const value = String(Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0);
+      return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(value)}</span>`
+        + `</div>`;
+    }).filter(Boolean).join("");
+    return { totalLabel, totalValue, countHTML, available: safeCounts.length > 0 };
+  }
+
+  function turnWorkflowHUDCountLedgerHTML(presentation) {
+    if (!presentation || presentation.available !== true) return "";
+    return `<div style="${TURN_WORKFLOW_HUD_TOTAL_STYLE}">`
+      + `<span style="${TURN_WORKFLOW_HUD_TOTAL_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(presentation.totalLabel)}</span>`
+      + `<span style="${TURN_WORKFLOW_HUD_TOTAL_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(presentation.totalValue)}</span>`
+      + `</div>`
+      + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${presentation.countHTML}</div>`;
+  }
+
   function dismissTurnWorkflowHUD(requestId) {
     if (requestId && _turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
     _turnWorkflowHUDWatchToken++;
@@ -12563,6 +12749,8 @@
     const severity = String(view.severity || "info");
     if (view.status === "failed" || severity === "error") {
       const error = view.error && typeof view.error === "object" ? view.error : {};
+      const preservedCounts = Array.isArray(error.preserved_counts) ? error.preserved_counts : view.counts;
+      const countPresentation = turnWorkflowHUDCountPresentation(preservedCounts);
       const stage = Array.isArray(view.stages)
         ? view.stages.find(function(item) { return item && item.key === error.stage_key; })
         : null;
@@ -12581,32 +12769,19 @@
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>`
+          + turnWorkflowHUDWarningListHTML(view)
+          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
+          + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
       };
     }
 
-    if (view.status === "completed" || view.status === "completed_with_warning") {
-      const completionLabel = view.status === "completed_with_warning"
-        ? t("turn_hud.completed_with_warning")
-        : t("turn_hud.completed");
-      const counts = Array.isArray(view.counts) ? view.counts : [];
-      const totalCount = counts.find(function(count) {
-        return count && count.key === "total_committed";
-      });
-      const totalNumericValue = totalCount ? Number(totalCount.value) : 0;
-      const totalValue = String(Number.isFinite(totalNumericValue) ? Math.max(0, Math.trunc(totalNumericValue)) : 0);
-      const totalLabel = totalCount ? t(totalCount.label_key || totalCount.key) : t("turn_hud.count.total_committed");
-      const countHTML = counts.filter(function(count) {
-        return count && count.key !== "total_committed";
-      }).map(function(count) {
-        if (!count || typeof count.key !== "string") return;
-        const numericValue = Number(count.value);
-        const value = String(Number.isFinite(numericValue) ? Math.max(0, Math.trunc(numericValue)) : 0);
-        return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
-          + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(count.label_key || count.key))}</span>`
-          + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(value)}</span>`
-          + `</div>`;
-      }).filter(Boolean).join("");
+    if (view.status === "completed" || view.status === "completed_with_warning" || view.status === "invalidated") {
+      const completionLabel = view.status === "invalidated"
+        ? t("turn_hud.invalidated")
+        : (view.status === "completed_with_warning" ? t("turn_hud.completed_with_warning") : t("turn_hud.completed"));
+      const countPresentation = turnWorkflowHUDCountPresentation(view.counts);
       return {
         terminal: true,
         elapsedStartedAt: "",
@@ -12615,11 +12790,9 @@
           + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
           + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
-          + `<div style="${TURN_WORKFLOW_HUD_TOTAL_STYLE}">`
-          + `<span style="${TURN_WORKFLOW_HUD_TOTAL_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(totalLabel)}</span>`
-          + `<span style="${TURN_WORKFLOW_HUD_TOTAL_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(totalValue)}</span>`
-          + `</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${countHTML}</div>`
+          + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + turnWorkflowHUDWarningListHTML(view)
+          + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
       };
     }
@@ -12664,10 +12837,6 @@
     _turnWorkflowHUDActiveRequestId = requestId;
     const revision = Number(view.revision || 0);
     _turnWorkflowHUDLastRevision = Math.max(_turnWorkflowHUDLastRevision, revision);
-    if (view.status === "invalidated") {
-      dismissTurnWorkflowHUD(requestId);
-      return;
-    }
     const presentation = buildTurnWorkflowHUDPresentation(view);
     return queueTurnWorkflowHUDOperation("render", async function() {
       if (requestId !== _turnWorkflowHUDActiveRequestId) return;

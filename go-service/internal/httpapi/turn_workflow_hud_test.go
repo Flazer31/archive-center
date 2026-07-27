@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -93,6 +94,61 @@ func TestTurnWorkflowHUDWaitSnapshotReturnsOnRevision(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("waitSnapshot did not wake after revision")
+	}
+}
+
+func TestTurnWorkflowHUDStagesExposeBackendDurationStatusAndReason(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-stage-ledger", "session-stage-ledger", 2)
+	ledger.startStage("request-stage-ledger", turnWorkflowStagePublisherLLM)
+
+	ledger.mu.Lock()
+	entry := ledger.entries["request-stage-ledger"]
+	index := turnWorkflowHUDStageIndex(entry.view.Stages, turnWorkflowStagePublisherLLM)
+	startedAt := time.Now().UTC().Add(-1500 * time.Millisecond)
+	entry.view.Stages[index].StartedAt = timePtr(startedAt)
+	ledger.mu.Unlock()
+
+	ledger.finishStage("request-stage-ledger", turnWorkflowStagePublisherLLM, "skipped", "deferred_no_guide_support")
+	ledger.complete("request-stage-ledger")
+
+	view, ok := ledger.snapshot("request-stage-ledger")
+	if !ok || len(view.Stages) != len(turnWorkflowHUDStageTemplates) {
+		t.Fatalf("terminal stage ledger = %#v, found=%t", view.Stages, ok)
+	}
+	publisher := view.Stages[index]
+	if publisher.Status != "skipped" || publisher.ReasonCode != "deferred_no_guide_support" || publisher.DurationMS < 1400 {
+		t.Fatalf("publisher stage = %#v", publisher)
+	}
+	if completeIndex := turnWorkflowHUDStageIndex(view.Stages, turnWorkflowStageComplete); completeIndex < 0 ||
+		view.Stages[completeIndex].Status != "succeeded" || view.Stages[completeIndex].DurationMS < 0 {
+		t.Fatalf("complete stage = %#v", view.Stages)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("marshal terminal stage ledger: %v", err)
+	}
+	if !bytes.Contains(encoded, []byte(`"duration_ms"`)) {
+		t.Fatalf("terminal stage ledger omitted duration_ms: %s", encoded)
+	}
+
+	ledger.begin("request-stage-failure", "session-stage-failure", 3)
+	ledger.startStage("request-stage-failure", turnWorkflowStageCriticLLM)
+	ledger.mu.Lock()
+	failureEntry := ledger.entries["request-stage-failure"]
+	failureIndex := turnWorkflowHUDStageIndex(failureEntry.view.Stages, turnWorkflowStageCriticLLM)
+	failureStartedAt := time.Now().UTC().Add(-800 * time.Millisecond)
+	failureEntry.view.Stages[failureIndex].StartedAt = timePtr(failureStartedAt)
+	ledger.mu.Unlock()
+	ledger.fail("request-stage-failure", "CRITIC_LLM_FAILED", "turn_hud.error.critic_llm_failed", turnWorkflowStageCriticLLM, true)
+
+	failed, ok := ledger.snapshot("request-stage-failure")
+	if !ok {
+		t.Fatal("failed workflow stage ledger was not retained")
+	}
+	critic := failed.Stages[failureIndex]
+	if critic.Status != "failed" || critic.ReasonCode != "CRITIC_LLM_FAILED" || critic.DurationMS < 700 {
+		t.Fatalf("failed critic stage = %#v", critic)
 	}
 }
 

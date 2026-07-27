@@ -86,6 +86,7 @@ type turnWorkflowHUDStage struct {
 	Status     string     `json:"status"`
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	DurationMS int64      `json:"duration_ms"`
 	ReasonCode string     `json:"reason_code,omitempty"`
 	LLMCall    bool       `json:"llm_call"`
 }
@@ -263,6 +264,7 @@ func (l *turnWorkflowHUDLedger) startStage(requestID, stageKey string) {
 		if stage.Status == "running" && index != target {
 			stage.Status = "succeeded"
 			stage.EndedAt = timePtr(now)
+			stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
 		}
 	}
 	stage := &entry.view.Stages[target]
@@ -270,6 +272,7 @@ func (l *turnWorkflowHUDLedger) startStage(requestID, stageKey string) {
 		stage.Status = "running"
 		stage.StartedAt = timePtr(now)
 		stage.EndedAt = nil
+		stage.DurationMS = 0
 		stage.ReasonCode = ""
 	}
 	entry.view.Status = "running"
@@ -304,6 +307,7 @@ func (l *turnWorkflowHUDLedger) finishStage(requestID, stageKey, status, reasonC
 	}
 	stage.ReasonCode = strings.TrimSpace(reasonCode)
 	stage.EndedAt = timePtr(now)
+	stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
 	entry.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
 	l.touchLocked(entry, now)
 }
@@ -366,6 +370,7 @@ func (l *turnWorkflowHUDLedger) fail(requestID, code, messageKey, stageKey strin
 		stage.Status = "failed"
 		stage.ReasonCode = strings.TrimSpace(code)
 		stage.EndedAt = timePtr(now)
+		stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
 		entry.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
 	}
 	entry.view.Status = "failed"
@@ -443,6 +448,7 @@ func (l *turnWorkflowHUDLedger) complete(requestID string) {
 		if stage.Status == "running" {
 			stage.Status = "succeeded"
 			stage.EndedAt = timePtr(now)
+			stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
 		}
 	}
 	index := turnWorkflowHUDStageIndex(entry.view.Stages, turnWorkflowStageComplete)
@@ -453,6 +459,7 @@ func (l *turnWorkflowHUDLedger) complete(requestID string) {
 		}
 		stage.Status = "succeeded"
 		stage.EndedAt = timePtr(now)
+		stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
 		entry.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
 	}
 	entry.view.Status = "completed"
@@ -547,6 +554,7 @@ func (l *turnWorkflowHUDLedger) invalidateLocked(entry *turnWorkflowHUDEntry, re
 			stage.Status = "invalidated"
 			stage.ReasonCode = strings.TrimSpace(reasonCode)
 			stage.EndedAt = timePtr(now)
+			stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
 			entry.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
 		}
 	}
@@ -589,6 +597,7 @@ func (l *turnWorkflowHUDLedger) supersedeAttemptLocked(entry *turnWorkflowHUDEnt
 		stage.Status = "invalidated"
 		stage.ReasonCode = strings.TrimSpace(reasonCode)
 		stage.EndedAt = timePtr(now)
+		stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
 		entry.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
 	}
 	entry.view.Status = "invalidated"
@@ -718,6 +727,13 @@ func cloneTurnWorkflowHUDStage(source *turnWorkflowHUDStage) *turnWorkflowHUDSta
 func timePtr(value time.Time) *time.Time {
 	out := value
 	return &out
+}
+
+func turnWorkflowHUDDurationMS(startedAt, endedAt *time.Time) int64 {
+	if startedAt == nil || endedAt == nil || endedAt.Before(*startedAt) {
+		return 0
+	}
+	return endedAt.Sub(*startedAt).Milliseconds()
 }
 
 func (s *Server) handleTurnWorkflowHUDStatus(w http.ResponseWriter, r *http.Request) {

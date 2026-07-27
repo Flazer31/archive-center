@@ -493,12 +493,23 @@ const settings = {turnWorkflowHUDEnabled:true};
 const translations = {
   "turn_hud.completed": "완료",
   "turn_hud.completed_with_warning": "경고와 함께 완료",
+  "turn_hud.invalidated": "작업 중단",
   "turn_hud.failed": "실패",
   "turn_hud.tap_to_dismiss": "눌러서 닫기",
   "turn_hud.transport_unavailable": "전송 실패",
   "turn_hud.not_retryable": "재시도 불가",
   "turn_hud.retryable": "재시도 가능",
+  "turn_hud.stage_ledger": "전체 작동 확인",
+  "turn_hud.stage_status.succeeded": "정상",
+  "turn_hud.stage_status.skipped": "건너뜀",
+  "turn_hud.stage_status.failed": "실패",
+  "turn_hud.stage_status.invalidated": "중단",
+  "turn_hud.stage_status.pending": "미실행",
+  "turn_hud.stage_status.running": "진행 중",
+  "turn_hud.stage_status.unknown": "미확인",
+  "turn_hud.reason.deferred_no_guide_support": "지원 근거 없음",
   "turn_hud.stage.prepare_source": "원문 준비",
+  "warn.publisher": "감독관 호출을 건너뜀",
   "count.raw": "원문 <저장>",
   "count.summary": "요약",
   "count.direct": "직접 근거",
@@ -528,9 +539,22 @@ function assert(condition, message) {
     {key:"world",label_key:"count.world",value:6},
     {key:"total_committed",label_key:"count.total",value:21}
   ];
+  const stages = Array.from({length:12}, function(_, index) {
+    return {
+      key:"stage-" + (index + 1),
+      label_key:"stage.label." + (index + 1),
+      ordinal:index + 1,
+      total:12,
+      status:index === 3 ? "skipped" : "succeeded",
+      duration_ms:index === 3 ? 0 : (index + 1) * 100,
+      reason_code:index === 3 ? "deferred_no_guide_support" : "",
+      llm_call:index === 3 || index === 8
+    };
+  });
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-a",revision:1,
-    logical_turn:55,status:"completed",severity:"info",counts
+    logical_turn:55,status:"completed_with_warning",severity:"warning",counts,stages,
+    warnings:[{code:"PUBLISHER_SKIPPED",message_key:"warn.publisher",stage_key:"stage-4"}]
   }), "completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   const root = nodesByClass.get("mo-turn-workflow-hud-root");
@@ -549,6 +573,13 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("grid-template-columns:repeat(2,minmax(0,1fr))"), "completed HUD details are not arranged as a compact ledger");
   assert(surface.innerHTML.includes("linear-gradient(135deg,rgba(93,115,230,.18),rgba(138,85,247,.10)"), "completed HUD total does not use the restrained blue-purple selection gradient");
   assert(surface.innerHTML.includes("color:#8B909A"), "completed HUD secondary text does not use the supplied hierarchy");
+  assert(surface.innerHTML.includes("전체 작동 확인"), "completed HUD omitted the full stage ledger heading");
+  assert(surface.innerHTML.includes("건너뜀 · 0초"), "completed HUD omitted skipped stage status or duration");
+  assert(surface.innerHTML.includes("지원 근거 없음"), "completed HUD omitted the visible stage reason");
+  assert(surface.innerHTML.includes("감독관 호출을 건너뜀 · PUBLISHER_SKIPPED"), "completed HUD omitted warning details");
+  for (let index = 1; index <= 12; index++) {
+    assert(surface.innerHTML.includes("stage.label." + index), "completed HUD omitted stage " + index);
+  }
   assert(surface.button, "completed HUD has no visible close button");
   assert(!surface.innerHTML.includes("x-mo-turn-hud"), "rendered HUD still depends on x-* attributes stripped by RisuAI");
   assert(surface.innerHTML.includes("원문 &lt;저장&gt;"), "dynamic HUD label was not HTML escaped");
@@ -576,12 +607,23 @@ function assert(condition, message) {
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"failed-c",revision:1,
     logical_turn:57,status:"failed",severity:"error",
-    error:{code:"BAD_<CODE>",message_key:"turn_hud.transport_unavailable",retryable:false}
+    stages:stages.map(function(stage, index) {
+      return index === 8
+        ? {...stage,status:"failed",duration_ms:800,reason_code:"CRITIC_LLM_FAILED"}
+        : stage;
+    }),
+    error:{code:"BAD_<CODE>",message_key:"turn_hud.transport_unavailable",retryable:false,preserved_counts:counts}
   }), "failed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("BAD_&lt;CODE&gt;"), "error metadata was not HTML escaped");
   assert(surface.card.attributes.style.includes("background:#2A151D"), "failed HUD has no opaque fintech error window");
   assert(surface.innerHTML.includes("color:#E158A6"), "failed HUD does not use the supplied pink error accent");
+  assert(surface.innerHTML.includes("실패 · 0.8초"), "failed HUD omitted failed stage status or duration");
+  assert(surface.innerHTML.includes("CRITIC_LLM_FAILED"), "failed HUD omitted the failed stage reason code");
+  assert(surface.innerHTML.includes(">21</span>"), "failed HUD omitted preserved generated counts");
+  for (let index = 1; index <= 12; index++) {
+    assert(surface.innerHTML.includes("stage.label." + index), "failed HUD omitted stage " + index);
+  }
   assert(surface.button, "failed HUD has no visible close button");
   const failedCard = surface.card;
   await failedCard.listeners.keydown({type:"keydown",key:"x"});
@@ -591,12 +633,32 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "Enter did not dismiss terminal HUD");
 
+  assert(consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"invalidated-d",revision:1,
+    logical_turn:58,status:"invalidated",severity:"warning",counts,
+    stages:stages.map(function(stage, index) {
+      return index === 5
+        ? {...stage,status:"invalidated",duration_ms:640,reason_code:"superseded_by_new_attempt"}
+        : stage;
+    })
+  }), "invalidated HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML.includes("작업 중단"), "invalidated HUD omitted terminal title: " + surface.innerHTML);
+  assert(surface.innerHTML.includes("중단 · 0.64초"), "invalidated HUD omitted stage status or duration");
+  assert(surface.innerHTML.includes("superseded_by_new_attempt"), "invalidated HUD omitted visible reason");
+  assert(surface.card.attributes.style.includes("background:#1C1828"), "invalidated HUD does not use warning styling");
+  assert(!surface.card.attributes.style.includes("background:#2A151D"), "invalidated HUD was incorrectly rendered as a red error");
+  assert(surface.button, "invalidated HUD has no visible close button");
+  await surface.card.listeners.click({type:"click"});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "invalidated terminal click did not dismiss HUD");
+
   settings.turnWorkflowHUDEnabled = false;
   assert(!consumeTurnWorkflowHUD({
-    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"disabled-d",revision:1,
-    logical_turn:58,status:"completed",severity:"info",counts
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"disabled-e",revision:1,
+    logical_turn:59,status:"completed",severity:"info",counts
   }), "disabled HUD accepted a backend view");
-  startTurnWorkflowHUDWatch("disabled-d");
+  startTurnWorkflowHUDWatch("disabled-e");
   await _turnWorkflowHUDRenderChain;
   assert(_turnWorkflowHUDActiveRequestId === "", "disabled HUD started a request watch");
   assert(surface.innerHTML === "", "disabled HUD left visible content behind");
@@ -606,7 +668,11 @@ function assert(condition, message) {
   process.exit(1);
 });
 `
-	command := exec.Command(nodePath, "-e", script)
+	scriptPath := t.TempDir() + "/turn-workflow-hud-runtime.js"
+	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
+		t.Fatalf("write turn workflow HUD runtime fixture: %v", err)
+	}
+	command := exec.Command(nodePath, scriptPath)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("turn workflow HUD main RootDocument runtime fixture failed: %v\n%s", err, output)
