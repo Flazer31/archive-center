@@ -22,6 +22,17 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 	if sid == "" || replacement.TurnIndex <= 0 || strings.TrimSpace(replacement.UserContent) == "" || strings.TrimSpace(replacement.AssistantContent) == "" {
 		return fmt.Errorf("invalid logical turn replacement")
 	}
+	if replacement.SourceRevision != nil {
+		source := replacement.SourceRevision
+		if source.ChatSessionID != sid || source.TurnIndex != replacement.TurnIndex ||
+			source.UserContent != replacement.UserContent ||
+			source.AssistantContent != replacement.AssistantContent {
+			return fmt.Errorf("logical turn replacement source revision mismatch")
+		}
+		if err := validateMemorySourceRevision(source); err != nil {
+			return err
+		}
+	}
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -44,12 +55,33 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 		return fmt.Errorf("logical turn replacement requires current canonical tail: latest=%d requested=%d", latest.Int64, replacement.TurnIndex)
 	}
 	t := replacement.TurnIndex
+	if replacement.SourceRevision != nil {
+		if err := invalidateMemorySourcesTx(
+			ctx, tx, sid, t, true, replacement.SourceRevision.SourceRevision,
+			"superseded", "logical_turn_replaced", nonZeroTime(replacement.CreatedAt),
+		); err != nil {
+			return err
+		}
+		if err := insertMemorySourceRevisionTx(ctx, tx, replacement.SourceRevision); err != nil {
+			return err
+		}
+	}
 	commands := []struct {
 		query string
 		args  []any
 	}{
 		{`DELETE FROM effective_input_logs WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
-		{`DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
+	}
+	if replacement.SourceRevision == nil {
+		commands = append(commands, struct {
+			query string
+			args  []any
+		}{`DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}})
+	}
+	commands = append(commands, []struct {
+		query string
+		args  []any
+	}{
 		{`DELETE FROM memories WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
 		{`DELETE FROM direct_evidence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
 		{`DELETE FROM kg_triples WHERE chat_session_id = ? AND (source_turn >= ? OR valid_from >= ?)`, []any{sid, t, t}},
@@ -85,7 +117,7 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 		{`UPDATE status_effects SET effect_state = 'active', cleared_evidence_json = NULL, cleared_turn = NULL, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND cleared_turn >= ?`, []any{sid, t}},
 		{`DELETE FROM status_effects WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
 		{`DELETE FROM chat_logs WHERE chat_session_id = ? AND turn_index = ?`, []any{sid, t}},
-	}
+	}...)
 	for _, command := range commands {
 		if _, err := tx.ExecContext(ctx, command.query, command.args...); err != nil {
 			return err

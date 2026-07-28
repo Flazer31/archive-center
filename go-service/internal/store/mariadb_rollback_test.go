@@ -22,14 +22,14 @@ func TestMariaDBRollbackStoreDeleteFromTurn(t *testing.T) {
 
 	mock.ExpectExec("DELETE FROM chat_logs").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 3))
 	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("UPDATE precise_memory_units").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("DELETE FROM memories").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM kg_triples").WithArgs(sid, fromTurn, fromTurn).WillReturnResult(sqlmock.NewResult(0, 4))
 	mock.ExpectExec("DELETE FROM critic_feedback").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM character_events").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectBegin()
-	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("UPDATE precise_memory_units").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM speaker_attributions").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM entity_identity_artifact_bindings").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM entity_identity_surfaces").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
@@ -170,9 +170,48 @@ func TestMariaDBDeleteSession(t *testing.T) {
 	mock.ExpectExec("DELETE FROM session_reference_bindings").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM persona_capsule_attachments").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM protagonist_entity_memories").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT source_revision").
+		WithArgs(sid, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"source_revision"}).AddRow("revision-delete"))
+	mock.ExpectQuery("SELECT id FROM memories").
+		WithArgs(sid, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery("SELECT id FROM direct_evidence_records").
+		WithArgs(sid, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery("SELECT id FROM world_rules").
+		WithArgs(sid, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery("SELECT DISTINCT document_id").
+		WithArgs(sid, "revision-delete").
+		WillReturnRows(sqlmock.NewRows([]string{"document_id"}).
+			AddRow("precise_memory:sess-delete:unit"))
+	mock.ExpectExec("INSERT INTO memory_vector_outbox").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE memory_derivation_dependencies").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sid, "revision-delete").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE precise_memory_units").
+		WithArgs("deleted", "deleted", "deleted", "deleted", "deleted",
+			sqlmock.AnyArg(), sid, "revision-delete").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE memory_reprocessing_jobs").
+		WithArgs("session_deleted", sqlmock.AnyArg(), sid, "revision-delete").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE memory_vector_outbox").
+		WithArgs("deleted", "session_deleted", sqlmock.AnyArg(), sid, "revision-delete").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE memory_vector_outbox").
+		WithArgs(sqlmock.AnyArg(), sid, "revision-delete").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WithArgs("deleted", nil, "session_deleted", sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"deleted", "deleted", "deleted", "deleted", sid, "revision-delete").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 	mock.ExpectExec("DELETE FROM chat_logs").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 10))
 	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 10))
-	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("DELETE FROM memories").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 5))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM kg_triples").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 2))

@@ -689,6 +689,7 @@ type LogicalTurnReplacement struct {
 	UserContent      string
 	AssistantContent string
 	CreatedAt        time.Time
+	SourceRevision   *MemorySourceRevision
 }
 
 // EffectiveInput is the processed user intent per turn.

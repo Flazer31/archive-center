@@ -93,6 +93,7 @@ type turnRecordingVectorStore struct {
 	docs                []vector.VectorDocument
 	deletedDocumentIDs  []string
 	upsertErr           error
+	deleteErr           error
 	upsertCalls         int
 	deleteSessionCalls  int
 	deleteDocumentCalls int
@@ -119,6 +120,9 @@ func (f *turnRecordingVectorStore) DeleteSession(ctx context.Context, sessionID 
 
 func (f *turnRecordingVectorStore) DeleteDocuments(ctx context.Context, ids []string) error {
 	f.deleteDocumentCalls++
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	f.deletedDocumentIDs = append(f.deletedDocumentIDs, ids...)
 	remove := map[string]bool{}
 	for _, id := range ids {

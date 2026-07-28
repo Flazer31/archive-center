@@ -34,7 +34,7 @@ func (m *mariadbStore) DeleteMemories(ctx context.Context, chatSessionID string,
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
-	if _, err := m.db.ExecContext(ctx, "DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?", chatSessionID, fromTurn); err != nil {
+	if _, err := m.db.ExecContext(ctx, "UPDATE precise_memory_units SET lifecycle_state = 'invalidated', updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND source_turn_end >= ? AND lifecycle_state = 'active'", chatSessionID, fromTurn); err != nil {
 		return err
 	}
 	_, err := m.db.ExecContext(ctx, "DELETE FROM memories WHERE chat_session_id = ? AND turn_index >= ?", chatSessionID, fromTurn)
@@ -95,7 +95,18 @@ func (m *mariadbStore) DeleteEntities(ctx context.Context, chatSessionID string,
 			_ = tx.Rollback()
 		}
 	}()
-	if _, err := tx.ExecContext(ctx, "DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?", chatSessionID, fromTurn); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE precise_memory_units
+		SET lifecycle_state = 'invalidated',
+		    actor_entity_id = NULL,
+		    subject_entity_id = NULL,
+		    affected_entity_id = NULL,
+		    location_entity_id = NULL,
+		    object_entity_id = NULL,
+		    knowledge_holder_entity_id = NULL,
+		    updated_at = CURRENT_TIMESTAMP(3)
+		WHERE chat_session_id = ? AND source_turn_end >= ?
+	`, chatSessionID, fromTurn); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM speaker_attributions WHERE chat_session_id = ? AND source_turn >= ?", chatSessionID, fromTurn); err != nil {

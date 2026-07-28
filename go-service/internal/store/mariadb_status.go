@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -586,10 +587,12 @@ func (m *mariadbStore) DeleteSession(ctx context.Context, chatSessionID string) 
 	if _, err := m.db.ExecContext(ctx, "DELETE FROM protagonist_entity_memories WHERE source_chat_session_id = ?", chatSessionID); err != nil {
 		return err
 	}
+	if err := m.InvalidateSourceRevisions(ctx, chatSessionID, 1, "deleted", "session_deleted", time.Now().UTC()); err != nil {
+		return err
+	}
 	tables := []string{
 		"chat_logs",
 		"effective_input_logs",
-		"precise_memory_units",
 		"memories",
 		"direct_evidence_records",
 		"kg_triples",

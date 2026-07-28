@@ -199,6 +199,103 @@ func (r *rollbackRecordingStore) SaveAuditLog(ctx context.Context, a *store.Audi
 	return nil
 }
 
+type rollbackLifecycleStore struct {
+	*rollbackRecordingStore
+	invalidationErr error
+	outbox          *store.MemoryVectorOutboxItem
+}
+
+func (r *rollbackLifecycleStore) MemoryDerivationLifecycleEnabled() bool {
+	return true
+}
+
+func (r *rollbackLifecycleStore) RegisterAcceptedSourceRevision(context.Context, *store.MemorySourceRevision) (store.SourceRevisionRegistration, error) {
+	return store.SourceRevisionRegistration{}, store.ErrNotEnabled
+}
+
+func (r *rollbackLifecycleStore) GetSourceRevision(context.Context, string, string) (*store.MemorySourceRevision, error) {
+	return nil, store.ErrNotFound
+}
+
+func (r *rollbackLifecycleStore) IsSourceRevisionActive(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (r *rollbackLifecycleStore) InvalidateSourceRevisions(_ context.Context, sid string, fromTurn int, lifecycleState, reason string, now time.Time) error {
+	if r.invalidationErr != nil {
+		return r.invalidationErr
+	}
+	r.outbox = &store.MemoryVectorOutboxItem{
+		ID: 1, Operation: "delete", OperationKey: "rollback-delete",
+		ChatSessionID: sid, SourceRevision: "old-revision",
+		DocumentID: "memory:" + sid + ":41", EmbeddingReady: true,
+		RequiredSourceState: "inactive", Status: "pending",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	return nil
+}
+
+func (r *rollbackLifecycleStore) DeleteSession(_ context.Context, sid string) error {
+	if r.invalidationErr != nil {
+		return r.invalidationErr
+	}
+	r.deletes = append(r.deletes, "session:"+sid)
+	now := time.Now().UTC()
+	r.outbox = &store.MemoryVectorOutboxItem{
+		ID: 2, Operation: "delete", OperationKey: "session-delete",
+		ChatSessionID: sid, SourceRevision: "deleted-revision",
+		DocumentID: "memory:" + sid + ":all", EmbeddingReady: true,
+		RequiredSourceState: "inactive", Status: "pending",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	return nil
+}
+
+func (r *rollbackLifecycleStore) EnqueueMemoryVectorOperation(_ context.Context, item *store.MemoryVectorOutboxItem) (bool, error) {
+	r.outbox = item
+	return true, nil
+}
+
+func (r *rollbackLifecycleStore) ClaimMemoryVectorOperation(_ context.Context, owner string, now time.Time, lease time.Duration) (*store.MemoryVectorOutboxItem, error) {
+	if r.outbox == nil || (r.outbox.Status != "pending" && r.outbox.Status != "retryable") {
+		return nil, store.ErrNotFound
+	}
+	if !r.outbox.RetryAfter.IsZero() && r.outbox.RetryAfter.After(now) {
+		return nil, store.ErrNotFound
+	}
+	copy := *r.outbox
+	copy.Status = "leased"
+	copy.LeaseOwner = owner
+	copy.LeaseUntil = now.Add(lease)
+	r.outbox = &copy
+	return &copy, nil
+}
+
+func (r *rollbackLifecycleStore) CompleteMemoryVectorOperation(_ context.Context, _ int64, owner string, now time.Time) error {
+	if r.outbox == nil || r.outbox.LeaseOwner != owner {
+		return store.ErrLeaseExpired
+	}
+	r.outbox.Status = "completed"
+	r.outbox.UpdatedAt = now
+	return nil
+}
+
+func (r *rollbackLifecycleStore) FailMemoryVectorOperation(_ context.Context, _ int64, owner string, now, retryAfter time.Time, permanent bool, failure string) error {
+	if r.outbox == nil || r.outbox.LeaseOwner != owner {
+		return store.ErrLeaseExpired
+	}
+	r.outbox.Status = "retryable"
+	if permanent {
+		r.outbox.Status = "permanent"
+	}
+	r.outbox.RetryAfter = retryAfter
+	r.outbox.LastError = failure
+	r.outbox.LeaseOwner = ""
+	r.outbox.LeaseUntil = time.Time{}
+	r.outbox.UpdatedAt = now
+	return nil
+}
+
 func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -327,6 +424,100 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	}
 	if rec.audits[0].Source != "auto_rollback" {
 		t.Fatalf("audit source = %q, want auto_rollback", rec.audits[0].Source)
+	}
+}
+
+func TestRollbackLifecycleUsesDurableOutboxAndProviderFailureStaysRetryable(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
+	lifecycle := &rollbackLifecycleStore{rollbackRecordingStore: base}
+	vec := &turnRecordingVectorStore{deleteErr: errors.New("chroma unavailable")}
+	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: vec}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodDelete, "/rollback/5?chat_session_id=sess-outbox&req_source=manual", nil)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["status"] != "ok" {
+		t.Fatalf("response=%+v", response)
+	}
+	deletions := response["deletions"].(map[string]any)
+	vectors := deletions["vectors"].(map[string]any)
+	if vectors["mode"] != "durable_outbox" || vectors["retryable_queued"] != float64(1) {
+		t.Fatalf("vectors=%+v", vectors)
+	}
+	if lifecycle.outbox == nil || lifecycle.outbox.Status != "retryable" {
+		t.Fatalf("outbox=%+v", lifecycle.outbox)
+	}
+	if len(base.deletes) == 0 {
+		t.Fatal("canonical rollback did not run")
+	}
+}
+
+func TestRollbackStopsBeforeCanonicalDeletionWhenSourceInvalidationFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
+	lifecycle := &rollbackLifecycleStore{
+		rollbackRecordingStore: base,
+		invalidationErr:        errors.New("source lock failed"),
+	}
+	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: &turnRecordingVectorStore{}}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodDelete, "/rollback/5?chat_session_id=sess-stop&req_source=manual", nil)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(base.deletes) != 0 {
+		t.Fatalf("canonical deletes ran after source invalidation failure: %+v", base.deletes)
+	}
+}
+
+func TestSessionDeleteLifecycleUsesOutboxInsteadOfDirectVectorSessionDelete(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
+	lifecycle := &rollbackLifecycleStore{rollbackRecordingStore: base}
+	vec := &turnRecordingVectorStore{deleteErr: errors.New("chroma unavailable")}
+	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: vec}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodDelete, "/sessions/sess-session-outbox", nil)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["status"] != "ok" || response["deleted"] != true {
+		t.Fatalf("response=%+v", response)
+	}
+	cleanup := response["vector_cleanup"].(map[string]any)
+	if cleanup["mode"] != "durable_outbox" || cleanup["retryable_queued"] != float64(1) {
+		t.Fatalf("cleanup=%+v", cleanup)
+	}
+	if vec.deleteSessionCalls != 0 {
+		t.Fatalf("direct vector session delete calls=%d", vec.deleteSessionCalls)
+	}
+	if lifecycle.outbox == nil || lifecycle.outbox.Status != "retryable" {
+		t.Fatalf("outbox=%+v", lifecycle.outbox)
 	}
 }
 

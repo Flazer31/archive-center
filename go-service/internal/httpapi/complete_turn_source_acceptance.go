@@ -320,7 +320,13 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 			return stale
 		}
 	}
-	decision.ReplaceExisting = (previous.Revision != "" && previous.LogicalTurnID == decision.LogicalTurnID && previous.ContentHash != observation.ObservedContentHash) || legacyLogicalTurnMatch
+	// Revision identity, not only text inequality, owns supersession. A reroll
+	// may legitimately produce byte-identical text under a new Host-observed
+	// generation/message identity; that new accepted revision still supersedes
+	// the prior active worker fence.
+	decision.ReplaceExisting = (previous.Revision != "" &&
+		previous.LogicalTurnID == decision.LogicalTurnID &&
+		previous.Revision != decision.Revision) || legacyLogicalTurnMatch
 	var superseded *completeTurnSourceAcceptanceState
 	if decision.ReplaceExisting {
 		prior := previous

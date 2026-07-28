@@ -49,6 +49,9 @@ type PreciseMemoryUnit struct {
 	RevealCondition         string    `json:"reveal_condition,omitempty"`
 	Confidence              float64   `json:"confidence"`
 	IdempotencyKey          string    `json:"idempotency_key"`
+	DerivationVersion       string    `json:"derivation_version"`
+	ExtractorVersion        string    `json:"extractor_version"`
+	IndexVersion            string    `json:"index_version"`
 	LifecycleState          string    `json:"lifecycle_state"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`

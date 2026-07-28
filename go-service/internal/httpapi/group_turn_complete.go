@@ -142,7 +142,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			writeCompleteTurnSourceAcceptanceRejection(w, req, rejectedCompleteTurnSourceAcceptance("source_acceptance_revision_superseded_before_replacement", false, sourceAcceptance.Observation))
 			return
 		}
-		if err := s.replaceCompleteTurnLogicalTail(ctx, sid, req.TurnIndex, userText, assistantText, now); err != nil {
+		if err := s.replaceCompleteTurnLogicalTail(ctx, sid, req.TurnIndex, userText, assistantText, sourceAcceptance, now); err != nil {
 			if s.TurnWorkflows != nil && workflowRequestID != "" {
 				s.TurnWorkflows.fail(workflowRequestID, "LOGICAL_TURN_REPLACE_FAILED", "turn_hud.error.logical_turn_replace_failed", turnWorkflowStageFinalAccepted, true)
 			}
@@ -482,6 +482,18 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	rawSave := s.persistCompleteTurnRaw(ctx, sid, turnIndex, userText, assistantText, now, rawTurnAlreadyPersisted, rawUserAlreadyPersisted, rawAssistantAlreadyPersisted)
 	timing.addElapsed("raw_and_audit_store", rawStoreStartedAt)
 	rawTurnDurable := rawSave.UserDurable && rawSave.AssistantDurable
+	if rawTurnDurable {
+		if err := s.registerCompleteTurnSourceRevision(ctx, sourceAcceptance, sid, turnIndex, userText, assistantText, now); err != nil {
+			rawSave.Errors++
+			rawSave.ErrorDetails = append(rawSave.ErrorDetails, "RegisterAcceptedSourceRevision: "+err.Error())
+			rawTurnDurable = false
+		}
+	}
+	if rawTurnDurable {
+		s.processMemoryVectorOutboxBatch(
+			ctx, fmt.Sprintf("complete-turn:%s", sid), now, 30*time.Second, 16,
+		)
+	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		if !s.usesShadowWriteStore() {
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageRawPersist, "skipped", "store_writes_disabled")
@@ -497,6 +509,8 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	criticTrace := map[string]any{}
 	criticTriggered := false
 	criticFailureReason := ""
+	reprocessingReason := ""
+	reprocessingDurable := false
 	var criticFailureTrace map[string]any
 	failReasons := []string{}
 	criticWorkflowStageHandled := false
@@ -524,6 +538,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				timing.addElapsed("critic_llm", criticStartedAt)
 				if err != nil {
 					criticFailureReason = "critic_extract_failed: " + err.Error()
+					reprocessingReason = criticFailureReason
 					failReasons = append(failReasons, criticFailureReason)
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
 						s.TurnWorkflows.fail(workflowRequestID, "CRITIC_LLM_FAILED", "turn_hud.error.critic_llm_failed", turnWorkflowStageCriticLLM, true)
@@ -545,6 +560,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			}
 		} else {
 			failReasons = append(failReasons, "critic_config_missing")
+			reprocessingReason = "critic_config_missing"
 			criticWorkflowStageHandled = true
 			if s.TurnWorkflows != nil && workflowRequestID != "" {
 				s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageCriticLLM, "skipped", "critic_config_missing")
@@ -711,6 +727,29 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveAuditLog(critic_extract_failed): "+err.Error())
 			} else {
 				auditSaved++
+			}
+		}
+		if reprocessingReason != "" && rawTurnDurable &&
+			sourceAcceptance.Enabled && sourceAcceptance.Accepted &&
+			strings.TrimSpace(sourceAcceptance.Revision) != "" {
+			_, supported := s.Store.(store.MemoryReprocessingJobStore)
+			if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); ok &&
+				!availability.MemoryDerivationLifecycleEnabled() {
+				supported = false
+			}
+			if supported {
+				storeWriteAttempted++
+				if _, err := s.enqueueCompleteTurnReprocessingJob(
+					ctx, sourceAcceptance, sid, reprocessingReason, now,
+				); err != nil {
+					storeWriteErrors++
+					storeWriteErrorDetails = append(
+						storeWriteErrorDetails,
+						"EnqueueMemoryReprocessingJob: "+err.Error(),
+					)
+				} else {
+					reprocessingDurable = true
+				}
 			}
 		}
 
@@ -968,7 +1007,8 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		},
 	}
 	backendTiming := timing.snapshot()
-	derivedRetryRequired := saveOK && rawTurnDurable && criticFailureReason != ""
+	derivedRetryRequired := saveOK && rawTurnDurable &&
+		(criticFailureReason != "" || (reprocessingReason != "" && reprocessingDurable))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                           "ok",

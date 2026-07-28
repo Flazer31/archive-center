@@ -139,6 +139,28 @@ func TestCompleteTurnSourceAcceptanceRejectsSupersededQueuedRevision(t *testing.
 	}
 }
 
+func TestCompleteTurnSourceAcceptanceSupersedesByteIdenticalNewGeneration(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 2, "user", "same answer", 1000,
+		"generation-1", "not_streaming", 2, 3, 4,
+	)
+	second := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 2, "user", "same answer", 2000,
+		"generation-2", "not_streaming", 2, 3, 4,
+	)
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !firstDecision.Accepted || firstDecision.ReplaceExisting {
+		t.Fatalf("first decision=%+v", firstDecision)
+	}
+	secondDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), second)
+	if !secondDecision.Accepted || !secondDecision.ReplaceExisting ||
+		secondDecision.Previous != firstDecision.Revision ||
+		secondDecision.Revision == firstDecision.Revision {
+		t.Fatalf("second decision=%+v first=%+v", secondDecision, firstDecision)
+	}
+}
+
 func TestCompleteTurnSourceAcceptanceRollbackFenceRejectsOldQueueAndAllowsNewGeneration(t *testing.T) {
 	server := newCompleteTurnAcceptanceTestServer()
 	old := completeTurnAcceptanceTestRequest("session-1", 4, "old", 1000, "or1c_old", "generation-old", "not_streaming", "current_active_chat_tail", 7, 8)
@@ -393,8 +415,8 @@ func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *te
 	if len(storage.savedChatLogs) != 0 {
 		t.Fatalf("atomic replacement must not be followed by duplicate raw saves: %+v", storage.savedChatLogs)
 	}
-	if vectors.deleteDocumentCalls != 1 || len(vectors.deletedDocumentIDs) == 0 {
-		t.Fatalf("vector delete calls=%d ids=%v", vectors.deleteDocumentCalls, vectors.deletedDocumentIDs)
+	if vectors.deleteDocumentCalls != 0 || len(vectors.deletedDocumentIDs) != 0 {
+		t.Fatalf("replacement must queue canonical outbox deletion instead of pre-deleting vectors: calls=%d ids=%v", vectors.deleteDocumentCalls, vectors.deletedDocumentIDs)
 	}
 	var response map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
@@ -405,7 +427,7 @@ func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *te
 	}
 	repeated := httptest.NewRecorder()
 	server.handleCompleteTurn(repeated, httptest.NewRequest("POST", "/complete-turn", bytes.NewReader(body)))
-	if repeated.Code != 200 || len(storage.logicalTurnReplacements) != 1 || vectors.deleteDocumentCalls != 1 || criticCalls != 1 {
+	if repeated.Code != 200 || len(storage.logicalTurnReplacements) != 1 || vectors.deleteDocumentCalls != 0 || criticCalls != 1 {
 		t.Fatalf("repeat status=%d replacements=%d vector deletes=%d critic calls=%d body=%s", repeated.Code, len(storage.logicalTurnReplacements), vectors.deleteDocumentCalls, criticCalls, repeated.Body.String())
 	}
 }

@@ -76,7 +76,38 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	deletions := map[string]any{}
 	var delErrs []string
-	vectorIDs, vectorCollectErr := rollbackVectorDocumentIDs(ctx, s.Store, sid, turnIndex)
+	lifecycleOutbox := false
+	if lifecycle, ok := s.Store.(store.SourceRevisionStore); ok {
+		if availability, hasAvailability := s.Store.(store.MemoryDerivationLifecycleAvailability); !hasAvailability || availability.MemoryDerivationLifecycleEnabled() {
+			if err := lifecycle.InvalidateSourceRevisions(ctx, sid, turnIndex, "invalidated", "turn_rollback", time.Now().UTC()); err != nil {
+				deletions["source_revisions"] = map[string]any{"ok": false, "error": err.Error()}
+				writeJSON(w, http.StatusInternalServerError, map[string]any{
+					"status":          "error",
+					"code":            "source_invalidation_failed",
+					"chat_session_id": sid,
+					"turn_index":      turnIndex,
+					"deletions":       deletions,
+					"note":            "rollback stopped before canonical deletion",
+					"turn_workflow_hud": newTurnWorkflowHUDOperationNotice(
+						fmt.Sprintf("rollback:%s:%d:%d", sid, turnIndex, time.Now().UTC().UnixNano()),
+						sid, turnIndex, "failed", "error",
+						"turn_hud.notice.delete_sync_failed",
+						"turn_hud.error.delete_sync_partial",
+						"ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL",
+					),
+				})
+				return
+			} else {
+				lifecycleOutbox = true
+				deletions["source_revisions"] = map[string]any{"ok": true, "vector_cleanup": "durable_outbox"}
+			}
+		}
+	}
+	var vectorIDs []string
+	var vectorCollectErr error
+	if !lifecycleOutbox {
+		vectorIDs, vectorCollectErr = rollbackVectorDocumentIDs(ctx, s.Store, sid, turnIndex)
+	}
 	vectorCountBefore := -1
 	vectorCountAfter := -1
 	if s.Vector != nil {
@@ -140,7 +171,38 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		deletions["narrative_current_state_restore"] = map[string]any{"ok": true, "restored": restored}
 	}
-	if vectorCollectErr != nil {
+	if lifecycleOutbox {
+		results := s.processMemoryVectorOutboxBatch(
+			ctx,
+			fmt.Sprintf("rollback:%s:%d", sid, turnIndex),
+			time.Now().UTC(),
+			30*time.Second,
+			64,
+		)
+		completed := 0
+		retryable := 0
+		permanent := 0
+		for _, result := range results {
+			switch result.CanonicalState {
+			case "completed", "stale_rejected":
+				completed++
+			case "retryable":
+				retryable++
+			case "permanent":
+				permanent++
+			}
+		}
+		deletions["vectors"] = map[string]any{
+			"ok":               true,
+			"mode":             "durable_outbox",
+			"drain_attempted":  true,
+			"processed":        len(results),
+			"completed":        completed,
+			"retryable_queued": retryable,
+			"permanent":        permanent,
+			"canonical_note":   "MariaDB invalidation is committed; provider failure remains retryable outbox work",
+		}
+	} else if vectorCollectErr != nil {
 		deletions["vectors"] = map[string]any{"ok": false, "attempted": false, "error": vectorCollectErr.Error()}
 		delErrs = append(delErrs, fmt.Sprintf("vectors: collect rollback ids: %v", vectorCollectErr))
 	} else if len(vectorIDs) == 0 {
@@ -174,12 +236,20 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		"session_count_after":    nilIfNegative(vectorCountAfter),
 		"full_listing_available": false,
 	}
+	if lifecycleOutbox {
+		vectorOrphanCheck["policy"] = "durable_outbox_then_session_vector_count_checked"
+		vectorOrphanCheck["known_delete_id_count"] = nil
+	}
 	if s.Vector != nil {
 		fullAudit := s.adminVectorOrphanAudit(ctx, sid, false)
 		if available, _ := fullAudit["full_listing_available"].(bool); available {
 			fullAudit["status"] = "full"
 			fullAudit["policy"] = "post_rollback_full_chromadb_listing_compared_with_mariadb_canonical_rows"
-			fullAudit["known_delete_id_count"] = len(vectorIDs)
+			if lifecycleOutbox {
+				fullAudit["known_delete_id_count"] = nil
+			} else {
+				fullAudit["known_delete_id_count"] = len(vectorIDs)
+			}
 			fullAudit["session_count_before"] = nilIfNegative(vectorCountBefore)
 			fullAudit["session_count_after"] = nilIfNegative(vectorCountAfter)
 			vectorOrphanCheck = fullAudit
