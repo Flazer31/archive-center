@@ -81,12 +81,12 @@ Observe and Prepare runtime context
 -> Prepare output segments (JS)
 -> Specialist Scan / Rewrite (parallel LLM)
 -> Candidate Dedupe (JS)
--> Semantic Fusion Judge (LLM)
+-> Semantic Fusion Judge (LLM, deferred)
 -> optional Table Read evidence (later)
 -> Fusion Director (JS)
 -> Whole-Scene Composer (LLM)
 -> Structural Verifier (JS)
--> conditional Semantic Prover (LLM)
+-> conditional Semantic Prover (LLM, deferred)
 -> at most one Repair and re-Prove cycle
 -> enhanced output
 ```
@@ -100,12 +100,14 @@ Observe and Prepare runtime context
    fragments; it does not add a serial first-draft model.
 3. There is no LLM router. Fugu-like routing remains deterministic JS under the
    user-selected preset.
-4. Quality keeps the six current specialist roles until an A/B evaluation
-   proves that a smaller grouped panel performs as well or better.
-5. Semantic Prover is always available to Quality and conditional in Balanced.
-   Fast does not add Judge or Prover by default.
-6. Table Read is deferred until the core Judge, Composer, and Prover path is
-   implemented and live-validated.
+4. All six specialist profiles remain available, but the deterministic router
+   selects at most 2/3/4 output specialists in Fast/Balanced/Quality. Quality
+   does not mean "call every configured role".
+5. Input planner attempts and output rewrite attempts use separate budgets.
+   Output reserves Composer primary plus one distinct configured fallback
+   before any specialist retry. Specialists use one primary attempt.
+6. Semantic Judge, Semantic Prover, and Table Read remain deferred until the
+   adaptive specialist plus Composer path is stable in live RisuAI turns.
 7. The one-file hard size limit is 500 KB. New behavior should replace obsolete
    paths in the same batch instead of appending parallel policy.
 8. Archive Center subjective memory and backend integration remain future work.
@@ -168,7 +170,7 @@ Known lifecycle risks:
 - a single global request snapshot can be stale or reused
 - the snapshot is not consumed as a one-shot value
 - the pipeline deadline starts after context collection
-- per-role retry/fallback can multiply HTTP attempts
+- an unavailable Composer provider can still exhaust its reserved time
 - streaming state is mostly trace data and does not prove one final execution
 
 Known fusion risks:
@@ -176,7 +178,7 @@ Known fusion risks:
 - candidate confidence is model self-report and dominates current scoring
 - whitespace-token similarity is weak for Korean semantic comparison
 - duplicate candidates are not collapsed before composition
-- partial Composer output can be treated as success
+- Composer output must cover every actionable mutable segment to be accepted
 - the final verifier checks structure, not semantic RP regression
 
 ## 5. Runtime Contracts
@@ -522,18 +524,21 @@ Goal:
 
 Rules:
 
-- Fast keeps two specialists plus Composer.
-- Balanced keeps its core specialists plus Judge and may add Prover on semantic
-  risk or unresolved conflict.
-- Quality keeps all six specialists, Judge, Composer, and Prover.
+- Fast selects at most two specialists plus Composer.
+- Balanced selects at most three specialists plus Composer.
+- Quality selects at most four specialists plus Composer from the six-role
+  profile pool.
+- `secret_pov_guard` remains a required baseline in Balanced and Quality.
+- High-severity meta/mechanical artifacts prioritize `agency_meta_guard`.
 - The router may not exceed the user-selected preset.
-- Invalid routing falls back to the static preset.
+- Capacity-skipped roles are reported with their score and skip reason.
 - The router may recommend Table Read but may not create temporary roles,
   providers, models, or recursive work.
 
 ### Batch 7: Table Read Escalation
 
-Table Read is added only after Batches 1-6 pass live validation.
+Table Read is added only after the adaptive Composer path passes live
+validation.
 
 Placement:
 
@@ -556,7 +561,7 @@ Compare the same `draft_zero` under blinded labels:
 - original draft
 - one strong Composer call
 - grouped three-lane specialists
-- six specialists plus Judge, Composer, and Prover
+- adaptive specialists plus Composer with a distinct-provider fallback
 
 Start with 20-30 pilot turns, then use 40-60 Korean and English scenes covering:
 
@@ -586,19 +591,22 @@ Normal logical calls:
 
 | Preset | Normal path | Conditional maximum |
 |---|---:|---:|
-| Fast | manifest contract + 2 specialists + Composer = 3 | 3 |
-| Balanced | 2 input planners + 4 specialists + Judge + Composer = 8 | Prover or contract adjudication = 9 |
-| Quality | 3 input planners + 6 specialists + Judge + Composer + Prover = 12 | one contract adjudication or Repair/re-Prove path, bounded by deadline |
+| Fast | manifest contract + up to 2 specialists + Composer | Composer fallback |
+| Balanced | 2 input planners + up to 3 specialists + Composer | Composer fallback |
+| Quality | 3 input planners + up to 4 specialists + Composer | Composer fallback |
 
-Turn-wide HTTP attempt targets:
+Stage-separated HTTP attempt caps:
 
-| Preset | Attempt cap |
-|---|---:|
-| Fast | 5 |
-| Balanced | 8 |
-| Quality | 11 |
+| Preset | Input cap | Output cap |
+|---|---:|---:|
+| Fast | 0 | 4 |
+| Balanced | 3 | 5 |
+| Quality | 4 | 6 |
 
-Logical calls and HTTP attempts must be traced separately.
+Input usage remains visible in Trace but does not consume the output budget.
+Output specialists do not retry. Composer uses its primary and then a distinct
+configured fallback when necessary. Logical calls and HTTP attempts remain
+separate Trace values.
 
 ## 8. Implementation Discipline
 
