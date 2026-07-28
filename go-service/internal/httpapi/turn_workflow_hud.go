@@ -122,6 +122,10 @@ type turnWorkflowHUDViewModel struct {
 	Counts          []turnWorkflowHUDCount  `json:"counts"`
 	Warnings        []turnWorkflowHUDNotice `json:"warnings"`
 	Error           *turnWorkflowHUDError   `json:"error,omitempty"`
+	DisplayMode     string                  `json:"display_mode,omitempty"`
+	TitleKey        string                  `json:"title_key,omitempty"`
+	MessageKey      string                  `json:"message_key,omitempty"`
+	NoticeCode      string                  `json:"notice_code,omitempty"`
 }
 
 type turnWorkflowHUDEntry struct {
@@ -332,6 +336,23 @@ func (l *turnWorkflowHUDLedger) addWarning(requestID, code, messageKey, stageKey
 	}
 	entry.view.Warnings = append(entry.view.Warnings, notice)
 	entry.view.Severity = "warning"
+	l.touchLocked(entry, time.Now().UTC())
+}
+
+func (l *turnWorkflowHUDLedger) setNoticePresentation(requestID, titleKey, messageKey, noticeCode string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[strings.TrimSpace(requestID)]
+	if entry == nil || turnWorkflowHUDTerminal(entry.view.Status) {
+		return
+	}
+	entry.view.DisplayMode = "notice"
+	entry.view.TitleKey = strings.TrimSpace(titleKey)
+	entry.view.MessageKey = strings.TrimSpace(messageKey)
+	entry.view.NoticeCode = strings.TrimSpace(noticeCode)
 	l.touchLocked(entry, time.Now().UTC())
 }
 
@@ -924,4 +945,85 @@ func turnWorkflowHUDCountsFromComplete(
 		"episode_summary": maxInt(0, episodeSummariesSaved),
 		"vector_index":    maxInt(0, vectorsUpserted),
 	}
+}
+
+func (s *Server) completeTurnWorkflowHUDDuplicate(
+	requestID string,
+	sessionID string,
+	logicalTurn int,
+	reasonCode string,
+	warningCode string,
+	warningMessageKey string,
+	noticeMessageKey string,
+) any {
+	requestID = strings.TrimSpace(requestID)
+	if s == nil || s.TurnWorkflows == nil || requestID == "" {
+		return nil
+	}
+	if _, ok := s.TurnWorkflows.snapshot(requestID); !ok {
+		s.TurnWorkflows.begin(requestID, strings.TrimSpace(sessionID), logicalTurn)
+	}
+	s.TurnWorkflows.setLogicalTurn(requestID, logicalTurn)
+	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageFinalAccepted, "succeeded", "")
+	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageRawPersist, "skipped", reasonCode)
+	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageCriticLLM, "skipped", reasonCode)
+	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageDerivedPersist, "skipped", reasonCode)
+	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageCheckpoints, "skipped", reasonCode)
+	s.TurnWorkflows.setCounts(requestID, turnWorkflowHUDCountsFromComplete(
+		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	))
+	s.TurnWorkflows.addWarning(requestID, warningCode, warningMessageKey, turnWorkflowStageRawPersist)
+	s.TurnWorkflows.setNoticePresentation(
+		requestID,
+		"turn_hud.notice.duplicate_suspected",
+		noticeMessageKey,
+		warningCode,
+	)
+	s.TurnWorkflows.complete(requestID)
+	return s.turnWorkflowHUDSnapshot(requestID)
+}
+
+func newTurnWorkflowHUDOperationNotice(
+	requestID string,
+	sessionID string,
+	logicalTurn int,
+	status string,
+	severity string,
+	titleKey string,
+	messageKey string,
+	noticeCode string,
+) turnWorkflowHUDViewModel {
+	now := time.Now().UTC()
+	view := turnWorkflowHUDViewModel{
+		ContractVersion: turnWorkflowHUDContractVersion,
+		RequestID:       strings.TrimSpace(requestID),
+		ChatSessionID:   strings.TrimSpace(sessionID),
+		LogicalTurn:     logicalTurn,
+		Attempt:         1,
+		Revision:        1,
+		Status:          strings.TrimSpace(status),
+		Severity:        strings.TrimSpace(severity),
+		StartedAt:       now,
+		UpdatedAt:       now,
+		EndedAt:         timePtr(now),
+		Stages:          []turnWorkflowHUDStage{},
+		Counts:          []turnWorkflowHUDCount{},
+		Warnings:        []turnWorkflowHUDNotice{},
+		DisplayMode:     "notice",
+		TitleKey:        strings.TrimSpace(titleKey),
+		MessageKey:      strings.TrimSpace(messageKey),
+		NoticeCode:      strings.TrimSpace(noticeCode),
+	}
+	if view.Status == "failed" || view.Severity == "error" {
+		view.Status = "failed"
+		view.Severity = "error"
+		view.Error = &turnWorkflowHUDError{
+			Code:            view.NoticeCode,
+			MessageKey:      view.MessageKey,
+			StageKey:        "",
+			Retryable:       true,
+			PreservedCounts: []turnWorkflowHUDCount{},
+		}
+	}
+	return view
 }

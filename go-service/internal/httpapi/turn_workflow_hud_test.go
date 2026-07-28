@@ -184,6 +184,39 @@ func TestTurnWorkflowHUDCountsIncludeAllZerosAndTerminalSeverity(t *testing.T) {
 	}
 }
 
+func TestTurnWorkflowHUDOperationNoticePreservesBackendSeverity(t *testing.T) {
+	confirmed := newTurnWorkflowHUDOperationNotice(
+		"rollback:confirmed",
+		"session-delete",
+		9,
+		"completed",
+		"info",
+		"turn_hud.notice.delete_confirmed",
+		"turn_hud.notice.delete_confirmed_detail",
+		"ASSISTANT_OUTPUT_DELETE_CONFIRMED",
+	)
+	if confirmed.DisplayMode != "notice" || confirmed.Status != "completed" || confirmed.Error != nil {
+		t.Fatalf("confirmed delete notice = %#v", confirmed)
+	}
+
+	partial := newTurnWorkflowHUDOperationNotice(
+		"rollback:partial",
+		"session-delete",
+		9,
+		"failed",
+		"error",
+		"turn_hud.notice.delete_sync_failed",
+		"turn_hud.error.delete_sync_partial",
+		"ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL",
+	)
+	if partial.DisplayMode != "notice" || partial.Status != "failed" || partial.Severity != "error" || partial.Error == nil {
+		t.Fatalf("partial delete notice = %#v", partial)
+	}
+	if partial.Error.Code != "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL" || partial.Error.MessageKey != "turn_hud.error.delete_sync_partial" {
+		t.Fatalf("partial delete error = %#v", partial.Error)
+	}
+}
+
 func TestTurnWorkflowHUDUnknownRouteAndTTLBound(t *testing.T) {
 	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
 	request := httptest.NewRequest("GET", "/turn-workflow/status?request_id=missing&after_revision=0&wait_ms=0", nil)

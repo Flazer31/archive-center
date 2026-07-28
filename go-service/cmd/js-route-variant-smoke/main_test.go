@@ -1052,7 +1052,8 @@ func TestArchiveCenterJSI18nRuntimeSwitchAndPersistenceBehavior(t *testing.T) {
 	if i18nStart < 0 || i18nEnd < 0 || i18nEnd <= i18nStart {
 		t.Fatalf("Archive Center.js missing i18n dictionary block")
 	}
-	script := src[i18nStart:i18nEnd] + "\n" +
+	script := `const VERSION = "3.6.0-dev";` + "\n" +
+		src[i18nStart:i18nEnd] + "\n" +
 		extractJSFunctionBlockForTest(t, src, "function t(key, overrideLang)") + "\n" +
 		extractJSFunctionBlockForTest(t, src, "async function applyUiLanguageChange(nextLang)") + `
 const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
@@ -1086,6 +1087,7 @@ async function renderSettingsPanel() { renderCount++; }
 (async () => {
   assert(t("settings.title", "ko").includes("설정"), "ko settings title missing");
   assert(t("settings.title", "en").includes("Settings"), "en settings title missing");
+  assert(t("settings.title", "en").includes(VERSION), "settings title is not synchronized with VERSION");
   assert(t("settings.title", "ja").includes("設定"), "ja settings title missing");
   assert(t("missing.seq05.key", "ja") === "missing.seq05.key", "missing key fallback regressed");
   await applyUiLanguageChange("ja");

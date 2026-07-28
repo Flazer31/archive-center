@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 3.5.0
+//@display-name Archive Center 3.6.0-dev
 //@author memory-scaffold
 //@api 3.0
-//@version 3.5.0
+//@version 3.6.0-dev
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "3.5.0";
-  const BUILD_ID = "3.5.0-release.20260728-1";
-  const BUILD_CHANNEL = "stable";
+  const VERSION = "3.6.0-dev";
+  const BUILD_ID = "3.6-precision-memory.20260728-1";
+  const BUILD_CHANNEL = "3.6-local-test";
   const BUILD_TIME = "2026-07-28 KST";
-  const BUILD_NOTES = "3.5 memory relevance, output fidelity, dormant-goal lifecycle, and duplicate-goal thinning";
+  const BUILD_NOTES = "3.6 stable identity, atomic memory admission, and HUD safety groundwork";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -264,7 +264,7 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": "🗂️ Archive Center 3.0.0 설정",
+      "settings.title": `🗂️ Archive Center ${VERSION} 설정`,
       "settings.tab.dashboard": "대시보드",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
@@ -1200,6 +1200,9 @@
       "turn_hud.reason.critic_config_missing": "평론가 설정 없음",
       "turn_hud.reason.critic_not_applicable": "평론가 적용 대상 아님",
       "turn_hud.reason.critic_result_unavailable": "평론가 결과 없음",
+      "turn_hud.reason.duplicate_turn_conflict": "같은 턴의 저장값 충돌",
+      "turn_hud.reason.duplicate_turn_replay": "이미 처리된 턴",
+      "turn_hud.reason.duplicate_pair_replay": "다른 턴과 동일한 입력·응답",
       "turn_hud.transport_unavailable": "진행 상태 연결이 끊겼습니다.",
       "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
       "turn_hud.stage.recall_materialization": "기억·근거 불러오기",
@@ -1233,6 +1236,15 @@
       "turn_hud.warning.store_writes_disabled": "저장 기능이 꺼져 있음",
       "turn_hud.warning.maintenance_handoff_failed": "후속 정리 작업 연결 실패",
       "turn_hud.warning.ooc_turn_skipped": "OOC 턴은 저장하지 않음",
+      "turn_hud.warning.duplicate_turn_conflict": "같은 턴에 서로 다른 저장값이 있어 새 값을 저장하지 않음",
+      "turn_hud.warning.duplicate_turn_replay": "이미 처리된 턴의 중복 저장을 차단함",
+      "turn_hud.warning.duplicate_pair_replay": "다른 턴에 동일한 입력·응답이 있어 중복 저장을 차단함",
+      "turn_hud.notice.delete_confirmed": "삭제 확인",
+      "turn_hud.notice.delete_confirmed_detail": "작성자가 지운 출력과 연결된 저장값을 정리했습니다.",
+      "turn_hud.notice.delete_sync_failed": "삭제 동기화 오류",
+      "turn_hud.notice.duplicate_suspected": "중복 값 의심",
+      "turn_hud.notice.duplicate_existing_preserved": "이미 처리된 값과 겹쳐 새로 저장하지 않고 기존 값을 유지했습니다.",
+      "turn_hud.notice.duplicate_conflict_preserved": "같은 턴에 서로 다른 값이 확인되어 새 값을 저장하지 않고 기존 값을 유지했습니다.",
       "turn_hud.error.logical_turn_replace_failed": "리롤 턴 교체에 실패했습니다.",
       "turn_hud.error.user_input_missing": "저장할 사용자 원문이 없습니다.",
       "turn_hud.error.raw_turn_persist_failed": "사용자·Assistant 원문 저장에 실패했습니다.",
@@ -1243,11 +1255,12 @@
       "turn_hud.error.episode_checkpoint_failed": "구간 요약 저장에 실패했습니다.",
       "turn_hud.error.hierarchy_checkpoint_failed": "장기 요약 승격에 실패했습니다.",
       "turn_hud.error.complete_turn_aborted": "턴 완료 처리가 끝나기 전에 중단됐습니다.",
+      "turn_hud.error.delete_sync_partial": "출력 삭제는 확인했지만 연결된 저장값 일부를 정리하지 못했습니다.",
     },
 
     en: {
       // ── Settings Panel ──
-      "settings.title": "🗂️ Archive Center 3.0.0 Settings",
+      "settings.title": `🗂️ Archive Center ${VERSION} Settings`,
       "settings.tab.dashboard": "Dashboard",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
@@ -2183,6 +2196,9 @@
       "turn_hud.reason.critic_config_missing": "Critic not configured",
       "turn_hud.reason.critic_not_applicable": "Critic not applicable",
       "turn_hud.reason.critic_result_unavailable": "Critic result unavailable",
+      "turn_hud.reason.duplicate_turn_conflict": "Conflicting values already exist for this turn",
+      "turn_hud.reason.duplicate_turn_replay": "Turn already processed",
+      "turn_hud.reason.duplicate_pair_replay": "Same input and response exist on another turn",
       "turn_hud.transport_unavailable": "The progress connection was lost.",
       "turn_hud.stage.prepare_source": "Confirming current input and request",
       "turn_hud.stage.recall_materialization": "Loading memory and evidence",
@@ -2216,6 +2232,15 @@
       "turn_hud.warning.store_writes_disabled": "Storage writes are disabled",
       "turn_hud.warning.maintenance_handoff_failed": "Follow-up maintenance handoff failed",
       "turn_hud.warning.ooc_turn_skipped": "OOC turn was not saved",
+      "turn_hud.warning.duplicate_turn_conflict": "Different stored values already exist for this turn; the new value was not saved",
+      "turn_hud.warning.duplicate_turn_replay": "Duplicate storage for an already processed turn was blocked",
+      "turn_hud.warning.duplicate_pair_replay": "The same input and response exist on another turn; duplicate storage was blocked",
+      "turn_hud.notice.delete_confirmed": "Deletion confirmed",
+      "turn_hud.notice.delete_confirmed_detail": "Stored values linked to the author's deleted output were cleaned up.",
+      "turn_hud.notice.delete_sync_failed": "Deletion sync error",
+      "turn_hud.notice.duplicate_suspected": "Possible duplicate",
+      "turn_hud.notice.duplicate_existing_preserved": "This matched an already processed value, so the existing value was kept without saving another copy.",
+      "turn_hud.notice.duplicate_conflict_preserved": "Different values were found for the same turn, so the existing value was kept and the new value was not saved.",
       "turn_hud.error.logical_turn_replace_failed": "Failed to replace the rerolled turn.",
       "turn_hud.error.user_input_missing": "The user source required for saving is missing.",
       "turn_hud.error.raw_turn_persist_failed": "Failed to save the user and Assistant source.",
@@ -2226,11 +2251,12 @@
       "turn_hud.error.episode_checkpoint_failed": "Failed to save an interval summary.",
       "turn_hud.error.hierarchy_checkpoint_failed": "Long-range summary promotion failed.",
       "turn_hud.error.complete_turn_aborted": "Turn completion stopped before it finished.",
+      "turn_hud.error.delete_sync_partial": "The output deletion was confirmed, but some linked stored values could not be cleaned up.",
     },
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": "🗂️ Archive Center 3.0.0 設定",
+      "settings.title": `🗂️ Archive Center ${VERSION} 設定`,
       "settings.tab.dashboard": "ダッシュボード",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
@@ -3164,6 +3190,9 @@
       "turn_hud.reason.critic_config_missing": "批評家が未設定",
       "turn_hud.reason.critic_not_applicable": "批評家の対象外",
       "turn_hud.reason.critic_result_unavailable": "批評家の結果なし",
+      "turn_hud.reason.duplicate_turn_conflict": "同じターンの保存値が競合",
+      "turn_hud.reason.duplicate_turn_replay": "処理済みのターン",
+      "turn_hud.reason.duplicate_pair_replay": "別ターンと同じ入力・応答",
       "turn_hud.transport_unavailable": "進行状況への接続が切れました。",
       "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
       "turn_hud.stage.recall_materialization": "記憶と根拠を読み込み",
@@ -3197,6 +3226,15 @@
       "turn_hud.warning.store_writes_disabled": "保存機能が無効",
       "turn_hud.warning.maintenance_handoff_failed": "後続整理処理への接続に失敗",
       "turn_hud.warning.ooc_turn_skipped": "OOCターンは保存しません",
+      "turn_hud.warning.duplicate_turn_conflict": "同じターンに異なる保存値があるため、新しい値を保存しませんでした",
+      "turn_hud.warning.duplicate_turn_replay": "処理済みターンの重複保存を防止しました",
+      "turn_hud.warning.duplicate_pair_replay": "別ターンに同じ入力・応答があるため、重複保存を防止しました",
+      "turn_hud.notice.delete_confirmed": "削除確認",
+      "turn_hud.notice.delete_confirmed_detail": "作成者が削除した出力に関連する保存値を整理しました。",
+      "turn_hud.notice.delete_sync_failed": "削除同期エラー",
+      "turn_hud.notice.duplicate_suspected": "重複値の疑い",
+      "turn_hud.notice.duplicate_existing_preserved": "処理済みの値と重複したため、新規保存せず既存値を維持しました。",
+      "turn_hud.notice.duplicate_conflict_preserved": "同じターンに異なる値が確認されたため、新規保存せず既存値を維持しました。",
       "turn_hud.error.logical_turn_replace_failed": "再生成ターンの置換に失敗しました。",
       "turn_hud.error.user_input_missing": "保存するユーザー原文がありません。",
       "turn_hud.error.raw_turn_persist_failed": "ユーザー・Assistant原文の保存に失敗しました。",
@@ -3207,6 +3245,7 @@
       "turn_hud.error.episode_checkpoint_failed": "区間要約の保存に失敗しました。",
       "turn_hud.error.hierarchy_checkpoint_failed": "長期要約の昇格に失敗しました。",
       "turn_hud.error.complete_turn_aborted": "ターン完了処理が終了前に中断されました。",
+      "turn_hud.error.delete_sync_partial": "出力の削除は確認できましたが、関連する保存値の一部を整理できませんでした。",
     },
   };
 
@@ -12735,18 +12774,48 @@
     });
   }
 
-  async function attachTurnWorkflowHUDDismiss(card, requestId) {
+  async function attachTurnWorkflowHUDDismiss(card, requestId, closeButtonOnly) {
     if (!card || typeof card.addEventListener !== "function") return;
+    const target = closeButtonOnly && typeof card.querySelector === "function"
+      ? await card.querySelector("button")
+      : card;
+    if (!target || typeof target.addEventListener !== "function") return;
     const dismiss = async function(event) {
       if (event && String(event.type || "") === "keydown" && event.key !== "Enter" && event.key !== " ") return;
       await dismissTurnWorkflowHUD(requestId);
     };
-    await card.addEventListener("click", dismiss);
-    await card.addEventListener("keydown", dismiss);
+    await target.addEventListener("click", dismiss);
+    await target.addEventListener("keydown", dismiss);
   }
 
   function buildTurnWorkflowHUDPresentation(view) {
     const severity = String(view.severity || "info");
+    if (String(view.display_mode || "") === "notice") {
+      const failed = view.status === "failed" || severity === "error";
+      const titleKey = String(view.title_key || (failed ? "turn_hud.failed" : "turn_hud.completed"));
+      const messageKey = String(view.message_key || (failed ? "turn_hud.error.complete_turn_aborted" : ""));
+      const noticeCode = String(view.notice_code || (view.error && view.error.code) || "").trim();
+      const countPresentation = turnWorkflowHUDCountPresentation(view.counts);
+      const meta = [turnWorkflowHUDTurnLabel(view), noticeCode].filter(Boolean).join(" · ");
+      const noticeStyle = failed
+        ? TURN_WORKFLOW_HUD_ERROR_STYLE
+        : (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "");
+      return {
+        terminal: true,
+        closeButtonOnly: failed || severity === "warning",
+        elapsedStartedAt: "",
+        html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + noticeStyle}">`
+          + turnWorkflowHUDDismissButtonHTML()
+          + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t(titleKey))}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
+          + (messageKey ? `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t(messageKey))}</div>` : "")
+          + (meta ? `<div style="${failed ? TURN_WORKFLOW_HUD_ERROR_META_STYLE : TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>` : "")
+          + turnWorkflowHUDWarningListHTML(view)
+          + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + `</div>`,
+      };
+    }
     if (view.status === "failed" || severity === "error") {
       const error = view.error && typeof view.error === "object" ? view.error : {};
       const preservedCounts = Array.isArray(error.preserved_counts) ? error.preserved_counts : view.counts;
@@ -12761,6 +12830,7 @@
       ].filter(Boolean).join(" · ");
       return {
         terminal: true,
+        closeButtonOnly: true,
         elapsedStartedAt: "",
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
           + turnWorkflowHUDDismissButtonHTML()
@@ -12784,6 +12854,7 @@
       const countPresentation = turnWorkflowHUDCountPresentation(view.counts);
       return {
         terminal: true,
+        closeButtonOnly: severity === "warning" || view.status === "invalidated",
         elapsedStartedAt: "",
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "")}">`
           + turnWorkflowHUDDismissButtonHTML()
@@ -12856,7 +12927,11 @@
         }
       }
       if (presentation.terminal) {
-        await attachTurnWorkflowHUDDismiss(await root.querySelector("div"), requestId);
+        await attachTurnWorkflowHUDDismiss(
+          await root.querySelector("div"),
+          requestId,
+          presentation.closeButtonOnly === true,
+        );
       }
     });
   }
@@ -12884,7 +12959,7 @@
         + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">HUD_TRANSPORT_UNAVAILABLE</div>`
         + `</div>`
       );
-      await attachTurnWorkflowHUDDismiss(await root.querySelector("div"), requestId);
+      await attachTurnWorkflowHUDDismiss(await root.querySelector("div"), requestId, true);
     });
   }
 
@@ -12895,6 +12970,20 @@
     if (!requestId || (_turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId)) return false;
     const revision = Number(view.revision || 0);
     if (revision > 0 && revision < _turnWorkflowHUDLastRevision) return false;
+    renderTurnWorkflowHUD(view);
+    return true;
+  }
+
+  function consumeTurnWorkflowHUDNotice(view) {
+    if (!turnWorkflowHUDIsEnabled()) return false;
+    if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT || view.display_mode !== "notice") return false;
+    const requestId = String(view.request_id || "");
+    if (!requestId) return false;
+    _turnWorkflowHUDWatchToken++;
+    _turnWorkflowHUDWatchRunning = false;
+    _turnWorkflowHUDActiveRequestId = "";
+    _turnWorkflowHUDLastRevision = 0;
+    clearTurnWorkflowHUDTimer();
     renderTurnWorkflowHUD(view);
     return true;
   }
@@ -16429,6 +16518,9 @@
 
       const rollbackStatus = result && result.status;
       const rollbackPartial = rollbackStatus === "partial_error";
+      if (result && result.turn_workflow_hud) {
+        consumeTurnWorkflowHUDNotice(result.turn_workflow_hud);
+      }
       if (result && (rollbackStatus === "ok" || rollbackPartial)) {
         // 성공: 중복 방지 시그니처 기록
         const sig = String((detail || {}).duplicateSignature || (sessionId + "|" + (((detail || {}).currentMsgCount) || 0) + "|" + (((detail || {}).currentTailHash) || "")));

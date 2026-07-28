@@ -1135,7 +1135,7 @@ func TestCompleteTurnExactPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *tes
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-pair-replay","turn_index":8,"user_input":"same user text","assistant_content":"same assistant text","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai"}}}`
+	body := `{"chat_session_id":"sess-pair-replay","turn_index":8,"user_input":"same user text","assistant_content":"same assistant text","client_meta":{"turn_workflow_request_id":"duplicate-pair-hud","critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1159,6 +1159,19 @@ func TestCompleteTurnExactPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *tes
 	trace, _ := resp["trace_handoff"].(map[string]any)
 	if trace["duplicate_guard"] != "same_session_exact_pair_exists_on_another_turn" {
 		t.Fatalf("duplicate_guard = %v, want same_session_exact_pair_exists_on_another_turn; resp=%+v", trace["duplicate_guard"], resp)
+	}
+	hud, ok := resp["turn_workflow_hud"].(map[string]any)
+	if !ok {
+		t.Fatalf("turn_workflow_hud missing from duplicate response: %+v", resp)
+	}
+	if hud["display_mode"] != "notice" || hud["status"] != "completed_with_warning" {
+		t.Fatalf("duplicate HUD status = %+v", hud)
+	}
+	if hud["title_key"] != "turn_hud.notice.duplicate_suspected" || hud["notice_code"] != "DUPLICATE_PAIR_REPLAY" {
+		t.Fatalf("duplicate HUD presentation = %+v", hud)
+	}
+	if hud["logical_turn"] != float64(8) {
+		t.Fatalf("duplicate HUD logical_turn = %v, want attempted turn 8", hud["logical_turn"])
 	}
 }
 

@@ -260,6 +260,16 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	if rb["step23_invalidation"] != "delete_turn_scoped_support_records_from_from_turn" {
 		t.Errorf("rollback_plan.step23_invalidation = %v", rb["step23_invalidation"])
 	}
+	hud, ok := resp["turn_workflow_hud"].(map[string]any)
+	if !ok {
+		t.Fatalf("turn_workflow_hud missing from executed rollback: %+v", resp)
+	}
+	if hud["display_mode"] != "notice" || hud["status"] != "completed" {
+		t.Fatalf("delete HUD status = %+v", hud)
+	}
+	if hud["title_key"] != "turn_hud.notice.delete_confirmed" || hud["notice_code"] != "ASSISTANT_OUTPUT_DELETE_CONFIRMED" {
+		t.Fatalf("delete HUD presentation = %+v", hud)
+	}
 
 	wantDeletes := []string{
 		"chat_logs:sess-live:5",

@@ -447,6 +447,9 @@ class FakeRemoteNode {
       this.elapsed.attributes.style = sourceHTML.match(/<time[^>]*style="([^"]*)"/)?.[1] || "";
     }
     this.button = sourceHTML.includes("<button") ? new FakeRemoteNode("button") : null;
+    if (this.card) {
+      this.card.button = this.button;
+    }
   }
   async setTextContent(value) {
     this.textContent = String(value);
@@ -586,10 +589,22 @@ function assert(condition, message) {
   for (const value of ["1","2","3","4","5","6","21"]) {
     assert(surface.innerHTML.includes(">" + value + "</span>"), "completed HUD omitted count " + value);
   }
-  assert(surface.card && typeof surface.card.listeners.click === "function", "terminal click dismiss listener missing");
+  assert(surface.card && typeof surface.card.listeners.click !== "function", "warning HUD still has a card-wide dismiss listener");
+  assert(surface.button && typeof surface.button.listeners.click === "function", "warning HUD close button listener missing");
+  assert(surface.innerHTML !== "", "warning HUD disappeared before the close button was used");
+  await surface.button.listeners.click({type:"click"});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "warning HUD close button did not dismiss HUD");
+
+  assert(consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-info",revision:1,
+    logical_turn:55,status:"completed",severity:"info",counts,stages
+  }), "normal completed HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.card && typeof surface.card.listeners.click === "function", "normal completed HUD lost card-wide dismissal");
   await surface.card.listeners.click({type:"click"});
   await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML === "", "terminal click did not dismiss HUD");
+  assert(surface.innerHTML === "", "normal completed HUD card click did not dismiss HUD");
 
   const startedAt = new Date(Date.now() - 2200).toISOString();
   assert(consumeTurnWorkflowHUD({
@@ -626,12 +641,15 @@ function assert(condition, message) {
   }
   assert(surface.button, "failed HUD has no visible close button");
   const failedCard = surface.card;
-  await failedCard.listeners.keydown({type:"keydown",key:"x"});
+  assert(typeof failedCard.listeners.click !== "function", "failed HUD still has a card-wide dismiss listener");
+  assert(typeof failedCard.listeners.keydown !== "function", "failed HUD still has a card-wide keyboard dismiss listener");
+  assert(typeof surface.button.listeners.keydown === "function", "failed HUD close button keyboard listener missing");
+  await surface.button.listeners.keydown({type:"keydown",key:"x"});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML !== "", "unrelated key dismissed terminal HUD");
-  await failedCard.listeners.keydown({type:"keydown",key:"Enter"});
+  await surface.button.listeners.keydown({type:"keydown",key:"Enter"});
   await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML === "", "Enter did not dismiss terminal HUD");
+  assert(surface.innerHTML === "", "failed HUD close button did not dismiss HUD");
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"invalidated-d",revision:1,
@@ -649,9 +667,11 @@ function assert(condition, message) {
   assert(surface.card.attributes.style.includes("background:#1C1828"), "invalidated HUD does not use warning styling");
   assert(!surface.card.attributes.style.includes("background:#2A151D"), "invalidated HUD was incorrectly rendered as a red error");
   assert(surface.button, "invalidated HUD has no visible close button");
-  await surface.card.listeners.click({type:"click"});
+  assert(typeof surface.card.listeners.click !== "function", "invalidated HUD still has a card-wide dismiss listener");
+  assert(typeof surface.button.listeners.click === "function", "invalidated HUD close button listener missing");
+  await surface.button.listeners.click({type:"click"});
   await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML === "", "invalidated terminal click did not dismiss HUD");
+  assert(surface.innerHTML === "", "invalidated HUD close button did not dismiss HUD");
 
   settings.turnWorkflowHUDEnabled = false;
   assert(!consumeTurnWorkflowHUD({

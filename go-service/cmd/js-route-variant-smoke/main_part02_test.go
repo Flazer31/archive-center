@@ -678,8 +678,11 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.5.0",
-		`const VERSION = "3.5.0";`,
+		"//@version 3.6.0-dev",
+		`const VERSION = "3.6.0-dev";`,
+		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 설정`",
+		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} Settings`",
+		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 設定`",
 		`const VERSION_STR = typeof VERSION !== "undefined" ? String(VERSION) : "unknown";`,
 		"source_version:    VERSION_STR",
 		`bridgeFetch("/update/check", {`,

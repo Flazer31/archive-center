@@ -207,9 +207,32 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 
 	status := "ok"
 	note := "rollback executed"
+	hudStatus := "completed"
+	hudSeverity := "info"
+	hudTitleKey := "turn_hud.notice.delete_confirmed"
+	hudMessageKey := "turn_hud.notice.delete_confirmed_detail"
+	hudNoticeCode := "ASSISTANT_OUTPUT_DELETE_CONFIRMED"
 	if len(delErrs) > 0 {
 		status = "partial_error"
 		note = "rollback executed with partial errors"
+		hudStatus = "failed"
+		hudSeverity = "error"
+		hudTitleKey = "turn_hud.notice.delete_sync_failed"
+		hudMessageKey = "turn_hud.error.delete_sync_partial"
+		hudNoticeCode = "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL"
+	}
+	var rollbackHUD any
+	if reqSource == "auto" || reqSource == "auto_rollback" || reqSource == "manual" {
+		rollbackHUD = newTurnWorkflowHUDOperationNotice(
+			fmt.Sprintf("rollback:%s:%d:%d", sid, turnIndex, time.Now().UTC().UnixNano()),
+			sid,
+			turnIndex,
+			hudStatus,
+			hudSeverity,
+			hudTitleKey,
+			hudMessageKey,
+			hudNoticeCode,
+		)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -243,9 +266,10 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 			"step23_invalidation":              "delete_turn_scoped_support_records_from_from_turn",
 			"rebuild_owner":                    "chroma_shadow_orchestrator",
 		},
-		"deletions": deletions,
-		"errors":    delErrs,
-		"note":      note,
+		"deletions":         deletions,
+		"errors":            delErrs,
+		"turn_workflow_hud": rollbackHUD,
+		"note":              note,
 	})
 }
 

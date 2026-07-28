@@ -170,6 +170,15 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				(rawUserAlreadyPersisted && rawAssistantAlreadyPersisted && !rawExactPairAlreadyPersisted)
 			if rawTurnContentConflict {
 				now := time.Now().UTC()
+				duplicateHUD := s.completeTurnWorkflowHUDDuplicate(
+					workflowRequestID,
+					sid,
+					req.TurnIndex,
+					"duplicate_turn_conflict",
+					"DUPLICATE_TURN_CONFLICT",
+					"turn_hud.warning.duplicate_turn_conflict",
+					"turn_hud.notice.duplicate_conflict_preserved",
+				)
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status":                  "partial",
 					"source":                  s.storeWriteSource(),
@@ -202,13 +211,23 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 						"duplicate_guard":    "same_turn_role_pair_exists_with_different_content",
 						"note":               "complete-turn refused duplicate raw/derived writes for an existing turn with conflicting raw text",
 					},
-					"warnings": []string{"complete_turn_raw_content_conflict: existing user+assistant logs for this turn differ; duplicate writes skipped"},
-					"note":     "complete-turn duplicate guard kept existing raw turn; use explicit rollback/delete+rebuild to replace it",
+					"warnings":          []string{"complete_turn_raw_content_conflict: existing user+assistant logs for this turn differ; duplicate writes skipped"},
+					"turn_workflow_hud": duplicateHUD,
+					"note":              "complete-turn duplicate guard kept existing raw turn; use explicit rollback/delete+rebuild to replace it",
 				})
 				return
 			}
 			if rawExactPairAlreadyPersisted && completeTurnHasDerivedArtifacts(ctx, s.Store, sid, req.TurnIndex) {
 				now := time.Now().UTC()
+				duplicateHUD := s.completeTurnWorkflowHUDDuplicate(
+					workflowRequestID,
+					sid,
+					req.TurnIndex,
+					"duplicate_turn_replay",
+					"DUPLICATE_TURN_REPLAY",
+					"turn_hud.warning.duplicate_turn_replay",
+					"turn_hud.notice.duplicate_existing_preserved",
+				)
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status":                  "ok",
 					"source":                  s.storeWriteSource(),
@@ -243,8 +262,9 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 						"derived_write_policy": "skip_when_raw_and_derived_artifacts_exist",
 						"note":                 "complete-turn retry detected existing raw and derived turn artifacts and skipped duplicate writes",
 					},
-					"warnings": []string{"complete_turn_idempotent_replay: existing raw and derived turn artifacts found; duplicate writes skipped"},
-					"note":     "complete-turn idempotent replay; existing turn artifacts kept",
+					"warnings":          []string{"complete_turn_idempotent_replay: existing raw and derived turn artifacts found; duplicate writes skipped"},
+					"turn_workflow_hud": duplicateHUD,
+					"note":              "complete-turn idempotent replay; existing turn artifacts kept",
 				})
 				return
 			}
@@ -255,6 +275,15 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			if existingTurn, ok := completeTurnFindPersistedTurnWithContent(existingLogs, sid, userText, assistantText); ok && existingTurn > 0 && existingTurn != req.TurnIndex {
 				if completeTurnHasDerivedArtifacts(ctx, s.Store, sid, existingTurn) {
 					now := time.Now().UTC()
+					duplicateHUD := s.completeTurnWorkflowHUDDuplicate(
+						workflowRequestID,
+						sid,
+						req.TurnIndex,
+						"duplicate_pair_replay",
+						"DUPLICATE_PAIR_REPLAY",
+						"turn_hud.warning.duplicate_pair_replay",
+						"turn_hud.notice.duplicate_existing_preserved",
+					)
 					writeJSON(w, http.StatusOK, map[string]any{
 						"status":                  "ok",
 						"source":                  s.storeWriteSource(),
@@ -291,8 +320,9 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 							"duplicate_guard":        "same_session_exact_pair_exists_on_another_turn",
 							"note":                   "complete-turn detected the same raw user+assistant pair on another turn and skipped duplicate writes",
 						},
-						"warnings": []string{"complete_turn_idempotent_pair_replay: same raw user+assistant pair already exists on turn " + strconv.Itoa(existingTurn) + "; duplicate writes skipped"},
-						"note":     "complete-turn idempotent pair replay; existing turn artifacts kept",
+						"warnings":          []string{"complete_turn_idempotent_pair_replay: same raw user+assistant pair already exists on turn " + strconv.Itoa(existingTurn) + "; duplicate writes skipped"},
+						"turn_workflow_hud": duplicateHUD,
+						"note":              "complete-turn idempotent pair replay; existing turn artifacts kept",
 					})
 					return
 				}
