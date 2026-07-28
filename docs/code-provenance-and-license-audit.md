@@ -60,12 +60,12 @@ MPL-2.0은 파일 단위 copyleft다. Archive Center의 MPL 적용 파일을 수
 
 | 모듈 | 버전 | 라이선스 |
 | --- | --- | --- |
-| `filippo.io/edwards25519` | v1.1.0 | BSD 3-Clause |
-| `github.com/go-ole/go-ole` | v1.2.6 | MIT |
-| `github.com/go-sql-driver/mysql` | v1.8.1 | MPL-2.0 |
-| `github.com/shirou/gopsutil/v3` | v3.23.12 | BSD 3-Clause |
-| `github.com/yusufpapurcu/wmi` | v1.2.3 | MIT |
-| `golang.org/x/sys` | v0.40.0 | BSD 3-Clause |
+| `filippo.io/edwards25519` | v1.2.0 | BSD 3-Clause |
+| `github.com/go-ole/go-ole` | v1.3.0 | MIT |
+| `github.com/go-sql-driver/mysql` | v1.10.0 | MPL-2.0 |
+| `github.com/shirou/gopsutil/v4` | v4.26.6 | BSD 3-Clause |
+| `github.com/yusufpapurcu/wmi` | v1.2.4 | MIT |
+| `golang.org/x/sys` | v0.47.0 | BSD 3-Clause |
 
 모두 라이선스 파일과 `THIRD_PARTY_NOTICES.md` 기록이 확인됐다. MariaDB
 서버는 Archive Center 패키지에 링크되거나 포함되지 않고 공식 배포본을 별도

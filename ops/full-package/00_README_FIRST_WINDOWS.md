@@ -7,7 +7,7 @@ Archive Center 패키지에 포함하지 않습니다.
 ## 처음 실행
 
 1. `01_start_archive_center_windows.bat`를 더블클릭합니다.
-2. MariaDB가 없으면 공식 MariaDB 11.4.10 ZIP을 직접 다운로드합니다.
+2. MariaDB가 없으면 공식 MariaDB 12.3.2 ZIP을 직접 다운로드합니다.
 3. Python/ChromaDB가 없으면 공식 CPython 설치 파일을 다운로드하고 ChromaDB
    1.5.9를 설치합니다.
 4. MariaDB와 Python은 SHA-256을 검증하며, Python은 Python Software

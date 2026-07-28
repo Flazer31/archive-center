@@ -123,8 +123,8 @@ if (Test-Path -LiteralPath $installerScriptPath -PathType Leaf) {
     foreach ($marker in @(
         "-InstallMariaDBRuntime",
         "-InstallChromaDBRuntime",
-        "https://dlm.mariadb.com/4566977/MariaDB/mariadb-11.4.10/winx64-packages/mariadb-11.4.10-winx64.zip",
-        "fb7c76f0804321ee373daa49145f2056d2d88f321b614130adeb05a1644ea003",
+        "https://downloads.mariadb.org/rest-api/mariadb/12.3.2/mariadb-12.3.2-winx64.zip",
+        "67347c129eb9c5923d002ea34fbfa27c60eb95d36dd73b85af2651cdeceecac5",
         "MariaDB archive SHA-256 mismatch",
         "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
         "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",

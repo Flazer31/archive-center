@@ -10,7 +10,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
-	"github.com/shirou/gopsutil/v3/disk"
+	"github.com/shirou/gopsutil/v4/disk"
 )
 
 // Chroma shadow: R0 probes
