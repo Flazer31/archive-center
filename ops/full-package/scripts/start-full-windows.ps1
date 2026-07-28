@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $packagedBuildVersion = "__ARCHIVE_CENTER_PACKAGE_VERSION__"
+$managedChromaDBVersion = "1.5.9"
 
 function ConvertFrom-ProtectedEnvText([string]$ProtectedPath) {
     $cipherText = (Get-Content -LiteralPath $ProtectedPath -Raw).Trim()
@@ -183,6 +184,27 @@ function Find-ChromaRuntimePython([string]$Root) {
     return $hit.FullName
 }
 
+function Test-ChromaRuntimeVersion {
+    param(
+        [string]$PythonPath,
+        [string]$RequiredVersion = "1.5.9"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PythonPath) -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+        return $false
+    }
+    Unblock-PackageFile $PythonPath
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $PythonPath -c "import sys; from importlib.metadata import version; import chromadb; sys.exit(0 if version('chromadb') == sys.argv[1] else 1)" $RequiredVersion *> $null
+        $probeExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $probeExitCode -eq 0
+}
+
 function Start-ManagedChromaDB {
     param(
         [Parameter(Mandatory = $true)][string]$PackageRoot,
@@ -201,9 +223,8 @@ function Start-ManagedChromaDB {
     }
     Unblock-PackageFile $python
 
-    & $python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('chromadb') else 1)"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Managed Python exists but does not include chromadb."
+    if (-not (Test-ChromaRuntimeVersion -PythonPath $python -RequiredVersion $managedChromaDBVersion)) {
+        throw "Managed Python does not contain the required chromadb==$managedChromaDBVersion runtime."
     }
 
     Write-Host "Starting managed ChromaDB"
@@ -570,33 +591,43 @@ foreach ($tool in @($mariadbd, $installDb, $client, $admin)) {
 }
 
 $chromaRuntimeRoot = $managedRuntimeInstallRoot
+$packageChromaRuntimeSelected = $false
+$customChromaRuntimeSelected = $false
 $packageChromaPython = Find-ChromaRuntimePython $packRoot
 if (-not [string]::IsNullOrWhiteSpace($packageChromaPython)) {
     # Internal full packages may still carry their own runtime. Standard
     # managed packages never do.
     $chromaRuntimeRoot = $packRoot
+    $packageChromaRuntimeSelected = $true
 } elseif (-not [string]::IsNullOrWhiteSpace($env:AC_CHROMA_RUNTIME_DIR)) {
     $chromaRuntimeRoot = [System.IO.Path]::GetFullPath($env:AC_CHROMA_RUNTIME_DIR)
+    $customChromaRuntimeSelected = $true
 }
 if (Test-LocalChromaRequested $env:AC_VECTOR_MODE) {
     $chromaPython = Find-ChromaRuntimePython $chromaRuntimeRoot
-    if ([string]::IsNullOrWhiteSpace($chromaPython)) {
-        if (-not [string]::IsNullOrWhiteSpace($env:AC_CHROMA_RUNTIME_DIR)) {
-            throw "AC_CHROMA_RUNTIME_DIR does not contain a complete ChromaDB runtime: $chromaRuntimeRoot"
+    $chromaRuntimeReady = Test-ChromaRuntimeVersion -PythonPath $chromaPython -RequiredVersion $managedChromaDBVersion
+    if (-not $chromaRuntimeReady) {
+        if ($packageChromaRuntimeSelected) {
+            throw "The packaged ChromaDB runtime is missing or does not contain chromadb==$managedChromaDBVersion."
+        }
+        if ($customChromaRuntimeSelected) {
+            throw "AC_CHROMA_RUNTIME_DIR does not contain chromadb==$managedChromaDBVersion`: $chromaRuntimeRoot"
         }
         $runtimeInstaller = Join-Path $packRoot "tools\install-windows.ps1"
         if (-not (Test-Path -LiteralPath $runtimeInstaller -PathType Leaf)) {
             throw "Separate ChromaDB runtime is missing and the installer was not found: $runtimeInstaller"
         }
-        Write-Host "ChromaDB is not bundled with Archive Center. Installing verified official Python and pinned ChromaDB for this user."
+        Write-Host "Managed ChromaDB is missing, incomplete, or has the wrong version."
+        Write-Host "Repairing the per-user runtime with verified official Python and pinned ChromaDB $managedChromaDBVersion."
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller -InstallChromaDBRuntime -InstallDir $managedRuntimeInstallRoot
         if ($LASTEXITCODE -ne 0) {
             throw "Separate ChromaDB runtime installation failed. Check the download connection and retry."
         }
         $chromaRuntimeRoot = $managedRuntimeInstallRoot
         $chromaPython = Find-ChromaRuntimePython $chromaRuntimeRoot
+        $chromaRuntimeReady = Test-ChromaRuntimeVersion -PythonPath $chromaPython -RequiredVersion $managedChromaDBVersion
     }
-    if ([string]::IsNullOrWhiteSpace($chromaPython) -or -not (Test-Path -LiteralPath $chromaPython -PathType Leaf)) {
+    if (-not $chromaRuntimeReady) {
         throw "Separate ChromaDB runtime is incomplete: $chromaRuntimeRoot"
     }
     Unblock-PackageFile $chromaPython

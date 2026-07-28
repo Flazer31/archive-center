@@ -89,10 +89,13 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     if ($launcherScriptText.Contains("archive-center-go.new.exe")) {
         [void]$failures.Add("launcher_legacy_partial_update_path_present")
     }
-    foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "AC_CHROMA_RUNTIME_DIR", "-InstallChromaDBRuntime", "Start-ManagedChromaDB", "LocalApplicationData")) {
+    foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "AC_CHROMA_RUNTIME_DIR", "-InstallChromaDBRuntime", "Test-ChromaRuntimeVersion", "chromadb==`$managedChromaDBVersion", "chromaRuntimeReady", "Repairing the per-user runtime", "Start-ManagedChromaDB", "LocalApplicationData")) {
         if (-not $launcherScriptText.Contains($marker)) {
             [void]$failures.Add("launcher_managed_runtime_marker_missing:$marker")
         }
+    }
+    if ($launcherScriptText -notmatch '(?s)\$chromaRuntimeReady\s*=\s*Test-ChromaRuntimeVersion.*?if\s*\(-not\s+\$chromaRuntimeReady\).*?-InstallChromaDBRuntime.*?\$chromaRuntimeReady\s*=\s*Test-ChromaRuntimeVersion') {
+        [void]$failures.Add("launcher_chromadb_health_repair_recheck_flow_missing")
     }
     if ($launcherScriptText -notmatch '(?s)if \(\$pendingApplyStatus -eq "applied_pending_health"\).*?\}\s*else\s*\{\s*& \$backendExe\s*\}') {
         [void]$failures.Add("launcher_no_pending_direct_backend_path_missing")
@@ -126,6 +129,8 @@ if (Test-Path -LiteralPath $installerScriptPath -PathType Leaf) {
         "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
         "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
         "Python installer Authenticode verification failed",
+        "Test-CompatiblePythonBootstrap",
+        "Python registration exists but the runtime is incomplete",
         "chromadb==`$ChromaDBVersion",
         "package_bundled = `$false"
     )) {

@@ -231,8 +231,116 @@ function Test-ChromaDBRuntimeVersion {
     if ([string]::IsNullOrWhiteSpace($PythonPath) -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
         return $false
     }
-    & $PythonPath -c "import sys; from importlib.metadata import version; import chromadb; sys.exit(0 if version('chromadb') == sys.argv[1] else 1)" $ChromaDBVersion *> $null
-    return $LASTEXITCODE -eq 0
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $PythonPath -c "import sys; from importlib.metadata import version; import chromadb; sys.exit(0 if version('chromadb') == sys.argv[1] else 1)" $ChromaDBVersion *> $null
+        $probeExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $probeExitCode -eq 0
+}
+
+function Test-CompatiblePythonBootstrap {
+    param([string]$PythonPath)
+    if ([string]::IsNullOrWhiteSpace($PythonPath) -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+        return $false
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $PythonPath
+    $signerSubject = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { "" }
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $signerSubject -notmatch "(?i)(^|,\s*)O=Python Software Foundation(,|$)") {
+        return $false
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $PythonPath -c "import struct, sys; sys.exit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) and struct.calcsize('P') * 8 == 64 else 1)" *> $null
+        $probeExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $probeExitCode -eq 0
+}
+
+function Get-PythonRuntimeVersion {
+    param([string]$PythonPath)
+    if ([string]::IsNullOrWhiteSpace($PythonPath) -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+        return ""
+    }
+    $productVersion = (Get-Item -LiteralPath $PythonPath).VersionInfo.ProductVersion
+    if (-not [string]::IsNullOrWhiteSpace($productVersion) -and $productVersion -match "\d+\.\d+\.\d+") {
+        return $Matches[0]
+    }
+    $versionText = (& $PythonPath -c "import platform; print(platform.python_version())" 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0) {
+        return ""
+    }
+    return ([string]$versionText).Trim()
+}
+
+function Find-CompatiblePythonBootstrap {
+    param([string]$PreferredPath)
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($PreferredPath)) {
+        [void]$candidates.Add($PreferredPath)
+    }
+
+    $pyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $pyLauncher -and -not [string]::IsNullOrWhiteSpace($pyLauncher.Source)) {
+        foreach ($selector in @("-3.12", "-3.11", "-3.10", "-3.9")) {
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "Continue"
+                $located = (& $pyLauncher.Source $selector -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+                $launcherExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
+            if ($launcherExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$located)) {
+                [void]$candidates.Add(([string]$located).Trim())
+            }
+        }
+    }
+
+    $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+    $programFiles = [Environment]::GetFolderPath("ProgramFiles")
+    $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+    foreach ($candidate in @(
+        (Join-Path $localAppData "Programs\Python\Python312\python.exe"),
+        (Join-Path $localAppData "Programs\Python\Python311\python.exe"),
+        (Join-Path $localAppData "Programs\Python\Python310\python.exe"),
+        (Join-Path $localAppData "Programs\Python\Python39\python.exe"),
+        (Join-Path $programFiles "Python312\python.exe"),
+        (Join-Path $programFiles "Python311\python.exe"),
+        (Join-Path $programFiles "Python310\python.exe"),
+        (Join-Path $programFiles "Python39\python.exe"),
+        (Join-Path $programFilesX86 "Python312\python.exe"),
+        (Join-Path $programFilesX86 "Python311\python.exe"),
+        (Join-Path $programFilesX86 "Python310\python.exe"),
+        (Join-Path $programFilesX86 "Python39\python.exe")
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            [void]$candidates.Add($candidate)
+        }
+    }
+
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        $full = [System.IO.Path]::GetFullPath($candidate)
+        if ($seen.ContainsKey($full)) {
+            continue
+        }
+        $seen[$full] = $true
+        if (Test-CompatiblePythonBootstrap $full) {
+            return $full
+        }
+    }
+    return ""
 }
 
 function Write-JsonReport {
@@ -575,11 +683,12 @@ function Invoke-InstallChromaDBRuntime {
 
     $existingPython = Find-ChromaDBPython $effectiveInstallDir
     if (Test-ChromaDBRuntimeVersion $existingPython) {
+        $existingRuntimePythonVersion = Get-PythonRuntimeVersion $existingPython
         return [ordered]@{
             schema_version = "archive-center.chromadb-runtime-install.v1"
             status = "already_installed"
             version = $ChromaDBVersion
-            python_version = $PythonVersion
+            python_version = $existingRuntimePythonVersion
             install_dir = $effectiveInstallDir
             runtime_root = Find-ChromaDBRuntime $effectiveInstallDir
             python_path = $existingPython
@@ -598,8 +707,9 @@ function Invoke-InstallChromaDBRuntime {
     $chromaPython = Join-Path $chromaRoot "Scripts\python.exe"
     $installerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("archive-center-python-$PythonVersion-$PID.exe")
     $downloadedPython = $false
+    $bootstrapPython = Find-CompatiblePythonBootstrap $pythonExe
     try {
-        if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+        if ([string]::IsNullOrWhiteSpace($bootstrapPython)) {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             Write-Host "Downloading Python $PythonVersion from python.org for the managed ChromaDB runtime."
             Invoke-WebRequest -UseBasicParsing -Uri $PythonDownloadUrl -OutFile $installerPath
@@ -631,13 +741,23 @@ function Invoke-InstallChromaDBRuntime {
             if ($installProcess.ExitCode -ne 0) {
                 throw "Python installer failed with exit code $($installProcess.ExitCode)."
             }
+            $bootstrapPython = Find-CompatiblePythonBootstrap $pythonExe
+            if ([string]::IsNullOrWhiteSpace($bootstrapPython)) {
+                Write-Host "Python registration exists but the runtime is incomplete. Running the verified installer repair path."
+                $repairProcess = Start-Process -FilePath $installerPath -ArgumentList @("/quiet", "/repair") -Wait -PassThru -WindowStyle Hidden
+                if ($repairProcess.ExitCode -ne 0) {
+                    throw "Python installer repair failed with exit code $($repairProcess.ExitCode)."
+                }
+                $bootstrapPython = Find-CompatiblePythonBootstrap $pythonExe
+            }
         }
-        if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
-            throw "Python installation completed without producing the expected executable: $pythonExe"
+        if ([string]::IsNullOrWhiteSpace($bootstrapPython)) {
+            throw "Python installation completed without producing a signed compatible Python 3.9-3.12 x64 runtime."
         }
+        $bootstrapPythonVersion = Get-PythonRuntimeVersion $bootstrapPython
 
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $chromaRoot) | Out-Null
-        & $pythonExe -m venv $chromaRoot 2>&1 | Out-Host
+        & $bootstrapPython -m venv $chromaRoot 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $chromaPython -PathType Leaf)) {
             throw "Managed ChromaDB virtual environment creation failed."
         }
@@ -645,7 +765,7 @@ function Invoke-InstallChromaDBRuntime {
         if ($LASTEXITCODE -ne 0) {
             throw "Managed ChromaDB pip bootstrap failed."
         }
-        & $chromaPython -m pip install --disable-pip-version-check --no-input "chromadb==$ChromaDBVersion" 2>&1 | Out-Host
+        & $chromaPython -m pip install --disable-pip-version-check --no-input --upgrade "chromadb==$ChromaDBVersion" 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "pip install chromadb==$ChromaDBVersion failed."
         }
@@ -657,12 +777,13 @@ function Invoke-InstallChromaDBRuntime {
             schema_version = "archive-center.chromadb-runtime-install.v1"
             status = "installed"
             version = $ChromaDBVersion
-            python_version = $PythonVersion
+            python_version = $bootstrapPythonVersion
             install_dir = $effectiveInstallDir
             runtime_root = $chromaRoot
             python_path = $chromaPython
-            python_source_url = $PythonDownloadUrl
-            python_sha256 = $PythonSha256.Trim().ToLowerInvariant()
+            bootstrap_python_path = $bootstrapPython
+            python_source_url = if ($downloadedPython) { $PythonDownloadUrl } else { "" }
+            python_sha256 = if ($downloadedPython) { $PythonSha256.Trim().ToLowerInvariant() } else { "" }
             python_authenticode_signer = "Python Software Foundation"
             downloaded_by_archive_center = $downloadedPython
             package_bundled = $false
