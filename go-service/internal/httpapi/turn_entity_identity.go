@@ -454,6 +454,19 @@ func (p *entityIdentityProjection) resolveUnique(surface string) (*entityIdentit
 	return selected, reviewState, false
 }
 
+func (p *entityIdentityProjection) preciseMemoryEntityPointer(surface string, spanStart, spanEnd int) (string, bool) {
+	if p == nil || strings.TrimSpace(surface) == "" {
+		return "", false
+	}
+	occurrence, reviewState, ambiguous := p.resolveUnique(surface)
+	if occurrence == nil || ambiguous || reviewState != "source_observed" ||
+		occurrence.ReviewState != "source_observed" ||
+		!p.surfaceAppearsIndependentlyWithinSourceSpan(surface, spanStart, spanEnd) {
+		return "", false
+	}
+	return occurrence.StableEntityID, true
+}
+
 func (p *entityIdentityProjection) ensureArtifactIdentity(ctx context.Context, surface, entityKind, artifactKind string, ordinal int, result *artifactSaveResult) (*entityIdentityOccurrence, string) {
 	if occurrence, reviewState, ambiguous := p.resolveUnique(surface); occurrence != nil {
 		return occurrence, reviewState

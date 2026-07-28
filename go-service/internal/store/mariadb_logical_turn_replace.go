@@ -49,6 +49,7 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 		args  []any
 	}{
 		{`DELETE FROM effective_input_logs WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
+		{`DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
 		{`DELETE FROM memories WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
 		{`DELETE FROM direct_evidence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
 		{`DELETE FROM kg_triples WHERE chat_session_id = ? AND (source_turn >= ? OR valid_from >= ?)`, []any{sid, t, t}},

@@ -452,6 +452,49 @@ func (d *dualWriteStore) EntityIdentityWritesEnabled() bool {
 	return primaryOK || shadowOK
 }
 
+func (d *dualWriteStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseMemoryUnit) (bool, error) {
+	primary, primaryOK := preciseMemoryWriterForStore(d.primary)
+	shadow, shadowOK := preciseMemoryWriterForStore(d.shadow)
+	if !primaryOK && !shadowOK {
+		return false, ErrNotEnabled
+	}
+	if primaryOK {
+		inserted, err := primary.SavePreciseMemoryUnit(ctx, item)
+		if err != nil {
+			return false, err
+		}
+		if shadowOK {
+			if _, err := shadow.SavePreciseMemoryUnit(ctx, item); err != nil {
+				d.recordShadowErr(err)
+			}
+		}
+		return inserted, nil
+	}
+	inserted, err := shadow.SavePreciseMemoryUnit(ctx, item)
+	if err != nil {
+		d.recordShadowErr(err)
+		return false, nil
+	}
+	return inserted, nil
+}
+
+func (d *dualWriteStore) PreciseMemoryWritesEnabled() bool {
+	_, primaryOK := preciseMemoryWriterForStore(d.primary)
+	_, shadowOK := preciseMemoryWriterForStore(d.shadow)
+	return primaryOK || shadowOK
+}
+
+func preciseMemoryWriterForStore(st Store) (PreciseMemoryWriter, bool) {
+	writer, ok := st.(PreciseMemoryWriter)
+	if !ok {
+		return nil, false
+	}
+	if availability, ok := st.(PreciseMemoryWriteAvailability); ok && !availability.PreciseMemoryWritesEnabled() {
+		return nil, false
+	}
+	return writer, true
+}
+
 func (d *dualWriteStore) writeEntityIdentityExtension(ctx context.Context, write func(EntityIdentityWriter) error) error {
 	primary, primaryOK := d.primary.(EntityIdentityWriter)
 	shadow, shadowOK := d.shadow.(EntityIdentityWriter)

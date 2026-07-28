@@ -1,0 +1,71 @@
+package main
+
+// preciseMemorySchemaStatements mirrors the standalone additive migration.
+// The compatibility pass may safely repair an older database without
+// replacing or renumbering legacy aggregate memories.
+func preciseMemorySchemaStatements() []string {
+	return splitSQLStatements(preciseMemorySchemaSQL)
+}
+
+const preciseMemorySchemaSQL = `
+CREATE TABLE IF NOT EXISTS precise_memory_units (
+    id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    unit_id                    CHAR(36) NOT NULL,
+    contract_version           VARCHAR(80) NOT NULL DEFAULT 'precise_memory_unit.v1',
+    chat_session_id            VARCHAR(255) NOT NULL,
+    source_turn_start          INT NOT NULL,
+    source_turn_end            INT NOT NULL,
+    source_contract            VARCHAR(80) NOT NULL,
+    source_revision            VARCHAR(160) NOT NULL,
+    source_logical_turn_id     VARCHAR(160) NULL,
+    source_message_id          VARCHAR(255) NULL,
+    source_generation_id       VARCHAR(255) NULL,
+    source_content_hash        CHAR(64) NOT NULL,
+    source_role                VARCHAR(80) NOT NULL,
+    source_span_start          INT NOT NULL,
+    source_span_end            INT NOT NULL,
+    evidence_excerpt           TEXT NOT NULL,
+    evidence_hash              CHAR(64) NOT NULL,
+    root_evidence_id           BIGINT UNSIGNED NOT NULL,
+    direct_evidence_ids_json   JSON NOT NULL,
+    memory_kind                VARCHAR(80) NOT NULL,
+    memory_subtype             VARCHAR(120) NULL,
+    payload_json               JSON NOT NULL,
+    actor_entity_id            CHAR(36) NULL,
+    subject_entity_id          CHAR(36) NULL,
+    affected_entity_id         CHAR(36) NULL,
+    location_entity_id         CHAR(36) NULL,
+    object_entity_id           CHAR(36) NULL,
+    relationship_key           VARCHAR(255) NULL,
+    truth_scope                VARCHAR(80) NOT NULL,
+    epistemic_mode             VARCHAR(80) NOT NULL,
+    authority_class            VARCHAR(80) NOT NULL,
+    admission_state            VARCHAR(50) NOT NULL,
+    review_state               VARCHAR(50) NOT NULL,
+    visibility                 VARCHAR(80) NOT NULL,
+    knowledge_holder_entity_id CHAR(36) NULL,
+    reveal_condition           VARCHAR(255) NULL,
+    confidence                 DOUBLE NOT NULL DEFAULT 0,
+    idempotency_key            VARCHAR(255) NOT NULL,
+    lifecycle_state            VARCHAR(50) NOT NULL DEFAULT 'active',
+    created_at                 DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at                 DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    UNIQUE KEY uq_precise_memory_unit_id (unit_id),
+    UNIQUE KEY uq_precise_memory_source_payload (chat_session_id(120), idempotency_key(160)),
+    INDEX idx_precise_memory_source (chat_session_id(120), source_revision(120), source_turn_start),
+    INDEX idx_precise_memory_kind (chat_session_id(120), memory_kind, lifecycle_state, source_turn_start),
+    INDEX idx_precise_memory_review (chat_session_id(120), admission_state, review_state, updated_at),
+    INDEX idx_precise_memory_root_evidence (root_evidence_id),
+    CONSTRAINT fk_precise_memory_root_evidence FOREIGN KEY (root_evidence_id) REFERENCES direct_evidence_records(id) ON DELETE CASCADE,
+    CONSTRAINT fk_precise_memory_actor FOREIGN KEY (actor_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_precise_memory_subject FOREIGN KEY (subject_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_precise_memory_affected FOREIGN KEY (affected_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_precise_memory_location FOREIGN KEY (location_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_precise_memory_object FOREIGN KEY (object_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_precise_memory_knower FOREIGN KEY (knowledge_holder_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
+    CONSTRAINT chk_precise_memory_kind CHECK (memory_kind IN ('event', 'state', 'utterance', 'observation')),
+    CONSTRAINT chk_precise_memory_span CHECK (source_span_start >= 0 AND source_span_end > source_span_start),
+    CONSTRAINT chk_precise_memory_turn_range CHECK (source_turn_start > 0 AND source_turn_end >= source_turn_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='precise_memory_unit.v1 exact-source atomic projection; legacy aggregate memories remain unchanged.';
+`

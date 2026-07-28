@@ -129,6 +129,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		extraction = mergedExtraction
 		result.Warnings = append(result.Warnings, "confirmed_identity_alias_canonical_merge_applied")
 	}
+	extraction = appendPreciseMemoryEvidenceExcerpts(ctx, extraction)
 	extraction = appendNarrativeStateEvidenceExcerpts(extraction)
 	memorySearchText := completeTurnMemorySearchText(summary, extraction, content)
 	searchText := strings.TrimSpace(memorySearchText.Text)
@@ -240,6 +241,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 
 	// Current narrative state is resolved only after direct evidence has been
 	// persisted, so every accepted change can point back to concrete evidence.
+	s.savePreciseMemoryUnitsFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, identityProjection, now, &result)
 	s.saveNarrativeStateFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
 
 	for tripleIndex, item := range sliceFromAny(extraction["kg_triples"]) {

@@ -589,6 +589,7 @@ func (m *mariadbStore) DeleteSession(ctx context.Context, chatSessionID string) 
 	tables := []string{
 		"chat_logs",
 		"effective_input_logs",
+		"precise_memory_units",
 		"memories",
 		"direct_evidence_records",
 		"kg_triples",

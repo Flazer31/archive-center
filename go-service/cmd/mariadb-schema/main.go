@@ -250,6 +250,7 @@ func compatibilityMigrationStatements() []string {
 	statements = append(statements, referenceLibrarySchemaStatements()...)
 	statements = append(statements, canonPackStorageSchemaStatements()...)
 	statements = append(statements, entityIdentitySchemaStatements()...)
+	statements = append(statements, preciseMemorySchemaStatements()...)
 	statements = append(statements, "ALTER TABLE session_reference_bindings ADD COLUMN IF NOT EXISTS injection_enabled BOOLEAN NOT NULL DEFAULT FALSE AFTER enabled")
 	statements = append(statements, "ALTER TABLE session_reference_bindings ADD COLUMN IF NOT EXISTS reference_mode VARCHAR(50) NOT NULL DEFAULT 'supplement' AFTER binding_role")
 	return statements

@@ -21,7 +21,11 @@ func TestMariaDBReplaceLogicalTurnAtomicallyReplacesCanonicalTail(t *testing.T) 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE")).
 		WithArgs("session-1").
 		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(3))
-	for i := 0; i < 36; i++ {
+	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM memories").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
+	for i := 0; i < 33; i++ {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
@@ -77,7 +81,11 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedImmediateTail(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE")).
 		WithArgs("session-1").
 		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(14))
-	for i := 0; i < 36; i++ {
+	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM memories").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
+	for i := 0; i < 33; i++ {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).

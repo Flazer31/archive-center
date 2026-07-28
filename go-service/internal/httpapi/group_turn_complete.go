@@ -363,7 +363,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageCheckpoints, "skipped", "ooc_turn_guard")
 			s.TurnWorkflows.addWarning(workflowRequestID, "OOC_TURN_SKIPPED", "turn_hud.warning.ooc_turn_skipped", turnWorkflowStageFinalAccepted)
 			s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
-				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			))
 			s.TurnWorkflows.complete(workflowRequestID)
 		}
@@ -402,7 +402,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			s.TurnWorkflows.fail(workflowRequestID, "USER_INPUT_MISSING", "turn_hud.error.user_input_missing", turnWorkflowStageFinalAccepted, false)
 			s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
-				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -588,6 +588,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	auditSaved := 0
 	criticFeedbackSaved := 0
 	memoriesSaved := 0
+	preciseMemoryUnitsSaved := 0
 	evidenceSaved := 0
 	kgTriplesSaved := 0
 	personaCapsuleCandidates := 0
@@ -733,6 +734,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			timing.addMilliseconds("embedding", embeddingMS)
 			timing.addMilliseconds("vector_upsert", vectorUpsertMS)
 			memoriesSaved += artifactResult.Memories
+			preciseMemoryUnitsSaved += artifactResult.PreciseMemoryUnits
 			evidenceSaved += artifactResult.Evidence
 			kgTriplesSaved += artifactResult.KGTriples
 			personaCapsuleCandidates += artifactResult.PersonaCapsuleCandidates
@@ -867,6 +869,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			rawSave.AssistantDurable,
 			effectiveInputSaved,
 			memoriesSaved,
+			preciseMemoryUnitsSaved,
 			evidenceSaved,
 			kgTriplesSaved,
 			subjectiveEntityMemoriesSaved,
@@ -905,7 +908,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			s.TurnWorkflows.complete(workflowRequestID)
 		}
 	}
-	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
+	derivedArtifactsSaved := memoriesSaved + preciseMemoryUnitsSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
 	rawStatus := "skipped"
 	if chatLogsSaved > 0 || effectiveInputSaved > 0 {
 		rawStatus = "ok"
@@ -937,6 +940,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"status":                           derivedStatus,
 			"artifacts_saved":                  derivedArtifactsSaved,
 			"memories_saved":                   memoriesSaved,
+			"precise_memory_units_saved":       preciseMemoryUnitsSaved,
 			"direct_evidence_saved":            evidenceSaved,
 			"kg_triples_saved":                 kgTriplesSaved,
 			"world_rules_saved":                worldRulesSaved,
@@ -975,6 +979,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"save_ok":                          saveOK,
 		"save_error":                       saveErr,
 		"memories_saved":                   memoriesSaved,
+		"precise_memory_units_saved":       preciseMemoryUnitsSaved,
 		"evidence_saved":                   evidenceSaved,
 		"kg_triples_saved":                 kgTriplesSaved,
 		"persona_capsule_candidates":       personaCapsuleCandidates,

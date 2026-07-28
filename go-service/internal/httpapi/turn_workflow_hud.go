@@ -68,6 +68,7 @@ var turnWorkflowHUDCountTemplates = []turnWorkflowHUDCount{
 	{Key: "raw_assistant", LabelKey: "turn_hud.count.raw_assistant"},
 	{Key: "effective_input", LabelKey: "turn_hud.count.effective_input"},
 	{Key: "turn_summary", LabelKey: "turn_hud.count.turn_summary"},
+	{Key: "precise_memory", LabelKey: "turn_hud.count.precise_memory"},
 	{Key: "direct_evidence", LabelKey: "turn_hud.count.direct_evidence"},
 	{Key: "relationship_knowledge", LabelKey: "turn_hud.count.relationship_knowledge"},
 	{Key: "entity_identity", LabelKey: "turn_hud.count.entity_identity"},
@@ -905,6 +906,7 @@ func turnWorkflowHUDCountsFromComplete(
 	rawAssistantDurable bool,
 	effectiveInputSaved int,
 	memoriesSaved int,
+	preciseMemoryUnitsSaved int,
 	evidenceSaved int,
 	kgTriplesSaved int,
 	subjectiveEntityMemoriesSaved int,
@@ -941,6 +943,7 @@ func turnWorkflowHUDCountsFromComplete(
 		"raw_assistant":          boolCount(rawAssistantDurable),
 		"effective_input":        maxInt(0, effectiveInputSaved),
 		"turn_summary":           maxInt(0, memoriesSaved),
+		"precise_memory":         maxInt(0, preciseMemoryUnitsSaved),
 		"direct_evidence":        maxInt(0, evidenceSaved),
 		"relationship_knowledge": maxInt(0, kgTriplesSaved),
 		"entity_identity":        maxInt(0, entityIdentitiesSaved),
@@ -982,7 +985,7 @@ func (s *Server) completeTurnWorkflowHUDDuplicate(
 	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageDerivedPersist, "skipped", reasonCode)
 	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageCheckpoints, "skipped", reasonCode)
 	s.TurnWorkflows.setCounts(requestID, turnWorkflowHUDCountsFromComplete(
-		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	))
 	s.TurnWorkflows.addWarning(requestID, warningCode, warningMessageKey, turnWorkflowStageRawPersist)
 	s.TurnWorkflows.setNoticePresentation(

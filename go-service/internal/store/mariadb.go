@@ -84,6 +84,7 @@ var mariaAdminResetTables = []string{
 	"protagonist_entity_memories",
 	"effective_input_logs",
 	"chat_logs",
+	"precise_memory_units",
 	"memories",
 	"direct_evidence_records",
 	"kg_triples",

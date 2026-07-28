@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"regexp"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -21,12 +22,14 @@ func TestMariaDBRollbackStoreDeleteFromTurn(t *testing.T) {
 
 	mock.ExpectExec("DELETE FROM chat_logs").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 3))
 	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("DELETE FROM memories").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM kg_triples").WithArgs(sid, fromTurn, fromTurn).WillReturnResult(sqlmock.NewResult(0, 4))
 	mock.ExpectExec("DELETE FROM critic_feedback").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM character_events").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM speaker_attributions").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM entity_identity_artifact_bindings").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM entity_identity_surfaces").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
@@ -169,6 +172,7 @@ func TestMariaDBDeleteSession(t *testing.T) {
 	mock.ExpectExec("DELETE FROM protagonist_entity_memories").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM chat_logs").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 10))
 	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 10))
+	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("DELETE FROM memories").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 5))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM kg_triples").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 2))
@@ -210,5 +214,41 @@ func TestMariaDBDeleteSession(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestMariaDBAdminResetClearsPreciseMemoryUnits(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+
+	mock.ExpectExec(regexp.QuoteMeta("SET FOREIGN_KEY_CHECKS=0")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectBegin()
+	foundPrecise := false
+	for _, table := range mariaAdminResetTables {
+		if table == "precise_memory_units" {
+			foundPrecise = true
+		}
+		mock.ExpectExec(regexp.QuoteMeta("DELETE FROM " + mariaQuoteIdentifier(table))).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectCommit()
+	mock.ExpectExec(regexp.QuoteMeta("SET FOREIGN_KEY_CHECKS=1")).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if !foundPrecise {
+		t.Fatal("admin reset table list omits precise_memory_units")
+	}
+	result, err := m.ResetAll(context.Background())
+	if err != nil {
+		t.Fatalf("ResetAll: %v", err)
+	}
+	if result.TablesCleared != len(mariaAdminResetTables) || result.RowsDeleted != int64(len(mariaAdminResetTables)) {
+		t.Fatalf("reset result=%+v tables=%d", result, len(mariaAdminResetTables))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }

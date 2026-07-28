@@ -68,6 +68,7 @@ type artifactSaveResult struct {
 	IdentitySurfaces         int
 	IdentityBindings         int
 	SpeakerAttributions      int
+	PreciseMemoryUnits       int
 	TrustStates              int
 	VectorsUpserted          int
 	VectorsMemoryUpserted    int

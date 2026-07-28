@@ -155,7 +155,7 @@ func TestTurnWorkflowHUDStagesExposeBackendDurationStatusAndReason(t *testing.T)
 func TestTurnWorkflowHUDCountsIncludeAllZerosAndTerminalSeverity(t *testing.T) {
 	ledger := newTurnWorkflowHUDLedger()
 	ledger.begin("request-warning", "session-warning", 3)
-	ledger.setCounts("request-warning", map[string]int{"raw_user": 1})
+	ledger.setCounts("request-warning", map[string]int{"raw_user": 1, "precise_memory": 3})
 	ledger.addWarning("request-warning", "OPTIONAL_SKIPPED", "turn_hud.warning.optional_skipped", turnWorkflowStagePublisherLLM)
 	ledger.complete("request-warning")
 	view, ok := ledger.snapshot("request-warning")
@@ -169,7 +169,7 @@ func TestTurnWorkflowHUDCountsIncludeAllZerosAndTerminalSeverity(t *testing.T) {
 	for _, count := range view.Counts {
 		values[count.Key] = count.Value
 	}
-	if values["raw_user"] != 1 || values["raw_assistant"] != 0 || values["direct_evidence"] != 0 || values["total_committed"] != 1 {
+	if values["raw_user"] != 1 || values["raw_assistant"] != 0 || values["precise_memory"] != 3 || values["direct_evidence"] != 0 || values["total_committed"] != 4 {
 		t.Fatalf("zero-inclusive counts = %#v", values)
 	}
 

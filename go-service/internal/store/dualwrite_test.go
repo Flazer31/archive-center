@@ -502,3 +502,52 @@ func Test36BDualWriteIdentityShadowFailureIsRecordedNotSurfaced(t *testing.T) {
 		t.Fatalf("shadow failure was not recorded: failures=%d err=%v", failures, lastErr)
 	}
 }
+
+type preciseMemoryWriterStore struct {
+	Store
+	enabled  bool
+	inserted bool
+	saveErr  error
+	calls    int64
+}
+
+func (s *preciseMemoryWriterStore) PreciseMemoryWritesEnabled() bool {
+	return s.enabled
+}
+
+func (s *preciseMemoryWriterStore) SavePreciseMemoryUnit(context.Context, *PreciseMemoryUnit) (bool, error) {
+	atomic.AddInt64(&s.calls, 1)
+	return s.inserted, s.saveErr
+}
+
+func TestDualWritePreciseMemoryAvailabilityRequiresRealWriter(t *testing.T) {
+	dual := NewDualWriteStore(NewNoopStore(), NewNoopStore()).(*dualWriteStore)
+	if dual.PreciseMemoryWritesEnabled() {
+		t.Fatal("no-op lanes advertised precise-memory writes")
+	}
+	if inserted, err := dual.SavePreciseMemoryUnit(context.Background(), &PreciseMemoryUnit{}); !errors.Is(err, ErrNotEnabled) || inserted {
+		t.Fatalf("no-writer save inserted=%v err=%v, want disabled", inserted, err)
+	}
+
+	disabledWriter := &preciseMemoryWriterStore{Store: NewNoopStore()}
+	dual = NewDualWriteStore(NewNoopStore(), disabledWriter).(*dualWriteStore)
+	if dual.PreciseMemoryWritesEnabled() {
+		t.Fatal("explicitly unavailable writer advertised precise-memory writes")
+	}
+}
+
+func TestDualWritePreciseMemoryShadowFailureIsRecordedNotSurfaced(t *testing.T) {
+	shadowErr := errors.New("precise memory shadow down")
+	shadow := &preciseMemoryWriterStore{
+		Store: NewNoopStore(), enabled: true, inserted: true, saveErr: shadowErr,
+	}
+	dual := NewDualWriteStore(NewNoopStore(), shadow).(*dualWriteStore)
+	inserted, err := dual.SavePreciseMemoryUnit(context.Background(), &PreciseMemoryUnit{})
+	if err != nil || inserted {
+		t.Fatalf("shadow-only failure inserted=%v err=%v, want honest false and no surfaced error", inserted, err)
+	}
+	failures, lastErr := dual.ShadowStatus()
+	if failures != 1 || !errors.Is(lastErr, shadowErr) || atomic.LoadInt64(&shadow.calls) != 1 {
+		t.Fatalf("shadow failure not recorded: failures=%d err=%v calls=%d", failures, lastErr, shadow.calls)
+	}
+}
