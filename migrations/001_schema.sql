@@ -1716,6 +1716,13 @@ CREATE TABLE IF NOT EXISTS memory_source_revisions (
     hash_algorithm VARCHAR(80) NOT NULL,
     host_observed_at_ms BIGINT NOT NULL,
     lifecycle_state VARCHAR(50) NOT NULL DEFAULT 'active',
+    derived_admission_state VARCHAR(30) NOT NULL DEFAULT 'pending',
+    derived_admission_version VARCHAR(120) NOT NULL DEFAULT '',
+    derived_extractor_version VARCHAR(120) NOT NULL DEFAULT '',
+    derived_index_version VARCHAR(120) NOT NULL DEFAULT '',
+    derived_result_hash CHAR(64) NULL,
+    derived_result_json JSON NULL,
+    derived_admitted_at DATETIME(3) NULL,
     active_logical_turn_slot VARCHAR(160)
         GENERATED ALWAYS AS (CASE WHEN lifecycle_state = 'active' THEN logical_turn_id ELSE NULL END) PERSISTENT,
     superseded_by_revision VARCHAR(160) NULL,
@@ -1729,6 +1736,7 @@ CREATE TABLE IF NOT EXISTS memory_source_revisions (
     INDEX idx_memory_source_turn (chat_session_id(160), turn_index, lifecycle_state),
     INDEX idx_memory_source_generation (chat_session_id(160), source_generation_id(120)),
     CONSTRAINT chk_memory_source_lifecycle CHECK (lifecycle_state IN ('active', 'superseded', 'invalidated', 'deleted')),
+    CONSTRAINT chk_memory_source_admission CHECK (derived_admission_state IN ('pending', 'committed')),
     CONSTRAINT chk_memory_source_turn CHECK (turn_index > 0),
     CONSTRAINT chk_memory_source_branch_state CHECK (branch_state IN ('observed', 'not_exposed'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci

@@ -90,28 +90,67 @@ func (s *Server) savePreciseMemoryUnitsFromExtraction(
 	if availability, ok := s.Store.(store.PreciseMemoryWriteAvailability); ok && !availability.PreciseMemoryWritesEnabled() {
 		return
 	}
+	units := s.buildPreciseMemoryUnitsFromExtraction(
+		ctx, sid, turnIndex, extraction, content, evidence, identities, now, result,
+	)
+	for _, unit := range units {
+		result.Attempted++
+		inserted, err := writer.SavePreciseMemoryUnit(ctx, unit)
+		if err != nil {
+			result.Errors++
+			result.ErrorDetails = append(result.ErrorDetails, "SavePreciseMemoryUnit: "+err.Error())
+			continue
+		}
+		if inserted {
+			result.PreciseMemoryUnits++
+		} else {
+			result.addSkipReason("precise_memory_units", "idempotent_replay", map[string]any{
+				"kind": unit.Kind, "idempotency_key": unit.IdempotencyKey,
+			})
+		}
+	}
+}
+
+func (s *Server) buildPreciseMemoryUnitsFromExtraction(
+	ctx context.Context,
+	sid string,
+	turnIndex int,
+	extraction map[string]any,
+	content string,
+	evidence []store.DirectEvidence,
+	identities *entityIdentityProjection,
+	now time.Time,
+	result *artifactSaveResult,
+) []*store.PreciseMemoryUnit {
+	units := []*store.PreciseMemoryUnit{}
 	source, accepted := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext)
 	if !accepted ||
 		source.ContractVersion != completeTurnSourceAcceptanceContract ||
 		strings.TrimSpace(source.Revision) == "" {
-		result.addSkipReason("precise_memory_units", "accepted_current_source_required", nil)
-		return
+		if result != nil {
+			result.addSkipReason("precise_memory_units", "accepted_current_source_required", nil)
+		}
+		return units
 	}
 	source.ContentHash = fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 	candidates := preciseMemoryCandidates(extraction)
 	for _, candidate := range candidates {
 		spanStart, spanEnd, exact := preciseMemoryExactSpan(candidate.payload, candidate.excerpt, content)
 		if !exact {
-			result.addSkipReason("precise_memory_units", "exact_unique_source_span_required", map[string]any{
-				"kind": candidate.kind, "excerpt": candidate.excerpt,
-			})
+			if result != nil {
+				result.addSkipReason("precise_memory_units", "exact_unique_source_span_required", map[string]any{
+					"kind": candidate.kind, "excerpt": candidate.excerpt,
+				})
+			}
 			continue
 		}
 		evidenceIDs := preciseMemoryExactEvidenceIDs(evidence, sid, turnIndex, candidate.excerpt)
 		if len(evidenceIDs) == 0 {
-			result.addSkipReason("precise_memory_units", "accepted_direct_evidence_required", map[string]any{
-				"kind": candidate.kind, "source_span_start": spanStart, "source_span_end": spanEnd,
-			})
+			if result != nil {
+				result.addSkipReason("precise_memory_units", "accepted_direct_evidence_required", map[string]any{
+					"kind": candidate.kind, "source_span_start": spanStart, "source_span_end": spanEnd,
+				})
+			}
 			continue
 		}
 		candidate.applyIdentityPointers(identities, spanStart, spanEnd)
@@ -173,21 +212,9 @@ func (s *Server) savePreciseMemoryUnitsFromExtraction(
 			UpdatedAt:             now,
 		}
 		candidate.assignIdentityPointers(unit)
-		result.Attempted++
-		inserted, err := writer.SavePreciseMemoryUnit(ctx, unit)
-		if err != nil {
-			result.Errors++
-			result.ErrorDetails = append(result.ErrorDetails, "SavePreciseMemoryUnit: "+err.Error())
-			continue
-		}
-		if inserted {
-			result.PreciseMemoryUnits++
-		} else {
-			result.addSkipReason("precise_memory_units", "idempotent_replay", map[string]any{
-				"kind": candidate.kind, "idempotency_key": idempotencyKey,
-			})
-		}
+		units = append(units, unit)
 	}
+	return units
 }
 
 func preciseMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate {

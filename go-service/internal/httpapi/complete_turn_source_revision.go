@@ -130,15 +130,34 @@ func (s *Server) enqueueCompleteTurnReprocessingJob(
 		!availability.MemoryDerivationLifecycleEnabled() {
 		return false, nil
 	}
-	const indexVersion = "not_materialized"
+	source := &store.MemorySourceRevision{
+		ChatSessionID:  strings.TrimSpace(sid),
+		SourceRevision: strings.TrimSpace(decision.Revision),
+	}
+	return s.enqueueSourceRevisionReprocessingJob(ctx, writer, source, reason, now)
+}
+
+func (s *Server) enqueueSourceRevisionReprocessingJob(
+	ctx context.Context,
+	writer store.MemoryReprocessingJobStore,
+	source *store.MemorySourceRevision,
+	reason string,
+	now time.Time,
+) (bool, error) {
+	if source == nil ||
+		strings.TrimSpace(source.ChatSessionID) == "" ||
+		strings.TrimSpace(source.SourceRevision) == "" ||
+		strings.TrimSpace(reason) == "" {
+		return false, nil
+	}
 	job := &store.MemoryReprocessingJob{
 		ContractVersion:   store.MemoryReprocessingJobContract,
-		ChatSessionID:     strings.TrimSpace(sid),
-		SourceRevision:    strings.TrimSpace(decision.Revision),
+		ChatSessionID:     strings.TrimSpace(source.ChatSessionID),
+		SourceRevision:    strings.TrimSpace(source.SourceRevision),
 		SourceContract:    completeTurnSourceAcceptanceContract,
-		DerivationVersion: store.PreciseMemoryUnitContract,
+		DerivationVersion: store.MemoryAdmissionContract,
 		ExtractorVersion:  completeTurnCriticPipelineVersion,
-		IndexVersion:      indexVersion,
+		IndexVersion:      memoryAdmissionIndexVersion,
 		Status:            "pending",
 		LastError:         strings.TrimSpace(reason),
 		CreatedAt:         now,

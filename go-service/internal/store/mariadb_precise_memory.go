@@ -36,20 +36,37 @@ func (m *mariadbStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseM
 			_ = tx.Rollback()
 		}
 	}()
-	var lifecycle string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT lifecycle_state
-		FROM memory_source_revisions
-		WHERE chat_session_id = ? AND source_revision = ?
-		FOR UPDATE
-	`, item.ChatSessionID, item.SourceRevision).Scan(&lifecycle); err != nil {
-		if err == sql.ErrNoRows {
-			return false, ErrSourceRevisionStale
-		}
+	inserted, err := savePreciseMemoryUnitTx(ctx, tx, item, false)
+	if err != nil {
 		return false, err
 	}
-	if lifecycle != "active" {
-		return false, ErrSourceRevisionStale
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	committed = true
+	return inserted, nil
+}
+
+func savePreciseMemoryUnitTx(ctx context.Context, tx *sql.Tx, item *PreciseMemoryUnit, sourceFenceLocked bool) (bool, error) {
+	if item == nil || strings.TrimSpace(item.SourceRevision) == "" {
+		return false, fmt.Errorf("precise memory source revision is required")
+	}
+	var lifecycle string
+	if !sourceFenceLocked {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT lifecycle_state
+			FROM memory_source_revisions
+			WHERE chat_session_id = ? AND source_revision = ?
+			FOR UPDATE
+		`, item.ChatSessionID, item.SourceRevision).Scan(&lifecycle); err != nil {
+			if err == sql.ErrNoRows {
+				return false, ErrSourceRevisionStale
+			}
+			return false, err
+		}
+		if lifecycle != "active" {
+			return false, ErrSourceRevisionStale
+		}
 	}
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO precise_memory_units (
@@ -84,10 +101,23 @@ func (m *mariadbStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseM
 		item.IdempotencyKey, item.LifecycleState, nonZeroTime(item.CreatedAt),
 		nonZeroTime(item.UpdatedAt))
 	if preciseMemoryDuplicateKeyError(err) {
-		if err := tx.Commit(); err != nil {
-			return false, err
+		var existingUnitID, existingRevision, existingKey string
+		if queryErr := tx.QueryRowContext(ctx, `
+			SELECT unit_id, source_revision, idempotency_key
+			FROM precise_memory_units
+			WHERE unit_id = ? OR idempotency_key = ?
+			ORDER BY unit_id = ? DESC
+			LIMIT 1
+		`, item.UnitID, item.IdempotencyKey, item.UnitID).Scan(
+			&existingUnitID, &existingRevision, &existingKey,
+		); queryErr != nil {
+			return false, queryErr
 		}
-		committed = true
+		if existingUnitID != item.UnitID ||
+			existingRevision != item.SourceRevision ||
+			existingKey != item.IdempotencyKey {
+			return false, fmt.Errorf("precise memory idempotency conflict")
+		}
 		return false, nil
 	}
 	if err != nil {
@@ -99,13 +129,9 @@ func (m *mariadbStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseM
 	if err := savePreciseMemoryDependenciesTx(ctx, tx, item); err != nil {
 		return false, err
 	}
-	if err := enqueuePreciseMemoryVectorTx(ctx, tx, item); err != nil {
+	if _, err := enqueuePreciseMemoryVectorTx(ctx, tx, item); err != nil {
 		return false, err
 	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	committed = true
 	return true, nil
 }
 
@@ -179,7 +205,7 @@ func savePreciseMemoryDependenciesTx(ctx context.Context, tx *sql.Tx, item *Prec
 	return nil
 }
 
-func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *PreciseMemoryUnit) error {
+func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *PreciseMemoryUnit) (bool, error) {
 	documentID := "precise_memory:" + item.ChatSessionID + ":" + item.UnitID
 	documentJSON, err := json.Marshal(map[string]any{
 		"id":              documentID,
@@ -191,11 +217,14 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		"embedding":       []float32{},
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	outbox := &MemoryVectorOutboxItem{
-		ContractVersion:     MemoryVectorOutboxContract,
-		OperationKey:        memoryVectorOperationKey("upsert", item.ChatSessionID, item.SourceRevision, documentID),
+		ContractVersion: MemoryVectorOutboxContract,
+		OperationKey: preciseMemoryVectorOperationKey(
+			item.ChatSessionID, item.SourceRevision, item.DerivationVersion,
+			item.ExtractorVersion, item.IndexVersion, documentID,
+		),
 		Operation:           "upsert",
 		ChatSessionID:       item.ChatSessionID,
 		SourceRevision:      item.SourceRevision,
@@ -207,8 +236,24 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		CreatedAt:           nonZeroTime(item.CreatedAt),
 		UpdatedAt:           nonZeroTime(item.UpdatedAt),
 	}
-	_, err = enqueueMemoryVectorOperation(ctx, tx, outbox)
-	return err
+	return enqueueMemoryVectorOperation(ctx, tx, outbox)
+}
+
+func preciseMemoryVectorOperationKey(
+	sid string,
+	sourceRevision string,
+	derivationVersion string,
+	extractorVersion string,
+	indexVersion string,
+	documentID string,
+) string {
+	versionedRevision := strings.Join([]string{
+		sourceRevision,
+		firstNonEmptyString(derivationVersion, PreciseMemoryUnitContract),
+		firstNonEmptyString(extractorVersion, "complete_turn.configured_critic_extract"),
+		firstNonEmptyString(indexVersion, "not_materialized"),
+	}, ":")
+	return memoryVectorOperationKey("upsert", sid, versionedRevision, documentID)
 }
 
 func preciseMemoryDuplicateKeyError(err error) bool {

@@ -235,6 +235,92 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		}, nil
 	}
 
+	if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); ok &&
+		availability.MemoryDerivationLifecycleEnabled() {
+		lister, listOK := s.Store.(store.ActiveSourceRevisionLister)
+		queue, queueOK := s.Store.(store.MemoryReprocessingJobStore)
+		if !listOK || !queueOK {
+			return nil, fmt.Errorf("durable rescan queue is unavailable")
+		}
+		sources, err := lister.ListActiveSourceRevisions(ctx, sid, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		sourcesByTurn := map[int][]store.MemorySourceRevision{}
+		for _, source := range sources {
+			sourcesByTurn[source.TurnIndex] = append(sourcesByTurn[source.TurnIndex], source)
+		}
+		queued := 0
+		for _, turn := range turns {
+			candidates := sourcesByTurn[turn]
+			switch {
+			case len(candidates) == 0:
+				failed++
+				failedTurns = append(failedTurns, map[string]any{
+					"turn_index": turn,
+					"reason":     "accepted_source_revision_missing",
+				})
+			case len(candidates) > 1:
+				failed++
+				failedTurns = append(failedTurns, map[string]any{
+					"turn_index": turn,
+					"reason":     "active_source_revision_ambiguous",
+				})
+			case req.DryRun:
+				skipped++
+				skippedTurns = append(skippedTurns, map[string]any{
+					"turn_index": turn,
+					"reason":     "dry_run",
+				})
+			default:
+				inserted, enqueueErr := s.enqueueSourceRevisionReprocessingJob(
+					ctx, queue, &candidates[0], "admin_rescan_requested", time.Now().UTC(),
+				)
+				if enqueueErr != nil {
+					failed++
+					failedTurns = append(failedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "reprocessing_enqueue_failed",
+					})
+					break
+				}
+				succeeded++
+				processedTurns = append(processedTurns, turn)
+				if inserted {
+					queued++
+				}
+			}
+			if progress != nil {
+				progress(adminRescanProgress(
+					succeeded+failed+skipped, len(turns), succeeded, failed,
+					skipped, processedTurns, failedTurns, skippedTurns,
+					artifactCounts, turn, "durable_reprocessing_queue",
+				))
+			}
+		}
+		return map[string]any{
+			"status":              "ok",
+			"source":              s.storeWriteSource(),
+			"chat_session_id":     sid,
+			"dry_run":             req.DryRun,
+			"candidate_count":     len(turns),
+			"succeeded":           succeeded,
+			"failed":              failed,
+			"skipped":             skipped,
+			"queued":              queued,
+			"processed_turns":     processedTurns,
+			"failed_turns":        failedTurns,
+			"skipped_turns":       skippedTurns,
+			"artifact_counts":     artifactCounts,
+			"episode_backfill":    episodeBackfill,
+			"world_rule_backfill": worldRuleBackfill,
+			"hierarchy_backfill":  hierarchyBackfill,
+			"warnings":            warnings,
+			"llm_config_trace":    llmTrace,
+			"note":                "rescan candidates were handed to the durable source-fenced reprocessing worker",
+		}, nil
+	}
+
 	if !extractionCfg.Critic.hasConfig() {
 		for _, turn := range turns {
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turn, "reason": "critic_config_missing"})

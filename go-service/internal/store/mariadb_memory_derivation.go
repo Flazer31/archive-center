@@ -116,8 +116,11 @@ func insertMemorySourceRevisionTx(ctx context.Context, exec memoryDerivationSQLE
 			combined_content_hash, user_observed_content_hash,
 			assistant_observed_content_hash, hash_algorithm, host_observed_at_ms,
 			lifecycle_state, superseded_by_revision, invalidation_reason,
+			derived_admission_state, derived_admission_version,
+			derived_extractor_version, derived_index_version,
+			derived_result_hash, derived_result_json, derived_admitted_at,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, source.ContractVersion, source.SourceRevision, source.ChatSessionID,
 		source.LogicalTurnID, source.TurnIndex, nullableString(source.SourceMessageID),
 		nullableString(source.SourceGenerationID), nullableString(source.BranchID),
@@ -126,7 +129,12 @@ func insertMemorySourceRevisionTx(ctx context.Context, exec memoryDerivationSQLE
 		nullableString(source.AssistantObservedContentHash), source.HashAlgorithm,
 		source.HostObservedAtMS, source.LifecycleState,
 		nullableString(source.SupersededByRevision),
-		nullableString(source.InvalidationReason), createdAt, updatedAt)
+		nullableString(source.InvalidationReason),
+		firstNonEmptyString(source.DerivedAdmissionState, "pending"),
+		source.DerivedAdmissionVersion, source.DerivedExtractorVersion,
+		source.DerivedIndexVersion, nullableString(source.DerivedResultHash),
+		nullableString(source.DerivedResultJSON),
+		nullableTime(source.DerivedAdmittedAt), createdAt, updatedAt)
 	if err != nil {
 		return err
 	}
@@ -144,6 +152,9 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 	var sourceMessageID, sourceGenerationID, branchID sql.NullString
 	var supersededByRevision, invalidationReason sql.NullString
 	var userObservedContentHash, assistantObservedContentHash sql.NullString
+	var derivedResultHash sql.NullString
+	var derivedResultJSON sql.NullString
+	var derivedAdmittedAt sql.NullTime
 	err := m.db.QueryRowContext(ctx, `
 		SELECT id, contract_version, source_revision, chat_session_id,
 		       logical_turn_id, turn_index, source_message_id,
@@ -151,7 +162,11 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 		       raw_user_content, raw_assistant_content, combined_content_hash,
 		       user_observed_content_hash, assistant_observed_content_hash,
 		       hash_algorithm, host_observed_at_ms, lifecycle_state,
-		       superseded_by_revision, invalidation_reason, created_at, updated_at
+		       superseded_by_revision, invalidation_reason,
+		       derived_admission_state, derived_admission_version,
+		       derived_extractor_version, derived_index_version,
+		       derived_result_hash, derived_result_json, derived_admitted_at,
+		       created_at, updated_at
 		FROM memory_source_revisions
 		WHERE chat_session_id = ? AND source_revision = ?
 	`, strings.TrimSpace(chatSessionID), strings.TrimSpace(sourceRevision)).Scan(
@@ -163,6 +178,9 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 		&assistantObservedContentHash, &source.HashAlgorithm,
 		&source.HostObservedAtMS, &source.LifecycleState,
 		&supersededByRevision, &invalidationReason,
+		&source.DerivedAdmissionState, &source.DerivedAdmissionVersion,
+		&source.DerivedExtractorVersion, &source.DerivedIndexVersion,
+		&derivedResultHash, &derivedResultJSON, &derivedAdmittedAt,
 		&source.CreatedAt, &source.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -178,6 +196,9 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 	source.AssistantObservedContentHash = assistantObservedContentHash.String
 	source.SupersededByRevision = supersededByRevision.String
 	source.InvalidationReason = invalidationReason.String
+	source.DerivedResultHash = derivedResultHash.String
+	source.DerivedResultJSON = derivedResultJSON.String
+	source.DerivedAdmittedAt = derivedAdmittedAt.Time
 	return source, nil
 }
 
@@ -192,6 +213,57 @@ func (m *mariadbStore) IsSourceRevisionActive(ctx context.Context, chatSessionID
 		WHERE chat_session_id = ? AND source_revision = ? AND lifecycle_state = 'active'
 	`, strings.TrimSpace(chatSessionID), strings.TrimSpace(sourceRevision)).Scan(&active)
 	return active > 0, err
+}
+
+func (m *mariadbStore) ListActiveSourceRevisions(
+	ctx context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+) ([]MemorySourceRevision, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	where := "chat_session_id = ? AND lifecycle_state = 'active'"
+	args := []any{strings.TrimSpace(chatSessionID)}
+	if fromTurn > 0 {
+		where += " AND turn_index >= ?"
+		args = append(args, fromTurn)
+	}
+	if toTurn > 0 {
+		where += " AND turn_index <= ?"
+		args = append(args, toTurn)
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT source_revision, chat_session_id, logical_turn_id, turn_index,
+		       source_message_id, source_generation_id, raw_user_content,
+		       raw_assistant_content, combined_content_hash, lifecycle_state
+		FROM memory_source_revisions
+		WHERE `+where+`
+		ORDER BY turn_index, id
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MemorySourceRevision{}
+	for rows.Next() {
+		var item MemorySourceRevision
+		var sourceMessageID, sourceGenerationID sql.NullString
+		if err := rows.Scan(
+			&item.SourceRevision, &item.ChatSessionID, &item.LogicalTurnID,
+			&item.TurnIndex, &sourceMessageID, &sourceGenerationID,
+			&item.UserContent, &item.AssistantContent,
+			&item.CombinedContentHash, &item.LifecycleState,
+		); err != nil {
+			return nil, err
+		}
+		item.ContractVersion = MemorySourceRevisionContract
+		item.SourceMessageID = sourceMessageID.String
+		item.SourceGenerationID = sourceGenerationID.String
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (m *mariadbStore) InvalidateSourceRevisions(ctx context.Context, chatSessionID string, fromTurn int, lifecycleState, reason string, invalidatedAt time.Time) error {
@@ -332,10 +404,11 @@ func invalidateMemorySourcesTx(
 			    , raw_assistant_content = CASE WHEN ? = 'deleted' THEN '' ELSE raw_assistant_content END
 			    , source_message_id = CASE WHEN ? = 'deleted' THEN NULL ELSE source_message_id END
 			    , source_generation_id = CASE WHEN ? = 'deleted' THEN NULL ELSE source_generation_id END
+			    , derived_result_json = CASE WHEN ? = 'deleted' THEN NULL ELSE derived_result_json END
 			WHERE chat_session_id = ? AND source_revision = ? AND `+sourceStatePredicate+`
 		`, lifecycleState, nullableString(supersededByRevision), nullableString(reason),
 			now, now, lifecycleState, lifecycleState, lifecycleState,
-			lifecycleState, chatSessionID, revision); err != nil {
+			lifecycleState, lifecycleState, chatSessionID, revision); err != nil {
 			return err
 		}
 	}
@@ -753,7 +826,7 @@ func (m *mariadbStore) ClaimMemoryVectorOperation(ctx context.Context, leaseOwne
 		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
 		SET o.status = 'stale_rejected', o.lease_owner = NULL, o.lease_until = NULL,
 		    o.last_error = 'source_revision_fence_rejected', o.updated_at = ?
-		WHERE o.status IN ('pending', 'leased', 'retryable')
+		WHERE o.status IN ('pending', 'leased', 'retryable', 'needs_embedding')
 		  AND (
 		    (o.required_source_state = 'active' AND s.lifecycle_state <> 'active')
 		    OR (o.required_source_state = 'inactive' AND s.lifecycle_state = 'active')
@@ -796,9 +869,18 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 		       o.lease_until, o.last_error, o.created_at, o.updated_at
 		FROM memory_vector_outbox o
 		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
-		WHERE o.embedding_ready = TRUE
-		  AND (
-		    (o.status IN ('pending', 'retryable') AND (o.retry_after IS NULL OR o.retry_after <= ?))
+		WHERE (
+		    (
+		      o.embedding_ready = TRUE
+		      AND o.status IN ('pending', 'retryable')
+		      AND (o.retry_after IS NULL OR o.retry_after <= ?)
+		    )
+		    OR (
+		      o.operation = 'upsert'
+		      AND o.embedding_ready = FALSE
+		      AND o.status IN ('needs_embedding', 'retryable')
+		      AND (o.retry_after IS NULL OR o.retry_after <= ?)
+		    )
 		    OR (o.status = 'leased' AND o.lease_until < ?)
 		  )
 		  AND (
@@ -807,7 +889,7 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 		  )
 		ORDER BY o.created_at, o.id
 		LIMIT 1 FOR UPDATE
-	`, now, now).Scan(&item.ID, &item.ContractVersion, &item.OperationKey,
+	`, now, now, now).Scan(&item.ID, &item.ContractVersion, &item.OperationKey,
 		&item.Operation, &item.ChatSessionID, &item.SourceRevision,
 		&item.DocumentID, &documentJSON, &item.EmbeddingReady,
 		&item.RequiredSourceState, &item.Status, &item.Attempts,

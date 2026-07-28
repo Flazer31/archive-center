@@ -43,6 +43,13 @@ type MemorySourceRevision struct {
 	LifecycleState               string
 	SupersededByRevision         string
 	InvalidationReason           string
+	DerivedAdmissionState        string
+	DerivedAdmissionVersion      string
+	DerivedExtractorVersion      string
+	DerivedIndexVersion          string
+	DerivedResultHash            string
+	DerivedResultJSON            string
+	DerivedAdmittedAt            time.Time
 	CreatedAt                    time.Time
 	UpdatedAt                    time.Time
 }
@@ -63,6 +70,15 @@ type SourceRevisionStore interface {
 
 type MemoryDerivationLifecycleAvailability interface {
 	MemoryDerivationLifecycleEnabled() bool
+}
+
+type ActiveSourceRevisionLister interface {
+	ListActiveSourceRevisions(
+		context.Context,
+		string,
+		int,
+		int,
+	) ([]MemorySourceRevision, error)
 }
 
 type MemoryDerivationDependency struct {

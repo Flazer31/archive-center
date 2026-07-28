@@ -385,9 +385,8 @@ type directProviderConfig struct {
 }
 
 func (cfg directProviderConfig) skipDefaultReadShadow() bool {
-	return cfg.SessionIsolationSmoke &&
+	return (cfg.SessionIsolationSmoke || cfg.RouteWriteSmoke) &&
 		!cfg.ProductReadProof &&
-		!cfg.RouteWriteSmoke &&
 		!cfg.BackupRestore &&
 		!cfg.AuthorityCutover &&
 		!cfg.DefaultSwitch &&

@@ -9,11 +9,22 @@ import (
 
 type memoryLifecycleTestStore struct {
 	Store
-	registerErr error
-	registered  int
+	registerErr  error
+	registered   int
+	admissionErr error
+	admissions   int
 }
 
 func (f *memoryLifecycleTestStore) MemoryDerivationLifecycleEnabled() bool { return true }
+func (f *memoryLifecycleTestStore) MemoryAdmissionWritesEnabled() bool     { return true }
+
+func (f *memoryLifecycleTestStore) CommitMemoryAdmission(context.Context, *MemoryAdmission) (MemoryAdmissionResult, error) {
+	f.admissions++
+	if f.admissionErr != nil {
+		return MemoryAdmissionResult{}, f.admissionErr
+	}
+	return MemoryAdmissionResult{MemoryInserted: true}, nil
+}
 
 func (f *memoryLifecycleTestStore) RegisterAcceptedSourceRevision(context.Context, *MemorySourceRevision) (SourceRevisionRegistration, error) {
 	f.registered++
@@ -21,6 +32,28 @@ func (f *memoryLifecycleTestStore) RegisterAcceptedSourceRevision(context.Contex
 		return SourceRevisionRegistration{}, f.registerErr
 	}
 	return SourceRevisionRegistration{Inserted: true}, nil
+}
+
+func TestMemoryAdmissionDualWriteKeepsPrimaryAuthorityAndReportsShadowFailure(t *testing.T) {
+	shadowFailure := errors.New("shadow admission failed")
+	primary := &memoryLifecycleTestStore{Store: NewNoopStore()}
+	shadow := &memoryLifecycleTestStore{Store: NewNoopStore(), admissionErr: shadowFailure}
+	dual := NewDualWriteStore(primary, shadow)
+	writer, ok := dual.(MemoryAdmissionWriter)
+	if !ok {
+		t.Fatal("dual store did not expose memory admission writer")
+	}
+	result, err := writer.CommitMemoryAdmission(context.Background(), &MemoryAdmission{})
+	if err != nil || !result.MemoryInserted {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	reporter := dual.(ShadowStatusReporter)
+	failures, lastErr := reporter.ShadowStatus()
+	if primary.admissions != 1 || shadow.admissions != 1 ||
+		failures != 1 || !errors.Is(lastErr, shadowFailure) {
+		t.Fatalf("primary=%d shadow=%d failures=%d last=%v",
+			primary.admissions, shadow.admissions, failures, lastErr)
+	}
 }
 
 func (f *memoryLifecycleTestStore) IsSourceRevisionActive(context.Context, string, string) (bool, error) {

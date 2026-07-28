@@ -5,7 +5,10 @@ import (
 	"time"
 )
 
-const PreciseMemoryUnitContract = "precise_memory_unit.v1"
+const (
+	MemoryAdmissionContract   = "memory_admission.v1"
+	PreciseMemoryUnitContract = "precise_memory_unit.v1"
+)
 
 // PreciseMemoryUnit is an additive, exact-source memory projection. It does
 // not replace the legacy aggregate Memory row. Each unit preserves one
@@ -67,4 +70,69 @@ type PreciseMemoryWriter interface {
 // one real persistence lane can accept the optional projection.
 type PreciseMemoryWriteAvailability interface {
 	PreciseMemoryWritesEnabled() bool
+}
+
+// MemoryAdmission is the single source-fenced commit payload shared by the
+// foreground complete-turn path and the durable reprocessing worker. The
+// legacy Memory row remains a compatibility read projection, but it is written
+// in the same transaction as its exact Direct Evidence and precise units.
+type MemoryAdmission struct {
+	ContractVersion   string
+	ChatSessionID     string
+	SourceRevision    string
+	TurnIndex         int
+	DerivationVersion string
+	ExtractorVersion  string
+	IndexVersion      string
+	ResultHash        string
+	ResultJSON        string
+	Memory            *Memory
+	Evidence          []*DirectEvidence
+	PreciseUnits      []*PreciseMemoryUnit
+	Vectors           []MemoryAdmissionVector
+	CreatedAt         time.Time
+}
+
+type MemoryAdmissionVector struct {
+	ArtifactType          string
+	EvidenceText          string
+	Embedding             []float32
+	Tier                  string
+	SourceTable           string
+	SchemaVersion         string
+	DocumentText          string
+	SearchTextPolicy      string
+	RawLanguage           string
+	SummaryLanguage       string
+	SessionOutputLanguage string
+	AliasCount            int
+}
+
+type MemoryAdmissionResult struct {
+	Idempotent          bool
+	ExistingResultHash  string
+	ExistingResultJSON  string
+	MemoryInserted      bool
+	MemoryUpdated       bool
+	EvidenceInserted    int
+	EvidenceReactivated int
+	EvidenceRetired     int
+	PreciseInserted     int
+	PreciseReactivated  int
+	PreciseRetired      int
+	VectorOperations    int
+	CommittedResultHash string
+	CommittedAt         time.Time
+}
+
+// MemoryAdmissionWriter is the canonical 3.6 memory write boundary. Stores
+// advertising this interface must commit the compatibility aggregate,
+// evidence, precise rows, dependencies, source admission marker, and vector
+// outbox changes atomically.
+type MemoryAdmissionWriter interface {
+	CommitMemoryAdmission(context.Context, *MemoryAdmission) (MemoryAdmissionResult, error)
+}
+
+type MemoryAdmissionWriteAvailability interface {
+	MemoryAdmissionWritesEnabled() bool
 }

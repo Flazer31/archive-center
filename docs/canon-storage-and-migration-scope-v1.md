@@ -347,8 +347,11 @@ records that condition.
 
 ## 8. Package Upgrade And Rollback
 
-The current updater v1 rejects migration and `mariadb-schema` changes. Therefore
-this schema must not be shipped as an automatic lightweight update.
+The 3.6-E updater has a narrow automatic lane for a new higher-numbered
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration paired with its fresh
+schema and authenticated `mariadb-schema` tool. This Canon Pack migration
+creates tables and remains outside that lane, so it must not be shipped as an
+automatic lightweight update.
 
 Until an updater v2 additive-migration and DB rollback contract is implemented
 and tested, the release uses a safe full-package upgrade with:
@@ -523,6 +526,7 @@ preserved the seeded pre-migration row fingerprint, and passed all constraint
 checks.
 
 That evidence permits production registration for full 3.1 package installs
-and upgrades. It does not permit updater v1 to apply schema changes, and it
-does not implement pack install/remove APIs. Remote GitHub Actions has not yet
-run and remains the repeatable CI gate.
+and upgrades. It does not make the CREATE TABLE migration eligible for the
+3.6-E add-column-only updater lane, and it does not implement pack
+install/remove APIs. Remote GitHub Actions has not yet run and remains the
+repeatable CI gate.

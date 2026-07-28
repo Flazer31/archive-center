@@ -673,6 +673,61 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
+	if req.DryRun {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":          "ok",
+			"code":            "dry_run_ready",
+			"dry_run":         true,
+			"chat_session_id": sid,
+			"turn_index":      req.TurnIndex,
+			"source":          s.storeWriteSource(),
+			"note":            "Explorer regenerate dry-run found a completed turn but did not enqueue or write artifacts",
+		})
+		return
+	}
+	if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); ok &&
+		availability.MemoryDerivationLifecycleEnabled() {
+		lister, listOK := s.Store.(store.ActiveSourceRevisionLister)
+		queue, queueOK := s.Store.(store.MemoryReprocessingJobStore)
+		if !listOK || !queueOK {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status": "failed", "code": "durable_reprocessing_unavailable",
+			})
+			return
+		}
+		sources, err := lister.ListActiveSourceRevisions(
+			r.Context(), sid, req.TurnIndex, req.TurnIndex,
+		)
+		if err != nil || len(sources) != 1 {
+			code := "accepted_source_revision_missing"
+			if len(sources) > 1 {
+				code = "active_source_revision_ambiguous"
+			}
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"status": "failed", "code": code, "chat_session_id": sid,
+				"turn_index": req.TurnIndex,
+			})
+			return
+		}
+		inserted, err := s.enqueueSourceRevisionReprocessingJob(
+			r.Context(), queue, &sources[0], "explorer_regenerate_requested",
+			time.Now().UTC(),
+		)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status": "failed", "code": "reprocessing_enqueue_failed",
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok", "code": "reprocessing_queued",
+			"chat_session_id": sid, "turn_index": req.TurnIndex,
+			"queued": inserted, "idempotent_replay": !inserted,
+			"source_revision": sources[0].SourceRevision,
+			"note":            "Explorer regeneration was handed to the durable source-fenced worker",
+		})
+		return
+	}
 	extractionCfg := s.completeTurnExtractionConfig(req.ClientMeta)
 	llmTrace := completeTurnLLMConfigTrace(extractionCfg)
 	if !extractionCfg.Critic.hasConfig() {
@@ -687,20 +742,6 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	if req.DryRun {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":           "ok",
-			"code":             "dry_run_ready",
-			"dry_run":          true,
-			"chat_session_id":  sid,
-			"turn_index":       req.TurnIndex,
-			"source":           s.storeWriteSource(),
-			"llm_config_trace": llmTrace,
-			"note":             "Explorer regenerate dry-run found a completed turn but did not call Critic or write artifacts",
-		})
-		return
-	}
-
 	extraction, criticTrace, err := s.runCompleteTurnCriticFromCanonicalLogs(r.Context(), sid, req.TurnIndex, userText, assistantText, extractionCfg.Critic)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{

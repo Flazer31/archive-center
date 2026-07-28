@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,52 @@ func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	mock.ExpectRollback()
 	if _, err := m.RegisterAcceptedSourceRevision(context.Background(), &concurrent); !errors.Is(err, ErrSourceRevisionConflict) {
 		t.Fatalf("database active-slot conflict error = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBSourceRevisionReadsCommittedAdmissionSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 7, 28, 1, 2, 3, 0, time.UTC)
+	resultJSON := `{"turn_summary":"first result"}`
+	mock.ExpectQuery("SELECT id, contract_version, source_revision").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "contract_version", "source_revision", "chat_session_id",
+			"logical_turn_id", "turn_index", "source_message_id",
+			"source_generation_id", "branch_id", "branch_state",
+			"raw_user_content", "raw_assistant_content", "combined_content_hash",
+			"user_observed_content_hash", "assistant_observed_content_hash",
+			"hash_algorithm", "host_observed_at_ms", "lifecycle_state",
+			"superseded_by_revision", "invalidation_reason",
+			"derived_admission_state", "derived_admission_version",
+			"derived_extractor_version", "derived_index_version",
+			"derived_result_hash", "derived_result_json", "derived_admitted_at",
+			"created_at", "updated_at",
+		}).AddRow(
+			11, MemorySourceRevisionContract, "revision", "session",
+			"turn:4", 4, "message:4", "generation:4", nil, "not_exposed",
+			"user", "assistant", strings.Repeat("a", 64),
+			nil, nil, "sha256", int64(1234), "active",
+			nil, nil, "committed", MemoryAdmissionContract,
+			"critic.v1", MemoryVectorOutboxContract, strings.Repeat("b", 64),
+			resultJSON, now, now, now,
+		))
+	got, err := m.GetSourceRevision(context.Background(), "session", "revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DerivedAdmissionState != "committed" ||
+		got.DerivedResultJSON != resultJSON ||
+		got.DerivedAdmittedAt != now {
+		t.Fatalf("source=%+v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -197,7 +244,7 @@ func TestMariaDBVectorOutboxReplayLeaseRecoveryAndSourceFence(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE memory_vector_outbox o").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT o.id, o.contract_version").
-		WithArgs(now, now).
+		WithArgs(now, now, now).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "contract_version", "operation_key", "operation",
 			"chat_session_id", "source_revision", "document_id", "document_json",
@@ -258,6 +305,40 @@ func TestMariaDBVectorOutboxRejectsInvalidDocumentJSONBeforeWrite(t *testing.T) 
 	}
 }
 
+func TestMariaDBListsOnlyActiveSourceRevisionsForDurableRescan(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	mock.ExpectQuery("SELECT source_revision, chat_session_id, logical_turn_id, turn_index").
+		WithArgs("session", 3, 7).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"source_revision", "chat_session_id", "logical_turn_id", "turn_index",
+			"source_message_id", "source_generation_id", "raw_user_content",
+			"raw_assistant_content", "combined_content_hash", "lifecycle_state",
+		}).AddRow(
+			"revision", "session", "turn:4", 4, "message:4", "generation:4",
+			"user", "assistant",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"active",
+		))
+	items, err := st.ListActiveSourceRevisions(
+		context.Background(), "session", 3, 7,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].SourceRevision != "revision" ||
+		items[0].TurnIndex != 4 || items[0].ContractVersion != MemorySourceRevisionContract {
+		t.Fatalf("items=%+v", items)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -297,7 +378,7 @@ func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t
 	mock.ExpectExec("UPDATE memory_vector_outbox").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE memory_source_revisions").
 		WithArgs("superseded", source.SourceRevision, "logical_turn_replaced", now, now,
-			"superseded", "superseded", "superseded", "superseded",
+			"superseded", "superseded", "superseded", "superseded", "superseded",
 			source.ChatSessionID, "sar_old").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO memory_source_revisions").WillReturnResult(sqlmock.NewResult(12, 1))

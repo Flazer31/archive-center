@@ -1,0 +1,207 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
+
+func TestMariaDBMemoryAdmissionCommitsCoreProjectionsAndOutboxAtomically(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	now := time.Date(2026, 7, 28, 7, 0, 0, 0, time.UTC)
+	evidence := &DirectEvidence{
+		ID: 1, ChatSessionID: "session", EvidenceKind: "turn_excerpt",
+		EvidenceText: "Mina found the key.", SourceTurnStart: 4, SourceTurnEnd: 4,
+		TurnAnchor: 4, ArchiveState: "verified_direct",
+		CaptureStage: "critic_extract", CaptureVerification: "verified",
+		CommittedGate: "auto_grounded_excerpt", SourceMessageIDsJSON: `["turn:4"]`,
+		LineageJSON: `{}`, CreatedAt: now,
+	}
+	unit := &PreciseMemoryUnit{
+		UnitID: "11111111-1111-5111-8111-111111111111", ContractVersion: PreciseMemoryUnitContract,
+		ChatSessionID: "session", SourceTurnStart: 4, SourceTurnEnd: 4,
+		SourceContract: "source_acceptance_observation.v1", SourceRevision: "revision",
+		SourceContentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SourceRole:        "combined_turn_pair", SourceSpanStart: 0, SourceSpanEnd: 19,
+		EvidenceExcerpt: evidence.EvidenceText,
+		EvidenceHash:    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		RootEvidenceID:  1, DirectEvidenceIDsJSON: "[1]", Kind: "event",
+		PayloadJSON: "{}", TruthScope: "objective", EpistemicMode: "direct",
+		AuthorityClass: "objective_world_state", AdmissionState: "committed",
+		ReviewState: "source_observed", Visibility: "public", Confidence: 0.9,
+		IdempotencyKey:    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		DerivationVersion: MemoryAdmissionContract,
+		ExtractorVersion:  "critic.v1", IndexVersion: MemoryVectorOutboxContract,
+		LifecycleState: "active", CreatedAt: now, UpdatedAt: now,
+	}
+	admission := &MemoryAdmission{
+		ContractVersion: MemoryAdmissionContract, ChatSessionID: "session",
+		SourceRevision: "revision", TurnIndex: 4,
+		DerivationVersion: MemoryAdmissionContract, ExtractorVersion: "critic.v1",
+		IndexVersion: MemoryVectorOutboxContract,
+		ResultJSON:   `{"turn_summary":"Mina found the key."}`,
+		Memory: &Memory{
+			ChatSessionID: "session", TurnIndex: 4, SummaryJSON: `{"turn_summary":"Mina found the key."}`,
+			Embedding: "[]", EmbeddingModel: "not_configured", Importance: 0.7,
+			Evidence: `{}`, CreatedAt: now,
+		},
+		Evidence: []*DirectEvidence{evidence}, PreciseUnits: []*PreciseMemoryUnit{unit},
+		Vectors: []MemoryAdmissionVector{{
+			ArtifactType: "memory", Tier: "memory", SourceTable: "memories",
+			SchemaVersion: "memory.v2", DocumentText: "Mina found the key.",
+		}},
+		CreatedAt: now,
+	}
+	admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+		WithArgs("session", "revision", 4).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"lifecycle_state", "derived_admission_state",
+			"derived_admission_version", "derived_extractor_version",
+			"derived_index_version", "derived_result_hash", "derived_result_json",
+		}).AddRow("active", "pending", "", "", "", nil, nil))
+	mock.ExpectQuery("SELECT id[\\s\\S]+FROM memories").
+		WithArgs("session", 4).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO memories")).
+		WillReturnResult(sqlmock.NewResult(11, 1))
+	mock.ExpectQuery("SELECT id, evidence_text, tombstoned").
+		WithArgs("session", 4, 4).
+		WillReturnError(sqlmock.ErrCancelled)
+	mock.ExpectRollback()
+	if _, err := st.CommitMemoryAdmission(context.Background(), admission); !errors.Is(err, sqlmock.ErrCancelled) {
+		t.Fatalf("injected mid-transaction failure err=%v", err)
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+		WithArgs("session", "revision", 4).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"lifecycle_state", "derived_admission_state",
+			"derived_admission_version", "derived_extractor_version",
+			"derived_index_version", "derived_result_hash", "derived_result_json",
+		}).AddRow("active", "pending", "", "", "", nil, nil))
+	mock.ExpectQuery("SELECT id[\\s\\S]+FROM memories").
+		WithArgs("session", 4).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO memories")).
+		WillReturnResult(sqlmock.NewResult(11, 1))
+	mock.ExpectQuery("SELECT id, evidence_text, tombstoned").
+		WithArgs("session", 4, 4).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO direct_evidence_records")).
+		WillReturnResult(sqlmock.NewResult(21, 1))
+	mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO precise_memory_units")).
+		WillReturnResult(sqlmock.NewResult(31, 1))
+	mock.ExpectExec("INSERT INTO memory_derivation_dependencies").
+		WillReturnResult(sqlmock.NewResult(41, 1))
+	mock.ExpectExec("INSERT INTO memory_derivation_dependencies").
+		WillReturnResult(sqlmock.NewResult(42, 1))
+	mock.ExpectExec("INSERT INTO memory_vector_outbox").
+		WillReturnResult(sqlmock.NewResult(51, 1))
+	mock.ExpectExec("INSERT INTO memory_vector_outbox").
+		WillReturnResult(sqlmock.NewResult(52, 1))
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	got, err := st.CommitMemoryAdmission(context.Background(), admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.MemoryInserted || got.EvidenceInserted != 1 ||
+		got.PreciseInserted != 1 || got.VectorOperations != 2 ||
+		admission.Memory.ID != 11 || evidence.ID != 21 ||
+		unit.ID != 31 || unit.RootEvidenceID != 21 {
+		t.Fatalf("unexpected result=%+v memory=%d evidence=%d unit=%d root=%d",
+			got, admission.Memory.ID, evidence.ID, unit.ID, unit.RootEvidenceID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBMemoryAdmissionFreezesFirstCommittedResultForReplay(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	admission := &MemoryAdmission{
+		ContractVersion: MemoryAdmissionContract, ChatSessionID: "session",
+		SourceRevision: "revision", TurnIndex: 2,
+		DerivationVersion: MemoryAdmissionContract, ExtractorVersion: "critic.v1",
+		IndexVersion: MemoryVectorOutboxContract,
+		ResultJSON:   `{"turn_summary":"second"}`,
+	}
+	admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
+	firstHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	firstJSON := `{"turn_summary":"first"}`
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+		WithArgs("session", "revision", 2).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"lifecycle_state", "derived_admission_state",
+			"derived_admission_version", "derived_extractor_version",
+			"derived_index_version", "derived_result_hash", "derived_result_json",
+		}).AddRow("active", "committed", MemoryAdmissionContract, "critic.v1",
+			MemoryVectorOutboxContract, firstHash, firstJSON))
+	mock.ExpectCommit()
+	got, err := st.CommitMemoryAdmission(context.Background(), admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Idempotent || got.CommittedResultHash != firstHash ||
+		got.ExistingResultJSON != firstJSON {
+		t.Fatalf("result=%+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBMemoryAdmissionRejectsStaleSourceBeforeAnyProjectionWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	admission := &MemoryAdmission{
+		ContractVersion: MemoryAdmissionContract, ChatSessionID: "session",
+		SourceRevision: "old", TurnIndex: 2,
+		DerivationVersion: MemoryAdmissionContract, ExtractorVersion: "critic.v1",
+		IndexVersion: MemoryVectorOutboxContract,
+		ResultJSON:   `{}`,
+	}
+	admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+		WithArgs("session", "old", 2).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"lifecycle_state", "derived_admission_state",
+			"derived_admission_version", "derived_extractor_version",
+			"derived_index_version", "derived_result_hash", "derived_result_json",
+		}).AddRow("superseded", "pending", "", "", "", nil, nil))
+	mock.ExpectRollback()
+	if _, err := st.CommitMemoryAdmission(context.Background(), admission); !errors.Is(err, ErrSourceRevisionStale) {
+		t.Fatalf("err=%v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

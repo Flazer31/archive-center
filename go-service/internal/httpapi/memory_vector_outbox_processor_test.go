@@ -2,7 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +156,57 @@ func TestMemoryVectorProcessorCompensatesStaleUpsertWithoutResurrection(t *testi
 	if result.CanonicalState != "stale_rejected" || len(vec.upserts) != 1 ||
 		len(vec.deletes) != 1 || vec.deletes[0][0] != document.ID {
 		t.Fatalf("result=%+v upserts=%v deletes=%v", result, vec.upserts, vec.deletes)
+	}
+}
+
+func TestMemoryVectorProcessorMaterializesDeferredEmbedding(t *testing.T) {
+	now := time.Now().UTC()
+	document := vector.VectorDocument{
+		ID: "evidence:session:7", ChatSessionID: "session",
+		SourceTable: "direct_evidence_records", SourceRowID: "7",
+		SchemaVersion: "direct_evidence.v1", DocumentText: "Mina found the key.",
+	}
+	documentJSON, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &memoryVectorProcessorStore{
+		Store: store.NewNoopStore(),
+		items: []*store.MemoryVectorOutboxItem{{
+			ID: 5, Operation: "upsert", ChatSessionID: "session",
+			SourceRevision: "sar_active", DocumentID: document.ID,
+			DocumentJSON: string(documentJSON), EmbeddingReady: false,
+			RequiredSourceState: "active", Status: "needs_embedding",
+		}},
+	}
+	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		payload := `{"model":"embedding-test","data":[{"embedding":[0.1,0.2]}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(payload)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, EmbeddingProvider: "openai",
+			EmbeddingAPIKey: "test-key", EmbeddingEndpoint: "https://example.invalid/v1",
+			EmbeddingModel: "embedding-test",
+		},
+	}
+	result, err := server.processMemoryVectorOutboxOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalState != "completed" || len(st.completed) != 1 ||
+		len(vec.upserts) != 1 || len(vec.upserts[0]) != 1 ||
+		len(vec.upserts[0][0].Embedding) != 2 {
+		t.Fatalf("result=%+v completed=%v upserts=%+v", result, st.completed, vec.upserts)
 	}
 }

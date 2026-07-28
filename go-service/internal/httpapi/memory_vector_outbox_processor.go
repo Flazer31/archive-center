@@ -54,7 +54,7 @@ func (s *Server) processMemoryVectorOutboxOnce(
 	if s.Vector == nil {
 		result.CanonicalState = "retryable"
 		result.Failure = "vector store is not configured"
-		return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, "vector store is not configured")
+		return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), "vector store is not configured")
 	}
 
 	switch item.Operation {
@@ -63,19 +63,19 @@ func (s *Server) processMemoryVectorOutboxOnce(
 		if !ok {
 			result.CanonicalState = "retryable"
 			result.Failure = "vector store does not support document deletion"
-			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, "vector store does not support document deletion")
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), "vector store does not support document deletion")
 		}
 		if err := deleter.DeleteDocuments(ctx, []string{item.DocumentID}); err != nil {
 			result.CanonicalState = "retryable"
 			result.Failure = err.Error()
-			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, err.Error())
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), err.Error())
 		}
 	case "upsert":
 		var document vector.VectorDocument
 		if err := json.Unmarshal([]byte(item.DocumentJSON), &document); err != nil {
 			result.CanonicalState = "permanent"
 			result.Failure = err.Error()
-			return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, "materialized vector document is invalid: "+err.Error())
+			return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, time.Now().UTC(), "materialized vector document is invalid: "+err.Error())
 		}
 		if strings.TrimSpace(document.ID) == "" {
 			document.ID = item.DocumentID
@@ -84,22 +84,42 @@ func (s *Server) processMemoryVectorOutboxOnce(
 			document.ChatSessionID = item.ChatSessionID
 		}
 		if len(document.Embedding) == 0 {
-			result.CanonicalState = "permanent"
-			result.Failure = "materialized vector document has no embedding"
-			return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, "materialized vector document has no embedding")
+			embeddingCfg := s.completeTurnExtractionConfig(nil).Embedder
+			if !embeddingCfg.hasConfig() {
+				result.CanonicalState = "retryable"
+				result.Failure = "embedding configuration is not available"
+				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), result.Failure)
+			}
+			if strings.TrimSpace(document.DocumentText) == "" {
+				result.CanonicalState = "permanent"
+				result.Failure = "materialized vector document has no searchable text"
+				return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, time.Now().UTC(), result.Failure)
+			}
+			embeddingJSON, _, embedErr := callEmbedding(ctx, embeddingCfg, document.DocumentText)
+			if embedErr != nil {
+				result.CanonicalState = "retryable"
+				result.Failure = "embedding materialization failed"
+				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), result.Failure)
+			}
+			document.Embedding = parseFloat32JSONList(embeddingJSON)
+			if len(document.Embedding) == 0 {
+				result.CanonicalState = "retryable"
+				result.Failure = "embedding materialization returned no vector"
+				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), result.Failure)
+			}
 		}
 		if err := s.Vector.Upsert(ctx, item.ChatSessionID, []vector.VectorDocument{document}); err != nil {
 			result.CanonicalState = "retryable"
 			result.Failure = err.Error()
-			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, err.Error())
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), err.Error())
 		}
 	default:
 		result.CanonicalState = "permanent"
 		result.Failure = "unknown vector operation"
-		return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, "unknown vector operation")
+		return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, time.Now().UTC(), "unknown vector operation")
 	}
 	result.VectorApplied = true
-	if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, now); err != nil {
+	if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, time.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrSourceRevisionStale) && item.Operation == "upsert" {
 			if deleter, ok := s.Vector.(vector.DocumentDeleter); ok {
 				_ = deleter.DeleteDocuments(ctx, []string{item.DocumentID})
@@ -125,7 +145,11 @@ func (s *Server) processMemoryVectorOutboxBatch(
 	}
 	results := make([]memoryVectorProcessResult, 0, limit)
 	for len(results) < limit {
-		result, err := s.processMemoryVectorOutboxOnce(ctx, leaseOwner, now, leaseDuration)
+		batchNow := now
+		if len(results) > 0 {
+			batchNow = time.Now().UTC()
+		}
+		result, err := s.processMemoryVectorOutboxOnce(ctx, leaseOwner, batchNow, leaseDuration)
 		if err != nil || !result.Processed {
 			break
 		}

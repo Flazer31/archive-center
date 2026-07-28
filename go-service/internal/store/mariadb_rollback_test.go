@@ -207,7 +207,8 @@ func TestMariaDBDeleteSession(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("UPDATE memory_source_revisions").
 		WithArgs("deleted", nil, "session_deleted", sqlmock.AnyArg(), sqlmock.AnyArg(),
-			"deleted", "deleted", "deleted", "deleted", sid, "revision-delete").
+			"deleted", "deleted", "deleted", "deleted", "deleted",
+			sid, "revision-delete").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec("DELETE FROM chat_logs").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 10))

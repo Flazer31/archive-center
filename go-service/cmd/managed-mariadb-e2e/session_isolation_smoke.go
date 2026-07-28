@@ -27,7 +27,7 @@ func runSessionIsolationSmoke(ctx context.Context, baseURL string, criticStub *r
 		label   string
 	}{
 		{session: sessionA, turn: 1, label: "session-a-first"},
-		{session: sessionA, turn: 1, label: "session-a-second-stale-request"},
+		{session: sessionA, turn: 2, label: "session-a-second"},
 		{session: sessionB, turn: 1, label: "session-b-first"},
 	}
 	for _, step := range steps {

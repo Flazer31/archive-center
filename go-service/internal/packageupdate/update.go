@@ -13,8 +13,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -171,21 +173,14 @@ func applyPending(root string, hook applyHook) (Result, error) {
 	for _, file := range newManifest.Files {
 		newManaged[strings.ToLower(canonicalRelativePath(file.Path))] = file
 	}
-	for rel, currentFile := range currentManaged {
-		newFile, present := newManaged[rel]
+	for rel := range currentManaged {
+		_, present := newManaged[rel]
 		if !present {
 			return Result{}, updateErr("managed_file_removal_unsupported", fmt.Errorf("new package omits managed path %q", rel))
 		}
-		if isDatabaseMigrationPath(rel) && normalizeSHA(currentFile.SHA256) != normalizeSHA(newFile.SHA256) {
-			return Result{}, updateErr("database_migration_update_unsupported", fmt.Errorf("automatic update changes %q", rel))
-		}
 	}
-	for rel := range newManaged {
-		if isDatabaseMigrationPath(rel) {
-			if _, present := currentManaged[rel]; !present {
-				return Result{}, updateErr("database_migration_update_unsupported", fmt.Errorf("automatic update adds %q", rel))
-			}
-		}
+	if err := validateDatabaseMigrationUpdate(packageRoot, currentManaged, newManaged); err != nil {
+		return Result{}, updateErr("database_migration_update_unsupported", err)
 	}
 	for _, file := range files {
 		if err := validateInstallTarget(root, file.Rel); err != nil {
@@ -712,9 +707,125 @@ func validateInstallTarget(root, rel string) error {
 	return nil
 }
 
-func isDatabaseMigrationPath(rel string) bool {
+var numberedMigrationName = regexp.MustCompile(`^migrations/([0-9]{3,})_[a-z0-9][a-z0-9_-]*\.sql$`)
+
+// validateDatabaseMigrationUpdate permits a narrow upgrade-safe schema lane:
+// historical numbered migrations are immutable, a changed fresh-install
+// schema must be paired with a new higher-numbered additive migration, and
+// every statement in that migration must be independently rerunnable.
+func validateDatabaseMigrationUpdate(
+	packageRoot string,
+	current map[string]manifestFile,
+	next map[string]manifestFile,
+) error {
+	currentMax := 0
+	currentHasFreshSchema := false
+	migrationNumbers := map[int]string{}
+	for rel := range current {
+		if rel == "migrations/001_schema.sql" {
+			currentHasFreshSchema = true
+		}
+		if number, ok := numberedMigrationNumber(rel); ok {
+			migrationNumbers[number] = rel
+			if number > currentMax {
+				currentMax = number
+			}
+		}
+	}
+	freshSchemaChanged := false
+	newMigrations := []string{}
+	for rel, currentFile := range current {
+		nextFile, present := next[rel]
+		if !present || normalizeSHA(currentFile.SHA256) == normalizeSHA(nextFile.SHA256) {
+			continue
+		}
+		switch {
+		case isMariaDBSchemaToolPath(rel):
+			// The package archive and file manifest already authenticate the
+			// tool. The launcher runs it before backend health commit.
+		case rel == "migrations/001_schema.sql":
+			freshSchemaChanged = true
+		case strings.HasPrefix(rel, "migrations/"):
+			return fmt.Errorf("historical migration is immutable: %q", rel)
+		}
+	}
+	for rel := range next {
+		if _, present := current[rel]; present || !strings.HasPrefix(rel, "migrations/") {
+			continue
+		}
+		number, ok := numberedMigrationNumber(rel)
+		if !ok || number <= currentMax {
+			return fmt.Errorf("new migration is not a higher numbered SQL migration: %q", rel)
+		}
+		if prior := migrationNumbers[number]; prior != "" {
+			return fmt.Errorf("migration number %03d is already used by %q", number, prior)
+		}
+		if err := validateAdditiveMigrationFile(filepath.Join(packageRoot, filepath.FromSlash(rel))); err != nil {
+			return fmt.Errorf("%s: %w", rel, err)
+		}
+		migrationNumbers[number] = rel
+		newMigrations = append(newMigrations, rel)
+	}
+	if currentHasFreshSchema && freshSchemaChanged != (len(newMigrations) > 0) {
+		return fmt.Errorf("fresh schema and additive migration must change together")
+	}
+	return nil
+}
+
+func numberedMigrationNumber(rel string) (int, bool) {
+	match := numberedMigrationName.FindStringSubmatch(strings.ToLower(canonicalRelativePath(rel)))
+	if len(match) != 2 {
+		return 0, false
+	}
+	number, err := strconv.Atoi(match[1])
+	return number, err == nil
+}
+
+func isMariaDBSchemaToolPath(rel string) bool {
 	rel = strings.ToLower(canonicalRelativePath(rel))
-	return rel == "bin/mariadb-schema.exe" || rel == "bin/mariadb-schema" || strings.HasPrefix(rel, "migrations/")
+	return rel == "bin/mariadb-schema.exe" || rel == "bin/mariadb-schema"
+}
+
+func validateAdditiveMigrationFile(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(raw) == 0 || len(raw) > 4*1024*1024 {
+		return fmt.Errorf("migration size is invalid")
+	}
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	cleanLines := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if index := strings.Index(line, "--"); index >= 0 {
+			line = line[:index]
+		}
+		cleanLines = append(cleanLines, line)
+	}
+	statementCount := 0
+	for _, statement := range strings.Split(strings.Join(cleanLines, "\n"), ";") {
+		normalized := strings.ToUpper(strings.Join(strings.Fields(statement), " "))
+		if normalized == "" {
+			continue
+		}
+		statementCount++
+		if !strings.HasPrefix(normalized, "ALTER TABLE ") ||
+			!strings.Contains(normalized, " ADD COLUMN IF NOT EXISTS ") {
+			return fmt.Errorf("only ALTER TABLE ADD COLUMN IF NOT EXISTS is allowed")
+		}
+		for _, forbidden := range []string{
+			" DROP ", " DELETE ", " UPDATE ", " INSERT ", " TRUNCATE ",
+			" RENAME ", " MODIFY ", " CHANGE ",
+		} {
+			if strings.Contains(" "+normalized+" ", forbidden) {
+				return fmt.Errorf("destructive or data-changing statement is not allowed")
+			}
+		}
+	}
+	if statementCount == 0 {
+		return fmt.Errorf("migration has no statements")
+	}
+	return nil
 }
 
 func managedInstallMode(rel string, archived fs.FileMode, goos string) fs.FileMode {

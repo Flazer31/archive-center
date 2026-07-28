@@ -317,6 +317,19 @@ func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "error", "code": "store_not_enabled", "detail": "store is not enabled"})
 		return
 	}
+	if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); ok &&
+		availability.MemoryDerivationLifecycleEnabled() {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"status":          "error",
+			"code":            "external_import_source_admission_required",
+			"detail":          "HypaMemory summaries cannot bypass accepted-source admission in the canonical writer.",
+			"chat_session_id": sid,
+			"total":           len(req.Summaries),
+			"succeeded":       0,
+			"failed":          len(req.Summaries),
+		})
+		return
+	}
 
 	extractionCfg := s.completeTurnExtractionConfig(nil)
 	llmTrace := completeTurnLLMConfigTrace(extractionCfg)

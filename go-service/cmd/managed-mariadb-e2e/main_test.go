@@ -18,6 +18,26 @@ type fakeLookup struct {
 	paths map[string]string
 }
 
+func TestRouteSmokeCompleteTurnUsesAcceptedSourceObservation(t *testing.T) {
+	body := routeSmokeCompleteTurnBodyWithClientMeta(
+		"session", 3, "third", map[string]any{"critic": map[string]any{"model": "test"}}, false,
+	)
+	meta, ok := body["client_meta"].(map[string]any)
+	if !ok || meta["source_acceptance_required"] != true || meta["critic"] == nil {
+		t.Fatalf("client_meta=%+v", body["client_meta"])
+	}
+	observation, ok := meta["source_acceptance_observation"].(map[string]any)
+	if !ok ||
+		observation["contract_version"] != "source_acceptance_observation.v1" ||
+		observation["active_message_count"] != 6 ||
+		observation["user_message_index"] != 4 ||
+		observation["message_index"] != 5 ||
+		observation["user_persistence_content_hash"] != routeSmokeOR1CHash("route smoke third user input") ||
+		observation["persistence_content_hash"] != routeSmokeOR1CHash("route smoke third assistant content") {
+		t.Fatalf("observation=%+v", observation)
+	}
+}
+
 func (f *fakeLookup) lookup(name string) (string, bool) {
 	if p, ok := f.paths[name]; ok {
 		return p, true
@@ -129,6 +149,44 @@ func TestRunMissingSource(t *testing.T) {
 	}
 	if len(r.Errors) == 0 || !strings.Contains(r.Errors[0], "missing source") {
 		t.Fatalf("expected missing source error, got %v", r.Errors)
+	}
+}
+
+func TestDirectProviderConfigStandaloneSmokeSkipsDefaultReadShadow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  directProviderConfig
+		want bool
+	}{
+		{
+			name: "route write smoke",
+			cfg:  directProviderConfig{RouteWriteSmoke: true},
+			want: true,
+		},
+		{
+			name: "session isolation smoke",
+			cfg:  directProviderConfig{SessionIsolationSmoke: true},
+			want: true,
+		},
+		{
+			name: "ordinary migration",
+			cfg:  directProviderConfig{},
+			want: false,
+		},
+		{
+			name: "route smoke plus product read proof",
+			cfg: directProviderConfig{
+				RouteWriteSmoke:  true,
+				ProductReadProof: true,
+			},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.skipDefaultReadShadow(); got != tc.want {
+				t.Fatalf("skipDefaultReadShadow() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

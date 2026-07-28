@@ -496,6 +496,50 @@ func preciseMemoryWriterForStore(st Store) (PreciseMemoryWriter, bool) {
 	return writer, true
 }
 
+func (d *dualWriteStore) CommitMemoryAdmission(ctx context.Context, admission *MemoryAdmission) (MemoryAdmissionResult, error) {
+	primary, primaryOK := memoryAdmissionWriterForStore(d.primary)
+	shadow, shadowOK := memoryAdmissionWriterForStore(d.shadow)
+	if !primaryOK && !shadowOK {
+		return MemoryAdmissionResult{}, ErrNotEnabled
+	}
+	if primaryOK {
+		result, err := primary.CommitMemoryAdmission(ctx, admission)
+		if err != nil {
+			return MemoryAdmissionResult{}, err
+		}
+		if shadowOK {
+			if _, err := shadow.CommitMemoryAdmission(ctx, admission); err != nil {
+				d.recordShadowErr(err)
+			}
+		}
+		return result, nil
+	}
+	result, err := shadow.CommitMemoryAdmission(ctx, admission)
+	if err != nil {
+		d.recordShadowErr(err)
+		return MemoryAdmissionResult{}, nil
+	}
+	return result, nil
+}
+
+func (d *dualWriteStore) MemoryAdmissionWritesEnabled() bool {
+	_, primaryOK := memoryAdmissionWriterForStore(d.primary)
+	_, shadowOK := memoryAdmissionWriterForStore(d.shadow)
+	return primaryOK || shadowOK
+}
+
+func memoryAdmissionWriterForStore(st Store) (MemoryAdmissionWriter, bool) {
+	writer, ok := st.(MemoryAdmissionWriter)
+	if !ok {
+		return nil, false
+	}
+	if availability, ok := st.(MemoryAdmissionWriteAvailability); ok &&
+		!availability.MemoryAdmissionWritesEnabled() {
+		return nil, false
+	}
+	return writer, true
+}
+
 func (d *dualWriteStore) MemoryDerivationLifecycleEnabled() bool {
 	_, primaryOK := memoryLifecycleSourceStore(d.primary)
 	_, shadowOK := memoryLifecycleSourceStore(d.shadow)
@@ -556,6 +600,21 @@ func (d *dualWriteStore) GetSourceRevision(ctx context.Context, sid, revision st
 	}
 	if shadow, ok := memoryLifecycleSourceStore(d.shadow); ok {
 		return shadow.GetSourceRevision(ctx, sid, revision)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListActiveSourceRevisions(
+	ctx context.Context,
+	sid string,
+	fromTurn int,
+	toTurn int,
+) ([]MemorySourceRevision, error) {
+	if reader, ok := d.primary.(ActiveSourceRevisionLister); ok {
+		return reader.ListActiveSourceRevisions(ctx, sid, fromTurn, toTurn)
+	}
+	if reader, ok := d.shadow.(ActiveSourceRevisionLister); ok {
+		return reader.ListActiveSourceRevisions(ctx, sid, fromTurn, toTurn)
 	}
 	return nil, ErrNotEnabled
 }

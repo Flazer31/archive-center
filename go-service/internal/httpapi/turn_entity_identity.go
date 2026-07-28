@@ -43,6 +43,22 @@ func contextWithEntityIdentitySource(ctx context.Context, decision completeTurnS
 	})
 }
 
+func contextWithStoredMemorySource(ctx context.Context, source *store.MemorySourceRevision) context.Context {
+	if source == nil ||
+		strings.TrimSpace(source.SourceRevision) == "" ||
+		strings.TrimSpace(source.LogicalTurnID) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        source.SourceRevision,
+		LogicalTurnID:   source.LogicalTurnID,
+		MessageID:       source.SourceMessageID,
+		GenerationID:    source.SourceGenerationID,
+		ContentHash:     source.CombinedContentHash,
+	})
+}
+
 func entityIdentitySourceFromContext(ctx context.Context, sid string, turnIndex int, content string) entityIdentitySourceContext {
 	contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 	if value, ok := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext); ok {

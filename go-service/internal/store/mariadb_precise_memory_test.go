@@ -48,7 +48,10 @@ func TestMariaDBPreciseMemoryWriterReportsInsertedAndReplayHonestly(t *testing.T
 	mock.ExpectExec("INSERT INTO memory_vector_outbox").
 		WithArgs(
 			MemoryVectorOutboxContract,
-			memoryVectorOperationKey("upsert", unit.ChatSessionID, unit.SourceRevision, preciseDocumentID),
+			preciseMemoryVectorOperationKey(
+				unit.ChatSessionID, unit.SourceRevision, unit.DerivationVersion,
+				unit.ExtractorVersion, unit.IndexVersion, preciseDocumentID,
+			),
 			"upsert", unit.ChatSessionID, unit.SourceRevision, preciseDocumentID,
 			sqlmock.AnyArg(), false, "active", "needs_embedding", 0,
 			nil, nil, nil, nil, now, now,
@@ -61,6 +64,10 @@ func TestMariaDBPreciseMemoryWriterReportsInsertedAndReplayHonestly(t *testing.T
 	}
 	expectActiveSource()
 	mock.ExpectExec(insertPattern).WillReturnError(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry"})
+	mock.ExpectQuery("SELECT unit_id, source_revision, idempotency_key").
+		WithArgs(unit.UnitID, unit.IdempotencyKey, unit.UnitID).
+		WillReturnRows(sqlmock.NewRows([]string{"unit_id", "source_revision", "idempotency_key"}).
+			AddRow(unit.UnitID, unit.SourceRevision, unit.IdempotencyKey))
 	mock.ExpectCommit()
 	inserted, err = m.SavePreciseMemoryUnit(context.Background(), unit)
 	if err != nil || inserted {

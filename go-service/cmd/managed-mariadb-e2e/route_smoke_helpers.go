@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -28,8 +29,16 @@ func startRouteSmokeCriticStub() *routeSmokeCriticStub {
 		stub.calls.Add(1)
 		raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		evidenceExcerpt := "route smoke first assistant content"
+		kgPredicate := "trusts_after_first_smoke"
+		worldRuleKey := "route_smoke_rule"
+		pendingTitle := "Route smoke continuity check"
+		pendingDetails := "Follow up if managed route smoke writes are missing."
 		if strings.Contains(string(raw), "route smoke second assistant content") {
 			evidenceExcerpt = "route smoke second assistant content"
+			kgPredicate = "trusts_after_second_smoke"
+			worldRuleKey = "route_smoke_followup_rule"
+			pendingTitle = "Route smoke continuity follow-up"
+			pendingDetails = "Confirm the second managed route smoke write remains visible."
 		}
 		extraction := map[string]any{
 			"turn_summary":           "Route smoke critic saved a durable memory.",
@@ -51,7 +60,7 @@ func startRouteSmokeCriticStub() *routeSmokeCriticStub {
 			},
 			"kg_triples": []any{map[string]any{
 				"subject":    "Nova",
-				"predicate":  "trusts",
+				"predicate":  kgPredicate,
 				"object":     "Orion",
 				"valid_from": 1,
 			}},
@@ -68,15 +77,15 @@ func startRouteSmokeCriticStub() *routeSmokeCriticStub {
 			"world_rules": []any{map[string]any{
 				"scope":     "session",
 				"category":  "migration_smoke",
-				"key":       "route_smoke_rule",
+				"key":       worldRuleKey,
 				"value":     "Managed route smoke writes must be visible in MariaDB.",
 				"source":    "managed_mariadb_e2e",
 				"source_id": "route-write-smoke",
 			}},
 			"pending_threads": []any{map[string]any{
-				"title":       "Route smoke continuity check",
-				"details":     "Follow up if managed route smoke writes are missing.",
-				"thread_type": "migration_smoke",
+				"title":       pendingTitle,
+				"details":     pendingDetails,
+				"thread_type": "open_question",
 				"priority":    2,
 				"confidence":  0.85,
 			}},
@@ -129,6 +138,9 @@ func routeSmokeCompleteTurnBodyWithClientMeta(sessionID string, requestedTurn in
 		userInput = fmt.Sprintf("route smoke %s user input: Nova tells Orion that she trusts him with the lighthouse key and asks him to remember the Archive Hall promise.", label)
 		assistantContent = fmt.Sprintf("route smoke %s assistant content: Nova gives Orion the silver compass in the Archive Hall. Nova says exactly, \"I trust you with the lighthouse key.\" Orion accepts responsibility. The world rule is that the lighthouse key opens the north archive only during moonrise. The unresolved storyline is to repair the clock bridge before dawn. Nova feels focused and relieved.", label)
 	}
+	clientMeta = routeSmokeSourceAcceptedClientMeta(
+		clientMeta, sessionID, requestedTurn, label, userInput, assistantContent,
+	)
 	return map[string]any{
 		"chat_session_id":   sessionID,
 		"turn_index":        requestedTurn,
@@ -141,6 +153,87 @@ func routeSmokeCompleteTurnBodyWithClientMeta(sessionID string, requestedTurn in
 		"improvement_trace": map[string]any{"score": 1, "source": "managed_mariadb_e2e", "label": label},
 		"client_meta":       clientMeta,
 	}
+}
+
+func routeSmokeSourceAcceptedClientMeta(
+	base map[string]any,
+	sessionID string,
+	turnIndex int,
+	label string,
+	userInput string,
+	assistantContent string,
+) map[string]any {
+	meta := make(map[string]any, len(base)+2)
+	for key, value := range base {
+		meta[key] = value
+	}
+	if turnIndex <= 0 {
+		turnIndex = 1
+	}
+	messageCount := turnIndex * 2
+	userIndex := messageCount - 2
+	assistantIndex := messageCount - 1
+	generationID := fmt.Sprintf("managed-smoke:%s:%d", label, turnIndex)
+	observedAt := int64(1700000000000 + turnIndex*1000)
+	meta["source_acceptance_required"] = true
+	meta["source_acceptance_observation"] = map[string]any{
+		"contract_version":              "source_acceptance_observation.v1",
+		"observed_at_ms":                observedAt,
+		"session_id":                    sessionID,
+		"host_chat_id":                  sessionID,
+		"host_chat_id_state":            "observed",
+		"chat_streaming_state":          "not_streaming",
+		"active_message_count":          messageCount,
+		"message_index":                 assistantIndex,
+		"message_role":                  "char",
+		"message_chat_id":               generationID,
+		"message_chat_id_state":         "observed",
+		"generation_id":                 generationID,
+		"generation_id_state":           "observed",
+		"message_time_ms":               observedAt - 10,
+		"message_time_state":            "observed",
+		"user_message_index":            userIndex,
+		"user_message_chat_id":          generationID + ":user",
+		"user_message_chat_id_state":    "observed",
+		"user_message_time_ms":          observedAt - 20,
+		"user_message_time_state":       "observed",
+		"user_observed_content_hash":    routeSmokeOR1CHash(strings.TrimSpace(userInput)),
+		"user_persistence_content_hash": routeSmokeOR1CHash(strings.TrimSpace(userInput)),
+		"observed_content_hash":         routeSmokeOR1CHash(strings.TrimSpace(assistantContent)),
+		"persistence_content_hash":      routeSmokeOR1CHash(strings.TrimSpace(assistantContent)),
+		"hash_algorithm":                "or1c_utf16_djb2.v1",
+		"position_observation":          "current_active_chat_tail",
+		"message_disabled_state":        "not_disabled",
+		"revision_state":                "not_exposed_by_risuai",
+	}
+	return meta
+}
+
+func routeSmokeOR1CHash(value string) string {
+	if value == "" {
+		return ""
+	}
+	var hash int64 = 5381
+	for _, unit := range utf16.Encode([]rune(value)) {
+		hash = ((hash << 5) + hash + int64(unit)) & 0x7fffffff
+	}
+	return "or1c_" + routeSmokeBase36(hash)
+}
+
+func routeSmokeBase36(value int64) string {
+	const digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+	if value == 0 {
+		return "0"
+	}
+	buffer := make([]byte, 0, 16)
+	for value > 0 {
+		buffer = append(buffer, digits[value%36])
+		value /= 36
+	}
+	for left, right := 0, len(buffer)-1; left < right; left, right = left+1, right-1 {
+		buffer[left], buffer[right] = buffer[right], buffer[left]
+	}
+	return string(buffer)
 }
 
 func routeSmokeDelta(before map[string]int, after map[string]int) map[string]int {
@@ -349,8 +442,8 @@ func routeSmokeContentChecks(ctx context.Context, dsn string, sessionID string, 
 		},
 		{
 			name:  "critic_kg_triple",
-			query: "SELECT COUNT(*) FROM kg_triples WHERE chat_session_id = ? AND subject = ? AND predicate = ? AND object = ?",
-			args:  []any{sessionID, "Nova", "trusts", "Orion"},
+			query: "SELECT COUNT(*) FROM kg_triples WHERE chat_session_id = ? AND subject = ? AND predicate IN (?, ?) AND object = ?",
+			args:  []any{sessionID, "Nova", "trusts_after_first_smoke", "trusts_after_second_smoke", "Orion"},
 		},
 		{
 			name:  "critic_entity",

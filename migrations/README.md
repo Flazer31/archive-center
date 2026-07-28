@@ -11,8 +11,17 @@ are additive and do not rewrite existing session rows.
 Canon Pack storage migration. Its statements are also registered in the
 canonical fresh-install schema and the production `mariadb-schema`
 compatibility pass. The registration is for a full 3.1 package install or
-upgrade only. Updater v1 continues to reject migration and `mariadb-schema`
-changes and must not apply this migration.
+upgrade only.
+
+Archive Center 3.6-E adds a schema-aware automatic-update lane. Historical
+numbered migrations remain immutable. An update may add only a higher-numbered
+SQL migration made entirely of rerunnable
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements, and it must update the
+fresh schema in the same package. Destructive/data-changing SQL and a fresh
+schema change without its additive migration are rejected before package
+application. The launcher runs the authenticated `mariadb-schema` tool before
+backend health commit; package files are recovered if schema execution or
+health verification fails.
 
 The registration decision is backed by a local disposable MariaDB 11.4.12
 run: `002` was applied twice through the production loader, all ten tables and

@@ -42,7 +42,7 @@ func runRouteWriteSmoke(ctx context.Context, port int, dsn string, sessionID str
 		return routeSmokeReport("failed", baseURL, smokeSession, before, nil, routes, storeMode), fmt.Errorf("route smoke one-turn count: %w", err)
 	}
 
-	secondCompleteBody := routeSmokeCompleteTurnBodyWithClientMeta(smokeSession, 9101, "second", clientMeta, liveCfg.Enabled)
+	secondCompleteBody := routeSmokeCompleteTurnBodyWithClientMeta(smokeSession, 9102, "second", clientMeta, liveCfg.Enabled)
 	secondCompleteRoute, err := postJSONWithTimeout(ctx, baseURL+"/complete-turn", secondCompleteBody, liveCfg.HTTPWait)
 	routes = append(routes, secondCompleteRoute)
 	if err != nil {

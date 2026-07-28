@@ -44,6 +44,11 @@ func main() {
 		os.Exit(1)
 	}
 	cancelPreflight()
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
+	if server.StartMemoryWorkers(workerCtx) {
+		logger.Info("memory reprocessing worker enabled")
+	}
 	server.RegisterRoutes(mux)
 
 	logger.Info("starting server", "bind", cfg.BindAddr, "mode", cfg.Mode)

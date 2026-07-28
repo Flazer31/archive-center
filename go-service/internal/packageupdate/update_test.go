@@ -369,13 +369,92 @@ func TestApplyPendingRejectsDatabaseMigrationChanges(t *testing.T) {
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
 }
 
-func TestPOSIXDatabaseMigrationToolIsProtected(t *testing.T) {
+func TestPOSIXDatabaseMigrationToolCanUpgradeWithoutChangingSchema(t *testing.T) {
 	current := map[string]string{"bin/archive-center-go": "one", "bin/mariadb-schema": "schema-tool"}
 	next := map[string]string{"bin/archive-center-go": "two", "bin/mariadb-schema": "changed-schema-tool"}
 	root := newFixture(t, current, next, nil)
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "bin/archive-center-go"), "two")
+}
+
+func TestApplyPendingAllowsNewAdditiveMigrationWithFreshSchema(t *testing.T) {
+	current := map[string]string{
+		"bin/app.exe": "one", "bin/mariadb-schema.exe": "schema-tool",
+		"migrations/001_schema.sql":   "old schema",
+		"migrations/005_existing.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
+	}
+	next := map[string]string{
+		"bin/app.exe": "two", "bin/mariadb-schema.exe": "new-schema-tool",
+		"migrations/001_schema.sql":    "new schema",
+		"migrations/005_existing.sql":  "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
+		"migrations/006_admission.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS admission_state VARCHAR(30) NOT NULL DEFAULT 'pending';",
+	}
+	root := newFixture(t, current, next, nil)
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "migrations/006_admission.sql"), next["migrations/006_admission.sql"])
+}
+
+func TestApplyPendingRejectsChangedHistoricalMigration(t *testing.T) {
+	current := map[string]string{
+		"bin/app.exe":                 "one",
+		"migrations/005_existing.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
+	}
+	next := map[string]string{
+		"bin/app.exe":                 "two",
+		"migrations/005_existing.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS changed_value INT;",
+	}
+	root := newFixture(t, current, next, nil)
 	_, err := ApplyPending(root)
 	assertUpdateCode(t, err, "database_migration_update_unsupported")
-	assertFile(t, filepath.Join(root, "bin/archive-center-go"), "one")
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
+}
+
+func TestApplyPendingRejectsDestructiveNewMigration(t *testing.T) {
+	current := map[string]string{
+		"bin/app.exe":                 "one",
+		"migrations/001_schema.sql":   "old schema",
+		"migrations/005_existing.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
+	}
+	next := map[string]string{
+		"bin/app.exe":                 "two",
+		"migrations/001_schema.sql":   "new schema",
+		"migrations/005_existing.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
+		"migrations/006_bad.sql":      "DROP TABLE records;",
+	}
+	root := newFixture(t, current, next, nil)
+	_, err := ApplyPending(root)
+	assertUpdateCode(t, err, "database_migration_update_unsupported")
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
+}
+
+func TestApplyPendingRejectsDuplicateNewMigrationNumber(t *testing.T) {
+	current := map[string]string{
+		"bin/app.exe":               "one",
+		"migrations/001_schema.sql": "old schema",
+	}
+	next := map[string]string{
+		"bin/app.exe":                     "two",
+		"migrations/001_schema.sql":       "new schema",
+		"migrations/006_admission.sql":    "ALTER TABLE records ADD COLUMN IF NOT EXISTS admission_state VARCHAR(30);",
+		"migrations/006_other_change.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS other_value INT;",
+	}
+	root := newFixture(t, current, next, nil)
+	_, err := ApplyPending(root)
+	assertUpdateCode(t, err, "database_migration_update_unsupported")
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
+}
+
+func TestProductionMemoryAdmissionMigrationPassesAdditivePolicy(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "migrations", "006_memory_admission_writer.sql")
+	if err := validateAdditiveMigrationFile(path); err != nil {
+		t.Fatalf("production migration rejected: %v", err)
+	}
 }
 
 func TestManagedInstallModePreservesPOSIXExecutables(t *testing.T) {
