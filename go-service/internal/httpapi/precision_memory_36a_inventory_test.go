@@ -33,6 +33,28 @@ func Test36BNearNameCanonicalizationDoesNotCollapseDistinctPeople(t *testing.T) 
 	}
 }
 
+func Test36BCanonicalCharacterNameRequiresExactFullDisplaySurface(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnCharStates: []store.CharacterState{
+			{ChatSessionID: "sess-36b-exact-name", CharacterName: "박한얼"},
+			{ChatSessionID: "sess-36b-exact-name", CharacterName: "김한얼"},
+			{ChatSessionID: "sess-36b-exact-name", CharacterName: "이시우"},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	if got := srv.canonicalCharacterName(context.Background(), "sess-36b-exact-name", "박한얼"); got != "박한얼" {
+		t.Fatalf("exact full display surface was not retained, got %q", got)
+	}
+	if got := srv.canonicalCharacterName(context.Background(), "sess-36b-exact-name", "한얼"); got != "한얼" {
+		t.Fatalf("suffix surface must not merge to a stored full name, got %q", got)
+	}
+	if got := srv.canonicalCharacterName(context.Background(), "sess-36b-exact-name", "Siwoo"); got != "Siwoo" {
+		t.Fatalf("romanized surface must not merge to a stored display name, got %q", got)
+	}
+}
+
 func Test36ABaselineOneAggregateMemoryPerSourceTurn(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnMemories: []store.Memory{

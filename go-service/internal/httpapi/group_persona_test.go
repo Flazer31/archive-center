@@ -346,7 +346,7 @@ func TestProtagonistEntityMemoryRoutesScopeByEntityAndSourceSession(t *testing.T
 	if fake.entityMemories[0].Importance10 != 10 || fake.entityMemories[0].EmotionalWeight != 1 {
 		t.Fatalf("scores not clamped: %+v", fake.entityMemories[0])
 	}
-	if fake.entityMemories[0].PersonaEntityKey != "siwoo" || fake.entityMemories[0].PersonaEntityName != "이시우" || fake.entityMemories[0].SourceChatSessionID != "chloe-session" {
+	if fake.entityMemories[0].PersonaEntityKey != "isiu" || fake.entityMemories[0].PersonaEntityName != "이시우" || fake.entityMemories[0].SourceChatSessionID != "chloe-session" {
 		t.Fatalf("entity/source scope not stored: %+v", fake.entityMemories[0])
 	}
 
@@ -778,11 +778,11 @@ func TestSubjectiveEntityMemoryAliasRepairDryRunAndApply(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&dryRun); err != nil {
 		t.Fatalf("decode dry-run: %v", err)
 	}
-	if !dryRun.DryRunOnly || dryRun.RepairableCount != 0 || dryRun.ReviewRequiredCount != 1 || dryRun.UpdatedCount != 0 {
+	if !dryRun.DryRunOnly || dryRun.RepairableCount != 0 || dryRun.ReviewRequiredCount != 0 || dryRun.UpdatedCount != 0 {
 		t.Fatalf("dry-run repair counts mismatch: %+v", dryRun)
 	}
-	if len(dryRun.Groups) != 1 || dryRun.Groups[0].CanonicalOwnerKey != "chloe" || dryRun.Groups[0].MemoryCount != 2 || dryRun.Groups[0].RepairableCount != 0 || dryRun.Groups[0].ReviewRequiredCount != 1 || dryRun.Groups[0].Decision != "review_required" {
-		t.Fatalf("dry-run group mismatch: %+v", dryRun.Groups)
+	if len(dryRun.Groups) != 0 {
+		t.Fatalf("unconfirmed transliteration must not create an alias group: %+v", dryRun.Groups)
 	}
 	if dryRun.Policy["delete_duplicate_rows"] != false {
 		t.Fatalf("repair must not delete rows by default: %+v", dryRun.Policy)
@@ -807,7 +807,7 @@ func TestSubjectiveEntityMemoryAliasRepairDryRunAndApply(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&applied); err != nil {
 		t.Fatalf("decode apply: %v", err)
 	}
-	if applied.DryRunOnly || applied.RepairableCount != 0 || applied.ReviewRequiredCount != 1 || applied.UpdatedCount != 0 {
+	if applied.DryRunOnly || applied.RepairableCount != 0 || applied.ReviewRequiredCount != 0 || applied.UpdatedCount != 0 {
 		t.Fatalf("apply repair counts mismatch: %+v", applied)
 	}
 	repaired := fake.entityMemories[1]
@@ -836,7 +836,7 @@ func TestSubjectiveEntityMemoryAliasRepairDryRunAndApply(t *testing.T) {
 	}
 }
 
-func TestSubjectiveEntityMemoryAliasRepairVexKoreanAlias(t *testing.T) {
+func TestSubjectiveEntityMemoryAliasRepairRequiresExplicitCanonicalTarget(t *testing.T) {
 	fake := newPersonaRouteFakeStore()
 	for _, item := range []*store.ProtagonistEntityMemory{
 		{
@@ -888,8 +888,8 @@ func TestSubjectiveEntityMemoryAliasRepairVexKoreanAlias(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&dryRun); err != nil {
 		t.Fatalf("decode dry-run: %v", err)
 	}
-	if dryRun.RepairableCount != 1 || len(dryRun.Groups) != 1 || dryRun.Groups[0].CanonicalOwnerKey != "vex" || dryRun.Groups[0].MemoryCount != 2 {
-		t.Fatalf("vex alias repair dry-run mismatch: %+v", dryRun)
+	if dryRun.RepairableCount != 0 || len(dryRun.Groups) != 0 {
+		t.Fatalf("confirmation without a canonical target must not guess an alias merge: %+v", dryRun)
 	}
 }
 

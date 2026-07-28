@@ -72,17 +72,25 @@ type entityIdentityOccurrence struct {
 	SourceSpanEnd   int
 }
 
+type entityIdentitySurfaceCandidate struct {
+	Occurrence  *entityIdentityOccurrence
+	ReviewState string
+}
+
 type entityIdentityProjection struct {
-	sid         string
-	turnIndex   int
-	content     string
-	source      entityIdentitySourceContext
-	now         time.Time
-	writer      store.EntityIdentityWriter
-	bySurface   map[string][]*entityIdentityOccurrence
-	nameSeen    map[string]int
-	speakerSeen map[string]int
-	sourceIndex int
+	sid              string
+	turnIndex        int
+	content          string
+	source           entityIdentitySourceContext
+	now              time.Time
+	writer           store.EntityIdentityWriter
+	bySurface        map[string][]entityIdentitySurfaceCandidate
+	fullDisplayNames []string
+	conflictedKeys   map[string]bool
+	displaySeen      map[string]int
+	aliasSeen        map[string]int
+	speakerSeen      map[string]int
+	sourceIndex      int
 }
 
 func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, turnIndex int, extraction map[string]any, content string, now time.Time, result *artifactSaveResult) *entityIdentityProjection {
@@ -94,15 +102,17 @@ func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, 
 		return nil
 	}
 	projection := &entityIdentityProjection{
-		sid:         sid,
-		turnIndex:   turnIndex,
-		content:     content,
-		source:      entityIdentitySourceFromContext(ctx, sid, turnIndex, content),
-		now:         now,
-		writer:      writer,
-		bySurface:   map[string][]*entityIdentityOccurrence{},
-		nameSeen:    map[string]int{},
-		speakerSeen: map[string]int{},
+		sid:            sid,
+		turnIndex:      turnIndex,
+		content:        content,
+		source:         entityIdentitySourceFromContext(ctx, sid, turnIndex, content),
+		now:            now,
+		writer:         writer,
+		bySurface:      map[string][]entityIdentitySurfaceCandidate{},
+		conflictedKeys: map[string]bool{},
+		displaySeen:    map[string]int{},
+		aliasSeen:      map[string]int{},
+		speakerSeen:    map[string]int{},
 	}
 	entities := mapFromAny(extraction["entities"])
 	buckets := []struct {
@@ -115,6 +125,37 @@ func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, 
 		{key: "items", entityKind: "item"},
 		{key: "objects", entityKind: "item"},
 		{key: "groups", entityKind: "group"},
+	}
+	surfaceOwners := map[string]map[string]struct{}{}
+	for _, bucket := range buckets {
+		for itemIndex, raw := range sliceFromAny(entities[bucket.key]) {
+			item := mapFromAny(raw)
+			name := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "name"),
+				stringFromMap(item, "label"),
+				stringFromMap(item, "title"),
+			))
+			if name == "" || isPlaceholderKGPart(name) {
+				continue
+			}
+			projection.fullDisplayNames = append(projection.fullDisplayNames, name)
+			owner := fmt.Sprintf("%s:%d", bucket.key, itemIndex)
+			for _, surface := range append([]string{name}, stringsFromAny(item["aliases"])...) {
+				key := comparableEntityKey(surface)
+				if key == "" {
+					continue
+				}
+				if surfaceOwners[key] == nil {
+					surfaceOwners[key] = map[string]struct{}{}
+				}
+				surfaceOwners[key][owner] = struct{}{}
+			}
+		}
+	}
+	for key, owners := range surfaceOwners {
+		if len(owners) > 1 {
+			projection.conflictedKeys[key] = true
+		}
 	}
 	artifactOrdinal := 0
 	for _, bucket := range buckets {
@@ -185,6 +226,8 @@ func (p *entityIdentityProjection) persistOccurrence(ctx context.Context, name, 
 		reviewState = "needs_review"
 		presenceAuthority = "unverified"
 		occurrenceAuthority = "none"
+	} else if p.conflictedKeys[comparableEntityKey(name)] {
+		reviewState = "needs_review"
 	}
 	occurrence := &entityIdentityOccurrence{
 		StableEntityID:  stableID,
@@ -223,20 +266,43 @@ func (p *entityIdentityProjection) persistOccurrence(ctx context.Context, name, 
 		})
 	}, result, func() { result.EntityIdentities++ })
 	p.persistSurface(ctx, occurrence, "display_name", name, spanStart, spanEnd, reviewState, result)
+	p.indexSurface(name, occurrence, reviewState)
 	for aliasIndex, alias := range aliases {
 		alias = strings.TrimSpace(alias)
 		if alias == "" || strings.EqualFold(alias, name) {
 			continue
 		}
-		aliasStart, aliasEnd := p.nextExactSpan(alias)
-		aliasReview := "source_observed"
-		if aliasStart < 0 {
-			aliasReview = "needs_review"
+		aliasStart, aliasEnd := -1, -1
+		if !p.conflictedKeys[comparableEntityKey(alias)] {
+			aliasStart, aliasEnd = p.nextIndependentAliasSpan(alias)
 		}
+		aliasReview := "needs_review"
 		p.persistSurface(ctx, occurrence, fmt.Sprintf("alias_%d", aliasIndex), alias, aliasStart, aliasEnd, aliasReview, result)
+		p.indexSurface(alias, occurrence, aliasReview)
 	}
-	p.bySurface[comparableEntityKey(name)] = append(p.bySurface[comparableEntityKey(name)], occurrence)
 	return occurrence
+}
+
+func (p *entityIdentityProjection) indexSurface(surface string, occurrence *entityIdentityOccurrence, reviewState string) {
+	key := comparableEntityKey(surface)
+	if key == "" || occurrence == nil {
+		return
+	}
+	candidates := p.bySurface[key]
+	for index, candidate := range candidates {
+		if candidate.Occurrence == nil || candidate.Occurrence.StableEntityID != occurrence.StableEntityID {
+			continue
+		}
+		if candidate.ReviewState != "source_observed" && reviewState == "source_observed" {
+			candidates[index].ReviewState = reviewState
+			p.bySurface[key] = candidates
+		}
+		return
+	}
+	p.bySurface[key] = append(candidates, entityIdentitySurfaceCandidate{
+		Occurrence:  occurrence,
+		ReviewState: reviewState,
+	})
 }
 
 func (p *entityIdentityProjection) persistSurface(ctx context.Context, occurrence *entityIdentityOccurrence, kind, text string, spanStart, spanEnd int, reviewState string, result *artifactSaveResult) {
@@ -272,7 +338,78 @@ func (p *entityIdentityProjection) persistSurface(ctx context.Context, occurrenc
 }
 
 func (p *entityIdentityProjection) nextExactSpan(text string) (int, int) {
-	return nextExactSpanWithSeen(p.content, text, p.nameSeen)
+	return p.nextIndependentSurfaceSpan(text, p.displaySeen)
+}
+
+func (p *entityIdentityProjection) nextIndependentAliasSpan(text string) (int, int) {
+	return p.nextIndependentSurfaceSpan(text, p.aliasSeen)
+}
+
+func (p *entityIdentityProjection) nextIndependentSurfaceSpan(text string, seen map[string]int) (int, int) {
+	nth := seen[text]
+	seen[text] = nth + 1
+	offset := 0
+	for {
+		found := strings.Index(p.content[offset:], text)
+		if found < 0 {
+			return -1, -1
+		}
+		spanStart := offset + found
+		spanEnd := spanStart + len(text)
+		if !p.surfaceSpanNestedInLongerDisplayName(text, spanStart, spanEnd) {
+			if nth == 0 {
+				return spanStart, spanEnd
+			}
+			nth--
+		}
+		offset = spanEnd
+	}
+}
+
+func (p *entityIdentityProjection) surfaceSpanNestedInLongerDisplayName(surface string, surfaceStart, surfaceEnd int) bool {
+	return p.surfaceSpanNestedInLongerDisplayNameWithin(p.content, surface, surfaceStart, surfaceEnd)
+}
+
+func (p *entityIdentityProjection) surfaceSpanNestedInLongerDisplayNameWithin(content, surface string, surfaceStart, surfaceEnd int) bool {
+	for _, displayName := range p.fullDisplayNames {
+		if len(displayName) <= len(surface) {
+			continue
+		}
+		offset := 0
+		for {
+			found := strings.Index(content[offset:], displayName)
+			if found < 0 {
+				break
+			}
+			nameStart := offset + found
+			nameEnd := nameStart + len(displayName)
+			if nameStart <= surfaceStart && surfaceEnd <= nameEnd {
+				return true
+			}
+			offset = nameEnd
+		}
+	}
+	return false
+}
+
+func (p *entityIdentityProjection) surfaceAppearsIndependentlyWithinSourceSpan(surface string, spanStart, spanEnd int) bool {
+	if strings.TrimSpace(surface) == "" || spanStart < 0 || spanEnd <= spanStart || spanEnd > len(p.content) {
+		return false
+	}
+	content := p.content[spanStart:spanEnd]
+	offset := 0
+	for {
+		found := strings.Index(content[offset:], surface)
+		if found < 0 {
+			return false
+		}
+		surfaceStart := spanStart + offset + found
+		surfaceEnd := surfaceStart + len(surface)
+		if !p.surfaceSpanNestedInLongerDisplayName(surface, surfaceStart, surfaceEnd) {
+			return true
+		}
+		offset += found + len(surface)
+	}
 }
 
 func nextExactSpanWithSeen(content, text string, seen map[string]int) (int, int) {
@@ -293,24 +430,33 @@ func nextExactSpanWithSeen(content, text string, seen map[string]int) (int, int)
 	return offset, offset + len(text)
 }
 
-func (p *entityIdentityProjection) resolveUnique(surface string) (*entityIdentityOccurrence, bool) {
+func (p *entityIdentityProjection) resolveUnique(surface string) (*entityIdentityOccurrence, string, bool) {
 	candidates := p.bySurface[comparableEntityKey(surface)]
 	var selected *entityIdentityOccurrence
+	reviewState := "source_observed"
 	for _, candidate := range candidates {
-		if candidate == nil || candidate.ReviewState != "source_observed" {
+		if candidate.Occurrence == nil {
 			continue
 		}
-		if selected != nil && selected.StableEntityID != candidate.StableEntityID {
-			return nil, true
+		if selected != nil && selected.StableEntityID != candidate.Occurrence.StableEntityID {
+			return nil, "needs_review", true
 		}
-		selected = candidate
+		selected = candidate.Occurrence
+		if candidate.ReviewState != "source_observed" || selected.ReviewState != "source_observed" {
+			reviewState = "needs_review"
+		}
 	}
-	return selected, false
+	if selected == nil {
+		reviewState = ""
+	} else if reviewState != "source_observed" {
+		return nil, "needs_review", true
+	}
+	return selected, reviewState, false
 }
 
 func (p *entityIdentityProjection) ensureArtifactIdentity(ctx context.Context, surface, entityKind, artifactKind string, ordinal int, result *artifactSaveResult) (*entityIdentityOccurrence, string) {
-	if occurrence, ambiguous := p.resolveUnique(surface); occurrence != nil {
-		return occurrence, occurrence.ReviewState
+	if occurrence, reviewState, ambiguous := p.resolveUnique(surface); occurrence != nil {
+		return occurrence, reviewState
 	} else if ambiguous {
 		return p.persistUnknownOccurrence(ctx, surface, entityKind, artifactKind, ordinal, result), "needs_review"
 	}
@@ -390,14 +536,14 @@ func (p *entityIdentityProjection) bindKGTriple(ctx context.Context, triple map[
 		{field: "object", role: "object"},
 	} {
 		surface := strings.TrimSpace(stringFromMap(triple, endpoint.field))
-		occurrence, ambiguous := p.resolveUnique(surface)
+		occurrence, reviewState, ambiguous := p.resolveUnique(surface)
 		if occurrence == nil && ambiguous {
 			occurrence = p.persistUnknownOccurrence(ctx, surface, "unknown", "kg_triple_"+endpoint.role, ordinal, result)
+			reviewState = "needs_review"
 		}
 		if occurrence == nil {
 			continue
 		}
-		reviewState := occurrence.ReviewState
 		if ambiguous {
 			reviewState = "needs_review"
 		}
@@ -425,10 +571,11 @@ func (p *entityIdentityProjection) persistSpeakerAttributions(ctx context.Contex
 			continue
 		}
 		speakerName := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "speaker_name"), stringFromMap(item, "speaker")))
-		occurrence, ambiguous := p.resolveUnique(speakerName)
+		occurrence, surfaceReviewState, ambiguous := p.resolveUnique(speakerName)
 		state := strings.ToLower(strings.TrimSpace(stringFromMap(item, "attribution_state")))
 		explicitlyAmbiguous := state == "ambiguous" || state == "unknown" || state == "tentative" || state == "needs_review"
-		linkedBySource := occurrence != nil && !ambiguous && speakerName != "" && strings.Contains(excerpt, speakerName)
+		linkedBySource := occurrence != nil && !ambiguous && surfaceReviewState == "source_observed" &&
+			p.surfaceAppearsIndependentlyWithinSourceSpan(speakerName, spanStart, spanEnd)
 		if !linkedBySource || explicitlyAmbiguous {
 			occurrence = p.persistUnknownOccurrence(ctx, speakerName, "speaker", "speaker_attribution", index, result)
 		}

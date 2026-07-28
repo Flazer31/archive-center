@@ -123,7 +123,7 @@ func TestCompleteTurnSubjectiveEntityMemoryDuplicateSkipped(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnSubjectiveEntityMemoryCanonicalizesOwnerAliases(t *testing.T) {
+func TestCompleteTurnSubjectiveEntityMemoryDoesNotGuessRomanizedOwnerAlias(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnCharStates: []store.CharacterState{{CharacterName: "\uc774\uc2dc\uc6b0"}},
 	}
@@ -147,19 +147,19 @@ func TestCompleteTurnSubjectiveEntityMemoryCanonicalizesOwnerAliases(t *testing.
 	}
 	saved := fake.savedEntityMemories[0]
 	if saved.OwnerEntityKey != "siwoo" || saved.PersonaEntityKey != "siwoo" {
-		t.Fatalf("owner alias key was not canonicalized: %+v", saved)
+		t.Fatalf("owner key changed without explicit identity evidence: %+v", saved)
 	}
-	if saved.OwnerEntityName != "\uc774\uc2dc\uc6b0" || saved.PersonaEntityName != "\uc774\uc2dc\uc6b0" {
-		t.Fatalf("owner display name should use canonical character state: %+v", saved)
+	if saved.OwnerEntityName != "Siwoo" || saved.PersonaEntityName != "Siwoo" {
+		t.Fatalf("romanized owner was merged into a stored character without explicit evidence: %+v", saved)
 	}
-	for _, needle := range []string{"owner_entity_alias:Siwoo", "entity_alias_canonicalized", "raw_owner_entity_name:Siwoo"} {
-		if !strings.Contains(saved.TagsJSON, needle) {
-			t.Fatalf("canonical alias tag %q missing from %s", needle, saved.TagsJSON)
+	for _, forbidden := range []string{"entity_alias_canonicalized", "raw_owner_entity_name:Siwoo"} {
+		if strings.Contains(saved.TagsJSON, forbidden) {
+			t.Fatalf("unconfirmed alias tag %q must not be added to %s", forbidden, saved.TagsJSON)
 		}
 	}
 }
 
-func TestSaveCriticExtractionArtifactsNormalizesMultilingualEntityAliases(t *testing.T) {
+func TestSaveCriticExtractionArtifactsPreservesUnconfirmedMultilingualAliases(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnCharStates: []store.CharacterState{{CharacterName: "Mina"}},
 	}
@@ -185,14 +185,14 @@ func TestSaveCriticExtractionArtifactsNormalizesMultilingualEntityAliases(t *tes
 	if result.Entities != 1 || result.KGTriples != 1 {
 		t.Fatalf("expected entity and KG saves, result=%#v entities=%#v kg=%#v", result, fake.savedEntities, fake.savedKGTriples)
 	}
-	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "Mina" {
-		t.Fatalf("expected Korean entity name to canonicalize to Mina, got %#v", fake.savedEntities)
+	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "\uBBFC\uC544" {
+		t.Fatalf("unconfirmed multilingual alias was rewritten: %#v", fake.savedEntities)
 	}
 	if !strings.Contains(fake.savedEntities[0].AliasesJSON, "Mina") || !strings.Contains(fake.savedEntities[0].AliasesJSON, "\uBBFC\uC544") {
 		t.Fatalf("expected aliases to preserve display variants, got %#v", fake.savedEntities[0])
 	}
-	if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "Mina" || fake.savedKGTriples[0].Object != "Rowan" {
-		t.Fatalf("expected KG subject to use canonical display name, got %#v", fake.savedKGTriples)
+	if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "\uBBFC\uC544" || fake.savedKGTriples[0].Object != "Rowan" {
+		t.Fatalf("unconfirmed KG subject was rewritten: %#v", fake.savedKGTriples)
 	}
 }
 

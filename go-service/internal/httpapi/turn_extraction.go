@@ -520,112 +520,29 @@ func (s *Server) canonicalCharacterName(ctx context.Context, sid, proposed strin
 	if err != nil || len(states) == 0 {
 		return proposed
 	}
-	proposedKeys := comparableCharacterAliasKeys(proposed)
-	proposedKey := firstNonEmpty(proposedKeys...)
+	proposedKey := comparableEntityKey(proposed)
 	if proposedKey == "" {
 		return proposed
 	}
+	matched := ""
 	for _, state := range states {
 		candidate := strings.TrimSpace(state.CharacterName)
-		if candidate == "" {
+		if candidate == "" || comparableEntityKey(candidate) != proposedKey {
 			continue
 		}
-		candidateKeys := comparableCharacterAliasKeys(candidate)
-		candidateKey := firstNonEmpty(candidateKeys...)
-		if candidateKey == "" {
-			continue
+		if matched != "" && matched != candidate {
+			return proposed
 		}
-		if characterAliasKeysOverlap(proposedKeys, candidateKeys) {
-			return candidate
-		}
+		matched = candidate
+	}
+	if matched != "" {
+		return matched
 	}
 	return proposed
 }
 
 func canonicalCharacterAliasKey(name string) string {
-	key := normalizeCharacterKey(name)
-	if key == "" {
-		return ""
-	}
-	if canonical, ok := knownCharacterAliasKeys[key]; ok {
-		return canonical
-	}
-	return key
-}
-
-var knownCharacterAliasKeys = map[string]string{
-	"isiu":              "siwoo",
-	"leesiwoo":          "siwoo",
-	"leesiwu":           "siwoo",
-	"siu":               "siwoo",
-	"siwoo":             "siwoo",
-	"siwu":              "siwoo",
-	"chloe":             "chloe",
-	"kloe":              "chloe",
-	"keulroe":           "chloe",
-	"asuna":             "asuna",
-	"aseuna":            "asuna",
-	"ichinoseasuna":     "asuna",
-	"ichinoseaseuna":    "asuna",
-	"ichinose":          "ichinose",
-	"saori":             "saori",
-	"sao-ri":            "saori",
-	"ichinoseasna":      "asuna",
-	"ichinoseasunah":    "asuna",
-	"ichinoseaseunah":   "asuna",
-	"ichinoseasunaich":  "asuna",
-	"ichinoseaseunaich": "asuna",
-	"vex":               "vex",
-	"bex":               "vex",
-	"bekseu":            "vex",
-}
-
-func comparableCharacterAliasKeys(name string) []string {
-	added := map[string]bool{}
-	out := []string{}
-	add := func(value string) {
-		key := canonicalCharacterAliasKey(value)
-		if key == "" || added[key] {
-			return
-		}
-		added[key] = true
-		out = append(out, key)
-	}
-	add(name)
-	for _, part := range strings.FieldsFunc(name, func(r rune) bool {
-		switch r {
-		case ' ', '\t', '\n', '\r', '-', '_', '.', '/', '\\', '·', '・', '(', ')', '[', ']', '{', '}', ':', ';', ',', '\'':
-			return true
-		default:
-			return false
-		}
-	}) {
-		part = strings.TrimSpace(part)
-		if len([]rune(canonicalCharacterAliasKey(part))) >= 4 {
-			add(part)
-		}
-	}
-	return out
-}
-
-func characterAliasKeysOverlap(left, right []string) bool {
-	for _, l := range left {
-		for _, r := range right {
-			if l == "" || r == "" {
-				continue
-			}
-			if l == r {
-				return true
-			}
-			if len([]rune(l)) >= 5 && strings.HasSuffix(r, l) {
-				return true
-			}
-			if len([]rune(r)) >= 5 && strings.HasSuffix(l, r) {
-				return true
-			}
-		}
-	}
-	return false
+	return normalizeCharacterKey(name)
 }
 
 var koreanInitialRoman = []string{"g", "kk", "n", "d", "tt", "r", "m", "b", "pp", "s", "ss", "", "j", "jj", "ch", "k", "t", "p", "h"}
