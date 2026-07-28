@@ -7,7 +7,9 @@ Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존�
 자료 종류별 독립 기억 예산, 출력 계보와 플로팅 진행 HUD가 포함됩니다. 완료 범위,
 실제 UI 제공 상태, 추가 검증이 필요한 부분과 3.6 이후 인계는
 [`docs/3.1-3.5-consolidated-release.md`](docs/3.1-3.5-consolidated-release.md)에
-정리되어 있습니다.
+정리되어 있습니다. 3.6부터 4.0까지의 정밀 장기 기억 구현 범위는
+[`docs/3.6-4.0-precision-long-term-memory-roadmap.md`](docs/3.6-4.0-precision-long-term-memory-roadmap.md)
+한 문서만 권위 로드맵으로 사용합니다.
 
 ## Runtime Architecture
 
