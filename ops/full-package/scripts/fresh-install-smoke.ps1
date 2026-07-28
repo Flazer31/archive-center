@@ -89,9 +89,9 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     if ($launcherScriptText.Contains("archive-center-go.new.exe")) {
         [void]$failures.Add("launcher_legacy_partial_update_path_present")
     }
-    foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "LocalApplicationData")) {
+    foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "AC_CHROMA_RUNTIME_DIR", "-InstallChromaDBRuntime", "Start-ManagedChromaDB", "LocalApplicationData")) {
         if (-not $launcherScriptText.Contains($marker)) {
-            [void]$failures.Add("launcher_separate_mariadb_marker_missing:$marker")
+            [void]$failures.Add("launcher_managed_runtime_marker_missing:$marker")
         }
     }
     if ($launcherScriptText -notmatch '(?s)if \(\$pendingApplyStatus -eq "applied_pending_health"\).*?\}\s*else\s*\{\s*& \$backendExe\s*\}') {
@@ -119,9 +119,14 @@ if (Test-Path -LiteralPath $installerScriptPath -PathType Leaf) {
     $installerScriptText = Get-Content -LiteralPath $installerScriptPath -Raw -Encoding UTF8
     foreach ($marker in @(
         "-InstallMariaDBRuntime",
+        "-InstallChromaDBRuntime",
         "https://dlm.mariadb.com/4566977/MariaDB/mariadb-11.4.10/winx64-packages/mariadb-11.4.10-winx64.zip",
         "fb7c76f0804321ee373daa49145f2056d2d88f321b614130adeb05a1644ea003",
         "MariaDB archive SHA-256 mismatch",
+        "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
+        "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
+        "Python installer Authenticode verification failed",
+        "chromadb==`$ChromaDBVersion",
         "package_bundled = `$false"
     )) {
         if (-not $installerScriptText.Contains($marker)) {
@@ -134,8 +139,8 @@ if (-not $SkipRuntimePayloadCheck) {
     if (-not [string]::IsNullOrWhiteSpace((Find-MariaDBProvider (Join-Path $packRoot "runtime")))) {
         [void]$failures.Add("forbidden_payload:mariadb_runtime")
     }
-    if ([string]::IsNullOrWhiteSpace((Find-ChromaRuntime (Join-Path $packRoot "runtime")))) {
-        [void]$failures.Add("missing:chromadb_runtime")
+    if (-not [string]::IsNullOrWhiteSpace((Find-ChromaRuntime (Join-Path $packRoot "runtime")))) {
+        [void]$failures.Add("forbidden_payload:chromadb_runtime")
     }
 }
 

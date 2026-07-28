@@ -6,20 +6,23 @@ It includes:
 
 - Go backend
 - next-start package updater
-- per-user MariaDB runtime installer
+- per-user MariaDB and ChromaDB runtime installers
 - Archive Center.js
 - migrations
 - prompts
 
-MariaDB and ChromaDB are not contained in the Archive Center ZIP. On first
-start, the launcher downloads the pinned official MariaDB ZIP, verifies its
-SHA-256, and installs it under
-`%LOCALAPPDATA%\ArchiveCenter\runtime\MariaDB`.
+MariaDB, Python, and ChromaDB are not contained in the Archive Center ZIP. On
+first start, the launcher downloads the pinned official MariaDB ZIP and the
+official CPython installer. It verifies both SHA-256 values, also requires a
+valid Python Software Foundation Authenticode signature, and installs the
+runtimes under `%LOCALAPPDATA%\ArchiveCenter\runtime`. ChromaDB 1.5.9 is then
+installed into a dedicated managed Python environment.
 
-The default runtime profile is `core_lite` with vector mode `fallback`, so
-ChromaDB is not required for the normal first start. Users who need vector
-search can configure an external ChromaDB endpoint or a separately installed
-local ChromaDB runtime.
+The standard runtime profile is `full_local` with vector mode `bundled`, so the
+normal first start prepares and starts both MariaDB and local ChromaDB. The
+first start requires an internet connection and can take several minutes.
+Users may still select `core_lite`/`fallback` or configure an external
+ChromaDB endpoint when local vector search is not wanted.
 
 ## Start
 
@@ -62,7 +65,8 @@ Updates do not move, replace, or copy `.runtime/`, `.updates/`,
 `.env.full.local`, or `.env.full.local.protected`. MariaDB and any separately
 configured ChromaDB keep using their existing data directories. The MariaDB
 executable runtime remains outside the versioned package under
-`%LOCALAPPDATA%\ArchiveCenter`. The v1 automatic updater
+`%LOCALAPPDATA%\ArchiveCenter`. The separately installed Python and ChromaDB
+runtime also remain outside the package. The v1 automatic updater
 rejects a package that adds or changes managed migration SQL or
 `mariadb-schema.exe`; database-changing releases require a separately reviewed
 manual migration path.
@@ -139,7 +143,7 @@ Edit `.env.full.local`, then run `04_protect_env_windows.bat` again.
 Do not put these into a release zip:
 
 - `.runtime/`
-- MariaDB or ChromaDB runtime binaries
+- MariaDB, Python, or ChromaDB runtime binaries
 - database files
 - ChromaDB persist data
 - API keys

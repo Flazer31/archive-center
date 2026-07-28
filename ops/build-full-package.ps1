@@ -374,9 +374,9 @@ if ($PackageKind -eq "managed") {
     if (-not [string]::IsNullOrWhiteSpace($ChromaRuntime)) {
         throw "Managed Windows packages must not bundle ChromaDB. Remove -ChromaRuntime or use -PackageKind full for an internal full build."
     }
-    $runtimeProfileDefault = "core_lite"
-    $vectorModeDefault = "fallback"
-    $packageProfile = "windows_managed_auto_install"
+    $runtimeProfileDefault = "full_local"
+    $vectorModeDefault = "bundled"
+    $packageProfile = "windows_managed_full_local_auto_install"
     $requiredRuntimePayloads = @()
 } else {
     $runtimeProfileDefault = "full_local"
@@ -522,20 +522,23 @@ $manifest = [ordered]@{
     vector_engine = $vectorEngine
     includes_runtime_binaries = [bool]$chromaCopied
     mariadb_distribution = "separate_official_runtime_install"
+    chromadb_distribution = if ($PackageKind -eq "managed") { "separate_pinned_runtime_install" } else { "bundled" }
     runtime_profile_default = $runtimeProfileDefault
     vector_mode_default = $vectorModeDefault
     go_toolchain = $goVersionText
-    chromadb_version = if ($chromaCopied) { "1.5.9" } else { "not_bundled" }
+    chromadb_version = "1.5.9"
     chromadb_api_path = "/api/v2"
     required_runtime_payloads = $requiredRuntimePayloads
     runtime_payloads = [ordered]@{
         mariadb_payload_copied = $false
         mariadb_install_tool = "tools/install-windows.ps1"
         mariadb_external_runtime_root = "%LOCALAPPDATA%\ArchiveCenter\runtime\MariaDB"
+        chromadb_install_tool = if ($PackageKind -eq "managed") { "tools/install-windows.ps1 -InstallChromaDBRuntime" } else { "" }
+        chromadb_external_runtime_root = if ($PackageKind -eq "managed") { "%LOCALAPPDATA%\ArchiveCenter\runtime\ChromaDB\1.5.9" } else { "" }
         chromadb_copied_from = if ($chromaCopied) { "release-runtime-input" } else { "" }
         chromadb_payload_copied = [bool]$chromaCopied
         chromadb_runtime_path = $chromaRuntimeFound
-        chromadb_default_behavior = if ($PackageKind -eq "managed") { "fallback; configure an external or separately installed local ChromaDB to enable vector mode" } else { "bundled" }
+        chromadb_default_behavior = if ($PackageKind -eq "managed") { "download verified official Python, install pinned ChromaDB 1.5.9 per user, and start local vector mode" } else { "bundled" }
     }
     windows_trust = [ordered]@{
         automatic_defender_exclusions = $false
@@ -574,6 +577,8 @@ $manifest = [ordered]@{
         "test binaries",
         "database files",
         "MariaDB runtime binaries",
+        "Python runtime binaries",
+        "ChromaDB runtime binaries",
         "legacy 1.0 migration tools and launcher",
         "ChromaDB persist data",
         "backup/release/deploy outputs"

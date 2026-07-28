@@ -139,7 +139,7 @@ function Start-ArchiveChildProcess {
             $nativeCode = $_.Exception.InnerException.NativeErrorCode
         }
         $message = $_.Exception.Message
-        $hint = "Failed to start bundled runtime executable."
+        $hint = "Failed to start managed runtime executable."
         if ($nativeCode -eq 1223 -or $message -match "(?i)cancel|cancell|operation.*canceled|user.*cancel") {
             $hint = "Windows cancelled the bundled runtime executable launch. This is commonly caused by Mark-of-the-Web, SmartScreen, Defender quarantine, or a cancelled security prompt. From the package root, run: Get-ChildItem -Recurse -File | Unblock-File"
         }
@@ -147,8 +147,13 @@ function Start-ArchiveChildProcess {
     }
 }
 
-function Find-BundledPython([string]$Root) {
+function Find-ChromaRuntimePython([string]$Root) {
+    if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return ""
+    }
     $candidates = @(
+        "runtime\ChromaDB\1.5.9\Scripts\python.exe",
+        "runtime\chromadb\1.5.9\Scripts\python.exe",
         "runtime\Python\python.exe",
         "runtime\python\python.exe",
         "runtime\Python\Scripts\python.exe",
@@ -164,7 +169,11 @@ function Find-BundledPython([string]$Root) {
             return (Resolve-Path -LiteralPath $path).Path
         }
     }
-    $hit = Get-ChildItem -LiteralPath (Join-Path $Root "runtime") -Recurse -File -ErrorAction SilentlyContinue |
+    $searchRoot = Join-Path $Root "runtime"
+    if (-not (Test-Path -LiteralPath $searchRoot -PathType Container)) {
+        $searchRoot = $Root
+    }
+    $hit = Get-ChildItem -LiteralPath $searchRoot -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ieq "python.exe" } |
         Sort-Object FullName |
         Select-Object -First 1
@@ -174,9 +183,10 @@ function Find-BundledPython([string]$Root) {
     return $hit.FullName
 }
 
-function Start-BundledChromaDB {
+function Start-ManagedChromaDB {
     param(
         [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
         [Parameter(Mandatory = $true)][Uri]$Endpoint
     )
 
@@ -185,18 +195,18 @@ function Start-BundledChromaDB {
     $dataDir = Join-Path $PackageRoot ".runtime\chromadb"
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
-    $python = Find-BundledPython $PackageRoot
+    $python = Find-ChromaRuntimePython $RuntimeRoot
     if ([string]::IsNullOrWhiteSpace($python)) {
-        throw "Bundled ChromaDB Python runtime not found under runtime/. Package is incomplete."
+        throw "Managed ChromaDB Python runtime not found: $RuntimeRoot"
     }
     Unblock-PackageFile $python
 
     & $python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('chromadb') else 1)"
     if ($LASTEXITCODE -ne 0) {
-        throw "Bundled Python exists but does not include chromadb."
+        throw "Managed Python exists but does not include chromadb."
     }
 
-    Write-Host "Starting bundled ChromaDB"
+    Write-Host "Starting managed ChromaDB"
     Write-Host "  Endpoint: http://$hostName`:$port"
     Write-Host "  Data:     $dataDir"
 
@@ -342,7 +352,7 @@ $profileBeforeApply = if (-not [string]::IsNullOrWhiteSpace($RuntimeProfile)) {
     Get-DotEnvValue $EnvFile "AC_RUNTIME_PROFILE"
 }
 if ([string]::IsNullOrWhiteSpace($profileBeforeApply)) {
-    $profileBeforeApply = "core_lite"
+    $profileBeforeApply = "full_local"
 }
 $profileBeforeApply = $profileBeforeApply.Trim().ToLowerInvariant()
 
@@ -478,7 +488,7 @@ if ($pendingApplyStatus -eq "applied_pending_health" -and -not [string]::IsNullO
 if (-not [string]::IsNullOrWhiteSpace($BindAddr)) {
     $env:AC_BIND_ADDR = $BindAddr
 }
-$profileCandidate = if (-not [string]::IsNullOrWhiteSpace($RuntimeProfile)) { $RuntimeProfile } elseif (-not [string]::IsNullOrWhiteSpace($env:AC_RUNTIME_PROFILE)) { $env:AC_RUNTIME_PROFILE } else { "core_lite" }
+$profileCandidate = if (-not [string]::IsNullOrWhiteSpace($RuntimeProfile)) { $RuntimeProfile } elseif (-not [string]::IsNullOrWhiteSpace($env:AC_RUNTIME_PROFILE)) { $env:AC_RUNTIME_PROFILE } else { "full_local" }
 $profileCandidate = $profileCandidate.Trim().ToLowerInvariant()
 if (-not (Test-AllowedRuntimeProfile $profileCandidate)) {
     throw "Unsupported runtime profile: $profileCandidate"
@@ -523,7 +533,8 @@ $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
 if ([string]::IsNullOrWhiteSpace($localAppData)) {
     $localAppData = Join-Path $env:USERPROFILE "AppData\Local"
 }
-$mariaInstallRoot = Join-Path $localAppData "ArchiveCenter"
+$managedRuntimeInstallRoot = Join-Path $localAppData "ArchiveCenter"
+$mariaInstallRoot = $managedRuntimeInstallRoot
 $mariaRuntimeRoot = Join-Path $mariaInstallRoot "runtime\MariaDB"
 if (-not [string]::IsNullOrWhiteSpace($env:AC_MARIADB_RUNTIME_DIR)) {
     $mariaRuntimeRoot = [System.IO.Path]::GetFullPath($env:AC_MARIADB_RUNTIME_DIR)
@@ -557,6 +568,40 @@ foreach ($tool in @($mariadbd, $installDb, $client, $admin)) {
     }
     Unblock-PackageFile $tool
 }
+
+$chromaRuntimeRoot = $managedRuntimeInstallRoot
+$packageChromaPython = Find-ChromaRuntimePython $packRoot
+if (-not [string]::IsNullOrWhiteSpace($packageChromaPython)) {
+    # Internal full packages may still carry their own runtime. Standard
+    # managed packages never do.
+    $chromaRuntimeRoot = $packRoot
+} elseif (-not [string]::IsNullOrWhiteSpace($env:AC_CHROMA_RUNTIME_DIR)) {
+    $chromaRuntimeRoot = [System.IO.Path]::GetFullPath($env:AC_CHROMA_RUNTIME_DIR)
+}
+if (Test-LocalChromaRequested $env:AC_VECTOR_MODE) {
+    $chromaPython = Find-ChromaRuntimePython $chromaRuntimeRoot
+    if ([string]::IsNullOrWhiteSpace($chromaPython)) {
+        if (-not [string]::IsNullOrWhiteSpace($env:AC_CHROMA_RUNTIME_DIR)) {
+            throw "AC_CHROMA_RUNTIME_DIR does not contain a complete ChromaDB runtime: $chromaRuntimeRoot"
+        }
+        $runtimeInstaller = Join-Path $packRoot "tools\install-windows.ps1"
+        if (-not (Test-Path -LiteralPath $runtimeInstaller -PathType Leaf)) {
+            throw "Separate ChromaDB runtime is missing and the installer was not found: $runtimeInstaller"
+        }
+        Write-Host "ChromaDB is not bundled with Archive Center. Installing verified official Python and pinned ChromaDB for this user."
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller -InstallChromaDBRuntime -InstallDir $managedRuntimeInstallRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "Separate ChromaDB runtime installation failed. Check the download connection and retry."
+        }
+        $chromaRuntimeRoot = $managedRuntimeInstallRoot
+        $chromaPython = Find-ChromaRuntimePython $chromaRuntimeRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($chromaPython) -or -not (Test-Path -LiteralPath $chromaPython -PathType Leaf)) {
+        throw "Separate ChromaDB runtime is incomplete: $chromaRuntimeRoot"
+    }
+    Unblock-PackageFile $chromaPython
+}
+
 Unblock-PackageFile $backendExe
 Unblock-PackageFile (Join-Path $packRoot "bin\mariadb-schema.exe")
 
@@ -618,7 +663,7 @@ try {
             $chromaUri = [Uri]$env:AC_CHROMA_ENDPOINT
             $chromaPort = if ($chromaUri.Port -gt 0) { $chromaUri.Port } else { 8000 }
             if (-not (Test-PortOpen $chromaPort)) {
-                $startedChroma = Start-BundledChromaDB -PackageRoot $packRoot -Endpoint $chromaUri
+                $startedChroma = Start-ManagedChromaDB -PackageRoot $packRoot -RuntimeRoot $chromaRuntimeRoot -Endpoint $chromaUri
             }
             try {
                 Wait-Port $chromaPort 60
@@ -701,7 +746,7 @@ Write-Host "Starting Archive Center 2.1 full package"
                     Wait-Port $MariaDBPort 60
                 }
                 if ($restartManagedChroma) {
-                    $startedChroma = Start-BundledChromaDB -PackageRoot $packRoot -Endpoint $chromaUri
+                    $startedChroma = Start-ManagedChromaDB -PackageRoot $packRoot -RuntimeRoot $chromaRuntimeRoot -Endpoint $chromaUri
                     Wait-Port $chromaPort 60
                 }
                 Write-Host "Update commit did not return a clean acknowledgement ($commitFailure). Recovery is safe; starting the verified current backend."
@@ -725,7 +770,7 @@ Write-Host "Starting Archive Center 2.1 full package"
                 Wait-Port $MariaDBPort 60
             }
             if ($restartManagedChroma) {
-                $startedChroma = Start-BundledChromaDB -PackageRoot $packRoot -Endpoint $chromaUri
+                $startedChroma = Start-ManagedChromaDB -PackageRoot $packRoot -RuntimeRoot $chromaRuntimeRoot -Endpoint $chromaUri
                 Wait-Port $chromaPort 60
             }
             Write-Host "Updated backend failed main readiness ($($health.Detail)). The verified baseline was restored; starting the old backend."

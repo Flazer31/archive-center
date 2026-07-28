@@ -1,6 +1,7 @@
 ﻿param(
     [switch]$Preflight,
     [switch]$InstallMariaDBRuntime,
+    [switch]$InstallChromaDBRuntime,
     [switch]$StageMariaDBProvider,
     [switch]$VerifyBundle,
     [string]$Out = "",
@@ -10,7 +11,11 @@
     [string]$BundlePath = "",
     [string]$MariaDBVersion = "11.4.10",
     [string]$MariaDBDownloadUrl = "https://dlm.mariadb.com/4566977/MariaDB/mariadb-11.4.10/winx64-packages/mariadb-11.4.10-winx64.zip",
-    [string]$MariaDBSha256 = "fb7c76f0804321ee373daa49145f2056d2d88f321b614130adeb05a1644ea003"
+    [string]$MariaDBSha256 = "fb7c76f0804321ee373daa49145f2056d2d88f321b614130adeb05a1644ea003",
+    [string]$PythonVersion = "3.11.9",
+    [string]$PythonDownloadUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
+    [string]$PythonSha256 = "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
+    [string]$ChromaDBVersion = "1.5.9"
 )
 
 Set-StrictMode -Version 3.0
@@ -182,31 +187,52 @@ function Find-GoBackendBinary {
     return ""
 }
 
-function Find-ChromaDBRuntime {
+function Find-ChromaDBPython {
     param([string]$Root)
+    if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return ""
+    }
     $candidates = @(
-        "runtime\ChromaDB",
-        "runtime\chromadb",
-        "runtime\Python\Lib\site-packages\chromadb",
-        "resources\ChromaDB",
-        "resources\chromadb",
-        "vendor\ChromaDB",
-        "vendor\chromadb"
+        "runtime\ChromaDB\$ChromaDBVersion\Scripts\python.exe",
+        "runtime\chromadb\$ChromaDBVersion\Scripts\python.exe",
+        "runtime\ChromaDB\Scripts\python.exe",
+        "runtime\chromadb\Scripts\python.exe",
+        "runtime\ChromaDB\python.exe",
+        "runtime\chromadb\python.exe"
     )
     foreach ($rel in $candidates) {
         $path = Join-Path $Root $rel
-        if (Test-Path -LiteralPath $path -PathType Container) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
             return (Resolve-Path -LiteralPath $path).Path
         }
     }
-    $found = Get-ChildItem -LiteralPath $Root -Recurse -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -ieq "chromadb" -or $_.Name -ieq "ChromaDB" -or $_.Name -ieq "chroma" } |
+    $found = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ieq "python.exe" -and $_.FullName -match "(?i)[\\/]runtime[\\/]chromadb[\\/]" } |
         Sort-Object FullName |
         Select-Object -First 1
     if ($null -ne $found) {
         return (Resolve-Path -LiteralPath $found.FullName).Path
     }
     return ""
+}
+
+function Find-ChromaDBRuntime {
+    param([string]$Root)
+    $python = Find-ChromaDBPython $Root
+    if ([string]::IsNullOrWhiteSpace($python)) {
+        return ""
+    }
+    $runtime = Split-Path -Parent (Split-Path -Parent $python)
+    return (Resolve-Path -LiteralPath $runtime).Path
+}
+
+function Test-ChromaDBRuntimeVersion {
+    param([string]$PythonPath)
+    if ([string]::IsNullOrWhiteSpace($PythonPath) -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
+        return $false
+    }
+    & $PythonPath -c "import sys; from importlib.metadata import version; import chromadb; sys.exit(0 if version('chromadb') == sys.argv[1] else 1)" $ChromaDBVersion *> $null
+    return $LASTEXITCODE -eq 0
 }
 
 function Write-JsonReport {
@@ -341,10 +367,15 @@ function Invoke-Preflight {
         Add-ListItem $warnings "mariadb_separate_runtime_install_required"
     }
 
-    $chromaRuntime = Find-ChromaDBRuntime $effectiveInstallDir
+    $chromaSearchRoot = if (-not [string]::IsNullOrWhiteSpace($env:AC_CHROMA_RUNTIME_DIR)) {
+        Resolve-ExistingPathOrRaw $env:AC_CHROMA_RUNTIME_DIR
+    } else {
+        $defaultMariaDBInstallRoot
+    }
+    $chromaRuntime = Find-ChromaDBRuntime $chromaSearchRoot
     $chromaRuntimePresent = -not [string]::IsNullOrWhiteSpace($chromaRuntime)
     if (-not $chromaRuntimePresent) {
-        Add-ListItem $warnings "chromadb_runtime_bundle_required"
+        Add-ListItem $warnings "chromadb_separate_runtime_install_required"
     }
 
     $supportLevel = "green"
@@ -400,7 +431,7 @@ function Invoke-Preflight {
             runtime_path = $chromaRuntime
             installer_managed_required = -not $chromaRuntimePresent
             normal_user_manual_chromadb_required = $false
-            required_action = if ($chromaRuntimePresent) { "use bundled ChromaDB runtime" } else { "installer must stage a bundled ChromaDB/Python runtime under runtime/ChromaDB or runtime/Python" }
+            required_action = if ($chromaRuntimePresent) { "use the installed separate ChromaDB runtime" } else { "installer downloads verified official Python and installs pinned ChromaDB into the per-user ArchiveCenter runtime directory" }
             smoke_status = "not_run_preflight_only"
         }
         ports = [ordered]@{
@@ -521,6 +552,128 @@ function Invoke-InstallMariaDBRuntime {
     }
 }
 
+function Invoke-InstallChromaDBRuntime {
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir "..")).Path
+    $effectiveInstallDir = $InstallDir
+    if ([string]::IsNullOrWhiteSpace($effectiveInstallDir)) {
+        $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+        if ([string]::IsNullOrWhiteSpace($localAppData)) {
+            $localAppData = Join-Path $env:USERPROFILE "AppData\Local"
+        }
+        $effectiveInstallDir = Join-Path $localAppData "ArchiveCenter"
+    }
+    $effectiveInstallDir = Resolve-ExistingPathOrRaw $effectiveInstallDir
+    if (Test-PathInside $effectiveInstallDir $repoRoot) {
+        throw "Refusing to install the separate Python/ChromaDB runtime inside the Archive Center package or source tree."
+    }
+
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    if ($arch -ne "x64") {
+        throw "The managed Windows ChromaDB installer currently supports x64 only. Detected architecture: $arch"
+    }
+
+    $existingPython = Find-ChromaDBPython $effectiveInstallDir
+    if (Test-ChromaDBRuntimeVersion $existingPython) {
+        return [ordered]@{
+            schema_version = "archive-center.chromadb-runtime-install.v1"
+            status = "already_installed"
+            version = $ChromaDBVersion
+            python_version = $PythonVersion
+            install_dir = $effectiveInstallDir
+            runtime_root = Find-ChromaDBRuntime $effectiveInstallDir
+            python_path = $existingPython
+            downloaded_by_archive_center = $false
+            package_bundled = $false
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PythonDownloadUrl) -or [string]::IsNullOrWhiteSpace($PythonSha256)) {
+        throw "Python download URL and SHA-256 are required."
+    }
+
+    $pythonRoot = Join-Path $effectiveInstallDir "runtime\Python\$PythonVersion"
+    $pythonExe = Join-Path $pythonRoot "python.exe"
+    $chromaRoot = Join-Path $effectiveInstallDir "runtime\ChromaDB\$ChromaDBVersion"
+    $chromaPython = Join-Path $chromaRoot "Scripts\python.exe"
+    $installerPath = Join-Path ([System.IO.Path]::GetTempPath()) ("archive-center-python-$PythonVersion-$PID.exe")
+    $downloadedPython = $false
+    try {
+        if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Write-Host "Downloading Python $PythonVersion from python.org for the managed ChromaDB runtime."
+            Invoke-WebRequest -UseBasicParsing -Uri $PythonDownloadUrl -OutFile $installerPath
+            $downloadedPython = $true
+            $actualSha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $expectedSha256 = $PythonSha256.Trim().ToLowerInvariant()
+            if ($actualSha256 -ne $expectedSha256) {
+                throw "Python installer SHA-256 mismatch. Expected $expectedSha256, got $actualSha256."
+            }
+            $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
+            $signerSubject = if ($null -ne $signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { "" }
+            if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $signerSubject -notmatch "(?i)(^|,\s*)O=Python Software Foundation(,|$)") {
+                throw "Python installer Authenticode verification failed. Status: $($signature.Status); signer: $signerSubject"
+            }
+
+            New-Item -ItemType Directory -Force -Path $pythonRoot | Out-Null
+            $pythonArgs = @(
+                "/quiet",
+                "InstallAllUsers=0",
+                ('TargetDir="{0}"' -f $pythonRoot),
+                "PrependPath=0",
+                "Include_launcher=0",
+                "Include_test=0",
+                "Include_doc=0",
+                "Include_tcltk=0",
+                "Include_pip=1"
+            )
+            $installProcess = Start-Process -FilePath $installerPath -ArgumentList $pythonArgs -Wait -PassThru -WindowStyle Hidden
+            if ($installProcess.ExitCode -ne 0) {
+                throw "Python installer failed with exit code $($installProcess.ExitCode)."
+            }
+        }
+        if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+            throw "Python installation completed without producing the expected executable: $pythonExe"
+        }
+
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $chromaRoot) | Out-Null
+        & $pythonExe -m venv $chromaRoot 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $chromaPython -PathType Leaf)) {
+            throw "Managed ChromaDB virtual environment creation failed."
+        }
+        & $chromaPython -m pip install --disable-pip-version-check --no-input --upgrade pip wheel setuptools 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "Managed ChromaDB pip bootstrap failed."
+        }
+        & $chromaPython -m pip install --disable-pip-version-check --no-input "chromadb==$ChromaDBVersion" 2>&1 | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "pip install chromadb==$ChromaDBVersion failed."
+        }
+        if (-not (Test-ChromaDBRuntimeVersion $chromaPython)) {
+            throw "ChromaDB $ChromaDBVersion was installed but the runtime verification failed."
+        }
+
+        return [ordered]@{
+            schema_version = "archive-center.chromadb-runtime-install.v1"
+            status = "installed"
+            version = $ChromaDBVersion
+            python_version = $PythonVersion
+            install_dir = $effectiveInstallDir
+            runtime_root = $chromaRoot
+            python_path = $chromaPython
+            python_source_url = $PythonDownloadUrl
+            python_sha256 = $PythonSha256.Trim().ToLowerInvariant()
+            python_authenticode_signer = "Python Software Foundation"
+            downloaded_by_archive_center = $downloadedPython
+            package_bundled = $false
+        }
+    } finally {
+        if (Test-Path -LiteralPath $installerPath -PathType Leaf) {
+            Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-VerifyBundle {
     if ([string]::IsNullOrWhiteSpace($BundlePath)) {
         throw "BundlePath is required for -VerifyBundle"
@@ -549,8 +702,23 @@ function Invoke-VerifyBundle {
         if (-not [string]::IsNullOrWhiteSpace($mariadbProvider)) {
             Add-ListItem $failures "mariadb_runtime_must_not_be_bundled"
         }
-        if ([string]::IsNullOrWhiteSpace($chromaRuntime)) {
-            Add-ListItem $failures "chromadb_runtime_missing"
+        if (-not [string]::IsNullOrWhiteSpace($chromaRuntime)) {
+            Add-ListItem $failures "chromadb_runtime_must_not_be_bundled"
+        }
+        $runtimeInstallerFile = Get-ChildItem -LiteralPath $tempRoot -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ieq "install-windows.ps1" -and $_.DirectoryName -match "(?i)[\\/]tools$" } |
+            Sort-Object FullName |
+            Select-Object -First 1
+        if ($null -eq $runtimeInstallerFile) {
+            Add-ListItem $failures "managed_runtime_installer_missing"
+        } else {
+            $runtimeInstaller = $runtimeInstallerFile.FullName
+            $runtimeInstallerText = Get-Content -LiteralPath $runtimeInstaller -Raw -Encoding UTF8
+            foreach ($marker in @("-InstallMariaDBRuntime", "-InstallChromaDBRuntime", "chromadb==`$ChromaDBVersion", "Python installer Authenticode verification failed")) {
+                if (-not $runtimeInstallerText.Contains($marker)) {
+                    Add-ListItem $failures "managed_runtime_installer_marker_missing:$marker"
+                }
+            }
         }
 
         $status = "ok"
@@ -581,8 +749,8 @@ function Invoke-VerifyBundle {
                 go_backend_binary_path = $goBinary
                 mariadb_provider_present = $false
                 mariadb_provider_path = ""
-                chromadb_runtime_present = -not [string]::IsNullOrWhiteSpace($chromaRuntime)
-                chromadb_runtime_path = $chromaRuntime
+                chromadb_runtime_present = $false
+                chromadb_runtime_path = ""
             }
             warnings = @($warnings)
             failures = @($failures)
@@ -594,8 +762,8 @@ function Invoke-VerifyBundle {
     }
 }
 
-if (-not $Preflight -and -not $InstallMariaDBRuntime -and -not $StageMariaDBProvider -and -not $VerifyBundle) {
-    throw "Use -Preflight, -InstallMariaDBRuntime, -StageMariaDBProvider, or -VerifyBundle"
+if (-not $Preflight -and -not $InstallMariaDBRuntime -and -not $InstallChromaDBRuntime -and -not $StageMariaDBProvider -and -not $VerifyBundle) {
+    throw "Use -Preflight, -InstallMariaDBRuntime, -InstallChromaDBRuntime, -StageMariaDBProvider, or -VerifyBundle"
 }
 
 if ($Preflight) {
@@ -610,6 +778,11 @@ if ($VerifyBundle) {
 
 if ($InstallMariaDBRuntime) {
     Write-JsonReport (Invoke-InstallMariaDBRuntime) $Out
+    exit 0
+}
+
+if ($InstallChromaDBRuntime) {
+    Write-JsonReport (Invoke-InstallChromaDBRuntime) $Out
     exit 0
 }
 

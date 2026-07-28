@@ -28,10 +28,12 @@ and `CREDITS` files remain inside the separately installed official runtime.
 
 - Project: https://github.com/chroma-core/chroma/tree/1.5.9
 - License: Apache License 2.0
-- License retained at:
+- Internal full-package license retained at:
   `runtime/ChromaDB/Lib/site-packages/chromadb-1.5.9.dist-info/licenses/LICENSE`
+- Windows managed-install license retained under:
+  `%LOCALAPPDATA%\ArchiveCenter\runtime\ChromaDB\1.5.9\Lib\site-packages\chromadb-1.5.9.dist-info\licenses`
 
-The bundled ChromaDB environment also contains CPython and Python packages.
+The bundled or managed ChromaDB environment also contains CPython and Python packages.
 Their license texts and notices are retained in the Python runtime and the
 respective `*.dist-info/licenses` directories. The audited 3.0.1 Windows
 runtime contained 79 `*.dist-info` package records and 109 package-level
@@ -42,7 +44,7 @@ The audited upstream runtime omitted package-local license files for
 `flatbuffers` 25.12.19 and `tokenizers` 0.23.1 even though their installed
 metadata identifies the Apache License 2.0. Archive Center retains the
 unmodified Apache License 2.0 text at `licenses/Apache-2.0.txt`. The Windows
-package builder copies that text into both exact `*.dist-info/licenses`
+internal full-package builder copies that text into both exact `*.dist-info/licenses`
 directories and stops the build if either dependency metadata directory or
 the license text is missing.
 
@@ -51,7 +53,9 @@ the license text is missing.
 - Project: https://www.python.org/
 - License: Python Software Foundation License Version 2 and the additional
   historical licenses included with CPython
-- License retained at: `runtime/ChromaDB/LICENSE.txt`
+- Internal full-package license retained at: `runtime/ChromaDB/LICENSE.txt`
+- Windows managed-install license retained at:
+  `%LOCALAPPDATA%\ArchiveCenter\runtime\Python\3.11.9\LICENSE.txt`
 
 ## Go modules used by Archive Center source and release tools
 
