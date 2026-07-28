@@ -92,6 +92,28 @@ func (m *mariadbStore) DeleteEntities(ctx context.Context, chatSessionID string,
 			_ = tx.Rollback()
 		}
 	}()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM speaker_attributions WHERE chat_session_id = ? AND source_turn >= ?", chatSessionID, fromTurn); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM entity_identity_artifact_bindings WHERE chat_session_id = ? AND source_turn >= ?", chatSessionID, fromTurn); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM entity_identity_surfaces WHERE chat_session_id = ? AND source_turn >= ?", chatSessionID, fromTurn); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM entity_identity_links
+		WHERE chat_session_id = ?
+		  AND (
+			source_entity_id IN (SELECT stable_entity_id FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?)
+			OR target_entity_id IN (SELECT stable_entity_id FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?)
+		  )
+	`, chatSessionID, chatSessionID, fromTurn, chatSessionID, fromTurn); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?", chatSessionID, fromTurn); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE entities
 		SET last_seen_turn = ?,

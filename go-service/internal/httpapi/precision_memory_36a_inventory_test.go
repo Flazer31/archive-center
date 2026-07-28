@@ -15,7 +15,7 @@ import (
 // limitations as baselines. 3.6-B must replace the relevant negative
 // assertions when the versioned identity contract is implemented.
 
-func Test36ABaselineNearNameFuzzyCanonicalizationCanCollapseDistinctPeople(t *testing.T) {
+func Test36BNearNameCanonicalizationDoesNotCollapseDistinctPeople(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnCharStates: []store.CharacterState{
 			{
@@ -28,8 +28,8 @@ func Test36ABaselineNearNameFuzzyCanonicalizationCanCollapseDistinctPeople(t *te
 	srv.Store = fake
 
 	got := srv.canonicalCharacterName(context.Background(), "sess-36a-near-name", "Marino")
-	if got != "Marina" {
-		t.Fatalf("3.6-A baseline changed: current fuzzy resolver should collapse Marino into Marina, got %q", got)
+	if got != "Marino" {
+		t.Fatalf("3.6-B must not collapse a near-name into another identity, got %q", got)
 	}
 }
 
@@ -75,7 +75,7 @@ func Test36ABaselineOneAggregateMemoryPerSourceTurn(t *testing.T) {
 	t.Fatalf("duplicate_source_turn_memory baseline reason missing: %#v", result.SkipReasons)
 }
 
-func Test36ABaselineTypedIdentityAndSourceLineageGaps(t *testing.T) {
+func Test36BTypedIdentityContractAndRemainingSourceLineageGaps(t *testing.T) {
 	requireFieldsPresent(t, reflect.TypeOf(store.DirectEvidence{}),
 		"SourceMessageIDsJSON",
 		"SourceHash",
@@ -91,19 +91,25 @@ func Test36ABaselineTypedIdentityAndSourceLineageGaps(t *testing.T) {
 		"SpeakerEntityID",
 		"MemoryUnitKind",
 	)
-	requireFieldsAbsent(t, reflect.TypeOf(store.Entity{}),
+	requireFieldsPresent(t, reflect.TypeOf(store.EntityIdentity{}),
 		"StableEntityID",
 		"IdentityNamespace",
 		"SourceRevision",
 		"LifecycleState",
+		"ReviewState",
+		"IdempotencyKey",
 	)
-	requireFieldsAbsent(t, reflect.TypeOf(store.KGTriple{}),
-		"SubjectEntityID",
-		"ObjectEntityID",
+	requireFieldsPresent(t, reflect.TypeOf(store.EntityIdentityArtifactBinding{}),
+		"StableEntityID",
+		"ArtifactKind",
+		"ArtifactRole",
 		"SourceRevision",
 	)
-	requireFieldsAbsent(t, reflect.TypeOf(store.CharacterState{}),
-		"CharacterEntityID",
+	requireFieldsPresent(t, reflect.TypeOf(store.SpeakerAttribution{}),
+		"SpeakerEntityID",
+		"AttributionState",
+		"EvidenceExcerpt",
+		"SourceSpanStart",
 		"SourceRevision",
 	)
 }

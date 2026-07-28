@@ -10,7 +10,11 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, embCfg completeTurnEmbeddingConfig, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement) {
+func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, embCfg completeTurnEmbeddingConfig, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement, identityProjectionArg ...*entityIdentityProjection) {
+	var identityProjection *entityIdentityProjection
+	if len(identityProjectionArg) > 0 {
+		identityProjection = identityProjectionArg[0]
+	}
 	entities := mapFromAny(extraction["entities"])
 	physicalConditions := normalizePhysicalConditionItems(extraction["physical_conditions"])
 	entityConditions := normalizePhysicalConditionItems(extraction["entity_conditions"])
@@ -85,9 +89,13 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		}
 	}
 
-	for _, item := range sliceFromAny(extraction["character_deltas"]) {
+	for characterDeltaIndex, item := range sliceFromAny(extraction["character_deltas"]) {
 		charDelta := mapFromAny(item)
-		name := s.canonicalCharacterName(ctx, sid, strings.TrimSpace(stringFromMap(charDelta, "name")))
+		rawName := strings.TrimSpace(stringFromMap(charDelta, "name"))
+		if identityProjection != nil && rawName != "" {
+			identityProjection.bindCharacterState(ctx, rawName, characterDeltaIndex, result)
+		}
+		name := s.canonicalCharacterName(ctx, sid, rawName)
 		if name == "" {
 			continue
 		}

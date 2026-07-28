@@ -70,6 +70,10 @@ var turnWorkflowHUDCountTemplates = []turnWorkflowHUDCount{
 	{Key: "turn_summary", LabelKey: "turn_hud.count.turn_summary"},
 	{Key: "direct_evidence", LabelKey: "turn_hud.count.direct_evidence"},
 	{Key: "relationship_knowledge", LabelKey: "turn_hud.count.relationship_knowledge"},
+	{Key: "entity_identity", LabelKey: "turn_hud.count.entity_identity"},
+	{Key: "identity_surface", LabelKey: "turn_hud.count.identity_surface"},
+	{Key: "identity_binding", LabelKey: "turn_hud.count.identity_binding"},
+	{Key: "speaker_attribution", LabelKey: "turn_hud.count.speaker_attribution"},
 	{Key: "subjective_memory", LabelKey: "turn_hud.count.subjective_memory"},
 	{Key: "world_rule", LabelKey: "turn_hud.count.world_rule"},
 	{Key: "character_state", LabelKey: "turn_hud.count.character_state"},
@@ -919,6 +923,10 @@ func turnWorkflowHUDCountsFromComplete(
 	canonicalStateLayersSaved int,
 	entitiesSaved int,
 	trustStatesSaved int,
+	entityIdentitiesSaved int,
+	identitySurfacesSaved int,
+	identityBindingsSaved int,
+	speakerAttributionsSaved int,
 	episodeSummariesSaved int,
 	vectorsUpserted int,
 ) map[string]int {
@@ -935,6 +943,10 @@ func turnWorkflowHUDCountsFromComplete(
 		"turn_summary":           maxInt(0, memoriesSaved),
 		"direct_evidence":        maxInt(0, evidenceSaved),
 		"relationship_knowledge": maxInt(0, kgTriplesSaved),
+		"entity_identity":        maxInt(0, entityIdentitiesSaved),
+		"identity_surface":       maxInt(0, identitySurfacesSaved),
+		"identity_binding":       maxInt(0, identityBindingsSaved),
+		"speaker_attribution":    maxInt(0, speakerAttributionsSaved),
 		"subjective_memory":      maxInt(0, subjectiveEntityMemoriesSaved),
 		"world_rule":             maxInt(0, worldRulesSaved),
 		"character_state": maxInt(0,
@@ -970,7 +982,7 @@ func (s *Server) completeTurnWorkflowHUDDuplicate(
 	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageDerivedPersist, "skipped", reasonCode)
 	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageCheckpoints, "skipped", reasonCode)
 	s.TurnWorkflows.setCounts(requestID, turnWorkflowHUDCountsFromComplete(
-		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	))
 	s.TurnWorkflows.addWarning(requestID, warningCode, warningMessageKey, turnWorkflowStageRawPersist)
 	s.TurnWorkflows.setNoticePresentation(

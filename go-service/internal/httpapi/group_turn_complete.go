@@ -363,7 +363,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageCheckpoints, "skipped", "ooc_turn_guard")
 			s.TurnWorkflows.addWarning(workflowRequestID, "OOC_TURN_SKIPPED", "turn_hud.warning.ooc_turn_skipped", turnWorkflowStageFinalAccepted)
 			s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
-				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			))
 			s.TurnWorkflows.complete(workflowRequestID)
 		}
@@ -402,7 +402,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			s.TurnWorkflows.fail(workflowRequestID, "USER_INPUT_MISSING", "turn_hud.error.user_input_missing", turnWorkflowStageFinalAccepted, false)
 			s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
-				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -606,6 +606,10 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	activeStatesSaved := 0
 	canonicalStateLayersSaved := 0
 	entitiesSaved := 0
+	entityIdentitiesSaved := 0
+	identitySurfacesSaved := 0
+	identityBindingsSaved := 0
+	speakerAttributionsSaved := 0
 	trustStatesSaved := 0
 	vectorsUpserted := 0
 	vectorsMemoryUpserted := 0
@@ -716,7 +720,8 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		timing.addElapsed("raw_and_audit_store", auditStoreStartedAt)
 		if criticResult != nil {
 			artifactStartedAt := time.Now()
-			artifactResult := s.saveCriticExtractionArtifacts(ctx, sid, turnIndex, criticResult, content, extractionCfg.Embedder, now, existingEvidence)
+			artifactContext := contextWithEntityIdentitySource(ctx, sourceAcceptance)
+			artifactResult := s.saveCriticExtractionArtifacts(artifactContext, sid, turnIndex, criticResult, content, extractionCfg.Embedder, now, existingEvidence)
 			artifactTotalMS := durationMilliseconds(time.Since(artifactStartedAt))
 			embeddingMS := artifactResult.TimingMS["embedding"]
 			vectorUpsertMS := artifactResult.TimingMS["vector_upsert"]
@@ -746,6 +751,10 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			activeStatesSaved += artifactResult.ActiveStates
 			canonicalStateLayersSaved += artifactResult.CanonicalStateLayers
 			entitiesSaved += artifactResult.Entities
+			entityIdentitiesSaved += artifactResult.EntityIdentities
+			identitySurfacesSaved += artifactResult.IdentitySurfaces
+			identityBindingsSaved += artifactResult.IdentityBindings
+			speakerAttributionsSaved += artifactResult.SpeakerAttributions
 			trustStatesSaved += artifactResult.TrustStates
 			vectorsUpserted += artifactResult.VectorsUpserted
 			vectorsMemoryUpserted += artifactResult.VectorsMemoryUpserted
@@ -876,6 +885,10 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			canonicalStateLayersSaved,
 			entitiesSaved,
 			trustStatesSaved,
+			entityIdentitiesSaved,
+			identitySurfacesSaved,
+			identityBindingsSaved,
+			speakerAttributionsSaved,
 			episodeSummariesSaved,
 			vectorsUpserted,
 		))
@@ -892,7 +905,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			s.TurnWorkflows.complete(workflowRequestID)
 		}
 	}
-	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + trustStatesSaved
+	derivedArtifactsSaved := memoriesSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
 	rawStatus := "skipped"
 	if chatLogsSaved > 0 || effectiveInputSaved > 0 {
 		rawStatus = "ok"
@@ -936,6 +949,10 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"narrative_current_states_saved":   narrativeCurrentStatesSaved,
 			"narrative_state_events_saved":     narrativeStateEventsSaved,
 			"canonical_state_layers_saved":     canonicalStateLayersSaved,
+			"entity_identities_saved":          entityIdentitiesSaved,
+			"identity_surfaces_saved":          identitySurfacesSaved,
+			"identity_bindings_saved":          identityBindingsSaved,
+			"speaker_attributions_saved":       speakerAttributionsSaved,
 		},
 		"vector": map[string]any{
 			"status":                   vectorPipelineStatus,
@@ -976,6 +993,10 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"active_states_saved":              activeStatesSaved,
 		"canonical_state_layers_saved":     canonicalStateLayersSaved,
 		"entities_saved":                   entitiesSaved,
+		"entity_identities_saved":          entityIdentitiesSaved,
+		"identity_surfaces_saved":          identitySurfacesSaved,
+		"identity_bindings_saved":          identityBindingsSaved,
+		"speaker_attributions_saved":       speakerAttributionsSaved,
 		"trust_states_saved":               trustStatesSaved,
 		"vectors_upserted":                 vectorsUpserted,
 		"vectors_memory_upserted":          vectorsMemoryUpserted,

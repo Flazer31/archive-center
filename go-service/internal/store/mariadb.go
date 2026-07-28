@@ -113,6 +113,11 @@ var mariaAdminResetTables = []string{
 	"chapter_summaries",
 	"arc_summaries",
 	"saga_digests",
+	"speaker_attributions",
+	"entity_identity_artifact_bindings",
+	"entity_identity_links",
+	"entity_identity_surfaces",
+	"entity_identities",
 	"entities",
 }
 

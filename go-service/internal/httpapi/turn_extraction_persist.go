@@ -124,6 +124,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	}
 	languageContext := completeTurnLanguageContextFromExtraction(extraction)
 	extraction = applyLanguageMemoryWriteContract(extraction, languageContext)
+	identityProjection := s.buildEntityIdentityProjection(ctx, sid, turnIndex, extraction, content, now, &result)
 	if mergedExtraction, applied := applyConfirmedIdentityAliasCanonicalMerge(extraction); applied > 0 {
 		extraction = mergedExtraction
 		result.Warnings = append(result.Warnings, "confirmed_identity_alias_canonical_merge_applied")
@@ -241,8 +242,11 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	// persisted, so every accepted change can point back to concrete evidence.
 	s.saveNarrativeStateFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
 
-	for _, item := range sliceFromAny(extraction["kg_triples"]) {
+	for tripleIndex, item := range sliceFromAny(extraction["kg_triples"]) {
 		triple := mapFromAny(item)
+		if identityProjection != nil {
+			identityProjection.bindKGTriple(ctx, triple, tripleIndex, &result)
+		}
 		subject := s.canonicalCharacterName(ctx, sid, sanitizeKGPart(stringFromMap(triple, "subject")))
 		predicate := sanitizeKGPredicate(stringFromMap(triple, "predicate"))
 		object := s.canonicalCharacterName(ctx, sid, sanitizeKGPart(stringFromMap(triple, "object")))
@@ -286,7 +290,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		})
 	}
 
-	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, embCfg, now, &result, existingCanonicalLayers, cost)
+	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, embCfg, now, &result, existingCanonicalLayers, cost, identityProjection)
 	finalizeCanonicalStateWriteCost(cost)
 	if cost.StateWriteCount > 0 {
 		result.CanonicalStateWriteCost = cost

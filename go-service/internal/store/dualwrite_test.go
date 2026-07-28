@@ -443,3 +443,62 @@ func TestDualWriteSaverInterfacesDelegate(t *testing.T) {
 		t.Errorf("shadow SaveActiveState calls = %d, want 1", shadow.saveActiveCalls)
 	}
 }
+
+type identityWriterStore struct {
+	Store
+	saveErr error
+	calls   int64
+}
+
+func (s *identityWriterStore) SaveEntityIdentity(context.Context, *EntityIdentity) error {
+	atomic.AddInt64(&s.calls, 1)
+	return s.saveErr
+}
+
+func (s *identityWriterStore) SaveEntityIdentitySurface(context.Context, *EntityIdentitySurface) error {
+	atomic.AddInt64(&s.calls, 1)
+	return s.saveErr
+}
+
+func (s *identityWriterStore) SaveEntityIdentityArtifactBinding(context.Context, *EntityIdentityArtifactBinding) error {
+	atomic.AddInt64(&s.calls, 1)
+	return s.saveErr
+}
+
+func (s *identityWriterStore) SaveSpeakerAttribution(context.Context, *SpeakerAttribution) error {
+	atomic.AddInt64(&s.calls, 1)
+	return s.saveErr
+}
+
+func Test36BDualWriteIdentityAvailabilityMatchesOwnedLanes(t *testing.T) {
+	disabled := NewDualWriteStore(NewNoopStore(), NewNoopStore()).(*dualWriteStore)
+	if disabled.EntityIdentityWritesEnabled() {
+		t.Fatal("no-op dual-write lanes must not advertise entity identity persistence")
+	}
+
+	shadow := &identityWriterStore{Store: NewNoopStore()}
+	enabled := NewDualWriteStore(NewNoopStore(), shadow).(*dualWriteStore)
+	if !enabled.EntityIdentityWritesEnabled() {
+		t.Fatal("Maria-like shadow writer must advertise entity identity persistence")
+	}
+	if err := enabled.SaveEntityIdentity(context.Background(), &EntityIdentity{}); err != nil {
+		t.Fatalf("shadow identity write unexpectedly failed the primary path: %v", err)
+	}
+	if atomic.LoadInt64(&shadow.calls) != 1 {
+		t.Fatalf("shadow identity writes = %d, want 1", shadow.calls)
+	}
+}
+
+func Test36BDualWriteIdentityShadowFailureIsRecordedNotSurfaced(t *testing.T) {
+	shadowErr := errors.New("identity shadow down")
+	shadow := &identityWriterStore{Store: NewNoopStore(), saveErr: shadowErr}
+	dual := NewDualWriteStore(NewNoopStore(), shadow).(*dualWriteStore)
+
+	if err := dual.SaveEntityIdentity(context.Background(), &EntityIdentity{}); err != nil {
+		t.Fatalf("shadow-only identity failure must not fail the primary workflow: %v", err)
+	}
+	failures, lastErr := dual.ShadowStatus()
+	if failures != 1 || !errors.Is(lastErr, shadowErr) {
+		t.Fatalf("shadow failure was not recorded: failures=%d err=%v", failures, lastErr)
+	}
+}

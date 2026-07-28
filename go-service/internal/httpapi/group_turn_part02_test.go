@@ -462,10 +462,10 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if ev := fake.savedEvidence[0]; ev.SourceTurnStart != 2 || ev.SourceTurnEnd != 2 || ev.TurnAnchor != 2 || !strings.Contains(ev.SourceMessageIDsJSON, "turn:2") || !strings.Contains(ev.LineageJSON, "critic.evidence_excerpts") {
 		t.Fatalf("expected evidence source lineage for turn 2, got %#v", ev)
 	}
-	if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "Alice" || fake.savedKGTriples[0].Object != "Bob" {
+	if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "Alicee" || fake.savedKGTriples[0].Object != "Bob" {
 		t.Fatalf("expected extracted KG triple, got %#v", fake.savedKGTriples)
 	}
-	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "Alice" {
+	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "Alicee" {
 		t.Fatalf("expected extracted entity, got %#v", fake.savedEntities)
 	}
 	if len(fake.savedTrusts) != 1 {
@@ -480,8 +480,8 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if len(fake.savedCharacterEvents) != 1 || len(fake.savedCharacterStates) != 1 || len(fake.savedPendingThreads) != 1 || len(fake.savedActiveStates) != 5 {
 		t.Fatalf("expected character/state/thread artifacts, events=%d states=%d threads=%d active=%d", len(fake.savedCharacterEvents), len(fake.savedCharacterStates), len(fake.savedPendingThreads), len(fake.savedActiveStates))
 	}
-	if rel := fake.savedCharacterStates[0].RelationshipsJSON; !strings.Contains(rel, "Carol") || !strings.Contains(rel, "Bob") || !strings.Contains(rel, "affection") || !strings.Contains(rel, "tension") {
-		t.Fatalf("expected character relationships to merge existing and incoming values, got %s", rel)
+	if rel := fake.savedCharacterStates[0].RelationshipsJSON; strings.Contains(rel, "Carol") || !strings.Contains(rel, "Bob") || !strings.Contains(rel, "affection") || !strings.Contains(rel, "tension") {
+		t.Fatalf("near-name character state must not inherit another identity's relationships, got %s", rel)
 	}
 	if len(fake.savedWorldRules) != 1 || len(fake.savedStorylines) != 1 {
 		t.Fatalf("expected world/story artifacts, world=%d story=%d", len(fake.savedWorldRules), len(fake.savedStorylines))

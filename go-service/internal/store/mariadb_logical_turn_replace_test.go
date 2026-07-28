@@ -21,7 +21,7 @@ func TestMariaDBReplaceLogicalTurnAtomicallyReplacesCanonicalTail(t *testing.T) 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE")).
 		WithArgs("session-1").
 		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(3))
-	for i := 0; i < 31; i++ {
+	for i := 0; i < 36; i++ {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
@@ -77,7 +77,7 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedImmediateTail(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE")).
 		WithArgs("session-1").
 		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(14))
-	for i := 0; i < 31; i++ {
+	for i := 0; i < 36; i++ {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).

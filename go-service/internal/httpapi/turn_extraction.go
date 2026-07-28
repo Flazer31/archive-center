@@ -64,6 +64,10 @@ type artifactSaveResult struct {
 	PendingThreads           int
 	ActiveStates             int
 	Entities                 int
+	EntityIdentities         int
+	IdentitySurfaces         int
+	IdentityBindings         int
+	SpeakerAttributions      int
 	TrustStates              int
 	VectorsUpserted          int
 	VectorsMemoryUpserted    int
@@ -521,8 +525,6 @@ func (s *Server) canonicalCharacterName(ctx context.Context, sid, proposed strin
 	if proposedKey == "" {
 		return proposed
 	}
-	bestName := proposed
-	bestDistance := 999
 	for _, state := range states {
 		candidate := strings.TrimSpace(state.CharacterName)
 		if candidate == "" {
@@ -536,20 +538,8 @@ func (s *Server) canonicalCharacterName(ctx context.Context, sid, proposed strin
 		if characterAliasKeysOverlap(proposedKeys, candidateKeys) {
 			return candidate
 		}
-		dist := levenshteinDistance(proposedKey, candidateKey)
-		maxLen := len([]rune(proposedKey))
-		if other := len([]rune(candidateKey)); other > maxLen {
-			maxLen = other
-		}
-		if maxLen <= 4 {
-			continue
-		}
-		if dist < bestDistance && dist <= 2 {
-			bestDistance = dist
-			bestName = candidate
-		}
 	}
-	return bestName
+	return proposed
 }
 
 func canonicalCharacterAliasKey(name string) string {
@@ -754,44 +744,6 @@ func romanizeKatakanaRune(r rune) string {
 		return v
 	}
 	return ""
-}
-
-func levenshteinDistance(a, b string) int {
-	ar := []rune(a)
-	br := []rune(b)
-	if len(ar) == 0 {
-		return len(br)
-	}
-	if len(br) == 0 {
-		return len(ar)
-	}
-	prev := make([]int, len(br)+1)
-	cur := make([]int, len(br)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(ar); i++ {
-		cur[0] = i
-		for j := 1; j <= len(br); j++ {
-			cost := 0
-			if ar[i-1] != br[j-1] {
-				cost = 1
-			}
-			cur[j] = min3Int(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
-		}
-		prev, cur = cur, prev
-	}
-	return prev[len(br)]
-}
-
-func min3Int(a, b, c int) int {
-	if b < a {
-		a = b
-	}
-	if c < a {
-		a = c
-	}
-	return a
 }
 
 var genericDescriptorHumanTokens = map[string]bool{

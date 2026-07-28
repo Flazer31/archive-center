@@ -422,6 +422,55 @@ func (d *dualWriteStore) SaveEntity(ctx context.Context, e *Entity) error {
 	return nil
 }
 
+func (d *dualWriteStore) SaveEntityIdentity(ctx context.Context, item *EntityIdentity) error {
+	return d.writeEntityIdentityExtension(ctx, func(writer EntityIdentityWriter) error {
+		return writer.SaveEntityIdentity(ctx, item)
+	})
+}
+
+func (d *dualWriteStore) SaveEntityIdentitySurface(ctx context.Context, item *EntityIdentitySurface) error {
+	return d.writeEntityIdentityExtension(ctx, func(writer EntityIdentityWriter) error {
+		return writer.SaveEntityIdentitySurface(ctx, item)
+	})
+}
+
+func (d *dualWriteStore) SaveEntityIdentityArtifactBinding(ctx context.Context, item *EntityIdentityArtifactBinding) error {
+	return d.writeEntityIdentityExtension(ctx, func(writer EntityIdentityWriter) error {
+		return writer.SaveEntityIdentityArtifactBinding(ctx, item)
+	})
+}
+
+func (d *dualWriteStore) SaveSpeakerAttribution(ctx context.Context, item *SpeakerAttribution) error {
+	return d.writeEntityIdentityExtension(ctx, func(writer EntityIdentityWriter) error {
+		return writer.SaveSpeakerAttribution(ctx, item)
+	})
+}
+
+func (d *dualWriteStore) EntityIdentityWritesEnabled() bool {
+	_, primaryOK := d.primary.(EntityIdentityWriter)
+	_, shadowOK := d.shadow.(EntityIdentityWriter)
+	return primaryOK || shadowOK
+}
+
+func (d *dualWriteStore) writeEntityIdentityExtension(ctx context.Context, write func(EntityIdentityWriter) error) error {
+	primary, primaryOK := d.primary.(EntityIdentityWriter)
+	shadow, shadowOK := d.shadow.(EntityIdentityWriter)
+	if !primaryOK && !shadowOK {
+		return ErrNotEnabled
+	}
+	if primaryOK {
+		if err := write(primary); err != nil {
+			return err
+		}
+	}
+	if shadowOK {
+		if err := write(shadow); err != nil {
+			d.recordShadowErr(err)
+		}
+	}
+	return nil
+}
+
 // SaveTrust writes to primary then shadow.
 func (d *dualWriteStore) SaveTrust(ctx context.Context, t *Trust) error {
 	if primary, ok := d.primary.(interface {

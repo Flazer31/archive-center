@@ -514,7 +514,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
@@ -527,6 +527,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- kg_triples must use real in-story names only. Never use char_*, cid_*, turn_*, user, assistant, system, prompt, or has_turn edges.",
 		"- For ordinary narrative turns with named actors, emit kg_triples for durable relations, assignments, locations, ownership, promises, threats, injuries, permissions, commands, faction links, or plan participation.",
 		"- entities.characters/locations/items should contain only concrete in-story people, places, or objects observed in this turn.",
+		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker from style alone; use ambiguous or unknown when multiple speakers fit.",
 		"- Separate location/time fact classes. A current scene location or current scene time belongs in state_deltas.scene_state; a durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status and/or kg_triples with predicates such as residence, hometown, lives_in, or based_in.",
 		"- Do not treat 'X lives in London' as 'the current scene is London'. Do not treat a temporary visit as a durable residence unless the latest turn says it directly.",
 		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
@@ -914,6 +915,7 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["character_deltas"] = sliceFromAny(raw["character_deltas"])
 	out["pending_threads"] = sliceFromAny(raw["pending_threads"])
 	out["entities"] = mapFromAny(raw["entities"])
+	out["speaker_attributions"] = normalizeSpeakerAttributionCandidates(raw["speaker_attributions"])
 	out["relationship_memory"] = mapFromAny(raw["relationship_memory"])
 	out["state_deltas"] = mapFromAny(raw["state_deltas"])
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
