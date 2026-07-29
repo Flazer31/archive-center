@@ -1094,6 +1094,7 @@ type ProxyPluginMainRequest struct {
 	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
 	Endpoint              *string `json:"endpoint,omitempty"`
+	ClaudePromptCacheMode *string `json:"claude_prompt_cache_mode,omitempty"`
 	ExtraBodyJSON         *string `json:"extra_body_json,omitempty"`
 	ExtraHeadersJSON      *string `json:"extra_headers_json,omitempty"`
 	GlmThinkingType       *string `json:"glm_thinking_type,omitempty"`

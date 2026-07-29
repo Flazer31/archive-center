@@ -23,6 +23,7 @@ type RuntimeConfig struct {
 	MainExtraBodyJSON                  string
 	MainVertexFlexMode                 string
 	MainLLMGatewayServiceTier          string
+	MainClaudePromptCacheMode          string
 	CriticProvider                     string
 	CriticAPIKey                       string
 	CriticEndpoint                     string
@@ -37,6 +38,7 @@ type RuntimeConfig struct {
 	CriticExtraBodyJSON                string
 	CriticVertexFlexMode               string
 	CriticLLMGatewayServiceTier        string
+	CriticClaudePromptCacheMode        string
 	SupervisorProvider                 string
 	SupervisorAPIKey                   string
 	SupervisorEndpoint                 string
@@ -51,6 +53,7 @@ type RuntimeConfig struct {
 	SupervisorExtraBodyJSON            string
 	SupervisorVertexFlexMode           string
 	SupervisorLLMGatewayServiceTier    string
+	SupervisorClaudePromptCacheMode    string
 	EmbeddingProvider                  string
 	EmbeddingAPIKey                    string
 	EmbeddingEndpoint                  string
@@ -200,6 +203,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("mainExtraBodyJson", &s.RuntimeConfig.MainExtraBodyJSON)
 	setString("mainVertexFlexMode", &s.RuntimeConfig.MainVertexFlexMode)
 	setString("mainLlmGatewayServiceTier", &s.RuntimeConfig.MainLLMGatewayServiceTier)
+	setString("mainClaudePromptCacheMode", &s.RuntimeConfig.MainClaudePromptCacheMode)
 	setString("criticProvider", &s.RuntimeConfig.CriticProvider)
 	setString("criticApiKey", &s.RuntimeConfig.CriticAPIKey)
 	setString("criticEndpoint", &s.RuntimeConfig.CriticEndpoint)
@@ -214,6 +218,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("criticExtraBodyJson", &s.RuntimeConfig.CriticExtraBodyJSON)
 	setString("criticVertexFlexMode", &s.RuntimeConfig.CriticVertexFlexMode)
 	setString("criticLlmGatewayServiceTier", &s.RuntimeConfig.CriticLLMGatewayServiceTier)
+	setString("criticClaudePromptCacheMode", &s.RuntimeConfig.CriticClaudePromptCacheMode)
 	setString("supervisorProvider", &s.RuntimeConfig.SupervisorProvider)
 	setString("supervisorApiKey", &s.RuntimeConfig.SupervisorAPIKey)
 	setString("supervisorEndpoint", &s.RuntimeConfig.SupervisorEndpoint)
@@ -228,6 +233,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("supervisorExtraBodyJson", &s.RuntimeConfig.SupervisorExtraBodyJSON)
 	setString("supervisorVertexFlexMode", &s.RuntimeConfig.SupervisorVertexFlexMode)
 	setString("supervisorLlmGatewayServiceTier", &s.RuntimeConfig.SupervisorLLMGatewayServiceTier)
+	setString("supervisorClaudePromptCacheMode", &s.RuntimeConfig.SupervisorClaudePromptCacheMode)
 	setString("embeddingProvider", &s.RuntimeConfig.EmbeddingProvider)
 	setString("embeddingApiKey", &s.RuntimeConfig.EmbeddingAPIKey)
 	setString("embeddingEndpoint", &s.RuntimeConfig.EmbeddingEndpoint)
@@ -286,6 +292,7 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 		ExtraBodyJSON:         rt.SupervisorExtraBodyJSON,
 		VertexFlexMode:        rt.SupervisorVertexFlexMode,
 		LLMGatewayServiceTier: rt.SupervisorLLMGatewayServiceTier,
+		ClaudePromptCacheMode: rt.SupervisorClaudePromptCacheMode,
 	}
 }
 
@@ -343,6 +350,7 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 		ExtraBodyJSON:         rt.MainExtraBodyJSON,
 		VertexFlexMode:        rt.MainVertexFlexMode,
 		LLMGatewayServiceTier: rt.MainLLMGatewayServiceTier,
+		ClaudePromptCacheMode: rt.MainClaudePromptCacheMode,
 	}
 }
 
@@ -469,6 +477,9 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	if strings.TrimSpace(rt.MainLLMGatewayServiceTier) != "" {
 		mainTrace["llm_gateway_service_tier"] = strings.TrimSpace(rt.MainLLMGatewayServiceTier)
 	}
+	if strings.TrimSpace(rt.MainClaudePromptCacheMode) != "" {
+		mainTrace["claude_prompt_cache_mode"] = strings.TrimSpace(rt.MainClaudePromptCacheMode)
+	}
 	mainTrace["runtime_role"] = "publisher_editor_default"
 	mainTrace["direct_generation"] = map[string]any{
 		"status":  "risuai_host_retained",
@@ -488,6 +499,9 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	if strings.TrimSpace(rt.SupervisorLLMGatewayServiceTier) != "" {
 		supervisorTrace["llm_gateway_service_tier"] = strings.TrimSpace(rt.SupervisorLLMGatewayServiceTier)
 	}
+	if strings.TrimSpace(rt.SupervisorClaudePromptCacheMode) != "" {
+		supervisorTrace["claude_prompt_cache_mode"] = strings.TrimSpace(rt.SupervisorClaudePromptCacheMode)
+	}
 	criticTrace := configuredTrace(
 		criticProviderID.Value,
 		criticAPIKeyID.Value,
@@ -500,6 +514,9 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	addOptionalReasoningTraceFields(criticTrace, rt.CriticReasoningPreset, rt.CriticReasoningEffort, rt.CriticReasoningBudget)
 	if strings.TrimSpace(rt.CriticLLMGatewayServiceTier) != "" {
 		criticTrace["llm_gateway_service_tier"] = strings.TrimSpace(rt.CriticLLMGatewayServiceTier)
+	}
+	if strings.TrimSpace(rt.CriticClaudePromptCacheMode) != "" {
+		criticTrace["claude_prompt_cache_mode"] = strings.TrimSpace(rt.CriticClaudePromptCacheMode)
 	}
 	embeddingTrace := configuredTrace(
 		embeddingProviderID.Value,

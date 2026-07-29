@@ -405,6 +405,92 @@ Implementation status:
 - release status: `implemented_unverified`, not a live-provider acceptance
   result.
 
+## Anthropic Claude Automatic Prompt Caching
+
+Archive Center 3.6 exposes Anthropic's automatic prompt caching only for the
+direct Claude Messages API provider ID `claude`. The UI stores independent
+Publisher and Critic choices; the Supervisor inherits the Publisher choice.
+The default is `off`.
+
+Role-specific settings:
+
+```json
+{
+  "pluginMainClaudePromptCacheMode": "off",
+  "subLlmClaudePromptCacheMode": "off"
+}
+```
+
+Backend request field:
+
+```json
+{
+  "claude_prompt_cache_mode": "ephemeral_5m"
+}
+```
+
+The Go provider owner validates the typed mode and writes the top-level
+Anthropic `cache_control` object:
+
+| Typed mode | Claude Messages API request |
+|---|---|
+| `off` | no typed `cache_control` is added |
+| `ephemeral_5m` | `{"cache_control":{"type":"ephemeral"}}` |
+| `ephemeral_1h` | `{"cache_control":{"type":"ephemeral","ttl":"1h"}}` |
+
+Anthropic documents `ephemeral` as the current cache type. Its default
+lifetime is five minutes; `ttl:"1h"` selects the one-hour duration. An
+explicit manual `ttl:"5m"` is equivalent to the omitted five-minute TTL for
+typed/manual matching, although Archive Center's typed five-minute mapping
+continues to omit `ttl`.
+
+Anthropic's official pricing uses multipliers relative to base input tokens:
+five-minute cache writes cost `1.25x`, one-hour cache writes cost `2x`, and
+cache reads/hits cost `0.1x`. The one-hour option therefore has a higher write
+cost and should be selected intentionally.
+
+Rules:
+
+- A non-`off` typed mode is accepted only with provider `claude`.
+- Invalid values and conflicting `extra_body_json.cache_control` values fail
+  before any upstream request.
+- Matching typed and manual values are accepted and traced as
+  `typed_and_extra_body_json`.
+- When the typed field is absent or `off`, an existing manual
+  `extra_body_json.cache_control` remains unchanged.
+- Manual `extra_body_json.cache_control` is backend request compatibility for
+  callers that explicitly send that field. The Archive Center settings UI
+  does not expose Claude manual body JSON and does not reuse the Vertex Extra
+  Body JSON setting for Claude; the typed mode above is the normal plugin
+  path.
+- The normalized response preserves Anthropic's raw `usage` object when it is
+  present. Trace copies `cache_creation_input_tokens`,
+  `cache_read_input_tokens`, and `usage.service_tier` only when Anthropic
+  returned those fields; missing usage is never synthesized.
+- Anthropic can process a prompt without caching when it is below the
+  model-specific minimum cacheable length. The usage cache counters are the
+  source of truth for whether a cache write or read occurred.
+
+Official reference:
+
+- https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+- https://platform.claude.com/docs/en/about-claude/pricing
+
+Implementation status:
+
+- `source_implemented`: typed mapping, conflict handling, role propagation,
+  response/trace preservation, and automated regression are implemented;
+- live Anthropic account/model call: unverified;
+- acceptance status: `live Anthropic call unverified`, not live-provider proof.
+
+Scope exclusions:
+
+- no Claude Batch API;
+- no priority or service-tier selector;
+- no Claude Flex mode;
+- no changes to retry policy or HUD design.
+- no expansion of the Vertex Extra Body JSON UI/runtime setting to Claude.
+
 ## Non-Goals
 
 - Do not auto-enable Flex for every user.

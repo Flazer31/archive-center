@@ -70,21 +70,13 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string) (map[string]any, int, error) {
 	isGLM := proxyIsGLMLike(model, endpoint, provider)
 	target := proxyOpenAIChatEndpoint(proxyOpenAIBaseURL(provider, endpoint), provider, isGLM)
-	authToken := apiKey
-	if provider == "copilot" {
-		token, status, err := proxyGetCopilotToken(ctx, apiKey)
-		if err != nil {
-			return nil, status, err
-		}
-		authToken = token
-	}
 
 	headers := map[string]string{
 		"Content-Type": "application/json",
 		"Accept":       "application/json",
 	}
-	if authToken != "" {
-		headers["Authorization"] = "Bearer " + authToken
+	if apiKey != "" && provider != "copilot" {
+		headers["Authorization"] = "Bearer " + apiKey
 	}
 	if provider == "openrouter" {
 		headers["HTTP-Referer"] = "https://risuai.xyz"
@@ -130,6 +122,13 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, overrideErr
+	}
+	if provider == "copilot" {
+		token, status, err := proxyGetCopilotToken(ctx, apiKey)
+		if err != nil {
+			return nil, status, err
+		}
+		headers["Authorization"] = "Bearer " + token
 	}
 
 	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
@@ -207,6 +206,7 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		return nil, http.StatusBadGateway, fmt.Errorf("Claude returned no text content")
 	}
 	resp := proxyNormalizeChatResponse(content, model, "stop")
+	proxyAttachClaudeUsage(resp, data, overrideTrace)
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
 	return resp, http.StatusOK, nil
 }
@@ -247,18 +247,7 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 
 	target := ""
 	headers := map[string]string{"Content-Type": "application/json", "Accept": "application/json"}
-	if vertex {
-		token, status, err := proxyGetVertexAccessToken(ctx, apiKey)
-		if err != nil {
-			return nil, status, err
-		}
-		target = proxyNormalizeVertexEndpoint(endpoint, model)
-		target, err = proxyResolveVertexProjectID(target, apiKey)
-		if err != nil {
-			return nil, http.StatusBadRequest, err
-		}
-		headers["Authorization"] = "Bearer " + token
-	} else {
+	if !vertex {
 		target = proxyNormalizeGeminiEndpoint(endpoint, model, "generateContent")
 		headers["x-goog-api-key"] = apiKey
 	}
@@ -272,6 +261,19 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	}
 	if policyErr := proxyApplyJSONResponsePolicy(body, overrideTrace, policy); policyErr != nil {
 		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, policyErr
+	}
+	if vertex {
+		target = proxyNormalizeVertexEndpoint(endpoint, model)
+		resolvedTarget, resolveErr := proxyResolveVertexProjectID(target, apiKey)
+		if resolveErr != nil {
+			return nil, http.StatusBadRequest, resolveErr
+		}
+		target = resolvedTarget
+		token, status, tokenErr := proxyGetVertexAccessToken(ctx, apiKey)
+		if tokenErr != nil {
+			return nil, status, tokenErr
+		}
+		headers["Authorization"] = "Bearer " + token
 	}
 
 	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
@@ -519,6 +521,9 @@ func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, 
 	if err := proxyApplyLLMGatewayServiceTier(body, req, provider, trace); err != nil {
 		return trace, err
 	}
+	if err := proxyApplyClaudePromptCacheMode(body, req, provider, trace); err != nil {
+		return trace, err
+	}
 
 	mode := proxyNormalizeVertexFlexMode(stringPtrValue(req.VertexFlexMode, ""))
 	if mode != "" && mode != "off" {
@@ -701,6 +706,102 @@ func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMai
 	body["service_tier"] = tier
 	trace["llm_gateway_service_tier_applied"] = true
 	return nil
+}
+
+func proxyNormalizeClaudePromptCacheMode(value string) (string, bool) {
+	normalized := strings.TrimSpace(value)
+	switch normalized {
+	case "":
+		return "", true
+	case "off":
+		return "off", true
+	case "ephemeral_5m":
+		return "ephemeral_5m", true
+	case "ephemeral_1h":
+		return "ephemeral_1h", true
+	default:
+		return "", false
+	}
+}
+
+func proxyClaudePromptCacheControl(mode string) map[string]any {
+	cacheControl := map[string]any{"type": "ephemeral"}
+	if mode == "ephemeral_1h" {
+		cacheControl["ttl"] = "1h"
+	}
+	return cacheControl
+}
+
+func proxyClaudePromptCacheControlMatches(value any, mode string) bool {
+	cacheControl, ok := value.(map[string]any)
+	if !ok || extractionStringFromAny(cacheControl["type"]) != "ephemeral" {
+		return false
+	}
+	switch mode {
+	case "ephemeral_5m":
+		ttl, hasTTL := cacheControl["ttl"]
+		return (len(cacheControl) == 1 && !hasTTL) ||
+			(len(cacheControl) == 2 && extractionStringFromAny(ttl) == "5m")
+	case "ephemeral_1h":
+		return len(cacheControl) == 2 && extractionStringFromAny(cacheControl["ttl"]) == "1h"
+	default:
+		return false
+	}
+}
+
+func proxyApplyClaudePromptCacheMode(body map[string]any, req dto.ProxyPluginMainRequest, provider string, trace map[string]any) error {
+	rawMode := strings.TrimSpace(stringPtrValue(req.ClaudePromptCacheMode, ""))
+	if rawMode == "" {
+		return nil
+	}
+	mode, ok := proxyNormalizeClaudePromptCacheMode(rawMode)
+	if !ok {
+		return fmt.Errorf("claude_prompt_cache_mode must be off, ephemeral_5m, or ephemeral_1h")
+	}
+	trace["claude_prompt_cache_mode_requested"] = mode
+	if mode == "off" {
+		trace["claude_prompt_cache_mode_applied"] = false
+		trace["claude_prompt_cache_mode_source"] = "typed_off"
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(provider), "claude") {
+		trace["claude_prompt_cache_mode_applied"] = false
+		trace["claude_prompt_cache_mode_skip_reason"] = "provider_not_claude"
+		return fmt.Errorf("claude_prompt_cache_mode requires provider claude")
+	}
+	if existing, exists := body["cache_control"]; exists {
+		if !proxyClaudePromptCacheControlMatches(existing, mode) {
+			trace["claude_prompt_cache_mode_applied"] = false
+			trace["claude_prompt_cache_mode_conflict"] = true
+			return fmt.Errorf("claude_prompt_cache_mode conflicts with extra_body_json cache_control")
+		}
+		trace["claude_prompt_cache_mode_source"] = "typed_and_extra_body_json"
+	} else {
+		trace["claude_prompt_cache_mode_source"] = "typed_setting"
+	}
+	body["cache_control"] = proxyClaudePromptCacheControl(mode)
+	trace["claude_prompt_cache_mode_applied"] = true
+	return nil
+}
+
+func proxyAttachClaudeUsage(resp, upstream map[string]any, trace map[string]any) {
+	if resp == nil || upstream == nil {
+		return
+	}
+	usage, ok := upstream["usage"].(map[string]any)
+	if !ok || len(usage) == 0 {
+		return
+	}
+	resp["usage"] = usage
+	usageTrace := map[string]any{}
+	for _, key := range []string{"cache_creation_input_tokens", "cache_read_input_tokens", "service_tier"} {
+		if value, exists := usage[key]; exists {
+			usageTrace[key] = value
+		}
+	}
+	if len(usageTrace) > 0 {
+		trace["anthropic_usage"] = usageTrace
+	}
 }
 
 func proxyAttachLLMGatewayServiceTierTrace(resp map[string]any, trace map[string]any) {

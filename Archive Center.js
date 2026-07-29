@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.6.0-dev";
-  const BUILD_ID = "3.6-precision-memory.20260729-2";
+  const BUILD_ID = "3.6-precision-memory.20260729-3";
   const BUILD_CHANNEL = "3.6-local-test";
   const BUILD_TIME = "2026-07-29 KST";
-  const BUILD_NOTES = "3.6 LLM Gateway provider and role-specific service tier controls";
+  const BUILD_NOTES = "3.6 Claude automatic prompt caching with typed 5m/1h controls";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -91,6 +91,7 @@
   const REASONING_PRESET_OPTIONS = Object.freeze(["auto", "gpt", "gemini", "claude", "glm", "custom"]);
   const REASONING_EFFORT_OPTIONS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "enable", "disable"]);
   const LLM_GATEWAY_SERVICE_TIER_OPTIONS = Object.freeze(["standard", "flex", "priority"]);
+  const CLAUDE_PROMPT_CACHE_MODE_OPTIONS = Object.freeze(["off", "ephemeral_5m", "ephemeral_1h"]);
   const REASONING_PRESET_GUIDE = Object.freeze({
     gpt: {
       label: "GPT",
@@ -185,6 +186,7 @@
     pluginMainMaxCompletionTokens: 1024,
     pluginMainVertexFlexMode: "off",
     pluginMainLlmGatewayServiceTier: "standard",
+    pluginMainClaudePromptCacheMode: "off",
     pluginMainExtraHeadersJson: "",
     pluginMainExtraBodyJson: "",
     // ── 편집 검토 LLM (편집자 결과 second-pass 검토 전용) ──
@@ -200,6 +202,7 @@
     subLlmMaxCompletionTokens: 1024,
     subLlmVertexFlexMode: "off",
     subLlmLlmGatewayServiceTier: "standard",
+    subLlmClaudePromptCacheMode: "off",
     subLlmExtraHeadersJson: "",
     subLlmExtraBodyJson: "",
     // ── Embedding LLM (메모리 검색용 임베딩) ──
@@ -9791,6 +9794,10 @@
     return sanitizeEnumValue(normalized, "standard", LLM_GATEWAY_SERVICE_TIER_OPTIONS);
   }
 
+  function normalizeClaudePromptCacheModeSetting(value) {
+    return sanitizeEnumValue(value, "off", CLAUDE_PROMPT_CACHE_MODE_OPTIONS);
+  }
+
   function sanitizeProviderOverrideJsonSetting(value) {
     return typeof value === "string" ? value.trim() : "";
   }
@@ -10038,6 +10045,11 @@
         isSub ? settings.subLlmLlmGatewayServiceTier : settings.pluginMainLlmGatewayServiceTier,
       );
     }
+    if (provider === "claude") {
+      payload.claude_prompt_cache_mode = normalizeClaudePromptCacheModeSetting(
+        isSub ? settings.subLlmClaudePromptCacheMode : settings.pluginMainClaudePromptCacheMode,
+      );
+    }
     if (provider !== "vertex") return payload;
     const flexMode = normalizeVertexFlexModeSetting(isSub ? settings.subLlmVertexFlexMode : settings.pluginMainVertexFlexMode);
     const extraHeaders = sanitizeProviderOverrideJsonSetting(isSub ? settings.subLlmExtraHeadersJson : settings.pluginMainExtraHeadersJson);
@@ -10058,6 +10070,9 @@
         : "off",
       llmGatewayServiceTier: normalizedProvider === "llmgateway"
         ? normalizeLlmGatewayServiceTierSetting(isSub ? cfg.subLlmLlmGatewayServiceTier : cfg.pluginMainLlmGatewayServiceTier)
+        : "",
+      claudePromptCacheMode: normalizedProvider === "claude"
+        ? normalizeClaudePromptCacheModeSetting(isSub ? cfg.subLlmClaudePromptCacheMode : cfg.pluginMainClaudePromptCacheMode)
         : "",
       extraHeadersJson: normalizedProvider === "vertex"
         ? sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraHeadersJson : cfg.pluginMainExtraHeadersJson)
@@ -10293,6 +10308,7 @@
     merged.pluginMainReasoningBudgetTokens = getPluginMainReasoningBudgetTokensSetting(merged.pluginMainReasoningBudgetTokens);
     merged.pluginMainVertexFlexMode = normalizeVertexFlexModeSetting(merged.pluginMainVertexFlexMode);
     merged.pluginMainLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting(merged.pluginMainLlmGatewayServiceTier);
+    merged.pluginMainClaudePromptCacheMode = normalizeClaudePromptCacheModeSetting(merged.pluginMainClaudePromptCacheMode);
     merged.pluginMainExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraHeadersJson);
     merged.pluginMainExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraBodyJson);
     merged.supervisorTimeout = sanitizeNumber(merged.supervisorTimeout, 60, 5, 6000);
@@ -10312,6 +10328,7 @@
     merged.subLlmReasoningBudgetTokens = getSubLlmReasoningBudgetTokensSetting(merged.subLlmReasoningBudgetTokens);
     merged.subLlmVertexFlexMode = normalizeVertexFlexModeSetting(merged.subLlmVertexFlexMode);
     merged.subLlmLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting(merged.subLlmLlmGatewayServiceTier);
+    merged.subLlmClaudePromptCacheMode = normalizeClaudePromptCacheModeSetting(merged.subLlmClaudePromptCacheMode);
     merged.subLlmExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraHeadersJson);
     merged.subLlmExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraBodyJson);
     merged.embeddingProvider = normalizeEmbeddingProvider(merged.embeddingProvider, DEFAULT_SETTINGS.embeddingProvider);
@@ -10495,6 +10512,7 @@
       mainReasoningBudgetTokens: getPluginMainReasoningBudgetTokensSetting(s.pluginMainReasoningBudgetTokens),
       mainVertexFlexMode: mainOverrides.vertexFlexMode,
       mainLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier,
+      mainClaudePromptCacheMode: mainOverrides.claudePromptCacheMode,
       mainExtraHeadersJson: mainOverrides.extraHeadersJson,
       mainExtraBodyJson: mainOverrides.extraBodyJson,
         criticProvider,
@@ -10508,6 +10526,7 @@
       criticReasoningBudgetTokens: getSubLlmReasoningBudgetTokensSetting(s.subLlmReasoningBudgetTokens),
       criticVertexFlexMode: criticOverrides.vertexFlexMode,
       criticLlmGatewayServiceTier: criticOverrides.llmGatewayServiceTier,
+      criticClaudePromptCacheMode: criticOverrides.claudePromptCacheMode,
       criticExtraHeadersJson: criticOverrides.extraHeadersJson,
       criticExtraBodyJson: criticOverrides.extraBodyJson,
       supervisorProvider: mainProvider,
@@ -10521,6 +10540,7 @@
       supervisorReasoningBudgetTokens: getPluginMainReasoningBudgetTokensSetting(s.pluginMainReasoningBudgetTokens),
       supervisorVertexFlexMode: mainOverrides.vertexFlexMode,
       supervisorLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier,
+      supervisorClaudePromptCacheMode: mainOverrides.claudePromptCacheMode,
       supervisorExtraHeadersJson: mainOverrides.extraHeadersJson,
       supervisorExtraBodyJson: mainOverrides.extraBodyJson,
       embeddingApiKey: typeof s.embeddingApiKey === "string" ? s.embeddingApiKey : "",
@@ -10572,6 +10592,7 @@
         reasoning_budget_tokens: getSubLlmReasoningBudgetTokensSetting(settings.subLlmReasoningBudgetTokens),
         vertex_flex_mode: criticOverrides.vertexFlexMode,
         llm_gateway_service_tier: criticOverrides.llmGatewayServiceTier,
+        claude_prompt_cache_mode: criticOverrides.claudePromptCacheMode,
         extra_headers_json: criticOverrides.extraHeadersJson,
         extra_body_json: criticOverrides.extraBodyJson,
       },
@@ -49639,6 +49660,15 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         </select>
         <small style="color:#888;font-size:11px;">지원되는 provider/model 조합에만 적용됩니다. 미지원 조합은 자동 강등 없이 400 오류를 반환합니다.</small>
       </div>
+      <div class="mo-row" id="mo-pluginMainClaudePromptCacheModeRow">
+        <label>Claude Prompt Cache</label>
+        <select id="mo-pluginMainClaudePromptCacheMode">
+          <option value="off"${(s.pluginMainClaudePromptCacheMode || "off") === "off" ? " selected" : ""}>Off</option>
+          <option value="ephemeral_5m"${s.pluginMainClaudePromptCacheMode === "ephemeral_5m" ? " selected" : ""}>Automatic 5 min</option>
+          <option value="ephemeral_1h"${s.pluginMainClaudePromptCacheMode === "ephemeral_1h" ? " selected" : ""}>Automatic 1 hour</option>
+        </select>
+        <small style="color:#888;font-size:11px;">비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배(기본 입력 토큰 대비).</small>
+      </div>
       <div class="mo-row" id="mo-pluginMainExtraHeadersJsonRow">
         <label>Extra Headers JSON</label>
         <textarea id="mo-pluginMainExtraHeadersJson" rows="2" spellcheck="false" placeholder="{}">${escapeAttr(s.pluginMainExtraHeadersJson || "")}</textarea>
@@ -49746,6 +49776,15 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <option value="priority"${s.subLlmLlmGatewayServiceTier === "priority" ? " selected" : ""}>Priority</option>
         </select>
         <small style="color:#888;font-size:11px;">평론가처럼 지연을 감수할 수 있는 호출에 Flex를 선택할 수 있습니다. 지원 여부는 선택 모델에 따라 다릅니다.</small>
+      </div>
+      <div class="mo-row" id="mo-subLlmClaudePromptCacheModeRow">
+        <label>Claude Prompt Cache</label>
+        <select id="mo-subLlmClaudePromptCacheMode">
+          <option value="off"${(s.subLlmClaudePromptCacheMode || "off") === "off" ? " selected" : ""}>Off</option>
+          <option value="ephemeral_5m"${s.subLlmClaudePromptCacheMode === "ephemeral_5m" ? " selected" : ""}>Automatic 5 min</option>
+          <option value="ephemeral_1h"${s.subLlmClaudePromptCacheMode === "ephemeral_1h" ? " selected" : ""}>Automatic 1 hour</option>
+        </select>
+        <small style="color:#888;font-size:11px;">비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배(기본 입력 토큰 대비).</small>
       </div>
       <div class="mo-row" id="mo-subLlmExtraHeadersJsonRow">
         <label>Extra Headers JSON</label>
@@ -50843,12 +50882,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         providerEl.addEventListener("change", sync);
         sync();
       };
-      const syncLlmGatewayTierRow = (providerId, rowId) => {
+      const syncProviderSpecificRow = (providerId, rowId, expectedProvider) => {
         const providerEl = $(providerId);
         const row = $(rowId);
         if (!providerEl || !row) return;
         const sync = () => {
-          const enabled = String(providerEl.value || "").trim().toLowerCase() === "llmgateway";
+          const enabled = String(providerEl.value || "").trim().toLowerCase() === expectedProvider;
           row.style.display = enabled ? "" : "none";
           row.querySelectorAll("input,select,textarea,button").forEach((el) => {
             el.disabled = !enabled;
@@ -50901,8 +50940,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       // 저장
       syncVertexOverrideRows("mo-pluginMainProvider", ["mo-pluginMainVertexFlexRow", "mo-pluginMainExtraHeadersJsonRow", "mo-pluginMainExtraBodyJsonRow"]);
       syncVertexOverrideRows("mo-subLlmProvider", ["mo-subLlmVertexFlexRow", "mo-subLlmExtraHeadersJsonRow", "mo-subLlmExtraBodyJsonRow"]);
-      syncLlmGatewayTierRow("mo-pluginMainProvider", "mo-pluginMainLlmGatewayServiceTierRow");
-      syncLlmGatewayTierRow("mo-subLlmProvider", "mo-subLlmLlmGatewayServiceTierRow");
+      syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainLlmGatewayServiceTierRow", "llmgateway");
+      syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmLlmGatewayServiceTierRow", "llmgateway");
+      syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainClaudePromptCacheModeRow", "claude");
+      syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmClaudePromptCacheModeRow", "claude");
 
       $("mo-save-btn").addEventListener("click", async () => {
         try {
@@ -50954,6 +50995,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             pluginMainReasoningBudgetTokens: $("mo-pluginMainReasoningBudgetTokens").value,
             pluginMainVertexFlexMode: readValue("mo-pluginMainVertexFlexMode", settings.pluginMainVertexFlexMode, true),
             pluginMainLlmGatewayServiceTier: readValue("mo-pluginMainLlmGatewayServiceTier", settings.pluginMainLlmGatewayServiceTier, true),
+            pluginMainClaudePromptCacheMode: readValue("mo-pluginMainClaudePromptCacheMode", settings.pluginMainClaudePromptCacheMode, true),
             pluginMainExtraHeadersJson: readValue("mo-pluginMainExtraHeadersJson", settings.pluginMainExtraHeadersJson, true),
             pluginMainExtraBodyJson: readValue("mo-pluginMainExtraBodyJson", settings.pluginMainExtraBodyJson, true),
             subLlmApiKey: $("mo-subLlmApiKey").value,
@@ -50968,6 +51010,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             subLlmReasoningBudgetTokens: $("mo-subLlmReasoningBudgetTokens").value,
             subLlmVertexFlexMode: readValue("mo-subLlmVertexFlexMode", settings.subLlmVertexFlexMode, true),
             subLlmLlmGatewayServiceTier: readValue("mo-subLlmLlmGatewayServiceTier", settings.subLlmLlmGatewayServiceTier, true),
+            subLlmClaudePromptCacheMode: readValue("mo-subLlmClaudePromptCacheMode", settings.subLlmClaudePromptCacheMode, true),
             subLlmExtraHeadersJson: readValue("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson, true),
             subLlmExtraBodyJson: readValue("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson, true),
             embeddingProvider: $("mo-embeddingProvider").value,
@@ -51040,10 +51083,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           };
           setValueIfPresent("mo-pluginMainVertexFlexMode", settings.pluginMainVertexFlexMode || "off");
           setValueIfPresent("mo-pluginMainLlmGatewayServiceTier", settings.pluginMainLlmGatewayServiceTier || "standard");
+          setValueIfPresent("mo-pluginMainClaudePromptCacheMode", settings.pluginMainClaudePromptCacheMode || "off");
           setValueIfPresent("mo-pluginMainExtraHeadersJson", settings.pluginMainExtraHeadersJson || "");
           setValueIfPresent("mo-pluginMainExtraBodyJson", settings.pluginMainExtraBodyJson || "");
           setValueIfPresent("mo-subLlmVertexFlexMode", settings.subLlmVertexFlexMode || "off");
           setValueIfPresent("mo-subLlmLlmGatewayServiceTier", settings.subLlmLlmGatewayServiceTier || "standard");
+          setValueIfPresent("mo-subLlmClaudePromptCacheMode", settings.subLlmClaudePromptCacheMode || "off");
           setValueIfPresent("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson || "");
           setValueIfPresent("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson || "");
           setValueIfPresent("mo-primaryCanonBaseMaxChars", settings.primaryCanonBaseMaxChars);
@@ -51145,6 +51190,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testMaxCompletionTokens = getPluginMainMaxCompletionTokensSetting((($("mo-pluginMainMaxCompletionTokens") || {}).value));
           const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-pluginMainVertexFlexMode") || {}).value || "off").trim());
           const testLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting((($("mo-pluginMainLlmGatewayServiceTier") || {}).value || "standard").trim());
+          const testClaudePromptCacheMode = normalizeClaudePromptCacheModeSetting((($("mo-pluginMainClaudePromptCacheMode") || {}).value || "off").trim());
           const testExtraHeadersJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraHeadersJson") || {}).value || ""));
           const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraBodyJson") || {}).value || ""));
           const testBody = {
@@ -51165,6 +51211,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           }
           if (testProvider === "llmgateway") {
             testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
+          }
+          if (testProvider === "claude") {
+            testBody.claude_prompt_cache_mode = testClaudePromptCacheMode;
           }
           const data = await withUiBridgeSettings(() => bridgeFetch("/proxy/plugin-main", {
             method: "POST",
@@ -51208,6 +51257,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testMaxCompletionTokens = getSubLlmMaxCompletionTokensSetting((($("mo-subLlmMaxCompletionTokens") || {}).value));
           const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-subLlmVertexFlexMode") || {}).value || "off").trim());
           const testLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting((($("mo-subLlmLlmGatewayServiceTier") || {}).value || "standard").trim());
+          const testClaudePromptCacheMode = normalizeClaudePromptCacheModeSetting((($("mo-subLlmClaudePromptCacheMode") || {}).value || "off").trim());
           const testExtraHeadersJson = sanitizeProviderOverrideJsonSetting((($("mo-subLlmExtraHeadersJson") || {}).value || ""));
           const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-subLlmExtraBodyJson") || {}).value || ""));
           const testBody = {
@@ -51228,6 +51278,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           }
           if (testProvider === "llmgateway") {
             testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
+          }
+          if (testProvider === "claude") {
+            testBody.claude_prompt_cache_mode = testClaudePromptCacheMode;
           }
           const data = await withUiBridgeSettings(() => bridgeFetch("/proxy/plugin-main", {
             method: "POST",

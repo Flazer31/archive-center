@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -503,6 +504,290 @@ func TestProxyLLMGatewayServedTierNotReportedAndUntypedExtraBodyPreserved(t *tes
 	})
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("untyped extra body status=%d err=%v", status, err)
+	}
+}
+
+func TestProxyClaudePromptCacheModesAndUsageTrace(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		wantTTL string
+	}{
+		{name: "automatic 5 minutes", mode: "ephemeral_5m"},
+		{name: "automatic 1 hour", mode: "ephemeral_1h", wantTTL: "1h"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				cacheControl := mapFromAny(body["cache_control"])
+				if cacheControl["type"] != "ephemeral" {
+					t.Fatalf("cache_control type = %v, body=%+v", cacheControl["type"], body)
+				}
+				if tc.wantTTL == "" {
+					if _, exists := cacheControl["ttl"]; exists {
+						t.Fatalf("5m mapping must omit ttl: %+v", cacheControl)
+					}
+				} else if cacheControl["ttl"] != tc.wantTTL {
+					t.Fatalf("cache_control ttl = %v, want %q", cacheControl["ttl"], tc.wantTTL)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(`{
+						"model":"claude-test",
+						"content":[{"type":"text","text":"ok"}],
+						"usage":{
+							"input_tokens":21,
+							"output_tokens":3,
+							"cache_creation_input_tokens":13,
+							"cache_read_input_tokens":8,
+							"service_tier":"standard"
+						}
+					}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("anthropic-test"),
+				Endpoint:              strPtr("https://api.anthropic.com"),
+				Model:                 strPtr("claude-test"),
+				Provider:              strPtr("claude"),
+				ClaudePromptCacheMode: strPtr(tc.mode),
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMain status=%d err=%v", status, err)
+			}
+			usage := mapFromAny(resp["usage"])
+			if usage["cache_creation_input_tokens"] != float64(13) ||
+				usage["cache_read_input_tokens"] != float64(8) ||
+				usage["service_tier"] != "standard" {
+				t.Fatalf("normalized Claude usage missing raw fields: %+v", usage)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if trace["provider"] != "claude" ||
+				trace["claude_prompt_cache_mode_requested"] != tc.mode ||
+				trace["claude_prompt_cache_mode_applied"] != true {
+				t.Fatalf("unexpected Claude prompt cache trace: %+v", trace)
+			}
+			usageTrace := mapFromAny(trace["anthropic_usage"])
+			if usageTrace["cache_creation_input_tokens"] != float64(13) ||
+				usageTrace["cache_read_input_tokens"] != float64(8) ||
+				usageTrace["service_tier"] != "standard" {
+				t.Fatalf("Anthropic usage trace missing raw fields: %+v", usageTrace)
+			}
+		})
+	}
+}
+
+func TestProxyClaudePromptCacheOffAndAbsentPreserveManualCacheControl(t *testing.T) {
+	tests := []struct {
+		name string
+		mode *string
+	}{
+		{name: "typed absent"},
+		{name: "typed off", mode: strPtr("off")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				cacheControl := mapFromAny(body["cache_control"])
+				if cacheControl["type"] != "ephemeral" || cacheControl["ttl"] != "1h" {
+					t.Fatalf("manual cache_control changed: %+v", cacheControl)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			extraBody := `{"cache_control":{"type":"ephemeral","ttl":"1h"}}`
+			resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("anthropic-test"),
+				Endpoint:              strPtr("https://api.anthropic.com"),
+				Model:                 strPtr("claude-test"),
+				Provider:              strPtr("claude"),
+				ClaudePromptCacheMode: tc.mode,
+				ExtraBodyJSON:         &extraBody,
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMain status=%d err=%v", status, err)
+			}
+			if _, exists := resp["usage"]; exists {
+				t.Fatalf("normalized response invented usage: %+v", resp)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if _, exists := trace["anthropic_usage"]; exists {
+				t.Fatalf("trace invented Anthropic usage: %+v", trace)
+			}
+		})
+	}
+}
+
+func TestProxyClaudePromptCacheMatchingExtraBodyAccepted(t *testing.T) {
+	tests := []struct {
+		name      string
+		mode      string
+		extraBody string
+	}{
+		{
+			name:      "5m explicit ttl is equivalent",
+			mode:      "ephemeral_5m",
+			extraBody: `{"cache_control":{"type":"ephemeral","ttl":"5m"}}`,
+		},
+		{
+			name:      "1h exact match",
+			mode:      "ephemeral_1h",
+			extraBody: `{"cache_control":{"type":"ephemeral","ttl":"1h"}}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("anthropic-test"),
+				Endpoint:              strPtr("https://api.anthropic.com"),
+				Model:                 strPtr("claude-test"),
+				Provider:              strPtr("claude"),
+				ClaudePromptCacheMode: strPtr(tc.mode),
+				ExtraBodyJSON:         strPtr(tc.extraBody),
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMain status=%d err=%v", status, err)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if trace["claude_prompt_cache_mode_source"] != "typed_and_extra_body_json" ||
+				trace["claude_prompt_cache_mode_applied"] != true {
+				t.Fatalf("matching cache_control trace = %+v", trace)
+			}
+		})
+	}
+}
+
+func TestProxyClaudePromptCacheInvalidWrongProviderAndConflictsFailBeforeUpstream(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  string
+		mode      string
+		extraBody string
+		wantError string
+	}{
+		{name: "invalid", provider: "claude", mode: "automatic", wantError: "must be off, ephemeral_5m, or ephemeral_1h"},
+		{name: "uppercase near miss", provider: "claude", mode: "EPHEMERAL_5M", wantError: "must be off, ephemeral_5m, or ephemeral_1h"},
+		{name: "hyphen near miss", provider: "claude", mode: "ephemeral-5m", wantError: "must be off, ephemeral_5m, or ephemeral_1h"},
+		{name: "wrong provider", provider: "openai", mode: "ephemeral_5m", wantError: "requires provider claude"},
+		{name: "conflicting ttl", provider: "claude", mode: "ephemeral_1h", extraBody: `{"cache_control":{"type":"ephemeral"}}`, wantError: "conflicts with extra_body_json"},
+		{name: "extra keys conflict", provider: "claude", mode: "ephemeral_5m", extraBody: `{"cache_control":{"type":"ephemeral","scope":"session"}}`, wantError: "conflicts with extra_body_json"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			upstreamCalls := 0
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return nil, fmt.Errorf("unexpected upstream call")
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			req := dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("anthropic-test"),
+				Endpoint:              strPtr("https://api.anthropic.com"),
+				Model:                 strPtr("claude-test"),
+				Provider:              strPtr(tc.provider),
+				ClaudePromptCacheMode: strPtr(tc.mode),
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+			}
+			if tc.extraBody != "" {
+				req.ExtraBodyJSON = strPtr(tc.extraBody)
+			}
+			_, status, err := performProxyPluginMain(context.Background(), req)
+			if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("status=%d err=%v, want %q", status, err, tc.wantError)
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstreamCalls = %d, want 0", upstreamCalls)
+			}
+		})
+	}
+}
+
+func TestProxyClaudePromptCacheWrongCopilotProviderFailsBeforeTokenExchange(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return nil, fmt.Errorf("unexpected upstream call to %s", r.URL.String())
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("github-token"),
+		Endpoint:              strPtr("https://api.githubcopilot.com"),
+		Model:                 strPtr("gpt-test"),
+		Provider:              strPtr("copilot"),
+		ClaudePromptCacheMode: strPtr("ephemeral_5m"),
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "requires provider claude") {
+		t.Fatalf("status=%d err=%v, want local Claude provider error", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstreamCalls = %d, want 0 before Copilot token exchange", upstreamCalls)
+	}
+}
+
+func TestProxyClaudePromptCacheWrongVertexProviderFailsBeforeOAuthExchange(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return nil, fmt.Errorf("unexpected upstream call to %s", r.URL.String())
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	credential := testVertexServiceAccountJSON(t)
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                &credential,
+		Endpoint:              strPtr("https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"),
+		Model:                 strPtr("gemini-test"),
+		Provider:              strPtr("vertex"),
+		ClaudePromptCacheMode: strPtr("ephemeral_5m"),
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "requires provider claude") {
+		t.Fatalf("status=%d err=%v, want local Claude provider error", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstreamCalls = %d, want 0 before Vertex OAuth exchange", upstreamCalls)
 	}
 }
 

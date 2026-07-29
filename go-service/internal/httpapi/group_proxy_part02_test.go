@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
@@ -593,6 +594,66 @@ func TestConfigUpdatePropagatesLLMGatewayServiceTierToAllGenerationRoles(t *test
 		mapFromAny(trace["supervisor"])["llm_gateway_service_tier"] != "priority" ||
 		mapFromAny(trace["critic"])["llm_gateway_service_tier"] != "flex" {
 		t.Fatalf("runtime service tier trace missing: %+v", trace)
+	}
+}
+
+func TestConfigUpdatePropagatesClaudePromptCacheModeToAllGenerationRoles(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.RegisterRoutes(mux)
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader([]byte(`{
+		"mainProvider":"claude",
+		"mainApiKey":"main-key",
+		"mainEndpoint":"https://api.anthropic.com",
+		"mainModel":"claude-main",
+		"mainClaudePromptCacheMode":"ephemeral_5m",
+		"supervisorProvider":"claude",
+		"supervisorApiKey":"supervisor-key",
+		"supervisorEndpoint":"https://api.anthropic.com",
+		"supervisorModel":"claude-supervisor",
+		"supervisorClaudePromptCacheMode":"ephemeral_1h",
+		"criticProvider":"claude",
+		"criticApiKey":"critic-key",
+		"criticEndpoint":"https://api.anthropic.com",
+		"criticModel":"claude-critic",
+		"criticClaudePromptCacheMode":"off"
+	}`)))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRec := httptest.NewRecorder()
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("config/update status = %d, body=%s", updateRec.Code, updateRec.Body.String())
+	}
+
+	mainCfg := srv.chapterLLMConfig()
+	supervisorCfg := srv.supervisorLLMConfig()
+	criticCfg := srv.completeTurnExtractionConfig(map[string]any{}).Critic
+	if mainCfg.Provider != "claude" || mainCfg.ClaudePromptCacheMode != "ephemeral_5m" {
+		t.Fatalf("main Claude cache config = %+v", mainCfg)
+	}
+	if supervisorCfg.Provider != "claude" || supervisorCfg.ClaudePromptCacheMode != "ephemeral_1h" {
+		t.Fatalf("supervisor Claude cache config = %+v", supervisorCfg)
+	}
+	if criticCfg.Provider != "claude" || criticCfg.ClaudePromptCacheMode != "off" {
+		t.Fatalf("critic Claude cache config = %+v", criticCfg)
+	}
+
+	var updateResp map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &updateResp); err != nil {
+		t.Fatalf("decode config/update response: %v", err)
+	}
+	trace := mapFromAny(updateResp["runtime_config_trace"])
+	if mapFromAny(trace["main"])["claude_prompt_cache_mode"] != "ephemeral_5m" ||
+		mapFromAny(trace["supervisor"])["claude_prompt_cache_mode"] != "ephemeral_1h" ||
+		mapFromAny(trace["critic"])["claude_prompt_cache_mode"] != "off" {
+		t.Fatalf("runtime Claude prompt cache trace missing: %+v", trace)
+	}
+
+	req := dto.ProxyPluginMainRequest{}
+	applyProxyOverridesFromLLMConfig(&req, criticCfg)
+	if req.ClaudePromptCacheMode == nil || *req.ClaudePromptCacheMode != "off" {
+		t.Fatalf("critic proxy request cache mode = %v", req.ClaudePromptCacheMode)
 	}
 }
 

@@ -560,6 +560,38 @@ func TestArchiveCenterJSLLMGatewayProviderAndServiceTierMarkers(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		`const CLAUDE_PROMPT_CACHE_MODE_OPTIONS = Object.freeze(["off", "ephemeral_5m", "ephemeral_1h"])`,
+		`pluginMainClaudePromptCacheMode: "off"`,
+		`subLlmClaudePromptCacheMode: "off"`,
+		`function normalizeClaudePromptCacheModeSetting(value)`,
+		`payload.claude_prompt_cache_mode = normalizeClaudePromptCacheModeSetting(`,
+		`mainClaudePromptCacheMode: mainOverrides.claudePromptCacheMode`,
+		`criticClaudePromptCacheMode: criticOverrides.claudePromptCacheMode`,
+		`supervisorClaudePromptCacheMode: mainOverrides.claudePromptCacheMode`,
+		`claude_prompt_cache_mode: criticOverrides.claudePromptCacheMode`,
+		`id="mo-pluginMainClaudePromptCacheMode"`,
+		`id="mo-subLlmClaudePromptCacheMode"`,
+		`>Automatic 5 min</option>`,
+		`>Automatic 1 hour</option>`,
+		`syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainClaudePromptCacheModeRow", "claude")`,
+		`syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmClaudePromptCacheModeRow", "claude")`,
+		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
+		`extraBodyJson: normalizedProvider === "vertex"`,
+		`if (provider !== "vertex") return payload;`,
+		`const BUILD_ID = "3.6-precision-memory.20260729-3"`,
+		`const BUILD_NOTES = "3.6 Claude automatic prompt caching with typed 5m/1h controls"`,
+		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
+	}
+	for _, needle := range required {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing Claude prompt cache marker %q", needle)
+		}
+	}
+}
+
 func TestArchiveCenterJSAuxiliaryInjectionPlacementI18nAndNoStaleBudgetPreview(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{

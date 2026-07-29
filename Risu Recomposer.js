@@ -2,7 +2,7 @@
 //@display-name Risu Recomposer
 //@author recomposer
 //@api 3.0
-//@version 0.1.25
+//@version 0.1.29
 
 
 /*
@@ -14,8 +14,8 @@
   "use strict";
 
   const PLUGIN_ID = "risu_recomposer";
-  const VERSION = "0.1.27";
-  const BUILD_MARKER = "STRUCTURED-RESPONSE-RECOVERY-20260729";
+  const VERSION = "0.1.29";
+  const BUILD_MARKER = "VISIBLE-DRAFT-QUALITY-PROOF-20260729";
   const LOG_PREFIX = "[Recomposer]";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings_v1`;
   const TRACE_KEY = `${PLUGIN_ID}_trace_v1`;
@@ -48,6 +48,11 @@
     fast: 2,
     balanced: 3,
     quality: 3,
+  });
+  const SPECIALIST_STRUCTURED_RECOVERY_LIMIT = Object.freeze({
+    fast: 0,
+    balanced: 1,
+    quality: 2,
   });
 
   /* ── Providers ─────────────────────────────────────────── */
@@ -295,10 +300,13 @@
       "You are the final Semantic Prover for a composed roleplay response.",
       "Audit only the final Composer output against the Draft Ledger, original turn contract, Semantic Judgment, Fusion Plan, and runtime evidence.",
       "Check every required fact, scene beat, hard constraint, secret/reveal boundary, identity state, POV boundary, user agency boundary, and output contract.",
-      "Detect unsupported additions, missing or contradicted ledger units, meta artifacts, language violations, and turn-boundary expansion.",
+      "Detect unsupported additions, missing or contradicted ledger units, meta artifacts, language violations, turn-boundary expansion, and residual prose defects.",
+      "Inspect mechanics and wording, register and era consistency, repetition and exposition, grounded psychology and relationships, and opening-transition-ending coherence.",
+      "A newly asserted motive, emotion, relationship meaning, knowledge state, or personality judgment is unsupported unless the original, Draft Ledger, or runtime evidence establishes it.",
       "Every preserved fact or beat must include a short exact evidence_quote copied from the final Composer output.",
-      "Do not reward style, length, confidence, or eloquence. Do not rewrite prose.",
-      "Return semantic_proof.v1 JSON only. A pass is valid only when every required ledger unit is covered and no hard violation or unsupported addition remains.",
+      "Every realized specialist contribution must cite exact final wording introduced by the rewrite, not a quote already present in draft_zero.",
+      "Do not reward length, confidence, or merely different wording. Do not rewrite prose.",
+      "Return semantic_proof.v1 JSON only. A pass is valid only when every required ledger unit and contribution is covered, all residual quality checks are clean, and no hard violation or unsupported addition remains.",
     ].join("\n"),
     whole_scene_composer: [
       "You are the Whole-Scene Fusion Composer for a roleplay response.",
@@ -325,6 +333,8 @@
       "- Maintain transitions across segment boundaries. Avoid duplicated setup, repeated emotional conclusions, abrupt compression, and generic closing questions.",
       "- Every substantive mutable prose segment must receive a material rewrite. Copying the original with punctuation, spelling, synonym, or one-sentence edits is a failed composition.",
       "- Rebuild diction, sentence architecture, sensory specificity, subtext, pacing, transitions, and ending cadence while preserving facts.",
+      "- After composing the individual segment values, reread their assembled order as one scene. Repair the opening hook, every boundary transition, causal progression, character subtext, awkward wording, typos, register or era mismatch, repeated explanation, and the final paragraph's cadence before returning JSON.",
+      "- Do not assert a new motive, emotion, relationship interpretation, knowledge state, or personality judgment unless it is established by draft_zero, the Draft Ledger, accepted evidence, or runtime context.",
       "- Include every requested mutable segment ID exactly once as a complete final replacement.",
       "- Never output protected or inspect-only segments.",
       "",
@@ -851,12 +861,24 @@
       request_type: safeString(type),
       timestamp: Date.now(),
       streaming: { detected: false, reason: "" },
+      visible_output: {
+        raw_chars: 0,
+        visible_chars: 0,
+        removed_block_count: 0,
+        removed_chars: 0,
+        ambiguous_unclosed: false,
+      },
       roles: [],
       segments: { protected: 0, inspect_only: 0, mutable: 0 },
       candidates: {
         total: 0,
         segment_variant_total: 0,
         duplicate_scene_candidates: 0,
+        partial_salvage_count: 0,
+        normalized_field_count: 0,
+        structured_recovery_queued: 0,
+        structured_recovery_attempted: 0,
+        structured_recovery_succeeded: 0,
         by_segment: {},
       },
       composer: {
@@ -874,6 +896,7 @@
         missing_facts: 0,
         unsupported_additions: 0,
         hard_violations: 0,
+        required_contributions: 0,
       },
       semantic_prover: {
         status: "not_run",
@@ -887,6 +910,12 @@
         hard_violations: 0,
         unsupported_additions: 0,
         output_contract_failures: 0,
+        quality_gains_required: 0,
+        quality_gains_missing: 0,
+        quality_gains_regressed: 0,
+        residual_quality_checked: 0,
+        residual_quality_issues: 0,
+        realized_contributions: [],
         reason: "",
       },
       fusion_plan: {
@@ -896,6 +925,7 @@
         consensus_claims: 0,
         complementary_claims: 0,
         conflicts: 0,
+        required_contributions: 0,
       },
       router: { signals: [], selected: [], skipped: [] },
       scheduler: {
@@ -948,6 +978,7 @@
       },
       summary: {
         specialist_calls: 0,
+        specialist_http_calls: 0,
         successful_roles: 0,
         candidate_count: 0,
         composer_state: "",
@@ -993,6 +1024,9 @@
       request_overrides: entry.request_overrides || null,
       error_class: entry.error_class || "",
       error: entry.error || "",
+      validation_diagnostics: Array.isArray(entry.validation_diagnostics)
+        ? entry.validation_diagnostics
+        : [],
     });
   }
 
@@ -1031,7 +1065,7 @@
     { kind: "code_fence", regex: /```[\s\S]*?```/gi, priority: 95 },
     { kind: "inline_code", regex: /`[^`\n]+`/g, priority: 90 },
     { kind: "risu_marker", regex: /<\/?(?:risu|module|status|chatindex|regex|system|plugin|asset|background|emotion|prompt)[^>]*>/gi, priority: 92 },
-    { kind: "html_tag", regex: /<\/?(?!(?:thoughts?|analysis|thinking)\b)[a-z][^>]*>/gi, priority: 80 },
+    { kind: "html_tag", regex: /<\/?(?!(?:thoughts?|analysis|thinking|think)\b)[a-z][^>]*>/gi, priority: 80 },
   ];
 
   const INSPECT_PATTERNS = [
@@ -1146,7 +1180,69 @@
   function isWhollyMetaArtifactText(text) {
     const value = safeString(text).trim();
     if (!value) return false;
-    return /^<(thoughts?|analysis|thinking)\b[^>]*>[\s\S]*<\/\1>$/i.test(value);
+    return /^<(thoughts?|analysis|thinking|think)\b[^>]*>[\s\S]*<\/\1>$/i.test(value);
+  }
+
+  function visibleResponseBoundary(text) {
+    const source = safeString(text);
+    const patterns = [
+      /<(?:final|response|answer)\b[^>]*>/i,
+      /(?:^|\n)\s*#{1,6}\s*(?:final(?:\s+answer)?|response|answer|최종(?:\s*답변)?|응답)\s*:?\s*(?:\n|$)/im,
+    ];
+    let selected = null;
+    patterns.forEach((pattern) => {
+      const match = pattern.exec(source);
+      if (!match) return;
+      const candidate = {
+        start: match.index,
+        content_start: match.index + match[0].length,
+        marker: match[0],
+      };
+      if (!selected || candidate.start < selected.start) selected = candidate;
+    });
+    return selected;
+  }
+
+  function extractVisibleAssistantOutput(text) {
+    const source = safeString(text);
+    let visible = source;
+    let removedBlocks = 0;
+    let removedChars = 0;
+    let ambiguousUnclosed = false;
+    const closedPattern = /<(thoughts?|analysis|thinking|think)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+    visible = visible.replace(closedPattern, (match) => {
+      removedBlocks++;
+      removedChars += match.length;
+      return "";
+    });
+
+    const leadingOpen = /^\s*<(thoughts?|analysis|thinking|think)\b[^>]*>/i.exec(visible);
+    if (leadingOpen) {
+      const remainderStart = leadingOpen.index + leadingOpen[0].length;
+      const boundary = visibleResponseBoundary(visible.slice(remainderStart));
+      if (boundary) {
+        const visibleStart = remainderStart + boundary.content_start;
+        removedBlocks++;
+        removedChars += visibleStart;
+        visible = visible.slice(visibleStart);
+      } else {
+        ambiguousUnclosed = true;
+        removedBlocks++;
+        removedChars += visible.length;
+        visible = "";
+      }
+    }
+
+    if (removedBlocks > 0) {
+      visible = visible.replace(/^\s*\n+/, "").replace(/\n{3,}/g, "\n\n");
+    }
+    return {
+      text: visible,
+      removed_block_count: removedBlocks,
+      removed_chars: removedChars,
+      ambiguous_unclosed: ambiguousUnclosed,
+      changed: visible !== source,
+    };
   }
 
   function buildSegmentMap(text, settings) {
@@ -3212,13 +3308,15 @@
         proposed_additions: candidate.proposed_additions,
         addressed_issues: candidate.addressed_issues,
         change_summary: candidate.change_summary,
+        partial_salvage: candidate.partial_salvage === true,
+        coverage_gap: candidate.coverage_gap || [],
       }));
       const originalSegments = allSegments.map((segment) => ({
         id: segment.id,
         type: segment.type,
         text: segment.type === "mutable" ? segment.text : preview(segment.text, 240),
       }));
-      userPrompt = `Judge every scene-wide candidate against the original response, Draft Ledger, runtime evidence, and output contract.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nScene candidates:\n${JSON.stringify(sceneCandidates)}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Return exactly one judgment for every candidate_id and no unknown candidate_id.\n- preserved_ledger_ids and missing_ledger_ids may contain only Draft Ledger ledger_id values.\n- A candidate with a secret, POV, identity/reveal, user-agency, model/meta, or output-contract violation must be reject, unless the exact violating element is isolated in rejected_elements and hard_violations for Composer prohibition; only then use accept_with_constraints.\n- Treat unsupported factual, relationship, location, object-state, backstory, or event additions as unsupported_additions.\n- Record accepted and rejected elements as concrete claims with candidate_ids and evidence_refs.\n- Cross-candidate consensus, complementary value, and conflicts must describe claims or facts, not shared issue labels.\n- Do not use model confidence as evidence and do not write replacement prose.\n\nReturn compact JSON only:\n{"schema":"semantic_judgment.v1","candidate_judgments":[{"candidate_id":"candidate_id","verdict":"accept|accept_with_constraints|reject","preserved_ledger_ids":[],"missing_ledger_ids":[],"unsupported_additions":[{"claim":"unsupported claim","reason":"why","evidence_refs":[],"candidate_ids":["candidate_id"],"segment_ids":["mutable_1"]}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"violation","evidence_refs":[],"segment_ids":["mutable_1"]}],"accepted_elements":[],"rejected_elements":[],"quality_gains":[],"quality_regressions":[]}],"cross_candidate":{"consensus":[],"complementary":[],"conflicts":[]},"scene_requirements":{"target_arc":"","target_voice":"","target_pacing":""}}`;
+      userPrompt = `Judge every scene-wide candidate against the original response, Draft Ledger, runtime evidence, and output contract.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nScene candidates:\n${JSON.stringify(sceneCandidates)}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Return exactly one judgment for every candidate_id and no unknown candidate_id.\n- preserved_ledger_ids and missing_ledger_ids may contain only Draft Ledger ledger_id values.\n- A candidate with a secret, POV, identity/reveal, user-agency, model/meta, or output-contract violation must be reject, unless the exact violating element is isolated in rejected_elements and hard_violations for Composer prohibition; only then use accept_with_constraints.\n- Treat unsupported factual, relationship, location, object-state, backstory, or event additions as unsupported_additions.\n- Record accepted and rejected elements as concrete claims with candidate_ids and evidence_refs.\n- Every non-rejected candidate must expose at least one concrete accepted_elements or quality_gains item tied to its candidate_id and affected segment_ids. Describe the contribution Composer must realize, not a generic compliment.\n- Cross-candidate consensus, complementary value, and conflicts must describe claims or facts, not shared issue labels.\n- Do not use model confidence as evidence and do not write replacement prose.\n\nReturn compact JSON only:\n{"schema":"semantic_judgment.v1","candidate_judgments":[{"candidate_id":"candidate_id","verdict":"accept|accept_with_constraints|reject","preserved_ledger_ids":[],"missing_ledger_ids":[],"unsupported_additions":[{"claim":"unsupported claim","reason":"why","evidence_refs":[],"candidate_ids":["candidate_id"],"segment_ids":["mutable_1"]}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"violation","evidence_refs":[],"segment_ids":["mutable_1"]}],"accepted_elements":[{"claim":"specific contribution to preserve","candidate_ids":["candidate_id"],"segment_ids":["mutable_1"],"evidence_refs":[]}],"rejected_elements":[],"quality_gains":[{"claim":"specific quality gain Composer must realize","candidate_ids":["candidate_id"],"segment_ids":["mutable_1"],"evidence_refs":[]}],"quality_regressions":[]}],"cross_candidate":{"consensus":[],"complementary":[],"conflicts":[]},"scene_requirements":{"target_arc":"","target_voice":"","target_pacing":""}}`;
     } else if (role.is_prover) {
       const finalSegments = arrayFromCollection(directorInfo && directorInfo.final_segments).map((segment) => ({
         id: safeString(segment.id),
@@ -3230,7 +3328,7 @@
         type: segment.type,
         text: segment.type === "mutable" ? mutableFullText(segment) : preview(segment.text, 240),
       }));
-      userPrompt = `Prove or reject the FINAL Composer output against every binding semantic unit.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nFinal Composer segments:\n${JSON.stringify(finalSegments)}\n\nSemantic Judgment:\n${JSON.stringify(asObject(directorInfo && directorInfo.semantic_judgment))}\n\nFusion Plan:\n${JSON.stringify(asObject(directorInfo && directorInfo.fusion_plan))}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Cover every established_facts ledger_id exactly once in fact_checks.\n- Cover every scene_beats ledger_id exactly once in beat_checks.\n- Cover every hard_constraints ledger_id exactly once in constraint_checks.\n- Mark missing, contradicted, violated, or uncertain honestly. Uncertain is not a pass.\n- Record every secret, POV, identity, agency, meta, or output-contract failure as a hard_violation.\n- Record every new factual, relationship, location, object-state, backstory, or event claim without evidence as an unsupported_addition.\n- output_contract fields must be booleans grounded in the final text.\n- Use verdict repair only when one targeted Composer repair can resolve all failures; then provide concrete segment-scoped repair_instructions.\n- Use verdict fail when the scene cannot be repaired without replacing its grounded event structure.\n- Do not write prose, advice, markdown, or reasoning.\n\nReturn compact JSON only:\n{"schema":"semantic_proof.v1","declared_verdict":"pass|repair|fail","fact_checks":[{"ledger_id":"fact_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"beat_checks":[{"ledger_id":"beat_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"constraint_checks":[{"ledger_id":"constraint_1","status":"satisfied|violated|uncertain","detail":"","evidence_quote":""}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"unsupported_additions":[{"claim":"","reason":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[{"segment_id":"mutable_1","instruction":"","evidence_refs":[],"prohibited":[]}]}`;
+      userPrompt = `Prove or reject the FINAL Composer output against every binding semantic unit and required Fusion contribution.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nFinal Composer segments:\n${JSON.stringify(finalSegments)}\n\nSemantic Judgment:\n${JSON.stringify(asObject(directorInfo && directorInfo.semantic_judgment))}\n\nFusion Plan:\n${JSON.stringify(asObject(directorInfo && directorInfo.fusion_plan))}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Cover every established_facts ledger_id exactly once in fact_checks.\n- Cover every scene_beats ledger_id exactly once in beat_checks.\n- Cover every hard_constraints ledger_id exactly once in constraint_checks.\n- Cover every fusion_plan.required_contributions contribution_id exactly once in quality_gain_checks.\n- A quality gain is realized only when its exact evidence_quote appears in the required final segment and that exact wording was not already present in the corresponding original segment. Missing, unchanged, or regressed gains cannot pass.\n- Return exactly one residual_quality_checks item for each check_id: mechanics_and_wording, register_and_era, repetition_and_exposition, grounded_psychology_and_relationship, scene_coherence_and_ending.\n- Mark a residual check issue when the final scene retains an awkward or erroneous phrase, typo, register/era mismatch, repeated or flattened exposition, unsupported motive/emotion/relationship/knowledge assertion, weak opening or transition, or generic/explanatory ending. An issue requires an exact final-text quote and segment_id and cannot pass.\n- Mark missing, contradicted, violated, uncertain, regressed, or issue honestly. Uncertain is not a pass.\n- Record every secret, POV, identity, agency, meta, or output-contract failure as a hard_violation.\n- Record every new factual, relationship, location, object-state, backstory, event, motive, emotion, knowledge state, or personality assertion without original, Draft Ledger, or runtime evidence as an unsupported_addition.\n- output_contract fields must be booleans grounded in the final text.\n- Use verdict repair only when one targeted Composer repair can resolve all failures; then provide concrete segment-scoped repair_instructions for every missing contribution and residual issue.\n- Use verdict fail when the scene cannot be repaired without replacing its grounded event structure.\n- Do not write prose, advice, markdown, or reasoning.\n\nReturn compact JSON only:\n{"schema":"semantic_proof.v1","declared_verdict":"pass|repair|fail","fact_checks":[{"ledger_id":"fact_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"beat_checks":[{"ledger_id":"beat_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"constraint_checks":[{"ledger_id":"constraint_1","status":"satisfied|violated|uncertain","detail":"","evidence_quote":""}],"quality_gain_checks":[{"contribution_id":"gain_id","status":"realized|missing|regressed","detail":"","evidence_quote":"","segment_ids":["mutable_1"]}],"residual_quality_checks":[{"check_id":"mechanics_and_wording|register_and_era|repetition_and_exposition|grounded_psychology_and_relationship|scene_coherence_and_ending","status":"clean|issue","detail":"","evidence_quote":"","segment_ids":[]}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"unsupported_additions":[{"claim":"","reason":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[{"segment_id":"mutable_1","instruction":"","evidence_refs":[],"prohibited":[]}]}`;
     } else if (role.is_composer) {
       const mutableList = mutableSegs.map((s) => {
         const candidates = (directorInfo && directorInfo.candidateBundles && directorInfo.candidateBundles[s.id]) || [];
@@ -3253,10 +3351,10 @@
       const retrySection = arrayFromCollection(revisionFeedback.weak_segment_ids).length
         ? `\n--- Recomposition Retry ---\nThe previous composition was rejected as a near-copy.\nWeak segment IDs: ${revisionFeedback.weak_segment_ids.join(", ")}\nPrevious rejected segments:\n${JSON.stringify(revisionFeedback.previous_segments || {})}\nFor every weak segment, discard the previous sentence structure and reconstruct the prose materially. Preserve facts, not wording. Do not answer with spelling, punctuation, synonym, or isolated-line edits.\n--- End Retry ---\n`
         : "";
-      userPrompt = `Compose the FINAL mutable prose from the original, accepted scene candidates, Semantic Judgment, Fusion Plan, and Draft Ledger.\n\nMutable segments:\n${mutableList}\n\nPreserved segments (never output or rewrite):\n${preservedList}\n${directorSection}${retrySection}${draftLedgerSection}${contextSection}\n\nRules:\n- Follow fusion_plan.v1. Preserve every required fact, beat, constraint, user-owned decision, secret/reveal state, POV boundary, and cross-segment consequence.\n- Use only accepted candidate elements and permitted additions. Exclude every rejected element, prohibited addition, unsupported claim, and hard violation.\n- Resolve conflicts exactly as the Fusion Plan states; do not choose by confidence, score, verbosity, or surface elegance.\n- Synthesize compatible strengths into new prose. Never concatenate candidate passages or copy one candidate unchanged.\n- Remove model reasoning, prompt residue, approval labels, assistant commentary, and output-contract violations from mutable prose.\n- A mutable segment that is wholly a model Thoughts/Analysis/Reasoning artifact must be returned as an empty string. Never empty a substantive scene segment.\n- Materially reconstruct every substantive segment through stronger scene architecture, causality, voice, subtext, dramatic pressure, imagery, pacing, transitions, and cadence.\n- Do not cross the current turn boundary or decide the user's unexpressed thought, speech, consent, emotion, or next action.\n- Include every requested mutable segment ID exactly once. Output no protected or inspect-only segment.\n\nReturn compact JSON only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}`;
+      userPrompt = `Compose the FINAL mutable prose from the original, accepted scene candidates, Semantic Judgment, Fusion Plan, and Draft Ledger.\n\nMutable segments:\n${mutableList}\n\nPreserved segments (never output or rewrite):\n${preservedList}\n${directorSection}${retrySection}${draftLedgerSection}${contextSection}\n\nRules:\n- Follow fusion_plan.v1. Preserve every required fact, beat, constraint, user-owned decision, secret/reveal state, POV boundary, and cross-segment consequence.\n- Realize every fusion_plan.required_contributions item in its specified segment_ids. Integrate compatible contributions from every accepted specialist role rather than collapsing to one top candidate.\n- Use only accepted candidate elements and permitted additions. Exclude every rejected element, prohibited addition, unsupported claim, and hard violation.\n- Resolve conflicts exactly as the Fusion Plan states; do not choose by confidence, score, verbosity, or surface elegance.\n- Synthesize compatible strengths into new prose. Never concatenate candidate passages or copy one candidate unchanged.\n- The supplied mutable text is already the visible response; do not recreate removed model reasoning, prompt residue, approval labels, assistant commentary, or output-contract violations.\n- Materially reconstruct every substantive segment through stronger scene architecture, causality, voice, subtext, dramatic pressure, imagery, pacing, transitions, and cadence.\n- After drafting all segment values, read them in assembled order and perform one final whole-scene polish. Correct awkward or erroneous wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, weak boundary transitions, and generic or explanatory ending cadence.\n- Do not introduce a motive, emotion, relationship interpretation, knowledge state, or personality judgment unless grounded in the original, Draft Ledger, accepted evidence, or runtime context.\n- Do not cross the current turn boundary or decide the user's unexpressed thought, speech, consent, emotion, or next action.\n- Include every requested mutable segment ID exactly once. Output no protected or inspect-only segment.\n\nReturn compact JSON only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}`;
     } else {
       const segIds = mutableSegs.map((s) => s.id);
-      userPrompt = `Produce one complete scene-wide rewrite candidate through this lane.\n\nYou are seeing the full ordered response for continuity. Protected and inspect-only segments are [PRESERVED] context and must never be returned or rewritten.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [PRESERVED]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${draftLedgerSection}${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return exactly one candidate containing every allowed substantive mutable segment ID, or return an empty candidates array.\n- Reconstruct the full scene through this lane; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Preserve Draft Ledger facts, beats, secrets, POV, identity state, user-owned decisions, and the current turn boundary. Wording and paragraph architecture are not protected.\n- Enforce the shared output contract while rewriting: remove model reasoning, approval labels, assistant commentary, prompt residue, and other meta artifacts.\n- A mutable segment that is wholly a Thoughts/Analysis/Reasoning artifact may be returned as an empty string with meta_artifact in addressed_issues. No substantive scene segment may be empty.\n- evidence_refs must name Draft Ledger ledger_id, source_ref, or runtime context refs actually used.\n- retained_beats must identify the Draft Ledger units preserved in the scene.\n- proposed_additions must disclose every new factual claim, relationship fact, event, location fact, object state, or backstory detail introduced by the candidate. Use [] when none.\n- confidence is trace-only metadata and never guarantees selection.\n- If this lane cannot materially improve the whole scene, return {"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[]}.\n- Identify the concrete issues addressed and summarize the actual scene-level revision.\n\nReturn one compact JSON object only:\n{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"complete replacement text"},"evidence_refs":["ledger_or_context_ref"],"retained_beats":[{"id":"ledger_id","text":"retained beat"}],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.75,"change_summary":"what materially changed across the scene"}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
+      userPrompt = `Produce one complete scene-wide rewrite candidate through this lane.\n\nYou are seeing the full ordered visible response for continuity. Model reasoning containers were removed before this call. Protected and inspect-only segments are [PRESERVED] context and must never be returned or rewritten.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [PRESERVED]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${draftLedgerSection}${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return exactly one candidate containing every allowed substantive mutable segment ID, or return an empty candidates array.\n- Reconstruct the full scene through this lane; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Preserve Draft Ledger facts, beats, secrets, POV, identity state, user-owned decisions, and the current turn boundary. Wording and paragraph architecture are not protected.\n- Do not recreate model reasoning, approval labels, assistant commentary, prompt residue, or other meta artifacts.\n- No substantive scene segment may be empty.\n- evidence_refs must name Draft Ledger ledger_id, source_ref, or runtime context refs actually used.\n- retained_beats must identify the Draft Ledger units preserved in the scene.\n- proposed_additions must disclose every new factual claim, relationship fact, event, location fact, object state, backstory detail, motive, emotion, knowledge state, or personality judgment introduced by the candidate. Use [] when none.\n- confidence is trace-only metadata and never guarantees selection.\n- If this lane cannot materially improve the whole scene, return {"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[]}.\n- Identify the concrete issues addressed and summarize the actual scene-level revision.\n\nReturn one compact JSON object only:\n{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"complete replacement text"},"evidence_refs":["ledger_or_context_ref"],"retained_beats":[{"id":"ledger_id","text":"retained beat"}],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.75,"change_summary":"what materially changed across the scene"}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
     }
     return { system: systemPrompt, user: userPrompt };
   }
@@ -3285,14 +3383,50 @@
     return result;
   }
 
-  function validateCandidateSchema(parsed, expectedRoleId, allowedSegmentIds, mutableSegs) {
-    if (!parsed || typeof parsed !== "object") return null;
-    if (safeString(parsed.schema) !== "scene_rewrite_candidates.v1") return null;
+  function candidateValidationDiagnostic(code, candidateIndex, segmentIds, detail) {
+    return {
+      code: safeString(code),
+      candidate_index: Number.isFinite(candidateIndex) ? candidateIndex : -1,
+      segment_ids: uniqueList(arrayFromCollection(segmentIds).map((id) => safeString(id)).filter(Boolean)),
+      detail: truncate(detail, 240).trim(),
+    };
+  }
+
+  function recognizableCandidateEnvelope(parsed) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (Array.isArray(parsed.candidates)) return parsed;
+    if (parsed.candidate && typeof parsed.candidate === "object") {
+      return Object.assign({}, parsed, { candidates: [parsed.candidate] });
+    }
+    if (parsed.segments && typeof parsed.segments === "object") {
+      return Object.assign({}, parsed, { candidates: [parsed] });
+    }
+    return null;
+  }
+
+  function validateCandidateSchemaDetailed(parsed, expectedRoleId, allowedSegmentIds, mutableSegs) {
+    const diagnostics = [];
+    const envelope = recognizableCandidateEnvelope(parsed);
+    if (!envelope) {
+      return {
+        value: null,
+        diagnostics: [candidateValidationDiagnostic("unrecognized_candidate_envelope", -1, [], "")],
+      };
+    }
     const roleId = safeString(expectedRoleId);
-    if (safeString(parsed.role_id) !== roleId) return null;
-    if (!Array.isArray(parsed.candidates)) return null;
+    if (safeString(envelope.schema) !== "scene_rewrite_candidates.v1") {
+      diagnostics.push(candidateValidationDiagnostic("normalized_schema", -1, [], safeString(envelope.schema)));
+    }
+    if (safeString(envelope.role_id) !== roleId) {
+      diagnostics.push(candidateValidationDiagnostic("normalized_role_id", -1, [], safeString(envelope.role_id)));
+    }
     const allowedIds = uniqueList(arrayFromCollection(allowedSegmentIds).map((id) => safeString(id)));
-    if (!allowedIds.length) return null;
+    if (!allowedIds.length) {
+      return {
+        value: null,
+        diagnostics: diagnostics.concat(candidateValidationDiagnostic("no_allowed_segments", -1, [], "")),
+      };
+    }
     const allowed = new Set(allowedIds);
     const laneIssues = ROLE_ALLOWED_ISSUES[roleId]
       ? new Set(roleAllowedIssues(roleId))
@@ -3302,9 +3436,19 @@
     const valid = [];
     const seen = new Set();
 
-    parsed.candidates.forEach((candidate) => {
-      if (!candidate || typeof candidate !== "object") return;
-      if (candidate.role_id != null && safeString(candidate.role_id) !== roleId) return;
+    envelope.candidates.forEach((candidate, candidateIndex) => {
+      if (!candidate || typeof candidate !== "object") {
+        diagnostics.push(candidateValidationDiagnostic("invalid_candidate_item", candidateIndex, [], ""));
+        return;
+      }
+      if (candidate.role_id != null && safeString(candidate.role_id) !== roleId) {
+        diagnostics.push(candidateValidationDiagnostic(
+          "normalized_candidate_role_id",
+          candidateIndex,
+          [],
+          safeString(candidate.role_id)
+        ));
+      }
       let rawSegments = asObject(candidate.segments);
       if (!Object.keys(rawSegments).length
           && allowedIds.length === 1
@@ -3312,14 +3456,50 @@
         rawSegments = { [allowedIds[0]]: candidate.scene_rewrite };
       }
       const tags = arrayFromCollection(candidate.tags).map((tag) => safeString(tag)).filter(Boolean);
-      const issues = normalizeIssues(candidate.addressed_issues || candidate.issues, tags);
-      if (laneIssues && issues.some((issue) => !laneIssues.has(issue))) return;
+      const rawIssueValues = arrayFromCollection(candidate.addressed_issues || candidate.issues)
+        .map((issue) => safeString(issue).trim().toLowerCase())
+        .filter(Boolean);
+      const unknownIssues = uniqueList(rawIssueValues.filter(
+        (issue) => ISSUE_GROUPS.indexOf(issue) < 0
+      ));
+      if (unknownIssues.length) {
+        diagnostics.push(candidateValidationDiagnostic(
+          "filtered_unknown_issue_codes",
+          candidateIndex,
+          [],
+          unknownIssues.join(",")
+        ));
+      }
+      const normalizedIssues = normalizeIssues(candidate.addressed_issues || candidate.issues, tags);
+      const issues = laneIssues
+        ? normalizedIssues.filter((issue) => laneIssues.has(issue))
+        : normalizedIssues;
+      const removedIssues = normalizedIssues.filter((issue) => issues.indexOf(issue) < 0);
+      if (removedIssues.length) {
+        diagnostics.push(candidateValidationDiagnostic(
+          "filtered_out_of_lane_issues",
+          candidateIndex,
+          [],
+          removedIssues.join(",")
+        ));
+      }
       const normalizedSegments = {};
       const segmentOperations = {};
-      let invalid = false;
+      const salvagedSegmentIds = [];
+      const changedSegmentIds = [];
+      let changedSegmentCount = 0;
       allowedIds.forEach((segmentId) => {
+        const original = mutableCoreText(mutableById[segmentId]);
         if (!Object.prototype.hasOwnProperty.call(rawSegments, segmentId)) {
-          invalid = true;
+          normalizedSegments[segmentId] = original;
+          segmentOperations[segmentId] = "passthrough";
+          salvagedSegmentIds.push(segmentId);
+          diagnostics.push(candidateValidationDiagnostic(
+            "missing_segment_filled_from_original",
+            candidateIndex,
+            [segmentId],
+            ""
+          ));
           return;
         }
         const rewrite = safeString(rawSegments[segmentId]);
@@ -3327,13 +3507,33 @@
           && issues.indexOf("meta_artifact") >= 0
           && isWhollyMetaArtifactText(mutableFullText(mutableById[segmentId]));
         if (!rewrite && !deleteMeta) {
-          invalid = true;
+          normalizedSegments[segmentId] = original;
+          segmentOperations[segmentId] = "passthrough";
+          salvagedSegmentIds.push(segmentId);
+          diagnostics.push(candidateValidationDiagnostic(
+            "empty_substantive_segment_filled_from_original",
+            candidateIndex,
+            [segmentId],
+            ""
+          ));
           return;
         }
         normalizedSegments[segmentId] = rewrite;
         segmentOperations[segmentId] = deleteMeta ? "delete" : "replace";
+        if (rewrite !== original) {
+          changedSegmentCount++;
+          if (!deleteMeta) changedSegmentIds.push(segmentId);
+        }
       });
-      if (invalid) return;
+      if (!changedSegmentCount) {
+        diagnostics.push(candidateValidationDiagnostic(
+          "candidate_has_no_usable_rewrite",
+          candidateIndex,
+          allowedIds,
+          ""
+        ));
+        return;
+      }
       const evidenceRefs = uniqueList(
         arrayFromCollection(candidate.evidence_refs)
           .map((ref) => truncate(ref, 160).trim())
@@ -3366,13 +3566,34 @@
         change_summary: truncate(candidate.change_summary, 500),
         tags,
         foreign_segment_ids: Object.keys(rawSegments).filter((segmentId) => !allowed.has(segmentId)),
+        partial_salvage: salvagedSegmentIds.length > 0,
+        salvaged_segment_ids: salvagedSegmentIds,
+        coverage_gap: salvagedSegmentIds,
+        changed_segment_ids: changedSegmentIds,
       });
     });
-    if (!parsed.candidates.length) {
-      return { schema: "scene_rewrite_candidates.v1", role: roleId, candidates: [] };
+    if (!envelope.candidates.length) {
+      return {
+        value: { schema: "scene_rewrite_candidates.v1", role: roleId, candidates: [] },
+        diagnostics,
+      };
     }
-    if (!valid.length) return null;
-    return { schema: "scene_rewrite_candidates.v1", role: roleId, candidates: valid };
+    if (!valid.length) {
+      return { value: null, diagnostics };
+    }
+    return {
+      value: { schema: "scene_rewrite_candidates.v1", role: roleId, candidates: valid },
+      diagnostics,
+    };
+  }
+
+  function validateCandidateSchema(parsed, expectedRoleId, allowedSegmentIds, mutableSegs) {
+    return validateCandidateSchemaDetailed(
+      parsed,
+      expectedRoleId,
+      allowedSegmentIds,
+      mutableSegs
+    ).value;
   }
 
   const JUDGE_VERDICTS = Object.freeze(["accept", "accept_with_constraints", "reject"]);
@@ -3483,6 +3704,15 @@
 
   const PROOF_ITEM_STATUSES = Object.freeze(["preserved", "missing", "contradicted", "uncertain"]);
   const PROOF_CONSTRAINT_STATUSES = Object.freeze(["satisfied", "violated", "uncertain"]);
+  const PROOF_QUALITY_STATUSES = Object.freeze(["realized", "missing", "regressed"]);
+  const PROOF_RESIDUAL_QUALITY_STATUSES = Object.freeze(["clean", "issue"]);
+  const PROOF_RESIDUAL_QUALITY_IDS = Object.freeze([
+    "mechanics_and_wording",
+    "register_and_era",
+    "repetition_and_exposition",
+    "grounded_psychology_and_relationship",
+    "scene_coherence_and_ending",
+  ]);
   const PROOF_OUTPUT_CONTRACT_KEYS = Object.freeze([
     "language_ok",
     "turn_boundary_ok",
@@ -3523,7 +3753,123 @@
     return normalized;
   }
 
-  function validateSemanticProof(parsed, draftLedger, mutableSegs, finalSegments) {
+  function normalizeQualityGainChecks(
+    values,
+    requiredContributions,
+    allowedSegments,
+    finalEvidenceText,
+    finalTextBySegment,
+    originalTextBySegment
+  ) {
+    const required = arrayFromCollection(requiredContributions);
+    if (!required.length) {
+      return values == null || (Array.isArray(values) && values.length === 0) ? [] : null;
+    }
+    if (!Array.isArray(values) || values.length !== required.length) return null;
+    const expected = {};
+    required.forEach((item) => {
+      expected[safeString(item.contribution_id)] = item;
+    });
+    const seen = new Set();
+    const normalized = [];
+    for (const raw of values) {
+      const item = asObject(raw);
+      const contributionId = safeString(item.contribution_id);
+      const status = safeString(item.status);
+      const expectedItem = expected[contributionId];
+      if (!expectedItem || seen.has(contributionId)
+          || PROOF_QUALITY_STATUSES.indexOf(status) < 0) return null;
+      seen.add(contributionId);
+      let segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
+        .map((id) => safeString(id))
+        .filter(Boolean));
+      const expectedSegmentIds = uniqueList(arrayFromCollection(expectedItem.segment_ids)
+        .map((id) => safeString(id))
+        .filter(Boolean));
+      if (!segmentIds.length) {
+        segmentIds = expectedSegmentIds.slice();
+      }
+      if (segmentIds.some((id) => !allowedSegments.has(id))) return null;
+      if (segmentIds.slice().sort().join("\u0000")
+          !== expectedSegmentIds.slice().sort().join("\u0000")) return null;
+      const evidenceQuote = truncate(item.evidence_quote, 320).trim();
+      const normalizedQuote = evidenceQuote.replace(/\s+/g, " ").toLowerCase();
+      const expectedSegmentEvidence = expectedSegmentIds
+        .map((segmentId) => safeString(asObject(finalTextBySegment)[segmentId]))
+        .join("\n")
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+      const quoteIsNewMaterialEvidence = expectedSegmentIds.some((segmentId) => {
+        const originalText = safeString(asObject(originalTextBySegment)[segmentId]);
+        const finalText = safeString(asObject(finalTextBySegment)[segmentId]);
+        const normalizedOriginal = originalText.replace(/\s+/g, " ").toLowerCase();
+        const normalizedFinal = finalText.replace(/\s+/g, " ").toLowerCase();
+        return rewriteMateriality(originalText, finalText).material
+          && normalizedFinal.includes(normalizedQuote)
+          && !normalizedOriginal.includes(normalizedQuote);
+      });
+      if (status === "realized" && (!normalizedQuote
+          || !finalEvidenceText.includes(normalizedQuote)
+          || !expectedSegmentEvidence.includes(normalizedQuote)
+          || !quoteIsNewMaterialEvidence)) {
+        return null;
+      }
+      normalized.push({
+        contribution_id: contributionId,
+        role_id: safeString(expectedItem.role_id),
+        candidate_id: safeString(expectedItem.candidate_id),
+        status,
+        detail: truncate(item.detail, 500).trim(),
+        evidence_quote: evidenceQuote,
+        segment_ids: segmentIds,
+      });
+    }
+    return normalized;
+  }
+
+  function normalizeResidualQualityChecks(values, allowedSegments, finalTextBySegment) {
+    if (!Array.isArray(values) || values.length !== PROOF_RESIDUAL_QUALITY_IDS.length) {
+      return null;
+    }
+    const expected = new Set(PROOF_RESIDUAL_QUALITY_IDS);
+    const seen = new Set();
+    const normalized = [];
+    for (const raw of values) {
+      const item = asObject(raw);
+      const checkId = safeString(item.check_id);
+      const status = safeString(item.status);
+      if (!expected.has(checkId) || seen.has(checkId)
+          || PROOF_RESIDUAL_QUALITY_STATUSES.indexOf(status) < 0) {
+        return null;
+      }
+      seen.add(checkId);
+      const segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
+        .map((id) => safeString(id))
+        .filter(Boolean));
+      if (segmentIds.some((id) => !allowedSegments.has(id))) return null;
+      const evidenceQuote = truncate(item.evidence_quote, 320).trim();
+      if (status === "issue") {
+        const normalizedQuote = evidenceQuote.replace(/\s+/g, " ").toLowerCase();
+        const quotedInDeclaredSegment = segmentIds.some((segmentId) =>
+          safeString(asObject(finalTextBySegment)[segmentId])
+            .replace(/\s+/g, " ")
+            .toLowerCase()
+            .includes(normalizedQuote)
+        );
+        if (!normalizedQuote || !segmentIds.length || !quotedInDeclaredSegment) return null;
+      }
+      normalized.push({
+        check_id: checkId,
+        status,
+        detail: truncate(item.detail, 600).trim(),
+        evidence_quote: evidenceQuote,
+        segment_ids: segmentIds,
+      });
+    }
+    return normalized;
+  }
+
+  function validateSemanticProof(parsed, draftLedger, mutableSegs, finalSegments, fusionPlan) {
     if (!parsed || safeString(parsed.schema) !== "semantic_proof.v1") return null;
     const declaredVerdict = safeString(parsed.declared_verdict);
     if (["pass", "repair", "fail"].indexOf(declaredVerdict) < 0) return null;
@@ -3549,6 +3895,19 @@
       .join("\n")
       .replace(/\s+/g, " ")
       .toLowerCase();
+    const finalTextBySegment = {};
+    const originalTextBySegment = {};
+    arrayFromCollection(finalSegments).forEach((segment) => {
+      const segmentId = safeString(segment && segment.id);
+      if (!segmentId) return;
+      finalTextBySegment[segmentId] = safeString(
+        segment && (segment.final_text != null ? segment.final_text : segment.text)
+      );
+    });
+    arrayFromCollection(mutableSegs).forEach((segment) => {
+      const segmentId = safeString(segment && segment.id);
+      if (segmentId) originalTextBySegment[segmentId] = mutableFullText(segment);
+    });
     const unsupportedPreservedClaim = factChecks.concat(beatChecks).some((item) => {
       if (item.status !== "preserved") return false;
       const quote = safeString(item.evidence_quote).replace(/\s+/g, " ").trim().toLowerCase();
@@ -3557,6 +3916,21 @@
     if (unsupportedPreservedClaim) return null;
 
     const allowedSegments = new Set(arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id)));
+    const qualityGainChecks = normalizeQualityGainChecks(
+      parsed.quality_gain_checks,
+      asObject(fusionPlan).required_contributions,
+      allowedSegments,
+      finalEvidenceText,
+      finalTextBySegment,
+      originalTextBySegment
+    );
+    if (!qualityGainChecks) return null;
+    const residualQualityChecks = normalizeResidualQualityChecks(
+      parsed.residual_quality_checks,
+      allowedSegments,
+      finalTextBySegment
+    );
+    if (!residualQualityChecks) return null;
     const hardViolations = [];
     if (!Array.isArray(parsed.hard_violations)) return null;
     for (const raw of parsed.hard_violations.slice(0, 32)) {
@@ -3622,11 +3996,24 @@
     const failedFacts = factChecks.filter((item) => item.status !== "preserved");
     const failedBeats = beatChecks.filter((item) => item.status !== "preserved");
     const failedConstraints = constraintChecks.filter((item) => item.status !== "satisfied");
+    const failedQualityGains = qualityGainChecks.filter((item) => item.status !== "realized");
+    const failedResidualQuality = residualQualityChecks.filter((item) => item.status !== "clean");
     const failedOutputContract = PROOF_OUTPUT_CONTRACT_KEYS.filter((key) => !normalizedOutputContract[key]);
+    const repairSegmentIds = new Set(repairInstructions.map((item) => item.segment_id));
+    const uncoveredQualityRepairs = failedQualityGains.filter((item) =>
+      !arrayFromCollection(item.segment_ids).some((segmentId) => repairSegmentIds.has(segmentId))
+    );
+    const uncoveredResidualRepairs = failedResidualQuality.filter((item) =>
+      !arrayFromCollection(item.segment_ids).some((segmentId) => repairSegmentIds.has(segmentId))
+    );
     const reasonCodes = uniqueList([]
       .concat(failedFacts.map((item) => `fact_${item.status}:${item.ledger_id}`))
       .concat(failedBeats.map((item) => `beat_${item.status}:${item.ledger_id}`))
       .concat(failedConstraints.map((item) => `constraint_${item.status}:${item.ledger_id}`))
+      .concat(failedQualityGains.map((item) => `quality_gain_${item.status}:${item.contribution_id}`))
+      .concat(failedResidualQuality.map((item) => `residual_quality_issue:${item.check_id}`))
+      .concat(uncoveredQualityRepairs.map((item) => `repair_missing_for_gain:${item.contribution_id}`))
+      .concat(uncoveredResidualRepairs.map((item) => `repair_missing_for_residual:${item.check_id}`))
       .concat(hardViolations.map((item) => `hard_violation:${item.type}`))
       .concat(unsupportedAdditions.length ? ["unsupported_addition"] : [])
       .concat(failedOutputContract.map((key) => `output_contract:${key}`)));
@@ -3634,7 +4021,8 @@
     let verdict = "fail";
     if (clean && declaredVerdict === "pass") {
       verdict = "pass";
-    } else if (!clean && declaredVerdict !== "fail" && repairInstructions.length) {
+    } else if (!clean && declaredVerdict !== "fail" && repairInstructions.length
+        && !uncoveredQualityRepairs.length && !uncoveredResidualRepairs.length) {
       verdict = "repair";
     } else if (clean) {
       reasonCodes.push(`declared_${declaredVerdict}_despite_clean_proof`);
@@ -3649,12 +4037,87 @@
       fact_checks: factChecks,
       beat_checks: beatChecks,
       constraint_checks: constraintChecks,
+      quality_gain_checks: qualityGainChecks,
+      residual_quality_checks: residualQualityChecks,
       hard_violations: hardViolations,
       unsupported_additions: unsupportedAdditions,
       output_contract: normalizedOutputContract,
       repair_instructions: repairInstructions,
       reason_codes: uniqueList(reasonCodes),
     };
+  }
+
+  function buildRequiredContributions(acceptedJudgments, candidateMap) {
+    const contributions = [];
+    const seen = new Set();
+    arrayFromCollection(acceptedJudgments).forEach((judgment) => {
+      const candidate = candidateMap[judgment.candidate_id];
+      if (!candidate) return;
+      const candidateSegmentIds = arrayFromCollection(candidate.changed_segment_ids).length
+        ? uniqueList(arrayFromCollection(candidate.changed_segment_ids).map((id) => safeString(id)).filter(Boolean))
+        : Object.keys(asObject(candidate.segments)).filter(
+          (segmentId) => safeString(asObject(candidate.segment_operations)[segmentId]) === "replace"
+        );
+      if (!candidateSegmentIds.length) return;
+      const rejectedClaims = new Set(arrayFromCollection(judgment.rejected_elements)
+        .map((item) => safeString(item && item.claim).trim().toLowerCase())
+        .filter(Boolean));
+      const qualitySources = arrayFromCollection(judgment.quality_gains);
+      const acceptedSources = arrayFromCollection(judgment.accepted_elements);
+      const sources = (qualitySources.length ? qualitySources : acceptedSources)
+        .slice(0, 2)
+        .map((item) => ({
+          item,
+          source: qualitySources.length ? "quality_gain" : "accepted_element",
+        }));
+      const contributionCountBefore = contributions.length;
+      sources.forEach((entry) => {
+        const item = asObject(entry.item);
+        const claim = truncate(item.claim != null ? item.claim : item.text, 500).trim();
+        if (!claim || rejectedClaims.has(claim.toLowerCase())) return;
+        const declaredSegmentIds = uniqueList(arrayFromCollection(item.segment_ids)
+          .map((id) => safeString(id))
+          .filter(Boolean));
+        const segmentIds = declaredSegmentIds.length
+          ? declaredSegmentIds.filter((id) => candidateSegmentIds.indexOf(id) >= 0)
+          : candidateSegmentIds.slice();
+        if (!segmentIds.length) return;
+        const contribution = {
+          candidate_id: candidate.candidate_id,
+          role_id: candidate.role_id,
+          segment_ids: segmentIds,
+          claim,
+          evidence_refs: uniqueList(arrayFromCollection(item.evidence_refs)
+            .concat(candidate.evidence_refs || [])
+            .map((ref) => truncate(ref, 160).trim())
+            .filter(Boolean)).slice(0, 24),
+          source: entry.source,
+        };
+        contribution.contribution_id = `gain_${stableDigest(contribution)}`;
+        if (seen.has(contribution.contribution_id)) return;
+        seen.add(contribution.contribution_id);
+        contributions.push(contribution);
+      });
+      if (contributions.length === contributionCountBefore
+          && safeString(candidate.change_summary).trim()) {
+        const fallbackContribution = {
+          candidate_id: candidate.candidate_id,
+          role_id: candidate.role_id,
+          segment_ids: candidateSegmentIds.slice(),
+          claim: truncate(candidate.change_summary, 500).trim(),
+          evidence_refs: uniqueList(arrayFromCollection(candidate.evidence_refs)
+            .map((ref) => truncate(ref, 160).trim())
+            .filter(Boolean)).slice(0, 24),
+          source: "change_summary",
+        };
+        fallbackContribution.contribution_id = `gain_${stableDigest(fallbackContribution)}`;
+        if (!seen.has(fallbackContribution.contribution_id)) {
+          seen.add(fallbackContribution.contribution_id);
+          contributions.push(fallbackContribution);
+        }
+      }
+    });
+    return contributions;
   }
 
   function buildFusionPlan(judgment, sceneCandidates, draftLedger, mutableSegs) {
@@ -3688,6 +4151,7 @@
           }
         });
     });
+    const requiredContributions = buildRequiredContributions(acceptedJudgments, candidateMap);
     const plan = {
       schema: "fusion_plan.v1",
       required_facts: arrayFromCollection(draftLedger && draftLedger.established_facts),
@@ -3704,6 +4168,7 @@
       rejected_elements: judgment.candidate_judgments.flatMap((item) =>
         item.rejected_elements.map((element) => Object.assign({}, element, { candidate_ids: [item.candidate_id] }))
       ),
+      required_contributions: requiredContributions,
       consensus_claims: judgment.cross_candidate.consensus,
       complementary_claims: judgment.cross_candidate.complementary,
       conflicts: judgment.cross_candidate.conflicts,
@@ -3837,7 +4302,7 @@
       : (role.is_judge
         ? '{"schema":"semantic_judgment.v1","candidate_judgments":[{"candidate_id":"candidate_id","verdict":"accept","preserved_ledger_ids":[],"missing_ledger_ids":[],"unsupported_additions":[],"hard_violations":[],"accepted_elements":[],"rejected_elements":[],"quality_gains":[],"quality_regressions":[]}],"cross_candidate":{"consensus":[],"complementary":[],"conflicts":[]},"scene_requirements":{"target_arc":"","target_voice":"","target_pacing":""}}'
         : (role.is_prover
-          ? '{"schema":"semantic_proof.v1","declared_verdict":"pass","fact_checks":[],"beat_checks":[],"constraint_checks":[],"hard_violations":[],"unsupported_additions":[],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[]}'
+        ? '{"schema":"semantic_proof.v1","declared_verdict":"pass","fact_checks":[],"beat_checks":[],"constraint_checks":[],"quality_gain_checks":[],"residual_quality_checks":[{"check_id":"mechanics_and_wording","status":"clean","detail":"","evidence_quote":"","segment_ids":[]},{"check_id":"register_and_era","status":"clean","detail":"","evidence_quote":"","segment_ids":[]},{"check_id":"repetition_and_exposition","status":"clean","detail":"","evidence_quote":"","segment_ids":[]},{"check_id":"grounded_psychology_and_relationship","status":"clean","detail":"","evidence_quote":"","segment_ids":[]},{"check_id":"scene_coherence_and_ending","status":"clean","detail":"","evidence_quote":"","segment_ids":[]}],"hard_violations":[],"unsupported_additions":[],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[]}'
           : (role.is_composer
             ? '{"segments":{"SEG_ID":"final rewritten text"}}'
             : `{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"full rewritten text"},"evidence_refs":["source_ref"],"retained_beats":[],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.8,"change_summary":"brief"}]}`)));
@@ -3925,7 +4390,7 @@
     };
     return {
       system: `${prompts.system}\n\nSTRUCTURED RECOVERY: Return the final Composer JSON object directly. Do not emit analysis, reasoning, markdown, or prose outside JSON.`,
-      user: `The prior Composer response used only the reasoning channel. Compose the final mutable scene now from this recovery payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return every requested mutable segment ID exactly once.\n- Materially reconstruct every substantive segment. Preserve grounded facts and constraints, not original wording.\n- Use accepted candidate strengths and the Fusion Plan; exclude rejected or prohibited content.\n- Remove model reasoning and output-contract artifacts.\n- Empty strings are allowed only for segments wholly made of model reasoning. Never empty mixed or substantive narrative.\n- Preserve the original output language and current turn boundary.\n\nReturn exactly this compact JSON shape and nothing else:\n${JSON.stringify({ segments: shape })}`,
+      user: `The prior Composer response used only the reasoning channel. Compose the final mutable scene now from this recovery payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return every requested mutable segment ID exactly once.\n- Materially reconstruct every substantive segment. Preserve grounded facts and constraints, not original wording.\n- Use accepted candidate strengths and the Fusion Plan; exclude rejected or prohibited content.\n- The mutable payload contains visible prose only. Do not recreate model reasoning or output-contract artifacts.\n- Read the returned segment values in assembled order and correct awkward wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, transitions, and ending cadence.\n- Preserve the original output language and current turn boundary.\n\nReturn exactly this compact JSON shape and nothing else:\n${JSON.stringify({ segments: shape })}`,
     };
   }
 
@@ -3949,6 +4414,28 @@
     return {
       system: `${prompts.system}\n\nSTRUCTURED RECOVERY: Return one valid scene_rewrite_candidates.v1 JSON object directly. Do not emit analysis, reasoning, markdown, or code fences.`,
       user: `The previous candidate tried to delete mixed meta+narrative segments. Repair that candidate from this payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return exactly one complete scene-wide candidate containing every allowed segment ID.\n- For mixed_non_deletable_segment_ids, remove only the model reasoning artifact and fully rewrite all substantive narrative. Never return an empty string for those IDs.\n- Keep valid improvements from the previous response where they remain grounded, but materially rebuild the scene through the ${safeString(role.role_id)} lane.\n- Preserve Draft Ledger facts, POV, identity/reveal state, user agency, and the current turn boundary.\n- Use only these issue values: ${roleAllowedIssues(role.role_id).join(", ")}.\n\nReturn exactly one compact object with this shape and nothing else:\n${JSON.stringify({ schema: "scene_rewrite_candidates.v1", role_id: role.role_id, candidates: [{ segments: shape, evidence_refs: [], retained_beats: [], proposed_additions: [], addressed_issues: ["meta_artifact"], confidence: 0.8, change_summary: "recovered complete scene rewrite" }] })}`,
+    };
+  }
+
+  function specialistCompactRecoveryPrompts(role, deferredFailure, mutableSegs) {
+    const allowedIds = arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id));
+    const segmentState = {};
+    allowedIds.forEach((segmentId) => {
+      const segment = arrayFromCollection(mutableSegs).find((item) => safeString(item.id) === segmentId);
+      segmentState[segmentId] = isWhollyMetaArtifactText(mutableFullText(segment))
+        ? "wholly_meta"
+        : "substantive";
+    });
+    const parsedPayload = deferredFailure && deferredFailure.recovery_payload;
+    const rawSource = parsedPayload && typeof parsedPayload === "object"
+      ? JSON.stringify(parsedPayload)
+      : safeString(deferredFailure && deferredFailure.recovery_source);
+    const laneInstruction = role.role_id === "style_reader"
+      ? "Keep the supplied scene rewrite intact while normalizing its style-lane candidate fields. Do not add new story events, facts, or dialogue."
+      : "Keep the supplied scene rewrite intact while normalizing its character-lane candidate fields. Do not add new relationships, knowledge, emotions, events, or dialogue.";
+    return {
+      system: "You are a structured-response recovery formatter. Convert the supplied specialist response into one valid JSON object. Do not analyze or rewrite the story.",
+      user: `Recover the existing ${safeString(role.role_id)} candidate from SOURCE. This is formatting recovery, not a new generation.\n\nAllowed segment states:\n${JSON.stringify(segmentState)}\n\nSOURCE:\n${truncate(rawSource, 120000)}\n\nRules:\n- Preserve the candidate prose already present in SOURCE. Do not invent replacement prose.\n- ${laneInstruction}\n- Return every segment text that SOURCE actually supplies.\n- Missing segment IDs may be omitted; deterministic validation will fill them from the original and record coverage_gap.\n- An empty string is allowed only when its segment state is wholly_meta.\n- Use only these issue values: ${roleAllowedIssues(role.role_id).join(", ")}.\n- Output JSON only, with no markdown, code fence, reasoning, or commentary.\n\nTarget shape:\n${JSON.stringify({ schema: "scene_rewrite_candidates.v1", role_id: role.role_id, candidates: [{ segments: { SEGMENT_ID_PRESENT_IN_SOURCE: "exact recovered text" }, evidence_refs: [], retained_beats: [], proposed_additions: [], addressed_issues: [], confidence: 0.8, change_summary: "recovered structured candidate" }] })}`,
     };
   }
 
@@ -4014,11 +4501,16 @@
     const specialistTraceEntries = (trace.roles || []).filter(
       (entry) => entry.stage === "output" && entry.role_id !== COMPOSER_ROLE_ID
     );
-    const successfulRoles = specialistTraceEntries.filter(
-      (entry) => entry.status === "fulfilled"
+    const specialistRoleIds = uniqueList(specialistTraceEntries.map((entry) => entry.role_id));
+    const successfulRoles = specialistRoleIds.filter((roleId) =>
+      specialistTraceEntries.some((entry) => entry.role_id === roleId && entry.status === "fulfilled")
     ).length;
     trace.summary = Object.assign({}, trace.summary || {}, {
-      specialist_calls: specialistTraceEntries.length,
+      specialist_calls: specialistRoleIds.length,
+      specialist_http_calls: specialistTraceEntries.reduce(
+        (sum, entry) => sum + Math.max(0, Number(entry.http_attempts) || 0),
+        0
+      ),
       successful_roles: successfulRoles,
       candidate_count: Number(trace.candidates && trace.candidates.total) || 0,
       composer_state: trace.composer.status || (composerResult ? "fulfilled" : "not_run"),
@@ -4037,13 +4529,19 @@
       && changedSegments.every((segment) => segment.operation === "delete");
     if (assembled && assembled.materialComposerApplied > 0) {
       const proofPassed = semanticProof && semanticProof.verdict === "pass";
+      const qualityChecks = arrayFromCollection(semanticProof && semanticProof.quality_gain_checks);
+      const residualChecks = arrayFromCollection(semanticProof && semanticProof.residual_quality_checks);
+      const qualityPreferred = residualChecks.length
+        ? qualityChecks.every((item) => item.status === "realized")
+          && residualChecks.every((item) => item.status === "clean")
+        : null;
       return {
         enhanced: proofPassed,
         state: proofPassed ? "enhanced" : "material_rewrite_unverified",
         reason: proofPassed ? "composer_rewrite_semantic_proof_passed" : "composer_material_rewrite_semantic_not_passed",
         material_rewrite: true,
         semantic_verified: proofPassed,
-        quality_preferred: null,
+        quality_preferred: qualityPreferred,
       };
     }
     if (deleteOnly || (changedSegments.length > 0
@@ -4079,7 +4577,9 @@
 
   async function callRole(role, profile, mutableSegs, contextBlock, allSegments, abortSignal, trace, directorInfo, queuedAt, runtimeControl) {
     const allowedSegIds = mutableSegs ? mutableSegs.map((s) => s.id) : (role.is_composer ? allSegments.filter((s) => s.type === "mutable").map((s) => s.id) : []);
-    const prompts = buildRolePrompt(role, profile, role.is_composer ? mutableSegs : mutableSegs, contextBlock, allSegments, directorInfo);
+    const prompts = runtimeControl && runtimeControl.initialPrompts
+      ? runtimeControl.initialPrompts
+      : buildRolePrompt(role, profile, role.is_composer ? mutableSegs : mutableSegs, contextBlock, allSegments, directorInfo);
     const startedAt = Date.now();
     const queuedTimestamp = queuedAt || startedAt;
     let httpAttempts = 0;
@@ -4214,6 +4714,7 @@
       httpAttempts++;
       let failureSource = "";
       let structuredTransport = "";
+      let validationDiagnostics = [];
       try {
         const requestProfile = role.is_input_planner || role.is_judge || role.is_prover
           ? Object.assign({}, activeProfile, { temperature: 0 })
@@ -4251,24 +4752,39 @@
         if (pseudoToolPayload) structuredTransport = "pseudo_tool_recovered";
         const parsed = structuredPayload || pseudoToolPayload || tryParseJson(structuredRaw) || tryParseJson(content);
         if (!parsed) throw new Error("json_parse_failed");
-        const validated = role.is_input_planner
-          ? validateTurnContractFragment(parsed, role.role_id, directorInfo && directorInfo.context_manifest)
-          : (role.is_judge
-            ? validateSemanticJudgment(
-                parsed,
-                directorInfo && directorInfo.scene_candidates,
-                directorInfo && directorInfo.draft_ledger
-              )
-            : (role.is_prover
-              ? validateSemanticProof(
-                  parsed,
-                  directorInfo && directorInfo.draft_ledger,
-                  mutableSegs,
-                  directorInfo && directorInfo.final_segments
-                )
-              : (role.is_composer
-                ? validateComposerSchema(parsed, allowedSegIds, mutableSegs)
-                : validateCandidateSchema(parsed, role.role_id, allowedSegIds, mutableSegs))));
+        let validated;
+        if (role.is_input_planner) {
+          validated = validateTurnContractFragment(
+            parsed,
+            role.role_id,
+            directorInfo && directorInfo.context_manifest
+          );
+        } else if (role.is_judge) {
+          validated = validateSemanticJudgment(
+            parsed,
+            directorInfo && directorInfo.scene_candidates,
+            directorInfo && directorInfo.draft_ledger
+          );
+        } else if (role.is_prover) {
+          validated = validateSemanticProof(
+            parsed,
+            directorInfo && directorInfo.draft_ledger,
+            mutableSegs,
+            directorInfo && directorInfo.final_segments,
+            directorInfo && directorInfo.fusion_plan
+          );
+        } else if (role.is_composer) {
+          validated = validateComposerSchema(parsed, allowedSegIds, mutableSegs);
+        } else {
+          const candidateValidation = validateCandidateSchemaDetailed(
+            parsed,
+            role.role_id,
+            allowedSegIds,
+            mutableSegs
+          );
+          validated = candidateValidation.value;
+          validationDiagnostics = candidateValidation.diagnostics;
+        }
         if (!validated) {
           const schemaError = new Error("schema_validation_failed");
           const mixedIds = mixedSegmentDeletionIds(parsed, role, allowedSegIds, mutableSegs);
@@ -4277,7 +4793,14 @@
             schemaError.structured_recovery_segment_ids = mixedIds;
             schemaError.structured_recovery_payload = parsed;
           }
+          schemaError.structured_recovery_payload = schemaError.structured_recovery_payload || parsed;
+          schemaError.validation_diagnostics = validationDiagnostics;
           throw schemaError;
+        }
+        if (!role.is_input_planner && !role.is_judge && !role.is_prover && !role.is_composer) {
+          const partialCount = validated.candidates.filter((candidate) => candidate.partial_salvage).length;
+          trace.candidates.partial_salvage_count += partialCount;
+          trace.candidates.normalized_field_count += validationDiagnostics.length;
         }
         attemptTrace.push({
           kind,
@@ -4288,6 +4811,7 @@
           started_at: attemptStarted,
           ended_at: Date.now(),
           structured_transport: structuredPayload ? "tool_call_used" : structuredTransport,
+          validation_diagnostics: validationDiagnostics,
         });
         return validated;
       } catch (err) {
@@ -4298,6 +4822,11 @@
           classification.recovery_segment_ids = arrayFromCollection(err.structured_recovery_segment_ids);
           classification.recovery_payload = err.structured_recovery_payload;
         }
+        if (err && err.structured_recovery_payload) {
+          classification.recovery_payload = err.structured_recovery_payload;
+        }
+        classification.recovery_source = truncate(failureSource, 120000);
+        classification.validation_diagnostics = arrayFromCollection(err && err.validation_diagnostics);
         lastErrorClass = classification.code;
         attemptTrace.push({
           kind,
@@ -4314,12 +4843,17 @@
           failure_preview: /^(?:json_parse_failed|schema_validation_failed|reasoning_only_response)$/.test(classification.code)
             ? boundedFailurePreview(failureSource)
             : "",
+          validation_diagnostics: classification.validation_diagnostics,
         });
         return { __error: true, classification };
       }
     }
 
-    let outcome = await executeAttempt(profile, prompts, "primary");
+    let outcome = await executeAttempt(
+      profile,
+      prompts,
+      safeString(runtimeControl && runtimeControl.initialAttemptKind) || "primary"
+    );
     const allowRetry = !runtimeControl || runtimeControl.allowRetry !== false;
     const allowFallback = !runtimeControl || runtimeControl.allowFallback !== false;
     if (outcome && outcome.__error && outcome.classification.retryable && allowRetry
@@ -4397,8 +4931,51 @@
                 ? Object.keys(outcome.segments).length
                 : outcome.candidates.length))),
         request_overrides: requestOverrides,
+        validation_diagnostics: finalAttempt.validation_diagnostics,
       });
       return outcome;
+    }
+
+    const deferStructuredRecovery = runtimeControl
+      && runtimeControl.deferStructuredRecovery === true
+      && !role.is_input_planner
+      && !role.is_judge
+      && !role.is_composer
+      && !role.is_prover
+      && outcome
+      && outcome.__error
+      && /^(?:json_parse_failed|schema_validation_failed|reasoning_only_response)$/.test(
+        outcome.classification.code
+      );
+    if (deferStructuredRecovery) {
+      traceRole(trace, {
+        role_id: role.role_id,
+        stage: role.stage || "output",
+        provider: profile.provider,
+        endpoint_group: executionGroupKey(profile),
+        model: profile.model,
+        status: "recovery_queued",
+        queued_at: queuedTimestamp,
+        started_at: startedAt,
+        ended_at: Date.now(),
+        elapsed_ms: Date.now() - startedAt,
+        retry: retryCount,
+        fallback: false,
+        http_attempts: httpAttempts,
+        attempts: attemptTrace,
+        request_overrides: requestOverrides,
+        error_class: lastErrorClass,
+        error: lastError,
+        validation_diagnostics: outcome.classification.validation_diagnostics,
+      });
+      return {
+        __deferred_specialist_recovery: true,
+        role_id: role.role_id,
+        error_class: outcome.classification.code,
+        recovery_source: outcome.classification.recovery_source,
+        recovery_payload: outcome.classification.recovery_payload || null,
+        validation_diagnostics: outcome.classification.validation_diagnostics || [],
+      };
     }
 
     const finalProfile = usedFallback && fallbackProfile ? fallbackProfile : profile;
@@ -4420,6 +4997,9 @@
       request_overrides: requestOverrides,
       error_class: lastErrorClass,
       error: lastError,
+      validation_diagnostics: outcome && outcome.classification
+        ? outcome.classification.validation_diagnostics
+        : [],
     });
     return null;
   }
@@ -4463,7 +5043,7 @@
     // Meta/list-like structure: bullet points, numbered lists, code-like blocks
     const listPattern = /^\s*(?:[-*•]|\d+[.)])\s+/gm;
     const listCount = (mutableText.match(listPattern) || []).length;
-    const metaPattern = /(?:<\/?(?:thoughts?|analysis|thinking)\b[^>]*>|(?:^|\n)\s*#{0,3}\s*(?:approved|response|processing\b)|(?:^|\n)\s*(?:as an ai|language model|i cannot|i apologize|i'm sorry|firstly|secondly|in summary|to summarize|결론적으로|요약하면|죄송합니다|먼저|둘째로))/gim;
+    const metaPattern = /(?:<\/?(?:thoughts?|analysis|thinking|think)\b[^>]*>|(?:^|\n)\s*#{0,3}\s*(?:approved|response|processing\b)|(?:^|\n)\s*(?:as an ai|language model|i cannot|i apologize|i'm sorry|firstly|secondly|in summary|to summarize|결론적으로|요약하면|죄송합니다|먼저|둘째로))/gim;
     const metaCount = (mutableText.match(metaPattern) || []).length;
 
     // Context availability
@@ -4712,8 +5292,8 @@
     const lengthDeltaRatio = Math.abs(original.length - final.length) / maxLength;
     const shortSegment = maxLength < 160;
     return {
-      material: originalMetaOnly
-        || (shortSegment
+      material: !originalMetaOnly
+        && (shortSegment
           ? (spanRatio >= 0.18
             || lengthDeltaRatio >= 0.18
             || (sequenceSimilarity <= 0.55 && spanRatio >= 0.08))
@@ -4835,7 +5415,7 @@
         },
       });
       const retryProfile = Object.assign({}, composerProfile, {
-        system_prompt: `${safeString(composerProfile.system_prompt || composerRole.default_prompt)}\n\nThe previous composition was rejected for copying the draft too closely. Recompose every flagged prose segment with materially different sentence architecture and scene execution while preserving facts.`,
+        system_prompt: `${safeString(composerProfile.system_prompt || composerRole.default_prompt)}\n\nThe previous composition was rejected for copying the draft too closely. Recompose every flagged prose segment with materially different sentence architecture and scene execution while preserving facts. Then reread the assembled scene and repair awkward wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, transitions, and ending cadence.`,
       });
       const retryResult = await callRole(
         composerRole,
@@ -4890,6 +5470,26 @@
     target.output_contract_failures = proof
       ? PROOF_OUTPUT_CONTRACT_KEYS.filter((key) => !proof.output_contract[key]).length
       : 0;
+    target.quality_gains_required = proof ? proof.quality_gain_checks.length : 0;
+    target.quality_gains_missing = proof
+      ? proof.quality_gain_checks.filter((item) => item.status === "missing").length
+      : 0;
+    target.quality_gains_regressed = proof
+      ? proof.quality_gain_checks.filter((item) => item.status === "regressed").length
+      : 0;
+    target.residual_quality_checked = proof ? proof.residual_quality_checks.length : 0;
+    target.residual_quality_issues = proof
+      ? proof.residual_quality_checks.filter((item) => item.status === "issue").length
+      : 0;
+    target.realized_contributions = proof
+      ? proof.quality_gain_checks.filter((item) => item.status === "realized").map((item) => ({
+        contribution_id: item.contribution_id,
+        role_id: item.role_id,
+        candidate_id: item.candidate_id,
+        segment_ids: item.segment_ids,
+        evidence_quote: item.evidence_quote,
+      }))
+      : [];
     target.reason = proof ? proof.reason_codes.join(",") : "semantic_prover_call_failed";
   }
 
@@ -4970,9 +5570,10 @@
         const materiality = rewriteMateriality(originalFull, finalFull);
         if (segmentChanged) changed = true;
         else unchangedSegments++;
-        if (segmentChanged && materiality.material) {
-          if (materiality.original_meta_only) metaOnlyChanged++;
-          else materialChanged++;
+        if (segmentChanged && materiality.original_meta_only) {
+          metaOnlyChanged++;
+        } else if (segmentChanged && materiality.material) {
+          materialChanged++;
         }
         if (segmentChanged && source === "composer"
             && materiality.material && !materiality.original_meta_only) {
@@ -5017,7 +5618,9 @@
     };
   }
 
-  function buildAppliedEvidence(finalSegments) {
+  function buildAppliedEvidence(finalSegments, semanticProof) {
+    const realized = arrayFromCollection(semanticProof && semanticProof.quality_gain_checks)
+      .filter((item) => item.status === "realized");
     return (finalSegments || []).filter((segment) => segment.type === "mutable").map((segment) => ({
       segment_id: segment.id,
       source: segment.source,
@@ -5029,14 +5632,22 @@
       original_meta_only: !!segment.original_meta_only,
       sequence_similarity: Number(segment.sequence_similarity) || 0,
       changed_span_ratio: Number(segment.changed_span_ratio) || 0,
+      role_contributions: realized.filter((item) =>
+        arrayFromCollection(item.segment_ids).indexOf(segment.id) >= 0
+      ).map((item) => ({
+        contribution_id: item.contribution_id,
+        role_id: item.role_id,
+        candidate_id: item.candidate_id,
+        evidence_quote: item.evidence_quote,
+      })),
       original_preview: preview(segment.original_text, 80),
       final_preview: preview(segment.final_text, 80),
     }));
   }
 
-  function updateAppliedEvidence(trace, assembled, verification) {
+  function updateAppliedEvidence(trace, assembled, verification, semanticProof) {
     trace.applied_evidence = verification && verification.pass
-      ? buildAppliedEvidence(assembled && assembled.finalSegments)
+      ? buildAppliedEvidence(assembled && assembled.finalSegments, semanticProof)
       : [];
     return trace.applied_evidence;
   }
@@ -5538,6 +6149,7 @@
     }
 
     let activeCallCount = 0;
+    const specialistResultRecords = [];
 
     const specialistPromises = specialistTasks.map((role) => {
       const profile = profiles[role.role_id];
@@ -5560,12 +6172,15 @@
             {
               allowRetry: false,
               allowFallback: false,
+              deferStructuredRecovery: role.role_id === "character_reader"
+                || role.role_id === "style_reader",
               completionWait: !!deadline.completion_wait,
               canContinue: () => !specialistController.signal.aborted
                 && deadline.remaining() > downstreamReserveMs + COMPOSER_RESERVE_GUARD_MS,
             }
           )
             .then((result) => {
+              specialistResultRecords.push({ role, profile, result });
               if (result && result.candidates) {
                 result.candidates.forEach((candidate) => {
                   if (!admitSceneCandidate(sceneCandidates, seenSceneSignatures, candidate)) {
@@ -5613,6 +6228,68 @@
     trace.composer.specialist_stop_reason = raceResult === "settled" ? "" : raceResult;
 
     trace.active_calls_after_specialists = activeCallCount;
+    if (raceResult === "settled" && trace && trace.budget) {
+      trace.budget.specialist_primary_remaining = 0;
+    }
+
+    const presetId = safeString(trace.router && trace.router.preset) || "balanced";
+    const presetRecoveryLimit = SPECIALIST_STRUCTURED_RECOVERY_LIMIT[presetId];
+    const recoveryLimit = Number.isFinite(presetRecoveryLimit)
+      ? presetRecoveryLimit
+      : SPECIALIST_STRUCTURED_RECOVERY_LIMIT.balanced;
+    const deferredRecoveryRecords = specialistResultRecords
+      .filter((record) => record.result && record.result.__deferred_specialist_recovery)
+      .sort((left, right) => {
+        const priority = { character_reader: 0, style_reader: 1 };
+        return (priority[left.role.role_id] == null ? 9 : priority[left.role.role_id])
+          - (priority[right.role.role_id] == null ? 9 : priority[right.role.role_id]);
+      });
+    const recoveryQueue = deferredRecoveryRecords;
+    trace.candidates.structured_recovery_queued = deferredRecoveryRecords.length;
+    for (const record of recoveryQueue) {
+      if (trace.candidates.structured_recovery_succeeded >= recoveryLimit) break;
+      if (deadline.check()
+          || deadline.remaining() <= downstreamReserveMs + COMPOSER_RESERVE_GUARD_MS) break;
+      trace.candidates.structured_recovery_attempted++;
+      const recovered = await callRole(
+        record.role,
+        structuredRecoveryProfile(record.profile),
+        mutableSegs,
+        "",
+        allSegments,
+        deadline.signal,
+        trace,
+        { draft_ledger: draftLedger },
+        Date.now(),
+        {
+          initialPrompts: specialistCompactRecoveryPrompts(
+            record.role,
+            record.result,
+            mutableSegs
+          ),
+          initialAttemptKind: "specialist_compact_recovery",
+          allowRetry: false,
+          allowFallback: false,
+          completionWait: !!deadline.completion_wait,
+          canContinue: () => !deadline.check()
+            && deadline.remaining() > downstreamReserveMs + COMPOSER_RESERVE_GUARD_MS,
+        }
+      );
+      if (!recovered || !Array.isArray(recovered.candidates) || !recovered.candidates.length) {
+        continue;
+      }
+      let admittedRecoveryCandidates = 0;
+      recovered.candidates.forEach((candidate) => {
+        if (!admitSceneCandidate(sceneCandidates, seenSceneSignatures, candidate)) {
+          trace.candidates.duplicate_scene_candidates++;
+        } else {
+          admittedRecoveryCandidates++;
+        }
+      });
+      if (admittedRecoveryCandidates > 0) {
+        trace.candidates.structured_recovery_succeeded++;
+      }
+    }
 
     sceneCandidates.forEach((candidate) => {
       Object.keys(candidate.segments || {}).forEach((segmentId) => {
@@ -5711,6 +6388,10 @@
     trace.fusion_plan.complementary_claims = fusionPlan ? fusionPlan.complementary_claims.length : 0;
     trace.fusion_plan.conflicts = fusionPlan ? fusionPlan.conflicts.length : 0;
     trace.fusion_plan.prohibited_additions = fusionPlan ? fusionPlan.prohibited_additions.length : 0;
+    trace.fusion_plan.required_contributions = fusionPlan
+      ? fusionPlan.required_contributions.length
+      : 0;
+    trace.semantic_judge.required_contributions = trace.fusion_plan.required_contributions;
     if (!fusionPlan || !fusionPlan.semantic_ready) {
       trace.semantic_judge.status = "rejected_all";
       trace.composer.status = "blocked_semantic_judge";
@@ -5924,6 +6605,10 @@
   let latestAppliedComparison = null;
 
   function updateLatestAppliedComparison(trace, finalSegments) {
+    const appliedBySegment = {};
+    arrayFromCollection(trace && trace.applied_evidence).forEach((item) => {
+      appliedBySegment[safeString(item.segment_id)] = item;
+    });
     const changes = (finalSegments || []).filter((segment) =>
       segment.type === "mutable"
       && safeString(segment.final_text) !== safeString(segment.original_text)
@@ -5933,6 +6618,9 @@
       operation: segment.operation || "none",
       applied_role_id: segment.applied_role_id || "",
       material_change: !!segment.material_change,
+      role_contributions: arrayFromCollection(
+        asObject(appliedBySegment[segment.id]).role_contributions
+      ),
       original_text: safeString(segment.original_text),
       final_text: safeString(segment.final_text),
     }));
@@ -6234,6 +6922,40 @@
       }
       comparisonTurn = true;
 
+      trace.content_type = typeof content;
+      trace.content_chars = safeString(content).length;
+      if (typeof content !== "string") {
+        if (content && typeof content === "object" && typeof content.content === "string") {
+          content = content.content;
+        } else {
+          setFinalTraceState(trace, false, "bypassed", "non_string_content_bypass");
+          if (settings_trace_enabled()) await saveTrace(trace);
+          return content;
+        }
+      }
+
+      const rawOriginalText = safeString(content);
+      const visibleOutput = extractVisibleAssistantOutput(rawOriginalText);
+      trace.visible_output = {
+        raw_chars: rawOriginalText.length,
+        visible_chars: visibleOutput.text.length,
+        removed_block_count: visibleOutput.removed_block_count,
+        removed_chars: visibleOutput.removed_chars,
+        ambiguous_unclosed: visibleOutput.ambiguous_unclosed,
+      };
+      content = visibleOutput.text;
+      const originalText = visibleOutput.text;
+      if (!originalText.trim()) {
+        setFinalTraceState(
+          trace, false, "bypassed",
+          visibleOutput.removed_block_count > 0
+            ? "reasoning_only_no_visible_output"
+            : "empty_input"
+        );
+        if (settings_trace_enabled()) await saveTrace(trace);
+        return content;
+      }
+
       const completionWait = presetUsesCompletionWait(settings.preset);
       const deadlineMs = completionWait ? 0 : resolvePipelineDeadlineMs(settings);
       trace.deadline_ms = deadlineMs;
@@ -6268,9 +6990,6 @@
         contract_id: safeString(snapshot.turn_contract && snapshot.turn_contract.contract_id),
         contract_digest: safeString(snapshot.turn_contract && snapshot.turn_contract.contract_digest),
       };
-      trace.content_type = typeof content;
-      trace.content_chars = safeString(content).length;
-
       if (snapshot.ambiguous) {
         setFinalTraceState(trace, false, "bypassed", `ambiguous_request_context:${snapshot.reason}`);
         if (settings_trace_enabled()) await saveTrace(trace);
@@ -6279,26 +6998,6 @@
 
       if (deadline.check()) {
         setFinalTraceState(trace, false, "bypassed", "deadline_before_pipeline");
-        if (settings_trace_enabled()) await saveTrace(trace);
-        return content;
-      }
-
-      if (typeof content !== "string") {
-        if (content && typeof content === "object" && typeof content.content === "string") {
-          content = content.content;
-        } else {
-          setFinalTraceState(trace, false, "bypassed", "non_string_content_bypass");
-          if (settings_trace_enabled()) await saveTrace(trace);
-          return content;
-        }
-      }
-
-      const originalText = safeString(content);
-      if (!originalText.trim()) {
-        setFinalTraceState(
-          trace, false, "bypassed",
-          snapshot.streaming.detected ? "streaming_empty_final" : "empty_input"
-        );
         if (settings_trace_enabled()) await saveTrace(trace);
         return content;
       }
@@ -6573,7 +7272,7 @@
           return content;
         }
 
-        updateAppliedEvidence(trace, assembled, verification);
+        updateAppliedEvidence(trace, assembled, verification, semanticProof);
         const finalClassification = classifyAppliedOutput(assembled, semanticProof);
         setFinalTraceState(
           trace,
@@ -6848,12 +7547,16 @@
       const finalText = change.operation === "delete" && !change.final_text
         ? "(삭제됨)"
         : change.final_text;
+      const contributionLabels = arrayFromCollection(change.role_contributions)
+        .map((item) => safeString(item.role_id))
+        .filter(Boolean);
       return `
         <section class="recomposer-compare-item">
           <div class="recomposer-compare-meta">
             <span>${escapeHtml(change.segment_id)}</span>
             <span>${escapeHtml(change.source)}</span>
             ${change.applied_role_id ? `<span>${escapeHtml(change.applied_role_id)}</span>` : ""}
+            ${contributionLabels.map((roleId) => `<span>${escapeHtml(roleId)}</span>`).join("")}
             <span>${escapeHtml(change.operation)}</span>
             <span>${change.material_change ? "실질적 재작성" : "미세 변경"}</span>
           </div>
@@ -7687,14 +8390,20 @@
             ? ` reasoning:${overrides.reasoning_family}${(overrides.reasoning_fields || []).length ? "/" + overrides.reasoning_fields.join(",") : ""}`
             : "";
           const transportLabel = overrides.transport ? ` transport:${overrides.transport}` : "";
-          return `[${r.stage || "output"}] ${r.role_id}: ${r.status} (${r.provider}/${r.model}${r.endpoint_group ? " @ " + r.endpoint_group : ""}) queue:${queueMs}ms run:${r.elapsed_ms}ms http:${r.http_attempts || 0}${r.retry ? " retry:" + r.retry : ""}${r.fallback ? " fallback" : ""}${r.candidate_count ? " cand:" + r.candidate_count : ""}${attemptSummary ? " [" + attemptSummary + "]" : ""}${transportLabel}${reasoningLabel}${appliedOverrideKeys.length ? " override+:" + appliedOverrideKeys.join(",") : ""}${skippedOverrideKeys.length ? " override-skip:" + skippedOverrideKeys.join(",") : ""}${r.error_class ? " class:" + r.error_class : ""}${r.error ? " ERR:" + r.error : ""}`;
+          const validationSummary = (r.validation_diagnostics || [])
+            .map((item) => `${item.code}${item.segment_ids && item.segment_ids.length ? ":" + item.segment_ids.join(",") : ""}`)
+            .join(",");
+          return `[${r.stage || "output"}] ${r.role_id}: ${r.status} (${r.provider}/${r.model}${r.endpoint_group ? " @ " + r.endpoint_group : ""}) queue:${queueMs}ms run:${r.elapsed_ms}ms http:${r.http_attempts || 0}${r.retry ? " retry:" + r.retry : ""}${r.fallback ? " fallback" : ""}${r.candidate_count ? " cand:" + r.candidate_count : ""}${attemptSummary ? " [" + attemptSummary + "]" : ""}${transportLabel}${reasoningLabel}${validationSummary ? " normalized:[" + validationSummary + "]" : ""}${appliedOverrideKeys.length ? " override+:" + appliedOverrideKeys.join(",") : ""}${skippedOverrideKeys.length ? " override-skip:" + skippedOverrideKeys.join(",") : ""}${r.error_class ? " class:" + r.error_class : ""}${r.error ? " ERR:" + r.error : ""}`;
         }).join("\n");
         const directorLines = (t.director_evidence || []).map((d) =>
           `${d.segment_id}: candidate=${d.top_role} verdict=${d.judge_verdict || "accepted"} issues=[${(d.issue_groups || []).join(",")}] cand=${d.candidate_count}`
         ).join("\n");
-        const appliedLines = (t.applied_evidence || []).map((a) =>
-          `${a.segment_id}: ${a.source}${a.changed ? " [CHANGED]" : " [unchanged]"}${a.material_change ? " [MATERIAL]" : (a.changed ? " [MINOR]" : "")}${a.composer_unchanged ? " (composer:identical)" : ""} orig:"${escapeHtml(a.original_preview || "")}" → final:"${escapeHtml(a.final_preview || "")}"`
-        ).join("\n");
+        const appliedLines = (t.applied_evidence || []).map((a) => {
+          const contributions = arrayFromCollection(a.role_contributions).map((item) =>
+            `${item.role_id}/${item.contribution_id} evidence:"${item.evidence_quote}"`
+          ).join(" | ");
+          return `${a.segment_id}: ${a.source}${a.changed ? " [CHANGED]" : " [unchanged]"}${a.material_change ? " [MATERIAL]" : (a.changed ? " [MINOR]" : "")}${a.composer_unchanged ? " (composer:identical)" : ""} orig:"${escapeHtml(a.original_preview || "")}" → final:"${escapeHtml(a.final_preview || "")}"${contributions ? ` contributions:[${contributions}]` : ""}`;
+        }).join("\n");
         const attemptedLines = (t.attempted_evidence || []).filter((a) => a.changed).map((a) =>
           `${a.segment_id}: ${a.source}${a.material_change ? " [MATERIAL]" : " [MINOR]"} orig:"${escapeHtml(a.original_preview || "")}" → attempted:"${escapeHtml(a.final_preview || "")}"`
         ).join("\n");
@@ -7710,11 +8419,13 @@
           return `${key}:${source.available ? "used" : "missing"}${source.count ? "/" + source.count : ""}${source.active_count ? "/active:" + source.active_count : ""}${source.unknown_activation_count ? "/unknown:" + source.unknown_activation_count : ""}`;
         }).join(", ");
         const inputLine = `state:${ie.status || "not_run"} contract:${ie.contract_id || "none"} digest:${ie.contract_digest || "none"} planners:${ie.planner_succeeded || 0}ok/${ie.planner_failed || 0}fail injected:${ie.injected_chars || 0} chars active:${ie.active_calls_final || 0} retry-reuse:${ie.retry_reuse_count || 0} transport-cancel:${ie.transport_cancellation || "not_requested"}${ie.fallback_reason ? " fallback:" + ie.fallback_reason : ""}`;
-        const summaryLine = `specialists:${s.specialist_calls} successful:${s.successful_roles} scene-candidates:${s.candidate_count} composer:${s.composer_state} changed:${s.changed_segment_count} material-segments:${s.material_changed_segment_count || 0} material-rewrite:${s.material_rewrite === true} semantic:${s.semantic_verified || "not_run"} quality:${s.quality_preferred || "not_run"} unchanged:${s.unchanged_segment_count} state:${s.final_state} reason:${escapeHtml(s.final_reason || "")}`;
+        const summaryLine = `specialists:${s.specialist_calls} successful:${s.successful_roles} http:${s.specialist_http_calls || 0} scene-candidates:${s.candidate_count} composer:${s.composer_state} changed:${s.changed_segment_count} material-segments:${s.material_changed_segment_count || 0} material-rewrite:${s.material_rewrite === true} semantic:${s.semantic_verified || "not_run"} quality:${s.quality_preferred || "not_run"} unchanged:${s.unchanged_segment_count} state:${s.final_state} reason:${escapeHtml(s.final_reason || "")}`;
         const ledgerLine = `digest:${ledger.digest || "none"} facts:${ledger.established_facts || 0} beats:${ledger.scene_beats || 0} hooks:${ledger.unresolved_hooks || 0} hard:${ledger.hard_constraints || 0} protected:${ledger.protected_structures || 0} unknown:[${(ledger.unknown_semantics || []).join(",")}]`;
-        const judgeLine = `status:${judge.status || "not_run"} accept:${judge.accepted_candidates || 0} constrained:${judge.constrained_candidates || 0} reject:${judge.rejected_candidates || 0} missing:${judge.missing_facts || 0} unsupported:${judge.unsupported_additions || 0} hard:${judge.hard_violations || 0}`;
-        const proverLine = `status:${prover.status || "not_run"} verdict:${prover.verdict || "not_run"} attempts:${prover.attempts || 0} repair:${prover.repair_attempted === true} facts:${prover.facts_missing || 0}/${prover.facts_contradicted || 0} beats:${prover.beats_missing || 0} constraints:${prover.constraints_violated || 0} unsupported:${prover.unsupported_additions || 0} hard:${prover.hard_violations || 0} contract:${prover.output_contract_failures || 0}${prover.reason ? " reason:" + prover.reason : ""}`;
-        const planLine = `status:${plan.status || "not_run"} accepted:${plan.accepted_candidates || 0} rejected:${plan.rejected_candidates || 0} consensus:${plan.consensus_claims || 0} complement:${plan.complementary_claims || 0} conflicts:${plan.conflicts || 0} prohibited:${plan.prohibited_additions || 0}`;
+        const judgeLine = `status:${judge.status || "not_run"} accept:${judge.accepted_candidates || 0} constrained:${judge.constrained_candidates || 0} reject:${judge.rejected_candidates || 0} contributions:${judge.required_contributions || 0} missing:${judge.missing_facts || 0} unsupported:${judge.unsupported_additions || 0} hard:${judge.hard_violations || 0}`;
+        const proverLine = `status:${prover.status || "not_run"} verdict:${prover.verdict || "not_run"} attempts:${prover.attempts || 0} repair:${prover.repair_attempted === true} gains:${prover.quality_gains_required || 0}/${prover.quality_gains_missing || 0}/${prover.quality_gains_regressed || 0} residual:${prover.residual_quality_checked || 0}/${prover.residual_quality_issues || 0} facts:${prover.facts_missing || 0}/${prover.facts_contradicted || 0} beats:${prover.beats_missing || 0} constraints:${prover.constraints_violated || 0} unsupported:${prover.unsupported_additions || 0} hard:${prover.hard_violations || 0} contract:${prover.output_contract_failures || 0}${prover.reason ? " reason:" + prover.reason : ""}`;
+        const planLine = `status:${plan.status || "not_run"} accepted:${plan.accepted_candidates || 0} rejected:${plan.rejected_candidates || 0} required:${plan.required_contributions || 0} consensus:${plan.consensus_claims || 0} complement:${plan.complementary_claims || 0} conflicts:${plan.conflicts || 0} prohibited:${plan.prohibited_additions || 0}`;
+        const visible = t.visible_output || {};
+        const visibleLine = `raw:${visible.raw_chars || 0} visible:${visible.visible_chars || 0} removed-blocks:${visible.removed_block_count || 0} removed-chars:${visible.removed_chars || 0} ambiguous:${visible.ambiguous_unclosed === true}`;
         const scheduler = t.scheduler || {};
         const schedulerLines = (scheduler.endpoint_groups || []).map((group) =>
           `${group.stage}:${group.endpoint_group} calls:${group.selected_calls} concurrency:${group.effective_concurrency}/${group.base_concurrency} reason:${group.reason}`
@@ -7724,6 +8435,7 @@
           <strong>${escapeHtml(t.stage)} ${new Date(t.timestamp).toLocaleString()}</strong><br>
           Enhanced: ${finalEvidence.enhanced === true} · material:${finalEvidence.material_rewrite === true} · semantic:${escapeHtml(finalEvidence.semantic_verified || "not_run")} · quality:${escapeHtml(finalEvidence.quality_preferred || "not_run")} — ${escapeHtml(finalEvidence.reason || "")}<br>
           Segments: P:${t.segments.protected} I:${t.segments.inspect_only} M:${t.segments.mutable}<br>
+          Visible Output: ${escapeHtml(visibleLine)}<br>
           ${routerLine ? `Router: ${escapeHtml(routerLine)}<br>` : ""}
           Input Enhance: ${escapeHtml(inputLine)}<br>
           Draft Ledger: ${escapeHtml(ledgerLine)}<br>
@@ -7733,7 +8445,7 @@
           ${sourceSummary ? `Sources: ${escapeHtml(sourceSummary)}<br>` : ""}
           Summary: ${escapeHtml(summaryLine)}<br>
           Scheduler: ${scheduler.completion_wait ? "completion_wait" : "deadline"} · serial threshold:${scheduler.endpoint_serial_threshold || ENDPOINT_SERIAL_THRESHOLD}<br>
-          Candidates: scenes:${t.candidates.total} segment-variants:${t.candidates.segment_variant_total || 0} deduped:${t.candidates.duplicate_scene_candidates || 0}<br>
+          Candidates: scenes:${t.candidates.total} segment-variants:${t.candidates.segment_variant_total || 0} partial:${t.candidates.partial_salvage_count || 0} normalized:${t.candidates.normalized_field_count || 0} recovery:${t.candidates.structured_recovery_succeeded || 0}/${t.candidates.structured_recovery_attempted || 0}/${t.candidates.structured_recovery_queued || 0} deduped:${t.candidates.duplicate_scene_candidates || 0}<br>
           Composer: ${t.composer.used} (${t.composer.status} ${t.composer.elapsed_ms}ms, reserve:${t.composer.reserve_ms || 0}ms, semantic-retry:${t.composer.semantic_retry || 0}${t.composer.specialist_stop_reason ? ", specialist-stop:" + escapeHtml(t.composer.specialist_stop_reason) : ""})<br>
           ${t.final.original_preview ? `Orig: ${escapeHtml(t.final.original_preview)}<br>` : ""}
           ${t.final.final_preview ? `Final: ${escapeHtml(t.final.final_preview)}<br>` : ""}
@@ -7909,6 +8621,14 @@
         fact_checks: [{ ledger_id: 'fact_1', status: 'preserved', detail: 'Fact remains.', evidence_quote: 'met' }],
         beat_checks: [{ ledger_id: 'beat_1', status: 'preserved', detail: 'Beat remains.', evidence_quote: 'room' }],
         constraint_checks: [{ ledger_id: 'constraint_1', status: 'satisfied', detail: 'Secret remains hidden.', evidence_quote: '' }],
+        quality_gain_checks: [],
+        residual_quality_checks: PROOF_RESIDUAL_QUALITY_IDS.map((checkId) => ({
+          check_id: checkId,
+          status: 'clean',
+          detail: 'No residual issue found.',
+          evidence_quote: '',
+          segment_ids: [],
+        })),
         hard_violations: [],
         unsupported_additions: [],
         output_contract: {
@@ -7939,6 +8659,415 @@
         }],
       });
     }
+
+    await test('specialist_partial_candidate_salvage_and_issue_filtering', () => {
+      const mutable = [
+        { id: 'mutable_1', type: 'mutable', text: 'First original.', leading_ws: '', trailing_ws: '' },
+        { id: 'mutable_2', type: 'mutable', text: 'Second original.', leading_ws: '', trailing_ws: '' },
+      ];
+      const detailed = validateCandidateSchemaDetailed({
+        schema: 'loose_candidate_wrapper',
+        role_id: 'wrong_role',
+        candidates: [{
+          role_id: 'wrong_role',
+          segments: { mutable_1: 'First sentence rebuilt with stronger cadence.' },
+          addressed_issues: ['rhythm', 'character_voice', 'unknown_issue'],
+          confidence: 0.8,
+          change_summary: 'Rebuilt the first segment.',
+        }],
+      }, 'style_reader', ['mutable_1', 'mutable_2'], mutable);
+      if (!detailed.value || detailed.value.candidates.length !== 1) {
+        throw new Error('usable candidate was discarded');
+      }
+      const recovered = detailed.value.candidates[0];
+      if (recovered.segments.mutable_2 !== 'Second original.'
+          || recovered.segment_operations.mutable_2 !== 'passthrough'
+          || !recovered.partial_salvage
+          || recovered.addressed_issues.length !== 1
+          || recovered.addressed_issues[0] !== 'rhythm') {
+        throw new Error(`partial salvage mismatch:${JSON.stringify(recovered)}`);
+      }
+      const codes = detailed.diagnostics.map((item) => item.code);
+      if (!codes.includes('normalized_schema')
+          || !codes.includes('normalized_role_id')
+          || !codes.includes('missing_segment_filled_from_original')
+          || !codes.includes('filtered_unknown_issue_codes')
+          || !codes.includes('filtered_out_of_lane_issues')) {
+        throw new Error(`missing validation diagnostics:${codes.join(',')}`);
+      }
+      return codes.join(',');
+    });
+
+    await test('reasoning_only_specialist_is_deferred_for_structured_recovery', async () => {
+      const originalFetch = globalThis.fetch;
+      const settings = defaultSettings();
+      const role = DEFAULT_ROLES.find((item) => item.role_id === 'character_reader');
+      const profile = settings.role_profiles.character_reader;
+      profile.endpoint = 'https://test.example.com/v1/chat/completions';
+      profile.model = 'reasoning-specialist-model';
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          choices: [{
+            message: {
+              content: '',
+              reasoning_content: sceneCandidateJson(
+                'character_reader',
+                'Character knowledge and reaction are rebuilt through action.'
+              ),
+            },
+          }],
+        }),
+      });
+      try {
+        const trace = newTrace('test', 'test');
+        const result = await callRole(
+          role,
+          profile,
+          [{ id: 'mutable_1', type: 'mutable', text: 'Original.', leading_ws: '', trailing_ws: '' }],
+          '',
+          [{ id: 'mutable_1', type: 'mutable', text: 'Original.', leading_ws: '', trailing_ws: '' }],
+          new AbortController().signal,
+          trace,
+          { draft_ledger: ledger() },
+          Date.now(),
+          {
+            allowRetry: false,
+            allowFallback: false,
+            deferStructuredRecovery: true,
+          }
+        );
+        if (!result || !result.__deferred_specialist_recovery
+            || result.error_class !== 'reasoning_only_response'
+            || !result.recovery_source.includes('scene_rewrite_candidates.v1')
+            || trace.roles[0].status !== 'recovery_queued') {
+          throw new Error(`reasoning-only specialist was dropped:${JSON.stringify(result)}`);
+        }
+        return result.error_class;
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('deferred_specialist_recovery_runs_after_primaries_with_preset_limits', async () => {
+      const originalFetch = globalThis.fetch;
+      async function runCase(preset, characterRecoveryFailure) {
+        const settings = defaultSettings();
+        const roleIds = [
+          'character_reader',
+          'style_reader',
+          'plot_continuity_reader',
+          JUDGE_ROLE_ID,
+          COMPOSER_ROLE_ID,
+          PROVER_ROLE_ID,
+        ];
+        const roles = roleIds.map((id) => DEFAULT_ROLES.find((role) => role.role_id === id));
+        roles.forEach((role) => {
+          const profile = settings.role_profiles[role.role_id];
+          profile.endpoint = 'https://test.example.com/v1/chat/completions';
+          profile.model = `${role.role_id}-model`;
+          profile.timeout_ms = 5000;
+        });
+        const calls = [];
+        globalThis.fetch = async (_url, options) => {
+          const body = JSON.parse(options.body);
+          const model = safeString(body.model);
+          const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
+          const recovery = prompt.includes('This is formatting recovery');
+          calls.push({ model, recovery, prompt });
+          if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
+            const match = /Scene candidates:\n(.+?)\n\n--- Draft Ledger/s.exec(prompt);
+            const promptCandidates = match ? JSON.parse(match[1]) : [];
+            return response(JSON.stringify(judgmentObject(
+              promptCandidates.map((item) => item.candidate_id)
+            )));
+          }
+          if (model.indexOf(COMPOSER_ROLE_ID) >= 0) {
+            return response(JSON.stringify({
+              segments: { mutable_1: 'Composer integrated every recovered specialist contribution.' },
+            }));
+          }
+          if (model.indexOf('plot_continuity_reader') >= 0) {
+            return response(sceneCandidateJson(
+              'plot_continuity_reader',
+              'The scene advances through a clear causal turn.'
+            ));
+          }
+          if (model.indexOf('character_reader') >= 0 || model.indexOf('style_reader') >= 0) {
+            const roleId = model.indexOf('character_reader') >= 0
+              ? 'character_reader'
+              : 'style_reader';
+            if (!recovery) {
+              return response('```json\n{"schema":"scene_rewrite_candidates.v1","role_id":"'
+                + roleId + '","candidates":[');
+            }
+            if (!prompt.includes('SOURCE:') || prompt.includes('Runtime Context')) {
+              throw new Error(`recovery prompt not compact:${roleId}`);
+            }
+            if (characterRecoveryFailure === 'invalid' && roleId === 'character_reader') {
+              return response('{"schema":"scene_rewrite_candidates.v1","candidates":[');
+            }
+            if (characterRecoveryFailure === 'empty' && roleId === 'character_reader') {
+              return response(JSON.stringify({
+                schema: 'scene_rewrite_candidates.v1',
+                role_id: 'character_reader',
+                candidates: [],
+              }));
+            }
+            return response(sceneCandidateJson(
+              roleId,
+              roleId === 'character_reader'
+                ? 'Character reactions now carry distinct knowledge and subtext.'
+                : 'The prose now moves through varied cadence and transitions.'
+            ));
+          }
+          throw new Error(`unexpected model:${model}`);
+        };
+        const trace = newTrace('test', 'test');
+        trace.router.preset = preset;
+        const deadline = createDeadline(60000);
+        const segments = [{
+          id: 'mutable_1',
+          type: 'mutable',
+          text: 'Original scene.',
+          leading_ws: '',
+          trailing_ws: '',
+        }];
+        try {
+          const result = await scheduleRoles(
+            roles,
+            settings.role_profiles,
+            segments,
+            '',
+            segments,
+            deadline,
+            trace,
+            3,
+            ledger()
+          );
+          if (result.failureReason || !result.composerResult) {
+            throw new Error(`recovery pipeline failed:${preset}:${result.failureReason}`);
+          }
+        } finally {
+          deadline.cancel();
+        }
+        const specialistModels = ['character_reader-model', 'style_reader-model', 'plot_continuity_reader-model'];
+        const primaryIndexes = calls.map((call, index) =>
+          specialistModels.includes(call.model) && !call.recovery ? index : -1
+        ).filter((index) => index >= 0);
+        const recoveryIndexes = calls.map((call, index) =>
+          specialistModels.includes(call.model) && call.recovery ? index : -1
+        ).filter((index) => index >= 0);
+        const expectedRecoveries = characterRecoveryFailure
+          ? 2
+          : (preset === 'quality' ? 2 : (preset === 'balanced' ? 1 : 0));
+        const expectedSuccesses = preset === 'fast' ? 0 : (preset === 'quality' ? 2 : 1);
+        if (primaryIndexes.length !== 3
+            || recoveryIndexes.length !== expectedRecoveries
+            || (recoveryIndexes.length
+              && Math.min.apply(null, recoveryIndexes) <= Math.max.apply(null, primaryIndexes))
+            || trace.candidates.structured_recovery_attempted !== expectedRecoveries
+            || trace.candidates.structured_recovery_succeeded !== expectedSuccesses) {
+          throw new Error(`deferred recovery mismatch:${preset}:${JSON.stringify(calls.map((call) => ({
+            model: call.model,
+            recovery: call.recovery,
+          })))}`);
+        }
+        return {
+          attempted: recoveryIndexes.length,
+          succeeded: trace.candidates.structured_recovery_succeeded,
+        };
+      }
+      try {
+        const fastRecoveries = await runCase('fast');
+        const balancedRecoveries = await runCase('balanced');
+        const qualityRecoveries = await runCase('quality');
+        const invalidFailover = await runCase('balanced', 'invalid');
+        const emptyFailover = await runCase('balanced', 'empty');
+        return `fast:${fastRecoveries.attempted}/${fastRecoveries.succeeded} balanced:${balancedRecoveries.attempted}/${balancedRecoveries.succeeded} quality:${qualityRecoveries.attempted}/${qualityRecoveries.succeeded} invalid-failover:${invalidFailover.attempted}/${invalidFailover.succeeded} empty-failover:${emptyFailover.attempted}/${emptyFailover.succeeded}`;
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('fusion_plan_requires_each_accepted_role_contribution', () => {
+      const candidates = [
+        candidate('character_reader', 'cand_character', 'Character subtext becomes explicit through action.'),
+        candidate('style_reader', 'cand_style', 'Cadence and paragraph transitions are rebuilt.'),
+      ];
+      const judged = validateSemanticJudgment(
+        judgmentObject(['cand_character', 'cand_style']),
+        candidates,
+        ledger()
+      );
+      const plan = buildFusionPlan(
+        judged,
+        candidates,
+        ledger(),
+        [{ id: 'mutable_1', type: 'mutable', text: 'Original.' }]
+      );
+      const roles = uniqueList(plan.required_contributions.map((item) => item.role_id)).sort();
+      if (roles.join(',') !== 'character_reader,style_reader'
+          || plan.required_contributions.some((item) =>
+            !item.contribution_id || !item.candidate_id || !item.segment_ids.length || !item.claim
+          )) {
+        throw new Error(`required contribution mismatch:${JSON.stringify(plan.required_contributions)}`);
+      }
+      const composerRole = DEFAULT_ROLES.find((role) => role.role_id === COMPOSER_ROLE_ID);
+      const prompt = buildRolePrompt(
+        composerRole,
+        defaultSettings().role_profiles[COMPOSER_ROLE_ID],
+        [{ id: 'mutable_1', type: 'mutable', text: 'Original.', leading_ws: '', trailing_ws: '' }],
+        '',
+        [{ id: 'mutable_1', type: 'mutable', text: 'Original.', leading_ws: '', trailing_ws: '' }],
+        {
+          candidateBundles: { mutable_1: [] },
+          semantic_judgment: judged,
+          fusion_plan: plan,
+          draft_ledger: ledger(),
+        }
+      );
+      if (!prompt.user.includes('Realize every fusion_plan.required_contributions')) {
+        throw new Error('Composer contribution obligation missing');
+      }
+      const partialCandidate = candidate(
+        'style_reader',
+        'cand_partial',
+        'Only the first segment is materially rewritten.'
+      );
+      partialCandidate.segments.mutable_2 = 'Second original.';
+      partialCandidate.segment_operations.mutable_2 = 'passthrough';
+      partialCandidate.changed_segment_ids = ['mutable_1'];
+      const partialJudgmentRaw = judgmentObject(['cand_partial']);
+      partialJudgmentRaw.candidate_judgments[0].quality_gains[0].segment_ids = ['mutable_2'];
+      const partialJudgment = validateSemanticJudgment(
+        partialJudgmentRaw,
+        [partialCandidate],
+        ledger()
+      );
+      const partialPlan = buildFusionPlan(
+        partialJudgment,
+        [partialCandidate],
+        ledger(),
+        [
+          { id: 'mutable_1', type: 'mutable', text: 'Original.' },
+          { id: 'mutable_2', type: 'mutable', text: 'Second original.' },
+        ]
+      );
+      if (partialPlan.required_contributions.some((item) =>
+        item.claim === 'Stronger dramatic movement'
+        || item.segment_ids.includes('mutable_2')
+      ) || partialPlan.required_contributions[0].source !== 'change_summary') {
+        throw new Error(`coverage-gap contribution moved:${JSON.stringify(partialPlan.required_contributions)}`);
+      }
+      return roles.join(',');
+    });
+
+    await test('semantic_prover_enforces_quality_gain_realization', () => {
+      const candidates = [candidate(
+        'character_reader',
+        'cand_character',
+        'The meeting gains sharper character subtext.'
+      )];
+      const judged = validateSemanticJudgment(
+        judgmentObject(['cand_character']),
+        candidates,
+        ledger()
+      );
+      const plan = buildFusionPlan(
+        judged,
+        candidates,
+        ledger(),
+        [{ id: 'mutable_1', type: 'mutable', text: 'Original.' }]
+      );
+      const contribution = plan.required_contributions[0];
+      const finalText = 'They met in the room. The exchange carried sharper dramatic movement.';
+      const mutable = [{ id: 'mutable_1', type: 'mutable', text: 'Original.' }];
+      const finalSegments = [{ id: 'mutable_1', type: 'mutable', final_text: finalText }];
+      const goodRaw = semanticProofObject('pass');
+      goodRaw.quality_gain_checks = [{
+        contribution_id: contribution.contribution_id,
+        status: 'realized',
+        detail: 'The dramatic movement is present in the exchange.',
+        evidence_quote: 'sharper dramatic movement',
+        segment_ids: ['mutable_1'],
+      }];
+      const good = validateSemanticProof(goodRaw, ledger(), mutable, finalSegments, plan);
+      if (!good || good.verdict !== 'pass') throw new Error('realized gain did not pass');
+
+      const unchangedEvidenceMutable = [{
+        id: 'mutable_1',
+        type: 'mutable',
+        text: 'They met in the room. The exchange remained guarded.',
+      }];
+      const unchangedEvidenceFinal = [{
+        id: 'mutable_1',
+        type: 'mutable',
+        final_text: 'They met in the room. The exchange carried sharper dramatic movement.',
+      }];
+      const unchangedEvidenceRaw = JSON.parse(JSON.stringify(goodRaw));
+      unchangedEvidenceRaw.quality_gain_checks[0].evidence_quote = 'They met in the room';
+      if (validateSemanticProof(
+        unchangedEvidenceRaw,
+        ledger(),
+        unchangedEvidenceMutable,
+        unchangedEvidenceFinal,
+        plan
+      )) {
+        throw new Error('unchanged original wording was accepted as role contribution evidence');
+      }
+
+      const wrongSegmentMutable = mutable.concat({
+        id: 'mutable_2',
+        type: 'mutable',
+        text: 'Other original.',
+      });
+      const wrongSegmentFinal = [
+        { id: 'mutable_1', type: 'mutable', final_text: 'They met in the room.' },
+        {
+          id: 'mutable_2',
+          type: 'mutable',
+          final_text: 'An unrelated paragraph contains sharper dramatic movement.',
+        },
+      ];
+      const wrongSegmentRaw = JSON.parse(JSON.stringify(goodRaw));
+      const wrongSegment = validateSemanticProof(
+        wrongSegmentRaw,
+        ledger(),
+        wrongSegmentMutable,
+        wrongSegmentFinal,
+        plan
+      );
+      if (wrongSegment) {
+        throw new Error('quality evidence from the wrong segment was accepted');
+      }
+
+      const repairRaw = JSON.parse(JSON.stringify(goodRaw));
+      repairRaw.declared_verdict = 'repair';
+      repairRaw.quality_gain_checks[0].status = 'missing';
+      repairRaw.quality_gain_checks[0].evidence_quote = '';
+      repairRaw.repair_instructions = [{
+        segment_id: 'mutable_1',
+        instruction: 'Realize the missing character contribution in the full scene.',
+        evidence_refs: [],
+        prohibited: [],
+      }];
+      const repair = validateSemanticProof(repairRaw, ledger(), mutable, finalSegments, plan);
+      if (!repair || repair.verdict !== 'repair'
+          || !repair.reason_codes.some((code) => code.indexOf('quality_gain_missing:') === 0)) {
+        throw new Error(`missing gain did not request repair:${JSON.stringify(repair)}`);
+      }
+
+      const failedRaw = JSON.parse(JSON.stringify(repairRaw));
+      failedRaw.declared_verdict = 'pass';
+      failedRaw.repair_instructions = [];
+      const failed = validateSemanticProof(failedRaw, ledger(), mutable, finalSegments, plan);
+      if (!failed || failed.verdict !== 'fail') {
+        throw new Error('missing gain incorrectly passed');
+      }
+      return `${good.verdict}/${repair.verdict}/${failed.verdict}`;
+    });
 
     await test('phase_c_role_topology', () => {
       const specialists = DEFAULT_ROLES.filter((role) => role.stage === 'output' && !role.is_composer);
@@ -8204,6 +9333,171 @@
       return 'computed verdict, exact ledger coverage, and one repair';
     });
 
+    await test('visible_output_extraction_precedes_segmentation', () => {
+      const closed = extractVisibleAssistantOutput(
+        '<Thoughts>Private chain of thought.</Thoughts>\n### Chapter 1\nMira opened the ledger.'
+      );
+      if (closed.text.indexOf('Private chain') >= 0
+          || closed.text.indexOf('### Chapter 1') !== 0
+          || closed.removed_block_count !== 1) {
+        throw new Error(`closed reasoning leaked:${JSON.stringify(closed)}`);
+      }
+      const multiple = extractVisibleAssistantOutput(
+        '<Analysis>First private block.</Analysis>\nScene line.\n<Thinking>Second private block.</Thinking>\nEnding.'
+      );
+      if (multiple.removed_block_count !== 2
+          || multiple.text.indexOf('private block') >= 0
+          || !multiple.text.includes('Scene line.')
+          || !multiple.text.includes('Ending.')) {
+        throw new Error(`multiple reasoning extraction failed:${JSON.stringify(multiple)}`);
+      }
+      const unclosed = extractVisibleAssistantOutput(
+        '<Thoughts>Private unfinished reasoning.\n## Response\nMira opened the ledger.'
+      );
+      if (!unclosed.text.startsWith('Mira opened the ledger.')
+          || unclosed.removed_block_count !== 1
+          || unclosed.ambiguous_unclosed) {
+        throw new Error(`unclosed boundary extraction failed:${JSON.stringify(unclosed)}`);
+      }
+      const ambiguousSource = '<Thoughts>Possibly narrative content without a visible boundary.';
+      const ambiguous = extractVisibleAssistantOutput(ambiguousSource);
+      if (!ambiguous.ambiguous_unclosed || !ambiguous.changed || ambiguous.text !== '') {
+        throw new Error(`ambiguous reasoning leaked:${JSON.stringify(ambiguous)}`);
+      }
+      const visibleSegments = buildSegmentMap(closed.text, defaultSettings());
+      if (visibleSegments.some((segment) => safeString(segment.text).indexOf('Private chain') >= 0)) {
+        throw new Error('segmentation received removed reasoning');
+      }
+      return 'closed/multiple/bounded-unclosed removed; ambiguous reasoning suppressed';
+    });
+
+    await test('after_request_returns_visible_output_only', async () => {
+      const originalRisu = globalThis.Risuai;
+      const settings = defaultSettings();
+      settings.trace_enabled = false;
+      Object.keys(settings.role_profiles).forEach((roleId) => {
+        settings.role_profiles[roleId].enabled = false;
+      });
+      globalThis.Risuai = {
+        pluginStorage: {
+          getItem: async (key) => key === SETTINGS_KEY ? JSON.stringify(settings) : null,
+          setItem: async () => true,
+        },
+      };
+      pendingMainSnapshot = makeRequestSnapshot(
+        [{ role: 'user', content: 'Continue the scene.' }],
+        'model',
+        { detected: false, reason: '' },
+        ''
+      );
+      try {
+        const result = await onAfterRequest(
+          '<Thoughts>Private chain of thought.</Thoughts>\n### Chapter 1\nMira opened the ledger.',
+          'model'
+        );
+        if (result !== '### Chapter 1\nMira opened the ledger.') {
+          throw new Error(`afterRequest returned reasoning:${JSON.stringify(result)}`);
+        }
+        pendingMainSnapshot = null;
+        const preflightResult = await onAfterRequest(
+          '<Analysis>Private preflight analysis.</Analysis>\nVisible fallback scene.',
+          'model'
+        );
+        if (preflightResult !== 'Visible fallback scene.') {
+          throw new Error(`preflight returned reasoning:${JSON.stringify(preflightResult)}`);
+        }
+        return 'role bypass and ambiguous preflight returned visible prose only';
+      } finally {
+        pendingMainSnapshot = null;
+        globalThis.Risuai = originalRisu;
+      }
+    });
+
+    await test('materiality_rejects_cosmetic_change_and_meta_deletion', () => {
+      const original = '초여름의 푸른 그늘이 공조(工曹) 청사 앞 느릅나무 가지마다 짙게 늘어서기 시작했다. '
+        + '단오를 앞둔 한양의 공기는 메말라 있었고 공조 마당은 수레와 인부들의 소리로 요란했다. '
+        + '행정실 북쪽 창가의 자리는 바깥과 격리된 섬처럼 정갈한 정적을 유지하고 있었다.';
+      const cosmetic = original.replace('공조(工曹)', '공조').replace('  ', ' ');
+      const rebuilt = '느릅나무 그늘 아래로 수레가 연달아 밀려들었다. 마른 흙먼지가 공조 마당을 훑을 때마다 '
+        + '인부들의 고함이 행정실 창호를 두드렸다. 그 소란에서 한 걸음 비껴난 북쪽 창가에서, '
+        + '강한얼의 붓만 일정한 호흡으로 장부의 빈칸을 메웠다.';
+      const cosmeticAssessment = rewriteMateriality(original, cosmetic);
+      const rebuiltAssessment = rewriteMateriality(original, rebuilt);
+      const metaAssessment = rewriteMateriality(
+        '<Thoughts>Private reasoning only.</Thoughts>',
+        ''
+      );
+      if (cosmeticAssessment.material) {
+        throw new Error(`cosmetic change counted material:${JSON.stringify(cosmeticAssessment)}`);
+      }
+      if (!rebuiltAssessment.material) {
+        throw new Error(`structural rewrite not material:${JSON.stringify(rebuiltAssessment)}`);
+      }
+      if (metaAssessment.material || !metaAssessment.original_meta_only) {
+        throw new Error(`reasoning deletion counted material:${JSON.stringify(metaAssessment)}`);
+      }
+      return 'cosmetic:false structural:true reasoning:false';
+    });
+
+    await test('semantic_prover_residual_quality_blocks_false_pass', () => {
+      const mutable = [{ id: 'mutable_1', type: 'mutable', text: 'Original scene.' }];
+      const finalText = 'They met in the room. 권 서리가 어깨를 쫑긋 세우며 새 교지를 내밀었다.';
+      const finalSegments = [{ id: 'mutable_1', type: 'mutable', final_text: finalText }];
+      const clean = validateSemanticProof(
+        semanticProofObject('pass'),
+        ledger(),
+        mutable,
+        finalSegments,
+        { required_contributions: [] }
+      );
+      if (!clean || clean.verdict !== 'pass') throw new Error('clean residual proof did not pass');
+
+      const issueRaw = semanticProofObject('pass');
+      issueRaw.residual_quality_checks[0] = {
+        check_id: 'mechanics_and_wording',
+        status: 'issue',
+        detail: 'The body movement is awkwardly phrased.',
+        evidence_quote: '어깨를 쫑긋 세우며',
+        segment_ids: ['mutable_1'],
+      };
+      const falsePass = validateSemanticProof(
+        issueRaw,
+        ledger(),
+        mutable,
+        finalSegments,
+        { required_contributions: [] }
+      );
+      if (!falsePass || falsePass.verdict !== 'fail'
+          || !falsePass.reason_codes.includes('residual_quality_issue:mechanics_and_wording')) {
+        throw new Error(`residual issue passed:${JSON.stringify(falsePass)}`);
+      }
+
+      const repairRaw = JSON.parse(JSON.stringify(issueRaw));
+      repairRaw.declared_verdict = 'repair';
+      repairRaw.repair_instructions = [{
+        segment_id: 'mutable_1',
+        instruction: 'Replace the awkward body movement with natural period-appropriate action.',
+        evidence_refs: [],
+        prohibited: [],
+      }];
+      const repair = validateSemanticProof(
+        repairRaw,
+        ledger(),
+        mutable,
+        finalSegments,
+        { required_contributions: [] }
+      );
+      if (!repair || repair.verdict !== 'repair') {
+        throw new Error(`residual issue did not request repair:${JSON.stringify(repair)}`);
+      }
+      const incomplete = semanticProofObject('pass');
+      incomplete.residual_quality_checks.pop();
+      if (validateSemanticProof(incomplete, ledger(), mutable, finalSegments, { required_contributions: [] })) {
+        throw new Error('incomplete residual quality coverage accepted');
+      }
+      return 'clean/pass issue/fail issue/repair incomplete/reject';
+    });
+
     await test('semantic_prover_call_validates_final_composer_output', async () => {
       const originalFetch = globalThis.fetch;
       const settings = defaultSettings();
@@ -8460,6 +9754,14 @@
               detail: 'Constraint preserved.',
               evidence_quote: '',
             })),
+            quality_gain_checks: [],
+            residual_quality_checks: PROOF_RESIDUAL_QUALITY_IDS.map((checkId) => ({
+              check_id: checkId,
+              status: 'clean',
+              detail: 'No residual issue found.',
+              evidence_quote: '',
+              segment_ids: [],
+            })),
             hard_violations: [],
             unsupported_additions: [],
             output_contract: {
@@ -8471,6 +9773,16 @@
             },
             repair_instructions: [],
           };
+          const planMatch = /Fusion Plan:\n(.+?)\n\n--- Draft Ledger/s.exec(prompt);
+          const proofPlan = planMatch ? JSON.parse(planMatch[1]) : {};
+          proof.quality_gain_checks = arrayFromCollection(proofPlan.required_contributions)
+            .map((item) => ({
+              contribution_id: item.contribution_id,
+              status: 'realized',
+              detail: 'The final scene realizes the required specialist contribution.',
+              evidence_quote: 'measured silence',
+              segment_ids: item.segment_ids,
+            }));
           if (proverCalls === 1) {
             proof.declared_verdict = 'repair';
             if (proof.fact_checks.length) {
@@ -8549,7 +9861,13 @@
             || traceRecord.final.semantic_verified !== 'passed'
             || traceRecord.semantic_prover.attempts !== 2
             || traceRecord.semantic_prover.repair_attempted !== true
-            || !traceRecord.applied_evidence.some((item) => item.changed && item.source === 'composer')) {
+            || traceRecord.semantic_prover.residual_quality_checked !== PROOF_RESIDUAL_QUALITY_IDS.length
+            || traceRecord.semantic_prover.residual_quality_issues !== 0
+            || !traceRecord.applied_evidence.some((item) =>
+              item.changed
+              && item.source === 'composer'
+              && arrayFromCollection(item.role_contributions).length > 0
+            )) {
           throw new Error(`final proof trace mismatch:${JSON.stringify(traceRecord && {
             final: traceRecord.final,
             prover: traceRecord.semantic_prover,

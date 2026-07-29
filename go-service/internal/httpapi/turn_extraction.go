@@ -29,6 +29,7 @@ type completeTurnLLMConfig struct {
 	ExtraBodyJSON         string
 	VertexFlexMode        string
 	LLMGatewayServiceTier string
+	ClaudePromptCacheMode string
 	ForceWorldRuleAudit   bool
 }
 
@@ -780,6 +781,7 @@ func completeTurnExtractionConfigFromMeta(meta map[string]any) completeTurnExtra
 			ExtraBodyJSON:         stringFromMap(criticMap, "extra_body_json"),
 			VertexFlexMode:        stringFromMap(criticMap, "vertex_flex_mode"),
 			LLMGatewayServiceTier: stringFromMap(criticMap, "llm_gateway_service_tier"),
+			ClaudePromptCacheMode: stringFromMap(criticMap, "claude_prompt_cache_mode"),
 			ForceWorldRuleAudit:   boolFromAny(meta["force_world_rule_backfill"]) || boolFromAny(meta["force_focused_world_rule_audit"]),
 		},
 		Embedder: completeTurnEmbeddingConfig{
@@ -835,6 +837,9 @@ func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnE
 	}
 	if strings.TrimSpace(cfg.Critic.LLMGatewayServiceTier) == "" {
 		cfg.Critic.LLMGatewayServiceTier = rt.CriticLLMGatewayServiceTier
+	}
+	if strings.TrimSpace(cfg.Critic.ClaudePromptCacheMode) == "" {
+		cfg.Critic.ClaudePromptCacheMode = rt.CriticClaudePromptCacheMode
 	}
 
 	cfg.Embedder = s.selectCompleteTurnEmbeddingConfig(meta, cfg.Embedder, rt)
@@ -1028,6 +1033,9 @@ func addCompleteTurnReasoningTraceFields(trace map[string]any, cfg completeTurnL
 	if strings.TrimSpace(cfg.LLMGatewayServiceTier) != "" {
 		trace["llm_gateway_service_tier"] = strings.TrimSpace(cfg.LLMGatewayServiceTier)
 	}
+	if strings.TrimSpace(cfg.ClaudePromptCacheMode) != "" {
+		trace["claude_prompt_cache_mode"] = strings.TrimSpace(cfg.ClaudePromptCacheMode)
+	}
 	if strings.TrimSpace(cfg.ExtraHeadersJSON) != "" {
 		trace["extra_headers_json_configured"] = true
 	}
@@ -1051,6 +1059,9 @@ func applyProxyOverridesFromLLMConfig(req *dto.ProxyPluginMainRequest, cfg compl
 	}
 	if strings.TrimSpace(cfg.LLMGatewayServiceTier) != "" {
 		req.LLMGatewayServiceTier = &cfg.LLMGatewayServiceTier
+	}
+	if strings.TrimSpace(cfg.ClaudePromptCacheMode) != "" {
+		req.ClaudePromptCacheMode = &cfg.ClaudePromptCacheMode
 	}
 }
 
