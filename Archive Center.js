@@ -620,6 +620,7 @@
       "dash.status.value.load": "불러오기",
       "dash.status.value.save": "저장",
       "dash.status.state.ok": "정상",
+      "dash.status.state.notice": "알림",
       "dash.status.state.warn": "경고",
       "dash.status.state.fail": "실패",
       "dash.status.state.skipped": "건너뜀",
@@ -1770,6 +1771,7 @@
       "dash.status.value.load": "load",
       "dash.status.value.save": "save",
       "dash.status.state.ok": "ok",
+      "dash.status.state.notice": "notice",
       "dash.status.state.warn": "warn",
       "dash.status.state.fail": "fail",
       "dash.status.state.skipped": "skipped",
@@ -2739,6 +2741,7 @@
       "dash.status.value.load": "読込",
       "dash.status.value.save": "保存",
       "dash.status.state.ok": "正常",
+      "dash.status.state.notice": "通知",
       "dash.status.state.warn": "警告",
       "dash.status.state.fail": "失敗",
       "dash.status.state.skipped": "スキップ",
@@ -46068,6 +46071,7 @@ html,body{width:100%;height:100%;overflow:hidden}
 .mo-settings-db-reset-btn{font-size:11px;padding:6px 10px;line-height:1.1;font-weight:800;border:1px solid #ff625a;box-shadow:0 0 0 1px rgba(255,72,72,.18) inset}
 .mo-status{font-size:12px;padding:6px 10px;border-radius:6px;margin-top:4px}
 .mo-status-ok{background:#1a3a1a;color:#5dbb5d}
+.mo-status-notice{background:#18213a;color:#8fa7ff}
 .mo-status-fail{background:#3a1a1a;color:#e74c3c}
 .mo-status-wait{background:#2a2a1a;color:#c89c1a}
 .mo-status-unknown{background:#1a1a2e;color:#666}
@@ -46080,10 +46084,11 @@ html,body{width:100%;height:100%;overflow:hidden}
 .mo-dash-row{display:flex;align-items:center;gap:8px;font-size:12px}
 .mo-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .mo-dot-ok{background:#5dbb5d}
+.mo-dot-notice{background:#8fa7ff}
 .mo-dot-warn{background:#e6a817}
 .mo-dot-fail{background:#e74c3c}
 .mo-dot-unknown{background:#555}
-.mo-dot-skipped{background:#e67e22}
+.mo-dot-skipped{background:#6f7891}
 .mo-dash-label{color:#a0a0b0;min-width:110px}
 .mo-dash-value{color:#e0e0e0;word-break:break-all}
 .mo-note{font-size:11px;color:#666;font-style:italic;padding:4px 0}
@@ -46373,6 +46378,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-export-json{width:100%;min-height:300px;max-height:55vh;background:#0a0a15;border:1px solid #2a2a4a;color:#c0c0c0;padding:8px;border-radius:4px;font-family:monospace;font-size:11px;resize:vertical;white-space:pre;overflow:auto}
 /* ── UI Redesign: Dashboard card groups ── */
 .mo-dash-card{background:#101a28;border:1px solid #2a3a4a;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.mo-dash-card.has-notice{border-color:#40558f;background:#10182a}
 .mo-dash-card.has-warn{border-color:#8a6a10;background:#161205}
 .mo-dash-card.has-fail{border-color:#6a2020;background:#160a0a}
 .mo-dash-card-head{display:flex;align-items:center;gap:8px;padding-bottom:6px;border-bottom:1px solid #1e2d42;margin-bottom:2px}
@@ -46381,6 +46387,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-dash-card-summary{display:flex;gap:4px;align-items:center}
 .mo-dash-chip{font-size:10px;font-weight:700;padding:1px 6px;border-radius:8px}
 .mo-dash-chip-ok{background:#1a2e1a;color:#5dbb5d;border:1px solid #2a4a2a}
+.mo-dash-chip-notice{background:#18213a;color:#8fa7ff;border:1px solid #40558f}
 .mo-dash-chip-warn{background:#2e2a10;color:#e6a817;border:1px solid #4a3a10}
 .mo-dash-chip-fail{background:#2e1010;color:#e74c3c;border:1px solid #4a1a1a}
 .mo-dash-chip-num{background:#11162a;color:#8a9ab0;border:1px solid #2a2a4a}
@@ -46388,6 +46395,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-hdr-health{display:flex;align-items:center;gap:5px;margin-right:4px}
 .mo-hdr-health-badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;line-height:1.4;white-space:nowrap}
 .mo-hdr-health-badge-ok{color:#5dbb5d;background:#1a2e1a}
+.mo-hdr-health-badge-notice{color:#8fa7ff;background:#18213a}
 .mo-hdr-health-badge-warn{color:#e6a817;background:#2a2a10}
 .mo-hdr-health-badge-fail{color:#e74c3c;background:#2a1010}
 @media(max-width:600px){.mo-overlay{padding:0;align-items:stretch}.mo-panel{width:100%;height:100%;max-height:100%;border-radius:0;border-left:0;border-right:0}.mo-body{padding:0 10px 12px}.mo-hdr{padding:10px 12px}.mo-hdr-left{min-width:0}.mo-hdr h2{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mo-tabs{padding:10px 0 8px}.mo-tab-btn{padding:7px 9px}.mo-model-grid{grid-template-columns:1fr}.mo-export-panel{width:100%;height:100%;max-height:100%;border-radius:0}}
@@ -46407,21 +46415,24 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   }
 
   function statusDotClass(status) {
-    if (status === "ok" || status === "eligible") return "mo-dot-ok";
-    if (status === "warn" || status === "deferred" || status === "degraded") return "mo-dot-warn";
-    if (status === "fail" || status === "error" || status === "failed" || status === "incompatible") return "mo-dot-fail";
-    if (status === "skipped" || status === "empty" || status === "not_applicable") return "mo-dot-skipped";
+    const normalized = String(status || "unknown").toLowerCase();
+    if (normalized === "ok" || normalized === "eligible") return "mo-dot-ok";
+    if (["notice", "info", "informational", "deferred", "queued", "pending", "delayed", "waiting", "running", "watching"].includes(normalized)) return "mo-dot-notice";
+    if (["warn", "warning", "degraded", "partial", "fallback", "ambiguous"].includes(normalized)) return "mo-dot-warn";
+    if (["fail", "error", "failed", "incompatible"].includes(normalized)) return "mo-dot-fail";
+    if (["skipped", "empty", "not_applicable"].includes(normalized)) return "mo-dot-skipped";
     return "mo-dot-unknown";
   }
 
   function runtimeStatusLabel(status) {
     const normalized = String(status || "unknown").toLowerCase();
     if (normalized === "ok") return t("dash.status.state.ok");
-    if (normalized === "warn") return t("dash.status.state.warn");
-    if (normalized === "fail" || normalized === "error") return t("dash.status.state.fail");
-    if (normalized === "skipped" || normalized === "empty") return t("dash.status.state.skipped");
+    if (["notice", "info", "informational", "deferred", "pending", "delayed", "waiting"].includes(normalized)) return t("dash.status.state.notice");
+    if (["warn", "warning", "degraded", "partial", "fallback", "ambiguous"].includes(normalized)) return t("dash.status.state.warn");
+    if (["fail", "error", "failed", "incompatible"].includes(normalized)) return t("dash.status.state.fail");
+    if (["skipped", "empty", "not_applicable"].includes(normalized)) return t("dash.status.state.skipped");
     if (normalized === "off") return t("dash.status.state.off");
-    if (normalized === "running") return t("dash.status.state.running");
+    if (normalized === "running" || normalized === "watching") return t("dash.status.state.running");
     if (normalized === "queued") return t("dash.status.state.queued");
     if (normalized === "idle") return t("dash.status.state.idle");
     if (normalized === "unknown") return t("dash.status.state.unknown");
@@ -46444,6 +46455,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         rollbackBlockedUnverified: "삭제인지 숨김인지 확실하지 않아 DB 정리 보류",
         historyTrimProtected: "화면 기록이 짧아졌지만 /cut일 수 있어 DB 유지",
         pendingSync: "방금 저장한 턴 동기화 대기",
+        postOutputPending: "후처리 최종문 반영 대기",
+        beforeRequestRecovered: "활성 채팅에서 요청 기록을 복구함",
+        forkCopyObserved: "채팅 복사 경로 감지",
+        legacyQueueItemRemoved: "이전 형식의 대기 항목 정리",
+        activeChatRebuildQueued: "활성 채팅 복구 작업이 대기열에 들어감",
         noTrackedTurn: "삭제 추적 기준 없음",
         noCompletedPairs: "완료된 새 턴 없음",
         noMissingBackfill: "누락 없음",
@@ -46474,6 +46490,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         rollbackBlockedUnverified: "DB cleanup paused until deletion is confirmed",
         historyTrimProtected: "Chat history is shorter; DB kept in case this was /cut",
         pendingSync: "Waiting for the latest saved turn to sync",
+        postOutputPending: "Waiting to apply the final post-processed response",
+        beforeRequestRecovered: "Request history recovered from the active chat",
+        forkCopyObserved: "Chat copy path detected",
+        legacyQueueItemRemoved: "Legacy queue item removed",
+        activeChatRebuildQueued: "Active-chat rebuild work queued",
         noTrackedTurn: "No deletion anchor yet",
         noCompletedPairs: "No completed new turn",
         noMissingBackfill: "Nothing missing",
@@ -46504,6 +46525,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         rollbackBlockedUnverified: "削除確認待ちのためDB整理を保留",
         historyTrimProtected: "履歴が短いため /cut の可能性としてDBを保持",
         pendingSync: "保存済みターンの同期待ち",
+        postOutputPending: "後処理された最終応答の反映を待機中",
+        beforeRequestRecovered: "アクティブチャットからリクエスト履歴を復元",
+        forkCopyObserved: "チャットのコピー経路を検出",
+        legacyQueueItemRemoved: "旧形式のキュー項目を整理",
+        activeChatRebuildQueued: "アクティブチャットの復旧処理をキューに登録",
         noTrackedTurn: "削除追跡の基準なし",
         noCompletedPairs: "完了した新規ターンなし",
         noMissingBackfill: "欠落なし",
@@ -48151,6 +48177,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const status = String((state && state.status) || "idle").toLowerCase();
     if (status === "fail" || status === "error") return "mo-dash-card has-fail";
     if (status === "warn") return "mo-dash-card has-warn";
+    if (status === "notice") return "mo-dash-card has-notice";
     return "mo-dash-card";
   }
 
@@ -48331,6 +48358,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const parts = [];
       if (summary && Number(summary.fail) > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-fail">✕ ' + Number(summary.fail) + '</span>');
       if (summary && Number(summary.warn) > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-warn">⚠ ' + Number(summary.warn) + '</span>');
+      if (summary && Number(summary.notice) > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-notice">ⓘ ' + Number(summary.notice) + '</span>');
       if (summary && Number(summary.ok) > 0) parts.push('<span class="mo-dash-chip mo-dash-chip-ok">✓ ' + Number(summary.ok) + '</span>');
       return parts.join("");
     }
@@ -48349,9 +48377,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
     return vm.cards.map(function(card) {
       const severity = String(card && card.severity || "unknown");
-      const cls = severity === "fail" ? "mo-dash-card has-fail" : severity === "warn" ? "mo-dash-card has-warn" : "mo-dash-card";
+      const cls = severity === "fail" ? "mo-dash-card has-fail" : severity === "warn" ? "mo-dash-card has-warn" : severity === "notice" ? "mo-dash-card has-notice" : "mo-dash-card";
       const chips = Array.isArray(card && card.chips) ? card.chips.map(function(chip) {
-        const tone = /^(ok|warn|fail|num)$/.test(String(chip && chip.tone || "")) ? String(chip.tone) : "num";
+        const tone = /^(ok|notice|warn|fail|num)$/.test(String(chip && chip.tone || "")) ? String(chip.tone) : "num";
         return '<span class="mo-dash-chip mo-dash-chip-' + tone + '">' + escapeAttr(dashboardViewModelText(chip && chip.label)) + '</span>';
       }).join("") : "";
       const rows = Array.isArray(card && card.rows) ? card.rows.map(renderRow).join("") : "";
@@ -48367,9 +48395,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if (!s || !s.enabled) return '<span class="mo-hdr-health-badge mo-hdr-health-badge-fail">OFF</span>';
     if (!vm || !vm.summary) return '<div class="mo-hdr-health"><span class="mo-hdr-health-badge mo-hdr-health-badge-warn">Dashboard unavailable</span></div>';
     const parts = [];
+    const noticeCount = Number(vm.summary.notice || 0);
     if (Number(vm.summary.fail) > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-fail">✕ ' + Number(vm.summary.fail) + ' FAIL</span>');
     if (Number(vm.summary.warn) > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-warn">⚠ ' + Number(vm.summary.warn) + ' WARN</span>');
-    if (Number(vm.summary.fail) === 0 && Number(vm.summary.warn) === 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-ok">✓ ' + escapeAttr(t("header.health.allOk")) + '</span>');
+    if (noticeCount > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-notice">ⓘ ' + noticeCount + ' ' + escapeAttr(t("dash.status.state.notice")) + '</span>');
+    if (Number(vm.summary.fail) === 0 && Number(vm.summary.warn) === 0 && noticeCount === 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-ok">✓ ' + escapeAttr(t("header.health.allOk")) + '</span>');
     return '<div class="mo-hdr-health">' + parts.join("") + '</div>';
   }
 

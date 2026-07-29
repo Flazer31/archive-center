@@ -56,8 +56,11 @@ func TestBuildDashboardViewModelOwnsStatusAndLaneCalculation(t *testing.T) {
 		t.Fatalf("first-turn engine row=%+v", got)
 	}
 	saveQueue := requireDashboardCard(t, vm, "save_queue")
-	if got := requireDashboardRow(t, saveQueue, "retryQueue"); got.Status != "warn" || got.Detail != "2 pending" {
+	if got := requireDashboardRow(t, saveQueue, "retryQueue"); got.Status != "notice" || got.Detail != "2 pending" {
 		t.Fatalf("retry row=%+v", got)
+	}
+	if saveQueue.Summary.Notice != 1 || saveQueue.Summary.Warn != 0 {
+		t.Fatalf("retry queue must be advisory, summary=%+v", saveQueue.Summary)
 	}
 	persistence := requireDashboardCard(t, vm, "persistence_lanes")
 	for _, label := range []string{"rawSave", "derived", "vectorUpsert"} {
@@ -102,7 +105,7 @@ func TestDashboardViewModelRouteStableSourceLaneSeverity(t *testing.T) {
 		{status: "empty", severity: "neutral"},
 		{status: "not_applicable", severity: "neutral"},
 		{status: "degraded", severity: "warn"},
-		{status: "deferred", severity: "warn"},
+		{status: "deferred", severity: "notice"},
 		{status: "failed", severity: "fail"},
 		{status: "incompatible", severity: "fail"},
 	}
@@ -160,6 +163,10 @@ func TestDashboardViewModelRouteStableSourceLaneSeverity(t *testing.T) {
 				if engine.Summary.Warn == 0 || viewModel.Summary.Warn == 0 {
 					t.Fatalf("%s must warn both card and global summary: card=%+v global=%+v", test.status, engine.Summary, viewModel.Summary)
 				}
+			case "notice":
+				if engine.Summary.Notice == 0 || viewModel.Summary.Notice == 0 || engine.Summary.Fail != 0 || engine.Summary.Warn != 0 {
+					t.Fatalf("%s must be advisory: card=%+v global=%+v", test.status, engine.Summary, viewModel.Summary)
+				}
 			case "neutral":
 				if engine.Summary.Neutral == 0 || viewModel.Summary.Neutral == 0 || engine.Summary.Fail != 0 || engine.Summary.Warn != 0 {
 					t.Fatalf("%s must remain neutral: card=%+v global=%+v", test.status, engine.Summary, viewModel.Summary)
@@ -170,6 +177,113 @@ func TestDashboardViewModelRouteStableSourceLaneSeverity(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
+	req := dashboardViewModelRequest{
+		PluginEnabled:            true,
+		PrepareTurnEverContacted: true,
+		FailedQueueDepth:         3,
+		GuideModeState:           map[string]any{"status": "ok"},
+		RuntimeState: map[string]any{
+			"prepareTurnStatus": map[string]any{
+				"status": "ok",
+				"backendTiming": map[string]any{
+					"total_ms":      12500,
+					"slowest_ms":    12000,
+					"slowest_stage": "vector_recall",
+				},
+			},
+			"lastSaveStatus": map[string]any{
+				"status": "warn",
+				"detail": "waiting for RisuAI active chat confirmation",
+			},
+			"lastCompleteStatus": map[string]any{"status": "ok"},
+			"queuePersistence": map[string]any{
+				"lastLoad": map[string]any{"status": "ok"},
+				"lastSave": map[string]any{"status": "ok"},
+			},
+			"lastAutoRollback": map[string]any{
+				"status": "warn",
+				"detail": "active chat tail is shorter than backend; possible /cut",
+			},
+			"lastStreamingAfterRequest": map[string]any{
+				"status": "warn",
+				"detail": "native afterRequest missing; recovered from active chat",
+			},
+			"lastRisuForkCopyCapture": map[string]any{
+				"status": "warn",
+				"detail": "observed source-session -> target-session",
+			},
+		},
+	}
+
+	vm := buildDashboardViewModel(req)
+	if vm.Summary.Warn != 0 || vm.Summary.Fail != 0 {
+		t.Fatalf("advisory runtime states must not raise warning/failure counts: %+v", vm.Summary)
+	}
+	if vm.Summary.Notice < 5 {
+		t.Fatalf("expected advisory states in summary, got %+v", vm.Summary)
+	}
+
+	saveQueue := requireDashboardCard(t, vm, "save_queue")
+	if got := requireDashboardRow(t, saveQueue, "save"); got.Status != "notice" || got.DetailCode != "pendingSync" {
+		t.Fatalf("active-chat confirmation wait=%+v", got)
+	}
+	if got := requireDashboardRow(t, saveQueue, "retryQueue"); got.Status != "notice" {
+		t.Fatalf("retry queue=%+v", got)
+	}
+
+	activity := requireDashboardCard(t, vm, "activity")
+	if got := requireDashboardRow(t, activity, "autoRollback"); got.Status != "notice" || got.DetailCode != "historyTrimProtected" {
+		t.Fatalf("protected history trim=%+v", got)
+	}
+	if got := requireDashboardRow(t, activity, "streamingHook"); got.Status != "ok" || got.DetailCode != "streamingRecovered" {
+		t.Fatalf("successful streaming recovery=%+v", got)
+	}
+	if got := requireDashboardRow(t, activity, "forkCopyCapture"); got.Status != "notice" || got.DetailCode != "forkCopyObserved" {
+		t.Fatalf("fork copy observation=%+v", got)
+	}
+
+	timing := requireDashboardCard(t, vm, "backend_timing")
+	if got := requireDashboardRow(t, timing, "prepareTiming"); got.Status != "notice" {
+		t.Fatalf("slow timing must be informational, got %+v", got)
+	}
+}
+
+func TestDashboardLaneStatusSeparatesQueuedWorkFromDegradation(t *testing.T) {
+	tests := []struct {
+		status string
+		want   string
+	}{
+		{status: "queued", want: "notice"},
+		{status: "pending", want: "notice"},
+		{status: "delayed", want: "notice"},
+		{status: "partial", want: "warn"},
+		{status: "degraded", want: "warn"},
+		{status: "fallback", want: "warn"},
+		{status: "missing_suspected", want: "warn"},
+		{status: "failed", want: "fail"},
+	}
+	for _, test := range tests {
+		t.Run(test.status, func(t *testing.T) {
+			if got := dashboardLaneStatus(test.status, 0); got != test.want {
+				t.Fatalf("dashboardLaneStatus(%q)=%q, want %q", test.status, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDashboardRealWarningsRemainWarnings(t *testing.T) {
+	for _, detail := range []string{
+		"complete-turn accepted; critic_extract_failed",
+		"rollback partial warning (turn 7): vector cleanup failed",
+		"timeout waiting for native afterRequest/active assistant",
+	} {
+		if got := normalizeDashboardStatus("warn", detail); got != "warn" {
+			t.Fatalf("real warning %q normalized to %q", detail, got)
+		}
 	}
 }
 

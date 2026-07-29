@@ -256,6 +256,87 @@ func extractArchiveCenterJSFunction(t *testing.T, src, name string) string {
 	return strings.TrimSpace(src[start:end])
 }
 
+func TestDashboardNoticeTierRendersBelowWarningRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for dashboard notice runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`.mo-dot-notice{background:#8fa7ff}`,
+		`.mo-dash-card.has-notice`,
+		`.mo-dash-chip-notice`,
+		`.mo-hdr-health-badge-notice`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("dashboard notice style missing %q", marker)
+		}
+	}
+	script := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "statusDotClass"),
+		extractArchiveCenterJSFunction(t, src, "runtimeStatusLabel"),
+		extractArchiveCenterJSFunction(t, src, "renderDashboardViewModel"),
+		extractArchiveCenterJSFunction(t, src, "renderDashboardViewModelHeader"),
+	}, "\n") + `
+const labels = {
+  "dash.status.state.ok": "정상",
+  "dash.status.state.notice": "알림",
+  "dash.status.state.warn": "경고",
+  "dash.status.state.fail": "실패",
+  "dash.status.state.skipped": "건너뜀",
+  "dash.status.state.off": "꺼짐",
+  "dash.status.state.running": "실행 중",
+  "dash.status.state.queued": "대기열",
+  "dash.status.state.idle": "유휴",
+  "dash.status.state.unknown": "미확인",
+  "header.health.allOk": "모두 정상",
+};
+function t(key) { return labels[key] || key; }
+function escapeAttr(value) { return String(value == null ? "" : value); }
+function dashboardSimpleText(key) { return key; }
+function dashboardViewModelLabel(key) { return key; }
+function dashboardViewModelText(value) { return String(value == null ? "" : value); }
+function formatAuxiliaryPlacementTrace() { return ""; }
+function formatDashboardTimestampLocal() { return ""; }
+
+const vm = {
+  status: "ok",
+  summary: {ok: 1, notice: 2, warn: 0, fail: 0},
+  cards: [
+    {title: "Advisory", severity: "notice", summary: {notice: 1}, rows: [{label_key: "save", status: "notice", detail: "waiting"}]},
+    {title: "Queued", severity: "notice", summary: {notice: 1}, chips: [{tone: "notice", label: "queued"}], rows: []},
+  ],
+};
+const html = renderDashboardViewModel(vm, {});
+if (!html.includes("has-notice") || !html.includes("mo-dash-chip-notice") || !html.includes("mo-dot-notice")) {
+  throw new Error("notice card did not render with advisory styles: " + html);
+}
+const header = renderDashboardViewModelHeader(vm, {enabled: true});
+if (!header.includes("mo-hdr-health-badge-notice") || !header.includes("알림") || header.includes("모두 정상")) {
+  throw new Error("notice summary was hidden or reported all-ok: " + header);
+}
+const legacyHeader = renderDashboardViewModelHeader({summary: {ok: 2, warn: 0, fail: 0}}, {enabled: true});
+if (!legacyHeader.includes("모두 정상")) {
+  throw new Error("legacy ViewModel without notice count lost all-ok state: " + legacyHeader);
+}
+if (statusDotClass("deferred") !== "mo-dot-notice" || statusDotClass("degraded") !== "mo-dot-warn") {
+  throw new Error("notice/warning dot classification regressed");
+}
+if (runtimeStatusLabel("deferred") !== "알림" || runtimeStatusLabel("degraded") !== "경고") {
+  throw new Error("notice/warning labels regressed");
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("dashboard notice JS fixture failed: %v\n%s", err, output)
+	}
+}
+
 func TestPrepareTurnEmptyObservationProductionJSAndGoRoute(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {

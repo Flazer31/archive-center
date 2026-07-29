@@ -40,6 +40,7 @@ type dashboardViewModel struct {
 type dashboardCounts struct {
 	OK      int `json:"ok"`
 	Neutral int `json:"neutral"`
+	Notice  int `json:"notice"`
 	Warn    int `json:"warn"`
 	Fail    int `json:"fail"`
 	Unknown int `json:"unknown"`
@@ -205,7 +206,7 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 	}
 	retryStatus, retryDetail := "ok", "empty"
 	if req.FailedQueueDepth > 0 {
-		retryStatus, retryDetail = "warn", strconv.Itoa(req.FailedQueueDepth)+" pending"
+		retryStatus, retryDetail = "notice", strconv.Itoa(req.FailedQueueDepth)+" pending"
 	}
 	cards = append(cards, newDashboardCard("save_queue", "💾", "Save / Queue", []dashboardRow{
 		dashboardRowFromState("injection", firstTurnState(state("lastInjectionStatus"))),
@@ -248,6 +249,7 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 	for _, card := range cards {
 		summary.OK += card.Summary.OK
 		summary.Neutral += card.Summary.Neutral
+		summary.Notice += card.Summary.Notice
 		summary.Warn += card.Summary.Warn
 		summary.Fail += card.Summary.Fail
 		summary.Unknown += card.Summary.Unknown
@@ -349,6 +351,8 @@ func buildCompleteTurnDashboardCard(complete map[string]any) dashboardCard {
 		card.Summary.OK = 1
 	case "neutral":
 		card.Summary.Neutral = 1
+	case "notice":
+		card.Summary.Notice = 1
 	case "warn":
 		card.Summary.Warn = 1
 	case "fail":
@@ -429,7 +433,7 @@ func buildDashboardTimingRows(prepare, complete map[string]any) []dashboardRow {
 		}
 		status := "ok"
 		if slowest >= 10000 {
-			status = "warn"
+			status = "notice"
 		}
 		rows = append(rows, dashboardRow{LabelKey: item.label, Status: status, Detail: strings.Join(parts, " / ")})
 	}
@@ -444,6 +448,8 @@ func newDashboardCard(id, icon, title string, rows []dashboardRow) dashboardCard
 			counts.Fail++
 		case "warn":
 			counts.Warn++
+		case "notice":
+			counts.Notice++
 		case "ok":
 			counts.OK++
 		case "neutral":
@@ -457,6 +463,8 @@ func newDashboardCard(id, icon, title string, rows []dashboardRow) dashboardCard
 		severity = "fail"
 	} else if counts.Warn > 0 {
 		severity = "warn"
+	} else if counts.Notice > 0 {
+		severity = "notice"
 	} else if counts.OK == 0 && counts.Neutral > 0 {
 		severity = "neutral"
 	} else if counts.OK == 0 {
@@ -468,6 +476,10 @@ func newDashboardCard(id, icon, title string, rows []dashboardRow) dashboardCard
 func dashboardRowFromState(label string, input map[string]any) dashboardRow {
 	status := normalizeDashboardStatus(dashboardStatus(input), input["detail"])
 	code, detail := classifyDashboardDetail(input["detail"])
+	if label == "forkCopyCapture" && status == "warn" && strings.HasPrefix(strings.ToLower(detail), "observed ") {
+		status = "notice"
+		code = "forkCopyObserved"
+	}
 	return dashboardRow{LabelKey: label, Status: status, DetailCode: code, Detail: detail, Time: dashboardString(input["time"]), TurnIndex: input["turnIndex"], ItemCount: firstNonNil(input["itemCount"], input["count"]), Placement: input["placement"]}
 }
 
@@ -479,13 +491,17 @@ var dashboardDetailPatterns = []struct {
 	{"existingAccepted", regexp.MustCompile(`(?i)accepted \(existing pair\)`)},
 	{"supervisorOkByTurn", regexp.MustCompile(`(?i)health test not run\s*/\s*turn call ok`)},
 	{"firstTurnLight", regexp.MustCompile(`(?i)first turn light mode`)},
-	{"streamingWaitFinal", regexp.MustCompile(`(?i)native non-persistable fragment ignored|waiting final output`)},
+	{"streamingWaitFinal", regexp.MustCompile(`(?i)native non-persistable fragment ignored|waiting final output|fragment_skipped_waiting_final`)},
 	{"streamingRecovered", regexp.MustCompile(`(?i)native afterRequest missing; recovered from active chat`)},
 	{"streamingTimeout", regexp.MustCompile(`(?i)timeout waiting for native afterRequest/active assistant`)},
 	{"deletedTurnSynced", regexp.MustCompile(`(?i)(active_chat_tail_missing_from_runtime|assistant_deleted_output_removed).*(rolled back|rollback)|(rolled back|rollback).*(active_chat_tail_missing_from_runtime|assistant_deleted_output_removed)`)},
 	{"rollbackBlockedUnverified", regexp.MustCompile(`(?i)unverified rollback signal blocked`)},
 	{"historyTrimProtected", regexp.MustCompile(`(?i)active chat tail is shorter than backend|history trim/cut protected|possible /cut`)},
-	{"pendingSync", regexp.MustCompile(`(?i)recent_completed_turn_waiting_active_chat_sync`)},
+	{"pendingSync", regexp.MustCompile(`(?i)recent_completed_turn_waiting_active_chat_sync|waiting for RisuAI active chat confirmation|waiting_for_risuai_active_chat|source_acceptance_waiting_active_chat`)},
+	{"postOutputPending", regexp.MustCompile(`(?i)후처리 최종문 (반영|재저장) 대기|post_output_final_(replacement_)?pending`)},
+	{"beforeRequestRecovered", regexp.MustCompile(`(?i)before_request_payload_(unusable_messages|no_messages)_recovered:`)},
+	{"legacyQueueItemRemoved", regexp.MustCompile(`(?i)legacy_startup_message_write_removed`)},
+	{"activeChatRebuildQueued", regexp.MustCompile(`(?i)recent active chat rebuild .* queued`)},
 	{"noTrackedTurn", regexp.MustCompile(`(?i)no_tracked_turn_index`)},
 	{"noCompletedPairs", regexp.MustCompile(`(?i)no_completed_pairs`)},
 	{"noMissingBackfill", regexp.MustCompile(`(?i)active chat backfill 0 saved / 1 existing`)},
@@ -508,10 +524,12 @@ func normalizeDashboardStatus(status string, detail any) string {
 	status = dashboardFirstNonEmpty(strings.ToLower(status), "unknown")
 	code, _ := classifyDashboardDetail(detail)
 	switch code {
-	case "duplicateExisting", "existingAccepted", "supervisorOkByTurn", "noMissingBackfill", "queueOk":
+	case "duplicateExisting", "existingAccepted", "supervisorOkByTurn", "streamingRecovered", "noMissingBackfill", "queueOk":
 		return "ok"
 	case "streamingWaitFinal":
 		return "running"
+	case "historyTrimProtected", "pendingSync", "postOutputPending", "beforeRequestRecovered", "legacyQueueItemRemoved", "activeChatRebuildQueued":
+		return "notice"
 	}
 	return status
 }
@@ -524,9 +542,11 @@ func dashboardSeverity(status string) string {
 	switch strings.ToLower(status) {
 	case "ok", "eligible":
 		return "ok"
-	case "empty", "not_applicable":
+	case "empty", "not_applicable", "skipped", "off", "idle":
 		return "neutral"
-	case "warn", "degraded", "deferred":
+	case "notice", "info", "informational", "deferred", "queued", "pending", "delayed", "waiting", "running", "watching":
+		return "notice"
+	case "warn", "warning", "degraded", "partial", "fallback", "ambiguous":
 		return "warn"
 	case "fail", "error", "failed", "incompatible":
 		return "fail"
@@ -581,7 +601,10 @@ func dashboardLaneStatus(status string, fallback any) string {
 	if regexp.MustCompile(`^(skipped|not_called|not_configured|disabled|empty|none)$`).MatchString(status) {
 		return "skipped"
 	}
-	if regexp.MustCompile(`^(queued|pending|delayed|partial|degraded|fallback|missing_suspected|not_checked_no_raw)$`).MatchString(status) {
+	if regexp.MustCompile(`^(queued|pending|delayed)$`).MatchString(status) {
+		return "notice"
+	}
+	if regexp.MustCompile(`^(partial|degraded|fallback|missing_suspected|not_checked_no_raw)$`).MatchString(status) {
 		return "warn"
 	}
 	if regexp.MustCompile(`^(fail|failed|error|missing|lost|blocked)$`).MatchString(status) {
