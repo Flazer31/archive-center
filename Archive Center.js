@@ -1250,6 +1250,8 @@
       "turn_hud.notice.duplicate_suspected": "중복 값 의심",
       "turn_hud.notice.duplicate_existing_preserved": "이미 처리된 값과 겹쳐 새로 저장하지 않고 기존 값을 유지했습니다.",
       "turn_hud.notice.duplicate_conflict_preserved": "같은 턴에 서로 다른 값이 확인되어 새 값을 저장하지 않고 기존 값을 유지했습니다.",
+      "turn_hud.notice.ooc_recognized": "OOC 인식",
+      "turn_hud.notice.ooc_recognized_detail": "OOC 판정으로 입력 처리를 취소했습니다.",
       "turn_hud.error.logical_turn_replace_failed": "리롤 턴 교체에 실패했습니다.",
       "turn_hud.error.user_input_missing": "저장할 사용자 원문이 없습니다.",
       "turn_hud.error.raw_turn_persist_failed": "사용자·Assistant 원문 저장에 실패했습니다.",
@@ -2251,6 +2253,8 @@
       "turn_hud.notice.duplicate_suspected": "Possible duplicate",
       "turn_hud.notice.duplicate_existing_preserved": "This matched an already processed value, so the existing value was kept without saving another copy.",
       "turn_hud.notice.duplicate_conflict_preserved": "Different values were found for the same turn, so the existing value was kept and the new value was not saved.",
+      "turn_hud.notice.ooc_recognized": "OOC recognized",
+      "turn_hud.notice.ooc_recognized_detail": "Input processing was cancelled after the OOC decision.",
       "turn_hud.error.logical_turn_replace_failed": "Failed to replace the rerolled turn.",
       "turn_hud.error.user_input_missing": "The user source required for saving is missing.",
       "turn_hud.error.raw_turn_persist_failed": "Failed to save the user and Assistant source.",
@@ -3250,6 +3254,8 @@
       "turn_hud.notice.duplicate_suspected": "重複値の疑い",
       "turn_hud.notice.duplicate_existing_preserved": "処理済みの値と重複したため、新規保存せず既存値を維持しました。",
       "turn_hud.notice.duplicate_conflict_preserved": "同じターンに異なる値が確認されたため、新規保存せず既存値を維持しました。",
+      "turn_hud.notice.ooc_recognized": "OOCを認識",
+      "turn_hud.notice.ooc_recognized_detail": "OOC判定により入力処理をキャンセルしました。",
       "turn_hud.error.logical_turn_replace_failed": "再生成ターンの置換に失敗しました。",
       "turn_hud.error.user_input_missing": "保存するユーザー原文がありません。",
       "turn_hud.error.raw_turn_persist_failed": "ユーザー・Assistant原文の保存に失敗しました。",
@@ -12535,6 +12541,7 @@
   const TURN_WORKFLOW_HUD_SURFACE_SELECTOR = ".mo-turn-workflow-hud-root > div";
   const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;max-height:calc(100vh - 20px);border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#181C24;box-shadow:0 16px 40px rgba(0,0,0,.48);padding:8px;pointer-events:auto;font-size:10px;line-height:1.25;letter-spacing:-.01em;color:#F4F5F7;white-space:normal;overflow:auto;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-width:thin";
   const TURN_WORKFLOW_HUD_WARNING_STYLE = ";border-color:rgba(138,85,247,.35);background:#1C1828";
+  const TURN_WORKFLOW_HUD_ATTENTION_STYLE = ";border-color:rgba(245,196,81,.58);background:#262113;box-shadow:0 16px 40px rgba(0,0,0,.48),0 0 18px rgba(245,196,81,.10)";
   const TURN_WORKFLOW_HUD_ERROR_STYLE = ";border-color:rgba(225,88,166,.55);background:#2A151D;box-shadow:0 16px 40px rgba(0,0,0,.48),0 0 20px rgba(225,88,166,.10)";
   const TURN_WORKFLOW_HUD_EYEBROW_STYLE = "padding-right:20px;font-size:8px;font-weight:500;line-height:1.2;letter-spacing:.12em;color:#5C626D";
   const TURN_WORKFLOW_HUD_TITLE_STYLE = "margin-top:2px;padding-right:20px;font-size:11px;font-weight:500;line-height:1.25;letter-spacing:-.015em;color:#F4F5F7";
@@ -12807,6 +12814,7 @@
     const severity = String(view.severity || "info");
     if (String(view.display_mode || "") === "notice") {
       const failed = view.status === "failed" || severity === "error";
+      const attention = String(view.presentation_tone || "") === "attention";
       const titleKey = String(view.title_key || (failed ? "turn_hud.failed" : "turn_hud.completed"));
       const messageKey = String(view.message_key || (failed ? "turn_hud.error.complete_turn_aborted" : ""));
       const noticeCode = String(view.notice_code || (view.error && view.error.code) || "").trim();
@@ -12814,7 +12822,10 @@
       const meta = [turnWorkflowHUDTurnLabel(view), noticeCode].filter(Boolean).join(" · ");
       const noticeStyle = failed
         ? TURN_WORKFLOW_HUD_ERROR_STYLE
-        : (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "");
+        : (attention ? TURN_WORKFLOW_HUD_ATTENTION_STYLE : (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : ""));
+      const noticeTitleStyle = attention
+        ? TURN_WORKFLOW_HUD_TITLE_STYLE + ";color:#F5C451"
+        : TURN_WORKFLOW_HUD_TITLE_STYLE;
       return {
         terminal: true,
         closeButtonOnly: failed || severity === "warning",
@@ -12822,7 +12833,7 @@
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + noticeStyle}">`
           + turnWorkflowHUDDismissButtonHTML()
           + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t(titleKey))}</div>`
+          + `<div style="${noticeTitleStyle}">${escapeTurnWorkflowHUDHTML(t(titleKey))}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + (messageKey ? `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t(messageKey))}</div>` : "")
           + (meta ? `<div style="${failed ? TURN_WORKFLOW_HUD_ERROR_META_STYLE : TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>` : "")
@@ -13001,6 +13012,28 @@
     clearTurnWorkflowHUDTimer();
     renderTurnWorkflowHUD(view);
     return true;
+  }
+
+  function showTurnWorkflowHUDOOCRecognition(logicalTurn) {
+    if (!turnWorkflowHUDIsEnabled()) return false;
+    const activeRequestId = String(_turnWorkflowHUDActiveRequestId || "").trim();
+    const turn = Number(logicalTurn || 0);
+    return consumeTurnWorkflowHUDNotice({
+      contract_version: TURN_WORKFLOW_HUD_CONTRACT,
+      request_id: activeRequestId || `ooc-recognition:${Date.now()}`,
+      logical_turn: Number.isFinite(turn) && turn > 0 ? Math.trunc(turn) : 0,
+      revision: Math.max(1, Number(_turnWorkflowHUDLastRevision || 0) + 1),
+      status: "completed",
+      severity: "info",
+      display_mode: "notice",
+      title_key: "turn_hud.notice.ooc_recognized",
+      message_key: "turn_hud.notice.ooc_recognized_detail",
+      notice_code: "OOC_INPUT_CANCELLED",
+      presentation_tone: "attention",
+      stages: [],
+      counts: [],
+      warnings: [],
+    });
   }
 
   function stopTurnWorkflowHUDWatch(requestId, removeEmpty) {
@@ -35933,6 +35966,7 @@
           detail: "ooc_skipped",
           failReasons: ["ooc_turn"],
         });
+        showTurnWorkflowHUDOOCRecognition(peekNextTurnIndex(chatSessionId));
 
         debugLog("afterRequest: OOC turn → skip DB save/critic/episode/maintenance", skipPersist.source || "unknown");
         return responseReturnContent;
@@ -36041,6 +36075,7 @@
           detail: "ooc_skipped",
           failReasons: ["ooc_turn"],
         });
+        showTurnWorkflowHUDOOCRecognition(skippedTurnIdx);
         if (lastOrchResult && lastOrchResult._trace) {
           lastOrchResult._trace.userInputCapture = {
             status: "ooc_turn_blocked",
@@ -36572,6 +36607,9 @@
       const persistedTurnIdx = _ctResult && Number.isFinite(Number(_ctResult.turn_index)) && Number(_ctResult.turn_index) > 0
         ? Number(_ctResult.turn_index)
         : turnIdx;
+      if (effectiveTurnOocGuardApplied) {
+        showTurnWorkflowHUDOOCRecognition(persistedTurnIdx);
+      }
       const ctPipeline = _ctResult && _ctResult.persistence_pipeline && typeof _ctResult.persistence_pipeline === "object" ? _ctResult.persistence_pipeline : null;
       const ctRaw = ctPipeline && ctPipeline.raw && typeof ctPipeline.raw === "object" ? ctPipeline.raw : null;
       const ctDerived = ctPipeline && ctPipeline.derived && typeof ctPipeline.derived === "object" ? ctPipeline.derived : null;

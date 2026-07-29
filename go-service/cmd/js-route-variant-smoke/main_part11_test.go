@@ -500,6 +500,8 @@ const translations = {
   "turn_hud.failed": "실패",
   "turn_hud.tap_to_dismiss": "눌러서 닫기",
   "turn_hud.transport_unavailable": "전송 실패",
+  "turn_hud.notice.ooc_recognized": "OOC 인식",
+  "turn_hud.notice.ooc_recognized_detail": "OOC 판정으로 입력 처리를 취소했습니다.",
   "turn_hud.not_retryable": "재시도 불가",
   "turn_hud.retryable": "재시도 가능",
   "turn_hud.stage_ledger": "전체 작동 확인",
@@ -618,6 +620,25 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("height:3px") && surface.innerHTML.includes("width:42.9%"), "running HUD progress bar does not reflect the backend stage ordinal");
   await dismissTurnWorkflowHUD("running-b");
   await _turnWorkflowHUDRenderChain;
+
+  assert(consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"ooc-running",revision:1,
+    logical_turn:56,status:"awaiting_final_output",severity:"info",
+    current_stage:{ordinal:6,total:12,label_key:"turn_hud.stage.awaiting_final_output",llm_call:false,status:"running"}
+  }), "OOC fixture running HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML.includes("6/12"), "OOC fixture did not begin from the awaiting-response stage");
+  assert(showTurnWorkflowHUDOOCRecognition(56), "existing OOC decision was not accepted by the HUD notice path");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML.includes("OOC 인식"), "OOC decision did not replace the awaiting-response title");
+  assert(surface.innerHTML.includes("OOC 판정으로 입력 처리를 취소했습니다."), "OOC cancellation detail was not rendered");
+  assert(surface.card.attributes.style.includes("rgba(245,196,81,.58)"), "OOC notice did not use the yellow attention accent");
+  assert(surface.innerHTML.includes("color:#F5C451"), "OOC notice title did not use the yellow attention color");
+  assert(_turnWorkflowHUDWatchRunning === false, "OOC notice left the workflow status watcher running");
+  assert(surface.card && typeof surface.card.listeners.click === "function", "OOC informational notice lost normal card dismissal");
+  await surface.card.listeners.click({type:"click"});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "OOC informational notice did not dismiss");
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"failed-c",revision:1,

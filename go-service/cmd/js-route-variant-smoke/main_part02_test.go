@@ -757,6 +757,10 @@ func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
 		`if (prevTurnWorkflowHUDEnabled && settings.turnWorkflowHUDEnabled === false)`,
 		`function turnWorkflowHUDIsEnabled()`,
 		`if (!turnWorkflowHUDIsEnabled())`,
+		`function showTurnWorkflowHUDOOCRecognition(logicalTurn)`,
+		`presentation_tone: "attention"`,
+		`showTurnWorkflowHUDOOCRecognition(skippedTurnIdx)`,
+		`showTurnWorkflowHUDOOCRecognition(persistedTurnIdx)`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
