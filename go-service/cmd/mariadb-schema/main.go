@@ -23,18 +23,23 @@ import (
 )
 
 type schemaReport struct {
-	Status                     string   `json:"status"`
-	SchemaPath                 string   `json:"schema_path"`
-	Executed                   bool     `json:"executed"`
-	GeneratedAt                string   `json:"generated_at"`
-	StatementsTotal            int      `json:"statements_total"`
-	StatementsRun              int      `json:"statements_run"`
-	CompatibilityStatementsRun int      `json:"compatibility_statements_run,omitempty"`
-	ManagedBootstrap           bool     `json:"managed_bootstrap,omitempty"`
-	VerifiedDataDir            string   `json:"verified_datadir,omitempty"`
-	ManagedAccountVerified     bool     `json:"managed_account_verified,omitempty"`
-	ErrorCode                  string   `json:"error_code,omitempty"`
-	Errors                     []string `json:"errors,omitempty"`
+	Status                     string                             `json:"status"`
+	SchemaPath                 string                             `json:"schema_path"`
+	Executed                   bool                               `json:"executed"`
+	GeneratedAt                string                             `json:"generated_at"`
+	StatementsTotal            int                                `json:"statements_total"`
+	StatementsRun              int                                `json:"statements_run"`
+	CompatibilityStatementsRun int                                `json:"compatibility_statements_run,omitempty"`
+	ManagedBootstrap           bool                               `json:"managed_bootstrap,omitempty"`
+	VerifiedDataDir            string                             `json:"verified_datadir,omitempty"`
+	ManagedAccountVerified     bool                               `json:"managed_account_verified,omitempty"`
+	AppAccountProbeRequested   bool                               `json:"app_account_probe_requested,omitempty"`
+	AppAccountProbes           []*appAccountPermissionProbeReport `json:"app_account_probes,omitempty"`
+	ErrorCode                  string                             `json:"error_code,omitempty"`
+	ErrorClass                 string                             `json:"error_class,omitempty"`
+	ErrorStage                 string                             `json:"error_stage,omitempty"`
+	ErrorOperation             string                             `json:"error_operation,omitempty"`
+	Errors                     []string                           `json:"errors,omitempty"`
 }
 
 type sqlExecer interface {
@@ -95,6 +100,7 @@ func main() {
 	managedHost := flag.String("managed-host", "127.0.0.1", "Host for the package-managed local MariaDB instance.")
 	managedPort := flag.Int("managed-port", 3307, "Port for the package-managed local MariaDB instance.")
 	expectedDataDir := flag.String("expected-datadir", "", "Expected package-managed MariaDB data directory.")
+	appAccountProbe := flag.Bool("app-account-probe", false, "Before schema apply, explicitly verify local non-root application-account CRUD and DDL permissions with a temporary table.")
 	flag.Parse()
 	executeRequested := *execute || executeArgPresent(os.Args[1:])
 
@@ -112,7 +118,7 @@ func main() {
 		Host:            *managedHost,
 		Port:            *managedPort,
 		ExpectedDataDir: *expectedDataDir,
-	})
+	}, *appAccountProbe)
 	writeReport(report, *outPath)
 	os.Exit(exitCode)
 }
@@ -172,12 +178,13 @@ func newReport(schemaPath string, executed bool) *schemaReport {
 }
 
 func run(schemaPath, dsn string, execute bool, timeout time.Duration) (*schemaReport, int) {
-	return runWithOptions(schemaPath, dsn, execute, timeout, managedBootstrapConfig{})
+	return runWithOptions(schemaPath, dsn, execute, timeout, managedBootstrapConfig{}, false)
 }
 
-func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration, managed managedBootstrapConfig) (*schemaReport, int) {
+func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration, managed managedBootstrapConfig, appAccountProbe bool) (*schemaReport, int) {
 	report := newReport(schemaPath, execute)
 	report.ManagedBootstrap = managed.Enabled
+	report.AppAccountProbeRequested = appAccountProbe
 	statements, err := loadStatements(schemaPath)
 	if err != nil {
 		report.Status = "failed"
@@ -195,6 +202,16 @@ func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration,
 		report.Status = "failed"
 		report.Errors = append(report.Errors, "missing DSN: provide --dsn or AC_MARIADB_DSN")
 		return report, 2
+	}
+	var appAccountTargets []localAppAccountProbeTarget
+	if appAccountProbe {
+		appAccountTargets, err = localAppAccountProbeTargets(dsn)
+		if err != nil {
+			report.Status = "failed"
+			report.ErrorCode = "mariadb_app_account_probe_invalid_target"
+			report.Errors = append(report.Errors, err.Error())
+			return report, 2
+		}
 	}
 
 	db, err := sql.Open("mysql", dsn)
@@ -220,6 +237,35 @@ func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration,
 		report.ManagedAccountVerified = true
 	}
 
+	if appAccountProbe {
+		var firstProbeError error
+		for _, target := range appAccountTargets {
+			probeDB, openErr := sql.Open("mysql", target.dsn)
+			if openErr != nil {
+				probeReport := newAppAccountPermissionProbeReport("")
+				probeReport.TargetHost = target.host
+				probeReport.Status = "failed"
+				probeReport.CleanupStatus = "not_created"
+				probeReport.Stages = append(probeReport.Stages, failedAppAccountProbeStage("connect", "OPEN", openErr))
+				report.AppAccountProbes = append(report.AppAccountProbes, probeReport)
+				if firstProbeError == nil {
+					firstProbeError = &appAccountPermissionProbeError{Stage: "connect", Operation: "OPEN", Err: openErr}
+				}
+				continue
+			}
+			probeReport, probeErr := runAppAccountPermissionProbe(ctx, probeDB, "")
+			probeReport.TargetHost = target.host
+			report.AppAccountProbes = append(report.AppAccountProbes, probeReport)
+			_ = probeDB.Close()
+			if probeErr != nil && firstProbeError == nil {
+				firstProbeError = probeErr
+			}
+		}
+		if firstProbeError != nil {
+			recordAppAccountProbeFailure(report, firstProbeError)
+			return report, 1
+		}
+	}
 	if err := applyStatements(ctx, db, statements, report); err != nil {
 		report.Status = "failed"
 		report.Errors = append(report.Errors, err.Error())
@@ -231,6 +277,18 @@ func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration,
 		return report, 1
 	}
 	return report, 0
+}
+
+func recordAppAccountProbeFailure(report *schemaReport, err error) {
+	report.Status = "failed"
+	report.ErrorCode = "mariadb_app_account_probe_failed"
+	report.ErrorClass = appAccountProbeErrorClass(err)
+	var typed *appAccountPermissionProbeError
+	if errors.As(err, &typed) {
+		report.ErrorStage = typed.Stage
+		report.ErrorOperation = typed.Operation
+	}
+	report.Errors = append(report.Errors, err.Error())
 }
 
 func runManagedBootstrap(ctx context.Context, cfg managedBootstrapConfig) (string, error) {

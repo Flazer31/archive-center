@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -473,6 +474,11 @@ func TestSessionMigrateCompleteCopiesOnlyAfterEmptyTargetPreview(t *testing.T) {
 	if !resp.ChromaReindexRequired || resp.ReadyForLive {
 		t.Fatalf("complete should remain pending Chroma reindex: %+v", resp)
 	}
+	if !resp.ReleaseBlocked || resp.ManifestParityVerified || resp.ManifestExecutorComplete ||
+		resp.ManifestVersion != store.SessionMigrationManifestVersion || resp.ManifestDirectTables != 46 ||
+		!sessionMigrationContainsString(resp.ReleaseBlockers, store.SessionMigrationManifestParityUnverifiedReason) {
+		t.Fatalf("complete response did not disclose incomplete manifest/parity gate: %+v", resp)
+	}
 }
 
 func TestSessionMigrateCompleteCopyKeepSourcePassesMode(t *testing.T) {
@@ -580,7 +586,10 @@ func TestSessionMigrateReindexUpsertsTargetVectorsAndMarksLedger(t *testing.T) {
 	vec := &sessionMigrationPreviewVector{counts: map[string]int{targetID: 0}}
 	resp := performSessionMigrationReindex(t, st, vec, map[string]any{"migration_id": float64(42)})
 
-	if resp.Blocked || resp.VerificationStatus != "verified" || !resp.ReadyForSourceLock || resp.ReadyForLive {
+	if !resp.Blocked || resp.VerificationStatus != "vector_verified_manifest_blocked" ||
+		resp.ReadyForSourceLock || resp.ReadyForLive || resp.ManifestParityVerified ||
+		resp.ManifestVersion != store.SessionMigrationManifestVersion ||
+		!sessionMigrationContainsString(resp.BlockedReasons, store.SessionMigrationManifestParityUnverifiedReason) {
 		t.Fatalf("unexpected reindex response: %+v", resp)
 	}
 	if !vec.upsertCalled || vec.upsertSessionID != targetID || len(vec.upsertDocs) != 2 {
@@ -589,7 +598,8 @@ func TestSessionMigrateReindexUpsertsTargetVectorsAndMarksLedger(t *testing.T) {
 	if vec.upsertDocs[0].MigrationID != 42 || vec.upsertDocs[0].MigratedFromSessionID != sourceID {
 		t.Fatalf("migration metadata missing from vector doc: %+v", vec.upsertDocs[0])
 	}
-	if !st.vectorStatusCalled || st.vectorStatus != "vector_reindexed" || st.vectorStatusCount != 2 || st.vectorStatusErrors != "[]" {
+	if !st.vectorStatusCalled || st.vectorStatus != "vector_reindex_unverified" || st.vectorStatusCount != 2 ||
+		!strings.Contains(st.vectorStatusErrors, store.SessionMigrationManifestParityUnverifiedReason) {
 		t.Fatalf("ledger update mismatch: called=%v status=%q count=%d errors=%q", st.vectorStatusCalled, st.vectorStatus, st.vectorStatusCount, st.vectorStatusErrors)
 	}
 	if resp.Candidates != 3 || resp.Upserted != 2 || resp.Skipped != 1 {

@@ -1,5 +1,10 @@
 param(
-    [string]$PackageRoot = ""
+    [string]$PackageRoot = "",
+    [string]$CompatibilityBridgeZip = "",
+    [string]$UpdateZip = "",
+    [string]$HistoricalV300PackageZip = "",
+    [string]$HistoricalV301PackageZip = "",
+    [string]$HistoricalV350PackageZip = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -217,6 +222,108 @@ function Assert-BackupCleaned([string]$Root, [string]$BackupDir) {
     }
 }
 
+function Set-InterruptedApplyState([object]$Scenario) {
+    $backupRelative = "backups/interrupted/Archive Center.js"
+    $backupPath = Join-Path $Scenario.Root (".updates\" + $backupRelative.Replace('/', '\'))
+    Copy-Bytes (Join-Path $Scenario.Root "Archive Center.js") $backupPath
+    Write-Utf8NoBom (Join-Path $Scenario.Root "Archive Center.js") "partially-applied-crash`n"
+    $state = [ordered]@{
+        contract_version = "archive-center.update-state.v1"
+        status = "applying"
+        current_version = "e2e-baseline-$($Scenario.Name)"
+        target_version = "e2e-candidate-$($Scenario.Name)"
+        runner_path = ".updates/runner/archive-center-updater-e2e.exe"
+        runner_sha256 = Get-LowerSHA256 $Scenario.Runner
+        backup_dir = "backups/interrupted"
+        journal = @(
+            [ordered]@{
+                path = "Archive Center.js"
+                existed = $true
+                backup_path = $backupRelative
+            }
+        )
+        updated_at = [DateTimeOffset]::UtcNow.ToString("o")
+    }
+    Write-Utf8NoBom (Join-Path $Scenario.Root ".updates\update-state.json") (($state | ConvertTo-Json -Depth 8) + "`n")
+}
+
+function New-HistoricalBridgeScenario {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunRoot,
+        [Parameter(Mandatory = $true)][string]$HistoricalPackageZip,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+    $scenarioRoot = Join-Path $RunRoot ("historical-" + $Version.Replace('.', '-'))
+    $extractRoot = Join-Path $scenarioRoot "published-package"
+    New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+    Expand-Archive -LiteralPath $HistoricalPackageZip -DestinationPath $extractRoot
+    $manifestFiles = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter "PACKAGE_FILE_MANIFEST.json")
+    Assert-Equal $manifestFiles.Count 1 "Published $Version fixture must contain exactly one package manifest"
+    $manifestPath = $manifestFiles[0].FullName
+    $packageRoot = Split-Path -Parent $manifestPath
+    $publishedManifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $managed = @($publishedManifest.files | ForEach-Object { [string]$_.path })
+    Assert-True ($managed.Count -gt 0) "Published $Version fixture has an empty package manifest"
+    foreach ($entry in @($publishedManifest.files)) {
+        $path = Join-Path $packageRoot (([string]$entry.path).Replace('/', '\'))
+        Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Published $Version managed file is missing: $([string]$entry.path)"
+        Assert-Equal (Get-LowerSHA256 $path) ([string]$entry.sha256).ToLowerInvariant() "Published $Version managed file hash mismatch: $([string]$entry.path)"
+    }
+    $baseline = [ordered]@{}
+    foreach ($file in @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File)) {
+        $relative = $file.FullName.Substring($packageRoot.Length).TrimStart('\').Replace('\', '/')
+        if (-not $relative.StartsWith(".updates/", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $baseline[$relative] = Get-LowerSHA256 $file.FullName
+        }
+    }
+    [pscustomobject]@{
+        Root = $packageRoot
+        Version = $Version
+        Managed = $managed
+        BaselineHashes = $baseline
+        ManifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
+    }
+}
+
+function Invoke-HistoricalCompatibilityBridge {
+    param(
+        [Parameter(Mandatory = $true)]$Scenario,
+        [Parameter(Mandatory = $true)][string]$BridgeRoot,
+        [Parameter(Mandatory = $true)][string]$CandidateZip
+    )
+    $script = Join-Path $BridgeRoot "apply-update-compatibility-bridge.ps1"
+    Assert-True (Test-Path -LiteralPath $script -PathType Leaf) "Bridge script is missing: $script"
+    $output = @(
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script `
+            -PackageRoot $Scenario.Root `
+            -UpdateZip $CandidateZip `
+            -CurrentVersion $Scenario.Version
+    )
+    Assert-Equal $LASTEXITCODE 0 "Historical $($Scenario.Version) bridge exit"
+    $payload = (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) | ConvertFrom-Json
+    Assert-Equal $payload.contract_version "archive-center.external-update-bridge-result.v1" "Historical bridge result contract"
+    Assert-Equal $payload.status "applied_pending_health" "Historical bridge apply status"
+    Assert-Equal $payload.current_version $Scenario.Version "Historical bridge source version"
+    $state = Get-Content -LiteralPath (Join-Path $Scenario.Root ".updates\update-state.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-Equal $state.status "applied_pending_health" "Historical bridge durable state"
+    $runner = Join-Path $Scenario.Root (([string]$state.runner_path).Replace('/', '\'))
+    Assert-Equal (Get-LowerSHA256 $runner) ([string]$state.runner_sha256) "Historical bridge runner binding"
+    $null = Invoke-Updater $runner "rollback" $Scenario.Root 0 "rolled_back"
+    foreach ($relative in $Scenario.BaselineHashes.Keys) {
+        Assert-Equal (Get-LowerSHA256 (Join-Path $Scenario.Root ($relative.Replace('/', '\')))) $Scenario.BaselineHashes[$relative] "Historical bridge rollback failed for $relative"
+    }
+    $restoredPaths = @(
+        Get-ChildItem -LiteralPath $Scenario.Root -Recurse -File |
+            ForEach-Object { $_.FullName.Substring($Scenario.Root.Length).TrimStart('\').Replace('\', '/') } |
+            Where-Object { -not $_.StartsWith(".updates/", [System.StringComparison]::OrdinalIgnoreCase) }
+    )
+    Assert-Equal $restoredPaths.Count $Scenario.BaselineHashes.Count "Historical bridge rollback left added or removed package files"
+    foreach ($relative in $restoredPaths) {
+        Assert-True $Scenario.BaselineHashes.Contains($relative) "Historical bridge rollback left unexpected package file: $relative"
+    }
+    Assert-BytesEqual ([System.IO.File]::ReadAllBytes((Join-Path $Scenario.Root "PACKAGE_FILE_MANIFEST.json"))) $Scenario.ManifestBytes "Historical bridge manifest rollback"
+}
+
 if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
     $PackageRoot = Join-Path $PSScriptRoot ".."
 }
@@ -236,6 +343,9 @@ try {
     $success = New-Scenario $runRootResolved $updaterExe "success"
     $successApply = Invoke-Updater $success.Runner "apply-pending" $success.Root 0 "applied_pending_health"
     Assert-True ([bool]$successApply.health_required) "Success apply did not require health"
+    $successAppliedState = Get-Content -LiteralPath (Join-Path $success.Root ".updates\update-state.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-Equal $successAppliedState.runner_path ".updates/runner/archive-center-updater-e2e.exe" "Success state runner path"
+    Assert-Equal $successAppliedState.runner_sha256 (Get-LowerSHA256 $success.Runner) "Success state runner SHA256"
     Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $success.Root "Archive Center.js"))) $success.Candidate.ExpectedJS "Success JS was not updated"
     Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $success.Root "bin\archive-center-go.exe"))) $success.Candidate.ExpectedBackend "Success backend was not updated"
     Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $success.Root "scripts\new-tool.ps1"))) $success.Candidate.ExpectedScript "Success new managed file was not installed"
@@ -265,6 +375,29 @@ try {
     Assert-BackupCleaned $rollback.Root ([string](Get-OptionalProperty $rollbackState "backup_dir"))
     Assert-Sentinels $rollback
 
+    $interrupted = New-Scenario $runRootResolved $updaterExe "interrupted"
+    Set-InterruptedApplyState $interrupted
+    $interruptedApply = Invoke-Updater $interrupted.Runner "apply-pending" $interrupted.Root 0 "applied_pending_health"
+    Assert-Equal $interruptedApply.target_version "e2e-candidate-interrupted" "Interrupted recovery target"
+    Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $interrupted.Root "Archive Center.js"))) $interrupted.Candidate.ExpectedJS "Interrupted recovery did not install candidate JS"
+    $null = Invoke-Updater $interrupted.Runner "rollback" $interrupted.Root 0 "rolled_back"
+    foreach ($relative in $interrupted.BaselineHashes.Keys) {
+        Assert-Equal (Get-LowerSHA256 (Join-Path $interrupted.Root ($relative.Replace('/', '\')))) $interrupted.BaselineHashes[$relative] "Interrupted recovery rollback failed to restore $relative"
+    }
+    Assert-Sentinels $interrupted
+
+    # This is the production updater reaction to a negative readiness verdict.
+    # The HTTP /ready and /version probe itself belongs to launcher live E2E.
+    $readinessFailure = New-Scenario $runRootResolved $updaterExe "backend-readiness-failure"
+    $null = Invoke-Updater $readinessFailure.Runner "apply-pending" $readinessFailure.Root 0 "applied_pending_health"
+    $simulatedBackendReady = $false
+    Assert-True (-not $simulatedBackendReady) "Backend readiness failure fixture unexpectedly passed"
+    $null = Invoke-Updater $readinessFailure.Runner "rollback" $readinessFailure.Root 0 "rolled_back"
+    foreach ($relative in $readinessFailure.BaselineHashes.Keys) {
+        Assert-Equal (Get-LowerSHA256 (Join-Path $readinessFailure.Root ($relative.Replace('/', '\')))) $readinessFailure.BaselineHashes[$relative] "Readiness failure recovery failed to restore $relative"
+    }
+    Assert-Sentinels $readinessFailure
+
     $tampered = New-Scenario $runRootResolved $updaterExe "tampered"
     $tamperedPendingPath = Join-Path $tampered.Root ".updates\pending-update.json"
     $tamperedPending = Get-Content -LiteralPath $tamperedPendingPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -278,6 +411,34 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $tampered.Root ".updates\update-state.json"))) "Tampered archive wrote update state"
     Assert-Sentinels $tampered
 
+    $historicalBridgeStatus = "not_requested"
+    if (-not [string]::IsNullOrWhiteSpace($CompatibilityBridgeZip) -or
+        -not [string]::IsNullOrWhiteSpace($UpdateZip) -or
+        -not [string]::IsNullOrWhiteSpace($HistoricalV300PackageZip) -or
+        -not [string]::IsNullOrWhiteSpace($HistoricalV301PackageZip) -or
+        -not [string]::IsNullOrWhiteSpace($HistoricalV350PackageZip)) {
+        Assert-True (-not [string]::IsNullOrWhiteSpace($CompatibilityBridgeZip)) "CompatibilityBridgeZip is required with UpdateZip"
+        Assert-True (-not [string]::IsNullOrWhiteSpace($UpdateZip)) "UpdateZip is required with CompatibilityBridgeZip"
+        Assert-True (-not [string]::IsNullOrWhiteSpace($HistoricalV300PackageZip)) "HistoricalV300PackageZip is required for bridge E2E"
+        Assert-True (-not [string]::IsNullOrWhiteSpace($HistoricalV301PackageZip)) "HistoricalV301PackageZip is required for bridge E2E"
+        Assert-True (-not [string]::IsNullOrWhiteSpace($HistoricalV350PackageZip)) "HistoricalV350PackageZip is required for bridge E2E"
+        $bridgeExtract = Join-Path $runRootResolved "compatibility-bridge"
+        Expand-Archive -LiteralPath $CompatibilityBridgeZip -DestinationPath $bridgeExtract
+        $bridgeScript = Get-ChildItem -LiteralPath $bridgeExtract -Recurse -File -Filter "apply-update-compatibility-bridge.ps1" |
+            Select-Object -First 1
+        Assert-True ($null -ne $bridgeScript) "Extracted compatibility bridge script was not found"
+        $bridgeRoot = Split-Path -Parent $bridgeScript.FullName
+        foreach ($fixture in @(
+            [pscustomobject]@{ Zip = $HistoricalV300PackageZip; Version = "3.0.0" },
+            [pscustomobject]@{ Zip = $HistoricalV301PackageZip; Version = "3.0.1" },
+            [pscustomobject]@{ Zip = $HistoricalV350PackageZip; Version = "3.5.0" }
+        )) {
+            $historical = New-HistoricalBridgeScenario -RunRoot $runRootResolved -HistoricalPackageZip $fixture.Zip -Version $fixture.Version
+            Invoke-HistoricalCompatibilityBridge -Scenario $historical -BridgeRoot $bridgeRoot -CandidateZip $UpdateZip
+        }
+        $historicalBridgeStatus = "passed_published_windows_update_packages"
+    }
+
     $report = [ordered]@{
         schema_version = "archive-center.updater-e2e-smoke.v1"
         status = "ok"
@@ -287,14 +448,17 @@ try {
         scenarios = [ordered]@{
             apply_status_commit_cli = "passed"
             apply_explicit_rollback_cli = "passed"
+            interrupted_apply_restart_recovery_cli = "passed"
+            simulated_backend_readiness_failure_rollback_cli = "passed"
             tampered_asset_rejected_before_mutation = "passed"
+            external_bridge_published_v300_v301_v350_to_candidate = $historicalBridgeStatus
         }
         launcher_integration = [ordered]@{
             status = "not_tested"
             includes = @(
                 "start-full-windows.ps1",
                 "backend /ready and /version",
-                "automatic health-failure rollback"
+                "actual automatic health-failure rollback"
             )
         }
         staged_asset_present_before_temp_cleanup = [bool](Test-Path -LiteralPath $success.Candidate.Asset -PathType Leaf)

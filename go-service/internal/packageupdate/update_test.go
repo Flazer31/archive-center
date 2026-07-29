@@ -131,7 +131,7 @@ func TestApplyPendingResumesExistingPendingHealthWithoutReapplying(t *testing.T)
 	if _, err := ApplyPending(root); err != nil {
 		t.Fatal(err)
 	}
-	result, err := applyPending(root, func(_ string, _ int) error {
+	result, err := applyPending(root, "", func(_ string, _ int) error {
 		t.Fatal("pending-health resume must not apply files again")
 		return nil
 	})
@@ -216,9 +216,52 @@ func TestApplyPendingRejectsManagedFileRemovalWithoutDeleting(t *testing.T) {
 	}
 }
 
+func TestApplyPendingAppliesAuthenticatedManagedRemovalAndRollbackRestoresIt(t *testing.T) {
+	current := map[string]string{
+		"bin/app.exe":               "old",
+		"migrations/001_schema.sql": "old schema",
+		"scripts/legacy.ps1":        "legacy",
+	}
+	next := map[string]string{
+		"bin/app.exe":               "new",
+		"migrations/001_schema.sql": "new schema",
+	}
+	addMigrationUpdateContractWithRemovals(t, current, next, "1", "2", []string{"scripts/legacy.ps1"})
+	root := newFixture(t, current, next, nil)
+	if _, err := ApplyPending(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "scripts", "legacy.ps1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("authenticated managed removal was not applied: %v", err)
+	}
+	if _, err := Rollback(root); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(root, "scripts", "legacy.ps1"), "legacy")
+	assertFile(t, filepath.Join(root, "bin", "app.exe"), "old")
+}
+
+func TestApplyPendingRejectsRemovalNotNamedByAuthenticatedSource(t *testing.T) {
+	current := map[string]string{
+		"bin/app.exe":               "old",
+		"migrations/001_schema.sql": "old schema",
+		"scripts/legacy.ps1":        "legacy",
+	}
+	next := map[string]string{
+		"bin/app.exe":               "new",
+		"migrations/001_schema.sql": "new schema",
+	}
+	addMigrationUpdateContract(t, current, next, "1", "2")
+	root := newFixture(t, current, next, nil)
+	_, err := ApplyPending(root)
+	assertUpdateCode(t, err, "managed_file_removal_unsupported")
+	assertFile(t, filepath.Join(root, "scripts", "legacy.ps1"), "legacy")
+	assertFile(t, filepath.Join(root, "bin", "app.exe"), "old")
+}
+
 func TestApplyFailureRollsBackEveryTouchedFile(t *testing.T) {
 	root := newFixture(t, map[string]string{"bin/a.exe": "old-a", "bin/b.exe": "old-b"}, map[string]string{"bin/a.exe": "new-a", "bin/b.exe": "new-b"}, nil)
-	_, err := applyPending(root, func(_ string, index int) error {
+	_, err := applyPending(root, "", func(_ string, index int) error {
 		if index == 1 {
 			return errors.New("injected write failure")
 		}
@@ -277,6 +320,19 @@ func TestApplyPendingDoesNotReapplyWhileHealthIsPending(t *testing.T) {
 		t.Fatalf("apply restarted: before=%q after=%q", firstState.BackupDir, secondState.BackupDir)
 	}
 	assertFile(t, filepath.Join(root, "operator-marker.txt"), "keep")
+}
+
+func TestApplyPendingFailsClosedWhenPendingHealthVersionsMismatch(t *testing.T) {
+	root := newFixture(t, map[string]string{"bin/app.exe": "old"}, map[string]string{"bin/app.exe": "new"}, nil)
+	if _, err := ApplyPending(root); err != nil {
+		t.Fatal(err)
+	}
+	pending := mustPending(t, root)
+	pending.TargetVersion = "unexpected-target"
+	writeJSON(t, filepath.Join(root, ".updates", "pending-update.json"), pending)
+	_, err := ApplyPending(root)
+	assertUpdateCode(t, err, "pending_health_state_invalid")
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
 }
 
 func TestRollbackRejectsEscapingBackupState(t *testing.T) {
@@ -360,6 +416,54 @@ func TestCommittedStateDoesNotDiscardNextPendingUpdate(t *testing.T) {
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "three")
 }
 
+func TestApplyPendingFinishesCommittedSameTargetCrashCleanupWithoutReapply(t *testing.T) {
+	root := newFixture(t, map[string]string{"bin/app.exe": "one"}, map[string]string{"bin/app.exe": "two"}, nil)
+	if _, err := ApplyPending(root); err != nil {
+		t.Fatal(err)
+	}
+	state := mustState(t, root)
+	state.Status = "committed"
+	state.CurrentVersion = state.TargetVersion
+	writeJSON(t, filepath.Join(root, ".updates", "update-state.json"), state)
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "two")
+
+	result, err := applyPending(root, "", func(_ string, _ int) error {
+		t.Fatal("committed same-target cleanup must not reapply files")
+		return nil
+	})
+	if err != nil || result.Status != "no_pending" || result.CurrentVersion != "2" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".updates", "pending-update.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("same-target pending marker survived cleanup: %v", err)
+	}
+	cleaned := mustState(t, root)
+	if cleaned.BackupDir != "" || len(cleaned.Journal) != 0 {
+		t.Fatalf("committed cleanup retained recovery data: %+v", cleaned)
+	}
+}
+
+func TestApplyPendingBindsPreservedRunnerIdentityToState(t *testing.T) {
+	root := newFixture(t, map[string]string{"bin/app.exe": "one"}, map[string]string{"bin/app.exe": "two"}, nil)
+	runner := filepath.Join(root, ".updates", "runner", "archive-center-updater-fixture.exe")
+	mustWrite(t, runner, "runner-v1")
+	result, err := ApplyPendingFromRunner(root, runner)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	state := mustState(t, root)
+	if state.RunnerPath != ".updates/runner/archive-center-updater-fixture.exe" || state.RunnerSHA256 != fileSHA(t, runner) {
+		t.Fatalf("runner identity not bound to state: %+v", state)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside-runner.exe")
+	mustWrite(t, outside, "outside")
+	otherRoot := newFixture(t, map[string]string{"bin/app.exe": "one"}, map[string]string{"bin/app.exe": "two"}, nil)
+	_, err = ApplyPendingFromRunner(otherRoot, outside)
+	assertUpdateCode(t, err, "runner_identity_invalid")
+	assertFile(t, filepath.Join(otherRoot, "bin/app.exe"), "one")
+}
+
 func TestApplyPendingRejectsDatabaseMigrationChanges(t *testing.T) {
 	current := map[string]string{"bin/app.exe": "one", "bin/mariadb-schema.exe": "schema-tool", "migrations/001_schema.sql": "old schema"}
 	next := map[string]string{"bin/app.exe": "two", "bin/mariadb-schema.exe": "schema-tool", "migrations/001_schema.sql": "new schema"}
@@ -380,7 +484,7 @@ func TestPOSIXDatabaseMigrationToolCanUpgradeWithoutChangingSchema(t *testing.T)
 	assertFile(t, filepath.Join(root, "bin/archive-center-go"), "two")
 }
 
-func TestApplyPendingAllowsNewAdditiveMigrationWithFreshSchema(t *testing.T) {
+func TestApplyPendingAllowsOnlyManifestBoundMigrationPlan(t *testing.T) {
 	current := map[string]string{
 		"bin/app.exe": "one", "bin/mariadb-schema.exe": "schema-tool",
 		"migrations/001_schema.sql":   "old schema",
@@ -390,8 +494,9 @@ func TestApplyPendingAllowsNewAdditiveMigrationWithFreshSchema(t *testing.T) {
 		"bin/app.exe": "two", "bin/mariadb-schema.exe": "new-schema-tool",
 		"migrations/001_schema.sql":    "new schema",
 		"migrations/005_existing.sql":  "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
-		"migrations/006_admission.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS admission_state VARCHAR(30) NOT NULL DEFAULT 'pending';",
+		"migrations/006_admission.sql": "CREATE TABLE admission (id BIGINT PRIMARY KEY, parent_id BIGINT, CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES admission(id)); ALTER TABLE admission MODIFY COLUMN parent_id BIGINT NULL;",
 	}
+	addMigrationUpdateContract(t, current, next, "1", "2")
 	root := newFixture(t, current, next, nil)
 	result, err := ApplyPending(root)
 	if err != nil || result.Status != "applied_pending_health" {
@@ -415,7 +520,7 @@ func TestApplyPendingRejectsChangedHistoricalMigration(t *testing.T) {
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
 }
 
-func TestApplyPendingRejectsDestructiveNewMigration(t *testing.T) {
+func TestApplyPendingRejectsUnboundNewMigrationRegardlessOfSQLText(t *testing.T) {
 	current := map[string]string{
 		"bin/app.exe":                 "one",
 		"migrations/001_schema.sql":   "old schema",
@@ -433,27 +538,72 @@ func TestApplyPendingRejectsDestructiveNewMigration(t *testing.T) {
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
 }
 
-func TestApplyPendingRejectsDuplicateNewMigrationNumber(t *testing.T) {
+func TestApplyPendingRejectsMigrationContractWithWrongTargetFingerprint(t *testing.T) {
 	current := map[string]string{
 		"bin/app.exe":               "one",
 		"migrations/001_schema.sql": "old schema",
 	}
 	next := map[string]string{
-		"bin/app.exe":                     "two",
-		"migrations/001_schema.sql":       "new schema",
-		"migrations/006_admission.sql":    "ALTER TABLE records ADD COLUMN IF NOT EXISTS admission_state VARCHAR(30);",
-		"migrations/006_other_change.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS other_value INT;",
+		"bin/app.exe":                  "two",
+		"migrations/001_schema.sql":    "new schema",
+		"migrations/006_admission.sql": "CREATE TABLE admission (id BIGINT PRIMARY KEY);",
 	}
+	addMigrationUpdateContract(t, current, next, "1", "2")
+	next["migrations/006_admission.sql"] = "CREATE TABLE silently_changed (id BIGINT PRIMARY KEY);"
 	root := newFixture(t, current, next, nil)
 	_, err := ApplyPending(root)
 	assertUpdateCode(t, err, "database_migration_update_unsupported")
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
 }
 
-func TestProductionMemoryAdmissionMigrationPassesAdditivePolicy(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "migrations", "006_memory_admission_writer.sql")
-	if err := validateAdditiveMigrationFile(path); err != nil {
-		t.Fatalf("production migration rejected: %v", err)
+// These fingerprints come from the published Windows Update Package ZIPs, not
+// Git blobs. The historical updater cannot consume this contract itself; the
+// external compatibility bridge launches the authenticated candidate updater.
+func TestNewUpdaterContractRecognizesPublished300301And35MigrationFingerprints(t *testing.T) {
+	sourceFixtures := []migrationManifestSource{
+		{
+			Version: "3.0.0",
+			Files: []migrationManifestFile{
+				{Path: "migrations/001_schema.sql", SizeBytes: 73630, SHA256: "09fc00c560436d46fe295e6dddbf01432c7daf8148beebef9c959ae7b5cb06d3"},
+			},
+		},
+		{
+			Version: "3.0.1",
+			Files: []migrationManifestFile{
+				{Path: "migrations/001_schema.sql", SizeBytes: 73630, SHA256: "09fc00c560436d46fe295e6dddbf01432c7daf8148beebef9c959ae7b5cb06d3"},
+			},
+		},
+		{
+			Version: "3.5.0",
+			Files: []migrationManifestFile{
+				{Path: "migrations/001_schema.sql", SizeBytes: 92635, SHA256: "85df8ac1480eadb85e9cf572cbc2696dd53a8f83b1b3bfd06be8f01016132e6f"},
+				{Path: "migrations/002_canon_pack_storage.sql", SizeBytes: 18802, SHA256: "27579f2efe123768c24dd873764105cfbc5901b4f3b81d81e4fb39ca8a1c2bd6"},
+			},
+		},
+	}
+	targetFiles := actualMigrationInventory(t)
+	contract := migrationUpdateManifest{
+		ContractVersion: MigrationUpdateContract,
+		TargetVersion:   "3.7.0",
+		Target:          targetFiles,
+		Sources:         sourceFixtures,
+	}
+	packageRoot := t.TempDir()
+	contractPath := filepath.Join(packageRoot, MigrationUpdateManifestName)
+	writeJSON(t, contractPath, contract)
+	next := manifestMapFromMigrationFiles(targetFiles)
+	info, err := os.Stat(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next[strings.ToLower(MigrationUpdateManifestName)] = manifestFile{
+		Path: MigrationUpdateManifestName, SizeBytes: info.Size(), SHA256: fileSHA(t, contractPath),
+	}
+	for _, source := range sourceFixtures {
+		current := manifestMapFromMigrationFiles(source.Files)
+		if _, err := validateDatabaseMigrationUpdate(packageRoot, source.Version, "3.7.0", current, next); err != nil {
+			t.Fatalf("%s -> 3.7 inventory contract rejected: %v", source.Version, err)
+		}
 	}
 }
 
@@ -469,6 +619,85 @@ func TestManagedInstallModePreservesPOSIXExecutables(t *testing.T) {
 	if got := managedInstallMode("bin/archive-center-go.exe", 0o640, "windows"); got != 0o640 {
 		t.Fatalf("Windows mode = %#o, want archived 0640", got)
 	}
+}
+
+func addMigrationUpdateContract(t *testing.T, current, next map[string]string, currentVersion, targetVersion string) {
+	addMigrationUpdateContractWithRemovals(t, current, next, currentVersion, targetVersion, nil)
+}
+
+func addMigrationUpdateContractWithRemovals(t *testing.T, current, next map[string]string, currentVersion, targetVersion string, removals []string) {
+	t.Helper()
+	contract := migrationUpdateManifest{
+		ContractVersion: MigrationUpdateContract,
+		TargetVersion:   targetVersion,
+		Target:          migrationFilesFromBodies(next),
+		Sources: []migrationManifestSource{{
+			Version:             currentVersion,
+			Files:               migrationFilesFromBodies(current),
+			RemovedManagedPaths: removals,
+		}},
+	}
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next[MigrationUpdateManifestName] = string(data)
+}
+
+func migrationFilesFromBodies(files map[string]string) []migrationManifestFile {
+	out := []migrationManifestFile{}
+	for rel, body := range files {
+		rel = strings.ToLower(filepath.ToSlash(rel))
+		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
+			continue
+		}
+		sum := sha256.Sum256([]byte(body))
+		out = append(out, migrationManifestFile{
+			Path: rel, SizeBytes: int64(len([]byte(body))), SHA256: hex.EncodeToString(sum[:]),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+func actualMigrationInventory(t *testing.T) []migrationManifestFile {
+	t.Helper()
+	root := filepath.Join("..", "..", "..", "migrations")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := []migrationManifestFile{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".sql") {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(data)
+		out = append(out, migrationManifestFile{
+			Path:      "migrations/" + strings.ToLower(entry.Name()),
+			SizeBytes: int64(len(data)),
+			SHA256:    hex.EncodeToString(sum[:]),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	if len(out) == 0 {
+		t.Fatal("production migration inventory is empty")
+	}
+	return out
+}
+
+func manifestMapFromMigrationFiles(files []migrationManifestFile) map[string]manifestFile {
+	out := make(map[string]manifestFile, len(files))
+	for _, file := range files {
+		rel := strings.ToLower(filepath.ToSlash(file.Path))
+		out[rel] = manifestFile{Path: rel, SizeBytes: file.SizeBytes, SHA256: file.SHA256}
+	}
+	return out
 }
 
 type zipEntry struct {

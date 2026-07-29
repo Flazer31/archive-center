@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	"github.com/risulongmemory/archive-center-go/internal/packageupdate"
 )
@@ -43,7 +44,15 @@ func run(args []string) int {
 	)
 	switch action {
 	case "apply-pending":
-		result, err = packageupdate.ApplyPending(*root)
+		if runtime.GOOS == "windows" {
+			runnerPath, executableErr := os.Executable()
+			if executableErr != nil {
+				return writeFailure(action, "runner_identity_invalid", executableErr)
+			}
+			result, err = packageupdate.ApplyPendingFromRunner(*root, runnerPath)
+		} else {
+			result, err = packageupdate.ApplyPending(*root)
+		}
 	case "commit":
 		result, err = packageupdate.Commit(*root)
 	case "rollback":

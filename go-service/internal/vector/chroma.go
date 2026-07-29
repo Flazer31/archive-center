@@ -396,15 +396,35 @@ func (s *chromaStore) ResetAll(ctx context.Context) error {
 			ref = strings.TrimSpace(s.collectionName)
 		}
 	}
-	status, err := s.doJSON(ctx, http.MethodDelete, s.collectionLookupPath(ref), nil, nil,
-		http.StatusOK, http.StatusAccepted, http.StatusNoContent, http.StatusNotFound)
-	if err == nil || status == http.StatusNotFound {
+	deleteRef := ref
+	if s.usesV2API() {
+		// ChromaDB v2 collection deletion is name-addressed. Some releases
+		// return success for an ID-addressed DELETE without removing anything.
+		deleteRef = strings.TrimSpace(s.collectionName)
+	}
+	deleteAndVerify := func(target string) (int, error) {
+		status, err := s.doJSON(ctx, http.MethodDelete, s.collectionLookupPath(target), nil, nil,
+			http.StatusOK, http.StatusAccepted, http.StatusNoContent, http.StatusNotFound)
+		if err != nil {
+			return status, err
+		}
+		verifyStatus, verifyErr := s.doJSON(ctx, http.MethodGet, s.collectionLookupPath(s.collectionName), nil, nil,
+			http.StatusOK, http.StatusNotFound)
+		if verifyErr != nil {
+			return verifyStatus, verifyErr
+		}
+		if verifyStatus != http.StatusNotFound {
+			return verifyStatus, fmt.Errorf("chroma store: collection %q still exists after delete", s.collectionName)
+		}
+		return status, nil
+	}
+	_, err := deleteAndVerify(deleteRef)
+	if err == nil {
 		return nil
 	}
-	if ref != strings.TrimSpace(s.collectionName) {
-		status, retryErr := s.doJSON(ctx, http.MethodDelete, s.collectionLookupPath(s.collectionName), nil, nil,
-			http.StatusOK, http.StatusAccepted, http.StatusNoContent, http.StatusNotFound)
-		if retryErr == nil || status == http.StatusNotFound {
+	if deleteRef != ref {
+		_, retryErr := deleteAndVerify(ref)
+		if retryErr == nil {
 			return nil
 		}
 	}

@@ -79,6 +79,219 @@ function Get-ExpectedSHA256([string]$SumsPath, [string]$AssetName) {
     return ""
 }
 
+function Test-LocalPortOpen([int]$Port, [string]$ConnectHost = "127.0.0.1") {
+    try {
+        $addresses = [System.Net.Dns]::GetHostAddresses($ConnectHost)
+    } catch {
+        return $false
+    }
+    foreach ($address in $addresses) {
+        $client = [System.Net.Sockets.TcpClient]::new($address.AddressFamily)
+        try {
+            $result = $client.BeginConnect($address, $Port, $null, $null)
+            $ready = $result.AsyncWaitHandle.WaitOne(500, $false)
+            if ($ready) { $client.EndConnect($result) }
+            if ($ready -and $client.Connected) {
+                return $true
+            }
+        } catch {
+            continue
+        } finally {
+            $client.Close()
+        }
+    }
+    return $false
+}
+
+function Get-DataFileMap([string]$Root) {
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $result = @{}
+    if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) {
+        return $result
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -Recurse -File -Force | Sort-Object FullName)) {
+        $relative = $file.FullName.Substring($rootFull.Length).TrimStart('\').Replace('\', '/')
+        $result[$relative] = "$($file.Length):$((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())"
+    }
+    return $result
+}
+
+function Copy-LegacyDataVerified([string]$Source, [string]$Destination) {
+    $destinationFull = [System.IO.Path]::GetFullPath($Destination)
+    $destinationParent = Split-Path -Parent $destinationFull
+    $destinationLeaf = Split-Path -Leaf $destinationFull
+    New-Item -ItemType Directory -Force -Path $destinationParent | Out-Null
+    $staging = Join-Path $destinationParent (".$destinationLeaf.import-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    $sourceFull = [System.IO.Path]::GetFullPath($Source).TrimEnd('\')
+    try {
+        foreach ($sourceFile in @(Get-ChildItem -LiteralPath $sourceFull -Recurse -File -Force | Sort-Object FullName)) {
+            $relative = $sourceFile.FullName.Substring($sourceFull.Length).TrimStart('\')
+            $stagedFile = Join-Path $staging $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stagedFile) | Out-Null
+            Copy-Item -LiteralPath $sourceFile.FullName -Destination $stagedFile
+        }
+        $sourceMap = Get-DataFileMap $Source
+        $stagingMap = Get-DataFileMap $staging
+        if ($sourceMap.Count -ne $stagingMap.Count) {
+            throw "Persistent data import staging count mismatch for $Destination"
+        }
+        foreach ($relative in $sourceMap.Keys) {
+            if (-not $stagingMap.ContainsKey($relative) -or $sourceMap[$relative] -cne $stagingMap[$relative]) {
+                throw "Persistent data import staging mismatch: $relative"
+            }
+        }
+        if (Test-Path -LiteralPath $destinationFull) {
+            $destinationMap = Get-DataFileMap $destinationFull
+            if ($sourceMap.Count -ne $destinationMap.Count) {
+                throw "Persistent data import found a conflicting destination directory: $Destination"
+            }
+            foreach ($relative in $sourceMap.Keys) {
+                if (-not $destinationMap.ContainsKey($relative) -or $sourceMap[$relative] -cne $destinationMap[$relative]) {
+                    throw "Persistent data import found a conflicting destination file: $relative"
+                }
+            }
+            return
+        }
+        Move-Item -LiteralPath $staging -Destination $destinationFull
+        $staging = ""
+        $destinationMap = Get-DataFileMap $destinationFull
+        if ($sourceMap.Count -ne $destinationMap.Count) {
+            throw "Persistent data import verification count mismatch for $Destination"
+        }
+        foreach ($relative in $sourceMap.Keys) {
+            if (-not $destinationMap.ContainsKey($relative) -or $sourceMap[$relative] -cne $destinationMap[$relative]) {
+                throw "Persistent data import verification mismatch: $relative"
+            }
+        }
+    } finally {
+        if (-not [string]::IsNullOrWhiteSpace($staging) -and (Test-Path -LiteralPath $staging)) {
+            Remove-Item -LiteralPath $staging -Recurse -Force
+        }
+    }
+}
+
+function Get-PreviousPackageChromaTargets([int]$DefaultPort = 8000) {
+    $targets = [ordered]@{}
+    foreach ($defaultHost in @("127.0.0.1", "::1")) {
+        $targets["$defaultHost`:$DefaultPort"] = [pscustomobject]@{
+            Host = $defaultHost
+            Port = $DefaultPort
+        }
+    }
+    $endpointText = [string]$env:AC_CHROMA_ENDPOINT
+    if (-not [string]::IsNullOrWhiteSpace($endpointText)) {
+        $endpoint = $null
+        if ([Uri]::TryCreate($endpointText.Trim(), [UriKind]::Absolute, [ref]$endpoint)) {
+            $endpointHost = $endpoint.DnsSafeHost
+            $endpointAddress = $null
+            $isLoopback = $endpointHost.Equals("localhost", [System.StringComparison]::OrdinalIgnoreCase)
+            if ([System.Net.IPAddress]::TryParse($endpointHost, [ref]$endpointAddress)) {
+                $isLoopback = [System.Net.IPAddress]::IsLoopback($endpointAddress)
+            }
+        }
+        if ($null -ne $endpoint -and $isLoopback) {
+            $endpointPort = $(if ($endpoint.IsDefaultPort) { 8000 } else { $endpoint.Port })
+            $targets["$($endpointHost.ToLowerInvariant())`:$endpointPort"] = [pscustomobject]@{
+                Host = $endpointHost
+                Port = $endpointPort
+            }
+        }
+    }
+    @($targets.Values | Where-Object { $_.Port -gt 0 -and $_.Port -le 65535 })
+}
+
+function Assert-PreviousPackageChromaOffline([string]$Source, [int]$DefaultPort = 8000) {
+    foreach ($target in @(Get-PreviousPackageChromaTargets -DefaultPort $DefaultPort)) {
+        if (Test-LocalPortOpen -Port $target.Port -ConnectHost $target.Host) {
+            $displayHost = $(if ($target.Host.Contains(":")) { "[$($target.Host)]" } else { $target.Host })
+            throw "Legacy ChromaDB data may be active at $displayHost`:$($target.Port). Stop ChromaDB before importing raw data files from $Source."
+        }
+    }
+}
+
+function Import-PreviousPackageRuntimeOnce([string]$PreviousPackageRoot, [string]$DataRoot, [int]$MariaDBPort = 3307, [int]$ChromaPort = 8000) {
+    if ([string]::IsNullOrWhiteSpace($PreviousPackageRoot)) {
+        return
+    }
+    $legacyRoot = Join-Path $PreviousPackageRoot ".runtime"
+    if (-not (Test-Path -LiteralPath $legacyRoot -PathType Container)) {
+        return
+    }
+    $dataRootFull = [System.IO.Path]::GetFullPath($DataRoot)
+    $markerPath = Join-Path $dataRootFull ".archive-center-legacy-runtime-import-v1.json"
+    if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+        try {
+            $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            throw "Persistent data import marker is unreadable: $markerPath"
+        }
+        if ([string]$marker.contract_version -cne "archive-center.legacy-runtime-import.v1" -or
+            ([string]$marker.data_root).Trim() -cne $dataRootFull) {
+            throw "Persistent data import marker contract/path mismatch."
+        }
+        return
+    }
+
+    $mariaCandidates = @(
+        (Join-Path $legacyRoot "mariadb"),
+        (Join-Path $legacyRoot "mariadb-data")
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    if (@($mariaCandidates).Count -gt 1) {
+        throw "Both legacy MariaDB data layouts exist; refusing an ambiguous automatic import."
+    }
+    $imports = @()
+    if (@($mariaCandidates).Count -eq 1) {
+        $imports += [pscustomobject]@{ Name = "mariadb"; Source = [string]$mariaCandidates[0]; Destination = (Join-Path $dataRootFull "mariadb") }
+    }
+    $legacyChroma = Join-Path $legacyRoot "chromadb"
+    if (Test-Path -LiteralPath $legacyChroma -PathType Container) {
+        $imports += [pscustomobject]@{ Name = "chromadb"; Source = $legacyChroma; Destination = (Join-Path $dataRootFull "chromadb") }
+    }
+    if ($imports.Count -eq 0) {
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $dataRootFull | Out-Null
+    $completed = @()
+    foreach ($item in $imports) {
+        if ($item.Name -eq "mariadb") {
+            $mariaProcesses = @(Get-Process -Name "mariadbd", "mysqld" -ErrorAction SilentlyContinue)
+            if ((Test-LocalPortOpen $MariaDBPort) -or $mariaProcesses.Count -gt 0) {
+                throw "Legacy MariaDB data may be active. Stop MariaDB and ensure port $MariaDBPort is closed before importing raw data files."
+            }
+        } elseif ($item.Name -eq "chromadb") {
+            Assert-PreviousPackageChromaOffline -Source $item.Source -DefaultPort $ChromaPort
+        }
+        Copy-LegacyDataVerified -Source $item.Source -Destination $item.Destination
+        $completed += [ordered]@{
+            name = $item.Name
+            source = [System.IO.Path]::GetFullPath($item.Source)
+            destination = [System.IO.Path]::GetFullPath($item.Destination)
+            file_count = (Get-DataFileMap $item.Source).Count
+        }
+    }
+    $marker = [ordered]@{
+        contract_version = "archive-center.legacy-runtime-import.v1"
+        data_root = $dataRootFull
+        source_preserved = $true
+        verified = $true
+        completed_at = [DateTimeOffset]::UtcNow.ToString("o")
+        imports = @($completed)
+    }
+    $temporaryPath = "$markerPath.tmp"
+    [System.IO.File]::WriteAllText(
+        $temporaryPath,
+        ($marker | ConvertTo-Json -Depth 6) + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Move-Item -LiteralPath $temporaryPath -Destination $markerPath -Force
+    foreach ($volatile in @("mariadb\mysql.sock", "mariadb\mariadb.pid", "mariadb\mysqld.pid")) {
+        Remove-Item -LiteralPath (Join-Path $dataRootFull $volatile) -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "Legacy runtime data was copied and verified. The source package remains unchanged."
+}
+
 if ($Repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
     throw "Repo must be OWNER/REPO."
 }
@@ -142,20 +355,10 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $persistentDataDir = [System.IO.Path]::GetFullPath($persistentDataDir)
+    $env:ARCHIVE_CENTER_DATA_DIR = $persistentDataDir
     New-Item -ItemType Directory -Force -Path $persistentDataDir | Out-Null
-    $previousRuntime = if ([string]::IsNullOrWhiteSpace($previousPackageRoot)) { "" } else { Join-Path $previousPackageRoot ".runtime" }
-    if (-not (Test-Path -LiteralPath (Join-Path $persistentDataDir "mariadb-data") -PathType Container) -and
-        -not [string]::IsNullOrWhiteSpace($previousRuntime) -and
-        (Test-Path -LiteralPath (Join-Path $previousRuntime "mariadb-data") -PathType Container)) {
-        Write-Host "Migrating package-local runtime data to persistent data directory:"
-        Write-Host "  From: $previousRuntime"
-        Write-Host "  To:   $persistentDataDir"
-        Get-ChildItem -LiteralPath $previousRuntime -Force | ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination $persistentDataDir -Recurse -Force
-        }
-        Remove-Item -LiteralPath (Join-Path $persistentDataDir "mysql.sock") -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath (Join-Path $persistentDataDir "mariadb.pid") -Force -ErrorAction SilentlyContinue
-    }
+    Import-PreviousPackageRuntimeOnce -PreviousPackageRoot $previousPackageRoot -DataRoot $persistentDataDir
 
     Set-Content -LiteralPath $currentPackagePointer -Value $packageRoot -Encoding UTF8
     Set-Content -LiteralPath (Join-Path $InstallDir "current-version.txt") -Value ([string]$release.tag_name) -Encoding UTF8
@@ -167,7 +370,6 @@ try {
     Write-Host "  Pointer:  $(Join-Path $InstallDir "current-package.txt")"
 
     if ($Start) {
-        $env:ARCHIVE_CENTER_DATA_DIR = $persistentDataDir
         if ($platform -eq "windows-x64") {
             $launcher = Join-Path $packageRoot "01_start_archive_center_windows.bat"
             Start-Process -FilePath $launcher -WorkingDirectory $packageRoot

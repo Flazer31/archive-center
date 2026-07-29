@@ -110,3 +110,24 @@ func TestChroma159V2Integration(t *testing.T) {
 		t.Fatalf("Count after delete: count=%d err=%v", count, err)
 	}
 }
+
+func TestChromaRoundTripProbeIntegration(t *testing.T) {
+	endpoint := os.Getenv("AC_CHROMA_INTEGRATION_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("AC_CHROMA_INTEGRATION_ENDPOINT is not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	report, err := RunChromaRoundTripProbe(ctx, ChromaRoundTripProbeConfig{
+		Endpoint:         endpoint,
+		APIPath:          "/api/v2",
+		CollectionPrefix: "archive_center_live_probe",
+	})
+	if err != nil {
+		t.Fatalf("RunChromaRoundTripProbe: %v report=%+v", err, report)
+	}
+	if report.Status != "ok" || report.CleanupStatus != "ok" {
+		t.Fatalf("unexpected live probe report: %+v", report)
+	}
+}

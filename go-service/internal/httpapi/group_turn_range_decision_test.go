@@ -29,6 +29,52 @@ type sessionIdentityRoutingStore struct {
 	baseline *store.SessionRoutingBaseline
 }
 
+type durableSessionIdentityBindingStore struct {
+	store.Store
+	bindings map[string]string
+	locks    map[string]string
+	fail     bool
+	lastMode string
+}
+
+func (s *durableSessionIdentityBindingStore) BindSessionRoute(_ context.Context, req store.SessionRouteBindingRequest) (*store.SessionRouteBindingResult, error) {
+	if s.fail {
+		return nil, context.DeadlineExceeded
+	}
+	if s.bindings == nil {
+		s.bindings = map[string]string{}
+	}
+	s.lastMode = req.Mode
+	key := req.StableCharacterID + "\x00" + req.HostChatID
+	canonical, exists := s.bindings[key]
+	force := req.Mode == store.SessionRouteBindingModeManualAttach || req.Mode == store.SessionRouteBindingModeMigrationCommit
+	if !exists || force {
+		canonical = req.RequestedSessionID
+	}
+	redirected := false
+	if target := s.locks[canonical]; target != "" {
+		canonical = target
+		redirected = true
+	}
+	if canonical == "" {
+		return nil, store.ErrNotFound
+	}
+	s.bindings[key] = canonical
+	return &store.SessionRouteBindingResult{
+		Binding: store.SessionRouteBinding{
+			ContractVersion:    store.SessionRouteBindingContractVersion,
+			StableCharacterID:  req.StableCharacterID,
+			HostChatID:         req.HostChatID,
+			CanonicalSessionID: canonical,
+			BindingState:       "active",
+		},
+		Created:              !exists,
+		Updated:              exists && (force || redirected),
+		ReadbackVerified:     true,
+		LockedSourceRedirect: redirected,
+	}, nil
+}
+
 func (s *sessionIdentityRoutingStore) ListSessions(context.Context) ([]store.SessionSummary, error) {
 	return s.sessions, nil
 }
@@ -125,6 +171,190 @@ func TestSessionRoutingIdentityKeepsExistingCIDWhenCharacterIndexChanges(t *test
 	}
 	if response.ChatSessionID != existingID || response.IdentityResolution != "existing_host_chat_id" {
 		t.Fatalf("same observed CID was split by character index: %+v", response)
+	}
+}
+
+func TestSessionRoutingDurableBindingSurvivesIndexMoveAndReload(t *testing.T) {
+	bindingStore := &durableSessionIdentityBindingStore{
+		Store: store.NewNoopStore(),
+	}
+	server := &Server{Store: bindingStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	post := func(requested string) sessionRoutingTurnResolutionResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+			"chat_session_id":"`+requested+`",
+			"mode":"identity",
+			"stable_character_id":"stable-character",
+			"stable_character_id_state":"observed",
+			"host_chat_id":"opaque-chat",
+			"host_chat_id_state":"observed"
+		}`))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var response sessionRoutingTurnResolutionResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	created := post("char_4_cid_opaque-chat")
+	if created.ChatSessionID != "char_4_cid_opaque-chat" || !created.BindingAcknowledged ||
+		!created.BindingCreated || created.IdentityResolution != "durable_binding_created" {
+		t.Fatalf("created binding response = %+v", created)
+	}
+	reloadedAfterIndexMove := post("char_1_cid_opaque-chat")
+	if reloadedAfterIndexMove.ChatSessionID != "char_4_cid_opaque-chat" ||
+		!reloadedAfterIndexMove.BindingAcknowledged ||
+		reloadedAfterIndexMove.IdentityResolution != "durable_binding_existing" {
+		t.Fatalf("index move/reload split durable binding: %+v", reloadedAfterIndexMove)
+	}
+}
+
+func TestSessionRoutingDurableBindingKeepsDifferentStableCharactersSeparate(t *testing.T) {
+	bindingStore := &durableSessionIdentityBindingStore{Store: store.NewNoopStore()}
+	server := &Server{Store: bindingStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	for _, fixture := range []struct {
+		character string
+		session   string
+	}{
+		{character: "stable-a", session: "session-a"},
+		{character: "stable-b", session: "session-b"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+			"chat_session_id":"`+fixture.session+`",
+			"mode":"identity",
+			"stable_character_id":"`+fixture.character+`",
+			"stable_character_id_state":"observed",
+			"host_chat_id":"same-opaque-chat",
+			"host_chat_id_state":"observed"
+		}`))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var response sessionRoutingTurnResolutionResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.ChatSessionID != fixture.session || !response.BindingAcknowledged {
+			t.Fatalf("%s response = %+v", fixture.character, response)
+		}
+	}
+}
+
+func TestSessionRoutingDurableBindingRedirectsLockedSource(t *testing.T) {
+	bindingStore := &durableSessionIdentityBindingStore{
+		Store: store.NewNoopStore(),
+		bindings: map[string]string{
+			"stable-character\x00opaque-chat": "locked-source",
+		},
+		locks: map[string]string{"locked-source": "migration-target"},
+	}
+	server := &Server{Store: bindingStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"locked-source",
+		"mode":"identity",
+		"stable_character_id":"stable-character",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"opaque-chat",
+		"host_chat_id_state":"observed"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ChatSessionID != "migration-target" || !response.LockedSourceRedirect ||
+		!response.BindingAcknowledged || response.IdentityResolution != "durable_binding_locked_source_redirect" {
+		t.Fatalf("locked source was not redirected: %+v", response)
+	}
+}
+
+func TestSessionRoutingBindingFailureReturnsNoAcknowledgement(t *testing.T) {
+	server := &Server{Store: &durableSessionIdentityBindingStore{Store: store.NewNoopStore(), fail: true}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"requested",
+		"mode":"identity",
+		"stable_character_id":"stable-character",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"opaque-chat",
+		"host_chat_id_state":"observed"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != "error" || response.Code != "session_route_binding_failed" ||
+		response.BindingAcknowledged || response.ChatSessionID != "requested" {
+		t.Fatalf("binding failure was presented as success: %+v", response)
+	}
+}
+
+func TestSessionRoutingManualAttachUsesExplicitBindingMode(t *testing.T) {
+	bindingStore := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"stable-character\x00opaque-chat": "old-session"},
+	}
+	server := &Server{Store: bindingStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"attached-session",
+		"mode":"identity",
+		"stable_character_id":"stable-character",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"opaque-chat",
+		"host_chat_id_state":"observed",
+		"bind_requested_session":true,
+		"binding_mode":"manual_attach"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ChatSessionID != "attached-session" || !response.BindingAcknowledged ||
+		!response.BindingUpdated || bindingStore.lastMode != store.SessionRouteBindingModeManualAttach {
+		t.Fatalf("manual attach binding response = %+v mode=%q", response, bindingStore.lastMode)
+	}
+}
+
+func TestSessionRoutingLegacyIndexPinPromotesToDurableBinding(t *testing.T) {
+	bindingStore := &durableSessionIdentityBindingStore{Store: store.NewNoopStore()}
+	server := &Server{Store: bindingStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"legacy-pinned-session",
+		"mode":"identity",
+		"stable_character_id":"stable-character",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"opaque-chat",
+		"host_chat_id_state":"observed",
+		"binding_mode":"legacy_promotion"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ChatSessionID != "legacy-pinned-session" || !response.BindingAcknowledged ||
+		!response.BindingCreated || bindingStore.lastMode != store.SessionRouteBindingModeLegacyPromotion {
+		t.Fatalf("legacy promotion response = %+v mode=%q", response, bindingStore.lastMode)
 	}
 }
 

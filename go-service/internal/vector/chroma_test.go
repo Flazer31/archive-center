@@ -290,13 +290,19 @@ func TestChromaStoreReranksReturnedCandidatesByActualCosine(t *testing.T) {
 
 func TestChromaStoreResetAllDeletesCollection(t *testing.T) {
 	var got []string
+	deleted := false
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.Method+" "+r.URL.Path)
 		if r.Method == http.MethodGet && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors" {
+			if deleted {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
 			_, _ = w.Write([]byte(`{"id":"collection-1","name":"archive_center_vectors"}`))
 			return
 		}
-		if r.Method == http.MethodDelete && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/collection-1" {
+		if r.Method == http.MethodDelete && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors" {
+			deleted = true
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -317,7 +323,47 @@ func TestChromaStoreResetAllDeletesCollection(t *testing.T) {
 	}
 	want := []string{
 		"GET /api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors",
+		"DELETE /api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors",
+		"GET /api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestChromaStoreResetAllRejectsFallback404WhenCollectionStillExists(t *testing.T) {
+	var got []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors":
+			_, _ = w.Write([]byte(`{"id":"collection-1","name":"archive_center_vectors"}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors":
+			http.Error(w, "name delete failed", http.StatusInternalServerError)
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v2/tenants/default_tenant/databases/default_database/collections/collection-1":
+			http.Error(w, "not found", http.StatusNotFound)
+		default:
+			http.Error(w, r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	raw, err := NewChromaStore(ts.URL, "archive_center_vectors", "/api/v2")
+	if err != nil {
+		t.Fatalf("NewChromaStore: %v", err)
+	}
+	resetter, ok := raw.(CollectionResetter)
+	if !ok {
+		t.Fatal("chroma store should implement CollectionResetter")
+	}
+	if err := resetter.ResetAll(context.Background()); err == nil {
+		t.Fatal("ResetAll succeeded even though fallback DELETE 404 left the named collection")
+	}
+	want := []string{
+		"GET /api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors",
+		"DELETE /api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors",
 		"DELETE /api/v2/tenants/default_tenant/databases/default_database/collections/collection-1",
+		"GET /api/v2/tenants/default_tenant/databases/default_database/collections/archive_center_vectors",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %#v, want %#v", got, want)

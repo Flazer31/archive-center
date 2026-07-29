@@ -511,7 +511,7 @@ func TestMariaDBStoreStatsQueriesCanonicalCounts(t *testing.T) {
 	}
 }
 
-func TestMariaDBStoreLockSessionMigrationSourceWritesLockAfterVectorReindex(t *testing.T) {
+func TestMariaDBStoreLockSessionMigrationSourceFailsClosedAfterVectorReindexUntilManifestParity(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -519,33 +519,9 @@ func TestMariaDBStoreLockSessionMigrationSourceWritesLockAfterVectorReindex(t *t
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
-	lockedAt := time.Date(2026, 6, 18, 10, 0, 0, 0, time.UTC)
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migrations")).
-		WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count"}).
-			AddRow("source-session", "target-session", SessionMigrationModeCopyThenLockSource, "vector_reindexed", 2))
-	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migration_locks")).
-		WithArgs("source-session").
-		WillReturnRows(sqlmock.NewRows([]string{"migration_id", "source_session_id", "target_session_id", "locked", "lock_status", "reason", "locked_at"}))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO session_migration_locks")).
-		WithArgs(int64(42), "source-session", "target-session", "operator confirmed").
-		WillReturnResult(sqlmock.NewResult(7, 1))
-	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migration_locks")).
-		WithArgs("source-session").
-		WillReturnRows(sqlmock.NewRows([]string{"migration_id", "source_session_id", "target_session_id", "locked", "lock_status", "reason", "locked_at"}).
-			AddRow(int64(42), "source-session", "target-session", true, "migrated_away", "operator confirmed", lockedAt))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE session_migrations")).
-		WithArgs(int64(42)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-
 	result, err := m.LockSessionMigrationSource(context.Background(), 42, "operator confirmed")
-	if err != nil {
-		t.Fatalf("LockSessionMigrationSource failed: %v", err)
-	}
-	if result.Status != "source_locked" || !result.ReadyForLive || !result.Lock.Locked || result.Lock.TargetSessionID != "target-session" {
-		t.Fatalf("unexpected lock result: %+v", result)
+	if result != nil || err == nil || !strings.Contains(err.Error(), SessionMigrationManifestParityUnverifiedReason) {
+		t.Fatalf("result=%+v err=%v, want manifest parity blocker", result, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -586,16 +562,10 @@ func TestMariaDBStoreLockSessionMigrationSourceBlocksBeforeVectorReindex(t *test
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migrations")).
-		WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count"}).
-			AddRow("source-session", "target-session", SessionMigrationModeCopyThenLockSource, "copied", 0))
-	mock.ExpectRollback()
 
 	_, err = m.LockSessionMigrationSource(context.Background(), 42, "too early")
-	if err == nil || !strings.Contains(err.Error(), "not vector_reindexed") {
-		t.Fatalf("expected vector_reindexed block, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), SessionMigrationManifestParityUnverifiedReason) {
+		t.Fatalf("expected manifest parity block before any phase read, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -610,16 +580,10 @@ func TestMariaDBStoreLockSessionMigrationSourceBlocksCopyKeepSourceMode(t *testi
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
-	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migrations")).
-		WithArgs(int64(42)).
-		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count"}).
-			AddRow("source-session", "target-session", SessionMigrationModeCopyKeepSource, "vector_reindexed", 2))
-	mock.ExpectRollback()
 
 	_, err = m.LockSessionMigrationSource(context.Background(), 42, "should not lock")
-	if err == nil || !strings.Contains(err.Error(), "does not lock source") {
-		t.Fatalf("expected copy_keep_source lock block, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), SessionMigrationManifestParityUnverifiedReason) {
+		t.Fatalf("expected manifest parity block before mode read, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

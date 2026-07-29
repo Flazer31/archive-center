@@ -63,18 +63,28 @@ function Import-DotEnv([string]$Path) {
     }
 }
 
-function Test-PortOpen([int]$Port) {
-    $client = New-Object Net.Sockets.TcpClient
+function Test-PortOpen([int]$Port, [string]$ConnectHost = "127.0.0.1") {
     try {
-        $iar = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
-        $ok = $iar.AsyncWaitHandle.WaitOne(500, $false)
-        if ($ok) { $client.EndConnect($iar) }
-        return $ok
+        $addresses = [System.Net.Dns]::GetHostAddresses($ConnectHost)
     } catch {
         return $false
-    } finally {
-        $client.Close()
     }
+    foreach ($address in $addresses) {
+        $client = [System.Net.Sockets.TcpClient]::new($address.AddressFamily)
+        try {
+            $iar = $client.BeginConnect($address, $Port, $null, $null)
+            $ok = $iar.AsyncWaitHandle.WaitOne(500, $false)
+            if ($ok) { $client.EndConnect($iar) }
+            if ($ok -and $client.Connected) {
+                return $true
+            }
+        } catch {
+            continue
+        } finally {
+            $client.Close()
+        }
+    }
+    return $false
 }
 
 function Wait-Port([int]$Port, [int]$TimeoutSeconds = 60) {
@@ -214,7 +224,12 @@ function Start-ManagedChromaDB {
 
     $hostName = if ([string]::IsNullOrWhiteSpace($Endpoint.Host)) { "127.0.0.1" } else { $Endpoint.Host }
     $port = if ($Endpoint.Port -gt 0) { $Endpoint.Port } else { 8000 }
-    $dataDir = Join-Path $PackageRoot ".runtime\chromadb"
+    $dataRoot = if ([string]::IsNullOrWhiteSpace($env:ARCHIVE_CENTER_DATA_DIR)) {
+        Join-Path $PackageRoot ".runtime"
+    } else {
+        [System.IO.Path]::GetFullPath($env:ARCHIVE_CENTER_DATA_DIR)
+    }
+    $dataDir = Join-Path $dataRoot "chromadb"
     New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 
     $python = Find-ChromaRuntimePython $RuntimeRoot
@@ -283,6 +298,34 @@ function Test-LocalChromaRequested([string]$Value) {
     @("local_native", "local_proot", "bundled") -contains $Value
 }
 
+function Get-LowerSHA256([string]$Path) {
+    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function ConvertTo-UpdaterDiagnostic([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return "<empty>"
+    }
+    $redacted = $Text -replace '(?i)("(?:password|passwd|token|secret|api[_-]?key)"\s*:\s*")[^"]*"', '$1<redacted>"'
+    $redacted = $redacted -replace '(?i)\b(password|passwd|token|secret|api[_-]?key)\b(\s*[:=]\s*)(?:"[^"]*"|''[^'']*''|[^,\s}]+)', '$1$2<redacted>'
+    $redacted = $redacted -replace '(?i)(https?://)[^/@:\s]+:[^/@\s]+@', '$1<redacted>@'
+    $redacted = $redacted -replace '[\x00-\x08\x0B\x0C\x0E-\x1F]', '?'
+    if ($redacted.Length -gt 2048) {
+        $redacted = $redacted.Substring(0, 2048) + "...<truncated>"
+    }
+    return $redacted
+}
+
+function Get-UpdaterAllowedStatuses([string]$Command) {
+    switch ($Command) {
+        "apply-pending" { return @("no_pending", "applied_pending_health") }
+        "commit" { return @("committed") }
+        "rollback" { return @("rolled_back", "nothing_to_rollback") }
+        "status" { return @("no_state", "applying", "applied_pending_health", "committed", "rolled_back") }
+        default { throw "Unsupported updater command: $Command" }
+    }
+}
+
 function Invoke-ArchiveUpdater {
     param(
         [Parameter(Mandatory = $true)][string]$RunnerPath,
@@ -290,22 +333,179 @@ function Invoke-ArchiveUpdater {
         [Parameter(Mandatory = $true)][string]$PackageRoot
     )
 
-    $output = @(& $RunnerPath $Command --root $PackageRoot 2>&1)
-    $exitCode = $LASTEXITCODE
-    $text = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
-    try {
-        $result = $text | ConvertFrom-Json
-    } catch {
-        throw "Archive Center updater returned an invalid response for '$Command' (exit $exitCode). Recovery is required before startup to avoid a mixed package.`n$text"
+    if (-not (Test-Path -LiteralPath $RunnerPath -PathType Leaf)) {
+        throw "Archive Center updater runner is missing: $RunnerPath"
     }
-    if ($null -eq $result -or [string]::IsNullOrWhiteSpace([string]$result.status)) {
-        throw "Archive Center updater response for '$Command' had no status. Recovery is required before startup to avoid a mixed package."
+    $runnerSHA256 = Get-LowerSHA256 $RunnerPath
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $RunnerPath
+    $startInfo.Arguments = Join-Args @($Command, "--root", $PackageRoot)
+    $startInfo.WorkingDirectory = $PackageRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "Process.Start returned false."
+        }
+    } catch {
+        throw "Archive Center updater failed to start for '$Command' (runner_sha256=$runnerSHA256): $(ConvertTo-UpdaterDiagnostic $_.Exception.Message)"
+    }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $stdout = ([string]$stdoutTask.GetAwaiter().GetResult()).Trim()
+    $stderr = ([string]$stderrTask.GetAwaiter().GetResult()).Trim()
+    $exitCode = $process.ExitCode
+    $diagnostic = "exit=$exitCode runner_sha256=$runnerSHA256 stdout=$(ConvertTo-UpdaterDiagnostic $stdout) stderr=$(ConvertTo-UpdaterDiagnostic $stderr)"
+
+    if ($exitCode -eq 0) {
+        if ([string]::IsNullOrWhiteSpace($stdout) -or -not [string]::IsNullOrWhiteSpace($stderr)) {
+            throw "Archive Center updater violated success IPC for '$Command'. $diagnostic"
+        }
+        $payloadText = $stdout
+    } else {
+        if (-not [string]::IsNullOrWhiteSpace($stdout) -or [string]::IsNullOrWhiteSpace($stderr)) {
+            throw "Archive Center updater violated failure IPC for '$Command'. $diagnostic"
+        }
+        $payloadText = $stderr
+    }
+    try {
+        $result = $payloadText | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Archive Center updater returned invalid JSON for '$Command'. $diagnostic"
+    }
+    if ($null -eq $result -or $result -is [System.Array]) {
+        throw "Archive Center updater returned a non-object response for '$Command'. $diagnostic"
+    }
+    $contractVersion = ([string]$result.contract_version).Trim()
+    $resultAction = ([string]$result.action).Trim()
+    $status = ([string]$result.status).Trim().ToLowerInvariant()
+    if ($contractVersion -cne "archive-center.updater-result.v1" -or $resultAction -cne $Command) {
+        throw "Archive Center updater contract/action mismatch for '$Command'. $diagnostic"
+    }
+    if ($exitCode -eq 0) {
+        if ($status -notin @(Get-UpdaterAllowedStatuses $Command)) {
+            throw "Archive Center updater returned unsupported success status '$status' for '$Command'. $diagnostic"
+        }
+    } elseif ($status -cne "error" -or [string]::IsNullOrWhiteSpace([string]$result.code)) {
+        throw "Archive Center updater returned an invalid failure contract for '$Command'. $diagnostic"
     }
     return [pscustomobject]@{
         ExitCode = $exitCode
-        Status = ([string]$result.status).Trim().ToLowerInvariant()
+        Status = $status
         Result = $result
+        RunnerSHA256 = $runnerSHA256
+        Diagnostic = $diagnostic
     }
+}
+
+function Write-UpdaterRunnerIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][string]$RunnerPath,
+        [Parameter(Mandatory = $true)][string]$TargetVersion
+    )
+    $runnerRoot = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot ".updates\runner")).TrimEnd('\')
+    $runnerFull = [System.IO.Path]::GetFullPath($RunnerPath)
+    if (-not $runnerFull.StartsWith($runnerRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Updater runner identity escaped .updates\runner."
+    }
+    if ([string]::IsNullOrWhiteSpace($TargetVersion)) {
+        throw "Updater runner identity requires a target version."
+    }
+    $relative = $runnerFull.Substring([System.IO.Path]::GetFullPath($PackageRoot).TrimEnd('\').Length).TrimStart('\').Replace('\', '/')
+    $identity = [ordered]@{
+        contract_version = "archive-center.updater-runner-identity.v1"
+        target_version = $TargetVersion.Trim()
+        runner_path = $relative
+        runner_sha256 = Get-LowerSHA256 $runnerFull
+        written_at = [DateTimeOffset]::UtcNow.ToString("o")
+    }
+    $identityPath = Join-Path $PackageRoot ".updates\runner-identity.json"
+    $temporaryPath = "$identityPath.tmp"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $identityPath) | Out-Null
+    [System.IO.File]::WriteAllText(
+        $temporaryPath,
+        ($identity | ConvertTo-Json -Depth 5) + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Move-Item -LiteralPath $temporaryPath -Destination $identityPath -Force
+}
+
+function New-BoundUpdaterRunner {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][string]$UpdaterPath,
+        [string]$TargetVersion = ""
+    )
+    if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
+        throw "Archive Center updater is missing: $UpdaterPath"
+    }
+    $runnerSHA256 = Get-LowerSHA256 $UpdaterPath
+    $runnerRoot = Join-Path $PackageRoot ".updates\runner"
+    New-Item -ItemType Directory -Force -Path $runnerRoot | Out-Null
+    $runner = Join-Path $runnerRoot ("archive-center-updater-$runnerSHA256.exe")
+    if (Test-Path -LiteralPath $runner -PathType Leaf) {
+        if ((Get-LowerSHA256 $runner) -cne $runnerSHA256) {
+            throw "Existing updater runner hash mismatched its bound filename."
+        }
+    } else {
+        Copy-Item -LiteralPath $UpdaterPath -Destination $runner
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TargetVersion)) {
+        Write-UpdaterRunnerIdentity -PackageRoot $PackageRoot -RunnerPath $runner -TargetVersion $TargetVersion
+    }
+    return $runner
+}
+
+function Resolve-BoundUpdaterRunner {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)]$State
+    )
+    $identityPath = Join-Path $PackageRoot ".updates\runner-identity.json"
+    if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
+        throw "Active update state has no bound updater runner identity."
+    }
+    try {
+        $identity = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Updater runner identity is unreadable."
+    }
+    if ([string]$identity.contract_version -cne "archive-center.updater-runner-identity.v1") {
+        throw "Updater runner identity contract mismatch."
+    }
+    $stateTarget = ([string]$State.target_version).Trim()
+    if ([string]::IsNullOrWhiteSpace($stateTarget) -or ([string]$identity.target_version).Trim() -cne $stateTarget) {
+        throw "Updater runner identity target does not match active update state."
+    }
+    $relative = ([string]$identity.runner_path).Replace('/', '\')
+    $runnerRoot = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot ".updates\runner")).TrimEnd('\')
+    $runner = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot $relative))
+    if (-not $runner.StartsWith($runnerRoot + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not (Test-Path -LiteralPath $runner -PathType Leaf)) {
+        throw "Updater runner identity path is missing or unsafe."
+    }
+    $identitySHA256 = ([string]$identity.runner_sha256).Trim().ToLowerInvariant()
+    if ($identitySHA256 -notmatch '^[0-9a-f]{64}$' -or (Get-LowerSHA256 $runner) -cne $identitySHA256) {
+        throw "Updater runner identity SHA256 mismatch."
+    }
+    $stateRunnerPath = ([string]$State.runner_path).Replace('/', '\')
+    $stateRunnerSHA256 = ([string]$State.runner_sha256).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($stateRunnerPath) -or -not [string]::IsNullOrWhiteSpace($stateRunnerSHA256)) {
+        if ([string]::IsNullOrWhiteSpace($stateRunnerPath) -or [string]::IsNullOrWhiteSpace($stateRunnerSHA256)) {
+            throw "Active update state has an incomplete runner identity."
+        }
+        $stateRunner = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot $stateRunnerPath))
+        if ($stateRunner -cne $runner -or $stateRunnerSHA256 -cne $identitySHA256) {
+            throw "Updater runner identity does not match the durable update state."
+        }
+    }
+    return $runner
 }
 
 function Test-UpdaterSafeBaselineStatus([string]$Status) {
@@ -363,6 +563,193 @@ function Stop-ArchiveChildProcess([System.Diagnostics.Process]$Process) {
     }
 }
 
+function Get-RelativeDataFileMap([string]$Root) {
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $result = @{}
+    if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) {
+        return $result
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $rootFull -Recurse -File -Force | Sort-Object FullName)) {
+        $relative = $file.FullName.Substring($rootFull.Length).TrimStart('\').Replace('\', '/')
+        $result[$relative] = "$($file.Length):$(Get-LowerSHA256 $file.FullName)"
+    }
+    return $result
+}
+
+function Copy-LegacyDataDirectoryVerified([string]$Source, [string]$Destination) {
+    $destinationFull = [System.IO.Path]::GetFullPath($Destination)
+    $destinationParent = Split-Path -Parent $destinationFull
+    $destinationLeaf = Split-Path -Leaf $destinationFull
+    New-Item -ItemType Directory -Force -Path $destinationParent | Out-Null
+    $staging = Join-Path $destinationParent (".$destinationLeaf.import-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    $sourceFull = [System.IO.Path]::GetFullPath($Source).TrimEnd('\')
+    try {
+        foreach ($sourceFile in @(Get-ChildItem -LiteralPath $sourceFull -Recurse -File -Force | Sort-Object FullName)) {
+            $relative = $sourceFile.FullName.Substring($sourceFull.Length).TrimStart('\')
+            $stagedFile = Join-Path $staging $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stagedFile) | Out-Null
+            Copy-Item -LiteralPath $sourceFile.FullName -Destination $stagedFile
+        }
+        $sourceMap = Get-RelativeDataFileMap $Source
+        $stagingMap = Get-RelativeDataFileMap $staging
+        if ($sourceMap.Count -ne $stagingMap.Count) {
+            throw "Stable data import staging count mismatch for $Destination"
+        }
+        foreach ($relative in $sourceMap.Keys) {
+            if (-not $stagingMap.ContainsKey($relative) -or $stagingMap[$relative] -cne $sourceMap[$relative]) {
+                throw "Stable data import staging mismatch: $relative"
+            }
+        }
+        if (Test-Path -LiteralPath $destinationFull) {
+            $destinationMap = Get-RelativeDataFileMap $destinationFull
+            if ($sourceMap.Count -ne $destinationMap.Count) {
+                throw "Stable data import found a conflicting destination directory: $Destination"
+            }
+            foreach ($relative in $sourceMap.Keys) {
+                if (-not $destinationMap.ContainsKey($relative) -or $destinationMap[$relative] -cne $sourceMap[$relative]) {
+                    throw "Stable data import found a conflicting destination file: $relative"
+                }
+            }
+            return
+        }
+        Move-Item -LiteralPath $staging -Destination $destinationFull
+        $staging = ""
+        $destinationMap = Get-RelativeDataFileMap $destinationFull
+        if ($sourceMap.Count -ne $destinationMap.Count) {
+            throw "Stable data import verification count mismatch for $Destination"
+        }
+        foreach ($relative in $sourceMap.Keys) {
+            if (-not $destinationMap.ContainsKey($relative) -or $destinationMap[$relative] -cne $sourceMap[$relative]) {
+                throw "Stable data import verification mismatch: $relative"
+            }
+        }
+    } finally {
+        if (-not [string]::IsNullOrWhiteSpace($staging) -and (Test-Path -LiteralPath $staging)) {
+            Remove-Item -LiteralPath $staging -Recurse -Force
+        }
+    }
+}
+
+function Get-LegacyChromaImportTargets([int]$DefaultPort = 8000) {
+    $targets = [ordered]@{}
+    foreach ($defaultHost in @("127.0.0.1", "::1")) {
+        $targets["$defaultHost`:$DefaultPort"] = [pscustomobject]@{
+            Host = $defaultHost
+            Port = $DefaultPort
+        }
+    }
+    $endpointText = [string]$env:AC_CHROMA_ENDPOINT
+    if (-not [string]::IsNullOrWhiteSpace($endpointText)) {
+        $endpoint = $null
+        if ([Uri]::TryCreate($endpointText.Trim(), [UriKind]::Absolute, [ref]$endpoint)) {
+            $endpointHost = $endpoint.DnsSafeHost
+            $endpointAddress = $null
+            $isLoopback = $endpointHost.Equals("localhost", [System.StringComparison]::OrdinalIgnoreCase)
+            if ([System.Net.IPAddress]::TryParse($endpointHost, [ref]$endpointAddress)) {
+                $isLoopback = [System.Net.IPAddress]::IsLoopback($endpointAddress)
+            }
+        }
+        if ($null -ne $endpoint -and $isLoopback) {
+            $endpointPort = $(if ($endpoint.IsDefaultPort) { 8000 } else { $endpoint.Port })
+            $targets["$($endpointHost.ToLowerInvariant())`:$endpointPort"] = [pscustomobject]@{
+                Host = $endpointHost
+                Port = $endpointPort
+            }
+        }
+    }
+    @($targets.Values | Where-Object { $_.Port -gt 0 -and $_.Port -le 65535 })
+}
+
+function Assert-LegacyChromaOffline([string]$Source, [int]$DefaultPort = 8000) {
+    foreach ($target in @(Get-LegacyChromaImportTargets -DefaultPort $DefaultPort)) {
+        if (Test-PortOpen -Port $target.Port -ConnectHost $target.Host) {
+            $displayHost = $(if ($target.Host.Contains(":")) { "[$($target.Host)]" } else { $target.Host })
+            throw "Legacy ChromaDB data may be active at $displayHost`:$($target.Port). Stop ChromaDB before importing raw data files from $Source."
+        }
+    }
+}
+
+function Import-LegacyRuntimeDataOnce([string]$PackageRoot, [string]$DataRoot, [int]$ChromaPort = 8000) {
+    $dataRootFull = [System.IO.Path]::GetFullPath($DataRoot)
+    $packageRootFull = [System.IO.Path]::GetFullPath($PackageRoot)
+    $markerPath = Join-Path $dataRootFull ".archive-center-legacy-runtime-import-v1.json"
+    if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+        try {
+            $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            throw "Stable data import marker is unreadable: $markerPath"
+        }
+        if ([string]$marker.contract_version -cne "archive-center.legacy-runtime-import.v1" -or
+            ([string]$marker.data_root).Trim() -cne $dataRootFull) {
+            throw "Stable data import marker contract/path mismatch."
+        }
+        return
+    }
+
+    $legacyRoot = Join-Path $packageRootFull ".runtime"
+    $mariaCandidates = @(
+        (Join-Path $legacyRoot "mariadb"),
+        (Join-Path $legacyRoot "mariadb-data")
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    if (@($mariaCandidates).Count -gt 1) {
+        throw "Both legacy MariaDB data layouts exist; refusing an ambiguous automatic import."
+    }
+    $imports = @()
+    if (@($mariaCandidates).Count -eq 1) {
+        $imports += [pscustomobject]@{ Name = "mariadb"; Source = [string]$mariaCandidates[0]; Destination = (Join-Path $dataRootFull "mariadb") }
+    }
+    $legacyChroma = Join-Path $legacyRoot "chromadb"
+    if (Test-Path -LiteralPath $legacyChroma -PathType Container) {
+        $imports += [pscustomobject]@{ Name = "chromadb"; Source = $legacyChroma; Destination = (Join-Path $dataRootFull "chromadb") }
+    }
+    if ($imports.Count -eq 0) {
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $dataRootFull | Out-Null
+    $completed = @()
+    foreach ($item in $imports) {
+        if ($item.Name -eq "mariadb") {
+            $mariaProcesses = @(
+                Get-Process -Name "mariadbd", "mysqld" -ErrorAction SilentlyContinue
+            )
+            if ((Test-PortOpen $MariaDBPort) -or $mariaProcesses.Count -gt 0) {
+                throw "Legacy MariaDB data may be active. Stop MariaDB and ensure port $MariaDBPort is closed before importing raw data files."
+            }
+        } elseif ($item.Name -eq "chromadb") {
+            Assert-LegacyChromaOffline -Source $item.Source -DefaultPort $ChromaPort
+        }
+        Copy-LegacyDataDirectoryVerified -Source $item.Source -Destination $item.Destination
+        $completed += [ordered]@{
+            name = $item.Name
+            source = [System.IO.Path]::GetFullPath($item.Source)
+            destination = [System.IO.Path]::GetFullPath($item.Destination)
+            file_count = (Get-RelativeDataFileMap $item.Source).Count
+        }
+    }
+    $markerValue = [ordered]@{
+        contract_version = "archive-center.legacy-runtime-import.v1"
+        data_root = $dataRootFull
+        source_preserved = $true
+        verified = $true
+        completed_at = [DateTimeOffset]::UtcNow.ToString("o")
+        imports = @($completed)
+    }
+    $temporaryPath = "$markerPath.tmp"
+    [System.IO.File]::WriteAllText(
+        $temporaryPath,
+        ($markerValue | ConvertTo-Json -Depth 6) + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Move-Item -LiteralPath $temporaryPath -Destination $markerPath -Force
+    foreach ($volatile in @("mariadb\mysql.sock", "mariadb\mariadb.pid", "mariadb\mysqld.pid")) {
+        Remove-Item -LiteralPath (Join-Path $dataRootFull $volatile) -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "Imported and verified legacy package-local runtime data into: $dataRootFull"
+    Write-Host "Legacy source data was preserved."
+}
+
 $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $packRoot
 
@@ -391,6 +778,24 @@ $pendingApplyStatus = "no_pending"
 $pendingTargetVersion = ""
 $pendingCurrentVersion = ""
 $observedStateStatus = ""
+$observedState = $null
+$pendingManifest = $null
+$pendingMarkerTargetVersion = ""
+$updaterRunnerCleanupAllowed = $true
+if ($pendingMarkerPresent) {
+    try {
+        $pendingManifest = Get-Content -LiteralPath $pendingMarker -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Pending update manifest is unreadable. Startup stopped to avoid a mixed package."
+    }
+    if ([string]$pendingManifest.contract_version -cne "archive-center.pending-update.v1") {
+        throw "Pending update manifest contract mismatch. Startup stopped to avoid a mixed package."
+    }
+    $pendingMarkerTargetVersion = ([string]$pendingManifest.target_version).Trim()
+    if ([string]::IsNullOrWhiteSpace($pendingMarkerTargetVersion)) {
+        throw "Pending update manifest has no target version. Startup stopped to avoid a mixed package."
+    }
+}
 if ($stateMarkerPresent) {
     try {
         $observedState = Get-Content -LiteralPath $stateStatusSource -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -398,42 +803,24 @@ if ($stateMarkerPresent) {
     } catch {
         $observedStateStatus = "invalid"
     }
+    if ([string]$observedState.contract_version -cne "archive-center.update-state.v1" -or
+        $observedStateStatus -notin @("applying", "applied_pending_health", "committed", "rolled_back")) {
+        $observedStateStatus = "invalid"
+    }
 }
 
 if ($profileBeforeApply -eq "client_only") {
-    $clientStateStatus = "no_state"
-    if ($stateMarkerPresent) {
-        try {
-            $clientState = Get-Content -LiteralPath $stateStatusSource -Raw -Encoding UTF8 | ConvertFrom-Json
-            $clientStateStatus = ([string]$clientState.status).Trim().ToLowerInvariant()
-        } catch {
-            throw "client_only profile found unreadable update state. Startup stopped because local backend health commit is unavailable."
-        }
-    }
+    $clientStateStatus = if ($stateMarkerPresent) { $observedStateStatus } else { "no_state" }
     if ($clientStateStatus -in @("applying", "applied_pending_health")) {
-        $clientPreservedRunner = Get-ChildItem -LiteralPath $updaterRunnerDir -Filter "archive-center-updater-*.exe" -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-        if ($null -ne $clientPreservedRunner) {
-            $updaterRunner = $clientPreservedRunner.FullName
-        } elseif (Test-Path -LiteralPath $updaterExe -PathType Leaf) {
-            New-Item -ItemType Directory -Force -Path $updaterRunnerDir | Out-Null
-            $updaterRunner = Join-Path $updaterRunnerDir ("archive-center-updater-{0}.exe" -f $PID)
-            Copy-Item -LiteralPath $updaterExe -Destination $updaterRunner -Force
-        } else {
-            $recoveryRunner = Get-ChildItem -LiteralPath $updaterRunnerDir -Filter "archive-center-updater-*.exe" -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTimeUtc -Descending |
-                Select-Object -First 1
-            if ($null -eq $recoveryRunner) {
-                throw "client_only profile found active update state '$clientStateStatus', but no updater recovery runner is available."
-            }
-            $updaterRunner = $recoveryRunner.FullName
-        }
+        $updaterRunner = Resolve-BoundUpdaterRunner -PackageRoot $packRoot -State $observedState
+        $updaterRunnerCleanupAllowed = $false
+        Write-Host "Using preserved updater recovery runner: $updaterRunner"
         Unblock-PackageFile $updaterRunner
         $clientRollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot
         if ($clientRollback.ExitCode -ne 0 -or $clientRollback.Status -notin @("rolled_back", "nothing_to_rollback")) {
             throw "client_only profile could not safely roll back active update state '$clientStateStatus'. Startup stopped to avoid a mixed package."
         }
+        $updaterRunnerCleanupAllowed = $true
         Write-Host "client_only profile restored the baseline package instead of entering an unsupported backend health gate."
     } elseif ($stateMarkerPresent -and $clientStateStatus -notin @("committed", "rolled_back", "no_state")) {
         throw "client_only profile found unsupported update state '$clientStateStatus'. Startup stopped because local backend health commit is unavailable."
@@ -441,25 +828,17 @@ if ($profileBeforeApply -eq "client_only") {
         Write-Host "client_only profile: pending package apply is deferred because no local backend health gate is available."
     }
 } else {
-    $preservedRunner = Get-ChildItem -LiteralPath $updaterRunnerDir -Filter "archive-center-updater-*.exe" -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1
-    if ($observedStateStatus -in @("applying", "applied_pending_health") -and $null -ne $preservedRunner) {
-        $updaterRunner = $preservedRunner.FullName
+    if ($observedStateStatus -in @("applying", "applied_pending_health")) {
+        $updaterRunner = Resolve-BoundUpdaterRunner -PackageRoot $packRoot -State $observedState
+        $updaterRunnerCleanupAllowed = $false
         Write-Host "Using preserved updater recovery runner: $updaterRunner"
     } elseif (Test-Path -LiteralPath $updaterExe -PathType Leaf) {
-        New-Item -ItemType Directory -Force -Path $updaterRunnerDir | Out-Null
-        $updaterRunner = Join-Path $updaterRunnerDir ("archive-center-updater-{0}.exe" -f $PID)
-        Copy-Item -LiteralPath $updaterExe -Destination $updaterRunner -Force
-    } elseif ($updateStatePresent) {
-        $recoveryRunner = Get-ChildItem -LiteralPath $updaterRunnerDir -Filter "archive-center-updater-*.exe" -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-        if ($null -eq $recoveryRunner) {
-            throw "Archive Center updater is missing while pending update state exists. No recovery runner is available; startup stopped to avoid a mixed package."
+        $updaterRunner = New-BoundUpdaterRunner -PackageRoot $packRoot -UpdaterPath $updaterExe -TargetVersion $pendingMarkerTargetVersion
+        if ($pendingMarkerPresent) {
+            $updaterRunnerCleanupAllowed = $false
         }
-        $updaterRunner = $recoveryRunner.FullName
-        Write-Host "Using preserved updater recovery runner: $updaterRunner"
+    } elseif ($updateStatePresent) {
+        throw "Archive Center updater is missing while pending update state exists. No bound recovery runner is available; startup stopped to avoid a mixed package."
     } else {
         Write-Host "Warning: Archive Center updater is not installed. No pending state exists, so normal startup will continue."
     }
@@ -487,13 +866,16 @@ if ($profileBeforeApply -eq "client_only") {
             }
             if ($safety.ExitCode -eq 0 -and $safety.Status -in @("no_state", "rolled_back", "nothing_to_rollback")) {
                 $pendingApplyStatus = "no_pending"
+                $updaterRunnerCleanupAllowed = $true
                 Write-Host "Warning: pending update was rejected before a live package mutation ($applyFailure). State is '$($safety.Status)'; continuing with the existing package."
             } else {
                 throw "Updater apply-pending failed ($applyFailure), and state is '$($safety.Status)'. Startup stopped to avoid a mixed package."
             }
         } elseif ($pendingApplyStatus -eq "applied_pending_health") {
+            $updaterRunnerCleanupAllowed = $false
             Write-Host "Applied a verified pending package. Main readiness will be checked before commit."
         } elseif (Test-UpdaterSafeBaselineStatus $pendingApplyStatus) {
+            $updaterRunnerCleanupAllowed = $true
             Write-Host "Updater reported '$pendingApplyStatus'; continuing with the verified baseline package."
         }
     }
@@ -545,7 +927,10 @@ if ($env:AC_RUNTIME_PROFILE -eq "client_only") {
     Write-Host "Archive Center client_only profile selected."
     Write-Host "No local backend, MariaDB, or ChromaDB service will be started on this device."
     Write-Host "Configure the RisuAI plugin Bridge URL to the PC/NAS Archive Center backend."
-    Remove-Item -LiteralPath $updaterRunner -Force -ErrorAction SilentlyContinue
+    if ($updaterRunnerCleanupAllowed) {
+        Remove-Item -LiteralPath $updaterRunner -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $packRoot ".updates\runner-identity.json") -Force -ErrorAction SilentlyContinue
+    }
     exit 0
 }
 Normalize-ProcessPathForStartProcess
@@ -555,6 +940,13 @@ if ([string]::IsNullOrWhiteSpace($localAppData)) {
     $localAppData = Join-Path $env:USERPROFILE "AppData\Local"
 }
 $managedRuntimeInstallRoot = Join-Path $localAppData "ArchiveCenter"
+$stableDataRoot = if ([string]::IsNullOrWhiteSpace($env:ARCHIVE_CENTER_DATA_DIR)) {
+    Join-Path $managedRuntimeInstallRoot "data"
+} else {
+    [System.IO.Path]::GetFullPath($env:ARCHIVE_CENTER_DATA_DIR)
+}
+$env:ARCHIVE_CENTER_DATA_DIR = [System.IO.Path]::GetFullPath($stableDataRoot)
+Import-LegacyRuntimeDataOnce -PackageRoot $packRoot -DataRoot $env:ARCHIVE_CENTER_DATA_DIR
 $mariaInstallRoot = $managedRuntimeInstallRoot
 $mariaRuntimeRoot = Join-Path $mariaInstallRoot "runtime\MariaDB"
 if (-not [string]::IsNullOrWhiteSpace($env:AC_MARIADB_RUNTIME_DIR)) {
@@ -636,8 +1028,8 @@ if (Test-LocalChromaRequested $env:AC_VECTOR_MODE) {
 Unblock-PackageFile $backendExe
 Unblock-PackageFile (Join-Path $packRoot "bin\mariadb-schema.exe")
 
-$dataDir = Join-Path $packRoot ".runtime\mariadb"
-$logDir = Join-Path $packRoot ".runtime\logs"
+$dataDir = Join-Path $env:ARCHIVE_CENTER_DATA_DIR "mariadb"
+$logDir = Join-Path $env:ARCHIVE_CENTER_DATA_DIR "logs"
 New-Item -ItemType Directory -Force -Path $dataDir, $logDir | Out-Null
 
 if (-not (Test-Path -LiteralPath (Join-Path $dataDir "mysql") -PathType Container)) {
@@ -664,7 +1056,7 @@ try {
         $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
         Start-Sleep -Seconds 2
         if ($startedMariaDB.HasExited) {
-            throw "MariaDB exited early with code $($startedMariaDB.ExitCode). Check .runtime\mariadb and .runtime\logs for details."
+            throw "MariaDB exited early with code $($startedMariaDB.ExitCode). Check $dataDir and $logDir for details."
         }
     }
     Wait-Port $MariaDBPort 60
@@ -758,6 +1150,7 @@ Write-Host "Starting Archive Center 2.1 full package"
                 $commitFailure = $_.Exception.Message
             }
             if ([string]::IsNullOrWhiteSpace($commitFailure)) {
+                $updaterRunnerCleanupAllowed = $true
                 Write-Host "Pending Archive Center package committed after main readiness passed."
                 $candidateBackend.WaitForExit()
             } else {
@@ -770,6 +1163,7 @@ Write-Host "Starting Archive Center 2.1 full package"
                 if (-not (Test-UpdaterSafeBaselineStatus $rollback.Status)) {
                     throw "Update commit failed ($commitFailure) and rollback was not reported safe (status '$($rollback.Status)'). Startup stopped to avoid a mixed package."
                 }
+                $updaterRunnerCleanupAllowed = $true
                 if ($rollback.Status -eq "rolled_back" -and -not [string]::IsNullOrWhiteSpace($pendingCurrentVersion)) {
                     $env:AC_BUILD_VERSION = $pendingCurrentVersion
                 }
@@ -794,6 +1188,7 @@ Write-Host "Starting Archive Center 2.1 full package"
             if (-not (Test-UpdaterSafeBaselineStatus $rollback.Status)) {
                 throw "Updated backend failed main readiness ($($health.Detail)) and rollback was not reported safe (status '$($rollback.Status)'). Startup stopped to avoid a mixed package."
             }
+            $updaterRunnerCleanupAllowed = $true
             if ($rollback.Status -eq "rolled_back" -and -not [string]::IsNullOrWhiteSpace($pendingCurrentVersion)) {
                 $env:AC_BUILD_VERSION = $pendingCurrentVersion
             }
@@ -821,6 +1216,7 @@ Write-Host "Starting Archive Center 2.1 full package"
             if ($startupRollback.ExitCode -ne 0 -or $startupRollback.Status -notin @("rolled_back", "nothing_to_rollback")) {
                 throw "rollback status '$($startupRollback.Status)' (exit $($startupRollback.ExitCode))"
             }
+            $updaterRunnerCleanupAllowed = $true
             Write-Host "Updated package preparation failed before main readiness. Managed package files were rolled back."
         } catch {
             throw "Updated package preparation failed, and rollback could not be proven safe. Startup stopped to avoid a mixed package.`nOriginal: $($startupError.Exception.Message)`nRollback: $($_.Exception.Message)"
@@ -828,8 +1224,11 @@ Write-Host "Starting Archive Center 2.1 full package"
     }
     throw $startupError
 } finally {
-    if ($updaterRunner -and (Test-Path -LiteralPath $updaterRunner -PathType Leaf)) {
+    if ($updaterRunnerCleanupAllowed -and $updaterRunner -and (Test-Path -LiteralPath $updaterRunner -PathType Leaf)) {
         Remove-Item -LiteralPath $updaterRunner -Force -ErrorAction SilentlyContinue
+    }
+    if ($updaterRunnerCleanupAllowed) {
+        Remove-Item -LiteralPath (Join-Path $packRoot ".updates\runner-identity.json") -Force -ErrorAction SilentlyContinue
     }
     if (-not $KeepServices) {
         if ($startedChroma -and -not $startedChroma.HasExited) {

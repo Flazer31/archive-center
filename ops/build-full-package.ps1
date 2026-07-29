@@ -273,6 +273,89 @@ function Set-OwnPayloadSignatures([string]$Root, [string]$Thumbprint, [string]$T
     return $result
 }
 
+function Write-PackageMigrationUpdateManifest([string]$Root, [string]$TargetVersion) {
+    if ([string]::IsNullOrWhiteSpace($TargetVersion)) {
+        throw "PackageVersion is required for the migration update contract."
+    }
+    $migrationRoot = Join-Path $Root "migrations"
+    $target = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $migrationRoot -File -Filter "*.sql" | Sort-Object Name)) {
+        $target += [ordered]@{
+            path = "migrations/$($file.Name)"
+            size_bytes = [int64]$file.Length
+            sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    if ($target.Count -eq 0) {
+        throw "The package migration inventory is empty."
+    }
+
+    # These are exact fingerprints extracted from the published Windows Update
+    # Package ZIPs for v3.0.0, v3.0.1, and v3.5.0. The two v3.0 artifacts were
+    # independently verified and contain the same migration bytes. Do not
+    # substitute Git blob hashes: historical packaging changed those bytes.
+    $source301 = @(
+        [ordered]@{
+            path = "migrations/001_schema.sql"
+            size_bytes = [int64]73630
+            sha256 = "09fc00c560436d46fe295e6dddbf01432c7daf8148beebef9c959ae7b5cb06d3"
+        }
+    )
+    $source35 = @(
+        [ordered]@{
+            path = "migrations/001_schema.sql"
+            size_bytes = [int64]92635
+            sha256 = "85df8ac1480eadb85e9cf572cbc2696dd53a8f83b1b3bfd06be8f01016132e6f"
+        },
+        [ordered]@{
+            path = "migrations/002_canon_pack_storage.sql"
+            size_bytes = [int64]18802
+            sha256 = "27579f2efe123768c24dd873764105cfbc5901b4f3b81d81e4fb39ca8a1c2bd6"
+        }
+    )
+    # Keep the script itself ASCII-safe for Windows PowerShell 5.1, which reads
+    # UTF-8-without-BOM script literals through the active ANSI code page.
+    $copySuffix = -join @([char]0xBCF5, [char]0xC0AC, [char]0xBCF8)
+    $source301RemovedManagedPaths = @(
+        "06_migrate_1_0_to_2_0_windows.bat",
+        "bin/compare-dry-run.exe",
+        "bin/dry-run-validator.exe",
+        "bin/legacy10-migrate.exe",
+        "bin/mariadb-dry-run-import.exe",
+        "bin/mariadb-import.exe",
+        "bin/sqlite-export.exe",
+        "prompts/critic_system - ${copySuffix}.txt",
+        "prompts/supervisor_system - ${copySuffix}.txt",
+        "scripts/migrate-legacy-1.0-windows.ps1",
+        "scripts/start-chromadb-bundled.ps1"
+    )
+    $contract = [ordered]@{
+        contract_version = "archive-center.package-migration-update.v1"
+        target_version = $TargetVersion.Trim()
+        target = @($target)
+        sources = @(
+            [ordered]@{
+                version = "3.0.0"
+                files = @($source301)
+                removed_managed_paths = @($source301RemovedManagedPaths)
+            },
+            [ordered]@{
+                version = "3.0.1"
+                files = @($source301)
+                removed_managed_paths = @($source301RemovedManagedPaths)
+            },
+            [ordered]@{ version = "3.5.0"; files = @($source35) }
+        )
+    }
+    $path = Join-Path $Root "PACKAGE_MIGRATION_UPDATE.json"
+    [System.IO.File]::WriteAllText(
+        $path,
+        ($contract | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    return $path
+}
+
 function Write-PackageTrustEvidence([string]$Root) {
     $payloadExts = @(".exe", ".dll", ".ps1", ".psm1", ".bat", ".cmd", ".msi")
     $selfFiles = @(
@@ -460,6 +543,10 @@ Set-RuntimeDefaultsInEnvExample (Join-Path $targetFull ".env.full.example") $run
 Set-CopiedPackageKindText (Join-Path $targetFull "01_start_archive_center_windows.bat") $PackageKind $PackageVersion
 Set-CopiedPackageKindText (Join-Path $targetFull "scripts\start-full-windows.ps1") $PackageKind $PackageVersion
 Set-CopiedPackageVersionText $targetFull $PackageVersion
+$migrationUpdateManifestPath = Write-PackageMigrationUpdateManifest $targetFull $PackageVersion
+if (-not (Test-Path -LiteralPath $migrationUpdateManifestPath -PathType Leaf)) {
+    throw "Failed to generate PACKAGE_MIGRATION_UPDATE.json."
+}
 
 $chromaCopied = $false
 if ($PackageKind -eq "full") {
@@ -558,6 +645,7 @@ $manifest = [ordered]@{
         "licenses",
         "WINDOWS_TRUST_AND_DEFENDER.md",
         "PACKAGE_FILE_MANIFEST.json",
+        "PACKAGE_MIGRATION_UPDATE.json",
         "SHA256SUMS.txt",
         "migrations",
         "prompts",
@@ -665,7 +753,7 @@ if ($Zip -or $UpdateZip) {
             }
             $manifestEntry = $manifestEntries[0]
             $packagePrefix = $manifestEntry.Substring(0, $manifestEntry.Length - "PACKAGE_FILE_MANIFEST.json".Length)
-            foreach ($requiredEntry in @("PACKAGE_FILE_MANIFEST.json", "bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/Apache-2.0.txt")) {
+            foreach ($requiredEntry in @("PACKAGE_FILE_MANIFEST.json", "PACKAGE_MIGRATION_UPDATE.json", "bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/Apache-2.0.txt")) {
                 $expectedEntry = $packagePrefix + $requiredEntry
                 if (-not $entryMap.ContainsKey($expectedEntry) -or $entryMap[$expectedEntry].Length -le 0) {
                     throw "Generated ZIP is missing required package entry: $expectedEntry"
@@ -778,6 +866,87 @@ if ($Zip -or $UpdateZip) {
     }
 }
 
+$bridgeZipPath = ""
+if ($UpdateZip) {
+    $bridgePackageName = "Archive Center $PackageVersion Windows Compatibility Bridge"
+    $bridgeStagingRoot = Join-Path $outputRootFull (".compatibility-bridge-" + [guid]::NewGuid().ToString("N"))
+    $bridgeRoot = Join-Path $bridgeStagingRoot $bridgePackageName
+    $bridgeZipPath = Join-Path $outputRootFull ($bridgePackageName + ".zip")
+    $bridgeTempZip = Join-Path $outputRootFull ("." + [System.IO.Path]::GetFileName($bridgeZipPath) + "." + [guid]::NewGuid().ToString("N") + ".tmp.zip")
+    try {
+        New-Item -ItemType Directory -Force -Path $bridgeRoot | Out-Null
+        $bridgeUpdater = Join-Path $bridgeRoot "archive-center-updater.exe"
+        $bridgeScript = Join-Path $bridgeRoot "apply-update-compatibility-bridge.ps1"
+        Copy-Item -LiteralPath (Join-Path $targetFull "bin\archive-center-updater.exe") -Destination $bridgeUpdater
+        Copy-Item -LiteralPath (Join-Path $targetFull "scripts\apply-update-compatibility-bridge.ps1") -Destination $bridgeScript
+
+        $migrationContract = Get-Content -LiteralPath (Join-Path $targetFull "PACKAGE_MIGRATION_UPDATE.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $bridgeManifest = [ordered]@{
+            contract_version = "archive-center.external-update-bridge.v1"
+            target_version = $PackageVersion.Trim()
+            sources = @($migrationContract.sources)
+            update_asset_name = [System.IO.Path]::GetFileName($zipPath)
+            update_sha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            updater_sha256 = (Get-FileHash -LiteralPath $bridgeUpdater -Algorithm SHA256).Hash.ToLowerInvariant()
+            script_sha256 = (Get-FileHash -LiteralPath $bridgeScript -Algorithm SHA256).Hash.ToLowerInvariant()
+            transaction = "external bridge stages the new updater; normal launcher readiness commits or rolls back"
+        }
+        [System.IO.File]::WriteAllText(
+            (Join-Path $bridgeRoot "BRIDGE_MANIFEST.json"),
+            ($bridgeManifest | ConvertTo-Json -Depth 10) + [Environment]::NewLine,
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        Compress-Archive -LiteralPath $bridgeRoot -DestinationPath $bridgeTempZip
+
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $bridgeArchive = [System.IO.Compression.ZipFile]::OpenRead($bridgeTempZip)
+        try {
+            $bridgeEntries = @{}
+            foreach ($entry in $bridgeArchive.Entries) {
+                $name = ([string]$entry.FullName).Replace('\', '/').TrimStart('/')
+                if (-not [string]::IsNullOrWhiteSpace($name)) {
+                    $bridgeEntries[$name] = $entry
+                }
+            }
+            $prefix = $bridgePackageName.Replace('\', '/') + "/"
+            foreach ($required in @("archive-center-updater.exe", "apply-update-compatibility-bridge.ps1", "BRIDGE_MANIFEST.json")) {
+                $entryName = $prefix + $required
+                if (-not $bridgeEntries.ContainsKey($entryName) -or $bridgeEntries[$entryName].Length -le 0) {
+                    throw "Compatibility bridge ZIP is missing: $entryName"
+                }
+            }
+        } finally {
+            $bridgeArchive.Dispose()
+        }
+
+        if (Test-Path -LiteralPath $bridgeZipPath -PathType Leaf) {
+            $bridgeBackup = "$bridgeZipPath.backup"
+            [System.IO.File]::Replace($bridgeTempZip, $bridgeZipPath, $bridgeBackup, $true)
+            Remove-Item -LiteralPath $bridgeBackup -Force -ErrorAction SilentlyContinue
+        } else {
+            Move-Item -LiteralPath $bridgeTempZip -Destination $bridgeZipPath
+        }
+        $bridgeSHA256 = (Get-FileHash -LiteralPath $bridgeZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $checksumLines = @(
+            "$((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($zipPath))",
+            "$bridgeSHA256  $([System.IO.Path]::GetFileName($bridgeZipPath))"
+        )
+        [System.IO.File]::WriteAllText($zipChecksumPath, ($checksumLines -join "`n") + "`n", [System.Text.Encoding]::ASCII)
+        foreach ($line in [System.IO.File]::ReadAllLines($zipChecksumPath, [System.Text.Encoding]::ASCII)) {
+            if ($line -notmatch '^[0-9a-f]{64}  [^\\/]+$') {
+                throw "Compatibility release checksum record is invalid: $line"
+            }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $bridgeTempZip -PathType Leaf) {
+            Remove-Item -LiteralPath $bridgeTempZip -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $bridgeStagingRoot -PathType Container) {
+            Remove-Item -LiteralPath $bridgeStagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Write-Host "Windows package staging created:"
 Write-Host "  $targetFull"
 Write-Host "Kind: $PackageKind"
@@ -787,6 +956,10 @@ if ($zipPath -ne "") {
     Write-Host "  $zipPath"
     Write-Host "Checksum:"
     Write-Host "  $zipChecksumPath"
+    if ($bridgeZipPath -ne "") {
+        Write-Host "Compatibility bridge:"
+        Write-Host "  $bridgeZipPath"
+    }
 }
 if ($missing.Count -gt 0) {
     Write-Host ""

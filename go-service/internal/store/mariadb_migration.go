@@ -338,6 +338,9 @@ func (m *mariadbStore) LockSessionMigrationSource(ctx context.Context, migration
 	if migrationID <= 0 {
 		return nil, ErrNotFound
 	}
+	if blockers := SessionMigrationManifestReleaseBlockers(); len(blockers) > 0 {
+		return nil, fmt.Errorf("session migration source lock blocked: %s", SessionMigrationManifestParityUnverifiedReason)
+	}
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err

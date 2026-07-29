@@ -5512,7 +5512,8 @@
   // indexes remain transient lookup coordinates, not canonical identity.
   const SESSION_FALLBACK = "default";
   const SESSION_ID_PIN_PREFIX = `${PLUGIN_ID}_session_id_pin_v1`;
-  const SESSION_PIN_RECORD_VERSION = "v2";
+  const SESSION_DURABLE_PIN_PREFIX = `${PLUGIN_ID}_session_id_pin_v3`;
+  const SESSION_PIN_RECORD_VERSION = "v3";
   const SESSION_NEW_CHAT_HISTORY_MAX = 2;
   const SESSION_WRITE_CANONICAL_CACHE_MS = 10000;
   const SESSION_DELETE_LEDGER_KEY = `${PLUGIN_ID}_session_delete_ledger_v1`;
@@ -5527,9 +5528,21 @@
   let _sessionDeleteLedger = { loaded: false, bySession: {}, lastSavedAt: 0, lastReconcileAt: 0 };
   const _sessionDeleteNotifyInFlight = new Set();
 
-  function makeSessionPinKey(charIdx, chatIdx) {
+  function makeSessionPinKey(charIdx, chatIdx, stableCharacterId = "", hostChatId = "") {
+    const stableId = String(stableCharacterId || "").trim();
+    const opaqueChatId = String(hostChatId || "").trim();
+    if (stableId && opaqueChatId) {
+      return `${SESSION_DURABLE_PIN_PREFIX}_character_${encodeURIComponent(stableId)}_chat_${encodeURIComponent(opaqueChatId)}`;
+    }
     if (charIdx == null || chatIdx == null) return "";
     return `${SESSION_ID_PIN_PREFIX}_char_${charIdx}_chat_${chatIdx}`;
+  }
+
+  function isSessionRouteAcknowledgementFailure(err) {
+    const message = String(err && err.message || err || "");
+    return message === "session_route_binding_readback_unverified"
+      || message === "session_pin_readback_unverified"
+      || message === "session_pin_readback_mismatch";
   }
 
   function scoreActiveChatMessageArrayCandidate(list) {
@@ -7275,6 +7288,8 @@
 
   async function getActiveChatSessionIdentity(charIdx, chatIdx) {
     const identity = {
+      stableCharacterId: "",
+      stableCharacterIdState: "unobserved",
       chatUniqueId: "",
       latestUserHash: "",
       latestAssistantHash: "",
@@ -7296,6 +7311,10 @@
       if (typeof R.getCharacter === "function") {
         const char = await R.getCharacter();
         identity.characterName = getNamedDisplayValue(char, ["name", "title", "label", "displayName"]);
+        if (char && typeof char.chaId === "string" && char.chaId.trim()) {
+          identity.stableCharacterId = char.chaId.trim();
+          identity.stableCharacterIdState = "observed";
+        }
       }
       identity.chatName = getNamedDisplayValue(activeChat, ["name", "title", "label", "displayName", "chatName"]);
       if (activeChat && activeChat.id) {
@@ -7343,6 +7362,7 @@
         return {
           sessionId,
           observedChatUniqueId: String(parsed.observedChatUniqueId || "").trim(),
+          stableCharacterId: String(parsed.stableCharacterId || "").trim(),
           version: String(parsed.version || SESSION_PIN_RECORD_VERSION || ""),
         };
       }
@@ -7351,6 +7371,7 @@
     return {
       sessionId: trimmed,
       observedChatUniqueId: "",
+      stableCharacterId: "",
       version: "legacy",
     };
   }
@@ -8184,34 +8205,108 @@
     return { status: "inactive", label: t("timeline.session.inactive"), deleted: false };
   }
 
-  async function loadPinnedSessionId(charIdx, chatIdx) {
-    const key = makeSessionPinKey(charIdx, chatIdx);
-    if (!key) return null;
+  async function loadPinnedSessionId(charIdx, chatIdx, stableCharacterId = "", observedChatUniqueId = "") {
+    const durableKey = makeSessionPinKey(charIdx, chatIdx, stableCharacterId, observedChatUniqueId);
+    const legacyKey = makeSessionPinKey(charIdx, chatIdx);
+    const keys = durableKey && durableKey !== legacyKey ? [durableKey, legacyKey] : [legacyKey];
     try {
-      const val = await persistentGet(key);
-      return parseSessionPinRecord(val);
+      for (let index = 0; index < keys.length; index++) {
+        const key = keys[index];
+        if (!key) continue;
+        const val = await persistentGet(key);
+        const record = parseSessionPinRecord(val);
+        if (!record) continue;
+        record.pinKeyMode = key === durableKey && durableKey !== legacyKey ? "durable_host_identity" : "legacy_index_fallback";
+        return record;
+      }
+      return null;
     } catch (err) {
       warnLog("loadPinnedSessionId failed:", err.message);
       return null;
     }
   }
 
-  async function savePinnedSessionId(charIdx, chatIdx, sessionId, observedChatUniqueId = "") {
-    const key = makeSessionPinKey(charIdx, chatIdx);
-    if (!key || !sessionId || sessionId === SESSION_FALLBACK) return;
+  async function savePinnedSessionId(charIdx, chatIdx, sessionId, observedChatUniqueId = "", stableCharacterId = "") {
+    const key = makeSessionPinKey(charIdx, chatIdx, stableCharacterId, observedChatUniqueId);
+    if (!key || !sessionId || sessionId === SESSION_FALLBACK) return false;
+    const payload = JSON.stringify({
+      version: SESSION_PIN_RECORD_VERSION,
+      sessionId: String(sessionId),
+      observedChatUniqueId: String(observedChatUniqueId || "").trim(),
+      stableCharacterId: String(stableCharacterId || "").trim(),
+    });
     try {
-      await persistentSet(key, JSON.stringify({
-        version: SESSION_PIN_RECORD_VERSION,
-        sessionId: String(sessionId),
-        observedChatUniqueId: String(observedChatUniqueId || "").trim(),
-      }));
+      await persistentSet(key, payload);
+      const readback = parseSessionPinRecord(await persistentGet(key));
+      if (!readback ||
+          String(readback.sessionId || "") !== String(sessionId) ||
+          String(readback.observedChatUniqueId || "") !== String(observedChatUniqueId || "").trim() ||
+          String(readback.stableCharacterId || "") !== String(stableCharacterId || "").trim()) {
+        throw new Error("session_pin_readback_mismatch");
+      }
+      return true;
     } catch (err) {
       warnLog("savePinnedSessionId failed:", err.message);
+      return false;
     }
   }
 
+  async function persistAcknowledgedCurrentSessionRoute(sessionId, bindingMode, observedContext = null) {
+    const requestedSessionId = String(sessionId || "").trim();
+    if (!requestedSessionId || requestedSessionId === SESSION_FALLBACK) {
+      throw new Error("session_route_target_required");
+    }
+    const coords = observedContext && observedContext.coords
+      ? observedContext.coords
+      : await getCurrentSessionRoutingCoordinates();
+    const identity = observedContext && observedContext.identity
+      ? observedContext.identity
+      : await getActiveChatSessionIdentity(coords.charIdx, coords.chatIdx);
+    const stableCharacterId = String(identity && identity.stableCharacterId || "").trim();
+    const hostChatId = String(identity && identity.chatUniqueId || "").trim();
+    let canonicalSessionId = requestedSessionId;
+    let bindingAcknowledged = false;
+
+    if (stableCharacterId && hostChatId) {
+      const resolution = await requestBackendSessionRoutingTurnResolution(requestedSessionId, "identity", {
+        stableCharacterId,
+        stableCharacterIdState: "observed",
+        hostChatId,
+        hostChatIdState: "observed",
+        bindRequestedSession: true,
+        bindingMode: String(bindingMode || "manual_attach"),
+        latestUserHash: String(identity.latestUserHash || ""),
+        latestAssistantHash: String(identity.latestAssistantHash || ""),
+        visibleCompletedTurns: Number(identity.completedTurnCount || 0),
+      });
+      if (!resolution || resolution.bindingAcknowledged !== true || !resolution.canonicalSessionId) {
+        throw new Error("session_route_binding_readback_unverified");
+      }
+      canonicalSessionId = String(resolution.canonicalSessionId);
+      bindingAcknowledged = true;
+    }
+    const pinSaved = await savePinnedSessionId(
+      coords.charIdx,
+      coords.chatIdx,
+      canonicalSessionId,
+      hostChatId,
+      stableCharacterId
+    );
+    if (!pinSaved) {
+      throw new Error("session_pin_readback_unverified");
+    }
+    return {
+      canonicalSessionId,
+      bindingAcknowledged,
+      stableCharacterId,
+      hostChatId,
+      coords,
+      identity,
+    };
+  }
+
   // 캐시: charIdx + chatIdx 조합이 같으면 재조회하지 않는다 (getCharacter가 무거울 수 있으므로).
-  let _sessionCache = { charIdx: null, chatIdx: null, sessionId: null, observedChatUniqueId: "" };
+  let _sessionCache = { charIdx: null, chatIdx: null, sessionId: null, stableCharacterId: "", observedChatUniqueId: "" };
 
   const RISU_FORK_COPY_PROVENANCE_KEY = `${PLUGIN_ID}_risu_fork_copy_provenance_v1`;
   const RISU_FORK_COPY_PROVENANCE_VERSION = "step23.auto_capture.v1";
@@ -8328,6 +8423,7 @@
       }
       const activeChatIdentity = await getActiveChatSessionIdentity(charIdx, chatIdx);
       const chatUniqueId = activeChatIdentity.chatUniqueId || "";
+      const stableCharacterId = activeChatIdentity.stableCharacterId || "";
       const cachedCidLostRuntimeId = !chatUniqueId
         && !!(_sessionCache && _sessionCache.observedChatUniqueId)
         && isCidSessionId(_sessionCache.sessionId);
@@ -8335,6 +8431,7 @@
       if (_sessionCache.sessionId &&
           _sessionCache.charIdx === charIdx &&
           _sessionCache.chatIdx === chatIdx &&
+          (!stableCharacterId || !_sessionCache.stableCharacterId || _sessionCache.stableCharacterId === stableCharacterId) &&
           !cachedCidLostRuntimeId &&
           (!chatUniqueId || !_sessionCache.observedChatUniqueId || _sessionCache.observedChatUniqueId === chatUniqueId)) {
         const expectedCid = (charIdx != null && chatUniqueId) ? `char_${charIdx}_cid_${chatUniqueId}` : "";
@@ -8353,7 +8450,7 @@
       const fallbackIndexSessionId = (chatIdx != null && charIdx != null)
         ? `char_${charIdx}_chat_${chatIdx}`
         : "";
-      const pinnedRecord = await loadPinnedSessionId(charIdx, chatIdx);
+      const pinnedRecord = await loadPinnedSessionId(charIdx, chatIdx, stableCharacterId, chatUniqueId);
       const pinnedObservedChatUniqueId = String(pinnedRecord && pinnedRecord.observedChatUniqueId || "").trim();
       const pinnedCidLostRuntimeId = !chatUniqueId
         && pinnedRecord
@@ -8396,12 +8493,20 @@
         const identityResolution = await requestBackendSessionRoutingTurnResolution(sessionId, "identity", {
           hostChatId: chatUniqueId,
           hostChatIdState: "observed",
+          stableCharacterId,
+          stableCharacterIdState: activeChatIdentity.stableCharacterIdState,
+          bindingMode: pinnedRecord && pinnedRecord.pinKeyMode === "legacy_index_fallback"
+            ? "legacy_promotion"
+            : "",
           latestUserHash: activeChatIdentity.latestUserHash,
           latestAssistantHash: activeChatIdentity.latestAssistantHash,
           visibleCompletedTurns: activeChatIdentity.completedTurnCount,
         });
         if (identityResolution && identityResolution.canonicalSessionId) {
           sessionId = identityResolution.canonicalSessionId;
+        }
+        if (stableCharacterId && (!identityResolution || identityResolution.bindingAcknowledged !== true)) {
+          throw new Error("session_route_binding_readback_unverified");
         }
       }
 
@@ -8426,13 +8531,15 @@
       }
 
       if (charIdx != null && chatIdx != null) {
-        await savePinnedSessionId(charIdx, chatIdx, sessionId, chatUniqueId);
+        const pinSaved = await savePinnedSessionId(charIdx, chatIdx, sessionId, chatUniqueId, stableCharacterId);
+        if (!pinSaved) throw new Error("session_pin_readback_unverified");
       }
 
       _sessionCache = {
         charIdx,
         chatIdx,
         sessionId,
+        stableCharacterId,
         observedChatUniqueId: chatUniqueId,
         latestUserHash: activeChatIdentity.latestUserHash,
         latestAssistantHash: activeChatIdentity.latestAssistantHash,
@@ -8450,6 +8557,7 @@
       return sessionId;
     } catch (err) {
       warnLog("getCurrentChatSessionId failed:", err.message);
+      if (isSessionRouteAcknowledgementFailure(err)) throw err;
       return SESSION_FALLBACK;
     }
   }
@@ -8476,8 +8584,26 @@
       const activeChatIdentity = await getActiveChatSessionIdentity(charIdx, chatIdx);
       const chatUniqueId = activeChatIdentity.chatUniqueId || "";
       if (charIdx != null && chatUniqueId) {
-        const sid = `char_${charIdx}_cid_${chatUniqueId}`;
-        _sessionCache = { charIdx, chatIdx, sessionId: sid, observedChatUniqueId: chatUniqueId };
+        const stableCharacterId = activeChatIdentity.stableCharacterId || "";
+        let sid = `char_${charIdx}_cid_${chatUniqueId}`;
+        if (stableCharacterId) {
+          const resolution = await requestBackendSessionRoutingTurnResolution(sid, "identity", {
+            stableCharacterId,
+            stableCharacterIdState: "observed",
+            hostChatId: chatUniqueId,
+            hostChatIdState: "observed",
+            latestUserHash: activeChatIdentity.latestUserHash,
+            latestAssistantHash: activeChatIdentity.latestAssistantHash,
+            visibleCompletedTurns: activeChatIdentity.completedTurnCount,
+          });
+          if (!resolution || resolution.bindingAcknowledged !== true || !resolution.canonicalSessionId) {
+            throw new Error("session_route_binding_readback_unverified");
+          }
+          sid = resolution.canonicalSessionId;
+        }
+        const pinSaved = await savePinnedSessionId(charIdx, chatIdx, sid, chatUniqueId, stableCharacterId);
+        if (!pinSaved) throw new Error("session_pin_readback_unverified");
+        _sessionCache = { charIdx, chatIdx, sessionId: sid, stableCharacterId, observedChatUniqueId: chatUniqueId };
         recordActiveSessionForDeleteSync(sid, {
           charIdx,
           chatIdx,
@@ -9321,15 +9447,49 @@
       }
       const activeChatIdentity = (charIdx != null && chatIdx != null)
         ? await getActiveChatSessionIdentity(charIdx, chatIdx)
-        : { chatUniqueId: "", messageCount: 0, isFreshChat: false };
+        : { stableCharacterId: "", stableCharacterIdState: "unobserved", chatUniqueId: "", messageCount: 0, isFreshChat: false };
       const chatUniqueId = activeChatIdentity.chatUniqueId || "";
+      const stableCharacterId = activeChatIdentity.stableCharacterId || "";
       const cacheKey = [
         primary,
+        stableCharacterId || "x",
         charIdx == null ? "x" : String(charIdx),
         chatIdx == null ? "x" : String(chatIdx),
         chatUniqueId || "x",
       ].join("|");
       const now = Date.now();
+      if (stableCharacterId && chatUniqueId) {
+        const durableResolution = await requestBackendSessionRoutingTurnResolution(primary, "identity", {
+          stableCharacterId,
+          stableCharacterIdState: "observed",
+          hostChatId: chatUniqueId,
+          hostChatIdState: "observed",
+          latestUserHash: activeChatIdentity.latestUserHash,
+          latestAssistantHash: activeChatIdentity.latestAssistantHash,
+          visibleCompletedTurns: activeChatIdentity.completedTurnCount,
+        });
+        if (!durableResolution || durableResolution.bindingAcknowledged !== true || !durableResolution.canonicalSessionId) {
+          throw new Error("session_route_binding_readback_unverified");
+        }
+        const durableTarget = durableResolution.canonicalSessionId;
+        const pinSaved = await savePinnedSessionId(charIdx, chatIdx, durableTarget, chatUniqueId, stableCharacterId);
+        if (!pinSaved) throw new Error("session_pin_readback_unverified");
+        _sessionCache = {
+          charIdx,
+          chatIdx,
+          sessionId: durableTarget,
+          stableCharacterId,
+          observedChatUniqueId: chatUniqueId,
+        };
+        _sessionWriteCanonicalCache = {
+          cacheKey,
+          sessionId: durableTarget,
+          rawSessionId: primary,
+          reason: durableResolution.identityResolution || "durable_binding",
+          cachedAt: now,
+        };
+        return durableTarget;
+      }
       if (_sessionWriteCanonicalCache.sessionId &&
           _sessionWriteCanonicalCache.cacheKey === cacheKey &&
           (now - Number(_sessionWriteCanonicalCache.cachedAt || 0)) <= SESSION_WRITE_CANONICAL_CACHE_MS) {
@@ -9418,8 +9578,9 @@
       }
 
       if (target !== primary) {
-        await savePinnedSessionId(charIdx, chatIdx, target, chatUniqueId);
-        _sessionCache = { charIdx, chatIdx, sessionId: target, observedChatUniqueId: chatUniqueId };
+        const pinSaved = await savePinnedSessionId(charIdx, chatIdx, target, chatUniqueId, stableCharacterId);
+        if (!pinSaved) throw new Error("session_pin_readback_unverified");
+        _sessionCache = { charIdx, chatIdx, sessionId: target, stableCharacterId, observedChatUniqueId: chatUniqueId };
         updateRuntimeState("sessionWriteRouting", "canonicalized", {
           detail: primary + " -> " + target + " (" + reason + ")",
           rawSessionId: primary,
@@ -9449,13 +9610,7 @@
       return target;
     } catch (err) {
       warnLog("resolveCanonicalWriteSessionId failed:", err.message);
-      _sessionWriteCanonicalCache = {
-        cacheKey: primary + "|error",
-        sessionId: primary,
-        rawSessionId: primary,
-        reason: "error",
-        cachedAt: Date.now(),
-      };
+      if (isSessionRouteAcknowledgementFailure(err)) throw err;
       return primary;
     }
   }
@@ -16810,6 +16965,11 @@
       body: {
         chat_session_id: String(sessionId || ""),
         mode: String(mode || "pair"),
+        stable_character_id: String(observed.stableCharacterId || (cachedIdentity && cachedIdentity.stableCharacterId) || ""),
+        stable_character_id_state: String(
+          observed.stableCharacterIdState
+          || ((cachedIdentity && cachedIdentity.stableCharacterId) ? "observed" : "unobserved")
+        ),
         host_chat_id: String(observed.hostChatId || (cachedIdentity && cachedIdentity.observedChatUniqueId) || ""),
         host_chat_id_state: String(
           observed.hostChatIdState
@@ -16817,6 +16977,8 @@
         ),
         latest_user_hash: String(observed.latestUserHash || (cachedIdentity && cachedIdentity.latestUserHash) || ""),
         latest_assistant_hash: String(observed.latestAssistantHash || (cachedIdentity && cachedIdentity.latestAssistantHash) || ""),
+        bind_requested_session: observed.bindRequestedSession === true,
+        binding_mode: String(observed.bindingMode || ""),
         risu_user_message_index: Number.isInteger(observed.risuUserMessageIndex) ? observed.risuUserMessageIndex : null,
         observed_pair_ordinal: Math.max(0, Math.floor(Number(observed.observedPairOrdinal || 0))),
         ...(visibleCompletedTurns != null ? {
@@ -16833,12 +16995,28 @@
       },
     });
     if (!result || result.status !== "ok" || result.contract_version !== "session-routing.turn-resolution.v1") {
-      return { status: "backend_unavailable", turnIndex: 0, completedTurnCount: 0, localTurnIndex: 0, resolvedObservations: [], baseline: null };
+      return {
+        status: result && result.code === "session_route_binding_failed" ? "binding_failed" : "backend_unavailable",
+        canonicalSessionId: String(result && result.chat_session_id || ""),
+        bindingRequired: !!(result && result.binding_required),
+        bindingAcknowledged: false,
+        turnIndex: 0,
+        completedTurnCount: 0,
+        localTurnIndex: 0,
+        resolvedObservations: [],
+        baseline: null,
+        backendDecision: result || null,
+      };
     }
     return {
       status: String(result.resolution || "normal"),
       canonicalSessionId: String(result.chat_session_id || ""),
       identityResolution: String(result.identity_resolution || ""),
+      bindingRequired: result.binding_required === true,
+      bindingAcknowledged: result.binding_acknowledged === true,
+      bindingCreated: result.binding_created === true,
+      bindingUpdated: result.binding_updated === true,
+      lockedSourceRedirect: result.locked_source_redirect === true,
       turnIndex: Number(result.turn_index || 0),
       completedTurnCount: Number(result.completed_turns || 0),
       localTurnIndex: Number(result.local_turn_index || 0),
@@ -37911,7 +38089,7 @@
   }
 
   function resetSessionRoutingRuntimeCaches() {
-    _sessionCache = { charIdx: null, chatIdx: null, sessionId: null, observedChatUniqueId: "" };
+    _sessionCache = { charIdx: null, chatIdx: null, sessionId: null, stableCharacterId: "", observedChatUniqueId: "" };
     _sessionReadCompatCache = { cacheKey: "", plan: null, cachedAt: 0 };
     _sessionRoutingTurnBaselines.clear();
     _sessionMigrationApplyInFlight.clear();
@@ -47152,36 +47330,40 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       migrationMode: "",
     });
     try {
-      const observedChatUniqueId = activeIdentity && activeIdentity.chatUniqueId ? activeIdentity.chatUniqueId : "";
-      await savePinnedSessionId(coords.charIdx, coords.chatIdx, sourceSid, observedChatUniqueId);
+      const route = await persistAcknowledgedCurrentSessionRoute(sourceSid, "manual_attach", {
+        coords,
+        identity: activeIdentity,
+      });
+      const attachedSid = route.canonicalSessionId;
       resetSessionRoutingRuntimeCaches();
       _sessionCache = {
         charIdx: coords.charIdx,
         chatIdx: coords.chatIdx,
-        sessionId: sourceSid,
-        observedChatUniqueId,
+        sessionId: attachedSid,
+        stableCharacterId: route.stableCharacterId,
+        observedChatUniqueId: route.hostChatId,
       };
-      _timelineState.currentSessionId = sourceSid;
-      _timelineState.selectedSessionId = sourceSid;
-      _timelineState.sessionId = sourceSid;
+      _timelineState.currentSessionId = attachedSid;
+      _timelineState.selectedSessionId = attachedSid;
+      _timelineState.sessionId = attachedSid;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
-      const routingBaseline = await establishSessionRoutingTurnBaseline(sourceSid, "timeline_attach");
+      const routingBaseline = await establishSessionRoutingTurnBaseline(attachedSid, "timeline_attach");
       updateRuntimeState("sessionWriteRouting", "ok", {
-        detail: "manual attach current chat -> " + shortenSessionIdForDisplay(sourceSid),
-        sourceSessionId: sourceSid,
+        detail: "manual attach current chat -> " + shortenSessionIdForDisplay(attachedSid),
+        sourceSessionId: attachedSid,
         targetSessionId: targetSid,
         routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
         routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
-      setSessionMigrationUiStatus("ok", tf("timeline.attach.success", { source: sourceLabel }), {
-        sourceSessionId: sourceSid,
+      setSessionMigrationUiStatus("ok", tf("timeline.attach.success", { source: getSessionDisplayLabel(attachedSid, false) }), {
+        sourceSessionId: attachedSid,
         targetSessionId: targetSid,
         migrationId: 0,
         routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
         routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
-      await loadTimelineData(true, { sessionId: sourceSid, skipRuntimeSessionResolve: true });
+      await loadTimelineData(true, { sessionId: attachedSid, skipRuntimeSessionResolve: true });
       return true;
     } catch (err) {
       const reason = err && err.message ? err.message : "unknown";
@@ -47413,28 +47595,39 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         throw new Error(sessionMigrationBlockedReason(lock, "source_lock_blocked", "/sessions/migrate-lock-source"));
       }
 
-      _timelineState.selectedSessionId = targetSid;
-      _timelineState.sessionId = targetSid;
+      const route = await persistAcknowledgedCurrentSessionRoute(targetSid, "migration_commit");
+      const routedTargetSid = route.canonicalSessionId;
+      resetSessionRoutingRuntimeCaches();
+      _sessionCache = {
+        charIdx: route.coords.charIdx,
+        chatIdx: route.coords.chatIdx,
+        sessionId: routedTargetSid,
+        stableCharacterId: route.stableCharacterId,
+        observedChatUniqueId: route.hostChatId,
+      };
+      _timelineState.currentSessionId = routedTargetSid;
+      _timelineState.selectedSessionId = routedTargetSid;
+      _timelineState.sessionId = routedTargetSid;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
-      const routingBaseline = await establishSessionRoutingTurnBaseline(targetSid, "timeline_migrate");
+      const routingBaseline = await establishSessionRoutingTurnBaseline(routedTargetSid, "timeline_migrate");
       updateRuntimeState("sessionWriteRouting", "ok", {
-        detail: "timeline migration target -> " + shortenSessionIdForDisplay(targetSid),
+        detail: "timeline migration target -> " + shortenSessionIdForDisplay(routedTargetSid),
         sourceSessionId: sourceSid,
-        targetSessionId: targetSid,
+        targetSessionId: routedTargetSid,
         reason: "timeline_migrate",
         routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
         routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
-      setSessionMigrationUiStatus("ok", tf("timeline.migration.success", { target: targetLabel }), {
+      setSessionMigrationUiStatus("ok", tf("timeline.migration.success", { target: getSessionDisplayLabel(routedTargetSid, false) }), {
         sourceSessionId: sourceSid,
-        targetSessionId: targetSid,
+        targetSessionId: routedTargetSid,
         migrationId: migrationID,
         migrationMode: "copy_then_lock_source",
         routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
         routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
       });
-      await loadTimelineData(true, { sessionId: targetSid, skipRuntimeSessionResolve: true });
+      await loadTimelineData(true, { sessionId: routedTargetSid, skipRuntimeSessionResolve: true });
       return true;
     } catch (err) {
       const reason = err && err.message ? err.message : "unknown";

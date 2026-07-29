@@ -14,8 +14,8 @@ import (
 
 const (
 	sessionMigrationPreviewVersion  = "sc-mig-preview.v1"
-	sessionMigrationCompleteVersion = "sc-mig-complete.v1"
-	sessionMigrationReindexVersion  = "sc-mig-reindex.v1"
+	sessionMigrationCompleteVersion = "sc-mig-complete.v2"
+	sessionMigrationReindexVersion  = "sc-mig-reindex.v2"
 	sessionMigrationLockVersion     = "sc-mig-lock.v1"
 	sessionMigrationRollbackVersion = "sc-mig-rollback.v1"
 	sessionMigrationCleanupVersion  = "sc-mig-cleanup.v2"
@@ -184,26 +184,33 @@ type sessionMigrationCompleteRequest struct {
 }
 
 type sessionMigrationCompleteResponse struct {
-	Status                string                        `json:"status"`
-	ContractVersion       string                        `json:"contract_version"`
-	WriteAttempted        bool                          `json:"write_attempted"`
-	VectorWriteAttempted  bool                          `json:"vector_write_attempted"`
-	LLMCallAttempted      bool                          `json:"llm_call_attempted"`
-	MigrationID           int64                         `json:"migration_id"`
-	MigrationStatus       string                        `json:"migration_status"`
-	SourceSessionID       string                        `json:"source_session_id"`
-	TargetSessionID       string                        `json:"target_session_id"`
-	Mode                  string                        `json:"mode"`
-	Counts                sessionMigrationPreviewCounts `json:"counts"`
-	RowMapCount           int                           `json:"row_map_count"`
-	SourceLocked          bool                          `json:"source_locked"`
-	ChromaReindexRequired bool                          `json:"chroma_reindex_required"`
-	ReadyForLive          bool                          `json:"ready_for_live"`
-	TargetStarterReplaced bool                          `json:"target_starter_replaced"`
-	Blocked               bool                          `json:"blocked"`
-	BlockedReasons        []string                      `json:"blocked_reasons"`
-	Warnings              []string                      `json:"warnings"`
-	GeneratedAt           string                        `json:"generated_at"`
+	Status                   string                        `json:"status"`
+	ContractVersion          string                        `json:"contract_version"`
+	WriteAttempted           bool                          `json:"write_attempted"`
+	VectorWriteAttempted     bool                          `json:"vector_write_attempted"`
+	LLMCallAttempted         bool                          `json:"llm_call_attempted"`
+	MigrationID              int64                         `json:"migration_id"`
+	MigrationStatus          string                        `json:"migration_status"`
+	SourceSessionID          string                        `json:"source_session_id"`
+	TargetSessionID          string                        `json:"target_session_id"`
+	Mode                     string                        `json:"mode"`
+	Counts                   sessionMigrationPreviewCounts `json:"counts"`
+	RowMapCount              int                           `json:"row_map_count"`
+	SourceLocked             bool                          `json:"source_locked"`
+	ChromaReindexRequired    bool                          `json:"chroma_reindex_required"`
+	ReadyForLive             bool                          `json:"ready_for_live"`
+	TargetStarterReplaced    bool                          `json:"target_starter_replaced"`
+	ManifestVersion          string                        `json:"manifest_version"`
+	ManifestDirectTables     int                           `json:"manifest_direct_tables"`
+	ManifestIndirectTables   int                           `json:"manifest_indirect_tables"`
+	ManifestExecutorComplete bool                          `json:"manifest_executor_complete"`
+	ManifestParityVerified   bool                          `json:"manifest_parity_verified"`
+	ReleaseBlocked           bool                          `json:"release_blocked"`
+	ReleaseBlockers          []string                      `json:"release_blockers"`
+	Blocked                  bool                          `json:"blocked"`
+	BlockedReasons           []string                      `json:"blocked_reasons"`
+	Warnings                 []string                      `json:"warnings"`
+	GeneratedAt              string                        `json:"generated_at"`
 }
 
 func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +226,10 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 	if mode == "" {
 		mode = sessionMigrationModeCopyLock
 	}
+	manifestDirect, manifestIndirect, manifestImplemented := store.SessionMigrationManifestSummary()
+	manifestTotal := manifestDirect + manifestIndirect
+	manifestExecutorComplete := manifestImplemented == manifestTotal
+	manifestBlockers := store.SessionMigrationManifestReleaseBlockers()
 
 	blockedReasons, warnings, sourceCounts, targetCounts, chroma, err := s.sessionMigrationValidate(r.Context(), sourceID, targetID, mode)
 	if err != nil {
@@ -227,19 +238,26 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 	}
 	if len(blockedReasons) > 0 {
 		writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
-			Status:               "ok",
-			ContractVersion:      sessionMigrationCompleteVersion,
-			WriteAttempted:       false,
-			VectorWriteAttempted: false,
-			LLMCallAttempted:     false,
-			SourceSessionID:      sourceID,
-			TargetSessionID:      targetID,
-			Mode:                 mode,
-			Counts:               sourceCounts,
-			Blocked:              true,
-			BlockedReasons:       blockedReasons,
-			Warnings:             warnings,
-			GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
+			Status:                   "ok",
+			ContractVersion:          sessionMigrationCompleteVersion,
+			WriteAttempted:           false,
+			VectorWriteAttempted:     false,
+			LLMCallAttempted:         false,
+			SourceSessionID:          sourceID,
+			TargetSessionID:          targetID,
+			Mode:                     mode,
+			Counts:                   sourceCounts,
+			ManifestVersion:          store.SessionMigrationManifestVersion,
+			ManifestDirectTables:     manifestDirect,
+			ManifestIndirectTables:   manifestIndirect,
+			ManifestExecutorComplete: manifestExecutorComplete,
+			ManifestParityVerified:   false,
+			ReleaseBlocked:           true,
+			ReleaseBlockers:          manifestBlockers,
+			Blocked:                  true,
+			BlockedReasons:           blockedReasons,
+			Warnings:                 warnings,
+			GeneratedAt:              time.Now().UTC().Format(time.RFC3339),
 		})
 		_ = targetCounts
 		_ = chroma
@@ -249,19 +267,26 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 	migrationStore, ok := s.Store.(store.SessionMigrationStore)
 	if !ok {
 		writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
-			Status:               "ok",
-			ContractVersion:      sessionMigrationCompleteVersion,
-			WriteAttempted:       false,
-			VectorWriteAttempted: false,
-			LLMCallAttempted:     false,
-			SourceSessionID:      sourceID,
-			TargetSessionID:      targetID,
-			Mode:                 mode,
-			Counts:               sourceCounts,
-			Blocked:              true,
-			BlockedReasons:       []string{"session_migration_store_unavailable"},
-			Warnings:             append(warnings, "complete migration requires MariaDB authority store"),
-			GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
+			Status:                   "ok",
+			ContractVersion:          sessionMigrationCompleteVersion,
+			WriteAttempted:           false,
+			VectorWriteAttempted:     false,
+			LLMCallAttempted:         false,
+			SourceSessionID:          sourceID,
+			TargetSessionID:          targetID,
+			Mode:                     mode,
+			Counts:                   sourceCounts,
+			ManifestVersion:          store.SessionMigrationManifestVersion,
+			ManifestDirectTables:     manifestDirect,
+			ManifestIndirectTables:   manifestIndirect,
+			ManifestExecutorComplete: manifestExecutorComplete,
+			ManifestParityVerified:   false,
+			ReleaseBlocked:           true,
+			ReleaseBlockers:          manifestBlockers,
+			Blocked:                  true,
+			BlockedReasons:           []string{"session_migration_store_unavailable"},
+			Warnings:                 append(warnings, "complete migration requires MariaDB authority store"),
+			GeneratedAt:              time.Now().UTC().Format(time.RFC3339),
 		})
 		return
 	}
@@ -278,26 +303,36 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 	}
 
 	writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
-		Status:                "ok",
-		ContractVersion:       sessionMigrationCompleteVersion,
-		WriteAttempted:        true,
-		VectorWriteAttempted:  false,
-		LLMCallAttempted:      false,
-		MigrationID:           result.MigrationID,
-		MigrationStatus:       result.Status,
-		SourceSessionID:       result.SourceSessionID,
-		TargetSessionID:       result.TargetSessionID,
-		Mode:                  result.Mode,
-		Counts:                sessionMigrationCountsFromStore(result.Counts),
-		RowMapCount:           result.RowMapCount,
-		SourceLocked:          result.SourceLocked,
-		ChromaReindexRequired: result.ChromaReindexRequired,
-		ReadyForLive:          result.ReadyForLive,
-		TargetStarterReplaced: result.TargetStarterReplaced,
-		Blocked:               false,
-		BlockedReasons:        []string{},
-		Warnings:              append(warnings, "chroma_reindex_pending: run SC-MIG-5 before treating target as live-complete"),
-		GeneratedAt:           time.Now().UTC().Format(time.RFC3339),
+		Status:                   "ok",
+		ContractVersion:          sessionMigrationCompleteVersion,
+		WriteAttempted:           true,
+		VectorWriteAttempted:     false,
+		LLMCallAttempted:         false,
+		MigrationID:              result.MigrationID,
+		MigrationStatus:          result.Status,
+		SourceSessionID:          result.SourceSessionID,
+		TargetSessionID:          result.TargetSessionID,
+		Mode:                     result.Mode,
+		Counts:                   sessionMigrationCountsFromStore(result.Counts),
+		RowMapCount:              result.RowMapCount,
+		SourceLocked:             result.SourceLocked,
+		ChromaReindexRequired:    result.ChromaReindexRequired,
+		ReadyForLive:             result.ReadyForLive,
+		TargetStarterReplaced:    result.TargetStarterReplaced,
+		ManifestVersion:          store.SessionMigrationManifestVersion,
+		ManifestDirectTables:     manifestDirect,
+		ManifestIndirectTables:   manifestIndirect,
+		ManifestExecutorComplete: manifestExecutorComplete,
+		ManifestParityVerified:   false,
+		ReleaseBlocked:           true,
+		ReleaseBlockers:          manifestBlockers,
+		Blocked:                  false,
+		BlockedReasons:           []string{},
+		Warnings: append(warnings,
+			"copy_phase_only: target is not live-complete",
+			store.SessionMigrationManifestParityUnverifiedReason,
+			"chroma_reindex_pending: vector parity is necessary but not sufficient for source lock"),
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -322,6 +357,8 @@ type sessionMigrationReindexResponse struct {
 	VerificationStatus      string   `json:"verification_status"`
 	ReadyForSourceLock      bool     `json:"ready_for_source_lock"`
 	ReadyForLive            bool     `json:"ready_for_live"`
+	ManifestVersion         string   `json:"manifest_version"`
+	ManifestParityVerified  bool     `json:"manifest_parity_verified"`
 	Blocked                 bool     `json:"blocked"`
 	BlockedReasons          []string `json:"blocked_reasons"`
 	Warnings                []string `json:"warnings"`
@@ -340,14 +377,16 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	resp := sessionMigrationReindexResponse{
-		Status:               "ok",
-		ContractVersion:      sessionMigrationReindexVersion,
-		MigrationID:          req.MigrationID,
-		WriteAttempted:       false,
-		VectorWriteAttempted: false,
-		LLMCallAttempted:     false,
-		VerificationStatus:   "not_run",
-		GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
+		Status:                 "ok",
+		ContractVersion:        sessionMigrationReindexVersion,
+		MigrationID:            req.MigrationID,
+		WriteAttempted:         false,
+		VectorWriteAttempted:   false,
+		LLMCallAttempted:       false,
+		VerificationStatus:     "not_run",
+		ManifestVersion:        store.SessionMigrationManifestVersion,
+		ManifestParityVerified: false,
+		GeneratedAt:            time.Now().UTC().Format(time.RFC3339),
 	}
 
 	migrationVectorStore, ok := s.Store.(store.SessionMigrationVectorStore)
@@ -455,10 +494,13 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 	}
 	if after >= expectedMinimum {
 		resp.WriteAttempted = true
-		resp.VerificationStatus = "verified"
-		resp.ReadyForSourceLock = true
+		resp.VerificationStatus = "vector_verified_manifest_blocked"
+		resp.ReadyForSourceLock = false
 		resp.ReadyForLive = false
-		if err := migrationVectorStore.UpdateSessionMigrationVectorStatus(r.Context(), req.MigrationID, "vector_reindexed", resp.Upserted, "[]"); err != nil {
+		resp.Blocked = true
+		resp.BlockedReasons = append(resp.BlockedReasons, store.SessionMigrationManifestParityUnverifiedReason)
+		resp.Warnings = append(resp.Warnings, "vector count verification is not exact expected-ID manifest parity")
+		if err := migrationVectorStore.UpdateSessionMigrationVectorStatus(r.Context(), req.MigrationID, "vector_reindex_unverified", resp.Upserted, mustCompactJSON(resp.BlockedReasons)); err != nil {
 			writeInternalError(w, err.Error())
 			return
 		}
