@@ -256,6 +256,24 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.Cfg.VectorRequiresEndpoint() && !vectorReady {
+		checks["ready_blocker"] = "required_vector_not_ready"
+		writeJSON(w, http.StatusServiceUnavailable, readyResponse{
+			Ready:                   false,
+			StoreReady:              true,
+			VectorReady:             false,
+			ReferenceVectorReady:    referenceVectorReady,
+			ReferenceVectorDegraded: referenceVectorDegraded,
+			RuntimeProfile:          string(s.Cfg.RuntimeProfile),
+			VectorMode:              string(s.Cfg.VectorMode),
+			Degraded:                true,
+			Mode:                    string(s.Cfg.Mode),
+			Checks:                  checks,
+			Timestamp:               time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
 	if s.Cfg.Mode != config.ModeShadow && !s.Cfg.IsLiveCutoverAllowed() {
 		checks["shadow_mode"] = "inactive"
 		checks["mode_guard"] = fmt.Sprintf("mode %q requires MariaDB authority and the selected vector policy to be satisfied", s.Cfg.Mode)

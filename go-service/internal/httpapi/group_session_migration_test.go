@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -432,7 +431,7 @@ func TestSessionMigratePreviewStillBlocksStarterPlusAnyOtherRow(t *testing.T) {
 	}
 }
 
-func TestSessionMigrateCompleteCopiesOnlyAfterEmptyTargetPreview(t *testing.T) {
+func TestSessionMigrateCompleteDoesNotCopyWhileManifestExecutorIsIncomplete(t *testing.T) {
 	sourceID := "char_59_cid_source"
 	targetID := "char_59_cid_fresh"
 	st := &sessionMigrationPreviewStore{
@@ -459,29 +458,23 @@ func TestSessionMigrateCompleteCopiesOnlyAfterEmptyTargetPreview(t *testing.T) {
 		"operator_note":     "fresh continuation",
 	})
 
-	if !st.completeCalled {
-		t.Fatalf("expected CompleteSessionMigration to be called")
+	if st.completeCalled {
+		t.Fatalf("CompleteSessionMigration was called before manifest execution was complete")
 	}
-	if st.completeRequest.OperatorNote != "fresh continuation" {
-		t.Fatalf("operator note = %q", st.completeRequest.OperatorNote)
-	}
-	if resp.Blocked || !resp.WriteAttempted || resp.VectorWriteAttempted || resp.LLMCallAttempted {
-		t.Fatalf("unexpected complete response flags: %+v", resp)
-	}
-	if resp.MigrationID != 99 || resp.MigrationStatus != "copied" || resp.RowMapCount != 3 {
-		t.Fatalf("unexpected migration result: %+v", resp)
-	}
-	if !resp.ChromaReindexRequired || resp.ReadyForLive {
-		t.Fatalf("complete should remain pending Chroma reindex: %+v", resp)
+	if !resp.Blocked || resp.WriteAttempted || resp.VectorWriteAttempted || resp.LLMCallAttempted {
+		t.Fatalf("manifest gate must return a blocked no-write response: %+v", resp)
 	}
 	if !resp.ReleaseBlocked || resp.ManifestParityVerified || resp.ManifestExecutorComplete ||
 		resp.ManifestVersion != store.SessionMigrationManifestVersion || resp.ManifestDirectTables != 46 ||
 		!sessionMigrationContainsString(resp.ReleaseBlockers, store.SessionMigrationManifestParityUnverifiedReason) {
 		t.Fatalf("complete response did not disclose incomplete manifest/parity gate: %+v", resp)
 	}
+	if !sessionMigrationContainsString(resp.BlockedReasons, "session_migration_manifest_executor_incomplete") {
+		t.Fatalf("blocked_reasons = %#v", resp.BlockedReasons)
+	}
 }
 
-func TestSessionMigrateCompleteCopyKeepSourcePassesMode(t *testing.T) {
+func TestSessionMigrateCompleteCopyKeepSourceAlsoFailsClosedAtManifestGate(t *testing.T) {
 	sourceID := "char_59_cid_source"
 	targetID := "char_59_cid_copy"
 	st := &sessionMigrationPreviewStore{
@@ -508,20 +501,14 @@ func TestSessionMigrateCompleteCopyKeepSourcePassesMode(t *testing.T) {
 		"operator_note":     "manual copy",
 	})
 
-	if !st.completeCalled {
-		t.Fatalf("expected CompleteSessionMigration to be called")
+	if st.completeCalled {
+		t.Fatalf("CompleteSessionMigration was called before manifest execution was complete")
 	}
-	if st.completeRequest.Mode != sessionMigrationModeCopyKeep {
-		t.Fatalf("mode = %q, want %q", st.completeRequest.Mode, sessionMigrationModeCopyKeep)
+	if !resp.Blocked || resp.WriteAttempted || resp.Mode != sessionMigrationModeCopyKeep || resp.SourceLocked {
+		t.Fatalf("copy_keep_source must fail closed without writes: %+v", resp)
 	}
-	if st.completeRequest.OperatorNote != "manual copy" {
-		t.Fatalf("operator note = %q", st.completeRequest.OperatorNote)
-	}
-	if resp.Blocked || !resp.WriteAttempted || resp.Mode != sessionMigrationModeCopyKeep || resp.SourceLocked {
-		t.Fatalf("unexpected copy_keep_source complete response: %+v", resp)
-	}
-	if resp.MigrationID != 100 || resp.RowMapCount != 2 {
-		t.Fatalf("unexpected migration result: %+v", resp)
+	if !sessionMigrationContainsString(resp.BlockedReasons, "session_migration_manifest_executor_incomplete") {
+		t.Fatalf("blocked_reasons = %#v", resp.BlockedReasons)
 	}
 }
 
@@ -545,7 +532,7 @@ func TestSessionMigrateCompleteDoesNotWriteWhenPreviewBlocked(t *testing.T) {
 	}
 }
 
-func TestSessionMigrateReindexUpsertsTargetVectorsAndMarksLedger(t *testing.T) {
+func TestSessionMigrateReindexDoesNotWriteWhileManifestExecutorIsIncomplete(t *testing.T) {
 	targetID := "char_59_cid_target"
 	sourceID := "char_59_cid_source"
 	st := &sessionMigrationPreviewStore{
@@ -586,34 +573,27 @@ func TestSessionMigrateReindexUpsertsTargetVectorsAndMarksLedger(t *testing.T) {
 	vec := &sessionMigrationPreviewVector{counts: map[string]int{targetID: 0}}
 	resp := performSessionMigrationReindex(t, st, vec, map[string]any{"migration_id": float64(42)})
 
-	if !resp.Blocked || resp.VerificationStatus != "vector_verified_manifest_blocked" ||
+	if !resp.Blocked || resp.VerificationStatus != "not_run" ||
 		resp.ReadyForSourceLock || resp.ReadyForLive || resp.ManifestParityVerified ||
 		resp.ManifestVersion != store.SessionMigrationManifestVersion ||
-		!sessionMigrationContainsString(resp.BlockedReasons, store.SessionMigrationManifestParityUnverifiedReason) {
+		!sessionMigrationContainsString(resp.BlockedReasons, "session_migration_manifest_executor_incomplete") {
 		t.Fatalf("unexpected reindex response: %+v", resp)
 	}
-	if !vec.upsertCalled || vec.upsertSessionID != targetID || len(vec.upsertDocs) != 2 {
-		t.Fatalf("upsert call mismatch: called=%v sid=%q docs=%d", vec.upsertCalled, vec.upsertSessionID, len(vec.upsertDocs))
+	if vec.upsertCalled || st.vectorStatusCalled {
+		t.Fatalf("manifest-blocked reindex must not write vectors or migration status")
 	}
-	if vec.upsertDocs[0].MigrationID != 42 || vec.upsertDocs[0].MigratedFromSessionID != sourceID {
-		t.Fatalf("migration metadata missing from vector doc: %+v", vec.upsertDocs[0])
-	}
-	if !st.vectorStatusCalled || st.vectorStatus != "vector_reindex_unverified" || st.vectorStatusCount != 2 ||
-		!strings.Contains(st.vectorStatusErrors, store.SessionMigrationManifestParityUnverifiedReason) {
-		t.Fatalf("ledger update mismatch: called=%v status=%q count=%d errors=%q", st.vectorStatusCalled, st.vectorStatus, st.vectorStatusCount, st.vectorStatusErrors)
-	}
-	if resp.Candidates != 3 || resp.Upserted != 2 || resp.Skipped != 1 {
-		t.Fatalf("candidate/upsert/skip mismatch: %+v", resp)
+	if resp.Candidates != 0 || resp.Upserted != 0 || resp.Skipped != 0 {
+		t.Fatalf("manifest gate must run before candidate materialization: %+v", resp)
 	}
 }
 
-func TestSessionMigrateReindexBlocksWithoutCandidates(t *testing.T) {
+func TestSessionMigrateReindexManifestGatePrecedesCandidateLookup(t *testing.T) {
 	st := &sessionMigrationPreviewStore{}
 	vec := &sessionMigrationPreviewVector{counts: map[string]int{}}
 	resp := performSessionMigrationReindex(t, st, vec, map[string]any{"migration_id": float64(123)})
 
-	if !resp.Blocked || !sessionMigrationContainsString(resp.BlockedReasons, "no_vector_candidates") {
-		t.Fatalf("expected no_vector_candidates block: %+v", resp)
+	if !resp.Blocked || !sessionMigrationContainsString(resp.BlockedReasons, "session_migration_manifest_executor_incomplete") {
+		t.Fatalf("expected manifest executor block: %+v", resp)
 	}
 	if vec.upsertCalled || st.vectorStatusCalled {
 		t.Fatalf("unexpected side effect for no-vector-candidates")

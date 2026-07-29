@@ -264,6 +264,32 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if !manifestExecutorComplete || len(manifestBlockers) > 0 {
+		writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
+			Status:                   "ok",
+			ContractVersion:          sessionMigrationCompleteVersion,
+			WriteAttempted:           false,
+			VectorWriteAttempted:     false,
+			LLMCallAttempted:         false,
+			SourceSessionID:          sourceID,
+			TargetSessionID:          targetID,
+			Mode:                     mode,
+			Counts:                   sourceCounts,
+			ManifestVersion:          store.SessionMigrationManifestVersion,
+			ManifestDirectTables:     manifestDirect,
+			ManifestIndirectTables:   manifestIndirect,
+			ManifestExecutorComplete: manifestExecutorComplete,
+			ManifestParityVerified:   false,
+			ReleaseBlocked:           true,
+			ReleaseBlockers:          manifestBlockers,
+			Blocked:                  true,
+			BlockedReasons:           []string{"session_migration_manifest_executor_incomplete"},
+			Warnings:                 warnings,
+			GeneratedAt:              time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
 	migrationStore, ok := s.Store.(store.SessionMigrationStore)
 	if !ok {
 		writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
@@ -387,6 +413,15 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		ManifestVersion:        store.SessionMigrationManifestVersion,
 		ManifestParityVerified: false,
 		GeneratedAt:            time.Now().UTC().Format(time.RFC3339),
+	}
+
+	manifestDirect, manifestIndirect, manifestImplemented := store.SessionMigrationManifestSummary()
+	if manifestImplemented != manifestDirect+manifestIndirect {
+		resp.Blocked = true
+		resp.BlockedReasons = append(resp.BlockedReasons, "session_migration_manifest_executor_incomplete")
+		resp.Warnings = append(resp.Warnings, store.SessionMigrationManifestReleaseBlockers()...)
+		writeJSON(w, http.StatusOK, resp)
+		return
 	}
 
 	migrationVectorStore, ok := s.Store.(store.SessionMigrationVectorStore)

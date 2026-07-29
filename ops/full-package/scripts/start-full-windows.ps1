@@ -1027,6 +1027,7 @@ if (Test-LocalChromaRequested $env:AC_VECTOR_MODE) {
 
 Unblock-PackageFile $backendExe
 Unblock-PackageFile (Join-Path $packRoot "bin\mariadb-schema.exe")
+Unblock-PackageFile (Join-Path $packRoot "bin\runtime-dependency-live-probe.exe")
 
 $dataDir = Join-Path $env:ARCHIVE_CENTER_DATA_DIR "mariadb"
 $logDir = Join-Path $env:ARCHIVE_CENTER_DATA_DIR "logs"
@@ -1111,12 +1112,28 @@ try {
         -dsn $env:AC_MARIADB_DSN `
         -schema $schemaPath `
         -execute `
+        -app-account-probe `
         -managed-bootstrap `
         -managed-host "127.0.0.1" `
         -managed-port $MariaDBPort `
         -expected-datadir $dataDir
     if ($LASTEXITCODE -ne 0) {
         throw "MariaDB managed account bootstrap or schema apply failed."
+    }
+
+    if (Test-VectorRequiresChroma $env:AC_VECTOR_MODE) {
+        $dependencyProbe = Join-Path $packRoot "bin\runtime-dependency-live-probe.exe"
+        if (-not (Test-Path -LiteralPath $dependencyProbe -PathType Leaf)) {
+            throw "ChromaDB round-trip probe is missing: $dependencyProbe"
+        }
+        & $dependencyProbe `
+            -execute `
+            -chroma-endpoint $env:AC_CHROMA_ENDPOINT `
+            -chroma-api-path $env:AC_CHROMA_API_PATH `
+            -timeout "45s"
+        if ($LASTEXITCODE -ne 0) {
+            throw "ChromaDB endpoint/upsert/readback/delete probe failed."
+        }
     }
 
 Write-Host "Starting Archive Center 2.1 full package"

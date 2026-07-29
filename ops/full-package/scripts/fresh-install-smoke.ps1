@@ -39,7 +39,7 @@ $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $failures = [System.Collections.Generic.List[string]]::new()
 $warnings = [System.Collections.Generic.List[string]]::new()
 
-foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses\Apache-2.0.txt", "migrations", "prompts", "scripts", "tools\install-windows.ps1", "01_start_archive_center_windows.bat", ".env.full.example", "FULL_PACKAGE_MANIFEST.json", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
+foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "bin\runtime-dependency-live-probe.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses\Apache-2.0.txt", "migrations", "prompts", "scripts", "tools\install-windows.ps1", "01_start_archive_center_windows.bat", ".env.full.example", "FULL_PACKAGE_MANIFEST.json", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
     $path = Join-Path $packRoot $rel
     if (-not (Test-Path -LiteralPath $path)) {
         [void]$failures.Add("missing:$rel")

@@ -2,12 +2,45 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 )
+
+func TestHandleReadyBlocksRequiredVectorHealthFailure(t *testing.T) {
+	cfg := config.Default()
+	cfg.VectorMode = config.VectorModeBundled
+	cfg.ChromaEnabled = true
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	cfg.Readiness.ChromaConfigured = true
+
+	mux := http.NewServeMux()
+	srv := NewServer(cfg)
+	srv.Vector = &fakeVectorStore{healthErr: errors.New("probe failed")}
+	srv.VectorOpenError = nil
+	srv.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+	var resp readyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Ready || resp.VectorReady || !resp.Degraded {
+		t.Fatalf("required vector failure must block readiness: %+v", resp)
+	}
+	if resp.Checks["ready_blocker"] != "required_vector_not_ready" ||
+		resp.Checks["chromadb_vector"] != "health_error" {
+		t.Fatalf("checks = %#v", resp.Checks)
+	}
+}
 
 func TestHandleReadyDefaultStoreModeNoop(t *testing.T) {
 	mux := http.NewServeMux()

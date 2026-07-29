@@ -513,6 +513,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "go build mariadb-schema failed."
     }
+    & go build -buildvcs=false -trimpath -ldflags "-s -w" -o (Join-Path $targetFull "bin\runtime-dependency-live-probe.exe") ./cmd/runtime-dependency-live-probe
+    if ($LASTEXITCODE -ne 0) {
+        throw "go build runtime-dependency-live-probe failed."
+    }
 } finally {
     Pop-Location
 }
@@ -638,6 +642,7 @@ $manifest = [ordered]@{
         "bin/archive-center-go.exe",
         "bin/archive-center-updater.exe",
         "bin/mariadb-schema.exe",
+        "bin/runtime-dependency-live-probe.exe",
         "Archive Center.js",
         "LICENSE",
         "NOTICE",
@@ -753,7 +758,7 @@ if ($Zip -or $UpdateZip) {
             }
             $manifestEntry = $manifestEntries[0]
             $packagePrefix = $manifestEntry.Substring(0, $manifestEntry.Length - "PACKAGE_FILE_MANIFEST.json".Length)
-            foreach ($requiredEntry in @("PACKAGE_FILE_MANIFEST.json", "PACKAGE_MIGRATION_UPDATE.json", "bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/Apache-2.0.txt")) {
+            foreach ($requiredEntry in @("PACKAGE_FILE_MANIFEST.json", "PACKAGE_MIGRATION_UPDATE.json", "bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", "bin/runtime-dependency-live-probe.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/Apache-2.0.txt")) {
                 $expectedEntry = $packagePrefix + $requiredEntry
                 if (-not $entryMap.ContainsKey($expectedEntry) -or $entryMap[$expectedEntry].Length -le 0) {
                     throw "Generated ZIP is missing required package entry: $expectedEntry"
