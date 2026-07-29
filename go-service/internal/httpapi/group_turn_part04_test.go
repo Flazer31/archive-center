@@ -200,11 +200,12 @@ func TestCompleteTurnOOCGuardSkipsWrites(t *testing.T) {
 	srv := NewServer(cfg)
 	srv.Store = fake
 	srv.StoreOpenError = nil
+	srv.TurnWorkflows.begin("request-ooc", "sess-ooc", 1)
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-ooc","turn_index":1,"user_input":"OOC: please change the plugin setting","assistant_content":"Sure, I will help.","context_messages":[]}`
+	body := `{"chat_session_id":"sess-ooc","turn_index":1,"user_input":"OOC: please change the plugin setting","assistant_content":"Sure, I will help.","context_messages":[],"client_meta":{"turn_workflow_request_id":"request-ooc"}}`
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -219,6 +220,15 @@ func TestCompleteTurnOOCGuardSkipsWrites(t *testing.T) {
 	}
 	if resp["save_error"] != "skipped_by_ooc_guard" || resp["critic_triggered"] != false {
 		t.Fatalf("unexpected OOC response: %+v", resp)
+	}
+	hud, _ := resp["turn_workflow_hud"].(map[string]any)
+	if hud["contract_version"] != turnWorkflowHUDContractVersion || hud["notice_kind"] != "ooc" ||
+		hud["severity"] != turnWorkflowHUDSeverityNotice || hud["dismissal_policy"] != turnWorkflowHUDDismissCardOrX {
+		t.Fatalf("unexpected OOC HUD: %+v response=%+v", hud, resp)
+	}
+	facts, _ := hud["facts"].([]any)
+	if len(facts) != len(turnWorkflowHUDFactTemplates) {
+		t.Fatalf("OOC HUD facts=%+v", facts)
 	}
 	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
 		t.Fatalf("OOC guard should skip all writes, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))

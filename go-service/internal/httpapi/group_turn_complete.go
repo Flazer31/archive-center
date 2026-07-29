@@ -117,6 +117,37 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		s.TurnWorkflows.setLogicalTurn(workflowRequestID, req.TurnIndex)
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageFinalAccepted)
+		payloadObservation := mapFromAny(req.ClientMeta["source_to_final_lineage_observation"])
+		payloadStatus := strings.TrimSpace(extractionStringFromAny(payloadObservation["payload_application_status"]))
+		payloadStage := strings.TrimSpace(extractionStringFromAny(payloadObservation["payload_observation_stage"]))
+		payloadFact := turnWorkflowHUDFact{
+			Key:         "payload_delivery",
+			Owner:       "risu_host",
+			Scope:       "current_request",
+			Status:      firstNonEmpty(payloadStatus, "unobserved"),
+			Disposition: "deferred",
+			ReasonCode:  "source_to_final_payload_application_unobserved",
+			Severity:    turnWorkflowHUDSeverityNotice,
+		}
+		if (payloadStatus == "applied" || payloadStatus == "empty") && payloadStage == "archive_center_before_request_return" {
+			payloadFact.Disposition = "delivered"
+			payloadFact.ReasonCode = "risu_host_payload_application_observed"
+			payloadFact.Severity = turnWorkflowHUDSeverityNormal
+		} else if payloadStatus != "" && payloadStatus != "applied" && payloadStatus != "empty" {
+			payloadFact.Disposition = "dropped"
+			payloadFact.ReasonCode = "risu_host_payload_application_rejected"
+			payloadFact.Severity = turnWorkflowHUDSeverityWarning
+		}
+		s.TurnWorkflows.setFact(workflowRequestID, payloadFact)
+		s.TurnWorkflows.setFact(workflowRequestID, turnWorkflowHUDFact{
+			Key:         "finality",
+			Owner:       "go_backend",
+			Scope:       "current_request",
+			Status:      "active_final",
+			Disposition: "delivered",
+			ReasonCode:  "active_final_source_accepted",
+			Severity:    turnWorkflowHUDSeverityNormal,
+		})
 	}
 	userText := sanitizeCriticStorageText(*req.UserInput)
 	assistantText := sanitizeCriticStorageText(*req.AssistantContent)
@@ -407,11 +438,17 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageCriticLLM, "skipped", "ooc_turn_guard")
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageDerivedPersist, "skipped", "ooc_turn_guard")
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageCheckpoints, "skipped", "ooc_turn_guard")
-			s.TurnWorkflows.addWarning(workflowRequestID, "OOC_TURN_SKIPPED", "turn_hud.warning.ooc_turn_skipped", turnWorkflowStageFinalAccepted)
+			s.TurnWorkflows.addNotice(workflowRequestID, "OOC_TURN_SKIPPED", "turn_hud.notice.ooc_turn_skipped", turnWorkflowStageFinalAccepted)
 			s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
 				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			))
-			s.TurnWorkflows.complete(workflowRequestID)
+			s.TurnWorkflows.setPersistenceFacts(workflowRequestID, "skipped", 0, "skipped", 0, "not_requested", 0)
+			s.TurnWorkflows.completeWithNotice(
+				workflowRequestID,
+				"turn_hud.notice.ooc_recognized",
+				"turn_hud.notice.ooc_recognized_detail",
+				"OOC_INPUT_CANCELLED",
+			)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":               "ok",
@@ -937,6 +974,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		failReasons = []string{}
 	}
 
+	persistenceWriteErrors := storeWriteErrors
 	maintenanceStartedAt := time.Now()
 	maintenanceHandoff := s.buildCompleteTurnMaintenanceHandoff(ctx, sid, turnIndex, saveOK, now, writeSource, req)
 	timing.addElapsed("maintenance_handoff", maintenanceStartedAt)
@@ -969,7 +1007,40 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	episodeSummariesSaved := intFromAny(episodeResult["generated"], 0)
+	derivedArtifactsSaved := memoriesSaved + preciseMemoryUnitsSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
+	rawStatus := "skipped"
+	if rawTurnDurable {
+		rawStatus = "ok"
+	} else if s.usesShadowWriteStore() {
+		rawStatus = "error"
+	}
+	derivedPersistenceFailed := rawTurnDurable && persistenceWriteErrors > rawSave.Errors
+	derivedStatus := "skipped"
+	if derivedPersistenceFailed {
+		derivedStatus = "error"
+	} else if derivedArtifactsSaved > 0 {
+		derivedStatus = "ok"
+	} else if criticTriggered && derivedArtifactsSaved == 0 {
+		derivedStatus = "empty"
+	} else if rawStatus == "ok" && !criticTriggered {
+		derivedStatus = "delayed"
+	} else if rawStatus == "error" {
+		derivedStatus = "not_checked_no_raw"
+	}
+	vectorPipelineStatus := vectorStatus
+	if vectorPipelineStatus == "" {
+		vectorPipelineStatus = "not_requested"
+	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.setPersistenceFacts(
+			workflowRequestID,
+			rawStatus,
+			rawSave.ChatLogsSaved,
+			derivedStatus,
+			derivedArtifactsSaved,
+			vectorPipelineStatus,
+			vectorsUpserted,
+		)
 		s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
 			rawSave.UserDurable,
 			rawSave.AssistantDurable,
@@ -1022,30 +1093,6 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				s.TurnWorkflows.complete(workflowRequestID)
 			}
 		}
-	}
-	derivedArtifactsSaved := memoriesSaved + preciseMemoryUnitsSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
-	rawStatus := "skipped"
-	if rawTurnDurable {
-		rawStatus = "ok"
-	} else if s.usesShadowWriteStore() {
-		rawStatus = "error"
-	}
-	derivedPersistenceFailed := rawTurnDurable && storeWriteErrors > rawSave.Errors
-	derivedStatus := "skipped"
-	if derivedPersistenceFailed {
-		derivedStatus = "error"
-	} else if derivedArtifactsSaved > 0 {
-		derivedStatus = "ok"
-	} else if criticTriggered && derivedArtifactsSaved == 0 {
-		derivedStatus = "empty"
-	} else if rawStatus == "ok" && !criticTriggered {
-		derivedStatus = "delayed"
-	} else if rawStatus == "error" {
-		derivedStatus = "not_checked_no_raw"
-	}
-	vectorPipelineStatus := vectorStatus
-	if vectorPipelineStatus == "" {
-		vectorPipelineStatus = "not_requested"
 	}
 	persistencePipeline := map[string]any{
 		"contract_version": "complete_turn.persistence_pipeline.v1",

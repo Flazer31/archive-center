@@ -127,6 +127,15 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	workflowRequestID := prepareTurnWorkflowRequestID(prepareSourceContract, request)
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		s.TurnWorkflows.begin(workflowRequestID, sid, intPtrValue(req.TurnIndex, 0))
+		s.TurnWorkflows.setFact(workflowRequestID, turnWorkflowHUDFact{
+			Key:         "host_observation",
+			Owner:       "risu_host",
+			Scope:       "current_request",
+			Status:      "accepted",
+			Disposition: "eligible",
+			ReasonCode:  "source_observation_eligible",
+			Severity:    turnWorkflowHUDSeverityNormal,
+		})
 		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePrepareSource, "succeeded", "source_observation_eligible")
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageRecall)
 	}
@@ -438,6 +447,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	materializationTrace["total_materialized_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(charStates) + len(activeStates) + len(canonicalLayers) + len(charEvents)
 	timing.addElapsed("store_reads", storeReadsStartedAt)
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		hostTurn, hostTurnObserved := prepareTurnWorkflowHostOrdinal(request, currentInputDecision)
+		s.TurnWorkflows.setHostTurn(workflowRequestID, hostTurn, hostTurnObserved)
 		s.TurnWorkflows.setLogicalTurn(workflowRequestID, resolvePrepareTurnWorkflowLogicalTurn(request, currentInputDecision, chatLogs))
 		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageRecall, "succeeded", "")
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageContext)
@@ -815,6 +826,43 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	injectionPack["memory_budget_resolution"] = memoryBudgetResolution
 	injectionText = extractionStringFromAny(payloadApplicationPlan["auxiliary_text"])
 	inputContextText = extractionStringFromAny(payloadApplicationPlan["input_context_text"])
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		selectedChars := len([]rune(injectionText)) + len([]rune(inputContextText))
+		contextFact := turnWorkflowHUDFact{
+			Key:      "context_selection",
+			Owner:    "go_backend",
+			Scope:    "current_request",
+			Status:   "empty",
+			Severity: turnWorkflowHUDSeverityNormal,
+			Count:    intValuePtr(selectedChars),
+		}
+		switch {
+		case selectedChars > 0:
+			contextFact.Status = "selected"
+			contextFact.Disposition = "selected"
+			contextFact.ReasonCode = "payload_plan_context_selected"
+		case !injectionEnabled && !inputContextEnabled:
+			contextFact.Status = "disabled"
+			contextFact.Disposition = "dropped"
+			contextFact.ReasonCode = "context_delivery_disabled"
+		default:
+			contextFact.Status = "empty"
+			contextFact.Disposition = "deferred"
+			contextFact.ReasonCode = "no_context_selected"
+			contextFact.Severity = turnWorkflowHUDSeverityNotice
+		}
+		s.TurnWorkflows.setFact(workflowRequestID, contextFact)
+		s.TurnWorkflows.setFact(workflowRequestID, turnWorkflowHUDFact{
+			Key:         "payload_delivery",
+			Owner:       "risu_host",
+			Scope:       "current_request",
+			Status:      "awaiting_host_application",
+			Disposition: "deferred",
+			ReasonCode:  "awaiting_risu_host_payload_application",
+			Severity:    turnWorkflowHUDSeverityNotice,
+			Count:       intValuePtr(selectedChars),
+		})
+	}
 	if injectionText == "" {
 		injectionOut = nil
 	} else {

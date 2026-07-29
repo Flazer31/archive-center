@@ -60,6 +60,15 @@ func TestTurnWorkflowHUDAttemptIsScopedToLogicalTurnAndSupersedesCompletedAttemp
 	if !ok || superseded.Status != "invalidated" || superseded.CurrentStage == nil || superseded.CurrentStage.Status != "invalidated" {
 		t.Fatalf("superseded completed workflow = %#v, found=%t", superseded, ok)
 	}
+	supersededFacts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range superseded.Facts {
+		supersededFacts[fact.Key] = fact
+	}
+	if supersededFacts["backend_processing"].Disposition != "dropped" ||
+		supersededFacts["finality"].Disposition != "dropped" ||
+		supersededFacts["finality"].Status != "invalidated" {
+		t.Fatalf("superseded facts=%#v", supersededFacts)
+	}
 
 	ledger.complete("request-second")
 	third := ledger.begin("request-third", "session-a", 8)
@@ -182,6 +191,105 @@ func TestTurnWorkflowHUDCountsIncludeAllZerosAndTerminalSeverity(t *testing.T) {
 	if failed.Error.Code != "CRITIC_LLM_FAILED" || !failed.Error.Retryable {
 		t.Fatalf("error payload = %#v", failed.Error)
 	}
+	if failed.DismissalPolicy != turnWorkflowHUDDismissXOnly {
+		t.Fatalf("error dismissal policy=%q", failed.DismissalPolicy)
+	}
+}
+
+func TestTurnWorkflowHUDTypedFactsTurnAlignmentAndPersistence(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	started := ledger.begin("request-facts", "session-facts", 7)
+	if started == nil || started.ContractVersion != "turn_workflow_hud.v2" || started.Severity != turnWorkflowHUDSeverityNormal {
+		t.Fatalf("started HUD=%#v", started)
+	}
+	ledger.setHostTurn("request-facts", 8, true)
+	ledger.setFact("request-facts", turnWorkflowHUDFact{
+		Key: "host_observation", Owner: "risu_host", Scope: "current_request",
+		Status: "accepted", Disposition: "eligible", ReasonCode: "source_observation_eligible", Severity: turnWorkflowHUDSeverityNormal,
+	})
+	ledger.setFact("request-facts", turnWorkflowHUDFact{
+		Key: "context_selection", Owner: "go_backend", Scope: "current_request",
+		Status: "selected", Disposition: "selected", ReasonCode: "payload_plan_context_selected", Severity: turnWorkflowHUDSeverityNormal, Count: intValuePtr(240),
+	})
+	ledger.setPersistenceFacts("request-facts", "ok", 2, "empty", 0, "vector_not_configured", 0)
+	ledger.addWarning("request-facts", "VECTOR_INDEX_SKIPPED", "turn_hud.warning.vector_index_skipped", turnWorkflowStageDerivedPersist)
+	ledger.complete("request-facts")
+
+	view, ok := ledger.snapshot("request-facts")
+	if !ok {
+		t.Fatal("typed HUD snapshot missing")
+	}
+	if view.TurnAlignment.State != "host_ahead" || view.TurnAlignment.HostTurn != 8 || view.TurnAlignment.BackendTurn != 7 {
+		t.Fatalf("turn alignment=%#v", view.TurnAlignment)
+	}
+	facts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range view.Facts {
+		facts[fact.Key] = fact
+	}
+	if facts["host_observation"].Disposition != "eligible" || facts["context_selection"].Disposition != "selected" || facts["context_selection"].Count == nil || *facts["context_selection"].Count != 240 {
+		t.Fatalf("selection facts=%#v", facts)
+	}
+	if facts["raw_persistence"].Disposition != "delivered" || facts["derived_memory"].Disposition != "delivered" {
+		t.Fatalf("persistence facts=%#v", facts)
+	}
+	if facts["vector_index"].Disposition != "dropped" || facts["vector_index"].Severity != turnWorkflowHUDSeverityWarning {
+		t.Fatalf("vector fact=%#v", facts["vector_index"])
+	}
+	if facts["backend_processing"].Severity != turnWorkflowHUDSeverityNormal ||
+		facts["finality"].Severity != turnWorkflowHUDSeverityNormal {
+		t.Fatalf("successful backend/finality facts inherited an unrelated warning: %#v", facts)
+	}
+	if view.DismissalPolicy != turnWorkflowHUDDismissXOnly || view.Severity != turnWorkflowHUDSeverityWarning {
+		t.Fatalf("warning presentation=%#v", view)
+	}
+}
+
+func TestTurnWorkflowHUDCompletionClearsTransientAwaitingNotice(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-awaiting", "session-awaiting", 4)
+	ledger.awaitFinal("request-awaiting")
+	awaiting, ok := ledger.snapshot("request-awaiting")
+	if !ok || awaiting.Severity != turnWorkflowHUDSeverityNotice {
+		t.Fatalf("awaiting snapshot=%#v found=%t", awaiting, ok)
+	}
+
+	ledger.complete("request-awaiting")
+	completed, ok := ledger.snapshot("request-awaiting")
+	if !ok || completed.Status != "completed" || completed.Severity != turnWorkflowHUDSeverityNormal {
+		t.Fatalf("completed snapshot=%#v found=%t", completed, ok)
+	}
+	facts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range completed.Facts {
+		facts[fact.Key] = fact
+	}
+	if facts["backend_processing"].Severity != turnWorkflowHUDSeverityNormal ||
+		facts["finality"].Severity != turnWorkflowHUDSeverityNormal {
+		t.Fatalf("transient awaiting severity leaked into completed facts: %#v", facts)
+	}
+}
+
+func TestTurnWorkflowHUDRepeatedIdenticalFactDoesNotCreateNewRevision(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-fact-idempotent", "session-fact-idempotent", 3)
+	fact := turnWorkflowHUDFact{
+		Key: "vector_index", Owner: "vector_store", Scope: "current_turn",
+		Status: "queued", Disposition: "deferred",
+		ReasonCode: "rollback_vector_retry_queued", Severity: turnWorkflowHUDSeverityNotice,
+		Count: intValuePtr(1),
+	}
+	ledger.setFact("request-fact-idempotent", fact)
+	first, ok := ledger.snapshot("request-fact-idempotent")
+	if !ok {
+		t.Fatal("first fact snapshot missing")
+	}
+	ledger.setFact("request-fact-idempotent", fact)
+	repeated, ok := ledger.snapshot("request-fact-idempotent")
+	if !ok {
+		t.Fatal("repeated fact snapshot missing")
+	}
+	if repeated.Revision != first.Revision || !repeated.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Fatalf("identical fact changed workflow revision: first=%#v repeated=%#v", first, repeated)
+	}
 }
 
 func TestTurnWorkflowHUDOperationNoticePreservesBackendSeverity(t *testing.T) {
@@ -197,6 +305,18 @@ func TestTurnWorkflowHUDOperationNoticePreservesBackendSeverity(t *testing.T) {
 	)
 	if confirmed.DisplayMode != "notice" || confirmed.Status != "completed" || confirmed.Error != nil {
 		t.Fatalf("confirmed delete notice = %#v", confirmed)
+	}
+	if confirmed.Severity != turnWorkflowHUDSeverityNotice || confirmed.DismissalPolicy != turnWorkflowHUDDismissCardOrX || confirmed.NoticeKind != "delete" {
+		t.Fatalf("confirmed delete presentation = %#v", confirmed)
+	}
+	confirmedFacts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range confirmed.Facts {
+		confirmedFacts[fact.Key] = fact
+	}
+	if confirmedFacts["host_observation"].Disposition != "eligible" ||
+		confirmedFacts["finality"].Status != "deleted" ||
+		confirmedFacts["finality"].Disposition != "dropped" {
+		t.Fatalf("confirmed delete facts=%#v", confirmedFacts)
 	}
 
 	partial := newTurnWorkflowHUDOperationNotice(
@@ -214,6 +334,73 @@ func TestTurnWorkflowHUDOperationNoticePreservesBackendSeverity(t *testing.T) {
 	}
 	if partial.Error.Code != "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL" || partial.Error.MessageKey != "turn_hud.error.delete_sync_partial" {
 		t.Fatalf("partial delete error = %#v", partial.Error)
+	}
+	partialFacts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range partial.Facts {
+		partialFacts[fact.Key] = fact
+	}
+	if partialFacts["finality"].Status != "deleted" ||
+		partialFacts["finality"].Disposition != "dropped" ||
+		partialFacts["finality"].Severity != turnWorkflowHUDSeverityError {
+		t.Fatalf("partial delete facts=%#v", partialFacts)
+	}
+}
+
+func TestTurnWorkflowHUDNoticeRouteAcceptsOnlyTypedOOCObservation(t *testing.T) {
+	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
+	mux := http.NewServeMux()
+	server.registerTurnRoutes(mux)
+	body := []byte(`{"contract_version":"turn_workflow_notice_observation.v1","kind":"ooc_input_cancelled","request_id":"ooc-1","chat_session_id":"session-ooc","host_turn":5}`)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/turn-workflow/notice", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("notice status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var view turnWorkflowHUDViewModel
+	if err := json.Unmarshal(recorder.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.NoticeKind != "ooc" || view.Severity != turnWorkflowHUDSeverityNotice || view.DismissalPolicy != turnWorkflowHUDDismissCardOrX {
+		t.Fatalf("OOC notice=%#v", view)
+	}
+	if view.TurnAlignment.HostTurn != 5 || view.TurnAlignment.State != "unobserved" || view.TurnAlignment.ReasonCode != "backend_turn_unobserved" {
+		t.Fatalf("OOC turn alignment=%#v", view.TurnAlignment)
+	}
+	facts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range view.Facts {
+		facts[fact.Key] = fact
+	}
+	if facts["host_observation"].Disposition != "dropped" ||
+		facts["backend_processing"].Disposition != "dropped" ||
+		facts["finality"].Status != "cancelled" ||
+		facts["finality"].Disposition != "dropped" ||
+		facts["raw_persistence"].Status != "skipped" ||
+		facts["raw_persistence"].Disposition != "dropped" ||
+		facts["derived_memory"].Status != "skipped" ||
+		facts["vector_index"].Status != "not_requested" {
+		t.Fatalf("OOC facts=%#v", facts)
+	}
+	if snapshot, ok := server.TurnWorkflows.latestSnapshotForSession("session-ooc"); !ok || snapshot.RequestID != "ooc-1" {
+		t.Fatalf("recorded OOC snapshot=%#v found=%t", snapshot, ok)
+	}
+	repeated := httptest.NewRecorder()
+	mux.ServeHTTP(repeated, httptest.NewRequest(http.MethodPost, "/turn-workflow/notice", bytes.NewReader(body)))
+	if repeated.Code != http.StatusOK {
+		t.Fatalf("repeated OOC status=%d body=%s", repeated.Code, repeated.Body.String())
+	}
+	var repeatedView turnWorkflowHUDViewModel
+	if err := json.Unmarshal(repeated.Body.Bytes(), &repeatedView); err != nil {
+		t.Fatal(err)
+	}
+	if len(server.TurnWorkflows.entries) != 1 || repeatedView.RequestID != view.RequestID ||
+		repeatedView.Revision != view.Revision || !repeatedView.UpdatedAt.Equal(view.UpdatedAt) {
+		t.Fatalf("repeated OOC created a second operation: first=%#v repeated=%#v entries=%d", view, repeatedView, len(server.TurnWorkflows.entries))
+	}
+
+	invalid := httptest.NewRecorder()
+	mux.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/turn-workflow/notice", bytes.NewReader([]byte(`{"contract_version":"turn_workflow_notice_observation.v1","kind":"reroll","request_id":"bad","chat_session_id":"session-ooc"}`))))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported notice kind status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 }
 
@@ -239,6 +426,54 @@ func TestTurnWorkflowHUDCompleteWithNoticeIsTerminalAndPreservesWarnings(t *test
 		view.MessageKey != "turn_hud.notice.reroll_confirmed_detail" ||
 		view.NoticeCode != "LOGICAL_TURN_REPLACED" {
 		t.Fatalf("reroll notice presentation = %#v", view)
+	}
+}
+
+func TestTurnWorkflowHUDDuplicateReplayAndConflictUseDifferentSeverity(t *testing.T) {
+	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
+	replayAny := server.completeTurnWorkflowHUDDuplicate(
+		"duplicate-replay", "session-duplicate", 4,
+		"duplicate_turn_replay", "DUPLICATE_TURN_REPLAY",
+		"turn_hud.warning.duplicate_turn_replay", "turn_hud.notice.duplicate_existing_preserved",
+	)
+	replay, ok := replayAny.(turnWorkflowHUDViewModel)
+	if !ok {
+		t.Fatalf("duplicate replay HUD type=%T", replayAny)
+	}
+	if replay.NoticeKind != "duplicate" || replay.Severity != turnWorkflowHUDSeverityNotice || replay.DismissalPolicy != turnWorkflowHUDDismissCardOrX {
+		t.Fatalf("duplicate replay HUD=%#v", replay)
+	}
+	replayFacts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range replay.Facts {
+		replayFacts[fact.Key] = fact
+	}
+	if replayFacts["finality"].Status != "existing_preserved" ||
+		replayFacts["finality"].Disposition != "dropped" ||
+		replayFacts["raw_persistence"].Status != "existing" ||
+		replayFacts["derived_memory"].Status != "existing" {
+		t.Fatalf("duplicate replay facts=%#v", replayFacts)
+	}
+
+	conflictAny := server.completeTurnWorkflowHUDDuplicate(
+		"duplicate-conflict", "session-duplicate", 5,
+		"duplicate_turn_conflict", "DUPLICATE_TURN_CONFLICT",
+		"turn_hud.warning.duplicate_turn_conflict", "turn_hud.notice.duplicate_conflict_preserved",
+	)
+	conflict, ok := conflictAny.(turnWorkflowHUDViewModel)
+	if !ok {
+		t.Fatalf("duplicate conflict HUD type=%T", conflictAny)
+	}
+	if conflict.NoticeKind != "duplicate" || conflict.Severity != turnWorkflowHUDSeverityWarning || conflict.DismissalPolicy != turnWorkflowHUDDismissXOnly {
+		t.Fatalf("duplicate conflict HUD=%#v", conflict)
+	}
+	conflictFacts := map[string]turnWorkflowHUDFact{}
+	for _, fact := range conflict.Facts {
+		conflictFacts[fact.Key] = fact
+	}
+	if conflictFacts["finality"].Status != "existing_preserved" ||
+		conflictFacts["finality"].Disposition != "dropped" ||
+		conflictFacts["finality"].Severity != turnWorkflowHUDSeverityWarning {
+		t.Fatalf("duplicate conflict facts=%#v", conflictFacts)
 	}
 }
 

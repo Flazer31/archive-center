@@ -202,6 +202,7 @@ func (r *rollbackRecordingStore) SaveAuditLog(ctx context.Context, a *store.Audi
 type rollbackLifecycleStore struct {
 	*rollbackRecordingStore
 	invalidationErr error
+	outboxOperation string
 	outbox          *store.MemoryVectorOutboxItem
 }
 
@@ -225,8 +226,12 @@ func (r *rollbackLifecycleStore) InvalidateSourceRevisions(_ context.Context, si
 	if r.invalidationErr != nil {
 		return r.invalidationErr
 	}
+	operation := r.outboxOperation
+	if operation == "" {
+		operation = "delete"
+	}
 	r.outbox = &store.MemoryVectorOutboxItem{
-		ID: 1, Operation: "delete", OperationKey: "rollback-delete",
+		ID: 1, Operation: operation, OperationKey: "rollback-delete",
 		ChatSessionID: sid, SourceRevision: "old-revision",
 		DocumentID: "memory:" + sid + ":41", EmbeddingReady: true,
 		RequiredSourceState: "inactive", Status: "pending",
@@ -367,6 +372,20 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	if hud["title_key"] != "turn_hud.notice.delete_confirmed" || hud["notice_code"] != "ASSISTANT_OUTPUT_DELETE_CONFIRMED" {
 		t.Fatalf("delete HUD presentation = %+v", hud)
 	}
+	if hud["request_id"] != "rollback:sess-live:5:auto_rollback" {
+		t.Fatalf("delete HUD request_id = %v", hud["request_id"])
+	}
+	hudFacts := map[string]map[string]any{}
+	for _, rawFact := range hud["facts"].([]any) {
+		fact := rawFact.(map[string]any)
+		hudFacts[fact["key"].(string)] = fact
+	}
+	if hudFacts["raw_persistence"]["status"] != "deleted" ||
+		hudFacts["derived_memory"]["status"] != "deleted" ||
+		hudFacts["vector_index"]["status"] != "deleted" ||
+		hudFacts["vector_index"]["count"] != float64(4) {
+		t.Fatalf("delete HUD facts = %+v", hudFacts)
+	}
 
 	wantDeletes := []string{
 		"chat_logs:sess-live:5",
@@ -461,6 +480,69 @@ func TestRollbackLifecycleUsesDurableOutboxAndProviderFailureStaysRetryable(t *t
 	if len(base.deletes) == 0 {
 		t.Fatal("canonical rollback did not run")
 	}
+	hud := response["turn_workflow_hud"].(map[string]any)
+	facts := map[string]map[string]any{}
+	for _, rawFact := range hud["facts"].([]any) {
+		fact := rawFact.(map[string]any)
+		facts[fact["key"].(string)] = fact
+	}
+	if facts["vector_index"]["status"] != "queued" ||
+		facts["vector_index"]["disposition"] != "deferred" ||
+		facts["vector_index"]["count"] != float64(1) {
+		t.Fatalf("outbox rollback HUD facts=%+v", facts)
+	}
+}
+
+func TestRollbackLifecyclePermanentVectorFailureIsPartialError(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
+	lifecycle := &rollbackLifecycleStore{
+		rollbackRecordingStore: base,
+		outboxOperation:        "unsupported",
+	}
+	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: &turnRecordingVectorStore{}}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodDelete, "/rollback/5?chat_session_id=sess-permanent&req_source=manual", nil)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["status"] != "partial_error" {
+		t.Fatalf("response status=%v body=%s", response["status"], recorder.Body.String())
+	}
+	deletions := response["deletions"].(map[string]any)
+	vectors := deletions["vectors"].(map[string]any)
+	if vectors["ok"] != false ||
+		vectors["canonical_committed"] != true ||
+		vectors["permanent"] != float64(1) ||
+		vectors["canonical_note"] != "MariaDB invalidation is committed; vector cleanup has a permanent provider failure" {
+		t.Fatalf("permanent vector result=%+v", vectors)
+	}
+	hud := response["turn_workflow_hud"].(map[string]any)
+	if hud["status"] != "failed" ||
+		hud["severity"] != "error" ||
+		hud["dismissal_policy"] != "x_only" ||
+		hud["notice_code"] != "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL" {
+		t.Fatalf("permanent vector HUD=%+v", hud)
+	}
+	facts := map[string]map[string]any{}
+	for _, rawFact := range hud["facts"].([]any) {
+		fact := rawFact.(map[string]any)
+		facts[fact["key"].(string)] = fact
+	}
+	if facts["vector_index"]["status"] != "partial_error" ||
+		facts["vector_index"]["severity"] != "error" ||
+		facts["vector_index"]["count"] != float64(1) {
+		t.Fatalf("permanent vector HUD fact=%+v", facts["vector_index"])
+	}
 }
 
 func TestRollbackStopsBeforeCanonicalDeletionWhenSourceInvalidationFails(t *testing.T) {
@@ -483,6 +565,27 @@ func TestRollbackStopsBeforeCanonicalDeletionWhenSourceInvalidationFails(t *test
 	}
 	if len(base.deletes) != 0 {
 		t.Fatalf("canonical deletes ran after source invalidation failure: %+v", base.deletes)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	hud := response["turn_workflow_hud"].(map[string]any)
+	if hud["request_id"] != "rollback:sess-stop:5:manual" {
+		t.Fatalf("blocked rollback HUD request_id=%v", hud["request_id"])
+	}
+	facts := map[string]map[string]any{}
+	for _, rawFact := range hud["facts"].([]any) {
+		fact := rawFact.(map[string]any)
+		facts[fact["key"].(string)] = fact
+	}
+	for _, key := range []string{"raw_persistence", "derived_memory", "vector_index"} {
+		if facts[key]["status"] != "blocked" || facts[key]["severity"] != "error" {
+			t.Fatalf("blocked rollback fact %s=%+v", key, facts[key])
+		}
+	}
+	if facts["finality"]["status"] != "blocked" {
+		t.Fatalf("blocked rollback finality=%+v", facts["finality"])
 	}
 }
 

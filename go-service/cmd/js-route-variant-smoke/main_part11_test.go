@@ -460,7 +460,7 @@ func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	start := strings.Index(src, `  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v1";`)
+	start := strings.Index(src, `  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v2";`)
 	if start < 0 {
 		t.Fatal("turn workflow HUD contract marker not found")
 	}
@@ -615,6 +615,24 @@ function tf(key, args) {
   return key;
 }
 function warnLog() {}
+function getRequestTimeoutSettingMs() { return 5000; }
+let bridgeNoticeCalls = 0;
+let bridgeNoticeError = false;
+async function bridgeFetch(path, options) {
+  if (path !== "/turn-workflow/notice") return null;
+  bridgeNoticeCalls++;
+  if (bridgeNoticeError) throw new Error("backend unavailable");
+  const body = options && options.body || {};
+  return {
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:body.request_id,revision:1,
+    host_turn:body.host_turn,backend_turn:0,
+    turn_alignment:{host_turn:body.host_turn,backend_turn:0,state:"unobserved",reason_code:"backend_turn_unobserved"},
+    status:"completed",severity:"notice",dismissal_policy:"card_or_x",display_mode:"notice",
+    title_key:"turn_hud.notice.ooc_recognized",message_key:"turn_hud.notice.ooc_recognized_detail",
+    notice_code:"OOC_INPUT_CANCELLED",notice_kind:"ooc",presentation_tone:"attention",
+    stages:[],counts:[],warnings:[],facts:[{key:"host_observation",status:"observed",disposition:"dropped",severity:"notice"}]
+  };
+}
 ` + "\n" + hudRuntime + `
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -641,9 +659,19 @@ function assert(condition, message) {
       llm_call:index === 3 || index === 8
     };
   });
+  const facts = [
+    {key:"host_observation",status:"accepted",disposition:"eligible",reason_code:"source_observation_eligible",severity:"normal"},
+    {key:"context_selection",status:"selected",disposition:"selected",reason_code:"payload_plan_context_selected",severity:"normal",count:240},
+    {key:"payload_delivery",status:"applied",disposition:"delivered",reason_code:"risu_host_payload_application_observed",severity:"normal"},
+    {key:"raw_persistence",status:"ok",disposition:"delivered",reason_code:"ok",severity:"normal",count:2},
+    {key:"derived_memory",status:"ok",disposition:"delivered",reason_code:"ok",severity:"normal",count:10},
+    {key:"vector_index",status:"vector_not_configured",disposition:"dropped",reason_code:"vector_not_configured",severity:"warning",count:0}
+  ];
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-a",revision:1,
-    logical_turn:55,status:"completed_with_warning",severity:"warning",counts,stages,
+    logical_turn:55,host_turn:56,backend_turn:55,
+    turn_alignment:{host_turn:56,backend_turn:55,state:"host_ahead",reason_code:"host_turn_ahead_of_backend"},
+    status:"completed_with_warning",severity:"warning",dismissal_policy:"x_only",counts,stages,facts,
     warnings:[{code:"PUBLISHER_SKIPPED",message_key:"warn.publisher",stage_key:"stage-4"}]
   }), "completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
@@ -667,6 +695,10 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("건너뜀 · 0초"), "completed HUD omitted skipped stage status or duration");
   assert(surface.innerHTML.includes("지원 근거 없음"), "completed HUD omitted the visible stage reason");
   assert(surface.innerHTML.includes("감독관 호출을 건너뜀 · PUBLISHER_SKIPPED"), "completed HUD omitted warning details");
+  assert(surface.innerHTML.includes("Host 56 / Backend 55"), "completed HUD omitted host/backend turn mismatch");
+  assert(surface.innerHTML.includes("WORKFLOW FACTS"), "completed HUD omitted typed workflow facts");
+  assert(surface.innerHTML.includes("eligible · accepted"), "completed HUD omitted eligible host observation");
+  assert(surface.innerHTML.includes("dropped · vector_not_configured"), "completed HUD omitted dropped vector state");
   for (let index = 1; index <= 12; index++) {
     assert(surface.innerHTML.includes("stage.label." + index), "completed HUD omitted stage " + index);
   }
@@ -685,7 +717,7 @@ function assert(condition, message) {
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-info",revision:1,
-    logical_turn:55,status:"completed",severity:"info",counts,stages
+    logical_turn:55,status:"completed",severity:"normal",dismissal_policy:"card_or_x",counts,stages
   }), "normal completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.card && typeof surface.card.listeners.click === "function", "normal completed HUD lost card-wide dismissal");
@@ -696,7 +728,7 @@ function assert(condition, message) {
   const startedAt = new Date(Date.now() - 2200).toISOString();
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"running-b",revision:1,
-    logical_turn:56,status:"running",severity:"info",
+    logical_turn:56,status:"running",severity:"normal",dismissal_policy:"none",
     current_stage:{ordinal:3,total:7,label_key:"turn_hud.stage.prepare_source",llm_call:true,status:"running",started_at:startedAt}
   }), "running HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
@@ -708,12 +740,12 @@ function assert(condition, message) {
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"ooc-running",revision:1,
-    logical_turn:56,status:"awaiting_final_output",severity:"info",
+    logical_turn:56,status:"awaiting_final_output",severity:"notice",dismissal_policy:"none",
     current_stage:{ordinal:6,total:12,label_key:"turn_hud.stage.awaiting_final_output",llm_call:false,status:"running"}
   }), "OOC fixture running HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("6/12"), "OOC fixture did not begin from the awaiting-response stage");
-  assert(showTurnWorkflowHUDOOCRecognition(56), "existing OOC decision was not accepted by the HUD notice path");
+  assert(await showTurnWorkflowHUDOOCRecognition("session-ooc", 56), "existing OOC decision was not accepted by the HUD notice path");
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("OOC 인식"), "OOC decision did not replace the awaiting-response title");
   assert(surface.innerHTML.includes("OOC 판정으로 입력 처리를 취소했습니다."), "OOC cancellation detail was not rendered");
@@ -724,10 +756,21 @@ function assert(condition, message) {
   await surface.card.listeners.click({type:"click"});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "OOC informational notice did not dismiss");
+  settings.turnWorkflowHUDEnabled = false;
+  const bridgeCallsBeforeHiddenOOC = bridgeNoticeCalls;
+  assert(await showTurnWorkflowHUDOOCRecognition("session-ooc", 57), "hidden HUD must still record the OOC observation");
+  await _turnWorkflowHUDRenderChain;
+  assert(bridgeNoticeCalls === bridgeCallsBeforeHiddenOOC + 1, "HUD setting incorrectly suppressed the backend OOC observation");
+  assert(surface.innerHTML === "", "disabled HUD rendered an OOC card");
+  settings.turnWorkflowHUDEnabled = true;
+  bridgeNoticeError = true;
+  assert(!(await showTurnWorkflowHUDOOCRecognition("session-ooc", 58)), "OOC observation transport failure did not fail open");
+  bridgeNoticeError = false;
+  assert(surface.innerHTML === "", "failed OOC observation transport rendered a false backend notice");
 
   assert(consumeTurnWorkflowHUDNotice({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"delete-confirmed",revision:1,
-    logical_turn:56,status:"completed",severity:"info",display_mode:"notice",
+    logical_turn:56,status:"completed",severity:"notice",dismissal_policy:"card_or_x",display_mode:"notice",
     title_key:"turn_hud.notice.delete_confirmed",message_key:"turn_hud.notice.delete_confirmed_detail",
     notice_code:"ASSISTANT_OUTPUT_DELETE_CONFIRMED",counts:[],stages:[],warnings:[]
   }), "backend deletion notice was rejected");
@@ -741,7 +784,7 @@ function assert(condition, message) {
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"reroll-confirmed",revision:1,
-    logical_turn:56,status:"completed",severity:"info",display_mode:"notice",
+    logical_turn:56,status:"completed",severity:"notice",dismissal_policy:"card_or_x",display_mode:"notice",
     title_key:"turn_hud.notice.reroll_confirmed",message_key:"turn_hud.notice.reroll_confirmed_detail",
     notice_code:"LOGICAL_TURN_REPLACED",counts:[],stages:[],warnings:[]
   }), "backend reroll notice was rejected");
@@ -755,7 +798,7 @@ function assert(condition, message) {
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"failed-c",revision:1,
-    logical_turn:57,status:"failed",severity:"error",
+    logical_turn:57,status:"failed",severity:"error",dismissal_policy:"x_only",
     stages:stages.map(function(stage, index) {
       return index === 8
         ? {...stage,status:"failed",duration_ms:800,reason_code:"CRITIC_LLM_FAILED"}
@@ -787,7 +830,7 @@ function assert(condition, message) {
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"invalidated-d",revision:1,
-    logical_turn:58,status:"invalidated",severity:"warning",counts,
+    logical_turn:58,status:"invalidated",severity:"warning",dismissal_policy:"x_only",counts,
     stages:stages.map(function(stage, index) {
       return index === 5
         ? {...stage,status:"invalidated",duration_ms:640,reason_code:"superseded_by_new_attempt"}
@@ -810,7 +853,7 @@ function assert(condition, message) {
   settings.turnWorkflowHUDEnabled = false;
   assert(!consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"disabled-e",revision:1,
-    logical_turn:59,status:"completed",severity:"info",counts
+    logical_turn:59,status:"completed",severity:"normal",dismissal_policy:"card_or_x",counts
   }), "disabled HUD accepted a backend view");
   startTurnWorkflowHUDWatch("disabled-e");
   await _turnWorkflowHUDRenderChain;
@@ -866,7 +909,7 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
   nextResult = {
     status:"ok",turn_index:7,
     source_acceptance:{accepted:true,replace_existing:true,lifecycle:"active_final"},
-    turn_workflow_hud:{contract_version:"turn_workflow_hud.v1",request_id:"request-reroll",status:"completed"}
+    turn_workflow_hud:{contract_version:"turn_workflow_hud.v2",request_id:"request-reroll",status:"completed"}
   };
   await tryCompleteTurn(8, "user", "new answer", [], "session-1", null, null);
   assert(runtimeUpdates.length === 1, "confirmed reroll was not recorded exactly once");

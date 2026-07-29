@@ -12737,11 +12737,12 @@
   // the returned ViewModel, and interpolates an active LLM timer locally.
   // ──────────────────────────────────────────────────────────────
 
-  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v1";
+  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v2";
   const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(5px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(140px,calc(100vw - 10px));pointer-events:none;font-family:Pretendard Variable,Pretendard,Inter,Geist,system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:10px;line-height:1.25;color:#F4F5F7";
   const TURN_WORKFLOW_HUD_ROOT_SELECTOR = ".mo-turn-workflow-hud-root";
   const TURN_WORKFLOW_HUD_SURFACE_SELECTOR = ".mo-turn-workflow-hud-root > div";
   const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;max-height:calc(100vh - 20px);border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#181C24;box-shadow:0 16px 40px rgba(0,0,0,.48);padding:8px;pointer-events:auto;font-size:10px;line-height:1.25;letter-spacing:-.01em;color:#F4F5F7;white-space:normal;overflow:auto;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-width:thin";
+  const TURN_WORKFLOW_HUD_NOTICE_STYLE = ";border-color:rgba(143,167,255,.38);background:#171D2A";
   const TURN_WORKFLOW_HUD_WARNING_STYLE = ";border-color:rgba(138,85,247,.35);background:#1C1828";
   const TURN_WORKFLOW_HUD_ATTENTION_STYLE = ";border-color:rgba(245,196,81,.58);background:#262113;box-shadow:0 16px 40px rgba(0,0,0,.48),0 0 18px rgba(245,196,81,.10)";
   const TURN_WORKFLOW_HUD_ERROR_STYLE = ";border-color:rgba(225,88,166,.55);background:#2A151D;box-shadow:0 16px 40px rgba(0,0,0,.48),0 0 20px rgba(225,88,166,.10)";
@@ -12768,6 +12769,8 @@
   const TURN_WORKFLOW_HUD_STAGE_REASON_STYLE = "margin-top:2px;font-size:6.5px;line-height:1.15;color:#8B909A;overflow-wrap:anywhere";
   const TURN_WORKFLOW_HUD_WARNING_LIST_STYLE = "margin-top:5px;border:1px solid rgba(138,85,247,.28);border-radius:7px;background:rgba(138,85,247,.08);padding:4px";
   const TURN_WORKFLOW_HUD_WARNING_ITEM_STYLE = "font-size:7px;line-height:1.25;color:#B9A4F7;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_FACT_STYLE = "display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 6px;margin-top:4px";
+  const TURN_WORKFLOW_HUD_FACT_CELL_STYLE = "min-width:0;border:1px solid rgba(255,255,255,.07);border-radius:6px;background:#13161C;padding:4px";
   const TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE = "margin-top:5px;font-size:9px;line-height:1.35;color:#F4F5F7";
   const TURN_WORKFLOW_HUD_ERROR_META_STYLE = "margin-top:4px;padding-right:18px;font-size:8px;line-height:1.3;color:#E158A6;white-space:normal;overflow-wrap:anywhere";
 
@@ -12860,7 +12863,13 @@
   }
 
   function turnWorkflowHUDTurnLabel(view) {
-    const turn = Number(view && view.logical_turn || 0);
+    const alignment = view && view.turn_alignment && typeof view.turn_alignment === "object" ? view.turn_alignment : null;
+    const hostTurn = Number(alignment && alignment.host_turn || view && view.host_turn || 0);
+    const backendTurn = Number(alignment && alignment.backend_turn || view && view.backend_turn || 0);
+    if (alignment && alignment.state && alignment.state !== "aligned" && hostTurn > 0 && backendTurn > 0) {
+      return `Host ${Math.trunc(hostTurn)} / Backend ${Math.trunc(backendTurn)}`;
+    }
+    const turn = Number(view && (view.backend_turn || view.logical_turn) || 0);
     return turn > 0 ? tf("turn_hud.turn", { n: turn }) : t("turn_hud.turn_unknown");
   }
 
@@ -12951,6 +12960,46 @@
     return `<div style="${TURN_WORKFLOW_HUD_WARNING_LIST_STYLE}">${warningHTML}</div>`;
   }
 
+  function turnWorkflowHUDFactLabel(key) {
+    const labels = {
+      host_observation: "Host",
+      backend_processing: "Backend",
+      context_selection: "Context",
+      payload_delivery: "Payload",
+      finality: "Final",
+      raw_persistence: "Raw",
+      derived_memory: "Derived",
+      vector_index: "Vector",
+    };
+    return labels[String(key || "")] || String(key || "");
+  }
+
+  function turnWorkflowHUDFactColor(severity) {
+    switch (String(severity || "normal")) {
+      case "error": return "#E158A6";
+      case "warning": return "#B9A4F7";
+      case "notice": return "#F5C451";
+      default: return "#8FA7FF";
+    }
+  }
+
+  function turnWorkflowHUDFactLedgerHTML(view) {
+    const facts = Array.isArray(view && view.facts) ? view.facts : [];
+    if (!facts.length) return "";
+    const factHTML = facts.map(function(fact) {
+      const item = fact && typeof fact === "object" ? fact : {};
+      const parts = [item.disposition, item.status].filter(Boolean);
+      if (item.count != null) parts.push(String(item.count));
+      return `<div style="${TURN_WORKFLOW_HUD_FACT_CELL_STYLE}">`
+        + `<div style="${TURN_WORKFLOW_HUD_STAGE_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDFactLabel(item.key))}</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_STAGE_META_STYLE};color:${turnWorkflowHUDFactColor(item.severity)}">${escapeTurnWorkflowHUDHTML(parts.join(" · ") || "unobserved")}</div>`
+        + (item.reason_code ? `<div style="${TURN_WORKFLOW_HUD_STAGE_REASON_STYLE}">${escapeTurnWorkflowHUDHTML(item.reason_code)}</div>` : "")
+        + `</div>`;
+    }).join("");
+    return `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">WORKFLOW FACTS</div>`
+      + `<div style="${TURN_WORKFLOW_HUD_FACT_STYLE}">${factHTML}</div>`;
+  }
+
   function turnWorkflowHUDCountPresentation(counts) {
     const safeCounts = Array.isArray(counts) ? counts : [];
     const totalCount = safeCounts.find(function(count) {
@@ -13012,8 +13061,21 @@
     await target.addEventListener("keydown", dismiss);
   }
 
+  function turnWorkflowHUDCloseButtonOnly(view) {
+    return String(view && view.dismissal_policy || "") === "x_only";
+  }
+
+  function turnWorkflowHUDSeverityStyle(severity) {
+    switch (String(severity || "normal")) {
+      case "error": return TURN_WORKFLOW_HUD_ERROR_STYLE;
+      case "warning": return TURN_WORKFLOW_HUD_WARNING_STYLE;
+      case "notice": return TURN_WORKFLOW_HUD_NOTICE_STYLE;
+      default: return "";
+    }
+  }
+
   function buildTurnWorkflowHUDPresentation(view) {
-    const severity = String(view.severity || "info");
+    const severity = String(view.severity || "normal");
     if (String(view.display_mode || "") === "notice") {
       const failed = view.status === "failed" || severity === "error";
       const attention = String(view.presentation_tone || "") === "attention";
@@ -13024,13 +13086,13 @@
       const meta = [turnWorkflowHUDTurnLabel(view), noticeCode].filter(Boolean).join(" · ");
       const noticeStyle = failed
         ? TURN_WORKFLOW_HUD_ERROR_STYLE
-        : (attention ? TURN_WORKFLOW_HUD_ATTENTION_STYLE : (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : ""));
+        : (attention ? TURN_WORKFLOW_HUD_ATTENTION_STYLE : turnWorkflowHUDSeverityStyle(severity));
       const noticeTitleStyle = attention
         ? TURN_WORKFLOW_HUD_TITLE_STYLE + ";color:#F5C451"
         : TURN_WORKFLOW_HUD_TITLE_STYLE;
       return {
         terminal: true,
-        closeButtonOnly: failed || severity === "warning",
+        closeButtonOnly: turnWorkflowHUDCloseButtonOnly(view),
         elapsedStartedAt: "",
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + noticeStyle}">`
           + turnWorkflowHUDDismissButtonHTML()
@@ -13041,6 +13103,7 @@
           + (meta ? `<div style="${failed ? TURN_WORKFLOW_HUD_ERROR_META_STYLE : TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>` : "")
           + turnWorkflowHUDWarningListHTML(view)
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + turnWorkflowHUDFactLedgerHTML(view)
           + `</div>`,
       };
     }
@@ -13058,7 +13121,7 @@
       ].filter(Boolean).join(" · ");
       return {
         terminal: true,
-        closeButtonOnly: true,
+        closeButtonOnly: turnWorkflowHUDCloseButtonOnly(view),
         elapsedStartedAt: "",
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
           + turnWorkflowHUDDismissButtonHTML()
@@ -13070,6 +13133,7 @@
           + turnWorkflowHUDWarningListHTML(view)
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + turnWorkflowHUDFactLedgerHTML(view)
           + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
       };
@@ -13082,15 +13146,16 @@
       const countPresentation = turnWorkflowHUDCountPresentation(view.counts);
       return {
         terminal: true,
-        closeButtonOnly: severity === "warning" || view.status === "invalidated",
+        closeButtonOnly: turnWorkflowHUDCloseButtonOnly(view),
         elapsedStartedAt: "",
-        html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "")}">`
+        html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle(severity)}">`
           + turnWorkflowHUDDismissButtonHTML()
           + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
           + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + completionLabel)}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
           + turnWorkflowHUDWarningListHTML(view)
+          + turnWorkflowHUDFactLedgerHTML(view)
           + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
       };
@@ -13108,7 +13173,7 @@
     return {
       terminal: false,
       elapsedStartedAt,
-      html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + (severity === "warning" ? TURN_WORKFLOW_HUD_WARNING_STYLE : "")}">`
+      html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle(severity)}">`
         + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER</div>`
         + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + (ordinal > 0 && total > 0 ? " · " + ordinal + "/" + total : ""))}</div>`
         + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
@@ -13216,26 +13281,29 @@
     return true;
   }
 
-  function showTurnWorkflowHUDOOCRecognition(logicalTurn) {
-    if (!turnWorkflowHUDIsEnabled()) return false;
-    const activeRequestId = String(_turnWorkflowHUDActiveRequestId || "").trim();
+  async function showTurnWorkflowHUDOOCRecognition(chatSessionId, logicalTurn) {
+    const hudEnabled = turnWorkflowHUDIsEnabled();
+    const sessionId = String(chatSessionId || "").trim();
+    if (!sessionId) return false;
     const turn = Number(logicalTurn || 0);
-    return consumeTurnWorkflowHUDNotice({
-      contract_version: TURN_WORKFLOW_HUD_CONTRACT,
-      request_id: activeRequestId || `ooc-recognition:${Date.now()}`,
-      logical_turn: Number.isFinite(turn) && turn > 0 ? Math.trunc(turn) : 0,
-      revision: Math.max(1, Number(_turnWorkflowHUDLastRevision || 0) + 1),
-      status: "completed",
-      severity: "info",
-      display_mode: "notice",
-      title_key: "turn_hud.notice.ooc_recognized",
-      message_key: "turn_hud.notice.ooc_recognized_detail",
-      notice_code: "OOC_INPUT_CANCELLED",
-      presentation_tone: "attention",
-      stages: [],
-      counts: [],
-      warnings: [],
-    });
+    try {
+      const view = await bridgeFetch("/turn-workflow/notice", {
+        method: "POST",
+        timeoutMs: getRequestTimeoutSettingMs(),
+        body: {
+          contract_version: "turn_workflow_notice_observation.v1",
+          kind: "ooc_input_cancelled",
+          request_id: `ooc-observation:${sessionId}:${Number.isFinite(turn) && turn > 0 ? Math.trunc(turn) : 0}`,
+          chat_session_id: sessionId,
+          host_turn: Number.isFinite(turn) && turn > 0 ? Math.trunc(turn) : 0,
+        },
+      });
+      if (!hudEnabled) return true;
+      return consumeTurnWorkflowHUDNotice(view);
+    } catch (error) {
+      warnLog("turn workflow OOC observation unavailable", error);
+      return false;
+    }
   }
 
   function stopTurnWorkflowHUDWatch(requestId, removeEmpty) {
@@ -26041,6 +26109,11 @@
           time: new Date().toISOString(),
           enqueueStatus: result.status,
           queueDepth: result.queue_depth || 1,
+          sessionId: String(chatSessionId || ""),
+          requestId: String(result.request_id || ""),
+          turnIndex: Number.isFinite(Number(result.turn_index))
+            ? Math.trunc(Number(result.turn_index))
+            : (Number.isFinite(Number(turnIdx)) ? Math.trunc(Number(turnIdx)) : 0),
         };
       } catch (_mqe) { /* non-fatal */ }
       // traceRef가 살아있으면 enqueue 상태를 비동기로 attach
@@ -36020,7 +36093,7 @@
           detail: "ooc_skipped",
           failReasons: ["ooc_turn"],
         });
-        showTurnWorkflowHUDOOCRecognition(peekNextTurnIndex(chatSessionId));
+        await showTurnWorkflowHUDOOCRecognition(chatSessionId, peekNextTurnIndex(chatSessionId));
 
         debugLog("afterRequest: OOC turn → skip DB save/critic/episode/maintenance", skipPersist.source || "unknown");
         return responseReturnContent;
@@ -36129,7 +36202,7 @@
           detail: "ooc_skipped",
           failReasons: ["ooc_turn"],
         });
-        showTurnWorkflowHUDOOCRecognition(skippedTurnIdx);
+        await showTurnWorkflowHUDOOCRecognition(chatSessionId, skippedTurnIdx);
         if (lastOrchResult && lastOrchResult._trace) {
           lastOrchResult._trace.userInputCapture = {
             status: "ooc_turn_blocked",
@@ -36661,9 +36734,6 @@
       const persistedTurnIdx = _ctResult && Number.isFinite(Number(_ctResult.turn_index)) && Number(_ctResult.turn_index) > 0
         ? Number(_ctResult.turn_index)
         : turnIdx;
-      if (effectiveTurnOocGuardApplied) {
-        showTurnWorkflowHUDOOCRecognition(persistedTurnIdx);
-      }
       const ctPipeline = _ctResult && _ctResult.persistence_pipeline && typeof _ctResult.persistence_pipeline === "object" ? _ctResult.persistence_pipeline : null;
       const ctRaw = ctPipeline && ctPipeline.raw && typeof ctPipeline.raw === "object" ? ctPipeline.raw : null;
       const ctDerived = ctPipeline && ctPipeline.derived && typeof ctPipeline.derived === "object" ? ctPipeline.derived : null;
@@ -48309,6 +48379,47 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     return "mo-dash-card";
   }
 
+  function buildDashboardQueueObservations(rs) {
+    const observations = [];
+    const maxAttempts = failedQueueMaxAttempts();
+    for (const item of Array.isArray(_failedQueue) ? _failedQueue.slice(0, 200) : []) {
+      const payload = item && item.payload && typeof item.payload === "object" ? item.payload : {};
+      observations.push({
+        queue_kind: "transport_retry",
+        session_id: String(payload.chat_session_id || item.chatSessionId || ""),
+        request_id: String(turnWorkflowHUDRequestIdFromCompleteBody(payload) || ""),
+        turn_index: Number(payload.turn_index || item.turnIndex || 0),
+        state: String(item && item.state || "unobserved"),
+        attempts: Number(item && item.attempts || 0),
+        max_attempts: maxAttempts,
+      });
+    }
+    for (const pending of _pendingFinalConfirmations.values()) {
+      const payload = pending && pending.payload && typeof pending.payload === "object" ? pending.payload : {};
+      observations.push({
+        queue_kind: "pending_confirmation",
+        session_id: String(pending && pending.sessionId || payload.chat_session_id || ""),
+        request_id: String(pending && pending.requestContext && pending.requestContext.requestId || turnWorkflowHUDRequestIdFromCompleteBody(payload) || ""),
+        turn_index: Number(payload.turn_index || 0),
+        state: String(pending && pending.state || "pending"),
+      });
+    }
+    const maintenance = rs && rs.lastMaintenanceQueueStatus && typeof rs.lastMaintenanceQueueStatus === "object"
+      ? rs.lastMaintenanceQueueStatus
+      : null;
+    if (maintenance && Number(maintenance.queueDepth || 0) > 0) {
+      observations.push({
+        queue_kind: "maintenance",
+        session_id: String(maintenance.sessionId || ""),
+        request_id: String(maintenance.requestId || ""),
+        turn_index: Number(maintenance.turnIndex || 0),
+        state: String(maintenance.status || "queued"),
+        count: Number(maintenance.queueDepth || 0),
+      });
+    }
+    return observations;
+  }
+
   async function loadDashboardViewModel(rs, s, guideModeDashboardState) {
     try {
       const firstTurnLight = !!(
@@ -48326,8 +48437,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             runtime_current: runtimeState && runtimeState.currentSessionId || "",
             timeline_current: _timelineState && _timelineState.currentSessionId || "",
           },
+          current_session_id: runtimeState && runtimeState.currentSessionId || _timelineState && _timelineState.currentSessionId || "",
           prepare_turn_ever_contacted: !!_prepareTurnEverContacted,
           failed_queue_depth: Array.isArray(_failedQueue) ? _failedQueue.length : 0,
+          current_workflow_request_id: String(_turnWorkflowHUDActiveRequestId || ""),
+          queue_observations: buildDashboardQueueObservations(rs),
           guide_mode_state: guideModeDashboardState,
           first_turn_light: firstTurnLight,
           first_turn_ended_at: lastTurnTrace && lastTurnTrace.endedAt || "",
@@ -48467,6 +48581,21 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       prepareTiming: "Turn Prepare",
       completeTiming: "Save / Memory Build",
       referenceVector: dashboardSimpleText("referenceVectorLabel"),
+      turnAlignment: "Host / Backend Turn",
+      "workflowFact.host_observation": "Host Observation",
+      "workflowFact.backend_processing": "Backend Processing",
+      "workflowFact.context_selection": "Context Selection",
+      "workflowFact.payload_delivery": "Payload Delivery",
+      "workflowFact.finality": "Final Output",
+      "workflowFact.raw_persistence": "Raw Save",
+      "workflowFact.derived_memory": "Derived Memory",
+      "workflowFact.vector_index": "Vector",
+      "queue.transport_retry": "Current Transport Retry",
+      "queue.pending_confirmation": "Current Confirmation",
+      "queue.maintenance": "Current Maintenance",
+      "queueHistory.transport_retry": "Past Transport Retry",
+      "queueHistory.pending_confirmation": "Past Confirmation",
+      "queueHistory.maintenance": "Past Maintenance",
     };
     return labels[key] || String(key || "");
   }
@@ -50698,7 +50827,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <div class="mo-dash">
           ${_failedQueue.length === 0 ? '<div class="mo-note">' + t('dash.queue.empty') + '</div>' : _failedQueue.slice(0, 10).map((item, i) => {
             const p = item.payload || {};
-            return '<div class="mo-dash-row" style="font-size:11px"><span class="mo-dot ' + (item.attempts > 5 ? 'mo-dot-fail' : 'mo-dot-unknown') + '"></span><span class="mo-dash-label">#' + (i+1) + ' ' + escapeAttr(item.type) + '</span><span class="mo-dash-value">turn=' + (p.turn_index ?? '?') + ' sid=' + escapeAttr(truncPreview(p.chat_session_id || '?', 30)) + ' att=' + item.attempts + ' age=' + escapeAttr(formatDashboardTimestampLocal(item.addedAt, { includeDate: true }) || '?') + '</span></div>';
+            const queueTerminal = String(item.state || "") === "terminal" || Number(item.attempts || 0) >= failedQueueMaxAttempts();
+            return '<div class="mo-dash-row" style="font-size:11px"><span class="mo-dot ' + (queueTerminal ? 'mo-dot-fail' : 'mo-dot-notice') + '"></span><span class="mo-dash-label">#' + (i+1) + ' ' + escapeAttr(item.type) + '</span><span class="mo-dash-value">turn=' + (p.turn_index ?? '?') + ' sid=' + escapeAttr(truncPreview(p.chat_session_id || '?', 30)) + ' att=' + item.attempts + '/' + failedQueueMaxAttempts() + ' age=' + escapeAttr(formatDashboardTimestampLocal(item.addedAt, { includeDate: true }) || '?') + '</span></div>';
           }).join("")}
           ${_failedQueue.length > 10 ? '<div class="mo-note">' + t('dash.queue.moreItems').replace('{n}', _failedQueue.length - 10) + '</div>' : ''}
           <div class="mo-dash-row" style="font-size:10px"><span class="mo-dash-label">Persistence</span><span class="mo-dash-value">load: ${runtimeState.queuePersistence.lastLoad ? escapeAttr(runtimeState.queuePersistence.lastLoad.detail || runtimeState.queuePersistence.lastLoad.status) : 'N/A'} / save: ${runtimeState.queuePersistence.lastSave ? escapeAttr(runtimeState.queuePersistence.lastSave.status) : 'N/A'}</span></div>

@@ -56,11 +56,15 @@ func TestBuildDashboardViewModelOwnsStatusAndLaneCalculation(t *testing.T) {
 		t.Fatalf("first-turn engine row=%+v", got)
 	}
 	saveQueue := requireDashboardCard(t, vm, "save_queue")
-	if got := requireDashboardRow(t, saveQueue, "retryQueue"); got.Status != "notice" || got.Detail != "2 pending" {
-		t.Fatalf("retry row=%+v", got)
+	if findDashboardCard(vm, "current_queue") != nil {
+		t.Fatalf("unscoped failed_queue_depth must not be shown as current-turn queue: %+v", vm.Cards)
 	}
-	if saveQueue.Summary.Notice != 1 || saveQueue.Summary.Warn != 0 {
-		t.Fatalf("retry queue must be advisory, summary=%+v", saveQueue.Summary)
+	historicalQueue := requireDashboardCard(t, vm, "historical_queue")
+	if got := requireDashboardRow(t, historicalQueue, "queueHistory.transport_retry"); got.Status != "notice" || got.Detail != "2 pending" || got.Scope != "unknown" {
+		t.Fatalf("historical retry row=%+v", got)
+	}
+	if saveQueue.Summary.Warn != 0 {
+		t.Fatalf("save queue must not inherit historical queue severity, summary=%+v", saveQueue.Summary)
 	}
 	persistence := requireDashboardCard(t, vm, "persistence_lanes")
 	for _, label := range []string{"rawSave", "derived", "vectorUpsert"} {
@@ -93,6 +97,60 @@ func TestDashboardViewModelRoute(t *testing.T) {
 	}
 	if vm.ContractVersion != dashboardViewModelContractVersion || len(vm.Cards) < 3 {
 		t.Fatalf("response=%+v", vm)
+	}
+}
+
+func TestDashboardViewModelRouteIncludesLatestSessionWorkflow(t *testing.T) {
+	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
+	server.TurnWorkflows.begin("request-latest", "session-latest", 3)
+	server.TurnWorkflows.setHostTurn("request-latest", 4, true)
+	body, err := json.Marshal(dashboardViewModelRequest{
+		PluginEnabled: true, CurrentSessionID: "session-latest", RuntimeState: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.handleDashboardViewModel(recorder, httptest.NewRequest(http.MethodPost, "/dashboard/view-model", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var vm dashboardViewModel
+	if err := json.Unmarshal(recorder.Body.Bytes(), &vm); err != nil {
+		t.Fatal(err)
+	}
+	alignment := requireDashboardRow(t, requireDashboardCard(t, vm, "current_workflow"), "turnAlignment")
+	if alignment.Status != "warn" || alignment.DetailCode != "host_turn_ahead_of_backend" {
+		t.Fatalf("latest workflow alignment=%+v", alignment)
+	}
+}
+
+func TestDashboardViewModelRoutePrefersExactCurrentWorkflowOverNewerOperation(t *testing.T) {
+	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
+	server.TurnWorkflows.begin("request-current", "session-exact", 3)
+	server.TurnWorkflows.setHostTurn("request-current", 4, true)
+	server.turnWorkflowHUDOperationNotice(
+		"operation-newer", "session-exact", 3, "completed", "notice",
+		"turn_hud.notice.delete_confirmed", "turn_hud.notice.delete_confirmed_detail", "ASSISTANT_OUTPUT_DELETE_CONFIRMED",
+	)
+	body, err := json.Marshal(dashboardViewModelRequest{
+		PluginEnabled: true, CurrentSessionID: "session-exact", CurrentWorkflowRequestID: "request-current", RuntimeState: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.handleDashboardViewModel(recorder, httptest.NewRequest(http.MethodPost, "/dashboard/view-model", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var vm dashboardViewModel
+	if err := json.Unmarshal(recorder.Body.Bytes(), &vm); err != nil {
+		t.Fatal(err)
+	}
+	alignment := requireDashboardRow(t, requireDashboardCard(t, vm, "current_workflow"), "turnAlignment")
+	if alignment.DetailCode != "host_turn_ahead_of_backend" {
+		t.Fatalf("dashboard substituted a newer operation for the exact current workflow: %+v", alignment)
 	}
 }
 
@@ -236,8 +294,11 @@ func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
 	if got := requireDashboardRow(t, saveQueue, "save"); got.Status != "notice" || got.DetailCode != "pendingSync" {
 		t.Fatalf("active-chat confirmation wait=%+v", got)
 	}
-	if got := requireDashboardRow(t, saveQueue, "retryQueue"); got.Status != "notice" {
-		t.Fatalf("retry queue=%+v", got)
+	if findDashboardCard(vm, "current_queue") != nil {
+		t.Fatalf("unscoped retry depth must not become a current queue card: %+v", vm.Cards)
+	}
+	if got := requireDashboardRow(t, requireDashboardCard(t, vm, "historical_queue"), "queueHistory.transport_retry"); got.Status != "notice" || got.Scope != "unknown" {
+		t.Fatalf("historical retry queue=%+v", got)
 	}
 
 	activity := requireDashboardCard(t, vm, "activity")
@@ -257,6 +318,84 @@ func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
 	timing := requireDashboardCard(t, vm, "backend_timing")
 	if got := requireDashboardRow(t, timing, "prepareTiming"); got.Status != "notice" {
 		t.Fatalf("slow timing must be informational, got %+v", got)
+	}
+}
+
+func TestDashboardSeparatesCurrentAndHistoricalQueueObservations(t *testing.T) {
+	workflow := turnWorkflowHUDViewModel{
+		RequestID: "request-current", ChatSessionID: "session-current", BackendTurn: 8,
+		TurnAlignment: turnWorkflowHUDTurnAlignment{HostTurn: 8, BackendTurn: 8, State: "aligned", ReasonCode: "host_backend_turn_aligned"},
+		Facts:         []turnWorkflowHUDFact{{Key: "raw_persistence", Status: "ok", Severity: turnWorkflowHUDSeverityNormal}},
+	}
+	req := dashboardViewModelRequest{
+		PluginEnabled:            true,
+		CurrentSessionID:         "session-current",
+		CurrentWorkflowRequestID: "request-current",
+		WorkflowSnapshot:         &workflow,
+		RuntimeState:             map[string]any{},
+		QueueObservations: []dashboardQueueObservation{
+			{QueueKind: "pending_confirmation", SessionID: "session-current", RequestID: "request-current", TurnIndex: 8, State: "pending"},
+			{QueueKind: "transport_retry", SessionID: "session-current", RequestID: "request-old", TurnIndex: 8, State: "retryable", Attempts: 2, MaxAttempts: 4},
+			{QueueKind: "maintenance", SessionID: "session-other", TurnIndex: 3, State: "queued", Count: 2},
+		},
+	}
+	vm := buildDashboardViewModel(req)
+	current := requireDashboardCard(t, vm, "current_queue")
+	currentRow := requireDashboardRow(t, current, "queue.pending_confirmation")
+	if currentRow.Scope != "current_request" || currentRow.Status != "notice" {
+		t.Fatalf("current queue row=%+v", currentRow)
+	}
+	historical := requireDashboardCard(t, vm, "historical_queue")
+	if got := requireDashboardRow(t, historical, "queueHistory.transport_retry"); got.Scope != "current_session_history" || dashboardInt(got.ItemCount) != 1 {
+		t.Fatalf("current-session history row=%+v", got)
+	}
+	if got := requireDashboardRow(t, historical, "queueHistory.maintenance"); got.Scope != "other_session" || dashboardInt(got.ItemCount) != 2 {
+		t.Fatalf("other-session history row=%+v", got)
+	}
+}
+
+func TestDashboardMaintenanceWithoutRequestProvenanceNeverBecomesCurrent(t *testing.T) {
+	workflow := turnWorkflowHUDViewModel{
+		RequestID: "request-current", ChatSessionID: "session-current", BackendTurn: 8,
+		TurnAlignment: turnWorkflowHUDTurnAlignment{HostTurn: 8, BackendTurn: 8, State: "aligned", ReasonCode: "host_backend_turn_aligned"},
+	}
+	vm := buildDashboardViewModel(dashboardViewModelRequest{
+		PluginEnabled: true, CurrentSessionID: "session-current", CurrentWorkflowRequestID: "request-current",
+		WorkflowSnapshot: &workflow, RuntimeState: map[string]any{},
+		QueueObservations: []dashboardQueueObservation{
+			{QueueKind: "maintenance", SessionID: "session-current", TurnIndex: 8, State: "queued", Count: 2},
+		},
+	})
+	if findDashboardCard(vm, "current_queue") != nil {
+		t.Fatalf("maintenance without exact request provenance became current: %+v", vm.Cards)
+	}
+	row := requireDashboardRow(t, requireDashboardCard(t, vm, "historical_queue"), "queueHistory.maintenance")
+	if row.Scope != "current_session_history" || dashboardInt(row.ItemCount) != 2 {
+		t.Fatalf("maintenance history row=%+v", row)
+	}
+}
+
+func TestDashboardCurrentWorkflowUsesTypedFactsAndTurnAlignment(t *testing.T) {
+	workflow := turnWorkflowHUDViewModel{
+		RequestID: "request-mismatch", ChatSessionID: "session-current", BackendTurn: 7,
+		TurnAlignment: turnWorkflowHUDTurnAlignment{HostTurn: 8, BackendTurn: 7, State: "host_ahead", ReasonCode: "host_turn_ahead_of_backend"},
+		Facts: []turnWorkflowHUDFact{
+			{Key: "host_observation", Status: "accepted", Disposition: "eligible", ReasonCode: "source_observation_eligible", Severity: turnWorkflowHUDSeverityNormal},
+			{Key: "vector_index", Status: "vector_not_configured", Disposition: "dropped", ReasonCode: "vector_not_configured", Severity: turnWorkflowHUDSeverityWarning, Count: intValuePtr(0)},
+		},
+	}
+	vm := buildDashboardViewModel(dashboardViewModelRequest{
+		PluginEnabled: true, CurrentSessionID: "session-current", WorkflowSnapshot: &workflow, RuntimeState: map[string]any{},
+	})
+	card := requireDashboardCard(t, vm, "current_workflow")
+	if got := requireDashboardRow(t, card, "turnAlignment"); got.Status != "warn" || got.DetailCode != "host_turn_ahead_of_backend" {
+		t.Fatalf("alignment row=%+v", got)
+	}
+	if got := requireDashboardRow(t, card, "workflowFact.host_observation"); got.Status != "ok" || got.DetailCode != "source_observation_eligible" {
+		t.Fatalf("host fact=%+v", got)
+	}
+	if got := requireDashboardRow(t, card, "workflowFact.vector_index"); got.Status != "warn" || got.DetailCode != "vector_not_configured" || dashboardInt(got.ItemCount) != 0 {
+		t.Fatalf("vector fact=%+v", got)
 	}
 }
 

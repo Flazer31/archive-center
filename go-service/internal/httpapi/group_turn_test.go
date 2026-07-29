@@ -78,6 +78,17 @@ func (f *auditFailingTurnStore) SaveAuditLog(context.Context, *store.AuditLog) e
 	return errors.New("audit store unavailable")
 }
 
+type maintenanceAuditFailingTurnStore struct {
+	*turnRecordingStore
+}
+
+func (f *maintenanceAuditFailingTurnStore) SaveAuditLog(ctx context.Context, item *store.AuditLog) error {
+	if item != nil && item.EventType == "maintenance_audit_recorded" {
+		return errors.New("maintenance audit store unavailable")
+	}
+	return f.turnRecordingStore.SaveAuditLog(ctx, item)
+}
+
 func (f *turnRecordingStore) ReplaceLogicalTurn(ctx context.Context, replacement store.LogicalTurnReplacement) error {
 	f.logicalTurnReplacements = append(f.logicalTurnReplacements, replacement)
 	f.returnChatLogs = []store.ChatLog{
@@ -824,6 +835,55 @@ func TestCompleteTurnRawSaveSurvivesDerivedAuditFailure(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnMaintenanceAuditFailureDoesNotBecomeDerivedPersistenceFailure(t *testing.T) {
+	base := &turnRecordingStore{}
+	fake := &maintenanceAuditFailingTurnStore{turnRecordingStore: base}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	srv.TurnWorkflows.begin("maintenance-audit-hud", "sess-maintenance-audit-fail", 4)
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-maintenance-audit-fail","turn_index":4,"user_input":"user text",` +
+		`"assistant_content":"assistant text","client_meta":{"turn_workflow_request_id":"maintenance-audit-hud"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	pipeline, _ := resp["persistence_pipeline"].(map[string]any)
+	derived, _ := pipeline["derived"].(map[string]any)
+	if derived["status"] != "delayed" {
+		t.Fatalf("maintenance audit failure changed derived persistence status: response=%#v", resp)
+	}
+	hud, _ := resp["turn_workflow_hud"].(map[string]any)
+	facts, _ := hud["facts"].([]any)
+	var derivedFact map[string]any
+	for _, item := range facts {
+		fact, _ := item.(map[string]any)
+		if fact["key"] == "derived_memory" {
+			derivedFact = fact
+			break
+		}
+	}
+	if derivedFact["status"] != "delayed" || derivedFact["disposition"] != "deferred" || derivedFact["severity"] != "notice" {
+		t.Fatalf("maintenance audit failure changed derived HUD fact: hud=%#v", hud)
+	}
+	if hud["severity"] != "warning" || hud["dismissal_policy"] != "x_only" {
+		t.Fatalf("maintenance audit failure must remain a separate warning: hud=%#v", hud)
+	}
+}
+
 func TestCompleteTurnMariaDBAuthorityWritesAll(t *testing.T) {
 	fake := &turnRecordingStore{}
 	cfg := config.Default()
@@ -1220,7 +1280,8 @@ func TestCompleteTurnExactPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *tes
 	if !ok {
 		t.Fatalf("turn_workflow_hud missing from duplicate response: %+v", resp)
 	}
-	if hud["display_mode"] != "notice" || hud["status"] != "completed_with_warning" {
+	if hud["display_mode"] != "notice" || hud["status"] != "completed" ||
+		hud["severity"] != "notice" || hud["dismissal_policy"] != "card_or_x" {
 		t.Fatalf("duplicate HUD status = %+v", hud)
 	}
 	if hud["title_key"] != "turn_hud.notice.duplicate_suspected" || hud["notice_code"] != "DUPLICATE_PAIR_REPLAY" {

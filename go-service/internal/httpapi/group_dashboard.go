@@ -15,19 +15,33 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
-const dashboardViewModelContractVersion = "dashboard.viewmodel.v1"
+const dashboardViewModelContractVersion = "dashboard.viewmodel.v2"
 
 type dashboardViewModelRequest struct {
-	RuntimeState             map[string]any `json:"runtime_state"`
-	PluginEnabled            bool           `json:"plugin_enabled"`
-	CurrentSessionID         string         `json:"current_session_id"`
-	SessionCandidates        map[string]any `json:"session_candidates"`
-	PrepareTurnEverContacted bool           `json:"prepare_turn_ever_contacted"`
-	FailedQueueDepth         int            `json:"failed_queue_depth"`
-	GuideModeState           map[string]any `json:"guide_mode_state"`
-	FirstTurnLight           bool           `json:"first_turn_light"`
-	FirstTurnEndedAt         string         `json:"first_turn_ended_at"`
-	ReferenceCard            *dashboardCard `json:"-"`
+	RuntimeState             map[string]any              `json:"runtime_state"`
+	PluginEnabled            bool                        `json:"plugin_enabled"`
+	CurrentSessionID         string                      `json:"current_session_id"`
+	SessionCandidates        map[string]any              `json:"session_candidates"`
+	PrepareTurnEverContacted bool                        `json:"prepare_turn_ever_contacted"`
+	FailedQueueDepth         int                         `json:"failed_queue_depth"`
+	CurrentWorkflowRequestID string                      `json:"current_workflow_request_id,omitempty"`
+	QueueObservations        []dashboardQueueObservation `json:"queue_observations,omitempty"`
+	GuideModeState           map[string]any              `json:"guide_mode_state"`
+	FirstTurnLight           bool                        `json:"first_turn_light"`
+	FirstTurnEndedAt         string                      `json:"first_turn_ended_at"`
+	ReferenceCard            *dashboardCard              `json:"-"`
+	WorkflowSnapshot         *turnWorkflowHUDViewModel   `json:"-"`
+}
+
+type dashboardQueueObservation struct {
+	QueueKind   string `json:"queue_kind"`
+	SessionID   string `json:"session_id,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+	TurnIndex   int    `json:"turn_index,omitempty"`
+	State       string `json:"state,omitempty"`
+	Attempts    int    `json:"attempts,omitempty"`
+	MaxAttempts int    `json:"max_attempts,omitempty"`
+	Count       int    `json:"count,omitempty"`
 }
 
 type dashboardViewModel struct {
@@ -65,6 +79,8 @@ type dashboardRow struct {
 	TurnIndex  any    `json:"turn_index,omitempty"`
 	ItemCount  any    `json:"item_count,omitempty"`
 	Placement  any    `json:"placement,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	QueueKind  string `json:"queue_kind,omitempty"`
 }
 
 type dashboardChip struct {
@@ -83,6 +99,17 @@ func (s *Server) handleDashboardViewModel(w http.ResponseWriter, r *http.Request
 		return
 	}
 	req.ReferenceCard = s.buildReferenceDashboardCard(r.Context(), resolveDashboardSessionID(req))
+	if s != nil && s.TurnWorkflows != nil {
+		sessionID := resolveDashboardSessionID(req)
+		requestID := strings.TrimSpace(req.CurrentWorkflowRequestID)
+		if requestID != "" {
+			if snapshot, ok := s.TurnWorkflows.snapshot(requestID); ok && snapshot.ChatSessionID == sessionID {
+				req.WorkflowSnapshot = &snapshot
+			}
+		} else if snapshot, ok := s.TurnWorkflows.latestSnapshotForSession(sessionID); ok {
+			req.WorkflowSnapshot = &snapshot
+		}
+	}
 	writeJSON(w, http.StatusOK, buildDashboardViewModel(req))
 }
 
@@ -188,6 +215,9 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 			dashboardRowFromState("runtimeSync", map[string]any{"status": dashboardBoolUnknownStatus(req.PrepareTurnEverContacted), "detail": dashboardSyncDetail(req.PrepareTurnEverContacted)}),
 		}),
 	}
+	if req.WorkflowSnapshot != nil {
+		cards = append(cards, buildCurrentWorkflowDashboardCard(*req.WorkflowSnapshot))
+	}
 	if critic := buildCriticLedgerDashboardCard(state("lastCriticLedgerProbe")); critic != nil {
 		cards = append(cards, *critic)
 	}
@@ -204,17 +234,20 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 	if len(save) > 0 {
 		queueDetail = append(queueDetail, "save:"+dashboardStatus(save))
 	}
-	retryStatus, retryDetail := "ok", "empty"
-	if req.FailedQueueDepth > 0 {
-		retryStatus, retryDetail = "notice", strconv.Itoa(req.FailedQueueDepth)+" pending"
-	}
 	cards = append(cards, newDashboardCard("save_queue", "💾", "Save / Queue", []dashboardRow{
 		dashboardRowFromState("injection", firstTurnState(state("lastInjectionStatus"))),
 		dashboardRowFromState("save", state("lastSaveStatus")),
 		dashboardRowFromState("complete", state("lastCompleteStatus")),
-		dashboardRowFromState("retryQueue", map[string]any{"status": retryStatus, "detail": retryDetail}),
 		dashboardRowFromState("queueStorage", map[string]any{"status": dashboardStatus(save), "detail": dashboardFirstNonEmpty(strings.Join(queueDetail, " / "), "not yet")}),
 	}))
+
+	currentQueue, historicalQueue := buildDashboardQueueCards(req, sessionID)
+	if currentQueue != nil {
+		cards = append(cards, *currentQueue)
+	}
+	if historicalQueue != nil {
+		cards = append(cards, *historicalQueue)
+	}
 
 	complete := state("lastCompleteTurnStatus")
 	if dashboardStatus(complete) != "idle" {
@@ -256,6 +289,194 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 		summary.Unknown += card.Summary.Unknown
 	}
 	return dashboardViewModel{ContractVersion: dashboardViewModelContractVersion, Status: "ok", Summary: summary, Cards: cards}
+}
+
+func buildCurrentWorkflowDashboardCard(view turnWorkflowHUDViewModel) dashboardCard {
+	rows := make([]dashboardRow, 0, len(view.Facts)+1)
+	alignmentStatus := "neutral"
+	switch strings.TrimSpace(view.TurnAlignment.State) {
+	case "aligned":
+		alignmentStatus = "ok"
+	case "host_ahead", "backend_ahead":
+		alignmentStatus = "warn"
+	}
+	rows = append(rows, dashboardRow{
+		LabelKey:   "turnAlignment",
+		Status:     alignmentStatus,
+		DetailCode: strings.TrimSpace(view.TurnAlignment.ReasonCode),
+		Detail:     fmt.Sprintf("host:%d / backend:%d / %s", view.TurnAlignment.HostTurn, view.TurnAlignment.BackendTurn, dashboardFirstNonEmpty(view.TurnAlignment.State, "unobserved")),
+		TurnIndex:  view.BackendTurn,
+		Scope:      "current_request",
+	})
+	for _, fact := range view.Facts {
+		rows = append(rows, dashboardRow{
+			LabelKey:   "workflowFact." + strings.TrimSpace(fact.Key),
+			Status:     dashboardStatusFromWorkflowFact(fact),
+			DetailCode: strings.TrimSpace(fact.ReasonCode),
+			Detail:     strings.Join(nonEmptyDashboardParts(fact.Disposition, fact.Status, fact.ReasonCode), " / "),
+			TurnIndex:  view.BackendTurn,
+			ItemCount:  fact.Count,
+			Scope:      strings.TrimSpace(fact.Scope),
+		})
+	}
+	return newDashboardCard("current_workflow", "HUD", "Current Turn Workflow", rows)
+}
+
+func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID string) (*dashboardCard, *dashboardCard) {
+	currentRows := []dashboardRow{}
+	historicalCounts := map[string]int{}
+	observedTransportCount := 0
+	for _, observation := range req.QueueObservations {
+		kind := normalizeDashboardQueueKind(observation.QueueKind)
+		if kind == "" {
+			continue
+		}
+		if kind == "transport_retry" {
+			observedTransportCount += maxInt(1, observation.Count)
+		}
+		scope := classifyDashboardQueueScope(observation, currentSessionID, req.CurrentWorkflowRequestID, req.WorkflowSnapshot)
+		if scope == "current_request" {
+			currentRows = append(currentRows, dashboardRow{
+				LabelKey:   "queue." + kind,
+				Status:     dashboardCurrentQueueStatus(kind, observation.State, observation.Attempts, observation.MaxAttempts),
+				DetailCode: dashboardFirstNonEmpty(strings.TrimSpace(observation.State), "pending"),
+				Detail:     dashboardQueueAttemptDetail(observation),
+				TurnIndex:  observation.TurnIndex,
+				ItemCount:  maxInt(1, observation.Count),
+				Scope:      scope,
+				QueueKind:  kind,
+			})
+			continue
+		}
+		historicalCounts[scope+":"+kind] += maxInt(1, observation.Count)
+	}
+	if req.FailedQueueDepth > observedTransportCount {
+		historicalCounts["unknown:transport_retry"] += req.FailedQueueDepth - observedTransportCount
+	}
+	var currentCard *dashboardCard
+	if len(currentRows) > 0 {
+		card := newDashboardCard("current_queue", "NOW", "Current Turn Queue", currentRows)
+		currentCard = &card
+	}
+	var historicalCard *dashboardCard
+	if len(historicalCounts) > 0 {
+		keys := make([]string, 0, len(historicalCounts))
+		for key := range historicalCounts {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		rows := make([]dashboardRow, 0, len(keys))
+		for _, key := range keys {
+			parts := strings.SplitN(key, ":", 2)
+			scope, kind := parts[0], parts[1]
+			rows = append(rows, dashboardRow{
+				LabelKey:   "queueHistory." + kind,
+				Status:     "notice",
+				DetailCode: "historical_queue_not_current_turn",
+				Detail:     strconv.Itoa(historicalCounts[key]) + " pending",
+				ItemCount:  historicalCounts[key],
+				Scope:      scope,
+				QueueKind:  kind,
+			})
+		}
+		card := newDashboardCard("historical_queue", "HIS", "Historical Queue", rows)
+		historicalCard = &card
+	}
+	return currentCard, historicalCard
+}
+
+func classifyDashboardQueueScope(observation dashboardQueueObservation, currentSessionID, currentRequestID string, workflow *turnWorkflowHUDViewModel) string {
+	observationRequestID := strings.TrimSpace(observation.RequestID)
+	activeRequestID := strings.TrimSpace(currentRequestID)
+	if activeRequestID == "" && workflow != nil {
+		activeRequestID = strings.TrimSpace(workflow.RequestID)
+	}
+	if observationRequestID != "" && activeRequestID != "" {
+		if observationRequestID == activeRequestID {
+			return "current_request"
+		}
+		return classifyDashboardHistoricalQueueScope(observation.SessionID, currentSessionID)
+	}
+	if normalizeDashboardQueueKind(observation.QueueKind) == "maintenance" && observationRequestID == "" {
+		return classifyDashboardHistoricalQueueScope(observation.SessionID, currentSessionID)
+	}
+	if workflow != nil {
+		if strings.TrimSpace(observation.SessionID) == strings.TrimSpace(workflow.ChatSessionID) &&
+			observation.TurnIndex > 0 && observation.TurnIndex == workflow.BackendTurn {
+			return "current_request"
+		}
+	}
+	return classifyDashboardHistoricalQueueScope(observation.SessionID, currentSessionID)
+}
+
+func classifyDashboardHistoricalQueueScope(observationSessionID, currentSessionID string) string {
+	observationSessionID = strings.TrimSpace(observationSessionID)
+	currentSessionID = strings.TrimSpace(currentSessionID)
+	if observationSessionID == "" {
+		return "unknown"
+	}
+	if observationSessionID == currentSessionID {
+		return "current_session_history"
+	}
+	return "other_session"
+}
+
+func normalizeDashboardQueueKind(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "transport_retry", "pending_confirmation", "maintenance":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func dashboardCurrentQueueStatus(kind, state string, attempts, maxAttempts int) string {
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state == "terminal" || state == "failed" || (maxAttempts > 0 && attempts >= maxAttempts) {
+		return "fail"
+	}
+	if kind == "transport_retry" {
+		return "warn"
+	}
+	return "notice"
+}
+
+func dashboardQueueAttemptDetail(observation dashboardQueueObservation) string {
+	state := dashboardFirstNonEmpty(strings.TrimSpace(observation.State), "pending")
+	if observation.Attempts <= 0 && observation.MaxAttempts <= 0 {
+		return state
+	}
+	return fmt.Sprintf("%s / attempts:%d/%d", state, maxInt(0, observation.Attempts), maxInt(0, observation.MaxAttempts))
+}
+
+func dashboardStatusFromWorkflowFact(fact turnWorkflowHUDFact) string {
+	switch normalizeTurnWorkflowHUDSeverity(fact.Severity) {
+	case turnWorkflowHUDSeverityError:
+		return "fail"
+	case turnWorkflowHUDSeverityWarning:
+		return "warn"
+	case turnWorkflowHUDSeverityNotice:
+		return "notice"
+	}
+	if strings.TrimSpace(fact.Disposition) == "deferred" {
+		return "notice"
+	}
+	if strings.TrimSpace(fact.Disposition) == "dropped" ||
+		strings.TrimSpace(fact.Status) == "pending" ||
+		strings.TrimSpace(fact.Status) == "unobserved" {
+		return "neutral"
+	}
+	return "ok"
+}
+
+func nonEmptyDashboardParts(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func resolveDashboardSessionID(req dashboardViewModelRequest) string {
