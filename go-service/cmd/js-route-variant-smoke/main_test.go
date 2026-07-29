@@ -524,8 +524,8 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 		`<select id="mo-narrativeGuideStrength"`,
 		`<option value="none"`,
 		`guide_strength: settings.narrativeGuideStrength || "weak"`,
-		`Strength: weak. Keep this nearly invisible`,
-		`Strength: strong. Be more active about pacing`,
+		`Weak allows fidelity and low-impact portrayal support`,
+		`Strong also allows reversible options`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -578,7 +578,8 @@ func TestArchiveCenterJSAuxiliaryInjectionPlacementI18nAndNoStaleBudgetPreview(t
 func TestSeq01ContextInjectionToggleRemovedAndSyncedToInputImprovement(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`"settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC2 default mode."`,
+		`"settings.section.common.desc": "The previous completed turn is included as continuity context by default. The optional input-improvement LLM is independent from narrative guidance."`,
+		`"settings.label.pluginMainApplyMode": "Input Improvement LLM (Optional)"`,
 		`merged.dbEnabled = true;`,
 		`merged.supervisorEnabled = true;`,
 		`settings.pluginMainApplyMode`,
@@ -596,6 +597,10 @@ func TestSeq01ContextInjectionToggleRemovedAndSyncedToInputImprovement(t *testin
 		`id="mo-dbEnabled"`,
 		`id="mo-supervisorEnabled"`,
 		`mo-injection-budget-preview`,
+		`<select id="mo-narrativeGuideStrength"${s.pluginMainApplyMode === "off"`,
+		`const syncInputImprovementDependentControls =`,
+		`if (_narrativeGuideOff) return Promise.resolve(null);`,
+		`reasoningSummary: "guide_off"`,
 	}
 	for _, needle := range forbidden {
 		if strings.Contains(src, needle) {
@@ -604,24 +609,23 @@ func TestSeq01ContextInjectionToggleRemovedAndSyncedToInputImprovement(t *testin
 	}
 }
 
-func TestSeq01NarrativeStanceLabelsAndResumeTriggerCustomUIRemoved(t *testing.T) {
+func TestSeq01DeadNarrativeStanceAndResumeTriggerCustomUIRemoved(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`storyNarrativeStance: "balanced"`,
-		`"settings.label.storyNarrativeStance": "Story Direction Style"`,
-		`<select id="mo-storyNarrativeStance"`,
-		`<option value="reactive"`,
-		`<option value="balanced"`,
-		`<option value="proactive"`,
-		`storyNarrativeStance: $("mo-storyNarrativeStance").value`,
+		`<select id="mo-narrativeGuideStrength">`,
 		`pluginMainApplyMode: $("mo-pluginMainApplyMode").value`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-01 narrative stance marker %q", needle)
+			t.Fatalf("Archive Center.js missing SEQ-01 narrative guide marker %q", needle)
 		}
 	}
 	forbidden := []string{
+		`storyNarrativeStance`,
+		`mo-storyNarrativeStance`,
+		`NARRATIVE_STANCE_MODES`,
+		`buildInitiativeModeSuffix`,
+		`buildInitiativeModeBounds`,
 		`resumeTrigger`,
 		`customResumeTrigger`,
 		`mo-resumeTrigger`,
@@ -637,8 +641,8 @@ func TestSeq01NarrativeGuideAutoTraceDashboardAndLegacyCleanupMarkers(t *testing
 	src := readArchiveCenterJS(t)
 	required := []string{
 		`narrativeGuideMode: "auto"`,
-		`"settings.label.narrativeGuideMode.help": "Auto mode combines recent input, scene pressure, emotional intensity, combat, and relationship signals, then exposes the resolved mode in trace and dashboard."`,
-		`let _guideModeRuntimeCache = { lastMode: null, lastProbe: "", consecutiveSame: 0 };`,
+		`"settings.label.narrativeGuideMode.help": "Auto mode is resolved by the Go backend from the current input, then exposed in trace and the dashboard."`,
+		`guide_mode: requestedGuideMode`,
 		`const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)`,
 		`guideModeBasis: (supervisorResult && supervisorResult._guideModeBasis) || "manual"`,
 		`const guideModeDashboardState = lastGuideSupervisor && lastGuideSupervisor.guideMode`,
@@ -652,6 +656,16 @@ func TestSeq01NarrativeGuideAutoTraceDashboardAndLegacyCleanupMarkers(t *testing
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-01 narrative guide/legacy cleanup marker %q", needle)
+		}
+	}
+	forbidden := []string{
+		`let _guideModeRuntimeCache =`,
+		`function resolveNarrativeGuideMode(`,
+		`function inferNarrativeGuideModeFromText(`,
+	}
+	for _, needle := range forbidden {
+		if strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js still contains removed JavaScript narrative guide policy %q", needle)
 		}
 	}
 }

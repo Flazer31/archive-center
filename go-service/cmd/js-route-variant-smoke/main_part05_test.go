@@ -673,7 +673,7 @@ func TestArchiveCenterJSSeq168P136BackendMetadataAlignmentMarkers(t *testing.T) 
 		"pendingThreadCount",
 		"suppressionTriggerActive",
 		"guidance_metadata",
-		"input_context_enabled",
+		"max_input_context_chars",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {

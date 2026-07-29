@@ -236,9 +236,22 @@ func TestOutputFidelity35BPrepareTurnLinksEligibleCorpusSourceToPayload(t *testi
 	if plan["contract_version"] != "payload_application_plan.v1" {
 		t.Fatalf("payload application plan missing: %#v", plan)
 	}
+	supportPacket := mapFromAny(mapFromAny(fixture.Response["supervisor_input_pack"])["support_packet"])
+	supportedMemory := false
+	for _, raw := range outputFidelityLineageSlice(supportPacket["delivered_memory"]) {
+		item := mapFromAny(raw)
+		if item["source_ref"] == fixture.MemorySourceRef &&
+			strings.TrimSpace(extractionStringFromAny(item["final_text"])) != "" {
+			supportedMemory = true
+			break
+		}
+	}
+	if !supportedMemory {
+		t.Errorf("supervisor support packet omitted delivered safe memory %q: %#v", fixture.MemorySourceRef, supportPacket)
+	}
 	trace := mapFromAny(plan["guidance_application_trace"])
-	if !outputFidelity35BContainsSourceRef(trace["items"], fixture.MemorySourceRef) {
-		t.Errorf("guidance items omit delivered memory %q: %#v", fixture.MemorySourceRef, trace["items"])
+	if outputFidelity35BContainsSourceRef(trace["items"], fixture.MemorySourceRef) {
+		t.Errorf("deterministic output guidance duplicated delivered memory %q: %#v", fixture.MemorySourceRef, trace["items"])
 	}
 	if trace["final_hash"] != prepareTurnTextHash(extractionStringFromAny(trace["final_text"])) {
 		t.Errorf("guidance final hash does not match its exact text: %#v", trace)
@@ -250,8 +263,8 @@ func TestOutputFidelity35BPrepareTurnLinksEligibleCorpusSourceToPayload(t *testi
 	if outputLane["content_hash"] != prepareTurnTextHash(extractionStringFromAny(outputLane["text"])) {
 		t.Errorf("output guidance lane hash mismatch: %#v", outputLane)
 	}
-	if !outputFidelity35BContainsSourceRef(outputLane, fixture.MemorySourceRef) {
-		t.Errorf("output guidance lane hash is not attributable to delivered memory %q: %#v", fixture.MemorySourceRef, outputLane)
+	if boolFromAny(outputLane["applied"]) || outputFidelity35BContainsSourceRef(outputLane, fixture.MemorySourceRef) {
+		t.Errorf("output guidance duplicated delivered memory without a supervisor proposal %q: %#v", fixture.MemorySourceRef, outputLane)
 	}
 	if plan["auxiliary_hash"] != prepareTurnTextHash(extractionStringFromAny(plan["auxiliary_text"])) {
 		t.Errorf("final auxiliary payload hash mismatch: %#v", plan)

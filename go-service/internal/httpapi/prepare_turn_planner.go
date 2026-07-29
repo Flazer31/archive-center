@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
@@ -44,28 +43,19 @@ func prepareTurnSectionSummary(injectionText, inputContextText string, injection
 	}
 }
 
-func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput, guideMode, guideStrength, narrativeStance, autoAdvanceTrigger, continuityQuery string, promptAssembly map[string]any, evidenceCounts map[string]any, sectionSummary []map[string]any, storylineSelection storylineSupervisorSelection, degraded bool, fallbackReason string, languageContext map[string]any) map[string]any {
+func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput, guideMode, guideStrength, _, _, _ string, promptAssembly map[string]any, evidenceCounts map[string]any, sectionSummary []map[string]any, storylineSelection storylineSupervisorSelection, degraded bool, fallbackReason string, languageContext map[string]any) map[string]any {
 	guideMode = resolveNarrativeGuideMode(guideMode, nil, "", rawUserInput)
 	guideStrength = normalizeNarrativeGuideStrength(guideStrength)
 	guideFocus := buildNarrativeGuideFocus(guideMode)
 	storylineSelectionTrace := storylineSelectionSummary(storylineSelection)
 	plannerLanguageContract := buildPrepareTurnPlannerLanguageContract(languageContext)
-	guidanceParts := []string{
-		"[Go R1 Supervisor Read Shadow]",
-		"mode=read_shadow; would_call_llm=false; would_write=false",
-		fmt.Sprintf("guide_mode=%s; guide_strength=%s", guideMode, guideStrength),
-		fmt.Sprintf("evidence_counts=%s", compactJSONForShadow(evidenceCounts, 500)),
-		fmt.Sprintf("section_summary=%s", compactJSONForShadow(sectionSummary, 500)),
-	}
-	persistentGuidance := strings.Join(guidanceParts, "\n")
-	finalGuidance := persistentGuidance
 	status := "ready"
 	if degraded {
 		status = "degraded"
 	}
 	return map[string]any{
 		"status":                    status,
-		"source":                    "go_r1_read_shadow",
+		"source":                    "go_supervisor_support_planner",
 		"chat_session_id":           chatSessionID,
 		"turn_index":                turnIndex,
 		"raw_user_input_chars":      len([]rune(rawUserInput)),
@@ -76,9 +66,7 @@ func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput,
 		"guide_focus":               guideFocus,
 		"language_context":          nilIfEmptyMap(languageContext),
 		"planner_language_contract": plannerLanguageContract,
-		"persistent_guidance":       persistentGuidance,
 		"storyline_selection":       storylineSelectionTrace,
-		"final_guidance_suffix":     finalGuidance,
 		"momentum_packet": map[string]any{
 			"packet_status":   status,
 			"evidence_counts": evidenceCounts,
@@ -86,15 +74,88 @@ func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput,
 		},
 		"prompt_plan": []string{
 			"supervisor_system.txt",
-			"supervisor_prompt.txt",
-			"persistent_guidance",
-			"recent_context_summary",
-			"wake_up_or_continuity_context",
+			"supervisor_support_packet",
+			"response_execution_contract",
 		},
 		"degraded":        degraded,
 		"fallback_reason": fallbackReason,
 		"would_call_llm":  false,
 		"would_write":     false,
+	}
+}
+
+func buildSupervisorSupportPacket(chatSessionID, rawUserInput string, responseExecutionContract, memoryDeliveryLineage map[string]any) map[string]any {
+	sourceRefs := mapFromAny(responseExecutionContract["source_refs"])
+	currentInputRefs := stringSliceFromAny(sourceRefs["current_input"])
+	memoryRefList := stringSliceFromAny(sourceRefs["memory"])
+	allowedMemoryRefs := make(map[string]struct{}, len(memoryRefList))
+	for _, ref := range memoryRefList {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			allowedMemoryRefs[ref] = struct{}{}
+		}
+	}
+
+	var currentInput any
+	if text := strings.TrimSpace(rawUserInput); text != "" {
+		for _, ref := range currentInputRefs {
+			if ref = strings.TrimSpace(ref); ref != "" {
+				currentInput = map[string]any{
+					"source_ref":          ref,
+					"raw_text":            rawUserInput,
+					"visibility_boundary": "current_request",
+				}
+				break
+			}
+		}
+	}
+
+	deliveredMemory := []map[string]any{}
+	seenMemoryRefs := map[string]struct{}{}
+	for _, raw := range outputFidelityLineageSlice(memoryDeliveryLineage["items"]) {
+		item := mapFromAny(raw)
+		if !boolFromAny(item["delivered"]) {
+			continue
+		}
+		finalText := extractionStringFromAny(item["final_text"])
+		if strings.TrimSpace(finalText) == "" {
+			continue
+		}
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if ref == "" {
+			ref = prepareTurnMemoryLineageSourceRef(chatSessionID, item["source_row_id"])
+		}
+		if _, allowed := allowedMemoryRefs[ref]; !allowed {
+			continue
+		}
+		if _, duplicate := seenMemoryRefs[ref]; duplicate {
+			continue
+		}
+		seenMemoryRefs[ref] = struct{}{}
+		protected := boolFromAny(item["protected_guard"])
+		visibilityBoundary := "delivered_to_main_model"
+		if protected {
+			visibilityBoundary = "rendered_protection_guard_only"
+		}
+		deliveredMemory = append(deliveredMemory, map[string]any{
+			"source_ref":          ref,
+			"final_text":          finalText,
+			"protected_guard":     protected,
+			"visibility_boundary": visibilityBoundary,
+		})
+	}
+
+	status := "empty"
+	if currentInput != nil || len(deliveredMemory) > 0 {
+		status = "ready"
+	}
+	return map[string]any{
+		"contract_version":                "supervisor_support_packet.v1",
+		"status":                          status,
+		"current_input":                   currentInput,
+		"delivered_memory":                deliveredMemory,
+		"delivered_memory_count":          len(deliveredMemory),
+		"undelivered_candidates_included": false,
+		"raw_private_memory_included":     false,
 	}
 }
 
@@ -203,10 +264,18 @@ func buildPrepareTurnGuideEligibility(guideMode, guideStrength string, injection
 	mode := normalizeNarrativeGuideMode(guideMode)
 	strength := normalizeNarrativeGuideStrength(guideStrength)
 	sourceRefs := mapFromAny(responseExecutionContract["source_refs"])
-	eligibleRefs := []string{}
-	for _, ref := range stringSliceFromAny(sourceRefs["memory"]) {
-		eligibleRefs = appendUniqueMemorySearchText(eligibleRefs, ref)
+	currentInputRefs := []string{}
+	memoryRefs := []string{}
+	expressionRefs := []string{}
+	for _, ref := range stringSliceFromAny(sourceRefs["current_input"]) {
+		currentInputRefs = appendUniqueMemorySearchText(currentInputRefs, ref)
+		expressionRefs = appendUniqueMemorySearchText(expressionRefs, ref)
 	}
+	for _, ref := range stringSliceFromAny(sourceRefs["memory"]) {
+		memoryRefs = appendUniqueMemorySearchText(memoryRefs, ref)
+		expressionRefs = appendUniqueMemorySearchText(expressionRefs, ref)
+	}
+	eligibleRefs := append([]string{}, expressionRefs...)
 
 	status := "eligible"
 	reason := "source_backed_guide_support_available"
@@ -223,24 +292,36 @@ func buildPrepareTurnGuideEligibility(guideMode, guideStrength string, injection
 		status = "budget_disabled"
 		reason = "narrative_support_budget_zero"
 		eligibleRefs = []string{}
-	case len(eligibleRefs) == 0:
+	case len(expressionRefs) == 0:
 		status = "no_support"
 		reason = "no_source_backed_guide_support"
 	}
+	lanesEnabled := status == "eligible"
 
 	return map[string]any{
-		"contract_version":                  "guide_eligibility.v1",
-		"status":                            status,
-		"reason_code":                       reason,
-		"guide_mode":                        mode,
-		"guide_strength":                    strength,
-		"source_refs":                       eligibleRefs,
-		"source_ref_count":                  len(eligibleRefs),
-		"current_input_only_is_not_support": true,
-		"native_system_only_is_not_support": true,
-		"truth_authority":                   false,
-		"would_write":                       false,
-		"coverage":                          supervisorProposalCoverage(strength),
+		"contract_version":                      "guide_eligibility.v2",
+		"status":                                status,
+		"reason_code":                           reason,
+		"guide_mode":                            mode,
+		"guide_strength":                        strength,
+		"source_refs":                           eligibleRefs,
+		"source_ref_count":                      len(eligibleRefs),
+		"current_input_only_is_not_support":     false,
+		"current_input_only_expression_support": len(currentInputRefs) > 0,
+		"native_system_only_is_not_support":     true,
+		"truth_authority":                       false,
+		"would_write":                           false,
+		"coverage":                              supervisorProposalCoverage(strength),
+		"lanes": map[string]any{
+			"fidelity": map[string]any{
+				"eligible":    lanesEnabled && len(memoryRefs) > 0,
+				"source_refs": memoryRefs,
+			},
+			"expression": map[string]any{
+				"eligible":    lanesEnabled && len(expressionRefs) > 0,
+				"source_refs": expressionRefs,
+			},
+		},
 	}
 }
 
@@ -304,51 +385,6 @@ func buildResponseExecutionContractWithMemoryLineage(sessionID string, inputAnch
 			"deferred_count":   hostEvidence.DeferredCount,
 		},
 	}
-}
-
-func responseExecutionRuleSourceRefs(contract map[string]any, keys ...string) []string {
-	refs := []string{}
-	for _, key := range keys {
-		for _, raw := range outputFidelityLineageSlice(mapFromAny(contract[key])["items"]) {
-			for _, ref := range stringSliceFromAny(mapFromAny(raw)["source_refs"]) {
-				refs = appendUniqueMemorySearchText(refs, ref)
-			}
-		}
-	}
-	return refs
-}
-
-func formatResponseExecutionRuleGuidance(contract map[string]any, heading string, keys []string) string {
-	if contract == nil || !boolFromAny(contract["active"]) {
-		return ""
-	}
-	lines := []string{
-		heading,
-		"mode=support_only; truth_authority=false; current_user_input_priority=highest",
-	}
-	for _, key := range keys {
-		for _, raw := range outputFidelityLineageSlice(mapFromAny(contract[key])["items"]) {
-			item := mapFromAny(raw)
-			instruction := strings.TrimSpace(extractionStringFromAny(item["instruction"]))
-			refs := stringSliceFromAny(item["source_refs"])
-			if instruction == "" || len(refs) == 0 {
-				continue
-			}
-			lines = append(lines, fmt.Sprintf("%s=%s; source_refs:%s", key, instruction, strings.Join(refs, ",")))
-		}
-	}
-	if len(lines) == 2 {
-		return ""
-	}
-	return strings.Join(lines, "\n")
-}
-
-func formatResponseExecutionFidelityGuidance(contract map[string]any) string {
-	return formatResponseExecutionRuleGuidance(
-		contract,
-		"[Source-backed Fidelity Preservation]",
-		[]string{"must_preserve", "must_not_assert"},
-	)
 }
 
 func normalizeNarrativeGuideMode(mode string) string {

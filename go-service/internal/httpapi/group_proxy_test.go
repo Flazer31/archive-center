@@ -1083,8 +1083,15 @@ func TestHandleSupervisorReadOnlyShadowEvidence(t *testing.T) {
 	if pack["would_call_llm"] != false {
 		t.Errorf("supervisor_input_pack.would_call_llm = %v, want false", pack["would_call_llm"])
 	}
-	if suffix, _ := pack["final_guidance_suffix"].(string); !strings.Contains(suffix, "Go R1 Supervisor Read Shadow") {
-		t.Errorf("final_guidance_suffix missing read-shadow marker: %q", suffix)
+	if pack["source"] != "go_supervisor_support_planner" {
+		t.Errorf("supervisor_input_pack.source = %v", pack["source"])
+	}
+	promptPlan := stringSliceFromAny(pack["prompt_plan"])
+	promptPlanText := strings.Join(promptPlan, " ")
+	if strings.Contains(promptPlanText, "persistent_guidance") ||
+		strings.Contains(promptPlanText, "supervisor_prompt.txt") ||
+		!strings.Contains(promptPlanText, "supervisor_support_packet") {
+		t.Errorf("supervisor prompt plan retained read-shadow inputs: %#v", promptPlan)
 	}
 
 	trace, ok := resp["trace_summary"].(map[string]any)
@@ -1136,10 +1143,13 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		userMsg, _ := messages[1].(map[string]any)
 		systemPrompt := extractionStringFromAny(systemMsg["content"])
 		userPrompt := extractionStringFromAny(userMsg["content"])
-		if !strings.Contains(userPrompt, "response_execution_contract") || !strings.Contains(userPrompt, "guide_focus") {
+		if !strings.Contains(userPrompt, "response_execution_contract") ||
+			!strings.Contains(userPrompt, "supervisor_support_packet") ||
+			!strings.Contains(userPrompt, "guide_focus") {
 			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
 		}
-		if !strings.Contains(systemPrompt, "memory fidelity reviewer") || !strings.Contains(systemPrompt, "optional rudder") {
+		if !strings.Contains(systemPrompt, "source-backed narrative support reviewer") ||
+			!strings.Contains(systemPrompt, "current user input is the only command source") {
 			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)
 		}
 		for _, forbidden := range []string{"Story Initiative", "max_new_beats", "narrative_stance", "auto_advance_trigger", "may_advance"} {
@@ -1152,7 +1162,7 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{
 				"model":"supervisor-model",
-				"choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the current request boundary\",\"source_refs\":[\"memory:test:1\"]}],\"portrayal_notes\":[]}}"}}]
+				"choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"preserve the current request boundary\",\"source_refs\":[\"input:test\"]}]}}"}}]
 			}`)),
 		}, nil
 	})}
@@ -1228,12 +1238,16 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 	}
 	directive, _ := result["directive"].(map[string]any)
 	proposal, _ := directive["supervisor_scene_proposal"].(map[string]any)
-	if proposal["authority"] != "proposal_only" || proposal["truth_authority"] != false {
+	if proposal["contract_version"] != "supervisor_scene_proposal.v3" ||
+		proposal["authority"] != "proposal_only" || proposal["truth_authority"] != false ||
+		proposal["would_write"] != false {
 		t.Fatalf("supervisor proposal authority = %+v, want proposal_only/non-truth", proposal)
 	}
 	warnings, _ := proposal["fidelity_warnings"].([]any)
-	if len(warnings) != 1 {
-		t.Fatalf("fidelity_warnings = %+v, want one source-linked warning", warnings)
+	expressions, _ := proposal["expression_hints"].([]any)
+	if len(warnings) != 0 || len(expressions) != 1 ||
+		mapFromAny(expressions[0])["kind"] != "portrayal" {
+		t.Fatalf("supervisor proposal lanes = fidelity:%+v expression:%+v", warnings, expressions)
 	}
 	traceSummary, ok := resp["trace_summary"].(map[string]any)
 	if !ok {

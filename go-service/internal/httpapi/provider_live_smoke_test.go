@@ -106,18 +106,8 @@ func runProviderSupervisorSmoke(t *testing.T, cfg providerSmokeLaneConfig) map[s
 	defer cancel()
 	srv := setupTestServer()
 	sid := "provider-smoke-seq01"
-	req := dto.SupervisorRequest{
-		ChatSessionID:         strPtr(sid),
-		GuideMode:             strPtr("strict"),
-		NarrativeStance:       strPtr("balanced"),
-		AutoAdvanceTrigger:    strPtr("none"),
-		WakeUpContext:         strPtr("provider smoke"),
-		PersistentGuidance:    strPtr("return bounded JSON"),
-		ContextMessages:       []map[string]any{{"role": "user", "content": "A short smoke turn."}},
-		NarrativeStanceBounds: map[string]any{"pressure": "normal"},
-	}
 	pack := buildSupervisorInputPack(sid, 1, "provider smoke", "strict", "weak", "balanced", "none", "provider smoke", map[string]any{}, map[string]any{"context_messages": 1}, nil, storylineSupervisorSelection{}, false, "", nil)
-	result, trace, err := srv.runSupervisorLLM(ctx, sid, pack, req, completeTurnLLMConfig{
+	result, trace, err := srv.runSupervisorLLM(ctx, sid, pack, completeTurnLLMConfig{
 		APIKey:      cfg.APIKey,
 		Endpoint:    cfg.Endpoint,
 		Model:       cfg.Model,

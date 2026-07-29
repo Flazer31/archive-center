@@ -769,37 +769,28 @@ func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSInitiativeControlLatestEquivalentMarkers(t *testing.T) {
+func TestArchiveCenterJSRetiredLocalInitiativePolicyIsAbsent(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	required := []string{
+	forbidden := []string{
 		`storyNarrativeStance: "balanced"`,
 		"merged.storyNarrativeStance = sanitizeEnumValue(",
 		"NARRATIVE_STANCE_MODES",
 		`<select id="mo-storyNarrativeStance"`,
-		`<option value="reactive"`,
-		`<option value="balanced"`,
-		`<option value="proactive"`,
-		`const stanceEl = $("mo-storyNarrativeStance");`,
 		`storyNarrativeStance: $("mo-storyNarrativeStance").value`,
-		`$("mo-storyNarrativeStance").value = settings.storyNarrativeStance || "balanced";`,
 		"function buildInitiativeModeSuffix(mode)",
 		"function buildInitiativeModeBounds(mode)",
 		`narrative_stance: settings.storyNarrativeStance || "balanced"`,
-		"supervisorResult:   result.supervisor_result",
-		"const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)",
 		"extractNarrativeStanceSummary(_narrativeStance)",
 		"initiativeSummaryRaw",
 		"initiativeSuffixRaw",
 		"initiativeBoundsRaw",
 		`debugLog("initiative:", _initiativeSummary.mode`,
+		"storyInitiativeMode",
 	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing H-3 initiative latest-equivalent marker %q", needle)
+	for _, needle := range forbidden {
+		if strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js still contains retired local initiative policy %q", needle)
 		}
-	}
-	if strings.Contains(src, "storyInitiativeMode") {
-		t.Fatal("Archive Center.js should not reintroduce retired storyInitiativeMode beside storyNarrativeStance")
 	}
 }
 

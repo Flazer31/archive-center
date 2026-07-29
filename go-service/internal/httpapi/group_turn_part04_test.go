@@ -596,8 +596,11 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if supervisorPack["prompt_source"] != "not_configured" {
 		t.Errorf("supervisor_input_pack.prompt_source = %v, want not_configured", supervisorPack["prompt_source"])
 	}
-	if suffix, _ := supervisorPack["final_guidance_suffix"].(string); !strings.Contains(suffix, "Go R1 Supervisor Read Shadow") {
-		t.Errorf("final_guidance_suffix missing read-shadow marker: %q", suffix)
+	promptPlan := strings.Join(stringSliceFromAny(supervisorPack["prompt_plan"]), " ")
+	if !strings.Contains(promptPlan, "supervisor_support_packet") ||
+		strings.Contains(promptPlan, "persistent_guidance") ||
+		strings.Contains(promptPlan, "supervisor_prompt.txt") {
+		t.Errorf("supervisor prompt plan retained read-shadow guidance: %q", promptPlan)
 	}
 
 	criticPack, ok := resp["critic_input_pack"].(map[string]any)

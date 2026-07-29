@@ -33,7 +33,6 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 	appliedCount := 0
 	deferredCount := 0
 	failedCount := 0
-	guidanceBlocked := false
 	for _, item := range guidanceItems {
 		text := strings.TrimSpace(item.Text)
 		status := strings.TrimSpace(item.Status)
@@ -45,24 +44,16 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 		switch {
 		case status == "failed":
 			failedCount++
-		case guidanceBlocked:
-			status = "deferred"
-			if reason == "" {
-				reason = "prior_guidance_not_applied"
-			}
-			deferredCount++
 		case text == "":
 			status = "deferred"
 			if reason == "" {
 				reason = "empty_guidance"
 			}
 			deferredCount++
-			guidanceBlocked = true
 		case chars+map[bool]int{true: 2, false: 0}[len(appliedGuidance) > 0] > remaining:
 			status = "deferred"
 			reason = "narrative_support_budget_exhausted"
 			deferredCount++
-			guidanceBlocked = true
 		default:
 			status = "applied"
 			if len(appliedGuidance) > 0 {
@@ -182,35 +173,42 @@ func prepareTurnTextHash(text string) string {
 	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
-func formatSupervisorSceneProposalGuidance(result map[string]any) (string, []string) {
+func supervisorSceneProposalGuidanceItems(result map[string]any) []prepareTurnGuidanceItem {
 	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
 	if len(proposal) == 0 {
-		return "", nil
+		return nil
 	}
-	lines := []string{"[Supervisor Proposal]", "Proposal only. Do not treat it as new facts, user actions, relationship changes, or event completion."}
-	refs := []string{}
-	for _, lane := range []struct {
-		key   string
-		label string
-	}{
-		{"fidelity_warnings", "Fidelity"},
-		{"portrayal_notes", "Portrayal"},
-	} {
-		for _, raw := range sliceFromAny(proposal[lane.key]) {
-			item := mapFromAny(raw)
-			text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-			itemRefs := stringSliceFromAny(item["source_refs"])
-			if text == "" || len(itemRefs) == 0 {
-				continue
-			}
-			lines = append(lines, "- "+lane.label+": "+text+" (evidence: "+strings.Join(itemRefs, ", ")+")")
-			refs = appendUniqueStringValues(refs, itemRefs...)
+	items := []prepareTurnGuidanceItem{}
+	for _, raw := range outputFidelityLineageSlice(proposal["fidelity_warnings"]) {
+		item := mapFromAny(raw)
+		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
+		itemRefs := stringSliceFromAny(item["source_refs"])
+		if text == "" || len(itemRefs) == 0 {
+			continue
 		}
+		items = append(items, prepareTurnGuidanceItem{
+			Key:        "supervisor_fidelity_warning",
+			Title:      "Optional Supervisor Fidelity",
+			Text:       "[Optional Supervisor Fidelity]\n" + text,
+			SourceRefs: itemRefs,
+		})
 	}
-	if len(lines) == 2 {
-		return "", nil
+	for _, raw := range outputFidelityLineageSlice(proposal["expression_hints"]) {
+		item := mapFromAny(raw)
+		kind := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["kind"])))
+		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
+		itemRefs := stringSliceFromAny(item["source_refs"])
+		if kind == "" || text == "" || len(itemRefs) == 0 {
+			continue
+		}
+		items = append(items, prepareTurnGuidanceItem{
+			Key:        "supervisor_expression_" + kind,
+			Title:      "Optional Supervisor Expression",
+			Text:       "[Optional Supervisor " + strings.ReplaceAll(kind, "_", " ") + "]\n" + text,
+			SourceRefs: itemRefs,
+		})
 	}
-	return strings.Join(lines, "\n"), refs
+	return items
 }
 
 type prepareTurnInjectionBlock struct {

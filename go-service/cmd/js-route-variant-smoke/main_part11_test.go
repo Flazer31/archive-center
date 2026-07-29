@@ -915,14 +915,13 @@ const R = {
   getChatFromIndex: async () => ({bindedPersona: "persona-a"})
 };
 const settings = {
-  narrativeGuideMode: "off", narrativeGuideStrength: "weak", storyNarrativeStance: "balanced",
+  narrativeGuideMode: "off", narrativeGuideStrength: "weak",
   pluginMainApplyMode: "shadow", inputContextEnabled: true, maxInjectionChars: 1000, injectionBudgetExtraChars: 0,
   topK: 3, injectionEnabled: true, primaryCanonBaseMaxChars: 1000,
   maxInputContextChars: 800, episodeIntervalTurns: 10,
   embeddingApiKey: "", embeddingEndpoint: "", embeddingModel: "", embeddingProvider: "off", embeddingTimeout: 1
 };
 const DEFAULT_SETTINGS = {maxInjectionChars: 1000, topK: 3, episodeIntervalTurns: 10, embeddingProvider: "off"};
-function resolveNarrativeGuideMode() { return "off"; }
 function normalizeNarrativeGuideStrength(value) { return value === "none" ? "none" : "weak"; }
 function getPayloadMessageRoleAndText(message) { return {role: message.role || "", text: message.content || ""}; }
 function sanitizeTopKSetting(value) { return Number(value || 0); }
@@ -1030,14 +1029,14 @@ async function bridgeFetch(path, options) {
   if (fullBody.host_observations !== hostObservations || fullBody.bootstrap_observation !== bootstrapObservation) {
     throw new Error("full prepare did not repeat the correlated host observations");
   }
-  if (fullBody.settings.top_k !== 0 || fullBody.settings.max_injection_chars !== 0 || fullBody.settings.max_input_context_chars !== 0 || fullBody.settings.input_context_enabled !== false) {
-    throw new Error("fresh-first-turn memory budgets were not suppressed");
+  if (fullBody.settings.top_k !== 0 || fullBody.settings.max_injection_chars !== 0 || fullBody.settings.max_input_context_chars !== 0 || fullBody.settings.injection_enabled !== true || Object.prototype.hasOwnProperty.call(fullBody.settings, "input_context_enabled")) {
+    throw new Error("fresh-first-turn memory recall was not suppressed independently from guide and Go-default input context");
   }
   await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
     sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
   });
   const existingSessionBody = capturedBodies[capturedBodies.length - 1];
-  if (existingSessionBody.settings.top_k !== 3 || existingSessionBody.settings.max_injection_chars !== 1000 || existingSessionBody.settings.input_context_enabled !== true) {
+  if (existingSessionBody.settings.top_k !== 3 || existingSessionBody.settings.max_injection_chars !== 1000 || Object.prototype.hasOwnProperty.call(existingSessionBody.settings, "input_context_enabled")) {
     throw new Error("existing-session prepare budget regressed");
   }
   settings.injectionBudgetExtraChars = 2500;
@@ -1050,6 +1049,15 @@ async function bridgeFetch(path, options) {
     throw new Error("adaptive plus extra budget was not forwarded to Go: " + adaptiveBudgetBody.settings.max_injection_chars);
   }
   settings.narrativeGuideMode = "auto";
+  settings.narrativeGuideStrength = "weak";
+  settings.pluginMainApplyMode = "off";
+  await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
+    sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+  });
+  const guideAutoBody = capturedBodies[capturedBodies.length - 1];
+  if (guideAutoBody.settings.apply_mode !== "off" || guideAutoBody.settings.guide_mode !== "auto" || guideAutoBody.settings.guide_strength !== "weak" || guideAutoBody.settings.supervisor_enabled !== true || Object.prototype.hasOwnProperty.call(guideAutoBody.settings, "input_context_enabled")) {
+    throw new Error("optional input improvement was not independent from Go-owned guide and input context: "+JSON.stringify(guideAutoBody.settings));
+  }
   settings.narrativeGuideStrength = "none";
   await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
     sourceObservation, capabilityObservation, hostObservations, bootstrapObservation

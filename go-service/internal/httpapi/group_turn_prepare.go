@@ -557,9 +557,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	currentStoryClock19 := resolveCurrentStoryClock(activeStates, chatLogs, canonicalLayers)
 	temporalRelationLedger19 := buildTemporalRelationLedger(activeStates)
 	temporalSupportPacket := buildTemporalSupportPacket(currentStoryClock19, temporalRelationLedger19)
-	narrativeStance := stringPtrValue(req.Settings.NarrativeStance, "balanced")
-	continuityTriggerMode := stringPtrValue(req.ContinuityTriggerMode, "none")
-	continuityQuery := stringPtrValue(req.ContinuityQuery, "")
 	requestType := stringPtrValue(req.RequestType, "model")
 	applyMode := stringPtrValue(req.Settings.ApplyMode, "shadow")
 	promptAssembly := buildPromptAssemblyTrace(s.Cfg.PromptDir)
@@ -574,9 +571,9 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		rawUserInput,
 		guideMode,
 		guideStrength,
-		narrativeStance,
-		continuityTriggerMode,
-		continuityQuery,
+		"",
+		"",
+		"",
 		promptAssembly,
 		evidenceCounts,
 		sectionSummary,
@@ -696,27 +693,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	supervisorInputPack["guide_eligibility"] = guideEligibility
 	guideEligible := extractionStringFromAny(guideEligibility["status"]) == "eligible"
 	supervisorInputPack["response_execution_contract"] = responseExecutionContract
+	supervisorInputPack["support_packet"] = buildSupervisorSupportPacket(sid, rawUserInput, responseExecutionContract, injectionAssembly.MemoryDeliveryLineage)
 	guidanceItems := []prepareTurnGuidanceItem{}
-	if guideEligible {
-		if guidance := formatResponseExecutionFidelityGuidance(responseExecutionContract); guidance != "" {
-			guidanceItems = append(guidanceItems, prepareTurnGuidanceItem{
-				Key:        "fidelity_preservation",
-				Title:      "Source-backed Fidelity Preservation",
-				Text:       guidance,
-				SourceRefs: responseExecutionRuleSourceRefs(responseExecutionContract, "must_preserve", "must_not_assert"),
-			})
-		}
-	}
 	supervisorCallStatus := "disabled"
 	var supervisorResult map[string]any
 	supervisorEnabled := req.Settings.SupervisorEnabled == nil || *req.Settings.SupervisorEnabled
-	guideDeliveryReady := guideEligible &&
-		len(guidanceItems) > 0 &&
-		len([]rune(strings.TrimSpace(guidanceItems[0].Text))) <= narrativeSupportMaxChars
-	executionContractReady := extractionStringFromAny(responseExecutionContract["contract_version"]) == "response_execution_contract.v1" &&
-		extractionStringFromAny(responseExecutionContract["status"]) == "ready" &&
-		boolFromAny(responseExecutionContract["active"]) &&
-		guideEligible
+	executionContractReady, _ := supervisorExecutionContractReady(supervisorInputPack)
+	executionContractReady = executionContractReady && guideEligible
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageContext, "succeeded", "")
 	}
@@ -741,11 +724,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
 		}
-	case !guideDeliveryReady:
-		supervisorCallStatus = "deferred_insufficient_narrative_budget"
-		if s.TurnWorkflows != nil && workflowRequestID != "" {
-			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", supervisorCallStatus)
-		}
 	case !executionContractReady:
 		supervisorCallStatus = "deferred_no_execution_evidence"
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
@@ -764,22 +742,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStagePublisherLLM)
 			}
 			supervisorStartedAt := time.Now()
-			sidValue := sid
-			guideModeValue := guideMode
-			narrativeStanceValue := narrativeStance
-			continuityTriggerValue := continuityTriggerMode
-			wakeUpContextValue := continuityQuery
-			persistentGuidanceValue := extractionStringFromAny(supervisorInputPack["persistent_guidance"])
-			supervisorReq := dto.SupervisorRequest{
-				ChatSessionID:      &sidValue,
-				ContextMessages:    req.Messages,
-				GuideMode:          &guideModeValue,
-				NarrativeStance:    &narrativeStanceValue,
-				AutoAdvanceTrigger: &continuityTriggerValue,
-				WakeUpContext:      &wakeUpContextValue,
-				PersistentGuidance: &persistentGuidanceValue,
-			}
-			result, llmTrace, err := s.runSupervisorLLM(r.Context(), sid, supervisorInputPack, supervisorReq, llmCfg)
+			result, llmTrace, err := s.runSupervisorLLM(r.Context(), sid, supervisorInputPack, llmCfg)
 			timing.addElapsed("supervisor_llm", supervisorStartedAt)
 			supervisorInputPack["llm_trace"] = llmTrace
 			if err != nil {
@@ -795,14 +758,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				if s.TurnWorkflows != nil && workflowRequestID != "" {
 					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "")
 				}
-				if proposalText, proposalRefs := formatSupervisorSceneProposalGuidance(result); proposalText != "" {
-					guidanceItems = append(guidanceItems, prepareTurnGuidanceItem{
-						Key:        "supervisor_scene_proposal",
-						Title:      "Supervisor Proposal",
-						Text:       proposalText,
-						SourceRefs: proposalRefs,
-					})
-				}
+				guidanceItems = append(guidanceItems, supervisorSceneProposalGuidanceItems(result)...)
 			}
 		}
 	}

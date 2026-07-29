@@ -74,7 +74,6 @@
   // 이 플러그인의 설정은 프로젝트 전용이다.
   // RisuAI 기본 모델 호출 설정과 별개로 관리된다.
   // ──────────────────────────────────────────────────────────────
-  const NARRATIVE_STANCE_MODES = Object.freeze(["reactive", "balanced", "proactive"]);
   const NARRATIVE_GUIDE_MODES = Object.freeze(["auto", "off", "standard", "romantic", "action", "mature_soft", "mature_direct"]);
   const NARRATIVE_GUIDE_STRENGTH_OPTIONS = Object.freeze(["none", "weak", "medium", "strong"]);
   const ROLLBACK_IDLE_WATCHER_MODES = Object.freeze(["event", "slow", "fast_debug", "off"]);
@@ -239,8 +238,6 @@
     narrativeGuideMode: "auto",      // auto / off / standard / romantic / action / mature_soft / mature_direct
     narrativeGuideStrength: "weak",  // none / weak / medium / strong
     narrativeSupportMaxChars: 3000,  // 서사 안내 전용 문자 예산
-    // ── H-3a: Initiative Control contract only (behavior wired in H-3c) ──
-    storyNarrativeStance: "balanced", // reactive / balanced / proactive
     // ── J-3a: Plugin Main Apply Mode ──
     // off          → shadow call 자체를 실행하지 않음 (J-track 완전 비활성)
     // shadow       → shadow call 실행, trace·preview만 기록, 실제 userInput은 변경하지 않음
@@ -276,7 +273,7 @@
       "settings.tab.debug": "디버그",
       "settings.section.status": "설정 상태",
       "settings.section.common": "공통 설정",
-      "settings.section.common.desc": "2.4 RC2 기본값: 입력 보조는 보조 컨텍스트만 추가하고 유저 입력은 재작성하지 않습니다.",
+      "settings.section.common.desc": "직전 완료 턴의 연속성 맥락은 기본 적용됩니다. 입력 개선 LLM은 별도의 선택 기능이며 서사 가이드와 독립적으로 작동합니다.",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
       "settings.section.update": "업데이트",
@@ -373,12 +370,9 @@
       "settings.narrativeStrength.weak": "약하게",
       "settings.narrativeStrength.medium": "중간",
       "settings.narrativeStrength.strong": "강하게",
-      "settings.narrativeStance.reactive": "사용자 따라가기 (안전 진행)",
-      "settings.narrativeStance.balanced": "기본 진행",
-      "settings.narrativeStance.proactive": "AI 주도 진행",
-      "settings.label.pluginMainApplyMode": "입력 보조 컨텍스트",
-      "settings.applyMode.off": "꺼짐 (보조 컨텍스트 없음)",
-      "settings.applyMode.shadow": "켜짐 (보조만 추가, 유저 입력 유지)",
+      "settings.label.pluginMainApplyMode": "입력 개선 LLM (선택)",
+      "settings.applyMode.off": "꺼짐 (입력 개선 호출 안 함)",
+      "settings.applyMode.shadow": "검토만 (유저 입력 유지)",
       "settings.applyMode.reviewed_apply": "Legacy 입력 재작성 (명시적 opt-in 필요)",
                                                             "settings.label.takeoverMode": "Takeover 모드 (generation packet 적용 수준)",
       "settings.takeoverMode.off": "Off (backend 패킷 무시)",
@@ -1053,9 +1047,9 @@
       "settings.label.llmRetryCount.hint": "0 = 재시도 없음(1회만 시도), 3 = 실패 시 3회 추가 시도",
       "settings.label.maxInjectionChars": "보조 컨텍스트 길이 제한 (chars)",
       "settings.label.narrativeGuideMode": "서사 가이드 (AI 자동)",
-      "settings.label.narrativeGuideMode.help": "Auto 모드는 최근 입력, 장면 압력, 감정 강도, 전투, 관계 신호를 조합하고 결정된 모드를 trace와 대시보드에 표시합니다.",
+      "settings.label.narrativeGuideMode.help": "Auto 모드는 현재 입력을 기준으로 Go 백엔드가 판정하고, 결정된 모드를 trace와 대시보드에 표시합니다.",
       "settings.label.narrativeGuideStrength": "서사 가이드 강도",
-      "settings.label.narrativeGuideStrength.help": "None은 서사 가이드 접미사와 보조 강조를 끕니다. Weak는 거의 보이지 않게, Medium은 균형 있게, Strong은 더 적극적으로 페이스/연속성을 지원합니다.",
+      "settings.label.narrativeGuideStrength.help": "None은 서사 가이드를 끕니다. Weak는 충실도와 낮은 영향의 표현을, Medium은 페이스·장면 강조·콜백을, Strong은 추가로 가역적 선택지를 지원합니다. 모든 제안은 선택 사항입니다.",
       "settings.label.narrativeSupportMaxChars": "서사 안내 예산 (chars)",
       "settings.hint.narrativeSupportMaxChars": "감독관 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
       "settings.label.publisherMaxCompletionTokens": "출판사 Max Completion Tokens",
@@ -1063,7 +1057,6 @@
       "settings.label.publisherReasoningEffort": "출판사 Reasoning Effort",
       "settings.label.publisherReasoningPreset": "출판사 Reasoning Preset",
       "settings.label.publisherTemp": "출판사 Temperature",
-      "settings.label.storyNarrativeStance": "스토리 진행 방식",
       "settings.label.supervisorTimeout": "감독관 Timeout (초)",
       "settings.label.topK": "ChromaDB 의미 기억 검색 수",
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
@@ -1283,7 +1276,7 @@
       "settings.tab.debug": "Debug",
       "settings.section.status": "Settings Status",
       "settings.section.common": "Common Settings",
-      "settings.section.common.desc": "Backend supervisor, critic, embedding, and input support settings. Input support adds auxiliary context only; the latest user input is not rewritten in 2.4 RC2 default mode.",
+      "settings.section.common.desc": "The previous completed turn is included as continuity context by default. The optional input-improvement LLM is independent from narrative guidance.",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
       "settings.section.update": "Update",
@@ -1337,9 +1330,9 @@
       "settings.label.primaryCanonBaseMaxChars": "Primary-mode Canon Base budget (chars)",
       "settings.hint.primaryCanonBaseMaxChars": "Set to 0 to disable. In primary original-work mode, this is a Canon Base sub-cap within the resolved reference total.",
       "settings.label.narrativeGuideMode": "Narrative Guide (AI Auto)",
-      "settings.label.narrativeGuideMode.help": "Auto mode combines recent input, scene pressure, emotional intensity, combat, and relationship signals, then exposes the resolved mode in trace and dashboard.",
+      "settings.label.narrativeGuideMode.help": "Auto mode is resolved by the Go backend from the current input, then exposed in trace and the dashboard.",
       "settings.label.narrativeGuideStrength": "Narrative Guide Strength",
-      "settings.label.narrativeGuideStrength.help": "None disables narrative guide suffixes and helper emphasis. Weak stays almost invisible, Medium gives balanced support, Strong gives more active pacing/continuity support.",
+      "settings.label.narrativeGuideStrength.help": "None disables guidance. Weak allows fidelity and low-impact portrayal support, Medium adds pacing, scene emphasis, and callbacks, and Strong also allows reversible options. Every suggestion remains optional.",
       "settings.label.narrativeSupportMaxChars": "Narrative guidance budget (chars)",
       "settings.hint.narrativeSupportMaxChars": "Independent budget for supervisor proposals and response execution guidance. It does not borrow from memory, original-work, or user-input budgets.",
       "settings.label.auxiliaryInjectionPlacement": "Memory Injection Placement",
@@ -1352,7 +1345,6 @@
       "settings.option.auxiliaryInjectionPlacement.after_last_cache_point": "After last cache point",
       "settings.option.auxiliaryInjectionPlacement.after_first_system": "Legacy: after first system",
       "settings.option.auxiliaryInjectionPlacement.end": "End of request messages",
-      "settings.label.storyNarrativeStance": "Story Direction Style",
       "settings.label.uiLanguage": "UI Language",
       "settings.label.uiDetailMode": "UI Detail Level",
       "settings.label.turnWorkflowHUDEnabled": "Floating Turn UI",
@@ -1530,12 +1522,9 @@
       "settings.narrativeStrength.weak": "Weak",
       "settings.narrativeStrength.medium": "Medium",
       "settings.narrativeStrength.strong": "Strong",
-      "settings.narrativeStance.reactive": "User-led (safe)",
-      "settings.narrativeStance.balanced": "Standard Flow",
-      "settings.narrativeStance.proactive": "AI-led",
-      "settings.label.pluginMainApplyMode": "Input Support Context",
-      "settings.applyMode.off": "Off (no support context)",
-      "settings.applyMode.shadow": "On (support only; keep user input)",
+      "settings.label.pluginMainApplyMode": "Input Improvement LLM (Optional)",
+      "settings.applyMode.off": "Off (do not call input improvement)",
+      "settings.applyMode.shadow": "Review only (keep user input)",
       "settings.applyMode.reviewed_apply": "Legacy rewrite (explicit opt-in required)",
                                                             "settings.label.takeoverMode": "Takeover Mode (generation packet apply level)",
       "settings.takeoverMode.off": "Off (ignore backend packet)",
@@ -2290,7 +2279,7 @@
       "settings.tab.debug": "デバッグ",
       "settings.section.status": "設定状態",
       "settings.section.common": "共通設定",
-      "settings.section.common.desc": "2.4 RC2既定では入力補助は補助コンテキストだけを追加し、最新ユーザー入力を書き換えません。",
+      "settings.section.common.desc": "直前の完了ターンは継続コンテキストとして既定で適用されます。入力改善LLMは任意機能で、ナラティブガイドとは独立しています。",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
       "settings.section.update": "アップデート",
@@ -2344,9 +2333,9 @@
       "settings.label.primaryCanonBaseMaxChars": "単独モード Canon Base 予算（chars）",
       "settings.hint.primaryCanonBaseMaxChars": "0で無効化します。単独（primary）原作モードで、原作参照の総予算内にある Canon Base の下位上限です。",
       "settings.label.narrativeGuideMode": "ナラティブガイド（AI自動）",
-      "settings.label.narrativeGuideMode.help": "自動判定は直近入力、場面圧、感情強度、戦闘/関係シグナルを合わせて見て、最終モードをtraceとダッシュボードに表示します。",
+      "settings.label.narrativeGuideMode.help": "自動判定は現在の入力を基準にGoバックエンドが判断し、最終モードをtraceとダッシュボードに表示します。",
       "settings.label.narrativeGuideStrength": "ナラティブガイド強度",
-      "settings.label.narrativeGuideStrength.help": "なしはナラティブガイドsuffix/補助強調を無効化します。弱はほぼ目立たず、中はバランス補助、強はペーシング/連続性をより積極的に補助します。",
+      "settings.label.narrativeGuideStrength.help": "なしはガイドを無効化します。弱は忠実性と低影響の表現、中はペーシング・場面強調・コールバック、強はさらに可逆的な選択肢を補助します。すべて任意の提案です。",
       "settings.label.narrativeSupportMaxChars": "ナラティブ案内予算（chars）",
       "settings.hint.narrativeSupportMaxChars": "監督提案と応答実行ガイド専用の独立予算です。長期記憶・原作資料・ユーザー入力の予算は使用しません。",
       "settings.label.auxiliaryInjectionPlacement": "記憶の注入位置",
@@ -2359,7 +2348,6 @@
       "settings.option.auxiliaryInjectionPlacement.after_last_cache_point": "最後のキャッシュ地点の後",
       "settings.option.auxiliaryInjectionPlacement.after_first_system": "従来方式: 最初のsystemの後",
       "settings.option.auxiliaryInjectionPlacement.end": "リクエストメッセージの末尾",
-      "settings.label.storyNarrativeStance": "ストーリー進行スタイル",
       "settings.label.uiLanguage": "UI言語",
       "settings.label.uiDetailMode": "UI情報量",
       "settings.label.turnWorkflowHUDEnabled": "フローティング進行UI",
@@ -2502,12 +2490,9 @@
       "settings.narrativeStrength.weak": "弱く",
       "settings.narrativeStrength.medium": "中",
       "settings.narrativeStrength.strong": "強く",
-      "settings.narrativeStance.reactive": "ユーザー主導（安全進行）",
-      "settings.narrativeStance.balanced": "標準進行",
-      "settings.narrativeStance.proactive": "AI主導",
-      "settings.label.pluginMainApplyMode": "入力補助コンテキスト",
-      "settings.applyMode.off": "オフ（補助コンテキストなし）",
-      "settings.applyMode.shadow": "オン（補助のみ、ユーザー入力維持）",
+      "settings.label.pluginMainApplyMode": "入力改善LLM（任意）",
+      "settings.applyMode.off": "オフ（入力改善を呼び出さない）",
+      "settings.applyMode.shadow": "レビューのみ（ユーザー入力維持）",
       "settings.applyMode.reviewed_apply": "Legacy入力書き換え（明示的opt-in必須）",
                                                             "settings.label.takeoverMode": "Takeoverモード (generation packet適用水準)",
       "settings.takeoverMode.off": "Off（backendパケット無視）",
@@ -10364,11 +10349,6 @@
       0,
       12000,
     );
-    merged.storyNarrativeStance = sanitizeEnumValue(
-      merged.storyNarrativeStance,
-      DEFAULT_SETTINGS.storyNarrativeStance,
-      NARRATIVE_STANCE_MODES,
-    );
     // J-3a: pluginMainApplyMode enum 방어
     merged.pluginMainApplyMode = sanitizeEnumValue(
       merged.pluginMainApplyMode,
@@ -13538,14 +13518,9 @@
       const freshFirstTurnLightMode = !!prepareOptions.freshFirstTurnLightMode;
       const prepareInjectionBudget = estimateAdaptiveInjectionBudgetParts(settings, prepareOptions.runtimeTokenInfo || null);
       const guideDisabled = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength) === "none";
-      const resolvedGuideMode = guideDisabled
+      const requestedGuideMode = guideDisabled
         ? "off"
-        : resolveNarrativeGuideMode(
-            settings.narrativeGuideMode,
-            messages,
-            (continuityInfo && continuityInfo.query) ? continuityInfo.query : "",
-            userInput,
-          );
+        : String(settings.narrativeGuideMode || "auto");
       const body = {
         chat_session_id: sessionId || "",
         request_type: type || "model",
@@ -13562,13 +13537,11 @@
         continuity_trigger_mode: (continuityInfo && continuityInfo.triggerMode) ? continuityInfo.triggerMode : "none",
         continuity_query: (continuityInfo && continuityInfo.query) ? String(continuityInfo.query) : "",
         settings: {
-          guide_mode: resolvedGuideMode,
+          guide_mode: requestedGuideMode,
           guide_strength: settings.narrativeGuideStrength || "weak",
-          narrative_stance: settings.storyNarrativeStance || "balanced",
           apply_mode: settings.pluginMainApplyMode || "shadow",
           takeover_mode: "off",  // 사용자 경로 단순화: takeover 비활성 고정
-          injection_enabled: !freshFirstTurnLightMode,
-          input_context_enabled: freshFirstTurnLightMode ? false : !!settings.inputContextEnabled,
+          injection_enabled: settings.injectionEnabled !== false,
           max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.budgetLimit,
           memory_delivery_budget_mode: settings.memoryDeliveryBudgetMode || "auto",
           memory_delivery_budgets: { ...(settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets) },
@@ -17140,7 +17113,7 @@
       search: { status: "pending", itemCount: 0, memoryCount: 0, fallbackCount: 0, chromaLive: null, continuityUsed: false, continuityQueryPreview: "", continuitySourcePreview: "", paths: [], dedupeStats: { before: 0, after: 0, removed: 0 }, pathBUsed: false, pathBInfo: null, multiMatchCount: 0 },
       continuity: { status: "pending", triggerMode: null, querySource: null, queryPreview: "", sourcePreview: "", packRequested: false, packFetched: false, packStatus: null, packUsedAsQuery: false, packUsedAsWakeUp: false, directPathSuppressed: false, preferAsPrimaryQuery: false, forceWhenInput: false, bareTrigger: false, idleGapMs: 0, sectionCounts: { storylines: 0, relationships: 0, latestEpisode: 0, worldRules: 0, hooksReady: false, hooksPending: false }, warningsCount: 0 },
       wakeUpContext: { status: "pending", length: 0, preview: "" },
-      supervisor: { status: "pending", hasDirective: false, hasAuthor: false, hasDirector: false, hasSectionWorld: false, directivePreview: null, initiative: extractNarrativeStanceSummary(DEFAULT_SETTINGS.storyNarrativeStance), storylineSelection: { referenceTurn: null, totalActiveCount: 0, selectedCount: 0, droppedCount: 0, staleDroppedCount: 0, selectedPreview: "", droppedPreview: "" } },
+      supervisor: { status: "pending", hasDirective: false, hasAuthor: false, hasDirector: false, hasSectionWorld: false, directivePreview: null, storylineSelection: { referenceTurn: null, totalActiveCount: 0, selectedCount: 0, droppedCount: 0, staleDroppedCount: 0, selectedPreview: "", droppedPreview: "" } },
       injection: { status: "pending", applied: false, memoriesUsed: 0, fallbackUsed: false, directiveIncluded: false, authorIncluded: false, directorIncluded: false, sectionWorldIncluded: false, chapterIncluded: false, arcIncluded: false, sagaIncluded: false, chapterDelivered: false, arcDelivered: false, sagaDelivered: false, hierarchyEscalation: null, trimmedCount: 0, totalChars: 0, budgetLimit: 0, precedencePolicyVersion: null, precedenceOrder: [], canonicalConflictGuardApplied: false, canonicalConflictSuppressedBlocks: [] },
       protection: { userPriorityIncluded: false, baseRulesIncluded: false, reliabilityGuardIncluded: false, guardTriggerReasons: [], protectionPreview: "" },
       kgRecall: { status: "pending", entitiesExtracted: 0, entitiesSent: 0, triplesReturned: 0, entitiesPreview: "" },
@@ -17498,40 +17471,6 @@
       };
     } catch {
       return { referenceTurn: null, totalActiveCount: 0, selectedCount: 0, droppedCount: 0, staleDroppedCount: 0, selectedPreview: "", droppedPreview: "" };
-    }
-  }
-
-  function extractNarrativeStanceSummary(mode) {
-    try {
-      var normalized = sanitizeEnumValue(mode, DEFAULT_SETTINGS.storyNarrativeStance, NARRATIVE_STANCE_MODES);
-      var suffix = buildInitiativeModeSuffix(normalized);
-      var bounds = buildInitiativeModeBounds(normalized);
-      var emphasis = Array.isArray(bounds.emphasis) ? bounds.emphasis.filter(Boolean) : [];
-      var forbidden = Array.isArray(bounds.forbidden_moves) ? bounds.forbidden_moves.filter(Boolean) : [];
-      var suffixPreview = (suffix || "").split("\n").map(function(line) { return String(line || "").trim(); }).filter(Boolean).slice(1).join(" ");
-      return {
-        mode: normalized,
-        suffixApplied: !!suffixPreview,
-        suffixPreview: truncPreview(suffixPreview, 140),
-        maxNewBeats: typeof bounds.max_new_beats === "number" ? bounds.max_new_beats : null,
-        allowSceneJump: bounds.allow_scene_jump !== false,
-        emphasisCount: emphasis.length,
-        emphasisPreview: emphasis.slice(0, 2).join(", "),
-        forbiddenCount: forbidden.length,
-        forbiddenPreview: forbidden.slice(0, 2).join(", "),
-      };
-    } catch {
-      return {
-        mode: DEFAULT_SETTINGS.storyNarrativeStance,
-        suffixApplied: false,
-        suffixPreview: "",
-        maxNewBeats: null,
-        allowSceneJump: true,
-        emphasisCount: 0,
-        emphasisPreview: "",
-        forbiddenCount: 0,
-        forbiddenPreview: "",
-      };
     }
   }
 
@@ -18751,9 +18690,6 @@
         if (rp.searchResult) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Search Result</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.searchResult, 400)) + '</div></div>');
         if (rp.wakeUpContextFull) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Wake-Up Context (full)</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.wakeUpContextFull, 500)) + '</div></div>');
         if (rp.supervisorRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Supervisor Raw</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.supervisorRaw, 500)) + '</div></div>');
-        if (rp.initiativeSummaryRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Initiative Summary</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.initiativeSummaryRaw, 400)) + '</div></div>');
-        if (rp.initiativeSuffixRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Initiative Suffix</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.initiativeSuffixRaw, 500)) + '</div></div>');
-        if (rp.initiativeBoundsRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Initiative Bounds</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.initiativeBoundsRaw, 400)) + '</div></div>');
         if (rp.completeResult) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Complete Result</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.completeResult, 400)) + '</div></div>');
         // Sprint 3-B: injection debug
         if (rp.injectionPreview) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Injection Block</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.injectionPreview, 800)) + '</div></div>');
@@ -26245,7 +26181,6 @@
       }
       const _pmShadowPromise = (function() {
         if (freshFirstTurnLightMode) return Promise.resolve(null);
-        if (_narrativeGuideOff) return Promise.resolve(null);
         if (!_applyGate.shouldRunShadow) return Promise.resolve(null);
         const _orchPreview = wakeUpContext ? wakeUpContext.slice(0, 1200) : null;
         // K-4b+4c: arbitration 결과의 suppressed 항목을 hints에서 제외
@@ -26293,8 +26228,6 @@
       const _supervisorLatencyMs = Date.now() - _supervisorCallStart;
       const _svDir = supervisorResult && (supervisorResult.directive || supervisorResult);
       const _storylineSelection = extractStorylineSelectionSummary(supervisorResult);
-      const _narrativeStance = settings.storyNarrativeStance || "balanced";
-      const _initiativeSummary = extractNarrativeStanceSummary(_narrativeStance);
       const storylineOverlay = buildStorylineOverlay(supervisorResult);
       const worldRuleOverlay = buildWorldRuleOverlay(supervisorResult);
       trace.supervisor = {
@@ -26306,14 +26239,12 @@
         hasDirector: !!(_svDir && _svDir.director),
         hasSectionWorld: !!(_svDir && _svDir.section_world && _svDir.section_world.applies),
         directivePreview: extractDirectivePreview(supervisorResult),
-        initiative: _initiativeSummary,
         storylineSelection: _storylineSelection,
         autoAdvanceTrigger: _autoAdvanceTrigger,
         autoAdvanceHintApplied: !!_autoAdvanceHint,
       };
       debugLog("supervisor:", supervisorResult ? "received" : "null/skipped",
         _svDir ? "(author:" + !!_svDir.book_author + " director:" + !!_svDir.director + " sw:" + !!(_svDir.section_world && _svDir.section_world.applies) + ")" : "");
-      debugLog("initiative:", _initiativeSummary.mode, "beats<=" + (_initiativeSummary.maxNewBeats != null ? _initiativeSummary.maxNewBeats : "?"), _initiativeSummary.allowSceneJump ? "sceneJump:yes" : "sceneJump:no");
       if (_storylineSelection.totalActiveCount > 0) {
         debugLog("storyline-selection:", "sel=" + _storylineSelection.selectedCount + "/" + _storylineSelection.totalActiveCount, "drop=" + _storylineSelection.droppedCount, _storylineSelection.droppedPreview ? "dropped:" + _storylineSelection.droppedPreview : "");
       }
@@ -26338,8 +26269,6 @@
       let _pmShadowResult = await _pmShadowPromise;
       if (freshFirstTurnLightMode) {
         trace.pluginMain = { status: "skip", called: false, improved: false, elapsed_ms: null, reasoningSummary: "fresh_first_turn_light_mode", preview: "" };
-      } else if (_narrativeGuideOff) {
-        trace.pluginMain = { status: "skip", called: false, improved: false, elapsed_ms: null, reasoningSummary: "guide_off", preview: "" };
       } else if (!_applyGate.shouldRunShadow) {
         const _skipReason = _applyGate.mode === "off" ? "mode=off" : "not configured";
         trace.pluginMain = { status: "skip", called: false, improved: false, elapsed_ms: null, reasoningSummary: _skipReason, preview: "" };
@@ -26704,9 +26633,6 @@
           currentTurnUserInput: userInput ? truncPreview(userInput, 300) : null,
           wakeUpContextFull: truncPreview(wakeUpContext, 500),
           supervisorRaw: supervisorResult ? truncPreview(JSON.stringify(supervisorResult), 500) : null,
-          initiativeSummaryRaw: truncPreview(JSON.stringify(_initiativeSummary), 300),
-          initiativeSuffixRaw: truncPreview(buildInitiativeModeSuffix(_narrativeStance), 400),
-          initiativeBoundsRaw: truncPreview(JSON.stringify(buildInitiativeModeBounds(_narrativeStance)), 300),
           // Phase 1-1: continuity debug
           continuityInfoRaw: continuityInfo ? truncPreview(JSON.stringify({ triggerMode: continuityInfo.triggerMode, querySource: continuityInfo.querySource, packPriorityRequested: !!continuityInfo.packPriorityRequested, suppressUserInputPath: !!continuityInfo.suppressUserInputPath, preferAsPrimaryQuery: !!continuityInfo.preferAsPrimaryQuery, bareTrigger: !!continuityInfo.bareTrigger, idleGapMs: continuityInfo.idleGapMs || 0, debugForced: !!continuityInfo.debugForced, packStatus: continuityInfo.packStatus || null }), 400) : null,
           continuityQuery: continuityInfo && continuityInfo.query ? truncPreview(continuityInfo.query, 300) : null,
@@ -26885,89 +26811,6 @@
   // 실제 메인 LLM 요청 payload에 주입한다.
   // Token Budget Manager: 문자 수 기반 근사치로 예산 관리.
   // ──────────────────────────────────────────────────────────────
-
-  /** directive packet에서 응답 생성에 유용한 핵심 필드만 추려 읽기 쉬운 텍스트로 변환 */
-  /**
-   * Phase 4-1: Story Author 블록을 사람이 읽기 쉬운 텍스트로 변환.
-   */
-  function formatAuthorBlock(supervisorResult) {
-    try {
-      if (!supervisorResult) return "";
-      const d = supervisorResult.directive || supervisorResult;
-      if (!d || typeof d !== "object") return "";
-      const sa = d.book_author;
-      if (!sa || typeof sa !== "object") return "";
-      const lines = [];
-      if (sa.current_arc) lines.push("Current Arc: " + sa.current_arc);
-      if (sa.narrative_goal) lines.push("Narrative Goal: " + sa.narrative_goal);
-      if (Array.isArray(sa.next_beats) && sa.next_beats.length > 0) {
-        lines.push("Next Beats:");
-        sa.next_beats.slice(0, 3).forEach(function(b) { if (b) lines.push("- " + b); });
-      }
-      if (Array.isArray(sa.guardrails) && sa.guardrails.length > 0) {
-        lines.push("Guardrails:");
-        sa.guardrails.slice(0, 3).forEach(function(g) { if (g) lines.push("- " + g); });
-      }
-      return lines.join("\n");
-    } catch { return ""; }
-  }
-
-  /**
-   * Phase 4-1: Director 블록을 사람이 읽기 쉬운 텍스트로 변환.
-   */
-  function formatDirectorBlock(supervisorResult) {
-    try {
-      if (!supervisorResult) return "";
-      const d = supervisorResult.directive || supervisorResult;
-      if (!d || typeof d !== "object") return "";
-      const dr = d.director;
-      if (!dr || typeof dr !== "object") return "";
-      const lines = [];
-      if (dr.scene_mandate) lines.push("Scene Mandate: " + dr.scene_mandate);
-      if (Array.isArray(dr.required_outcomes) && dr.required_outcomes.length > 0) {
-        lines.push("Required Outcomes:");
-        dr.required_outcomes.slice(0, 3).forEach(function(o) { if (o) lines.push("- " + o); });
-      }
-      if (Array.isArray(dr.forbidden_moves) && dr.forbidden_moves.length > 0) {
-        lines.push("Forbidden Moves:");
-        dr.forbidden_moves.slice(0, 3).forEach(function(f) { if (f) lines.push("- " + f); });
-      }
-      if (dr.pressure_level) lines.push("Pressure Level: " + dr.pressure_level);
-      // E-5: Narrative Guide Mode overrides
-      const guideMode = (supervisorResult && supervisorResult._guideModeResolved)
-        ? supervisorResult._guideModeResolved
-        : resolveNarrativeGuideMode(settings.narrativeGuideMode);
-      const guideStrength = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength);
-      if (guideMode !== "off" && guideStrength !== "none") {
-        const overrides = buildGuideModeDirectorOverrides(guideMode);
-        if (overrides.emphasis && overrides.emphasis.length > 0) {
-          lines.push("Emphasis:");
-          overrides.emphasis.forEach(function(e) { lines.push("- " + e); });
-        }
-        if (overrides.forbidden_moves && overrides.forbidden_moves.length > 0) {
-          lines.push("Additional Forbidden:");
-          overrides.forbidden_moves.forEach(function(f) { lines.push("- " + f); });
-        }
-      }
-      const narrativeStance = settings.storyNarrativeStance || "balanced";
-      const initiativeBounds = buildInitiativeModeBounds(narrativeStance);
-      if (initiativeBounds.emphasis && initiativeBounds.emphasis.length > 0) {
-        lines.push("Initiative Emphasis:");
-        initiativeBounds.emphasis.forEach(function(e) { lines.push("- " + e); });
-      }
-      if (typeof initiativeBounds.max_new_beats === "number") {
-        lines.push("Initiative Beat Limit: " + initiativeBounds.max_new_beats);
-      }
-      if (initiativeBounds.allow_scene_jump === false) {
-        lines.push("Initiative Scene Jump: only with clear causal setup");
-      }
-      if (initiativeBounds.forbidden_moves && initiativeBounds.forbidden_moves.length > 0) {
-        lines.push("Initiative Forbidden:");
-        initiativeBounds.forbidden_moves.forEach(function(f) { lines.push("- " + f); });
-      }
-      return lines.join("\n");
-    } catch { return ""; }
-  }
 
   /**
    * Phase 4-3: Section World 블록을 사람이 읽기 쉬운 텍스트로 변환.
@@ -27278,251 +27121,12 @@
   // E-5: Narrative Guide Mode — supervisor suffix + director overrides
   // ================================================================
 
-  function getLatestUserMessageText(contextMessages) {
-    try {
-      if (!Array.isArray(contextMessages)) return "";
-      for (let i = contextMessages.length - 1; i >= 0; i--) {
-        const msg = contextMessages[i];
-        if (msg && msg.role === "user" && typeof msg.content === "string" && msg.content.trim()) {
-          return msg.content.trim();
-        }
-      }
-    } catch {}
-    return "";
-  }
-
-  function inferNarrativeGuideModeFromText(text) {
-    const source = String(text || "").toLowerCase();
-    if (!source.trim()) return "standard";
-
-    const isMatch = function(patterns) {
-      for (let i = 0; i < patterns.length; i++) {
-        if (patterns[i].test(source)) return true;
-      }
-      return false;
-    };
-
-    if (isMatch([/r\s*18/, /19\s*금/, /explicit/, /노골/, /직접\s*묘사/, /成人向け/, /露骨/])) return "mature_direct";
-    if (isMatch([/sensual/, /mature/, /관능/, /감각/, /성인\s*로맨스/, /官能/, /大人向け/])) return "mature_soft";
-    if (isMatch([/romance/, /romantic/, /\blove\b/, /\bdate\b/, /연애/, /로맨스/, /설렘/, /恋/, /ロマンス/, /デート/])) return "romantic";
-    if (isMatch([/action/, /battle/, /fight/, /combat/, /mission/, /chase/, /액션/, /전투/, /싸움/, /추격/, /작전/, /戦闘/, /任務/, /追跡/])) return "action";
-    return "standard";
-  }
-
-  function inferNarrativeGuideModeHybrid(text) {
-    const source = String(text || "").toLowerCase();
-    if (!source.trim()) return "standard";
-
-    const scores = {
-      standard: 0,
-      romantic: 0,
-      action: 0,
-      mature_soft: 0,
-      mature_direct: 0,
-    };
-    const base = inferNarrativeGuideModeFromText(source);
-    if (base && base !== "standard" && scores[base] != null) scores[base] += 2;
-
-    const has = function(patterns) {
-      for (let i = 0; i < patterns.length; i++) {
-        if (patterns[i].test(source)) return true;
-      }
-      return false;
-    };
-    if (has([/r\s*18/, /19\s*금/, /explicit/, /nsfw/, /노골/, /직접\s*묘사/, /成人向け/, /露骨/])) scores.mature_direct += 4;
-    if (has([/sensual/, /mature/, /관능/, /감각/, /성인\s*로맨스/, /官能/, /大人向け/])) scores.mature_soft += 3;
-    if (has([/romance/, /romantic/, /\blove\b/, /\bdate\b/, /confession/, /kiss/, /jealous/, /연애/, /로맨스/, /고백/, /키스/, /설렘/, /감정선/, /호감/, /질투/, /恋/, /ロマンス/, /デート/])) scores.romantic += 2;
-    if (has([/action/, /battle/, /fight/, /combat/, /mission/, /chase/, /threat/, /danger/, /attack/, /전투/, /싸움/, /추격/, /작전/, /위협/, /공격/, /戦闘/, /任務/, /追跡/])) scores.action += 2;
-
-    // SEQ-01-P29: scene-state hybrid signals, not keyword-only genre labels.
-    if (has([/pressure\s*level\s*:\s*high/, /pressure\s*:\s*high/, /stakes/, /urgent/, /enemy/, /weapon/, /wound/, /blood/, /explosion/, /scene mandate\s*:\s*(fight|battle)/])) scores.action += 1;
-    if (has([/pressure\s*level\s*:\s*low/, /pressure\s*:\s*low/, /calm/, /quiet/, /stable flow/, /안정적인 흐름/, /현재 감정선을 자연스럽게/])) scores.standard += 1;
-    if (has([/emotional intensity/, /affection/, /longing/, /intimacy/, /relationship tension/])) scores.romantic += 1;
-
-    let bestMode = "standard";
-    let bestScore = scores.standard;
-    ["mature_direct", "mature_soft", "action", "romantic"].forEach(function(candidate) {
-      if (scores[candidate] > bestScore) {
-        bestMode = candidate;
-        bestScore = scores[candidate];
-      }
-    });
-    return bestScore > 0 ? bestMode : "standard";
-  }
-
-  function hasStrongGuideModeSignal(sourceText, mode) {
-    const source = String(sourceText || "").toLowerCase();
-    if (!source || !mode || mode === "standard") return false;
-    const any = function(patterns) {
-      for (let i = 0; i < patterns.length; i++) {
-        if (patterns[i].test(source)) return true;
-      }
-      return false;
-    };
-    if (mode === "action") {
-      return any([/battle/, /fight/, /combat/, /attack/, /전투/, /싸움/, /공격/, /pressure\s*level\s*:\s*high/, /scene mandate\s*:\s*(fight|battle)/]);
-    }
-    if (mode === "romantic") {
-      return any([/confession/, /kiss/, /\blove\b/, /romance/, /고백/, /키스/, /연애/, /로맨스/, /emotional intensity/, /affection/]);
-    }
-    if (mode === "mature_soft" || mode === "mature_direct") {
-      return any([/r\s*18/, /19\s*금/, /explicit/, /nsfw/, /sensual/, /mature/, /노골/, /관능/]);
-    }
-    return false;
-  }
-
-  // SEQ-01-P30: bounded runtime hysteresis cache (no DB writes)
-  let _guideModeRuntimeCache = { lastMode: null, lastProbe: "", consecutiveSame: 0 };
-
-  function resolveNarrativeGuideMode(mode, contextMessages, wakeUpContext, fallbackUserInput) {
-    const normalized = sanitizeEnumValue(
-      mode,
-      DEFAULT_SETTINGS.narrativeGuideMode,
-      NARRATIVE_GUIDE_MODES,
-    );
-    if (normalized !== "auto") return normalized;
-
-    const probeText = [
-      typeof fallbackUserInput === "string" ? fallbackUserInput : "",
-      getLatestUserMessageText(contextMessages),
-      typeof wakeUpContext === "string" ? wakeUpContext : "",
-    ].filter(Boolean).join("\n");
-
-    const inferred = inferNarrativeGuideModeHybrid(probeText);
-
-    // P30 hysteresis: do not flicker when recent mode is present
-    if (_guideModeRuntimeCache.lastMode !== null && inferred !== _guideModeRuntimeCache.lastMode) {
-      // Strong signal: same mode detected in both previous and current probe, or >=2 scene-state hits
-      const prevLower = String(_guideModeRuntimeCache.lastProbe || "").toLowerCase();
-      const currLower = probeText.toLowerCase();
-      const strongPrev = inferNarrativeGuideModeHybrid(prevLower) === inferred;
-      const currentStrong = hasStrongGuideModeSignal(currLower, inferred);
-      if (!currentStrong && !strongPrev && _guideModeRuntimeCache.consecutiveSame < 2) {
-        return _guideModeRuntimeCache.lastMode;
-      }
-      _guideModeRuntimeCache.consecutiveSame = 1;
-    } else {
-      _guideModeRuntimeCache.consecutiveSame = (_guideModeRuntimeCache.consecutiveSame || 0) + 1;
-    }
-
-    _guideModeRuntimeCache.lastMode = inferred;
-    _guideModeRuntimeCache.lastProbe = probeText;
-    return inferred;
-  }
-
   function normalizeNarrativeGuideStrength(value) {
     return sanitizeEnumValue(
       value,
       DEFAULT_SETTINGS.narrativeGuideStrength,
       NARRATIVE_GUIDE_STRENGTH_OPTIONS,
     );
-  }
-
-  function buildNarrativeGuideStrengthLine(strength) {
-    switch (normalizeNarrativeGuideStrength(strength)) {
-      case "none":
-        return "";
-      case "strong":
-        return "Strength: strong. Be more active about pacing, continuity repair, and callback suggestions, but never override user input or force outcomes.";
-      case "medium":
-        return "Strength: medium. Give visible pacing and continuity support when the scene has room, but avoid forcing outcomes.";
-      case "weak":
-      default:
-        return "Strength: weak. Keep this nearly invisible; only prevent continuity breaks or obvious tone drift.";
-    }
-  }
-
-  /**
-   * E-5: buildGuideModeSuffix
-   * 선택된 narrative guide mode에 맞는 supervisor prompt suffix를 반환한다.
-   * supervisor 호출 시 system prompt 끝에 붙는다.
-   */
-  function buildGuideModeSuffix(mode, strength) {
-    if (normalizeNarrativeGuideStrength(strength) === "none") return "";
-    const strengthLine = buildNarrativeGuideStrengthLine(strength);
-    switch (mode) {
-      case "standard":
-        return [
-          "\n[Narrative Guide — Standard]",
-          strengthLine,
-          "Use as light optional style hints only; do not force the next scene, resolution, or character decision.",
-          "Prefer continuity-preserving tone, pacing, and callbacks when they naturally fit.",
-          "Current user input has priority; if the input is narrow, keep the guide almost invisible.",
-        ].join("\n");
-      case "romantic":
-        return [
-          "\n[Narrative Guide — Romantic]",
-          strengthLine,
-          "Use as light optional style hints only; do not force confession, intimacy, jealousy, or a relationship milestone.",
-          "Let emotional dynamics surface only when the current exchange supports them.",
-          "Dialogue subtext is preferred over explicit declarations.",
-        ].join("\n");
-      case "action":
-        return [
-          "\n[Narrative Guide — Action]",
-          strengthLine,
-          "Use as light optional style hints only; do not force combat, chase, danger, or a scene jump.",
-          "If combat/chase/action is already happening, keep momentum clear and consequences grounded.",
-          "If the user is only preparing or observing, do not escalate on their behalf.",
-        ].join("\n");
-      case "mature_soft":
-        return [
-          "\n[Narrative Guide — Mature (Sensual)]",
-          strengthLine,
-          "Use as light optional style hints only; do not force intimacy, escalation, or physical contact.",
-          "When story-appropriate, prefer sensory, suggestive, indirect description.",
-          "Atmosphere and emotion over explicit mechanics.",
-          "Respect character agency and established boundaries.",
-        ].join("\n");
-      case "mature_direct":
-        return [
-          "\n[Narrative Guide — Mature (Explicit)]",
-          strengthLine,
-          "Use as light optional style hints only; do not force explicit content, escalation, or irreversible intimacy.",
-          "Direct description is allowed only when the current scene and user input clearly support it.",
-          "Character voice and emotional context remain paramount.",
-          "Do not reduce characters to mere participants; inner thoughts matter.",
-        ].join("\n");
-      default: // "off"
-        return "";
-    }
-  }
-
-  /**
-   * E-5: buildGuideModeDirectorOverrides
-   * 선택된 mode에 맞는 director emphasis / forbidden_moves를 반환한다.
-   * formatDirectorBlock 출력에 추가 지시로 병합된다.
-   */
-  function buildGuideModeDirectorOverrides(mode) {
-    switch (mode) {
-      case "standard":
-        return {
-          emphasis: ["tension management", "pacing variety", "subplot callbacks"],
-          forbidden_moves: [],
-        };
-      case "romantic":
-        return {
-          emphasis: ["emotional resonance", "relationship progression", "intimate atmosphere"],
-          forbidden_moves: ["sudden genre shift to horror", "trivializing emotional moments"],
-        };
-      case "action":
-        return {
-          emphasis: ["combat choreography", "environmental hazards", "tactical decisions"],
-          forbidden_moves: ["excessive monologuing during action", "deus ex machina resolution"],
-        };
-      case "mature_soft":
-        return {
-          emphasis: ["sensory atmosphere", "emotional vulnerability", "consensual dynamics"],
-          forbidden_moves: ["gratuitous shock content", "ignoring character consent"],
-        };
-      case "mature_direct":
-        return {
-          emphasis: ["vivid physical description", "emotional authenticity", "character agency"],
-          forbidden_moves: ["dehumanizing portrayals", "ignoring character consent"],
-        };
-      default:
-        return { emphasis: [], forbidden_moves: [] };
-    }
   }
 
   /**
@@ -27742,141 +27346,6 @@
       parts.push("Previously resolved:\n" + ch.map(function(s) { return "  - " + s; }).join("\n"));
     }
     return "[Story Guidance]\n" + parts.join("\n");
-  }
-
-  /**
-   * H-3c: initiative mode에 맞는 supervisor prompt suffix를 생성한다.
-   * guide mode를 복제하지 않고, MO의 현재 supervisor 경로에 맞는 보수적 지시만 추가한다.
-   */
-  function buildInitiativeModeSuffix(mode) {
-    switch (mode) {
-      case "reactive":
-        return [
-          "\n[Story Initiative — Reactive]",
-          "Stay close to the user's immediate lead and the current scene.",
-          "If the user expresses caution, hesitation, or uncertainty, remain in observation, clarification, or low-risk preparation rather than pushing action.",
-          "Do not initiate entry, unlock barriers, assign a plan, or commit companions to a risky move unless the user explicitly asks for that step.",
-          "Advance existing threads only when the current exchange clearly opens space for it, and keep any suggestion small and reversible.",
-        ].join("\n");
-      case "proactive":
-        return [
-          "\n[Story Initiative — Proactive]",
-          "You may introduce one plausible next beat or complication when continuity supports it.",
-          "Initiative must grow from existing tensions, hooks, promises, or scene context.",
-          "When the user is still deciding, propose the next beat rather than executing the decision on the user's behalf.",
-          "Do not override the user's intent, skip causal steps, or force abrupt scene changes.",
-        ].join("\n");
-      default: // balanced
-        return [
-          "\n[Story Initiative — Balanced]",
-          "You may add one gentle next-beat nudge when it naturally fits the current scene.",
-          "Keep the response anchored to the user's immediate intent and the current arc, and suggest rather than execute the next step.",
-          "Avoid abrupt escalation, forced twists, or hard scene jumps.",
-        ].join("\n");
-    }
-  }
-
-  /**
-   * H-3c: initiative mode에 맞는 bounds를 구조화해서 반환한다.
-   * 현재는 supervisor request와 director block에 같은 안전 경계를 전달하는 데 사용한다.
-   */
-  function buildInitiativeModeBounds(mode) {
-    switch (mode) {
-      case "reactive":
-        return {
-          emphasis: ["user-led follow-through", "observation before action", "low-risk option framing"],
-          forbidden_moves: [
-            "unlocking barriers or initiating entry without explicit user intent",
-            "committing the group to a risky plan on the user's behalf",
-            "inventing urgent danger to force motion",
-          ],
-          max_new_beats: 0,
-          allow_scene_jump: false,
-        };
-      case "proactive":
-        return {
-          emphasis: ["causal next-beat proposal", "continuity-aware tension increase", "bounded steering"],
-          forbidden_moves: [
-            "forcing irreversible turns without buildup",
-            "overwriting the user's immediate intent",
-            "turning a cautious pause into immediate entry or confrontation without buy-in",
-          ],
-          max_new_beats: 1,
-          allow_scene_jump: false,
-        };
-      default:
-        return {
-          emphasis: ["gentle next-beat nudges", "continuity-aware escalation", "conversation momentum"],
-          forbidden_moves: [
-            "hard scene cut without setup",
-            "forcing a dramatic turn too early",
-            "executing a risky step before the user agrees to it",
-          ],
-          max_new_beats: 1,
-          allow_scene_jump: false,
-        };
-    }
-  }
-
-  /**
-   * Phase 4-1: legacy fallback — 이전 형식 supervisor 결과도 처리 가능
-   */
-  function formatDirectiveBlock(supervisorResult) {
-    try {
-      if (!supervisorResult) return "";
-      const d = supervisorResult.directive || supervisorResult;
-      if (!d || typeof d !== "object") return typeof d === "string" ? d : "";
-      // Phase 4-1: 새 형식이면 author+director 합산
-      if (d.book_author || d.director) {
-        const parts = [];
-        const authorText = formatAuthorBlock(supervisorResult);
-        const directorText = formatDirectorBlock(supervisorResult);
-        if (authorText) parts.push(authorText);
-        if (directorText) parts.push(directorText);
-        return parts.join("\n\n");
-      }
-      // legacy 형식 fallback
-      const lines = [];
-
-      // scene_read
-      if (d.scene_read) {
-        const sr = d.scene_read;
-        if (sr.current_mood) lines.push("Mood: " + sr.current_mood);
-        if (sr.tension_level != null) lines.push("Tension: " + sr.tension_level + "/5");
-        if (sr.narrative_density) lines.push("Narrative Density: " + sr.narrative_density);
-      }
-
-      // drama_plan
-      if (d.drama_plan) {
-        if (d.drama_plan.goal) lines.push("Drama Goal: " + d.drama_plan.goal);
-        if (d.drama_plan.pacing) lines.push("Pacing: " + d.drama_plan.pacing);
-      }
-
-      // causal_hooks — 요약만
-      if (Array.isArray(d.causal_hooks) && d.causal_hooks.length > 0) {
-        const hooks = d.causal_hooks.slice(0, 3).map(h =>
-          (h.source || "") + (h.payoff_style ? " → " + h.payoff_style : "")
-        ).filter(Boolean);
-        if (hooks.length > 0) lines.push("Causal Hooks: " + hooks.join("; "));
-      }
-
-      // must_include
-      if (Array.isArray(d.must_include) && d.must_include.length > 0) {
-        lines.push("Must Include: " + d.must_include.join(", "));
-      }
-
-      // avoid
-      if (Array.isArray(d.avoid) && d.avoid.length > 0) {
-        lines.push("Avoid: " + d.avoid.join(", "));
-      }
-
-      // writer_instruction — 핵심
-      if (d.writer_instruction) {
-        lines.push("Instruction: " + (typeof d.writer_instruction === "string" ? d.writer_instruction : JSON.stringify(d.writer_instruction)));
-      }
-
-      return lines.join("\n");
-    } catch { return ""; }
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -50410,7 +49879,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         </div>
         <div class="mo-row">
           <label>${t('settings.label.narrativeGuideStrength')}</label>
-          <select id="mo-narrativeGuideStrength"${s.pluginMainApplyMode === "off" ? " disabled" : ""}>
+          <select id="mo-narrativeGuideStrength">
             <option value="none"${s.narrativeGuideStrength === "none" ? " selected" : ""}>${t('settings.narrativeStrength.none')}</option>
             <option value="weak"${s.narrativeGuideStrength === "weak" || !s.narrativeGuideStrength ? " selected" : ""}>${t('settings.narrativeStrength.weak')}</option>
             <option value="medium"${s.narrativeGuideStrength === "medium" ? " selected" : ""}>${t('settings.narrativeStrength.medium')}</option>
@@ -50423,14 +49892,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <input type="number" id="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
           <input class="mo-range" type="range" id="mo-narrativeSupportMaxCharsRange" data-sync-input="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
           <small>${t('settings.hint.narrativeSupportMaxChars')}</small>
-        </div>
-        <div class="mo-row">
-          <label>${t('settings.label.storyNarrativeStance')}</label>
-          <select id="mo-storyNarrativeStance"${s.pluginMainApplyMode === "off" ? " disabled" : ""}>
-            <option value="reactive"${s.storyNarrativeStance === "reactive" ? " selected" : ""}>${t('settings.narrativeStance.reactive')}</option>
-            <option value="balanced"${s.storyNarrativeStance === "balanced" || !s.storyNarrativeStance ? " selected" : ""}>${t('settings.narrativeStance.balanced')}</option>
-            <option value="proactive"${s.storyNarrativeStance === "proactive" ? " selected" : ""}>${t('settings.narrativeStance.proactive')}</option>
-          </select>
         </div>
         <div class="mo-row">
           <label>${t('settings.label.uiDetailMode')}</label>
@@ -51138,28 +50599,20 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       }
       syncMemoryDeliveryBudgetControls();
 
-      const syncInputImprovementDependentControls = () => {
-        const modeEl = $("mo-pluginMainApplyMode");
+      const syncNarrativeGuideControls = () => {
         const narrativeEl = $("mo-narrativeGuideModeDisplay");
         const guideStrengthEl = $("mo-narrativeGuideStrength");
-        const stanceEl = $("mo-storyNarrativeStance");
-        const isOff = modeEl && modeEl.value === "off";
+        const isOff = guideStrengthEl && guideStrengthEl.value === "none";
         if (narrativeEl) {
           narrativeEl.value = isOff ? t("settings.narrativeMode.off") : t("settings.narrativeMode.auto");
           narrativeEl.disabled = true;
         }
-        if (guideStrengthEl) {
-          guideStrengthEl.disabled = !!isOff;
-        }
-        if (stanceEl) {
-          stanceEl.disabled = !!isOff;
-        }
       };
-      const applyModeEl = $("mo-pluginMainApplyMode");
-      if (applyModeEl) {
-        applyModeEl.addEventListener("change", syncInputImprovementDependentControls);
-        syncInputImprovementDependentControls();
+      const guideStrengthEl = $("mo-narrativeGuideStrength");
+      if (guideStrengthEl) {
+        guideStrengthEl.addEventListener("change", syncNarrativeGuideControls);
       }
+      syncNarrativeGuideControls();
 
       function getCurrentUiRequestTimeoutMs() {
         return getRequestTimeoutSettingMs(($("mo-requestTimeoutMs") || { value: settings.requestTimeoutMs }).value);
@@ -51466,10 +50919,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             maxInputContextChars: $("mo-maxInputContextChars").value,
             failedQueueMaxSize: $("mo-failedQueueMaxSize").value,
             failedQueueMaxAgeDays: $("mo-failedQueueMaxAgeDays").value,
-            // H-3b: Initiative mode persistence only
             narrativeGuideStrength: $("mo-narrativeGuideStrength").value,
             narrativeSupportMaxChars: $("mo-narrativeSupportMaxChars").value,
-            storyNarrativeStance: $("mo-storyNarrativeStance").value,
             // J-3a: Plugin Main Apply Mode
             pluginMainApplyMode: $("mo-pluginMainApplyMode").value,
             // F-1: UI Language
@@ -51541,10 +50992,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           setValueIfPresent("mo-auxiliaryInjectionPlacement", settings.auxiliaryInjectionPlacement || "auto");
           setValueIfPresent("mo-auxiliaryInjectionAnchorMarker", settings.auxiliaryInjectionAnchorMarker || "");
           $("mo-narrativeGuideStrength").value = settings.narrativeGuideStrength || "weak";
-          $("mo-storyNarrativeStance").value = settings.storyNarrativeStance || "balanced";
           $("mo-uiDetailMode").value = settings.uiDetailMode || "full";
           setCheckedIfPresent("mo-turnWorkflowHUDEnabled", settings.turnWorkflowHUDEnabled !== false);
-          syncInputImprovementDependentControls();
+          syncNarrativeGuideControls();
           syncAllRangesFromInputs();
 
           const statusEl = $("mo-save-status");

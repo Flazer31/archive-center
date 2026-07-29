@@ -25,6 +25,10 @@ func outputFidelity35CPrepareResponseWithInjection(t *testing.T, caseID, guideMo
 }
 
 func outputFidelity35CPrepareResponseWithOptions(t *testing.T, caseID, guideMode, guideStrength, supervisorEndpoint string, withMemorySupport, injectionEnabled bool, narrativeSupportMaxChars int) map[string]any {
+	return outputFidelity36FPrepareResponseWithBudgets(t, caseID, guideMode, guideStrength, supervisorEndpoint, withMemorySupport, injectionEnabled, 9000, narrativeSupportMaxChars)
+}
+
+func outputFidelity36FPrepareResponseWithBudgets(t *testing.T, caseID, guideMode, guideStrength, supervisorEndpoint string, withMemorySupport, injectionEnabled bool, maxInjectionChars, narrativeSupportMaxChars int) map[string]any {
 	t.Helper()
 	corpus, _ := loadOutputFidelityCorpus(t)
 	fixture := outputFidelityCaseByID(t, corpus, caseID)
@@ -157,7 +161,7 @@ func outputFidelity35CPrepareResponseWithOptions(t *testing.T, caseID, guideMode
 		},
 		"settings": map[string]any{
 			"apply_mode":            "shadow",
-			"max_injection_chars":   9000,
+			"max_injection_chars":   maxInjectionChars,
 			"injection_enabled":     injectionEnabled,
 			"input_context_enabled": false,
 			"top_k":                 1,
@@ -189,16 +193,25 @@ func outputFidelity35CGuideTrace(t *testing.T, response map[string]any) (map[str
 	return plan, trace
 }
 
-func TestOutputFidelity35CNoSupportHasZeroGuideWork(t *testing.T) {
+func outputFidelity36FFindLane(plan map[string]any, key string) map[string]any {
+	for _, raw := range outputFidelityLineageSlice(plan["lanes"]) {
+		lane := mapFromAny(raw)
+		if extractionStringFromAny(lane["key"]) == key {
+			return lane
+		}
+	}
+	return nil
+}
+
+func TestOutputFidelity36FCurrentInputOnlyCallsExpressionSupervisor(t *testing.T) {
 	var supervisorCalls atomic.Int64
 	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		supervisorCalls.Add(1)
-		http.Error(w, "no-support must not call supervisor", http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"Keep the current request perceptible.\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
 	}))
 	defer supervisor.Close()
 
-	var baselineAuxiliaryHash any
-	var baselineInputHash any
 	for _, profile := range []struct {
 		mode     string
 		strength string
@@ -212,44 +225,79 @@ func TestOutputFidelity35CNoSupportHasZeroGuideWork(t *testing.T) {
 			response := outputFidelity35CPrepareResponse(t, "ko_reencounter_no_support_v1", profile.mode, profile.strength, supervisor.URL, false)
 			plan, trace := outputFidelity35CGuideTrace(t, response)
 			lane := outputFidelity35BFindLane(plan, "output_guidance")
-			if trace["eligibility"] != map[bool]string{true: "off", false: "no_support"}[profile.mode == "off"] {
-				t.Errorf("eligibility = %v", trace["eligibility"])
-			}
-			if intFromAny(trace["budget_chars"], -1) != 0 ||
-				intFromAny(trace["used_chars"], -1) != 0 ||
-				intFromAny(trace["applied_count"], -1) != 0 ||
-				len(sliceFromAny(trace["items"])) != 0 {
-				t.Errorf("no-support generated guide work: %#v", trace)
-			}
-			if lane == nil ||
-				boolFromAny(lane["applied"]) ||
-				extractionStringFromAny(lane["text"]) != "" ||
-				len(stringSliceFromAny(lane["source_refs"])) != 0 {
-				t.Errorf("no-support output-guidance lane is not empty: %#v", lane)
-			}
 			hostEvidence := mapFromAny(response["host_context_reference_evidence"])
 			if intFromAny(hostEvidence["selected_count"], 0) != 1 {
 				t.Errorf("test did not exercise the official system-message shape: %#v", hostEvidence)
 			}
-			evaluation := mapFromAny(plan["guide_efficacy_evaluation"])
-			wantEvaluationStatus := map[bool]string{true: "not_applicable_guide_off", false: "not_applicable_no_support"}[profile.mode == "off"]
-			if evaluation["contract_version"] != "guide_efficacy_evaluation.v1" ||
-				evaluation["status"] != wantEvaluationStatus ||
-				len(sliceFromAny(evaluation["item_results"])) != 0 ||
-				boolFromAny(evaluation["automatic_text_judgement"]) ||
-				boolFromAny(evaluation["body_difference_is_efficacy_evidence"]) {
-				t.Errorf("no-support evaluation invented guide efficacy: %#v", evaluation)
+			if profile.mode == "off" {
+				if trace["eligibility"] != "off" ||
+					intFromAny(trace["budget_chars"], -1) != 0 ||
+					len(sliceFromAny(trace["items"])) != 0 ||
+					lane == nil || boolFromAny(lane["applied"]) {
+					t.Fatalf("guide OFF changed payload parity: trace=%#v lane=%#v", trace, lane)
+				}
+				return
 			}
-			if baselineAuxiliaryHash == nil {
-				baselineAuxiliaryHash = plan["auxiliary_hash"]
-				baselineInputHash = plan["input_context_hash"]
-			} else if plan["auxiliary_hash"] != baselineAuxiliaryHash || plan["input_context_hash"] != baselineInputHash {
-				t.Errorf("no-support profile forced a payload difference: plan=%#v", plan)
+			eligibility := mapFromAny(trace["guide_eligibility"])
+			lanes := mapFromAny(eligibility["lanes"])
+			if trace["eligibility"] != "eligible" ||
+				boolFromAny(mapFromAny(lanes["fidelity"])["eligible"]) ||
+				!boolFromAny(mapFromAny(lanes["expression"])["eligible"]) ||
+				trace["supervisor_call_status"] != "applied" {
+				t.Fatalf("current-input-only expression lane was not applied: eligibility=%#v trace=%#v", eligibility, trace)
+			}
+			if lane == nil || !boolFromAny(lane["applied"]) ||
+				!strings.Contains(extractionStringFromAny(lane["text"]), "Keep the current request perceptible.") {
+				t.Fatalf("current-input-only expression was not delivered: %#v", lane)
+			}
+			support := mapFromAny(mapFromAny(response["supervisor_input_pack"])["support_packet"])
+			currentSupport := mapFromAny(support["current_input"])
+			if currentSupport["source_ref"] != "active:1" ||
+				extractionStringFromAny(currentSupport["raw_text"]) == "" ||
+				intFromAny(support["delivered_memory_count"], -1) != 0 {
+				t.Fatalf("current-input-only support packet = %#v", support)
 			}
 		})
 	}
-	if got := supervisorCalls.Load(); got != 0 {
-		t.Fatalf("no-support supervisor calls = %d, want 0", got)
+	if got := supervisorCalls.Load(); got != 3 {
+		t.Fatalf("current-input-only supervisor calls = %d, want 3 (OFF must skip)", got)
+	}
+}
+
+func TestOutputFidelity36FFreshTurnZeroMemoryBudgetStillCallsExpressionSupervisor(t *testing.T) {
+	var supervisorCalls atomic.Int64
+	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		supervisorCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"Keep the fresh-turn request perceptible.\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
+	}))
+	defer supervisor.Close()
+
+	response := outputFidelity36FPrepareResponseWithBudgets(
+		t,
+		"ko_reencounter_no_support_v1",
+		"standard",
+		"weak",
+		supervisor.URL,
+		false,
+		true,
+		0,
+		3000,
+	)
+	plan, trace := outputFidelity35CGuideTrace(t, response)
+	eligibility := mapFromAny(trace["guide_eligibility"])
+	lanes := mapFromAny(eligibility["lanes"])
+	if trace["eligibility"] != "eligible" ||
+		!boolFromAny(mapFromAny(lanes["expression"])["eligible"]) ||
+		boolFromAny(mapFromAny(lanes["fidelity"])["eligible"]) ||
+		trace["supervisor_call_status"] != "applied" ||
+		supervisorCalls.Load() != 1 {
+		t.Fatalf("fresh-turn expression guide was blocked by zero memory budget: eligibility=%#v trace=%#v calls=%d", eligibility, trace, supervisorCalls.Load())
+	}
+	outputLane := outputFidelity35BFindLane(plan, "output_guidance")
+	if outputLane == nil || !boolFromAny(outputLane["applied"]) ||
+		!strings.Contains(extractionStringFromAny(outputLane["text"]), "fresh-turn request") {
+		t.Fatalf("fresh-turn expression guidance missing: %#v", outputLane)
 	}
 }
 
@@ -303,16 +351,20 @@ func TestOutputFidelity35CEligibleGuideMatrixUsesSameSourceSnapshot(t *testing.T
 		if trace["eligibility"] != "eligible" || eligibility["status"] != "eligible" {
 			t.Fatalf("%s eligibility = %#v / %#v", name, trace["eligibility"], eligibility)
 		}
-		refs := stringSliceFromAny(eligibility["source_refs"])
-		if len(refs) == 0 || !strings.HasPrefix(refs[0], "memory:") {
-			t.Fatalf("%s has no source-backed guide eligibility: %#v", name, eligibility)
+		lanes := mapFromAny(eligibility["lanes"])
+		fidelityLane := mapFromAny(lanes["fidelity"])
+		expressionLane := mapFromAny(lanes["expression"])
+		refs := stringSliceFromAny(fidelityLane["source_refs"])
+		if !boolFromAny(fidelityLane["eligible"]) || !boolFromAny(expressionLane["eligible"]) ||
+			len(refs) == 0 || !strings.HasPrefix(refs[0], "memory:") {
+			t.Fatalf("%s has no delivered-memory fidelity lane: %#v", name, eligibility)
 		}
 		coverage := mapFromAny(eligibility["coverage"])
 		roles := stringSliceFromAny(coverage["allowed_roles"])
 		wantRoles := map[string][]string{
-			"weak":   {"fidelity_warning"},
-			"medium": {"fidelity_warning", "portrayal_note"},
-			"strong": {"fidelity_warning", "portrayal_note"},
+			"weak":   {"fidelity_warning", "portrayal"},
+			"medium": {"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback"},
+			"strong": {"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback", "reversible_option"},
 		}[profile.strength]
 		if !reflect.DeepEqual(roles, wantRoles) {
 			t.Errorf("%s roles = %#v, want %#v", name, roles, wantRoles)
@@ -321,33 +373,24 @@ func TestOutputFidelity35CEligibleGuideMatrixUsesSameSourceSnapshot(t *testing.T
 		for _, raw := range sliceFromAny(trace["items"]) {
 			itemKeys = append(itemKeys, extractionStringFromAny(mapFromAny(raw)["key"]))
 		}
-		wantItemKeys := map[string][]string{
-			"weak":   {"fidelity_preservation"},
-			"medium": {"fidelity_preservation"},
-			"strong": {"fidelity_preservation"},
-		}[profile.strength]
+		wantItemKeys := []string{}
 		if !reflect.DeepEqual(itemKeys, wantItemKeys) {
 			t.Errorf("%s actual guide items = %#v, want %#v", name, itemKeys, wantItemKeys)
 		}
-		if !boolFromAny(outputLane["applied"]) {
-			t.Fatalf("%s missing applied output lane: %#v", name, outputLane)
+		if boolFromAny(outputLane["applied"]) || extractionStringFromAny(outputLane["text"]) != "" {
+			t.Fatalf("%s injected duplicate deterministic fidelity guidance without a supervisor result: %#v", name, outputLane)
 		}
 		outputText := extractionStringFromAny(outputLane["text"])
-		for _, forbidden := range []string{"scene_mandate=", "required_outcome=", "forbidden_move=", "pacing=", "ending_requirement=", "[Progression Choice Ledger]"} {
+		for _, forbidden := range []string{"scene_mandate=", "required_outcome=", "forbidden_move=", "pacing=", "ending_requirement=", "[Progression Choice Ledger]", "memory:"} {
 			if strings.Contains(outputText, forbidden) {
 				t.Errorf("%s injected story-composition directive %q: %q", name, forbidden, outputText)
 			}
 		}
-		if !strings.Contains(outputText, "must_preserve=") ||
-			strings.Contains(outputText, "must_respond=") ||
-			strings.Contains(outputText, "[Progression Choice Ledger]") {
-			t.Errorf("%s guide payload does not match its semantic coverage: %q", name, outputText)
-		}
 		evaluation := mapFromAny(prepareLineage["guide_efficacy_evaluation"])
-		if evaluation["status"] != "awaiting_final_and_explicit_live_review" ||
+		if evaluation["status"] != "not_applied_no_guidance_item" ||
 			boolFromAny(evaluation["automatic_text_judgement"]) ||
 			boolFromAny(evaluation["body_difference_is_efficacy_evidence"]) ||
-			len(sliceFromAny(evaluation["item_results"])) == 0 {
+			len(sliceFromAny(evaluation["item_results"])) != 0 {
 			t.Errorf("%s efficacy evaluation is not fail-closed: %#v", name, evaluation)
 		}
 		for _, raw := range sliceFromAny(evaluation["item_results"]) {
@@ -370,18 +413,30 @@ func TestOutputFidelity35CEligibleGuideMatrixUsesSameSourceSnapshot(t *testing.T
 		observations["medium"].memoryLaneHash != observations["strong"].memoryLaneHash {
 		t.Fatalf("guide matrix did not preserve the source snapshot: %#v", observations)
 	}
-	if observations["weak"].outputHash != observations["medium"].outputHash ||
+	if reflect.DeepEqual(observations["weak"].roles, observations["medium"].roles) ||
+		reflect.DeepEqual(observations["medium"].roles, observations["strong"].roles) ||
+		observations["weak"].outputHash != observations["medium"].outputHash ||
 		observations["medium"].outputHash != observations["strong"].outputHash {
-		t.Fatalf("strength changed deterministic guide text without memory-backed supervisor output: %#v", observations)
+		t.Fatalf("strength coverage or no-result payload parity is wrong: %#v", observations)
 	}
 }
 
 func TestOutputFidelity35CWeakGuideCallsConfiguredSupervisorOnce(t *testing.T) {
 	var supervisorCalls atomic.Int64
+	var capturedPrompt atomic.Value
 	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		supervisorCalls.Add(1)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode supervisor request: %v", err)
+		} else {
+			messages := sliceFromAny(body["messages"])
+			if len(messages) > 0 {
+				capturedPrompt.Store(extractionStringFromAny(mapFromAny(messages[len(messages)-1])["content"]))
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the supported recollection\",\"source_refs\":[\"memory:output-fidelity-35c-prepare:51\"]}],\"portrayal_notes\":[]}}"}}]}`))
+		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the supported recollection\",\"source_refs\":[\"memory:output-fidelity-35c-prepare:51\"]}],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"keep the current request perceptible\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
 	}))
 	defer supervisor.Close()
 
@@ -389,6 +444,29 @@ func TestOutputFidelity35CWeakGuideCallsConfiguredSupervisorOnce(t *testing.T) {
 	_, trace := outputFidelity35CGuideTrace(t, response)
 	if got := supervisorCalls.Load(); got != 1 || trace["supervisor_call_status"] != "applied" {
 		t.Fatalf("configured weak supervisor calls=%d trace=%#v", got, trace)
+	}
+	support := mapFromAny(mapFromAny(response["supervisor_input_pack"])["support_packet"])
+	delivered := anySliceFromAny(support["delivered_memory"])
+	if len(delivered) != 1 {
+		t.Fatalf("delivered support packet = %#v", support)
+	}
+	deliveredItem := mapFromAny(delivered[0])
+	prompt, _ := capturedPrompt.Load().(string)
+	var promptPayload map[string]any
+	if err := json.Unmarshal([]byte(prompt), &promptPayload); err != nil {
+		t.Fatalf("decode captured supervisor payload: %v\n%s", err, prompt)
+	}
+	if _, leaked := promptPayload["context_messages"]; leaked ||
+		strings.Contains(prompt, "Stay in character and follow the current chat context.") {
+		t.Fatalf("supervisor prompt leaked unbounded request context: %s", prompt)
+	}
+	promptSupport := mapFromAny(promptPayload["supervisor_support_packet"])
+	promptDelivered := anySliceFromAny(promptSupport["delivered_memory"])
+	if extractionStringFromAny(mapFromAny(promptSupport["current_input"])["raw_text"]) != extractionStringFromAny(mapFromAny(support["current_input"])["raw_text"]) ||
+		len(promptDelivered) != 1 ||
+		extractionStringFromAny(mapFromAny(promptDelivered[0])["final_text"]) != extractionStringFromAny(deliveredItem["final_text"]) ||
+		extractionStringFromAny(mapFromAny(promptDelivered[0])["source_ref"]) != extractionStringFromAny(deliveredItem["source_ref"]) {
+		t.Fatalf("supervisor prompt support packet mismatch: response=%#v prompt=%#v", support, promptSupport)
 	}
 }
 
@@ -404,27 +482,77 @@ func TestResponseExecutionContractDoesNotControlStoryComposition(t *testing.T) {
 	}
 }
 
-func TestOutputFidelity35CRendersMemoryExecutionItem(t *testing.T) {
+func TestOutputFidelity36FVisibleGuideOmitsRefsWhileTraceRetainsThem(t *testing.T) {
 	const memoryRef = "memory:output-fidelity-35c:77"
-	contract := map[string]any{
-		"active": true,
-		"must_preserve": map[string]any{
-			"items": []map[string]any{{
-				"instruction": "Preserve the continuity facts carried by the delivered long-term-memory items.",
-				"source_refs": []string{memoryRef},
-			}},
-		},
-		"must_respond":    map[string]any{"items": []map[string]any{}},
-		"must_account":    map[string]any{"items": []map[string]any{}},
-		"must_not_assert": map[string]any{"items": []map[string]any{}},
-		"source_refs": map[string]any{
-			"memory": []string{memoryRef},
-			"all":    []string{memoryRef},
+	result := map[string]any{
+		"directive": map[string]any{
+			"supervisor_scene_proposal": map[string]any{
+				"fidelity_warnings": []map[string]any{
+					{"text": "Preserve the delivered recollection.", "source_refs": []string{memoryRef}},
+				},
+			},
 		},
 	}
-	rendered := formatResponseExecutionFidelityGuidance(contract)
-	if !strings.Contains(rendered, "delivered long-term-memory items") || !strings.Contains(rendered, memoryRef) {
-		t.Fatalf("memory execution item was attributed in lineage but omitted from guide text: %q", rendered)
+	plan := buildPrepareTurnPayloadApplicationPlan("", "", "", "", true, false, 0, 0, 3000, supervisorSceneProposalGuidanceItems(result), "applied")
+	lane := outputFidelity36FFindLane(plan, "output_guidance")
+	visible := extractionStringFromAny(lane["text"])
+	if !strings.Contains(visible, "Preserve the delivered recollection.") || strings.Contains(visible, memoryRef) {
+		t.Fatalf("visible guide text leaked or omitted source support: %q", visible)
+	}
+	traceItems := outputFidelityLineageSlice(mapFromAny(plan["guidance_application_trace"])["items"])
+	if len(traceItems) != 1 || !reflect.DeepEqual(stringSliceFromAny(mapFromAny(traceItems[0])["source_refs"]), []string{memoryRef}) {
+		t.Fatalf("structured trace lost exact source ref: %#v", traceItems)
+	}
+}
+
+func TestOutputFidelity36FOversizedGuidanceDoesNotBlockLaterSmallItem(t *testing.T) {
+	items := []prepareTurnGuidanceItem{
+		{Key: "oversized", Text: strings.Repeat("x", 200), SourceRefs: []string{"input:latest"}},
+		{Key: "small", Text: "optional", SourceRefs: []string{"input:latest"}},
+	}
+	plan := buildPrepareTurnPayloadApplicationPlan("", "", "", "", true, false, 0, 0, 20, items, "applied")
+	trace := mapFromAny(plan["guidance_application_trace"])
+	traceItems := outputFidelityLineageSlice(trace["items"])
+	if intFromAny(trace["applied_count"], 0) != 1 ||
+		intFromAny(trace["deferred_count"], 0) != 1 ||
+		len(traceItems) != 2 ||
+		mapFromAny(traceItems[0])["status"] != "deferred" ||
+		mapFromAny(traceItems[1])["status"] != "applied" ||
+		extractionStringFromAny(trace["final_text"]) != "optional" {
+		t.Fatalf("item-by-item guidance packing failed: %#v", trace)
+	}
+}
+
+func TestOutputFidelity36FManyHostRefsDoNotConsumeVisibleNarrativeBudget(t *testing.T) {
+	hostRefs := make([]string, 0, 500)
+	allRefs := []string{"input:latest", "memory:delivered"}
+	for index := 0; index < 500; index++ {
+		ref := fmt.Sprintf("system:host:%d", index)
+		hostRefs = append(hostRefs, ref)
+		allRefs = append(allRefs, ref)
+	}
+	pack := supervisorBoundaryTestPack("weak")
+	contract := mapFromAny(pack["response_execution_contract"])
+	contract["source_refs"] = map[string]any{
+		"all":           allRefs,
+		"current_input": []string{"input:latest"},
+		"native_system": hostRefs,
+		"memory":        []string{"memory:delivered"},
+	}
+	if ready, reason := supervisorExecutionContractReady(pack); !ready {
+		t.Fatalf("many Host refs blocked supervisor readiness: %s", reason)
+	}
+	result, _ := buildBoundedSupervisorResult(map[string]any{
+		"supervisor_scene_proposal": map[string]any{
+			"expression_hints": []any{
+				map[string]any{"kind": "portrayal", "text": "Keep the current request perceptible.", "source_refs": []any{"input:latest"}},
+			},
+		},
+	}, pack)
+	plan := buildPrepareTurnPayloadApplicationPlan("", "", "", "", true, false, 0, 0, 3000, supervisorSceneProposalGuidanceItems(result), "applied")
+	lane := outputFidelity36FFindLane(plan, "output_guidance")
+	if !boolFromAny(lane["applied"]) || strings.Contains(extractionStringFromAny(lane["text"]), "system:host:") {
+		t.Fatalf("Host ref repetition consumed or leaked into visible guide: %#v", lane)
 	}
 }
 
@@ -467,16 +595,17 @@ func TestOutputFidelity35CInjectionDisabledHasZeroGuideWork(t *testing.T) {
 	}
 }
 
-func TestOutputFidelity35CZeroOrInsufficientBudgetDoesNotCallSupervisor(t *testing.T) {
+func TestOutputFidelity36FZeroBudgetSkipsButPositiveBudgetDoesNotPreflightSkip(t *testing.T) {
 	for _, testCase := range []struct {
 		name               string
 		budget             int
 		wantEligibility    string
 		wantTraceItemCount int
 		wantEvaluation     string
+		wantCalls          int64
 	}{
-		{name: "zero", budget: 0, wantEligibility: "budget_disabled", wantTraceItemCount: 0, wantEvaluation: "not_applicable_budget_disabled"},
-		{name: "insufficient", budget: 1, wantEligibility: "eligible", wantTraceItemCount: 1, wantEvaluation: "not_applied_no_guidance_item"},
+		{name: "zero", budget: 0, wantEligibility: "budget_disabled", wantTraceItemCount: 0, wantEvaluation: "not_applicable_budget_disabled", wantCalls: 0},
+		{name: "positive_tiny", budget: 1, wantEligibility: "eligible", wantTraceItemCount: 1, wantEvaluation: "not_applied_no_guidance_item", wantCalls: 1},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			var supervisorCalls atomic.Int64
@@ -502,8 +631,8 @@ func TestOutputFidelity35CZeroOrInsufficientBudgetDoesNotCallSupervisor(t *testi
 			if evaluation["status"] != testCase.wantEvaluation {
 				t.Errorf("budget %d evaluation = %#v", testCase.budget, evaluation)
 			}
-			if got := supervisorCalls.Load(); got != 0 {
-				t.Fatalf("budget %d supervisor calls = %d, want 0", testCase.budget, got)
+			if got := supervisorCalls.Load(); got != testCase.wantCalls {
+				t.Fatalf("budget %d supervisor calls = %d, want %d", testCase.budget, got, testCase.wantCalls)
 			}
 		})
 	}

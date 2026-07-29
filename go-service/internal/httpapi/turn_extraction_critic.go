@@ -507,7 +507,7 @@ func readSupervisorSystemPrompt(configuredDir string) (string, string) {
 			return string(data), path
 		}
 	}
-	return "You are Archive Center's memory fidelity reviewer. Use guide_focus only as an optional rudder for supported memory emphasis. Every item must cite at least one exact response_execution_contract.source_refs.memory reference; current-input or native-system references cannot support an item alone. Never prescribe story structure, pacing, scenes, transitions, endings, or next actions. Return only valid JSON matching supervisor_scene_proposal with fidelity_warnings and portrayal_notes.", "fallback_builtin"
+	return "You are Archive Center's source-backed narrative support reviewer. Return only valid JSON matching supervisor_scene_proposal.v3 with fidelity_warnings and typed expression_hints. Fidelity warnings and callbacks require delivered-memory support; portrayal, pacing, scene emphasis, and reversible options require current-input or delivered-memory support. Every item is optional, proposal-only, non-canonical, and cannot decide user actions, new facts or knowledge, relationship changes, event closure, or scene jumps.", "fallback_builtin"
 }
 
 func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, previewPass map[string]any, archiveLedger ...map[string]any) string {
