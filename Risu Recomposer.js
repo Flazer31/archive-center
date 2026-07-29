@@ -2,32 +2,20 @@
 //@display-name Risu Recomposer
 //@author recomposer
 //@api 3.0
-//@version 0.1.22
+//@version 0.1.25
 
 
 /*
- * Risu Recomposer — MDASH/Fusion/Fugu output recomposition plugin.
- *
- * Product: read-only RisuAI context is fused into one bounded turn contract
- * before the main LLM runs. Its response (draft_zero) is then split into
- * ordered segments (protected / inspect_only / mutable), multiple specialist
- * AI roles rewrite each mutable segment, a Fusion Director ranks candidates,
- * a Fusion Composer AI integrates everything into one final RP response, and
- * a JS Verifier checks structural integrity before returning.
- *
- * No string patch / find / replace / fuzzy matching / anchor diff system.
- * Final output is assembled by walking the original ordered segment list and
- * substituting Composer results for mutable segments.
- *
- * Single candidate schema, single composer schema, single trace schema,
- * single Director scoring function, single callRole path for all roles.
+ * Standalone RisuAI scene recomposer: turn contract -> scene variants ->
+ * Semantic Judge -> Fusion Plan -> Composer -> structural verifier -> Semantic Prover. Protected and inspect-only
+ * segments are preserved while mutable prose is rebuilt.
  */
 (async () => {
   "use strict";
 
   const PLUGIN_ID = "risu_recomposer";
-  const VERSION = "0.1.22";
-  const BUILD_MARKER = "MATERIAL-RECOMPOSITION-GATE-20260728";
+  const VERSION = "0.1.27";
+  const BUILD_MARKER = "STRUCTURED-RESPONSE-RECOVERY-20260729";
   const LOG_PREFIX = "[Recomposer]";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings_v1`;
   const TRACE_KEY = `${PLUGIN_ID}_trace_v1`;
@@ -52,14 +40,14 @@
     quality: 4,
   });
   const OUTPUT_HTTP_ATTEMPT_BUDGET = Object.freeze({
-    fast: 4,
-    balanced: 5,
-    quality: 7,
+    fast: 7,
+    balanced: 9,
+    quality: 12,
   });
   const OUTPUT_SPECIALIST_LIMIT = Object.freeze({
     fast: 2,
     balanced: 3,
-    quality: 5,
+    quality: 3,
   });
 
   /* ── Providers ─────────────────────────────────────────── */
@@ -84,18 +72,20 @@
 
   /* ── Role Registry ─────────────────────────────────────── */
 
-  const ROLE_PROMPT_VERSION = "rp-rewrite-contract.v3";
-  const PREVIOUS_ROLE_PROMPT_VERSIONS = Object.freeze(["rp-rewrite-contract.v2"]);
+  const ROLE_PROMPT_VERSION = "rp-rewrite-contract.v6";
+  const PREVIOUS_ROLE_PROMPT_VERSIONS = Object.freeze([
+    "rp-rewrite-contract.v2",
+    "rp-rewrite-contract.v3",
+    "rp-rewrite-contract.v4",
+    "rp-rewrite-contract.v5",
+  ]);
   const LEGACY_BUILTIN_PROMPT_DIGESTS = Object.freeze({
     input_canon_secret_planner: "b4faf92a",
     input_character_relationship_planner: "0ff28e3d",
     input_scene_continuity_planner: "e1dd440c",
-    secret_pov_guard: "0208f796",
     character_reader: "4eda8179",
     plot_continuity_reader: "040b89c9",
-    world_reader: "bec12239",
     style_reader: "5e5ef9ba",
-    agency_meta_guard: "bfc4daf4",
     whole_scene_composer: "875ee4f4",
   });
 
@@ -135,8 +125,8 @@
       "",
       "Mission:",
       "- Act as a decisive revision worker, not a critic, advisor, auditor, or summarizer.",
-      "- Read the complete ordered response and runtime context, then produce full replacement candidates for mutable segments that your lane can materially improve.",
-      "- When a lane defect affects most of a segment, reconstruct the segment instead of making a timid phrase substitution.",
+      "- Read the complete ordered response, Draft Ledger, and runtime context, then produce one complete scene-wide rewrite candidate.",
+      "- Rebuild every substantive mutable segment through your lane. The candidate must remain a single continuous version of the same turn.",
       "",
       "You own only:",
       ...owns.map((item) => `- ${item}`),
@@ -152,15 +142,16 @@
       "- Preserve established events, names, factual outcomes, and the user's last action.",
       "- Preserve the response language unless the binding turn contract or latest user input explicitly requires another output language. Only the User Agency / Meta Artifact lane may repair that violation.",
       "- Use runtime context as evidence. Do not invent canon, backstory, relationships, knowledge, or future events.",
-      "- Return the complete replacement text for each changed segment, not a patch, note, explanation, or list of suggestions.",
-      "- Do not emit an identical or cosmetic-only candidate. If this lane has no material improvement, return candidates: [].",
+      "- Return complete replacement text for every substantive mutable segment, not patches, advice, diagnostics, or a list of suggestions.",
+      "- Record the Draft Ledger units retained, evidence used, and any proposed factual addition. Do not conceal additions inside attractive prose.",
+      "- Do not emit an identical or cosmetic-only candidate. If this lane cannot produce a material scene-wide improvement, return candidates: [].",
       "",
-      "Confidence contract:",
-      "- confidence estimates expected net quality gain supported by the supplied evidence.",
+      "Trace confidence:",
+      "- confidence is trace metadata describing the model's own estimate. It is not an authority or automatic application score.",
       "- 0.90-1.00: major, well-grounded correction; 0.70-0.89: clear substantial improvement; 0.55-0.69: useful focused improvement.",
       "- Do not emit a candidate below 0.55.",
       "",
-      "Return one compact JSON object matching the requested candidate schema. Output JSON only.",
+      "Return one compact JSON object matching scene_rewrite_candidates.v1. Output JSON only.",
     ].join("\n");
   }
 
@@ -210,41 +201,16 @@
         "Mark uncertain timing, location, ownership, or causality instead of silently choosing an answer.",
       ]
     ),
-    secret_pov_guard: specialistPrompt(
-      "Secret / POV / Identity",
-      [
-        "secret and private-knowledge leakage",
-        "POV scope and narrator access violations",
-        "identity, alias, disguise, reveal-state, and recognition continuity",
-        "characters acting on information they have not learned",
-      ],
-      [
-        "user agency or model/meta artifact cleanup",
-        "general plot repair, world-rule enrichment, or stylistic polishing",
-        "changing character voice except where required to remove leaked knowledge",
-      ],
-      [
-        "A character states, recalls, recognizes, or acts on a fact outside their evidenced knowledge scope.",
-        "Narration presents another person's private thought or hidden motive as directly known from a limited POV.",
-        "An alias, disguise, secret identity, or prior encounter is forgotten, prematurely revealed, or treated as separate without evidence.",
-        "The prose converts writer-only context into dialogue, certainty, or visible character knowledge.",
-      ],
-      [
-        "Replace leaked certainty with the character's available perception, inference, suspicion, error, question, or non-recognition.",
-        "Preserve the secret for the reader when useful, but never transfer it to an unauthorized character.",
-        "Maintain prior encounter and recognition history without forcing a reveal that has not occurred.",
-      ]
-    ),
     character_reader: specialistPrompt(
-      "Character / Relationship / Emotion",
+      "Character / Relationship",
       [
         "character-specific voice, vocabulary, register, rhythm, and mannerisms",
         "emotion expressed through behavior, speech, restraint, and subtext",
         "relationship stance and power dynamics visible in the interaction",
-        "persona consistency across the current scene and recent chat",
+        "persona and recognition continuity across the current scene and recent chat",
       ],
       [
-        "secret knowledge, identity reveal policy, plot causality, or world rules",
+        "deciding secret/reveal policy, plot causality, or world rules",
         "generic prose polishing that does not strengthen characterization",
         "deciding the user's unexpressed thoughts, feelings, dialogue, or action",
       ],
@@ -261,16 +227,18 @@
       ]
     ),
     plot_continuity_reader: specialistPrompt(
-      "Plot / Causality / Scene Flow",
+      "Plot / World",
       [
         "causal sequence and action-order continuity",
         "object, participant, location, and physical-state continuity",
         "open threads, promises, immediate consequences, and scene progression",
         "transitions needed to connect existing beats without changing their meaning",
+        "active lore, institutions, customs, factions, geography, technology, magic, resources, and physical constraints",
+        "setting-specific social, legal, economic, and material plausibility",
       ],
       [
-        "inventing world facts, changing character voice, or polishing style for its own sake",
-        "secret and identity policy except when reporting an observable continuity break",
+        "inventing canon, changing character voice, or polishing style for its own sake",
+        "deciding secret, identity, POV, or user-agency policy",
         "overriding the user's choice or forcing a new plot direction",
       ],
       [
@@ -278,50 +246,27 @@
         "A participant, object, injury, location, time, or objective appears, disappears, or changes without a bridge.",
         "The response forgets an active promise, consequence, question, or obstacle that the current beat must acknowledge.",
         "Paragraphs contain individually plausible events but do not form a coherent progression.",
+        "An action, ability, object, rank, distance, institution, or custom contradicts active lore or physical constraints.",
       ],
       [
         "Restore cause and effect with concrete bridging action, acknowledgement, or reordered narration.",
         "Carry forward active consequences and open threads while leaving unresolved choices open for later turns.",
+        "Replace generic or impossible details with grounded setting-specific action and consequence supported by active context.",
         "Do not add a new twist merely to make the scene more dramatic.",
       ]
     ),
-    world_reader: specialistPrompt(
-      "World / Lore / Physical Logic",
-      [
-        "active lore, institutions, customs, factions, geography, and material conditions",
-        "magic, technology, ability, item, and resource constraints",
-        "social, legal, economic, and physical plausibility inside the established setting",
-        "world-specific grounding details supported by active context",
-      ],
-      [
-        "character voice, secret reveal policy, user agency, or general prose polishing",
-        "treating candidate or unknown-activation lore as binding canon",
-        "adding decorative lore that does not improve the current scene",
-      ],
-      [
-        "An action, ability, object, custom, law, rank, distance, or institution contradicts active lore.",
-        "The scene uses modern assumptions, generic fantasy logic, or impossible logistics where setting-specific rules apply.",
-        "Characters ignore an immediate environmental, social, legal, or material constraint.",
-        "The scene lacks a setting-specific anchor that active lore clearly supplies.",
-      ],
-      [
-        "Replace impossible or generic elements with setting-consistent actions and concrete details.",
-        "Prefer the smallest coherent world correction that preserves the intended dramatic beat.",
-        "When lore activation is uncertain, avoid asserting it as fact and leave the original fact pattern intact.",
-      ]
-    ),
     style_reader: specialistPrompt(
-      "Style / Rhythm / Prose",
+      "Style / Dramatic Prose",
       [
         "sentence rhythm, paragraph movement, repetition, clarity, specificity, and transitions",
         "mechanical phrasing, vague abstraction, redundant explanation, and AI-like prose habits",
         "sensory and image precision that preserves the scene's established tone",
-        "prose-level escalation, emphasis, and ending cadence",
+        "dramatic pressure, subtext, prose-level escalation, emphasis, and ending cadence",
       ],
       [
         "changing facts, events, POV knowledge, identity state, user agency, or relationship state",
         "homogenizing distinctive character dialogue into a generic literary voice",
-        "adding plot, lore, exposition, or emotional conclusions not present in the source",
+        "adding unsupported plot, lore, exposition, or emotional conclusions",
       ],
       [
         "Repeated words, sentence openings, paragraph shapes, explanations, or emotional beats flatten the scene.",
@@ -331,44 +276,36 @@
       ],
       [
         "Rewrite decisively for varied cadence, concrete verbs, precise images, and clean paragraph momentum.",
-        "Remove redundant interpretation and stock AI phrasing while preserving the scene's content density.",
+        "Remove redundant interpretation and stock AI phrasing while preserving every nonredundant scene beat.",
+        "Strengthen dramatic pressure and subtext without manufacturing a new event or conclusion.",
         "Keep dialogue character-specific and preserve meaningful repetition used for tension or motif.",
       ]
     ),
-    agency_meta_guard: specialistPrompt(
-      "User Agency / Meta Artifact / Output Contract",
-      [
-        "the model deciding the user's unexpressed thought, emotion, speech, consent, or next action",
-        "model reasoning, prompt analysis, approval labels, response headers, OOC leakage, and instruction residue",
-        "mechanical summaries, translator commentary, disclaimers, and assistant self-reference",
-        "explicit user requirements for output language, response framing, and non-diegetic format",
-        "immersive replacement of contaminated prose with scene-native narration",
-      ],
-      [
-        "secret or identity policy, plot invention, world-rule repair, or broad stylistic polishing",
-        "removing legitimate in-world documents, interfaces, lists, or formatting",
-        "asking the user to choose an action as a substitute for advancing the scene",
-      ],
-      [
-        "The response exposes analysis such as Thoughts, Processing, Approved, Response, instructions, or planning language.",
-        "Narration asserts what the user character thinks, feels, agrees to, says, or does beyond the user's supplied action.",
-        "The prose contains assistant disclaimers, moralizing, translation commentary, prompt language, or a mechanical recap.",
-        "The draft uses a language or response framing that directly contradicts the latest user's explicit output requirement.",
-        "A closing line hands authorship back with a generic question instead of ending on an active scene beat.",
-      ],
-      [
-        "Remove the artifact completely and write the missing space as immersive, in-scene prose rather than merely deleting a header.",
-        "Replace user-controlled interiority or action with observable pressure, NPC behavior, environmental change, or an open consequence.",
-        "When the user explicitly requires an output language or framing, rewrite the complete affected segment to satisfy it rather than preserving the draft's violation.",
-        "Preserve legitimate diegetic formatting and never erase protected or inspect-only structures.",
-      ]
-    ),
+    semantic_judge: [
+      "You are the Semantic Judge for competing scene-wide roleplay rewrites.",
+      "Do not write prose and do not choose by model confidence, eloquence, or length.",
+      "Compare every candidate against draft_zero, the Draft Ledger, runtime evidence, and the binding output contract.",
+      "Judge facts and claims: preserved or missing beats, unsupported additions, weaker elements, grounded gains, and conflicts.",
+      "Hard violations are secret_leak, pov_violation, identity_continuity, agency_takeover, meta_artifact, and output_contract_violation.",
+      "A candidate with a hard violation may be accept_with_constraints only when that exact element is prohibited for Composer; otherwise reject it.",
+      "Accept only evidence-grounded elements; an entire candidate may be accept, accept_with_constraints, or reject.",
+      "Return one compact semantic_judgment.v1 JSON object only. Never return revised narration, markdown, advice, or reasoning.",
+    ].join("\n"),
+    semantic_prover: [
+      "You are the final Semantic Prover for a composed roleplay response.",
+      "Audit only the final Composer output against the Draft Ledger, original turn contract, Semantic Judgment, Fusion Plan, and runtime evidence.",
+      "Check every required fact, scene beat, hard constraint, secret/reveal boundary, identity state, POV boundary, user agency boundary, and output contract.",
+      "Detect unsupported additions, missing or contradicted ledger units, meta artifacts, language violations, and turn-boundary expansion.",
+      "Every preserved fact or beat must include a short exact evidence_quote copied from the final Composer output.",
+      "Do not reward style, length, confidence, or eloquence. Do not rewrite prose.",
+      "Return semantic_proof.v1 JSON only. A pass is valid only when every required ledger unit is covered and no hard violation or unsupported addition remains.",
+    ].join("\n"),
     whole_scene_composer: [
       "You are the Whole-Scene Fusion Composer for a roleplay response.",
       "",
       "Mission:",
-      "- Produce the final version of every mutable segment by reconstructing the draft from the strongest specialist evidence.",
-      "- You are a synthesis writer, not a judge report, critic, summarizer, or candidate selector that merely copies one answer.",
+      "- Produce the final version of every mutable segment from the Draft Ledger, accepted candidate elements, Semantic Judgment, and fusion_plan.v1.",
+      "- You are the sole final prose writer, not a judge report, critic, summarizer, or candidate selector.",
       "- The result must read as one continuous scene with a single narrative voice, coherent causality, and deliberate prose.",
       "",
       "Authority order:",
@@ -378,11 +315,10 @@
       "4. Rhythm, clarity, specificity, transitions, imagery, and ending cadence.",
       "",
       "Composition contract:",
-      "- Compare each original segment with all candidates and the Director's consensus, complementary, conflict, and gap records.",
-      "- Scores and confidence are evidence, not commands. Reject a high-scoring candidate if it breaks a higher-priority constraint.",
-      "- For complementary candidates, synthesize their compatible strengths into a new segment. Do not concatenate sentences from different candidates.",
-      "- For conflicts, preserve the higher-priority constraint and rebuild the prose so the lower-priority strength survives where compatible.",
-      "- For gaps, improve the original directly without inventing canon, secrets, relationships, actions, or outcomes.",
+      "- Follow fusion_plan.v1. Use accepted elements and permitted additions; exclude rejected elements, prohibited additions, and hard violations.",
+      "- Treat model confidence and former Director scores as non-authoritative trace metadata.",
+      "- Synthesize consensus and complementary claims into new prose. Do not concatenate sentences from different candidates.",
+      "- Resolve conflicts exactly as the plan states while preserving required facts, beats, and constraints.",
       "- Remove analysis, prompt residue, approval labels, mechanical headers, and assistant commentary from mutable prose. Replace contaminated space with scene-native writing.",
       "- Preserve established events, names, required details, the user's last action, and narrative perspective, but do not preserve weak wording, sentence architecture, paragraph rhythm, generic imagery, or flat transitions.",
       "- Preserve the draft language only when it does not conflict with the binding turn contract or latest explicit user requirement.",
@@ -428,52 +364,41 @@
       cost_tier: "standard",
     },
     {
-      role_id: "secret_pov_guard",
-      label: "Secret / POV Constraint Ledger",
-      purpose: "Detect leaks of secrets, private thoughts, hidden narrator knowledge, system/meta text, or information the current POV character should not know. Rewrite the segment to enforce knowledge boundaries.",
-      priority: 10,
-      default_prompt: ROLE_PROMPTS.secret_pov_guard,
-      cost_tier: "standard",
-    },
-    {
       role_id: "character_reader",
-      label: "Character / Voice",
-      purpose: "Inspect and rewrite for character voice, emotional posture, knowledge boundary, and persona consistency.",
+      label: "Character / Relationship Rewriter",
+      purpose: "Write one complete scene variant centered on character voice, emotion, relationship dynamics, recognition, and subtext.",
       priority: 9,
+      stage: "output",
       default_prompt: ROLE_PROMPTS.character_reader,
       cost_tier: "standard",
     },
     {
       role_id: "plot_continuity_reader",
-      label: "Plot / Continuity",
-      purpose: "Inspect and rewrite for causality, scene flow, action order, and unresolved promise continuity.",
+      label: "Plot / World Rewriter",
+      purpose: "Write one complete scene variant centered on causality, scene progression, active lore, world constraints, and physical continuity.",
       priority: 8,
+      stage: "output",
       default_prompt: ROLE_PROMPTS.plot_continuity_reader,
       cost_tier: "standard",
     },
     {
-      role_id: "world_reader",
-      label: "World / Scene Logic",
-      purpose: "Inspect and rewrite for local world rules, social laws, magic/technology constraints, geography, and faction logic.",
-      priority: 7,
-      default_prompt: ROLE_PROMPTS.world_reader,
-      cost_tier: "standard",
-    },
-    {
       role_id: "style_reader",
-      label: "Style / Rhythm",
-      purpose: "Inspect and rewrite for prose rhythm, repetition, awkward phrasing, tone, and transitions.",
+      label: "Style / Dramatic Rewriter",
+      purpose: "Write one complete scene variant centered on prose rhythm, imagery, subtext, dramatic pressure, transitions, and cadence.",
       priority: 6,
+      stage: "output",
       default_prompt: ROLE_PROMPTS.style_reader,
       cost_tier: "standard",
     },
     {
-      role_id: "agency_meta_guard",
-      label: "Agency / Meta Artifact",
-      purpose: "Detect and remove user agency takeover, meta text, model self-commentary, translator-like phrasing, and mechanical artifacts.",
-      priority: 7,
-      default_prompt: ROLE_PROMPTS.agency_meta_guard,
-      cost_tier: "standard",
+      role_id: "semantic_judge",
+      label: "Semantic Judge",
+      purpose: "Compare complete scene variants against the Draft Ledger and runtime evidence, reject unsupported or violating elements, and produce semantic_judgment.v1.",
+      priority: 20,
+      stage: "judge",
+      is_judge: true,
+      default_prompt: ROLE_PROMPTS.semantic_judge,
+      cost_tier: "premium",
     },
     {
       role_id: "whole_scene_composer",
@@ -484,10 +409,21 @@
       default_prompt: ROLE_PROMPTS.whole_scene_composer,
       cost_tier: "premium",
     },
+    {
+      role_id: "semantic_prover",
+      label: "Final Semantic Prover",
+      purpose: "Verify the final Composer output against facts, beats, constraints, secrets, POV, identity, agency, and output contract before return.",
+      priority: 4,
+      stage: "prover",
+      is_prover: true,
+      default_prompt: ROLE_PROMPTS.semantic_prover,
+      cost_tier: "premium",
+    },
   ];
 
   const COMPOSER_ROLE_ID = "whole_scene_composer";
-  const DIRECTOR_APPLY_SCORE_MIN = 15;
+  const JUDGE_ROLE_ID = "semantic_judge";
+  const PROVER_ROLE_ID = "semantic_prover";
 
   /* ── R1: Semantic Issue Groups ────────────────────────── */
 
@@ -510,35 +446,23 @@
   ]);
 
   const ROLE_ALLOWED_ISSUES = Object.freeze({
-    secret_pov_guard: Object.freeze(["secret_leak", "pov_violation", "identity_continuity"]),
-    character_reader: Object.freeze(["character_voice", "emotion"]),
-    plot_continuity_reader: Object.freeze(["plot_continuity", "scene_logic"]),
-    world_reader: Object.freeze(["world_rule", "scene_logic"]),
-    style_reader: Object.freeze(["repetition", "rhythm", "transition", "prose_clarity"]),
-    agency_meta_guard: Object.freeze(["output_contract_violation", "agency_takeover", "meta_artifact"]),
+    character_reader: Object.freeze([
+      "character_voice", "emotion", "identity_continuity", "agency_takeover",
+      "meta_artifact", "output_contract_violation",
+    ]),
+    plot_continuity_reader: Object.freeze([
+      "plot_continuity", "scene_logic", "world_rule",
+      "meta_artifact", "output_contract_violation",
+    ]),
+    style_reader: Object.freeze([
+      "repetition", "rhythm", "transition", "prose_clarity",
+      "meta_artifact", "output_contract_violation",
+    ]),
   });
 
   function roleAllowedIssues(roleId) {
     return ROLE_ALLOWED_ISSUES[safeString(roleId)] || ISSUE_GROUPS;
   }
-
-  const ISSUE_PRIORITY = Object.freeze({
-    secret_leak: 100,
-    output_contract_violation: 99,
-    pov_violation: 98,
-    identity_continuity: 97,
-    agency_takeover: 96,
-    meta_artifact: 95,
-    plot_continuity: 85,
-    world_rule: 75,
-    scene_logic: 70,
-    character_voice: 65,
-    emotion: 60,
-    repetition: 40,
-    rhythm: 35,
-    transition: 30,
-    prose_clarity: 25,
-  });
 
   const TAG_ISSUE_MAP = Object.freeze({
     pov: "pov_violation",
@@ -581,34 +505,25 @@
     return Array.from(result);
   }
 
-  function maxIssuePriority(issues) {
-    let max = 0;
-    (issues || []).forEach((iss) => {
-      const p = ISSUE_PRIORITY[iss] || 0;
-      if (p > max) max = p;
-    });
-    return max;
-  }
-
   /* ── Presets ───────────────────────────────────────────── */
 
   const PRESETS = Object.freeze([
     {
       id: "fast",
-      label: "Fast (cheap models, core roles)",
-      roles: ["character_reader", "style_reader", "whole_scene_composer"],
+      label: "Fast (2 rewrites + Judge + Composer + Prover)",
+      roles: ["character_reader", "style_reader", "semantic_judge", "whole_scene_composer", "semantic_prover"],
       deadline_ms: 60000,
     },
     {
       id: "balanced",
-      label: "Balanced (core + continuity + composer)",
-      roles: ["secret_pov_guard", "character_reader", "plot_continuity_reader", "style_reader", "whole_scene_composer"],
+      label: "Balanced (3 rewrites + Judge + Composer + Prover)",
+      roles: ["character_reader", "plot_continuity_reader", "style_reader", "semantic_judge", "whole_scene_composer", "semantic_prover"],
       deadline_ms: 120000,
     },
     {
       id: "quality",
-      label: "Quality (adaptive up to 4 roles + composer)",
-      roles: ["secret_pov_guard", "character_reader", "plot_continuity_reader", "world_reader", "style_reader", "agency_meta_guard", "whole_scene_composer"],
+      label: "Quality (3 rewrites + Judge + Composer + Prover)",
+      roles: ["character_reader", "plot_continuity_reader", "style_reader", "semantic_judge", "whole_scene_composer", "semantic_prover"],
       deadline_ms: 180000,
     },
   ]);
@@ -750,6 +665,7 @@
   function defaultRoleProfile(roleId) {
     const role = DEFAULT_ROLES.find((r) => r.role_id === roleId);
     const isInputPlanner = !!(role && role.is_input_planner);
+    const isProofRole = !!(role && (role.is_judge || role.is_prover));
     return {
       role_id: roleId,
       enabled: true,
@@ -757,9 +673,9 @@
       endpoint: "",
       api_key_ref: "",
       model: "",
-      temperature: role && role.is_composer ? 0.4 : (isInputPlanner ? 0.1 : 0.3),
-      max_output_tokens: role && role.is_composer ? 4096 : (isInputPlanner ? 1800 : 2048),
-      timeout_ms: role && role.is_composer ? 60000 : 45000,
+      temperature: role && role.is_composer ? 0.4 : (isProofRole ? 0 : (isInputPlanner ? 0.1 : 0.3)),
+      max_output_tokens: role && (role.is_composer || isProofRole) ? 4096 : (isInputPlanner ? 1800 : 2048),
+      timeout_ms: role && (role.is_composer || isProofRole) ? 60000 : 45000,
       system_prompt: role ? role.default_prompt : "",
       fallback_provider: "",
       fallback_endpoint: "",
@@ -794,6 +710,8 @@
         priority: r.priority,
         stage: r.stage || "output",
         is_input_planner: !!r.is_input_planner,
+        is_judge: !!r.is_judge,
+        is_prover: !!r.is_prover,
         is_composer: !!r.is_composer,
         default_prompt: r.default_prompt,
       })),
@@ -841,11 +759,34 @@
     merged.context_char_limit = clampNumber(input.context_char_limit, 500, 50000, 6000);
     merged.trace_enabled = input.trace_enabled !== false;
     if (input.role_profiles && typeof input.role_profiles === "object") {
-      Object.keys(input.role_profiles).forEach((roleId) => {
-        if (!merged.role_profiles[roleId]) {
-          merged.role_profiles[roleId] = defaultRoleProfile(roleId);
-        }
-        const src = input.role_profiles[roleId];
+      const sourceProfiles = Object.assign({}, input.role_profiles);
+      const legacyJudgeProfile = sourceProfiles.secret_pov_guard || sourceProfiles.agency_meta_guard;
+      if (!sourceProfiles[JUDGE_ROLE_ID] && legacyJudgeProfile) {
+        sourceProfiles[JUDGE_ROLE_ID] = Object.assign({}, legacyJudgeProfile, {
+          role_id: JUDGE_ROLE_ID,
+          system_prompt: ROLE_PROMPTS.semantic_judge,
+          prompt_contract_version: ROLE_PROMPT_VERSION,
+        });
+      }
+      const proverSourceProfile = sourceProfiles[JUDGE_ROLE_ID] || legacyJudgeProfile;
+      if (!sourceProfiles[PROVER_ROLE_ID] && proverSourceProfile) {
+        sourceProfiles[PROVER_ROLE_ID] = Object.assign({}, proverSourceProfile, {
+          role_id: PROVER_ROLE_ID,
+          temperature: 0,
+          system_prompt: ROLE_PROMPTS.semantic_prover,
+          prompt_contract_version: ROLE_PROMPT_VERSION,
+        });
+      }
+      if (!sourceProfiles.plot_continuity_reader && sourceProfiles.world_reader) {
+        sourceProfiles.plot_continuity_reader = Object.assign({}, sourceProfiles.world_reader, {
+          role_id: "plot_continuity_reader",
+          system_prompt: ROLE_PROMPTS.plot_continuity_reader,
+          prompt_contract_version: ROLE_PROMPT_VERSION,
+        });
+      }
+      Object.keys(merged.role_profiles).forEach((roleId) => {
+        const src = sourceProfiles[roleId];
+        if (!src || typeof src !== "object") return;
         const dst = merged.role_profiles[roleId];
         Object.keys(dst).forEach((key) => {
           if (src[key] !== undefined) {
@@ -912,8 +853,50 @@
       streaming: { detected: false, reason: "" },
       roles: [],
       segments: { protected: 0, inspect_only: 0, mutable: 0 },
-      candidates: { total: 0, by_segment: {} },
-      composer: { used: false, status: "", elapsed_ms: 0 },
+      candidates: {
+        total: 0,
+        segment_variant_total: 0,
+        duplicate_scene_candidates: 0,
+        by_segment: {},
+      },
+      composer: {
+        used: false,
+        status: "",
+        elapsed_ms: 0,
+        semantic_retry: 0,
+        proof_repair_attempted: false,
+      },
+      semantic_judge: {
+        status: "not_run",
+        accepted_candidates: 0,
+        rejected_candidates: 0,
+        constrained_candidates: 0,
+        missing_facts: 0,
+        unsupported_additions: 0,
+        hard_violations: 0,
+      },
+      semantic_prover: {
+        status: "not_run",
+        verdict: "not_run",
+        attempts: 0,
+        repair_attempted: false,
+        facts_missing: 0,
+        facts_contradicted: 0,
+        beats_missing: 0,
+        constraints_violated: 0,
+        hard_violations: 0,
+        unsupported_additions: 0,
+        output_contract_failures: 0,
+        reason: "",
+      },
+      fusion_plan: {
+        status: "not_run",
+        accepted_elements: 0,
+        rejected_elements: 0,
+        consensus_claims: 0,
+        complementary_claims: 0,
+        conflicts: 0,
+      },
       router: { signals: [], selected: [], skipped: [] },
       scheduler: {
         completion_wait: false,
@@ -937,6 +920,7 @@
       },
       director_evidence: [],
       applied_evidence: [],
+      attempted_evidence: [],
       budget: {
         http_attempt_max: OUTPUT_HTTP_ATTEMPT_BUDGET.balanced,
         http_attempt_used: 0,
@@ -945,10 +929,44 @@
         input_attempt_used: 0,
         composer_attempt_reserved: 0,
         composer_attempt_used: 0,
+        judge_attempt_reserved: 0,
+        judge_attempt_used: 0,
+        prover_attempt_reserved: 0,
+        prover_attempt_used: 0,
         specialist_primary_remaining: 0,
       },
-      summary: { specialist_calls: 0, successful_roles: 0, candidate_count: 0, composer_state: "", changed_segment_count: 0, material_changed_segment_count: 0, unchanged_segment_count: 0, final_state: "", final_reason: "" },
-      final: { enhanced: false, reason: "" },
+      draft_ledger: {
+        schema: "draft_ledger.v1",
+        digest: "",
+        source_contract_id: "",
+        established_facts: 0,
+        scene_beats: 0,
+        unresolved_hooks: 0,
+        hard_constraints: 0,
+        protected_structures: 0,
+        unknown_semantics: [],
+      },
+      summary: {
+        specialist_calls: 0,
+        successful_roles: 0,
+        candidate_count: 0,
+        composer_state: "",
+        changed_segment_count: 0,
+        material_changed_segment_count: 0,
+        unchanged_segment_count: 0,
+        material_rewrite: false,
+        semantic_verified: "not_run",
+        quality_preferred: "not_run",
+        final_state: "",
+        final_reason: "",
+      },
+      final: {
+        enhanced: false,
+        material_rewrite: false,
+        semantic_verified: "not_run",
+        quality_preferred: "not_run",
+        reason: "",
+      },
       errors: [],
       timeline: [],
     };
@@ -960,6 +978,7 @@
       role_id: entry.role_id,
       stage: entry.stage || "output",
       provider: entry.provider,
+      endpoint_group: entry.endpoint_group || "",
       model: entry.model,
       status: entry.status,
       queued_at: entry.queued_at || entry.started_at,
@@ -1768,6 +1787,14 @@
         body.thinking = { type: "disabled" };
         return { family, applied: ["think", "thinking"] };
       }
+      if (family === "deepseek") {
+        if (provider === "ollama_compatible" && !isOllamaCloudEndpoint(profile && profile.endpoint)) {
+          body.think = false;
+          return { family, applied: ["think"] };
+        }
+        body.reasoning_effort = "none";
+        return { family, applied: ["reasoning_effort"] };
+      }
       if (family === "kimi") {
         if (provider === "ollama_compatible" && !isOllamaCloudEndpoint(profile && profile.endpoint)) {
           body.think = false;
@@ -2286,6 +2313,9 @@
         num_predict: profile.max_output_tokens,
       },
     };
+    if (profile.force_json_response && !(requestOptions && requestOptions.planner_tool)) {
+      body.format = "json";
+    }
     const reasoningInfo2 = applyReasoningAdapter("ollama_compatible", body, profile);
     const bodyResult2 = applyExtraBodySafe(body, extraBody, "ollama_compatible");
     body = bodyResult2.body;
@@ -3024,11 +3054,145 @@
     return next;
   }
 
+  function draftLedgerItems(contract, field, kind) {
+    return uniqueContractItems(asObject(contract)[field]).map((item) => {
+      const normalized = {
+        kind: safeString(kind),
+        text: safeString(item.text),
+        evidence_refs: uniqueList(arrayFromCollection(item.evidence_refs).map((ref) => safeString(ref))),
+        evidence_quote: safeString(item.evidence_quote),
+        status: "explicit_contract",
+      };
+      normalized.ledger_id = `ledger_${stableDigest(normalized)}`;
+      return normalized;
+    });
+  }
+
+  function uniqueDraftLedgerItems(items) {
+    const seen = new Set();
+    const result = [];
+    arrayFromCollection(items).forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      const key = safeString(item.ledger_id)
+        || stableDigest({
+          kind: item.kind,
+          text: item.text,
+          evidence_refs: item.evidence_refs,
+        });
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push(item);
+    });
+    return result;
+  }
+
+  function buildDraftLedger(draftZero, segments, turnContract) {
+    const contract = asObject(turnContract);
+    const establishedFacts = uniqueDraftLedgerItems(
+      draftLedgerItems(contract, "immutable_constraints", "established_fact")
+        .concat(draftLedgerItems(contract, "character_visible_facts", "character_visible_fact"))
+        .concat(draftLedgerItems(contract, "scene_state", "scene_state"))
+    );
+    const unresolvedHooks = draftLedgerItems(contract, "open_threads", "unresolved_hook");
+    const sceneBeats = uniqueDraftLedgerItems(
+      unresolvedHooks.concat(draftLedgerItems(contract, "turn_objectives", "turn_objective"))
+    );
+    const relationshipState = draftLedgerItems(
+      contract,
+      "relationship_and_emotion_state",
+      "relationship_state"
+    );
+    const speakerAndPov = draftLedgerItems(
+      contract,
+      "agency_and_pov_constraints",
+      "speaker_pov_constraint"
+    );
+    const secretsAndReveal = uniqueDraftLedgerItems(
+      draftLedgerItems(contract, "writer_only_secrets", "writer_only_secret")
+        .concat(draftLedgerItems(contract, "character_knowledge_scopes", "knowledge_scope"))
+        .concat(draftLedgerItems(contract, "identity_and_alias_map", "identity_reveal_state"))
+    );
+    const userOwnedDecisions = speakerAndPov.concat(
+      draftLedgerItems(contract, "turn_objectives", "user_turn_objective")
+        .filter((item) => item.evidence_refs.indexOf("payload_user_input") >= 0)
+    );
+    const hardConstraints = uniqueDraftLedgerItems(
+      establishedFacts
+        .concat(secretsAndReveal)
+        .concat(speakerAndPov)
+        .concat(draftLedgerItems(contract, "forbidden_regressions", "forbidden_regression"))
+    );
+    const protectedStructures = (segments || [])
+      .filter((segment) => segment.type !== "mutable")
+      .map((segment) => ({
+        segment_id: safeString(segment.id),
+        type: safeString(segment.type),
+        kind: safeString(segment.kind),
+        source_ref: `draft_zero:${safeString(segment.id)}`,
+        digest: stableDigest(safeString(segment.text)),
+        chars: safeString(segment.text).length,
+        status: "exact_preservation",
+      }));
+    const mutableSources = (segments || [])
+      .filter((segment) => segment.type === "mutable" && mutableCoreText(segment).trim())
+      .map((segment) => ({
+        segment_id: safeString(segment.id),
+        source_ref: `draft_zero:${safeString(segment.id)}`,
+        digest: stableDigest(mutableFullText(segment)),
+        chars: mutableFullText(segment).length,
+        paragraph_count: mutableCoreText(segment).split(/\n\s*\n/).filter((part) => part.trim()).length,
+        status: "explicit_draft_source",
+      }));
+    const unknownSemantics = ["character_intentions"];
+    if (!speakerAndPov.length) unknownSemantics.push("speaker_and_pov");
+    if (!secretsAndReveal.length) unknownSemantics.push("secrets_and_reveal");
+    const ledger = {
+      schema: "draft_ledger.v1",
+      source_contract_id: safeString(contract.contract_id),
+      source_contract_digest: safeString(contract.contract_digest),
+      draft_digest: stableDigest(safeString(draftZero)),
+      established_facts: establishedFacts,
+      scene_beats: sceneBeats,
+      unresolved_hooks: unresolvedHooks,
+      character_intentions: [],
+      relationship_state: relationshipState,
+      speaker_and_pov: speakerAndPov,
+      secrets_and_reveal: secretsAndReveal,
+      user_owned_decisions: uniqueDraftLedgerItems(userOwnedDecisions),
+      hard_constraints: hardConstraints,
+      protected_structures: protectedStructures,
+      mutable_sources: mutableSources,
+      candidate_factual_additions: [],
+      unknown_semantics: uniqueList(unknownSemantics),
+    };
+    ledger.ledger_digest = stableDigest(ledger);
+    return ledger;
+  }
+
+  function summarizeDraftLedger(ledger) {
+    const source = asObject(ledger);
+    return {
+      schema: safeString(source.schema) || "draft_ledger.v1",
+      digest: safeString(source.ledger_digest),
+      source_contract_id: safeString(source.source_contract_id),
+      established_facts: arrayFromCollection(source.established_facts).length,
+      scene_beats: arrayFromCollection(source.scene_beats).length,
+      unresolved_hooks: arrayFromCollection(source.unresolved_hooks).length,
+      hard_constraints: arrayFromCollection(source.hard_constraints).length,
+      protected_structures: arrayFromCollection(source.protected_structures).length,
+      unknown_semantics: uniqueList(arrayFromCollection(source.unknown_semantics).map((item) => safeString(item))),
+    };
+  }
+
   /* ── Role Call (single path for all roles) ─────────────── */
 
   function buildRolePrompt(role, profile, mutableSegs, contextBlock, allSegments, directorInfo) {
     const systemPrompt = safeString(profile.system_prompt || role.default_prompt);
     const contextSection = contextBlock ? `\n\n--- Runtime Context (read-only) ---\n${contextBlock}\n--- End Context ---\n` : "";
+    const draftLedger = asObject(directorInfo && directorInfo.draft_ledger);
+    const draftLedgerSection = draftLedger.schema === "draft_ledger.v1"
+      ? `\n\n--- Draft Ledger (binding source map) ---\n${JSON.stringify(draftLedger)}\n--- End Draft Ledger ---\n`
+      : "";
     let userPrompt;
     if (role.is_input_planner) {
       const manifest = asObject(directorInfo && directorInfo.context_manifest);
@@ -3037,91 +3201,578 @@
         ? "Call submit_turn_contract_fragment exactly once with the final object. Do not also emit the object as message text."
         : "Output one compact JSON object only. Do not emit XML, <tool_call>, function tags, markdown, reasoning, or commentary.";
       userPrompt = `Build one grounded turn_contract_fragment.v1 from this context_manifest.v1.\n\nAllowed evidence_refs: ${arrayFromCollection(manifest.evidence_refs).join(", ")}\nPlanner-owned fields: ${inputPlannerFields(role.role_id).join(", ")}\n\nContext manifest:\n${JSON.stringify(manifest)}\n\nRules:\n- Every item outside uncertainty MUST include at least one allowed evidence_ref and an exact short evidence_quote copied from that same evidence_sources field.\n- The item text must describe the quoted evidence; never attach an unrelated real quote to an invented claim.\n- Keep writer_only_secrets separate from character_visible_facts when those fields are assigned to this role.\n- Do not convert narrator knowledge into character knowledge.\n- Do not write RP prose, dialogue, a draft, recommendations, or markdown.\n- Return only this role's assigned fields. Use empty arrays when no grounded item exists.\n- ${transportInstruction}\n\nExpected object:\n${inputPlannerExample(role.role_id)}`;
+    } else if (role.is_judge) {
+      const sceneCandidates = arrayFromCollection(directorInfo && directorInfo.scene_candidates).map((candidate) => ({
+        candidate_id: candidate.candidate_id,
+        role_id: candidate.role_id,
+        supporting_roles: candidate.supporting_roles,
+        segments: candidate.segments,
+        evidence_refs: candidate.evidence_refs,
+        retained_beats: candidate.retained_beats,
+        proposed_additions: candidate.proposed_additions,
+        addressed_issues: candidate.addressed_issues,
+        change_summary: candidate.change_summary,
+      }));
+      const originalSegments = allSegments.map((segment) => ({
+        id: segment.id,
+        type: segment.type,
+        text: segment.type === "mutable" ? segment.text : preview(segment.text, 240),
+      }));
+      userPrompt = `Judge every scene-wide candidate against the original response, Draft Ledger, runtime evidence, and output contract.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nScene candidates:\n${JSON.stringify(sceneCandidates)}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Return exactly one judgment for every candidate_id and no unknown candidate_id.\n- preserved_ledger_ids and missing_ledger_ids may contain only Draft Ledger ledger_id values.\n- A candidate with a secret, POV, identity/reveal, user-agency, model/meta, or output-contract violation must be reject, unless the exact violating element is isolated in rejected_elements and hard_violations for Composer prohibition; only then use accept_with_constraints.\n- Treat unsupported factual, relationship, location, object-state, backstory, or event additions as unsupported_additions.\n- Record accepted and rejected elements as concrete claims with candidate_ids and evidence_refs.\n- Cross-candidate consensus, complementary value, and conflicts must describe claims or facts, not shared issue labels.\n- Do not use model confidence as evidence and do not write replacement prose.\n\nReturn compact JSON only:\n{"schema":"semantic_judgment.v1","candidate_judgments":[{"candidate_id":"candidate_id","verdict":"accept|accept_with_constraints|reject","preserved_ledger_ids":[],"missing_ledger_ids":[],"unsupported_additions":[{"claim":"unsupported claim","reason":"why","evidence_refs":[],"candidate_ids":["candidate_id"],"segment_ids":["mutable_1"]}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"violation","evidence_refs":[],"segment_ids":["mutable_1"]}],"accepted_elements":[],"rejected_elements":[],"quality_gains":[],"quality_regressions":[]}],"cross_candidate":{"consensus":[],"complementary":[],"conflicts":[]},"scene_requirements":{"target_arc":"","target_voice":"","target_pacing":""}}`;
+    } else if (role.is_prover) {
+      const finalSegments = arrayFromCollection(directorInfo && directorInfo.final_segments).map((segment) => ({
+        id: safeString(segment.id),
+        type: safeString(segment.type),
+        text: safeString(segment.final_text),
+      }));
+      const originalSegments = allSegments.map((segment) => ({
+        id: segment.id,
+        type: segment.type,
+        text: segment.type === "mutable" ? mutableFullText(segment) : preview(segment.text, 240),
+      }));
+      userPrompt = `Prove or reject the FINAL Composer output against every binding semantic unit.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nFinal Composer segments:\n${JSON.stringify(finalSegments)}\n\nSemantic Judgment:\n${JSON.stringify(asObject(directorInfo && directorInfo.semantic_judgment))}\n\nFusion Plan:\n${JSON.stringify(asObject(directorInfo && directorInfo.fusion_plan))}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Cover every established_facts ledger_id exactly once in fact_checks.\n- Cover every scene_beats ledger_id exactly once in beat_checks.\n- Cover every hard_constraints ledger_id exactly once in constraint_checks.\n- Mark missing, contradicted, violated, or uncertain honestly. Uncertain is not a pass.\n- Record every secret, POV, identity, agency, meta, or output-contract failure as a hard_violation.\n- Record every new factual, relationship, location, object-state, backstory, or event claim without evidence as an unsupported_addition.\n- output_contract fields must be booleans grounded in the final text.\n- Use verdict repair only when one targeted Composer repair can resolve all failures; then provide concrete segment-scoped repair_instructions.\n- Use verdict fail when the scene cannot be repaired without replacing its grounded event structure.\n- Do not write prose, advice, markdown, or reasoning.\n\nReturn compact JSON only:\n{"schema":"semantic_proof.v1","declared_verdict":"pass|repair|fail","fact_checks":[{"ledger_id":"fact_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"beat_checks":[{"ledger_id":"beat_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"constraint_checks":[{"ledger_id":"constraint_1","status":"satisfied|violated|uncertain","detail":"","evidence_quote":""}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"unsupported_additions":[{"claim":"","reason":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[{"segment_id":"mutable_1","instruction":"","evidence_refs":[],"prohibited":[]}]}`;
     } else if (role.is_composer) {
       const mutableList = mutableSegs.map((s) => {
         const candidates = (directorInfo && directorInfo.candidateBundles && directorInfo.candidateBundles[s.id]) || [];
         const candidateSection = candidates.length
-          ? candidates.map((c, i) => `  Candidate ${i + 1} (role: ${c.role}, confidence: ${c.confidence}, score: ${c.score != null ? c.score.toFixed(1) : ""}, issues: [${(c.issues || []).join(", ")}], change: ${c.change_summary || "none"}):\n    ${c.rewrite}`).join("\n")
+          ? candidates.map((c, i) => `  Candidate ${i + 1} (id: ${c.candidate_id || "unknown"}, role: ${c.role}, Judge: ${c.judge_verdict || "unknown"}, evidence: [${(c.evidence_refs || []).join(", ")}], retained: ${JSON.stringify(c.retained_beats || [])}, proposed additions: ${JSON.stringify(c.proposed_additions || [])}, change: ${c.change_summary || "none"}):\n    ${c.rewrite}`).join("\n")
           : "  (no candidates — gap, improve original directly)";
-        const segConsensus = directorInfo && directorInfo.consensus && directorInfo.consensus[s.id] ? directorInfo.consensus[s.id] : [];
-        const segComplementary = directorInfo && directorInfo.complementary && directorInfo.complementary[s.id] ? directorInfo.complementary[s.id] : [];
-        const segConflict = directorInfo && directorInfo.conflict && directorInfo.conflict[s.id] ? directorInfo.conflict[s.id] : [];
-        const isGap = directorInfo && directorInfo.gap && directorInfo.gap.indexOf(s.id) >= 0;
-        return `Segment ${s.id}:\nOriginal:\n${s.text}\nCandidates:\n${candidateSection}\nDirector: consensus=[${segConsensus.join(", ")}] complementary=[${segComplementary.join(", ")}] conflict=[${segConflict.join(", ")}] gap=${isGap ? "yes" : "no"}`;
+        return `Segment ${s.id}:\nOriginal:\n${s.text}\nAccepted candidates:\n${candidateSection}`;
       }).join("\n\n---\n\n");
       const preservedList = allSegments.filter((s) => s.type !== "mutable").map((s) =>
         `${s.id} [PRESERVED — do not output]: ${preview(s.text, 200)}`
       ).join("\n");
+      const proofRepair = asObject(directorInfo && directorInfo.semantic_proof_repair);
+      const proofRepairSection = arrayFromCollection(proofRepair.repair_instructions).length
+        ? `\n--- Semantic Proof Repair ---\nThe previous composed scene failed final semantic proof.\nPrevious rejected final segments:\n${JSON.stringify(proofRepair.previous_segments || {})}\nRepair instructions:\n${JSON.stringify(proofRepair.repair_instructions)}\nFailure reasons:\n${JSON.stringify(proofRepair.reason_codes || [])}\nRecompose the complete mutable scene once. Resolve every listed failure while preserving all already-correct facts, beats, constraints, voice, and causality. Do not return a local phrase patch or commentary.\n--- End Semantic Proof Repair ---\n`
+        : "";
       const directorSection = directorInfo
-        ? `\n--- Fusion Director ---\nConsensus: ${JSON.stringify(directorInfo.consensus || {})}\nComplementary: ${JSON.stringify(directorInfo.complementary || {})}\nConflict: ${JSON.stringify(directorInfo.conflict || {})}\nGaps: ${JSON.stringify(directorInfo.gap || [])}\n--- End Director ---\n`
+        ? `\n--- Semantic Judgment ---\n${JSON.stringify(directorInfo.semantic_judgment || {})}\n--- Fusion Plan ---\n${JSON.stringify(directorInfo.fusion_plan || {})}\n--- End Semantic Plan ---\n${proofRepairSection}`
         : "";
       const revisionFeedback = asObject(directorInfo && directorInfo.composer_revision_feedback);
       const retrySection = arrayFromCollection(revisionFeedback.weak_segment_ids).length
         ? `\n--- Recomposition Retry ---\nThe previous composition was rejected as a near-copy.\nWeak segment IDs: ${revisionFeedback.weak_segment_ids.join(", ")}\nPrevious rejected segments:\n${JSON.stringify(revisionFeedback.previous_segments || {})}\nFor every weak segment, discard the previous sentence structure and reconstruct the prose materially. Preserve facts, not wording. Do not answer with spelling, punctuation, synonym, or isolated-line edits.\n--- End Retry ---\n`
         : "";
-      userPrompt = `Compose the FINAL version of the mutable prose for this roleplay response.\n\nFull scene segments (mutable only — rewrite these):\n\n${mutableList}\n\nPreserved segments (do NOT include in your output):\n${preservedList}\n${directorSection}${retrySection}${contextSection}\n\nComposition instructions:\n- Reconstruct each mutable segment from the original, all candidates, and Director evidence. Synthesize compatible strengths; never concatenate candidate passages.\n- Resolve conflicts in this order: binding output contract; secret/POV/identity/user-agency/meta integrity; continuity/world facts; character/emotion/relationship; style/rhythm.\n- Reject any candidate that breaks a higher-priority constraint even when its score is higher.\n- Use consensus as strong corroboration, complementary findings as synthesis targets, and gaps as a mandate to elevate the original directly.\n- Remove Thoughts, Processing, Approved, Response, prompt residue, and assistant commentary from mutable prose, replacing contaminated space with scene-native writing.\n- Explicit output-language or framing requirements in the turn contract override the draft's language and framing.\n- Preserve established facts, events, user actions, perspective, and cross-segment flow, but not the draft's wording or sentence structure.\n- Materially rewrite every substantive prose segment through stronger diction, sentence architecture, sensory detail, subtext, pacing, transitions, and ending cadence.\n- Cosmetic spelling, punctuation, synonym, or single-line edits do not satisfy the task.\n- Include every requested mutable segment ID exactly once. Output no protected or inspect-only segment.\n\nReturn one compact JSON object only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}`;
+      userPrompt = `Compose the FINAL mutable prose from the original, accepted scene candidates, Semantic Judgment, Fusion Plan, and Draft Ledger.\n\nMutable segments:\n${mutableList}\n\nPreserved segments (never output or rewrite):\n${preservedList}\n${directorSection}${retrySection}${draftLedgerSection}${contextSection}\n\nRules:\n- Follow fusion_plan.v1. Preserve every required fact, beat, constraint, user-owned decision, secret/reveal state, POV boundary, and cross-segment consequence.\n- Use only accepted candidate elements and permitted additions. Exclude every rejected element, prohibited addition, unsupported claim, and hard violation.\n- Resolve conflicts exactly as the Fusion Plan states; do not choose by confidence, score, verbosity, or surface elegance.\n- Synthesize compatible strengths into new prose. Never concatenate candidate passages or copy one candidate unchanged.\n- Remove model reasoning, prompt residue, approval labels, assistant commentary, and output-contract violations from mutable prose.\n- A mutable segment that is wholly a model Thoughts/Analysis/Reasoning artifact must be returned as an empty string. Never empty a substantive scene segment.\n- Materially reconstruct every substantive segment through stronger scene architecture, causality, voice, subtext, dramatic pressure, imagery, pacing, transitions, and cadence.\n- Do not cross the current turn boundary or decide the user's unexpressed thought, speech, consent, emotion, or next action.\n- Include every requested mutable segment ID exactly once. Output no protected or inspect-only segment.\n\nReturn compact JSON only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}`;
     } else {
       const segIds = mutableSegs.map((s) => s.id);
-      const deleteRule = role.role_id === "agency_meta_guard"
-        ? "\n- If and only if a complete mutable segment is solely a Thoughts/Analysis/Thinking wrapper, you may return operation:\"delete\", rewrite:\"\", and issue meta_artifact."
-        : "";
-      userPrompt = `Produce this lane's decisive rewrite candidates for the mutable segments below.\n\nYou are seeing the full ordered response for continuity. Protected and inspect-only segments are [PRESERVED] context and must never be returned or rewritten.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [PRESERVED]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return a candidate only when you can materially improve the complete segment within that lane.\n- Reconstruct the whole segment when necessary; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Omit unchanged segments. If this lane finds no material improvement, return {"role":"${role.role_id}","candidates":[]}.\n- For every candidate, identify the concrete issues fixed and summarize the actual revision.${deleteRule}\n\nReturn one compact JSON object only:\n{"role":"${role.role_id}","candidates":[{"segment_id":"SEG_ID","operation":"replace","rewrite":"complete replacement text","confidence":0.75,"issues":["issue_code"],"change_summary":"what materially changed","tags":["tag"]}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
+      userPrompt = `Produce one complete scene-wide rewrite candidate through this lane.\n\nYou are seeing the full ordered response for continuity. Protected and inspect-only segments are [PRESERVED] context and must never be returned or rewritten.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [PRESERVED]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${draftLedgerSection}${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return exactly one candidate containing every allowed substantive mutable segment ID, or return an empty candidates array.\n- Reconstruct the full scene through this lane; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Preserve Draft Ledger facts, beats, secrets, POV, identity state, user-owned decisions, and the current turn boundary. Wording and paragraph architecture are not protected.\n- Enforce the shared output contract while rewriting: remove model reasoning, approval labels, assistant commentary, prompt residue, and other meta artifacts.\n- A mutable segment that is wholly a Thoughts/Analysis/Reasoning artifact may be returned as an empty string with meta_artifact in addressed_issues. No substantive scene segment may be empty.\n- evidence_refs must name Draft Ledger ledger_id, source_ref, or runtime context refs actually used.\n- retained_beats must identify the Draft Ledger units preserved in the scene.\n- proposed_additions must disclose every new factual claim, relationship fact, event, location fact, object state, or backstory detail introduced by the candidate. Use [] when none.\n- confidence is trace-only metadata and never guarantees selection.\n- If this lane cannot materially improve the whole scene, return {"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[]}.\n- Identify the concrete issues addressed and summarize the actual scene-level revision.\n\nReturn one compact JSON object only:\n{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"complete replacement text"},"evidence_refs":["ledger_or_context_ref"],"retained_beats":[{"id":"ledger_id","text":"retained beat"}],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.75,"change_summary":"what materially changed across the scene"}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
     }
     return { system: systemPrompt, user: userPrompt };
   }
 
+  function normalizeCandidateReferences(values, limit) {
+    const result = [];
+    const seen = new Set();
+    arrayFromCollection(values).slice(0, limit || 24).forEach((value) => {
+      const source = typeof value === "string" ? { text: value } : asObject(value);
+      const normalized = {
+        id: truncate(source.id, 120).trim(),
+        text: truncate(source.text != null ? source.text : source.value, 320).trim(),
+        evidence_refs: uniqueList(
+          arrayFromCollection(source.evidence_refs)
+            .map((item) => truncate(item, 120).trim())
+            .filter(Boolean)
+        ),
+        evidence_quote: truncate(source.evidence_quote, 180).trim(),
+      };
+      if (!normalized.id && !normalized.text) return;
+      const key = stableDigest(normalized);
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push(normalized);
+    });
+    return result;
+  }
+
   function validateCandidateSchema(parsed, expectedRoleId, allowedSegmentIds, mutableSegs) {
     if (!parsed || typeof parsed !== "object") return null;
+    if (safeString(parsed.schema) !== "scene_rewrite_candidates.v1") return null;
+    const roleId = safeString(expectedRoleId);
+    if (safeString(parsed.role_id) !== roleId) return null;
     if (!Array.isArray(parsed.candidates)) return null;
-    const candidates = parsed.candidates;
-    const allowed = Array.isArray(allowedSegmentIds) ? new Set(allowedSegmentIds) : null;
-    const laneIssues = ROLE_ALLOWED_ISSUES[safeString(expectedRoleId)]
-      ? new Set(roleAllowedIssues(expectedRoleId))
+    const allowedIds = uniqueList(arrayFromCollection(allowedSegmentIds).map((id) => safeString(id)));
+    if (!allowedIds.length) return null;
+    const allowed = new Set(allowedIds);
+    const laneIssues = ROLE_ALLOWED_ISSUES[roleId]
+      ? new Set(roleAllowedIssues(roleId))
       : null;
     const mutableById = {};
     (mutableSegs || []).forEach((segment) => { mutableById[segment.id] = segment; });
     const valid = [];
-    candidates.forEach((c) => {
-      if (!c || typeof c !== "object") return;
-      const segId = safeString(c.segment_id).trim();
-      const rewrite = safeString(c.rewrite);
-      if (!segId) return;
-      if (allowed && !allowed.has(segId)) return;
-      const tags = Array.isArray(c.tags) ? c.tags.map((t) => safeString(t)).filter(Boolean) : [];
-      const issues = normalizeIssues(c.issues, tags);
+    const seen = new Set();
+
+    parsed.candidates.forEach((candidate) => {
+      if (!candidate || typeof candidate !== "object") return;
+      if (candidate.role_id != null && safeString(candidate.role_id) !== roleId) return;
+      let rawSegments = asObject(candidate.segments);
+      if (!Object.keys(rawSegments).length
+          && allowedIds.length === 1
+          && typeof candidate.scene_rewrite === "string") {
+        rawSegments = { [allowedIds[0]]: candidate.scene_rewrite };
+      }
+      const tags = arrayFromCollection(candidate.tags).map((tag) => safeString(tag)).filter(Boolean);
+      const issues = normalizeIssues(candidate.addressed_issues || candidate.issues, tags);
       if (laneIssues && issues.some((issue) => !laneIssues.has(issue))) return;
-      const deleteMeta = !rewrite
-        && expectedRoleId === "agency_meta_guard"
-        && issues.indexOf("meta_artifact") >= 0
-        && safeString(c.operation).toLowerCase() === "delete"
-        && isWhollyMetaArtifactText(mutableFullText(mutableById[segId]));
-      if (!rewrite && !deleteMeta) return;
+      const normalizedSegments = {};
+      const segmentOperations = {};
+      let invalid = false;
+      allowedIds.forEach((segmentId) => {
+        if (!Object.prototype.hasOwnProperty.call(rawSegments, segmentId)) {
+          invalid = true;
+          return;
+        }
+        const rewrite = safeString(rawSegments[segmentId]);
+        const deleteMeta = !rewrite
+          && issues.indexOf("meta_artifact") >= 0
+          && isWhollyMetaArtifactText(mutableFullText(mutableById[segmentId]));
+        if (!rewrite && !deleteMeta) {
+          invalid = true;
+          return;
+        }
+        normalizedSegments[segmentId] = rewrite;
+        segmentOperations[segmentId] = deleteMeta ? "delete" : "replace";
+      });
+      if (invalid) return;
+      const evidenceRefs = uniqueList(
+        arrayFromCollection(candidate.evidence_refs)
+          .map((ref) => truncate(ref, 160).trim())
+          .filter(Boolean)
+      ).slice(0, 32);
+      const retainedBeats = normalizeCandidateReferences(candidate.retained_beats, 32);
+      const proposedAdditions = normalizeCandidateReferences(candidate.proposed_additions, 24);
+      const sceneSignature = stableDigest({ segments: normalizedSegments });
+      const candidateId = `candidate_${stableDigest({
+        role_id: roleId,
+        scene_signature: sceneSignature,
+        addressed_issues: issues,
+        evidence_refs: evidenceRefs,
+      })}`;
+      if (seen.has(candidateId)) return;
+      seen.add(candidateId);
       valid.push({
-        segment_id: segId,
-        rewrite,
-        operation: deleteMeta ? "delete" : "replace",
-        confidence: clampNumber(c.confidence, 0, 1, 0.5),
-        issues,
-        change_summary: safeString(c.change_summary),
+        candidate_id: candidateId,
+        scene_signature: sceneSignature,
+        role_id: roleId,
+        supporting_roles: [roleId],
+        duplicate_count: 0,
+        segments: normalizedSegments,
+        segment_operations: segmentOperations,
+        evidence_refs: evidenceRefs,
+        retained_beats: retainedBeats,
+        proposed_additions: proposedAdditions,
+        addressed_issues: issues,
+        confidence: clampNumber(candidate.confidence, 0, 1, 0.5),
+        change_summary: truncate(candidate.change_summary, 500),
         tags,
+        foreign_segment_ids: Object.keys(rawSegments).filter((segmentId) => !allowed.has(segmentId)),
       });
     });
-    if (!candidates.length) return { role: safeString(expectedRoleId), candidates: [] };
+    if (!parsed.candidates.length) {
+      return { schema: "scene_rewrite_candidates.v1", role: roleId, candidates: [] };
+    }
     if (!valid.length) return null;
-    return { role: safeString(expectedRoleId), candidates: valid };
+    return { schema: "scene_rewrite_candidates.v1", role: roleId, candidates: valid };
   }
 
-  function validateComposerSchema(parsed, allowedSegmentIds) {
+  const JUDGE_VERDICTS = Object.freeze(["accept", "accept_with_constraints", "reject"]);
+  const JUDGE_HARD_VIOLATIONS = Object.freeze([
+    "secret_leak",
+    "pov_violation",
+    "identity_continuity",
+    "agency_takeover",
+    "meta_artifact",
+    "output_contract_violation",
+  ]);
+
+  function judgmentItems(values, allowedCandidateIds, limit) {
+    const result = [];
+    arrayFromCollection(values).slice(0, limit || 32).forEach((value) => {
+      const item = typeof value === "string" ? { claim: value } : asObject(value);
+      const candidateIds = uniqueList(
+        arrayFromCollection(item.candidate_ids).map((id) => safeString(id)).filter(Boolean)
+      );
+      if (candidateIds.some((id) => !allowedCandidateIds.has(id))) return;
+      const normalized = {
+        claim: truncate(item.claim != null ? item.claim : item.text, 500).trim(),
+        reason: truncate(item.reason, 400).trim(),
+        evidence_refs: uniqueList(arrayFromCollection(item.evidence_refs)
+          .map((ref) => truncate(ref, 160).trim()).filter(Boolean)).slice(0, 24),
+        candidate_ids: candidateIds,
+        segment_ids: uniqueList(arrayFromCollection(item.segment_ids)
+          .map((id) => truncate(id, 120).trim()).filter(Boolean)).slice(0, 24),
+      };
+      if (normalized.claim || normalized.reason) result.push(normalized);
+    });
+    return result;
+  }
+
+  function draftLedgerIdSet(ledger) {
+    const ids = new Set();
+    Object.keys(asObject(ledger)).forEach((field) => {
+      arrayFromCollection(ledger[field]).forEach((item) => {
+        const id = safeString(item && item.ledger_id);
+        if (id) ids.add(id);
+      });
+    });
+    return ids;
+  }
+
+  function validateSemanticJudgment(parsed, sceneCandidates, draftLedger) {
+    if (!parsed || safeString(parsed.schema) !== "semantic_judgment.v1"
+        || !Array.isArray(parsed.candidate_judgments)) return null;
+    const candidates = arrayFromCollection(sceneCandidates);
+    const allowedIds = new Set(candidates.map((candidate) => safeString(candidate.candidate_id)).filter(Boolean));
+    if (!allowedIds.size || parsed.candidate_judgments.length !== allowedIds.size) return null;
+    const ledgerIds = draftLedgerIdSet(draftLedger);
+    const seen = new Set();
+    const judgments = [];
+    for (const raw of parsed.candidate_judgments) {
+      const item = asObject(raw);
+      const candidateId = safeString(item.candidate_id);
+      const verdict = safeString(item.verdict);
+      if (!allowedIds.has(candidateId) || seen.has(candidateId)
+          || JUDGE_VERDICTS.indexOf(verdict) < 0) return null;
+      seen.add(candidateId);
+      const preserved = uniqueList(arrayFromCollection(item.preserved_ledger_ids).map((id) => safeString(id)).filter(Boolean));
+      const missing = uniqueList(arrayFromCollection(item.missing_ledger_ids).map((id) => safeString(id)).filter(Boolean));
+      if (preserved.concat(missing).some((id) => !ledgerIds.has(id))) return null;
+      const hard = arrayFromCollection(item.hard_violations).slice(0, 24).map((value) => {
+        const violation = asObject(value);
+        const type = safeString(violation.type);
+        if (JUDGE_HARD_VIOLATIONS.indexOf(type) < 0) return null;
+        return {
+          type,
+          detail: truncate(violation.detail != null ? violation.detail : violation.claim, 500).trim(),
+          evidence_refs: uniqueList(arrayFromCollection(violation.evidence_refs)
+            .map((ref) => truncate(ref, 160).trim()).filter(Boolean)).slice(0, 24),
+          segment_ids: uniqueList(arrayFromCollection(violation.segment_ids)
+            .map((id) => truncate(id, 120).trim()).filter(Boolean)).slice(0, 24),
+        };
+      });
+      if (hard.some((item2) => !item2) || (hard.length && verdict === "accept")) return null;
+      judgments.push({
+        candidate_id: candidateId,
+        verdict,
+        preserved_ledger_ids: preserved,
+        missing_ledger_ids: missing,
+        unsupported_additions: judgmentItems(item.unsupported_additions, allowedIds, 24),
+        hard_violations: hard,
+        accepted_elements: judgmentItems(item.accepted_elements, allowedIds, 32),
+        rejected_elements: judgmentItems(item.rejected_elements, allowedIds, 32),
+        quality_gains: judgmentItems(item.quality_gains, allowedIds, 24),
+        quality_regressions: judgmentItems(item.quality_regressions, allowedIds, 24),
+      });
+    }
+    const cross = asObject(parsed.cross_candidate);
+    return {
+      schema: "semantic_judgment.v1",
+      candidate_judgments: judgments,
+      cross_candidate: {
+        consensus: judgmentItems(cross.consensus, allowedIds, 32),
+        complementary: judgmentItems(cross.complementary, allowedIds, 32),
+        conflicts: judgmentItems(cross.conflicts, allowedIds, 32),
+      },
+      scene_requirements: {
+        target_arc: truncate(asObject(parsed.scene_requirements).target_arc, 600).trim(),
+        target_voice: truncate(asObject(parsed.scene_requirements).target_voice, 600).trim(),
+        target_pacing: truncate(asObject(parsed.scene_requirements).target_pacing, 600).trim(),
+      },
+    };
+  }
+
+  const PROOF_ITEM_STATUSES = Object.freeze(["preserved", "missing", "contradicted", "uncertain"]);
+  const PROOF_CONSTRAINT_STATUSES = Object.freeze(["satisfied", "violated", "uncertain"]);
+  const PROOF_OUTPUT_CONTRACT_KEYS = Object.freeze([
+    "language_ok",
+    "turn_boundary_ok",
+    "user_agency_ok",
+    "meta_free",
+    "format_ok",
+  ]);
+
+  function draftLedgerIdsForField(draftLedger, field) {
+    return uniqueList(
+      arrayFromCollection(asObject(draftLedger)[field])
+        .map((item) => safeString(item && item.ledger_id))
+        .filter(Boolean)
+    );
+  }
+
+  function normalizeProofChecks(values, expectedIds, statuses) {
+    if (!Array.isArray(values)) return null;
+    const expected = new Set(expectedIds);
+    if (values.length !== expected.size) return null;
+    const seen = new Set();
+    const normalized = [];
+    for (const raw of values) {
+      const item = asObject(raw);
+      const ledgerId = safeString(item.ledger_id);
+      const status = safeString(item.status);
+      if (!expected.has(ledgerId) || seen.has(ledgerId) || statuses.indexOf(status) < 0) {
+        return null;
+      }
+      seen.add(ledgerId);
+      normalized.push({
+        ledger_id: ledgerId,
+        status,
+        detail: truncate(item.detail, 500).trim(),
+        evidence_quote: truncate(item.evidence_quote, 240).trim(),
+      });
+    }
+    return normalized;
+  }
+
+  function validateSemanticProof(parsed, draftLedger, mutableSegs, finalSegments) {
+    if (!parsed || safeString(parsed.schema) !== "semantic_proof.v1") return null;
+    const declaredVerdict = safeString(parsed.declared_verdict);
+    if (["pass", "repair", "fail"].indexOf(declaredVerdict) < 0) return null;
+
+    const factChecks = normalizeProofChecks(
+      parsed.fact_checks,
+      draftLedgerIdsForField(draftLedger, "established_facts"),
+      PROOF_ITEM_STATUSES
+    );
+    const beatChecks = normalizeProofChecks(
+      parsed.beat_checks,
+      draftLedgerIdsForField(draftLedger, "scene_beats"),
+      PROOF_ITEM_STATUSES
+    );
+    const constraintChecks = normalizeProofChecks(
+      parsed.constraint_checks,
+      draftLedgerIdsForField(draftLedger, "hard_constraints"),
+      PROOF_CONSTRAINT_STATUSES
+    );
+    if (!factChecks || !beatChecks || !constraintChecks) return null;
+    const finalEvidenceText = arrayFromCollection(finalSegments)
+      .map((segment) => safeString(segment && (segment.final_text != null ? segment.final_text : segment.text)))
+      .join("\n")
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+    const unsupportedPreservedClaim = factChecks.concat(beatChecks).some((item) => {
+      if (item.status !== "preserved") return false;
+      const quote = safeString(item.evidence_quote).replace(/\s+/g, " ").trim().toLowerCase();
+      return !quote || !finalEvidenceText.includes(quote);
+    });
+    if (unsupportedPreservedClaim) return null;
+
+    const allowedSegments = new Set(arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id)));
+    const hardViolations = [];
+    if (!Array.isArray(parsed.hard_violations)) return null;
+    for (const raw of parsed.hard_violations.slice(0, 32)) {
+      const item = asObject(raw);
+      const type = safeString(item.type);
+      const detail = truncate(item.detail, 500).trim();
+      const segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
+        .map((id) => safeString(id)).filter(Boolean));
+      if (JUDGE_HARD_VIOLATIONS.indexOf(type) < 0 || !detail
+          || segmentIds.some((id) => !allowedSegments.has(id))) return null;
+      hardViolations.push({
+        type,
+        detail,
+        segment_ids: segmentIds,
+        evidence_refs: uniqueList(arrayFromCollection(item.evidence_refs)
+          .map((ref) => truncate(ref, 160).trim()).filter(Boolean)).slice(0, 24),
+      });
+    }
+
+    const unsupportedAdditions = [];
+    if (!Array.isArray(parsed.unsupported_additions)) return null;
+    for (const raw of parsed.unsupported_additions.slice(0, 32)) {
+      const item = asObject(raw);
+      const claim = truncate(item.claim, 500).trim();
+      const segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
+        .map((id) => safeString(id)).filter(Boolean));
+      if (!claim || segmentIds.some((id) => !allowedSegments.has(id))) return null;
+      unsupportedAdditions.push({
+        claim,
+        reason: truncate(item.reason, 500).trim(),
+        segment_ids: segmentIds,
+        evidence_refs: uniqueList(arrayFromCollection(item.evidence_refs)
+          .map((ref) => truncate(ref, 160).trim()).filter(Boolean)).slice(0, 24),
+      });
+    }
+
+    const outputContract = asObject(parsed.output_contract);
+    if (PROOF_OUTPUT_CONTRACT_KEYS.some((key) => typeof outputContract[key] !== "boolean")) {
+      return null;
+    }
+    const normalizedOutputContract = {};
+    PROOF_OUTPUT_CONTRACT_KEYS.forEach((key) => {
+      normalizedOutputContract[key] = outputContract[key];
+    });
+
+    const repairInstructions = [];
+    if (!Array.isArray(parsed.repair_instructions)) return null;
+    for (const raw of parsed.repair_instructions.slice(0, 24)) {
+      const item = asObject(raw);
+      const segmentId = safeString(item.segment_id);
+      const instruction = truncate(item.instruction, 800).trim();
+      if (!allowedSegments.has(segmentId) || !instruction) return null;
+      repairInstructions.push({
+        segment_id: segmentId,
+        instruction,
+        evidence_refs: uniqueList(arrayFromCollection(item.evidence_refs)
+          .map((ref) => truncate(ref, 160).trim()).filter(Boolean)).slice(0, 24),
+        prohibited: uniqueList(arrayFromCollection(item.prohibited)
+          .map((value) => truncate(value, 300).trim()).filter(Boolean)).slice(0, 24),
+      });
+    }
+
+    const failedFacts = factChecks.filter((item) => item.status !== "preserved");
+    const failedBeats = beatChecks.filter((item) => item.status !== "preserved");
+    const failedConstraints = constraintChecks.filter((item) => item.status !== "satisfied");
+    const failedOutputContract = PROOF_OUTPUT_CONTRACT_KEYS.filter((key) => !normalizedOutputContract[key]);
+    const reasonCodes = uniqueList([]
+      .concat(failedFacts.map((item) => `fact_${item.status}:${item.ledger_id}`))
+      .concat(failedBeats.map((item) => `beat_${item.status}:${item.ledger_id}`))
+      .concat(failedConstraints.map((item) => `constraint_${item.status}:${item.ledger_id}`))
+      .concat(hardViolations.map((item) => `hard_violation:${item.type}`))
+      .concat(unsupportedAdditions.length ? ["unsupported_addition"] : [])
+      .concat(failedOutputContract.map((key) => `output_contract:${key}`)));
+    const clean = reasonCodes.length === 0;
+    let verdict = "fail";
+    if (clean && declaredVerdict === "pass") {
+      verdict = "pass";
+    } else if (!clean && declaredVerdict !== "fail" && repairInstructions.length) {
+      verdict = "repair";
+    } else if (clean) {
+      reasonCodes.push(`declared_${declaredVerdict}_despite_clean_proof`);
+    } else if (!repairInstructions.length) {
+      reasonCodes.push("no_valid_repair_instruction");
+    }
+
+    return {
+      schema: "semantic_proof.v1",
+      declared_verdict: declaredVerdict,
+      verdict,
+      fact_checks: factChecks,
+      beat_checks: beatChecks,
+      constraint_checks: constraintChecks,
+      hard_violations: hardViolations,
+      unsupported_additions: unsupportedAdditions,
+      output_contract: normalizedOutputContract,
+      repair_instructions: repairInstructions,
+      reason_codes: uniqueList(reasonCodes),
+    };
+  }
+
+  function buildFusionPlan(judgment, sceneCandidates, draftLedger, mutableSegs) {
+    if (!judgment) return null;
+    const candidateMap = {};
+    arrayFromCollection(sceneCandidates).forEach((candidate) => {
+      candidateMap[candidate.candidate_id] = candidate;
+    });
+    const acceptedJudgments = judgment.candidate_judgments.filter((item) => item.verdict !== "reject");
+    const rejectedJudgments = judgment.candidate_judgments.filter((item) => item.verdict === "reject");
+    const prohibited = judgment.candidate_judgments.flatMap((item) =>
+      item.unsupported_additions.concat(item.verdict !== "accept" ? item.hard_violations.map((violation) => ({
+        claim: violation.detail,
+        reason: violation.type,
+        candidate_ids: [item.candidate_id],
+        evidence_refs: violation.evidence_refs,
+        segment_ids: violation.segment_ids,
+      })) : [])
+    );
+    const unsupportedKeys = new Set(prohibited.map((item) => stableDigest({
+      claim: safeString(item.claim),
+      candidate_ids: item.candidate_ids,
+    })));
+    const permittedAdditions = [];
+    acceptedJudgments.forEach((item) => {
+      arrayFromCollection(candidateMap[item.candidate_id] && candidateMap[item.candidate_id].proposed_additions)
+        .forEach((addition) => {
+          const normalized = Object.assign({}, addition, { candidate_ids: [item.candidate_id] });
+          if (!unsupportedKeys.has(stableDigest({ claim: safeString(normalized.text), candidate_ids: normalized.candidate_ids }))) {
+            permittedAdditions.push(normalized);
+          }
+        });
+    });
+    const plan = {
+      schema: "fusion_plan.v1",
+      required_facts: arrayFromCollection(draftLedger && draftLedger.established_facts),
+      required_beats: arrayFromCollection(draftLedger && draftLedger.scene_beats),
+      must_preserve_constraints: arrayFromCollection(draftLedger && draftLedger.hard_constraints),
+      accepted_candidate_ids: acceptedJudgments.map((item) => item.candidate_id),
+      rejected_candidates: rejectedJudgments.map((item) => ({
+        candidate_id: item.candidate_id,
+        reasons: item.rejected_elements.concat(item.unsupported_additions, item.hard_violations),
+      })),
+      accepted_elements: acceptedJudgments.flatMap((item) =>
+        item.accepted_elements.map((element) => Object.assign({}, element, { candidate_ids: [item.candidate_id] }))
+      ),
+      rejected_elements: judgment.candidate_judgments.flatMap((item) =>
+        item.rejected_elements.map((element) => Object.assign({}, element, { candidate_ids: [item.candidate_id] }))
+      ),
+      consensus_claims: judgment.cross_candidate.consensus,
+      complementary_claims: judgment.cross_candidate.complementary,
+      conflicts: judgment.cross_candidate.conflicts,
+      permitted_additions: permittedAdditions,
+      prohibited_additions: prohibited,
+      target_scene_arc: judgment.scene_requirements.target_arc,
+      target_voice: judgment.scene_requirements.target_voice,
+      target_pacing: judgment.scene_requirements.target_pacing,
+      expected_segment_coverage: arrayFromCollection(mutableSegs).map((segment) => segment.id),
+      semantic_ready: acceptedJudgments.length > 0,
+    };
+    plan.plan_id = `fusion_${stableDigest(plan)}`;
+    return plan;
+  }
+
+  function buildComposerCandidatePool(sceneCandidates, judgment, fusionPlan, segments, draftLedger) {
+    const acceptedOrder = new Map(arrayFromCollection(fusionPlan && fusionPlan.accepted_candidate_ids)
+      .map((id, index) => [id, index]));
+    const verdicts = {};
+    arrayFromCollection(judgment && judgment.candidate_judgments).forEach((item) => {
+      verdicts[item.candidate_id] = item.verdict;
+    });
+    const ranked = {};
+    mutableSegments(segments).forEach((segment) => {
+      ranked[segment.id] = arrayFromCollection(sceneCandidates)
+        .filter((candidate) => acceptedOrder.has(candidate.candidate_id))
+        .sort((left, right) => acceptedOrder.get(left.candidate_id) - acceptedOrder.get(right.candidate_id))
+        .map((candidate) => ({
+          candidate_id: candidate.candidate_id,
+          role_id: candidate.role_id,
+          supporting_roles: candidate.supporting_roles,
+          rewrite: candidate.segments[segment.id],
+          operation: candidate.segment_operations[segment.id] || "replace",
+          issues: candidate.addressed_issues || [],
+          evidence_refs: candidate.evidence_refs || [],
+          retained_beats: candidate.retained_beats || [],
+          proposed_additions: candidate.proposed_additions || [],
+          change_summary: candidate.change_summary || "",
+          judge_verdict: verdicts[candidate.candidate_id],
+          identical_to_original: replacementCoreText(candidate.segments[segment.id]) === mutableCoreText(segment),
+        }))
+        .filter((candidate) => candidate.rewrite != null);
+    });
+    return {
+      ranked,
+      consensus: {},
+      complementary: {},
+      conflict: {},
+      gap: Object.keys(ranked).filter((segmentId) => !ranked[segmentId].length),
+      scene_candidates: sceneCandidates,
+      semantic_judgment: judgment,
+      fusion_plan: fusionPlan,
+      draft_ledger: draftLedger,
+    };
+  }
+
+  function validateComposerSchema(parsed, allowedSegmentIds, mutableSegs) {
     if (!parsed || typeof parsed !== "object") return null;
     const segments = asObject(parsed.segments);
     if (!Array.isArray(allowedSegmentIds) || !allowedSegmentIds.length) return null;
     const allowed = new Set(allowedSegmentIds);
+    const mutableById = {};
+    arrayFromCollection(mutableSegs).forEach((segment) => { mutableById[segment.id] = segment; });
     const result = {};
     let count = 0;
     Object.keys(segments).forEach((segId) => {
       if (!allowed.has(segId)) return;
       const text = safeString(segments[segId]);
-      if (text) {
+      if (text || isWhollyMetaArtifactText(mutableFullText(mutableById[segId]))) {
         result[segId] = text;
         count++;
       }
@@ -3183,12 +3834,121 @@
   function jsonRepairPrompts(prompts, role) {
     const schema = role.is_input_planner
       ? inputPlannerExample(role.role_id)
-      : (role.is_composer
-        ? '{"segments":{"SEG_ID":"final rewritten text"}}'
-        : `{"role":"${role.role_id}","candidates":[{"segment_id":"SEG_ID","rewrite":"full rewritten text","confidence":0.8,"issues":["issue_code"],"change_summary":"brief","tags":["tag"]}]}`);
+      : (role.is_judge
+        ? '{"schema":"semantic_judgment.v1","candidate_judgments":[{"candidate_id":"candidate_id","verdict":"accept","preserved_ledger_ids":[],"missing_ledger_ids":[],"unsupported_additions":[],"hard_violations":[],"accepted_elements":[],"rejected_elements":[],"quality_gains":[],"quality_regressions":[]}],"cross_candidate":{"consensus":[],"complementary":[],"conflicts":[]},"scene_requirements":{"target_arc":"","target_voice":"","target_pacing":""}}'
+        : (role.is_prover
+          ? '{"schema":"semantic_proof.v1","declared_verdict":"pass","fact_checks":[],"beat_checks":[],"constraint_checks":[],"hard_violations":[],"unsupported_additions":[],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[]}'
+          : (role.is_composer
+            ? '{"segments":{"SEG_ID":"final rewritten text"}}'
+            : `{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"full rewritten text"},"evidence_refs":["source_ref"],"retained_beats":[],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.8,"change_summary":"brief"}]}`)));
     return {
       system: `${prompts.system}\n\nREPAIR RESPONSE CONTRACT: Output JSON only. Do not include reasoning, analysis, markdown, or code fences.`,
       user: `${prompts.user}\n\nYour previous response could not be parsed. Return one compact JSON object only, matching this shape exactly:\n${schema}`,
+    };
+  }
+
+  function structuredRecoveryProfile(profile) {
+    const extraBody = parseExtraBody(safeString(profile && profile.extra_body));
+    [
+      "reasoning_effort", "reasoning", "think", "thinking",
+      "response_format", "format", "stream",
+    ].forEach((key) => { delete extraBody[key]; });
+    if (extraBody.generationConfig && typeof extraBody.generationConfig === "object") {
+      delete extraBody.generationConfig.thinkingConfig;
+    }
+    return Object.assign({}, profile, {
+      temperature: 0,
+      force_json_response: true,
+      reasoning_effort: "none",
+      reasoning_budget_tokens: 0,
+      extra_body: Object.keys(extraBody).length ? JSON.stringify(extraBody) : "",
+    });
+  }
+
+  function mixedSegmentDeletionIds(parsed, role, allowedSegmentIds, mutableSegs) {
+    if (!role || role.is_input_planner || role.is_judge || role.is_prover || role.is_composer) {
+      return [];
+    }
+    const allowed = new Set(arrayFromCollection(allowedSegmentIds).map((id) => safeString(id)));
+    const mutableById = {};
+    arrayFromCollection(mutableSegs).forEach((segment) => {
+      mutableById[safeString(segment.id)] = segment;
+    });
+    const ids = [];
+    arrayFromCollection(parsed && parsed.candidates).forEach((candidate) => {
+      const segments = asObject(candidate && candidate.segments);
+      Object.keys(segments).forEach((segmentId) => {
+        const original = mutableById[segmentId];
+        if (!allowed.has(segmentId) || safeString(segments[segmentId]) || !original) return;
+        if (mutableCoreText(original).trim() && !isWhollyMetaArtifactText(mutableFullText(original))) {
+          ids.push(segmentId);
+        }
+      });
+    });
+    return uniqueList(ids);
+  }
+
+  function composerStructuredRecoveryPrompts(prompts, mutableSegs, allSegments, directorInfo, contextBlock) {
+    const segmentIds = arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id));
+    const candidateBundles = {};
+    segmentIds.forEach((segmentId) => {
+      candidateBundles[segmentId] = arrayFromCollection(
+        directorInfo && directorInfo.candidateBundles && directorInfo.candidateBundles[segmentId]
+      ).map((candidate) => ({
+        candidate_id: safeString(candidate.candidate_id),
+        role: safeString(candidate.role),
+        judge_verdict: safeString(candidate.judge_verdict),
+        rewrite: safeString(candidate.rewrite),
+        evidence_refs: arrayFromCollection(candidate.evidence_refs),
+        retained_beats: arrayFromCollection(candidate.retained_beats),
+        proposed_additions: arrayFromCollection(candidate.proposed_additions),
+        change_summary: safeString(candidate.change_summary),
+      }));
+    });
+    const shape = {};
+    segmentIds.forEach((segmentId) => { shape[segmentId] = "final rewritten text"; });
+    const recoveryPayload = {
+      mutable_segments: arrayFromCollection(mutableSegs).map((segment) => ({
+        id: safeString(segment.id),
+        original: mutableFullText(segment),
+      })),
+      preserved_segments: arrayFromCollection(allSegments)
+        .filter((segment) => segment.type !== "mutable")
+        .map((segment) => ({ id: safeString(segment.id), type: safeString(segment.type), kind: safeString(segment.kind) })),
+      accepted_candidates: candidateBundles,
+      semantic_judgment: asObject(directorInfo && directorInfo.semantic_judgment),
+      fusion_plan: asObject(directorInfo && directorInfo.fusion_plan),
+      draft_ledger: asObject(directorInfo && directorInfo.draft_ledger),
+      composer_revision_feedback: asObject(directorInfo && directorInfo.composer_revision_feedback),
+      semantic_proof_repair: asObject(directorInfo && directorInfo.semantic_proof_repair),
+      runtime_context: safeString(contextBlock),
+    };
+    return {
+      system: `${prompts.system}\n\nSTRUCTURED RECOVERY: Return the final Composer JSON object directly. Do not emit analysis, reasoning, markdown, or prose outside JSON.`,
+      user: `The prior Composer response used only the reasoning channel. Compose the final mutable scene now from this recovery payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return every requested mutable segment ID exactly once.\n- Materially reconstruct every substantive segment. Preserve grounded facts and constraints, not original wording.\n- Use accepted candidate strengths and the Fusion Plan; exclude rejected or prohibited content.\n- Remove model reasoning and output-contract artifacts.\n- Empty strings are allowed only for segments wholly made of model reasoning. Never empty mixed or substantive narrative.\n- Preserve the original output language and current turn boundary.\n\nReturn exactly this compact JSON shape and nothing else:\n${JSON.stringify({ segments: shape })}`,
+    };
+  }
+
+  function specialistStructuredRecoveryPrompts(prompts, role, parsed, mixedIds, mutableSegs, allSegments, directorInfo, contextBlock) {
+    const allowedIds = arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id));
+    const shape = {};
+    allowedIds.forEach((segmentId) => { shape[segmentId] = "complete replacement text"; });
+    const recoveryPayload = {
+      mixed_non_deletable_segment_ids: mixedIds,
+      mutable_segments: arrayFromCollection(mutableSegs).map((segment) => ({
+        id: safeString(segment.id),
+        original: mutableFullText(segment),
+      })),
+      preserved_segments: arrayFromCollection(allSegments)
+        .filter((segment) => segment.type !== "mutable")
+        .map((segment) => ({ id: safeString(segment.id), type: safeString(segment.type), kind: safeString(segment.kind) })),
+      previous_invalid_response: parsed,
+      draft_ledger: asObject(directorInfo && directorInfo.draft_ledger),
+      runtime_context: safeString(contextBlock),
+    };
+    return {
+      system: `${prompts.system}\n\nSTRUCTURED RECOVERY: Return one valid scene_rewrite_candidates.v1 JSON object directly. Do not emit analysis, reasoning, markdown, or code fences.`,
+      user: `The previous candidate tried to delete mixed meta+narrative segments. Repair that candidate from this payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return exactly one complete scene-wide candidate containing every allowed segment ID.\n- For mixed_non_deletable_segment_ids, remove only the model reasoning artifact and fully rewrite all substantive narrative. Never return an empty string for those IDs.\n- Keep valid improvements from the previous response where they remain grounded, but materially rebuild the scene through the ${safeString(role.role_id)} lane.\n- Preserve Draft Ledger facts, POV, identity/reveal state, user agency, and the current turn boundary.\n- Use only these issue values: ${roleAllowedIssues(role.role_id).join(", ")}.\n\nReturn exactly one compact object with this shape and nothing else:\n${JSON.stringify({ schema: "scene_rewrite_candidates.v1", role_id: role.role_id, candidates: [{ segments: shape, evidence_refs: [], retained_beats: [], proposed_additions: [], addressed_issues: ["meta_artifact"], confidence: 0.8, change_summary: "recovered complete scene rewrite" }] })}`,
     };
   }
 
@@ -3229,14 +3989,46 @@
       : null;
   }
 
-  function setFinalTraceState(trace, enhanced, state, reason) {
-    trace.final.enhanced = !!enhanced;
+  function setFinalTraceState(trace, enhanced, state, reason, assessment) {
+    const evidence = asObject(assessment);
+    const materialRewrite = evidence.material_rewrite === true;
+    const semanticVerified = evidence.semantic_verified === true
+      ? "passed"
+      : (evidence.semantic_verified === false ? "failed" : "not_run");
+    const qualityPreferred = evidence.quality_preferred === true
+      ? "passed"
+      : (evidence.quality_preferred === false ? "failed" : "not_run");
+    trace.final.material_rewrite = materialRewrite;
+    trace.final.semantic_verified = semanticVerified;
+    trace.final.quality_preferred = qualityPreferred;
+    trace.final.enhanced = !!enhanced && materialRewrite && semanticVerified === "passed";
     trace.final.reason = safeString(reason);
+    trace.summary.material_rewrite = materialRewrite;
+    trace.summary.semantic_verified = semanticVerified;
+    trace.summary.quality_preferred = qualityPreferred;
     trace.summary.final_state = safeString(state);
     trace.summary.final_reason = safeString(reason);
   }
 
-  function classifyAppliedOutput(assembled) {
+  function refreshTraceSummary(trace, segSummary, composerResult) {
+    const specialistTraceEntries = (trace.roles || []).filter(
+      (entry) => entry.stage === "output" && entry.role_id !== COMPOSER_ROLE_ID
+    );
+    const successfulRoles = specialistTraceEntries.filter(
+      (entry) => entry.status === "fulfilled"
+    ).length;
+    trace.summary = Object.assign({}, trace.summary || {}, {
+      specialist_calls: specialistTraceEntries.length,
+      successful_roles: successfulRoles,
+      candidate_count: Number(trace.candidates && trace.candidates.total) || 0,
+      composer_state: trace.composer.status || (composerResult ? "fulfilled" : "not_run"),
+      changed_segment_count: 0,
+      material_changed_segment_count: 0,
+      unchanged_segment_count: Number(segSummary && segSummary.mutable) || 0,
+    });
+  }
+
+  function classifyAppliedOutput(assembled, semanticProof) {
     const changedSegments = (assembled && assembled.finalSegments || []).filter((segment) =>
       segment.type === "mutable"
       && safeString(segment.final_text) !== safeString(segment.original_text)
@@ -3244,16 +4036,45 @@
     const deleteOnly = changedSegments.length > 0
       && changedSegments.every((segment) => segment.operation === "delete");
     if (assembled && assembled.materialComposerApplied > 0) {
-      return { enhanced: true, state: "enhanced", reason: "composer_integrated" };
+      const proofPassed = semanticProof && semanticProof.verdict === "pass";
+      return {
+        enhanced: proofPassed,
+        state: proofPassed ? "enhanced" : "material_rewrite_unverified",
+        reason: proofPassed ? "composer_rewrite_semantic_proof_passed" : "composer_material_rewrite_semantic_not_passed",
+        material_rewrite: true,
+        semantic_verified: proofPassed,
+        quality_preferred: null,
+      };
     }
     if (deleteOnly || (changedSegments.length > 0
         && assembled && assembled.metaOnlyChanged === changedSegments.length)) {
-      return { enhanced: false, state: "sanitized", reason: "meta_artifact_removed_without_composer" };
+      return {
+        enhanced: false,
+        state: "sanitized",
+        reason: "composer_meta_sanitization_not_material",
+        material_rewrite: false,
+        semantic_verified: null,
+        quality_preferred: null,
+      };
     }
     if (assembled && assembled.composerApplied > 0) {
-      return { enhanced: false, state: "precision_patch", reason: "composer_non_material_change" };
+      return {
+        enhanced: false,
+        state: "precision_patch",
+        reason: "composer_non_material_change",
+        material_rewrite: false,
+        semantic_verified: null,
+        quality_preferred: null,
+      };
     }
-    return { enhanced: false, state: "degraded_patch", reason: "specialist_patch_without_composer" };
+    return {
+      enhanced: false,
+      state: "composer_output_not_material",
+      reason: "composer_output_not_material",
+      material_rewrite: false,
+      semantic_verified: null,
+      quality_preferred: null,
+    };
   }
 
   async function callRole(role, profile, mutableSegs, contextBlock, allSegments, abortSignal, trace, directorInfo, queuedAt, runtimeControl) {
@@ -3275,17 +4096,25 @@
           && traceBudget.input_attempt_used >= traceBudget.input_attempt_max) {
         return { allowed: false, reason: "input_attempt_budget_exhausted" };
       }
-      const composerReserve = role.is_composer
+      const proverReserve = role.is_prover
+        ? 0
+        : Math.max(0, Number(traceBudget.prover_attempt_reserved) || 0);
+      const composerReserve = role.is_composer || role.is_prover
         ? 0
         : Math.max(0, Number(traceBudget.composer_attempt_reserved) || 0);
-      const primaryReserve = !role.is_input_planner && !role.is_composer && kind !== "primary"
+      const judgeReserve = role.is_composer || role.is_judge || role.is_prover
+        ? 0
+        : Math.max(0, Number(traceBudget.judge_attempt_reserved) || 0);
+      const downstreamReserve = proverReserve + composerReserve + judgeReserve;
+      const primaryReserve = !role.is_input_planner && !role.is_composer
+          && !role.is_judge && !role.is_prover && kind !== "primary"
         ? Math.max(0, Number(traceBudget.specialist_primary_remaining) || 0)
         : 0;
-      if (!role.is_composer
-          && traceBudget.http_attempt_used >= traceBudget.http_attempt_max - composerReserve - primaryReserve) {
+      if (!role.is_prover
+          && traceBudget.http_attempt_used >= traceBudget.http_attempt_max - downstreamReserve - primaryReserve) {
         return {
           allowed: false,
-          reason: primaryReserve > 0 ? "specialist_primary_and_composer_reserved" : "composer_attempt_reserved",
+          reason: primaryReserve > 0 ? "specialist_primary_and_downstream_reserved" : "downstream_attempt_reserved",
         };
       }
       if (traceBudget.http_attempt_used >= traceBudget.http_attempt_max) {
@@ -3295,9 +4124,15 @@
       traceBudget.http_attempt_used += 1;
       if (role.is_input_planner) {
         traceBudget.input_attempt_used = Math.max(0, Number(traceBudget.input_attempt_used) || 0) + 1;
+      } else if (role.is_prover) {
+        traceBudget.prover_attempt_used = Math.max(0, Number(traceBudget.prover_attempt_used) || 0) + 1;
+        traceBudget.prover_attempt_reserved = 0;
       } else if (role.is_composer) {
         traceBudget.composer_attempt_used = Math.max(0, Number(traceBudget.composer_attempt_used) || 0) + 1;
         traceBudget.composer_attempt_reserved = 0;
+      } else if (role.is_judge) {
+        traceBudget.judge_attempt_used = Math.max(0, Number(traceBudget.judge_attempt_used) || 0) + 1;
+        traceBudget.judge_attempt_reserved = 0;
       } else if (kind === "primary") {
         traceBudget.specialist_primary_remaining = Math.max(
           0,
@@ -3313,6 +4148,7 @@
         role_id: role.role_id,
         stage: role.stage || "output",
         provider: safeString(profile && profile.provider),
+        endpoint_group: profile && profile.endpoint ? executionGroupKey(profile) : "",
         model: safeString(profile && profile.model),
         status: "failed",
         queued_at: queuedTimestamp,
@@ -3342,6 +4178,7 @@
         attemptTrace.push({
           kind,
           provider: activeProfile.provider,
+          endpoint_group: executionGroupKey(activeProfile),
           model: activeProfile.model,
           status: "failed",
           started_at: blockedAt,
@@ -3361,6 +4198,7 @@
         attemptTrace.push({
           kind,
           provider: activeProfile.provider,
+          endpoint_group: executionGroupKey(activeProfile),
           model: activeProfile.model,
           status: "blocked",
           started_at: blockedAt,
@@ -3377,7 +4215,7 @@
       let failureSource = "";
       let structuredTransport = "";
       try {
-        const requestProfile = role.is_input_planner
+        const requestProfile = role.is_input_planner || role.is_judge || role.is_prover
           ? Object.assign({}, activeProfile, { temperature: 0 })
           : activeProfile;
         const providerRequestOptions = Object.assign(
@@ -3415,13 +4253,36 @@
         if (!parsed) throw new Error("json_parse_failed");
         const validated = role.is_input_planner
           ? validateTurnContractFragment(parsed, role.role_id, directorInfo && directorInfo.context_manifest)
-          : (role.is_composer
-            ? validateComposerSchema(parsed, allowedSegIds)
-            : validateCandidateSchema(parsed, role.role_id, allowedSegIds, mutableSegs));
-        if (!validated) throw new Error("schema_validation_failed");
+          : (role.is_judge
+            ? validateSemanticJudgment(
+                parsed,
+                directorInfo && directorInfo.scene_candidates,
+                directorInfo && directorInfo.draft_ledger
+              )
+            : (role.is_prover
+              ? validateSemanticProof(
+                  parsed,
+                  directorInfo && directorInfo.draft_ledger,
+                  mutableSegs,
+                  directorInfo && directorInfo.final_segments
+                )
+              : (role.is_composer
+                ? validateComposerSchema(parsed, allowedSegIds, mutableSegs)
+                : validateCandidateSchema(parsed, role.role_id, allowedSegIds, mutableSegs))));
+        if (!validated) {
+          const schemaError = new Error("schema_validation_failed");
+          const mixedIds = mixedSegmentDeletionIds(parsed, role, allowedSegIds, mutableSegs);
+          if (mixedIds.length) {
+            schemaError.structured_recovery_kind = "specialist_mixed_segment_recovery";
+            schemaError.structured_recovery_segment_ids = mixedIds;
+            schemaError.structured_recovery_payload = parsed;
+          }
+          throw schemaError;
+        }
         attemptTrace.push({
           kind,
           provider: activeProfile.provider,
+          endpoint_group: executionGroupKey(activeProfile),
           model: activeProfile.model,
           status: "fulfilled",
           started_at: attemptStarted,
@@ -3432,10 +4293,16 @@
       } catch (err) {
         lastError = safeString(err && err.message);
         const classification = classifyRoleError(err, abortSignal);
+        if (err && err.structured_recovery_kind) {
+          classification.recovery_kind = safeString(err.structured_recovery_kind);
+          classification.recovery_segment_ids = arrayFromCollection(err.structured_recovery_segment_ids);
+          classification.recovery_payload = err.structured_recovery_payload;
+        }
         lastErrorClass = classification.code;
         attemptTrace.push({
           kind,
           provider: activeProfile.provider,
+          endpoint_group: executionGroupKey(activeProfile),
           model: activeProfile.model,
           status: "failed",
           started_at: attemptStarted,
@@ -3459,8 +4326,41 @@
         && !role.is_input_planner && !(abortSignal && abortSignal.aborted)
         && (!runtimeControl || typeof runtimeControl.canContinue !== "function" || runtimeControl.canContinue())) {
       retryCount++;
-      const retryPrompts = outcome.classification.repair ? jsonRepairPrompts(prompts, role) : prompts;
-      outcome = await executeAttempt(profile, retryPrompts, outcome.classification.repair ? "repair_retry" : "transient_retry");
+      if (role.is_composer && outcome.classification.code === "reasoning_only_response") {
+        outcome = await executeAttempt(
+          structuredRecoveryProfile(profile),
+          composerStructuredRecoveryPrompts(
+            prompts,
+            mutableSegs,
+            allSegments,
+            directorInfo,
+            contextBlock
+          ),
+          "composer_json_recovery"
+        );
+      } else if (outcome.classification.recovery_kind === "specialist_mixed_segment_recovery") {
+        outcome = await executeAttempt(
+          structuredRecoveryProfile(profile),
+          specialistStructuredRecoveryPrompts(
+            prompts,
+            role,
+            outcome.classification.recovery_payload,
+            outcome.classification.recovery_segment_ids,
+            mutableSegs,
+            allSegments,
+            directorInfo,
+            contextBlock
+          ),
+          "specialist_mixed_segment_recovery"
+        );
+      } else {
+        const retryPrompts = outcome.classification.repair ? jsonRepairPrompts(prompts, role) : prompts;
+        outcome = await executeAttempt(
+          profile,
+          retryPrompts,
+          outcome.classification.repair ? "repair_retry" : "transient_retry"
+        );
+      }
     }
 
     if (outcome && outcome.__error && allowFallback && fallbackProfile
@@ -3476,6 +4376,7 @@
         role_id: role.role_id,
         stage: role.stage || "output",
         provider: finalAttempt.provider || profile.provider,
+        endpoint_group: finalAttempt.endpoint_group || executionGroupKey(profile),
         model: finalAttempt.model || profile.model,
         status: "fulfilled",
         queued_at: queuedTimestamp,
@@ -3488,9 +4389,13 @@
         attempts: attemptTrace,
         candidate_count: role.is_input_planner
           ? 1
-          : (role.is_composer
-            ? Object.keys(outcome.segments).length
-            : outcome.candidates.length),
+          : (role.is_judge
+            ? outcome.candidate_judgments.length
+            : (role.is_prover
+              ? 1
+              : (role.is_composer
+                ? Object.keys(outcome.segments).length
+                : outcome.candidates.length))),
         request_overrides: requestOverrides,
       });
       return outcome;
@@ -3501,6 +4406,7 @@
       role_id: role.role_id,
       stage: role.stage || "output",
       provider: finalProfile.provider,
+      endpoint_group: executionGroupKey(finalProfile),
       model: finalProfile.model,
       status: "failed",
       queued_at: queuedTimestamp,
@@ -3608,12 +4514,12 @@
   const SIGNAL_ROLE_MAP = Object.freeze({
     dialogue_heavy: ["character_reader"],
     speaker_switch: ["character_reader"],
-    mechanical_artifact: ["agency_meta_guard"],
-    list_structure: ["agency_meta_guard"],
+    mechanical_artifact: ["style_reader"],
+    list_structure: ["style_reader"],
     repetition_detected: ["style_reader"],
     long_scene: ["plot_continuity_reader", "style_reader"],
     dense_segments: ["style_reader"],
-    lorebook_available: ["world_reader"],
+    lorebook_available: ["plot_continuity_reader"],
     memory_available: ["plot_continuity_reader"],
     character_available: ["character_reader"],
   });
@@ -3624,16 +4530,15 @@
     const signalIds = signals.map((s) => s.id);
     const specialistLimit = OUTPUT_SPECIALIST_LIMIT[presetDef.id] || OUTPUT_SPECIALIST_LIMIT.balanced;
     const baseScores = {
-      secret_pov_guard: 80,
       character_reader: 55,
       plot_continuity_reader: 50,
-      style_reader: 40,
-      agency_meta_guard: 35,
-      world_reader: 25,
+      style_reader: 45,
     };
     const severityScores = { high: 100, medium: 45, low: 15 };
     const candidates = [];
     let composer = null;
+    let judge = null;
+    let prover = null;
     const skipReasons = [];
     const selectReasons = [];
 
@@ -3641,6 +4546,30 @@
       const profile = settings.role_profiles[role.role_id];
       if (role.is_input_planner) {
         skipReasons.push({ role_id: role.role_id, reason: "input_stage_only" });
+        return;
+      }
+      if (role.is_judge) {
+        if (!baseRoleIds.has(role.role_id)) {
+          skipReasons.push({ role_id: role.role_id, reason: "not_in_preset" });
+        } else if (!profile || !profile.enabled) {
+          skipReasons.push({ role_id: role.role_id, reason: "disabled" });
+        } else if (!isProfileConfigured(profile)) {
+          skipReasons.push({ role_id: role.role_id, reason: "not_configured" });
+        } else {
+          judge = role;
+        }
+        return;
+      }
+      if (role.is_prover) {
+        if (!baseRoleIds.has(role.role_id)) {
+          skipReasons.push({ role_id: role.role_id, reason: "not_in_preset" });
+        } else if (!profile || !profile.enabled) {
+          skipReasons.push({ role_id: role.role_id, reason: "disabled" });
+        } else if (!isProfileConfigured(profile)) {
+          skipReasons.push({ role_id: role.role_id, reason: "not_configured" });
+        } else {
+          prover = role;
+        }
         return;
       }
       if (role.is_composer) {
@@ -3678,8 +4607,7 @@
       candidates.push({
         role,
         matchedSignalIds: matchedSignals.map((signal) => signal.id),
-        required: role.role_id === "secret_pov_guard"
-          && (presetDef.id === "balanced" || presetDef.id === "quality"),
+        required: baseRoleIds.has(role.role_id),
         score: (baseScores[role.role_id] || 0) + maxSignalScore + matchedSignals.length * 3,
       });
     });
@@ -3707,28 +4635,25 @@
     if (composer) {
       selectReasons.push({ role_id: composer.role_id, reason: "composer_reserved" });
     }
+    if (judge) {
+      selectReasons.push({ role_id: judge.role_id, reason: "semantic_judge_reserved" });
+    }
+    if (prover) {
+      selectReasons.push({ role_id: prover.role_id, reason: "semantic_prover_reserved" });
+    }
 
     return {
-      roles: chosen.map((item) => item.role).concat(composer ? [composer] : []),
+      roles: chosen.map((item) => item.role)
+        .concat(judge ? [judge] : [])
+        .concat(composer ? [composer] : [])
+        .concat(prover ? [prover] : []),
       skipReasons,
       selectReasons,
       signals: signalIds,
     };
   }
 
-  /* ── Fusion Director (single scoring function) ─────────── */
-
-  function textSimilarity(a, b) {
-    const sa = safeString(a);
-    const sb = safeString(b);
-    if (!sa || !sb) return 0;
-    const setA = new Set(sa.toLowerCase().split(/\s+/).filter(Boolean));
-    const setB = new Set(sb.toLowerCase().split(/\s+/).filter(Boolean));
-    if (!setA.size || !setB.size) return 0;
-    let common = 0;
-    setA.forEach((w) => { if (setB.has(w)) common++; });
-    return common / Math.max(setA.size, setB.size);
-  }
+  /* ── Rewrite materiality ─────────── */
 
   function sequenceShingles(text, size) {
     const tokens = safeString(text).toLowerCase().replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
@@ -3827,142 +4752,11 @@
     };
   }
 
-  function fusionDirector(candidatesBySegment, roles, originalSegments) {
-    const originalMutableIds = (originalSegments || []).filter((s) => s.type === "mutable").map((s) => s.id);
-    const segmentIds = uniqueList(originalMutableIds.concat(Object.keys(candidatesBySegment || {})));
-    const ranked = {};
-    const consensus = {};
-    const complementary = {};
-    const conflict = {};
-    const gap = [];
-    const origMap = {};
-    (originalSegments || []).forEach((s) => {
-      if (s.type === "mutable") origMap[s.id] = mutableCoreText(s);
-    });
-
-    const rolePriority = {};
-    roles.forEach((r, i) => { rolePriority[r.role_id] = (r.priority || 0) + (roles.length - i); });
-
-    segmentIds.forEach((segId) => {
-      const candidates = candidatesBySegment[segId] || [];
-      if (!candidates.length) {
-        gap.push(segId);
-        ranked[segId] = [];
-        return;
-      }
-
-      const hasOriginal = Object.prototype.hasOwnProperty.call(origMap, segId);
-      const origText = safeString(origMap[segId]);
-      const origLen = origText.trim().length || 1;
-
-      const normalized = candidates.map((c) => {
-        const roleWeight = rolePriority[c.role_id] || 0;
-        const confidence = clampNumber(c.confidence, 0, 1, 0.5);
-        const issues = normalizeIssues(c.issues, c.tags);
-        const issuePri = maxIssuePriority(issues);
-        const rewriteCore = replacementCoreText(c.rewrite);
-        const sim = textSimilarity(rewriteCore, origText);
-        const rewriteLen = rewriteCore.trim().length;
-        const lenRatio = rewriteLen / origLen;
-        const lenPenalty = (lenRatio < 0.3 || lenRatio > 3.0) ? -20 : 0;
-        const identical = hasOriginal && rewriteCore === origText;
-        const simPenalty = identical ? -1000 : (sim > 0.95 ? -30 : 0);
-        const baseScore = confidence * 100 + roleWeight + issuePri * 0.3 + lenPenalty + simPenalty;
-        return Object.assign({}, c, {
-          score: baseScore,
-          base_score: baseScore,
-          similarity: sim,
-          lenRatio,
-          issues,
-          identical_to_original: identical,
-          issue_priority: issuePri,
-        });
-      });
-
-      /* ── Semantic consensus / complementary / conflict ── */
-      const issueToRoles = {};
-      const changedCandidates = normalized.filter((c) => !c.identical_to_original);
-      changedCandidates.forEach((c) => {
-        (c.issues || []).forEach((iss) => {
-          if (!issueToRoles[iss]) issueToRoles[iss] = new Set();
-          issueToRoles[iss].add(c.role_id);
-        });
-      });
-
-      const consensusIssues = [];
-      Object.keys(issueToRoles).forEach((iss) => {
-        const roleSet = issueToRoles[iss];
-        if (roleSet.size >= 2) {
-          consensusIssues.push(iss);
-        }
-      });
-
-      const distinctRoles = new Set(changedCandidates.map((c) => c.role_id));
-      const distinctIssues = Object.keys(issueToRoles);
-      const complementaryIssues = changedCandidates.length >= 2
-        && distinctRoles.size >= 2
-        && distinctIssues.length >= 2
-        ? distinctIssues.filter((issue) => consensusIssues.indexOf(issue) < 0)
-        : [];
-
-      if (consensusIssues.length) {
-        consensus[segId] = consensusIssues;
-      }
-      if (complementaryIssues.length) {
-        complementary[segId] = complementaryIssues;
-      }
-
-      /* conflict: same issue, very different rewrites */
-      const conflictIssues = [];
-      Object.keys(issueToRoles).forEach((iss) => {
-        const roleSet = issueToRoles[iss];
-        if (roleSet.size >= 2) {
-            const sameIssueCandidates = changedCandidates.filter((c) => (c.issues || []).indexOf(iss) >= 0);
-            if (sameIssueCandidates.length >= 2) {
-              for (let i = 0; i < sameIssueCandidates.length && conflictIssues.indexOf(iss) < 0; i++) {
-                for (let j = i + 1; j < sameIssueCandidates.length; j++) {
-                  const left = replacementCoreText(sameIssueCandidates[i].rewrite);
-                  const right = replacementCoreText(sameIssueCandidates[j].rewrite);
-                  const simPair = textSimilarity(left, right);
-                  const lenDiff = Math.abs(left.length - right.length) / Math.max(left.length, right.length, 1);
-                  if (simPair < 0.3 || lenDiff > 0.5) {
-                    conflictIssues.push(iss);
-                    break;
-                  }
-                }
-              }
-            }
-        }
-      });
-      if (conflictIssues.length) {
-        conflict[segId] = conflictIssues;
-      }
-
-      const scored = normalized.map((candidate) => {
-        let semanticScore = 0;
-        (candidate.issues || []).forEach((issue) => {
-          if (consensusIssues.indexOf(issue) >= 0) semanticScore += 12;
-          if (complementaryIssues.indexOf(issue) >= 0) semanticScore += 4;
-          if (conflictIssues.indexOf(issue) >= 0) semanticScore -= 8;
-        });
-        return Object.assign({}, candidate, {
-          semantic_score: semanticScore,
-          score: candidate.base_score + semanticScore,
-        });
-      }).sort((a, b) => b.score - a.score);
-      ranked[segId] = scored;
-      if (!changedCandidates.length && gap.indexOf(segId) < 0) gap.push(segId);
-    });
-
-    return { ranked, consensus, complementary, conflict, gap };
-  }
-
   /* ── Composer ──────────────────────────────────────────── */
 
   function candidateEligibleForApplication(candidate) {
     if (!candidate || candidate.identical_to_original) return false;
-    if (candidate.score == null) return true;
-    return Number(candidate.score) > DIRECTOR_APPLY_SCORE_MIN;
+    return safeString(candidate.judge_verdict) !== "reject";
   }
 
   function composerTokenPlan(mutableSegs, profile) {
@@ -3974,26 +4768,41 @@
     };
   }
 
-  async function runComposer(composerRole, profile, segments, directorResult, contextBlock, abortSignal, trace, mutableSegs, completionWait) {
+  async function runComposer(
+    composerRole,
+    profile,
+    segments,
+    directorResult,
+    contextBlock,
+    abortSignal,
+    trace,
+    mutableSegs,
+    completionWait,
+    semanticProofRepair
+  ) {
     const candidateBundles = {};
     Object.keys(directorResult.ranked).forEach((segId) => {
       const ranked = directorResult.ranked[segId];
       candidateBundles[segId] = ranked.filter(candidateEligibleForApplication).slice(0, 3).map((c) => ({
+        candidate_id: c.candidate_id,
         role: c.role_id,
-        confidence: c.confidence,
-        score: c.score,
-        issues: c.issues || [],
+        supporting_roles: c.supporting_roles || [c.role_id],
+        duplicate_count: c.duplicate_count || 0,
+        judge_verdict: c.judge_verdict,
         change_summary: c.change_summary || "",
+        evidence_refs: c.evidence_refs || [],
+        retained_beats: c.retained_beats || [],
+        proposed_additions: c.proposed_additions || [],
         operation: c.operation || "replace",
         rewrite: c.rewrite,
       }));
     });
     const directorInfo = {
       candidateBundles,
-      consensus: directorResult.consensus,
-      complementary: directorResult.complementary,
-      conflict: directorResult.conflict,
-      gap: directorResult.gap,
+      semantic_judgment: directorResult.semantic_judgment,
+      fusion_plan: directorResult.fusion_plan,
+      draft_ledger: directorResult.draft_ledger || null,
+      semantic_proof_repair: semanticProofRepair || null,
     };
     const tokenPlan = composerTokenPlan(mutableSegs, profile);
     const composerProfile = Object.assign({}, profile, {
@@ -4014,8 +4823,8 @@
     );
     let materiality = result ? assessComposerMateriality(mutableSegs, result) : null;
     trace.composer.materiality = materiality;
-    trace.composer.semantic_retry = 0;
-    if (completionWait && result && materiality && !materiality.pass
+    if (!semanticProofRepair) trace.composer.semantic_retry = 0;
+    if (!semanticProofRepair && completionWait && result && materiality && !materiality.pass
         && trace.budget.http_attempt_used < trace.budget.http_attempt_max
         && !(abortSignal && abortSignal.aborted)) {
       trace.composer.semantic_retry = 1;
@@ -4053,22 +4862,84 @@
     const elapsed = Date.now() - composerStarted;
     trace.composer.used = !!result;
     trace.composer.status = result ? "fulfilled" : "failed";
-    trace.composer.elapsed_ms = elapsed;
+    trace.composer.elapsed_ms = Math.max(0, Number(trace.composer.elapsed_ms) || 0) + elapsed;
+    if (semanticProofRepair) trace.composer.proof_repair_attempted = true;
     return result;
+  }
+
+  function summarizeSemanticProof(trace, proof, attemptLabel) {
+    const target = trace.semantic_prover;
+    target.attempts = Math.max(0, Number(target.attempts) || 0) + 1;
+    target.status = proof ? "fulfilled" : "failed";
+    target.verdict = proof ? proof.verdict : "failed";
+    target.attempt_label = safeString(attemptLabel);
+    target.facts_missing = proof
+      ? proof.fact_checks.filter((item) => item.status !== "preserved").length
+      : 0;
+    target.facts_contradicted = proof
+      ? proof.fact_checks.filter((item) => item.status === "contradicted").length
+      : 0;
+    target.beats_missing = proof
+      ? proof.beat_checks.filter((item) => item.status !== "preserved").length
+      : 0;
+    target.constraints_violated = proof
+      ? proof.constraint_checks.filter((item) => item.status !== "satisfied").length
+      : 0;
+    target.hard_violations = proof ? proof.hard_violations.length : 0;
+    target.unsupported_additions = proof ? proof.unsupported_additions.length : 0;
+    target.output_contract_failures = proof
+      ? PROOF_OUTPUT_CONTRACT_KEYS.filter((key) => !proof.output_contract[key]).length
+      : 0;
+    target.reason = proof ? proof.reason_codes.join(",") : "semantic_prover_call_failed";
+  }
+
+  async function runSemanticProver(
+    proverRole,
+    profile,
+    segments,
+    finalSegments,
+    directorResult,
+    contextBlock,
+    abortSignal,
+    trace,
+    completionWait,
+    attemptLabel
+  ) {
+    const proof = await callRole(
+      proverRole,
+      profile,
+      mutableSegments(segments),
+      contextBlock,
+      segments,
+      abortSignal,
+      trace,
+      {
+        final_segments: finalSegments,
+        semantic_judgment: directorResult.semantic_judgment,
+        fusion_plan: directorResult.fusion_plan,
+        draft_ledger: directorResult.draft_ledger,
+      },
+      Date.now(),
+      {
+        allowRetry: false,
+        allowFallback: true,
+        completionWait: !!completionWait,
+      }
+    );
+    summarizeSemanticProof(trace, proof, attemptLabel);
+    return proof;
   }
 
   /* ── Output Assembly ───────────────────────────────────── */
 
-  function assembleOutput(segments, composerResult, directorResult) {
+  function assembleOutput(segments, composerResult) {
     const composerSegments = composerResult ? asObject(composerResult.segments) : {};
-    const ranked = directorResult ? directorResult.ranked : {};
     const finalSegments = [];
     let changed = false;
     let composerApplied = 0;
     let materialComposerApplied = 0;
     let materialChanged = 0;
     let metaOnlyChanged = 0;
-    let topCandidateApplied = 0;
     let unchangedSegments = 0;
 
     segments.forEach((seg) => {
@@ -4080,34 +4951,17 @@
         let operation = "none";
         let appliedRole = "";
         let composerUnchanged = false;
-        const rankedChanged = (ranked[seg.id] || []).find((candidate) =>
-          candidateEligibleForApplication(candidate)
-          && replacementCoreText(candidate.rewrite) !== originalCore
-        );
         if (Object.prototype.hasOwnProperty.call(composerSegments, seg.id)) {
           const composerCore = replacementCoreText(composerSegments[seg.id]);
           if (composerCore === originalCore) {
             composerUnchanged = true;
-            if (rankedChanged) {
-              finalCore = replacementCoreText(rankedChanged.rewrite);
-              source = "top_candidate_after_composer_unchanged";
-              operation = rankedChanged.operation || "replace";
-              appliedRole = rankedChanged.role_id || "";
-              topCandidateApplied++;
-            }
           } else {
             finalCore = composerCore;
             source = "composer";
-            operation = "replace";
+            operation = !composerCore && isWhollyMetaArtifactText(originalFull) ? "delete" : "replace";
             appliedRole = COMPOSER_ROLE_ID;
             composerApplied++;
           }
-        } else if (rankedChanged) {
-          finalCore = replacementCoreText(rankedChanged.rewrite);
-          source = "top_candidate";
-          operation = rankedChanged.operation || "replace";
-          appliedRole = rankedChanged.role_id || "";
-          topCandidateApplied++;
         }
         const finalFull = finalCore === null
           ? originalFull
@@ -4159,7 +5013,6 @@
       materialComposerApplied,
       materialChanged,
       metaOnlyChanged,
-      topCandidateApplied,
       unchangedSegments,
     };
   }
@@ -4186,6 +5039,12 @@
       ? buildAppliedEvidence(assembled && assembled.finalSegments)
       : [];
     return trace.applied_evidence;
+  }
+
+  function holdAttemptedEvidence(trace, assembled) {
+    trace.attempted_evidence = buildAppliedEvidence(assembled && assembled.finalSegments);
+    trace.applied_evidence = [];
+    return trace.attempted_evidence;
   }
 
   /* ── Verifier (structural checks only) ─────────────────── */
@@ -4440,22 +5299,71 @@
     });
   }
 
-  function composerReserveWindowMs(deadline, profile) {
+  function sceneCandidateSimilarity(left, right) {
+    const grams = (candidate) => {
+      let text = Object.keys(asObject(candidate && candidate.segments)).sort()
+        .map((id) => safeString(candidate.segments[id])).join("\n").toLowerCase().replace(/\s+/g, "");
+      try { text = text.normalize("NFKC"); } catch (_) {}
+      const chars = Array.from(text);
+      const set = new Set();
+      const width = chars.length < 3 ? 1 : 3;
+      for (let i = 0; i <= chars.length - width; i++) set.add(chars.slice(i, i + width).join(""));
+      return set;
+    };
+    return setJaccardSimilarity(grams(left), grams(right));
+  }
+
+  function admitSceneCandidate(pool, seenSignatures, candidate) {
+    if (!Array.isArray(pool) || !(seenSignatures instanceof Set)
+        || !candidate || !safeString(candidate.scene_signature)) {
+      return false;
+    }
+    const duplicate = pool.find((item) =>
+      item.scene_signature === candidate.scene_signature
+      || sceneCandidateSimilarity(item, candidate) >= 0.96
+    );
+    if (duplicate) {
+      duplicate.supporting_roles = uniqueList(
+        arrayFromCollection(duplicate.supporting_roles).concat(candidate.supporting_roles || [candidate.role_id])
+      );
+      duplicate.evidence_refs = uniqueList(
+        arrayFromCollection(duplicate.evidence_refs).concat(candidate.evidence_refs || [])
+      );
+      duplicate.addressed_issues = uniqueList(
+        arrayFromCollection(duplicate.addressed_issues).concat(candidate.addressed_issues || [])
+      );
+      duplicate.retained_beats = normalizeCandidateReferences(
+        arrayFromCollection(duplicate.retained_beats).concat(candidate.retained_beats || []), 32
+      );
+      duplicate.proposed_additions = normalizeCandidateReferences(
+        arrayFromCollection(duplicate.proposed_additions).concat(candidate.proposed_additions || []), 24
+      );
+      duplicate.duplicate_count = (duplicate.duplicate_count || 0) + 1;
+      return false;
+    }
+    seenSignatures.add(candidate.scene_signature);
+    pool.push(candidate);
+    return true;
+  }
+
+  function downstreamReserveWindowMs(deadline, roleProfiles) {
     if (deadline && deadline.completion_wait) return 0;
-    if (!deadline || !profile || !isProfileConfigured(profile)) return 0;
+    const configured = arrayFromCollection(roleProfiles).filter((profile) => profile && isProfileConfigured(profile));
+    if (!deadline || !configured.length) return 0;
     const remaining = deadline.remaining();
     if (remaining <= COMPOSER_RESERVE_GUARD_MS) return 0;
-    const composerAttempts = configuredFallbackProfile(profile) ? 2 : 1;
-    const requested = clampNumber(profile.timeout_ms, 5000, 300000, 60000)
-      * composerAttempts + COMPOSER_RESERVE_GUARD_MS;
-    const dynamicShare = Math.max(COMPOSER_RESERVE_MS, Math.floor(remaining * 0.75));
+    const requested = configured.reduce((sum, profile) => (
+      sum + clampNumber(profile.timeout_ms, 5000, 300000, 60000)
+        * (configuredFallbackProfile(profile) ? 2 : 1)
+    ), COMPOSER_RESERVE_GUARD_MS);
+    const dynamicShare = Math.max(COMPOSER_RESERVE_MS * 2, Math.floor(remaining * 0.72));
     return Math.max(
       0,
       Math.min(requested, dynamicShare, remaining - COMPOSER_RESERVE_GUARD_MS)
     );
   }
 
-  async function scheduleRoles(roles, profiles, segments, contextBlock, allSegments, deadline, trace, maxParallel) {
+  async function scheduleRoles(roles, profiles, segments, contextBlock, allSegments, deadline, trace, maxParallel, draftLedger) {
     // Output attempts are independent from the beforeRequest planner budget.
     if (trace && trace.budget) {
       const presetId = safeString(trace.router && trace.router.preset ? trace.router.preset : "balanced");
@@ -4469,13 +5377,62 @@
     const mutableSegs = mutableSegments(segments).filter((segment) =>
       mutableCoreText(segment).trim().length > 0
     );
-    const specialistRoles = roles.filter((r) => !r.is_composer && !r.is_input_planner);
+    const specialistRoles = roles.filter(
+      (r) => !r.is_composer && !r.is_judge && !r.is_prover && !r.is_input_planner
+    );
+    const judgeRole = roles.find((r) => r.is_judge);
     const composerRole = roles.find((r) => r.is_composer);
+    const proverRole = roles.find((r) => r.is_prover);
+    const judgeProfile = judgeRole && profiles[judgeRole.role_id];
     const composerProfile = composerRole && profiles[composerRole.role_id];
-    const composerReserveMs = composerRole && composerProfile && composerProfile.enabled
-      ? composerReserveWindowMs(deadline, composerProfile)
-      : 0;
-    trace.composer.reserve_ms = composerReserveMs;
+    const proverProfile = proverRole && profiles[proverRole.role_id];
+    if (!judgeRole || !judgeProfile || !judgeProfile.enabled || !isProfileConfigured(judgeProfile)) {
+      trace.semantic_judge.status = "not_configured";
+      trace.composer.status = "blocked_semantic_judge";
+      trace.active_calls_final = 0;
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment: null,
+        fusionPlan: null,
+        proverRole: null,
+        proverProfile: null,
+        failureReason: "semantic_judge_not_configured",
+      };
+    }
+    if (!composerRole || !composerProfile || !composerProfile.enabled
+        || !isProfileConfigured(composerProfile)) {
+      trace.composer.status = "not_configured";
+      trace.active_calls_final = 0;
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment: null,
+        fusionPlan: null,
+        proverRole: null,
+        proverProfile: null,
+        failureReason: "composer_not_configured",
+      };
+    }
+    if (!proverRole || !proverProfile || !proverProfile.enabled || !isProfileConfigured(proverProfile)) {
+      trace.semantic_prover.status = "not_configured";
+      trace.active_calls_final = 0;
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment: null,
+        fusionPlan: null,
+        proverRole: null,
+        proverProfile: null,
+        failureReason: "semantic_prover_not_configured",
+      };
+    }
+    const downstreamReserveMs = downstreamReserveWindowMs(deadline, [
+      judgeRole && judgeProfile && judgeProfile.enabled ? judgeProfile : null,
+      composerRole && composerProfile && composerProfile.enabled ? composerProfile : null,
+      proverRole && proverProfile && proverProfile.enabled ? proverProfile : null,
+    ]);
+    trace.composer.reserve_ms = downstreamReserveMs;
     const specialistTasks = specialistRoles.filter((role) => {
       const profile = profiles[role.role_id];
       return profile && profile.enabled;
@@ -4499,7 +5456,35 @@
         },
       });
     }
+    if (judgeRole && judgeProfile && judgeProfile.enabled
+        && isProfileConfigured(judgeProfile)) {
+      recordExecutionGroupPlan(trace, {
+        [executionGroupKey(judgeProfile)]: {
+          stage: "semantic_judge",
+          endpoint_group: executionGroupKey(judgeProfile),
+          selected_calls: 1,
+          base_concurrency: 1,
+          effective_concurrency: 1,
+          reason: "judge_after_specialists",
+        },
+      });
+    }
+    if (proverRole && proverProfile && proverProfile.enabled
+        && isProfileConfigured(proverProfile)) {
+      recordExecutionGroupPlan(trace, {
+        [executionGroupKey(proverProfile)]: {
+          stage: "semantic_prover",
+          endpoint_group: executionGroupKey(proverProfile),
+          selected_calls: 1,
+          base_concurrency: 1,
+          effective_concurrency: 1,
+          reason: "prover_after_composer",
+        },
+      });
+    }
     const candidatesBySegment = {};
+    const sceneCandidates = [];
+    const seenSceneSignatures = new Set();
     const mutableSegIds = mutableSegs.map((s) => s.id);
     mutableSegIds.forEach((segId) => { candidatesBySegment[segId] = []; });
 
@@ -4523,11 +5508,11 @@
       specialistStopReason = safeString(reason) || "deadline";
       try { specialistController.abort(specialistStopReason); } catch (_) { try { specialistController.abort(); } catch (_) {} }
     }
-    const reserveDelay = composerReserveMs > 0
-      ? Math.max(0, deadline.remaining() - composerReserveMs)
+    const reserveDelay = downstreamReserveMs > 0
+      ? Math.max(0, deadline.remaining() - downstreamReserveMs)
       : -1;
     const reserveTimer = reserveDelay >= 0
-      ? setTimeout(() => stopSpecialists(deadline.check() ? "deadline" : "composer_reserve"), reserveDelay)
+      ? setTimeout(() => stopSpecialists(deadline.check() ? "deadline" : "judge_composer_reserve"), reserveDelay)
       : null;
     const onPipelineAbort = () => stopSpecialists("deadline");
     if (deadline.signal.aborted) onPipelineAbort();
@@ -4539,6 +5524,16 @@
         ? (configuredFallbackProfile(composerProfile) ? 2 : 1)
         : 0;
       trace.budget.composer_attempt_used = 0;
+      trace.budget.judge_attempt_reserved = judgeRole && judgeProfile
+        && judgeProfile.enabled && isProfileConfigured(judgeProfile)
+        ? (configuredFallbackProfile(judgeProfile) ? 2 : 1)
+        : 0;
+      trace.budget.judge_attempt_used = 0;
+      trace.budget.prover_attempt_reserved = proverRole && proverProfile
+        && proverProfile.enabled && isProfileConfigured(proverProfile)
+        ? (configuredFallbackProfile(proverProfile) ? 2 : 1)
+        : 0;
+      trace.budget.prover_attempt_used = 0;
       trace.budget.specialist_primary_remaining = specialistTasks.length;
     }
 
@@ -4560,29 +5555,22 @@
             allSegments,
             specialistController.signal,
             trace,
-            null,
+            { draft_ledger: draftLedger },
             queuedAt,
             {
               allowRetry: false,
               allowFallback: false,
               completionWait: !!deadline.completion_wait,
               canContinue: () => !specialistController.signal.aborted
-                && deadline.remaining() > composerReserveMs + COMPOSER_RESERVE_GUARD_MS,
+                && deadline.remaining() > downstreamReserveMs + COMPOSER_RESERVE_GUARD_MS,
             }
           )
             .then((result) => {
               if (result && result.candidates) {
-                result.candidates.forEach((c) => {
-                  if (!candidatesBySegment[c.segment_id]) candidatesBySegment[c.segment_id] = [];
-                  candidatesBySegment[c.segment_id].push({
-                    role_id: result.role,
-                    rewrite: c.rewrite,
-                    operation: c.operation || "replace",
-                    confidence: c.confidence,
-                    issues: c.issues || [],
-                    change_summary: c.change_summary || "",
-                    tags: c.tags,
-                  });
+                result.candidates.forEach((candidate) => {
+                  if (!admitSceneCandidate(sceneCandidates, seenSceneSignatures, candidate)) {
+                    trace.candidates.duplicate_scene_candidates++;
+                  }
                 });
               }
               return result;
@@ -4626,12 +5614,119 @@
 
     trace.active_calls_after_specialists = activeCallCount;
 
-    const directorResult = fusionDirector(candidatesBySegment, specialistRoles, segments);
-    trace.candidates.total = Object.values(candidatesBySegment).reduce((s, arr) => s + arr.length, 0);
+    sceneCandidates.forEach((candidate) => {
+      Object.keys(candidate.segments || {}).forEach((segmentId) => {
+        if (!candidatesBySegment[segmentId]) return;
+        candidatesBySegment[segmentId].push({
+          candidate_id: candidate.candidate_id,
+          scene_signature: candidate.scene_signature,
+          role_id: candidate.role_id,
+          supporting_roles: candidate.supporting_roles,
+          duplicate_count: candidate.duplicate_count || 0,
+          rewrite: candidate.segments[segmentId],
+          operation: candidate.segment_operations[segmentId] || "replace",
+          confidence: candidate.confidence,
+          issues: candidate.addressed_issues || [],
+          change_summary: candidate.change_summary || "",
+          evidence_refs: candidate.evidence_refs || [],
+          retained_beats: candidate.retained_beats || [],
+          proposed_additions: candidate.proposed_additions || [],
+          tags: candidate.tags || [],
+        });
+      });
+    });
+    trace.candidates.total = sceneCandidates.length;
+    trace.candidates.segment_variant_total = Object.values(candidatesBySegment)
+      .reduce((sum, entries) => sum + entries.length, 0);
     Object.keys(candidatesBySegment).forEach((segId) => {
       trace.candidates.by_segment[segId] = candidatesBySegment[segId].length;
     });
 
+    if (!sceneCandidates.length) {
+      trace.semantic_judge.status = "no_candidates";
+      trace.composer.status = "blocked_no_candidates";
+      trace.active_calls_final = activeCallCount;
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment: null,
+        fusionPlan: null,
+        failureReason: "no_scene_candidates",
+      };
+    }
+    let semanticJudgment = null;
+    if (!deadline.check() && deadline.remaining() > COMPOSER_RESERVE_GUARD_MS) {
+      semanticJudgment = await callRole(
+        judgeRole,
+        judgeProfile,
+        mutableSegs,
+        contextBlock,
+        allSegments,
+        deadline.signal,
+        trace,
+        { scene_candidates: sceneCandidates, draft_ledger: draftLedger },
+        Date.now(),
+        {
+          allowRetry: false,
+          allowFallback: true,
+          completionWait: !!deadline.completion_wait,
+        }
+      );
+    }
+    if (!semanticJudgment) {
+      trace.semantic_judge.status = deadline.check() ? "skipped_deadline" : "failed";
+      trace.composer.status = "blocked_semantic_judge";
+      trace.active_calls_final = activeCallCount;
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment: null,
+        fusionPlan: null,
+        failureReason: deadline.check() ? "semantic_judge_deadline" : "semantic_judge_failed",
+      };
+    }
+
+    const judgeItems = semanticJudgment.candidate_judgments;
+    trace.semantic_judge.status = "fulfilled";
+    trace.semantic_judge.accepted_candidates = judgeItems.filter((item) => item.verdict === "accept").length;
+    trace.semantic_judge.constrained_candidates = judgeItems.filter(
+      (item) => item.verdict === "accept_with_constraints"
+    ).length;
+    trace.semantic_judge.rejected_candidates = judgeItems.filter((item) => item.verdict === "reject").length;
+    trace.semantic_judge.missing_facts = judgeItems.reduce(
+      (sum, item) => sum + item.missing_ledger_ids.length, 0
+    );
+    trace.semantic_judge.unsupported_additions = judgeItems.reduce(
+      (sum, item) => sum + item.unsupported_additions.length, 0
+    );
+    trace.semantic_judge.hard_violations = judgeItems.reduce(
+      (sum, item) => sum + item.hard_violations.length, 0
+    );
+
+    const fusionPlan = buildFusionPlan(semanticJudgment, sceneCandidates, draftLedger, mutableSegs);
+    trace.fusion_plan.status = fusionPlan && fusionPlan.semantic_ready ? "ready" : "rejected_all";
+    trace.fusion_plan.accepted_candidates = fusionPlan ? fusionPlan.accepted_candidate_ids.length : 0;
+    trace.fusion_plan.rejected_candidates = fusionPlan ? fusionPlan.rejected_candidates.length : 0;
+    trace.fusion_plan.consensus_claims = fusionPlan ? fusionPlan.consensus_claims.length : 0;
+    trace.fusion_plan.complementary_claims = fusionPlan ? fusionPlan.complementary_claims.length : 0;
+    trace.fusion_plan.conflicts = fusionPlan ? fusionPlan.conflicts.length : 0;
+    trace.fusion_plan.prohibited_additions = fusionPlan ? fusionPlan.prohibited_additions.length : 0;
+    if (!fusionPlan || !fusionPlan.semantic_ready) {
+      trace.semantic_judge.status = "rejected_all";
+      trace.composer.status = "blocked_semantic_judge";
+      trace.active_calls_final = activeCallCount;
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment,
+        fusionPlan,
+        failureReason: "semantic_judge_rejected_all",
+      };
+    }
+
+    const directorResult = buildComposerCandidatePool(
+      sceneCandidates, semanticJudgment, fusionPlan, segments, draftLedger
+    );
     let composerResult = null;
     if (composerRole && !deadline.check() && deadline.remaining() > COMPOSER_RESERVE_GUARD_MS) {
       if (composerProfile && composerProfile.enabled && isProfileConfigured(composerProfile)) {
@@ -4654,7 +5749,26 @@
     }
 
     trace.active_calls_final = activeCallCount;
-    return { directorResult, composerResult };
+    if (!composerResult) {
+      return {
+        directorResult,
+        composerResult: null,
+        semanticJudgment,
+        fusionPlan,
+        proverRole,
+        proverProfile,
+        failureReason: deadline.check() ? "composer_deadline" : "composer_failed",
+      };
+    }
+    return {
+      directorResult,
+      composerResult,
+      semanticJudgment,
+      fusionPlan,
+      proverRole,
+      proverProfile,
+      failureReason: "",
+    };
   }
 
   /* ── Main Pipeline ─────────────────────────────────────── */
@@ -5131,7 +6245,7 @@
       const snapshot = consumePendingSnapshot(type);
       trace.streaming = snapshot.streaming;
       if (snapshot.input_trace && snapshot.input_trace.input_enhance) {
-        trace.input_enhance = cloneAndFreezeSnapshotValue(snapshot.input_trace.input_enhance);
+        trace.input_enhance = cloneSnapshotValue(snapshot.input_trace.input_enhance);
       }
       if (snapshot.input_trace && Array.isArray(snapshot.input_trace.roles)) {
         trace.roles = cloneAndFreezeSnapshotValue(snapshot.input_trace.roles).slice();
@@ -5193,6 +6307,8 @@
       const segments = buildSegmentMap(originalText, settings);
       const segSummary = summarizeSegments(segments);
       trace.segments = segSummary;
+      const draftLedger = buildDraftLedger(originalText, segments, snapshot.turn_contract);
+      trace.draft_ledger = summarizeDraftLedger(draftLedger);
       traceTimeline(trace, "segment_done");
 
       if (segSummary.mutable === 0) {
@@ -5238,14 +6354,30 @@
 
       try {
         traceTimeline(trace, "schedule_start");
-        const { directorResult, composerResult } = await scheduleRoles(
+        const scheduled = await scheduleRoles(
           selectedRoles, settings.role_profiles, segments,
-          rewriteContextBlock, segments, deadline, trace, settings.max_parallel
+          rewriteContextBlock, segments, deadline, trace, settings.max_parallel,
+          draftLedger
         );
+        const directorResult = scheduled.directorResult;
+        let composerResult = scheduled.composerResult;
+        const proverRole = scheduled.proverRole;
+        const proverProfile = scheduled.proverProfile;
+        const failureReason = scheduled.failureReason;
         traceTimeline(trace, "schedule_done");
+        refreshTraceSummary(trace, segSummary, composerResult);
+        if (failureReason) {
+          setFinalTraceState(trace, false, "rejected", failureReason, {
+            material_rewrite: false,
+            semantic_verified: null,
+            quality_preferred: null,
+          });
+          if (settings_trace_enabled()) await saveTrace(trace);
+          return content;
+        }
 
         traceTimeline(trace, "assemble_start");
-        const assembled = assembleOutput(segments, composerResult, directorResult);
+        let assembled = assembleOutput(segments, composerResult);
         traceTimeline(trace, "assemble_done");
 
         /* ── R4: Director evidence ── */
@@ -5260,7 +6392,7 @@
               consensus: directorResult.consensus[segId] || [],
               complementary: directorResult.complementary[segId] || [],
               conflict: directorResult.conflict[segId] || [],
-              top_score: top.score != null ? Math.round(top.score * 10) / 10 : 0,
+              judge_verdict: top.judge_verdict || "",
               top_role: top.role_id,
               candidate_count: ranked.length,
             });
@@ -5268,51 +6400,187 @@
         }
 
         /* ── R4: Final summary ── */
-        const specialistTraceEntries = (trace.roles || []).filter(
-          (entry) => entry.stage !== "input" && entry.role_id !== COMPOSER_ROLE_ID
-        );
-        const successfulRoles = specialistTraceEntries.filter((entry) => entry.status === "fulfilled").length;
-        trace.summary = {
-          specialist_calls: specialistTraceEntries.length,
-          successful_roles: successfulRoles,
-          candidate_count: trace.candidates.total,
-          composer_state: trace.composer.status || (composerResult ? "fulfilled" : "not_run"),
-          changed_segment_count: 0,
-          material_changed_segment_count: 0,
-          unchanged_segment_count: segSummary.mutable,
-          final_state: "",
-          final_reason: "",
-        };
-
         traceTimeline(trace, "verify_start");
-        const verification = verifyOutput(segments, assembled.finalSegments, assembled.output, originalText);
+        let verification = verifyOutput(segments, assembled.finalSegments, assembled.output, originalText);
         traceTimeline(trace, "verify_done");
-        updateAppliedEvidence(trace, assembled, verification);
 
         if (!verification.pass) {
-          trace.final.enhanced = false;
-          trace.final.reason = `verifier_failed: ${verification.errors.join(", ")}`;
-          setFinalTraceState(trace, false, "rejected", trace.final.reason);
-          traceError(trace, trace.final.reason);
+          const reason = `verifier_failed:${verification.errors.join(",")}`;
+          holdAttemptedEvidence(trace, assembled);
+          setFinalTraceState(trace, false, "rejected", reason, {
+            material_rewrite: assembled.materialComposerApplied > 0,
+            semantic_verified: null,
+            quality_preferred: null,
+          });
+          traceError(trace, reason);
           if (settings_trace_enabled()) await saveTrace(trace);
           return content;
         }
 
         if (!assembled.changed || assembled.output === originalText) {
+          holdAttemptedEvidence(trace, assembled);
           setFinalTraceState(
             trace, false, "unchanged",
-            assembled.changed ? "output_identical" : "no_candidates_applied"
+            assembled.changed ? "composer_output_identical" : "composer_returned_original",
+            {
+              material_rewrite: false,
+              semantic_verified: null,
+              quality_preferred: null,
+            }
           );
           if (settings_trace_enabled()) await saveTrace(trace);
           return content;
         }
 
-        const finalClassification = classifyAppliedOutput(assembled);
+        if (assembled.materialComposerApplied <= 0) {
+          holdAttemptedEvidence(trace, assembled);
+          setFinalTraceState(trace, false, "rejected", "composer_materiality_failed", {
+            material_rewrite: false,
+            semantic_verified: null,
+            quality_preferred: null,
+          });
+          if (settings_trace_enabled()) await saveTrace(trace);
+          return content;
+        }
+
+        if (!proverRole || !proverProfile || deadline.check()) {
+          holdAttemptedEvidence(trace, assembled);
+          const reason = deadline.check() ? "semantic_prover_deadline" : "semantic_prover_not_configured";
+          setFinalTraceState(trace, false, "rejected", reason, {
+            material_rewrite: true,
+            semantic_verified: false,
+            quality_preferred: null,
+          });
+          if (settings_trace_enabled()) await saveTrace(trace);
+          return content;
+        }
+
+        traceTimeline(trace, "semantic_proof_start");
+        let semanticProof = await runSemanticProver(
+          proverRole,
+          proverProfile,
+          segments,
+          assembled.finalSegments,
+          directorResult,
+          rewriteContextBlock,
+          deadline.signal,
+          trace,
+          !!deadline.completion_wait,
+          "initial"
+        );
+        traceTimeline(trace, "semantic_proof_done");
+
+        if (!semanticProof) {
+          holdAttemptedEvidence(trace, assembled);
+          setFinalTraceState(trace, false, "rejected", "semantic_prover_failed", {
+            material_rewrite: true,
+            semantic_verified: false,
+            quality_preferred: null,
+          });
+          if (settings_trace_enabled()) await saveTrace(trace);
+          return content;
+        }
+
+        if (semanticProof.verdict === "repair") {
+          trace.semantic_prover.repair_attempted = true;
+          if (deadline.check()) {
+            holdAttemptedEvidence(trace, assembled);
+            setFinalTraceState(trace, false, "rejected", "semantic_repair_deadline", {
+              material_rewrite: true,
+              semantic_verified: false,
+              quality_preferred: null,
+            });
+            if (settings_trace_enabled()) await saveTrace(trace);
+            return content;
+          }
+          trace.budget.prover_attempt_reserved = 1;
+          const previousSegments = {};
+          assembled.finalSegments.filter((segment) => segment.type === "mutable").forEach((segment) => {
+            previousSegments[segment.id] = segment.final_text;
+          });
+          traceTimeline(trace, "semantic_repair_start");
+          const repairedComposerResult = await runComposer(
+            DEFAULT_ROLES.find((role) => role.role_id === COMPOSER_ROLE_ID),
+            settings.role_profiles[COMPOSER_ROLE_ID],
+            segments,
+            directorResult,
+            rewriteContextBlock,
+            deadline.signal,
+            trace,
+            mutableSegments(segments).filter((segment) => mutableCoreText(segment).trim().length > 0),
+            !!deadline.completion_wait,
+            {
+              repair_instructions: semanticProof.repair_instructions,
+              previous_segments: previousSegments,
+              reason_codes: semanticProof.reason_codes,
+            }
+          );
+          traceTimeline(trace, "semantic_repair_done");
+          if (!repairedComposerResult) {
+            holdAttemptedEvidence(trace, assembled);
+            setFinalTraceState(trace, false, "rejected", "semantic_repair_composer_failed", {
+              material_rewrite: true,
+              semantic_verified: false,
+              quality_preferred: null,
+            });
+            if (settings_trace_enabled()) await saveTrace(trace);
+            return content;
+          }
+          composerResult = repairedComposerResult;
+          assembled = assembleOutput(segments, composerResult);
+          verification = verifyOutput(segments, assembled.finalSegments, assembled.output, originalText);
+          if (!verification.pass || !assembled.changed || assembled.materialComposerApplied <= 0) {
+            holdAttemptedEvidence(trace, assembled);
+            const reason = !verification.pass
+              ? `semantic_repair_verifier_failed:${verification.errors.join(",")}`
+              : (!assembled.changed ? "semantic_repair_returned_original" : "semantic_repair_materiality_failed");
+            setFinalTraceState(trace, false, "rejected", reason, {
+              material_rewrite: assembled.materialComposerApplied > 0,
+              semantic_verified: false,
+              quality_preferred: null,
+            });
+            if (settings_trace_enabled()) await saveTrace(trace);
+            return content;
+          }
+          trace.budget.prover_attempt_reserved = 1;
+          traceTimeline(trace, "semantic_reproof_start");
+          semanticProof = await runSemanticProver(
+            proverRole,
+            proverProfile,
+            segments,
+            assembled.finalSegments,
+            directorResult,
+            rewriteContextBlock,
+            deadline.signal,
+            trace,
+            !!deadline.completion_wait,
+            "after_repair"
+          );
+          traceTimeline(trace, "semantic_reproof_done");
+        }
+
+        if (!semanticProof || semanticProof.verdict !== "pass") {
+          holdAttemptedEvidence(trace, assembled);
+          const proofReason = semanticProof && semanticProof.reason_codes.length
+            ? semanticProof.reason_codes.join("|")
+            : "semantic_proof_not_passed";
+          setFinalTraceState(trace, false, "rejected", `semantic_proof_failed:${proofReason}`, {
+            material_rewrite: true,
+            semantic_verified: false,
+            quality_preferred: null,
+          });
+          if (settings_trace_enabled()) await saveTrace(trace);
+          return content;
+        }
+
+        updateAppliedEvidence(trace, assembled, verification);
+        const finalClassification = classifyAppliedOutput(assembled, semanticProof);
         setFinalTraceState(
           trace,
           finalClassification.enhanced,
           finalClassification.state,
-          finalClassification.reason
+          finalClassification.reason,
+          finalClassification
         );
         trace.summary.changed_segment_count = trace.applied_evidence.filter((item) => item.changed).length;
         trace.summary.material_changed_segment_count = trace.applied_evidence.filter(
@@ -5329,6 +6597,7 @@
         if (deadline) deadline.cancel();
       }
     } catch (err) {
+      warn("afterRequest pipeline error:", err);
       traceError(trace, `pipeline_error: ${safeString(err && err.message)}`);
       setFinalTraceState(trace, false, "failed", "pipeline_error");
       if (settings_trace_enabled()) await saveTrace(trace);
@@ -5406,8 +6675,12 @@
       const providerOptions = PROVIDERS.map((p) =>
         `<option value="${p}" ${profile.provider === p ? "selected" : ""}>${p}</option>`
       ).join("");
-      const roleStage = role.is_input_planner ? "input" : (role.is_composer ? "composer" : "specialist");
-      const roleStageLabel = role.is_input_planner ? "INPUT" : (role.is_composer ? "COMPOSER" : "REWRITE");
+      const roleStage = role.is_input_planner
+        ? "input"
+        : (role.is_judge ? "judge" : (role.is_composer ? "composer" : (role.is_prover ? "prover" : "specialist")));
+      const roleStageLabel = role.is_input_planner
+        ? "INPUT"
+        : (role.is_judge ? "JUDGE" : (role.is_composer ? "COMPOSER" : (role.is_prover ? "PROVER" : "REWRITE")));
       const configured = isProfileConfigured(profile);
       const stateLabel = !profile.enabled ? "꺼짐" : (configured ? "준비됨" : "설정 필요");
       const stateClass = !profile.enabled ? "is-off" : (configured ? "is-ready" : "is-missing");
@@ -5536,11 +6809,12 @@
     }).join("");
     return `
       <div class="recomposer-role-intro">
-        <div><span>01</span><strong>Input planning</strong><small>설정·기억·현재 장면을 턴 계약으로 정리</small></div>
-        <div><span>02</span><strong>Specialist rewrite</strong><small>역할별로 초안의 재작성 후보 생성</small></div>
-        <div><span>03</span><strong>Fusion compose</strong><small>후보를 결합해 최종 출력으로 재구성</small></div>
-      </div>
-      <div class="recomposer-roles-list">${rows}</div>`;
+        <div><span>01</span><strong>입력 계획</strong><small>설정, 기억, 현재 장면을 턴 계약으로 정리</small></div>
+        <div><span>02</span><strong>장면 재작성</strong><small>세 전문 역할이 완성된 장면 후보를 각각 생성</small></div>
+        <div><span>03</span><strong>Semantic Judge</strong><small>근거, 누락, 충돌, 비밀과 시점 위반을 후보별 판정</small></div>
+        <div><span>04</span><strong>Fusion Composer</strong><small>승인된 요소와 Fusion Plan으로 최종 장면을 재구성</small></div>
+        <div><span>05</span><strong>Semantic Prover</strong><small>최종문 전체가 사실, beat, 비밀, 시점, agency 계약을 지켰는지 증명</small></div>
+      </div>      <div class="recomposer-roles-list">${rows}</div>`;
   }
 
   function renderTracePanel() {
@@ -5628,8 +6902,8 @@
       return profile && profile.enabled && isProfileConfigured(profile);
     });
     const configuredInputRoles = configuredRoles.filter((role) => role.is_input_planner);
-    const providerCount = new Set(configuredRoles.map((role) => (
-      settings.role_profiles[role.role_id].provider
+    const providerEndpointCount = new Set(configuredRoles.map((role) => (
+      executionGroupKey(settings.role_profiles[role.role_id])
     ))).size;
     const preset = PRESETS.find((item) => item.id === settings.preset) || PRESETS[1];
     const style = `
@@ -6020,6 +7294,16 @@
           background: rgba(138,85,247,0.09);
           color: #b49aff;
         }
+        .stage-judge .recomposer-stage-badge {
+          border-color: rgba(225,88,166,0.24);
+          background: rgba(225,88,166,0.08);
+          color: #ef9ac9;
+        }
+        .stage-prover .recomposer-stage-badge {
+          border-color: rgba(143,167,255,0.28);
+          background: rgba(143,167,255,0.09);
+          color: #b7c5ff;
+        }
         .recomposer-role-meta {
           display: flex;
           align-items: center;
@@ -6290,7 +7574,7 @@
           <div class="recomposer-metric"><span>프리셋</span><strong>${escapeHtml(preset.label)}</strong></div>
           <div class="recomposer-metric"><span>준비된 역할</span><strong>${configuredRoles.length} / ${settings.roles.length}</strong></div>
           <div class="recomposer-metric"><span>Input Planner</span><strong>${configuredInputRoles.length} ready</strong></div>
-          <div class="recomposer-metric"><span>Provider</span><strong>${providerCount || 0} connected</strong></div>
+          <div class="recomposer-metric"><span>Provider endpoints</span><strong>${providerEndpointCount || 0} connected</strong></div>
         </div>
         <div class="recomposer-tabs">
           <button class="recomposer-tab active" data-tab="general">개요·실행</button>
@@ -6397,28 +7681,40 @@
             .concat(overrides.skipped_header_keys || [])
             .concat(overrides.skipped_body_keys || []);
           const attemptSummary = (r.attempts || []).map((attempt) =>
-            `${attempt.kind}:${attempt.status}${attempt.error_class ? "/" + attempt.error_class : ""}${attempt.structured_transport ? "/via:" + attempt.structured_transport : ""}${attempt.transport ? "@" + attempt.transport : ""}${attempt.endpoint ? "(" + attempt.endpoint + ")" : ""}${attempt.failure_preview ? ' preview:"' + attempt.failure_preview + '"' : ""}`
+            `${attempt.kind}:${attempt.status}${attempt.error_class ? "/" + attempt.error_class : ""}${attempt.structured_transport ? "/via:" + attempt.structured_transport : ""}${attempt.endpoint_group ? " group:" + attempt.endpoint_group : ""}${attempt.transport ? "@" + attempt.transport : ""}${attempt.endpoint ? "(" + attempt.endpoint + ")" : ""}${attempt.failure_preview ? ' preview:"' + attempt.failure_preview + '"' : ""}`
           ).join(",");
           const reasoningLabel = overrides.reasoning_family
             ? ` reasoning:${overrides.reasoning_family}${(overrides.reasoning_fields || []).length ? "/" + overrides.reasoning_fields.join(",") : ""}`
             : "";
           const transportLabel = overrides.transport ? ` transport:${overrides.transport}` : "";
-          return `[${r.stage || "output"}] ${r.role_id}: ${r.status} (${r.provider}/${r.model}) queue:${queueMs}ms run:${r.elapsed_ms}ms http:${r.http_attempts || 0}${r.retry ? " retry:" + r.retry : ""}${r.fallback ? " fallback" : ""}${r.candidate_count ? " cand:" + r.candidate_count : ""}${attemptSummary ? " [" + attemptSummary + "]" : ""}${transportLabel}${reasoningLabel}${appliedOverrideKeys.length ? " override+:" + appliedOverrideKeys.join(",") : ""}${skippedOverrideKeys.length ? " override-skip:" + skippedOverrideKeys.join(",") : ""}${r.error_class ? " class:" + r.error_class : ""}${r.error ? " ERR:" + r.error : ""}`;
+          return `[${r.stage || "output"}] ${r.role_id}: ${r.status} (${r.provider}/${r.model}${r.endpoint_group ? " @ " + r.endpoint_group : ""}) queue:${queueMs}ms run:${r.elapsed_ms}ms http:${r.http_attempts || 0}${r.retry ? " retry:" + r.retry : ""}${r.fallback ? " fallback" : ""}${r.candidate_count ? " cand:" + r.candidate_count : ""}${attemptSummary ? " [" + attemptSummary + "]" : ""}${transportLabel}${reasoningLabel}${appliedOverrideKeys.length ? " override+:" + appliedOverrideKeys.join(",") : ""}${skippedOverrideKeys.length ? " override-skip:" + skippedOverrideKeys.join(",") : ""}${r.error_class ? " class:" + r.error_class : ""}${r.error ? " ERR:" + r.error : ""}`;
         }).join("\n");
         const directorLines = (t.director_evidence || []).map((d) =>
-          `${d.segment_id}: top=${d.top_role} score=${d.top_score} issues=[${(d.issue_groups || []).join(",")}] consensus=[${(d.consensus || []).join(",")}] complementary=[${(d.complementary || []).join(",")}] conflict=[${(d.conflict || []).join(",")}] cand=${d.candidate_count}`
+          `${d.segment_id}: candidate=${d.top_role} verdict=${d.judge_verdict || "accepted"} issues=[${(d.issue_groups || []).join(",")}] cand=${d.candidate_count}`
         ).join("\n");
         const appliedLines = (t.applied_evidence || []).map((a) =>
           `${a.segment_id}: ${a.source}${a.changed ? " [CHANGED]" : " [unchanged]"}${a.material_change ? " [MATERIAL]" : (a.changed ? " [MINOR]" : "")}${a.composer_unchanged ? " (composer:identical)" : ""} orig:"${escapeHtml(a.original_preview || "")}" → final:"${escapeHtml(a.final_preview || "")}"`
         ).join("\n");
+        const attemptedLines = (t.attempted_evidence || []).filter((a) => a.changed).map((a) =>
+          `${a.segment_id}: ${a.source}${a.material_change ? " [MATERIAL]" : " [MINOR]"} orig:"${escapeHtml(a.original_preview || "")}" → attempted:"${escapeHtml(a.final_preview || "")}"`
+        ).join("\n");
         const s = t.summary || {};
         const ie = t.input_enhance || {};
+        const finalEvidence = t.final || {};
+        const ledger = t.draft_ledger || {};
+        const judge = t.semantic_judge || {};
+        const prover = t.semantic_prover || {};
+        const plan = t.fusion_plan || {};
         const sourceSummary = Object.keys(ie.source_availability || {}).map((key) => {
           const source = ie.source_availability[key] || {};
           return `${key}:${source.available ? "used" : "missing"}${source.count ? "/" + source.count : ""}${source.active_count ? "/active:" + source.active_count : ""}${source.unknown_activation_count ? "/unknown:" + source.unknown_activation_count : ""}`;
         }).join(", ");
         const inputLine = `state:${ie.status || "not_run"} contract:${ie.contract_id || "none"} digest:${ie.contract_digest || "none"} planners:${ie.planner_succeeded || 0}ok/${ie.planner_failed || 0}fail injected:${ie.injected_chars || 0} chars active:${ie.active_calls_final || 0} retry-reuse:${ie.retry_reuse_count || 0} transport-cancel:${ie.transport_cancellation || "not_requested"}${ie.fallback_reason ? " fallback:" + ie.fallback_reason : ""}`;
-        const summaryLine = `specialists:${s.specialist_calls} successful:${s.successful_roles} candidates:${s.candidate_count} composer:${s.composer_state} changed:${s.changed_segment_count} material:${s.material_changed_segment_count || 0} unchanged:${s.unchanged_segment_count} state:${s.final_state} reason:${escapeHtml(s.final_reason || "")}`;
+        const summaryLine = `specialists:${s.specialist_calls} successful:${s.successful_roles} scene-candidates:${s.candidate_count} composer:${s.composer_state} changed:${s.changed_segment_count} material-segments:${s.material_changed_segment_count || 0} material-rewrite:${s.material_rewrite === true} semantic:${s.semantic_verified || "not_run"} quality:${s.quality_preferred || "not_run"} unchanged:${s.unchanged_segment_count} state:${s.final_state} reason:${escapeHtml(s.final_reason || "")}`;
+        const ledgerLine = `digest:${ledger.digest || "none"} facts:${ledger.established_facts || 0} beats:${ledger.scene_beats || 0} hooks:${ledger.unresolved_hooks || 0} hard:${ledger.hard_constraints || 0} protected:${ledger.protected_structures || 0} unknown:[${(ledger.unknown_semantics || []).join(",")}]`;
+        const judgeLine = `status:${judge.status || "not_run"} accept:${judge.accepted_candidates || 0} constrained:${judge.constrained_candidates || 0} reject:${judge.rejected_candidates || 0} missing:${judge.missing_facts || 0} unsupported:${judge.unsupported_additions || 0} hard:${judge.hard_violations || 0}`;
+        const proverLine = `status:${prover.status || "not_run"} verdict:${prover.verdict || "not_run"} attempts:${prover.attempts || 0} repair:${prover.repair_attempted === true} facts:${prover.facts_missing || 0}/${prover.facts_contradicted || 0} beats:${prover.beats_missing || 0} constraints:${prover.constraints_violated || 0} unsupported:${prover.unsupported_additions || 0} hard:${prover.hard_violations || 0} contract:${prover.output_contract_failures || 0}${prover.reason ? " reason:" + prover.reason : ""}`;
+        const planLine = `status:${plan.status || "not_run"} accepted:${plan.accepted_candidates || 0} rejected:${plan.rejected_candidates || 0} consensus:${plan.consensus_claims || 0} complement:${plan.complementary_claims || 0} conflicts:${plan.conflicts || 0} prohibited:${plan.prohibited_additions || 0}`;
         const scheduler = t.scheduler || {};
         const schedulerLines = (scheduler.endpoint_groups || []).map((group) =>
           `${group.stage}:${group.endpoint_group} calls:${group.selected_calls} concurrency:${group.effective_concurrency}/${group.base_concurrency} reason:${group.reason}`
@@ -6426,19 +7722,24 @@
         const routerLine = (t.router && t.router.signals && t.router.signals.length) ? `signals:[${t.router.signals.join(",")}]` : "";
         return `<div class="recomposer-trace-entry">
           <strong>${escapeHtml(t.stage)} ${new Date(t.timestamp).toLocaleString()}</strong><br>
-          Enhanced: ${t.final.enhanced} — ${escapeHtml(t.final.reason || "")}<br>
+          Enhanced: ${finalEvidence.enhanced === true} · material:${finalEvidence.material_rewrite === true} · semantic:${escapeHtml(finalEvidence.semantic_verified || "not_run")} · quality:${escapeHtml(finalEvidence.quality_preferred || "not_run")} — ${escapeHtml(finalEvidence.reason || "")}<br>
           Segments: P:${t.segments.protected} I:${t.segments.inspect_only} M:${t.segments.mutable}<br>
           ${routerLine ? `Router: ${escapeHtml(routerLine)}<br>` : ""}
           Input Enhance: ${escapeHtml(inputLine)}<br>
+          Draft Ledger: ${escapeHtml(ledgerLine)}<br>
+          Semantic Judge: ${escapeHtml(judgeLine)}<br>
+          Fusion Plan: ${escapeHtml(planLine)}<br>
+          Semantic Prover: ${escapeHtml(proverLine)}<br>
           ${sourceSummary ? `Sources: ${escapeHtml(sourceSummary)}<br>` : ""}
           Summary: ${escapeHtml(summaryLine)}<br>
           Scheduler: ${scheduler.completion_wait ? "completion_wait" : "deadline"} · serial threshold:${scheduler.endpoint_serial_threshold || ENDPOINT_SERIAL_THRESHOLD}<br>
-          Candidates: ${t.candidates.total}<br>
+          Candidates: scenes:${t.candidates.total} segment-variants:${t.candidates.segment_variant_total || 0} deduped:${t.candidates.duplicate_scene_candidates || 0}<br>
           Composer: ${t.composer.used} (${t.composer.status} ${t.composer.elapsed_ms}ms, reserve:${t.composer.reserve_ms || 0}ms, semantic-retry:${t.composer.semantic_retry || 0}${t.composer.specialist_stop_reason ? ", specialist-stop:" + escapeHtml(t.composer.specialist_stop_reason) : ""})<br>
           ${t.final.original_preview ? `Orig: ${escapeHtml(t.final.original_preview)}<br>` : ""}
           ${t.final.final_preview ? `Final: ${escapeHtml(t.final.final_preview)}<br>` : ""}
-          ${directorLines ? `<pre style="color:#8FA7FF;">Director:\n${escapeHtml(directorLines)}</pre>` : ""}
+          ${directorLines ? `<pre style="color:#8FA7FF;">Accepted candidate coverage:\n${escapeHtml(directorLines)}</pre>` : ""}
           ${appliedLines ? `<pre style="color:#8A55F7;">Applied:\n${escapeHtml(appliedLines)}</pre>` : ""}
+          ${attemptedLines ? `<pre style="color:#E158A6;">Rejected Composer attempt:\n${escapeHtml(attemptedLines)}</pre>` : ""}
           ${schedulerLines ? `<pre>Endpoint groups:\n${escapeHtml(schedulerLines)}</pre>` : ""}
           <pre>${escapeHtml(roleLines)}</pre>
           ${t.errors && t.errors.length ? `<pre style="color:#e55;">${escapeHtml(t.errors.join("\n"))}</pre>` : ""}
@@ -6547,3109 +7848,753 @@
 
   async function runInMemoryTests() {
     const results = [];
-    function test(name, fn) {
+    async function test(name, fn) {
       try {
-        const r = fn();
-        results.push({ name, pass: true, detail: r || "" });
+        const detail = await fn();
+        results.push({ name, pass: true, detail: safeString(detail) });
       } catch (err) {
-        results.push({ name, pass: false, detail: safeString(err && err.message) });
+        results.push({ name, pass: false, error: safeString(err && err.message) });
       }
     }
-    async function asyncTest(name, fn) {
-      try {
-        const r = await fn();
-        results.push({ name, pass: true, detail: r || "" });
-      } catch (err) {
-        results.push({ name, pass: false, detail: safeString(err && err.message) });
-      }
+    function candidate(roleId, id, text) {
+      return {
+        candidate_id: id,
+        role_id: roleId,
+        supporting_roles: [roleId],
+        duplicate_count: 0,
+        segments: { mutable_1: text },
+        segment_operations: { mutable_1: 'replace' },
+        evidence_refs: ['fact_1'],
+        retained_beats: [{ id: 'fact_1', text: 'Keep the meeting fact.' }],
+        proposed_additions: [],
+        addressed_issues: roleId === 'style_reader' ? ['rhythm'] : ['character_voice'],
+        confidence: 0.8,
+        change_summary: 'material scene rewrite',
+      };
+    }
+    function ledger() {
+      return {
+        schema: 'draft_ledger.v1',
+        established_facts: [{ ledger_id: 'fact_1', text: 'The characters met.', source_ref: 'current_chat' }],
+        scene_beats: [{ ledger_id: 'beat_1', text: 'The scene remains in the room.', source_ref: 'draft_zero' }],
+        unresolved_hooks: [],
+        hard_constraints: [{ ledger_id: 'constraint_1', text: 'Do not reveal the secret.', source_ref: 'turn_contract' }],
+        protected_structures: [],
+        unknown_semantics: [],
+      };
+    }
+    function judgmentObject(candidateIds, verdict) {
+      return {
+        schema: 'semantic_judgment.v1',
+        candidate_judgments: candidateIds.map((candidateId) => ({
+          candidate_id: candidateId,
+          verdict: verdict || 'accept',
+          preserved_ledger_ids: ['fact_1', 'beat_1', 'constraint_1'],
+          missing_ledger_ids: [],
+          unsupported_additions: [],
+          hard_violations: [],
+          accepted_elements: [{ claim: 'Grounded scene improvement', candidate_ids: [candidateId], segment_ids: ['mutable_1'] }],
+          rejected_elements: [],
+          quality_gains: [{ claim: 'Stronger dramatic movement', candidate_ids: [candidateId] }],
+          quality_regressions: [],
+        })),
+        cross_candidate: { consensus: [], complementary: [], conflicts: [] },
+        scene_requirements: { target_arc: 'Escalate the exchange.', target_voice: 'Character-specific.', target_pacing: 'Tight.' },
+      };
+    }
+    function semanticProofObject(verdict) {
+      return {
+        schema: 'semantic_proof.v1',
+        declared_verdict: verdict || 'pass',
+        fact_checks: [{ ledger_id: 'fact_1', status: 'preserved', detail: 'Fact remains.', evidence_quote: 'met' }],
+        beat_checks: [{ ledger_id: 'beat_1', status: 'preserved', detail: 'Beat remains.', evidence_quote: 'room' }],
+        constraint_checks: [{ ledger_id: 'constraint_1', status: 'satisfied', detail: 'Secret remains hidden.', evidence_quote: '' }],
+        hard_violations: [],
+        unsupported_additions: [],
+        output_contract: {
+          language_ok: true,
+          turn_boundary_ok: true,
+          user_agency_ok: true,
+          meta_free: true,
+          format_ok: true,
+        },
+        repair_instructions: [],
+      };
+    }
+    function response(content) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) };
+    }
+    function sceneCandidateJson(roleId, text) {
+      return JSON.stringify({
+        schema: 'scene_rewrite_candidates.v1',
+        role_id: roleId,
+        candidates: [{
+          segments: { mutable_1: text },
+          evidence_refs: ['fact_1'],
+          retained_beats: [{ id: 'fact_1', text: 'Keep the meeting fact.' }],
+          proposed_additions: [],
+          addressed_issues: roleId === 'style_reader' ? ['rhythm'] : ['character_voice'],
+          confidence: 0.8,
+          change_summary: 'material scene rewrite',
+        }],
+      });
     }
 
-    const settings = defaultSettings();
-
-    // Test 1: protected 없는 전체 재작성
-    test("1_full_rewrite_no_protected", () => {
-      const text = "The wind howled across the moor. She pulled her cloak tighter.";
-      const segs = buildSegmentMap(text, settings);
-      const mutable = mutableSegments(segs);
-      if (mutable.length < 1) throw new Error("no mutable segments");
-      if (segs.some((s) => s.type === "protected")) throw new Error("unexpected protected");
-      return `${segs.length} segments, ${mutable.length} mutable`;
+    await test('phase_c_role_topology', () => {
+      const specialists = DEFAULT_ROLES.filter((role) => role.stage === 'output' && !role.is_composer);
+      const ids = specialists.map((role) => role.role_id).sort().join(',');
+      if (ids !== 'character_reader,plot_continuity_reader,style_reader') throw new Error(`unexpected specialists:${ids}`);
+      if (!DEFAULT_ROLES.some((role) => role.is_judge && role.role_id === JUDGE_ROLE_ID)) throw new Error('semantic judge missing');
+      if (!DEFAULT_ROLES.some((role) => role.is_prover && role.role_id === PROVER_ROLE_ID)) throw new Error('semantic prover missing');
+      if (DEFAULT_ROLES.some((role) => ['secret_pov_guard', 'world_reader', 'agency_meta_guard'].indexOf(role.role_id) >= 0)) throw new Error('legacy specialist remains');
+      return ids;
     });
 
-    // Test 2: 이미지/상태창/코드가 섞인 출력
-    test("2_mixed_protected_image_status_code", () => {
-      const text = 'She smiled. <img cmd="photo"> Then she said hello. ```status\nHP: 100\n``` Finally, `code_here` was visible.';
-      const segs = buildSegmentMap(text, settings);
-      const protectedSegs = segs.filter((s) => s.type === "protected");
-      const inspectSegs = segs.filter((s) => s.type === "inspect_only");
-      const mutableSegs = segs.filter((s) => s.type === "mutable");
-      if (protectedSegs.length < 2) throw new Error(`expected >=2 protected, got ${protectedSegs.length}`);
-      if (mutableSegs.length < 1) throw new Error("no mutable segments");
-      return `P:${protectedSegs.length} I:${inspectSegs.length} M:${mutableSegs.length}`;
-    });
-
-    // Test 3: status inspect-only exact preservation
-    test("3_status_inspect_only_exact_preservation", () => {
-      const text = "Some prose here. ```status\nHP: 100\nMP: 50\n``` More prose after.";
-      const segs = buildSegmentMap(text, settings);
-      const inspectSegs = segs.filter((s) => s.type === "inspect_only");
-      if (!inspectSegs.length) throw new Error("no inspect segments — status fence not classified as inspect_only");
-      const assembled = assembleOutput(segs, null, { ranked: {} });
-      inspectSegs.forEach((seg) => {
-        const final = assembled.finalSegments.find((f) => f.id === seg.id);
-        if (!final || final.final_text !== seg.text) {
-          throw new Error(`inspect segment ${seg.id} not preserved exactly`);
-        }
+    await test('provider_endpoint_metric_and_role_trace_are_distinct', () => {
+      const settings = defaultSettings();
+      settings.roles.forEach((role) => {
+        settings.role_profiles[role.role_id].enabled = false;
       });
-      return `${inspectSegs.length} inspect segments preserved`;
-    });
-
-    // Test 4: 역할 3개 후보 Fusion — 서로 다른 issue는 complementary
-    test("4_three_role_fusion", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "character_reader", rewrite: "A", confidence: 0.8, tags: ["voice"] },
-          { role_id: "style_reader", rewrite: "B", confidence: 0.7, tags: ["style"] },
-          { role_id: "plot_continuity_reader", rewrite: "C", confidence: 0.6, tags: ["continuity"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const result = fusionDirector(candidates, roles);
-      if (!result.ranked.mutable_1 || result.ranked.mutable_1.length !== 3) throw new Error("ranking failed");
-      if (result.ranked.mutable_1[0].rewrite !== "A") throw new Error("top candidate should be A (highest confidence * priority)");
-      // voice→character_voice, style→rhythm, continuity→plot_continuity: all different issues → complementary, not consensus
-      if (result.consensus.mutable_1) throw new Error("different issues should not produce consensus");
-      if (!result.complementary.mutable_1 || !result.complementary.mutable_1.length) throw new Error("complementary not detected for different issues");
-      return `top: ${result.ranked.mutable_1[0].role_id} score ${result.ranked.mutable_1[0].score.toFixed(1)} complementary: ${result.complementary.mutable_1.join(",")}`;
-    });
-
-    // Test 5: 한 역할 실패 후 나머지 후보 적용
-    test("5_one_role_failure_remaining_applied", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "character_reader", rewrite: "Good rewrite", confidence: 0.85, tags: ["voice"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const result = fusionDirector(candidates, roles);
-      const assembled = assembleOutput(
-        [{ id: "mutable_1", type: "mutable", text: "original", leading_ws: "", trailing_ws: "", start: 0, end: 8 }],
-        null,
-        result
-      );
-      if (!assembled.changed) throw new Error("output not changed");
-      if (assembled.output !== "Good rewrite") throw new Error("output should be top candidate");
-      return `applied top candidate: ${assembled.output}`;
-    });
-
-    // Test 6: Composer 성공
-    test("6_composer_success", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original 1", leading_ws: "", trailing_ws: "", start: 0, end: 10 },
-        { id: "mutable_2", type: "mutable", text: "original 2", leading_ws: "", trailing_ws: "", start: 10, end: 20 },
-      ];
-      const composerResult = { segments: { mutable_1: "composed 1", mutable_2: "composed 2" } };
-      const directorResult = { ranked: {} };
-      const assembled = assembleOutput(segs, composerResult, directorResult);
-      if (!assembled.changed) throw new Error("output not changed");
-      if (assembled.output !== "composed 1composed 2") throw new Error(`unexpected output: ${assembled.output}`);
-      return `composer output: ${assembled.output}`;
-    });
-
-    // Test 7: Composer 실패 후 최고 후보 적용
-    test("7_composer_failure_top_candidate", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original", leading_ws: "", trailing_ws: "", start: 0, end: 8 },
-      ];
-      const directorResult = {
-        ranked: {
-          mutable_1: [{ role_id: "character_reader", rewrite: "best candidate", confidence: 0.9, score: 90, tags: ["voice"] }],
-        },
-      };
-      const assembled = assembleOutput(segs, null, directorResult);
-      if (!assembled.changed) throw new Error("output not changed");
-      if (assembled.output !== "best candidate") throw new Error("output should be top candidate");
-      return `fallback to top candidate: ${assembled.output}`;
-    });
-
-    // Test 8: deadline 부분 결과 반환
-    await asyncTest("8_deadline_partial_results", async () => {
-      const deadline = createDeadline(50);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      if (!deadline.check()) throw new Error("deadline should have passed");
-      if (!deadline.aborted()) throw new Error("deadline should be aborted");
-      if (deadline.remaining() > 0) throw new Error("remaining should be 0");
-      deadline.cancel();
-      return "deadline expired and aborted correctly";
-    });
-
-    // Test 9: scheduleRoles 실행 후 deadline 반환 시 activeCount=0
-    await asyncTest("9_scheduleRoles_deadline_active_zero", async () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "prose", leading_ws: "", trailing_ws: "", start: 0, end: 5 },
-      ];
-      const trace = newTrace("test", "test");
-      const deadline = createDeadline(50);
-      const roles = selectRoles(DEFAULT_ROLES, [{ id: "mechanical_artifact", severity: "high" }], "balanced", settings).roles;
-      const profiles = deepClone(settings.role_profiles);
-      Object.keys(profiles).forEach((rid) => {
-        profiles[rid].endpoint = "https://test.example.com/v1";
-        profiles[rid].model = "test-model";
+      const roleIds = ['character_reader', 'style_reader'];
+      roleIds.forEach((roleId, index) => {
+        const profile = settings.role_profiles[roleId];
+        profile.enabled = true;
+        profile.provider = 'openai_compatible';
+        profile.endpoint = index === 0
+          ? 'https://ollama.com/v1/chat/completions'
+          : 'https://api.llmgateway.io/v1/chat/completions';
+        profile.model = `${roleId}-model`;
       });
-      const result = await scheduleRoles(roles, profiles, segs, "", segs, deadline, trace, 5);
-      deadline.cancel();
-      if (typeof trace.active_calls_final !== "number") throw new Error("active_calls_final not recorded");
-      if (trace.active_calls_final !== 0) throw new Error(`active_calls_final should be 0, got ${trace.active_calls_final}`);
-      return `active_calls_final=${trace.active_calls_final}`;
-    });
-
-    // Test 10: API key 저장/마스킹/resolve
-    await asyncTest("10_api_key_mask_resolve", async () => {
-      const masked = maskKey("sk-1234567890abcdef");
-      if (masked.indexOf("1234") >= 0 || masked.indexOf("abcdef") >= 0) throw new Error("key not properly masked");
-      if (masked.indexOf("••••") < 0) throw new Error("mask marker missing");
-      const resolved = await resolveApiKey("direct-key-value");
-      if (resolved !== "direct-key-value") throw new Error("direct key not resolved");
-      return `masked: ${masked}, resolved direct key OK`;
-    });
-
-    // Test 11: Trace 평문 key 없음
-    test("11_trace_no_plain_key", () => {
-      const trace = newTrace("test", "test");
+      const html = renderUI(settings);
+      if (html.indexOf('Provider endpoints</span><strong>2 connected') < 0) {
+        throw new Error('distinct endpoint origins collapsed in UI metric');
+      }
+      const trace = newTrace('test', 'test');
       traceRole(trace, {
-        role_id: "character_reader",
-        provider: "openai_compatible",
-        model: "gpt-4",
-        status: "fulfilled",
-        started_at: Date.now(),
-        ended_at: Date.now(),
-        elapsed_ms: 100,
+        role_id: 'character_reader',
+        provider: 'openai_compatible',
+        endpoint_group: 'https://ollama.com',
+        model: 'character-reader-model',
+        status: 'fulfilled',
+        started_at: 1,
+        ended_at: 2,
+        elapsed_ms: 1,
       });
-      const traceStr = JSON.stringify(trace);
-      const testKey = "sk-test-secret-key-12345";
-      if (traceStr.indexOf(testKey) >= 0) throw new Error("plain key found in trace");
-      return "no plain key in trace";
-    });
-
-    // Test 12: 최종 output이 draft_zero와 실제로 다름
-    test("12_output_differs_from_draft", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "The wind blew.", leading_ws: "", trailing_ws: "", start: 0, end: 14 },
-      ];
-      const composerResult = { segments: { mutable_1: "The cold wind swept across the barren moor." } };
-      const assembled = assembleOutput(segs, composerResult, { ranked: {} });
-      if (assembled.output === "The wind blew.") throw new Error("output identical to draft");
-      if (!assembled.changed) throw new Error("changed flag false");
-      return `output changed: "${preview(assembled.output, 60)}"`;
-    });
-
-    // Test 13: verifier protected preservation
-    test("13_verifier_protected_preservation", () => {
-      const segs = [
-        { id: "protected_1", type: "protected", kind: "image_tag", text: '<img src="test">', start: 0, end: 17 },
-        { id: "mutable_1", type: "mutable", text: "prose", start: 17, end: 22 },
-      ];
-      const finalSegs = [
-        { id: "protected_1", type: "protected", kind: "image_tag", original_text: '<img src="test">', final_text: '<img src="test">', source: "preserved" },
-        { id: "mutable_1", type: "mutable", original_text: "prose", final_text: "rewritten prose", source: "composer" },
-      ];
-      const v = verifyOutput(segs, finalSegs, '<img src="test">rewritten prose', "original");
-      if (!v.pass) throw new Error(`verifier failed: ${v.errors.join(",")}`);
-      return "protected preserved, verifier pass";
-    });
-
-    // Test 14: verifier catches preservation violation
-    test("14_verifier_catches_preservation_violation", () => {
-      const segs = [
-        { id: "protected_1", type: "protected", kind: "image_tag", text: '<img src="test">', start: 0, end: 17 },
-      ];
-      const finalSegs = [
-        { id: "protected_1", type: "protected", kind: "image_tag", original_text: '<img src="test">', final_text: "BROKEN", source: "preserved" },
-      ];
-      const v = verifyOutput(segs, finalSegs, "BROKEN", "original");
-      if (v.pass) throw new Error("verifier should have caught violation");
-      if (v.errors.indexOf("preservation_violation:protected_1") < 0) throw new Error("missing violation error");
-      return `caught: ${v.errors.join(",")}`;
-    });
-
-    // Test 15: verifier empty output
-    test("15_verifier_empty_output", () => {
-      const segs = [{ id: "mutable_1", type: "mutable", text: "text", start: 0, end: 4 }];
-      const finalSegs = [{ id: "mutable_1", type: "mutable", original_text: "text", final_text: "", source: "composer" }];
-      const v = verifyOutput(segs, finalSegs, "", "text");
-      if (v.pass) throw new Error("verifier should catch empty output");
-      return `caught: ${v.errors.join(",")}`;
-    });
-
-    // Test 16: Quality keeps the full role pool but executes an adaptive subset.
-    test("16_router_signal_difference", () => {
-      const settings2 = defaultSettings();
-      Object.keys(settings2.role_profiles).forEach((rid) => {
-        settings2.role_profiles[rid].endpoint = "https://test.example.com/v1";
-        settings2.role_profiles[rid].model = "test-model";
-      });
-      const noSignals = [];
-      const metaSignals = [{ id: "mechanical_artifact", severity: "high" }];
-      const selectedNone = selectRoles(DEFAULT_ROLES, noSignals, "quality", settings2);
-      const selectedMeta = selectRoles(DEFAULT_ROLES, metaSignals, "quality", settings2);
-      const noneHasGuard = selectedNone.roles.some((r) => r.role_id === "secret_pov_guard");
-      const noneHasWorld = selectedNone.roles.some((r) => r.role_id === "world_reader");
-      if (!noneHasGuard) throw new Error("quality must preserve the secret/POV baseline");
-      if (noneHasWorld) throw new Error("low-priority world role should be capacity-skipped without a signal");
-      const noneSpecialistCount = selectedNone.roles.filter((r) => !r.is_composer).length;
-      const metaSpecialistCount = selectedMeta.roles.filter((r) => !r.is_composer).length;
-      if (noneSpecialistCount !== OUTPUT_SPECIALIST_LIMIT.quality
-          || metaSpecialistCount !== OUTPUT_SPECIALIST_LIMIT.quality) {
-        throw new Error(`quality adaptive limit failed: ${noneSpecialistCount}/${metaSpecialistCount}`);
+      if (trace.roles[0].endpoint_group !== 'https://ollama.com') {
+        throw new Error('role endpoint group was not retained');
       }
-      if (!selectedMeta.roles.some((r) => r.role_id === "agency_meta_guard")) {
-        throw new Error("meta signal did not select agency_meta_guard");
+      trace.candidates.total = 1;
+      trace.composer.status = 'failed';
+      refreshTraceSummary(trace, { mutable: 3 }, null);
+      if (trace.summary.specialist_calls !== 1
+          || trace.summary.successful_roles !== 1
+          || trace.summary.candidate_count !== 1
+          || trace.summary.composer_state !== 'failed') {
+        throw new Error('failure trace summary did not retain completed work');
       }
-      const capacitySkip = selectedMeta.skipReasons.find((item) => item.reason.indexOf("router_capacity:") === 0);
-      if (!capacitySkip) throw new Error("capacity skip reason missing");
-      return `limit:${noneSpecialistCount} meta:${metaSpecialistCount} skip:${capacitySkip.role_id}`;
+      return '2 endpoint origins counted and failure trace retained';
     });
 
-    // Test 17: segment ID uniqueness
-    test("17_segment_id_uniqueness", () => {
-      const text = "prose <img> more prose ```code``` end prose";
-      const segs = buildSegmentMap(text, settings);
-      const ids = segs.map((s) => s.id);
-      const unique = new Set(ids);
-      if (unique.size !== ids.length) throw new Error("duplicate segment IDs");
-      return `${ids.length} unique IDs: ${ids.join(", ")}`;
-    });
-
-    // Test 18: candidate schema validation with allowedSegmentIds
-    test("18_candidate_schema_allowed_segs", () => {
-      const allowed = ["mutable_1", "mutable_2"];
-      const good = { role: "character_reader", candidates: [
-        { segment_id: "mutable_1", rewrite: "text", confidence: 0.8, tags: ["voice"] },
-        { segment_id: "mutable_2", rewrite: "text2", confidence: 0.7, tags: ["emotion"] },
-      ] };
-      const v = validateCandidateSchema(good, "character_reader", allowed);
-      if (!v || v.candidates.length !== 2) throw new Error("valid schema rejected");
-      const withForeign = { role: "x", candidates: [
-        { segment_id: "mutable_1", rewrite: "text", confidence: 0.8 },
-        { segment_id: "foreign_id", rewrite: "text", confidence: 0.8 },
-      ] };
-      const v2 = validateCandidateSchema(withForeign, "x", allowed);
-      if (!v2 || v2.candidates.length !== 1) throw new Error("foreign segment_id should be filtered");
-      const bad = { role: "x", candidates: [{ segment_id: "", rewrite: "" }] };
-      const v3 = validateCandidateSchema(bad, "x", allowed);
-      if (v3) throw new Error("invalid schema accepted");
-      return "schema validation with allowedSegmentIds OK";
-    });
-
-    // Test 19: composer schema validation with allowedSegmentIds
-    test("19_composer_schema_allowed_segs", () => {
-      const allowed = ["mutable_1", "mutable_2"];
-      const good = { segments: { mutable_1: "text 1", mutable_2: "text 2" } };
-      const v = validateComposerSchema(good, allowed);
-      if (!v || Object.keys(v.segments).length !== 2) throw new Error("valid composer schema rejected");
-      const withForeign = { segments: { mutable_1: "text 1", mutable_2: "text 2", foreign_id: "text" } };
-      const v2 = validateComposerSchema(withForeign, allowed);
-      if (!v2 || Object.keys(v2.segments).length !== 2) throw new Error("foreign segment should be filtered");
-      if (validateComposerSchema({ segments: { mutable_1: "text 1" } }, allowed)) {
-        throw new Error("partial composer output accepted");
-      }
-      const bad = { segments: { mutable_1: "" } };
-      const v3 = validateComposerSchema(bad, allowed);
-      if (v3) throw new Error("invalid composer schema accepted");
-      return "composer schema validation with allowedSegmentIds OK";
-    });
-
-    // Test 20: JSON repair
-    test("20_json_repair", () => {
-      const fenced = '```json\n{"role":"x","candidates":[]}\n```';
-      const parsed = tryParseJson(fenced);
-      if (!parsed || parsed.role !== "x") throw new Error("fenced JSON not parsed");
-      const trailing = '{"a":1,}';
-      const parsed2 = tryParseJson(trailing);
-      if (!parsed2 || parsed2.a !== 1) throw new Error("trailing comma not repaired");
-      return "JSON repair OK";
-    });
-
-    // Test 21: Ollama Cloud URL/Auth/body capture via mock fetch
-    await asyncTest("21_ollama_cloud_mock_fetch", async () => {
-      const captured = { url: "", auth: "", bodyStr: "", reasoningNone: false };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.url = String(url);
-        captured.auth = (opts && opts.headers && opts.headers.Authorization) || "";
-        captured.bodyStr = (opts && opts.body) || "";
-        try {
-          const parsed = JSON.parse(captured.bodyStr);
-          captured.reasoningNone = parsed.reasoning_effort === "none";
-        } catch (_) {}
-        return {
-          ok: true,
-          text: async () => JSON.stringify({
-            choices: [{ message: { content: '{"role":"character_reader","candidates":[]}' } }],
-          }),
-        };
-      };
-      try {
-        const cloudProfile = {
-          provider: "ollama_compatible",
-          endpoint: "https://ollama.com/v1",
-          model: "kimi-k2.7-code:cloud",
-          api_key_ref: "sk-ollama-cloud-key",
-          temperature: 0.3,
-          max_output_tokens: 1024,
-          force_json_response: true,
-          reasoning_preset: "auto",
-          reasoning_effort: "none",
-          reasoning_budget_tokens: 512,
-          extra_headers: "",
-          extra_body: "",
-        };
-        await callProvider(cloudProfile, { system: "sys", user: "usr" }, null);
-        if (captured.url.indexOf("ollama.com") < 0) throw new Error(`URL should contain ollama.com, got: ${captured.url}`);
-        if (captured.url.indexOf("/chat/completions") < 0) throw new Error(`URL should use /chat/completions, got: ${captured.url}`);
-        if (captured.auth.indexOf("Bearer sk-ollama-cloud-key") < 0) throw new Error(`Auth should be Bearer key, got: ${captured.auth}`);
-        if (!captured.reasoningNone) throw new Error("Kimi reasoning_effort=none should be in body");
-      } finally {
-        globalThis.fetch = origFetch;
-      }
-      return `url:${captured.url.indexOf("/chat/completions") >= 0} auth:${captured.auth.indexOf("Bearer") >= 0} kimiNone:${captured.reasoningNone}`;
-    });
-
-    // Test 22: slow fetch deadline abort — scheduleRoles 실행 후 activeCount=0
-    await asyncTest("22_slow_fetch_deadline_schedule", async () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "prose one", leading_ws: "", trailing_ws: "", start: 0, end: 9 },
-        { id: "mutable_2", type: "mutable", text: "prose two", leading_ws: "", trailing_ws: "", start: 9, end: 18 },
-      ];
-      const trace = newTrace("test", "test");
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async () => {
-        return new Promise(() => {});
-      };
-      try {
-        const deadline = createDeadline(80);
-        const roles = selectRoles(DEFAULT_ROLES, [{ id: "mechanical_artifact", severity: "high" }], "balanced", settings).roles;
-        const testProfiles = deepClone(settings.role_profiles);
-        Object.keys(testProfiles).forEach((rid) => {
-          testProfiles[rid].endpoint = "https://test.example.com/v1";
-          testProfiles[rid].model = "test-model";
-        });
-        const result = await scheduleRoles(roles, testProfiles, segs, "", segs, deadline, trace, 5);
-        deadline.cancel();
-        if (trace.active_calls_final !== 0) throw new Error(`active_calls_final should be 0, got ${trace.active_calls_final}`);
-      } finally {
-        globalThis.fetch = origFetch;
-      }
-      return `active_calls_final=${trace.active_calls_final}`;
-    });
-
-    // Test 23: mock fetch로 scheduleRoles 실행 — 호출 수 = specialist + 1
-    await asyncTest("23_call_count_specialist_plus_composer", async () => {
-      let callCount = 0;
-      let specialistCalls = 0;
-      let composerCalls = 0;
-      let expectedMax = 0;
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        callCount++;
-        let bodyStr = "";
-        try { bodyStr = (opts && opts.body) || ""; } catch (_) {}
-        const isComposer = bodyStr.indexOf("Whole-Scene Fusion Composer") >= 0 || bodyStr.indexOf("\"segments\"") >= 0;
-        if (isComposer) {
-          composerCalls++;
-          return {
-            ok: true,
-            text: async () => JSON.stringify({
-              choices: [{ message: { content: '{"segments":{"mutable_1":"composed 1","mutable_2":"composed 2","mutable_3":"composed 3"}}' } }],
-            }),
-          };
-        }
-        specialistCalls++;
-        let userPrompt = "";
-        try {
-          const body = JSON.parse(bodyStr);
-          userPrompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
-        } catch (_) {}
-        const roleMatch = /"role":"([^"]+)"/.exec(userPrompt);
-        const roleId = roleMatch ? roleMatch[1] : "character_reader";
-        const issue = roleAllowedIssues(roleId)[0];
-        return {
-          ok: true,
-          text: async () => JSON.stringify({
-            choices: [{ message: { content: JSON.stringify({
-              role: roleId,
-              candidates: [
-                { segment_id: "mutable_1", rewrite: "rewritten", confidence: 0.8, issues: [issue] },
-                { segment_id: "mutable_2", rewrite: "rewritten 2", confidence: 0.7, issues: [issue] },
-                { segment_id: "mutable_3", rewrite: "rewritten 3", confidence: 0.6, issues: [issue] },
-              ],
-            }) } }],
-          }),
-        };
-      };
-      try {
-        const segs = [
-          { id: "mutable_1", type: "mutable", text: "prose one", leading_ws: "", trailing_ws: "", start: 0, end: 9 },
-          { id: "mutable_2", type: "mutable", text: "prose two", leading_ws: "", trailing_ws: "", start: 9, end: 18 },
-          { id: "mutable_3", type: "mutable", text: "prose three", leading_ws: "", trailing_ws: "", start: 18, end: 29 },
-        ];
-        const trace = newTrace("test", "test");
-        const deadline = createDeadline(60000);
-        const testProfiles = deepClone(settings.role_profiles);
-        Object.keys(testProfiles).forEach((rid) => {
-          testProfiles[rid].endpoint = "https://test.example.com/v1";
-          testProfiles[rid].model = "test-model";
-        });
-        const testSettings = Object.assign({}, settings, { role_profiles: testProfiles });
-        const roles = selectRoles(DEFAULT_ROLES, [{ id: "mechanical_artifact", severity: "high" }], "balanced", testSettings).roles;
-        const specialistCount = roles.filter((r) => !r.is_composer).length;
-        expectedMax = specialistCount + 1;
-        await scheduleRoles(roles, testProfiles, segs, "", segs, deadline, trace, 5);
-        deadline.cancel();
-        if (callCount !== expectedMax) throw new Error(`callCount ${callCount} should equal exactly ${expectedMax} (specialist ${specialistCount} + composer 1)`);
-        if (specialistCalls !== specialistCount) throw new Error(`specialistCalls ${specialistCalls} should equal ${specialistCount}`);
-        if (composerCalls !== 1) throw new Error(`composerCalls ${composerCalls} should equal 1`);
-      } finally {
-        globalThis.fetch = origFetch;
-      }
-      return `calls=${callCount}=${expectedMax} specialist=${specialistCalls} composer=${composerCalls}`;
-    });
-
-    // Test 24: Composer 입력에 원문/후보/Director 정보 포함
-    test("24_composer_input_structure", () => {
-      const mutableSegs = [
-        { id: "mutable_1", type: "mutable", text: "original 1", leading_ws: "", trailing_ws: "" },
-        { id: "mutable_2", type: "mutable", text: "original 2", leading_ws: "", trailing_ws: "" },
-      ];
-      const allSegments = mutableSegs.concat([
-        { id: "protected_1", type: "protected", kind: "image_tag", text: '<img src="x">' },
-      ]);
-      const directorResult = {
-        ranked: {
-          mutable_1: [{ role_id: "character_reader", rewrite: "cand 1", confidence: 0.8, score: 80, issues: ["character_voice"], change_summary: "fixed voice" }],
-        },
-        consensus: { mutable_1: ["character_voice"] },
-        complementary: { mutable_1: ["emotion"] },
-        conflict: {},
-        gap: ["mutable_2"],
-      };
-      const composerRole = DEFAULT_ROLES.find((r) => r.is_composer);
-      const profile = defaultRoleProfile("whole_scene_composer");
-      const directorInfo = {
-        candidateBundles: { mutable_1: [{ role: "character_reader", confidence: 0.8, score: 80, issues: ["character_voice"], change_summary: "fixed voice", rewrite: "cand 1" }] },
-        consensus: directorResult.consensus,
-        complementary: directorResult.complementary,
-        conflict: directorResult.conflict,
-        gap: directorResult.gap,
-      };
-      const prompts = buildRolePrompt(composerRole, profile, mutableSegs, "context block", allSegments, directorInfo);
-      const hasOriginal = prompts.user.indexOf("Original:") >= 0;
-      const hasCandidates = prompts.user.indexOf("Candidate 1") >= 0;
-      const hasDirector = prompts.user.indexOf("Fusion Director") >= 0;
-      const hasConsensus = prompts.user.indexOf("character_voice") >= 0;
-      const hasComplementary = prompts.user.indexOf("Complementary") >= 0;
-      const hasGap = prompts.user.indexOf("mutable_2") >= 0;
-      if (!hasOriginal) throw new Error("composer input missing original text");
-      if (!hasCandidates) throw new Error("composer input missing candidates");
-      if (!hasDirector) throw new Error("composer input missing director info");
-      if (!hasConsensus) throw new Error("composer input missing consensus");
-      if (!hasComplementary) throw new Error("composer input missing complementary");
-      if (!hasGap) throw new Error("composer input missing gap info");
-      return `original:${hasOriginal} candidates:${hasCandidates} director:${hasDirector} consensus:${hasConsensus} complementary:${hasComplementary} gap:${hasGap}`;
-    });
-
-    // Test 25: 이미지 태그 3개 이상 통과
-    test("25_three_image_tags_pass", () => {
-      const text = '<img src="a"> prose <img src="b"> more <img src="c">';
-      const segs = buildSegmentMap(text, settings);
-      const protectedSegs = segs.filter((s) => s.type === "protected" && s.kind === "image_tag");
-      if (protectedSegs.length < 3) throw new Error(`expected >=3 image_tag protected, got ${protectedSegs.length}`);
-      const assembled = assembleOutput(segs, null, { ranked: {} });
-      protectedSegs.forEach((seg) => {
-        const final = assembled.finalSegments.find((f) => f.id === seg.id);
-        if (!final || final.final_text !== seg.text) throw new Error(`image tag ${seg.id} not preserved`);
-      });
-      return `${protectedSegs.length} image tags preserved`;
-    });
-
-    // Test 26: 이미지 전후 개행 보존
-    test("26_image_newline_preservation", () => {
-      const text = "prose before\n<img src=\"x\">\nprose after";
-      const segs = buildSegmentMap(text, settings);
-      const assembled = assembleOutput(segs, null, { ranked: {} });
-      if (assembled.output !== text) throw new Error(`output should equal original, got: ${JSON.stringify(assembled.output)}`);
-      return "newlines around image preserved";
-    });
-
-    // Test 27: API key 평문 DOM 미노출 및 유지/교체/삭제
-    test("27_api_key_no_plain_dom", () => {
-      const profile = defaultRoleProfile("character_reader");
-      profile.api_key_ref = "sk-secret-key-12345";
-      const masked = maskKey(profile.api_key_ref);
-      if (masked.indexOf("secret") >= 0 || masked.indexOf("12345") >= 0) throw new Error("mask leaks key content");
-      const keepResult = applyKeyUpdate("", "sk-existing-key");
-      if (keepResult !== "sk-existing-key") throw new Error("blank input should keep existing key");
-      const replaceResult = applyKeyUpdate("sk-new-key", "sk-old-key");
-      if (replaceResult !== "sk-new-key") throw new Error("new value should replace existing key");
-      const clearResult = applyKeyUpdate("clear:key", "sk-existing-key");
-      if (clearResult !== "") throw new Error("clear:key should delete key");
-      return `mask:${masked} keep:${keepResult === "sk-existing-key"} replace:${replaceResult === "sk-new-key"} clear:${clearResult === ""}`;
-    });
-
-    // Test 28: void HTML 태그 닫는 태그 검사 제외
-    test("28_void_tag_no_close_required", () => {
-      const segs = [{ id: "mutable_1", type: "mutable", text: "text", start: 0, end: 4 }];
-      const finalSegs = [{ id: "mutable_1", type: "mutable", original_text: "text", final_text: "text<br><hr><img src='x'>", source: "composer" }];
-      const v = verifyOutput(segs, finalSegs, "text<br><hr><img src='x'>", "text");
-      if (!v.pass) throw new Error(`void tags should not require closing tags: ${v.errors.join(",")}`);
-      return "void tags pass without closing tags";
-    });
-
-    // Test 29: specialist prompt에 전체 segment 목록 제공
-    test("29_specialist_gets_full_segments", () => {
-      const allSegments = [
-        { id: "protected_1", type: "protected", kind: "image_tag", text: '<img src="x">' },
-        { id: "mutable_1", type: "mutable", text: "prose here", leading_ws: "", trailing_ws: "" },
-        { id: "inspect_1", type: "inspect_only", kind: "status_window", text: "```status\nHP:100\n```" },
-        { id: "mutable_2", type: "mutable", text: "more prose", leading_ws: "", trailing_ws: "" },
-      ];
-      const mutableSegs = allSegments.filter((s) => s.type === "mutable");
-      const role = DEFAULT_ROLES.find((r) => r.role_id === "character_reader");
-      const profile = defaultRoleProfile("character_reader");
-      const prompts = buildRolePrompt(role, profile, mutableSegs, "ctx", allSegments, null);
-      const hasAllSegments = prompts.user.indexOf("protected_1") >= 0 && prompts.user.indexOf("inspect_1") >= 0;
-      const hasMutableIds = prompts.user.indexOf("mutable_1") >= 0 && prompts.user.indexOf("mutable_2") >= 0;
-      const hasPreservedLabel = prompts.user.indexOf("[PRESERVED") >= 0;
-      const hasMutableLabel = prompts.user.indexOf("[MUTABLE") >= 0;
-      if (!hasAllSegments) throw new Error("specialist prompt missing non-mutable segments");
-      if (!hasMutableIds) throw new Error("specialist prompt missing mutable IDs");
-      if (!hasPreservedLabel) throw new Error("specialist prompt missing PRESERVED label");
-      if (!hasMutableLabel) throw new Error("specialist prompt missing MUTABLE label");
-      return `allSegs:${hasAllSegments} mutableIds:${hasMutableIds} preserved:${hasPreservedLabel} mutable:${hasMutableLabel}`;
-    });
-
-    // Test 30: mutable 선행/후행 공백 보존
-    test("30_mutable_whitespace_preservation", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "\n  original text  \n", leading_ws: "\n  ", core_text: "original text", trailing_ws: "  \n", start: 0, end: 20 },
-      ];
-      const composerResult = { segments: { mutable_1: "rewritten text" } };
-      const assembled = assembleOutput(segs, composerResult, { ranked: {} });
-      if (assembled.output !== "\n  rewritten text  \n") throw new Error(`whitespace not preserved: ${JSON.stringify(assembled.output)}`);
-      return `whitespace preserved: ${JSON.stringify(assembled.output)}`;
-    });
-
-    // Test 31: status fence 뒤 inline code 올바르게 분리
-    test("31_status_fence_then_inline_code", () => {
-      const text = "Some prose. ```status\nHP: 100\n``` Then `code_here` end.";
-      const segs = buildSegmentMap(text, settings);
-      const inspectSegs = segs.filter((s) => s.type === "inspect_only");
-      const inlineCodeSegs = segs.filter((s) => s.type === "protected" && s.kind === "inline_code");
-      if (!inspectSegs.length) throw new Error("status fence not classified as inspect_only");
-      if (!inlineCodeSegs.length) throw new Error("inline code after status fence not detected");
-      const inlineCodeText = inlineCodeSegs[0].text;
-      if (inlineCodeText.indexOf("```") >= 0) throw new Error(`inline code should not contain triple backticks: ${inlineCodeText}`);
-      if (inlineCodeText !== "`code_here`") throw new Error(`inline code should be \`code_here\`, got: ${inlineCodeText}`);
-      return `inspect:${inspectSegs.length} inlineCode:${inlineCodeSegs.length} text=${inlineCodeText}`;
-    });
-
-    // Test 32: triple backtick 내부를 inline-code가 가로지르지 않음
-    test("32_inline_code_not_inside_fence", () => {
-      const text = "Before ```code\n`inner`\nmore``` After `outer` end";
-      const segs = buildSegmentMap(text, settings);
-      const inlineCodeSegs = segs.filter((s) => s.type === "protected" && s.kind === "inline_code");
-      const codeFenceSegs = segs.filter((s) => s.type === "protected" && s.kind === "code_fence");
-      if (!codeFenceSegs.length) throw new Error("code fence not detected");
-      if (!inlineCodeSegs.length) throw new Error("outer inline code not detected");
-      const outerInline = inlineCodeSegs.find((s) => s.text === "`outer`");
-      if (!outerInline) throw new Error("outer inline code not found");
-      const innerInline = inlineCodeSegs.find((s) => s.text === "`inner`");
-      if (innerInline) throw new Error("inner inline code inside fence should not be detected");
-      return `fence:${codeFenceSegs.length} inline:${inlineCodeSegs.length} outerFound:${!!outerInline} innerLeaked:${!!innerInline}`;
-    });
-
-    // Test 33: 등록/요소 계약 검사 — document 없으면 renderUI 문자열 검사, 있으면 DOM mock으로 검증
-    await asyncTest("33_ui_registration_and_element_contract", async () => {
-      const mockR = {
-        _registeredSettings: [],
-        _registeredButtons: [],
-        _replacers: {},
-        _arguments: [],
-        _showContainerCalled: false,
-        _hideContainerCalled: false,
-        _buttonCallback: null,
-        async registerSetting(name, callback, icon, type) {
-          this._registeredSettings.push({ name, callback, icon, type });
-        },
-        async registerButton(buttonObj, callback) {
-          this._registeredButtons.push(buttonObj);
-          this._buttonCallback = callback;
-        },
-        addRisuReplacer(event, fn) {
-          this._replacers[event] = fn;
-        },
-        addArgument(name, fn) {
-          this._arguments.push({ name, fn });
-        },
-        getStorage() { return null; },
-        setStorage() {},
-        async showContainer() { this._showContainerCalled = true; },
-        async hideContainer() { this._hideContainerCalled = true; },
-      };
-      const origR = globalThis.Risuai;
-      globalThis.Risuai = mockR;
-      try {
-        await initialize();
-        const hasSetting = mockR._registeredSettings.some((s) => s.name === "Risu Recomposer" && s.type === "html");
-        const buttonObj = mockR._registeredButtons.find((b) => b.name === "Risu Recomposer Settings");
-        const hasButton = !!buttonObj;
-        const hasButtonId = buttonObj && buttonObj.id === "risu-recomposer-chat-btn";
-        const hasButtonLocation = buttonObj && buttonObj.location === "chat";
-        const hasButtonIconType = buttonObj && buttonObj.iconType === "html";
-        const hasButtonCallback = typeof mockR._buttonCallback === "function";
-        const hasBefore = !!mockR._replacers.beforeRequest;
-        const hasAfter = !!mockR._replacers.afterRequest;
-        if (!hasSetting) throw new Error("registerSetting not called with html type");
-        if (!hasButton) throw new Error("registerButton not called");
-        if (!hasButtonId) throw new Error("registerButton missing id=risu-recomposer-chat-btn");
-        if (!hasButtonLocation) throw new Error("registerButton missing location=chat");
-        if (!hasButtonIconType) throw new Error("registerButton missing iconType=html");
-        if (!hasButtonCallback) throw new Error("registerButton second callback arg missing");
-        if (!hasBefore || !hasAfter) throw new Error("addRisuReplacer not called for both events");
-        const s = defaultSettings();
-        const uiHtml = renderUI(s);
-        if (uiHtml.indexOf("recomposer-root") < 0) throw new Error("renderUI missing .recomposer-root");
-        if (uiHtml.indexOf("recomposer-tab") < 0) throw new Error("renderUI missing tab structure");
-        if (uiHtml.indexOf('data-tab="general"') < 0) throw new Error("renderUI missing General tab");
-        if (uiHtml.indexOf('data-tab="roles"') < 0) throw new Error("renderUI missing Roles tab");
-        if (uiHtml.indexOf('data-tab="trace"') < 0) throw new Error("renderUI missing Trace tab");
-        if (uiHtml.indexOf('data-tab="compare"') < 0) throw new Error("renderUI missing Compare tab");
-        if (uiHtml.indexOf("recomposer-save") < 0) throw new Error("renderUI missing save button");
-        if (uiHtml.indexOf("recomposer-close") < 0) throw new Error("renderUI missing close button");
-        if (uiHtml.indexOf("recomposer-role-row") < 0) throw new Error("renderUI missing role rows");
-        if (uiHtml.indexOf("recomposer-provider-table") >= 0) throw new Error("renderUI should not contain provider details table");
-        if (uiHtml.indexOf("--rc-bg") < 0) throw new Error("renderUI missing CSS variables");
-        if (uiHtml.indexOf("max-width: 1080px") < 0) throw new Error("renderUI missing product panel max-width");
-        if (uiHtml.indexOf("max-height: calc(100vh - 48px)") < 0) throw new Error("renderUI missing bounded panel height");
-        if (uiHtml.indexOf("background: rgba(4, 6, 9, 0.76)") < 0) throw new Error("renderUI missing translucent backdrop");
-        if (uiHtml.indexOf("grid-template-columns") < 0) throw new Error("renderUI missing responsive grid");
-        if (uiHtml.indexOf("@media") < 0) throw new Error("renderUI missing media query");
-        if (uiHtml.indexOf("#0B0D11") < 0) throw new Error("renderUI missing dark background color");
-        if (uiHtml.indexOf("recomposer-btn-primary") < 0) throw new Error("renderUI missing primary button class");
-        if (uiHtml.indexOf("recomposer-product-bar") < 0) throw new Error("renderUI missing compact product header");
-        if (uiHtml.indexOf("recomposer-section-label") < 0) throw new Error("renderUI missing section labels");
-        if (typeof document !== "undefined" && document.body) {
-          const settingCallback = mockR._registeredSettings.find((s2) => s2.name === "Risu Recomposer").callback;
-          await settingCallback();
-          if (!mockR._showContainerCalled) throw new Error("showContainer not called by openSettingsUI");
-          const rootEl = document.querySelector(".recomposer-root");
-          if (!rootEl) throw new Error(".recomposer-root not created in DOM");
-          const saveBtn = rootEl.querySelector(".recomposer-save");
-          const closeBtn = rootEl.querySelector(".recomposer-close");
-          if (!saveBtn) throw new Error("save button not found in DOM");
-          if (!closeBtn) throw new Error("close button not found in DOM");
-          closeBtn.click();
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          if (!mockR._hideContainerCalled) throw new Error("hideContainer not called after close");
-          return `setting:${hasSetting} button:${hasButton} id:${hasButtonId} loc:${hasButtonLocation} iconType:${hasButtonIconType} cb:${hasButtonCallback} show:${mockR._showContainerCalled} hide:${mockR._hideContainerCalled} DOM:pass`;
-        }
-        return `setting:${hasSetting} button:${hasButton} id:${hasButtonId} loc:${hasButtonLocation} iconType:${hasButtonIconType} cb:${hasButtonCallback} string:pass`;
-      } finally {
-        globalThis.Risuai = origR;
-      }
-    });
-
-    // Test 34: streaming 감지 — type keyword and OpenAIChat[] role-based detection
-    test("34_streaming_detection", () => {
-      const fromType = detectStreamingState(null, "streaming");
-      if (!fromType.detected) throw new Error("streaming type not detected");
-      const fromFunctionRole = detectStreamingState([{ role: "function", content: "x" }], "main");
-      if (!fromFunctionRole.detected) throw new Error("function role not detected as streaming");
-      const fromToolRole = detectStreamingState([{ role: "tool", content: "x" }], "main");
-      if (!fromToolRole.detected) throw new Error("tool role not detected as streaming");
-      const notStreaming = detectStreamingState([{ role: "user", content: "hi" }], "main");
-      if (notStreaming.detected) throw new Error("non-streaming should not be detected");
-      return `type:${fromType.detected} function:${fromFunctionRole.detected} tool:${fromToolRole.detected} normal:${!notStreaming.detected}`;
-    });
-
-    // Test 35: streaming trace 기록 — onAfterRequest에서 streaming 상태가 trace에 기록됨
-    await asyncTest("35_streaming_trace_recorded", async () => {
-      const origR = globalThis.Risuai;
-      const mockR = Object.assign({}, origR || {}, {
-        _registeredSettings: [], _registeredButtons: [], _replacers: {}, _arguments: [],
-        async registerSetting() {}, async registerButton() {},
-        addRisuReplacer(e, f) { this._replacers[e] = f; },
-        addArgument() {},
-        getStorage() { return Promise.resolve(null); },
-        setStorage() { return Promise.resolve(); },
-        async showContainer() {}, async hideContainer() {},
-      });
-      globalThis.Risuai = mockR;
-      try {
-        const beforeFn = mockR._replacers.beforeRequest || globalThis.__recomposer;
-        const afterFn = mockR._replacers.afterRequest;
-        if (!afterFn) {
-          await (globalThis.__recomposer.initialize || function() {})();
-        }
-        const after = mockR._replacers.afterRequest;
-        if (!after) throw new Error("afterRequest replacer not registered");
-        const before = mockR._replacers.beforeRequest;
-        if (before) await before({ options: { stream: true }, messages: [] }, "main");
-        const result = await after("some content here", "main");
-        return `result returned: ${typeof result === "string"}`;
-      } finally {
-        globalThis.Risuai = origR;
-      }
-    });
-
-    // Test 36: RisuAI pluginStorage 설정 저장/read-back
-    await asyncTest("36_plugin_storage_settings_roundtrip", async () => {
-      const values = new Map();
-      const mockR = {
-        pluginStorage: {
-          async getItem(key) { return values.has(key) ? values.get(key) : null; },
-          async setItem(key, value) { values.set(key, value); },
-        },
-      };
-      const origR = globalThis.Risuai;
-      globalThis.Risuai = mockR;
-      try {
-        const next = defaultSettings();
-        next.preset = "quality";
-        next.deadline_ms = 180000;
-        next.max_parallel = 2;
-        next.role_profiles.character_reader.model = "storage-roundtrip-model";
-        next.role_profiles.character_reader.api_key_ref = "storage-roundtrip-key";
-        await saveSettings(next);
-        const loaded = await loadSettings();
-        if (loaded.preset !== "quality") throw new Error("preset did not persist");
-        if (loaded.deadline_ms !== 180000) throw new Error("deadline did not persist");
-        if (loaded.max_parallel !== 2) throw new Error("max_parallel did not persist");
-        if (loaded.role_profiles.character_reader.model !== "storage-roundtrip-model") throw new Error("role model did not persist");
-        if (loaded.role_profiles.character_reader.api_key_ref !== "storage-roundtrip-key") throw new Error("role key did not persist");
-        return "pluginStorage save/read-back passed";
-      } finally {
-        globalThis.Risuai = origR;
-      }
-    });
-
-    // Test 37: R1 — 같은 segment, 같은 issue, 다른 역할 2개 → true consensus
-    test("37_r1_same_issue_diff_role_consensus", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "secret_pov_guard", rewrite: "She hesitated, unsure.", confidence: 0.9, issues: ["pov_violation"] },
-          { role_id: "character_reader", rewrite: "She paused, uncertain.", confidence: 0.8, issues: ["pov_violation"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const result = fusionDirector(candidates, roles);
-      if (!result.consensus.mutable_1 || result.consensus.mutable_1.indexOf("pov_violation") < 0) {
-        throw new Error("same issue from 2 roles should produce consensus");
-      }
-      if (result.complementary.mutable_1) throw new Error("consensus issue should not also be complementary");
-      return `consensus: ${result.consensus.mutable_1.join(",")}`;
-    });
-
-    // Test 38: R1 — 같은 segment, 서로 다른 issue → complementary, conflict 아님
-    test("38_r1_diff_issue_complementary", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "character_reader", rewrite: "She spoke softly.", confidence: 0.8, issues: ["character_voice"] },
-          { role_id: "style_reader", rewrite: "She whispered.", confidence: 0.7, issues: ["rhythm"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const result = fusionDirector(candidates, roles);
-      if (result.consensus.mutable_1) throw new Error("different issues should not produce consensus");
-      if (!result.complementary.mutable_1 || !result.complementary.mutable_1.length) {
-        throw new Error("different issues should produce complementary");
-      }
-      if (result.conflict.mutable_1) throw new Error("different issues should not produce conflict");
-      return `complementary: ${result.complementary.mutable_1.join(",")}`;
-    });
-
-    // Test 39: R1 — 같은 issue, 상반된 rewrite → conflict
-    test("39_r1_same_issue_conflict", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "secret_pov_guard", rewrite: "She hesitated, unsure of what lay beyond the door. The hallway stretched endlessly before her.", confidence: 0.9, issues: ["pov_violation"] },
-          { role_id: "character_reader", rewrite: "NO! She KNEW everything! The door was open and she charged through!", confidence: 0.8, issues: ["pov_violation"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const result = fusionDirector(candidates, roles);
-      if (!result.conflict.mutable_1 || result.conflict.mutable_1.indexOf("pov_violation") < 0) {
-        throw new Error("same issue with very different rewrites should produce conflict");
-      }
-      return `conflict: ${result.conflict.mutable_1.join(",")}`;
-    });
-
-    // Test 40: R1 — 후보 여러 개지만 issue가 다름 → false consensus
-    test("40_r1_multi_candidate_diff_issue_no_consensus", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "character_reader", rewrite: "A", confidence: 0.8, issues: ["character_voice"] },
-          { role_id: "style_reader", rewrite: "B", confidence: 0.7, issues: ["repetition"] },
-          { role_id: "world_reader", rewrite: "C", confidence: 0.6, issues: ["world_rule"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 4);
-      const result = fusionDirector(candidates, roles);
-      if (result.consensus.mutable_1) throw new Error("all different issues should not produce consensus");
-      if (!result.complementary.mutable_1 || result.complementary.mutable_1.length !== 3) {
-        throw new Error("all 3 different issues should be complementary");
-      }
-      return `complementary count: ${result.complementary.mutable_1.length}`;
-    });
-
-    // Test 41: R1 — 이전 schema의 tags만 있는 후보 → 정상 정규화
-    test("41_r1_tags_only_normalization", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "character_reader", rewrite: "A", confidence: 0.8, tags: ["voice"] },
-          { role_id: "style_reader", rewrite: "B", confidence: 0.7, tags: ["style"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const result = fusionDirector(candidates, roles);
-      if (!result.ranked.mutable_1 || result.ranked.mutable_1.length !== 2) throw new Error("tags-only candidates should be ranked");
-      const issues0 = result.ranked.mutable_1[0].issues || [];
-      const issues1 = result.ranked.mutable_1[1].issues || [];
-      if (!issues0.length) throw new Error("tags-only candidate 0 should have normalized issues");
-      if (!issues1.length) throw new Error("tags-only candidate 1 should have normalized issues");
-      if (issues0.indexOf("character_voice") < 0) throw new Error("voice tag should normalize to character_voice");
-      if (issues1.indexOf("rhythm") < 0) throw new Error("style tag should normalize to rhythm");
-      return `normalized: ${issues0.join(",")} | ${issues1.join(",")}`;
-    });
-
-    // Test 42: R1 — secret/POV 후보와 style 후보 충돌 → secret/POV 우선
-    test("42_r1_secret_pov_priority_over_style", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "style_reader", rewrite: "Beautiful flowing prose.", confidence: 0.95, issues: ["rhythm"] },
-          { role_id: "secret_pov_guard", rewrite: "She could not know his thoughts.", confidence: 0.7, issues: ["secret_leak"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 4);
-      const result = fusionDirector(candidates, roles);
-      const top = result.ranked.mutable_1[0];
-      if (top.role_id !== "secret_pov_guard") {
-        throw new Error(`secret_pov_guard should rank above style_reader even with lower confidence, got ${top.role_id}`);
-      }
-      return `top: ${top.role_id} score ${top.score.toFixed(1)} (issue_pri ${top.issue_priority})`;
-    });
-
-    // Test 43: R1 — 원문과 동일한 rewrite → 낮은 점수
-    test("43_r1_identical_rewrite_low_score", () => {
-      const origText = "The wind howled across the moor.";
-      const candidates = {
-        mutable_1: [
-          { role_id: "character_reader", rewrite: origText, confidence: 0.9, issues: ["character_voice"] },
-          { role_id: "style_reader", rewrite: "The wind screamed across the barren moor.", confidence: 0.8, issues: ["rhythm"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer);
-      const origSegs = [{ id: "mutable_1", type: "mutable", text: origText }];
-      const result = fusionDirector(candidates, roles, origSegs);
-      const identical = result.ranked.mutable_1.find((c) => c.rewrite === origText);
-      const changed = result.ranked.mutable_1.find((c) => c.rewrite !== origText);
-      if (!identical || !changed) throw new Error("both candidates should be ranked");
-      if (identical.score >= changed.score) {
-        throw new Error(`identical rewrite should have lower score: ${identical.score.toFixed(1)} vs ${changed.score.toFixed(1)}`);
-      }
-      return `identical: ${identical.score.toFixed(1)} < changed: ${changed.score.toFixed(1)}`;
-    });
-
-    // Test 44: R1 — 정상 후보가 directorResult.ranked에 보존
-    test("44_r1_valid_candidates_preserved_in_ranked", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "character_reader", rewrite: "Good rewrite", confidence: 0.85, issues: ["character_voice"], change_summary: "fixed voice" },
-          { role_id: "style_reader", rewrite: "Better rhythm", confidence: 0.7, issues: ["rhythm"], change_summary: "fixed rhythm" },
-        ],
-        mutable_2: [],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const origSegs = [
-        { id: "mutable_1", type: "mutable", text: "original 1" },
-        { id: "mutable_2", type: "mutable", text: "original 2" },
-      ];
-      const result = fusionDirector(candidates, roles, origSegs);
-      if (!result.ranked.mutable_1 || result.ranked.mutable_1.length !== 2) throw new Error("ranked should preserve all valid candidates");
-      if (result.ranked.mutable_1[0].issues.indexOf("character_voice") < 0) throw new Error("issues should be preserved in ranked");
-      if (result.ranked.mutable_1[0].change_summary !== "fixed voice") throw new Error("change_summary should be preserved in ranked");
-      if (result.gap.indexOf("mutable_2") < 0) throw new Error("empty candidate segment should be in gap");
-      return `ranked: ${result.ranked.mutable_1.length} candidates, gap: ${result.gap.join(",")}`;
-    });
-
-    // Test 45: R2 — 동일 의미의 한국어/영어 장면에서 핵심 역할 집합이 비정상적으로 달라지지 않음
-    test("45_r2_korean_english_core_roles_stable", () => {
-      const settings2 = defaultSettings();
-      const profiles = settings2.role_profiles;
-      Object.keys(profiles).forEach((rid) => {
-        profiles[rid].endpoint = "https://test.example.com/v1";
-        profiles[rid].model = "test-model";
-      });
-      const enSegs = buildSegmentMap("She said, \"Hello there.\" He replied, \"How are you?\" They walked together.", settings2);
-      const koSegs = buildSegmentMap("그녀가 말했다, \"안녕하세요.\" 그가 대답했다, \"잘 지내세요?\" 둘이 함께 걸었다.", settings2);
-      const enCtx = { bounded_context_block: "", character: "char", lorebook: "", memory: "" };
-      const koCtx = { bounded_context_block: "", character: "char", lorebook: "", memory: "" };
-      const enSignals = detectSceneSignals(enSegs, enCtx);
-      const koSignals = detectSceneSignals(koSegs, koCtx);
-      const enSelected = selectRoles(DEFAULT_ROLES, enSignals, "balanced", settings2);
-      const koSelected = selectRoles(DEFAULT_ROLES, koSignals, "balanced", settings2);
-      const enIds = enSelected.roles.map((r) => r.role_id).sort().join(",");
-      const koIds = koSelected.roles.map((r) => r.role_id).sort().join(",");
-      if (enIds !== koIds) throw new Error(`Korean and English should produce same role set, got en:${enIds} ko:${koIds}`);
-      return `en==ko: ${enIds}`;
-    });
-
-    // Test 46: R2 — Balanced에서 하나의 신호가 감지되어도 핵심 역할 유지
-    test("46_r2_balanced_signal_preserves_core", () => {
-      const settings2 = defaultSettings();
-      const profiles = settings2.role_profiles;
-      Object.keys(profiles).forEach((rid) => {
-        profiles[rid].endpoint = "https://test.example.com/v1";
-        profiles[rid].model = "test-model";
-      });
-      const noSignalResult = selectRoles(DEFAULT_ROLES, [], "balanced", settings2);
-      const withSignalResult = selectRoles(DEFAULT_ROLES, [{ id: "dialogue_heavy", severity: "medium" }], "balanced", settings2);
-      const noIds = new Set(noSignalResult.roles.map((r) => r.role_id));
-      const withIds = new Set(withSignalResult.roles.map((r) => r.role_id));
-      noIds.forEach((id) => {
-        if (!withIds.has(id)) throw new Error(`signal should not remove role ${id} from balanced`);
-      });
-      if (withSignalResult.roles.length !== noSignalResult.roles.length) {
-        throw new Error(`signal should not change role count in balanced: ${noSignalResult.roles.length} vs ${withSignalResult.roles.length}`);
-      }
-      return `core preserved: ${withSignalResult.roles.length} roles`;
-    });
-
-    // Test 47: Quality keeps six configured profiles but selects at most five specialists.
-    test("47_r2_quality_adaptive_five_plus_composer", () => {
-      const settings2 = defaultSettings();
-      const profiles = settings2.role_profiles;
-      Object.keys(profiles).forEach((rid) => {
-        profiles[rid].endpoint = "https://test.example.com/v1";
-        profiles[rid].model = "test-model";
-      });
-      const result = selectRoles(DEFAULT_ROLES, [], "quality", settings2);
-      const specialists = result.roles.filter((r) => !r.is_composer);
-      const composers = result.roles.filter((r) => r.is_composer);
-      if (specialists.length !== OUTPUT_SPECIALIST_LIMIT.quality) {
-        throw new Error(`quality should select ${OUTPUT_SPECIALIST_LIMIT.quality} specialists, got ${specialists.length}`);
-      }
-      if (composers.length !== 1) throw new Error(`quality should select 1 composer, got ${composers.length}`);
-      if (!specialists.some((role) => role.role_id === "secret_pov_guard")) {
-        throw new Error("quality baseline lost secret_pov_guard");
-      }
-      const capacitySkips = result.skipReasons.filter((item) => item.reason.indexOf("router_capacity:") === 0);
-      if (capacitySkips.length !== 1) throw new Error(`expected one capacity skip, got ${capacitySkips.length}`);
-      return `pool:6 selected:${specialists.length} composer:${composers.length}`;
-    });
-
-    // Test 48: R2 — Fast에서 정해진 핵심 역할 + Composer만 선택
-    test("48_r2_fast_core_roles_only", () => {
-      const settings2 = defaultSettings();
-      const profiles = settings2.role_profiles;
-      Object.keys(profiles).forEach((rid) => {
-        profiles[rid].endpoint = "https://test.example.com/v1";
-        profiles[rid].model = "test-model";
-      });
-      const result = selectRoles(DEFAULT_ROLES, [], "fast", settings2);
-      const specialists = result.roles.filter((r) => !r.is_composer);
-      const composers = result.roles.filter((r) => r.is_composer);
-      if (specialists.length !== 2) throw new Error(`fast should select 2 specialists, got ${specialists.length}`);
-      if (composers.length !== 1) throw new Error(`fast should select 1 composer, got ${composers.length}`);
-      const ids = specialists.map((r) => r.role_id).sort().join(",");
-      if (ids !== "character_reader,style_reader") throw new Error(`fast specialist set mismatch: ${ids}`);
-      return `specialists:${specialists.length} composer:${composers.length}`;
-    });
-
-    // Test 49: R2 — 비활성 역할 제외
-    test("49_r2_disabled_role_excluded", () => {
-      const settings2 = defaultSettings();
-      const profiles = settings2.role_profiles;
-      Object.keys(profiles).forEach((rid) => {
-        profiles[rid].endpoint = "https://test.example.com/v1";
-        profiles[rid].model = "test-model";
-      });
-      profiles.character_reader.enabled = false;
-      const result = selectRoles(DEFAULT_ROLES, [], "balanced", settings2);
-      const hasCharReader = result.roles.some((r) => r.role_id === "character_reader");
-      if (hasCharReader) throw new Error("disabled role should be excluded");
-      const skipEntry = result.skipReasons.find((s) => s.role_id === "character_reader");
-      if (!skipEntry || skipEntry.reason !== "disabled") throw new Error("disabled role should have skip reason");
-      return `excluded: character_reader, skipReason: ${skipEntry.reason}`;
-    });
-
-    // Test 50: R2 — 설정 불완전 역할의 skip reason 기록
-    test("50_r2_not_configured_skip_reason", () => {
-      const settings2 = defaultSettings();
-      const profiles = settings2.role_profiles;
-      // Leave model empty for secret_pov_guard
-      Object.keys(profiles).forEach((rid) => {
-        if (rid !== "secret_pov_guard") {
-          profiles[rid].endpoint = "https://test.example.com/v1";
-          profiles[rid].model = "test-model";
-        }
-      });
-      const result = selectRoles(DEFAULT_ROLES, [], "balanced", settings2);
-      const skipEntry = result.skipReasons.find((s) => s.role_id === "secret_pov_guard");
-      if (!skipEntry) throw new Error("not_configured role should have skip reason");
-      if (skipEntry.reason !== "not_configured") throw new Error(`skip reason should be not_configured, got ${skipEntry.reason}`);
-      const hasGuard = result.roles.some((r) => r.role_id === "secret_pov_guard");
-      if (hasGuard) throw new Error("not_configured role should not be selected");
-      return `skipReason: ${skipEntry.reason}`;
-    });
-
-    // Test 51: R2 — router reason이 Trace에 남음
-    test("51_r2_router_reason_in_trace", () => {
-      const trace = newTrace("test", "test");
-      if (!trace.router) throw new Error("trace should have router field");
-      if (!Array.isArray(trace.router.signals)) throw new Error("trace.router.signals should be array");
-      if (!Array.isArray(trace.router.selected)) throw new Error("trace.router.selected should be array");
-      if (!Array.isArray(trace.router.skipped)) throw new Error("trace.router.skipped should be array");
-      const settings2 = defaultSettings();
-      Object.keys(settings2.role_profiles).forEach((rid) => {
-        settings2.role_profiles[rid].endpoint = "https://test.example.com/v1";
-        settings2.role_profiles[rid].model = "test-model";
-      });
-      const signals = [{ id: "dialogue_heavy", severity: "medium" }];
-      const routerResult = selectRoles(DEFAULT_ROLES, signals, "balanced", settings2);
-      trace.router = {
-        signals: routerResult.signals,
-        selected: routerResult.selectReasons,
-        skipped: routerResult.skipReasons,
-      };
-      if (trace.router.signals.indexOf("dialogue_heavy") < 0) throw new Error("signal not recorded in trace");
-      const charSelect = trace.router.selected.find((s) => s.role_id === "character_reader");
-      if (!charSelect) throw new Error("character_reader select reason not in trace");
-      if (charSelect.reason.indexOf("adaptive_score:") !== 0
-          || charSelect.reason.indexOf("dialogue_heavy") < 0) {
-        throw new Error("character_reader should have adaptive signal score reason");
-      }
-      return `signals:${trace.router.signals.length} selected:${trace.router.selected.length} skipped:${trace.router.skipped.length}`;
-    });
-
-    // Test 52: R2 — 구조 기반 신호 감지 (대화 비율, 목록 구조, 반복)
-    test("52_r2_structure_based_signals", () => {
-      const settings2 = defaultSettings();
-      const dialogueText = '"Hello," she said. "How are you?" he asked. "Fine," she replied. "Good," he nodded.';
-      const dialogueSegs = buildSegmentMap(dialogueText, settings2);
-      const dialogueSignals = detectSceneSignals(dialogueSegs, { bounded_context_block: "" });
-      const hasDialogue = dialogueSignals.some((s) => s.id === "dialogue_heavy");
-      if (!hasDialogue) throw new Error("dialogue_heavy signal not detected for dialogue-rich text");
-      const listText = "Some intro.\n- item one\n- item two\n- item three\nMore prose.";
-      const listSegs = buildSegmentMap(listText, settings2);
-      const listSignals = detectSceneSignals(listSegs, { bounded_context_block: "" });
-      const hasList = listSignals.some((s) => s.id === "list_structure");
-      if (!hasList) throw new Error("list_structure signal not detected for bullet list");
-      const repeatText = "The wind howled across the moor. The wind howled across the moor. She walked away. She walked away.";
-      const repeatSegs = buildSegmentMap(repeatText, settings2);
-      const repeatSignals = detectSceneSignals(repeatSegs, { bounded_context_block: "" });
-      const hasRepeat = repeatSignals.some((s) => s.id === "repetition_detected");
-      if (!hasRepeat) throw new Error("repetition_detected signal not detected for repeated sentences");
-      return `dialogue:${hasDialogue} list:${hasList} repeat:${hasRepeat}`;
-    });
-
-    // Test 53: R3 — Composer가 모든 mutable segment 재작성
-    test("53_r3_composer_all_segments", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original 1", leading_ws: "", trailing_ws: "", start: 0, end: 10 },
-        { id: "mutable_2", type: "mutable", text: "original 2", leading_ws: "", trailing_ws: "", start: 10, end: 20 },
-        { id: "mutable_3", type: "mutable", text: "original 3", leading_ws: "", trailing_ws: "", start: 20, end: 30 },
-      ];
-      const composerResult = { segments: { mutable_1: "composed 1", mutable_2: "composed 2", mutable_3: "composed 3" } };
-      const directorResult = { ranked: {} };
-      const assembled = assembleOutput(segs, composerResult, directorResult);
-      if (!assembled.changed) throw new Error("output should be changed");
-      if (assembled.output !== "composed 1composed 2composed 3") throw new Error(`unexpected output: ${assembled.output}`);
-      if (assembled.composerApplied !== 3) throw new Error(`composerApplied should be 3, got ${assembled.composerApplied}`);
-      const sources = assembled.finalSegments.map((f) => f.source);
-      if (sources.some((s) => s !== "composer")) throw new Error(`all sources should be composer, got ${sources.join(",")}`);
-      return `composerApplied:${assembled.composerApplied} output:${assembled.output}`;
-    });
-
-    // Test 54: Partial Composer output is rejected before specialist fallback assembly.
-    test("54_r3_partial_composer_rejected_then_top_candidate_used", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original 1", leading_ws: "", trailing_ws: "", start: 0, end: 10 },
-        { id: "mutable_2", type: "mutable", text: "original 2", leading_ws: "", trailing_ws: "", start: 10, end: 20 },
-      ];
-      const composerResult = validateComposerSchema(
-        { segments: { mutable_1: "composed 1" } },
-        ["mutable_1", "mutable_2"]
-      );
-      if (composerResult) throw new Error("partial Composer output must be rejected");
-      const directorResult = {
-        ranked: {
-          mutable_1: [{ role_id: "style_reader", rewrite: "best candidate 1", confidence: 0.9, score: 90, issues: ["rhythm"] }],
-          mutable_2: [{ role_id: "character_reader", rewrite: "best candidate 2", confidence: 0.9, score: 90, issues: ["character_voice"] }],
-        },
-      };
-      const assembled = assembleOutput(segs, composerResult, directorResult);
-      if (!assembled.changed) throw new Error("output should be changed");
-      if (assembled.output !== "best candidate 1best candidate 2") throw new Error(`unexpected output: ${assembled.output}`);
-      const seg1 = assembled.finalSegments.find((f) => f.id === "mutable_1");
-      const seg2 = assembled.finalSegments.find((f) => f.id === "mutable_2");
-      if (seg1.source !== "top_candidate") throw new Error(`mutable_1 source should be top_candidate, got ${seg1.source}`);
-      if (seg2.source !== "top_candidate") throw new Error(`mutable_2 source should be top_candidate, got ${seg2.source}`);
-      return `seg1:${seg1.source} seg2:${seg2.source}`;
-    });
-
-    // Test 55: R3 — Composer 실패 + specialist 후보 적용
-    test("55_r3_composer_failure_specialist_applied", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original", leading_ws: "", trailing_ws: "", start: 0, end: 8 },
-      ];
-      const directorResult = {
-        ranked: {
-          mutable_1: [{ role_id: "character_reader", rewrite: "specialist rewrite", confidence: 0.85, score: 85, issues: ["character_voice"] }],
-        },
-      };
-      const assembled = assembleOutput(segs, null, directorResult);
-      if (!assembled.changed) throw new Error("output should be changed with specialist candidate");
-      if (assembled.output !== "specialist rewrite") throw new Error(`output should be specialist rewrite, got ${assembled.output}`);
-      const seg1 = assembled.finalSegments.find((f) => f.id === "mutable_1");
-      if (seg1.source !== "top_candidate") throw new Error(`source should be top_candidate, got ${seg1.source}`);
-      return `source:${seg1.source} output:${assembled.output}`;
-    });
-
-    // Test 56: R3 — Composer unknown segment ID 거부
-    test("56_r3_composer_unknown_id_rejected", () => {
-      const allowed = ["mutable_1", "mutable_2"];
-      const withUnknown = { segments: { mutable_1: "text 1", mutable_2: "text 2", unknown_seg: "foreign text" } };
-      const v = validateComposerSchema(withUnknown, allowed);
-      if (!v) throw new Error("complete allowed set should be accepted");
-      if (Object.keys(v.segments).indexOf("unknown_seg") >= 0) throw new Error("unknown segment ID should be rejected");
-      if (Object.keys(v.segments).length !== 2) throw new Error("complete allowed set should remain");
-      return `unknown rejected, kept: ${Object.keys(v.segments).join(",")}`;
-    });
-
-    // Test 57: R3 — Composer protected/inspect-only ID 거부
-    test("57_r3_composer_protected_inspect_id_rejected", () => {
-      const allowed = ["mutable_1", "mutable_2"];
-      const withProtected = { segments: { mutable_1: "text 1", mutable_2: "text 2", protected_1: "should not pass" } };
-      const v1 = validateComposerSchema(withProtected, allowed);
-      if (!v1 || Object.keys(v1.segments).indexOf("protected_1") >= 0) throw new Error("protected ID should be rejected");
-      const withInspect = { segments: { mutable_1: "text 1", mutable_2: "text 2", inspect_1: "should not pass" } };
-      const v2 = validateComposerSchema(withInspect, allowed);
-      if (!v2 || Object.keys(v2.segments).indexOf("inspect_1") >= 0) throw new Error("inspect-only ID should be rejected");
-      return `protected rejected, inspect rejected`;
-    });
-
-    // Test 58: R3 — Composer 동일문 반환 → unchanged
-    test("58_r3_composer_identical_unchanged", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "same text", leading_ws: "", trailing_ws: "", start: 0, end: 9 },
-        { id: "mutable_2", type: "mutable", text: "original 2", leading_ws: "", trailing_ws: "", start: 9, end: 19 },
-      ];
-      const composerResult = { segments: { mutable_1: "same text", mutable_2: "changed text" } };
-      const directorResult = { ranked: {} };
-      const assembled = assembleOutput(segs, composerResult, directorResult);
-      const seg1 = assembled.finalSegments.find((f) => f.id === "mutable_1");
-      const seg2 = assembled.finalSegments.find((f) => f.id === "mutable_2");
-      if (!seg1.composer_unchanged) throw new Error("identical composer result should be marked unchanged");
-      if (seg2.composer_unchanged) throw new Error("changed composer result should not be marked unchanged");
-      if (!assembled.changed) throw new Error("output should be changed (mutable_2 changed)");
-      if (assembled.unchangedSegments !== 1) throw new Error(`unchangedSegments should be 1, got ${assembled.unchangedSegments}`);
-      return `seg1:unchanged seg2:changed unchangedSegments:${assembled.unchangedSegments}`;
-    });
-
-    // Test 59: R3 — 여러 문제군 후보가 하나의 segment로 합성 (Composer 입력 구조)
-    test("59_r3_multi_issue_synthesis_input", () => {
-      const mutableSegs = [
-        { id: "mutable_1", type: "mutable", text: "original text", leading_ws: "", trailing_ws: "" },
-      ];
-      const allSegments = mutableSegs;
-      const directorInfo = {
-        candidateBundles: {
-          mutable_1: [
-            { role: "secret_pov_guard", confidence: 0.9, score: 95.0, issues: ["secret_leak"], change_summary: "removed secret leak", rewrite: "She didn't know his secret." },
-            { role: "character_reader", confidence: 0.8, score: 80.0, issues: ["character_voice"], change_summary: "fixed voice", rewrite: "She spoke in her own voice." },
-            { role: "style_reader", confidence: 0.7, score: 70.0, issues: ["rhythm"], change_summary: "improved rhythm", rewrite: "She spoke, her voice steady." },
-          ],
-        },
-        consensus: { mutable_1: ["secret_leak"] },
-        complementary: { mutable_1: ["character_voice", "rhythm"] },
-        conflict: {},
-        gap: [],
-      };
-      const composerRole = DEFAULT_ROLES.find((r) => r.is_composer);
-      const profile = defaultRoleProfile("whole_scene_composer");
-      const prompts = buildRolePrompt(composerRole, profile, mutableSegs, "context block", allSegments, directorInfo);
-      const hasSecretLeak = prompts.user.indexOf("secret_leak") >= 0;
-      const hasCharacterVoice = prompts.user.indexOf("character_voice") >= 0;
-      const hasRhythm = prompts.user.indexOf("rhythm") >= 0;
-      const hasScore = prompts.user.indexOf("score:") >= 0;
-      const hasChangeSummary = prompts.user.indexOf("change:") >= 0;
-      const hasConsensus = prompts.user.indexOf("consensus=") >= 0;
-      const hasComplementary = prompts.user.indexOf("complementary=") >= 0;
-      const hasConflict = prompts.user.indexOf("conflict=") >= 0;
-      const hasGap = prompts.user.indexOf("gap=") >= 0;
-      if (!hasSecretLeak || !hasCharacterVoice || !hasRhythm) throw new Error("composer input missing issue codes");
-      if (!hasScore) throw new Error("composer input missing Director score");
-      if (!hasChangeSummary) throw new Error("composer input missing change_summary");
-      if (!hasConsensus || !hasComplementary || !hasConflict || !hasGap) throw new Error("composer input missing Director per-segment fields");
-      return `issues:${hasSecretLeak && hasCharacterVoice && hasRhythm} score:${hasScore} change:${hasChangeSummary} director:${hasConsensus && hasComplementary && hasConflict && hasGap}`;
-    });
-
-    // Test 60: R3 — 최종 출력이 실제 draft_zero와 다름
-    test("60_r3_output_differs_from_draft", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "The wind blew.", leading_ws: "", trailing_ws: "", start: 0, end: 14 },
-        { id: "mutable_2", type: "mutable", text: "She walked away.", leading_ws: "", trailing_ws: "", start: 14, end: 30 },
-      ];
-      const composerResult = { segments: { mutable_1: "The cold wind swept across the moor.", mutable_2: "She turned and walked into the fog." } };
-      const assembled = assembleOutput(segs, composerResult, { ranked: {} });
-      if (assembled.output === "The wind blew.She walked away.") throw new Error("output identical to draft");
-      if (!assembled.changed) throw new Error("changed flag false");
-      if (assembled.composerApplied !== 2) throw new Error(`composerApplied should be 2, got ${assembled.composerApplied}`);
-      return `changed:${assembled.changed} composerApplied:${assembled.composerApplied}`;
-    });
-
-    // Test 61: R3 — Composer 전체 실패 시 성공한 specialist 후보가 버려지지 않음
-    test("61_r3_composer_fail_specialist_preserved", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original 1", leading_ws: "", trailing_ws: "", start: 0, end: 10 },
-        { id: "mutable_2", type: "mutable", text: "original 2", leading_ws: "", trailing_ws: "", start: 10, end: 20 },
-      ];
-      const directorResult = {
-        ranked: {
-          mutable_1: [{ role_id: "character_reader", rewrite: "specialist 1", confidence: 0.85, score: 85, issues: ["character_voice"] }],
-          mutable_2: [{ role_id: "style_reader", rewrite: "specialist 2", confidence: 0.75, score: 75, issues: ["rhythm"] }],
-        },
-      };
-      const assembled = assembleOutput(segs, null, directorResult);
-      if (!assembled.changed) throw new Error("specialist candidates should produce changed output");
-      if (assembled.output !== "specialist 1specialist 2") throw new Error(`output should be specialist results, got ${assembled.output}`);
-      if (assembled.topCandidateApplied !== 2) throw new Error(`topCandidateApplied should be 2, got ${assembled.topCandidateApplied}`);
-      return `output:${assembled.output} topCandidateApplied:${assembled.topCandidateApplied}`;
-    });
-
-    // Test 62: R3 — validateComposerSchema with no allowedSegmentIds returns null
-    test("62_r3_composer_no_allowed_returns_null", () => {
-      const good = { segments: { mutable_1: "text 1" } };
-      const v = validateComposerSchema(good, null);
-      if (v) throw new Error("null allowedSegmentIds should return null");
-      const v2 = validateComposerSchema(good, []);
-      if (v2) throw new Error("empty allowedSegmentIds should return null");
-      return "null/empty allowed rejected";
-    });
-
-    // Test 63: R4 — 성공 역할 timeline
-    test("63_r4_successful_role_timeline", () => {
-      const trace = newTrace("test", "test");
-      traceRole(trace, {
-        role_id: "character_reader",
-        provider: "openai_compatible",
-        model: "gpt-4",
-        status: "fulfilled",
-        started_at: 1000,
-        ended_at: 2000,
-        elapsed_ms: 1000,
-        candidate_count: 3,
-      });
-      traceRole(trace, {
-        role_id: "style_reader",
-        provider: "openai_compatible",
-        model: "gpt-4",
-        status: "fulfilled",
-        started_at: 1100,
-        ended_at: 1900,
-        elapsed_ms: 800,
-        candidate_count: 2,
-      });
-      if (trace.roles.length !== 2) throw new Error("should have 2 role entries");
-      const r0 = trace.roles[0];
-      if (r0.status !== "fulfilled") throw new Error("role 0 should be fulfilled");
-      if (r0.candidate_count !== 3) throw new Error("role 0 should have 3 candidates");
-      if (r0.queued_at !== r0.started_at) throw new Error("queued_at should default to started_at");
-      return `roles:${trace.roles.length} r0:${r0.status} cand:${r0.candidate_count}`;
-    });
-
-    // Test 64: R4 — 실패 역할 timeline
-    test("64_r4_failed_role_timeline", () => {
-      const trace = newTrace("test", "test");
-      traceRole(trace, {
-        role_id: "world_reader",
-        provider: "anthropic",
-        model: "claude-3",
-        status: "failed",
-        started_at: 1000,
-        ended_at: 3000,
-        elapsed_ms: 2000,
-        error: "HTTP 500: server error",
-      });
-      const r0 = trace.roles[0];
-      if (r0.status !== "failed") throw new Error("role should be failed");
-      if (r0.error !== "HTTP 500: server error") throw new Error("error message not recorded");
-      if (r0.candidate_count !== 0) throw new Error("failed role should have 0 candidates");
-      return `status:${r0.status} error:${r0.error}`;
-    });
-
-    // Test 65: R4 — retry/fallback 표시
-    test("65_r4_retry_fallback_display", () => {
-      const trace = newTrace("test", "test");
-      traceRole(trace, {
-        role_id: "character_reader",
-        provider: "openai_compatible",
-        model: "gpt-4",
-        status: "fulfilled",
-        started_at: 1000,
-        ended_at: 5000,
-        elapsed_ms: 4000,
-        retry: 1,
-        fallback: true,
-        candidate_count: 2,
-      });
-      const r0 = trace.roles[0];
-      if (r0.retry !== 1) throw new Error("retry should be 1");
-      if (!r0.fallback) throw new Error("fallback should be true");
-      return `retry:${r0.retry} fallback:${r0.fallback}`;
-    });
-
-    // Test 66: R4 — candidate count
-    test("66_r4_candidate_count_recorded", () => {
-      const trace = newTrace("test", "test");
-      trace.candidates.total = 5;
-      trace.candidates.by_segment = { mutable_1: 3, mutable_2: 2 };
-      if (trace.candidates.total !== 5) throw new Error("total should be 5");
-      if (trace.candidates.by_segment.mutable_1 !== 3) throw new Error("by_segment not recorded");
-      return `total:${trace.candidates.total} seg1:${trace.candidates.by_segment.mutable_1}`;
-    });
-
-    // Test 67: R4 — Composer 적용 segment evidence
-    test("67_r4_composer_applied_evidence", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original 1", leading_ws: "", trailing_ws: "", start: 0, end: 10 },
-        { id: "mutable_2", type: "mutable", text: "original 2", leading_ws: "", trailing_ws: "", start: 10, end: 20 },
-      ];
-      const composerResult = { segments: { mutable_1: "composed 1", mutable_2: "composed 2" } };
-      const directorResult = { ranked: {} };
-      const assembled = assembleOutput(segs, composerResult, directorResult);
-      const trace = newTrace("test", "test");
-      assembled.finalSegments.forEach((fseg) => {
-        if (fseg.type !== "mutable") return;
-        trace.applied_evidence.push({
-          segment_id: fseg.id,
-          source: fseg.source,
-          changed: safeString(fseg.final_text) !== safeString(fseg.original_text),
-          composer_unchanged: !!fseg.composer_unchanged,
-          original_preview: preview(fseg.original_text, 80),
-          final_preview: preview(fseg.final_text, 80),
-        });
-      });
-      if (trace.applied_evidence.length !== 2) throw new Error("should have 2 applied evidence entries");
-      const ev0 = trace.applied_evidence[0];
-      if (ev0.source !== "composer") throw new Error(`source should be composer, got ${ev0.source}`);
-      if (!ev0.changed) throw new Error("segment should be changed");
-      if (ev0.composer_unchanged) throw new Error("should not be unchanged");
-      return `evidence:${trace.applied_evidence.length} source:${ev0.source} changed:${ev0.changed}`;
-    });
-
-    // Test 68: R4 — top candidate 적용 segment evidence
-    test("68_r4_top_candidate_applied_evidence", () => {
-      const segs = [
-        { id: "mutable_1", type: "mutable", text: "original", leading_ws: "", trailing_ws: "", start: 0, end: 8 },
-      ];
-      const directorResult = {
-        ranked: { mutable_1: [{ role_id: "character_reader", rewrite: "best candidate", confidence: 0.9, score: 90, issues: ["character_voice"] }] },
-      };
-      const assembled = assembleOutput(segs, null, directorResult);
-      const trace = newTrace("test", "test");
-      assembled.finalSegments.forEach((fseg) => {
-        if (fseg.type !== "mutable") return;
-        trace.applied_evidence.push({
-          segment_id: fseg.id,
-          source: fseg.source,
-          changed: safeString(fseg.final_text) !== safeString(fseg.original_text),
-          composer_unchanged: !!fseg.composer_unchanged,
-          original_preview: preview(fseg.original_text, 80),
-          final_preview: preview(fseg.final_text, 80),
-        });
-      });
-      const ev0 = trace.applied_evidence[0];
-      if (ev0.source !== "top_candidate") throw new Error(`source should be top_candidate, got ${ev0.source}`);
-      if (!ev0.changed) throw new Error("segment should be changed");
-      return `source:${ev0.source} changed:${ev0.changed}`;
-    });
-
-    // Test 69: R4 — original 반환 reason 기록
-    test("69_r4_original_return_reason", () => {
-      const trace = newTrace("test", "test");
-      trace.final.enhanced = false;
-      trace.final.reason = "no_candidates_applied";
-      trace.summary.final_state = "unchanged";
-      trace.summary.final_reason = trace.final.reason;
-      if (trace.final.enhanced) throw new Error("should not be enhanced");
-      if (trace.final.reason !== "no_candidates_applied") throw new Error("reason not recorded");
-      if (trace.summary.final_state !== "unchanged") throw new Error("final_state not recorded");
-      return `state:${trace.summary.final_state} reason:${trace.final.reason}`;
-    });
-
-    // Test 70: R4 — Trace JSON에 API Key 원문 없음
-    test("70_r4_no_api_key_in_trace", () => {
-      const trace = newTrace("test", "test");
-      traceRole(trace, {
-        role_id: "character_reader",
-        provider: "openai_compatible",
-        model: "gpt-4",
-        status: "fulfilled",
-        started_at: 1000,
-        ended_at: 2000,
-        elapsed_ms: 1000,
-      });
-      trace.applied_evidence.push({ segment_id: "mutable_1", source: "composer", changed: true, composer_unchanged: false, original_preview: "orig", final_preview: "final" });
-      trace.director_evidence.push({ segment_id: "mutable_1", issue_groups: ["character_voice"], consensus: [], complementary: ["character_voice"], conflict: [], top_score: 85, top_role: "character_reader", candidate_count: 1 });
-      trace.summary = { specialist_calls: 1, successful_roles: 1, candidate_count: 1, composer_state: "fulfilled", changed_segment_count: 1, unchanged_segment_count: 0, final_state: "enhanced", final_reason: "composer_integrated" };
-      const traceStr = JSON.stringify(trace);
-      const testKey = "sk-test-secret-key-12345";
-      if (traceStr.indexOf(testKey) >= 0) throw new Error("plain key found in trace");
-      if (traceStr.indexOf("Authorization") >= 0) throw new Error("Authorization header found in trace");
-      if (traceStr.indexOf("api_key") >= 0) throw new Error("api_key field found in trace");
-      return "no API key in trace JSON";
-    });
-
-    // Test 71: R4 — Trace 크기 상한 (preview만)
-    test("71_r4_trace_size_bounded", () => {
-      const trace = newTrace("test", "test");
-      const longText = "A".repeat(10000);
-      trace.applied_evidence.push({
-        segment_id: "mutable_1",
-        source: "composer",
-        changed: true,
-        composer_unchanged: false,
-        original_preview: preview(longText, 80),
-        final_preview: preview("B".repeat(10000), 80),
-      });
-      trace.final.original_preview = preview(longText, 200);
-      trace.final.final_preview = preview("B".repeat(10000), 200);
-      const traceStr = JSON.stringify(trace);
-      if (traceStr.length > 10000) throw new Error(`trace too large: ${traceStr.length} bytes`);
-      if (trace.applied_evidence[0].original_preview.length > 85) throw new Error("original_preview not bounded");
-      return `trace size: ${traceStr.length} bytes, preview: ${trace.applied_evidence[0].original_preview.length} chars`;
-    });
-
-    // Test 72: R4 — Director evidence
-    test("72_r4_director_evidence_recorded", () => {
-      const candidates = {
-        mutable_1: [
-          { role_id: "secret_pov_guard", rewrite: "She hesitated.", confidence: 0.9, issues: ["pov_violation"] },
-          { role_id: "character_reader", rewrite: "She paused.", confidence: 0.8, issues: ["pov_violation"] },
-        ],
-      };
-      const roles = DEFAULT_ROLES.filter((r) => !r.is_composer).slice(0, 3);
-      const origSegs = [{ id: "mutable_1", type: "mutable", text: "She knew everything." }];
-      const result = fusionDirector(candidates, roles, origSegs);
-      const trace = newTrace("test", "test");
-      if (result.ranked && result.ranked.mutable_1) {
-        const ranked = result.ranked.mutable_1;
-        const top = ranked[0];
-        trace.director_evidence.push({
-          segment_id: "mutable_1",
-          issue_groups: top.issues || [],
-          consensus: result.consensus.mutable_1 || [],
-          complementary: result.complementary.mutable_1 || [],
-          conflict: result.conflict.mutable_1 || [],
-          top_score: top.score != null ? Math.round(top.score * 10) / 10 : 0,
-          top_role: top.role_id,
-          candidate_count: ranked.length,
-        });
-      }
-      const ev = trace.director_evidence[0];
-      if (!ev) throw new Error("director evidence not recorded");
-      if (ev.segment_id !== "mutable_1") throw new Error("segment_id mismatch");
-      if (ev.consensus.indexOf("pov_violation") < 0) throw new Error("consensus not recorded");
-      if (ev.candidate_count !== 2) throw new Error("candidate count mismatch");
-      return `seg:${ev.segment_id} consensus:${ev.consensus.join(",")} score:${ev.top_score}`;
-    });
-
-    // Test 73: R4 — 최종 요약 필드
-    test("73_r4_final_summary_fields", () => {
-      const trace = newTrace("test", "test");
-      traceRole(trace, {
-        role_id: "character_reader",
-        provider: "openai_compatible",
-        model: "gpt-4",
-        status: "fulfilled",
-        started_at: 1000,
-        ended_at: 2000,
-        elapsed_ms: 1000,
-        candidate_count: 2,
-      });
-      traceRole(trace, {
-        role_id: "style_reader",
-        provider: "openai_compatible",
-        model: "gpt-4",
-        status: "failed",
-        started_at: 1100,
-        ended_at: 1900,
-        elapsed_ms: 800,
-        error: "timeout",
-      });
-      trace.candidates.total = 2;
-      trace.composer.status = "fulfilled";
-      trace.summary = { specialist_calls: 2, successful_roles: 1, candidate_count: 2, composer_state: "fulfilled", changed_segment_count: 1, unchanged_segment_count: 0, final_state: "enhanced", final_reason: "composer_integrated" };
-      if (trace.summary.specialist_calls !== 2) throw new Error("specialist_calls mismatch");
-      if (trace.summary.successful_roles !== 1) throw new Error("successful_roles should be 1");
-      if (trace.summary.composer_state !== "fulfilled") throw new Error("composer_state mismatch");
-      if (trace.summary.changed_segment_count !== 1) throw new Error("changed_segment_count mismatch");
-      return `calls:${trace.summary.specialist_calls} successful:${trace.summary.successful_roles} composer:${trace.summary.composer_state} changed:${trace.summary.changed_segment_count}`;
-    });
-
-    // Test 74: R5 — OpenAI-compatible request/response mock
-    await asyncTest("74_r5_openai_compatible_mock", async () => {
-      const captured = { url: "", auth: "", bodyStr: "", hasJson: false };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.url = String(url);
-        captured.auth = (opts && opts.headers && opts.headers.Authorization) || "";
-        captured.bodyStr = (opts && opts.body) || "";
-        try { const b = JSON.parse(captured.bodyStr); captured.hasJson = b.response_format && b.response_format.type === "json_object"; } catch (_) {}
-        return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content: '{"role":"x","candidates":[]}' } }] }) };
-      };
-      try {
-        const profile = { provider: "openai_compatible", endpoint: "https://api.test.com/v1", model: "gpt-4", api_key_ref: "sk-test", temperature: 0.3, max_output_tokens: 1024, force_json_response: true, reasoning_effort: "auto", reasoning_budget_tokens: 0, extra_headers: "", extra_body: "" };
-        await callProvider(profile, { system: "sys", user: "usr" }, null);
-        if (captured.url.indexOf("/chat/completions") < 0) throw new Error("URL should use /chat/completions");
-        if (captured.auth.indexOf("Bearer sk-test") < 0) throw new Error("Auth should be Bearer key");
-        if (!captured.hasJson) throw new Error("force_json_response should set response_format");
-      } finally { globalThis.fetch = origFetch; }
-      return `url:${captured.url.indexOf("/chat/completions") >= 0} auth:${captured.auth.indexOf("Bearer") >= 0} json:${captured.hasJson}`;
-    });
-
-    // Test 75: R5 — Ollama local request/response mock
-    await asyncTest("75_r5_ollama_local_mock", async () => {
-      const captured = { url: "", bodyStr: "", hasOptions: false };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.url = String(url);
-        captured.bodyStr = (opts && opts.body) || "";
-        try { const b = JSON.parse(captured.bodyStr); captured.hasOptions = !!b.options; } catch (_) {}
-        return { ok: true, text: async () => JSON.stringify({ message: { content: '{"role":"x","candidates":[]}' } }) };
-      };
-      try {
-        const profile = { provider: "ollama_compatible", endpoint: "http://localhost:11434", model: "llama3", api_key_ref: "", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, extra_headers: "", extra_body: "" };
-        await callProvider(profile, { system: "sys", user: "usr" }, null);
-        if (captured.url.indexOf("/api/chat") < 0) throw new Error("Ollama local should use /api/chat");
-        if (!captured.hasOptions) throw new Error("Ollama local should use options field");
-      } finally { globalThis.fetch = origFetch; }
-      return `url:${captured.url} options:${captured.hasOptions}`;
-    });
-
-    // Test 76: R5 — Anthropic request/response mock
-    await asyncTest("76_r5_anthropic_mock", async () => {
-      const captured = { url: "", apiKey: "", bodyStr: "", hasSystem: false };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.url = String(url);
-        captured.apiKey = (opts && opts.headers && opts.headers["x-api-key"]) || "";
-        captured.bodyStr = (opts && opts.body) || "";
-        try { const b = JSON.parse(captured.bodyStr); captured.hasSystem = typeof b.system === "string"; } catch (_) {}
-        return { ok: true, text: async () => JSON.stringify({ content: [{ type: "text", text: '{"role":"x","candidates":[]}' }] }) };
-      };
-      try {
-        const profile = { provider: "anthropic", endpoint: "https://api.anthropic.com/v1", model: "claude-3", api_key_ref: "sk-ant", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, extra_headers: "", extra_body: "" };
-        const result = await callProvider(profile, { system: "sys", user: "usr" }, null);
-        if (captured.url.indexOf("/messages") < 0) throw new Error("Anthropic should use /messages");
-        if (captured.apiKey !== "sk-ant") throw new Error("Anthropic should use x-api-key header");
-        if (!captured.hasSystem) throw new Error("Anthropic body should have system field");
-        if (!result.content) throw new Error("Anthropic response content empty");
-      } finally { globalThis.fetch = origFetch; }
-      return `url:${captured.url} key:${captured.apiKey === "sk-ant"} system:${captured.hasSystem}`;
-    });
-
-    // Test 77: R5 — Gemini request/response mock
-    await asyncTest("77_r5_gemini_mock", async () => {
-      const captured = { url: "", googKey: "", bodyStr: "", hasContents: false };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.url = String(url);
-        captured.googKey = (opts && opts.headers && opts.headers["x-goog-api-key"]) || "";
-        captured.bodyStr = (opts && opts.body) || "";
-        try { const b = JSON.parse(captured.bodyStr); captured.hasContents = !!b.contents; } catch (_) {}
-        return { ok: true, text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"role":"x","candidates":[]}' }] } }] }) };
-      };
-      try {
-        const profile = { provider: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-pro", api_key_ref: "AIza-test", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, extra_headers: "", extra_body: "" };
-        const result = await callProvider(profile, { system: "sys", user: "usr" }, null);
-        if (captured.url.indexOf(":generateContent") < 0) throw new Error("Gemini should use :generateContent");
-        if (captured.googKey !== "AIza-test") throw new Error("Gemini should use x-goog-api-key");
-        if (!captured.hasContents) throw new Error("Gemini body should have contents");
-        if (!result.content) throw new Error("Gemini response content empty");
-      } finally { globalThis.fetch = origFetch; }
-      return `url:${captured.url.indexOf(":generateContent") >= 0} key:${captured.googKey === "AIza-test"} contents:${captured.hasContents}`;
-    });
-
-    // Test 78: R5 — Vertex request/response mock
-    await asyncTest("78_r5_vertex_mock", async () => {
-      const captured = { url: "", auth: "", bodyStr: "", hasSystemInstr: false };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.url = String(url);
-        captured.auth = (opts && opts.headers && opts.headers.Authorization) || "";
-        captured.bodyStr = (opts && opts.body) || "";
-        try { const b = JSON.parse(captured.bodyStr); captured.hasSystemInstr = !!b.systemInstruction; } catch (_) {}
-        return { ok: true, text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"role":"x","candidates":[]}' }] } }] }) };
-      };
-      try {
-        const profile = { provider: "vertex", endpoint: "https://us-central1-aiplatform.googleapis.com/v1", model: "gemini-pro", api_key_ref: "ya29-test", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, vertex_flex_mode: "off", extra_headers: "", extra_body: "" };
-        const result = await callProvider(profile, { system: "sys", user: "usr" }, null);
-        if (captured.url.indexOf(":generateContent") < 0) throw new Error("Vertex should use :generateContent");
-        if (captured.auth.indexOf("Bearer ya29-test") < 0) throw new Error("Vertex should use Bearer token");
-        if (!captured.hasSystemInstr) throw new Error("Vertex body should have systemInstruction");
-        if (!result.content) throw new Error("Vertex response content empty");
-      } finally { globalThis.fetch = origFetch; }
-      return `url:${captured.url.indexOf(":generateContent") >= 0} auth:${captured.auth.indexOf("Bearer") >= 0} sysInstr:${captured.hasSystemInstr}`;
-    });
-
-    // Test 79: R5 — Vertex Flex가 Vertex에서만 적용
-    await asyncTest("79_r5_vertex_flex_vertex_only", async () => {
-      const captured = { flexHeader: "" };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.flexHeader = (opts && opts.headers && opts.headers["X-Vertex-AI-LLM-Shared-Request-Type"]) || "";
-        return { ok: true, text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"role":"x","candidates":[]}' }] } }] }) };
-      };
-      try {
-        const vertexProfile = { provider: "vertex", endpoint: "https://us-central1-aiplatform.googleapis.com/v1", model: "gemini-pro", api_key_ref: "ya29", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, vertex_flex_mode: "provisioned_then_flex", extra_headers: "", extra_body: "" };
-        await callProvider(vertexProfile, { system: "s", user: "u" }, null);
-        if (captured.flexHeader !== "flex") throw new Error(`Vertex provisioned_then_flex should set X-Vertex-AI-LLM-Shared-Request-Type: flex, got ${captured.flexHeader}`);
-        captured.flexHeader = "";
-        const geminiProfile = { provider: "gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta", model: "gemini-pro", api_key_ref: "AIza", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, vertex_flex_mode: "provisioned_then_flex", extra_headers: "", extra_body: "" };
-        await callProvider(geminiProfile, { system: "s", user: "u" }, null);
-        if (captured.flexHeader !== "") throw new Error("Gemini should NOT apply Vertex Flex headers");
-      } finally { globalThis.fetch = origFetch; }
-      return `vertex:flex vertex-only:${captured.flexHeader === ""}`;
-    });
-
-    // Test 80: R5 — Vertex flex_only sets both headers
-    await asyncTest("80_r5_vertex_flex_only_headers", async () => {
-      const captured = { shared: "", flex: "" };
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        captured.shared = (opts && opts.headers && opts.headers["X-Vertex-AI-LLM-Request-Type"]) || "";
-        captured.flex = (opts && opts.headers && opts.headers["X-Vertex-AI-LLM-Shared-Request-Type"]) || "";
-        return { ok: true, text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"role":"x","candidates":[]}' }] } }] }) };
-      };
-      try {
-        const profile = { provider: "vertex", endpoint: "https://us-central1-aiplatform.googleapis.com/v1", model: "gemini-pro", api_key_ref: "ya29", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, vertex_flex_mode: "flex_only", extra_headers: "", extra_body: "" };
-        await callProvider(profile, { system: "s", user: "u" }, null);
-        if (captured.shared !== "shared") throw new Error(`flex_only should set X-Vertex-AI-LLM-Request-Type: shared, got ${captured.shared}`);
-        if (captured.flex !== "flex") throw new Error(`flex_only should set X-Vertex-AI-LLM-Shared-Request-Type: flex, got ${captured.flex}`);
-      } finally { globalThis.fetch = origFetch; }
-      return `shared:${captured.shared} flex:${captured.flex}`;
-    });
-
-    // Test 81: R5 — invalid JSON -> 1회 repair retry
-    await asyncTest("81_r5_invalid_json_repair_retry", async () => {
-      let callCount = 0;
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async () => {
-        callCount++;
-        if (callCount === 1) {
-          return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content: "not json at all" } }] }) };
-        }
-        return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content: '{"role":"character_reader","candidates":[{"segment_id":"mutable_1","rewrite":"text","confidence":0.8}]}' } }] }) };
-      };
-      try {
-        const profile = { provider: "openai_compatible", endpoint: "https://api.test.com/v1", model: "gpt-4", api_key_ref: "sk-test", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, extra_headers: "", extra_body: "" };
-        const trace = newTrace("test", "test");
-        const role = DEFAULT_ROLES.find((r) => r.role_id === "character_reader");
-        const result = await callRole(role, profile, [{ id: "mutable_1", type: "mutable", text: "orig", leading_ws: "", trailing_ws: "" }], "", [{ id: "mutable_1", type: "mutable", text: "orig", leading_ws: "", trailing_ws: "" }], null, trace, null);
-        if (!result) throw new Error("callRole should succeed after retry");
-        if (callCount < 2) throw new Error(`should have retried, callCount=${callCount}`);
-      } finally { globalThis.fetch = origFetch; }
-      return `calls:${callCount} repaired:true`;
-    });
-
-    // Test 82: R5 — primary 실패 -> fallback 1회
-    await asyncTest("82_r5_primary_fail_fallback", async () => {
-      let callCount = 0;
-      let usedFallbackModel = "";
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        callCount++;
-        let isPrimary = true;
-        try { const b = JSON.parse(opts.body); if (b.model === "fallback-model") { usedFallbackModel = "fallback-model"; isPrimary = false; } } catch (_) {}
-        if (isPrimary) return { ok: false, status: 500, text: async () => "server error" };
-        return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content: '{"role":"character_reader","candidates":[{"segment_id":"mutable_1","rewrite":"text","confidence":0.8}]}' } }] }) };
-      };
-      try {
-        const profile = { provider: "openai_compatible", endpoint: "https://api.test.com/v1", model: "primary-model", api_key_ref: "sk-test", temperature: 0.3, max_output_tokens: 1024, force_json_response: false, reasoning_effort: "auto", reasoning_budget_tokens: 0, fallback_provider: "openai_compatible", fallback_endpoint: "https://api.test.com/v1", fallback_model: "fallback-model", fallback_api_key_ref: "sk-test", extra_headers: "", extra_body: "" };
-        const trace = newTrace("test", "test");
-        const role = DEFAULT_ROLES.find((r) => r.role_id === "character_reader");
-        const result = await callRole(role, profile, [{ id: "mutable_1", type: "mutable", text: "orig", leading_ws: "", trailing_ws: "" }], "", [{ id: "mutable_1", type: "mutable", text: "orig", leading_ws: "", trailing_ws: "" }], null, trace, null);
-        if (!result) throw new Error("callRole should succeed via fallback");
-        if (usedFallbackModel !== "fallback-model") throw new Error("should have used fallback model");
-        if (callCount < 2) throw new Error("should have retried with fallback");
-      } finally { globalThis.fetch = origFetch; }
-      return `calls:${callCount} fallback:${usedFallbackModel}`;
-    });
-
-    // Test 83: R5 — deadline abort -> active call 0
-    await asyncTest("83_r5_deadline_abort_active_zero", async () => {
-      const segs = [{ id: "mutable_1", type: "mutable", text: "prose", leading_ws: "", trailing_ws: "", start: 0, end: 5 }];
-      const trace = newTrace("test", "test");
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async () => new Promise(() => {});
-      try {
-        const deadline = createDeadline(80);
-        const settings2 = defaultSettings();
-        Object.keys(settings2.role_profiles).forEach((rid) => { settings2.role_profiles[rid].endpoint = "https://test.example.com/v1"; settings2.role_profiles[rid].model = "test-model"; });
-        const roles = selectRoles(DEFAULT_ROLES, [{ id: "mechanical_artifact", severity: "high" }], "balanced", settings2).roles;
-        await scheduleRoles(roles, settings2.role_profiles, segs, "", segs, deadline, trace, 5);
-        deadline.cancel();
-        if (trace.active_calls_final !== 0) throw new Error(`active_calls_final should be 0, got ${trace.active_calls_final}`);
-      } finally { globalThis.fetch = origFetch; }
-      return `active_calls_final=${trace.active_calls_final}`;
-    });
-
-    // Test 84: R5 — same provider concurrency 준수
-    test("84_r5_same_provider_concurrency", () => {
-      const sem = createSemaphore(PROVIDER_CONCURRENCY.openai_compatible);
-      if (PROVIDER_CONCURRENCY.openai_compatible !== 3) throw new Error("openai_compatible concurrency should be 3");
-      if (PROVIDER_CONCURRENCY.ollama_compatible !== 1) throw new Error("ollama_compatible concurrency should be 1");
-      if (PROVIDER_CONCURRENCY.anthropic !== 2) throw new Error("anthropic concurrency should be 2");
-      return `openai:${PROVIDER_CONCURRENCY.openai_compatible} ollama:${PROVIDER_CONCURRENCY.ollama_compatible} anthropic:${PROVIDER_CONCURRENCY.anthropic}`;
-    });
-
-    // Test 85: R5 — protected header fields skipped
-    test("85_r5_protected_headers_skipped", () => {
-      const base = { "Content-Type": "application/json", Authorization: "Bearer real-key" };
-      const extra = { "X-Custom": "val", Authorization: "Bearer evil-key", "Content-Type": "text/plain" };
-      const result = applyExtraHeadersSafe(base, extra);
-      if (result.headers["X-Custom"] !== "val") throw new Error("custom header should be applied");
-      if (result.headers.Authorization !== "Bearer real-key") throw new Error("Authorization should not be overridden");
-      if (result.headers["Content-Type"] !== "application/json") throw new Error("Content-Type should not be overridden");
-      if (result.skipped_header_keys.indexOf("Authorization") < 0) throw new Error("Authorization should be in skipped list");
-      if (result.skipped_header_keys.indexOf("Content-Type") < 0) throw new Error("Content-Type should be in skipped list");
-      return `skipped:${result.skipped_header_keys.join(",")}`;
-    });
-
-    // Test 86: R5 — protected body fields skipped with deep-merge
-    test("86_r5_protected_body_deep_merge", () => {
-      const base = { model: "gpt-4", messages: [{ role: "user", content: "hi" }], temperature: 0.3 };
-      const extra = { model: "evil-model", messages: [{ role: "evil" }], top_p: 0.9, temperature: 0.5 };
-      const result = applyExtraBodySafe(base, extra, "openai_compatible");
-      if (result.body.model !== "gpt-4") throw new Error("model should not be overridden");
-      if (result.body.messages[0].role !== "user") throw new Error("messages should not be overridden");
-      if (result.body.top_p !== 0.9) throw new Error("top_p should be applied");
-      if (result.body.temperature !== 0.5) throw new Error("temperature should be overridden by extra");
-      if (result.skipped_body_keys.indexOf("model") < 0) throw new Error("model should be in skipped list");
-      if (result.skipped_body_keys.indexOf("messages") < 0) throw new Error("messages should be in skipped list");
-      return `skipped:${result.skipped_body_keys.join(",")} top_p:${result.body.top_p}`;
-    });
-
-    // Test 87: R5 — API Key와 Authorization 비밀값 Trace 미노출
-    test("87_r5_no_secret_in_trace", () => {
-      const trace = newTrace("test", "test");
-      traceRole(trace, {
-        role_id: "character_reader", provider: "openai_compatible", model: "gpt-4",
-        status: "fulfilled", started_at: 1000, ended_at: 2000, elapsed_ms: 1000,
-        candidate_count: 1,
-        request_overrides: { skipped_header_keys: ["Authorization"], skipped_body_keys: [], vertex_flex_mode: "off" },
-      });
-      const traceStr = JSON.stringify(trace);
-      if (traceStr.indexOf("sk-test-secret") >= 0) throw new Error("API key found in trace");
-      if (traceStr.indexOf("Bearer ") >= 0) throw new Error("Bearer token found in trace");
-      if (trace.roles[0].request_overrides.skipped_header_keys.indexOf("Authorization") < 0) throw new Error("skipped headers not recorded");
-      return "no secrets in trace, overrides recorded";
-    });
-
-    // Test 88: R5 — model-aware reasoning adapter
-    test("88_r5_reasoning_supported_providers", () => {
-      const body1 = {};
-      applyReasoningAdapter("openai_compatible", body1, { model: "gpt-5.2", reasoning_effort: "high", reasoning_budget_tokens: 512 });
-      if (body1.reasoning_effort !== "high") throw new Error("openai should get reasoning_effort");
-      if (body1.max_completion_tokens !== 512) throw new Error("openai should get max_completion_tokens");
-      const body2 = {};
-      applyReasoningAdapter("anthropic", body2, { model: "claude-opus-4", reasoning_effort: "high", reasoning_budget_tokens: 1024 });
-      if (!body2.thinking || body2.thinking.budget_tokens !== 1024) throw new Error("anthropic should get thinking.budget_tokens");
-      const body3 = { generationConfig: {} };
-      applyReasoningAdapter("gemini", body3, { model: "gemini-3-pro", reasoning_effort: "high", reasoning_budget_tokens: 256 });
-      if (!body3.generationConfig.thinkingConfig || body3.generationConfig.thinkingConfig.thinkingLevel !== "high") throw new Error("gemini 3 should get thinkingConfig.thinkingLevel");
-      const body4 = {};
-      applyReasoningAdapter("openai_compatible", body4, { model: "unknown-model", reasoning_effort: "auto", reasoning_budget_tokens: 512 });
-      if (body4.reasoning_effort !== undefined) throw new Error("effort=none should skip reasoning");
-      return `openai:${body1.reasoning_effort} anthropic:${!!body2.thinking} gemini3:${!!body3.generationConfig.thinkingConfig} unknownAuto:${body4.reasoning_effort === undefined}`;
-    });
-
-    test("89_consensus_changes_director_score", () => {
-      const originals = [{ id: "mutable_1", type: "mutable", text: "Original scene.", leading_ws: "", trailing_ws: "" }];
-      const roles = DEFAULT_ROLES.filter((role) => !role.is_composer);
-      const solo = fusionDirector({ mutable_1: [
-        { role_id: "character_reader", rewrite: "Better scene.", confidence: 0.8, issues: ["character_voice"] },
-      ] }, roles, originals);
-      const supported = fusionDirector({ mutable_1: [
-        { role_id: "character_reader", rewrite: "Better scene.", confidence: 0.8, issues: ["character_voice"] },
-        { role_id: "style_reader", rewrite: "Better scene!", confidence: 0.5, issues: ["character_voice"] },
-      ] }, roles, originals);
-      const soloScore = solo.ranked.mutable_1.find((item) => item.role_id === "character_reader").score;
-      const supportedScore = supported.ranked.mutable_1.find((item) => item.role_id === "character_reader").score;
-      if (supportedScore <= soloScore) throw new Error(`consensus did not raise score: ${soloScore} -> ${supportedScore}`);
-      return `score:${soloScore.toFixed(1)}->${supportedScore.toFixed(1)}`;
-    });
-
-    test("90_true_gap_uses_all_mutable_segments", () => {
-      const originals = [
-        { id: "mutable_1", type: "mutable", text: "one" },
-        { id: "mutable_2", type: "mutable", text: "two" },
-      ];
-      const result = fusionDirector({ mutable_1: [
-        { role_id: "style_reader", rewrite: "ONE", confidence: 0.7, issues: ["prose_clarity"] },
-      ] }, DEFAULT_ROLES, originals);
-      if (result.gap.indexOf("mutable_2") < 0) throw new Error("mutable_2 gap missing");
-      if (!result.ranked.mutable_2 || result.ranked.mutable_2.length !== 0) throw new Error("gap segment ranking should be empty");
-      return `gap:${result.gap.join(",")}`;
-    });
-
-    test("91_single_candidate_not_complementary", () => {
-      const result = fusionDirector({ mutable_1: [
-        { role_id: "style_reader", rewrite: "Rewritten.", confidence: 0.8, issues: ["rhythm", "transition"] },
-      ] }, DEFAULT_ROLES, [{ id: "mutable_1", type: "mutable", text: "Original." }]);
-      if (result.complementary.mutable_1) throw new Error("single candidate must not be labeled complementary");
-      return "no false complementary";
-    });
-
-    test("92_composer_unchanged_uses_changed_candidate", () => {
-      const segs = [{ id: "mutable_1", type: "mutable", text: "Original", leading_ws: "", trailing_ws: "" }];
-      const assembled = assembleOutput(
-        segs,
-        { segments: { mutable_1: "Original" } },
-        { ranked: { mutable_1: [{ rewrite: "Improved", score: 100 }] } }
-      );
-      if (assembled.output !== "Improved") throw new Error(`expected changed candidate, got ${assembled.output}`);
-      if (assembled.finalSegments[0].source !== "top_candidate_after_composer_unchanged") throw new Error("fallback source missing");
-      return assembled.finalSegments[0].source;
-    });
-
-    test("93_whitespace_unchanged_evidence_false", () => {
-      const segs = [{
-        id: "mutable_1", type: "mutable", text: "\n  Original  \n",
-        leading_ws: "\n  ", core_text: "Original", trailing_ws: "  \n",
-      }];
-      const assembled = assembleOutput(segs, { segments: { mutable_1: "Original" } }, { ranked: {} });
-      const evidence = buildAppliedEvidence(assembled.finalSegments);
-      if (evidence[0].changed) throw new Error("preserved whitespace must not create a false change");
-      return "unchanged";
-    });
-
-    test("94_verifier_reject_clears_applied_evidence", () => {
-      const trace = newTrace("test", "test");
-      const assembled = {
-        finalSegments: [{ id: "mutable_1", type: "mutable", original_text: "A", final_text: "B", source: "composer" }],
-      };
-      updateAppliedEvidence(trace, assembled, { pass: false, errors: ["preservation_violation"] });
-      if (trace.applied_evidence.length) throw new Error("rejected output must not retain applied evidence");
-      return "cleared";
-    });
-
-    await asyncTest("95_auth_error_no_identical_retry", async () => {
-      let calls = 0;
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async () => {
-        calls++;
-        return { ok: false, status: 401, text: async () => "unauthorized" };
-      };
-      try {
-        const profile = Object.assign(defaultRoleProfile("character_reader"), {
-          provider: "openai_compatible", endpoint: "https://api.test.com/v1", model: "test-model", api_key_ref: "secret",
-        });
-        const trace = newTrace("test", "test");
-        const role = DEFAULT_ROLES.find((item) => item.role_id === "character_reader");
-        await callRole(role, profile, [{ id: "mutable_1", type: "mutable", text: "A" }], "", [{ id: "mutable_1", type: "mutable", text: "A" }], null, trace, null);
-        if (calls !== 1) throw new Error(`401 should make one request, got ${calls}`);
-        if (trace.roles[0].error_class !== "http_401") throw new Error(`wrong error class: ${trace.roles[0].error_class}`);
-      } finally {
-        globalThis.fetch = origFetch;
-      }
-      return `calls:${calls}`;
-    });
-
-    await asyncTest("96_reasoning_only_response_classified", async () => {
-      let calls = 0;
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async () => {
-        calls++;
-        return {
-          ok: true,
-          text: async () => JSON.stringify({ choices: [{ message: { content: "", reasoning_content: "analysis only" } }] }),
-        };
-      };
-      try {
-        const profile = Object.assign(defaultRoleProfile("character_reader"), {
-          provider: "openai_compatible", endpoint: "https://api.test.com/v1", model: "glm-5.2",
-        });
-        const trace = newTrace("test", "test");
-        const role = DEFAULT_ROLES.find((item) => item.role_id === "character_reader");
-        const result = await callRole(role, profile, [{ id: "mutable_1", type: "mutable", text: "A" }], "", [{ id: "mutable_1", type: "mutable", text: "A" }], null, trace, null);
-        if (result) throw new Error("reasoning-only response should not validate");
-        if (trace.roles[0].error_class !== "reasoning_only_response") throw new Error(`wrong error: ${trace.roles[0].error_class}`);
-        if (calls !== 2) throw new Error(`reasoning-only should get one repair retry, got ${calls}`);
-      } finally {
-        globalThis.fetch = origFetch;
-      }
-      return `calls:${calls}`;
-    });
-
-    test("97_custom_prompt_fields_protected", () => {
-      const result = applyExtraBodySafe(
-        { model: "real", system: "real system", user: "real user", temperature: 0.3 },
-        { model: "evil", system: "evil", user: "evil", top_p: 0.8 },
-        "custom"
-      );
-      if (result.body.model !== "real" || result.body.system !== "real system" || result.body.user !== "real user") {
-        throw new Error("custom prompt fields were overridden");
-      }
-      if (result.applied_body_keys.join(",") !== "top_p") throw new Error(`unexpected applied keys: ${result.applied_body_keys.join(",")}`);
-      return `skipped:${result.skipped_body_keys.join(",")}`;
-    });
-
-    test("98_composer_token_plan_capped", () => {
-      const plan = composerTokenPlan([{ text: "가".repeat(100000) }], { max_output_tokens: 999999 });
-      if (plan.estimated_output_tokens !== 32000 || plan.requested_output_tokens !== 32000) {
-        throw new Error(`token cap failed: ${JSON.stringify(plan)}`);
-      }
-      return `estimated:${plan.estimated_output_tokens} requested:${plan.requested_output_tokens}`;
-    });
-
-    test("99_candidate_role_identity_forced", () => {
-      const parsed = validateCandidateSchema({
-        role: "fake_role",
-        candidates: [{ segment_id: "mutable_1", rewrite: "B", confidence: 0.8 }],
-      }, "character_reader", ["mutable_1"]);
-      if (!parsed || parsed.role !== "character_reader") throw new Error(`role identity trusted model: ${parsed && parsed.role}`);
-      return parsed.role;
-    });
-
-    test("100_balanced_signal_adds_configured_role", () => {
-      const settings2 = defaultSettings();
-      Object.keys(settings2.role_profiles).forEach((roleId) => {
-        settings2.role_profiles[roleId].endpoint = "https://test.example.com/v1";
-        settings2.role_profiles[roleId].model = "test-model";
-      });
-      const baseline = selectRoles(DEFAULT_ROLES, [], "balanced", settings2);
-      const signaled = selectRoles(DEFAULT_ROLES, [{ id: "lorebook_available", severity: "medium" }], "balanced", settings2);
-      if (baseline.roles.some((role) => role.role_id === "world_reader")) throw new Error("world_reader should not be balanced core");
-      if (!signaled.roles.some((role) => role.role_id === "world_reader")) throw new Error("lore signal should add world_reader");
-      const reason = signaled.selectReasons.find((item) => item.role_id === "world_reader");
-      if (!reason || reason.reason.indexOf("adaptive_score:") !== 0
-          || reason.reason.indexOf("lorebook_available") < 0) {
-        throw new Error("adaptive lore signal reason missing");
-      }
-      return reason.reason;
-    });
-
-    await asyncTest("101_scheduler_records_real_queue_timing", async () => {
-      const origFetch = globalThis.fetch;
-      globalThis.fetch = async (url, opts) => {
-        const body = safeString(opts && opts.body);
-        const isComposer = body.indexOf("Whole-Scene Fusion Composer") >= 0;
-        const content = isComposer
-          ? '{"segments":{"mutable_1":"Composed"}}'
-          : '{"role":"character_reader","candidates":[{"segment_id":"mutable_1","rewrite":"Rewritten","confidence":0.8}]}';
-        return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) };
-      };
-      try {
-        const settings2 = defaultSettings();
-        Object.keys(settings2.role_profiles).forEach((roleId) => {
-          settings2.role_profiles[roleId].endpoint = "https://test.example.com/v1";
-          settings2.role_profiles[roleId].model = "test-model";
-        });
-        const roles = selectRoles(DEFAULT_ROLES, [], "fast", settings2).roles;
-        const trace = newTrace("test", "test");
-        const deadline = createDeadline(60000);
-        await scheduleRoles(roles, settings2.role_profiles, [{ id: "mutable_1", type: "mutable", text: "Original" }], "", [{ id: "mutable_1", type: "mutable", text: "Original" }], deadline, trace, 2);
-        deadline.cancel();
-        if (!trace.roles.length) throw new Error("no role trace entries");
-        trace.roles.forEach((entry) => {
-          if (!(entry.queued_at <= entry.started_at && entry.started_at <= entry.ended_at)) {
-            throw new Error(`invalid timing for ${entry.role_id}`);
-          }
-          if (entry.http_attempts !== 1) throw new Error(`unexpected attempts for ${entry.role_id}: ${entry.http_attempts}`);
-        });
-      } finally {
-        globalThis.fetch = origFetch;
-      }
-      return "queue/start/end recorded";
-    });
-
-    test("102_reasoning_model_families", () => {
-      const glm51 = {};
-      applyReasoningAdapter("ollama_compatible", glm51, { model: "glm-5.1", reasoning_effort: "disable" });
-      if (glm51.think !== false || !glm51.thinking || glm51.thinking.type !== "disabled") throw new Error("GLM 5.1 toggle failed");
-      const glm52 = {};
-      applyReasoningAdapter("openai_compatible", glm52, { model: "glm-5.2", reasoning_effort: "medium" });
-      if (glm52.reasoning_effort !== "medium" || glm52.think !== true) throw new Error("GLM 5.2 effort failed");
-      const deepseek = {};
-      applyReasoningAdapter("openai_compatible", deepseek, { model: "deepseek-v4", reasoning_effort: "low" });
-      if (deepseek.reasoning_effort !== "low") throw new Error("DeepSeek effort failed");
-      const gemini25 = { generationConfig: {} };
-      applyReasoningAdapter("gemini", gemini25, { model: "gemini-2.5-pro", reasoning_effort: "auto", reasoning_budget_tokens: 2048 });
-      if (gemini25.generationConfig.thinkingConfig.thinkingBudget !== 2048) throw new Error("Gemini 2.5 budget failed");
-      const kimiNative = {};
-      const kimiInfo = applyReasoningAdapter("ollama_compatible", kimiNative, { endpoint: "http://localhost:11434", model: "kimi-k2.7-code", reasoning_effort: "none" });
-      if (kimiInfo.family !== "kimi" || kimiNative.think !== false || kimiNative.reasoning_effort !== undefined) throw new Error("Kimi native none failed");
-      return "glm51/glm52/deepseek/gemini25/kimi";
-    });
-
-    await asyncTest("103_full_after_request_returns_enhanced_output", async () => {
-      const originalRisu = globalThis.Risuai;
+    await test('composer_reasoning_only_uses_one_json_recovery', async () => {
       const originalFetch = globalThis.fetch;
-      const store = {};
-      globalThis.Risuai = {
-        pluginStorage: {
-          getItem: async (key) => Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
-          setItem: async (key, value) => { store[key] = value; },
-        },
-      };
-      globalThis.fetch = async (url, opts) => {
-        const body = safeString(opts && opts.body);
-        const isComposer = body.indexOf("Whole-Scene Fusion Composer") >= 0;
-        const content = isComposer
-          ? '{"segments":{"mutable_1":"Final composed scene."}}'
-          : '{"role":"specialist","candidates":[{"segment_id":"mutable_1","rewrite":"Improved specialist scene.","confidence":0.8,"issues":["prose_clarity"]}]}';
-        return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) };
-      };
-      try {
-        const settings2 = defaultSettings();
-        settings2.preset = "fast";
-        settings2.trace_enabled = true;
-        ["character_reader", "style_reader", COMPOSER_ROLE_ID].forEach((roleId) => {
-          settings2.role_profiles[roleId].endpoint = "https://test.example.com/v1";
-          settings2.role_profiles[roleId].model = "test-model";
-        });
-        await saveSettings(settings2);
-        await onBeforeRequest([
-          { role: "system", content: "Test system context." },
-          { role: "user", content: "Continue the scene." },
-        ], "main");
-        const output = await onAfterRequest("Original scene.", "main");
-        if (output !== "Final composed scene.") {
-          const traces = JSON.parse(store[TRACE_KEY] || "[]");
-          const latest = traces[0] || {};
-          throw new Error(
-            `enhanced output not returned: ${output}; reason=${latest.final && latest.final.reason}; errors=${JSON.stringify(latest.errors || [])}`
-          );
-        }
-      } finally {
-        globalThis.fetch = originalFetch;
-        globalThis.Risuai = originalRisu;
-      }
-      return "enhanced return path";
-    });
-
-    await asyncTest("104_full_after_request_verifier_rejects_and_clears_evidence", async () => {
-      const originalRisu = globalThis.Risuai;
-      const originalFetch = globalThis.fetch;
-      const store = {};
-      globalThis.Risuai = {
-        pluginStorage: {
-          getItem: async (key) => Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
-          setItem: async (key, value) => { store[key] = value; },
-        },
-      };
-      globalThis.fetch = async (url, opts) => {
-        const body = safeString(opts && opts.body);
-        const isComposer = body.indexOf("Whole-Scene Fusion Composer") >= 0;
-        const content = isComposer
-          ? '{"segments":{"mutable_1":"Broken fence ```"}}'
-          : '{"role":"specialist","candidates":[{"segment_id":"mutable_1","rewrite":"Improved specialist scene.","confidence":0.8}]}';
-        return { ok: true, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) };
-      };
-      try {
-        const settings2 = defaultSettings();
-        settings2.preset = "fast";
-        settings2.trace_enabled = true;
-        ["character_reader", "style_reader", COMPOSER_ROLE_ID].forEach((roleId) => {
-          settings2.role_profiles[roleId].endpoint = "https://test.example.com/v1";
-          settings2.role_profiles[roleId].model = "test-model";
-        });
-        await saveSettings(settings2);
-        const original = "Original scene.";
-        await onBeforeRequest([
-          { role: "system", content: "Test system context." },
-          { role: "user", content: "Continue the scene." },
-        ], "main");
-        const output = await onAfterRequest(original, "main");
-        if (output !== original) throw new Error("verifier rejection must return original");
-        const traces = JSON.parse(store[TRACE_KEY] || "[]");
-        const latest = traces[0];
-        if (!latest || latest.summary.final_state !== "rejected") throw new Error("rejected trace state missing");
-        if ((latest.applied_evidence || []).length !== 0) throw new Error("rejected trace retained applied evidence");
-      } finally {
-        globalThis.fetch = originalFetch;
-        globalThis.Risuai = originalRisu;
-      }
-      return "original returned, evidence cleared";
-    });
-
-    await asyncTest("105_invalid_request_override_stops_before_http", async () => {
-      let calls = 0;
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async () => {
-        calls++;
-        throw new Error("fetch should not run");
-      };
-      try {
-        const profile = Object.assign(defaultRoleProfile("character_reader"), {
-          provider: "openai_compatible",
-          endpoint: "https://test.example.com/v1",
-          model: "test-model",
-          extra_body: "{broken",
-        });
-        const trace = newTrace("test", "test");
-        const role = DEFAULT_ROLES.find((item) => item.role_id === "character_reader");
-        await callRole(role, profile, [{ id: "mutable_1", type: "mutable", text: "A" }], "", [{ id: "mutable_1", type: "mutable", text: "A" }], null, trace, null);
-        if (calls !== 0) throw new Error(`invalid override reached HTTP: ${calls}`);
-        if (trace.roles[0].error_class !== "configuration_error") throw new Error(`wrong error class: ${trace.roles[0].error_class}`);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-      let headerError = "";
-      try { parseExtraHeaders("broken-header"); } catch (err) { headerError = safeString(err && err.message); }
-      if (headerError !== "invalid_extra_header_line") throw new Error(`invalid header not rejected: ${headerError}`);
-      return "body/header rejected before HTTP";
-    });
-
-    function testPlannerFragment(roleId) {
-      const fragment = {
-        schema: "turn_contract_fragment.v1",
-        planner_role: roleId,
-      };
-      inputPlannerFields(roleId).forEach((field) => { fragment[field] = []; });
-      fragment.required_facts = [{
-        text: "The bell rang",
-        evidence_refs: ["payload_user_input"],
-        evidence_quote: "The bell rang",
-      }];
-      return fragment;
-    }
-
-    await asyncTest("106_kimi_planner_tool_arguments_and_temperature_zero", async () => {
-      const role = DEFAULT_ROLES.find((item) => item.role_id === "input_canon_secret_planner");
-      const fragment = testPlannerFragment(role.role_id);
-      const originalFetch = globalThis.fetch;
-      let capturedBody = null;
-      globalThis.fetch = async (_url, opts) => {
-        capturedBody = JSON.parse(opts.body);
-        return {
-          ok: true,
-          text: async () => JSON.stringify({
-            choices: [{
-              message: {
-                content: "",
-                tool_calls: [{
-                  type: "function",
-                  function: {
-                    name: "submit_turn_contract_fragment",
-                    arguments: JSON.stringify(fragment),
-                  },
-                }],
-              },
-            }],
-          }),
-        };
-      };
-      try {
-        const profile = Object.assign(defaultRoleProfile(role.role_id), {
-          provider: "openai_compatible",
-          endpoint: "https://ollama.com/v1",
-          model: "kimi-k2.7-code:cloud",
-          reasoning_effort: "none",
-          force_json_response: true,
-        });
-        const trace = newTrace("test", "test");
-        trace.budget.input_attempt_max = 2;
-        const result = await callRole(role, profile, [], "", [], null, trace, {
-          context_manifest: {
-            evidence_refs: ["payload_user_input"],
-            evidence_sources: { payload_user_input: "The bell rang at dawn." },
-          },
-        });
-        if (!result || !result.required_facts.length) throw new Error("tool arguments were not accepted");
-        if (!capturedBody || capturedBody.temperature !== 0) throw new Error("planner temperature was not forced to zero");
-        if (!capturedBody.tools || capturedBody.tool_choice.function.name !== "submit_turn_contract_fragment") throw new Error("forced planner tool missing");
-        if (capturedBody.response_format !== undefined) throw new Error("cloud planner must not rely on response_format");
-        const properties = capturedBody.tools[0].function.parameters.properties;
-        if (properties.relationship_and_emotion_state) throw new Error("canon planner received unrelated relationship field");
-        if (trace.roles[0].attempts[0].structured_transport !== "tool_call_used") throw new Error("tool transport not traced");
-        return "tool arguments accepted; temperature=0; role schema reduced";
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    await asyncTest("107_kimi_planner_content_json_fallback", async () => {
-      const role = DEFAULT_ROLES.find((item) => item.role_id === "input_scene_continuity_planner");
-      const fragment = testPlannerFragment(role.role_id);
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async () => ({
-        ok: true,
-        text: async () => JSON.stringify({
-          choices: [{ message: { content: JSON.stringify(fragment) } }],
-        }),
-      });
-      try {
-        const profile = Object.assign(defaultRoleProfile(role.role_id), {
-          provider: "openai_compatible",
-          endpoint: "https://ollama.com/v1",
-          model: "kimi-k2.7-code:cloud",
-          reasoning_effort: "none",
-        });
-        const trace = newTrace("test", "test");
-        trace.budget.input_attempt_max = 2;
-        const result = await callRole(role, profile, [], "", [], null, trace, {
-          context_manifest: {
-            evidence_refs: ["payload_user_input"],
-            evidence_sources: { payload_user_input: "The bell rang at dawn." },
-          },
-        });
-        if (!result) throw new Error("content JSON fallback was rejected");
-        if (trace.roles[0].attempts[0].structured_transport !== "content_json") throw new Error("content fallback not traced");
-        return "content JSON fallback accepted";
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    await asyncTest("108_input_planner_single_attempt_fallback_and_bounded_preview", async () => {
-      const role = DEFAULT_ROLES.find((item) => item.role_id === "input_character_relationship_planner");
-      const manifest = {
-        evidence_refs: ["payload_user_input"],
-        evidence_sources: { payload_user_input: "The bell rang at dawn." },
-      };
-      const originalFetch = globalThis.fetch;
-      let calls = 0;
-      globalThis.fetch = async () => {
-        calls++;
-        return {
-          ok: true,
-          text: async () => JSON.stringify({
-            choices: [{
-              message: {
-                content: `not json Authorization: Bearer sk-secret-key-1234567890 ${"x".repeat(600)}`,
-              },
-            }],
-          }),
-        };
-      };
-      try {
-        const noFallback = Object.assign(defaultRoleProfile(role.role_id), {
-          provider: "openai_compatible",
-          endpoint: "https://ollama.com/v1",
-          model: "kimi-k2.7-code:cloud",
-        });
-        const failedTrace = newTrace("test", "test");
-        failedTrace.budget.input_attempt_max = 2;
-        const failed = await callRole(role, noFallback, [], "", [], null, failedTrace, { context_manifest: manifest });
-        if (failed || calls !== 1 || failedTrace.roles[0].retry !== 0) throw new Error("planner repeated the same profile");
-        const failurePreview = failedTrace.roles[0].attempts[0].failure_preview;
-        if (!failurePreview || failurePreview.length > 410) throw new Error("failure preview is missing or unbounded");
-        if (failurePreview.indexOf("sk-secret-key") >= 0) throw new Error("failure preview leaked a key");
-
-        calls = 0;
-        const fragment = testPlannerFragment(role.role_id);
-        globalThis.fetch = async (_url, opts) => {
-          calls++;
-          const body = JSON.parse(opts.body);
-          const content = body.model === "fallback-model" ? JSON.stringify(fragment) : "not json";
-          return {
-            ok: true,
-            text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
-          };
-        };
-        const withFallback = Object.assign({}, noFallback, {
-          fallback_provider: "openai_compatible",
-          fallback_endpoint: "https://fallback.example.com/v1",
-          fallback_model: "fallback-model",
-        });
-        const fallbackTrace = newTrace("test", "test");
-        fallbackTrace.budget.input_attempt_max = 2;
-        const recovered = await callRole(role, withFallback, [], "", [], null, fallbackTrace, { context_manifest: manifest });
-        if (!recovered || calls !== 2 || !fallbackTrace.roles[0].fallback || fallbackTrace.roles[0].retry !== 0) {
-          throw new Error("cross-provider fallback did not recover in one extra attempt");
-        }
-        return "one primary; one distinct fallback; bounded redacted preview";
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    await asyncTest("109_composer_primary_and_fallback_reserved_before_specialist_retry", async () => {
-      const outputRoles = DEFAULT_ROLES.filter((role) => !role.is_input_planner);
-      const profiles = {};
-      outputRoles.forEach((role) => {
-        profiles[role.role_id] = Object.assign(defaultRoleProfile(role.role_id), {
-          enabled: true,
-          provider: "openai_compatible",
-          endpoint: "https://test.example.com/v1",
-          model: `model-${role.role_id}`,
-          timeout_ms: 10000,
-        });
-      });
-      profiles[COMPOSER_ROLE_ID].fallback_provider = "openai_compatible";
-      profiles[COMPOSER_ROLE_ID].fallback_endpoint = "https://fallback.example.com/v1";
-      profiles[COMPOSER_ROLE_ID].fallback_model = "composer-fallback";
-      const originalFetch = globalThis.fetch;
-      let characterAttempts = 0;
-      globalThis.fetch = async (_url, opts) => {
-        const body = JSON.parse(opts.body);
-        const user = safeString(body.messages && body.messages[1] && body.messages[1].content);
-        if (user.indexOf("FINAL version") >= 0) {
-          if (body.model !== "composer-fallback") {
-            return { ok: false, status: 504, text: async () => "primary composer timeout" };
-          }
-          return {
-            ok: true,
-            text: async () => JSON.stringify({
-              choices: [{ message: { content: '{"segments":{"mutable_1":"composer rewrite"}}' } }],
-            }),
-          };
-        }
-        const match = /"role":"([^"]+)"/.exec(user);
-        const roleId = match ? match[1] : "character_reader";
-        if (roleId === "character_reader") {
-          characterAttempts++;
-          if (characterAttempts === 1) {
-            return {
-              ok: true,
-              text: async () => JSON.stringify({ choices: [{ message: { content: "not json" } }] }),
-            };
-          }
-        }
-        const payload = {
-          role: roleId,
-          candidates: [{
-            segment_id: "mutable_1",
-            rewrite: `${roleId} rewrite`,
-            confidence: 0.8,
-            issues: [roleAllowedIssues(roleId)[0]],
-            change_summary: "improved",
-            tags: [],
-          }],
-        };
-        return {
-          ok: true,
-          text: async () => JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) } }] }),
-        };
-      };
-      const deadline = createDeadline(60000, Date.now());
-      try {
-        const trace = newTrace("test", "test");
-        trace.router.preset = "quality";
-        const selected = selectRoles(
-          outputRoles,
-          [{ id: "dialogue_heavy", severity: "medium" }],
-          "quality",
-          { role_profiles: profiles }
-        ).roles;
-        const segments = [{ id: "mutable_1", type: "mutable", text: "original", leading_ws: "", trailing_ws: "" }];
-        const result = await scheduleRoles(selected, profiles, segments, "", segments, deadline, trace, 4);
-        const specialistEntries = trace.roles.filter((entry) => entry.role_id !== "whole_scene_composer");
-        if (specialistEntries.length !== OUTPUT_SPECIALIST_LIMIT.quality) {
-          throw new Error(`adaptive specialist count changed: ${specialistEntries.length}`);
-        }
-        if (!result.composerResult || trace.budget.composer_attempt_used !== 2) {
-          throw new Error("composer primary and fallback were not both attempted");
-        }
-        const composerEntry = trace.roles.find((entry) => entry.role_id === COMPOSER_ROLE_ID);
-        if (!composerEntry || !composerEntry.fallback) throw new Error("composer fallback was not traced");
-        if (trace.budget.http_attempt_used !== OUTPUT_HTTP_ATTEMPT_BUDGET.quality || characterAttempts !== 1) {
-          throw new Error(`unexpected budget use ${trace.budget.http_attempt_used}, character attempts ${characterAttempts}`);
-        }
-        return "4 specialist primaries + composer primary/fallback = 6; no specialist retry";
-      } finally {
-        deadline.cancel();
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    test("110_role_prompt_contract_v2_boundaries", () => {
-      const inputRoles = DEFAULT_ROLES.filter((role) => role.is_input_planner);
-      const specialists = DEFAULT_ROLES.filter((role) => !role.is_input_planner && !role.is_composer);
-      if (inputRoles.some((role) => role.default_prompt.indexOf("Evidence contract:") < 0
-          || role.default_prompt.indexOf("You own only:") < 0)) {
-        throw new Error("input planner ownership or evidence contract missing");
-      }
-      if (specialists.some((role) => role.default_prompt.indexOf("decisive revision worker") < 0
-          || role.default_prompt.indexOf("You do not own:") < 0
-          || role.default_prompt.indexOf("return candidates: []") < 0)) {
-        throw new Error("specialist rewrite boundary missing");
-      }
-      if (ROLE_PROMPTS.secret_pov_guard.indexOf("user agency or model/meta artifact cleanup") < 0) {
-        throw new Error("secret lane does not exclude agency/meta ownership");
-      }
-      if (ROLE_PROMPTS.agency_meta_guard.indexOf("secret or identity policy") < 0) {
-        throw new Error("agency lane does not exclude secret ownership");
-      }
-      if (ROLE_PROMPTS.whole_scene_composer.indexOf("Authority order:") < 0
-          || ROLE_PROMPTS.whole_scene_composer.indexOf("Secret, POV, identity/reveal continuity, user agency") < 0) {
-        throw new Error("composer authority order missing");
-      }
-      if (DEFAULT_ROLES.some((role) => role.default_prompt.indexOf("Confidence: report how much you improved") >= 0)) {
-        throw new Error("legacy confidence contract still active");
-      }
-      const segment = [{ id: "mutable_1", type: "mutable", text: "Draft." }];
-      const secretRole = DEFAULT_ROLES.find((role) => role.role_id === "secret_pov_guard");
-      const secretRequest = buildRolePrompt(
-        secretRole,
-        defaultRoleProfile(secretRole.role_id),
-        segment,
-        "",
-        segment,
-        null,
-      ).user;
-      if (secretRequest.indexOf("identity_continuity") < 0 || secretRequest.indexOf("meta_artifact") >= 0) {
-        throw new Error("specialist request exposes another lane's issue codes");
-      }
-      return `${inputRoles.length} planners, ${specialists.length} specialists, composer authority aligned`;
-    });
-
-    test("111_planner_prompt_transport_specific", () => {
-      const role = DEFAULT_ROLES.find((item) => item.role_id === "input_scene_continuity_planner");
-      const manifest = { evidence_refs: [], evidence_sources: {} };
-      const gatewayProfile = Object.assign(defaultRoleProfile(role.role_id), {
-        provider: "openai_compatible",
-        endpoint: "https://api.llmgateway.io/v1/chat/completions",
-        model: "minimax-m3",
-      });
-      const gatewayPrompt = buildRolePrompt(role, gatewayProfile, [], "", [], { context_manifest: manifest });
-      if (gatewayPrompt.user.indexOf("submit_turn_contract_fragment") >= 0
-          || gatewayPrompt.user.indexOf("Do not emit XML, <tool_call>") < 0) {
-        throw new Error("non-tool planner received tool transport instructions");
-      }
-      const kimiProfile = Object.assign(defaultRoleProfile(role.role_id), {
-        provider: "ollama_compatible",
-        endpoint: "https://ollama.com/v1/chat/completions",
-        model: "kimi-k2.7-code:cloud",
-      });
-      const kimiPrompt = buildRolePrompt(role, kimiProfile, [], "", [], { context_manifest: manifest });
-      if (kimiPrompt.user.indexOf("Call submit_turn_contract_fragment exactly once") < 0) {
-        throw new Error("tool-capable planner did not receive tool transport instructions");
-      }
-      return "gateway JSON-only; Kimi tool-specific";
-    });
-
-    test("112_empty_candidate_array_is_valid_success", () => {
-      const empty = validateCandidateSchema({ role: "style_reader", candidates: [] }, "style_reader", ["mutable_1"]);
-      if (!empty || !Array.isArray(empty.candidates) || empty.candidates.length !== 0) {
-        throw new Error("empty candidate array rejected");
-      }
-      const invalid = validateCandidateSchema({
-        role: "style_reader",
-        candidates: [{ segment_id: "foreign", rewrite: "rewrite" }],
-      }, "style_reader", ["mutable_1"]);
-      if (invalid !== null) throw new Error("nonempty invalid candidate array accepted");
-      return "clean lane succeeds without fabricated rewrite";
-    });
-
-    test("113_legacy_builtin_prompt_migrates", () => {
-      const legacyPrompt = "You are the Canon/Secret input planner for a roleplay turn. Read the provenance-labelled context manifest and return a compact turn_contract_fragment.v1 JSON object. Extract only facts supported by evidence_refs. Separate writer_only_secrets from character_visible_facts. Record identity aliases and per-character knowledge scopes without revealing secrets to characters who do not know them. Do not write dialogue, narration, a draft, advice, or markdown. Output JSON only.";
-      if (!isLegacyBuiltinPrompt("input_canon_secret_planner", legacyPrompt)) {
-        throw new Error("legacy prompt digest mismatch");
-      }
-      const merged = mergeSettings(defaultSettings(), {
-        role_profiles: {
-          input_canon_secret_planner: { system_prompt: legacyPrompt },
-        },
-      });
-      const migrated = merged.role_profiles.input_canon_secret_planner;
-      if (migrated.system_prompt !== ROLE_PROMPTS.input_canon_secret_planner
-          || migrated.prompt_contract_version !== ROLE_PROMPT_VERSION) {
-        throw new Error("legacy builtin prompt not migrated");
-      }
-      return `legacy builtin migrated to ${ROLE_PROMPT_VERSION}`;
-    });
-
-    test("114_custom_prompt_preserved", () => {
-      const customPrompt = "CUSTOM ROLE CONTRACT: rewrite the scene with a private house style.";
-      const merged = mergeSettings(defaultSettings(), {
-        role_profiles: {
-          style_reader: {
-            system_prompt: customPrompt,
-            prompt_contract_version: "custom",
-          },
-        },
-      });
-      const profile = merged.role_profiles.style_reader;
-      if (profile.system_prompt !== customPrompt || profile.prompt_contract_version !== "custom") {
-        throw new Error("custom prompt was overwritten");
-      }
-      return "custom prompt retained verbatim";
-    });
-
-    test("115_role_issue_whitelist_enforced", () => {
-      const mixedLane = validateCandidateSchema({
-        role: "character_reader",
-        candidates: [{
-          segment_id: "mutable_1",
-          rewrite: "A rewrite that claims to fix two lanes.",
-          confidence: 0.9,
-          issues: ["character_voice", "meta_artifact"],
-        }],
-      }, "character_reader", ["mutable_1"]);
-      if (mixedLane !== null) throw new Error("foreign issue survived character lane validation");
-      const outputContract = validateCandidateSchema({
-        role: "agency_meta_guard",
-        candidates: [{
-          segment_id: "mutable_1",
-          rewrite: "명시된 출력 언어를 지킨 재작성.",
-          confidence: 0.9,
-          issues: ["output_contract_violation"],
-        }],
-      }, "agency_meta_guard", ["mutable_1"]);
-      if (!outputContract || outputContract.candidates.length !== 1) {
-        throw new Error("agency output-contract candidate rejected");
-      }
-      return "foreign lane rejected; output contract accepted";
-    });
-
-    test("116_output_contract_priority_and_prompt", () => {
-      if (ISSUE_PRIORITY.output_contract_violation <= ISSUE_PRIORITY.character_voice
-          || ISSUE_PRIORITY.meta_artifact <= ISSUE_PRIORITY.character_voice) {
-        throw new Error("binding output or meta priority is below character voice");
-      }
-      const agencyPrompt = ROLE_PROMPTS.agency_meta_guard;
-      const composerPrompt = ROLE_PROMPTS.whole_scene_composer;
-      if (agencyPrompt.indexOf("output language") < 0
-          || composerPrompt.indexOf("binding turn contract") < 0) {
-        throw new Error("output language contract missing from rewrite prompts");
-      }
-      return "binding output and meta constraints outrank character/style";
-    });
-
-    test("117_pseudo_tool_planner_recovery", () => {
-      const pseudo = [
-        "<tool_call>",
-        "<function=submit_turn_contract_fragment>",
-        "<parameter=schema>turn_contract_fragment.v1</parameter>",
-        "<parameter=planner_role>input_canon_secret_planner</parameter>",
-        '<parameter=required_facts>[{"text":"The bridge is closed.","evidence_refs":["payload_user_input"],"evidence_quote":"bridge is closed"}]</parameter>',
-        "<parameter=writer_only_secrets>[]</parameter>",
-        "</function>",
-        "</tool_call>",
-      ].join("\n");
-      const parsed = tryParseJson(pseudo);
-      if (!parsed || parsed.schema !== "turn_contract_fragment.v1"
-          || parsed.planner_role !== "input_canon_secret_planner"
-          || !Array.isArray(parsed.required_facts)
-          || parsed.required_facts.length !== 1) {
-        throw new Error("pseudo tool wrapper was not recovered");
-      }
-      return "textual tool wrapper recovered as planner object";
-    });
-
-    test("118_planner_output_is_bounded", () => {
-      const items = Array.from({ length: 5 }, (_, index) => ({
-        text: `Alpha fact ${index}`,
-        evidence_refs: ["payload_user_input"],
-        evidence_quote: `Alpha fact ${index}`,
-      }));
-      const fragment = validateTurnContractFragment({
-        required_facts: items,
-        uncertainty: items,
-      }, "input_scene_continuity_planner", {
-        evidence_refs: ["payload_user_input"],
-        evidence_sources: {
-          payload_user_input: items.map((item) => item.evidence_quote).join(" "),
-        },
-      });
-      if (!fragment
-          || fragment.required_facts.length !== PLANNER_MAX_ITEMS_PER_FIELD
-          || fragment.uncertainty.length !== PLANNER_MAX_ITEMS_PER_FIELD) {
-        throw new Error("planner field cap not enforced");
-      }
-      const tool = inputPlannerTool("input_scene_continuity_planner");
-      const requiredFactsSchema = tool.function.parameters.properties.required_facts;
-      if (requiredFactsSchema.maxItems !== PLANNER_MAX_ITEMS_PER_FIELD) {
-        throw new Error("planner tool schema cap missing");
-      }
-      return "prompt, schema, and validator share compact limits";
-    });
-
-    await asyncTest("119_composer_time_reserve_aborts_specialist_phase", async () => {
-      const originalFetch = globalThis.fetch;
-      const pipelineController = new AbortController();
-      let remainingCalls = 0;
-      const fakeDeadline = {
-        signal: pipelineController.signal,
-        check: () => false,
-        remaining: () => {
-          remainingCalls++;
-          if (remainingCalls === 1) return 180000;
-          if (remainingCalls === 2) return 10100;
-          return 10000;
-        },
-      };
-      globalThis.fetch = async (_url, opts) => {
-        const body = JSON.parse(opts.body);
-        const userPrompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
-        if (userPrompt.indexOf("FINAL version") >= 0) {
-          return {
-            ok: true,
-            text: async () => JSON.stringify({
-              choices: [{ message: { content: '{"segments":{"mutable_1":"Composer completed."}}' } }],
-            }),
-          };
-        }
-        return new Promise(() => {});
-      };
-      try {
-        const characterRole = DEFAULT_ROLES.find((role) => role.role_id === "character_reader");
-        const composerRole = DEFAULT_ROLES.find((role) => role.role_id === "whole_scene_composer");
-        const profiles = {
-          character_reader: Object.assign(defaultRoleProfile("character_reader"), {
-            endpoint: "https://test.example.com/v1",
-            model: "slow-specialist",
-            timeout_ms: 5000,
-          }),
-          whole_scene_composer: Object.assign(defaultRoleProfile("whole_scene_composer"), {
-            endpoint: "https://test.example.com/v1",
-            model: "composer",
-            timeout_ms: 5000,
-          }),
-        };
-        const trace = newTrace("test", "model");
-        trace.router.preset = "quality";
-        const segments = [{
-          id: "mutable_1",
-          type: "mutable",
-          text: "Original.",
-          leading_ws: "",
-          trailing_ws: "",
-        }];
-        const result = await scheduleRoles(
-          [characterRole, composerRole],
-          profiles,
-          segments,
-          "",
-          segments,
-          fakeDeadline,
-          trace,
-          1
-        );
-        const specialistTrace = trace.roles.find((entry) => entry.role_id === "character_reader");
-        if (!result.composerResult
-            || trace.composer.status !== "fulfilled"
-            || trace.composer.specialist_stop_reason !== "composer_reserve"
-            || !specialistTrace
-            || specialistTrace.error_class !== "composer_reserve_aborted") {
-          throw new Error(`reserve path failed:${JSON.stringify({
-            composer: trace.composer,
-            specialist: specialistTrace && specialistTrace.error_class,
-          })}`);
-        }
-        return `reserve:${trace.composer.reserve_ms}ms composer fulfilled`;
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    test("120_v2_builtin_prompt_migrates_to_v3", () => {
-      const merged = mergeSettings(defaultSettings(), {
-        role_profiles: {
-          agency_meta_guard: {
-            system_prompt: "previous v2 builtin snapshot",
-            prompt_contract_version: "rp-rewrite-contract.v2",
-          },
-        },
-      });
-      const profile = merged.role_profiles.agency_meta_guard;
-      if (profile.system_prompt !== ROLE_PROMPTS.agency_meta_guard
-          || profile.prompt_contract_version !== ROLE_PROMPT_VERSION) {
-        throw new Error("v2 builtin prompt was not upgraded to v3");
-      }
-      return `${PREVIOUS_ROLE_PROMPT_VERSIONS[0]} -> ${ROLE_PROMPT_VERSION}`;
-    });
-
-    test("121_meta_wrapper_delete_is_narrow_and_traceable", () => {
-      const text = '<Thoughts>internal planning only</Thoughts><img src="x">Scene begins.';
-      const segments = buildSegmentMap(text, defaultSettings());
-      if (segments.some((segment) =>
-        segment.type === "protected" && /thoughts/i.test(segment.text)
-      )) {
-        throw new Error("Thoughts wrapper remained protected");
-      }
-      const mutableSegs = mutableSegments(segments);
-      const metaSegment = mutableSegs.find((segment) => isWhollyMetaArtifactText(mutableFullText(segment)));
-      if (!metaSegment) throw new Error("standalone meta wrapper was not isolated as mutable");
-      const validated = validateCandidateSchema({
-        role: "agency_meta_guard",
-        candidates: [{
-          segment_id: metaSegment.id,
-          operation: "delete",
-          rewrite: "",
-          confidence: 0.95,
-          issues: ["meta_artifact"],
-          change_summary: "remove model planning wrapper",
-        }],
-      }, "agency_meta_guard", mutableSegs.map((segment) => segment.id), mutableSegs);
-      if (!validated || validated.candidates[0].operation !== "delete") {
-        throw new Error("narrow meta deletion was rejected");
-      }
-      const director = fusionDirector({
-        [metaSegment.id]: [Object.assign(
-          { role_id: "agency_meta_guard" },
-          validated.candidates[0]
-        )],
-      }, [DEFAULT_ROLES.find((role) => role.role_id === "agency_meta_guard")], segments);
-      const assembled = assembleOutput(segments, null, director);
-      if (/thoughts|internal planning/i.test(assembled.output)
-          || assembled.output.indexOf('<img src="x">Scene begins.') < 0) {
-        throw new Error(`meta delete damaged scene:${assembled.output}`);
-      }
-      const evidence = buildAppliedEvidence(assembled.finalSegments);
-      if (!evidence.some((item) => item.operation === "delete")) {
-        throw new Error("delete operation missing from applied evidence");
-      }
-      return "meta wrapper deleted; image and scene preserved";
-    });
-
-    await asyncTest("122_specialist_patch_is_returned_but_not_labeled_enhanced", async () => {
-      const originalRisu = globalThis.Risuai;
-      const originalFetch = globalThis.fetch;
-      const store = {};
-      globalThis.Risuai = {
-        pluginStorage: {
-          getItem: async (key) => Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null,
-          setItem: async (key, value) => { store[key] = value; },
-        },
-      };
-      globalThis.fetch = async (_url, opts) => {
-        const body = JSON.parse(opts.body);
-        if (body.model === "composer-model") {
-          return { ok: false, status: 504, text: async () => "composer unavailable" };
-        }
-        const content = body.model === "character-model"
-          ? '{"role":"character_reader","candidates":[{"segment_id":"mutable_1","rewrite":"Specialist-improved scene.","confidence":0.9,"issues":["character_voice"],"change_summary":"stronger voice"}]}'
-          : '{"role":"style_reader","candidates":[]}';
-        return {
-          ok: true,
-          text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
-        };
-      };
-      try {
-        const settings = defaultSettings();
-        settings.preset = "fast";
-        settings.trace_enabled = true;
-        [
-          ["character_reader", "character-model"],
-          ["style_reader", "style-model"],
-          [COMPOSER_ROLE_ID, "composer-model"],
-        ].forEach(([roleId, model]) => {
-          settings.role_profiles[roleId].endpoint = "https://test.example.com/v1";
-          settings.role_profiles[roleId].model = model;
-        });
-        await saveSettings(settings);
-        await onBeforeRequest([{ role: "user", content: "Continue." }], "main");
-        const output = await onAfterRequest("Original scene.", "main");
-        const traces = JSON.parse(store[TRACE_KEY] || "[]");
-        const latest = traces[0];
-        if (output !== "Specialist-improved scene.") {
-          throw new Error(`specialist patch was not returned:${output}`);
-        }
-        if (!latest || latest.final.enhanced
-            || latest.summary.final_state !== "degraded_patch"
-            || latest.final.reason !== "specialist_patch_without_composer") {
-          throw new Error(`degraded state mislabeled:${JSON.stringify(latest && latest.final)}`);
-        }
-        return "changed output returned as degraded_patch, not Enhanced";
-      } finally {
-        globalThis.fetch = originalFetch;
-        globalThis.Risuai = originalRisu;
-      }
-    });
-
-    test("123_latest_comparison_is_full_ephemeral_and_replaced", () => {
-      const originalText = `Before sentence ${"A".repeat(140)}`;
-      const finalText = `After sentence ${"B".repeat(140)}`;
-      const finalSegments = [{
-        id: "mutable_1",
-        type: "mutable",
-        original_text: originalText,
-        final_text: finalText,
-        source: "composer",
-        operation: "replace",
-        applied_role_id: COMPOSER_ROLE_ID,
-      }];
-      const trace = newTrace("afterRequest", "main");
-      setFinalTraceState(trace, true, "enhanced", "composer_integrated");
-      updateLatestAppliedComparison(trace, finalSegments);
-      const comparisonHtml = renderLatestComparison();
-      if (comparisonHtml.indexOf(escapeHtml(originalText)) < 0
-          || comparisonHtml.indexOf(escapeHtml(finalText)) < 0
-          || comparisonHtml.indexOf(">전<") < 0
-          || comparisonHtml.indexOf(">후<") < 0) {
-        throw new Error("full before/after comparison missing");
-      }
-
-      const evidence = buildAppliedEvidence(finalSegments);
-      if (Object.prototype.hasOwnProperty.call(evidence[0], "original_text")
-          || Object.prototype.hasOwnProperty.call(evidence[0], "final_text")
-          || JSON.stringify(evidence).indexOf(originalText) >= 0
-          || JSON.stringify(evidence).indexOf(finalText) >= 0) {
-        throw new Error("full comparison text leaked into persisted trace evidence");
-      }
-
-      const nextTrace = newTrace("afterRequest", "main");
-      setFinalTraceState(nextTrace, false, "unchanged", "no_candidates_applied");
-      updateLatestAppliedComparison(nextTrace, null);
-      if (renderLatestComparison().indexOf(originalText) >= 0
-          || latestAppliedComparison.changes.length !== 0) {
-        throw new Error("previous turn comparison was not discarded");
-      }
-      return "full comparison is session-only and replaced by the next main turn";
-    });
-
-    test("124_endpoint_density_plan_serializes_three_or_more_calls", () => {
-      const roles = [
-        DEFAULT_ROLES.find((role) => role.role_id === "character_reader"),
-        DEFAULT_ROLES.find((role) => role.role_id === "style_reader"),
-        DEFAULT_ROLES.find((role) => role.role_id === "plot_continuity_reader"),
-      ];
-      const profiles = {};
-      roles.forEach((role) => {
-        profiles[role.role_id] = Object.assign(defaultRoleProfile(role.role_id), {
-          endpoint: "https://one-provider.example/v1/chat/completions",
-          model: `${role.role_id}-model`,
-        });
-      });
-      const plan = buildExecutionGroupPlan(roles, profiles, "output_specialist");
-      const group = plan["https://one-provider.example"];
-      if (!group
-          || group.selected_calls !== 3
-          || group.effective_concurrency !== 1
-          || group.reason !== "endpoint_density_3_serial") {
-        throw new Error(`endpoint density plan mismatch:${JSON.stringify(plan)}`);
-      }
-
-      profiles.plot_continuity_reader.endpoint = "https://second-provider.example/v1";
-      const distributed = buildExecutionGroupPlan(roles, profiles, "output_specialist");
-      if (distributed["https://one-provider.example"].effective_concurrency !== 2
-          || distributed["https://second-provider.example"].effective_concurrency !== 1) {
-        throw new Error(`distributed endpoint plan mismatch:${JSON.stringify(distributed)}`);
-      }
-      return "3 calls on one endpoint serialize; separate endpoints retain independent concurrency";
-    });
-
-    await asyncTest("125_completion_wait_disables_plugin_request_timeout", async () => {
-      const originalFetch = globalThis.fetch;
-      const originalRisu = globalThis.Risuai;
-      let receivedTimeoutField = false;
-      globalThis.Risuai = {};
-      globalThis.fetch = async (_url, options) => {
-        receivedTimeoutField = Object.prototype.hasOwnProperty.call(options || {}, "requestTimeoutMs");
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        return { ok: true, text: async () => "{}" };
-      };
-      try {
-        const started = Date.now();
-        await fetchWithAbort("https://wait.example/v1", {}, 0, null);
-        const elapsed = Date.now() - started;
-        if (elapsed < 30 || receivedTimeoutField) {
-          throw new Error(`completion wait was still bounded:${elapsed}ms timeoutField:${receivedTimeoutField}`);
-        }
-        return `waited ${elapsed}ms without plugin timeout`;
-      } finally {
-        globalThis.fetch = originalFetch;
-        globalThis.Risuai = originalRisu;
-      }
-    });
-
-    await asyncTest("126_quality_same_endpoint_executes_specialists_serially_then_composer", async () => {
-      const originalFetch = globalThis.fetch;
-      const originalRisu = globalThis.Risuai;
-      let active = 0;
-      let peak = 0;
-      globalThis.Risuai = {};
-      globalThis.fetch = async (_url, options) => {
-        active++;
-        peak = Math.max(peak, active);
-        const body = JSON.parse(options.body);
-        await new Promise((resolve) => setTimeout(resolve, 15));
-        active--;
-        const roleId = safeString(body.model).replace(/-model$/, "");
-        const content = roleId === COMPOSER_ROLE_ID
-          ? '{"segments":{"mutable_1":"Composer rewrite."}}'
-          : `{"role":"${roleId}","candidates":[]}`;
-        return {
-          ok: true,
-          text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
-        };
-      };
-      const roles = [
-        DEFAULT_ROLES.find((role) => role.role_id === "character_reader"),
-        DEFAULT_ROLES.find((role) => role.role_id === "style_reader"),
-        DEFAULT_ROLES.find((role) => role.role_id === "plot_continuity_reader"),
-        DEFAULT_ROLES.find((role) => role.role_id === COMPOSER_ROLE_ID),
-      ];
-      const profiles = {};
-      roles.forEach((role) => {
-        profiles[role.role_id] = Object.assign(defaultRoleProfile(role.role_id), {
-          endpoint: "https://single-endpoint.example/v1/chat/completions",
-          model: `${role.role_id}-model`,
-        });
-      });
-      const trace = newTrace("afterRequest", "main");
-      trace.router.preset = "quality";
-      trace.scheduler.completion_wait = true;
-      const deadline = createCompletionDeadline(Date.now());
-      const segments = [{
-        id: "mutable_1",
-        type: "mutable",
-        text: "Original scene.",
-        leading_ws: "",
-        core_text: "Original scene.",
-        trailing_ws: "",
-      }];
-      try {
-        const result = await scheduleRoles(
-          roles,
-          profiles,
-          segments,
-          "",
-          segments,
-          deadline,
-          trace,
-          4
-        );
-        const specialistGroup = trace.scheduler.endpoint_groups.find(
-          (group) => group.stage === "output_specialist"
-        );
-        if (!result.composerResult
-            || peak !== 1
-            || !specialistGroup
-            || specialistGroup.selected_calls !== 3
-            || specialistGroup.effective_concurrency !== 1) {
-          throw new Error(`serial quality schedule failed:${JSON.stringify({
-            peak,
-            composer: !!result.composerResult,
-            groups: trace.scheduler.endpoint_groups,
-          })}`);
-        }
-        return "same endpoint peak=1; composer ran after specialists";
-      } finally {
-        deadline.cancel();
-        globalThis.fetch = originalFetch;
-        globalThis.Risuai = originalRisu;
-      }
-    });
-
-    test("127_materiality_rejects_typo_only_and_accepts_recomposition", () => {
-      const original = "권 서리는 젖은 장부를 넘기며 한얼의 보고를 묵묵히 들었다. 창밖에서는 빗물이 처마 끝을 타고 흘렀다.";
-      const typoOnly = "권 서리는 젖은 장부를 넘기며 한얼의 보고를 묵묵히 들었다. 창밖에서는 빗물이 처마 끝을 타고 흘럿다.";
-      const recomposed = "처마 끝의 빗물이 흙바닥을 두드리는 동안, 권 서리는 젖은 장부에서 손을 떼지 않은 채 한얼의 보고를 끝까지 받아냈다.";
-      const minor = rewriteMateriality(original, typoOnly);
-      const material = rewriteMateriality(original, recomposed);
-      if (minor.material || !material.material) {
-        throw new Error(`materiality mismatch:${JSON.stringify({ minor, material })}`);
-      }
-      return `minor:${minor.changed_span_ratio.toFixed(3)} material:${material.changed_span_ratio.toFixed(3)}`;
-    });
-
-    test("128_precision_only_composer_is_not_enhanced", () => {
-      const segments = [{
-        id: "mutable_1",
-        type: "mutable",
-        text: "The clerk opened the ledger and read the report.",
-        leading_ws: "",
-        core_text: "The clerk opened the ledger and read the report.",
-        trailing_ws: "",
-      }];
-      const assembled = assembleOutput(
-        segments,
-        { segments: { mutable_1: "The clerk opened the ledger and read the reports." } },
-        { ranked: {} }
-      );
-      const classification = classifyAppliedOutput(assembled);
-      if (assembled.materialComposerApplied !== 0
-          || classification.enhanced
-          || classification.state !== "precision_patch") {
-        throw new Error(`precision patch mislabeled:${JSON.stringify({ assembled, classification })}`);
-      }
-      return "minor composer edit remains precision_patch";
-    });
-
-    await asyncTest("129_quality_composer_retries_near_copy_with_material_rewrite", async () => {
-      const originalFetch = globalThis.fetch;
-      const originalRisu = globalThis.Risuai;
-      let calls = 0;
-      globalThis.Risuai = {};
-      globalThis.fetch = async () => {
-        calls++;
-        const content = calls === 1
-          ? '{"segments":{"mutable_1":"The clerk opened the ledger and read the reports."}}'
-          : '{"segments":{"mutable_1":"Rain ticked against the paper doors as the clerk flattened the warped ledger, traced the missing totals with one ink-stained finger, and began reading the report aloud."}}';
-        return {
-          ok: true,
-          text: async () => JSON.stringify({ choices: [{ message: { content } }] }),
-        };
-      };
+      const settings = defaultSettings();
       const role = DEFAULT_ROLES.find((item) => item.role_id === COMPOSER_ROLE_ID);
-      const profile = Object.assign(defaultRoleProfile(COMPOSER_ROLE_ID), {
-        endpoint: "https://composer.example/v1/chat/completions",
-        model: "composer-model",
-      });
-      const segments = [{
-        id: "mutable_1",
-        type: "mutable",
-        text: "The clerk opened the ledger and read the report.",
-        leading_ws: "",
-        core_text: "The clerk opened the ledger and read the report.",
-        trailing_ws: "",
-      }];
-      const trace = newTrace("afterRequest", "main");
-      trace.router.preset = "quality";
-      trace.budget.http_attempt_max = OUTPUT_HTTP_ATTEMPT_BUDGET.quality;
-      const director = {
-        ranked: { mutable_1: [] },
-        consensus: {},
-        complementary: {},
-        conflict: {},
-        gap: ["mutable_1"],
+      const profile = settings.role_profiles[COMPOSER_ROLE_ID];
+      profile.provider = 'openai_compatible';
+      profile.endpoint = 'https://test.example.com/v1/chat/completions';
+      profile.model = 'deepseek-v4-pro';
+      profile.reasoning_preset = 'deepseek';
+      profile.reasoning_effort = 'high';
+      profile.force_json_response = false;
+      profile.extra_body = '{"reasoning_effort":"high","stream":true,"response_format":{"type":"text"}}';
+      profile.timeout_ms = 5000;
+      let calls = 0;
+      const bodies = [];
+      globalThis.fetch = async (_url, options) => {
+        calls++;
+        bodies.push(JSON.parse(options.body));
+        if (calls === 1) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              choices: [{ message: { content: '', reasoning_content: 'Long internal composition reasoning.' } }],
+            }),
+          };
+        }
+        return response(JSON.stringify({
+          segments: { mutable_1: 'The rain struck the shutters while Mira rebuilt the scene through action and subtext.' },
+        }));
       };
       try {
-        const result = await runComposer(
+        const trace = newTrace('test', 'test');
+        trace.budget.http_attempt_max = 4;
+        const deadline = createDeadline(30000);
+        const segments = [{
+          id: 'mutable_1',
+          type: 'mutable',
+          text: 'Mira stood by the window.',
+          leading_ws: '',
+          trailing_ws: '',
+        }];
+        const result = await callRole(
           role,
           profile,
           segments,
-          director,
-          "",
-          null,
-          trace,
+          'runtime context',
           segments,
-          true
+          deadline.signal,
+          trace,
+          {
+            candidateBundles: { mutable_1: [] },
+            semantic_judgment: {},
+            fusion_plan: {},
+            draft_ledger: ledger(),
+          },
+          Date.now(),
+          {
+            allowRetry: true,
+            allowFallback: false,
+            completionWait: false,
+            canContinue: () => true,
+          }
         );
-        if (!result
-            || calls !== 2
-            || trace.composer.semantic_retry !== 1
-            || !trace.composer.materiality
-            || !trace.composer.materiality.pass) {
-          throw new Error(`semantic retry failed:${JSON.stringify({
-            calls,
-            composer: trace.composer,
+        deadline.cancel();
+        const attempts = trace.roles[0] && trace.roles[0].attempts || [];
+        if (!result || calls !== 2) throw new Error(`composer recovery calls:${calls}`);
+        if (attempts.length !== 2 || attempts[1].kind !== 'composer_json_recovery') {
+          throw new Error('composer recovery attempt was not traced');
+        }
+        if (bodies[1].reasoning_effort !== 'none'
+            || bodies[1].stream !== false
+            || !bodies[1].response_format
+            || bodies[1].response_format.type !== 'json_object') {
+          throw new Error('composer recovery did not disable reasoning and force JSON');
+        }
+        return 'reasoning-only Composer recovered in exactly one structured retry';
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('specialist_mixed_segment_empty_uses_targeted_recovery', async () => {
+      const originalFetch = globalThis.fetch;
+      const settings = defaultSettings();
+      const role = DEFAULT_ROLES.find((item) => item.role_id === 'character_reader');
+      const profile = settings.role_profiles.character_reader;
+      profile.provider = 'openai_compatible';
+      profile.endpoint = 'https://test.example.com/v1/chat/completions';
+      profile.model = 'glm-5.2';
+      profile.reasoning_preset = 'glm';
+      profile.reasoning_effort = 'high';
+      profile.force_json_response = false;
+      profile.extra_body = '{"think":true,"thinking":{"type":"enabled"},"stream":true}';
+      profile.timeout_ms = 5000;
+      let calls = 0;
+      const bodies = [];
+      globalThis.fetch = async (_url, options) => {
+        calls++;
+        bodies.push(JSON.parse(options.body));
+        if (calls === 1) {
+          return response(JSON.stringify({
+            schema: 'scene_rewrite_candidates.v1',
+            role_id: 'character_reader',
+            candidates: [{
+              segments: { mutable_1: '' },
+              evidence_refs: ['fact_1'],
+              retained_beats: [{ id: 'fact_1', text: 'Keep the meeting fact.' }],
+              proposed_additions: [],
+              addressed_issues: ['meta_artifact'],
+              confidence: 0.8,
+              change_summary: 'remove leaked reasoning',
+            }],
+          }));
+        }
+        return response(JSON.stringify({
+          schema: 'scene_rewrite_candidates.v1',
+          role_id: 'character_reader',
+          candidates: [{
+            segments: {
+              mutable_1: '### Chapter 1\nMira closed the ledger and met Rowan with a guarded, character-specific answer.',
+            },
+            evidence_refs: ['fact_1'],
+            retained_beats: [{ id: 'fact_1', text: 'Keep the meeting fact.' }],
+            proposed_additions: [],
+            addressed_issues: ['meta_artifact', 'character_voice'],
+            confidence: 0.8,
+            change_summary: 'removed reasoning and rebuilt the complete narrative segment',
+          }],
+        }));
+      };
+      try {
+        const trace = newTrace('test', 'test');
+        trace.budget.http_attempt_max = 4;
+        const deadline = createDeadline(30000);
+        const segments = [{
+          id: 'mutable_1',
+          type: 'mutable',
+          text: '<Thoughts>Analyze the scene.</Thoughts>\n### Chapter 1\nMira met Rowan in the archive.',
+          leading_ws: '',
+          trailing_ws: '',
+        }];
+        const result = await callRole(
+          role,
+          profile,
+          segments,
+          '',
+          segments,
+          deadline.signal,
+          trace,
+          { draft_ledger: ledger() },
+          Date.now(),
+          {
+            allowRetry: true,
+            allowFallback: false,
+            completionWait: false,
+            canContinue: () => true,
+          }
+        );
+        deadline.cancel();
+        const attempts = trace.roles[0] && trace.roles[0].attempts || [];
+        if (!result || result.candidates.length !== 1 || calls !== 2) {
+          throw new Error(`specialist recovery calls:${calls}`);
+        }
+        if (attempts.length !== 2 || attempts[1].kind !== 'specialist_mixed_segment_recovery') {
+          throw new Error('specialist mixed-segment recovery was not traced');
+        }
+        if (bodies[1].think !== false
+            || !bodies[1].thinking
+            || bodies[1].thinking.type !== 'disabled'
+            || bodies[1].stream !== false
+            || !bodies[1].response_format) {
+          throw new Error('specialist recovery did not disable reasoning and force JSON');
+        }
+        if (!result.candidates[0].segments.mutable_1) {
+          throw new Error('mixed narrative segment was still deleted');
+        }
+        return 'mixed meta+narrative deletion recovered in exactly one structured retry';
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('semantic_proof_computes_pass_and_rejects_false_pass', () => {
+      const mutable = [{ id: 'mutable_1', type: 'mutable', text: 'Original.' }];
+      const finalSegments = [{ id: 'mutable_1', type: 'mutable', final_text: 'They met and remained in the room.' }];
+      const passed = validateSemanticProof(semanticProofObject('pass'), ledger(), mutable, finalSegments);
+      const falsePassRaw = semanticProofObject('pass');
+      falsePassRaw.fact_checks[0].status = 'missing';
+      const falsePass = validateSemanticProof(falsePassRaw, ledger(), mutable, finalSegments);
+      const incompleteRaw = semanticProofObject('pass');
+      incompleteRaw.beat_checks = [];
+      const incomplete = validateSemanticProof(incompleteRaw, ledger(), mutable, finalSegments);
+      const repairRaw = semanticProofObject('repair');
+      repairRaw.fact_checks[0].status = 'missing';
+      repairRaw.repair_instructions = [{
+        segment_id: 'mutable_1',
+        instruction: 'Restore the established meeting fact.',
+        evidence_refs: ['fact_1'],
+        prohibited: [],
+      }];
+      const repair = validateSemanticProof(repairRaw, ledger(), mutable, finalSegments);
+      if (!passed || passed.verdict !== 'pass') throw new Error('clean proof did not pass');
+      if (!falsePass || falsePass.verdict !== 'fail') throw new Error('declared pass overrode missing fact');
+      if (incomplete) throw new Error('incomplete ledger coverage accepted');
+      if (!repair || repair.verdict !== 'repair') throw new Error('targeted repair was not admitted');
+      return 'computed verdict, exact ledger coverage, and one repair';
+    });
+
+    await test('semantic_prover_call_validates_final_composer_output', async () => {
+      const originalFetch = globalThis.fetch;
+      const settings = defaultSettings();
+      const role = DEFAULT_ROLES.find((item) => item.role_id === PROVER_ROLE_ID);
+      const profile = settings.role_profiles[PROVER_ROLE_ID];
+      profile.endpoint = 'https://test.example.com/v1/chat/completions';
+      profile.model = 'semantic-prover-model';
+      profile.timeout_ms = 5000;
+      globalThis.fetch = async () => response(JSON.stringify(semanticProofObject('pass')));
+      try {
+        const trace = newTrace('test', 'test');
+        const deadline = createDeadline(30000);
+        const segments = [{ id: 'mutable_1', type: 'mutable', text: 'Original.', leading_ws: '', trailing_ws: '' }];
+        const finalSegments = [{
+          id: 'mutable_1',
+          type: 'mutable',
+          original_text: 'Original.',
+          final_text: 'They met and remained in the room.',
+        }];
+        const proof = await runSemanticProver(
+          role,
+          profile,
+          segments,
+          finalSegments,
+          {
+            semantic_judgment: judgmentObject(['cand_1']),
+            fusion_plan: { schema: 'fusion_plan.v1' },
+            draft_ledger: ledger(),
+          },
+          '',
+          deadline.signal,
+          trace,
+          false,
+          'test'
+        );
+        deadline.cancel();
+        if (!proof || proof.verdict !== 'pass' || trace.semantic_prover.verdict !== 'pass') {
+          throw new Error('semantic prover production call did not pass');
+        }
+        return 'provider response validated through semantic_proof.v1';
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('composer_only_assembly_ignores_specialist_candidate', () => {
+      const segments = [{ id: 'mutable_1', type: 'mutable', text: 'Original paragraph.', leading_ws: '', trailing_ws: '' }];
+      const director = {
+        ranked: {
+          mutable_1: [{
+            role_id: 'character_reader',
+            rewrite: 'Specialist replacement.',
+            judge_verdict: 'accept',
+            identical_to_original: false,
+          }],
+        },
+      };
+      const assembled = assembleOutput(segments, null, director);
+      if (assembled.changed || assembled.output !== 'Original paragraph.') {
+        throw new Error('specialist candidate escaped Composer boundary');
+      }
+      return 'specialist output remains Composer input only';
+    });
+
+    await test('semantic_judgment_strict_candidate_ids', () => {
+      const candidates = [candidate('character_reader', 'cand_1', 'Rewritten scene.')];
+      const good = validateSemanticJudgment(judgmentObject(['cand_1']), candidates, ledger());
+      const foreign = validateSemanticJudgment(judgmentObject(['foreign']), candidates, ledger());
+      if (!good || foreign) throw new Error('candidate identity validation failed');
+      return 'strict IDs accepted';
+    });
+
+    await test('fusion_plan_prohibits_constrained_addition', () => {
+      const candidates = [candidate('character_reader', 'cand_1', 'Rewritten scene.')];
+      const raw = judgmentObject(['cand_1'], 'accept_with_constraints');
+      raw.candidate_judgments[0].unsupported_additions = [{ claim: 'Invented sibling', candidate_ids: ['cand_1'], segment_ids: ['mutable_1'], reason: 'not grounded' }];
+      raw.candidate_judgments[0].hard_violations = [{
+        type: 'secret_leak',
+        detail: 'The candidate reveals a writer-only identity.',
+        evidence_refs: ['constraint_1'],
+        segment_ids: ['mutable_1'],
+      }];
+      raw.candidate_judgments[0].rejected_elements = [{
+        claim: 'Remove the identity reveal.',
+        candidate_ids: ['cand_1'],
+        segment_ids: ['mutable_1'],
+      }];
+      const judged = validateSemanticJudgment(raw, candidates, ledger());
+      const plan = buildFusionPlan(judged, candidates, ledger(), [{ id: 'mutable_1', type: 'mutable', text: 'Original.' }]);
+      if (!plan || !plan.semantic_ready || plan.prohibited_additions.length !== 2) throw new Error('constraint not carried into plan');
+      return plan.plan_id;
+    });
+
+    await test('judged_candidates_replace_confidence_director', () => {
+      const candidates = [candidate('character_reader', 'cand_a', 'Character rewrite.'), candidate('style_reader', 'cand_b', 'Style rewrite.')];
+      const raw = judgmentObject(['cand_a', 'cand_b']);
+      raw.candidate_judgments[1].verdict = 'reject';
+      const judged = validateSemanticJudgment(raw, candidates, ledger());
+      const plan = buildFusionPlan(judged, candidates, ledger(), [{ id: 'mutable_1', type: 'mutable', text: 'Original.' }]);
+      const result = buildComposerCandidatePool(candidates, judged, plan, [{ id: 'mutable_1', type: 'mutable', text: 'Original.' }], ledger());
+      if (result.ranked.mutable_1.length !== 1 || result.ranked.mutable_1[0].candidate_id !== 'cand_a') throw new Error('rejected candidate reached composer pool');
+      if ('score' in result.ranked.mutable_1[0]) throw new Error('confidence score still controls selection');
+      return result.ranked.mutable_1[0].judge_verdict;
+    });
+
+    await test('scheduler_orders_specialist_judge_composer_and_reserves_prover', async () => {
+      const originalFetch = globalThis.fetch;
+      const calls = [];
+      const settings = defaultSettings();
+      const roles = ['character_reader', JUDGE_ROLE_ID, COMPOSER_ROLE_ID, PROVER_ROLE_ID]
+        .map((id) => DEFAULT_ROLES.find((role) => role.role_id === id));
+      roles.forEach((role) => {
+        const profile = settings.role_profiles[role.role_id];
+        profile.endpoint = 'https://test.example.com/v1/chat/completions';
+        profile.model = `${role.role_id}-model`;
+        profile.timeout_ms = 5000;
+      });
+      globalThis.fetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        const model = safeString(body.model);
+        calls.push(model);
+        if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
+          const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
+          const match = /"candidate_id":"([^"]+)"/.exec(prompt);
+          if (!match) throw new Error('judge prompt candidate missing');
+          return response(JSON.stringify(judgmentObject([match[1]])));
+        }
+        if (model.indexOf(COMPOSER_ROLE_ID) >= 0) return response(JSON.stringify({ segments: { mutable_1: 'Composer rebuilt the scene with stronger causality.' } }));
+        return response(sceneCandidateJson('character_reader', 'Character specialist rebuilt the scene.'));
+      };
+      try {
+        const trace = newTrace('test', 'test');
+        trace.router.preset = 'balanced';
+        const deadline = createDeadline(30000);
+        const segments = [{ id: 'mutable_1', type: 'mutable', text: 'Original scene.', leading_ws: '', trailing_ws: '' }];
+        const result = await scheduleRoles(roles, settings.role_profiles, segments, '', segments, deadline, trace, 2, ledger());
+        deadline.cancel();
+        if (result.failureReason || !result.composerResult) throw new Error(`pipeline failed:${result.failureReason}`);
+        if (!result.proverRole || result.proverRole.role_id !== PROVER_ROLE_ID) throw new Error('prover not reserved');
+        const judgeIndex = calls.findIndex((model) => model.indexOf(JUDGE_ROLE_ID) >= 0);
+        const composerIndex = calls.findIndex((model) => model.indexOf(COMPOSER_ROLE_ID) >= 0);
+        if (judgeIndex < 1 || composerIndex <= judgeIndex) throw new Error(`wrong order:${calls.join('>')}`);
+        return calls.join('>');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('judge_reject_all_blocks_composer', async () => {
+      const originalFetch = globalThis.fetch;
+      let composerCalls = 0;
+      const settings = defaultSettings();
+      const roles = ['character_reader', JUDGE_ROLE_ID, COMPOSER_ROLE_ID, PROVER_ROLE_ID]
+        .map((id) => DEFAULT_ROLES.find((role) => role.role_id === id));
+      roles.forEach((role) => {
+        const profile = settings.role_profiles[role.role_id];
+        profile.endpoint = 'https://test.example.com/v1/chat/completions';
+        profile.model = `${role.role_id}-model`;
+        profile.timeout_ms = 5000;
+      });
+      globalThis.fetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        const model = safeString(body.model);
+        if (model.indexOf(COMPOSER_ROLE_ID) >= 0) {
+          composerCalls++;
+          return response(JSON.stringify({ segments: { mutable_1: 'Must not run.' } }));
+        }
+        if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
+          const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
+          const match = /"candidate_id":"([^"]+)"/.exec(prompt);
+          if (!match) throw new Error('judge prompt candidate missing');
+          const rejected = judgmentObject([match[1]], 'reject');
+          rejected.candidate_judgments[0].accepted_elements = [];
+          rejected.candidate_judgments[0].rejected_elements = [{ claim: 'Not grounded', candidate_ids: [match[1]] }];
+          return response(JSON.stringify(rejected));
+        }
+        return response(sceneCandidateJson('character_reader', 'Candidate rewrite.'));
+      };
+      try {
+        const trace = newTrace('test', 'test');
+        trace.router.preset = 'balanced';
+        const deadline = createDeadline(30000);
+        const segments = [{ id: 'mutable_1', type: 'mutable', text: 'Original scene.', leading_ws: '', trailing_ws: '' }];
+        const result = await scheduleRoles(roles, settings.role_profiles, segments, '', segments, deadline, trace, 2, ledger());
+        deadline.cancel();
+        if (result.failureReason !== 'semantic_judge_rejected_all' || composerCalls !== 0) throw new Error(`reject gate failed:${result.failureReason}/${composerCalls}`);
+        return result.failureReason;
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('phase_e_f_full_hook_returns_only_proven_composer_output', async () => {
+      const originalFetch = globalThis.fetch;
+      const originalRisu = globalThis.Risuai;
+      const settings = defaultSettings();
+      settings.preset = 'fast';
+      settings.trace_enabled = true;
+      const configuredIds = [
+        'character_reader',
+        'style_reader',
+        JUDGE_ROLE_ID,
+        COMPOSER_ROLE_ID,
+        PROVER_ROLE_ID,
+      ];
+      configuredIds.forEach((roleId) => {
+        const profile = settings.role_profiles[roleId];
+        profile.endpoint = 'https://test.example.com/v1/chat/completions';
+        profile.model = `${roleId}-model`;
+        profile.timeout_ms = 5000;
+      });
+      const calls = [];
+      const stored = {};
+      let composerCalls = 0;
+      let proverCalls = 0;
+      const initialComposerText = 'Rain tapped the window as Mira studied the open ledger in measured silence.';
+      const finalComposerText = 'Rain tapped the window as Mira studied the open ledger, keeping the secret behind her measured silence.';
+      globalThis.Risuai = {
+        pluginStorage: {
+          getItem: async (key) => key === SETTINGS_KEY
+            ? JSON.stringify(settings)
+            : (Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] : null),
+          setItem: async (key, value) => { stored[key] = value; },
+        },
+      };
+      globalThis.fetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        const model = safeString(body.model);
+        const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
+        calls.push(model);
+        if (model.indexOf(PROVER_ROLE_ID) >= 0) {
+          proverCalls++;
+          const ledgerMatch = /--- Draft Ledger \(binding source map\) ---\n(.+?)\n--- End Draft Ledger ---/s.exec(prompt);
+          if (!ledgerMatch) throw new Error('prover prompt missing draft ledger');
+          const proofLedger = JSON.parse(ledgerMatch[1]);
+          const proof = {
+            schema: 'semantic_proof.v1',
+            declared_verdict: 'pass',
+            fact_checks: arrayFromCollection(proofLedger.established_facts).map((item) => ({
+              ledger_id: item.ledger_id,
+              status: 'preserved',
+              detail: 'Grounded in final scene.',
+              evidence_quote: 'Rain tapped',
+            })),
+            beat_checks: arrayFromCollection(proofLedger.scene_beats).map((item) => ({
+              ledger_id: item.ledger_id,
+              status: 'preserved',
+              detail: 'Beat retained.',
+              evidence_quote: 'open ledger',
+            })),
+            constraint_checks: arrayFromCollection(proofLedger.hard_constraints).map((item) => ({
+              ledger_id: item.ledger_id,
+              status: 'satisfied',
+              detail: 'Constraint preserved.',
+              evidence_quote: '',
+            })),
+            hard_violations: [],
+            unsupported_additions: [],
+            output_contract: {
+              language_ok: true,
+              turn_boundary_ok: true,
+              user_agency_ok: true,
+              meta_free: true,
+              format_ok: true,
+            },
+            repair_instructions: [],
+          };
+          if (proverCalls === 1) {
+            proof.declared_verdict = 'repair';
+            if (proof.fact_checks.length) {
+              proof.fact_checks[0].status = 'missing';
+              proof.fact_checks[0].detail = 'The first required fact is not explicit enough.';
+            } else if (proof.beat_checks.length) {
+              proof.beat_checks[0].status = 'missing';
+              proof.beat_checks[0].detail = 'The first required beat is not explicit enough.';
+            } else {
+              proof.output_contract.turn_boundary_ok = false;
+            }
+            proof.repair_instructions = [{
+              segment_id: 'mutable_1',
+              instruction: 'Restore the missing grounded unit while preserving the full scene.',
+              evidence_refs: [],
+              prohibited: ['Do not add a new event.'],
+            }];
+          }
+          return response(JSON.stringify(proof));
+        }
+        if (model.indexOf(COMPOSER_ROLE_ID) >= 0) {
+          composerCalls++;
+          return response(JSON.stringify({
+            segments: { mutable_1: composerCalls === 1 ? initialComposerText : finalComposerText },
+          }));
+        }
+        if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
+          try {
+            const candidatesMatch = /Scene candidates:\n(.+?)\n\n--- Draft Ledger/s.exec(prompt);
+            const promptCandidates = candidatesMatch ? JSON.parse(candidatesMatch[1]) : [];
+            const ids = promptCandidates.map((candidate) => candidate.candidate_id);
+            if (ids.length !== 2) throw new Error(`judge expected two scene candidates:${ids.length}`);
+            const ledgerMatch = /--- Draft Ledger \(binding source map\) ---\n(.+?)\n--- End Draft Ledger ---/s.exec(prompt);
+            if (!ledgerMatch) throw new Error('judge prompt missing draft ledger');
+            const judgmentLedger = JSON.parse(ledgerMatch[1]);
+            const ledgerIds = ["established_facts", "scene_beats", "hard_constraints"]
+              .flatMap((field) => arrayFromCollection(judgmentLedger[field]).map((item) => item.ledger_id));
+            const judgment = judgmentObject(ids);
+            judgment.candidate_judgments.forEach((item) => {
+              item.preserved_ledger_ids = ledgerIds;
+            });
+            if (!validateSemanticJudgment(judgment, promptCandidates, judgmentLedger)) {
+              calls.push('judge_validation_null');
+            }
+            return response(JSON.stringify(judgment));
+          } catch (err) {
+            calls.push(`judge_mock_error:${safeString(err && err.message)}`);
+            throw err;
+          }
+        }
+        if (model.indexOf('character_reader') >= 0) {
+          return response(sceneCandidateJson('character_reader', 'Mira read the ledger while withholding the secret.'));
+        }
+        if (model.indexOf('style_reader') >= 0) {
+          return response(sceneCandidateJson('style_reader', 'Rain pressed softly at the window while Mira studied the ledger.'));
+        }
+        throw new Error(`unexpected model:${model}`);
+      };
+      try {
+        pendingMainSnapshot = null;
+        const messages = [{ role: 'user', content: 'Continue the scene without revealing the secret.' }];
+        await onBeforeRequest(messages, 'model');
+        const original = 'Mira watched the rain and kept the secret while the ledger remained open on the table.';
+        const output = await onAfterRequest(original, 'model');
+        if (output !== finalComposerText) {
+          const traces = JSON.parse(stored[TRACE_KEY] || '[]');
+          const reason = traces[0] && traces[0].final && traces[0].final.reason;
+          const roleErrors = arrayFromCollection(traces[0] && traces[0].roles)
+            .filter((entry) => entry.status !== 'fulfilled')
+            .map((entry) => `${entry.role_id}:${entry.error_class || entry.error || entry.status}`)
+            .join(',');
+          throw new Error(`unproven or wrong output returned:${output};calls:${calls.join('>')};reason:${reason || 'none'};roles:${roleErrors || 'none'}`);
+        }
+        const traceRecord = JSON.parse(stored[TRACE_KEY] || '[]')[0];
+        if (!traceRecord || traceRecord.final.enhanced !== true
+            || traceRecord.final.semantic_verified !== 'passed'
+            || traceRecord.semantic_prover.attempts !== 2
+            || traceRecord.semantic_prover.repair_attempted !== true
+            || !traceRecord.applied_evidence.some((item) => item.changed && item.source === 'composer')) {
+          throw new Error(`final proof trace mismatch:${JSON.stringify(traceRecord && {
+            final: traceRecord.final,
+            prover: traceRecord.semantic_prover,
+            applied: traceRecord.applied_evidence,
           })}`);
         }
-        return "near-copy rejected; second composition materially rewrote the segment";
+        const judgeIndex = calls.findIndex((model) => model.indexOf(JUDGE_ROLE_ID) >= 0);
+        const composerIndexes = calls.map((model, index) => model.indexOf(COMPOSER_ROLE_ID) >= 0 ? index : -1)
+          .filter((index) => index >= 0);
+        const proverIndexes = calls.map((model, index) => model.indexOf(PROVER_ROLE_ID) >= 0 ? index : -1)
+          .filter((index) => index >= 0);
+        if (judgeIndex < 2 || composerIndexes.length !== 2 || proverIndexes.length !== 2
+            || composerIndexes[0] <= judgeIndex
+            || proverIndexes[0] <= composerIndexes[0]
+            || composerIndexes[1] <= proverIndexes[0]
+            || proverIndexes[1] <= composerIndexes[1]) {
+          throw new Error(`wrong full hook order:${calls.join('>')}`);
+        }
+        return calls.join('>');
       } finally {
+        pendingMainSnapshot = null;
         globalThis.fetch = originalFetch;
         globalThis.Risuai = originalRisu;
       }
     });
 
-    const passed = results.filter((r) => r.pass).length;
-    const failed = results.filter((r) => !r.pass).length;
-    const summary = `\n${"=".repeat(60)}\nRecomposer In-Memory Tests: ${passed}/${results.length} passed, ${failed} failed\n${"=".repeat(60)}\n` +
-      results.map((r) => `  ${r.pass ? "✓" : "✗"} ${r.name}${r.detail ? " — " + r.detail : ""}`).join("\n") +
-      "\n" + "=".repeat(60);
-    log(summary);
-    return { passed, failed, total: results.length, results, summary };
-  }
+    await test('protected_segments_remain_exact', () => {
+      const source = 'Before <img src="x"> after.';
+      const segments = buildSegmentMap(source, defaultSettings());
+      const mutable = mutableSegments(segments);
+      const composed = { segments: {} };
+      mutable.forEach((segment) => { composed.segments[segment.id] = mutableCoreText(segment).toUpperCase(); });
+      const assembled = assembleOutput(segments, composed);
+      const verification = verifyOutput(segments, assembled.finalSegments, assembled.output, source);
+      if (!verification.pass || assembled.output.indexOf('<img src="x">') < 0) throw new Error('protected segment changed');
+      return 'protected exact';
+    });
 
+    return {
+      total: results.length,
+      passed: results.filter((item) => item.pass).length,
+      failed: results.filter((item) => !item.pass).length,
+      results,
+    };
+  }
   async function runInputEnhanceRegressionTests() {
     const results = [];
     async function check(name, fn) {
@@ -10142,7 +9087,8 @@
         await onAfterRequest("A mutable response.", "model");
         const traces = JSON.parse(store[TRACE_KEY] || "[]");
         if (!traces[0] || traces[0].budget.http_attempt_used !== 0
-            || traces[0].budget.input_attempt_used !== 3) {
+            || traces[0].budget.input_attempt_used !== 3
+            || traces[0].final.reason === "pipeline_error") {
           throw new Error(`budget_not_separated:${JSON.stringify(traces[0] && traces[0].budget)}`);
         }
         return "input usage traced separately; output starts with fresh budget";
@@ -10255,16 +9201,16 @@
       if (INPUT_HTTP_ATTEMPT_BUDGET.fast !== 0
           || INPUT_HTTP_ATTEMPT_BUDGET.balanced !== 3
           || INPUT_HTTP_ATTEMPT_BUDGET.quality !== 4
-          || OUTPUT_HTTP_ATTEMPT_BUDGET.fast !== 4
-          || OUTPUT_HTTP_ATTEMPT_BUDGET.balanced !== 5
-          || OUTPUT_HTTP_ATTEMPT_BUDGET.quality !== 7) {
+          || OUTPUT_HTTP_ATTEMPT_BUDGET.fast !== 7
+          || OUTPUT_HTTP_ATTEMPT_BUDGET.balanced !== 9
+          || OUTPUT_HTTP_ATTEMPT_BUDGET.quality !== 12) {
         throw new Error("wrong_stage_attempt_budget");
       }
       const trace = newTrace("test", "main");
       if (trace.budget.http_attempt_max !== OUTPUT_HTTP_ATTEMPT_BUDGET.balanced) {
         throw new Error("default_output_budget_not_initialized");
       }
-      return "input=0/3/4 output=4/5/7";
+      return "input=0/3/4 output=7/9/12";
     });
 
     await check("batch1_risu_native_fetch_precedes_browser_fetch", async () => {
@@ -10366,23 +9312,23 @@
       return "shared prefix accepted";
     });
 
-    await check("batch1_negative_director_candidate_not_applied", async () => {
+    await check("batch1_specialist_candidate_never_applied_without_composer", async () => {
       const segments = [{ id: "mutable_1", type: "mutable", text: "Original paragraph." }];
       const director = {
         ranked: {
           mutable_1: [{
             role_id: "character_reader",
             rewrite: "Inferior rewrite.",
-            score: -20,
+            judge_verdict: "accept",
             identical_to_original: false,
           }],
         },
       };
       const assembled = assembleOutput(segments, null, director);
       if (assembled.output !== "Original paragraph." || assembled.changed) {
-        throw new Error(`negative_candidate_applied:${assembled.output}`);
+        throw new Error(`specialist_candidate_applied:${assembled.output}`);
       }
-      return "negative candidate rejected";
+      return "specialist candidate stayed inside Composer input boundary";
     });
 
     await check("batch1_same_ollama_endpoint_shares_execution_group", async () => {
@@ -10475,12 +9421,19 @@
       initialize,
       buildSegmentMap,
       assembleOutput,
-      fusionDirector,
       verifyOutput,
       selectRoles,
       detectSceneSignals,
       validateCandidateSchema,
+      validateSemanticJudgment,
+      validateSemanticProof,
       validateComposerSchema,
+      buildDraftLedger,
+      buildFusionPlan,
+      buildComposerCandidatePool,
+      summarizeDraftLedger,
+      classifyAppliedOutput,
+      admitSceneCandidate,
       tryParseJson,
       maskKey,
       resolveApiKey,
@@ -10494,6 +9447,7 @@
       isVoidHtmlTag,
       buildRolePrompt,
       callProvider,
+      runSemanticProver,
       scheduleRoles,
       detectStreamingState,
       consumePendingSnapshot,
@@ -10513,10 +9467,8 @@
       SIGNAL_ROLE_MAP,
       VOID_HTML_TAGS,
       ISSUE_GROUPS,
-      ISSUE_PRIORITY,
       TAG_ISSUE_MAP,
       normalizeIssues,
-      maxIssuePriority,
       PROTECTED_HEADERS,
       PROTECTED_BODY_FIELDS,
       deepMergeBody,

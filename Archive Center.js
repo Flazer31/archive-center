@@ -607,6 +607,7 @@
       "dash.status.queueStorage": "큐 저장소",
       "dash.status.streamingHook": "스트리밍 훅",
       "dash.status.autoRollback": "자동 롤백",
+      "dash.status.rerollReplacement": "리롤 교체",
       "dash.status.completeTurn": "Complete-Turn",
       "dash.status.maintenanceQueue": "유지보수 큐",
       "dash.status.lastError": "마지막 오류",
@@ -1247,6 +1248,8 @@
       "turn_hud.warning.duplicate_pair_replay": "다른 턴에 동일한 입력·응답이 있어 중복 저장을 차단함",
       "turn_hud.notice.delete_confirmed": "삭제 확인",
       "turn_hud.notice.delete_confirmed_detail": "작성자가 지운 출력과 연결된 저장값을 정리했습니다.",
+      "turn_hud.notice.reroll_confirmed": "리롤 확인",
+      "turn_hud.notice.reroll_confirmed_detail": "새 최종 출력으로 기존 턴의 저장값을 교체했습니다.",
       "turn_hud.notice.delete_sync_failed": "삭제 동기화 오류",
       "turn_hud.notice.duplicate_suspected": "중복 값 의심",
       "turn_hud.notice.duplicate_existing_preserved": "이미 처리된 값과 겹쳐 새로 저장하지 않고 기존 값을 유지했습니다.",
@@ -1758,6 +1761,7 @@
       "dash.status.queueStorage": "Queue Storage",
       "dash.status.streamingHook": "Streaming Hook",
       "dash.status.autoRollback": "Auto-Rollback",
+      "dash.status.rerollReplacement": "Reroll Replacement",
       "dash.status.completeTurn": "Complete-Turn",
       "dash.status.maintenanceQueue": "Maintenance Queue",
       "dash.status.lastError": "Last Error",
@@ -2251,6 +2255,8 @@
       "turn_hud.warning.duplicate_pair_replay": "The same input and response exist on another turn; duplicate storage was blocked",
       "turn_hud.notice.delete_confirmed": "Deletion confirmed",
       "turn_hud.notice.delete_confirmed_detail": "Stored values linked to the author's deleted output were cleaned up.",
+      "turn_hud.notice.reroll_confirmed": "Reroll confirmed",
+      "turn_hud.notice.reroll_confirmed_detail": "The existing turn was replaced with the new final output.",
       "turn_hud.notice.delete_sync_failed": "Deletion sync error",
       "turn_hud.notice.duplicate_suspected": "Possible duplicate",
       "turn_hud.notice.duplicate_existing_preserved": "This matched an already processed value, so the existing value was kept without saving another copy.",
@@ -2728,6 +2734,7 @@
       "dash.status.queueStorage": "キュー保存",
       "dash.status.streamingHook": "ストリーミングフック",
       "dash.status.autoRollback": "自動ロールバック",
+      "dash.status.rerollReplacement": "再生成ターン置換",
       "dash.status.completeTurn": "Complete-Turn",
       "dash.status.maintenanceQueue": "メンテナンスキュー",
       "dash.status.lastError": "最新エラー",
@@ -3253,6 +3260,8 @@
       "turn_hud.warning.duplicate_pair_replay": "別ターンに同じ入力・応答があるため、重複保存を防止しました",
       "turn_hud.notice.delete_confirmed": "削除確認",
       "turn_hud.notice.delete_confirmed_detail": "作成者が削除した出力に関連する保存値を整理しました。",
+      "turn_hud.notice.reroll_confirmed": "再生成を確認",
+      "turn_hud.notice.reroll_confirmed_detail": "新しい最終出力で既存ターンの保存内容を置き換えました。",
       "turn_hud.notice.delete_sync_failed": "削除同期エラー",
       "turn_hud.notice.duplicate_suspected": "重複値の疑い",
       "turn_hud.notice.duplicate_existing_preserved": "処理済みの値と重複したため、新規保存せず既存値を維持しました。",
@@ -3861,6 +3870,8 @@
     queuePersistence: { lastLoad: null, lastSave: null, loadedCount: 0, fromStorage: false },
     // Sprint 3-E-2: rollback auto-detect 상태
     lastAutoRollback: { status: "idle", time: null, detail: null },
+    // Backend-confirmed source replacement; JavaScript only retains the result for dashboard rendering.
+    lastRerollReplacement: { status: "idle", time: null, detail: null, turnIndex: null },
     lastContinuityDebug: { status: "idle", time: null, detail: null },
     // Phase 3-2: episode auto-generation 상태
     lastEpisodeGeneration: { status: "idle", time: null, detail: null },
@@ -25482,6 +25493,22 @@
           renderTurnWorkflowHUDTransportError(workflowRequestId);
         }
       }
+      const sourceAcceptance = result && result.source_acceptance;
+      if (
+        result
+        && result.status !== "error"
+        && result.status !== "rejected"
+        && sourceAcceptance
+        && sourceAcceptance.accepted === true
+        && sourceAcceptance.replace_existing === true
+        && String(sourceAcceptance.lifecycle || "") === "active_final"
+      ) {
+        const replacedTurn = Number(result.turn_index || turnIdx);
+        updateRuntimeState("lastRerollReplacement", "ok", {
+          detail: "logical_turn_replaced",
+          turnIndex: Number.isFinite(replacedTurn) && replacedTurn > 0 ? Math.trunc(replacedTurn) : null,
+        });
+      }
       return result;
     } catch (err) {
       debugLog("[M-4c] tryCompleteTurn error:", err.message);
@@ -46452,6 +46479,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         streamingRecovered: "RisuAI 화면에서 최종 출력 복구",
         streamingTimeout: "최종 출력 감지 지연",
         deletedTurnSynced: "삭제된 턴을 DB에서도 정리함",
+        rerollReplaced: "새 최종 출력으로 기존 턴을 교체함",
         rollbackBlockedUnverified: "삭제인지 숨김인지 확실하지 않아 DB 정리 보류",
         historyTrimProtected: "화면 기록이 짧아졌지만 /cut일 수 있어 DB 유지",
         pendingSync: "방금 저장한 턴 동기화 대기",
@@ -46487,6 +46515,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         streamingRecovered: "Final output recovered from RisuAI chat",
         streamingTimeout: "Final output detection delayed",
         deletedTurnSynced: "Deleted turn was also cleaned from DB",
+        rerollReplaced: "Rerolled final output replaced the existing turn",
         rollbackBlockedUnverified: "DB cleanup paused until deletion is confirmed",
         historyTrimProtected: "Chat history is shorter; DB kept in case this was /cut",
         pendingSync: "Waiting for the latest saved turn to sync",
@@ -46522,6 +46551,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         streamingRecovered: "RisuAI画面から最終出力を復元",
         streamingTimeout: "最終出力の検出が遅延",
         deletedTurnSynced: "削除ターンをDB側でも整理",
+        rerollReplaced: "再生成した最終出力で既存ターンを置換",
         rollbackBlockedUnverified: "削除確認待ちのためDB整理を保留",
         historyTrimProtected: "履歴が短いため /cut の可能性としてDBを保持",
         pendingSync: "保存済みターンの同期待ち",
@@ -48322,6 +48352,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       retryQueue: dashLabel.retryQueue,
       queueStorage: dashLabel.queueStorage,
       autoRollback: dashLabel.autoRollback,
+      rerollReplacement: dashLabel.rerollReplacement,
       streamingHook: dashLabel.streamingHook,
       sessionRouting: dashLabel.sessionRouting,
       forkCopyCapture: dashLabel.forkCopyCapture,
@@ -49906,6 +49937,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         queueStorage: t("dash.status.queueStorage"),
         streamingHook: t("dash.status.streamingHook"),
         autoRollback: t("dash.status.autoRollback"),
+        rerollReplacement: t("dash.status.rerollReplacement"),
         sessionRouting: t("dash.status.sessionRouting"),
         forkCopyCapture: "Fork/Copy Capture",
         sessionDeleteSync: t("dash.status.sessionDeleteSync"),

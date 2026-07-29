@@ -944,7 +944,16 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			if maintenanceHandoff.Errors > 0 {
 				s.TurnWorkflows.addWarning(workflowRequestID, "MAINTENANCE_HANDOFF_FAILED", "turn_hud.warning.maintenance_handoff_failed", turnWorkflowStageCheckpoints)
 			}
-			s.TurnWorkflows.complete(workflowRequestID)
+			if sourceAcceptance.Enabled && sourceAcceptance.Accepted && sourceAcceptance.ReplaceExisting {
+				s.TurnWorkflows.completeWithNotice(
+					workflowRequestID,
+					"turn_hud.notice.reroll_confirmed",
+					"turn_hud.notice.reroll_confirmed_detail",
+					"LOGICAL_TURN_REPLACED",
+				)
+			} else {
+				s.TurnWorkflows.complete(workflowRequestID)
+			}
 		}
 	}
 	derivedArtifactsSaved := memoriesSaved + preciseMemoryUnitsSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved

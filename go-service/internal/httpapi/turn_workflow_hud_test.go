@@ -217,6 +217,31 @@ func TestTurnWorkflowHUDOperationNoticePreservesBackendSeverity(t *testing.T) {
 	}
 }
 
+func TestTurnWorkflowHUDCompleteWithNoticeIsTerminalAndPreservesWarnings(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-reroll", "session-reroll", 9)
+	ledger.addWarning("request-reroll", "OPTIONAL_SKIPPED", "turn_hud.warning.optional_skipped", turnWorkflowStagePublisherLLM)
+	ledger.completeWithNotice(
+		"request-reroll",
+		"turn_hud.notice.reroll_confirmed",
+		"turn_hud.notice.reroll_confirmed_detail",
+		"LOGICAL_TURN_REPLACED",
+	)
+
+	view, ok := ledger.snapshot("request-reroll")
+	if !ok {
+		t.Fatal("reroll notice was not retained")
+	}
+	if view.Status != "completed_with_warning" || view.Severity != "warning" || view.DisplayMode != "notice" {
+		t.Fatalf("reroll notice terminal state = %#v", view)
+	}
+	if view.TitleKey != "turn_hud.notice.reroll_confirmed" ||
+		view.MessageKey != "turn_hud.notice.reroll_confirmed_detail" ||
+		view.NoticeCode != "LOGICAL_TURN_REPLACED" {
+		t.Fatalf("reroll notice presentation = %#v", view)
+	}
+}
+
 func TestTurnWorkflowHUDUnknownRouteAndTTLBound(t *testing.T) {
 	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
 	request := httptest.NewRequest("GET", "/turn-workflow/status?request_id=missing&after_revision=0&wait_ms=0", nil)

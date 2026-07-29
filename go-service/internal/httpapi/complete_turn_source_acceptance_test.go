@@ -370,6 +370,7 @@ func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *te
 	server := &Server{
 		Cfg: config.Config{StoreMode: config.StoreModeMariaDBAuthority}, Store: storage, Vector: vectors,
 		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(), CompleteTurns: newCompleteTurnRequestLedger(),
+		TurnWorkflows: newTurnWorkflowHUDLedger(),
 	}
 	first := completeTurnAnchoredAcceptanceTestRequest("session-1", 1, "same user", "first", 1000, "generation-1", "not_streaming", 2, 3, 4)
 	if decision := server.beginCompleteTurnSourceAcceptance(context.Background(), first); !decision.Accepted {
@@ -377,6 +378,8 @@ func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *te
 	}
 	reroll := completeTurnAnchoredAcceptanceTestRequest("session-1", 2, "same user", "rerolled", 2000, "generation-2", "not_streaming", 2, 3, 4)
 	reroll.ClientMeta["idempotency_key"] = "session-1-turn-1-reroll-generation-2"
+	reroll.ClientMeta["turn_workflow_request_id"] = "reroll-replacement-hud"
+	server.TurnWorkflows.begin("reroll-replacement-hud", "session-1", 1)
 	reroll.ClientMeta["critic"] = map[string]any{
 		"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "timeout_ms": 90000,
 	}
@@ -424,6 +427,17 @@ func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *te
 	}
 	if response["critic_triggered"] != true || len(storage.savedMemories) != 1 || criticCalls != 1 {
 		t.Fatalf("replacement did not regenerate derived artifacts: critic=%v memories=%d calls=%d response=%v", response["critic_triggered"], len(storage.savedMemories), criticCalls, response)
+	}
+	sourceAcceptance, _ := response["source_acceptance"].(map[string]any)
+	if sourceAcceptance["accepted"] != true || sourceAcceptance["replace_existing"] != true || sourceAcceptance["lifecycle"] != "active_final" {
+		t.Fatalf("replacement source acceptance=%#v", sourceAcceptance)
+	}
+	hud, _ := response["turn_workflow_hud"].(map[string]any)
+	if hud["display_mode"] != "notice" || hud["status"] != "completed_with_warning" || hud["severity"] != "warning" ||
+		hud["title_key"] != "turn_hud.notice.reroll_confirmed" ||
+		hud["message_key"] != "turn_hud.notice.reroll_confirmed_detail" ||
+		hud["notice_code"] != "LOGICAL_TURN_REPLACED" {
+		t.Fatalf("replacement HUD notice=%#v", hud)
 	}
 	repeated := httptest.NewRecorder()
 	server.handleCompleteTurn(repeated, httptest.NewRequest("POST", "/complete-turn", bytes.NewReader(body)))

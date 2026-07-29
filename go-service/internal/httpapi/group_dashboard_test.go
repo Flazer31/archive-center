@@ -216,6 +216,11 @@ func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
 				"status": "warn",
 				"detail": "observed source-session -> target-session",
 			},
+			"lastRerollReplacement": map[string]any{
+				"status":    "ok",
+				"detail":    "logical_turn_replaced",
+				"turnIndex": 7,
+			},
 		},
 	}
 
@@ -223,7 +228,7 @@ func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
 	if vm.Summary.Warn != 0 || vm.Summary.Fail != 0 {
 		t.Fatalf("advisory runtime states must not raise warning/failure counts: %+v", vm.Summary)
 	}
-	if vm.Summary.Notice < 5 {
+	if vm.Summary.Notice < 6 {
 		t.Fatalf("expected advisory states in summary, got %+v", vm.Summary)
 	}
 
@@ -244,6 +249,9 @@ func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
 	}
 	if got := requireDashboardRow(t, activity, "forkCopyCapture"); got.Status != "notice" || got.DetailCode != "forkCopyObserved" {
 		t.Fatalf("fork copy observation=%+v", got)
+	}
+	if got := requireDashboardRow(t, activity, "rerollReplacement"); got.Status != "notice" || got.DetailCode != "rerollReplaced" || dashboardInt(got.TurnIndex) != 7 {
+		t.Fatalf("confirmed reroll replacement=%+v", got)
 	}
 
 	timing := requireDashboardCard(t, vm, "backend_timing")
@@ -284,6 +292,24 @@ func TestDashboardRealWarningsRemainWarnings(t *testing.T) {
 		if got := normalizeDashboardStatus("warn", detail); got != "warn" {
 			t.Fatalf("real warning %q normalized to %q", detail, got)
 		}
+	}
+}
+
+func TestDashboardConfirmedTurnDeletionIsNotice(t *testing.T) {
+	req := dashboardViewModelRequest{
+		PluginEnabled: true,
+		RuntimeState: map[string]any{
+			"lastAutoRollback": map[string]any{
+				"status":    "ok",
+				"detail":    "turn 7+ rolled back (assistant_deleted_output_removed)",
+				"turnIndex": 7,
+			},
+		},
+	}
+	vm := buildDashboardViewModel(req)
+	row := requireDashboardRow(t, requireDashboardCard(t, vm, "activity"), "autoRollback")
+	if row.Status != "notice" || row.DetailCode != "deletedTurnSynced" || dashboardInt(row.TurnIndex) != 7 {
+		t.Fatalf("confirmed deletion=%+v", row)
 	}
 }
 

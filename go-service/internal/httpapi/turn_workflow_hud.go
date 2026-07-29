@@ -344,23 +344,6 @@ func (l *turnWorkflowHUDLedger) addWarning(requestID, code, messageKey, stageKey
 	l.touchLocked(entry, time.Now().UTC())
 }
 
-func (l *turnWorkflowHUDLedger) setNoticePresentation(requestID, titleKey, messageKey, noticeCode string) {
-	if l == nil {
-		return
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	entry := l.entries[strings.TrimSpace(requestID)]
-	if entry == nil || turnWorkflowHUDTerminal(entry.view.Status) {
-		return
-	}
-	entry.view.DisplayMode = "notice"
-	entry.view.TitleKey = strings.TrimSpace(titleKey)
-	entry.view.MessageKey = strings.TrimSpace(messageKey)
-	entry.view.NoticeCode = strings.TrimSpace(noticeCode)
-	l.touchLocked(entry, time.Now().UTC())
-}
-
 func (l *turnWorkflowHUDLedger) awaitFinal(requestID string) {
 	if l == nil {
 		return
@@ -459,6 +442,10 @@ func (l *turnWorkflowHUDLedger) setCounts(requestID string, values map[string]in
 }
 
 func (l *turnWorkflowHUDLedger) complete(requestID string) {
+	l.completeWithNotice(requestID, "", "", "")
+}
+
+func (l *turnWorkflowHUDLedger) completeWithNotice(requestID, titleKey, messageKey, noticeCode string) {
 	if l == nil {
 		return
 	}
@@ -467,6 +454,12 @@ func (l *turnWorkflowHUDLedger) complete(requestID string) {
 	entry := l.entries[strings.TrimSpace(requestID)]
 	if entry == nil || entry.view.Status == "failed" || entry.view.Status == "invalidated" {
 		return
+	}
+	if strings.TrimSpace(titleKey) != "" || strings.TrimSpace(messageKey) != "" || strings.TrimSpace(noticeCode) != "" {
+		entry.view.DisplayMode = "notice"
+		entry.view.TitleKey = strings.TrimSpace(titleKey)
+		entry.view.MessageKey = strings.TrimSpace(messageKey)
+		entry.view.NoticeCode = strings.TrimSpace(noticeCode)
 	}
 	now := time.Now().UTC()
 	for index := range entry.view.Stages {
@@ -988,13 +981,12 @@ func (s *Server) completeTurnWorkflowHUDDuplicate(
 		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	))
 	s.TurnWorkflows.addWarning(requestID, warningCode, warningMessageKey, turnWorkflowStageRawPersist)
-	s.TurnWorkflows.setNoticePresentation(
+	s.TurnWorkflows.completeWithNotice(
 		requestID,
 		"turn_hud.notice.duplicate_suspected",
 		noticeMessageKey,
 		warningCode,
 	)
-	s.TurnWorkflows.complete(requestID)
 	return s.turnWorkflowHUDSnapshot(requestID)
 }
 

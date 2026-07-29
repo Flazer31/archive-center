@@ -583,6 +583,10 @@ const translations = {
   "turn_hud.transport_unavailable": "전송 실패",
   "turn_hud.notice.ooc_recognized": "OOC 인식",
   "turn_hud.notice.ooc_recognized_detail": "OOC 판정으로 입력 처리를 취소했습니다.",
+  "turn_hud.notice.delete_confirmed": "삭제 확인 테스트",
+  "turn_hud.notice.delete_confirmed_detail": "삭제 출력 정리 테스트",
+  "turn_hud.notice.reroll_confirmed": "리롤 확인 테스트",
+  "turn_hud.notice.reroll_confirmed_detail": "기존 턴 교체 테스트",
   "turn_hud.not_retryable": "재시도 불가",
   "turn_hud.retryable": "재시도 가능",
   "turn_hud.stage_ledger": "전체 작동 확인",
@@ -721,6 +725,34 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "OOC informational notice did not dismiss");
 
+  assert(consumeTurnWorkflowHUDNotice({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"delete-confirmed",revision:1,
+    logical_turn:56,status:"completed",severity:"info",display_mode:"notice",
+    title_key:"turn_hud.notice.delete_confirmed",message_key:"turn_hud.notice.delete_confirmed_detail",
+    notice_code:"ASSISTANT_OUTPUT_DELETE_CONFIRMED",counts:[],stages:[],warnings:[]
+  }), "backend deletion notice was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML.includes("삭제 확인 테스트"), "backend deletion notice title was not rendered");
+  assert(surface.innerHTML.includes("삭제 출력 정리 테스트"), "backend deletion notice detail was not rendered");
+  assert(surface.card && typeof surface.card.listeners.click === "function", "successful deletion notice lost card dismissal");
+  await surface.card.listeners.click({type:"click"});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "successful deletion notice did not dismiss");
+
+  assert(consumeTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"reroll-confirmed",revision:1,
+    logical_turn:56,status:"completed",severity:"info",display_mode:"notice",
+    title_key:"turn_hud.notice.reroll_confirmed",message_key:"turn_hud.notice.reroll_confirmed_detail",
+    notice_code:"LOGICAL_TURN_REPLACED",counts:[],stages:[],warnings:[]
+  }), "backend reroll notice was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML.includes("리롤 확인 테스트"), "backend reroll notice title was not rendered");
+  assert(surface.innerHTML.includes("기존 턴 교체 테스트"), "backend reroll notice detail was not rendered");
+  assert(surface.card && typeof surface.card.listeners.click === "function", "successful reroll notice lost card dismissal");
+  await surface.card.listeners.click({type:"click"});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "successful reroll notice did not dismiss");
+
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"failed-c",revision:1,
     logical_turn:57,status:"failed",severity:"error",
@@ -801,6 +833,61 @@ function assert(condition, message) {
 	}
 	if strings.TrimSpace(string(output)) != "ok" {
 		t.Fatalf("turn workflow HUD runtime fixture output=%q, want ok", output)
+	}
+}
+
+func TestTryCompleteTurnRecordsOnlyBackendConfirmedReroll(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for confirmed reroll adapter fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "tryCompleteTurn")
+	script := functionBody + `
+const settings = {enabled:true,dbEnabled:true};
+let nextResult = null;
+const runtimeUpdates = [];
+function buildCompleteTurnRequestBody() { return Promise.resolve({client_meta:{turn_workflow_request_id:"request-reroll"}}); }
+function turnWorkflowHUDRequestIdFromCompleteBody(body) { return body.client_meta.turn_workflow_request_id; }
+function startTurnWorkflowHUDWatch() {}
+function consumeTurnWorkflowHUD() {}
+function renderTurnWorkflowHUDTransportError() {}
+function getCompleteTurnTimeoutMs() { return 1000; }
+function bridgeFetchWithRetry() { return Promise.resolve(nextResult); }
+async function safeCall(call) { return await call(); }
+function debugLog() {}
+function updateRuntimeState(key, status, extra) { runtimeUpdates.push({key,status,extra}); }
+function assert(condition, message) { if (!condition) throw new Error(message); }
+(async function() {
+  nextResult = {
+    status:"ok",turn_index:7,
+    source_acceptance:{accepted:true,replace_existing:true,lifecycle:"active_final"},
+    turn_workflow_hud:{contract_version:"turn_workflow_hud.v1",request_id:"request-reroll",status:"completed"}
+  };
+  await tryCompleteTurn(8, "user", "new answer", [], "session-1", null, null);
+  assert(runtimeUpdates.length === 1, "confirmed reroll was not recorded exactly once");
+  assert(runtimeUpdates[0].key === "lastRerollReplacement", "wrong runtime state key");
+  assert(runtimeUpdates[0].status === "ok", "confirmed reroll status is not ok");
+  assert(runtimeUpdates[0].extra.detail === "logical_turn_replaced", "stable reroll detail code missing");
+  assert(runtimeUpdates[0].extra.turnIndex === 7, "backend-bound logical turn was not retained");
+
+  nextResult = {
+    status:"rejected",turn_index:8,
+    source_acceptance:{accepted:false,replace_existing:true,lifecycle:"candidate_or_inactive"}
+  };
+  await tryCompleteTurn(8, "user", "candidate", [], "session-1", null, null);
+  assert(runtimeUpdates.length === 1, "rejected candidate was misreported as a reroll");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("confirmed reroll adapter fixture failed: %v\n%s", err, out)
 	}
 }
 

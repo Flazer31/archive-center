@@ -231,6 +231,7 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 		{"lastAutoRollback", "autoRollback"}, {"lastStreamingAfterRequest", "streamingHook"},
 		{"sessionWriteRouting", "sessionRouting"}, {"lastRisuForkCopyCapture", "forkCopyCapture"},
 		{"lastSessionDeleteSync", "sessionDeleteSync"}, {"lastActiveChatBackfill", "activeChatBackfill"},
+		{"lastRerollReplacement", "rerollReplacement"},
 	}
 	activityRows := []dashboardRow{}
 	for _, item := range activityKeys {
@@ -495,6 +496,7 @@ var dashboardDetailPatterns = []struct {
 	{"streamingRecovered", regexp.MustCompile(`(?i)native afterRequest missing; recovered from active chat`)},
 	{"streamingTimeout", regexp.MustCompile(`(?i)timeout waiting for native afterRequest/active assistant`)},
 	{"deletedTurnSynced", regexp.MustCompile(`(?i)(active_chat_tail_missing_from_runtime|assistant_deleted_output_removed).*(rolled back|rollback)|(rolled back|rollback).*(active_chat_tail_missing_from_runtime|assistant_deleted_output_removed)`)},
+	{"rerollReplaced", regexp.MustCompile(`(?i)^logical_turn_replaced$`)},
 	{"rollbackBlockedUnverified", regexp.MustCompile(`(?i)unverified rollback signal blocked`)},
 	{"historyTrimProtected", regexp.MustCompile(`(?i)active chat tail is shorter than backend|history trim/cut protected|possible /cut`)},
 	{"pendingSync", regexp.MustCompile(`(?i)recent_completed_turn_waiting_active_chat_sync|waiting for RisuAI active chat confirmation|waiting_for_risuai_active_chat|source_acceptance_waiting_active_chat`)},
@@ -528,7 +530,7 @@ func normalizeDashboardStatus(status string, detail any) string {
 		return "ok"
 	case "streamingWaitFinal":
 		return "running"
-	case "historyTrimProtected", "pendingSync", "postOutputPending", "beforeRequestRecovered", "legacyQueueItemRemoved", "activeChatRebuildQueued":
+	case "deletedTurnSynced", "rerollReplaced", "historyTrimProtected", "pendingSync", "postOutputPending", "beforeRequestRecovered", "legacyQueueItemRemoved", "activeChatRebuildQueued":
 		return "notice"
 	}
 	return status
