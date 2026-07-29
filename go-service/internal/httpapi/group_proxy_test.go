@@ -407,6 +407,14 @@ func TestProxyGeminiNormalizesNativeResponse(t *testing.T) {
 		if got := r.Header.Get("x-goog-api-key"); got != "gem-key" {
 			t.Fatalf("x-goog-api-key = %q", got)
 		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if mime := mapFromAny(body["generationConfig"])["responseMimeType"]; mime != nil {
+			t.Fatalf("ordinary Gemini call unexpectedly forced responseMimeType: %v", mime)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
@@ -432,6 +440,182 @@ func TestProxyGeminiNormalizesNativeResponse(t *testing.T) {
 	got := chatCompletionText(resp)
 	if got != "gemini ok" {
 		t.Fatalf("content = %q, want gemini ok", got)
+	}
+}
+
+func TestProxyGeminiJSONPolicyAddsMimeAndTrace(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if mime := mapFromAny(body["generationConfig"])["responseMimeType"]; mime != "application/json" {
+			t.Fatalf("responseMimeType = %v, want application/json; body=%+v", mime, body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"{\"turn_summary\":\"ok\"}"}]}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("gem-key"),
+		Endpoint: strPtr("https://generativelanguage.googleapis.com/v1beta"),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("gemini"),
+		Messages: []any{map[string]any{"role": "user", "content": "return json"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("performProxyPluginMainWithPolicy status=%d err=%v", status, err)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["json_response_applied"] != true ||
+		trace["json_response_source"] != "backend_policy" ||
+		trace["json_response_mime_type"] != "application/json" ||
+		trace["json_response_purpose"] != "complete_turn_critic" {
+		t.Fatalf("unexpected JSON response trace: %+v", trace)
+	}
+}
+
+func TestProxyGeminiJSONPolicyPreservesMatchingExtraBody(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		generationConfig := mapFromAny(body["generationConfig"])
+		if generationConfig["responseMimeType"] != "application/json" || generationConfig["topP"] != float64(0.8) {
+			t.Fatalf("matching ExtraBodyJSON was not preserved: %+v", generationConfig)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"{}"}]}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	extraBody := `{"generationConfig":{"responseMimeType":"application/json","topP":0.8}}`
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:        strPtr("gem-key"),
+		Endpoint:      strPtr("https://generativelanguage.googleapis.com/v1beta"),
+		Model:         strPtr("gemini-test"),
+		Provider:      strPtr("gemini"),
+		ExtraBodyJSON: &extraBody,
+		Messages:      []any{map[string]any{"role": "user", "content": "return json"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("performProxyPluginMainWithPolicy status=%d err=%v", status, err)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["json_response_source"] != "extra_body_json" || trace["json_response_applied"] != true {
+		t.Fatalf("unexpected matching ExtraBody trace: %+v", trace)
+	}
+}
+
+func TestProxyGeminiJSONPolicyRejectsConflictingExtraBodyWithoutCall(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		t.Fatalf("conflicting JSON response MIME must fail before upstream call: %s", r.URL.String())
+		return nil, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	extraBody := `{"generationConfig":{"responseMimeType":"text/plain"}}`
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:        strPtr("gem-key"),
+		Endpoint:      strPtr("https://generativelanguage.googleapis.com/v1beta"),
+		Model:         strPtr("gemini-test"),
+		Provider:      strPtr("gemini"),
+		ExtraBodyJSON: &extraBody,
+		Messages:      []any{map[string]any{"role": "user", "content": "return json"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "json_response_mime_conflict") {
+		t.Fatalf("conflict status=%d err=%v, want stable config error", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstreamCalls = %d, want 0", upstreamCalls)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["json_response_conflict"] != true ||
+		trace["json_response_existing_value"] != "text/plain" ||
+		trace["json_response_applied"] != false {
+		t.Fatalf("unexpected conflict trace: %+v", trace)
+	}
+}
+
+func TestProxyGeminiJSONPolicyRejectsNonObjectGenerationConfigWithoutCall(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		t.Fatalf("invalid generationConfig must fail before upstream call: %s", r.URL.String())
+		return nil, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	extraBody := `{"generationConfig":"invalid"}`
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:        strPtr("gem-key"),
+		Endpoint:      strPtr("https://generativelanguage.googleapis.com/v1beta"),
+		Model:         strPtr("gemini-test"),
+		Provider:      strPtr("gemini"),
+		ExtraBodyJSON: &extraBody,
+		Messages:      []any{map[string]any{"role": "user", "content": "return json"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "json_response_generation_config_conflict") {
+		t.Fatalf("conflict status=%d err=%v, want stable generationConfig error", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstreamCalls = %d, want 0", upstreamCalls)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["json_response_conflict"] != true ||
+		trace["json_response_existing_type"] != "string" ||
+		trace["json_response_applied"] != false {
+		t.Fatalf("unexpected generationConfig conflict trace: %+v", trace)
+	}
+}
+
+func TestProxyJSONPolicyDoesNotAlterOpenAILikeRequest(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if body["response_format"] != nil || body["generationConfig"] != nil {
+			t.Fatalf("OpenAI-like request was altered by native JSON policy: %+v", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"gpt-test","choices":[{"message":{"content":"{}"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	_, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("sk-test"),
+		Endpoint: strPtr("https://api.example.com/v1"),
+		Model:    strPtr("gpt-test"),
+		Provider: strPtr("openai"),
+		Messages: []any{map[string]any{"role": "user", "content": "return json"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("performProxyPluginMainWithPolicy status=%d err=%v", status, err)
 	}
 }
 
@@ -509,6 +693,13 @@ func TestProxyVertexNormalizesNativeResponse(t *testing.T) {
 			}
 			if strings.Contains(body, "reasoning_effort") || strings.Contains(body, "max_completion_tokens") {
 				t.Fatalf("Vertex request leaked OpenAI reasoning fields: %s", body)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("decode Vertex request: %v", err)
+			}
+			if mime := mapFromAny(decoded["generationConfig"])["responseMimeType"]; mime != nil {
+				t.Fatalf("ordinary Vertex call unexpectedly forced responseMimeType: %v", mime)
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -603,8 +794,8 @@ func TestProxyVertexFlexAndExtraBodyOverrides(t *testing.T) {
 	credential := testVertexServiceAccountJSON(t)
 	flex := "flex_only"
 	headersJSON := `{"X-Test-Feature":"enabled","Authorization":"bad"}`
-	bodyJSON := `{"generationConfig":{"responseMimeType":"application/json"},"model":"bad","stream":true}`
-	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+	bodyJSON := `{"generationConfig":{"topP":0.9},"model":"bad","stream":true}`
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
 		APIKey:           &credential,
 		Endpoint:         strPtr("https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"),
 		Model:            strPtr("gemini-3.5-flash"),
@@ -614,7 +805,7 @@ func TestProxyVertexFlexAndExtraBodyOverrides(t *testing.T) {
 		ExtraBodyJSON:    &bodyJSON,
 		MaxTokens:        int64Ptr(5),
 		Messages:         []any{map[string]any{"role": "user", "content": "ping"}},
-	})
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
 	if err != nil {
 		t.Fatalf("performProxyPluginMain error: %v", err)
 	}
@@ -628,7 +819,9 @@ func TestProxyVertexFlexAndExtraBodyOverrides(t *testing.T) {
 		t.Fatalf("content = %q, want vertex flex ok", got)
 	}
 	trace := mapFromAny(resp["_proxy_request_overrides"])
-	if trace["vertex_flex_applied"] != true {
+	if trace["vertex_flex_applied"] != true ||
+		trace["json_response_applied"] != true ||
+		trace["json_response_source"] != "backend_policy" {
 		t.Fatalf("missing override trace: %+v", trace)
 	}
 }

@@ -28,7 +28,16 @@ const (
 	copilotTokenURL    = "https://api.github.com/copilot_internal/v2/token"
 )
 
+type proxyRequestPolicy struct {
+	JSONResponse bool
+	Purpose      string
+}
+
 func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map[string]any, int, error) {
+	return callProxyProviderWithPolicy(ctx, req, proxyRequestPolicy{})
+}
+
+func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy) (map[string]any, int, error) {
 	endpoint := strings.TrimSpace(stringPtrValue(req.Endpoint, ""))
 	apiKey := strings.TrimSpace(stringPtrValue(req.APIKey, ""))
 	model := strings.TrimSpace(stringPtrValue(req.Model, ""))
@@ -48,9 +57,9 @@ func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map
 	case "claude":
 		return proxyCallClaude(ctx, req, endpoint, apiKey, model)
 	case "gemini":
-		return proxyCallGemini(ctx, req, endpoint, apiKey, model, false)
+		return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
 	case "vertex":
-		return proxyCallGemini(ctx, req, endpoint, apiKey, model, true)
+		return proxyCallGemini(ctx, req, endpoint, apiKey, model, true, policy)
 	case "openai", "openrouter", "copilot", "ollama", "custom":
 		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider)
 	default:
@@ -198,7 +207,7 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	return resp, http.StatusOK, nil
 }
 
-func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model string, vertex bool) (map[string]any, int, error) {
+func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model string, vertex bool, policy proxyRequestPolicy) (map[string]any, int, error) {
 	system, user := proxySplitSystemUser(req.Messages)
 	requestedTokens := maxInt64(1, int64Value(req.MaxTokens, 1024))
 	configuredMax := maxInt64(0, int64Value(req.MaxCompletionTokens, 0))
@@ -257,6 +266,9 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, overrideErr
 	}
+	if policyErr := proxyApplyJSONResponsePolicy(body, overrideTrace, policy); policyErr != nil {
+		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, policyErr
+	}
 
 	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
 	if err != nil {
@@ -276,6 +288,62 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	resp := proxyNormalizeChatResponse(content, model, "stop")
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
 	return resp, http.StatusOK, nil
+}
+
+func proxyApplyJSONResponsePolicy(body map[string]any, trace map[string]any, policy proxyRequestPolicy) error {
+	if !policy.JSONResponse {
+		return nil
+	}
+	if trace == nil {
+		trace = map[string]any{}
+	}
+	trace["json_response_requested"] = true
+	if purpose := strings.TrimSpace(policy.Purpose); purpose != "" {
+		trace["json_response_purpose"] = purpose
+	}
+	rawGenerationConfig, exists := body["generationConfig"]
+	if !exists {
+		rawGenerationConfig = map[string]any{}
+		body["generationConfig"] = rawGenerationConfig
+	}
+	generationConfig, ok := rawGenerationConfig.(map[string]any)
+	if !ok {
+		trace["json_response_applied"] = false
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_conflict"] = true
+		trace["json_response_conflict_reason"] = "generationConfig must be a JSON object"
+		trace["json_response_existing_type"] = fmt.Sprintf("%T", rawGenerationConfig)
+		return fmt.Errorf("json_response_generation_config_conflict: generationConfig must be a JSON object")
+	}
+	if generationConfig == nil {
+		generationConfig = map[string]any{}
+		body["generationConfig"] = generationConfig
+	}
+	const requiredMIME = "application/json"
+	existing, mimeExists := generationConfig["responseMimeType"]
+	if !mimeExists {
+		generationConfig["responseMimeType"] = requiredMIME
+		trace["json_response_applied"] = true
+		trace["json_response_source"] = "backend_policy"
+		trace["json_response_mime_type"] = requiredMIME
+		return nil
+	}
+	existingText, stringValue := existing.(string)
+	if stringValue && strings.EqualFold(strings.TrimSpace(existingText), requiredMIME) {
+		trace["json_response_applied"] = true
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_mime_type"] = existingText
+		return nil
+	}
+	trace["json_response_applied"] = false
+	trace["json_response_source"] = "extra_body_json"
+	trace["json_response_conflict"] = true
+	trace["json_response_conflict_reason"] = "generationConfig.responseMimeType must be application/json"
+	trace["json_response_existing_type"] = fmt.Sprintf("%T", existing)
+	if stringValue {
+		trace["json_response_existing_value"] = strings.TrimSpace(existingText)
+	}
+	return fmt.Errorf("json_response_mime_conflict: generationConfig.responseMimeType must be application/json")
 }
 
 func proxyGetCopilotToken(ctx context.Context, apiKey string) (string, int, error) {

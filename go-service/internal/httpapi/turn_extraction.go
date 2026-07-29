@@ -328,7 +328,6 @@ type memoryImportanceUpdater interface {
 }
 
 var placeholderKGPartPattern = regexp.MustCompile(`(?i)^\s*(?:char_\d+(?:_cid_[a-f0-9-]{8,})?|cid_[a-f0-9-]{8,}|turn_\d+|\{\{\s*(?:user|char)\s*\}\}|<\s*(?:user|char)\s*>|user|유저|사용자|ユーザー|player|플레이어|プレイヤー|participant|참가자|assistant|어시스턴트|system|시스템|developer|개발자|prompt|instruction|bot|agent)\s*$`)
-var jsonTrailingCommaPattern = regexp.MustCompile(`,\s*([}\]])`)
 var closedThoughtTagPattern = regexp.MustCompile(`(?is)<\s*(?:thoughts|thinking|analysis|reasoning|scratchpad|filter)\b[^>]*>.*?<\s*/\s*(?:thoughts|thinking|analysis|reasoning|scratchpad|filter)\s*>`)
 var openThoughtTagPattern = regexp.MustCompile(`(?is)<\s*(?:thoughts|thinking|analysis|reasoning|scratchpad|filter)\b[^>]*>.*$`)
 var filterCompleteMarkerPattern = regexp.MustCompile(`(?is)<\s*__filter_complete__\s*>`)

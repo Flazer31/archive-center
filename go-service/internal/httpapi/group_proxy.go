@@ -493,6 +493,10 @@ func performProxyPluginMain(ctx context.Context, req dto.ProxyPluginMainRequest)
 	return callProxyProvider(ctx, req)
 }
 
+func performProxyPluginMainWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy) (map[string]any, int, error) {
+	return callProxyProviderWithPolicy(ctx, req, policy)
+}
+
 func scrubProxySecret(text, apiKey string) string {
 	out := text
 	if strings.TrimSpace(apiKey) != "" {

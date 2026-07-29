@@ -81,10 +81,14 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		req.GlmThinkingType = &cfg.GlmThinkingType
 	}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
+	jsonPolicy := proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"}
 
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithPolicy(ctx, req, jsonPolicy)
 	providerRetryTrace := map[string]any{}
 	if err != nil {
+		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+			return nil, map[string]any{"prompt_source": promptSource, "request_overrides": requestOverrides}, err
+		}
 		retryUserInput, userRedacted := redactSensitiveCriticRetryText(safeUserInput)
 		retryAssistantContent, assistantRedacted := redactSensitiveCriticRetryText(safeAssistantContent)
 		if !userRedacted && !assistantRedacted {
@@ -94,7 +98,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		retryPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, retryUserInput, retryAssistantContent, safeContextMessages, outputLanguageOverride, retryPreviewPass, languageContext, criticArchiveLedgerPromptInput)
 		retryReq := req
 		retryReq.Messages = []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": retryPrompt}}
-		retryUpstream, _, retryErr := performProxyPluginMain(ctx, retryReq)
+		retryUpstream, _, retryErr := performProxyPluginMainWithPolicy(ctx, retryReq, jsonPolicy)
 		providerRetryTrace = map[string]any{
 			"mode":                "sensitive_input_redacted_retry",
 			"user_input_redacted": userRedacted,
@@ -104,6 +108,9 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		}
 		if retryErr != nil {
 			providerRetryTrace["retry_error"] = retryErr.Error()
+			if requestOverrides := mapFromAny(retryUpstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+				providerRetryTrace["request_overrides"] = requestOverrides
+			}
 			return nil, providerRetryTrace, fmt.Errorf("%w; redacted critic retry failed: %v", err, retryErr)
 		}
 		upstream = retryUpstream
@@ -114,7 +121,11 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	content := chatCompletionText(upstream)
 	parsed, err := parseJSONFromLLMContent(content)
 	if err != nil {
-		return nil, map[string]any{"raw_preview": truncateRunes(content, 1000), "prompt_source": promptSource}, err
+		parseTrace := map[string]any{"raw_preview": truncateRunes(content, 1000), "prompt_source": promptSource}
+		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+			parseTrace["request_overrides"] = requestOverrides
+		}
+		return nil, parseTrace, err
 	}
 	trace := map[string]any{
 		"prompt_source": promptSource,
@@ -268,10 +279,13 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	trace["llm_call_attempt"] = true
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithPolicy(ctx, req, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_world_rule_audit"})
 	if err != nil {
 		trace["status"] = "error"
 		trace["error"] = err.Error()
+		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+			trace["request_overrides"] = requestOverrides
+		}
 		return nil, trace
 	}
 	content := chatCompletionText(upstream)
@@ -686,10 +700,32 @@ func (s *Server) buildCompleteTurnCriticPreviewPass(ctx context.Context, sid str
 
 func parseJSONFromLLMContent(content string) (map[string]any, error) {
 	candidate, err := extractJSONCandidateFromLLMContent(content)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		if out, parseErr := unmarshalJSONCandidate(candidate); parseErr == nil {
+			return out, nil
+		}
+		if out, repairErr := unmarshalJSONCandidate(repairJSONCandidate(candidate)); repairErr == nil {
+			return out, nil
+		}
 	}
-	candidate = repairJSONCandidate(candidate)
+
+	structuralRepair := repairStructuralJSONQuotes(normalizeLLMJSONText(content))
+	repairedCandidate, repairExtractErr := extractJSONCandidateFromLLMContent(structuralRepair)
+	if repairExtractErr != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, repairExtractErr
+	}
+	repairedCandidate = repairJSONCandidate(repairedCandidate)
+	out, repairErr := unmarshalJSONCandidate(repairedCandidate)
+	if repairErr != nil {
+		return nil, repairErr
+	}
+	return out, nil
+}
+
+func unmarshalJSONCandidate(candidate string) (map[string]any, error) {
 	var out map[string]any
 	if err := json.Unmarshal([]byte(candidate), &out); err != nil {
 		return nil, err
@@ -747,16 +783,6 @@ func extractJSONCandidateFromLLMContent(content string) (string, error) {
 
 func normalizeLLMJSONText(content string) string {
 	cleaned := strings.TrimSpace(strings.TrimPrefix(content, "\ufeff"))
-	replacer := strings.NewReplacer(
-		"\u201c", `"`,
-		"\u201d", `"`,
-		"\u201e", `"`,
-		"\u201f", `"`,
-		"\u2018", `'`,
-		"\u2019", `'`,
-	)
-	cleaned = replacer.Replace(cleaned)
-	cleaned = strings.TrimSpace(cleaned)
 	cleaned = strings.TrimPrefix(cleaned, "```json")
 	cleaned = strings.TrimPrefix(cleaned, "```JSON")
 	cleaned = strings.TrimPrefix(cleaned, "```")
@@ -767,8 +793,137 @@ func normalizeLLMJSONText(content string) string {
 func repairJSONCandidate(candidate string) string {
 	repaired := replaceJSONLiteralsOutsideStrings(candidate)
 	repaired = repairMissingJSONValuesOutsideStrings(repaired)
-	repaired = jsonTrailingCommaPattern.ReplaceAllString(repaired, "$1")
+	repaired = removeJSONTrailingCommasOutsideStrings(repaired)
 	return strings.TrimSpace(repaired)
+}
+
+func repairStructuralJSONQuotes(input string) string {
+	runes := []rune(input)
+	var b strings.Builder
+	b.Grow(len(input))
+	inASCIIString := false
+	inCurlyString := false
+	escaped := false
+	var previousSignificant rune
+	for i, current := range runes {
+		if inASCIIString {
+			b.WriteRune(current)
+			if escaped {
+				escaped = false
+			} else if current == '\\' {
+				escaped = true
+			} else if current == '"' {
+				inASCIIString = false
+			}
+			continue
+		}
+		if inCurlyString {
+			if isCurlyJSONQuote(current) && curlyJSONQuoteClosesToken(runes, i) {
+				b.WriteByte('"')
+				inCurlyString = false
+				previousSignificant = '"'
+			} else {
+				b.WriteRune(current)
+			}
+			continue
+		}
+		if current == '"' {
+			b.WriteRune(current)
+			inASCIIString = true
+			escaped = false
+			continue
+		}
+		if isCurlyJSONQuote(current) && curlyJSONQuoteCanOpenToken(previousSignificant) {
+			b.WriteByte('"')
+			inCurlyString = true
+			escaped = false
+			continue
+		}
+		b.WriteRune(current)
+		if !isJSONWhitespaceRune(current) {
+			previousSignificant = current
+		}
+	}
+	return b.String()
+}
+
+func isCurlyJSONQuote(value rune) bool {
+	switch value {
+	case '\u2018', '\u2019', '\u201c', '\u201d', '\u201e', '\u201f':
+		return true
+	default:
+		return false
+	}
+}
+
+func curlyJSONQuoteCanOpenToken(previous rune) bool {
+	switch previous {
+	case 0, '{', '[', ',', ':':
+		return true
+	default:
+		return false
+	}
+}
+
+func curlyJSONQuoteClosesToken(input []rune, index int) bool {
+	for i := index + 1; i < len(input); i++ {
+		if isJSONWhitespaceRune(input[i]) {
+			continue
+		}
+		switch input[i] {
+		case ':', ',', '}', ']':
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isJSONWhitespaceRune(value rune) bool {
+	switch value {
+	case ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+func removeJSONTrailingCommasOutsideStrings(input string) string {
+	var b strings.Builder
+	b.Grow(len(input))
+	inString := false
+	escaped := false
+	for i := 0; i < len(input); i++ {
+		current := input[i]
+		if inString {
+			b.WriteByte(current)
+			if escaped {
+				escaped = false
+			} else if current == '\\' {
+				escaped = true
+			} else if current == '"' {
+				inString = false
+			}
+			continue
+		}
+		if current == '"' {
+			inString = true
+			b.WriteByte(current)
+			continue
+		}
+		if current == ',' {
+			next := i + 1
+			for next < len(input) && (input[next] == ' ' || input[next] == '\t' || input[next] == '\r' || input[next] == '\n') {
+				next++
+			}
+			if next < len(input) && (input[next] == '}' || input[next] == ']') {
+				continue
+			}
+		}
+		b.WriteByte(current)
+	}
+	return b.String()
 }
 
 func closeTruncatedJSONCandidate(candidate string, stack []byte, inString bool, escaped bool) (string, error) {

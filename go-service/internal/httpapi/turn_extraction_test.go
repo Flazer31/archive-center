@@ -7,6 +7,50 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
+func TestParseJSONFromLLMContentPreservesCurlyQuotesInsideValidString(t *testing.T) {
+	raw := `{"turn_summary":"He called it “iron wheel”.","importance_score":7}`
+	got, err := parseJSONFromLLMContent(raw)
+	if err != nil {
+		t.Fatalf("parseJSONFromLLMContent failed: %v", err)
+	}
+	if got["turn_summary"] != "He called it “iron wheel”." {
+		t.Fatalf("turn_summary = %#v, want Unicode punctuation preserved", got["turn_summary"])
+	}
+}
+
+func TestParseJSONFromLLMContentRepairsStructuralCurlyQuotesOnly(t *testing.T) {
+	raw := "{“turn_summary”: “He called it ‘iron wheel’.”, “importance_score”: 7}"
+	got, err := parseJSONFromLLMContent(raw)
+	if err != nil {
+		t.Fatalf("parseJSONFromLLMContent failed: %v", err)
+	}
+	if got["turn_summary"] != "He called it ‘iron wheel’." {
+		t.Fatalf("turn_summary = %#v, want inner punctuation preserved", got["turn_summary"])
+	}
+}
+
+func TestParseJSONFromLLMContentPreservesTrailingCommaTextInsideString(t *testing.T) {
+	raw := `{"turn_summary":"Keep this literal,} and literal,] intact.","evidence_excerpts":["ok",],}`
+	got, err := parseJSONFromLLMContent(raw)
+	if err != nil {
+		t.Fatalf("parseJSONFromLLMContent failed: %v", err)
+	}
+	if got["turn_summary"] != "Keep this literal,} and literal,] intact." {
+		t.Fatalf("turn_summary = %#v, want string content preserved", got["turn_summary"])
+	}
+	items, ok := got["evidence_excerpts"].([]any)
+	if !ok || len(items) != 1 || items[0] != "ok" {
+		t.Fatalf("evidence_excerpts = %#v", got["evidence_excerpts"])
+	}
+}
+
+func TestParseJSONFromLLMContentDoesNotGuessMissingComma(t *testing.T) {
+	raw := `{"turn_summary":"Mina found the key" "importance_score":7}`
+	if got, err := parseJSONFromLLMContent(raw); err == nil {
+		t.Fatalf("parseJSONFromLLMContent unexpectedly repaired missing comma: %#v", got)
+	}
+}
+
 func TestParseJSONFromLLMContentRepairsMalformedCriticJSON(t *testing.T) {
 	raw := "preface\n```json\n{\n  \u201cturn_summary\u201d: \u201cMina found the brass key.\u201d,\n  \"importance_score\": 8,\n  \"evidence_excerpts\": [\"Mina found the brass key.\",],\n  \"archive_hint\": None,\n}\n```\nignored trailing text {\"wrong\":true}"
 	got, err := parseJSONFromLLMContent(raw)
