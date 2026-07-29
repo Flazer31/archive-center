@@ -2,11 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 )
 
 func TestMariaDBReplaceLogicalTurnAtomicallyReplacesCanonicalTail(t *testing.T) {
@@ -64,8 +66,51 @@ func TestMariaDBReplaceLogicalTurnRefusesHistoricalTurn(t *testing.T) {
 	if err == nil {
 		t.Fatal("historical logical turn replacement unexpectedly succeeded")
 	}
+	var typed *LogicalTurnReplacementError
+	if !errors.As(err, &typed) || typed.Code != "logical_turn_not_current_tail" || typed.Retryable || typed.CommitState != "not_committed" {
+		t.Fatalf("historical replacement error is not terminal and typed: %+v", err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLogicalTurnReplacementStoreErrorClassification(t *testing.T) {
+	tests := []struct {
+		name            string
+		err             error
+		commitAttempted bool
+		code            string
+		retryable       bool
+		commitState     string
+	}{
+		{
+			name: "permission",
+			err:  &mysql.MySQLError{Number: 1142, Message: "command denied"},
+			code: "logical_turn_db_permission_denied", commitState: "not_committed",
+		},
+		{
+			name: "deadlock",
+			err:  &mysql.MySQLError{Number: 1213, Message: "deadlock"},
+			code: "logical_turn_transaction_temporarily_blocked", retryable: true, commitState: "not_committed",
+		},
+		{
+			name: "commit unknown",
+			err:  errors.New("connection lost during commit"), commitAttempted: true,
+			code: "logical_turn_commit_outcome_unknown", commitState: "unknown",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := classifyLogicalTurnReplacementStoreError(tc.err, "test_stage", tc.commitAttempted)
+			var typed *LogicalTurnReplacementError
+			if !errors.As(err, &typed) {
+				t.Fatalf("error is not typed: %v", err)
+			}
+			if typed.Code != tc.code || typed.Retryable != tc.retryable || typed.CommitState != tc.commitState {
+				t.Fatalf("unexpected classification: %+v", typed)
+			}
+		})
 	}
 }
 

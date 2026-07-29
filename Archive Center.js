@@ -48,6 +48,7 @@
   const CONTINUITY_IDLE_REENTRY_MS = 30 * 60 * 1000;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
+  const PENDING_FINAL_CONFIRMATION_STORAGE_KEY = `${PLUGIN_ID}_pendingFinalConfirmation`;
   const FAILED_QUEUE_SAVE_DEBOUNCE_MS = 2000;
   const CHATLOG_RESTORE_SNAPSHOT_STORAGE_KEY = `${PLUGIN_ID}_chatLogRestoreSnapshot_v1`;
   const ACTIVE_CHAT_BACKFILL_LEDGER_KEY = `${PLUGIN_ID}_activeChatBackfillLedger_v1`;
@@ -238,6 +239,7 @@
     // ── Phase 4-D-2: 하드코딩 상수 설정화 ──
     failedQueueMaxSize: 50,          // 실패 큐 최대 크기 (10-200)
     failedQueueMaxAgeDays: 7,        // 실패 큐 항목 최대 보관 일수 (1-30)
+    failedQueueMaxAttempts: 4,       // 실패 큐 transport 최대 시도 횟수 (1-11)
     rollbackIdleWatcherMode: "slow",  // event / slow / fast_debug / off
     rollbackIdleWatcherModePolicyVersion: "tail_delete_slow_default.v1",
     // ── E-5: Narrative Guide Mode ──
@@ -365,6 +367,7 @@
       "settings.hint.maxInputContextChars": "사용자 입력 바로 앞에 붙는 짧은 맥락 요약 길이를 제한합니다.",
       "settings.label.failedQueueMaxSize": "실패 큐 최대 크기",
       "settings.label.failedQueueMaxAgeDays": "실패 큐 보관 일수",
+      "settings.label.failedQueueMaxAttempts": "실패 큐 최대 시도 횟수",
       "settings.narrativeMode.auto": "Auto (AI가 장면에 맞게 자동 결정)",
       "settings.narrativeMode.off": "Off (비활성)",
       "settings.narrativeMode.standard": "Standard (일반 서사)",
@@ -1517,6 +1520,7 @@
       "settings.hint.maxInputContextChars": "Limits the short context summary inserted right before the user input.",
       "settings.label.failedQueueMaxSize": "Failed Queue Max Size",
       "settings.label.failedQueueMaxAgeDays": "Failed Queue Retention (days)",
+      "settings.label.failedQueueMaxAttempts": "Failed Queue Max Attempts",
       "settings.narrativeMode.auto": "Auto (AI decides per scene)",
       "settings.narrativeMode.off": "Off",
       "settings.narrativeMode.standard": "Standard (General Narrative)",
@@ -2485,6 +2489,7 @@
       "settings.hint.maxInputContextChars": "ユーザー入力の直前に挿入する短い要約コンテキストの長さを制限します。",
       "settings.label.failedQueueMaxSize": "失敗キュー最大サイズ",
       "settings.label.failedQueueMaxAgeDays": "失敗キュー保持日数",
+      "settings.label.failedQueueMaxAttempts": "失敗キュー最大試行回数",
       "settings.narrativeMode.auto": "Auto（AIが場面に合わせて自動決定）",
       "settings.narrativeMode.off": "Off（無効）",
       "settings.narrativeMode.standard": "Standard（一般ナラティブ）",
@@ -3543,16 +3548,20 @@
     const storageValue = normalizePersistentValue(value);
     // 동기 캐시 즉시 갱신
     safeStorageSet(key, storageValue);
-    // pluginStorage 영속 저장 (실패해도 캐시에는 이미 기록됨)
+    // A memory-only cache is not durable evidence. Callers that transfer queue
+    // ownership must observe the write failure instead of deleting the source.
     if (!_hasPluginStorage()) {
+      if (!_storageOk) {
+        throw new Error("persistent_storage_unavailable");
+      }
       _persistentKnownValues.set(key, storageValue);
-      return;
+      return true;
     }
-    if (_persistentKnownValues.get(key) === storageValue) return;
+    if (_persistentKnownValues.get(key) === storageValue) return true;
     const pending = _persistentPendingWrites.get(key);
     if (pending && pending.value === storageValue) {
       await pending.promise;
-      return;
+      return true;
     }
 
     const token = {};
@@ -3562,15 +3571,17 @@
         if (safeStorageGet(key) === storageValue) {
           _persistentKnownValues.set(key, storageValue);
         }
+        return true;
       } catch (err) {
         warnLog("pluginStorage.setItem failed:", err.message);
+        throw err;
       } finally {
         const current = _persistentPendingWrites.get(key);
         if (current && current.token === token) _persistentPendingWrites.delete(key);
       }
     })();
     _persistentPendingWrites.set(key, { value: storageValue, promise: writePromise, token });
-    await writePromise;
+    return await writePromise;
   }
 
   /** pluginStorage에서 읽기 시도 → 실패 시 동기 캐시 fallback (비동기) */
@@ -3805,10 +3816,6 @@
   const ROLLBACK_TAIL_RECONCILE_INTERVAL_MS = 5000;
   const ROLLBACK_HISTORY_TRIM_GUARD_MS = 5 * 60 * 1000;
   const ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS = 1;
-  // Active chat usually reflects a completed assistant turn within a few polls.
-  // A long grace window makes real user deletions look like "still syncing",
-  // leaving ghost DB rows until the UI is opened or another turn happens.
-  const ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS = 8 * 1000;
   let _activeChatBackfillLedger = null;
   let _activeChatBackfillLedgerLoadPromise = null;
   const _activeChatBackfillInFlight = new Set();
@@ -3819,18 +3826,14 @@
   const RAW_INPUT_MAX_AGE_MS = 30 * 1000;
   const RAW_INPUT_FALLBACK_MAX_AGE_MS = 5 * 1000;
   const RAW_INPUT_STRONG_MAX_AGE_MS = 10 * 1000;
-  const STREAMING_AFTER_REQUEST_START_DELAY_MS = 700;
-  const STREAMING_AFTER_REQUEST_POLL_INTERVAL_MS = 800;
-  const STREAMING_AFTER_REQUEST_STABLE_POLLS = 3;
-  const STREAMING_AFTER_REQUEST_OBSERVED_STREAM_STABLE_POLLS = 4;
-  const STREAMING_AFTER_REQUEST_OBSERVED_STREAM_QUIET_MS = 8 * 1000;
-  const STREAMING_AFTER_REQUEST_TIMEOUT_MS = 90 * 1000;
-  const STREAMING_AFTER_REQUEST_RECENT_RECOVERY_GRACE_MS = 12 * 1000;
-  const _streamingAfterRequestWatchers = new Map();
-  const _streamingAfterRequestRecoveredBySession = new Map();
+  const _finalConfirmationRequestBySession = new Map();
+  const _pendingFinalConfirmations = new Map();
+  const _pendingFinalConfirmationRecoveryEntries = new Map();
+  let _finalConfirmationObserver = null;
+  let _pendingFinalConfirmationDrainInFlight = false;
+  let _pendingFinalConfirmationDrainRequested = false;
   const _step23CaptureVerificationPosted = new Set();
   const STEP23_CAPTURE_VERIFICATION_POSTED_MAX = 200;
-  let _streamingAfterRequestSyntheticCallDepth = 0;
   const _lastBridgeFailureByPath = new Map();
   const _step13GovernorTurnOutcomeHistoryBySession = new Map();
   const STEP13_GOVERNOR_FAILURE_HISTORY_MAX = 6;
@@ -10148,7 +10151,7 @@
     const base = getRequestTimeoutSettingMs();
     const critic = getCriticTimeoutMs();
     const embedding = getEmbeddingTimeoutMs();
-    return sanitizeNumber(Math.max(base, critic + embedding + 30000), 150000, 30000, 600000);
+    return sanitizeNumber(Math.max(base, critic + embedding), base, 1000, 600000);
   }
 
   function getPluginMainTimeoutSettingMs(value) {
@@ -10352,6 +10355,7 @@
     merged.maxInputContextChars = sanitizeNumber(merged.maxInputContextChars, 800, 200, 1500);
     merged.failedQueueMaxSize = sanitizeNumber(merged.failedQueueMaxSize, 50, 10, 200);
     merged.failedQueueMaxAgeDays = sanitizeNumber(merged.failedQueueMaxAgeDays, 7, 1, 30);
+    merged.failedQueueMaxAttempts = sanitizeNumber(merged.failedQueueMaxAttempts, 4, 1, 11);
     merged.directiveBudgetRatio = sanitizeNumber(merged.directiveBudgetRatio, 0.35, 0.05, 0.80);
     merged.memoryBudgetRatio = sanitizeNumber(merged.memoryBudgetRatio, 0.40, 0.05, 0.80);
     merged.wakeUpBudgetRatio = sanitizeNumber(merged.wakeUpBudgetRatio, 0.15, 0.0, 0.50);
@@ -13856,19 +13860,193 @@
   }
 
   /** 큐를 pluginStorage에 저장 */
+  function completeTurnPayloadObservationKey(payload) {
+    try {
+      const meta = payload && payload.client_meta && typeof payload.client_meta === "object"
+        ? payload.client_meta
+        : {};
+      const observation = meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object"
+        ? meta.source_acceptance_observation
+        : {};
+      const hostChatId = String(observation.host_chat_id || "").trim();
+      const messageIndex = Number(observation.message_index);
+      const generationId = String(observation.generation_id || "").trim();
+      const assistantContent = normalizeAssistantPersistenceCandidate(String(payload && payload.assistant_content || ""));
+      if (!hostChatId || !Number.isInteger(messageIndex) || messageIndex < 0 || !assistantContent) return "";
+      return [
+        hostChatId,
+        messageIndex,
+        generationId || "generation_unobserved",
+        computeOrchestrationDirtyHashOr1c(assistantContent),
+      ].join("|");
+    } catch {
+      return "";
+    }
+  }
+
+  function pendingFinalConfirmationRecoveryKey(payload) {
+    const key = String(
+      payload
+      && payload.client_meta
+      && payload.client_meta.idempotency_key
+      || ""
+    ).trim();
+    return key ? "complete|" + key : "";
+  }
+
+  function serializePendingFinalConfirmationRecovery() {
+    try {
+      const items = Array.from(_pendingFinalConfirmationRecoveryEntries.values()).map(function(entry) {
+        const safePayload = serializeCompleteTurnRecoveryPayload(entry && entry.payload);
+        if (!entry || !safePayload) return null;
+        return {
+          key: String(entry.key || pendingFinalConfirmationRecoveryKey(safePayload)),
+          payload: safePayload,
+          reason: String(entry.reason || "pending_confirmation"),
+          requiredObservationChangeFrom: String(entry.requiredObservationChangeFrom || ""),
+          addedAt: entry.addedAt || new Date().toISOString(),
+        };
+      }).filter(Boolean);
+      return JSON.stringify({ v: 1, savedAt: new Date().toISOString(), items });
+    } catch (err) {
+      warnLog("serializePendingFinalConfirmationRecovery failed:", err && err.message);
+      return null;
+    }
+  }
+
+  async function savePendingFinalConfirmationRecoveryToStorage() {
+    const serialized = serializePendingFinalConfirmationRecovery();
+    if (serialized == null) throw new Error("pending final confirmation serialize failed");
+    await persistentSet(PENDING_FINAL_CONFIRMATION_STORAGE_KEY, serialized);
+  }
+
+  async function persistPendingFinalConfirmationRecovery(payload, reason, requiredObservationChangeFrom, previousKey) {
+    const safePayload = serializeCompleteTurnRecoveryPayload(payload);
+    const key = pendingFinalConfirmationRecoveryKey(safePayload);
+    if (!safePayload || !key) return false;
+    const oldKey = String(previousKey || "").trim();
+    if (
+      !_pendingFinalConfirmationRecoveryEntries.has(key)
+      && (!oldKey || !_pendingFinalConfirmationRecoveryEntries.has(oldKey))
+      && _pendingFinalConfirmationRecoveryEntries.size >= Number(settings.failedQueueMaxSize || 50)
+    ) {
+      warnLog("persistPendingFinalConfirmationRecovery refused: visible queue capacity reached");
+      return false;
+    }
+    const previousOldEntry = oldKey ? _pendingFinalConfirmationRecoveryEntries.get(oldKey) : null;
+    const previousNewEntry = _pendingFinalConfirmationRecoveryEntries.get(key);
+    if (oldKey && oldKey !== key) _pendingFinalConfirmationRecoveryEntries.delete(oldKey);
+    _pendingFinalConfirmationRecoveryEntries.set(key, {
+      key,
+      payload: safePayload,
+      reason: String(reason || "pending_confirmation"),
+      requiredObservationChangeFrom: String(requiredObservationChangeFrom || ""),
+      addedAt: new Date().toISOString(),
+    });
+    try {
+      await savePendingFinalConfirmationRecoveryToStorage();
+      return true;
+    } catch (err) {
+      if (previousNewEntry) _pendingFinalConfirmationRecoveryEntries.set(key, previousNewEntry);
+      else _pendingFinalConfirmationRecoveryEntries.delete(key);
+      if (oldKey && oldKey !== key && previousOldEntry) {
+        _pendingFinalConfirmationRecoveryEntries.set(oldKey, previousOldEntry);
+      }
+      warnLog("persistPendingFinalConfirmationRecovery failed:", err && err.message);
+      return false;
+    }
+  }
+
+  async function removePendingFinalConfirmationRecovery(payload, recoveryKey) {
+    const key = String(recoveryKey || pendingFinalConfirmationRecoveryKey(payload)).trim();
+    if (!key || !_pendingFinalConfirmationRecoveryEntries.has(key)) return false;
+    const previous = _pendingFinalConfirmationRecoveryEntries.get(key);
+    _pendingFinalConfirmationRecoveryEntries.delete(key);
+    try {
+      await savePendingFinalConfirmationRecoveryToStorage();
+      return true;
+    } catch (err) {
+      _pendingFinalConfirmationRecoveryEntries.set(key, previous);
+      warnLog("removePendingFinalConfirmationRecovery failed:", err && err.message);
+      return false;
+    }
+  }
+
+  function removeFailedCompleteTurnByIdempotencyKey(idempotencyKey) {
+    const wanted = String(idempotencyKey || "").trim();
+    if (!wanted) return false;
+    let removed = false;
+    for (let index = _failedQueue.length - 1; index >= 0; index--) {
+      const item = _failedQueue[index];
+      const itemKey = String(
+        item
+        && item.type === "complete_turn"
+        && item.payload
+        && item.payload.client_meta
+        && item.payload.client_meta.idempotency_key
+        || ""
+      ).trim();
+      if (itemKey !== wanted) continue;
+      _failedQueue.splice(index, 1);
+      removed = true;
+    }
+    return removed;
+  }
+
+  async function loadPendingFinalConfirmationRecoveryFromStorage() {
+    const raw = await persistentGet(PENDING_FINAL_CONFIRMATION_STORAGE_KEY);
+    if (!raw || typeof raw !== "string") return 0;
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (err) {
+      warnLog("loadPendingFinalConfirmationRecoveryFromStorage parse failed:", err && err.message);
+      return 0;
+    }
+    if (!data || data.v !== 1 || !Array.isArray(data.items)) return 0;
+    let restored = 0;
+    let failedQueueChanged = false;
+    for (const stored of data.items) {
+      const safePayload = serializeCompleteTurnRecoveryPayload(stored && stored.payload);
+      const key = pendingFinalConfirmationRecoveryKey(safePayload);
+      if (!safePayload || !key) continue;
+      _pendingFinalConfirmationRecoveryEntries.set(key, {
+        key,
+        payload: safePayload,
+        reason: String(stored.reason || "pending_confirmation_recovered"),
+        requiredObservationChangeFrom: String(stored.requiredObservationChangeFrom || ""),
+        addedAt: stored.addedAt || new Date().toISOString(),
+      });
+      if (removeFailedCompleteTurnByIdempotencyKey(key.slice("complete|".length))) {
+        failedQueueChanged = true;
+      }
+      const queued = await queuePendingCompleteTurnPayload(
+        safePayload,
+        String(stored.reason || "pending_confirmation_recovered"),
+        String(stored.requiredObservationChangeFrom || ""),
+        { persist: false }
+      );
+      if (queued) restored++;
+    }
+    if (failedQueueChanged) await flushQueueSave();
+    return restored;
+  }
+
   async function saveFailedQueueToStorage() {
     try {
       const serialized = serializeFailedQueue();
       if (serialized == null) {
         runtimeState.queuePersistence.lastSave = { status: "error", time: new Date().toISOString(), detail: "serialize failed" };
-        return;
+        return false;
       }
       await persistentSet(FAILED_QUEUE_STORAGE_KEY, serialized);
       runtimeState.queuePersistence.lastSave = { status: "ok", time: new Date().toISOString(), count: _failedQueue.length };
       debugLog(`saveFailedQueueToStorage: ${_failedQueue.length} items saved`);
+      return true;
     } catch (err) {
       warnLog("saveFailedQueueToStorage failed:", err.message);
       runtimeState.queuePersistence.lastSave = { status: "error", time: new Date().toISOString(), detail: err.message };
+      return false;
     }
   }
 
@@ -13887,8 +14065,10 @@
   async function flushQueueSave() {
     try {
       if (_queueSaveTimer) { clearTimeout(_queueSaveTimer); _queueSaveTimer = null; }
-      await saveFailedQueueToStorage();
-    } catch { /* 무시 */ }
+      return await saveFailedQueueToStorage();
+    } catch {
+      return false;
+    }
   }
 
   /** pluginStorage에서 큐 복원 */
@@ -14001,6 +14181,7 @@
         type,
         payload,
         attempts: 0,
+        state: "retryable",
         addedAt: new Date().toISOString(),
         lastAttemptAt: null,
         _dedupeKey: makeFailedQueueDedupeKey({ type, payload }),
@@ -14033,6 +14214,10 @@
     }
   }
 
+  function failedQueueMaxAttempts() {
+    return Math.max(1, Number(settings.failedQueueMaxAttempts || 1));
+  }
+
   async function drainFailedQueue() {
     if (_failedQueue.length === 0) return;
     debugLog(`drainFailedQueue: ${_failedQueue.length} items pending`);
@@ -14055,34 +14240,106 @@
         queueChanged = true;
         continue;
       }
-      item.attempts++;
-      item.lastAttemptAt = new Date().toISOString();
       let ok = false;
       let shadowGuardedLegacy = false;
       let terminalSourceRejection = false;
+      let pendingSourceConfirmation = false;
+      let terminalResultCode = "";
+      let reconciliationRequired = false;
+      let rawSavedTerminalResult = false;
       try {
         if (item.type === "complete_turn") {
           if (!await refreshQueuedCompleteTurnSourceObservation(item.payload)) {
-            stillFailed.push(item);
+            pendingSourceConfirmation = await queuePendingCompleteTurnPayload(item.payload, "pending_confirmation");
+            if (!pendingSourceConfirmation) stillFailed.push(item);
             continue;
           }
           const requestKey = String(item.payload?.client_meta?.idempotency_key || "").trim();
           const requestStatus = requestKey
-            ? await bridgeFetch("/complete-turn/request-status?idempotency_key=" + encodeURIComponent(requestKey), { method: "GET", timeoutMs: Math.min(getRequestTimeoutSettingMs(), 5000) })
+            ? await bridgeFetch("/complete-turn/request-status?idempotency_key=" + encodeURIComponent(requestKey), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() })
             : null;
           if (requestStatus && requestStatus.status === "processing") {
-            stillFailed.push(item);
+            const processingAnchor = new Date(item.lastAttemptAt || item.addedAt || 0).getTime();
+            const processingAge = Date.now() - processingAnchor;
+            if (Number.isFinite(processingAge) && processingAge >= 0 && processingAge < getCompleteTurnTimeoutMs()) {
+              stillFailed.push(item);
+              continue;
+            }
+            item.attempts = Number(item.attempts || 0) + 1;
+            item.lastAttemptAt = new Date().toISOString();
+            item.state = item.attempts < failedQueueMaxAttempts() ? "retryable" : "terminal";
+            if (item.state === "retryable") {
+              stillFailed.push(item);
+            } else {
+              updateRuntimeState("lastCompleteTurnStatus", "fail", {
+                turnIndex: item.payload.turn_index,
+                source: "backend",
+                detail: "idempotent_processing_timeout",
+                failReasons: ["idempotent_processing_timeout"],
+              });
+              queueChanged = true;
+            }
             continue;
           }
-          if (requestStatus && requestStatus.status === "completed" && requestStatus.success === true) {
-            ok = true;
+          const completedResultStatus = String(requestStatus && requestStatus.result_status || "").toLowerCase();
+          const completedRawSaved = !!(
+            requestStatus
+            && requestStatus.status === "completed"
+            && (requestStatus.raw_saved === true || requestStatus.save_ok === true)
+          );
+          if (completedRawSaved) {
+            terminalResultCode = String(requestStatus.code || completedResultStatus || "");
+            reconciliationRequired = requestStatus.reconciliation_required === true
+              || requestStatus.derived_retry_required === true
+              || completedResultStatus === "partial";
+            if (completedResultStatus === "rejected" || completedResultStatus === "error") {
+              terminalSourceRejection = true;
+              rawSavedTerminalResult = true;
+              ok = false;
+            } else {
+              ok = true;
+            }
           } else if (requestStatus && requestStatus.status === "completed") {
-            stillFailed.push(item);
+            terminalSourceRejection = requestStatus.retryable !== true;
+            terminalResultCode = String(requestStatus.code || "completed_without_raw_save");
+            if (!terminalSourceRejection) {
+              item.attempts = Number(item.attempts || 0) + 1;
+              item.lastAttemptAt = new Date().toISOString();
+              item.state = "retryable";
+              if (item.attempts < failedQueueMaxAttempts()) {
+                stillFailed.push(item);
+              } else {
+                item.state = "terminal";
+                updateRuntimeState("lastCompleteTurnStatus", "fail", {
+                  turnIndex: item.payload.turn_index,
+                  source: "backend",
+                  detail: "retry_limit_reached",
+                  failReasons: ["retry_limit_reached"],
+                });
+                queueChanged = true;
+              }
+            }
             continue;
           } else {
+            const postedObservationKey = completeTurnPayloadObservationKey(item.payload);
             const res = await bridgeFetchWithRetry("/complete-turn", { method: "POST", body: item.payload, timeoutMs: getCompleteTurnTimeoutMs() }, 1);
-            terminalSourceRejection = !!(res && res.status === "rejected" && res.queue_action === "discard");
-            ok = !!(res && res.status && res.status !== "error" && res.status !== "skeleton" && res.save_ok !== false && res.derived_retry_required !== true);
+            pendingSourceConfirmation = !!(res && res.status === "rejected" && res.queue_action === "retry_after_new_observation");
+            if (pendingSourceConfirmation) {
+              pendingSourceConfirmation = await queuePendingCompleteTurnPayload(
+                item.payload,
+                String(res.code || "pending_confirmation"),
+                postedObservationKey
+              );
+            }
+            terminalSourceRejection = !!(
+              res
+              && !pendingSourceConfirmation
+              && (res.queue_action === "discard" || res.retryable === false)
+            );
+            terminalResultCode = String(res && res.code || "");
+            ok = !!(res && res.save_ok === true);
+            rawSavedTerminalResult = terminalSourceRejection && !!(res && (res.save_ok === true || res.raw_committed === true));
+            reconciliationRequired = !!(res && res.reconciliation_required === true);
           }
         } else if (item.type === "save") {
           const res = await bridgeFetchWithRetry("/turns", { method: "POST", body: item.payload }, 1);
@@ -14102,13 +14359,22 @@
         }
       } catch { ok = false; }
 
-      if (terminalSourceRejection) {
-        debugLog(`drainFailedQueue: discarded inactive complete_turn source for turn ${item.payload.turn_index}`);
-        updateRuntimeState("lastCompleteTurnStatus", "skipped", {
+      if (pendingSourceConfirmation) {
+        debugLog(`drainFailedQueue: moved complete_turn to pending confirmation for turn ${item.payload.turn_index}`);
+        queueChanged = true;
+      } else if (terminalSourceRejection) {
+        debugLog(`drainFailedQueue: discarded terminal complete_turn result for turn ${item.payload.turn_index}`);
+        if (rawSavedTerminalResult) {
+          updateRuntimeState("lastSaveStatus", "ok", {
+            turnIndex: item.payload.turn_index,
+            detail: "raw saved; semantic result terminal",
+          });
+        }
+        updateRuntimeState("lastCompleteTurnStatus", rawSavedTerminalResult ? "warn" : "fail", {
           turnIndex: item.payload.turn_index,
           source: "backend",
-          detail: "inactive source discarded from queue",
-          failReasons: ["source_acceptance_rejected"],
+          detail: terminalResultCode || "terminal complete-turn result discarded from queue",
+          failReasons: [terminalResultCode || "terminal_complete_turn_result"],
         });
         queueChanged = true;
       } else if (ok) {
@@ -14116,7 +14382,13 @@
         if (item.type === "complete_turn") {
           updateRuntimeState("lastSaveStatus", "ok", { turnIndex: item.payload.turn_index, detail: "recovered via complete-turn queue" });
           updateRuntimeState("lastCompleteStatus", "ok", { turnIndex: item.payload.turn_index, detail: "recovered via complete-turn queue" });
-          updateRuntimeState("lastCompleteTurnStatus", "ok", { source: "backend", detail: "recovered_from_queue", failReasons: [] });
+          updateRuntimeState("lastCompleteTurnStatus", reconciliationRequired ? "warn" : "ok", {
+            source: "backend",
+            detail: reconciliationRequired
+              ? (terminalResultCode || "raw_saved_reconciliation_required")
+              : "recovered_from_queue",
+            failReasons: reconciliationRequired ? [terminalResultCode || "reconciliation_required"] : [],
+          });
         } else if (item.type === "save" || item.type === "chat_log") {
           updateRuntimeState("lastSaveStatus", "ok", { turnIndex: item.payload.turn_index, detail: "recovered from queue" });
         } else {
@@ -14132,12 +14404,20 @@
         }
         queueChanged = true;
       } else {
-        // (llmRetryCount + 1) * 3 넘으면 포기 — 무한 누적 방지
-        const maxQueueAttempts = Math.max(1, (settings.llmRetryCount || 0) + 1) * 3;
-        if (item.attempts < maxQueueAttempts) {
+        item.attempts = Number(item.attempts || 0) + 1;
+        item.lastAttemptAt = new Date().toISOString();
+        item.state = "retryable";
+        if (item.attempts < failedQueueMaxAttempts()) {
           stillFailed.push(item);
         } else {
+          item.state = "terminal";
           warnLog(`drainFailedQueue: giving up ${item.type} turn ${item.payload.turn_index} after ${item.attempts} attempts`);
+          updateRuntimeState("lastCompleteTurnStatus", "fail", {
+            turnIndex: item.payload.turn_index,
+            source: "local",
+            detail: "retry_limit_reached",
+            failReasons: ["retry_limit_reached"],
+          });
           queueChanged = true;
         }
       }
@@ -15478,8 +15758,10 @@
           turnIndex: resolvedTurnIndex,
           fingerprint: promotedFingerprint,
           promotedAt: Date.now(),
-          syncState: alreadyTracked ? "confirmed_active_chat" : "pending_active_chat_confirmation",
-          confirmedAt: alreadyTracked ? Date.now() : null,
+          // 3.7-B persistence reaches this path only after an exact official
+          // RisuAI active-tail observation. No elapsed-time sync grace remains.
+          syncState: "confirmed_active_chat",
+          confirmedAt: Date.now(),
         },
       };
       persistRollbackTurnLedgerOr1f(sessionId, turnLedgerState);
@@ -15497,366 +15779,463 @@
     } catch { return null; }
   }
 
-  function stopStreamingAfterRequestWatch(sessionId, detail) {
+  async function captureFinalConfirmationRequestContext(sessionId, type, requestId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid || !settings.enabled || !isSaveType(type) || !R) return null;
+    if (
+      typeof R.getCurrentCharacterIndex !== "function"
+      || typeof R.getCurrentChatIndex !== "function"
+      || typeof R.getChatFromIndex !== "function"
+    ) {
+      return null;
+    }
     try {
-      const sid = String(sessionId || "").trim();
-      if (!sid) return false;
-      const watcher = _streamingAfterRequestWatchers.get(sid);
-      if (!watcher) return false;
-      if (watcher.timer) {
-        try { clearTimeout(watcher.timer); } catch {}
+      const characterIndex = await R.getCurrentCharacterIndex();
+      const chatIndex = await R.getCurrentChatIndex();
+      const chat = await R.getChatFromIndex(characterIndex, chatIndex);
+      if (!chat || !Array.isArray(chat.message)) return null;
+      const previousContext = _finalConfirmationRequestBySession.get(sid) || null;
+      const overlapAmbiguous = !!(
+        previousContext
+        && previousContext.state !== "accepted"
+        && previousContext.state !== "terminal"
+        && previousContext.state !== "superseded"
+      );
+      if (overlapAmbiguous) {
+        previousContext.state = "superseded";
       }
-      _streamingAfterRequestWatchers.delete(sid);
-      if (detail) {
-        debugLog("[streaming-afterRequest] watch stopped:", detail, sid);
+      for (const [pendingKey, pending] of _pendingFinalConfirmations.entries()) {
+        if (
+          pending
+          && pending.kind === "host_candidate"
+          && String(pending.sessionId || "") === sid
+          && pending.requestContext === previousContext
+        ) {
+          pending.state = "superseded";
+          _pendingFinalConfirmations.delete(pendingKey);
+        }
       }
-      return true;
-    } catch {
+      const hostChatId = typeof chat.id === "string" ? chat.id.trim() : "";
+      const baselineTailIndex = chat.message.length - 1;
+      const baselineTail = baselineTailIndex >= 0 ? chat.message[baselineTailIndex] : null;
+      const replacesAssistant = !!(
+        baselineTail
+        && baselineTail.role === "char"
+        && typeof baselineTail.data === "string"
+        && baselineTail.disabled !== true
+      );
+      const baselineGenerationId = replacesAssistant
+        && baselineTail.generationInfo
+        && typeof baselineTail.generationInfo.generationId === "string"
+        ? baselineTail.generationInfo.generationId.trim()
+        : "";
+      const context = {
+        sessionId: sid,
+        requestId: String(requestId || ""),
+        requestType: String(type || "model"),
+        characterIndex: Number(characterIndex),
+        chatIndex: Number(chatIndex),
+        hostChatId,
+        baselineMessageCount: chat.message.length,
+        expectedAssistantIndex: replacesAssistant ? baselineTailIndex : chat.message.length,
+        expectedMessageCount: replacesAssistant ? chat.message.length : chat.message.length + 1,
+        replacementMode: replacesAssistant ? "replace_assistant_tail" : "append_assistant_tail",
+        baselineAssistantContent: replacesAssistant
+          ? normalizeAssistantPersistenceCandidate(baselineTail.data)
+          : "",
+        baselineGenerationId,
+        overlapAmbiguous,
+        state: hostChatId ? "captured" : "unavailable",
+      };
+      _finalConfirmationRequestBySession.set(sid, context);
+      return context;
+    } catch (err) {
+      debugLog("[final-confirmation] request context unavailable:", err && err.message);
+      return null;
+    }
+  }
+
+  async function observePendingFinalConfirmation(pending) {
+    const context = pending && pending.requestContext;
+    if (!context || !R) return { confirmed: false, reason: "request_context_missing" };
+    if (context.state === "superseded" || pending.state === "superseded") {
+      return { confirmed: false, reason: "request_superseded" };
+    }
+    if (context.overlapAmbiguous) {
+      return { confirmed: false, reason: "overlapping_request_unobservable" };
+    }
+    if (!context.hostChatId) {
+      return { confirmed: false, reason: "host_chat_id_unobserved" };
+    }
+    try {
+      const characterIndex = await R.getCurrentCharacterIndex();
+      const chatIndex = await R.getCurrentChatIndex();
+      if (
+        Number(characterIndex) !== Number(context.characterIndex)
+        || Number(chatIndex) !== Number(context.chatIndex)
+      ) {
+        return { confirmed: false, reason: "request_chat_not_active" };
+      }
+      const chat = await R.getChatFromIndex(characterIndex, chatIndex);
+      if (!chat || !Array.isArray(chat.message)) {
+        return { confirmed: false, reason: "active_chat_unavailable" };
+      }
+      const hostChatId = typeof chat.id === "string" ? chat.id.trim() : "";
+      if (!hostChatId || hostChatId !== context.hostChatId) {
+        return { confirmed: false, reason: "host_chat_id_changed" };
+      }
+      if (chat.isStreaming !== false) {
+        return { confirmed: false, reason: chat.isStreaming === true ? "chat_streaming" : "streaming_state_unobserved" };
+      }
+      const tailIndex = chat.message.length - 1;
+      if (
+        chat.message.length !== Number(context.expectedMessageCount)
+        || tailIndex !== Number(context.expectedAssistantIndex)
+      ) {
+        return { confirmed: false, reason: "assistant_tail_not_committed" };
+      }
+      const message = chat.message[tailIndex];
+      if (!message || message.role !== "char" || typeof message.data !== "string" || message.disabled === true) {
+        return { confirmed: false, reason: "active_assistant_tail_unavailable" };
+      }
+      const observedContent = normalizeAssistantPersistenceCandidate(message.data);
+      if (!observedContent) {
+        return { confirmed: false, reason: "active_assistant_tail_empty" };
+      }
+      const expectedContent = normalizeAssistantPersistenceCandidate(String(pending.candidateContent || ""));
+      if (!expectedContent) {
+        return { confirmed: false, reason: "after_request_candidate_unavailable" };
+      }
+      if (!isSameAssistantComparableText(observedContent, expectedContent)) {
+        return { confirmed: false, reason: "after_request_candidate_mismatch" };
+      }
+      const generationId = message.generationInfo && typeof message.generationInfo.generationId === "string"
+        ? message.generationInfo.generationId.trim()
+        : "";
+      if (
+        context.replacementMode === "replace_assistant_tail"
+        && isSameAssistantComparableText(observedContent, String(context.baselineAssistantContent || ""))
+        && (!generationId || generationId === String(context.baselineGenerationId || ""))
+      ) {
+        return { confirmed: false, reason: "replacement_generation_unobserved" };
+      }
+      const observationKey = [
+        hostChatId,
+        tailIndex,
+        generationId || "generation_unobserved",
+        computeOrchestrationDirtyHashOr1c(observedContent),
+      ].join("|");
+      if (pending.requiredObservationChangeFrom && observationKey === pending.requiredObservationChangeFrom) {
+        return { confirmed: false, reason: "new_host_observation_required" };
+      }
+      return {
+        confirmed: true,
+        reason: "risu_active_assistant_tail_confirmed",
+        assistantContent: observedContent,
+        characterIndex: Number(characterIndex),
+        chatIndex: Number(chatIndex),
+        hostChatId,
+        messageIndex: tailIndex,
+        generationId,
+        observationKey,
+        requestContext: context,
+      };
+    } catch (err) {
+      debugLog("[final-confirmation] active chat observation failed:", err && err.message);
+      return { confirmed: false, reason: "active_chat_observation_failed" };
+    }
+  }
+
+  function pendingFinalConfirmationKey(pending) {
+    const contextRequestId = String(pending && pending.requestContext && pending.requestContext.requestId || "").trim();
+    if (contextRequestId && pending && pending.kind === "host_candidate") {
+      return "host|" + contextRequestId;
+    }
+    const payloadKey = String(
+      pending
+      && pending.payload
+      && pending.payload.client_meta
+      && pending.payload.client_meta.idempotency_key
+      || ""
+    ).trim();
+    if (payloadKey) return "complete|" + payloadKey;
+    return "";
+  }
+
+  function hasPendingFinalConfirmationForSession(sessionId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return false;
+    for (const pending of _pendingFinalConfirmations.values()) {
+      if (pending && String(pending.sessionId || "").trim() === sid) return true;
+    }
+    return false;
+  }
+
+  function queuePendingFinalConfirmation(pending) {
+    const sid = String(pending && pending.sessionId || "").trim();
+    if (!sid || !pending || typeof pending.resume !== "function") return false;
+    const pendingKey = pendingFinalConfirmationKey(pending);
+    if (!pendingKey) return false;
+    if (pending.requestContext && (
+      pending.requestContext.state === "accepted"
+      || pending.requestContext.state === "superseded"
+      || pending.requestContext.state === "terminal"
+    ) && pending.kind === "host_candidate") {
       return false;
     }
+    const current = _pendingFinalConfirmations.get(pendingKey);
+    if (current === pending || (current && current.inFlight)) {
+      return false;
+    }
+    pending.pendingKey = pendingKey;
+    pending.state = pending.state || "pending";
+    _pendingFinalConfirmations.set(pendingKey, pending);
+    if (_pendingFinalConfirmationDrainInFlight) {
+      _pendingFinalConfirmationDrainRequested = true;
+    }
+    return true;
   }
 
-  function markNativeAfterRequestObserved(sessionId, type) {
-    try {
-      const sid = String(sessionId || "").trim();
-      if (!sid) return;
-      let watcher = _streamingAfterRequestWatchers.get(sid);
-      if (!watcher) {
-        armStreamingAfterRequestWatch(sid, type, "late_native_after_request");
-        watcher = _streamingAfterRequestWatchers.get(sid);
+  async function observePendingCompleteTurnFinalObservation(pending) {
+    const payload = pending && pending.payload;
+    if (!payload) return { confirmed: false, reason: "pending_payload_missing", requestContext: pending && pending.requestContext || null };
+    if (!await refreshQueuedCompleteTurnSourceObservation(payload, { allowSourceReplacement: true })) {
+      return { confirmed: false, reason: "active_final_not_observed", requestContext: pending.requestContext || null };
+    }
+    const meta = payload.client_meta && typeof payload.client_meta === "object" ? payload.client_meta : {};
+    const observation = meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object"
+      ? meta.source_acceptance_observation
+      : null;
+    if (
+      !observation
+      || observation.host_chat_id_state !== "observed"
+      || !String(observation.host_chat_id || "").trim()
+      || observation.chat_streaming_state !== "not_streaming"
+      || observation.message_role !== "char"
+      || observation.message_disabled_state !== "not_disabled"
+      || observation.position_observation !== "current_active_chat_tail"
+      || Number(observation.active_message_count) !== Number(observation.message_index) + 1
+      || !String(observation.observed_content_hash || "").trim()
+      || !String(observation.persistence_content_hash || "").trim()
+    ) {
+      return { confirmed: false, reason: "active_final_evidence_incomplete", requestContext: pending.requestContext || null };
+    }
+    const observationKey = completeTurnPayloadObservationKey(payload);
+    if (!observationKey) {
+      return { confirmed: false, reason: "active_final_observation_key_missing", requestContext: pending.requestContext || null };
+    }
+    if (pending.requiredObservationChangeFrom && observationKey === pending.requiredObservationChangeFrom) {
+      return { confirmed: false, reason: "new_host_observation_required", requestContext: pending.requestContext || null };
+    }
+    return {
+      confirmed: true,
+      reason: "risu_active_assistant_tail_confirmed",
+      assistantContent: String(payload.assistant_content || ""),
+      hostChatId: String(observation.host_chat_id || ""),
+      messageIndex: Number(observation.message_index),
+      generationId: String(observation.generation_id || ""),
+      observationKey,
+      requestContext: pending.requestContext || null,
+    };
+  }
+
+  async function queuePendingCompleteTurnPayload(payload, reason, requiredObservationChangeFrom, options = {}) {
+    const sid = String(payload && payload.chat_session_id || "").trim();
+    if (!sid || !payload) return false;
+    const requestContext = _finalConfirmationRequestBySession.get(sid) || null;
+    const previousRecoveryKey = String(options.previousRecoveryKey || "").trim();
+    if (options.persist !== false) {
+      const persisted = await persistPendingFinalConfirmationRecovery(
+        payload,
+        reason,
+        requiredObservationChangeFrom,
+        previousRecoveryKey
+      );
+      if (!persisted) return false;
+    }
+    const pending = {
+      kind: "backend_observation_retry",
+      sessionId: sid,
+      requestType: "model",
+      requestContext,
+      candidateContent: String(payload.assistant_content || ""),
+      payload,
+      requiredObservationChangeFrom: String(requiredObservationChangeFrom || ""),
+      recoveryKey: pendingFinalConfirmationRecoveryKey(payload),
+      inFlight: false,
+      resume: null,
+    };
+    pending.resume = async function resumePendingCompleteTurnPayload(observation) {
+      if (!await refreshQueuedCompleteTurnSourceObservation(payload, { allowSourceReplacement: true })) {
+        pending.inFlight = false;
+        pending.requiredObservationChangeFrom = String(observation && observation.observationKey || pending.requiredObservationChangeFrom || "");
+        await persistPendingFinalConfirmationRecovery(
+          payload,
+          reason,
+          pending.requiredObservationChangeFrom,
+          pending.recoveryKey
+        );
+        pending.recoveryKey = pendingFinalConfirmationRecoveryKey(payload);
+        queuePendingFinalConfirmation(pending);
+        return;
       }
-      if (watcher) {
-        watcher.nativeAfterRequestObserved = true;
-        watcher.nativeAfterRequestObservedAt = Date.now();
-        updateRuntimeState("lastStreamingAfterRequest", "ok", {
-          detail: "native afterRequest observed; waiting active chat commit",
-          sessionId: sid,
-          requestType: String(type || "model"),
+      let result = null;
+      try {
+        result = await bridgeFetchWithRetry(
+          "/complete-turn",
+          { method: "POST", body: payload, timeoutMs: getCompleteTurnTimeoutMs() },
+          1
+        );
+      } catch {
+        result = null;
+      }
+      if (result && result.status === "rejected" && result.queue_action === "retry_after_new_observation") {
+        const requiredKey = String(observation && observation.observationKey || completeTurnPayloadObservationKey(payload) || pending.requiredObservationChangeFrom || "");
+        const requeued = await queuePendingCompleteTurnPayload(
+          payload,
+          String(result.code || "pending_confirmation"),
+          requiredKey,
+          { previousRecoveryKey: pending.recoveryKey }
+        );
+        if (!requeued) {
+          pending.inFlight = false;
+          pending.requiredObservationChangeFrom = requiredKey;
+          queuePendingFinalConfirmation(pending);
+          updateRuntimeState("lastError", "error", {
+            detail: "pending final confirmation persistence update failed",
+          });
+        }
+        return;
+      }
+      if (result && (result.queue_action === "discard" || result.retryable === false)) {
+        await removePendingFinalConfirmationRecovery(payload, pending.recoveryKey);
+        updateRuntimeState("lastCompleteTurnStatus", result.status === "rejected" ? "skipped" : "fail", {
+          turnIndex: payload.turn_index,
+          source: "backend",
+          detail: String(result.code || "terminal_complete_turn_result"),
+          failReasons: Array.isArray(result.fail_reasons) ? result.fail_reasons : [],
         });
+        return;
       }
-    } catch {
-      // non-fatal
-    }
-  }
-
-  function latestAssistantCandidateFromComparableMessages(messages) {
-    try {
-      const list = Array.isArray(messages) ? messages : [];
-      for (let i = list.length - 1; i >= 0; i--) {
-        const item = list[i];
-        if (!item || item.role !== "assistant") continue;
-        const candidate = normalizeAssistantPersistenceCandidate(String(item.content || ""));
-        if (candidate) return candidate;
-      }
-      return "";
-    } catch {
-      return "";
-    }
-  }
-
-  function latestStreamingAssistantCandidateFromComparableMessages(messages) {
-    try {
-      const list = Array.isArray(messages) ? messages : [];
-      const rawTailHash = computeTailHashFromSnapshotMessages(list.slice(-4).map(function(item) {
-        return {
-          role: item && item.role || "",
-          content: String(item && item.content || ""),
-        };
-      }));
-      let skippedCandidateCount = 0;
-      let lastBlockedCandidate = null;
-      let latestUserIndex = -1;
-      for (let i = list.length - 1; i >= 0; i--) {
-        if (list[i] && list[i].role === "user") {
-          latestUserIndex = i;
-          break;
-        }
-      }
-      const scanStart = latestUserIndex >= 0 ? latestUserIndex + 1 : 0;
-      const readyRecords = [];
-      for (let i = list.length - 1; i >= scanStart; i--) {
-        const item = list[i];
-        if (!item || item.role !== "assistant") continue;
-        const rawText = String(item.content || "");
-        const rawHash = rawTailHash || (rawText ? computeAssistantSnapshotFingerprint(rawText) : "");
-        if (!rawText.trim()) {
-          lastBlockedCandidate = {
-            candidate: "",
-            candidateHash: "",
-            rawHash,
-            stabilityHash: "",
-            blockedReason: "assistant_raw_empty",
-            streamingState: getActiveChatMessageStreamingState(item.raw),
-            rawChars: 0,
-          };
-          continue;
-        }
-        const candidate = normalizeAssistantPersistenceCandidate(rawText);
-        const readiness = assessStreamingAssistantCandidateForSyntheticAfterRequest(rawText, candidate, item.raw);
-        const candidateHash = candidate ? computeAssistantSnapshotFingerprint(candidate) : "";
-        if (!readiness.ready) {
-          skippedCandidateCount += 1;
-          lastBlockedCandidate = {
-            candidate,
-            candidateHash,
-            rawHash,
-            stabilityHash: candidateHash + ":" + rawHash,
-            blockedReason: readiness.reason,
-            streamingState: readiness.streamingState || "unknown",
-            rawChars: rawText.length,
-            skippedCandidateCount: skippedCandidateCount,
-          };
-          continue;
-        }
-        readyRecords.push({
-          candidate,
-          candidateHash,
-          rawHash,
-          stabilityHash: candidateHash + ":" + rawHash,
-          blockedReason: "",
-          streamingState: readiness.streamingState || "unknown",
-          rawChars: rawText.length,
-          skippedCandidateCount: skippedCandidateCount,
-          index: i,
+      if (result && result.save_ok === true) {
+        await removePendingFinalConfirmationRecovery(payload, pending.recoveryKey);
+        updateRuntimeState("lastSaveStatus", "ok", {
+          turnIndex: result.turn_index || payload.turn_index,
+          detail: result.derived_retry_required === true
+            ? "raw saved; derived retry owned by backend"
+            : "saved after RisuAI final confirmation",
         });
+        const reconciliationRequired = result.reconciliation_required === true;
+        updateRuntimeState("lastCompleteTurnStatus", result.derived_retry_required === true || reconciliationRequired ? "warn" : "ok", {
+          turnIndex: result.turn_index || payload.turn_index,
+          source: "backend",
+          detail: reconciliationRequired
+            ? String(result.code || "raw_saved_reconciliation_required")
+            : result.derived_retry_required === true ? "raw_saved_derived_retry_pending" : "accepted",
+          failReasons: Array.isArray(result.fail_reasons) ? result.fail_reasons : [],
+        });
+        return;
       }
-      const selected = selectBestAssistantCandidateRecord(readyRecords);
-      if (selected) {
-        const candidate = String(selected.candidate || "").trim();
-        const candidateHash = selected.candidateHash || computeAssistantSnapshotFingerprint(candidate);
-        return {
-          candidate,
-          candidateHash,
-          rawHash: rawTailHash,
-          stabilityHash: candidateHash + ":" + rawTailHash,
-          blockedReason: "",
-          streamingState: selected.streamingState || "unknown",
-          rawChars: Number(selected.rawChars || candidate.length),
-          skippedCandidateCount: skippedCandidateCount,
-          selectedAssistantIndex: Number(selected.index || 0),
-          assistantCandidateCount: readyRecords.length,
-        };
+      enqueue("complete_turn", payload);
+      const failedQueuePersisted = await flushQueueSave();
+      if (!failedQueuePersisted) {
+        removeFailedCompleteTurnByIdempotencyKey(
+          payload && payload.client_meta && payload.client_meta.idempotency_key
+        );
+        pending.inFlight = false;
+        queuePendingFinalConfirmation(pending);
+        updateRuntimeState("lastError", "error", {
+          detail: "transport queue persistence failed; pending final retained",
+        });
+        return;
       }
-      if (lastBlockedCandidate) {
-        return lastBlockedCandidate;
-      }
-      return {
-        candidate: "",
-        candidateHash: "",
-        rawHash: "",
-        stabilityHash: "",
-        blockedReason: "no_active_assistant",
-        streamingState: "unknown",
-        rawChars: 0,
-      };
-    } catch {
-      return {
-        candidate: "",
-        candidateHash: "",
-        rawHash: "",
-        stabilityHash: "",
-        blockedReason: "latest_assistant_candidate_failed",
-        streamingState: "unknown",
-        rawChars: 0,
-      };
-    }
-  }
-
-  function getStreamingAfterRequestObservedState(watcher, latestCandidate) {
-    try {
-      const rawChangeCount = Number(watcher && watcher.rawChangeCount || 0);
-      const streamingState = String(latestCandidate && latestCandidate.streamingState || "unknown");
-      const observedStreaming = streamingState === "streaming" || rawChangeCount >= 2;
-      const explicitComplete = streamingState === "complete";
-      const lastRawChangeAt = Number(watcher && watcher.lastRawChangeAt || 0);
-      const quietMs = lastRawChangeAt > 0 ? Math.max(0, Date.now() - lastRawChangeAt) : 0;
-      const requiredStablePolls = observedStreaming && !explicitComplete
-        ? STREAMING_AFTER_REQUEST_OBSERVED_STREAM_STABLE_POLLS
-        : STREAMING_AFTER_REQUEST_STABLE_POLLS;
-      return {
-        observedStreaming,
-        explicitComplete,
-        quietMs,
-        requiredStablePolls,
-        waitingForQuiet: observedStreaming && !explicitComplete && quietMs < STREAMING_AFTER_REQUEST_OBSERVED_STREAM_QUIET_MS,
-      };
-    } catch {
-      return {
-        observedStreaming: false,
-        explicitComplete: false,
-        quietMs: 0,
-        requiredStablePolls: STREAMING_AFTER_REQUEST_STABLE_POLLS,
-        waitingForQuiet: false,
-      };
-    }
-  }
-
-  async function pollStreamingAfterRequestWatch(sessionId) {
-    const sid = String(sessionId || "").trim();
-    const watcher = _streamingAfterRequestWatchers.get(sid);
-    if (!watcher || watcher.inFlight) return;
-    if (Date.now() - watcher.startedAt > STREAMING_AFTER_REQUEST_TIMEOUT_MS) {
-      stopStreamingAfterRequestWatch(sid, "timeout");
-      updateRuntimeState("lastStreamingAfterRequest", "skipped", {
-        detail: "timeout waiting for native afterRequest/active assistant",
-        sessionId: sid,
-        requestType: watcher.type,
+      await removePendingFinalConfirmationRecovery(payload, pending.recoveryKey);
+      updateRuntimeState("lastSaveStatus", "fail", {
+        turnIndex: payload.turn_index,
+        detail: "complete-turn transport retry queued",
       });
+    };
+    if (!queuePendingFinalConfirmation(pending)) return false;
+    updateRuntimeState("lastCompleteTurnStatus", "idle", {
+      turnIndex: payload.turn_index,
+      source: "backend",
+      detail: String(reason || "pending_confirmation"),
+      failReasons: [],
+    });
+    return true;
+  }
+
+  async function drainPendingFinalConfirmations(signalSource) {
+    if (_pendingFinalConfirmationDrainInFlight) {
+      _pendingFinalConfirmationDrainRequested = true;
       return;
     }
-    watcher.inFlight = true;
+    if (_pendingFinalConfirmations.size === 0) return;
+    _pendingFinalConfirmationDrainInFlight = true;
     try {
-      const resolved = await resolveCurrentActiveChatObject(sid);
-      const comparable = resolved && resolved.chat ? extractActiveChatComparableMessages(resolved.chat) : [];
-      const hostChatStreaming = !!(
-        resolved
-        && resolved.chat
-        && Object.prototype.hasOwnProperty.call(resolved.chat, "isStreaming")
-        && resolved.chat.isStreaming === true
-      );
-      const assistantMessages = comparable.filter(function(item) {
-        return item && item.role === "assistant" && String(item.content || "").trim();
-      });
-      const latestCandidate = latestStreamingAssistantCandidateFromComparableMessages(comparable);
-      const candidate = latestCandidate.candidate || "";
-      const candidateHash = latestCandidate.candidateHash || "";
-      const baselineHash = String(watcher.baselineAssistantTailHash || "");
-      const hasNewAssistant = !!candidate && (
-        assistantMessages.length > Number(watcher.baselineAssistantCount || 0)
-        || (!!candidateHash && candidateHash !== baselineHash)
-      );
-      if ((candidate || assistantMessages.length > Number(watcher.baselineAssistantCount || 0)) && latestCandidate.rawHash) {
-        const rawHash = String(latestCandidate.rawHash || "");
-        if (rawHash && rawHash !== String(watcher.lastCandidateRawHash || "")) {
-          watcher.lastCandidateRawHash = rawHash;
-          watcher.rawChangeCount = Number(watcher.rawChangeCount || 0) + 1;
-          watcher.lastRawChangeAt = Date.now();
-        }
-      }
-      if (hostChatStreaming) {
-        watcher.stableCount = 0;
-        watcher.lastCandidateHash = "";
-        watcher.lastCandidateStabilityHash = "";
-        updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          detail: "RisuAI active chat is still streaming",
-          sessionId: sid,
-          requestType: watcher.type,
-          streamingState: "streaming",
-          rawChars: Number(latestCandidate.rawChars || 0),
-        });
-      } else if (latestCandidate.blockedReason && assistantMessages.length > Number(watcher.baselineAssistantCount || 0)) {
-        watcher.stableCount = 0;
-        watcher.lastCandidateHash = "";
-        watcher.lastCandidateStabilityHash = "";
-        updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          detail: "active assistant observed; waiting final output (" + latestCandidate.blockedReason + ")",
-          sessionId: sid,
-          requestType: watcher.type,
-          streamingState: latestCandidate.streamingState || "unknown",
-          rawChars: Number(latestCandidate.rawChars || 0),
-        });
-      } else if (hasNewAssistant) {
-        const stabilityHash = latestCandidate.stabilityHash || (candidateHash + ":" + (latestCandidate.rawHash || ""));
-        if (stabilityHash === watcher.lastCandidateStabilityHash) {
-          watcher.stableCount = Number(watcher.stableCount || 0) + 1;
-        } else {
-          watcher.lastCandidateHash = candidateHash;
-          watcher.lastCandidateStabilityHash = stabilityHash;
-          watcher.stableCount = 1;
-        }
-        watcher.lastCandidate = candidate;
-        watcher.lastSeenAt = Date.now();
-        const observedState = getStreamingAfterRequestObservedState(watcher, latestCandidate);
-        updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          detail: observedState.waitingForQuiet
-            ? "streaming active chat observed; waiting quiet " + Math.round(observedState.quietMs / 1000) + "s/" + Math.round(STREAMING_AFTER_REQUEST_OBSERVED_STREAM_QUIET_MS / 1000) + "s"
-            : "active assistant observed; waiting stable " + watcher.stableCount + "/" + observedState.requiredStablePolls,
-          sessionId: sid,
-          requestType: watcher.type,
-          streamingState: latestCandidate.streamingState || "unknown",
-          rawChangeCount: Number(watcher.rawChangeCount || 0),
-        });
-        if (!observedState.waitingForQuiet && watcher.stableCount >= observedState.requiredStablePolls) {
-          stopStreamingAfterRequestWatch(sid, "synthetic_afterRequest");
-          if (!watcher.nativeAfterRequestObserved) {
-            _streamingAfterRequestRecoveredBySession.set(sid, {
-              at: Date.now(),
-              hash: candidateHash,
-              requestType: watcher.type,
+      do {
+        _pendingFinalConfirmationDrainRequested = false;
+        const entries = Array.from(_pendingFinalConfirmations.entries());
+        for (const [pendingKey, pending] of entries) {
+          if (!pending || pending.inFlight || _pendingFinalConfirmations.get(pendingKey) !== pending) continue;
+          const observation = pending.kind === "backend_observation_retry"
+            ? await observePendingCompleteTurnFinalObservation(pending)
+            : await observePendingFinalConfirmation(pending);
+          if (!observation.confirmed) continue;
+          if (
+            _pendingFinalConfirmations.get(pendingKey) !== pending
+            || pending.requestContext !== observation.requestContext
+            || (pending.requestContext && pending.requestContext.state === "superseded")
+          ) {
+            continue;
+          }
+          pending.inFlight = true;
+          pending.state = "accepted";
+          _pendingFinalConfirmations.delete(pendingKey);
+          if (pending.kind === "host_candidate" && pending.requestContext) {
+            pending.requestContext.state = "accepted";
+            pending.requestContext.acceptedObservationKey = observation.observationKey;
+          }
+          updateRuntimeState("lastStreamingAfterRequest", "ok", {
+            detail: "RisuAI active assistant tail confirmed",
+            sessionId: pending.sessionId,
+            requestType: pending.requestType,
+            signalSource: String(signalSource || "host_observation"),
+          });
+          try {
+            await pending.resume(observation);
+          } catch (err) {
+            if (pending.requestContext) pending.requestContext.state = "terminal";
+            warnLog("[final-confirmation] accepted-final continuation failed:", err && err.message);
+            updateRuntimeState("lastError", "error", {
+              detail: "accepted final persistence: " + String(err && err.message || "unknown"),
             });
           }
-          updateRuntimeState("lastStreamingAfterRequest", watcher.nativeAfterRequestObserved ? "ok" : "warn", {
-            detail: watcher.nativeAfterRequestObserved
-              ? "native afterRequest result confirmed in RisuAI active chat"
-              : "native afterRequest missing; recovered from RisuAI active chat",
-            sessionId: sid,
-            requestType: watcher.type,
-          });
-          debugLog("[streaming-afterRequest] persistence after active chat confirmation:", sid, "chars:", candidate.length);
-          _streamingAfterRequestSyntheticCallDepth++;
-          try {
-            await onAfterRequest(candidate, watcher.type || "model");
-            updateSessionSnapshot(sid, comparable);
-          } finally {
-            _streamingAfterRequestSyntheticCallDepth = Math.max(0, _streamingAfterRequestSyntheticCallDepth - 1);
-          }
-          return;
         }
-      }
-    } catch (err) {
-      debugLog("[streaming-afterRequest] poll failed:", err && err.message);
+      } while (_pendingFinalConfirmationDrainRequested);
     } finally {
-      watcher.inFlight = false;
-    }
-    if (_streamingAfterRequestWatchers.get(sid) === watcher) {
-      watcher.timer = setTimeout(function streamingAfterRequestPollTick() {
-        pollStreamingAfterRequestWatch(sid);
-      }, STREAMING_AFTER_REQUEST_POLL_INTERVAL_MS);
+      _pendingFinalConfirmationDrainInFlight = false;
     }
   }
 
-  function armStreamingAfterRequestWatch(sessionId, type, requestId) {
+  async function registerFinalConfirmationObserver() {
+    if (_finalConfirmationObserver || !R) return false;
+    if (typeof R.createMutationObserver !== "function" || typeof R.getRootDocument !== "function") return false;
     try {
-      const sid = String(sessionId || "").trim();
-      const hasOfficialActiveChatRead = !!(
-        R
-        && typeof R.getCurrentCharacterIndex === "function"
-        && typeof R.getCurrentChatIndex === "function"
-        && typeof R.getChatFromIndex === "function"
-      );
-      if (!sid || !settings.enabled || !isSaveType(type) || !hasOfficialActiveChatRead) return;
-      stopStreamingAfterRequestWatch(sid, "rearmed");
-      _streamingAfterRequestRecoveredBySession.delete(sid);
-      const snapshot = getSessionSnapshot(sid);
-      const watcher = {
-        sessionId: sid,
-        type: String(type || "model"),
-        requestId: String(requestId || ""),
-        startedAt: Date.now(),
-        baselineAssistantCount: Number(snapshot && snapshot.assistantMsgCount || 0),
-        baselineAssistantTailHash: String(snapshot && snapshot.assistantTailHash || ""),
-        lastCandidateHash: "",
-        lastCandidateRawHash: "",
-        lastCandidateStabilityHash: "",
-        rawChangeCount: 0,
-        lastRawChangeAt: 0,
-        stableCount: 0,
-        timer: null,
-        inFlight: false,
-        nativeAfterRequestObserved: false,
-        nativeAfterRequestObservedAt: 0,
-      };
-      _streamingAfterRequestWatchers.set(sid, watcher);
-      updateRuntimeState("lastStreamingAfterRequest", "watching", {
-        detail: "waiting for native afterRequest",
-        sessionId: sid,
-        requestType: watcher.type,
+      const rootDocument = await R.getRootDocument();
+      if (!rootDocument) return false;
+      const observer = await R.createMutationObserver(function onRisuHostMutation() {
+        drainPendingFinalConfirmations("risu_dom_mutation").catch(function(err) {
+          debugLog("[final-confirmation] mutation wake failed:", err && err.message);
+        });
       });
-      watcher.timer = setTimeout(function streamingAfterRequestWatchStart() {
-        pollStreamingAfterRequestWatch(sid);
-      }, STREAMING_AFTER_REQUEST_START_DELAY_MS);
+      if (!observer || typeof observer.observe !== "function") return false;
+      await observer.observe(rootDocument, { childList: true, subtree: true, characterData: true });
+      _finalConfirmationObserver = observer;
+      return true;
     } catch (err) {
-      debugLog("[streaming-afterRequest] arm failed:", err && err.message);
+      debugLog("[final-confirmation] observer unavailable:", err && err.message);
+      return false;
     }
   }
 
@@ -16079,52 +16458,6 @@
     };
   }
 
-  function assessPromotedAssistantSyncRollbackGuard(previousSnapshot, currentMessages, assistantDeletionState, detectionState) {
-    try {
-      const promotion = previousSnapshot && previousSnapshot.lastPromotedAssistant
-        ? previousSnapshot.lastPromotedAssistant
-        : null;
-      if (!promotion || promotion.syncState !== "pending_active_chat_confirmation") return null;
-      const promotedAt = Number(promotion.promotedAt || 0);
-      if (!Number.isFinite(promotedAt) || promotedAt <= 0) return null;
-      const ageMs = Date.now() - promotedAt;
-      if (ageMs < 0 || ageMs > ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS) return null;
-
-      const fingerprint = String(promotion.fingerprint || "");
-      if (!fingerprint) return null;
-      const currentAssistantMessages = extractAssistantSnapshotMessages(currentMessages);
-      const alreadyVisibleInActiveChat = currentAssistantMessages.some(function(message) {
-        return computeTailHashFromSnapshotMessages([{ role: "assistant", content: String(message && message.content || "") }]) === fingerprint;
-      });
-      if (alreadyVisibleInActiveChat) return null;
-
-      const promotedTurn = Number(promotion.turnIndex || 0);
-      const firstRemovedTurn = Number((assistantDeletionState && assistantDeletionState.firstRemovedTurnIndex) || 0);
-      const ledgerAnchorTurn = Number((detectionState && detectionState.ledgerAnchorTurnIndex) || 0);
-      const previousTurn = Number((previousSnapshot && previousSnapshot.turnIndex) || 0);
-      const targetsPromotedTurn = promotedTurn >= 1
-        && (
-          firstRemovedTurn === promotedTurn
-          || ledgerAnchorTurn === promotedTurn
-          || previousTurn === promotedTurn
-          || firstRemovedTurn === 0
-        );
-      const deletionLike = Number((assistantDeletionState && assistantDeletionState.removedAssistantCount) || 0) > 0
-        || Number((detectionState && detectionState.removedMsgCount) || 0) > 0;
-      if (!targetsPromotedTurn || !deletionLike) return null;
-      return {
-        promotedTurnIndex: promotedTurn,
-        ageMs,
-        graceMs: ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS,
-        syncState: promotion.syncState,
-        guardReason: "pending_promoted_assistant_not_confirmed_in_active_chat",
-        action: "skip_db_rollback_until_active_chat_confirms_or_next_turn_rebases_snapshot",
-      };
-    } catch {
-      return null;
-    }
-  }
-
   /**
    * beforeRequest 시점에서 rollback 필요 여부를 판단한다.
    * @returns {{ shouldRollback: boolean, reason: string, newTurnIndex: number|null, detail: object }}
@@ -16268,14 +16601,6 @@
 
       if (!(typeof prev.turnIndex === "number") || prev.turnIndex < 1) {
         result.reason = "no_tracked_turn_index";
-        return result;
-      }
-
-      const promotedAssistantGuard = assessPromotedAssistantSyncRollbackGuard(prev, currentMessages, assistantDeletionState, detectionState);
-      if (promotedAssistantGuard) {
-        result.reason = "recent_completed_turn_waiting_active_chat_sync";
-        result.detail.promotedAssistantSyncGuard = promotedAssistantGuard;
-        result.detail.skipSnapshotUpdate = true;
         return result;
       }
 
@@ -16750,20 +17075,6 @@
     }
   }
 
-  function hasRecentPromotedAssistantSyncPending(sessionId) {
-    try {
-      const snapshot = getSessionSnapshot(sessionId);
-      const promotion = snapshot && snapshot.lastPromotedAssistant ? snapshot.lastPromotedAssistant : null;
-      if (!promotion || promotion.syncState !== "pending_active_chat_confirmation") return false;
-      const promotedAt = Number(promotion.promotedAt || 0);
-      if (!Number.isFinite(promotedAt) || promotedAt <= 0) return false;
-      const ageMs = Date.now() - promotedAt;
-      return ageMs >= 0 && ageMs <= ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS;
-    } catch {
-      return false;
-    }
-  }
-
   function maxTimelineTurnIndex(items) {
     let maxTurn = 0;
     for (const item of Array.isArray(items) ? items : []) {
@@ -16849,15 +17160,6 @@
     const now = Date.now();
     if (!options.force && (now - _rollbackTailReconcileLastAt) < ROLLBACK_TAIL_RECONCILE_INTERVAL_MS) return false;
     _rollbackTailReconcileLastAt = now;
-    if (hasRecentPromotedAssistantSyncPending(sid)) {
-      updateRuntimeState("lastAutoRollback", "skipped", {
-        detail: "pending assistant output not yet confirmed in active chat; rollback blocked",
-        sessionId: sid,
-        policyVersion: "or1f.pending_assistant_confirmation_guard.v1",
-      });
-      return false;
-    }
-
     _rollbackTailReconcileInFlight = true;
     try {
       const rawMessages = extractActiveChatMessageList(activeChat);
@@ -16938,8 +17240,8 @@
         duplicateSignature,
         hostLifecycleObservation: String(
           options.hostLifecycleObservation
-          || ((typeof _streamingAfterRequestWatchers !== "undefined" && _streamingAfterRequestWatchers.has(sid))
-            ? "generation_watch_active"
+          || (hasPendingFinalConfirmationForSession(sid)
+            ? "final_confirmation_pending"
             : "")
         ),
       });
@@ -23825,22 +24127,6 @@
     }
   }
 
-  function assessStreamingAssistantCandidateForSyntheticAfterRequest(rawText, candidateText, rawMessage) {
-    try {
-      var streamingState = getActiveChatMessageStreamingState(rawMessage);
-      if (streamingState === "streaming") {
-        return { ready: false, reason: "active_chat_message_still_streaming", streamingState };
-      }
-      var candidate = String(candidateText || "").trim();
-      if (!candidate) {
-        return { ready: false, reason: "assistant_visible_output_empty", streamingState };
-      }
-      return { ready: true, reason: "ready", streamingState };
-    } catch {
-      return { ready: false, reason: "candidate_assessment_failed", streamingState: "unknown" };
-    }
-  }
-
   function sanitizeForCritic(text) {
     if (!text || typeof text !== "string") return text;
     try {
@@ -24944,7 +25230,7 @@
       const minimumMessageIndex = Number.isInteger(opts.minimumMessageIndex)
         ? opts.minimumMessageIndex
         : Number(snapshot && snapshot.msgCount || 0);
-      const allowExistingActiveMessage = opts.allowExistingActiveMessage === true || _streamingAfterRequestSyntheticCallDepth > 0;
+      const allowExistingActiveMessage = opts.allowExistingActiveMessage === true;
       if (!allowExistingActiveMessage && selectedIndex < minimumMessageIndex) return observation;
 
       const message = messages[selectedIndex];
@@ -25139,9 +25425,13 @@
         Object.assign({}, sourceObservationOptions || {}, { userInput: String(userInput || "") })
       );
       const risuPersonaObservation = await observeRisuPersona();
+      const lineageOrchestrationResult = sourceObservationOptions
+        && Object.prototype.hasOwnProperty.call(sourceObservationOptions, "orchestrationResult")
+        ? sourceObservationOptions.orchestrationResult
+        : lastOrchResult;
       const sourceToFinalLineageObservation = buildSourceToFinalLineageObservation(
         sourceAcceptanceObservation,
-        lastOrchResult
+        lineageOrchestrationResult
       );
       const idempotencyKey = [
         "complete_turn",
@@ -25280,7 +25570,7 @@
     }
   }
 
-  async function refreshQueuedCompleteTurnSourceObservation(payload) {
+  async function refreshQueuedCompleteTurnSourceObservation(payload, options = {}) {
     try {
       if (!payload || typeof payload !== "object") return false;
       const meta = payload.client_meta && typeof payload.client_meta === "object" ? payload.client_meta : {};
@@ -25320,7 +25610,7 @@
       if (!rebuilt || !rebuilt.client_meta) return false;
       const observation = rebuilt.client_meta.source_acceptance_observation;
       if (!observation || !observation.observed_content_hash) return false;
-      if (previous && previous.observed_content_hash) {
+      if (previous && previous.observed_content_hash && options.allowSourceReplacement !== true) {
         if (previous.host_chat_id && observation.host_chat_id && previous.host_chat_id !== observation.host_chat_id) return false;
         if (previous.generation_id && observation.generation_id && previous.generation_id !== observation.generation_id) return false;
         if (previous.message_chat_id && observation.message_chat_id && previous.message_chat_id !== observation.message_chat_id) return false;
@@ -25344,6 +25634,16 @@
       }
       const refreshedPayload = buildCompleteTurnQueuePayload(rebuilt);
       if (!refreshedPayload) return false;
+      // Recovery storage is credential-free, but a live retry must use the
+      // current runtime provider configuration. The next storage serialization
+      // strips these fields again through buildCompleteTurnQueuePayload.
+      refreshedPayload.client_meta = refreshedPayload.client_meta || {};
+      if (rebuilt.client_meta.critic && typeof rebuilt.client_meta.critic === "object") {
+        refreshedPayload.client_meta.critic = Object.assign({}, rebuilt.client_meta.critic);
+      }
+      if (rebuilt.client_meta.embedding && typeof rebuilt.client_meta.embedding === "object") {
+        refreshedPayload.client_meta.embedding = Object.assign({}, rebuilt.client_meta.embedding);
+      }
       Object.assign(payload, refreshedPayload);
       return true;
     } catch (err) {
@@ -34582,7 +34882,7 @@
         debugLog("active chat backfill beforeRequest failed:", err && err.message);
       });
       await captureAssistantPrefillSeedForSession(orchSessionId, messages);
-      armStreamingAfterRequestWatch(orchSessionId, type, orchRequestId);
+      await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);
 
       // Sprint 3-E-2: rollback 자동 감지 (두 Go source 검증 이후, orchestration 전에)
       try {
@@ -35276,14 +35576,34 @@
     try {
       debugLog("afterRequest hook fired, type:", type);
       if (!isNarrativeType(type) || !settings.enabled) return content;
-      const chatSessionId = await resolveAfterRequestWriteSessionId(lastOrchResult);
-      const syntheticAfterRequest = _streamingAfterRequestSyntheticCallDepth > 0;
+      const persistenceOrchResult = lastOrchResult;
+      const chatSessionId = await resolveAfterRequestWriteSessionId(persistenceOrchResult);
+      const persistencePendingCtx = _pendingOrchBySession.get(chatSessionId) || null;
+      const persistenceSkipState = _pendingPersistenceSkipBySession.get(chatSessionId) || null;
+      let persistenceRequestContext = null;
+      function clearPersistencePendingContext() {
+        if (_pendingOrchBySession.get(chatSessionId) === persistencePendingCtx) {
+          _pendingOrchBySession.delete(chatSessionId);
+        }
+      }
+      function clearPersistenceSkipState() {
+        if (_pendingPersistenceSkipBySession.get(chatSessionId) === persistenceSkipState) {
+          _pendingPersistenceSkipBySession.delete(chatSessionId);
+        }
+      }
+      function clearEffectiveInputAwaitingForRequest() {
+        if (
+          !persistenceRequestContext
+          || _finalConfirmationRequestBySession.get(chatSessionId) === persistenceRequestContext
+        ) {
+          _effectiveInputAwaitingNewTurn = false;
+        }
+      }
       const rawAfterRequestText = typeof content === "string" ? content : "";
       let responseReturnContent = content;
       const rememberedNonMainSkip = takeNonMainRequestSkip(chatSessionId, type);
       const requestType = String(type || "model");
       const auxiliaryTypedWithoutMainContext = (requestType === "submodel" || requestType === "otherAx")
-        && !syntheticAfterRequest
         && !lastOrchResult
         && !_pendingOrchBySession.get(chatSessionId);
       if (rememberedNonMainSkip && rememberedNonMainSkip.reason === "post_output_secondary_request") {
@@ -35307,29 +35627,14 @@
       const nativePersistableContent = rawAfterRequestText.trim()
         ? normalizeAssistantPersistenceCandidate(rawAfterRequestText)
         : "";
-      const nativeNonPersistableFragment = !syntheticAfterRequest
-        && !!rawAfterRequestText.trim()
+      const nativeNonPersistableFragment = !!rawAfterRequestText.trim()
         && !nativePersistableContent;
-      if (!syntheticAfterRequest) {
-        const recovered = _streamingAfterRequestRecoveredBySession.get(chatSessionId);
-        if (recovered && Date.now() - Number(recovered.at || 0) < STREAMING_AFTER_REQUEST_RECENT_RECOVERY_GRACE_MS) {
-          updateRuntimeState("lastStreamingAfterRequest", "skipped", {
-            detail: "late native afterRequest ignored after poller recovery",
-            sessionId: chatSessionId,
-            requestType: String(type || "model"),
-          });
-          debugLog("[streaming-afterRequest] late native afterRequest ignored after poller recovery:", chatSessionId);
-          return content;
-        }
-        if (nativeNonPersistableFragment) {
-          updateRuntimeState("lastStreamingAfterRequest", "watching", {
-            detail: "native non-persistable fragment ignored; waiting final output",
-            sessionId: chatSessionId,
-            requestType: String(type || "model"),
-          });
-        } else {
-          markNativeAfterRequestObserved(chatSessionId, type);
-        }
+      if (nativeNonPersistableFragment) {
+        updateRuntimeState("lastStreamingAfterRequest", "watching", {
+          detail: "afterRequest fragment observed; waiting for RisuAI active assistant tail",
+          sessionId: chatSessionId,
+          requestType: String(type || "model"),
+        });
       }
       const assistantPrefillSeed = takeAssistantPrefillSeedForSession(chatSessionId);
       const normalizedContent = typeof content === "string" ? sanitizeNarrativeOutputForDisplay(content) : content;
@@ -35359,7 +35664,6 @@
                 source: "active_chat_fallback",
                 rawContentChars: rawAfterRequestText.length,
                 recoveredChars: activeChatAssistant.length,
-                watcherKeptAlive: _streamingAfterRequestWatchers.has(chatSessionId),
               };
             }
             debugLog("[M-4c] assistant content recovered from active chat fallback:", activeChatAssistant.length, "chars");
@@ -35367,85 +35671,109 @@
         }
       }
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
-      if (nativeNonPersistableFragment && !recoveredAssistantContent) {
-        const watcherWasActive = _streamingAfterRequestWatchers.has(chatSessionId);
-        if (!watcherWasActive) {
-          armStreamingAfterRequestWatch(chatSessionId, type, "native_nonpersistable_fragment");
+      if (isSaveType(type)) {
+        const requestContext = _finalConfirmationRequestBySession.get(chatSessionId) || null;
+        persistenceRequestContext = requestContext;
+        const candidateContent = recoveredAssistantContent || normalizeAssistantPersistenceCandidate(String(displayContent || ""));
+        const contextMatchesRequest = !!(
+          requestContext
+          && persistencePendingCtx
+          && String(persistencePendingCtx.requestId || "") === String(requestContext.requestId || "")
+        );
+        if (
+          !requestContext
+          || (requestContext.state !== "captured" && requestContext.state !== "candidate_observed")
+          || requestContext.overlapAmbiguous
+          || !requestContext.hostChatId
+          || !contextMatchesRequest
+          || !candidateContent
+        ) {
+          if (requestContext && requestContext.state === "accepted") {
+            updateRuntimeState("lastStreamingAfterRequest", "skipped", {
+              detail: "duplicate afterRequest ignored for accepted RisuAI request",
+              sessionId: chatSessionId,
+              requestType: String(type || "model"),
+            });
+            return responseReturnContent;
+          }
+          if (requestContext) requestContext.state = "terminal";
+          updateRuntimeState("lastSaveStatus", "fail", {
+            detail: "RisuAI finality evidence unavailable; active-chat backfill required",
+          });
+          updateRuntimeState("lastCompleteTurnStatus", "fail", {
+            source: "local",
+            detail: "host_finality_evidence_unavailable",
+            failReasons: ["host_finality_evidence_unavailable"],
+          });
+          updateRuntimeState("lastError", "error", {
+            detail: "RisuAI request/output correlation could not be proven",
+          });
+          return responseReturnContent;
         }
-        const watcherKeptAlive = _streamingAfterRequestWatchers.has(chatSessionId);
-        if (assistantPrefillSeed) {
-          rememberAssistantPrefillSeedForSession(chatSessionId, assistantPrefillSeed);
+        requestContext.state = "candidate_observed";
+        for (const pending of _pendingFinalConfirmations.values()) {
+          if (pending && pending.kind === "backend_observation_retry" && pending.sessionId === chatSessionId) {
+            pending.requestContext = requestContext;
+            pending.candidateContent = candidateContent;
+          }
         }
-        updateRuntimeState("lastSaveStatus", "warn", {
-          detail: "fragment skipped; waiting final output",
-        });
-        updateRuntimeState("lastCompleteStatus", "warn", {
-          detail: "critic pending: fragment skipped; waiting final output",
-        });
-        updateRuntimeState("lastCompleteTurnStatus", "warn", {
-          source: "local",
-          detail: "fragment_skipped_waiting_final",
-          failReasons: ["nonpersistable_afterRequest_fragment"],
-        });
-        if (lastOrchResult && lastOrchResult._trace) {
-          lastOrchResult._trace.assistantContentCapture = {
-            status: "fragment_skipped_waiting_final",
-            rawContentChars: rawAfterRequestText.length,
-            watcherWasActive,
-            watcherKeptAlive,
-          };
-          syncRuntimeStateFromTurnTrace(lastOrchResult._trace);
-        }
-        recordStep23CaptureVerification(chatSessionId, peekNextTurnIndex(chatSessionId), "afterRequest", "degraded", {
-          degradedReason: "nonpersistable_afterRequest_fragment",
-          assistantContent: rawAfterRequestText,
-          metadata: {
-            request_type: String(type || "model"),
-            source: "native_nonpersistable_fragment",
-            synthetic_after_request: !!syntheticAfterRequest,
-            fragment_skipped: true,
-            final_recovery_pending: true,
-            watcher_was_active: watcherWasActive,
-            watcher_kept_alive: watcherKeptAlive,
+        let acceptedFinalObservation = null;
+        const pendingConfirmation = {
+          kind: "host_candidate",
+          sessionId: chatSessionId,
+          requestType: String(type || "model"),
+          requestContext,
+          candidateContent,
+          inFlight: false,
+          resume: async function resumeAcceptedFinal(observation) {
+            acceptedFinalObservation = observation || null;
+            const acceptedContent = String(observation && observation.assistantContent || "");
+            if (acceptedContent) {
+              recoveredAssistantContent = acceptedContent;
+              displayContent = acceptedContent;
+            }
+            if (lastOrchResult === persistenceOrchResult) {
+              lastOrchResult = null;
+            }
+            await continueAcceptedFinalPersistence(persistenceOrchResult, acceptedFinalObservation);
           },
-          evidence: {
-            capture: "native_nonpersistable_fragment",
-            raw_after_request_hash: computeOrchestrationDirtyHashOr1c(rawAfterRequestText),
-          },
-        }).catch(function() {});
-        debugLog("[streaming-afterRequest] native non-persistable fragment skipped; waiting final output:", chatSessionId, "watcher:", watcherKeptAlive);
-        if (panelOpen) {
-          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderNonPersistableFragmentIgnored");
+        };
+        if (!queuePendingFinalConfirmation(pendingConfirmation)) {
+          updateRuntimeState("lastStreamingAfterRequest", "skipped", {
+            detail: "duplicate or terminal RisuAI finality candidate ignored",
+            sessionId: chatSessionId,
+            requestType: String(type || "model"),
+          });
+          return responseReturnContent;
         }
-        return responseReturnContent;
-      }
-      if (!syntheticAfterRequest && isSaveType(type)) {
-        if (lastOrchResult && lastOrchResult._trace) {
-          attachSanitizeTrace(lastOrchResult._trace, displaySanitizeTrace);
-        }
-        updateRuntimeState("lastSaveStatus", "warn", {
-          detail: "waiting for RisuAI active chat confirmation",
+        updateRuntimeState("lastSaveStatus", "idle", {
+          detail: "waiting for RisuAI active assistant tail",
         });
         updateRuntimeState("lastCompleteTurnStatus", "idle", {
           source: "local",
-          detail: "waiting_for_risuai_active_chat",
+          detail: "pending_confirmation",
           failReasons: [],
         });
-        debugLog("afterRequest: transformed output returned; persistence deferred until RisuAI active chat confirmation");
+        drainPendingFinalConfirmations("native_afterRequest").catch(function(err) {
+          debugLog("[final-confirmation] native wake failed:", err && err.message);
+        });
         return responseReturnContent;
       }
-      if (lastOrchResult && lastOrchResult._trace) {
-        attachSanitizeTrace(lastOrchResult._trace, displaySanitizeTrace);
-      }
+      return await continueAcceptedFinalPersistence(persistenceOrchResult, null);
 
-      let skipPersist = _pendingPersistenceSkipBySession.get(chatSessionId);
+      async function continueAcceptedFinalPersistence(lastOrchResult = persistenceOrchResult, acceptedFinalObservation = null) {
+        if (lastOrchResult && lastOrchResult._trace) {
+          attachSanitizeTrace(lastOrchResult._trace, displaySanitizeTrace);
+        }
+
+      let skipPersist = persistenceSkipState;
       if (skipPersist && skipPersist.reason === "llm_gate_blocked") {
         const hasDeliveredContent = typeof displayContent === "string" && !!displayContent.trim();
         if (!hasDeliveredContent) {
-          _pendingPersistenceSkipBySession.delete(chatSessionId);
-          _pendingOrchBySession.delete(chatSessionId);
+          clearPersistenceSkipState();
+          clearPersistencePendingContext();
           lastOrchResult = null;
-          _effectiveInputAwaitingNewTurn = false;
+          clearEffectiveInputAwaitingForRequest();
 
           updateRuntimeState("lastSaveStatus", "skipped", {
             detail: "llm_gate_blocked" + (skipPersist.source ? " (" + skipPersist.source + ")" : ""),
@@ -35461,7 +35789,7 @@
         }
 
         // 비용이 이미 발생한 경우 응답 본문을 유지하고 정상 저장 경로로 복구한다.
-        _pendingPersistenceSkipBySession.delete(chatSessionId);
+        clearPersistenceSkipState();
         skipPersist = null;
         updateRuntimeState("lastCompleteTurnStatus", "warn", {
           source: "local",
@@ -35476,7 +35804,7 @@
         (typeof displayContent === "string" && normalizeAssistantPersistenceCandidate(displayContent))
       );
       if ((content == null || typeof content !== "string" || !content.trim()) && !hasAfterRequestAssistantCandidate) {
-        _effectiveInputAwaitingNewTurn = false;
+        clearEffectiveInputAwaitingForRequest();
         return responseReturnContent ?? "";
       }
 
@@ -35490,7 +35818,7 @@
         if (lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency) {
           lastTurnTrace = lastOrchResult._trace;
         }
-        _effectiveInputAwaitingNewTurn = false;
+        clearEffectiveInputAwaitingForRequest();
         if (panelOpen) {
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderNonModel");
         }
@@ -35499,10 +35827,10 @@
       }
 
       if (skipPersist && skipPersist.reason === "ooc_turn") {
-        _pendingPersistenceSkipBySession.delete(chatSessionId);
-        _pendingOrchBySession.delete(chatSessionId);
+        clearPersistenceSkipState();
+        clearPersistencePendingContext();
         lastOrchResult = null;
-        _effectiveInputAwaitingNewTurn = false;
+        clearEffectiveInputAwaitingForRequest();
 
         updateRuntimeState("lastSaveStatus", "skipped", {
           detail: "ooc_turn" + (skipPersist.source ? " (" + skipPersist.source + ")" : ""),
@@ -35519,7 +35847,7 @@
         return responseReturnContent;
       }
       // Sprint 4-A-1: pending context consume
-      const pendingCtx = _pendingOrchBySession.get(chatSessionId);
+      const pendingCtx = persistencePendingCtx;
       const cacheAssessment = assessOrchestrationCacheReuseOr1d(chatSessionId, pendingCtx);
       const staleProposalState = assessOrchestrationStaleProposalServingOr1j(chatSessionId, pendingCtx, {
         cacheAssessment,
@@ -35552,7 +35880,7 @@
         const failureBudgetState = recordStep13GovernorTurnOutcomeGv1c(chatSessionId, lastOrchResult._trace);
         applyStep13GovernorFailureBudgetTraceGv1c(lastOrchResult._trace, failureBudgetState);
       }
-      _pendingOrchBySession.delete(chatSessionId);
+      clearPersistencePendingContext();
 
       // 세션별 turn counter lazy-restore:
       // 플러그인이 재초기화(채팅 전환, 새로고침)되면 localStorage/_mem이 초기화되어
@@ -35635,8 +35963,8 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        _pendingOrchBySession.delete(chatSessionId);
-        _effectiveInputAwaitingNewTurn = false;
+        clearPersistencePendingContext();
+        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderOocSaveLayer");
@@ -35671,13 +35999,7 @@
       }
       if (!String(safeSavedUserInput || "").trim()) {
         const skippedTurnIdx = peekNextTurnIndex(chatSessionId);
-        const userInputMissingRecoveryArmed = !syntheticAfterRequest;
-        if (userInputMissingRecoveryArmed) {
-          armStreamingAfterRequestWatch(chatSessionId, type, "user_input_missing");
-        }
-        const userInputMissingDetail = userInputMissingRecoveryArmed
-          ? "user_input_missing; active chat recovery armed"
-          : "user_input_missing; save skipped";
+        const userInputMissingDetail = "user_input_missing; save skipped";
         updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: skippedTurnIdx, detail: userInputMissingDetail });
         updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: skippedTurnIdx, detail: "critic skipped: user_input_missing" });
         updateRuntimeState("lastCompleteTurnStatus", "idle", {
@@ -35697,20 +36019,19 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        recordStep23CaptureVerification(chatSessionId, skippedTurnIdx, syntheticAfterRequest ? "recovery" : "afterRequest", "degraded", {
+        recordStep23CaptureVerification(chatSessionId, skippedTurnIdx, "afterRequest", "degraded", {
           degradedReason: "user_input_missing",
           assistantContent: recoveredAssistantContent || displayContent || "",
           metadata: {
             request_type: String(type || "model"),
             source: "afterRequest_user_input_missing",
-            synthetic_after_request: !!syntheticAfterRequest,
             recovery_source: userInputRecoverySource || "",
             raw_cache_hit: !!peekRawInputForSession(chatSessionId),
           },
           evidence: { capture: "user_input_missing" },
         }).catch(function() {});
-        _pendingOrchBySession.delete(chatSessionId);
-        _effectiveInputAwaitingNewTurn = false;
+        clearPersistencePendingContext();
+        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderUserInputMissing");
@@ -35951,8 +36272,8 @@
             pushTurnHistory(lastTurnTrace);
             syncRuntimeStateFromTurnTrace(lastTurnTrace);
           }
-          _pendingOrchBySession.delete(chatSessionId);
-          _effectiveInputAwaitingNewTurn = false;
+          clearPersistencePendingContext();
+          clearEffectiveInputAwaitingForRequest();
           lastOrchResult = null;
           if (panelOpen) {
             await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderStaleAssistantReplay");
@@ -35982,16 +36303,15 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        _effectiveInputAwaitingNewTurn = false;
+        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
-        recordStep23CaptureVerification(chatSessionId, turnIdx, syntheticAfterRequest ? "recovery" : "afterRequest", "degraded", {
+        recordStep23CaptureVerification(chatSessionId, turnIdx, "afterRequest", "degraded", {
           degradedReason: "assistant_content_missing",
           userInput: safeSavedUserInput,
           assistantContent: displayContent || "",
           metadata: {
             request_type: String(type || "model"),
             source: "afterRequest_assistant_missing",
-            synthetic_after_request: !!syntheticAfterRequest,
           },
           evidence: { capture: "assistant_content_missing" },
         }).catch(function() {});
@@ -36031,8 +36351,8 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        _pendingOrchBySession.delete(chatSessionId);
-        _effectiveInputAwaitingNewTurn = false;
+        clearPersistencePendingContext();
+        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderDuplicatePairReplay");
@@ -36065,8 +36385,8 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        _pendingOrchBySession.delete(chatSessionId);
-        _effectiveInputAwaitingNewTurn = false;
+        clearPersistencePendingContext();
+        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
           await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderPersistenceGate");
@@ -36126,16 +36446,18 @@
       const _ctBody = turnOocGuardApplied
         ? null
         : await safeCall(
-            () => buildCompleteTurnRequestBody(turnIdx, safeSavedUserInput, persistedAssistantContent, criticCtx, chatSessionId, _improvementTrace),
+            () => buildCompleteTurnRequestBody(
+              turnIdx,
+              safeSavedUserInput,
+              persistedAssistantContent,
+              criticCtx,
+              chatSessionId,
+              _improvementTrace,
+              { orchestrationResult: lastOrchResult }
+            ),
             null, "buildCompleteTurnRequestBody"
           );
       const _ctQueuedPayload = _ctBody ? buildCompleteTurnQueuePayload(_ctBody) : null;
-      if (_ctQueuedPayload) {
-        // complete_turn_write_ahead_recovery_v1: persist raw turn text before
-        // the backend call so a closed/missing backend cannot lose the turn.
-        enqueue("complete_turn", _ctQueuedPayload);
-        flushQueueSave().catch(function() {});
-      }
       const _ctResult = turnOocGuardApplied || !_ctBody
         ? null
         : await safeCall(
@@ -36145,6 +36467,12 @@
       const _ctOk = !!(_ctResult && _ctResult.status !== "skeleton" && _ctResult.status !== "error" && _ctResult.status !== "processing" && _ctResult.status !== "rejected");
       const _ctSourceDiscarded = !!(_ctResult && _ctResult.status === "rejected" && _ctResult.queue_action === "discard");
       const _ctSourcePending = !!(_ctResult && _ctResult.status === "rejected" && _ctResult.queue_action === "retry_after_new_observation");
+      const _ctTerminalDiscarded = !!(
+        _ctResult
+        && _ctResult.save_ok !== true
+        && _ctResult.status !== "rejected"
+        && (_ctResult.queue_action === "discard" || _ctResult.retryable === false)
+      );
       const effectiveTurnOocGuardApplied = turnOocGuardApplied || isOocTurnGuardResult(_ctResult);
       const _ctSource = _ctOk ? "backend" : "local";
       if (_ctResult) {
@@ -36228,11 +36556,14 @@
       if (_ctOk && _ctResult.save_ok) {
         saveSucceeded = true;
         if (_ctResult.derived_retry_required === true) {
-          completeTurnRetryQueued = !!_ctQueuedPayload;
+          if (_ctQueuedPayload && removeQueuedItem("complete_turn", _ctQueuedPayload)) {
+            flushQueueSave().catch(function() {});
+          }
+          completeTurnRetryQueued = false;
           updateRuntimeState("lastCompleteTurnStatus", "warn", {
             turnIndex: persistedTurnIdx,
             source: _ctSource,
-            detail: "raw saved; derived retry queued",
+            detail: "raw saved; derived retry owned by backend",
             failReasons: Array.isArray(_ctResult.fail_reasons) ? _ctResult.fail_reasons : ["derived_retry_required"],
           });
         } else if (_ctQueuedPayload && removeQueuedItem("complete_turn", _ctQueuedPayload)) {
@@ -36252,8 +36583,9 @@
           const rawVerifyDetail = rawVerify && rawVerify.status && rawVerify.status !== "ok" && rawVerify.status !== "skipped"
             ? "saved (via complete-turn; raw " + rawVerify.status + ")"
             : "saved (via complete-turn)";
-          updateRuntimeState("lastSaveStatus", rawVerify && rawVerify.status === "queued" ? "warn" : "ok", { turnIndex: persistedTurnIdx, detail: rawVerifyDetail });
-          if (rawVerify && rawVerify.status && rawVerify.status !== "ok" && rawVerify.status !== "skipped") {
+          const rawVerifyMismatch = !!(rawVerify && (rawVerify.status === "queued" || rawVerify.status === "content_conflict"));
+          updateRuntimeState("lastSaveStatus", "ok", { turnIndex: persistedTurnIdx, detail: rawVerifyDetail });
+          if (rawVerifyMismatch) {
             const reason = "raw_chat_log_" + rawVerify.status;
             const currentFailReasons = (_ctResult && Array.isArray(_ctResult.fail_reasons)) ? _ctResult.fail_reasons.slice() : [];
             if (currentFailReasons.indexOf(reason) < 0) currentFailReasons.push(reason);
@@ -36285,14 +36617,30 @@
         }
       } else if (_ctSourcePending) {
         saveSucceeded = false;
-        completeTurnRetryQueued = !!_ctQueuedPayload;
-        flushQueueSave().catch(function() {});
-        updateRuntimeState("lastSaveStatus", "warn", { turnIndex: persistedTurnIdx, detail: "waiting for RisuAI active chat confirmation" });
-        updateRuntimeState("lastCompleteTurnStatus", "warn", {
+        completeTurnRetryQueued = false;
+        if (_ctQueuedPayload) {
+          const pendingPersisted = await queuePendingCompleteTurnPayload(
+            _ctQueuedPayload,
+            String(_ctResult.code || "pending_confirmation"),
+            acceptedFinalObservation && acceptedFinalObservation.observationKey
+          );
+          if (pendingPersisted) {
+            if (removeQueuedItem("complete_turn", _ctQueuedPayload)) await flushQueueSave();
+          } else {
+            enqueue("complete_turn", _ctQueuedPayload);
+            await flushQueueSave();
+            completeTurnRetryQueued = true;
+          }
+        }
+        updateRuntimeState("lastSaveStatus", completeTurnRetryQueued ? "fail" : "idle", {
+          turnIndex: persistedTurnIdx,
+          detail: completeTurnRetryQueued ? "pending confirmation persistence failed; transport queue retained" : "pending RisuAI final confirmation",
+        });
+        updateRuntimeState("lastCompleteTurnStatus", completeTurnRetryQueued ? "fail" : "idle", {
           turnIndex: persistedTurnIdx,
           source: "backend",
-          detail: String(_ctResult.code || "source_acceptance_waiting_active_chat"),
-          failReasons: Array.isArray(_ctResult.fail_reasons) ? _ctResult.fail_reasons : ["source_acceptance_waiting_active_chat"],
+          detail: completeTurnRetryQueued ? "pending_confirmation_persistence_failed" : String(_ctResult.code || "pending_confirmation"),
+          failReasons: completeTurnRetryQueued ? ["pending_confirmation_persistence_failed"] : [],
         });
       } else if (_ctSourceDiscarded) {
         saveSucceeded = true;
@@ -36306,12 +36654,30 @@
           detail: String(_ctResult.code || "source_acceptance_rejected"),
           failReasons: Array.isArray(_ctResult.fail_reasons) ? _ctResult.fail_reasons : ["source_acceptance_rejected"],
         });
+      } else if (_ctTerminalDiscarded) {
+        saveSucceeded = false;
+        if (_ctQueuedPayload && removeQueuedItem("complete_turn", _ctQueuedPayload)) {
+          flushQueueSave().catch(function() {});
+        }
+        updateRuntimeState("lastSaveStatus", "fail", {
+          turnIndex: persistedTurnIdx,
+          detail: String(_ctResult.code || "terminal_complete_turn_failure"),
+        });
+        updateRuntimeState("lastCompleteTurnStatus", "fail", {
+          turnIndex: persistedTurnIdx,
+          source: "backend",
+          detail: String(_ctResult.code || "terminal_complete_turn_failure"),
+          failReasons: Array.isArray(_ctResult.fail_reasons)
+            ? _ctResult.fail_reasons
+            : [String(_ctResult.code || "terminal_complete_turn_failure")],
+        });
       } else if (effectiveTurnOocGuardApplied) {
         saveSucceeded = true;
         updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: persistedTurnIdx, detail: "skipped (ooc turn guard)" });
       } else {
         saveSucceeded = false;
         if (_ctQueuedPayload) {
+          enqueue("complete_turn", _ctQueuedPayload);
           flushQueueSave().catch(function() {});
           completeTurnRetryQueued = true;
           updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: `complete-turn failed → queued (${_failedQueue.length})` });
@@ -36334,7 +36700,10 @@
         if (payloadRewrittenForCapture) {
           captureReason = "legacy_payload_rewrite_observed";
         } else if (_ctOk && _ctResult && _ctResult.save_ok) {
-          if (rawVerifyStatus && ["ok", "skipped", "repaired"].indexOf(rawVerifyStatus) < 0) {
+          if (rawVerifyStatus === "verify_unavailable") {
+            captureState = "accepted-final";
+            captureReason = "verification_unavailable";
+          } else if (rawVerifyStatus && ["ok", "skipped", "repaired"].indexOf(rawVerifyStatus) < 0) {
             captureReason = "raw_chat_log_" + rawVerifyStatus;
           } else {
             captureState = "verified-final";
@@ -36346,7 +36715,7 @@
         } else {
           captureReason = "complete_turn_failed";
         }
-        recordStep23CaptureVerification(chatSessionId, persistedTurnIdx, syntheticAfterRequest ? "recovery" : "afterRequest", captureState, {
+        recordStep23CaptureVerification(chatSessionId, persistedTurnIdx, "afterRequest", captureState, {
           degradedReason: captureReason,
           userInput: safeSavedUserInput,
           assistantContent: persistedAssistantContent,
@@ -36354,7 +36723,6 @@
           metadata: {
             request_type: String(type || "model"),
             source: "complete_turn_afterRequest",
-            synthetic_after_request: !!syntheticAfterRequest,
             complete_turn_status: _ctResult && _ctResult.status || "not_called",
             save_ok: !!(_ctOk && _ctResult && _ctResult.save_ok),
             save_succeeded: !!saveSucceeded,
@@ -36392,6 +36760,12 @@
       } else if (_ctSourceDiscarded) {
         completeResult = _ctResult;
         updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: persistedTurnIdx, detail: "inactive RisuAI source rejected" });
+      } else if (_ctTerminalDiscarded) {
+        completeResult = _ctResult;
+        updateRuntimeState("lastCompleteStatus", "fail", {
+          turnIndex: persistedTurnIdx,
+          detail: String(_ctResult.code || "terminal complete-turn failure"),
+        });
       } else if (effectiveTurnOocGuardApplied) {
         completeResult = { status: "accepted", skipped: true, skip_reason: "ooc_turn_guard" };
         updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: persistedTurnIdx, detail: "skipped (ooc turn guard)" });
@@ -36427,10 +36801,10 @@
           triggered: false,
           range: null,
           result: null,
-          reason: "source_acceptance_waiting_active_chat",
+          reason: "pending_confirmation",
         };
         updateRuntimeState("lastEpisodeGeneration", "skipped", {
-          detail: "waiting for RisuAI active chat confirmation",
+          detail: "pending RisuAI final confirmation",
           range: null,
         });
       } else if (_ctSourceDiscarded) {
@@ -36443,6 +36817,18 @@
         };
         updateRuntimeState("lastEpisodeGeneration", "skipped", {
           detail: "inactive RisuAI source rejected",
+          range: null,
+        });
+      } else if (_ctTerminalDiscarded) {
+        episodeInfo = {
+          checked: false,
+          triggered: false,
+          range: null,
+          result: null,
+          reason: String(_ctResult.code || "terminal_complete_turn_failure"),
+        };
+        updateRuntimeState("lastEpisodeGeneration", "skipped", {
+          detail: String(_ctResult.code || "terminal complete-turn failure"),
           range: null,
         });
       } else if (effectiveTurnOocGuardApplied) {
@@ -36581,6 +36967,7 @@
         await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRender");
       }
       return responseReturnContent;
+      }
     } catch (err) {
       _effectiveInputAwaitingNewTurn = false;
       warnLog("onAfterRequest error:", err.message);
@@ -50035,6 +50422,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <label>${t('settings.label.failedQueueMaxAgeDays')}</label>
           <input type="number" id="mo-failedQueueMaxAgeDays" value="${s.failedQueueMaxAgeDays}" min="1" max="30" step="1">
         </div>
+        <div class="mo-row">
+          <label>${t('settings.label.failedQueueMaxAttempts')}</label>
+          <input type="number" id="mo-failedQueueMaxAttempts" value="${s.failedQueueMaxAttempts}" min="1" max="11" step="1">
+        </div>
       </div>
     </details>
 
@@ -51032,6 +51423,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             maxInputContextChars: $("mo-maxInputContextChars").value,
             failedQueueMaxSize: $("mo-failedQueueMaxSize").value,
             failedQueueMaxAgeDays: $("mo-failedQueueMaxAgeDays").value,
+            failedQueueMaxAttempts: $("mo-failedQueueMaxAttempts").value,
             narrativeGuideStrength: $("mo-narrativeGuideStrength").value,
             narrativeSupportMaxChars: $("mo-narrativeSupportMaxChars").value,
             // J-3a: Plugin Main Apply Mode
@@ -51520,6 +51912,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             console.log(LOG_PREFIX, "addRisuReplacer beforeRequest OK");
             await R.addRisuReplacer("afterRequest", onAfterRequest);
             console.log(LOG_PREFIX, "addRisuReplacer afterRequest OK");
+            await registerFinalConfirmationObserver();
           }
         } catch (regErr) {
           warnLog("addRisuReplacer failed:", regErr.message);
@@ -51557,6 +51950,17 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         }
       } catch (err) {
         warnLog("Failed queue restore failed (non-fatal):", err.message);
+      }
+      try {
+        const restoredPendingFinals = await loadPendingFinalConfirmationRecoveryFromStorage();
+        if (restoredPendingFinals > 0) {
+          console.log(LOG_PREFIX, `Pending final confirmations restored: ${restoredPendingFinals} items`);
+          drainPendingFinalConfirmations("plugin_reload_recovery").catch(function(err) {
+            debugLog("[final-confirmation] reload recovery wake failed:", err && err.message);
+          });
+        }
+      } catch (err) {
+        warnLog("Pending final confirmation restore failed (non-fatal):", err && err.message);
       }
 
       try {

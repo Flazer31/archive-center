@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
 
 func TestCompleteTurnRequestLedgerSharesCompletedResponse(t *testing.T) {
@@ -32,6 +35,25 @@ func TestCompleteTurnRequestLedgerSharesCompletedResponse(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnRequestLedgerBoundsUnfinishedOwners(t *testing.T) {
+	ledger := newCompleteTurnRequestLedger()
+	now := time.Now().UTC()
+	for index := 0; index < completeTurnRequestMax; index++ {
+		entry, owner, conflict := ledger.beginWithFingerprint(
+			fmt.Sprintf("pending-%d", index),
+			fmt.Sprintf("fingerprint-%d", index),
+			now,
+		)
+		if entry == nil || !owner || conflict {
+			t.Fatalf("entry %d was not admitted", index)
+		}
+	}
+	entry, owner, conflict := ledger.beginWithFingerprint("over-capacity", "fingerprint", now)
+	if entry != nil || owner || conflict {
+		t.Fatalf("over-capacity request was admitted: entry=%v owner=%v conflict=%v", entry, owner, conflict)
+	}
+}
+
 func TestCompleteTurnIdempotentExecutionRunsWriterOnce(t *testing.T) {
 	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
 	started := make(chan struct{})
@@ -48,7 +70,7 @@ func TestCompleteTurnIdempotentExecutionRunsWriterOnce(t *testing.T) {
 	first := httptest.NewRecorder()
 	firstDone := make(chan struct{})
 	go func() {
-		server.executeCompleteTurnIdempotent(context.Background(), first, "same-key", run)
+		server.executeCompleteTurnIdempotent(context.Background(), first, "same-key", "same-fingerprint", run)
 		close(firstDone)
 	}()
 	<-started
@@ -56,7 +78,7 @@ func TestCompleteTurnIdempotentExecutionRunsWriterOnce(t *testing.T) {
 	second := httptest.NewRecorder()
 	secondDone := make(chan struct{})
 	go func() {
-		server.executeCompleteTurnIdempotent(context.Background(), second, "same-key", run)
+		server.executeCompleteTurnIdempotent(context.Background(), second, "same-key", "same-fingerprint", run)
 		close(secondDone)
 	}()
 	close(release)
@@ -68,6 +90,92 @@ func TestCompleteTurnIdempotentExecutionRunsWriterOnce(t *testing.T) {
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("duplicate response mismatch: first=%q second=%q", first.Body.String(), second.Body.String())
+	}
+}
+
+func TestCompleteTurnCancelledOwnerIsUnknownUntilOwnerResolves(t *testing.T) {
+	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.executeCompleteTurnIdempotent(ctx, httptest.NewRecorder(), "cancel-key", "fingerprint", func(w http.ResponseWriter) {
+			close(started)
+			<-release
+			writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "save_ok": true, "raw_committed": true})
+		})
+	}()
+	<-started
+	cancel()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, response, found := server.CompleteTurns.status("cancel-key", time.Now().UTC())
+		if found && status == "completed" {
+			if got := string(response.body); !strings.Contains(got, `"commit_state":"unknown"`) {
+				t.Fatalf("cancelled owner did not publish unknown outcome: %s", got)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancelled owner did not leave processing state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	close(release)
+	<-done
+	status, response, found := server.CompleteTurns.status("cancel-key", time.Now().UTC())
+	if !found || status != "completed" || !strings.Contains(string(response.body), `"save_ok":true`) {
+		t.Fatalf("resolved owner did not replace provisional outcome: found=%v status=%q body=%s", found, status, response.body)
+	}
+}
+
+func TestCompleteTurnIdempotentExecutionRejectsFingerprintConflict(t *testing.T) {
+	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
+	var calls atomic.Int32
+	run := func(w http.ResponseWriter) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "save_ok": true})
+	}
+
+	server.executeCompleteTurnIdempotent(
+		context.Background(), httptest.NewRecorder(), "same-key", "fingerprint-a", run,
+	)
+	conflict := httptest.NewRecorder()
+	server.executeCompleteTurnIdempotent(
+		context.Background(), conflict, "same-key", "fingerprint-b", run,
+	)
+
+	if calls.Load() != 1 {
+		t.Fatalf("writer calls=%d, want 1 after fingerprint conflict", calls.Load())
+	}
+	for _, want := range []string{`"code":"idempotency_key_conflict"`, `"retryable":false`, `"queue_action":"discard"`} {
+		if !strings.Contains(conflict.Body.String(), want) {
+			t.Fatalf("conflict response missing %s: %s", want, conflict.Body.String())
+		}
+	}
+}
+
+func TestCompleteTurnRequestFingerprintCoversDerivedProcessingInputs(t *testing.T) {
+	user, assistant, requestType := "user", "assistant", "model"
+	improvement := map[string]any{"verdict": "keep"}
+	base := dto.M4CompleteTurnRequest{
+		ChatSessionID:    "session-1",
+		TurnIndex:        3,
+		UserInput:        &user,
+		AssistantContent: &assistant,
+		RequestType:      &requestType,
+		ContextMessages:  []map[string]any{{"role": "user", "content": "context-a"}},
+		ImprovementTrace: &improvement,
+		ClientMeta:       map[string]any{"idempotency_key": "same-key", "source_acceptance_required": true},
+	}
+	changed := base
+	changed.ContextMessages = []map[string]any{{"role": "user", "content": "context-b"}}
+	if completeTurnRequestFingerprint(base) == completeTurnRequestFingerprint(changed) {
+		t.Fatal("semantic payload change did not change complete-turn fingerprint")
 	}
 }
 
@@ -90,15 +198,57 @@ func TestCompleteTurnFailedSaveAllowsLaterRetry(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "save_ok": saveOK})
 	}
 
-	server.executeCompleteTurnIdempotent(context.Background(), httptest.NewRecorder(), "retry-save-key", run)
+	server.executeCompleteTurnIdempotent(context.Background(), httptest.NewRecorder(), "retry-save-key", "same-fingerprint", run)
 	second := httptest.NewRecorder()
-	server.executeCompleteTurnIdempotent(context.Background(), second, "retry-save-key", run)
+	server.executeCompleteTurnIdempotent(context.Background(), second, "retry-save-key", "same-fingerprint", run)
 
 	if calls.Load() != 2 {
 		t.Fatalf("writer calls=%d, want 2 after save_ok=false", calls.Load())
 	}
 	if !strings.Contains(second.Body.String(), `"save_ok":true`) {
 		t.Fatalf("retry response did not report successful save: %s", second.Body.String())
+	}
+}
+
+func TestCompleteTurnUnknownCommitOutcomeStaysTerminalInLedger(t *testing.T) {
+	ledger := newCompleteTurnRequestLedger()
+	entry, owner := ledger.begin("unknown-commit-key", time.Now().UTC())
+	if !owner || entry == nil {
+		t.Fatal("first request did not acquire key")
+	}
+	ledger.finish("unknown-commit-key", completeTurnRecordedResponse{
+		status: http.StatusOK,
+		body: []byte(`{"status":"error","code":"logical_turn_commit_outcome_unknown",` +
+			`"save_ok":false,"raw_committed":false,"commit_state":"unknown",` +
+			`"reconciliation_required":true,"retryable":false,"queue_action":"discard"}`),
+	})
+	duplicate, duplicateOwner := ledger.begin("unknown-commit-key", time.Now().UTC())
+	if duplicateOwner || duplicate != entry {
+		t.Fatal("unknown commit outcome must not allow raw replacement replay")
+	}
+	status, _, found := ledger.status("unknown-commit-key", time.Now().UTC())
+	if !found || status != "completed" {
+		t.Fatalf("unknown commit outcome was not retained: found=%v status=%q", found, status)
+	}
+	status, _, found = ledger.status("unknown-commit-key", time.Now().UTC().Add(completeTurnRequestTTL+time.Second))
+	if !found || status != "completed" {
+		t.Fatalf("unknown commit outcome expired into a replayable key: found=%v status=%q", found, status)
+	}
+}
+
+func TestCompleteTurnTerminalFailedSaveStaysInLedger(t *testing.T) {
+	ledger := newCompleteTurnRequestLedger()
+	entry, owner := ledger.begin("terminal-save-key", time.Now().UTC())
+	if !owner || entry == nil {
+		t.Fatal("first request did not acquire key")
+	}
+	ledger.finish("terminal-save-key", completeTurnRecordedResponse{
+		status: http.StatusOK,
+		body:   []byte(`{"status":"error","save_ok":false,"retryable":false,"queue_action":"discard"}`),
+	})
+	duplicate, duplicateOwner := ledger.begin("terminal-save-key", time.Now().UTC())
+	if duplicateOwner || duplicate != entry {
+		t.Fatal("terminal failed save must return the recorded response without re-running")
 	}
 }
 
@@ -109,7 +259,7 @@ func TestCompleteTurnSemanticSuccessChecksSaveOK(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnDerivedRetryRequirementAllowsLaterRetry(t *testing.T) {
+func TestCompleteTurnDerivedRetryRequirementKeepsRawSaveCompletion(t *testing.T) {
 	ledger := newCompleteTurnRequestLedger()
 	if _, owner := ledger.begin("retry-derived-key", time.Now().UTC()); !owner {
 		t.Fatal("first request did not acquire key")
@@ -118,8 +268,8 @@ func TestCompleteTurnDerivedRetryRequirementAllowsLaterRetry(t *testing.T) {
 		status: http.StatusOK,
 		body:   []byte(`{"status":"ok","save_ok":true,"derived_retry_required":true}`),
 	})
-	if _, owner := ledger.begin("retry-derived-key", time.Now().UTC()); !owner {
-		t.Fatal("derived-retry request key must be available for retry")
+	if _, owner := ledger.begin("retry-derived-key", time.Now().UTC()); owner {
+		t.Fatal("raw-saved request must remain completed while derived retry is handled separately")
 	}
 }
 
@@ -150,5 +300,67 @@ func TestCompleteTurnRequestStatusDistinguishesFailedCompletion(t *testing.T) {
 	}
 	if got := rec.Body.String(); got == "" || !strings.Contains(got, `"success":false`) {
 		t.Fatalf("status endpoint did not report failed completion: %s", got)
+	}
+}
+
+func TestCompleteTurnRequestStatusSeparatesRawSaveFromDerivedRetry(t *testing.T) {
+	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
+	if _, owner := server.CompleteTurns.begin("derived-key", time.Now().UTC()); !owner {
+		t.Fatal("failed to acquire test key")
+	}
+	server.CompleteTurns.finish("derived-key", completeTurnRecordedResponse{
+		status: http.StatusOK,
+		body:   []byte(`{"status":"ok","save_ok":true,"derived_retry_required":true}`),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/complete-turn/request-status?idempotency_key=derived-key", nil)
+	rec := httptest.NewRecorder()
+	server.handleCompleteTurnRequestStatus(rec, req)
+	got := rec.Body.String()
+	for _, want := range []string{`"success":true`, `"raw_saved":true`, `"save_ok":true`, `"derived_retry_required":true`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status endpoint missing %s: %s", want, got)
+		}
+	}
+}
+
+func TestCompleteTurnRequestStatusPreservesReconciliationTruth(t *testing.T) {
+	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
+	if _, owner := server.CompleteTurns.begin("reconcile-key", time.Now().UTC()); !owner {
+		t.Fatal("failed to acquire test key")
+	}
+	server.CompleteTurns.finish("reconcile-key", completeTurnRecordedResponse{
+		status: http.StatusOK,
+		body: []byte(`{"status":"partial","code":"logical_turn_reference_cleanup_failed","save_ok":true,` +
+			`"raw_committed":true,"commit_state":"committed","reconciliation_required":true,"queue_action":"discard"}`),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/complete-turn/request-status?idempotency_key=reconcile-key", nil)
+	rec := httptest.NewRecorder()
+	server.handleCompleteTurnRequestStatus(rec, req)
+	got := rec.Body.String()
+	for _, want := range []string{
+		`"raw_saved":true`,
+		`"raw_committed":true`,
+		`"commit_state":"committed"`,
+		`"reconciliation_required":true`,
+		`"result_status":"partial"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status endpoint missing %s: %s", want, got)
+		}
+	}
+}
+
+func TestCompleteTurnRejectedRawSavedIsNotSemanticSuccess(t *testing.T) {
+	response := completeTurnRecordedResponse{
+		status: http.StatusOK,
+		body:   []byte(`{"status":"rejected","save_ok":true,"queue_action":"discard"}`),
+	}
+	if completeTurnRecordedResponseSuccessful(response) {
+		t.Fatal("rejected response must not be reported as semantic success")
+	}
+	if completeTurnRecordedResponseHasFailedSave(response) {
+		t.Fatal("save_ok=true must preserve raw-save truth even when semantic result is rejected")
 	}
 }

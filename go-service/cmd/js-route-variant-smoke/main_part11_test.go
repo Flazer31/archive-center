@@ -1918,39 +1918,194 @@ function debugLog() {}
 	}
 }
 
-func TestLateNativeAfterRequestRearmsExpiredActiveChatWatcher(t *testing.T) {
+func TestRisuHostSignalDrainsAcceptedFinalExactlyOnce(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
 		nodePath, err = exec.LookPath("node")
 		if err != nil {
-			t.Skip("node is required for streaming watcher fixture")
+			t.Skip("node is required for accepted-final signal fixture")
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSFunction(t, src, "markNativeAfterRequestObserved")
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "drainPendingFinalConfirmations")
 	script := functionBody + `
-const _streamingAfterRequestWatchers = new Map();
-let armCalls = 0;
-function armStreamingAfterRequestWatch(sessionId, type, requestId) {
-  armCalls++;
-  if (requestId !== "late_native_after_request") throw new Error("unexpected rearm reason");
-  _streamingAfterRequestWatchers.set(sessionId, {nativeAfterRequestObserved:false,nativeAfterRequestObservedAt:0,type});
+const pending = {
+  sessionId:"session-1",
+  requestType:"model",
+  inFlight:false,
+  resumeCalls:0,
+  async resume(observation) {
+    if (!observation || observation.assistantContent !== "accepted final") {
+      throw new Error("unconfirmed assistant content reached persistence continuation");
+    }
+    this.resumeCalls++;
+  },
+};
+const _pendingFinalConfirmations = new Map([["session-1", pending]]);
+let _pendingFinalConfirmationDrainInFlight = false;
+let _pendingFinalConfirmationDrainRequested = false;
+let confirmationStates = 0;
+async function observePendingFinalConfirmation(item) {
+  if (item !== pending) throw new Error("unexpected pending item");
+  return {confirmed:true,assistantContent:"accepted final"};
 }
-function updateRuntimeState() {}
-markNativeAfterRequestObserved("session-1", "model");
-const watcher = _streamingAfterRequestWatchers.get("session-1");
-if (armCalls !== 1 || !watcher || watcher.nativeAfterRequestObserved !== true || watcher.nativeAfterRequestObservedAt <= 0) {
-  throw new Error("late native afterRequest did not rearm active chat confirmation");
+function updateRuntimeState(name, status) {
+  if (name === "lastStreamingAfterRequest" && status === "ok") confirmationStates++;
 }
-markNativeAfterRequestObserved("session-1", "model");
-if (armCalls !== 1) throw new Error("live watcher was unnecessarily rearmed");
+function warnLog() {}
+(async function() {
+  await Promise.all([
+    drainPendingFinalConfirmations("native_afterRequest"),
+    drainPendingFinalConfirmations("host_dom_mutation"),
+  ]);
+  await drainPendingFinalConfirmations("duplicate_signal");
+  if (pending.resumeCalls !== 1 || confirmationStates !== 1 || _pendingFinalConfirmations.size !== 0) {
+    throw new Error("accepted final must drain exactly once: resume=" + pending.resumeCalls + " states=" + confirmationStates);
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("late native afterRequest watcher fixture failed: %v\n%s", err, out)
+		t.Fatalf("accepted-final signal fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRisuHostFinalConfirmationRequiresExactAppendOrReplacementSlot(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for exact host-final fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "observePendingFinalConfirmation")
+	script := functionBody + `
+let activeChat = null;
+const R = {
+  async getCurrentCharacterIndex() { return 7; },
+  async getCurrentChatIndex() { return 3; },
+  async getChatFromIndex() { return activeChat; },
+};
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function isSameAssistantComparableText(a, b) { return a === b; }
+function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || ""); }
+function debugLog() {}
+
+(async function() {
+  const appendContext = {
+    state:"candidate_observed", characterIndex:7, chatIndex:3, hostChatId:"chat-a",
+    expectedMessageCount:3, expectedAssistantIndex:2, replacementMode:"append_assistant_tail",
+  };
+  activeChat = {id:"chat-a",isStreaming:false,message:[
+    {role:"char",data:"prior"},
+    {role:"user",data:"question"},
+    {role:"char",data:"append final",generationInfo:{generationId:"g-append"}},
+  ]};
+  const append = await observePendingFinalConfirmation({
+    requestContext:appendContext,candidateContent:"append final",
+  });
+  if (!append.confirmed || append.messageIndex !== 2 || append.requestContext !== appendContext) {
+    throw new Error("exact append slot was not confirmed");
+  }
+
+  activeChat.message.push({role:"user",data:"later turn"});
+  const laterTail = await observePendingFinalConfirmation({
+    requestContext:appendContext,candidateContent:"append final",
+  });
+  if (laterTail.confirmed || laterTail.reason !== "assistant_tail_not_committed") {
+    throw new Error("later tail incorrectly satisfied prior request");
+  }
+
+  const replaceContext = {
+    state:"candidate_observed", characterIndex:7, chatIndex:3, hostChatId:"chat-a",
+    expectedMessageCount:2, expectedAssistantIndex:1, replacementMode:"replace_assistant_tail",
+    baselineAssistantContent:"old final",baselineGenerationId:"g-old",
+  };
+  activeChat = {id:"chat-a",isStreaming:false,message:[
+    {role:"user",data:"question"},
+    {role:"char",data:"rerolled final",generationInfo:{generationId:"g-new"}},
+  ]};
+  const reroll = await observePendingFinalConfirmation({
+    requestContext:replaceContext,candidateContent:"rerolled final",
+  });
+  if (!reroll.confirmed || reroll.messageIndex !== 1) {
+    throw new Error("same-length reroll replacement was not confirmed");
+  }
+
+  activeChat.message[1] = {role:"char",data:"old final",generationInfo:{generationId:"g-old"}};
+  const unchanged = await observePendingFinalConfirmation({
+    requestContext:replaceContext,candidateContent:"old final",
+  });
+  if (unchanged.confirmed || unchanged.reason !== "replacement_generation_unobserved") {
+    throw new Error("unchanged replacement was accepted without new generation proof");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("exact host-final fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRisuHostFinalConfirmationRechecksIdentityAndDoesNotLoseWake(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for final-confirmation race fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "drainPendingFinalConfirmations")
+	script := functionBody + `
+const oldContext = {state:"candidate_observed"};
+const newContext = {state:"candidate_observed"};
+const oldPending = {
+  kind:"host_candidate",sessionId:"session-1",requestType:"model",requestContext:oldContext,inFlight:false,
+  resumeCalls:0,async resume(){ this.resumeCalls++; },
+};
+const newPending = {
+  kind:"host_candidate",sessionId:"session-1",requestType:"model",requestContext:newContext,inFlight:false,
+  resumeCalls:0,async resume(){ this.resumeCalls++; },
+};
+const _pendingFinalConfirmations = new Map([["host|request-1", oldPending]]);
+let _pendingFinalConfirmationDrainInFlight = false;
+let _pendingFinalConfirmationDrainRequested = false;
+let releaseOld;
+const oldObservation = new Promise(resolve => { releaseOld = resolve; });
+async function observePendingFinalConfirmation(item) {
+  if (item === oldPending) return await oldObservation;
+  return {confirmed:true,assistantContent:"new",requestContext:newContext,observationKey:"new-key"};
+}
+function updateRuntimeState() {}
+function warnLog() {}
+
+(async function() {
+  const firstDrain = drainPendingFinalConfirmations("native_afterRequest");
+  await Promise.resolve();
+  _pendingFinalConfirmations.set("host|request-1", newPending);
+  const overlappingWake = drainPendingFinalConfirmations("host_dom_mutation");
+  releaseOld({confirmed:true,assistantContent:"old",requestContext:oldContext,observationKey:"old-key"});
+  await firstDrain;
+  await overlappingWake;
+  if (oldPending.resumeCalls !== 0 || newPending.resumeCalls !== 1 || _pendingFinalConfirmations.size !== 0) {
+    throw new Error("identity recheck/lost-wake fence failed: old=" + oldPending.resumeCalls + " new=" + newPending.resumeCalls);
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("final-confirmation race fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -2102,6 +2257,215 @@ if (saved.client_meta.critic || JSON.stringify(saved).includes("secret") || JSON
 	}
 }
 
+func TestPendingFinalConfirmationPersistsSeparatelyAndRestores(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending-final recovery fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "buildCompleteTurnQueuePayload"),
+		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey"),
+		extractArchiveCenterJSFunction(t, src, "serializePendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "savePendingFinalConfirmationRecoveryToStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "persistPendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSFunction(t, src, "removeFailedCompleteTurnByIdempotencyKey"),
+		extractArchiveCenterJSAsyncFunction(t, src, "loadPendingFinalConfirmationRecoveryFromStorage"),
+	}, "\n")
+	script := functions + `
+const PENDING_FINAL_CONFIRMATION_STORAGE_KEY="pending-final";
+const _pendingFinalConfirmationRecoveryEntries=new Map();
+const _failedQueue=[];
+const settings={failedQueueMaxSize:50};
+let stored="";
+let flushed=0;
+let queued=null;
+function normalizeLanguageContextTrace(value) { return value; }
+async function persistentSet(key,value) {
+  if (key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+  stored=value;
+}
+async function persistentGet(key) {
+  if (key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+  return stored;
+}
+async function flushQueueSave() { flushed++; }
+async function queuePendingCompleteTurnPayload(payload,reason,required,options) {
+  queued={payload,reason,required,options};
+  return true;
+}
+function warnLog() {}
+(async function() {
+  const payload={chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:"assistant",context_messages:[],
+    client_meta:{idempotency_key:"key-4",source_acceptance_required:true,
+      source_acceptance_observation:{host_chat_id:"chat-1",message_index:3,active_message_count:4},
+      critic:{api_key:"critic-secret"},embedding:{api_key:"embedding-secret"}}};
+  if(!await persistPendingFinalConfirmationRecovery(payload,"retry_after_new_observation","obs-old","")) {
+    throw new Error("pending final was not persisted");
+  }
+  if(!stored || stored.includes("critic-secret") || stored.includes("embedding-secret")) {
+    throw new Error("pending final storage leaked live credentials");
+  }
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  _failedQueue.push({type:"complete_turn",payload:{chat_session_id:"session-1",turn_index:4,
+    client_meta:{idempotency_key:"key-4"}}});
+  const restored=await loadPendingFinalConfirmationRecoveryFromStorage();
+  if(restored!==1 || !queued || queued.required!=="obs-old" || queued.options.persist!==false) {
+    throw new Error("pending final recovery was not reconstructed");
+  }
+  if(_failedQueue.length!==0 || flushed!==1) {
+    throw new Error("failed-queue duplicate was not atomically transferred on reload");
+  }
+  if(queued.payload.client_meta.critic || queued.payload.client_meta.embedding) {
+    throw new Error("recovered pending payload unexpectedly contains credentials");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending-final recovery fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestPendingCompleteTurnRequiresChangedHostObservation(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := extractArchiveCenterJSFunction(t, src, "completeTurnPayloadObservationKey") +
+		extractArchiveCenterJSAsyncFunction(t, src, "observePendingCompleteTurnFinalObservation")
+	script := functions + `
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || ""); }
+async function refreshQueuedCompleteTurnSourceObservation() { return true; }
+(async function() {
+  const payload={chat_session_id:"session-1",assistant_content:"same final",client_meta:{source_acceptance_observation:{
+    host_chat_id_state:"observed",host_chat_id:"chat-1",chat_streaming_state:"not_streaming",
+    message_role:"char",message_disabled_state:"not_disabled",position_observation:"current_active_chat_tail",
+    active_message_count:2,message_index:1,generation_id:"g-1",
+    observed_content_hash:"raw-hash",persistence_content_hash:"persist-hash"
+  }}};
+  const sameKey=completeTurnPayloadObservationKey(payload);
+  const pending={payload,requestContext:null,requiredObservationChangeFrom:sameKey};
+  const same=await observePendingCompleteTurnFinalObservation(pending);
+  if(same.confirmed || same.reason!=="new_host_observation_required") {
+    throw new Error("same host observation was reused");
+  }
+  payload.client_meta.source_acceptance_observation.generation_id="g-2";
+  const changed=await observePendingCompleteTurnFinalObservation(pending);
+  if(!changed.confirmed || changed.observationKey===sameKey) {
+    throw new Error("changed host generation was not accepted");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending observation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFailedQueuePersistenceFailureKeepsPendingFinalSource(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for queue persistence fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		"const failedQueuePersisted = await flushQueueSave()",
+		"transport queue persistence failed; pending final retained",
+		"queuePendingFinalConfirmation(pending)",
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("pending source retention marker missing %q", marker)
+		}
+	}
+	functions := extractArchiveCenterJSAsyncFunction(t, src, "saveFailedQueueToStorage") +
+		extractArchiveCenterJSAsyncFunction(t, src, "flushQueueSave")
+	script := functions + `
+const FAILED_QUEUE_STORAGE_KEY="failed";
+const _failedQueue=[{type:"complete_turn"}];
+const runtimeState={queuePersistence:{}};
+let _queueSaveTimer=null;
+function serializeFailedQueue() { return "{\"v\":1}"; }
+async function persistentSet() { throw new Error("storage unavailable"); }
+function debugLog() {}
+function warnLog() {}
+(async function() {
+  const saved=await flushQueueSave();
+  if(saved!==false || runtimeState.queuePersistence.lastSave.status!=="error") {
+    throw new Error("failed queue persistence was reported as success");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("queue persistence fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestPersistentSetPropagatesDurableStorageFailure(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for persistent storage fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := extractArchiveCenterJSFunction(t, src, "normalizePersistentValue") +
+		extractArchiveCenterJSAsyncFunction(t, src, "persistentSet")
+	script := functions + `
+let pluginEnabled=true;
+let _storageOk=true;
+const _persistentKnownValues=new Map();
+const _persistentPendingWrites=new Map();
+const R={pluginStorage:{async setItem(){ throw new Error("plugin write failed"); }}};
+function safeStorageSet() {}
+function safeStorageGet() { return null; }
+function _hasPluginStorage() { return pluginEnabled; }
+function warnLog() {}
+(async function() {
+  let failed=false;
+  try { await persistentSet("key","value"); } catch(err) { failed=String(err.message).includes("plugin write failed"); }
+  if(!failed || _persistentKnownValues.has("key") || _persistentPendingWrites.has("key")) {
+    throw new Error("plugin storage failure was swallowed");
+  }
+  pluginEnabled=false;
+  _storageOk=false;
+  failed=false;
+  try { await persistentSet("memory-only","value"); } catch(err) { failed=String(err.message)==="persistent_storage_unavailable"; }
+  if(!failed) throw new Error("memory-only storage was reported as durable");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("persistent storage fixture failed: %v\n%s", err, out)
+	}
+}
+
 func TestOutputFidelity35BProductionJSLineageBoundaries(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -2238,8 +2602,10 @@ func TestRestoredCompleteTurnQueueRebuildsLiveConfigAndSourceObservation(t *test
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "refreshQueuedCompleteTurnSourceObservation")
-	script := functionBody + `
+	functions := extractArchiveCenterJSFunction(t, src, "buildCompleteTurnQueuePayload") +
+		extractArchiveCenterJSAsyncFunction(t, src, "refreshQueuedCompleteTurnSourceObservation")
+	script := functions + `
+function normalizeLanguageContextTrace(value) { return value; }
 async function findActiveChatCompletedTurnPairForContent(session, user, assistant) {
   return {observedPairOrdinal:3,userContent:user,assistantContent:assistant,pairCount:3};
 }
@@ -2251,17 +2617,18 @@ async function buildCompleteTurnRequestBody(turn, user, assistant, context, sess
     source_acceptance_required:true,
     source_acceptance_observation:{observed_content_hash:"hash-final",host_chat_id:"chat-1",generation_id:"generation-final",message_chat_id:"message-final",message_time_state:"observed",message_time_ms:300},
     critic:{api_key:"current-live-key"},
+    embedding:{api_key:"current-embedding-key"},
     idempotency_key:"rebuilt-key",
     request_id:"rebuilt-key"
   }};
 }
-function buildCompleteTurnQueuePayload(body) { return JSON.parse(JSON.stringify(body)); }
 function debugLog() {}
 (async function() {
   const restored = {chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],client_meta:{}};
   if (!await refreshQueuedCompleteTurnSourceObservation(restored)) throw new Error("restored queue was not refreshed");
   if (restored.client_meta.source_acceptance_required !== true || restored.client_meta.idempotency_key !== "rebuilt-key") throw new Error("source fence or request key was not rebuilt");
   if (!restored.client_meta.critic || restored.client_meta.critic.api_key !== "current-live-key") throw new Error("current live critic config was not restored in memory");
+  if (!restored.client_meta.embedding || restored.client_meta.embedding.api_key !== "current-embedding-key") throw new Error("current live embedding config was not restored in memory");
 
   const stale = {chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],client_meta:{source_acceptance_observation:{observed_content_hash:"old",host_chat_id:"chat-1",generation_id:"generation-old"}}};
   if (await refreshQueuedCompleteTurnSourceObservation(stale)) throw new Error("stale generation was refreshed as current");
@@ -2572,8 +2939,9 @@ const ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS = 2;
 let _rollbackTailReconcileInFlight = false;
 let _rollbackTailReconcileLastAt = 0;
 let _lastAutoRollbackSignature = null;
+const _pendingFinalConfirmations = new Map();
 let rollbackFrom = 0;
-function hasRecentPromotedAssistantSyncPending() { return false; }
+function hasPendingFinalConfirmationForSession() { return false; }
 function extractActiveChatMessageList(chat) { return chat.message; }
 function extractActiveChatComparableMessages(chat) { return chat.message; }
 function buildCompletedTurnPairsFromActiveChatMessages() { return []; }

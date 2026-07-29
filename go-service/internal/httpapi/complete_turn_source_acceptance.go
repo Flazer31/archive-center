@@ -201,7 +201,7 @@ func validateCompleteTurnSourceObservation(req dto.M4CompleteTurnRequest, observ
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_not_assistant_message", false, observation)
 	}
 	if observation.MessageDisabledState == "disabled" {
-		return rejectedCompleteTurnSourceAcceptance("source_acceptance_assistant_message_disabled", true, observation)
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_assistant_message_disabled", false, observation)
 	}
 	if observation.MessageDisabledState != "" && observation.MessageDisabledState != "unobserved" && observation.MessageDisabledState != "not_disabled" {
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_message_visibility_observation_invalid", false, observation)

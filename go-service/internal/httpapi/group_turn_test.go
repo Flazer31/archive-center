@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,14 @@ type turnRecordingStore struct {
 	deletedStorylineIDs     []int64
 	deletedWorldRuleIDs     []int64
 	logicalTurnReplacements []store.LogicalTurnReplacement
+}
+
+type auditFailingTurnStore struct {
+	*turnRecordingStore
+}
+
+func (f *auditFailingTurnStore) SaveAuditLog(context.Context, *store.AuditLog) error {
+	return errors.New("audit store unavailable")
 }
 
 func (f *turnRecordingStore) ReplaceLogicalTurn(ctx context.Context, replacement store.LogicalTurnReplacement) error {
@@ -769,6 +778,49 @@ func TestCompleteTurnDualShadowWritesAll(t *testing.T) {
 	wpPreview, _ := wp["content_preview"].(string)
 	if !strings.Contains(wpPreview, "user text") {
 		t.Errorf("writeback_plan.content_preview missing user input: %q", wpPreview)
+	}
+}
+
+func TestCompleteTurnRawSaveSurvivesDerivedAuditFailure(t *testing.T) {
+	base := &turnRecordingStore{}
+	fake := &auditFailingTurnStore{turnRecordingStore: base}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-derived-fail","turn_index":4,"user_input":"user text",` +
+		`"assistant_content":"assistant text","client_meta":{"idempotency_key":"derived-fail-key"}}`
+	for attempt := 0; attempt < 2; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d status=%d body=%s", attempt+1, rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("attempt %d decode: %v", attempt+1, err)
+		}
+		for field, want := range map[string]any{
+			"status":                  "partial",
+			"save_ok":                 true,
+			"raw_committed":           true,
+			"commit_state":            "committed",
+			"derived_retry_required":  true,
+			"reconciliation_required": true,
+			"queue_action":            "discard",
+		} {
+			if got := resp[field]; got != want {
+				t.Fatalf("attempt %d %s=%v, want %v; body=%s", attempt+1, field, got, want, rec.Body.String())
+			}
+		}
+	}
+	if len(base.savedChatLogs) != 2 {
+		t.Fatalf("idempotent retry replayed raw logs: saved=%d, want 2", len(base.savedChatLogs))
 	}
 }
 

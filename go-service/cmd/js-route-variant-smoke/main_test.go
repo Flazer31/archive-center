@@ -486,11 +486,6 @@ func TestArchiveCenterJSRerollRollbackPath(t *testing.T) {
 		"single_assistant_msg_removed",
 		"msg_decrease_and_tail_change",
 		"duplicate_rollback_blocked",
-		"ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS",
-		"function assessPromotedAssistantSyncRollbackGuard",
-		"recent_completed_turn_waiting_active_chat_sync",
-		"pending_active_chat_confirmation",
-		"skipSnapshotUpdate",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {

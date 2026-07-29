@@ -24,21 +24,26 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	workflowRequestID := completeTurnWorkflowRequestID(req)
 
-	acceptance := s.beginCompleteTurnSourceAcceptance(r.Context(), req)
-	if acceptance.Enabled && !acceptance.Accepted {
-		if s.TurnWorkflows != nil && workflowRequestID != "" {
-			s.TurnWorkflows.invalidate(workflowRequestID, acceptance.Reason)
-		}
-		writeCompleteTurnSourceAcceptanceRejection(w, req, acceptance)
-		return
-	}
-	if acceptance.Enabled && acceptance.BoundTurn > 0 {
-		req.TurnIndex = acceptance.BoundTurn
-	}
-
-	s.executeCompleteTurnIdempotent(r.Context(), w, completeTurnIdempotencyKey(req.ClientMeta), func(target http.ResponseWriter) {
-		s.handleCompleteTurnDecoded(target, r, req, acceptance)
-	})
+	s.executeCompleteTurnIdempotent(
+		r.Context(),
+		w,
+		completeTurnIdempotencyKey(req.ClientMeta),
+		completeTurnRequestFingerprint(req),
+		func(target http.ResponseWriter) {
+			acceptance := s.beginCompleteTurnSourceAcceptance(r.Context(), req)
+			if acceptance.Enabled && !acceptance.Accepted {
+				if s.TurnWorkflows != nil && workflowRequestID != "" {
+					s.TurnWorkflows.invalidate(workflowRequestID, acceptance.Reason)
+				}
+				writeCompleteTurnSourceAcceptanceRejection(target, req, acceptance)
+				return
+			}
+			if acceptance.Enabled && acceptance.BoundTurn > 0 {
+				req.TurnIndex = acceptance.BoundTurn
+			}
+			s.handleCompleteTurnDecoded(target, r, req, acceptance)
+		},
+	)
 }
 
 func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Request, req dto.M4CompleteTurnRequest, sourceAcceptance completeTurnSourceAcceptanceDecision) {
@@ -142,11 +147,52 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			writeCompleteTurnSourceAcceptanceRejection(w, req, rejectedCompleteTurnSourceAcceptance("source_acceptance_revision_superseded_before_replacement", false, sourceAcceptance.Observation))
 			return
 		}
-		if err := s.replaceCompleteTurnLogicalTail(ctx, sid, req.TurnIndex, userText, assistantText, sourceAcceptance, now); err != nil {
-			if s.TurnWorkflows != nil && workflowRequestID != "" {
-				s.TurnWorkflows.fail(workflowRequestID, "LOGICAL_TURN_REPLACE_FAILED", "turn_hud.error.logical_turn_replace_failed", turnWorkflowStageFinalAccepted, true)
+		if replacementErr := s.replaceCompleteTurnLogicalTail(ctx, sid, req.TurnIndex, userText, assistantText, sourceAcceptance, now); replacementErr != nil {
+			queueAction := "retry"
+			status := "error"
+			saveOK := false
+			reconciliationRequired := replacementErr.CommitState == "unknown"
+			if !replacementErr.Retryable {
+				queueAction = "discard"
 			}
-			writeInternalError(w, "logical_turn_replace_failed: "+err.Error())
+			if replacementErr.RawCommitted {
+				status = "partial"
+				saveOK = true
+				queueAction = "discard"
+				reconciliationRequired = true
+				s.completeTurnSourceReplacementCompleted(ctx, sourceAcceptance, sid, req.TurnIndex)
+			}
+			if s.TurnWorkflows != nil && workflowRequestID != "" {
+				if replacementErr.RawCommitted {
+					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageFinalAccepted, "succeeded", "")
+					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageRawPersist, "succeeded", "")
+					s.TurnWorkflows.addWarning(workflowRequestID, replacementErr.Code, "turn_hud.error.logical_turn_replace_failed", turnWorkflowStageRawPersist)
+					s.TurnWorkflows.complete(workflowRequestID)
+				} else {
+					s.TurnWorkflows.fail(
+						workflowRequestID,
+						replacementErr.Code,
+						"turn_hud.error.logical_turn_replace_failed",
+						turnWorkflowStageFinalAccepted,
+						replacementErr.Retryable,
+					)
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":                  status,
+				"code":                    replacementErr.Code,
+				"stage":                   replacementErr.Stage,
+				"retryable":               replacementErr.Retryable && !replacementErr.RawCommitted,
+				"raw_committed":           replacementErr.RawCommitted,
+				"commit_state":            replacementErr.CommitState,
+				"save_ok":                 saveOK,
+				"reconciliation_required": reconciliationRequired,
+				"derived_retry_required":  false,
+				"queue_action":            queueAction,
+				"turn_index":              req.TurnIndex,
+				"fail_reasons":            []string{replacementErr.Code},
+				"turn_workflow_hud":       s.turnWorkflowHUDSnapshot(workflowRequestID),
+			})
 			return
 		}
 		// ReplaceLogicalTurn committed both canonical raw roles atomically. Shadow
@@ -596,9 +642,15 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Store save boundary: active only when the configured mode allows writes.
-	saveOK := false
+	// save_ok is the canonical raw-turn durability boundary. Derived/audit
+	// failures are reported separately and must never cause a full raw replay.
+	saveOK := rawTurnDurable
 	saveErr := "shadow_mode: save disabled in R0/R1"
+	if rawTurnDurable {
+		saveErr = ""
+	} else if s.usesShadowWriteStore() {
+		saveErr = "raw turn persistence failed"
+	}
 	chatLogsSaved := rawSave.ChatLogsSaved
 	effectiveInputSaved := 0
 	auditSaved := 0
@@ -832,10 +884,6 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageCheckpoints)
 		}
 
-		if storeWriteAttempted > 0 && storeWriteErrors == 0 {
-			saveOK = true
-			saveErr = ""
-		}
 	}
 	if !s.usesShadowWriteStore() {
 		timing.addElapsed("raw_and_audit_store", auditStoreStartedAt)
@@ -958,13 +1006,16 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	}
 	derivedArtifactsSaved := memoriesSaved + preciseMemoryUnitsSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
 	rawStatus := "skipped"
-	if chatLogsSaved > 0 || effectiveInputSaved > 0 {
+	if rawTurnDurable {
 		rawStatus = "ok"
-	} else if !saveOK || storeWriteErrors > 0 {
+	} else if s.usesShadowWriteStore() {
 		rawStatus = "error"
 	}
+	derivedPersistenceFailed := rawTurnDurable && storeWriteErrors > rawSave.Errors
 	derivedStatus := "skipped"
-	if derivedArtifactsSaved > 0 {
+	if derivedPersistenceFailed {
+		derivedStatus = "error"
+	} else if derivedArtifactsSaved > 0 {
 		derivedStatus = "ok"
 	} else if criticTriggered && derivedArtifactsSaved == 0 {
 		derivedStatus = "empty"
@@ -1016,17 +1067,38 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		},
 	}
 	backendTiming := timing.snapshot()
-	derivedRetryRequired := saveOK && rawTurnDurable &&
-		(criticFailureReason != "" || (reprocessingReason != "" && reprocessingDurable))
+	derivedRetryRequired := rawTurnDurable &&
+		(criticFailureReason != "" || (reprocessingReason != "" && reprocessingDurable) || derivedPersistenceFailed)
+	reconciliationRequired := rawTurnDurable && derivedPersistenceFailed
+	responseStatus := "ok"
+	queueAction := ""
+	retryable := false
+	commitState := "not_committed"
+	if rawTurnDurable {
+		commitState = "committed"
+	}
+	if rawTurnDurable && (derivedRetryRequired || reconciliationRequired) {
+		responseStatus = "partial"
+		queueAction = "discard"
+	} else if !rawTurnDurable && s.usesShadowWriteStore() {
+		responseStatus = "error"
+		queueAction = "retry"
+		retryable = true
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":                           "ok",
+		"status":                           responseStatus,
 		"source":                           writeSource,
 		"chat_session_id":                  sid,
 		"turn_index":                       turnIndex,
 		"generated_at":                     time.Now().UTC().Format(time.RFC3339),
 		"save_ok":                          saveOK,
 		"save_error":                       saveErr,
+		"raw_committed":                    rawTurnDurable,
+		"commit_state":                     commitState,
+		"reconciliation_required":          reconciliationRequired,
+		"retryable":                        retryable,
+		"queue_action":                     queueAction,
 		"memories_saved":                   memoriesSaved,
 		"precise_memory_units_saved":       preciseMemoryUnitsSaved,
 		"evidence_saved":                   evidenceSaved,

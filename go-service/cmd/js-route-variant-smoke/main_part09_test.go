@@ -743,7 +743,13 @@ func TestArchiveCenterJSCompleteTurnQueueUsesLiveEndpointMarkers(t *testing.T) {
 		`rollbackParams.set("host_observed_at_ms", String(Date.now()))`,
 		"serializeCompleteTurnRecoveryPayload",
 		"complete_turn_raw_recovery_v1",
-		"complete_turn_write_ahead_recovery_v1",
+		"queuePendingCompleteTurnPayload",
+		`state: "retryable"`,
+		`detail: "retry_limit_reached"`,
+		"settings.failedQueueMaxAttempts",
+		`detail: "idempotent_processing_timeout"`,
+		`res.queue_action === "discard" || res.retryable === false`,
+		"reconciliation_required === true",
 		"removeQueuedItem",
 		`return buildCompleteTurnQueuePayload(p);`,
 		"flushQueueSave().catch(function() {})",
@@ -756,6 +762,9 @@ func TestArchiveCenterJSCompleteTurnQueueUsesLiveEndpointMarkers(t *testing.T) {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing complete-turn live queue marker %q", needle)
 		}
+	}
+	if strings.Contains(src, "complete_turn_write_ahead_recovery_v1") {
+		t.Fatal("pending/in-flight complete-turn payload must not be exposed as a failed write-ahead queue item")
 	}
 }
 
@@ -813,7 +822,7 @@ func TestArchiveCenterJSFreshActiveCIDWriteRoutingMarkers(t *testing.T) {
 		"async function resolveCurrentActiveChatObject",
 		`await R.getChatFromIndex(charIdx, chatIdx)`,
 		"orchResult._trace.chatSessionId = currentSessionId",
-		"const chatSessionId = await resolveAfterRequestWriteSessionId(lastOrchResult)",
+		"const chatSessionId = await resolveAfterRequestWriteSessionId(persistenceOrchResult)",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -1153,7 +1162,7 @@ func TestArchiveCenterJSLegacyTableReadRemoved(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSCompleteTurnQueueDoesNotTreatRawAsDerivedCompletion(t *testing.T) {
+func TestArchiveCenterJSCompleteTurnQueueSeparatesRawSaveFromDerivedRetry(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	if strings.Contains(src, "isCompleteTurnPayloadAlreadySaved") {
 		t.Fatal("complete-turn queue must not treat raw chat rows as full pipeline completion")
@@ -1161,8 +1170,16 @@ func TestArchiveCenterJSCompleteTurnQueueDoesNotTreatRawAsDerivedCompletion(t *t
 	if !strings.Contains(src, `"/complete-turn/request-status?idempotency_key="`) {
 		t.Fatal("complete-turn queue is missing backend idempotency status check")
 	}
-	if !strings.Contains(src, "res.derived_retry_required !== true") ||
-		!strings.Contains(src, "_ctResult.derived_retry_required === true") {
-		t.Fatal("complete-turn queue must retain raw-success responses that still require derived retry")
+	for _, marker := range []string{
+		"requestStatus.raw_saved === true",
+		"_ctResult.derived_retry_required === true",
+		"raw saved; derived retry owned by backend",
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("complete-turn queue missing raw/derived split marker %q", marker)
+		}
+	}
+	if strings.Contains(src, "res.derived_retry_required !== true") {
+		t.Fatal("raw save must not stay in the full complete-turn retry queue only because derived retry is required")
 	}
 }

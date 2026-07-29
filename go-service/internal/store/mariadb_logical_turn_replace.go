@@ -3,11 +3,64 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 var _ LogicalTurnReplacementStore = (*mariadbStore)(nil)
+
+func typedLogicalTurnReplacementError(code, stage string, retryable bool, commitState string, cause error) error {
+	return &LogicalTurnReplacementError{
+		Code:        code,
+		Stage:       stage,
+		Retryable:   retryable,
+		CommitState: commitState,
+		Cause:       cause,
+	}
+}
+
+func classifyLogicalTurnReplacementStoreError(err error, stage string, commitAttempted bool) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrNotEnabled) {
+		return typedLogicalTurnReplacementError(
+			"logical_turn_store_unavailable", stage, false, "not_committed", err,
+		)
+	}
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		switch mysqlErr.Number {
+		case 1044, 1045, 1142, 1143:
+			return typedLogicalTurnReplacementError(
+				"logical_turn_db_permission_denied", stage, false, "not_committed", err,
+			)
+		case 1062:
+			return typedLogicalTurnReplacementError(
+				"logical_turn_revision_conflict", stage, false, "not_committed", err,
+			)
+		case 1451, 1452:
+			return typedLogicalTurnReplacementError(
+				"logical_turn_constraint_conflict", stage, false, "not_committed", err,
+			)
+		case 1205, 1213:
+			return typedLogicalTurnReplacementError(
+				"logical_turn_transaction_temporarily_blocked", stage, true, "not_committed", err,
+			)
+		}
+	}
+	if commitAttempted {
+		return typedLogicalTurnReplacementError(
+			"logical_turn_commit_outcome_unknown", stage, false, "unknown", err,
+		)
+	}
+	return typedLogicalTurnReplacementError(
+		"logical_turn_transaction_failed", stage, true, "not_committed", err,
+	)
+}
 
 // ReplaceLogicalTurn is intentionally limited to the canonical tail. It also
 // accepts the immediately missing tail (latest == requested-1): RisuAI can
@@ -16,26 +69,34 @@ var _ LogicalTurnReplacementStore = (*mariadbStore)(nil)
 // allocate a new turn. Historical turns and gaps remain rejected.
 func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement LogicalTurnReplacement) error {
 	if err := m.ensureDB(); err != nil {
-		return err
+		return classifyLogicalTurnReplacementStoreError(err, "preflight", false)
 	}
 	sid := strings.TrimSpace(replacement.ChatSessionID)
 	if sid == "" || replacement.TurnIndex <= 0 || strings.TrimSpace(replacement.UserContent) == "" || strings.TrimSpace(replacement.AssistantContent) == "" {
-		return fmt.Errorf("invalid logical turn replacement")
+		return typedLogicalTurnReplacementError(
+			"logical_turn_request_invalid", "preflight", false, "not_committed",
+			fmt.Errorf("invalid logical turn replacement"),
+		)
 	}
 	if replacement.SourceRevision != nil {
 		source := replacement.SourceRevision
 		if source.ChatSessionID != sid || source.TurnIndex != replacement.TurnIndex ||
 			source.UserContent != replacement.UserContent ||
 			source.AssistantContent != replacement.AssistantContent {
-			return fmt.Errorf("logical turn replacement source revision mismatch")
+			return typedLogicalTurnReplacementError(
+				"logical_turn_revision_conflict", "source_revision", false, "not_committed",
+				fmt.Errorf("logical turn replacement source revision mismatch"),
+			)
 		}
 		if err := validateMemorySourceRevision(source); err != nil {
-			return err
+			return typedLogicalTurnReplacementError(
+				"logical_turn_revision_invalid", "source_revision", false, "not_committed", err,
+			)
 		}
 	}
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return classifyLogicalTurnReplacementStoreError(err, "transaction_begin", false)
 	}
 	committed := false
 	defer func() {
@@ -45,14 +106,17 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 	}()
 	var latest sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE`, sid).Scan(&latest); err != nil {
-		return err
+		return classifyLogicalTurnReplacementStoreError(err, "canonical_tail_read", false)
 	}
 	latestTurn := 0
 	if latest.Valid {
 		latestTurn = int(latest.Int64)
 	}
 	if latestTurn != replacement.TurnIndex && latestTurn != replacement.TurnIndex-1 {
-		return fmt.Errorf("logical turn replacement requires current canonical tail: latest=%d requested=%d", latest.Int64, replacement.TurnIndex)
+		return typedLogicalTurnReplacementError(
+			"logical_turn_not_current_tail", "canonical_tail_check", false, "not_committed",
+			fmt.Errorf("logical turn replacement requires current canonical tail: latest=%d requested=%d", latest.Int64, replacement.TurnIndex),
+		)
 	}
 	t := replacement.TurnIndex
 	if replacement.SourceRevision != nil {
@@ -60,10 +124,10 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 			ctx, tx, sid, t, true, replacement.SourceRevision.SourceRevision,
 			"superseded", "logical_turn_replaced", nonZeroTime(replacement.CreatedAt),
 		); err != nil {
-			return err
+			return classifyLogicalTurnReplacementStoreError(err, "source_revision_invalidate", false)
 		}
 		if err := insertMemorySourceRevisionTx(ctx, tx, replacement.SourceRevision); err != nil {
-			return err
+			return classifyLogicalTurnReplacementStoreError(err, "source_revision_register", false)
 		}
 	}
 	commands := []struct {
@@ -120,18 +184,18 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 	}...)
 	for _, command := range commands {
 		if _, err := tx.ExecContext(ctx, command.query, command.args...); err != nil {
-			return err
+			return classifyLogicalTurnReplacementStoreError(err, "canonical_replace", false)
 		}
 	}
 	createdAt := nonZeroTime(replacement.CreatedAt)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_logs (chat_session_id, turn_index, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`, sid, t, replacement.UserContent, createdAt); err != nil {
-		return err
+		return classifyLogicalTurnReplacementStoreError(err, "raw_user_insert", false)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_logs (chat_session_id, turn_index, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)`, sid, t, replacement.AssistantContent, createdAt); err != nil {
-		return err
+		return classifyLogicalTurnReplacementStoreError(err, "raw_assistant_insert", false)
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return classifyLogicalTurnReplacementStoreError(err, "transaction_commit", true)
 	}
 	committed = true
 	return nil

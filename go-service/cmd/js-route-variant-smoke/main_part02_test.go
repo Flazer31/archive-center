@@ -970,31 +970,54 @@ func TestArchiveCenterJSPersistenceRequestsDoNotBlindRetry(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSStreamingAfterRequestPollerMarkers(t *testing.T) {
+func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"const STREAMING_AFTER_REQUEST_POLL_INTERVAL_MS = 800;",
-		"const STREAMING_AFTER_REQUEST_STABLE_POLLS = 3;",
-		"const STREAMING_AFTER_REQUEST_OBSERVED_STREAM_STABLE_POLLS = 4;",
-		"const STREAMING_AFTER_REQUEST_OBSERVED_STREAM_QUIET_MS = 8 * 1000;",
-		"const _streamingAfterRequestWatchers = new Map();",
-		"function armStreamingAfterRequestWatch(sessionId, type, requestId)",
-		"function pollStreamingAfterRequestWatch(sessionId)",
-		"function markNativeAfterRequestObserved(sessionId, type)",
-		"function stopStreamingAfterRequestWatch(sessionId, detail)",
-		"native afterRequest missing; recovered from RisuAI active chat",
-		"late native afterRequest ignored after poller recovery",
-		"RisuAI active chat is still streaming",
-		"persistence deferred until RisuAI active chat confirmation",
-		"armStreamingAfterRequestWatch(orchSessionId, type, orchRequestId);",
+		"const _pendingFinalConfirmations = new Map();",
+		"async function captureFinalConfirmationRequestContext(sessionId, type, requestId)",
+		"async function observePendingFinalConfirmation(pending)",
+		"async function drainPendingFinalConfirmations(signalSource)",
+		"async function registerFinalConfirmationObserver()",
+		"R.createMutationObserver",
+		"chat.isStreaming !== false",
+		"chat.message.length !== Number(context.expectedMessageCount)",
+		"tailIndex !== Number(context.expectedAssistantIndex)",
+		"!hostChatId || hostChatId !== context.hostChatId",
+		`message.role !== "char"`,
+		`message.disabled === true`,
+		"after_request_candidate_mismatch",
+		"new_host_observation_required",
+		"_pendingFinalConfirmationDrainRequested = true",
+		"pending.requestContext !== observation.requestContext",
+		`pending.requestContext.state = "accepted"`,
+		"await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);",
 		`hostLifecycleObservation: "before_request_observed"`,
 		`host_lifecycle_observation: String(observed.hostLifecycleObservation || "")`,
-		`? "generation_watch_active"`,
+		`? "final_confirmation_pending"`,
 		"Streaming Hook",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing streaming afterRequest poller marker %q", needle)
+			t.Fatalf("Archive Center.js missing event-driven final confirmation marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		"STREAMING_AFTER_REQUEST_START_DELAY_MS",
+		"STREAMING_AFTER_REQUEST_POLL_INTERVAL_MS",
+		"STREAMING_AFTER_REQUEST_STABLE_POLLS",
+		"STREAMING_AFTER_REQUEST_OBSERVED_STREAM_QUIET_MS",
+		"STREAMING_AFTER_REQUEST_TIMEOUT_MS",
+		"STREAMING_AFTER_REQUEST_RECENT_RECOVERY_GRACE_MS",
+		"ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS",
+		"assessPromotedAssistantSyncRollbackGuard",
+		"pending_active_chat_confirmation",
+		"_streamingAfterRequestSyntheticCallDepth",
+		"pollStreamingAfterRequestWatch",
+		"armStreamingAfterRequestWatch",
+		"synthetic_after_request",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains forbidden timer/synthetic finality marker %q", forbidden)
 		}
 	}
 	onBeforeRequestAt := strings.Index(src, "async function onBeforeRequest")
@@ -1002,10 +1025,10 @@ func TestArchiveCenterJSStreamingAfterRequestPollerMarkers(t *testing.T) {
 		t.Fatal("Archive Center.js missing onBeforeRequest")
 	}
 	onBeforeRequest := src[onBeforeRequestAt:]
-	armAt := strings.Index(onBeforeRequest, "armStreamingAfterRequestWatch(orchSessionId, type, orchRequestId);")
+	captureAt := strings.Index(onBeforeRequest, "await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);")
 	rollbackAt := strings.Index(onBeforeRequest, "await checkAndAutoRollback(orchSessionId, rollbackComparable.messages")
-	if armAt < 0 || rollbackAt < 0 || armAt > rollbackAt {
-		t.Fatal("generation watch must start before PocketRisu-style removed tail is evaluated")
+	if captureAt < 0 || rollbackAt < 0 || captureAt > rollbackAt {
+		t.Fatal("RisuAI request coordinates must be captured before removed-tail evaluation")
 	}
 }
 

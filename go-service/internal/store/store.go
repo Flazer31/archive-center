@@ -692,6 +692,34 @@ type LogicalTurnReplacementStore interface {
 	ReplaceLogicalTurn(ctx context.Context, replacement LogicalTurnReplacement) error
 }
 
+// LogicalTurnReplacementError exposes the canonical transaction stage without
+// forcing HTTP callers to infer retry policy from MariaDB error strings.
+// CommitState is one of not_committed, committed, or unknown.
+type LogicalTurnReplacementError struct {
+	Code        string
+	Stage       string
+	Retryable   bool
+	CommitState string
+	Cause       error
+}
+
+func (e *LogicalTurnReplacementError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Cause == nil {
+		return e.Code
+	}
+	return e.Code + ": " + e.Cause.Error()
+}
+
+func (e *LogicalTurnReplacementError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 type LogicalTurnReplacement struct {
 	ChatSessionID    string
 	TurnIndex        int
