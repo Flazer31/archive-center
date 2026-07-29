@@ -39,7 +39,7 @@ $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $failures = [System.Collections.Generic.List[string]]::new()
 $warnings = [System.Collections.Generic.List[string]]::new()
 
-foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses\Apache-2.0.txt", "migrations", "prompts", "scripts", "tools\install-windows.ps1", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
+foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses\Apache-2.0.txt", "migrations", "prompts", "scripts", "tools\install-windows.ps1", "01_start_archive_center_windows.bat", ".env.full.example", "FULL_PACKAGE_MANIFEST.json", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
     $path = Join-Path $packRoot $rel
     if (-not (Test-Path -LiteralPath $path)) {
         [void]$failures.Add("missing:$rel")
@@ -74,6 +74,45 @@ if (Test-Path -LiteralPath $managedManifestPath -PathType Leaf) {
     }
 }
 
+$fullManifestPath = Join-Path $packRoot "FULL_PACKAGE_MANIFEST.json"
+if (Test-Path -LiteralPath $fullManifestPath -PathType Leaf) {
+    try {
+        $fullManifest = Get-Content -LiteralPath $fullManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($fullManifest.package_kind -eq "managed") {
+            if ($fullManifest.runtime_profile_default -ne "full_local") {
+                [void]$failures.Add("managed_runtime_profile_default_invalid:$($fullManifest.runtime_profile_default)")
+            }
+            if ($fullManifest.vector_mode_default -ne "bundled") {
+                [void]$failures.Add("managed_vector_mode_default_invalid:$($fullManifest.vector_mode_default)")
+            }
+            if ($fullManifest.chromadb_distribution -ne "separate_pinned_runtime_install") {
+                [void]$failures.Add("managed_chromadb_distribution_invalid:$($fullManifest.chromadb_distribution)")
+            }
+        }
+    } catch {
+        [void]$failures.Add("full_package_manifest_invalid:$($_.Exception.Message)")
+    }
+}
+
+$standardLauncherPath = Join-Path $packRoot "01_start_archive_center_windows.bat"
+if (Test-Path -LiteralPath $standardLauncherPath -PathType Leaf) {
+    $standardLauncherText = Get-Content -LiteralPath $standardLauncherPath -Raw -Encoding UTF8
+    if ($standardLauncherText -notmatch '(?im)powershell[^\r\n]*-RuntimeProfile\s+"full_local"[^\r\n]*-VectorMode\s+"bundled"') {
+        [void]$failures.Add("standard_launcher_full_local_vector_contract_missing")
+    }
+}
+
+$fullEnvExamplePath = Join-Path $packRoot ".env.full.example"
+if (Test-Path -LiteralPath $fullEnvExamplePath -PathType Leaf) {
+    $fullEnvExampleText = Get-Content -LiteralPath $fullEnvExamplePath -Raw -Encoding UTF8
+    if ($fullEnvExampleText -notmatch '(?m)^AC_RUNTIME_PROFILE=full_local\s*$') {
+        [void]$failures.Add("full_env_runtime_profile_default_invalid")
+    }
+    if ($fullEnvExampleText -notmatch '(?m)^AC_VECTOR_MODE=bundled\s*$') {
+        [void]$failures.Add("full_env_vector_mode_default_invalid")
+    }
+}
+
 $launcherScriptPath = Join-Path $packRoot "scripts\start-full-windows.ps1"
 if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     $launcherScriptText = Get-Content -LiteralPath $launcherScriptPath -Raw -Encoding UTF8
@@ -92,6 +131,15 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "-managed-bootstrap", "-expected-datadir", "AC_CHROMA_RUNTIME_DIR", "-InstallChromaDBRuntime", "Test-ChromaRuntimeVersion", "chromadb==`$managedChromaDBVersion", "chromaRuntimeReady", "Repairing the per-user runtime", "Start-ManagedChromaDB", "LocalApplicationData")) {
         if (-not $launcherScriptText.Contains($marker)) {
             [void]$failures.Add("launcher_managed_runtime_marker_missing:$marker")
+        }
+    }
+    foreach ($marker in @(
+        'else { "full_local" }',
+        '"full_local" { $vectorCandidate = "bundled" }',
+        '$env:AC_CHROMA_ENDPOINT = "http://127.0.0.1:8000"'
+    )) {
+        if (-not $launcherScriptText.Contains($marker)) {
+            [void]$failures.Add("launcher_full_local_vector_contract_missing:$marker")
         }
     }
     foreach ($forbiddenMarker in @("CREATE USER IF NOT EXISTS 'archive_center'", "GRANT ALL PRIVILEGES ON archive_center.*")) {

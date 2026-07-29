@@ -27,5 +27,5 @@ echo  works for both local and remote RisuAI browsers.
 echo.
 echo ============================================================
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start-full-windows.ps1" -BindAddr "0.0.0.0:28080"
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start-full-windows.ps1" -RuntimeProfile "full_local" -VectorMode "bundled" -BindAddr "0.0.0.0:28080"
 pause
