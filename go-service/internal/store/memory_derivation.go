@@ -126,6 +126,20 @@ type MemoryReprocessingJobStore interface {
 	FailMemoryReprocessingJob(ctx context.Context, jobID int64, leaseOwner string, now, retryAfter time.Time, permanent bool, failure string) error
 }
 
+// MemoryReprocessingJobReopener is an optional administrative capability. It
+// reopens the exact idempotent job and resets only its active source revision's
+// committed admission snapshot. Raw source content and projected secondary
+// rows remain untouched for operator-reviewed recovery.
+type MemoryReprocessingJobReopener interface {
+	ReopenMemoryReprocessingJob(
+		context.Context,
+		string,
+		string,
+		string,
+		time.Time,
+	) (reopened bool, err error)
+}
+
 type MemoryVectorOutboxItem struct {
 	ID                  int64
 	ContractVersion     string

@@ -5,12 +5,159 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
+
+var (
+	criticAuthorizationSecretPattern = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;}\]]+`)
+	criticBearerSecretPattern        = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
+	criticJSONSecretPattern          = regexp.MustCompile(`(?i)("(?:x-api-key|api[_-]?key|password|client_secret|access_token|refresh_token)"\s*:\s*)"[^"]*"`)
+	criticKVSecretPattern            = regexp.MustCompile(`(?i)((?:x-api-key|api[_-]?key|password|client_secret|access_token|refresh_token)\s*[:=]\s*)[^\s,;}\]]+`)
+	criticClaimStopTokens            = map[string]struct{}{
+		"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "but": {},
+		"for": {}, "from": {}, "he": {}, "her": {}, "his": {}, "in": {}, "is": {},
+		"it": {}, "of": {}, "on": {}, "or": {}, "she": {}, "that": {}, "the": {},
+		"their": {}, "they": {}, "this": {}, "to": {}, "was": {}, "were": {}, "with": {},
+		"그": {}, "그가": {}, "그녀": {}, "그는": {}, "그것": {}, "그의": {}, "이것": {}, "저것": {},
+	}
+)
+
+type criticPipelineError struct {
+	Code       string
+	Stage      string
+	Retryable  bool
+	HTTPStatus int
+	Cause      error
+}
+
+func (e *criticPipelineError) Error() string {
+	if e == nil {
+		return "critic pipeline failed"
+	}
+	if e.Cause == nil {
+		return e.Code
+	}
+	return e.Code + ": " + e.Cause.Error()
+}
+
+func (e *criticPipelineError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func newCriticPipelineError(code, stage string, retryable bool, httpStatus int, cause error) *criticPipelineError {
+	return &criticPipelineError{
+		Code:       strings.TrimSpace(code),
+		Stage:      strings.TrimSpace(stage),
+		Retryable:  retryable,
+		HTTPStatus: httpStatus,
+		Cause:      cause,
+	}
+}
+
+func criticPipelineErrorDetails(err error) map[string]any {
+	var pipelineErr *criticPipelineError
+	if !errors.As(err, &pipelineErr) || pipelineErr == nil {
+		return map[string]any{
+			"code":      "CRITIC_UNKNOWN_FAILED",
+			"stage":     "unknown",
+			"retryable": true,
+		}
+	}
+	out := map[string]any{
+		"code":      pipelineErr.Code,
+		"stage":     pipelineErr.Stage,
+		"retryable": pipelineErr.Retryable,
+	}
+	if pipelineErr.HTTPStatus > 0 {
+		out["http_status"] = pipelineErr.HTTPStatus
+	}
+	return out
+}
+
+func classifyCriticProviderError(err error, status int) *criticPipelineError {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return newCriticPipelineError("CRITIC_PROVIDER_TIMEOUT", "provider_call", true, status, err)
+	case errors.Is(err, context.Canceled):
+		return newCriticPipelineError("CRITIC_PROVIDER_CANCELED", "provider_call", false, status, err)
+	}
+	var emptyContentErr *proxyEmptyContentError
+	if errors.As(err, &emptyContentErr) {
+		return newCriticPipelineError("CRITIC_EMPTY_RESPONSE", "provider_response", true, status, err)
+	}
+	var localRequestErr *proxyLocalRequestError
+	if errors.As(err, &localRequestErr) {
+		stage := strings.TrimSpace(localRequestErr.Stage)
+		code := "CRITIC_REQUEST_BUILD_FAILED"
+		if stage == "configuration" {
+			code = "CRITIC_CONFIG_INVALID"
+		}
+		if stage == "" {
+			stage = "request_build"
+		}
+		return newCriticPipelineError(code, stage, false, 0, err)
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() {
+			return newCriticPipelineError("CRITIC_PROVIDER_TIMEOUT", "provider_call", true, status, err)
+		}
+		return newCriticPipelineError("CRITIC_PROVIDER_CALL_FAILED", "provider_call", true, status, err)
+	}
+	if status >= http.StatusBadRequest {
+		retryable := status == http.StatusRequestTimeout ||
+			status == http.StatusTooEarly ||
+			status == http.StatusTooManyRequests ||
+			status >= http.StatusInternalServerError
+		return newCriticPipelineError("CRITIC_PROVIDER_HTTP_ERROR", "provider_response", retryable, status, err)
+	}
+	return newCriticPipelineError("CRITIC_PROVIDER_CALL_FAILED", "provider_call", true, status, err)
+}
+
+func criticFailureTrace(promptSource string, cfg completeTurnLLMConfig, status int, err error, content string) map[string]any {
+	trace := map[string]any{
+		"prompt_source": promptSource,
+		"provider":      strings.TrimSpace(cfg.Provider),
+		"model":         strings.TrimSpace(cfg.Model),
+	}
+	for key, value := range criticPipelineErrorDetails(err) {
+		trace[key] = value
+	}
+	if status > 0 {
+		trace["http_status"] = status
+	}
+	preview := strings.TrimSpace(scrubCriticFailureText(content, cfg.APIKey))
+	if preview == "" && err != nil {
+		preview = scrubCriticFailureText(err.Error(), cfg.APIKey)
+	}
+	if preview != "" {
+		trace["raw_preview"] = truncateRunes(preview, 1000)
+	}
+	return trace
+}
+
+func scrubCriticFailureText(text, apiKey string) string {
+	out := text
+	if key := strings.TrimSpace(apiKey); key != "" {
+		out = strings.ReplaceAll(out, key, "[redacted]")
+	}
+	out = criticAuthorizationSecretPattern.ReplaceAllString(out, `${1}[redacted]`)
+	out = criticBearerSecretPattern.ReplaceAllString(out, "Bearer [redacted]")
+	out = criticJSONSecretPattern.ReplaceAllString(out, `${1}"[redacted]"`)
+	out = criticKVSecretPattern.ReplaceAllString(out, `${1}[redacted]`)
+	return out
+}
 
 func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
 	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, contextMessages, outputLanguageOverride, cfg, false, languageContextArg...)
@@ -22,7 +169,8 @@ func (s *Server) runCompleteTurnCriticFromCanonicalLogs(ctx context.Context, sid
 
 func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, canonicalChatLogs bool, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
 	if !cfg.hasConfig() {
-		return nil, nil, errors.New("critic_config_missing")
+		err := newCriticPipelineError("CRITIC_CONFIG_MISSING", "configuration", false, 0, errors.New("critic_config_missing"))
+		return nil, criticFailureTrace("", cfg, 0, err, ""), err
 	}
 	var languageContext map[string]any
 	if len(languageContextArg) > 0 {
@@ -41,7 +189,11 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	safeUserInput := boundCompleteTurnCriticInput(sanitizedUserInput, 4000)
 	safeAssistantContent := boundCompleteTurnCriticInput(sanitizedAssistantContent, 9000)
 	if strings.TrimSpace(safeUserInput+"\n"+safeAssistantContent) == "" {
-		return nil, map[string]any{"prompt_source": promptSource, "source_aware_ingest_guard": !canonicalChatLogs, "canonical_chat_logs": canonicalChatLogs}, errors.New("critic_input_empty_after_sanitize")
+		err := newCriticPipelineError("CRITIC_INPUT_EMPTY", "input", false, 0, errors.New("critic_input_empty_after_sanitize"))
+		trace := criticFailureTrace(promptSource, cfg, 0, err, "")
+		trace["source_aware_ingest_guard"] = !canonicalChatLogs
+		trace["canonical_chat_logs"] = canonicalChatLogs
+		return nil, trace, err
 	}
 	safeContextMessages := sanitizeContextMessagesForCriticInput(contextMessages)
 	previewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, safeUserInput, safeAssistantContent)
@@ -83,53 +235,86 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	jsonPolicy := proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"}
 
-	upstream, _, err := performProxyPluginMainWithPolicy(ctx, req, jsonPolicy)
+	upstream, upstreamStatus, err := performProxyPluginMainWithPolicy(ctx, req, jsonPolicy)
 	providerRetryTrace := map[string]any{}
 	if err != nil {
+		providerErr := classifyCriticProviderError(err, upstreamStatus)
+		firstFailureTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, providerErr, "")
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
-			return nil, map[string]any{"prompt_source": promptSource, "request_overrides": requestOverrides}, err
+			firstFailureTrace["request_overrides"] = requestOverrides
 		}
 		retryUserInput, userRedacted := redactSensitiveCriticRetryText(safeUserInput)
 		retryAssistantContent, assistantRedacted := redactSensitiveCriticRetryText(safeAssistantContent)
 		if !userRedacted && !assistantRedacted {
-			return nil, nil, err
+			return nil, firstFailureTrace, providerErr
 		}
 		retryPreviewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, retryUserInput, retryAssistantContent)
 		retryPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, retryUserInput, retryAssistantContent, safeContextMessages, outputLanguageOverride, retryPreviewPass, languageContext, criticArchiveLedgerPromptInput)
 		retryReq := req
 		retryReq.Messages = []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": retryPrompt}}
-		retryUpstream, _, retryErr := performProxyPluginMainWithPolicy(ctx, retryReq, jsonPolicy)
+		retryUpstream, retryStatus, retryErr := performProxyPluginMainWithPolicy(ctx, retryReq, jsonPolicy)
 		providerRetryTrace = map[string]any{
 			"mode":                "sensitive_input_redacted_retry",
 			"user_input_redacted": userRedacted,
 			"assistant_redacted":  assistantRedacted,
-			"first_error":         err.Error(),
+			"first_failure":       firstFailureTrace,
 			"retry_preview_pass":  retryPreviewPass,
 		}
 		if retryErr != nil {
-			providerRetryTrace["retry_error"] = retryErr.Error()
+			retryPipelineErr := classifyCriticProviderError(retryErr, retryStatus)
+			retryFailureTrace := criticFailureTrace(promptSource, cfg, retryStatus, retryPipelineErr, "")
 			if requestOverrides := mapFromAny(retryUpstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 				providerRetryTrace["request_overrides"] = requestOverrides
 			}
-			return nil, providerRetryTrace, fmt.Errorf("%w; redacted critic retry failed: %v", err, retryErr)
+			providerRetryTrace["retry_failure_recorded"] = "top_level"
+			retryFailureTrace["provider_retry"] = providerRetryTrace
+			return nil, retryFailureTrace, retryPipelineErr
 		}
 		upstream = retryUpstream
+		upstreamStatus = retryStatus
 		previewPass = retryPreviewPass
 		safeUserInput = retryUserInput
 		safeAssistantContent = retryAssistantContent
 	}
 	content := chatCompletionText(upstream)
+	if strings.TrimSpace(content) == "" {
+		emptyErr := newCriticPipelineError("CRITIC_EMPTY_RESPONSE", "provider_response", true, upstreamStatus, errors.New("critic provider returned no assistant content"))
+		trace := criticFailureTrace(promptSource, cfg, upstreamStatus, emptyErr, "")
+		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+			trace["request_overrides"] = requestOverrides
+		}
+		if len(providerRetryTrace) > 0 {
+			trace["provider_retry"] = providerRetryTrace
+		}
+		return nil, trace, emptyErr
+	}
 	parsed, err := parseJSONFromLLMContent(content)
 	if err != nil {
-		parseTrace := map[string]any{"raw_preview": truncateRunes(content, 1000), "prompt_source": promptSource}
+		code := "CRITIC_JSON_PARSE_FAILED"
+		if strings.Contains(err.Error(), "critic_json_missing") {
+			code = "CRITIC_JSON_MISSING"
+		}
+		parseErr := newCriticPipelineError(code, "json_parse", true, upstreamStatus, err)
+		parseTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, parseErr, content)
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			parseTrace["request_overrides"] = requestOverrides
 		}
-		return nil, parseTrace, err
+		return nil, parseTrace, parseErr
 	}
+	if err := validateCriticExtractionSchema(parsed); err != nil {
+		schemaErr := newCriticPipelineError("CRITIC_SCHEMA_INVALID", "schema_validation", true, upstreamStatus, err)
+		schemaTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, schemaErr, content)
+		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
+			schemaTrace["request_overrides"] = requestOverrides
+		}
+		return nil, schemaTrace, schemaErr
+	}
+	parsed, quarantineTrace := quarantineCriticProtectedCandidates(parsed, safeUserInput, safeAssistantContent)
 	trace := map[string]any{
 		"prompt_source": promptSource,
 		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
+		"provider":      strings.TrimSpace(cfg.Provider),
+		"http_status":   upstreamStatus,
 		"usage":         upstream["usage"],
 		"input_budget": map[string]any{
 			"user_input_chars":        len([]rune(safeUserInput)),
@@ -161,6 +346,9 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			},
 		},
 		"preview_pass": previewPass,
+	}
+	if len(quarantineTrace) > 0 {
+		trace["protected_candidate_quarantine"] = quarantineTrace
 	}
 	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 		trace["request_overrides"] = requestOverrides
@@ -1054,6 +1242,351 @@ func hasJSONLiteralAt(input string, pos int, literal string) bool {
 
 func isJSONLiteralChar(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
+}
+
+func validateCriticExtractionSchema(raw map[string]any) error {
+	if raw == nil || len(raw) == 0 {
+		return errors.New("critic schema requires a non-empty JSON object")
+	}
+	recognizedPayload := false
+	stringFields := []string{"turn_summary"}
+	numberFields := []string{"importance_score", "emotional_intensity", "narrative_significance"}
+	arrayFields := []string{
+		"evidence_excerpts", "kg_triples", "character_deltas", "pending_threads",
+		"speaker_attributions", "world_rules", "physical_conditions",
+		"entity_conditions", "narrative_events", "state_claims", "belief_updates",
+		"subjective_entity_memories", "protected_secrets",
+		"character_identity_accuracy", "persona_capsule_candidates",
+	}
+	objectFields := []string{
+		"entities", "relationship_memory", "state_deltas", "world_rule_audit",
+		"world_state", "archive_hint",
+	}
+	for _, field := range stringFields {
+		value, exists := raw[field]
+		if !exists {
+			continue
+		}
+		recognizedPayload = true
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("critic schema field %s must be a string", field)
+		}
+	}
+	for _, field := range numberFields {
+		value, exists := raw[field]
+		if !exists {
+			continue
+		}
+		switch value.(type) {
+		case float64, float32, int, int32, int64, json.Number:
+		default:
+			return fmt.Errorf("critic schema field %s must be a number", field)
+		}
+	}
+	for _, field := range arrayFields {
+		value, exists := raw[field]
+		if !exists {
+			continue
+		}
+		recognizedPayload = true
+		if _, ok := value.([]any); !ok {
+			return fmt.Errorf("critic schema field %s must be an array", field)
+		}
+	}
+	for _, field := range objectFields {
+		value, exists := raw[field]
+		if !exists {
+			continue
+		}
+		recognizedPayload = true
+		if _, ok := value.(map[string]any); !ok {
+			return fmt.Errorf("critic schema field %s must be an object", field)
+		}
+	}
+	if excerpts, ok := raw["evidence_excerpts"].([]any); ok {
+		for index, excerpt := range excerpts {
+			if _, ok := excerpt.(string); !ok {
+				return fmt.Errorf("critic schema field evidence_excerpts[%d] must be a string", index)
+			}
+		}
+	}
+	if !recognizedPayload {
+		return errors.New("critic schema has no recognized extraction payload")
+	}
+	return nil
+}
+
+func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistantContent string) (map[string]any, map[string]any) {
+	if raw == nil {
+		return raw, nil
+	}
+	out := make(map[string]any, len(raw))
+	for key, value := range raw {
+		out[key] = value
+	}
+	source := strings.TrimSpace(userInput + "\n" + assistantContent)
+	reasons := map[string]int{}
+	total := 0
+	kept := 0
+	quarantine := func(reason string) {
+		reasons[reason]++
+	}
+
+	if values, ok := raw["protected_secrets"].([]any); ok {
+		safe := make([]any, 0, len(values))
+		for _, value := range values {
+			total++
+			item, itemOK := value.(map[string]any)
+			if !itemOK || item == nil {
+				quarantine("protected_secret_not_object")
+				continue
+			}
+			owner := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "owner"),
+				stringFromMap(item, "owner_entity_name"),
+				stringFromMap(item, "character_name"),
+			))
+			summary := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "summary"),
+				stringFromMap(item, "memory_text"),
+				stringFromMap(item, "secret_summary"),
+				stringFromMap(item, "text"),
+			))
+			policy := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "disclosure_policy"),
+				stringFromMap(item, "target_reveal_policy"),
+				stringFromMap(item, "reveal_policy"),
+			))
+			evidence := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "evidence_excerpt"),
+				stringFromMap(item, "evidence"),
+			))
+			switch {
+			case owner == "" || summary == "":
+				quarantine("protected_secret_identity_or_summary_missing")
+			case policy == "":
+				quarantine("protected_secret_policy_missing")
+			case !criticEvidenceOccursInSource(evidence, source):
+				quarantine("protected_secret_evidence_unbound")
+			case !criticOwnerOccursInSource(owner, source) ||
+				!criticProtectedClaimSupported(summary, evidence, owner):
+				quarantine("protected_secret_claim_unbound")
+			default:
+				safe = append(safe, item)
+				kept++
+			}
+		}
+		out["protected_secrets"] = safe
+	}
+
+	if values, ok := raw["subjective_entity_memories"].([]any); ok {
+		safe := make([]any, 0, len(values))
+		for _, value := range values {
+			item, itemOK := value.(map[string]any)
+			if !itemOK || item == nil {
+				total++
+				quarantine("subjective_memory_not_object")
+				continue
+			}
+			role := strings.ToLower(strings.TrimSpace(stringFromMap(item, "owner_entity_role")))
+			visibility := strings.ToLower(strings.TrimSpace(stringFromMap(item, "owner_visibility")))
+			portability := strings.ToLower(strings.TrimSpace(stringFromMap(item, "portability")))
+			defaultsToProtected := (role == "" && visibility == "") ||
+				(role == "npc" && visibility == "")
+			protected := boolFromAny(item["secret_guard"]) ||
+				visibility == "owner_private" ||
+				portability == "npc_private_recollection" ||
+				defaultsToProtected
+			if !protected {
+				safe = append(safe, item)
+				continue
+			}
+			total++
+			owner := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "owner_entity_name"),
+				stringFromMap(item, "owner_entity_key"),
+				stringFromMap(item, "entity_name"),
+				stringFromMap(item, "name"),
+			))
+			text := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "memory_text"),
+				stringFromMap(item, "subjective_memory"),
+				stringFromMap(item, "recollection"),
+				stringFromMap(item, "interpretation"),
+				stringFromMap(item, "summary"),
+			))
+			policy := strings.TrimSpace(stringFromMap(item, "target_reveal_policy"))
+			evidence := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "evidence_excerpt"),
+				stringFromMap(item, "evidence"),
+			))
+			switch {
+			case owner == "" || text == "":
+				quarantine("protected_subjective_identity_or_text_missing")
+			case policy == "":
+				quarantine("protected_subjective_policy_missing")
+			case !criticEvidenceOccursInSource(evidence, source):
+				quarantine("protected_subjective_evidence_unbound")
+			case !criticOwnerOccursInSource(owner, source) ||
+				!criticProtectedClaimSupported(text, evidence, owner):
+				quarantine("protected_subjective_claim_unbound")
+			default:
+				safe = append(safe, item)
+				kept++
+			}
+		}
+		out["subjective_entity_memories"] = safe
+	}
+
+	if values, ok := raw["character_identity_accuracy"].([]any); ok {
+		safe := make([]any, 0, len(values))
+		for _, value := range values {
+			total++
+			item, itemOK := value.(map[string]any)
+			if !itemOK || item == nil {
+				quarantine("protected_identity_not_object")
+				continue
+			}
+			surface := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "surface_identity_name"),
+				stringFromMap(item, "public_identity_name"),
+				stringFromMap(item, "alias_name"),
+			))
+			trueName := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "true_identity_name"),
+				stringFromMap(item, "canonical_entity_name"),
+				stringFromMap(item, "real_identity_name"),
+			))
+			policy := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "reveal_policy"),
+				stringFromMap(item, "target_reveal_policy"),
+				stringFromMap(item, "disclosure_policy"),
+			))
+			evidence := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "evidence_excerpt"),
+				stringFromMap(item, "evidence"),
+			))
+			switch {
+			case surface == "" || trueName == "" || !boolFromAny(item["same_entity"]):
+				quarantine("protected_identity_mapping_incomplete")
+			case policy == "":
+				quarantine("protected_identity_policy_missing")
+			case !criticEvidenceOccursInSource(evidence, source) ||
+				!criticProtectedIdentitySupported(surface, trueName, evidence, source):
+				quarantine("protected_identity_evidence_unbound")
+			default:
+				safe = append(safe, item)
+				kept++
+			}
+		}
+		out["character_identity_accuracy"] = safe
+	}
+
+	if total == 0 {
+		return out, nil
+	}
+	reasonPayload := map[string]any{}
+	for reason, count := range reasons {
+		reasonPayload[reason] = count
+	}
+	return out, map[string]any{
+		"contract_version":  "critic_protected_candidate_quarantine.v1",
+		"policy":            "exact_current_source_evidence_required",
+		"candidate_count":   total,
+		"kept_count":        kept,
+		"quarantined_count": total - kept,
+		"reasons":           reasonPayload,
+	}
+}
+
+func criticEvidenceOccursInSource(evidence, source string) bool {
+	evidence = strings.TrimSpace(evidence)
+	source = strings.TrimSpace(source)
+	return evidence != "" && source != "" && strings.Contains(source, evidence)
+}
+
+func criticOwnerOccursInSource(owner, source string) bool {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	source = strings.ToLower(strings.TrimSpace(source))
+	return owner != "" && source != "" && strings.Contains(source, owner)
+}
+
+func criticProtectedIdentitySupported(surface, trueName, evidence, source string) bool {
+	surface = strings.ToLower(strings.TrimSpace(surface))
+	trueName = strings.ToLower(strings.TrimSpace(trueName))
+	evidence = strings.ToLower(strings.TrimSpace(evidence))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if surface == "" || trueName == "" || evidence == "" || source == "" {
+		return false
+	}
+	return criticTextContainsDistinctIdentityPair(source, surface, trueName) &&
+		criticTextContainsDistinctIdentityPair(evidence, surface, trueName)
+}
+
+func criticTextContainsDistinctIdentityPair(text, surface, trueName string) bool {
+	if !strings.Contains(text, surface) || !strings.Contains(text, trueName) {
+		return false
+	}
+	if surface == trueName {
+		return true
+	}
+	if strings.Contains(surface, trueName) {
+		return strings.Contains(strings.ReplaceAll(text, surface, " "), trueName)
+	}
+	if strings.Contains(trueName, surface) {
+		return strings.Contains(strings.ReplaceAll(text, trueName, " "), surface)
+	}
+	return true
+}
+
+func criticProtectedClaimSupported(claim, evidence, owner string) bool {
+	claim = strings.ToLower(strings.TrimSpace(claim))
+	evidence = strings.ToLower(strings.TrimSpace(evidence))
+	if claim == "" || evidence == "" {
+		return false
+	}
+	if strings.Contains(claim, evidence) || strings.Contains(evidence, claim) {
+		return true
+	}
+	ownerTokens := criticSubstantiveTokens(owner)
+	claimTokens := criticSubstantiveTokens(claim)
+	evidenceTokens := criticSubstantiveTokens(evidence)
+	overlap := 0
+	for token := range claimTokens {
+		if _, ownerToken := ownerTokens[token]; ownerToken {
+			continue
+		}
+		if _, supported := evidenceTokens[token]; supported {
+			overlap++
+			if overlap >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func criticSubstantiveTokens(value string) map[string]struct{} {
+	tokens := map[string]struct{}{}
+	var current []rune
+	flush := func() {
+		if len(current) >= 2 {
+			token := string(current)
+			if _, ignored := criticClaimStopTokens[token]; !ignored {
+				tokens[token] = struct{}{}
+			}
+		}
+		current = current[:0]
+	}
+	for _, r := range strings.ToLower(value) {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			current = append(current, r)
+			continue
+		}
+		flush()
+	}
+	flush()
+	return tokens
 }
 
 func normalizeCriticExtraction(raw map[string]any) map[string]any {

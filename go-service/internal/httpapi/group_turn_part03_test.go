@@ -41,14 +41,15 @@ func TestCompleteTurnSubjectiveEntityMemoriesAutoSaveByOwner(t *testing.T) {
 				"target_reveal_policy": "requires_explicit_attachment",
 			},
 			map[string]any{
-				"owner_entity_key":  "asuna",
-				"owner_entity_name": "Asuna",
-				"owner_entity_role": "npc",
-				"memory_text":       "Asuna privately believes Siwoo is hiding fear from her.",
-				"importance_10":     6,
-				"emotional_weight":  0.7,
-				"evidence_excerpt":  "hiding fear",
-				"secret_guard":      true,
+				"owner_entity_key":     "asuna",
+				"owner_entity_name":    "Asuna",
+				"owner_entity_role":    "npc",
+				"memory_text":          "Asuna privately believes Siwoo is hiding fear from her.",
+				"importance_10":        6,
+				"emotional_weight":     0.7,
+				"evidence_excerpt":     "hiding fear",
+				"secret_guard":         true,
+				"target_reveal_policy": "owner_private_until_revealed",
 			},
 		},
 		"persona_capsule_candidates": []any{},
@@ -97,16 +98,18 @@ func TestCompleteTurnSubjectiveEntityMemoryDuplicateSkipped(t *testing.T) {
 	srv.Store = fake
 	srv.StoreOpenError = nil
 
-	extraction := normalizeCriticExtraction(map[string]any{
+	extraction := map[string]any{
 		"subjective_entity_memories": []any{
 			map[string]any{
 				"owner_entity_key":  "siwoo",
 				"owner_entity_name": "Siwoo",
+				"owner_entity_role": "protagonist",
+				"owner_visibility":  "player_known",
 				"memory_text":       memoryText,
 				"source_turn_index": 3,
 			},
 		},
-	})
+	}
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-subjective", 3, extraction, "The same hallway becomes dangerous when revisited.", completeTurnEmbeddingConfig{}, time.Unix(1300, 0))
 	if result.SubjectiveEntityMemories != 0 || len(fake.savedEntityMemories) != 0 {
 		t.Fatalf("duplicate subjective memory should be skipped, result=%#v saved=%#v", result, fake.savedEntityMemories)
@@ -123,6 +126,53 @@ func TestCompleteTurnSubjectiveEntityMemoryDuplicateSkipped(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnProtectedSubjectiveMemoryRequiresEvidenceAndRevealPolicy(t *testing.T) {
+	fake := &turnRecordingStore{}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	extraction := map[string]any{
+		"subjective_entity_memories": []any{
+			map[string]any{
+				"owner_entity_key":     "mina",
+				"owner_entity_name":    "Mina",
+				"owner_entity_role":    "npc",
+				"owner_visibility":     "owner_private",
+				"memory_text":          "Mina privately remembers hiding the key.",
+				"target_reveal_policy": "owner_private_until_revealed",
+				"secret_guard":         true,
+			},
+			map[string]any{
+				"owner_entity_key":  "rowan",
+				"owner_entity_name": "Rowan",
+				"owner_entity_role": "npc",
+				"owner_visibility":  "owner_private",
+				"memory_text":       "Rowan privately suspects Mina.",
+				"evidence_excerpt":  "Rowan suspects Mina",
+				"secret_guard":      true,
+			},
+		},
+	}
+	result := srv.saveCriticExtractionArtifacts(
+		context.Background(), "sess-protected", 5, extraction,
+		"Mina hid the key. Rowan suspects Mina.",
+		completeTurnEmbeddingConfig{}, time.Unix(1500, 0),
+	)
+	if result.SubjectiveEntityMemories != 0 || len(fake.savedEntityMemories) != 0 {
+		t.Fatalf("malformed protected memories must be quarantined: result=%#v saved=%#v", result, fake.savedEntityMemories)
+	}
+	reasons := map[string]bool{}
+	for _, skip := range result.SkipReasons {
+		if skip["surface"] == "subjective_entity_memories" {
+			reasons[fmt.Sprint(skip["reason"])] = true
+		}
+	}
+	if !reasons["protected_memory_evidence_required"] || !reasons["protected_memory_reveal_policy_required"] {
+		t.Fatalf("missing protected memory quarantine reasons: %#v", result.SkipReasons)
+	}
+}
+
 func TestCompleteTurnSubjectiveEntityMemoryDoesNotGuessRomanizedOwnerAlias(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnCharStates: []store.CharacterState{{CharacterName: "\uc774\uc2dc\uc6b0"}},
@@ -136,6 +186,8 @@ func TestCompleteTurnSubjectiveEntityMemoryDoesNotGuessRomanizedOwnerAlias(t *te
 			map[string]any{
 				"owner_entity_key":  "siwoo",
 				"owner_entity_name": "Siwoo",
+				"owner_entity_role": "protagonist",
+				"owner_visibility":  "player_known",
 				"memory_text":       "Siwoo privately remembers that Exit 2 felt unsafe.",
 				"source_turn_index": 4,
 			},
@@ -1041,12 +1093,12 @@ func TestCompleteTurnCriticProviderFailurePreservesRawTurnAndReportsReason(t *te
 	reasons, _ := resp["fail_reasons"].([]any)
 	found := false
 	for _, item := range reasons {
-		if strings.Contains(fmt.Sprint(item), "critic_extract_failed") {
+		if strings.Contains(fmt.Sprint(item), "CRITIC_PROVIDER_HTTP_ERROR") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected critic_extract_failed reason, got %+v", resp["fail_reasons"])
+		t.Fatalf("expected typed critic provider reason, got %+v", resp["fail_reasons"])
 	}
 	if !hasAuditEvent(fake.savedAuditLogs, "critic_extract_failed") {
 		t.Fatalf("expected critic_extract_failed audit log, got %#v", fake.savedAuditLogs)

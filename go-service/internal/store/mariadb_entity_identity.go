@@ -1,12 +1,19 @@
 package store
 
-import "context"
+import (
+	"context"
+	"database/sql"
+	"strings"
+)
+
+const acceptedSourceObservationContract = "source_acceptance_observation.v1"
 
 func (m *mariadbStore) SaveEntityIdentity(ctx context.Context, item *EntityIdentity) error {
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
-	_, err := m.db.ExecContext(ctx, `
+	return m.withActiveEntitySourceWrite(ctx, item.SourceContract, item.ChatSessionID, item.SourceRevision, func(exec memoryDerivationSQLExecutor) error {
+		_, err := exec.ExecContext(ctx, `
 		INSERT INTO entity_identities (
 			stable_entity_id, chat_session_id, identity_namespace, entity_kind,
 			canonical_label, lifecycle_state, review_state, presence_authority,
@@ -19,20 +26,22 @@ func (m *mariadbStore) SaveEntityIdentity(ctx context.Context, item *EntityIdent
 			last_seen_turn = GREATEST(last_seen_turn, VALUES(last_seen_turn)),
 			updated_at = VALUES(updated_at)
 	`, item.StableEntityID, item.ChatSessionID, item.IdentityNamespace, item.EntityKind,
-		item.CanonicalLabel, item.LifecycleState, item.ReviewState, item.PresenceAuthority,
-		item.OccurrenceAuthority, item.SourceContract, item.SourceRevision,
-		nullableString(item.SourceLogicalTurnID), nullableString(item.SourceMessageID),
-		nullableString(item.SourceGenerationID), item.SourceContentHash, item.SourceTurn,
-		item.SourceIndex, item.IdempotencyKey, item.MappingRevision, item.FirstSeenTurn,
-		item.LastSeenTurn, nonZeroTime(item.CreatedAt), nonZeroTime(item.UpdatedAt))
-	return err
+			item.CanonicalLabel, item.LifecycleState, item.ReviewState, item.PresenceAuthority,
+			item.OccurrenceAuthority, item.SourceContract, item.SourceRevision,
+			nullableString(item.SourceLogicalTurnID), nullableString(item.SourceMessageID),
+			nullableString(item.SourceGenerationID), item.SourceContentHash, item.SourceTurn,
+			item.SourceIndex, item.IdempotencyKey, item.MappingRevision, item.FirstSeenTurn,
+			item.LastSeenTurn, nonZeroTime(item.CreatedAt), nonZeroTime(item.UpdatedAt))
+		return err
+	})
 }
 
 func (m *mariadbStore) SaveEntityIdentitySurface(ctx context.Context, item *EntityIdentitySurface) error {
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
-	_, err := m.db.ExecContext(ctx, `
+	return m.withActiveEntitySourceWrite(ctx, item.SourceContract, item.ChatSessionID, item.SourceRevision, func(exec memoryDerivationSQLExecutor) error {
+		_, err := exec.ExecContext(ctx, `
 		INSERT INTO entity_identity_surfaces (
 			surface_id, stable_entity_id, chat_session_id, identity_namespace,
 			surface_kind, surface_text, normalized_surface, surface_scope,
@@ -42,20 +51,22 @@ func (m *mariadbStore) SaveEntityIdentitySurface(ctx context.Context, item *Enti
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)
 	`, item.SurfaceID, item.StableEntityID, item.ChatSessionID, item.IdentityNamespace,
-		item.SurfaceKind, item.SurfaceText, item.NormalizedSurface, item.Scope,
-		item.ValidFromTurn, nullableEntityIdentityPositiveInt(item.ValidToTurn), item.SourceContract,
-		item.SourceRevision, item.SourceTurn, nullableNonNegativeInt(item.SourceSpanStart),
-		nullableNonNegativeInt(item.SourceSpanEnd), nullableString(item.EvidenceExcerpt),
-		item.ReviewState, item.IdempotencyKey, nonZeroTime(item.CreatedAt),
-		nonZeroTime(item.UpdatedAt))
-	return err
+			item.SurfaceKind, item.SurfaceText, item.NormalizedSurface, item.Scope,
+			item.ValidFromTurn, nullableEntityIdentityPositiveInt(item.ValidToTurn), item.SourceContract,
+			item.SourceRevision, item.SourceTurn, nullableNonNegativeInt(item.SourceSpanStart),
+			nullableNonNegativeInt(item.SourceSpanEnd), nullableString(item.EvidenceExcerpt),
+			item.ReviewState, item.IdempotencyKey, nonZeroTime(item.CreatedAt),
+			nonZeroTime(item.UpdatedAt))
+		return err
+	})
 }
 
 func (m *mariadbStore) SaveEntityIdentityArtifactBinding(ctx context.Context, item *EntityIdentityArtifactBinding) error {
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
-	_, err := m.db.ExecContext(ctx, `
+	return m.withActiveEntitySourceWrite(ctx, item.SourceContract, item.ChatSessionID, item.SourceRevision, func(exec memoryDerivationSQLExecutor) error {
+		_, err := exec.ExecContext(ctx, `
 		INSERT INTO entity_identity_artifact_bindings (
 			binding_id, stable_entity_id, chat_session_id, artifact_kind,
 			artifact_role, artifact_ordinal, surface_text, review_state,
@@ -63,17 +74,19 @@ func (m *mariadbStore) SaveEntityIdentityArtifactBinding(ctx context.Context, it
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE review_state = VALUES(review_state)
 	`, item.BindingID, item.StableEntityID, item.ChatSessionID, item.ArtifactKind,
-		item.ArtifactRole, item.ArtifactOrdinal, item.SurfaceText, item.ReviewState,
-		item.SourceContract, item.SourceRevision, item.SourceTurn, item.IdempotencyKey,
-		nonZeroTime(item.CreatedAt))
-	return err
+			item.ArtifactRole, item.ArtifactOrdinal, item.SurfaceText, item.ReviewState,
+			item.SourceContract, item.SourceRevision, item.SourceTurn, item.IdempotencyKey,
+			nonZeroTime(item.CreatedAt))
+		return err
+	})
 }
 
 func (m *mariadbStore) SaveSpeakerAttribution(ctx context.Context, item *SpeakerAttribution) error {
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
-	_, err := m.db.ExecContext(ctx, `
+	return m.withActiveEntitySourceWrite(ctx, item.SourceContract, item.ChatSessionID, item.SourceRevision, func(exec memoryDerivationSQLExecutor) error {
+		_, err := exec.ExecContext(ctx, `
 		INSERT INTO speaker_attributions (
 			attribution_id, chat_session_id, speaker_entity_id, identity_namespace,
 			source_role, attribution_kind, attribution_state, review_state,
@@ -84,14 +97,63 @@ func (m *mariadbStore) SaveSpeakerAttribution(ctx context.Context, item *Speaker
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)
 	`, item.AttributionID, item.ChatSessionID, item.SpeakerEntityID,
-		item.IdentityNamespace, item.SourceRole, item.AttributionKind,
-		item.AttributionState, item.ReviewState, item.Confidence, item.SourceContract,
-		item.SourceRevision, nullableString(item.SourceLogicalTurn),
-		nullableString(item.SourceMessageID), nullableString(item.SourceGeneration),
-		item.SourceContentHash, item.SourceTurn, item.SourceSpanStart, item.SourceSpanEnd,
-		item.EvidenceExcerpt, item.IdempotencyKey, nonZeroTime(item.CreatedAt),
-		nonZeroTime(item.UpdatedAt))
-	return err
+			item.IdentityNamespace, item.SourceRole, item.AttributionKind,
+			item.AttributionState, item.ReviewState, item.Confidence, item.SourceContract,
+			item.SourceRevision, nullableString(item.SourceLogicalTurn),
+			nullableString(item.SourceMessageID), nullableString(item.SourceGeneration),
+			item.SourceContentHash, item.SourceTurn, item.SourceSpanStart, item.SourceSpanEnd,
+			item.EvidenceExcerpt, item.IdempotencyKey, nonZeroTime(item.CreatedAt),
+			nonZeroTime(item.UpdatedAt))
+		return err
+	})
+}
+
+func (m *mariadbStore) withActiveEntitySourceWrite(
+	ctx context.Context,
+	sourceContract string,
+	chatSessionID string,
+	sourceRevision string,
+	write func(memoryDerivationSQLExecutor) error,
+) error {
+	if strings.TrimSpace(sourceContract) != acceptedSourceObservationContract {
+		return write(m.db)
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	sourceRevision = strings.TrimSpace(sourceRevision)
+	if chatSessionID == "" || sourceRevision == "" {
+		return ErrSourceRevisionStale
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var lifecycle string
+	err = tx.QueryRowContext(ctx, `
+		SELECT lifecycle_state
+		FROM memory_source_revisions
+		WHERE chat_session_id = ? AND source_revision = ?
+		FOR UPDATE
+	`, chatSessionID, sourceRevision).Scan(&lifecycle)
+	if err == sql.ErrNoRows || strings.TrimSpace(lifecycle) != "active" {
+		return ErrSourceRevisionStale
+	}
+	if err != nil {
+		return err
+	}
+	if err := write(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func nullableEntityIdentityPositiveInt(value int) any {

@@ -251,6 +251,8 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			sourcesByTurn[source.TurnIndex] = append(sourcesByTurn[source.TurnIndex], source)
 		}
 		queued := 0
+		reopened := 0
+		now := time.Now().UTC()
 		for _, turn := range turns {
 			candidates := sourcesByTurn[turn]
 			switch {
@@ -274,7 +276,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 				})
 			default:
 				inserted, enqueueErr := s.enqueueSourceRevisionReprocessingJob(
-					ctx, queue, &candidates[0], "admin_rescan_requested", time.Now().UTC(),
+					ctx, queue, &candidates[0], "admin_rescan_requested", now,
 				)
 				if enqueueErr != nil {
 					failed++
@@ -284,10 +286,81 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 					})
 					break
 				}
+				if inserted {
+					succeeded++
+					processedTurns = append(processedTurns, turn)
+					queued++
+					break
+				}
+				if !forceDerivedRebuild {
+					skipped++
+					skippedTurns = append(skippedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "reprocessing_job_already_exists",
+					})
+					break
+				}
+				reopener, reopenOK := s.Store.(store.MemoryReprocessingJobReopener)
+				if !reopenOK {
+					skipped++
+					skippedTurns = append(skippedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "reprocessing_reopen_unavailable",
+					})
+					break
+				}
+				source := &candidates[0]
+				idempotencyKey := completeTurnReprocessingIdempotencyKey(
+					source.ChatSessionID,
+					source.SourceRevision,
+					store.MemoryAdmissionContract,
+					completeTurnCriticPipelineVersion,
+					memoryAdmissionIndexVersion,
+				)
+				wasReopened, reopenErr := reopener.ReopenMemoryReprocessingJob(
+					ctx,
+					idempotencyKey,
+					source.ChatSessionID,
+					source.SourceRevision,
+					now,
+				)
+				if reopenErr != nil {
+					failed++
+					failedTurns = append(failedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "reprocessing_reopen_failed",
+					})
+					break
+				}
+				if !wasReopened {
+					skipped++
+					skippedTurns = append(skippedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "reprocessing_job_not_reopened",
+					})
+					break
+				}
 				succeeded++
 				processedTurns = append(processedTurns, turn)
-				if inserted {
-					queued++
+				queued++
+				reopened++
+				if auditErr := s.Store.SaveAuditLog(ctx, &store.AuditLog{
+					ChatSessionID: sid,
+					EventType:     "memory_reprocessing_reopened",
+					TargetType:    "source_revision",
+					TargetID:      0,
+					Summary:       fmt.Sprintf("Reopened derived-memory rebuild for turn %d", turn),
+					DetailsJSON: mustCompactJSON(map[string]any{
+						"turn_index":      turn,
+						"source_revision": source.SourceRevision,
+						"idempotency_key": idempotencyKey,
+						"raw_preserved":   true,
+						"secondary_rows":  "preserved_for_operator_review",
+					}),
+					Source:    s.storeWriteSource(),
+					CreatedAt: now,
+				}); auditErr != nil {
+					warnings = append(warnings, "memory_reprocessing_reopen_audit_failed")
 				}
 			}
 			if progress != nil {
@@ -308,6 +381,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			"failed":              failed,
 			"skipped":             skipped,
 			"queued":              queued,
+			"reopened":            reopened,
 			"processed_turns":     processedTurns,
 			"failed_turns":        failedTurns,
 			"skipped_turns":       skippedTurns,

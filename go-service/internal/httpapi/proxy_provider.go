@@ -33,6 +33,34 @@ type proxyRequestPolicy struct {
 	Purpose      string
 }
 
+type proxyEmptyContentError struct {
+	Provider string
+}
+
+func (e *proxyEmptyContentError) Error() string {
+	provider := strings.TrimSpace(e.Provider)
+	if provider == "" {
+		provider = "provider"
+	}
+	return provider + " returned no text content"
+}
+
+type proxyLocalRequestError struct {
+	Stage string
+	Cause error
+}
+
+func (e *proxyLocalRequestError) Error() string {
+	if e.Cause == nil {
+		return strings.TrimSpace(e.Stage) + " failed"
+	}
+	return e.Cause.Error()
+}
+
+func (e *proxyLocalRequestError) Unwrap() error {
+	return e.Cause
+}
+
 func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map[string]any, int, error) {
 	return callProxyProviderWithPolicy(ctx, req, proxyRequestPolicy{})
 }
@@ -43,7 +71,10 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 	model := strings.TrimSpace(stringPtrValue(req.Model, ""))
 	provider := strings.ToLower(strings.TrimSpace(stringPtrValue(req.Provider, "")))
 	if provider == "" || endpoint == "" || model == "" || (apiKey == "" && provider != "ollama") {
-		return nil, http.StatusBadRequest, fmt.Errorf("provider / endpoint / api_key / model is required")
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "configuration",
+			Cause: fmt.Errorf("provider / endpoint / api_key / model is required"),
+		}
 	}
 
 	timeout := time.Duration(int64Value(req.TimeoutMs, 60000)) * time.Millisecond
@@ -63,7 +94,10 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 	case "openai", "openrouter", "llmgateway", "copilot", "ollama", "custom":
 		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider)
 	default:
-		return nil, http.StatusBadRequest, fmt.Errorf("unsupported provider %q", provider)
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "configuration",
+			Cause: fmt.Errorf("unsupported provider %q", provider),
+		}
 	}
 }
 
@@ -121,7 +155,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	}
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
 	if overrideErr != nil {
-		return nil, http.StatusBadRequest, overrideErr
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
 	}
 	if provider == "copilot" {
 		token, status, err := proxyGetCopilotToken(ctx, apiKey)
@@ -192,7 +226,7 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	}
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, "claude", false)
 	if overrideErr != nil {
-		return nil, http.StatusBadRequest, overrideErr
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
 	}
 	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
 	if err != nil {
@@ -203,7 +237,7 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	}
 	content := proxyExtractClaudeText(data)
 	if content == "" {
-		return nil, http.StatusBadGateway, fmt.Errorf("Claude returned no text content")
+		return nil, status, &proxyEmptyContentError{Provider: "claude"}
 	}
 	resp := proxyNormalizeChatResponse(content, model, "stop")
 	proxyAttachClaudeUsage(resp, data, overrideTrace)
@@ -257,16 +291,19 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	}
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, geminiProvider, vertex)
 	if overrideErr != nil {
-		return nil, http.StatusBadRequest, overrideErr
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
 	}
 	if policyErr := proxyApplyJSONResponsePolicy(body, overrideTrace, policy); policyErr != nil {
-		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, policyErr
+		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "request_build",
+			Cause: policyErr,
+		}
 	}
 	if vertex {
 		target = proxyNormalizeVertexEndpoint(endpoint, model)
 		resolvedTarget, resolveErr := proxyResolveVertexProjectID(target, apiKey)
 		if resolveErr != nil {
-			return nil, http.StatusBadRequest, resolveErr
+			return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: resolveErr}
 		}
 		target = resolvedTarget
 		token, status, tokenErr := proxyGetVertexAccessToken(ctx, apiKey)
@@ -289,7 +326,7 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	}
 	content := proxyExtractGeminiText(data)
 	if content == "" {
-		return nil, http.StatusBadGateway, fmt.Errorf("Gemini/Vertex returned no text content")
+		return nil, status, &proxyEmptyContentError{Provider: geminiProvider}
 	}
 	resp := proxyNormalizeChatResponse(content, model, "stop")
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
@@ -398,10 +435,16 @@ func proxyGetVertexAccessToken(ctx context.Context, serviceAccountJSON string) (
 		TokenURI    string `json:"token_uri"`
 	}
 	if err := json.Unmarshal([]byte(serviceAccountJSON), &cred); err != nil {
-		return "", http.StatusBadRequest, fmt.Errorf("Vertex AI Key must be a JSON service account credential")
+		return "", http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "configuration",
+			Cause: fmt.Errorf("Vertex AI Key must be a JSON service account credential"),
+		}
 	}
 	if strings.TrimSpace(cred.ClientEmail) == "" || strings.TrimSpace(cred.PrivateKey) == "" {
-		return "", http.StatusBadRequest, fmt.Errorf("Vertex AI credentials missing client_email or private_key")
+		return "", http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "configuration",
+			Cause: fmt.Errorf("Vertex AI credentials missing client_email or private_key"),
+		}
 	}
 	tokenURI := strings.TrimSpace(cred.TokenURI)
 	if tokenURI == "" {
@@ -419,12 +462,12 @@ func proxyGetVertexAccessToken(ctx context.Context, serviceAccountJSON string) (
 	signingInput := header + "." + claim
 	privateKey, err := parseRSAPrivateKey(cred.PrivateKey)
 	if err != nil {
-		return "", http.StatusBadRequest, err
+		return "", http.StatusBadRequest, &proxyLocalRequestError{Stage: "configuration", Cause: err}
 	}
 	digest := sha256.Sum256([]byte(signingInput))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, digest[:])
 	if err != nil {
-		return "", http.StatusBadGateway, err
+		return "", http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: err}
 	}
 	form := url.Values{}
 	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
@@ -432,7 +475,7 @@ func proxyGetVertexAccessToken(ctx context.Context, serviceAccountJSON string) (
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURI, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", http.StatusBadGateway, err
+		return "", http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: err}
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")

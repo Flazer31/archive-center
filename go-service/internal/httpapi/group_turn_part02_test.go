@@ -502,10 +502,10 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if trace["vector_status"] != "ok" || resp["vectors_upserted"] != float64(3) || resp["vectors_evidence_upserted"] != float64(1) || resp["vectors_world_rule_upserted"] != float64(1) {
 		t.Fatalf("vector status/count mismatch: trace=%+v resp=%+v", trace, resp)
 	}
-	if resp["maintenance_enqueued"] != true {
-		t.Fatalf("maintenance_enqueued = %v, want true", resp["maintenance_enqueued"])
+	if resp["maintenance_enqueued"] != false || resp["maintenance_audit_recorded"] != true {
+		t.Fatalf("maintenance audit/queue truth mismatch: enqueued=%v audit=%v", resp["maintenance_enqueued"], resp["maintenance_audit_recorded"])
 	}
-	if trace["critic_pipeline_version"] != "ea1j.v1" || trace["critic_pipeline_split_enabled"] != true || trace["critic_pipeline_all_in_single_call"] != false {
+	if trace["critic_pipeline_version"] != "critic_pipeline.v2" || trace["critic_pipeline_split_enabled"] != true || trace["critic_pipeline_all_in_single_call"] != false {
 		t.Fatalf("critic pipeline handoff mismatch: %+v", trace)
 	}
 	if trace["critic_preview_pass_version"] != "ea1k.v1" || trace["direct_evidence_retention_policy_version"] != "ea1l.v1" {
@@ -516,7 +516,7 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 		t.Fatalf("critic_trace missing: %+v", trace)
 	}
 	pipeline, ok := criticTrace["pipeline"].(map[string]any)
-	if !ok || pipeline["policy_version"] != "ea1j.v1" {
+	if !ok || pipeline["policy_version"] != "critic_pipeline.v2" {
 		t.Fatalf("critic pipeline trace missing: %+v", criticTrace)
 	}
 	stages, ok := pipeline["stages"].(map[string]any)
@@ -549,7 +549,7 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if _, ok := previewPass["compaction_hint"].(map[string]any); !ok {
 		t.Fatalf("preview_pass compaction_hint missing: %+v", previewPass)
 	}
-	if trace["maintenance_queue_status"] != "audit_shadow_enqueued" || trace["maintenance_queue_depth"] != float64(1) {
+	if trace["maintenance_queue_status"] != "audit_recorded" || trace["maintenance_queue_depth"] != float64(0) {
 		t.Fatalf("maintenance handoff mismatch: %+v", trace)
 	}
 	maintenance, ok := trace["maintenance_handoff"].(map[string]any)
@@ -558,13 +558,13 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	}
 	foundMaintenanceAudit := false
 	for _, item := range fake.savedAuditLogs {
-		if item.EventType == "maintenance_enqueued" && item.TargetID == 2 {
+		if item.EventType == "maintenance_audit_recorded" && item.TargetID == 2 {
 			foundMaintenanceAudit = true
 			break
 		}
 	}
 	if !foundMaintenanceAudit {
-		t.Fatalf("expected maintenance_enqueued audit log, got %#v", fake.savedAuditLogs)
+		t.Fatalf("expected maintenance_audit_recorded audit log, got %#v", fake.savedAuditLogs)
 	}
 }
 

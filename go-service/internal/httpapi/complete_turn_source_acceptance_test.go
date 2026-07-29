@@ -235,15 +235,29 @@ func TestCompleteTurnSourceAcceptanceSupersedeCancelsOlderWorker(t *testing.T) {
 	firstReq := completeTurnAcceptanceTestRequest("session-1", 2, "first", 1000, "or1c_first", "generation-1", "not_streaming", "current_active_chat_tail", 3, 4)
 	first := server.beginCompleteTurnSourceAcceptance(context.Background(), firstReq)
 	workerCtx, release := server.completeTurnSourceAcceptanceProcessingContext(context.Background(), first, "session-1", 2)
-	defer release()
 	secondReq := completeTurnAcceptanceTestRequest("session-1", 2, "second", 2000, "or1c_second", "generation-2", "not_streaming", "current_active_chat_tail", 3, 4)
-	if second := server.beginCompleteTurnSourceAcceptance(context.Background(), secondReq); !second.Accepted {
-		t.Fatalf("second=%+v", second)
-	}
+	secondDone := make(chan completeTurnSourceAcceptanceDecision, 1)
+	go func() {
+		secondDone <- server.beginCompleteTurnSourceAcceptance(context.Background(), secondReq)
+	}()
 	select {
 	case <-workerCtx.Done():
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("older complete-turn worker context was not canceled by a newer revision")
+	}
+	select {
+	case second := <-secondDone:
+		t.Fatalf("newer revision returned before the canceled worker drained: %+v", second)
+	default:
+	}
+	release()
+	select {
+	case second := <-secondDone:
+		if !second.Accepted {
+			t.Fatalf("second=%+v", second)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("newer revision did not resume after the canceled worker drained")
 	}
 }
 

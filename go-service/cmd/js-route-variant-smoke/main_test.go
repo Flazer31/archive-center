@@ -742,6 +742,7 @@ func TestSeq01SettingsSaveResetAndBridgeConfigMarkers(t *testing.T) {
 		`settings.bridgeUrl = sanitizeBridgeUrl(`,
 		`settings.requestTimeoutMs = getCurrentUiRequestTimeoutMs();`,
 		`topK: $("mo-topK").value`,
+		`failedQueueMaxAttempts: failedQueueMaxAttempts(),`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {

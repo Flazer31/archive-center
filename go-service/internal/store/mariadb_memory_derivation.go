@@ -14,6 +14,7 @@ import (
 var _ SourceRevisionStore = (*mariadbStore)(nil)
 var _ MemoryDerivationLifecycleAvailability = (*mariadbStore)(nil)
 var _ MemoryReprocessingJobStore = (*mariadbStore)(nil)
+var _ MemoryReprocessingJobReopener = (*mariadbStore)(nil)
 var _ MemoryVectorOutboxStore = (*mariadbStore)(nil)
 
 func (m *mariadbStore) MemoryDerivationLifecycleEnabled() bool {
@@ -557,6 +558,119 @@ func (m *mariadbStore) EnqueueMemoryReprocessingJob(ctx context.Context, job *Me
 	if err != nil {
 		return false, err
 	}
+	return true, nil
+}
+
+func (m *mariadbStore) ReopenMemoryReprocessingJob(
+	ctx context.Context,
+	idempotencyKey string,
+	chatSessionID string,
+	sourceRevision string,
+	now time.Time,
+) (bool, error) {
+	if err := m.ensureDB(); err != nil {
+		return false, err
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	sourceRevision = strings.TrimSpace(sourceRevision)
+	if idempotencyKey == "" || chatSessionID == "" || sourceRevision == "" {
+		return false, fmt.Errorf("invalid memory reprocessing reopen request")
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var (
+		jobID       int64
+		sid         string
+		revision    string
+		status      string
+		leaseUntil  sql.NullTime
+		sourceState string
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT j.id, j.chat_session_id, j.source_revision,
+		       j.status, j.lease_until, s.lifecycle_state
+		FROM memory_reprocessing_jobs j
+		JOIN memory_source_revisions s
+		  ON s.chat_session_id = j.chat_session_id
+		 AND s.source_revision = j.source_revision
+		WHERE j.idempotency_key = ?
+		FOR UPDATE
+	`, idempotencyKey).Scan(
+		&jobID, &sid, &revision, &status, &leaseUntil, &sourceState,
+	)
+	if err == sql.ErrNoRows {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if sid != chatSessionID || revision != sourceRevision {
+		return false, fmt.Errorf("memory reprocessing idempotency conflict")
+	}
+	if sourceState != "active" {
+		return false, ErrSourceRevisionStale
+	}
+	now = nonZeroTime(now)
+	if status == "leased" && leaseUntil.Valid && leaseUntil.Time.After(now) {
+		return false, fmt.Errorf("memory reprocessing job has an active lease")
+	}
+
+	sourceResult, err := tx.ExecContext(ctx, `
+		UPDATE memory_source_revisions
+		SET derived_admission_state = 'pending',
+		    derived_admission_version = '',
+		    derived_extractor_version = '',
+		    derived_index_version = '',
+		    derived_result_hash = NULL,
+		    derived_result_json = NULL,
+		    derived_admitted_at = NULL,
+		    updated_at = ?
+		WHERE chat_session_id = ?
+		  AND source_revision = ?
+		  AND lifecycle_state = 'active'
+	`, now, sid, revision)
+	if err != nil {
+		return false, err
+	}
+	if affected, err := sourceResult.RowsAffected(); err != nil {
+		return false, err
+	} else if affected != 1 {
+		return false, ErrSourceRevisionStale
+	}
+	jobResult, err := tx.ExecContext(ctx, `
+		UPDATE memory_reprocessing_jobs
+		SET status = 'pending',
+		    attempts = 0,
+		    retry_after = NULL,
+		    lease_owner = NULL,
+		    lease_until = NULL,
+		    last_error = NULL,
+		    updated_at = ?
+		WHERE id = ?
+		  AND idempotency_key = ?
+	`, now, jobID, idempotencyKey)
+	if err != nil {
+		return false, err
+	}
+	if affected, err := jobResult.RowsAffected(); err != nil {
+		return false, err
+	} else if affected != 1 {
+		return false, fmt.Errorf("memory reprocessing job reopen lost")
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	committed = true
 	return true, nil
 }
 

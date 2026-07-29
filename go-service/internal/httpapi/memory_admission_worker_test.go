@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,18 +18,21 @@ import (
 
 type memoryAdmissionWorkerStore struct {
 	store.Store
-	source         *store.MemorySourceRevision
-	job            *store.MemoryReprocessingJob
-	admissions     []*store.MemoryAdmission
-	completedJobs  []int64
-	failedJobs     []int64
-	failedRetryAt  []time.Time
-	enqueuedJobs   []*store.MemoryReprocessingJob
-	logs           []store.ChatLog
-	memories       []store.Memory
-	legacyMemories int
-	legacyEvidence int
-	nextEvidenceID int64
+	source          *store.MemorySourceRevision
+	job             *store.MemoryReprocessingJob
+	admissions      []*store.MemoryAdmission
+	completedJobs   []int64
+	failedJobs      []int64
+	failedRetryAt   []time.Time
+	failedPermanent []bool
+	failedReasons   []string
+	auditLogs       []*store.AuditLog
+	enqueuedJobs    []*store.MemoryReprocessingJob
+	logs            []store.ChatLog
+	memories        []store.Memory
+	legacyMemories  int
+	legacyEvidence  int
+	nextEvidenceID  int64
 }
 
 func (f *memoryAdmissionWorkerStore) MemoryDerivationLifecycleEnabled() bool {
@@ -127,9 +131,20 @@ func (f *memoryAdmissionWorkerStore) CompleteMemoryReprocessingJob(_ context.Con
 	return nil
 }
 
-func (f *memoryAdmissionWorkerStore) FailMemoryReprocessingJob(_ context.Context, id int64, _ string, _ time.Time, retryAt time.Time, _ bool, _ string) error {
+func (f *memoryAdmissionWorkerStore) FailMemoryReprocessingJob(_ context.Context, id int64, _ string, _ time.Time, retryAt time.Time, permanent bool, failure string) error {
 	f.failedJobs = append(f.failedJobs, id)
 	f.failedRetryAt = append(f.failedRetryAt, retryAt)
+	f.failedPermanent = append(f.failedPermanent, permanent)
+	f.failedReasons = append(f.failedReasons, failure)
+	return nil
+}
+
+func (f *memoryAdmissionWorkerStore) SaveAuditLog(_ context.Context, item *store.AuditLog) error {
+	if item == nil {
+		return nil
+	}
+	copy := *item
+	f.auditLogs = append(f.auditLogs, &copy)
 	return nil
 }
 
@@ -340,20 +355,162 @@ func TestHypaImportCannotBypassAcceptedSourceAdmission(t *testing.T) {
 	}
 }
 
-func TestMemoryReprocessingWorkerRetriesWithoutRuntimeCriticConfig(t *testing.T) {
+func TestMemoryReprocessingWorkerTerminatesWhenRetryLimitMissingOrInvalid(t *testing.T) {
+	for _, maxAttempts := range []int{0, -1, 12} {
+		t.Run(fmt.Sprintf("max_%d", maxAttempts), func(t *testing.T) {
+			now := time.Now().UTC()
+			st := newMemoryReprocessingWorkerStore(now)
+			srv := &Server{
+				Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+				RuntimeConfig: RuntimeConfig{FailedQueueMaxAttempts: maxAttempts},
+			}
+			result, err := srv.processMemoryReprocessingOnce(
+				context.Background(), "worker", now, time.Minute,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State != "terminal" ||
+				result.Failure != criticRetryLimitUnconfigured ||
+				len(st.failedJobs) != 1 ||
+				len(st.failedPermanent) != 1 || !st.failedPermanent[0] ||
+				len(st.completedJobs) != 0 ||
+				len(st.failedRetryAt) != 1 || !st.failedRetryAt[0].IsZero() ||
+				len(st.failedReasons) != 1 ||
+				!strings.HasPrefix(st.failedReasons[0], criticRetryLimitUnconfigured) {
+				t.Fatalf("result=%+v failed=%v permanent=%v reasons=%v completed=%v retry=%v",
+					result, st.failedJobs, st.failedPermanent, st.failedReasons,
+					st.completedJobs, st.failedRetryAt)
+			}
+		})
+	}
+}
+
+func TestMemoryReprocessingWorkerRetriesBelowConfiguredLimit(t *testing.T) {
 	now := time.Now().UTC()
 	st := newMemoryReprocessingWorkerStore(now)
-	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{FailedQueueMaxAttempts: 4},
+	}
 	result, err := srv.processMemoryReprocessingOnce(
 		context.Background(), "worker", now, time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "retryable" || len(st.failedJobs) != 1 ||
+	if result.State != "retryable" || result.Failure != "critic_config_missing" ||
+		len(st.failedJobs) != 1 ||
+		len(st.failedPermanent) != 1 || st.failedPermanent[0] ||
 		len(st.completedJobs) != 0 || !st.failedRetryAt[0].After(now) {
-		t.Fatalf("result=%+v failed=%v completed=%v retry=%v",
-			result, st.failedJobs, st.completedJobs, st.failedRetryAt)
+		t.Fatalf("result=%+v failed=%v permanent=%v completed=%v retry=%v",
+			result, st.failedJobs, st.failedPermanent, st.completedJobs, st.failedRetryAt)
+	}
+}
+
+func TestMemoryReprocessingWorkerTerminatesAtConfiguredRetryLimit(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryReprocessingWorkerStore(now)
+	st.job.Attempts = 3
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{FailedQueueMaxAttempts: 4},
+	}
+	result, err := srv.processMemoryReprocessingOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "terminal" ||
+		result.Failure != criticRetryLimitReached ||
+		len(st.failedPermanent) != 1 || !st.failedPermanent[0] ||
+		len(st.failedRetryAt) != 1 || !st.failedRetryAt[0].IsZero() ||
+		len(st.failedReasons) != 1 ||
+		!strings.HasPrefix(st.failedReasons[0], criticRetryLimitReached) {
+		t.Fatalf("result=%+v permanent=%v retry=%v reasons=%v",
+			result, st.failedPermanent, st.failedRetryAt, st.failedReasons)
+	}
+}
+
+func TestRuntimeConfigClampsFailedQueueMaxAttemptsWithoutHiddenDefault(t *testing.T) {
+	srv := &Server{}
+	srv.updateRuntimeConfig(map[string]any{"criticTimeout": 45})
+	if srv.RuntimeConfig.FailedQueueMaxAttempts != 0 {
+		t.Fatalf("missing retry setting gained hidden default %d", srv.RuntimeConfig.FailedQueueMaxAttempts)
+	}
+	srv.updateRuntimeConfig(map[string]any{"failedQueueMaxAttempts": 0})
+	if srv.RuntimeConfig.FailedQueueMaxAttempts != 1 {
+		t.Fatalf("lower clamp=%d, want 1", srv.RuntimeConfig.FailedQueueMaxAttempts)
+	}
+	srv.updateRuntimeConfig(map[string]any{"failedQueueMaxAttempts": 99})
+	if srv.RuntimeConfig.FailedQueueMaxAttempts != 11 {
+		t.Fatalf("upper clamp=%d, want 11", srv.RuntimeConfig.FailedQueueMaxAttempts)
+	}
+}
+
+func TestMemoryReprocessingWorkerAuditsTypedCriticFailure(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryReprocessingWorkerStore(now)
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"error":{"message":"retry test-key later"}}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			FailedQueueMaxAttempts: 4,
+		},
+	}
+	result, err := srv.processMemoryReprocessingOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "retryable" || len(st.auditLogs) != 1 {
+		t.Fatalf("result=%+v audit_count=%d", result, len(st.auditLogs))
+	}
+	audit := st.auditLogs[0]
+	if audit.EventType != "critic_reprocessing_failed" ||
+		audit.TargetType != "memory_reprocessing_job" ||
+		audit.TargetID != st.failedJobs[0] {
+		t.Fatalf("audit=%+v", audit)
+	}
+	if strings.Contains(audit.DetailsJSON, "test-key") {
+		t.Fatalf("audit leaked API key: %s", audit.DetailsJSON)
+	}
+	var details map[string]any
+	if err := json.Unmarshal([]byte(audit.DetailsJSON), &details); err != nil {
+		t.Fatal(err)
+	}
+	failure, _ := details["failure"].(map[string]any)
+	trace, _ := details["trace"].(map[string]any)
+	if failure["code"] != "CRITIC_PROVIDER_HTTP_ERROR" ||
+		failure["stage"] != "provider_response" ||
+		failure["retryable"] != true ||
+		failure["http_status"] != float64(http.StatusTooManyRequests) ||
+		trace["provider"] != "openai" ||
+		trace["model"] != "critic-test" ||
+		trace["http_status"] != float64(http.StatusTooManyRequests) ||
+		strings.TrimSpace(extractionStringFromAny(trace["raw_preview"])) == "" {
+		t.Fatalf("details=%+v", details)
+	}
+	if details["job_id"] != float64(9) ||
+		details["source_revision"] != "revision" ||
+		details["turn_index"] != float64(4) ||
+		details["attempt"] != float64(1) {
+		t.Fatalf("job evidence=%+v", details)
 	}
 }
 
@@ -402,6 +559,112 @@ func TestMemoryReprocessingWorkerUsesSameAdmissionWriterAndCompletes(t *testing.
 	if st.legacyMemories != 0 || st.legacyEvidence != 0 {
 		t.Fatalf("legacy parallel writes memory=%d evidence=%d",
 			st.legacyMemories, st.legacyEvidence)
+	}
+}
+
+func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryReprocessingWorkerStore(now)
+	st.source.AssistantContent = "The intimate scene involved penetration."
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		marker := "first failure marker"
+		if callCount == 2 {
+			marker = "second failure marker"
+		}
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"error":{"message":"` + marker + `"}}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			FailedQueueMaxAttempts: 4,
+		},
+	}
+	result, err := srv.processMemoryReprocessingOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "retryable" || callCount != 2 || len(st.auditLogs) != 1 {
+		t.Fatalf("result=%+v calls=%d audits=%d", result, callCount, len(st.auditLogs))
+	}
+	var details map[string]any
+	if err := json.Unmarshal([]byte(st.auditLogs[0].DetailsJSON), &details); err != nil {
+		t.Fatal(err)
+	}
+	trace := mapFromAny(details["trace"])
+	preview := stringFromMap(trace, "raw_preview")
+	if !strings.Contains(preview, "second failure marker") {
+		t.Fatalf("redacted retry failure preview was lost: %+v", details)
+	}
+}
+
+func TestMemoryReprocessingWorkerDiscardsProviderResultAfterSourceInvalidation(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryReprocessingWorkerStore(now)
+	requestStarted := make(chan struct{})
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		close(requestStarted)
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+		},
+	}
+	type workerOutcome struct {
+		result memoryReprocessingProcessResult
+		err    error
+	}
+	done := make(chan workerOutcome, 1)
+	go func() {
+		result, err := srv.processMemoryReprocessingOnce(
+			context.Background(), "worker", now, time.Minute,
+		)
+		done <- workerOutcome{result: result, err: err}
+	}()
+	<-requestStarted
+	st.source.LifecycleState = "superseded"
+	srv.invalidateCompleteTurnSourceAcceptances(
+		context.Background(), st.source.ChatSessionID, st.source.TurnIndex,
+		"test_reroll", 1,
+	)
+	outcome := <-done
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	if outcome.result.State != "stale_rejected" ||
+		outcome.result.Failure != "CRITIC_RESULT_SUPERSEDED" ||
+		len(st.admissions) != 0 ||
+		len(st.completedJobs) != 0 ||
+		len(st.failedJobs) != 1 ||
+		len(st.failedPermanent) != 1 || !st.failedPermanent[0] ||
+		len(st.failedReasons) != 1 || st.failedReasons[0] != "CRITIC_RESULT_SUPERSEDED" ||
+		len(st.auditLogs) != 0 {
+		t.Fatalf(
+			"result=%+v admissions=%d completed=%v failed=%v permanent=%v reasons=%v audits=%d",
+			outcome.result, len(st.admissions), st.completedJobs, st.failedJobs,
+			st.failedPermanent, st.failedReasons, len(st.auditLogs),
+		)
 	}
 }
 

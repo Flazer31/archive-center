@@ -69,6 +69,7 @@ type RuntimeConfig struct {
 	SourceSearchPlannerReasoningPreset string
 	SourceSearchPlannerReasoningEffort string
 	SourceSearchPlannerReasoningBudget *int64
+	FailedQueueMaxAttempts             int
 	TopK                               int64
 }
 
@@ -188,6 +189,19 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 			updated = append(updated, pluginKey)
 		}
 	}
+	setClampedInt := func(pluginKey string, target *int, minimum, maximum int) {
+		if value, ok := body[pluginKey]; ok {
+			parsed := intFromAny(value, 0)
+			if parsed < minimum {
+				parsed = minimum
+			}
+			if parsed > maximum {
+				parsed = maximum
+			}
+			*target = parsed
+			updated = append(updated, pluginKey)
+		}
+	}
 
 	setString("mainProvider", &s.RuntimeConfig.MainProvider)
 	setString("mainApiKey", &s.RuntimeConfig.MainAPIKey)
@@ -249,6 +263,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("sourceSearchPlannerReasoningPreset", &s.RuntimeConfig.SourceSearchPlannerReasoningPreset)
 	setString("sourceSearchPlannerReasoningEffort", &s.RuntimeConfig.SourceSearchPlannerReasoningEffort)
 	setIntPtr("sourceSearchPlannerReasoningBudgetTokens", &s.RuntimeConfig.SourceSearchPlannerReasoningBudget)
+	setClampedInt("failedQueueMaxAttempts", &s.RuntimeConfig.FailedQueueMaxAttempts, 1, 11)
 	setInt("topK", &s.RuntimeConfig.TopK)
 
 	return updated

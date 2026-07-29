@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -118,6 +119,234 @@ func TestProxyResolveVertexProjectIDRejectsMissingProjectID(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "missing project_id") {
 		t.Fatalf("expected missing project_id error, got %v", err)
 	}
+}
+
+func TestProxyEmptyContentPreservesProviderAndActual2xxStatus(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	tests := []struct {
+		name         string
+		provider     string
+		endpoint     string
+		model        string
+		upstreamCode int
+		upstreamBody string
+	}{
+		{
+			name:         "claude empty 204",
+			provider:     "claude",
+			endpoint:     "https://api.anthropic.example",
+			model:        "claude-test",
+			upstreamCode: http.StatusNoContent,
+			upstreamBody: "",
+		},
+		{
+			name:         "gemini empty candidates 206",
+			provider:     "gemini",
+			endpoint:     "https://generativelanguage.googleapis.com/v1beta",
+			model:        "gemini-test",
+			upstreamCode: http.StatusPartialContent,
+			upstreamBody: `{"candidates":[]}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tc.upstreamCode,
+					Status:     fmt.Sprintf("%d test", tc.upstreamCode),
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(tc.upstreamBody)),
+				}, nil
+			})}
+
+			_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:   strPtr("provider-key"),
+				Endpoint: strPtr(tc.endpoint),
+				Model:    strPtr(tc.model),
+				Provider: strPtr(tc.provider),
+				Messages: []any{map[string]any{"role": "user", "content": "return text"}},
+			})
+			var emptyErr *proxyEmptyContentError
+			if !errors.As(err, &emptyErr) {
+				t.Fatalf("error = %T %v, want *proxyEmptyContentError", err, err)
+			}
+			if emptyErr.Provider != tc.provider {
+				t.Fatalf("empty provider = %q, want %q", emptyErr.Provider, tc.provider)
+			}
+			if status != tc.upstreamCode {
+				t.Fatalf("status = %d, want actual upstream %d", status, tc.upstreamCode)
+			}
+		})
+	}
+}
+
+func TestProxyVertexEmptyContentPreservesActual2xxStatus(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	credential := testVertexServiceAccountJSON(t)
+	generateStatus := http.StatusMultiStatus
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://oauth2.googleapis.com/token":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"vertex-token","expires_in":3600}`)),
+			}, nil
+		case "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models/gemini-test:generateContent":
+			return &http.Response{
+				StatusCode: generateStatus,
+				Status:     "207 Multi-Status",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"candidates":[]}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected request URL: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   &credential,
+		Endpoint: strPtr("https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("vertex"),
+		Messages: []any{map[string]any{"role": "user", "content": "return text"}},
+	})
+	var emptyErr *proxyEmptyContentError
+	if !errors.As(err, &emptyErr) {
+		t.Fatalf("error = %T %v, want *proxyEmptyContentError", err, err)
+	}
+	if emptyErr.Provider != "vertex" {
+		t.Fatalf("empty provider = %q, want vertex", emptyErr.Provider)
+	}
+	if status != generateStatus {
+		t.Fatalf("status = %d, want actual upstream %d", status, generateStatus)
+	}
+}
+
+func TestProxyLocalRequestErrorsAreTypedSeparatelyFromUpstreamHTTP(t *testing.T) {
+	assertLocal := func(t *testing.T, status int, err error, wantStage string) {
+		t.Helper()
+		var localErr *proxyLocalRequestError
+		if !errors.As(err, &localErr) {
+			t.Fatalf("error = %T %v, want *proxyLocalRequestError", err, err)
+		}
+		if localErr.Stage != wantStage {
+			t.Fatalf("local stage = %q, want %q", localErr.Stage, wantStage)
+		}
+		if localErr.Cause == nil {
+			t.Fatal("local error did not preserve cause")
+		}
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", status)
+		}
+	}
+
+	t.Run("missing configuration", func(t *testing.T) {
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			Provider: strPtr("openai"),
+			Model:    strPtr("gpt-test"),
+			APIKey:   strPtr("sk-test"),
+		})
+		assertLocal(t, status, err, "configuration")
+	})
+
+	t.Run("unsupported provider", func(t *testing.T) {
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			Provider: strPtr("not-a-provider"),
+			Endpoint: strPtr("https://api.example.com"),
+			Model:    strPtr("model"),
+			APIKey:   strPtr("key"),
+		})
+		assertLocal(t, status, err, "configuration")
+	})
+
+	t.Run("invalid override json", func(t *testing.T) {
+		invalid := `["not-an-object"]`
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			Provider:      strPtr("openai"),
+			Endpoint:      strPtr("https://api.example.com"),
+			Model:         strPtr("gpt-test"),
+			APIKey:        strPtr("sk-test"),
+			ExtraBodyJSON: &invalid,
+		})
+		assertLocal(t, status, err, "request_build")
+	})
+
+	t.Run("json response mime conflict", func(t *testing.T) {
+		conflict := `{"generationConfig":{"responseMimeType":"text/plain"}}`
+		_, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+			Provider:      strPtr("gemini"),
+			Endpoint:      strPtr("https://generativelanguage.googleapis.com/v1beta"),
+			Model:         strPtr("gemini-test"),
+			APIKey:        strPtr("gem-key"),
+			ExtraBodyJSON: &conflict,
+		}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+		assertLocal(t, status, err, "request_build")
+	})
+
+	t.Run("vertex endpoint project resolution", func(t *testing.T) {
+		credentialWithoutProject := `{"client_email":"test@example.com","private_key":"unused"}`
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			Provider: strPtr("vertex"),
+			Endpoint: strPtr("https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"),
+			Model:    strPtr("gemini-test"),
+			APIKey:   &credentialWithoutProject,
+		})
+		assertLocal(t, status, err, "request_build")
+	})
+
+	for name, credential := range map[string]string{
+		"vertex malformed credential json": `{not-json`,
+		"vertex missing credential fields": `{"client_email":"test@example.com"}`,
+		"vertex invalid rsa key":           `{"client_email":"test@example.com","private_key":"not-a-private-key"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				Provider: strPtr("vertex"),
+				Endpoint: strPtr("https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models"),
+				Model:    strPtr("gemini-test"),
+				APIKey:   &credential,
+				Messages: []any{map[string]any{"role": "user", "content": "return text"}},
+			})
+			assertLocal(t, status, err, "configuration")
+		})
+	}
+
+	t.Run("actual upstream 400 remains upstream", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"upstream rejected request"}}`)),
+			}, nil
+		})}
+		defer func() { proxyHTTPClient = oldClient }()
+
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			Provider: strPtr("openai"),
+			Endpoint: strPtr("https://api.example.com/v1"),
+			Model:    strPtr("gpt-test"),
+			APIKey:   strPtr("sk-test"),
+		})
+		if err == nil {
+			t.Fatal("expected upstream HTTP error")
+		}
+		var localErr *proxyLocalRequestError
+		if errors.As(err, &localErr) {
+			t.Fatalf("actual upstream error was misclassified as local: %+v", localErr)
+		}
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want upstream 400", status)
+		}
+	})
 }
 
 func TestFormatMomentumSuffixOnlyForReadyOrPartialPackets(t *testing.T) {

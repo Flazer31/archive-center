@@ -199,6 +199,55 @@ func TestMariaDBReprocessingJobReplayLeaseRecoveryAndStaleCompletion(t *testing.
 	}
 }
 
+func TestMariaDBReopenMemoryReprocessingJobResetsExactAdmissionSnapshotAndPreservesRaw(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 7, 30, 3, 4, 5, 0, time.UTC)
+	idempotencyKey := strings.Repeat("c", 64)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT j.id, j.chat_session_id, j.source_revision").
+		WithArgs(idempotencyKey).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "chat_session_id", "source_revision", "status",
+			"lease_until", "lifecycle_state",
+		}).AddRow(17, "session", "revision", "completed", nil, "active"))
+	mock.ExpectExec(regexp.QuoteMeta(`
+		UPDATE memory_source_revisions
+		SET derived_admission_state = 'pending',
+		    derived_admission_version = '',
+		    derived_extractor_version = '',
+		    derived_index_version = '',
+		    derived_result_hash = NULL,
+		    derived_result_json = NULL,
+		    derived_admitted_at = NULL,
+		    updated_at = ?
+		WHERE chat_session_id = ?
+		  AND source_revision = ?
+		  AND lifecycle_state = 'active'
+	`)).
+		WithArgs(now, "session", "revision").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE memory_reprocessing_jobs").
+		WithArgs(now, int64(17), idempotencyKey).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	reopened, err := m.ReopenMemoryReprocessingJob(
+		context.Background(), idempotencyKey, "session", "revision", now,
+	)
+	if err != nil || !reopened {
+		t.Fatalf("reopened=%v err=%v", reopened, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBVectorOutboxReplayLeaseRecoveryAndSourceFence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

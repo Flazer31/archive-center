@@ -91,20 +91,30 @@ type sourceAcceptanceInvalidation struct {
 type completeTurnSourceAcceptanceWorker struct {
 	revision string
 	cancel   context.CancelFunc
+	done     chan struct{}
+}
+
+type completeTurnSourceReprocessingWorker struct {
+	sessionID string
+	turnIndex int
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 type completeTurnSourceAcceptanceLedger struct {
-	mu            sync.Mutex
-	current       map[string]completeTurnSourceAcceptanceState
-	invalidations map[string]sourceAcceptanceInvalidation
-	workers       map[string]completeTurnSourceAcceptanceWorker
+	mu                  sync.Mutex
+	current             map[string]completeTurnSourceAcceptanceState
+	invalidations       map[string]sourceAcceptanceInvalidation
+	workers             map[string]completeTurnSourceAcceptanceWorker
+	reprocessingWorkers map[string]*completeTurnSourceReprocessingWorker
 }
 
 func newCompleteTurnSourceAcceptanceLedger() *completeTurnSourceAcceptanceLedger {
 	return &completeTurnSourceAcceptanceLedger{
-		current:       map[string]completeTurnSourceAcceptanceState{},
-		invalidations: map[string]sourceAcceptanceInvalidation{},
-		workers:       map[string]completeTurnSourceAcceptanceWorker{},
+		current:             map[string]completeTurnSourceAcceptanceState{},
+		invalidations:       map[string]sourceAcceptanceInvalidation{},
+		workers:             map[string]completeTurnSourceAcceptanceWorker{},
+		reprocessingWorkers: map[string]*completeTurnSourceReprocessingWorker{},
 	}
 }
 
@@ -258,7 +268,11 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 		s.SourceAcceptances = ledger
 	}
 	ledger.mu.Lock()
-	defer ledger.mu.Unlock()
+	var supersededWorkerDone []<-chan struct{}
+	defer func() {
+		ledger.mu.Unlock()
+		waitForCompleteTurnSourceWorkers(supersededWorkerDone)
+	}()
 	ledger.loadDurableStateLocked(ctx, s.Store, sid)
 	latestCanonicalTurn := 0
 	if s.Store != nil {
@@ -347,7 +361,19 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 	}
 	if worker := ledger.workers[key]; worker.cancel != nil && worker.revision != decision.Revision {
 		worker.cancel()
+		if worker.done != nil {
+			supersededWorkerDone = append(supersededWorkerDone, worker.done)
+		}
 		delete(ledger.workers, key)
+	}
+	if previous.Revision != "" && previous.Revision != decision.Revision {
+		if worker := ledger.reprocessingWorkers[previous.Revision]; worker != nil {
+			worker.cancel()
+			if worker.done != nil {
+				supersededWorkerDone = append(supersededWorkerDone, worker.done)
+			}
+			delete(ledger.reprocessingWorkers, previous.Revision)
+		}
 	}
 	ledger.current[key] = state
 	if s.Store != nil && s.usesShadowWriteStore() {
@@ -431,7 +457,8 @@ func (s *Server) completeTurnSourceAcceptanceProcessingContext(parent context.Co
 	if previous := s.SourceAcceptances.workers[key]; previous.cancel != nil && previous.revision != decision.Revision {
 		previous.cancel()
 	}
-	s.SourceAcceptances.workers[key] = completeTurnSourceAcceptanceWorker{revision: decision.Revision, cancel: cancel}
+	worker := completeTurnSourceAcceptanceWorker{revision: decision.Revision, cancel: cancel, done: make(chan struct{})}
+	s.SourceAcceptances.workers[key] = worker
 	s.SourceAcceptances.mu.Unlock()
 	return ctx, func() {
 		s.SourceAcceptances.mu.Lock()
@@ -440,7 +467,90 @@ func (s *Server) completeTurnSourceAcceptanceProcessingContext(parent context.Co
 		}
 		s.SourceAcceptances.mu.Unlock()
 		cancel()
+		close(worker.done)
 	}
+}
+
+func (s *Server) completeTurnStoredSourceProcessingContext(parent context.Context, source *store.MemorySourceRevision) (context.Context, func()) {
+	if source == nil ||
+		strings.TrimSpace(source.ChatSessionID) == "" ||
+		strings.TrimSpace(source.SourceRevision) == "" ||
+		source.TurnIndex <= 0 {
+		ctx, cancel := context.WithCancel(parent)
+		cancel()
+		return ctx, func() {}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	ledger := s.SourceAcceptances
+	if ledger == nil {
+		ledger = newCompleteTurnSourceAcceptanceLedger()
+		s.SourceAcceptances = ledger
+	}
+	worker := &completeTurnSourceReprocessingWorker{
+		sessionID: source.ChatSessionID,
+		turnIndex: source.TurnIndex,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+	}
+	var previousDone <-chan struct{}
+	ledger.mu.Lock()
+	if previous := ledger.reprocessingWorkers[source.SourceRevision]; previous != nil {
+		previous.cancel()
+		previousDone = previous.done
+	}
+	ledger.reprocessingWorkers[source.SourceRevision] = worker
+	ledger.mu.Unlock()
+	waitForCompleteTurnSourceWorkers([]<-chan struct{}{previousDone})
+	return ctx, func() {
+		ledger.mu.Lock()
+		if ledger.reprocessingWorkers[source.SourceRevision] == worker {
+			delete(ledger.reprocessingWorkers, source.SourceRevision)
+		}
+		ledger.mu.Unlock()
+		cancel()
+		close(worker.done)
+	}
+}
+
+func waitForCompleteTurnSourceWorkers(workers []<-chan struct{}) {
+	for _, done := range workers {
+		if done != nil {
+			<-done
+		}
+	}
+}
+
+func (s *Server) cancelCompleteTurnSourceWorkers(sid string, fromTurn int) {
+	if strings.TrimSpace(sid) == "" || fromTurn <= 0 || s.SourceAcceptances == nil {
+		return
+	}
+	ledger := s.SourceAcceptances
+	var workers []<-chan struct{}
+	ledger.mu.Lock()
+	for key, state := range ledger.current {
+		if state.SessionID != sid || state.TurnIndex < fromTurn {
+			continue
+		}
+		if worker := ledger.workers[key]; worker.cancel != nil {
+			worker.cancel()
+			if worker.done != nil {
+				workers = append(workers, worker.done)
+			}
+			delete(ledger.workers, key)
+		}
+	}
+	for revision, worker := range ledger.reprocessingWorkers {
+		if worker == nil || worker.sessionID != sid || worker.turnIndex < fromTurn {
+			continue
+		}
+		worker.cancel()
+		if worker.done != nil {
+			workers = append(workers, worker.done)
+		}
+		delete(ledger.reprocessingWorkers, revision)
+	}
+	ledger.mu.Unlock()
+	waitForCompleteTurnSourceWorkers(workers)
 }
 
 func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.Context, st store.Store, sid string) {
@@ -524,6 +634,7 @@ func (s *Server) invalidateCompleteTurnSourceAcceptances(ctx context.Context, si
 	ledger.mu.Lock()
 	ledger.loadDurableStateLocked(ctx, s.Store, sid)
 	hasAcceptedSource := false
+	var workers []<-chan struct{}
 	for _, state := range ledger.current {
 		if state.SessionID == sid && state.TurnIndex >= fromTurn && state.Lifecycle == "active_final" {
 			hasAcceptedSource = true
@@ -549,11 +660,24 @@ func (s *Server) invalidateCompleteTurnSourceAcceptances(ctx context.Context, si
 			ledger.current[key] = state
 			if worker := ledger.workers[key]; worker.cancel != nil {
 				worker.cancel()
+				if worker.done != nil {
+					workers = append(workers, worker.done)
+				}
 				delete(ledger.workers, key)
 			}
 		}
 	}
+	for revision, worker := range ledger.reprocessingWorkers {
+		if worker != nil && worker.sessionID == sid && worker.turnIndex >= fromTurn {
+			worker.cancel()
+			if worker.done != nil {
+				workers = append(workers, worker.done)
+			}
+			delete(ledger.reprocessingWorkers, revision)
+		}
+	}
 	ledger.mu.Unlock()
+	waitForCompleteTurnSourceWorkers(workers)
 	if s.Store != nil && s.usesShadowWriteStore() {
 		invalidation := sourceAcceptanceInvalidation{FromTurn: fromTurn, ObservedAtMS: observedAt}
 		_ = s.Store.SaveAuditLog(context.WithoutCancel(ctx), &store.AuditLog{

@@ -152,19 +152,22 @@ func (s *Server) handleMaintenanceQueueStatus(w http.ResponseWriter, r *http.Req
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":          "ok",
-		"source":          "store_audit_shadow",
+		"source":          "store_audit",
 		"chat_session_id": sid,
 		"event_type":      eventType,
-		"queue_depth":     len(items),
+		"queue_depth":     0,
 		"audit_count":     len(items),
 		"status_counts":   statusCounts,
 		"items":           items,
 		"trace_summary": map[string]any{
-			"store_backed": true,
-			"limit":        limit,
-			"r1_shadow":    true,
+			"store_backed":        true,
+			"limit":               limit,
+			"r1_shadow":           true,
+			"worker_queue":        false,
+			"audit_log_listing":   true,
+			"actual_worker_queue": "memory_reprocessing_jobs",
 		},
-		"note": "maintenance queue-status is Store-backed R1 shadow evidence; no worker authority is enabled",
+		"note": "this compatibility endpoint lists maintenance audit records; queue_depth is zero because audit rows are not worker jobs",
 	})
 }
 
@@ -229,7 +232,7 @@ func (s *Server) handleMaintenanceShadowHandoff(w http.ResponseWriter, r *http.R
 	maintenancePassState := buildMaintenancePassStateTM1b(payload, turnIndex, driftSignals)
 	importanceReweighting := s.buildMaintenanceImportanceReweightingTM1c(r.Context(), sid, payload, turnIndex)
 	now := time.Now().UTC()
-	eventType := "maintenance_enqueued"
+	eventType := "maintenance_audit_recorded"
 	if len(driftSignals) > 0 {
 		eventType = "drift_detected"
 	} else if intFromAny(importanceReweighting["updated_count"], 0) > 0 {
@@ -256,11 +259,12 @@ func (s *Server) handleMaintenanceShadowHandoff(w http.ResponseWriter, r *http.R
 		refreshOutput[k] = v
 	}
 	trace := map[string]any{
-		"owner":                         "maintenance_shadow",
+		"owner":                         "maintenance_audit",
 		"action":                        action,
-		"status":                        "audit_shadow_enqueued",
+		"status":                        "audit_recorded",
 		"non_blocking":                  true,
-		"queue_mode":                    "audit_shadow",
+		"queue_mode":                    "none",
+		"audit_mode":                    "plan_only",
 		"shadow_only":                   shadowOnly,
 		"worker_enabled":                false,
 		"maintenance_pass_enabled":      false,
@@ -294,36 +298,32 @@ func (s *Server) handleMaintenanceShadowHandoff(w http.ResponseWriter, r *http.R
 			EventType:     eventType,
 			TargetType:    "turn",
 			TargetID:      int64(turnIndex),
-			Summary:       fmt.Sprintf("%s shadow handoff queued turn %d", action, turnIndex),
+			Summary:       fmt.Sprintf("%s audit recorded turn %d", action, turnIndex),
 			DetailsJSON:   mustCompactJSON(auditDetails),
 			Source:        s.storeWriteSource(),
 			CreatedAt:     now,
 		})
 		if err != nil {
 			auditErr = err.Error()
-			trace["status"] = "audit_shadow_enqueue_failed"
+			trace["status"] = "audit_record_failed"
 			trace["error"] = auditErr
 		} else {
 			auditSaved = true
 		}
 	}
-	queueDepth := 0
-	if auditSaved {
-		queueDepth = 1
-	}
 	status := "ok"
 	if auditErr != "" {
-		status = "audit_shadow_enqueue_failed"
+		status = "audit_record_failed"
 	}
 	lastVerifiedTurn := intFromAny(payload["last_verified_turn"], turnIndex)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                        status,
-		"source":                        "store_audit_shadow",
+		"source":                        "store_audit",
 		"action":                        action,
 		"chat_session_id":               sid,
 		"turn_index":                    turnIndex,
 		"last_verified_turn":            lastVerifiedTurn,
-		"queue_depth":                   queueDepth,
+		"queue_depth":                   0,
 		"shadow_only":                   shadowOnly,
 		"maintenance_pass_enabled":      false,
 		"worker_enabled":                false,
@@ -336,7 +336,7 @@ func (s *Server) handleMaintenanceShadowHandoff(w http.ResponseWriter, r *http.R
 		"memory_importance_reweighting": importanceReweighting,
 		"trace_summary":                 trace,
 		"changed_at":                    now,
-		"note":                          "maintenance is audit-shadow only; no guidance state mutation or worker authority is enabled",
+		"note":                          "maintenance audit was recorded; no worker job was enqueued",
 	})
 }
 

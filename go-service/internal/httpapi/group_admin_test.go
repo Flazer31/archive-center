@@ -949,11 +949,11 @@ func TestMaintenanceQueueStatusReadsAuditStore(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["source"] != "store_audit_shadow" {
-		t.Fatalf("source = %v, want store_audit_shadow", resp["source"])
+	if resp["source"] != "store_audit" {
+		t.Fatalf("source = %v, want store_audit", resp["source"])
 	}
-	if resp["queue_depth"] != float64(2) {
-		t.Fatalf("queue_depth = %v, want 2", resp["queue_depth"])
+	if resp["queue_depth"] != float64(0) || resp["audit_count"] != float64(2) {
+		t.Fatalf("audit listing must not impersonate a worker queue: queue=%v audit=%v", resp["queue_depth"], resp["audit_count"])
 	}
 	counts, ok := resp["status_counts"].(map[string]any)
 	if !ok {

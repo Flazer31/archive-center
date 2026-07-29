@@ -8,16 +8,17 @@ import (
 )
 
 const (
-	completeTurnCriticPipelineVersion          = "ea1j.v1"
+	completeTurnCriticPipelineVersion          = "critic_pipeline.v2"
 	completeTurnCriticPreviewPassVersion       = "ea1k.v1"
 	completeTurnDirectEvidenceRetentionVersion = "ea1l.v1"
-	completeTurnMaintenancePlanVersion         = "r3c.v1"
+	completeTurnMaintenancePlanVersion         = "maintenance_audit.v2"
 	completeTurnHierarchyPromotionVersion      = "step23.guarded_worker.v1"
 	completeTurnAutoContinueUserInputMarker    = "[auto-continue]"
 )
 
 type completeTurnMaintenanceHandoff struct {
 	Enqueued       bool
+	AuditRecorded  bool
 	QueueStatus    string
 	QueueDepth     int
 	RefreshEnabled bool

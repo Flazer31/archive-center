@@ -262,18 +262,18 @@ func TestMaintenanceEnqueueShadowWritesAuditAndTrace(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["status"] != "ok" || resp["queue_depth"] != float64(1) || resp["maintenance_pass_enabled"] != false {
+	if resp["status"] != "ok" || resp["queue_depth"] != float64(0) || resp["maintenance_pass_enabled"] != false || resp["audit_written"] != true {
 		t.Fatalf("unexpected enqueue response: %+v", resp)
 	}
 	trace, ok := resp["trace_summary"].(map[string]any)
-	if !ok || trace["owner"] != "maintenance_shadow" || trace["non_blocking"] != true || trace["worker_enabled"] != false {
+	if !ok || trace["owner"] != "maintenance_audit" || trace["non_blocking"] != true || trace["worker_enabled"] != false || trace["queue_mode"] != "none" {
 		t.Fatalf("trace_summary mismatch: %+v", trace)
 	}
 	refresh, ok := resp["refresh_output"].(map[string]any)
 	if !ok || refresh["story_plan_refresh"] != "shadow_candidate" || refresh["director_refresh"] != "shadow_candidate" || refresh["writeback_enabled"] != false {
 		t.Fatalf("refresh_output mismatch: %+v", refresh)
 	}
-	if len(fake.auditLogs) != 1 || fake.auditLogs[0].EventType != "maintenance_enqueued" || fake.auditLogs[0].ChatSessionID != "sess-maint" || fake.auditLogs[0].TargetID != 12 {
+	if len(fake.auditLogs) != 1 || fake.auditLogs[0].EventType != "maintenance_audit_recorded" || fake.auditLogs[0].ChatSessionID != "sess-maint" || fake.auditLogs[0].TargetID != 12 {
 		t.Fatalf("expected maintenance audit, got %#v", fake.auditLogs)
 	}
 }
@@ -324,7 +324,7 @@ func TestMaintenancePassPathUsesSessionAndShadowOutput(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp["chat_session_id"] != "sess-path" || resp["action"] != "maintenance_pass" || resp["queue_depth"] != float64(1) {
+	if resp["chat_session_id"] != "sess-path" || resp["action"] != "maintenance_pass" || resp["queue_depth"] != float64(0) || resp["audit_written"] != true {
 		t.Fatalf("maintenance-pass response mismatch: %+v", resp)
 	}
 	if len(fake.auditLogs) != 1 || fake.auditLogs[0].ChatSessionID != "sess-path" {

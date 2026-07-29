@@ -10566,6 +10566,7 @@
       supervisorTimeout: s.supervisorTimeout,
       criticTimeout: s.criticTimeout,
       embeddingTimeout: s.embeddingTimeout,
+      failedQueueMaxAttempts: failedQueueMaxAttempts(),
     };
 
     return safeCall(() => bridgeFetch("/config/update", {

@@ -558,6 +558,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	reprocessingReason := ""
 	reprocessingDurable := false
 	var criticFailureTrace map[string]any
+	criticFailure := map[string]any{}
 	failReasons := []string{}
 	criticWorkflowStageHandled := false
 	if s.usesShadowWriteStore() && content != "" {
@@ -583,15 +584,32 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				result, trace, err := s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic, true, languageContext)
 				timing.addElapsed("critic_llm", criticStartedAt)
 				if err != nil {
-					criticFailureReason = "critic_extract_failed: " + err.Error()
-					reprocessingReason = criticFailureReason
+					criticFailure = criticPipelineErrorDetails(err)
+					criticCode := strings.TrimSpace(stringFromMap(criticFailure, "code"))
+					if criticCode == "" {
+						criticCode = "CRITIC_UNKNOWN_FAILED"
+					}
+					criticFailureReason = strings.TrimSpace(err.Error())
+					if !strings.HasPrefix(criticFailureReason, criticCode) {
+						criticFailureReason = criticCode + ": " + criticFailureReason
+					}
+					reprocessingReason = criticCode
 					failReasons = append(failReasons, criticFailureReason)
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.fail(workflowRequestID, "CRITIC_LLM_FAILED", "turn_hud.error.critic_llm_failed", turnWorkflowStageCriticLLM, true)
+						s.TurnWorkflows.fail(
+							workflowRequestID,
+							criticCode,
+							"turn_hud.error.critic_llm_failed",
+							turnWorkflowStageCriticLLM,
+							boolFromAny(criticFailure["retryable"]),
+						)
 					}
 					if trace != nil {
 						criticTrace = trace
 						criticFailureTrace = trace
+					} else {
+						criticTrace = criticFailure
+						criticFailureTrace = criticFailure
 					}
 				} else {
 					criticTriggered = true
@@ -769,6 +787,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				DetailsJSON: mustCompactJSON(map[string]any{
 					"turn_index":       turnIndex,
 					"reason":           criticFailureReason,
+					"failure":          criticFailure,
 					"trace":            criticFailureTrace,
 					"llm_config_trace": llmConfigTrace,
 				}),
@@ -926,7 +945,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	storeWriteErrors += maintenanceHandoff.Errors
 	storeWriteErrorDetails = append(storeWriteErrorDetails, maintenanceHandoff.ErrorDetails...)
 	if maintenanceHandoff.Errors > 0 {
-		failReasons = append(failReasons, "maintenance_enqueue")
+		failReasons = append(failReasons, "maintenance_audit")
 	}
 	if len(failReasons) == 0 {
 		failReasons = []string{}
@@ -1137,6 +1156,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"store_write_error_details":        storeWriteErrorDetails,
 		"critic_triggered":                 criticTriggered,
 		"critic_result":                    criticResult,
+		"critic_failure":                   criticFailure,
 		"language_context":                 languageContext,
 		"llm_config_trace":                 llmConfigTrace,
 		"derived_artifacts_saved":          derivedArtifactsSaved,
@@ -1150,7 +1170,14 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"backend_timing":                   backendTiming,
 		"turn_workflow_hud":                s.turnWorkflowHUDSnapshot(workflowRequestID),
 		"maintenance_enqueued":             maintenanceHandoff.Enqueued,
-		"fail_reasons":                     failReasons,
+		"maintenance_audit_recorded":       maintenanceHandoff.AuditRecorded,
+		"memory_reprocessing_queue": map[string]any{
+			"required":            reprocessingReason != "",
+			"durable_or_existing": reprocessingDurable,
+			"source_revision":     nilIfEmpty(sourceAcceptance.Revision),
+			"reason_code":         nilIfEmpty(reprocessingReason),
+		},
+		"fail_reasons": failReasons,
 		"trace_handoff": map[string]any{
 			"shadow_mode":                              s.Cfg.StoreMode != config.StoreModeMariaDBAuthority,
 			"store_mode":                               string(s.Cfg.StoreMode),
@@ -1198,6 +1225,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"direct_evidence_retention_mode":           "importance_lineage_ttl",
 			"retention_decisions":                      retentionDecisions,
 			"maintenance_enqueued":                     maintenanceHandoff.Enqueued,
+			"maintenance_audit_recorded":               maintenanceHandoff.AuditRecorded,
 			"maintenance_queue_status":                 maintenanceHandoff.QueueStatus,
 			"maintenance_queue_depth":                  maintenanceHandoff.QueueDepth,
 			"maintenance_refresh_enabled":              maintenanceHandoff.RefreshEnabled,
@@ -1619,15 +1647,16 @@ func completeTurnHasDerivedArtifacts(ctx context.Context, st store.Store, sid st
 
 func (s *Server) buildCompleteTurnMaintenanceHandoff(ctx context.Context, sid string, turnIndex int, saveOK bool, now time.Time, writeSource string, req dto.M4CompleteTurnRequest) completeTurnMaintenanceHandoff {
 	handoff := completeTurnMaintenanceHandoff{
-		QueueStatus: "skipped",
+		QueueStatus: "audit_not_recorded",
 		QueueDepth:  0,
 		RefreshPlan: map[string]any{},
 		Trace: map[string]any{
 			"owner":          "complete_turn",
 			"version":        completeTurnMaintenancePlanVersion,
 			"worker_enabled": false,
-			"queue_mode":     "audit_shadow",
-			"status":         "skipped",
+			"queue_mode":     "none",
+			"audit_mode":     "plan_only",
+			"status":         "audit_not_recorded",
 		},
 	}
 	if !s.usesShadowWriteStore() {
@@ -1660,7 +1689,7 @@ func (s *Server) buildCompleteTurnMaintenanceHandoff(ctx context.Context, sid st
 	plan := map[string]any{
 		"enabled": refreshEnabled,
 		"version": completeTurnMaintenancePlanVersion,
-		"mode":    "complete_turn_audit_shadow_handoff",
+		"mode":    "complete_turn_maintenance_audit",
 		"layers": map[string]any{
 			"chapter": map[string]any{
 				"enabled":        refreshEnabled && chapterAutoEnabled,
@@ -1676,21 +1705,23 @@ func (s *Server) buildCompleteTurnMaintenanceHandoff(ctx context.Context, sid st
 			},
 		},
 		"worker_enabled": false,
-		"queue_mode":     "audit_shadow",
+		"queue_mode":     "none",
+		"audit_only":     true,
 	}
 
 	handoff.RefreshEnabled = refreshEnabled
 	handoff.RefreshPlan = plan
-	handoff.QueueStatus = "audit_shadow_enqueued"
-	handoff.QueueDepth = 1
-	handoff.Enqueued = true
+	handoff.QueueStatus = "audit_recorded"
+	handoff.QueueDepth = 0
+	handoff.Enqueued = false
 	handoff.Trace = map[string]any{
 		"owner":                    "complete_turn",
 		"version":                  completeTurnMaintenancePlanVersion,
 		"status":                   handoff.QueueStatus,
 		"queue_depth":              handoff.QueueDepth,
 		"worker_enabled":           false,
-		"queue_mode":               "audit_shadow",
+		"queue_mode":               "none",
+		"audit_mode":               "plan_only",
 		"maintenance_pass_enabled": false,
 		"refresh_enabled":          refreshEnabled,
 		"refresh_plan":             plan,
@@ -1699,26 +1730,27 @@ func (s *Server) buildCompleteTurnMaintenanceHandoff(ctx context.Context, sid st
 	handoff.Attempted = 1
 	err := s.Store.SaveAuditLog(ctx, &store.AuditLog{
 		ChatSessionID: sid,
-		EventType:     "maintenance_enqueued",
+		EventType:     "maintenance_audit_recorded",
 		TargetType:    "turn",
 		TargetID:      int64(turnIndex),
-		Summary:       fmt.Sprintf("complete-turn maintenance handoff queued turn %d", turnIndex),
+		Summary:       fmt.Sprintf("complete-turn maintenance plan recorded turn %d", turnIndex),
 		DetailsJSON:   mustCompactJSON(plan),
 		Source:        writeSource,
 		CreatedAt:     now,
 	})
 	if err != nil {
-		handoff.Enqueued = false
-		handoff.QueueStatus = "audit_shadow_enqueue_failed"
+		handoff.AuditRecorded = false
+		handoff.QueueStatus = "audit_record_failed"
 		handoff.QueueDepth = 0
 		handoff.Errors = 1
-		handoff.ErrorDetails = append(handoff.ErrorDetails, "SaveAuditLog(maintenance_enqueued): "+err.Error())
+		handoff.ErrorDetails = append(handoff.ErrorDetails, "SaveAuditLog(maintenance_audit_recorded): "+err.Error())
 		handoff.Trace["status"] = handoff.QueueStatus
 		handoff.Trace["queue_depth"] = 0
 		handoff.Trace["error"] = err.Error()
 		return handoff
 	}
 	handoff.AuditSaved = 1
+	handoff.AuditRecorded = true
 	return handoff
 }
 

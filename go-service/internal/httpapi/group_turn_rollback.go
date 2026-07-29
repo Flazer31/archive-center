@@ -76,6 +76,10 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	deletions := map[string]any{}
 	var delErrs []string
+	// Stop and drain source-bound foreground/worker writes before invalidating
+	// or deleting any derived rows. This prevents a canceled late Critic result
+	// from recreating secondary artifacts after rollback cleanup has passed.
+	s.cancelCompleteTurnSourceWorkers(sid, turnIndex)
 	lifecycleOutbox := false
 	if lifecycle, ok := s.Store.(store.SourceRevisionStore); ok {
 		if availability, hasAvailability := s.Store.(store.MemoryDerivationLifecycleAvailability); !hasAvailability || availability.MemoryDerivationLifecycleEnabled() {

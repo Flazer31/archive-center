@@ -56,15 +56,23 @@ func normalizeSubjectiveEntityMemories(raw any) []any {
 		if visibility == "" {
 			visibility = "player_known"
 		}
-		targetRevealPolicy := normalizeTargetRevealPolicy(stringFromMap(memory, "target_reveal_policy"))
-		if strings.TrimSpace(stringFromMap(memory, "target_reveal_policy")) == "" && (role == "npc" || visibility == "owner_private") {
+		rawTargetRevealPolicy := strings.TrimSpace(stringFromMap(memory, "target_reveal_policy"))
+		targetRevealPolicy := ""
+		if rawTargetRevealPolicy != "" {
+			targetRevealPolicy = normalizeTargetRevealPolicy(rawTargetRevealPolicy)
+		}
+		secretGuard := boolFromAny(memory["secret_guard"])
+		portability := strings.ToLower(strings.TrimSpace(stringFromMap(memory, "portability")))
+		privateCandidate := secretGuard ||
+			visibility == "owner_private" ||
+			portability == "npc_private_recollection"
+		if rawTargetRevealPolicy == "" && privateCandidate {
 			targetRevealPolicy = "owner_private_until_revealed"
 		}
-		portability := strings.ToLower(strings.TrimSpace(stringFromMap(memory, "portability")))
 		switch portability {
 		case "portable_subjective_entity_recollection", "portable_persona_recollection", "npc_private_recollection":
 		default:
-			if role == "npc" || visibility == "owner_private" {
+			if secretGuard || visibility == "owner_private" {
 				portability = "npc_private_recollection"
 			} else {
 				portability = "portable_subjective_entity_recollection"
@@ -80,7 +88,7 @@ func normalizeSubjectiveEntityMemories(raw any) []any {
 			"importance_10":        clampFloat(extractionFloatFromAny(memory["importance_10"], extractionFloatFromAny(memory["importance_score"], 5)), 1, 10),
 			"emotional_weight":     clampFloat(extractionFloatFromAny(memory["emotional_weight"], extractionFloatFromAny(memory["emotional_intensity"], 0.5)), 0, 1),
 			"evidence_excerpt":     strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(memory, "evidence_excerpt"), stringFromMap(memory, "evidence"))),
-			"secret_guard":         boolFromAny(memory["secret_guard"]),
+			"secret_guard":         secretGuard,
 			"target_reveal_policy": targetRevealPolicy,
 			"tags":                 stringsFromAny(memory["tags"]),
 			"portability":          portability,
@@ -906,22 +914,6 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 		if sourceTurn <= 0 {
 			sourceTurn = turnIndex
 		}
-		evidence := strings.TrimSpace(stringFromMap(item, "evidence_excerpt"))
-		if evidence != "" {
-			grounded := sanitizeEvidenceExcerptForTurn(evidence, content)
-			if grounded == "" {
-				result.addSkipReason("subjective_entity_memories", "evidence_excerpt_not_grounded", map[string]any{"index": idx, "owner_entity_key": ownerKey})
-			}
-			evidence = grounded
-		}
-		if duplicateReason := subjectiveEntityMemoryDuplicateReason(ctx, st, sid, ownerKey, sourceTurn, memoryText, evidence); duplicateReason != "" {
-			result.addSkipReason("subjective_entity_memories", duplicateReason, map[string]any{
-				"index":            idx,
-				"owner_entity_key": ownerKey,
-				"source_turn":      sourceTurn,
-			})
-			continue
-		}
 		ownerRole := normalizeSubjectiveEntityRoleFilter(stringFromMap(item, "owner_entity_role"))
 		if ownerRole == "" {
 			ownerRole = "npc"
@@ -933,6 +925,42 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 		if ownerVisibility == "" {
 			ownerVisibility = "player_known"
 		}
+		targetRevealPolicy := strings.TrimSpace(stringFromMap(item, "target_reveal_policy"))
+		protectedCandidate := boolFromAny(item["secret_guard"]) ||
+			ownerVisibility == "owner_private" ||
+			strings.EqualFold(strings.TrimSpace(stringFromMap(item, "portability")), "npc_private_recollection") ||
+			containsStringFold(stringsFromAny(item["tags"]), "protected_secret") ||
+			containsStringFold(stringsFromAny(item["tags"]), "secret_guard")
+		evidence := strings.TrimSpace(stringFromMap(item, "evidence_excerpt"))
+		if evidence != "" {
+			grounded := sanitizeEvidenceExcerptForTurn(evidence, content)
+			if grounded == "" {
+				result.addSkipReason("subjective_entity_memories", "evidence_excerpt_not_grounded", map[string]any{"index": idx, "owner_entity_key": ownerKey})
+			}
+			evidence = grounded
+		}
+		if protectedCandidate && evidence == "" {
+			result.addSkipReason("subjective_entity_memories", "protected_memory_evidence_required", map[string]any{
+				"index":            idx,
+				"owner_entity_key": ownerKey,
+			})
+			continue
+		}
+		if protectedCandidate && targetRevealPolicy == "" {
+			result.addSkipReason("subjective_entity_memories", "protected_memory_reveal_policy_required", map[string]any{
+				"index":            idx,
+				"owner_entity_key": ownerKey,
+			})
+			continue
+		}
+		if duplicateReason := subjectiveEntityMemoryDuplicateReason(ctx, st, sid, ownerKey, sourceTurn, memoryText, evidence); duplicateReason != "" {
+			result.addSkipReason("subjective_entity_memories", duplicateReason, map[string]any{
+				"index":            idx,
+				"owner_entity_key": ownerKey,
+				"source_turn":      sourceTurn,
+			})
+			continue
+		}
 		portability := strings.TrimSpace(stringFromMap(item, "portability"))
 		if portability == "" {
 			if ownerRole == "npc" || ownerVisibility == "owner_private" {
@@ -941,7 +969,6 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 				portability = "portable_subjective_entity_recollection"
 			}
 		}
-		targetRevealPolicy := strings.TrimSpace(stringFromMap(item, "target_reveal_policy"))
 		if targetRevealPolicy == "" {
 			if ownerRole == "npc" || ownerVisibility == "owner_private" {
 				targetRevealPolicy = "owner_private_until_revealed"
