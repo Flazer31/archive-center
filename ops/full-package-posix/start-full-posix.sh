@@ -638,13 +638,18 @@ bootstrap_mariadb_schema() {
 	db_name=archive_center
 	db_user=archive_center
 	db_pass=archive-center-local-pass
-	sql="CREATE DATABASE IF NOT EXISTS ${db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '${db_user}'@'127.0.0.1' IDENTIFIED BY '${db_pass}'; GRANT ALL PRIVILEGES ON ${db_name}.* TO '${db_user}'@'127.0.0.1'; CREATE USER IF NOT EXISTS '${db_user}'@'localhost' IDENTIFIED BY '${db_pass}'; GRANT ALL PRIVILEGES ON ${db_name}.* TO '${db_user}'@'localhost'; FLUSH PRIVILEGES;"
-	"$MARIA_CLIENT" --protocol=tcp --ssl=0 -h 127.0.0.1 -P "$MARIADB_PORT" -u root -e "$sql"
 	AC_MARIADB_DSN="${db_user}:${db_pass}@tcp(127.0.0.1:${MARIADB_PORT})/${db_name}?parseTime=true"
 	export AC_MARIADB_DSN
 	SCHEMA_FILE="$PACKAGE_ROOT/migrations/001_schema.sql"
 	[ -f "$SCHEMA_FILE" ] || die "schema file was not found: $SCHEMA_FILE"
-	"$MARIADB_SCHEMA_RUN" -dsn "$AC_MARIADB_DSN" -schema "$SCHEMA_FILE" -execute=true
+	"$MARIADB_SCHEMA_RUN" \
+		-dsn "$AC_MARIADB_DSN" \
+		-schema "$SCHEMA_FILE" \
+		-execute=true \
+		-managed-bootstrap=true \
+		-managed-host 127.0.0.1 \
+		-managed-port "$MARIADB_PORT" \
+		-expected-datadir "$MARIADB_DATA"
 }
 
 start_chromadb() {

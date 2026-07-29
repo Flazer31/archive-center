@@ -8,10 +8,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +30,10 @@ type schemaReport struct {
 	StatementsTotal            int      `json:"statements_total"`
 	StatementsRun              int      `json:"statements_run"`
 	CompatibilityStatementsRun int      `json:"compatibility_statements_run,omitempty"`
+	ManagedBootstrap           bool     `json:"managed_bootstrap,omitempty"`
+	VerifiedDataDir            string   `json:"verified_datadir,omitempty"`
+	ManagedAccountVerified     bool     `json:"managed_account_verified,omitempty"`
+	ErrorCode                  string   `json:"error_code,omitempty"`
 	Errors                     []string `json:"errors,omitempty"`
 }
 
@@ -33,12 +41,60 @@ type sqlExecer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
+type managedAdminConnection interface {
+	sqlExecer
+	PingContext(ctx context.Context) error
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+type managedBootstrapConfig struct {
+	Enabled         bool
+	Host            string
+	Port            int
+	ExpectedDataDir string
+}
+
+type managedBootstrapError struct {
+	Code string
+	Err  error
+}
+
+func (e *managedBootstrapError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *managedBootstrapError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+const (
+	managedErrInvalidConfig   = "managed_mariadb_invalid_config"
+	managedErrAdminAuth       = "managed_mariadb_admin_auth_failed"
+	managedErrDataDirQuery    = "managed_mariadb_datadir_query_failed"
+	managedErrDataDirMismatch = "managed_mariadb_datadir_mismatch"
+	managedErrPrivilegeSync   = "managed_mariadb_privilege_sync_failed"
+	managedErrApplicationAuth = "managed_mariadb_app_auth_failed"
+	managedDatabaseName       = "archive_center"
+	managedDatabaseUser       = "archive_center"
+	managedDatabasePassword   = "archive-center-local-pass"
+)
+
 func main() {
 	dsn := flag.String("dsn", os.Getenv("AC_MARIADB_DSN"), "MariaDB DSN. Defaults to AC_MARIADB_DSN.")
 	schemaPath := flag.String("schema", defaultSchemaPath(), "Path to schema SQL file.")
 	outPath := flag.String("out", "", "Path to write schema JSON report. Defaults to stdout.")
 	execute := flag.Bool("execute", false, "Required to apply schema statements.")
 	timeout := flag.Duration("timeout", 60*time.Second, "Schema apply timeout.")
+	managedBootstrap := flag.Bool("managed-bootstrap", false, "Verify and repair the package-managed local MariaDB account before applying the schema.")
+	managedHost := flag.String("managed-host", "127.0.0.1", "Host for the package-managed local MariaDB instance.")
+	managedPort := flag.Int("managed-port", 3307, "Port for the package-managed local MariaDB instance.")
+	expectedDataDir := flag.String("expected-datadir", "", "Expected package-managed MariaDB data directory.")
 	flag.Parse()
 	executeRequested := *execute || executeArgPresent(os.Args[1:])
 
@@ -51,7 +107,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	report, exitCode := run(absSchemaPath, *dsn, executeRequested, *timeout)
+	report, exitCode := runWithOptions(absSchemaPath, *dsn, executeRequested, *timeout, managedBootstrapConfig{
+		Enabled:         *managedBootstrap,
+		Host:            *managedHost,
+		Port:            *managedPort,
+		ExpectedDataDir: *expectedDataDir,
+	})
 	writeReport(report, *outPath)
 	os.Exit(exitCode)
 }
@@ -111,7 +172,12 @@ func newReport(schemaPath string, executed bool) *schemaReport {
 }
 
 func run(schemaPath, dsn string, execute bool, timeout time.Duration) (*schemaReport, int) {
+	return runWithOptions(schemaPath, dsn, execute, timeout, managedBootstrapConfig{})
+}
+
+func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration, managed managedBootstrapConfig) (*schemaReport, int) {
 	report := newReport(schemaPath, execute)
+	report.ManagedBootstrap = managed.Enabled
 	statements, err := loadStatements(schemaPath)
 	if err != nil {
 		report.Status = "failed"
@@ -142,6 +208,18 @@ func run(schemaPath, dsn string, execute bool, timeout time.Duration) (*schemaRe
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	if managed.Enabled {
+		verifiedDataDir, err := runManagedBootstrap(ctx, managed)
+		if err != nil {
+			report.Status = "failed"
+			report.ErrorCode = managedBootstrapErrorCode(err)
+			report.Errors = append(report.Errors, err.Error())
+			return report, 1
+		}
+		report.VerifiedDataDir = verifiedDataDir
+		report.ManagedAccountVerified = true
+	}
+
 	if err := applyStatements(ctx, db, statements, report); err != nil {
 		report.Status = "failed"
 		report.Errors = append(report.Errors, err.Error())
@@ -153,6 +231,136 @@ func run(schemaPath, dsn string, execute bool, timeout time.Duration) (*schemaRe
 		return report, 1
 	}
 	return report, 0
+}
+
+func runManagedBootstrap(ctx context.Context, cfg managedBootstrapConfig) (string, error) {
+	host := strings.TrimSpace(cfg.Host)
+	if host == "" || cfg.Port < 1 || cfg.Port > 65535 || strings.TrimSpace(cfg.ExpectedDataDir) == "" {
+		return "", newManagedBootstrapError(managedErrInvalidConfig, "managed MariaDB bootstrap requires a valid host, port, and expected data directory", nil)
+	}
+
+	address := net.JoinHostPort(host, strconv.Itoa(cfg.Port))
+	adminDSN := fmt.Sprintf("root@tcp(%s)/?timeout=5s&readTimeout=5s&writeTimeout=5s", address)
+	adminDB, err := sql.Open("mysql", adminDSN)
+	if err != nil {
+		return "", newManagedBootstrapError(managedErrAdminAuth, "open managed MariaDB administrator connection", err)
+	}
+	defer adminDB.Close()
+
+	adminConn, err := adminDB.Conn(ctx)
+	if err != nil {
+		return "", newManagedBootstrapError(managedErrAdminAuth, "open dedicated managed MariaDB administrator connection", err)
+	}
+	defer adminConn.Close()
+
+	verifiedDataDir, err := bootstrapManagedDatabase(ctx, adminConn, cfg.ExpectedDataDir)
+	if err != nil {
+		return "", err
+	}
+
+	appDSN := fmt.Sprintf(
+		"%s:%s@tcp(%s)/%s?parseTime=true&timeout=5s&readTimeout=5s&writeTimeout=5s",
+		managedDatabaseUser,
+		managedDatabasePassword,
+		address,
+		managedDatabaseName,
+	)
+	appDB, err := sql.Open("mysql", appDSN)
+	if err != nil {
+		return "", newManagedBootstrapError(managedErrApplicationAuth, "open managed MariaDB application connection", err)
+	}
+	defer appDB.Close()
+	if err := appDB.PingContext(ctx); err != nil {
+		return "", newManagedBootstrapError(managedErrApplicationAuth, "verify managed MariaDB application account", err)
+	}
+
+	return verifiedDataDir, nil
+}
+
+func bootstrapManagedDatabase(ctx context.Context, adminDB managedAdminConnection, expectedDataDir string) (string, error) {
+	if err := adminDB.PingContext(ctx); err != nil {
+		return "", newManagedBootstrapError(managedErrAdminAuth, "verify managed MariaDB administrator account", err)
+	}
+
+	var actualDataDir string
+	if err := adminDB.QueryRowContext(ctx, "SELECT @@datadir").Scan(&actualDataDir); err != nil {
+		return "", newManagedBootstrapError(managedErrDataDirQuery, "read managed MariaDB data directory", err)
+	}
+
+	expectedCanonical, err := canonicalManagedDataDir(expectedDataDir)
+	if err != nil {
+		return "", newManagedBootstrapError(managedErrInvalidConfig, "resolve expected managed MariaDB data directory", err)
+	}
+	actualCanonical, err := canonicalManagedDataDir(actualDataDir)
+	if err != nil {
+		return "", newManagedBootstrapError(managedErrDataDirQuery, "resolve running MariaDB data directory", err)
+	}
+	if !managedDataDirsEqual(expectedCanonical, actualCanonical) {
+		return "", newManagedBootstrapError(
+			managedErrDataDirMismatch,
+			fmt.Sprintf("MariaDB port belongs to a different data directory: expected %q, got %q", expectedCanonical, actualCanonical),
+			nil,
+		)
+	}
+
+	statements := []string{
+		"CREATE DATABASE IF NOT EXISTS archive_center CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+		"CREATE USER IF NOT EXISTS 'archive_center'@'127.0.0.1' IDENTIFIED BY 'archive-center-local-pass'",
+		"ALTER USER 'archive_center'@'127.0.0.1' IDENTIFIED BY 'archive-center-local-pass'",
+		"GRANT ALL PRIVILEGES ON archive_center.* TO 'archive_center'@'127.0.0.1'",
+		"CREATE USER IF NOT EXISTS 'archive_center'@'localhost' IDENTIFIED BY 'archive-center-local-pass'",
+		"ALTER USER 'archive_center'@'localhost' IDENTIFIED BY 'archive-center-local-pass'",
+		"GRANT ALL PRIVILEGES ON archive_center.* TO 'archive_center'@'localhost'",
+		"FLUSH PRIVILEGES",
+	}
+	for index, statement := range statements {
+		if _, err := adminDB.ExecContext(ctx, statement); err != nil {
+			return "", newManagedBootstrapError(
+				managedErrPrivilegeSync,
+				fmt.Sprintf("synchronize managed MariaDB application privileges at statement %d", index+1),
+				err,
+			)
+		}
+	}
+	return actualCanonical, nil
+}
+
+func canonicalManagedDataDir(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("data directory is empty")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(absolute); err == nil {
+		absolute = resolved
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func managedDataDirsEqual(expected, actual string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(expected, actual)
+	}
+	return expected == actual
+}
+
+func newManagedBootstrapError(code, message string, cause error) error {
+	err := fmt.Errorf("%s", message)
+	if cause != nil {
+		err = fmt.Errorf("%s: %w", message, cause)
+	}
+	return &managedBootstrapError{Code: code, Err: err}
+}
+
+func managedBootstrapErrorCode(err error) string {
+	var typed *managedBootstrapError
+	if errors.As(err, &typed) {
+		return typed.Code
+	}
+	return ""
 }
 
 func loadStatements(path string) ([]string, error) {

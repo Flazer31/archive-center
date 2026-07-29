@@ -675,12 +675,6 @@ try {
     if ([string]::IsNullOrWhiteSpace($env:AC_MARIADB_DSN)) {
         $env:AC_MARIADB_DSN = "${dbUser}:${dbPassword}@tcp(127.0.0.1:${MariaDBPort})/${dbName}?parseTime=true"
     }
-    $sqlPassword = $dbPassword.Replace("'", "''")
-    $sql = "CREATE DATABASE IF NOT EXISTS $dbName CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '$dbUser'@'127.0.0.1' IDENTIFIED BY '$sqlPassword'; GRANT ALL PRIVILEGES ON $dbName.* TO '$dbUser'@'127.0.0.1'; CREATE USER IF NOT EXISTS '$dbUser'@'localhost' IDENTIFIED BY '$sqlPassword'; GRANT ALL PRIVILEGES ON $dbName.* TO '$dbUser'@'localhost'; FLUSH PRIVILEGES;"
-    & $client --protocol=tcp --ssl=0 -h 127.0.0.1 -P $MariaDBPort -u root -e $sql
-    if ($LASTEXITCODE -ne 0) {
-        throw "MariaDB bootstrap SQL failed."
-    }
 
     if (Test-VectorRequiresChroma $env:AC_VECTOR_MODE) {
         if ($env:AC_VECTOR_MODE -eq "external") {
@@ -721,9 +715,16 @@ try {
     $env:AC_PROMPT_DIR = Join-Path $packRoot "prompts"
 
     $schemaPath = Join-Path $packRoot "migrations\001_schema.sql"
-    & (Join-Path $packRoot "bin\mariadb-schema.exe") -dsn $env:AC_MARIADB_DSN -schema $schemaPath -execute
+    & (Join-Path $packRoot "bin\mariadb-schema.exe") `
+        -dsn $env:AC_MARIADB_DSN `
+        -schema $schemaPath `
+        -execute `
+        -managed-bootstrap `
+        -managed-host "127.0.0.1" `
+        -managed-port $MariaDBPort `
+        -expected-datadir $dataDir
     if ($LASTEXITCODE -ne 0) {
-        throw "mariadb-schema failed."
+        throw "MariaDB managed account bootstrap or schema apply failed."
     }
 
 Write-Host "Starting Archive Center 2.1 full package"

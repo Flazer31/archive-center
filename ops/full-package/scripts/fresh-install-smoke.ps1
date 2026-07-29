@@ -89,9 +89,14 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     if ($launcherScriptText.Contains("archive-center-go.new.exe")) {
         [void]$failures.Add("launcher_legacy_partial_update_path_present")
     }
-    foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "AC_CHROMA_RUNTIME_DIR", "-InstallChromaDBRuntime", "Test-ChromaRuntimeVersion", "chromadb==`$managedChromaDBVersion", "chromaRuntimeReady", "Repairing the per-user runtime", "Start-ManagedChromaDB", "LocalApplicationData")) {
+    foreach ($marker in @("AC_MARIADB_RUNTIME_DIR", "-InstallMariaDBRuntime", "-managed-bootstrap", "-expected-datadir", "AC_CHROMA_RUNTIME_DIR", "-InstallChromaDBRuntime", "Test-ChromaRuntimeVersion", "chromadb==`$managedChromaDBVersion", "chromaRuntimeReady", "Repairing the per-user runtime", "Start-ManagedChromaDB", "LocalApplicationData")) {
         if (-not $launcherScriptText.Contains($marker)) {
             [void]$failures.Add("launcher_managed_runtime_marker_missing:$marker")
+        }
+    }
+    foreach ($forbiddenMarker in @("CREATE USER IF NOT EXISTS 'archive_center'", "GRANT ALL PRIVILEGES ON archive_center.*")) {
+        if ($launcherScriptText.Contains($forbiddenMarker)) {
+            [void]$failures.Add("launcher_direct_mariadb_bootstrap_sql_present:$forbiddenMarker")
         }
     }
     if ($launcherScriptText -notmatch '(?s)\$chromaRuntimeReady\s*=\s*Test-ChromaRuntimeVersion.*?if\s*\(-not\s+\$chromaRuntimeReady\).*?-InstallChromaDBRuntime.*?\$chromaRuntimeReady\s*=\s*Test-ChromaRuntimeVersion') {

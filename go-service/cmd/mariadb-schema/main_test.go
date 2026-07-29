@@ -271,6 +271,101 @@ func TestApplyStatementsReportsFailedStatementNumber(t *testing.T) {
 	}
 }
 
+func TestBootstrapManagedDatabaseRejectsDifferentDataDirectoryBeforeDDL(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	expectedDataDir := filepath.Join(t.TempDir(), "expected")
+	actualDataDir := filepath.Join(t.TempDir(), "other")
+	if err := os.MkdirAll(expectedDataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(actualDataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectPing()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@datadir")).
+		WillReturnRows(sqlmock.NewRows([]string{"@@datadir"}).AddRow(actualDataDir))
+
+	_, err = bootstrapManagedDatabase(context.Background(), db, expectedDataDir)
+	if err == nil {
+		t.Fatal("expected data directory mismatch")
+	}
+	if got := managedBootstrapErrorCode(err); got != managedErrDataDirMismatch {
+		t.Fatalf("error code = %q, want %q: %v", got, managedErrDataDirMismatch, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected SQL after ownership mismatch: %v", err)
+	}
+}
+
+func TestBootstrapManagedDatabaseRepairsExistingAccountPasswordAndPrivileges(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	dataDir := t.TempDir()
+	mock.ExpectPing()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT @@datadir")).
+		WillReturnRows(sqlmock.NewRows([]string{"@@datadir"}).AddRow(dataDir + string(os.PathSeparator)))
+
+	statements := []string{
+		"CREATE DATABASE IF NOT EXISTS archive_center CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+		"CREATE USER IF NOT EXISTS 'archive_center'@'127.0.0.1' IDENTIFIED BY 'archive-center-local-pass'",
+		"ALTER USER 'archive_center'@'127.0.0.1' IDENTIFIED BY 'archive-center-local-pass'",
+		"GRANT ALL PRIVILEGES ON archive_center.* TO 'archive_center'@'127.0.0.1'",
+		"CREATE USER IF NOT EXISTS 'archive_center'@'localhost' IDENTIFIED BY 'archive-center-local-pass'",
+		"ALTER USER 'archive_center'@'localhost' IDENTIFIED BY 'archive-center-local-pass'",
+		"GRANT ALL PRIVILEGES ON archive_center.* TO 'archive_center'@'localhost'",
+		"FLUSH PRIVILEGES",
+	}
+	for _, statement := range statements {
+		mock.ExpectExec(regexp.QuoteMeta(statement)).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+
+	verified, err := bootstrapManagedDatabase(context.Background(), db, dataDir)
+	if err != nil {
+		t.Fatalf("bootstrapManagedDatabase failed: %v", err)
+	}
+	want, err := canonicalManagedDataDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified != want {
+		t.Fatalf("verified data directory = %q, want %q", verified, want)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBootstrapManagedDatabaseClassifiesAdminAuthenticationFailure(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectPing().WillReturnError(errors.New("access denied"))
+	_, err = bootstrapManagedDatabase(context.Background(), db, t.TempDir())
+	if err == nil {
+		t.Fatal("expected administrator authentication failure")
+	}
+	if got := managedBootstrapErrorCode(err); got != managedErrAdminAuth {
+		t.Fatalf("error code = %q, want %q: %v", got, managedErrAdminAuth, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestApplyCompatibilityMigrationsAddsStorylineQualityColumns(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
