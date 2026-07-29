@@ -1,8 +1,8 @@
 # Provider Request Overrides and Vertex Flex PayGo Contract
 
-Status: design contract; Risu Output Quality Layer standalone JS implemented; Archive Center backend pending
+Status: Archive Center backend and adapter implemented; live provider verification pending
 
-Last updated: 2026-07-07
+Last updated: 2026-07-29
 
 ## Purpose
 
@@ -338,6 +338,72 @@ Provisioned then Flex
 Flex only
   Force cheaper shared Flex traffic. May be slower.
 ```
+
+## LLM Gateway Provider and Service Tiers
+
+Archive Center 3.6 exposes LLM Gateway as the independent generation provider
+ID `llmgateway`. It uses LLM Gateway's OpenAI-compatible Chat Completions
+transport, but it is not stored or reported as `openai` or `custom`.
+
+Configured endpoint:
+
+```text
+https://api.llmgateway.io/v1
+```
+
+Role-specific settings:
+
+```json
+{
+  "pluginMainLlmGatewayServiceTier": "standard",
+  "subLlmLlmGatewayServiceTier": "standard"
+}
+```
+
+Backend request field:
+
+```json
+{
+  "llm_gateway_service_tier": "flex"
+}
+```
+
+The Go provider owner normalizes the setting and writes the upstream
+OpenAI-compatible `service_tier` field:
+
+| UI value | Upstream value |
+|---|---|
+| `standard` | `default` |
+| `flex` | `flex` |
+| `priority` | `priority` |
+
+Rules:
+
+- The typed tier is accepted only with provider `llmgateway`.
+- Invalid values and a conflicting `extra_body_json.service_tier` fail before
+  an upstream request.
+- Existing untyped `extra_body_json.service_tier` remains usable when the
+  typed setting is absent.
+- An upstream `unsupported_service_tier` response is returned as an error. It
+  is never retried after removing the tier and never silently downgraded.
+- Trace records the requested and applied tier. It also records the response
+  `service_tier` as the served tier, or `not_reported` when the gateway omits
+  it.
+
+LLM Gateway documents `flex`, `priority`, and `default`/`auto`, but only for
+provider/model mappings that advertise the selected tier. Unsupported
+combinations return HTTP 400 `unsupported_service_tier`.
+
+Official reference:
+
+- https://docs.llmgateway.io/features/service-tiers
+
+Implementation status:
+
+- source and automated regression: implemented;
+- real LLM Gateway account/model call: unverified;
+- release status: `implemented_unverified`, not a live-provider acceptance
+  result.
 
 ## Non-Goals
 

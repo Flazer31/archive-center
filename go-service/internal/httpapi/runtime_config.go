@@ -22,6 +22,7 @@ type RuntimeConfig struct {
 	MainExtraHeadersJSON               string
 	MainExtraBodyJSON                  string
 	MainVertexFlexMode                 string
+	MainLLMGatewayServiceTier          string
 	CriticProvider                     string
 	CriticAPIKey                       string
 	CriticEndpoint                     string
@@ -35,6 +36,7 @@ type RuntimeConfig struct {
 	CriticExtraHeadersJSON             string
 	CriticExtraBodyJSON                string
 	CriticVertexFlexMode               string
+	CriticLLMGatewayServiceTier        string
 	SupervisorProvider                 string
 	SupervisorAPIKey                   string
 	SupervisorEndpoint                 string
@@ -48,6 +50,7 @@ type RuntimeConfig struct {
 	SupervisorExtraHeadersJSON         string
 	SupervisorExtraBodyJSON            string
 	SupervisorVertexFlexMode           string
+	SupervisorLLMGatewayServiceTier    string
 	EmbeddingProvider                  string
 	EmbeddingAPIKey                    string
 	EmbeddingEndpoint                  string
@@ -196,6 +199,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("mainExtraHeadersJson", &s.RuntimeConfig.MainExtraHeadersJSON)
 	setString("mainExtraBodyJson", &s.RuntimeConfig.MainExtraBodyJSON)
 	setString("mainVertexFlexMode", &s.RuntimeConfig.MainVertexFlexMode)
+	setString("mainLlmGatewayServiceTier", &s.RuntimeConfig.MainLLMGatewayServiceTier)
 	setString("criticProvider", &s.RuntimeConfig.CriticProvider)
 	setString("criticApiKey", &s.RuntimeConfig.CriticAPIKey)
 	setString("criticEndpoint", &s.RuntimeConfig.CriticEndpoint)
@@ -209,6 +213,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("criticExtraHeadersJson", &s.RuntimeConfig.CriticExtraHeadersJSON)
 	setString("criticExtraBodyJson", &s.RuntimeConfig.CriticExtraBodyJSON)
 	setString("criticVertexFlexMode", &s.RuntimeConfig.CriticVertexFlexMode)
+	setString("criticLlmGatewayServiceTier", &s.RuntimeConfig.CriticLLMGatewayServiceTier)
 	setString("supervisorProvider", &s.RuntimeConfig.SupervisorProvider)
 	setString("supervisorApiKey", &s.RuntimeConfig.SupervisorAPIKey)
 	setString("supervisorEndpoint", &s.RuntimeConfig.SupervisorEndpoint)
@@ -222,6 +227,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("supervisorExtraHeadersJson", &s.RuntimeConfig.SupervisorExtraHeadersJSON)
 	setString("supervisorExtraBodyJson", &s.RuntimeConfig.SupervisorExtraBodyJSON)
 	setString("supervisorVertexFlexMode", &s.RuntimeConfig.SupervisorVertexFlexMode)
+	setString("supervisorLlmGatewayServiceTier", &s.RuntimeConfig.SupervisorLLMGatewayServiceTier)
 	setString("embeddingProvider", &s.RuntimeConfig.EmbeddingProvider)
 	setString("embeddingApiKey", &s.RuntimeConfig.EmbeddingAPIKey)
 	setString("embeddingEndpoint", &s.RuntimeConfig.EmbeddingEndpoint)
@@ -279,6 +285,7 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 		ExtraHeadersJSON:      rt.SupervisorExtraHeadersJSON,
 		ExtraBodyJSON:         rt.SupervisorExtraBodyJSON,
 		VertexFlexMode:        rt.SupervisorVertexFlexMode,
+		LLMGatewayServiceTier: rt.SupervisorLLMGatewayServiceTier,
 	}
 }
 
@@ -335,6 +342,7 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 		ExtraHeadersJSON:      rt.MainExtraHeadersJSON,
 		ExtraBodyJSON:         rt.MainExtraBodyJSON,
 		VertexFlexMode:        rt.MainVertexFlexMode,
+		LLMGatewayServiceTier: rt.MainLLMGatewayServiceTier,
 	}
 }
 
@@ -458,6 +466,9 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	addRuntimeSourceTrace(mainTrace, mainProviderID, mainAPIKeyID, mainEndpointID, mainModelID)
 	addOptionalRuntimeTraceFields(mainTrace, rt.MainTemperature, rt.MainMaxTokens)
 	addOptionalReasoningTraceFields(mainTrace, rt.MainReasoningPreset, rt.MainReasoningEffort, rt.MainReasoningBudget)
+	if strings.TrimSpace(rt.MainLLMGatewayServiceTier) != "" {
+		mainTrace["llm_gateway_service_tier"] = strings.TrimSpace(rt.MainLLMGatewayServiceTier)
+	}
 	mainTrace["runtime_role"] = "publisher_editor_default"
 	mainTrace["direct_generation"] = map[string]any{
 		"status":  "risuai_host_retained",
@@ -474,6 +485,9 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	addRuntimeSourceTrace(supervisorTrace, supervisorProviderID, supervisorAPIKeyID, supervisorEndpointID, supervisorModelID)
 	addOptionalRuntimeTraceFields(supervisorTrace, rt.SupervisorTemperature, rt.SupervisorMaxTokens)
 	addOptionalReasoningTraceFields(supervisorTrace, rt.SupervisorReasoningPreset, rt.SupervisorReasoningEffort, rt.SupervisorReasoningBudget)
+	if strings.TrimSpace(rt.SupervisorLLMGatewayServiceTier) != "" {
+		supervisorTrace["llm_gateway_service_tier"] = strings.TrimSpace(rt.SupervisorLLMGatewayServiceTier)
+	}
 	criticTrace := configuredTrace(
 		criticProviderID.Value,
 		criticAPIKeyID.Value,
@@ -484,6 +498,9 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	addRuntimeSourceTrace(criticTrace, criticProviderID, criticAPIKeyID, criticEndpointID, criticModelID)
 	addOptionalRuntimeTraceFields(criticTrace, rt.CriticTemperature, rt.CriticMaxTokens)
 	addOptionalReasoningTraceFields(criticTrace, rt.CriticReasoningPreset, rt.CriticReasoningEffort, rt.CriticReasoningBudget)
+	if strings.TrimSpace(rt.CriticLLMGatewayServiceTier) != "" {
+		criticTrace["llm_gateway_service_tier"] = strings.TrimSpace(rt.CriticLLMGatewayServiceTier)
+	}
 	embeddingTrace := configuredTrace(
 		embeddingProviderID.Value,
 		embeddingAPIKeyID.Value,

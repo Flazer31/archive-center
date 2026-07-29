@@ -316,6 +316,196 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 	}
 }
 
+func TestProxyLLMGatewayServiceTierRoutingAndTrace(t *testing.T) {
+	for _, tier := range []string{"standard", "flex", "priority"} {
+		t.Run(tier, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if got := r.URL.String(); got != "https://api.llmgateway.io/v1/chat/completions" {
+					t.Fatalf("upstream URL = %q", got)
+				}
+				raw, _ := io.ReadAll(r.Body)
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				expected := tier
+				if expected == "standard" {
+					expected = "default"
+				}
+				if body["service_tier"] != expected {
+					t.Fatalf("service_tier = %v, want %q; body=%+v", body["service_tier"], expected, body)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"model":"gateway/test","service_tier":"` + expected + `","choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("llmg-test"),
+				Endpoint:              strPtr("https://api.llmgateway.io/v1"),
+				Model:                 strPtr("gateway/test"),
+				Provider:              strPtr("llmgateway"),
+				LLMGatewayServiceTier: strPtr(tier),
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMain status=%d err=%v", status, err)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			expected := tier
+			if expected == "standard" {
+				expected = "default"
+			}
+			if trace["provider"] != "llmgateway" ||
+				trace["llm_gateway_service_tier_requested"] != expected ||
+				trace["llm_gateway_service_tier_applied"] != true ||
+				trace["llm_gateway_service_tier_served"] != expected {
+				t.Fatalf("unexpected LLM Gateway tier trace: %+v", trace)
+			}
+		})
+	}
+	if got := proxyOpenAIBaseURL("llmgateway", ""); got != "https://api.llmgateway.io/v1" {
+		t.Fatalf("LLM Gateway default base = %q", got)
+	}
+}
+
+func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.T) {
+	tests := []struct {
+		name      string
+		tier      string
+		extraBody string
+		wantError string
+	}{
+		{name: "invalid", tier: "economy", wantError: "must be standard, flex, or priority"},
+		{name: "conflict", tier: "flex", extraBody: `{"service_tier":"priority"}`, wantError: "conflicts with extra_body_json"},
+		{name: "wrong provider", tier: "flex", wantError: "requires provider llmgateway"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			upstreamCalls := 0
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				t.Fatalf("invalid tier must fail before upstream call: %s", r.URL.String())
+				return nil, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			provider := "llmgateway"
+			if tc.name == "wrong provider" {
+				provider = "openai"
+			}
+			req := dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("llmg-test"),
+				Endpoint:              strPtr("https://api.llmgateway.io/v1"),
+				Model:                 strPtr("gateway/test"),
+				Provider:              strPtr(provider),
+				LLMGatewayServiceTier: strPtr(tc.tier),
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+			}
+			if tc.extraBody != "" {
+				req.ExtraBodyJSON = strPtr(tc.extraBody)
+			}
+			_, status, err := performProxyPluginMain(context.Background(), req)
+			if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("status=%d err=%v, want %q", status, err, tc.wantError)
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstreamCalls = %d, want 0", upstreamCalls)
+			}
+		})
+	}
+}
+
+func TestProxyLLMGatewayUnsupportedTierDoesNotFallback(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"unsupported_service_tier","message":"unsupported parameter service_tier for this model"}}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	effort := "low"
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("llmg-test"),
+		Endpoint:              strPtr("https://api.llmgateway.io/v1"),
+		Model:                 strPtr("gateway/test"),
+		Provider:              strPtr("llmgateway"),
+		LLMGatewayServiceTier: strPtr("flex"),
+		ReasoningEffort:       &effort,
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "unsupported_service_tier") {
+		t.Fatalf("status=%d err=%v, want unsupported_service_tier", status, err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstreamCalls = %d, want 1 without fallback", upstreamCalls)
+	}
+}
+
+func TestProxyLLMGatewayServedTierNotReportedAndUntypedExtraBodyPreserved(t *testing.T) {
+	oldClient := proxyHTTPClient
+	call := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		call++
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if call == 2 && body["service_tier"] != "flex" {
+			t.Fatalf("untyped extra_body_json service_tier lost: %+v", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("llmg-test"),
+		Endpoint:              strPtr("https://api.llmgateway.io/v1"),
+		Model:                 strPtr("gateway/test"),
+		Provider:              strPtr("llmgateway"),
+		LLMGatewayServiceTier: strPtr("flex"),
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("typed tier status=%d err=%v", status, err)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["llm_gateway_service_tier_served"] != "not_reported" {
+		t.Fatalf("served tier trace = %+v", trace)
+	}
+
+	extraBody := `{"service_tier":"flex"}`
+	_, status, err = performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:        strPtr("llmg-test"),
+		Endpoint:      strPtr("https://api.llmgateway.io/v1"),
+		Model:         strPtr("gateway/test"),
+		Provider:      strPtr("llmgateway"),
+		ExtraBodyJSON: &extraBody,
+		Messages:      []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("untyped extra body status=%d err=%v", status, err)
+	}
+}
+
 func TestProxyGLM52SendsReasoningEffortWithThinkingEnabled(t *testing.T) {
 	oldClient := proxyHTTPClient
 	var upstreamBody map[string]any

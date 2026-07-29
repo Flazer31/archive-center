@@ -60,7 +60,7 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
 	case "vertex":
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, true, policy)
-	case "openai", "openrouter", "copilot", "ollama", "custom":
+	case "openai", "openrouter", "llmgateway", "copilot", "ollama", "custom":
 		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider)
 	default:
 		return nil, http.StatusBadRequest, fmt.Errorf("unsupported provider %q", provider)
@@ -136,7 +136,10 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
-	if status == http.StatusBadRequest && proxyHasAdvancedParams(body) && proxyUnsupportedParameter(raw, data) {
+	if status == http.StatusBadRequest &&
+		proxyHasAdvancedParams(body) &&
+		proxyUnsupportedParameter(raw, data) &&
+		!proxyServiceTierError(raw, data) {
 		fallback := cloneMap(body)
 		delete(fallback, "reasoning_effort")
 		delete(fallback, "max_completion_tokens")
@@ -153,6 +156,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	if data == nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("OpenAI-like provider returned invalid JSON")
 	}
+	proxyAttachLLMGatewayServiceTierTrace(data, overrideTrace)
 	proxyAttachRequestOverrideTrace(data, overrideTrace)
 	return data, http.StatusOK, nil
 }
@@ -512,6 +516,10 @@ func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, 
 		}
 	}
 
+	if err := proxyApplyLLMGatewayServiceTier(body, req, provider, trace); err != nil {
+		return trace, err
+	}
+
 	mode := proxyNormalizeVertexFlexMode(stringPtrValue(req.VertexFlexMode, ""))
 	if mode != "" && mode != "off" {
 		trace["vertex_flex_mode"] = mode
@@ -645,6 +653,67 @@ func proxyNormalizeVertexFlexMode(value string) string {
 	}
 }
 
+func proxyNormalizeLLMGatewayServiceTier(value string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	normalized = strings.ReplaceAll(normalized, " ", "_")
+	switch normalized {
+	case "":
+		return "", true
+	case "standard", "default", "auto":
+		return "default", true
+	case "flex":
+		return "flex", true
+	case "priority":
+		return "priority", true
+	default:
+		return "", false
+	}
+}
+
+func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMainRequest, provider string, trace map[string]any) error {
+	rawTier := strings.TrimSpace(stringPtrValue(req.LLMGatewayServiceTier, ""))
+	if rawTier == "" {
+		return nil
+	}
+	tier, ok := proxyNormalizeLLMGatewayServiceTier(rawTier)
+	if !ok {
+		return fmt.Errorf("llm_gateway_service_tier must be standard, flex, or priority")
+	}
+	trace["llm_gateway_service_tier_requested"] = tier
+	if !strings.EqualFold(strings.TrimSpace(provider), "llmgateway") {
+		trace["llm_gateway_service_tier_applied"] = false
+		trace["llm_gateway_service_tier_skip_reason"] = "provider_not_llmgateway"
+		return fmt.Errorf("llm_gateway_service_tier requires provider llmgateway")
+	}
+	if existing, exists := body["service_tier"]; exists {
+		existingText, isString := existing.(string)
+		existingTier, valid := proxyNormalizeLLMGatewayServiceTier(existingText)
+		if !isString || !valid || existingTier == "" || existingTier != tier {
+			trace["llm_gateway_service_tier_applied"] = false
+			trace["llm_gateway_service_tier_conflict"] = true
+			return fmt.Errorf("llm_gateway_service_tier conflicts with extra_body_json service_tier")
+		}
+		trace["llm_gateway_service_tier_source"] = "typed_and_extra_body_json"
+	} else {
+		trace["llm_gateway_service_tier_source"] = "typed_setting"
+	}
+	body["service_tier"] = tier
+	trace["llm_gateway_service_tier_applied"] = true
+	return nil
+}
+
+func proxyAttachLLMGatewayServiceTierTrace(resp map[string]any, trace map[string]any) {
+	if resp == nil || trace["llm_gateway_service_tier_applied"] != true {
+		return
+	}
+	served := strings.TrimSpace(extractionStringFromAny(resp["service_tier"]))
+	if served == "" {
+		served = "not_reported"
+	}
+	trace["llm_gateway_service_tier_served"] = served
+}
+
 func proxyAttachRequestOverrideTrace(resp map[string]any, trace map[string]any) {
 	if len(trace) == 0 || resp == nil {
 		return
@@ -660,6 +729,8 @@ func proxyOpenAIBaseURL(provider, endpoint string) string {
 	switch provider {
 	case "openrouter":
 		return "https://openrouter.ai/api"
+	case "llmgateway":
+		return "https://api.llmgateway.io/v1"
 	case "copilot":
 		return "https://api.githubcopilot.com"
 	default:
@@ -943,6 +1014,13 @@ func proxyUnsupportedParameter(raw string, data map[string]any) bool {
 		}
 	}
 	return strings.Contains(text, "invalid_request_error") && strings.Contains(text, "parameter")
+}
+
+func proxyServiceTierError(raw string, data map[string]any) bool {
+	text := strings.ToLower(proxyErrorDetail(http.StatusBadRequest, data, raw))
+	return strings.Contains(text, "unsupported_service_tier") ||
+		strings.Contains(text, "service_tier") ||
+		strings.Contains(text, "service tier")
 }
 
 func proxyHasAdvancedParams(body map[string]any) bool {

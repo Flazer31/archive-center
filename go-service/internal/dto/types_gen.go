@@ -1093,11 +1093,12 @@ type ProxyPluginMainRequest struct {
 	BudgetTokens *int64  `json:"budget_tokens,omitempty"`
 	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
-	Endpoint            *string `json:"endpoint,omitempty"`
-	ExtraBodyJSON       *string `json:"extra_body_json,omitempty"`
-	ExtraHeadersJSON    *string `json:"extra_headers_json,omitempty"`
-	GlmThinkingType     *string `json:"glm_thinking_type,omitempty"`
-	MaxCompletionTokens *int64  `json:"max_completion_tokens,omitempty"`
+	Endpoint              *string `json:"endpoint,omitempty"`
+	ExtraBodyJSON         *string `json:"extra_body_json,omitempty"`
+	ExtraHeadersJSON      *string `json:"extra_headers_json,omitempty"`
+	GlmThinkingType       *string `json:"glm_thinking_type,omitempty"`
+	LLMGatewayServiceTier *string `json:"llm_gateway_service_tier,omitempty"`
+	MaxCompletionTokens   *int64  `json:"max_completion_tokens,omitempty"`
 	// PRESENCE: Optional non-null scalar int64: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (1024): Go handler must apply default when field is absent in request.
 	MaxTokens *int64 `json:"max_tokens,omitempty"`
@@ -1134,6 +1135,10 @@ func (dto *ProxyPluginMainRequest) ApplyDefaults() {
 	if dto.ExtraHeadersJSON == nil {
 		v := ""
 		dto.ExtraHeadersJSON = &v
+	}
+	if dto.LLMGatewayServiceTier == nil {
+		v := ""
+		dto.LLMGatewayServiceTier = &v
 	}
 	if dto.MaxTokens == nil {
 		v := int64(1024)

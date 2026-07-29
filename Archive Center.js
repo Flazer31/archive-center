@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.6.0-dev";
-  const BUILD_ID = "3.6-precision-memory.20260728-1";
+  const BUILD_ID = "3.6-precision-memory.20260729-2";
   const BUILD_CHANNEL = "3.6-local-test";
-  const BUILD_TIME = "2026-07-28 KST";
-  const BUILD_NOTES = "3.6 stable identity, atomic memory admission, and HUD safety groundwork";
+  const BUILD_TIME = "2026-07-29 KST";
+  const BUILD_NOTES = "3.6 LLM Gateway provider and role-specific service tier controls";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -85,11 +85,12 @@
   const LANGUAGE_MEMORY_CONTRACT_VERSION = "language_memory.v1";
   const LANGUAGE_MEMORY_SEARCH_TEXT_POLICY = "summary_plus_raw_plus_aliases";
   const UI_DETAIL_MODE_OPTIONS = Object.freeze(["full", "reduced_info", "status_only"]);
-  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "vertex", "copilot", "ollama", "custom"]);
+  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vertex", "copilot", "ollama", "custom"]);
   const EMBEDDING_PROVIDER_OPTIONS = Object.freeze(["openai", "gemini", "vertex", "voyageai", "ollama", "custom"]);
   const SOURCE_SEARCH_LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "ollama"]);
   const REASONING_PRESET_OPTIONS = Object.freeze(["auto", "gpt", "gemini", "claude", "glm", "custom"]);
   const REASONING_EFFORT_OPTIONS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "enable", "disable"]);
+  const LLM_GATEWAY_SERVICE_TIER_OPTIONS = Object.freeze(["standard", "flex", "priority"]);
   const REASONING_PRESET_GUIDE = Object.freeze({
     gpt: {
       label: "GPT",
@@ -183,6 +184,7 @@
     pluginMainReasoningBudgetTokens: 0,
     pluginMainMaxCompletionTokens: 1024,
     pluginMainVertexFlexMode: "off",
+    pluginMainLlmGatewayServiceTier: "standard",
     pluginMainExtraHeadersJson: "",
     pluginMainExtraBodyJson: "",
     // ── 편집 검토 LLM (편집자 결과 second-pass 검토 전용) ──
@@ -197,6 +199,7 @@
     subLlmReasoningBudgetTokens: 0,
     subLlmMaxCompletionTokens: 1024,
     subLlmVertexFlexMode: "off",
+    subLlmLlmGatewayServiceTier: "standard",
     subLlmExtraHeadersJson: "",
     subLlmExtraBodyJson: "",
     // ── Embedding LLM (메모리 검색용 임베딩) ──
@@ -9782,6 +9785,12 @@
     return sanitizeEnumValue(value, DEFAULT_SETTINGS.pluginMainVertexFlexMode, VERTEX_FLEX_MODE_OPTIONS);
   }
 
+  function normalizeLlmGatewayServiceTierSetting(value) {
+    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (normalized === "default" || normalized === "auto") return "standard";
+    return sanitizeEnumValue(normalized, "standard", LLM_GATEWAY_SERVICE_TIER_OPTIONS);
+  }
+
   function sanitizeProviderOverrideJsonSetting(value) {
     return typeof value === "string" ? value.trim() : "";
   }
@@ -10024,6 +10033,11 @@
     if (!payload || typeof payload !== "object") return payload;
     const isSub = source === "sub";
     const provider = normalizeLlmProvider(payload.provider || (isSub ? settings.subLlmProvider : settings.pluginMainProvider), "openai");
+    if (provider === "llmgateway") {
+      payload.llm_gateway_service_tier = normalizeLlmGatewayServiceTierSetting(
+        isSub ? settings.subLlmLlmGatewayServiceTier : settings.pluginMainLlmGatewayServiceTier,
+      );
+    }
     if (provider !== "vertex") return payload;
     const flexMode = normalizeVertexFlexModeSetting(isSub ? settings.subLlmVertexFlexMode : settings.pluginMainVertexFlexMode);
     const extraHeaders = sanitizeProviderOverrideJsonSetting(isSub ? settings.subLlmExtraHeadersJson : settings.pluginMainExtraHeadersJson);
@@ -10036,14 +10050,21 @@
 
   function providerRequestOverrideSettingsForProvider(s, source, provider) {
     const cfg = s || {};
-    if (normalizeLlmProvider(provider, "openai") !== "vertex") {
-      return { vertexFlexMode: "off", extraHeadersJson: "", extraBodyJson: "" };
-    }
+    const normalizedProvider = normalizeLlmProvider(provider, "openai");
     const isSub = source === "sub";
     return {
-      vertexFlexMode: normalizeVertexFlexModeSetting(isSub ? cfg.subLlmVertexFlexMode : cfg.pluginMainVertexFlexMode),
-      extraHeadersJson: sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraHeadersJson : cfg.pluginMainExtraHeadersJson),
-      extraBodyJson: sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraBodyJson : cfg.pluginMainExtraBodyJson),
+      vertexFlexMode: normalizedProvider === "vertex"
+        ? normalizeVertexFlexModeSetting(isSub ? cfg.subLlmVertexFlexMode : cfg.pluginMainVertexFlexMode)
+        : "off",
+      llmGatewayServiceTier: normalizedProvider === "llmgateway"
+        ? normalizeLlmGatewayServiceTierSetting(isSub ? cfg.subLlmLlmGatewayServiceTier : cfg.pluginMainLlmGatewayServiceTier)
+        : "",
+      extraHeadersJson: normalizedProvider === "vertex"
+        ? sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraHeadersJson : cfg.pluginMainExtraHeadersJson)
+        : "",
+      extraBodyJson: normalizedProvider === "vertex"
+        ? sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraBodyJson : cfg.pluginMainExtraBodyJson)
+        : "",
     };
   }
 
@@ -10271,6 +10292,7 @@
     merged.pluginMainReasoningEffort = getPluginMainReasoningEffortSetting(merged.pluginMainReasoningEffort);
     merged.pluginMainReasoningBudgetTokens = getPluginMainReasoningBudgetTokensSetting(merged.pluginMainReasoningBudgetTokens);
     merged.pluginMainVertexFlexMode = normalizeVertexFlexModeSetting(merged.pluginMainVertexFlexMode);
+    merged.pluginMainLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting(merged.pluginMainLlmGatewayServiceTier);
     merged.pluginMainExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraHeadersJson);
     merged.pluginMainExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraBodyJson);
     merged.supervisorTimeout = sanitizeNumber(merged.supervisorTimeout, 60, 5, 6000);
@@ -10289,6 +10311,7 @@
     merged.subLlmReasoningEffort = getSubLlmReasoningEffortSetting(merged.subLlmReasoningEffort);
     merged.subLlmReasoningBudgetTokens = getSubLlmReasoningBudgetTokensSetting(merged.subLlmReasoningBudgetTokens);
     merged.subLlmVertexFlexMode = normalizeVertexFlexModeSetting(merged.subLlmVertexFlexMode);
+    merged.subLlmLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting(merged.subLlmLlmGatewayServiceTier);
     merged.subLlmExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraHeadersJson);
     merged.subLlmExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraBodyJson);
     merged.embeddingProvider = normalizeEmbeddingProvider(merged.embeddingProvider, DEFAULT_SETTINGS.embeddingProvider);
@@ -10471,6 +10494,7 @@
       mainReasoningEffort: getPluginMainReasoningEffortSetting(s.pluginMainReasoningEffort),
       mainReasoningBudgetTokens: getPluginMainReasoningBudgetTokensSetting(s.pluginMainReasoningBudgetTokens),
       mainVertexFlexMode: mainOverrides.vertexFlexMode,
+      mainLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier,
       mainExtraHeadersJson: mainOverrides.extraHeadersJson,
       mainExtraBodyJson: mainOverrides.extraBodyJson,
         criticProvider,
@@ -10483,6 +10507,7 @@
       criticReasoningEffort: getSubLlmReasoningEffortSetting(s.subLlmReasoningEffort),
       criticReasoningBudgetTokens: getSubLlmReasoningBudgetTokensSetting(s.subLlmReasoningBudgetTokens),
       criticVertexFlexMode: criticOverrides.vertexFlexMode,
+      criticLlmGatewayServiceTier: criticOverrides.llmGatewayServiceTier,
       criticExtraHeadersJson: criticOverrides.extraHeadersJson,
       criticExtraBodyJson: criticOverrides.extraBodyJson,
       supervisorProvider: mainProvider,
@@ -10495,6 +10520,7 @@
       supervisorReasoningEffort: getPluginMainReasoningEffortSetting(s.pluginMainReasoningEffort),
       supervisorReasoningBudgetTokens: getPluginMainReasoningBudgetTokensSetting(s.pluginMainReasoningBudgetTokens),
       supervisorVertexFlexMode: mainOverrides.vertexFlexMode,
+      supervisorLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier,
       supervisorExtraHeadersJson: mainOverrides.extraHeadersJson,
       supervisorExtraBodyJson: mainOverrides.extraBodyJson,
       embeddingApiKey: typeof s.embeddingApiKey === "string" ? s.embeddingApiKey : "",
@@ -10545,6 +10571,7 @@
         reasoning_effort: getSubLlmReasoningEffortSetting(settings.subLlmReasoningEffort),
         reasoning_budget_tokens: getSubLlmReasoningBudgetTokensSetting(settings.subLlmReasoningBudgetTokens),
         vertex_flex_mode: criticOverrides.vertexFlexMode,
+        llm_gateway_service_tier: criticOverrides.llmGatewayServiceTier,
         extra_headers_json: criticOverrides.extraHeadersJson,
         extra_body_json: criticOverrides.extraBodyJson,
       },
@@ -49579,6 +49606,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <option value="claude"${s.pluginMainProvider === "claude" ? " selected" : ""}>Claude</option>
           <option value="gemini"${s.pluginMainProvider === "gemini" ? " selected" : ""}>Gemini</option>
           <option value="openrouter"${s.pluginMainProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
+          <option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
           <option value="vertex"${s.pluginMainProvider === "vertex" ? " selected" : ""}>Vertex</option>
           <option value="copilot"${s.pluginMainProvider === "copilot" ? " selected" : ""}>Copilot</option>
           <option value="ollama"${s.pluginMainProvider === "ollama" ? " selected" : ""}>Ollama</option>
@@ -49601,6 +49629,15 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <option value="provisioned_then_flex"${s.pluginMainVertexFlexMode === "provisioned_then_flex" ? " selected" : ""}>provisioned_then_flex</option>
           <option value="flex_only"${s.pluginMainVertexFlexMode === "flex_only" ? " selected" : ""}>flex_only</option>
         </select>
+      </div>
+      <div class="mo-row" id="mo-pluginMainLlmGatewayServiceTierRow">
+        <label>LLM Gateway Service Tier</label>
+        <select id="mo-pluginMainLlmGatewayServiceTier">
+          <option value="standard"${(s.pluginMainLlmGatewayServiceTier || "standard") === "standard" ? " selected" : ""}>Standard</option>
+          <option value="flex"${s.pluginMainLlmGatewayServiceTier === "flex" ? " selected" : ""}>Flex</option>
+          <option value="priority"${s.pluginMainLlmGatewayServiceTier === "priority" ? " selected" : ""}>Priority</option>
+        </select>
+        <small style="color:#888;font-size:11px;">지원되는 provider/model 조합에만 적용됩니다. 미지원 조합은 자동 강등 없이 400 오류를 반환합니다.</small>
       </div>
       <div class="mo-row" id="mo-pluginMainExtraHeadersJsonRow">
         <label>Extra Headers JSON</label>
@@ -49677,6 +49714,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <option value="claude"${s.subLlmProvider === "claude" ? " selected" : ""}>Claude</option>
           <option value="gemini"${s.subLlmProvider === "gemini" ? " selected" : ""}>Gemini</option>
           <option value="openrouter"${s.subLlmProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
+          <option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
           <option value="vertex"${s.subLlmProvider === "vertex" ? " selected" : ""}>Vertex</option>
           <option value="copilot"${s.subLlmProvider === "copilot" ? " selected" : ""}>Copilot</option>
           <option value="ollama"${s.subLlmProvider === "ollama" ? " selected" : ""}>Ollama</option>
@@ -49699,6 +49737,15 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <option value="provisioned_then_flex"${s.subLlmVertexFlexMode === "provisioned_then_flex" ? " selected" : ""}>provisioned_then_flex</option>
           <option value="flex_only"${s.subLlmVertexFlexMode === "flex_only" ? " selected" : ""}>flex_only</option>
         </select>
+      </div>
+      <div class="mo-row" id="mo-subLlmLlmGatewayServiceTierRow">
+        <label>LLM Gateway Service Tier</label>
+        <select id="mo-subLlmLlmGatewayServiceTier">
+          <option value="standard"${(s.subLlmLlmGatewayServiceTier || "standard") === "standard" ? " selected" : ""}>Standard</option>
+          <option value="flex"${s.subLlmLlmGatewayServiceTier === "flex" ? " selected" : ""}>Flex</option>
+          <option value="priority"${s.subLlmLlmGatewayServiceTier === "priority" ? " selected" : ""}>Priority</option>
+        </select>
+        <small style="color:#888;font-size:11px;">평론가처럼 지연을 감수할 수 있는 호출에 Flex를 선택할 수 있습니다. 지원 여부는 선택 모델에 따라 다릅니다.</small>
       </div>
       <div class="mo-row" id="mo-subLlmExtraHeadersJsonRow">
         <label>Extra Headers JSON</label>
@@ -50777,6 +50824,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const vertexEndpointPlaceholder = "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models";
       const vertexServiceAccountPlaceholder = '{"type":"service_account",...}';
       const vertexHintText = "LIBRA native 방식: 서비스 계정 JSON 전체와 /publishers/google/models까지의 endpoint prefix를 사용합니다. PROJECT_ID는 JSON의 project_id로 자동 치환됩니다. 모델은 gemini-3.5-flash처럼 google/ 없이 입력하세요.";
+      const llmGatewayEndpointPlaceholder = "https://api.llmgateway.io/v1";
+      const llmGatewayHintText = "LLM Gateway의 OpenAI 호환 endpoint입니다. 모델 ID는 LLM Gateway 모델 페이지의 provider/model 표기를 사용하세요.";
       const syncVertexOverrideRows = (providerId, rowIds) => {
         const providerEl = $(providerId);
         if (!providerEl) return;
@@ -50794,12 +50843,27 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         providerEl.addEventListener("change", sync);
         sync();
       };
+      const syncLlmGatewayTierRow = (providerId, rowId) => {
+        const providerEl = $(providerId);
+        const row = $(rowId);
+        if (!providerEl || !row) return;
+        const sync = () => {
+          const enabled = String(providerEl.value || "").trim().toLowerCase() === "llmgateway";
+          row.style.display = enabled ? "" : "none";
+          row.querySelectorAll("input,select,textarea,button").forEach((el) => {
+            el.disabled = !enabled;
+          });
+        };
+        providerEl.addEventListener("change", sync);
+        sync();
+      };
       const bindVertexProviderHints = (providerId, apiLabelId, apiInputId, endpointLabelId, endpointInputId, modelInputId, hintId, defaults) => {
         const providerEl = $(providerId);
         if (!providerEl) return;
         const sync = () => {
           const provider = (providerEl.value || "").trim().toLowerCase();
           const isVertex = provider === "vertex";
+          const isLlmGateway = provider === "llmgateway";
           const apiLabel = $(apiLabelId);
           const apiInput = $(apiInputId);
           const endpointLabel = $(endpointLabelId);
@@ -50809,9 +50873,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           if (apiLabel) apiLabel.textContent = isVertex ? "Service Account JSON" : "API Key";
           if (apiInput) apiInput.placeholder = isVertex ? vertexServiceAccountPlaceholder : (defaults.api || "");
           if (endpointLabel) endpointLabel.textContent = isVertex ? "Vertex Endpoint" : "Endpoint";
-          if (endpointInput) endpointInput.placeholder = isVertex ? vertexEndpointPlaceholder : (defaults.endpoint || "");
+          if (endpointInput) endpointInput.placeholder = isVertex
+            ? vertexEndpointPlaceholder
+            : (isLlmGateway ? llmGatewayEndpointPlaceholder : (defaults.endpoint || ""));
           if (modelInput) modelInput.placeholder = isVertex ? (defaults.vertexModel || "예: gemini-2.5-flash") : (defaults.model || "");
-          if (hint) hint.textContent = isVertex ? vertexHintText : "";
+          if (hint) hint.textContent = isVertex ? vertexHintText : (isLlmGateway ? llmGatewayHintText : "");
         };
         providerEl.addEventListener("change", sync);
         sync();
@@ -50835,6 +50901,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       // 저장
       syncVertexOverrideRows("mo-pluginMainProvider", ["mo-pluginMainVertexFlexRow", "mo-pluginMainExtraHeadersJsonRow", "mo-pluginMainExtraBodyJsonRow"]);
       syncVertexOverrideRows("mo-subLlmProvider", ["mo-subLlmVertexFlexRow", "mo-subLlmExtraHeadersJsonRow", "mo-subLlmExtraBodyJsonRow"]);
+      syncLlmGatewayTierRow("mo-pluginMainProvider", "mo-pluginMainLlmGatewayServiceTierRow");
+      syncLlmGatewayTierRow("mo-subLlmProvider", "mo-subLlmLlmGatewayServiceTierRow");
 
       $("mo-save-btn").addEventListener("click", async () => {
         try {
@@ -50885,6 +50953,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             pluginMainReasoningEffort: $("mo-pluginMainReasoningEffort").value.trim(),
             pluginMainReasoningBudgetTokens: $("mo-pluginMainReasoningBudgetTokens").value,
             pluginMainVertexFlexMode: readValue("mo-pluginMainVertexFlexMode", settings.pluginMainVertexFlexMode, true),
+            pluginMainLlmGatewayServiceTier: readValue("mo-pluginMainLlmGatewayServiceTier", settings.pluginMainLlmGatewayServiceTier, true),
             pluginMainExtraHeadersJson: readValue("mo-pluginMainExtraHeadersJson", settings.pluginMainExtraHeadersJson, true),
             pluginMainExtraBodyJson: readValue("mo-pluginMainExtraBodyJson", settings.pluginMainExtraBodyJson, true),
             subLlmApiKey: $("mo-subLlmApiKey").value,
@@ -50898,6 +50967,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             subLlmReasoningEffort: $("mo-subLlmReasoningEffort").value.trim(),
             subLlmReasoningBudgetTokens: $("mo-subLlmReasoningBudgetTokens").value,
             subLlmVertexFlexMode: readValue("mo-subLlmVertexFlexMode", settings.subLlmVertexFlexMode, true),
+            subLlmLlmGatewayServiceTier: readValue("mo-subLlmLlmGatewayServiceTier", settings.subLlmLlmGatewayServiceTier, true),
             subLlmExtraHeadersJson: readValue("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson, true),
             subLlmExtraBodyJson: readValue("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson, true),
             embeddingProvider: $("mo-embeddingProvider").value,
@@ -50969,9 +51039,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             if (el) el.checked = !!value;
           };
           setValueIfPresent("mo-pluginMainVertexFlexMode", settings.pluginMainVertexFlexMode || "off");
+          setValueIfPresent("mo-pluginMainLlmGatewayServiceTier", settings.pluginMainLlmGatewayServiceTier || "standard");
           setValueIfPresent("mo-pluginMainExtraHeadersJson", settings.pluginMainExtraHeadersJson || "");
           setValueIfPresent("mo-pluginMainExtraBodyJson", settings.pluginMainExtraBodyJson || "");
           setValueIfPresent("mo-subLlmVertexFlexMode", settings.subLlmVertexFlexMode || "off");
+          setValueIfPresent("mo-subLlmLlmGatewayServiceTier", settings.subLlmLlmGatewayServiceTier || "standard");
           setValueIfPresent("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson || "");
           setValueIfPresent("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson || "");
           setValueIfPresent("mo-primaryCanonBaseMaxChars", settings.primaryCanonBaseMaxChars);
@@ -51072,6 +51144,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-pluginMainReasoningBudgetTokens") || {}).value), 0);
           const testMaxCompletionTokens = getPluginMainMaxCompletionTokensSetting((($("mo-pluginMainMaxCompletionTokens") || {}).value));
           const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-pluginMainVertexFlexMode") || {}).value || "off").trim());
+          const testLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting((($("mo-pluginMainLlmGatewayServiceTier") || {}).value || "standard").trim());
           const testExtraHeadersJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraHeadersJson") || {}).value || ""));
           const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraBodyJson") || {}).value || ""));
           const testBody = {
@@ -51089,6 +51162,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
             if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
             if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
+          }
+          if (testProvider === "llmgateway") {
+            testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
           }
           const data = await withUiBridgeSettings(() => bridgeFetch("/proxy/plugin-main", {
             method: "POST",
@@ -51131,6 +51207,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-subLlmReasoningBudgetTokens") || {}).value), 0);
           const testMaxCompletionTokens = getSubLlmMaxCompletionTokensSetting((($("mo-subLlmMaxCompletionTokens") || {}).value));
           const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-subLlmVertexFlexMode") || {}).value || "off").trim());
+          const testLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting((($("mo-subLlmLlmGatewayServiceTier") || {}).value || "standard").trim());
           const testExtraHeadersJson = sanitizeProviderOverrideJsonSetting((($("mo-subLlmExtraHeadersJson") || {}).value || ""));
           const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-subLlmExtraBodyJson") || {}).value || ""));
           const testBody = {
@@ -51148,6 +51225,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
             if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
             if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
+          }
+          if (testProvider === "llmgateway") {
+            testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
           }
           const data = await withUiBridgeSettings(() => bridgeFetch("/proxy/plugin-main", {
             method: "POST",

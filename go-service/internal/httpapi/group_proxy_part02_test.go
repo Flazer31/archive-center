@@ -542,6 +542,60 @@ func TestConfigUpdateProjectGUISettingsTraceMasksSecrets(t *testing.T) {
 	}
 }
 
+func TestConfigUpdatePropagatesLLMGatewayServiceTierToAllGenerationRoles(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.RegisterRoutes(mux)
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader([]byte(`{
+		"mainProvider":"llmgateway",
+		"mainApiKey":"main-key",
+		"mainEndpoint":"https://api.llmgateway.io/v1",
+		"mainModel":"openai/gpt-test",
+		"mainLlmGatewayServiceTier":"standard",
+		"supervisorProvider":"llmgateway",
+		"supervisorApiKey":"supervisor-key",
+		"supervisorEndpoint":"https://api.llmgateway.io/v1",
+		"supervisorModel":"google-vertex/gemini-test",
+		"supervisorLlmGatewayServiceTier":"priority",
+		"criticProvider":"llmgateway",
+		"criticApiKey":"critic-key",
+		"criticEndpoint":"https://api.llmgateway.io/v1",
+		"criticModel":"google-ai-studio/gemini-test",
+		"criticLlmGatewayServiceTier":"flex"
+	}`)))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRec := httptest.NewRecorder()
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("config/update status = %d, body=%s", updateRec.Code, updateRec.Body.String())
+	}
+
+	mainCfg := srv.chapterLLMConfig()
+	supervisorCfg := srv.supervisorLLMConfig()
+	criticCfg := srv.completeTurnExtractionConfig(map[string]any{}).Critic
+	if mainCfg.Provider != "llmgateway" || mainCfg.LLMGatewayServiceTier != "standard" {
+		t.Fatalf("main LLM Gateway config = %+v", mainCfg)
+	}
+	if supervisorCfg.Provider != "llmgateway" || supervisorCfg.LLMGatewayServiceTier != "priority" {
+		t.Fatalf("supervisor LLM Gateway config = %+v", supervisorCfg)
+	}
+	if criticCfg.Provider != "llmgateway" || criticCfg.LLMGatewayServiceTier != "flex" {
+		t.Fatalf("critic LLM Gateway config = %+v", criticCfg)
+	}
+
+	var updateResp map[string]any
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &updateResp); err != nil {
+		t.Fatalf("decode config/update response: %v", err)
+	}
+	trace := mapFromAny(updateResp["runtime_config_trace"])
+	if mapFromAny(trace["main"])["llm_gateway_service_tier"] != "standard" ||
+		mapFromAny(trace["supervisor"])["llm_gateway_service_tier"] != "priority" ||
+		mapFromAny(trace["critic"])["llm_gateway_service_tier"] != "flex" {
+		t.Fatalf("runtime service tier trace missing: %+v", trace)
+	}
+}
+
 func TestConfigUpdateSupervisorTraceDoesNotInferMainConfig(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := setupTestServer()

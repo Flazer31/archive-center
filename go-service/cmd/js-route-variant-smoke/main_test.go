@@ -534,6 +534,32 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSLLMGatewayProviderAndServiceTierMarkers(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		`"openrouter", "llmgateway", "vertex"`,
+		`<option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
+		`<option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
+		`pluginMainLlmGatewayServiceTier: "standard"`,
+		`subLlmLlmGatewayServiceTier: "standard"`,
+		`function normalizeLlmGatewayServiceTierSetting(value)`,
+		`payload.llm_gateway_service_tier = normalizeLlmGatewayServiceTierSetting(`,
+		`mainLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier`,
+		`criticLlmGatewayServiceTier: criticOverrides.llmGatewayServiceTier`,
+		`supervisorLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier`,
+		`llm_gateway_service_tier: criticOverrides.llmGatewayServiceTier`,
+		`id="mo-pluginMainLlmGatewayServiceTier"`,
+		`id="mo-subLlmLlmGatewayServiceTier"`,
+		`https://api.llmgateway.io/v1`,
+		`testBody.llm_gateway_service_tier = testLlmGatewayServiceTier`,
+	}
+	for _, needle := range required {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing LLM Gateway marker %q", needle)
+		}
+	}
+}
+
 func TestArchiveCenterJSAuxiliaryInjectionPlacementI18nAndNoStaleBudgetPreview(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
