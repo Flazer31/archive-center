@@ -574,72 +574,13 @@ func (m *mariadbStore) PreviewSessionMigrationSourceCleanup(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	preview.BlockedReasons = append(preview.BlockedReasons, SessionMigrationCleanupManifestUnverifiedReason)
+	preview.ReadyForCleanup = false
 	return preview, nil
 }
 
 func (m *mariadbStore) CleanupSessionMigrationSource(ctx context.Context, migrationID int64, reason string) (*SessionMigrationCleanupResult, error) {
-	if err := m.ensureDB(); err != nil {
-		return nil, err
-	}
-	if migrationID <= 0 {
-		return nil, ErrNotFound
-	}
-	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return nil, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	preview, err := previewSessionMigrationSourceCleanupTx(ctx, tx, migrationID)
-	if err != nil {
-		return nil, err
-	}
-	if !preview.ReadyForCleanup {
-		return nil, fmt.Errorf("session migration source cleanup blocked: %s", strings.Join(preview.BlockedReasons, ","))
-	}
-
-	if err := deleteSessionRowsTx(ctx, tx, preview.SourceSessionID); err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, `
-		UPDATE session_migrations
-		SET status = 'source_cleaned',
-		    cleanup_at = CURRENT_TIMESTAMP(3),
-		    errors_json = JSON_ARRAY(),
-		    updated_at = CURRENT_TIMESTAMP(3)
-		WHERE id = ?
-	`, migrationID)
-	if err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, `
-		UPDATE session_migration_locks
-		SET lock_status = 'source_cleaned',
-		    reason = CONCAT(COALESCE(reason, ''), CASE WHEN COALESCE(reason, '') = '' THEN '' ELSE '\n' END, ?),
-		    updated_at = CURRENT_TIMESTAMP(3)
-		WHERE migration_id = ? AND locked = TRUE AND unlocked_at IS NULL
-	`, strings.TrimSpace(reason), migrationID)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	committed = true
-	return &SessionMigrationCleanupResult{
-		MigrationID:     migrationID,
-		SourceSessionID: preview.SourceSessionID,
-		TargetSessionID: preview.TargetSessionID,
-		Status:          "source_cleaned",
-		Counts:          preview.Counts,
-		SourceCleaned:   true,
-		ReadyForLive:    true,
-	}, nil
+	return nil, ErrSessionMigrationCleanupManifestUnverified
 }
 
 type sessionMigrationLockQuerier interface {
@@ -851,51 +792,6 @@ func execIDBatch(ctx context.Context, tx *sql.Tx, prefix string, ids []int64) (i
 		total += int(affected)
 	}
 	return total, nil
-}
-
-func deleteSessionRowsTx(ctx context.Context, tx *sql.Tx, chatSessionID string) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM session_reference_bindings WHERE chat_session_id = ?", chatSessionID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM persona_capsule_attachments WHERE target_chat_session_id = ?", chatSessionID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM protagonist_entity_memories WHERE source_chat_session_id = ?", chatSessionID); err != nil {
-		return err
-	}
-	tables := []string{
-		"chat_logs",
-		"effective_input_logs",
-		"memories",
-		"direct_evidence_records",
-		"kg_triples",
-		"character_events",
-		"storylines",
-		"world_rules",
-		"character_states",
-		"pending_threads",
-		"active_states",
-		"canonical_state_layers",
-		"episode_summaries",
-		"chapter_summaries",
-		"arc_summaries",
-		"saga_digests",
-		"session_active_scopes",
-		"guidance_plan_states",
-		"entities",
-		"trust_states",
-		"consequence_records",
-		"psychology_branches",
-		"session_fork_lineage",
-		"theme_offscreen_carries",
-		"critic_feedback",
-	}
-	for _, tbl := range tables {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM "+tbl+" WHERE chat_session_id = ?", chatSessionID); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func copySessionMigrationReferenceBindings(ctx context.Context, tx *sql.Tx, migrationID int64, sourceID, targetID string) (int, int, error) {

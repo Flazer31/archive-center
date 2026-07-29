@@ -669,15 +669,24 @@ func TestSessionMigrateCleanupSourceDryRunDoesNotDelete(t *testing.T) {
 		"dry_run":      true,
 	})
 
-	if resp.Blocked || !resp.DryRun || resp.WriteAttempted || resp.VectorWriteAttempted || st.cleanupCalled || vec.deleteCalled {
+	if !resp.Blocked || !resp.DryRun || resp.ReadyForCleanup || resp.ReadyForLive || resp.WriteAttempted || resp.VectorWriteAttempted || st.cleanupCalled || vec.deleteCalled {
 		t.Fatalf("cleanup dry-run attempted side effects: resp=%+v cleanupCalled=%v deleteCalled=%v", resp, st.cleanupCalled, vec.deleteCalled)
 	}
-	if !resp.ReadyForCleanup || resp.SourceVectors != 3 || resp.SourceRows.ChatLogs != 2 {
+	if resp.ContractVersion != "sc-mig-cleanup.v2" {
+		t.Fatalf("cleanup contract version = %q, want sc-mig-cleanup.v2", resp.ContractVersion)
+	}
+	if resp.MigrationID != 42 || resp.SourceSessionID != "char_59_cid_source" || resp.TargetSessionID != "char_59_cid_target" {
+		t.Fatalf("cleanup dry-run lost migration coordinates: %+v", resp)
+	}
+	if !sessionMigrationContainsString(resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason) {
+		t.Fatalf("cleanup dry-run blockers = %#v, want %s", resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason)
+	}
+	if resp.SourceVectors != 3 || resp.SourceRows.ChatLogs != 2 {
 		t.Fatalf("cleanup dry-run summary mismatch: %+v", resp)
 	}
 }
 
-func TestSessionMigrateCleanupSourceConfirmDeletesSourceVectorsAndRows(t *testing.T) {
+func TestSessionMigrateCleanupSourceConfirmFailsClosedBeforeDeletingSource(t *testing.T) {
 	st := &sessionMigrationPreviewStore{}
 	vec := &sessionMigrationPreviewVector{counts: map[string]int{"char_59_cid_source": 3}}
 	resp := performSessionMigrationCleanupSource(t, st, vec, map[string]any{
@@ -686,14 +695,17 @@ func TestSessionMigrateCleanupSourceConfirmDeletesSourceVectorsAndRows(t *testin
 		"reason":                 "source abandoned after verified target",
 	})
 
-	if resp.Blocked || !resp.WriteAttempted || !resp.VectorWriteAttempted || !resp.SourceCleaned || !resp.ReadyForLive {
-		t.Fatalf("cleanup confirm response mismatch: %+v", resp)
+	if !resp.Blocked || resp.DryRun || resp.ReadyForCleanup || resp.WriteAttempted || resp.VectorWriteAttempted || resp.SourceCleaned || resp.ReadyForLive {
+		t.Fatalf("cleanup confirm did not fail closed: %+v", resp)
 	}
-	if !st.cleanupCalled || st.cleanupReason != "source abandoned after verified target" {
-		t.Fatalf("cleanup store call mismatch: called=%v reason=%q", st.cleanupCalled, st.cleanupReason)
+	if !sessionMigrationContainsString(resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason) {
+		t.Fatalf("cleanup confirm blockers = %#v, want %s", resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason)
 	}
-	if !vec.deleteCalled || vec.deleteSessionID != "char_59_cid_source" {
-		t.Fatalf("source vector cleanup mismatch: called=%v sid=%q", vec.deleteCalled, vec.deleteSessionID)
+	if resp.MigrationID != 42 || resp.SourceSessionID != "char_59_cid_source" || resp.TargetSessionID != "char_59_cid_target" {
+		t.Fatalf("cleanup confirm lost migration coordinates: %+v", resp)
+	}
+	if st.cleanupCalled || vec.deleteCalled {
+		t.Fatalf("cleanup confirm attempted side effects: cleanupCalled=%v deleteCalled=%v", st.cleanupCalled, vec.deleteCalled)
 	}
 }
 

@@ -2,11 +2,23 @@ package store
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func TestCleanupSessionMigrationSourceFailsClosedUntilManifestVerified(t *testing.T) {
+	m := &mariadbStore{}
+	result, err := m.CleanupSessionMigrationSource(context.Background(), 7, "must not delete")
+	if result != nil {
+		t.Fatalf("cleanup result = %+v, want nil", result)
+	}
+	if !errors.Is(err, ErrSessionMigrationCleanupManifestUnverified) {
+		t.Fatalf("cleanup error = %v, want %v", err, ErrSessionMigrationCleanupManifestUnverified)
+	}
+}
 
 func TestCopySessionMigrationReferenceBindingsCopiesLinkRuntimeAndLedger(t *testing.T) {
 	db, mock, err := sqlmock.New()

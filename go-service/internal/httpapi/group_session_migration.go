@@ -18,7 +18,7 @@ const (
 	sessionMigrationReindexVersion  = "sc-mig-reindex.v1"
 	sessionMigrationLockVersion     = "sc-mig-lock.v1"
 	sessionMigrationRollbackVersion = "sc-mig-rollback.v1"
-	sessionMigrationCleanupVersion  = "sc-mig-cleanup.v1"
+	sessionMigrationCleanupVersion  = "sc-mig-cleanup.v2"
 	sessionMigrationModeCopyLock    = store.SessionMigrationModeCopyThenLockSource
 	sessionMigrationModeCopyKeep    = store.SessionMigrationModeCopyKeepSource
 	sessionMigrationSubjectiveCap   = 1000
@@ -776,51 +776,12 @@ func (s *Server) handleSessionMigrateCleanupSource(w http.ResponseWriter, r *htt
 			resp.SourceVectors = count
 		}
 	}
-	if resp.DryRun || resp.Blocked {
-		writeJSON(w, http.StatusOK, resp)
-		return
+	resp.Blocked = true
+	resp.ReadyForCleanup = false
+	resp.ReadyForLive = false
+	if !containsString(resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason) {
+		resp.BlockedReasons = append(resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason)
 	}
-	if s.Vector == nil {
-		resp.Blocked = true
-		resp.BlockedReasons = append(resp.BlockedReasons, "vector_store_unavailable")
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-	if strings.TrimSpace(s.Cfg.ChromaEndpoint) == "" {
-		resp.Blocked = true
-		resp.BlockedReasons = append(resp.BlockedReasons, "chroma_endpoint_not_configured")
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-	if s.VectorOpenError != nil {
-		resp.Blocked = true
-		resp.BlockedReasons = append(resp.BlockedReasons, "chroma_open_error")
-		resp.Errors = append(resp.Errors, s.VectorOpenError.Error())
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-	resp.VectorWriteAttempted = true
-	if err := s.Vector.DeleteSession(r.Context(), preview.SourceSessionID); err != nil {
-		resp.Errors = append(resp.Errors, err.Error())
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-	result, err := recoveryStore.CleanupSessionMigrationSource(r.Context(), req.MigrationID, strings.TrimSpace(req.Reason))
-	if err != nil {
-		if strings.Contains(err.Error(), "blocked:") {
-			resp.Blocked = true
-			resp.BlockedReasons = append(resp.BlockedReasons, err.Error())
-			writeJSON(w, http.StatusOK, resp)
-			return
-		}
-		writeInternalError(w, err.Error())
-		return
-	}
-	resp.WriteAttempted = true
-	resp.MigrationStatus = result.Status
-	resp.SourceCleaned = result.SourceCleaned
-	resp.ReadyForLive = result.ReadyForLive
-	resp.SourceRows = sessionMigrationCountsFromStore(result.Counts)
 	writeJSON(w, http.StatusOK, resp)
 }
 

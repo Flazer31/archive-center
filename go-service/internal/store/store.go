@@ -10,9 +10,15 @@ import (
 
 // Common errors.
 var (
-	ErrNotFound   = errors.New("record not found")
-	ErrNotEnabled = errors.New("mariadb store is not enabled in R0/R1")
+	ErrNotFound                                  = errors.New("record not found")
+	ErrNotEnabled                                = errors.New("mariadb store is not enabled in R0/R1")
+	ErrSessionMigrationCleanupManifestUnverified = errors.New(SessionMigrationCleanupManifestUnverifiedReason)
 )
+
+// SessionMigrationCleanupManifestUnverifiedReason blocks destructive source
+// cleanup until every session artifact has a versioned copy/retain/regenerate/
+// delete classification and count/hash/FK/vector parity verification.
+const SessionMigrationCleanupManifestUnverifiedReason = "session_cleanup_manifest_verification_required"
 
 // ShadowStatusReporter is implemented by stores that expose shadow-side health.
 // In R1 this is used by the dual-write wrapper to report shadow failures
@@ -438,7 +444,8 @@ type SessionMigrationRollbackResult struct {
 }
 
 // SessionMigrationCleanupPreview reports whether an abandoned source session
-// can be safely cleaned after a successful copy, vector reindex, and source lock.
+// can be safely cleaned after a successful copy, vector reindex, source lock,
+// and full artifact-manifest parity verification.
 type SessionMigrationCleanupPreview struct {
 	MigrationID     int64
 	SourceSessionID string
@@ -451,6 +458,8 @@ type SessionMigrationCleanupPreview struct {
 }
 
 // SessionMigrationCleanupResult reports an operator-confirmed source cleanup.
+// The destructive operation remains fail-closed until the artifact manifest is
+// complete; callers must honor ErrSessionMigrationCleanupManifestUnverified.
 type SessionMigrationCleanupResult struct {
 	MigrationID     int64
 	SourceSessionID string
