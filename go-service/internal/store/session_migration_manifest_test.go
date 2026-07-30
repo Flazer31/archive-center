@@ -145,6 +145,10 @@ func TestSessionMigrationLedgerTablesMatchFreshAndAdditiveSchemas(t *testing.T) 
 			t.Errorf("%s definition drifted between 001 and 007", table)
 		}
 	}
+	rowMapRE := regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS\s+session_migration_artifact_row_map\s*\((.*?)\)\s*ENGINE=InnoDB[^;]+;`)
+	if len(rowMapRE.Find(raw001)) == 0 {
+		t.Fatal("session_migration_artifact_row_map missing from canonical fresh/compatibility schema")
+	}
 }
 
 func TestSessionMigrationManifestClassifiesIndirectChildrenAndPolicies(t *testing.T) {
@@ -192,24 +196,148 @@ func TestSessionMigrationManifestClassifiesIndirectChildrenAndPolicies(t *testin
 	}
 }
 
-func TestSessionMigrationManifestRemainsExplicitlyReleaseBlocked(t *testing.T) {
+func TestSessionMigrationManifestHasExecutablePlanForEveryEntry(t *testing.T) {
 	direct, indirect, implemented := SessionMigrationManifestSummary()
 	if direct != 46 || indirect != 4 {
 		t.Fatalf("manifest summary direct=%d indirect=%d, want 46/4", direct, indirect)
 	}
-	if implemented >= direct+indirect {
-		t.Fatalf("manifest unexpectedly reports complete executor: implemented=%d total=%d", implemented, direct+indirect)
+	if implemented != direct+indirect {
+		t.Fatalf("manifest executor implemented=%d total=%d", implemented, direct+indirect)
 	}
-	blockers := strings.Join(SessionMigrationManifestReleaseBlockers(), "\n")
-	for _, want := range []string{
-		SessionMigrationManifestParityUnverifiedReason,
-		"source_target_count_hash_unverified",
-		"row_map_fk_remap_unverified",
-		"vector_expected_id_parity_unverified",
-	} {
-		if !strings.Contains(blockers, want) {
-			t.Errorf("release blockers missing %q: %s", want, blockers)
+	if blockers := SessionMigrationManifestReleaseBlockers(); len(blockers) != 0 {
+		t.Fatalf("static manifest release blockers = %v, want none", blockers)
+	}
+	plans := SessionMigrationExecutionPlans()
+	if len(plans) != direct+indirect {
+		t.Fatalf("execution plans=%d, want %d", len(plans), direct+indirect)
+	}
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Implemented {
+			t.Errorf("%s is not implemented", entry.Table)
 		}
+		plan, ok := SessionMigrationExecutionPlanFor(entry.Table)
+		if !ok {
+			t.Errorf("%s has no execution plan", entry.Table)
+			continue
+		}
+		columnSet := map[string]bool{}
+		for _, column := range plan.Columns {
+			columnSet[column] = true
+		}
+		if entry.Direct && !columnSet[entry.SessionColumn] {
+			t.Errorf("%s plan omits session column %s", entry.Table, entry.SessionColumn)
+		}
+		for _, fk := range plan.ForeignKeys {
+			if !columnSet[fk.Column] {
+				t.Errorf("%s FK plan omits column %s", entry.Table, fk.Column)
+			}
+		}
+	}
+}
+
+func TestSessionMigrationExecutionPlanColumnsAndPrimaryKeysMatchFreshSchema(t *testing.T) {
+	raw, err := os.ReadFile("../../../migrations/001_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRE := regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS\s+` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*\((.*?)\)\s*(?:ENGINE|COMMENT|;)`)
+	columnRE := regexp.MustCompile(`(?im)^\s*` + "`?" + `([a-z_][a-z0-9_]*)` + "`?" + `\s+(?:BIGINT|INT|TINYINT|DECIMAL|DOUBLE|FLOAT|BOOLEAN|CHAR|VARCHAR|TEXT|LONGTEXT|MEDIUMTEXT|JSON|DATETIME|TIMESTAMP|DATE|BLOB|LONGBLOB|ENUM)\b`)
+	inlinePrimaryRE := regexp.MustCompile(`(?im)^\s*` + "`?" + `([a-z_][a-z0-9_]*)` + "`?" + `\s+[^\r\n,]*\bPRIMARY\s+KEY\b`)
+	tablePrimaryRE := regexp.MustCompile(`(?im)^\s*PRIMARY\s+KEY\s*\(([^)]+)\)`)
+	generatedRE := regexp.MustCompile(`(?im)^\s*` + "`?" + `([a-z_][a-z0-9_]*)` + "`?" + `\s+[^\r\n,]*(?:\r?\n\s*)?GENERATED\s+ALWAYS\b`)
+	schema := map[string]struct {
+		columns   []string
+		primary   []string
+		generated []string
+	}{}
+	for _, match := range createRE.FindAllSubmatch(raw, -1) {
+		table := string(match[1])
+		if _, tracked := sessionMigrationExecutionPlansV1[table]; !tracked {
+			continue
+		}
+		block := match[2]
+		columns := []string{}
+		for _, column := range columnRE.FindAllSubmatch(block, -1) {
+			columns = append(columns, string(column[1]))
+		}
+		primary := []string{}
+		if tablePrimary := tablePrimaryRE.FindSubmatch(block); len(tablePrimary) == 2 {
+			for _, column := range strings.Split(string(tablePrimary[1]), ",") {
+				primary = append(primary, strings.Trim(strings.TrimSpace(column), "`"))
+			}
+		} else if inlinePrimary := inlinePrimaryRE.FindSubmatch(block); len(inlinePrimary) == 2 {
+			primary = append(primary, string(inlinePrimary[1]))
+		}
+		generated := []string{}
+		for _, column := range generatedRE.FindAllSubmatch(block, -1) {
+			generated = append(generated, string(column[1]))
+		}
+		if previous, duplicate := schema[table]; duplicate {
+			if strings.Join(previous.columns, ",") != strings.Join(columns, ",") ||
+				strings.Join(previous.primary, ",") != strings.Join(primary, ",") ||
+				strings.Join(previous.generated, ",") != strings.Join(generated, ",") {
+				t.Fatalf("duplicate schema definition drift for %s", table)
+			}
+			continue
+		}
+		schema[table] = struct {
+			columns   []string
+			primary   []string
+			generated []string
+		}{columns: columns, primary: primary, generated: generated}
+	}
+	for _, plan := range SessionMigrationExecutionPlans() {
+		actual, ok := schema[plan.Table]
+		if !ok {
+			t.Errorf("%s schema definition missing", plan.Table)
+			continue
+		}
+		if strings.Join(actual.columns, ",") != strings.Join(plan.Columns, ",") {
+			t.Errorf("%s columns\nschema=%s\nplan=%s", plan.Table, strings.Join(actual.columns, ","), strings.Join(plan.Columns, ","))
+		}
+		if strings.Join(actual.primary, ",") != strings.Join(plan.PrimaryKey, ",") {
+			t.Errorf("%s primary key schema=%v plan=%v", plan.Table, actual.primary, plan.PrimaryKey)
+		}
+		if strings.Join(actual.generated, ",") != strings.Join(plan.DatabaseGenerated, ",") {
+			t.Errorf("%s generated columns schema=%v plan=%v", plan.Table, actual.generated, plan.DatabaseGenerated)
+		}
+	}
+}
+
+func TestSessionMigrationVectorPlansCoverCanonicalManagedTiers(t *testing.T) {
+	want := map[string]string{
+		"memories":                "memory",
+		"direct_evidence_records": "evidence",
+		"world_rules":             "world_rule",
+		"kg_triples":              "kg_triple",
+		"episode_summaries":       "episode",
+		"chapter_summaries":       "chapter",
+		"arc_summaries":           "arc",
+		"saga_digests":            "saga",
+		"precise_memory_units":    "precise_memory",
+	}
+	for table, tier := range want {
+		plan, ok := SessionMigrationExecutionPlanFor(table)
+		if !ok || plan.Vector == nil {
+			t.Errorf("%s vector plan missing", table)
+			continue
+		}
+		wantIDColumn := plan.PrimaryKey[0]
+		if table == "precise_memory_units" {
+			wantIDColumn = "unit_id"
+		}
+		if plan.Vector.Tier != tier || plan.Vector.IDColumn != wantIDColumn {
+			t.Errorf("%s vector plan tier/id = %s/%s, want %s/%s", table,
+				plan.Vector.Tier, plan.Vector.IDColumn, tier, wantIDColumn)
+		}
+	}
+	for _, plan := range SessionMigrationExecutionPlans() {
+		if plan.Vector != nil {
+			delete(want, plan.Table)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("managed vector plans missing: %v", sortedManifestKeys(want))
 	}
 }
 

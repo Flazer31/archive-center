@@ -230,18 +230,29 @@ func resolveLockedSessionRouteTx(ctx context.Context, tx *sql.Tx, sessionID stri
 		seen[current] = true
 		var target string
 		var migrationID int64
+		var lockStatus string
 		err := tx.QueryRowContext(ctx, `
-			SELECT target_session_id, migration_id
+			SELECT target_session_id, migration_id, lock_status
 			FROM session_migration_locks
 			WHERE source_session_id = ? AND locked = TRUE AND unlocked_at IS NULL
 			ORDER BY locked_at DESC, id DESC
 			LIMIT 1
-		`, current).Scan(&target, &migrationID)
+		`, current).Scan(&target, &migrationID, &lockStatus)
 		if errors.Is(err, sql.ErrNoRows) {
 			return current, lastMigrationID, nil
 		}
 		if err != nil {
 			return "", 0, err
+		}
+		if lockStatus == "lock_pending_verification" {
+			return "", 0, sessionMigrationBlocker(
+				"source_lock_verification_in_progress", "session_route", "",
+			)
+		}
+		if lockStatus != "migrated_away" {
+			return "", 0, sessionMigrationBlocker(
+				"source_lock_state_not_routable", "session_route", "",
+			)
 		}
 		target = strings.TrimSpace(target)
 		if target == "" || target == current {

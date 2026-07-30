@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -117,7 +118,8 @@ func TestBindSessionRouteRedirectsLockedSourceAndPersistsTarget(t *testing.T) {
 		))
 	mock.ExpectQuery("(?s)FROM session_migration_locks.*LIMIT 1").
 		WithArgs("locked-source").
-		WillReturnRows(sqlmock.NewRows([]string{"target_session_id", "migration_id"}).AddRow("canonical-target", int64(41)))
+		WillReturnRows(sqlmock.NewRows([]string{"target_session_id", "migration_id", "lock_status"}).
+			AddRow("canonical-target", int64(41), "migrated_away"))
 	mock.ExpectQuery("(?s)FROM session_migration_locks.*LIMIT 1").
 		WithArgs("canonical-target").
 		WillReturnError(sql.ErrNoRows)
@@ -143,6 +145,44 @@ func TestBindSessionRouteRedirectsLockedSourceAndPersistsTarget(t *testing.T) {
 	}
 	if !result.Updated || !result.LockedSourceRedirect || result.Binding.CanonicalSessionID != "canonical-target" {
 		t.Fatalf("redirect result = %+v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBindSessionRouteBlocksPendingMigrationFenceWithoutRedirect(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Now().UTC()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("(?s)FROM session_route_bindings.*FOR UPDATE").
+		WithArgs("character-stable", "chat-opaque").
+		WillReturnRows(sessionRouteBindingRows(now).AddRow(
+			SessionRouteBindingContractVersion, "character-stable", "chat-opaque",
+			"locked-source", "active", "existing_readback", "", int64(0), uint64(2), now, now,
+		))
+	mock.ExpectQuery("(?s)FROM session_migration_locks.*LIMIT 1").
+		WithArgs("locked-source").
+		WillReturnRows(sqlmock.NewRows([]string{"target_session_id", "migration_id", "lock_status"}).
+			AddRow("canonical-target", int64(41), "lock_pending_verification"))
+	mock.ExpectRollback()
+
+	result, err := m.BindSessionRoute(context.Background(), SessionRouteBindingRequest{
+		StableCharacterID: "character-stable",
+		HostChatID:        "chat-opaque",
+	})
+	if result != nil {
+		t.Fatalf("pending lock unexpectedly routed: %+v", result)
+	}
+	var blocker *SessionMigrationBlockerError
+	if !errors.As(err, &blocker) || blocker.Code != "source_lock_verification_in_progress" {
+		t.Fatalf("error = %v, want pending verification blocker", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

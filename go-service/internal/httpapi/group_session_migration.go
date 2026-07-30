@@ -230,11 +230,44 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 	manifestTotal := manifestDirect + manifestIndirect
 	manifestExecutorComplete := manifestImplemented == manifestTotal
 	manifestBlockers := store.SessionMigrationManifestReleaseBlockers()
+	migrationRequest := store.SessionMigrationCompleteRequest{
+		SourceSessionID: sourceID,
+		TargetSessionID: targetID,
+		Mode:            mode,
+		OperatorNote:    strings.TrimSpace(req.OperatorNote),
+	}
+	migrationStore, migrationStoreAvailable := s.Store.(store.SessionMigrationStore)
+	var resumeContext *store.SessionMigrationResumeContext
+	if migrationStoreAvailable {
+		var resumeErr error
+		resumeContext, resumeErr = migrationStore.GetSessionMigrationResumeContext(r.Context(), migrationRequest)
+		if errors.Is(resumeErr, store.ErrNotFound) {
+			resumeContext = nil
+			resumeErr = nil
+		}
+		if resumeErr != nil {
+			writeInternalError(w, resumeErr.Error())
+			return
+		}
+	}
 
 	blockedReasons, warnings, sourceCounts, targetCounts, chroma, err := s.sessionMigrationValidate(r.Context(), sourceID, targetID, mode)
 	if err != nil {
 		writeInternalError(w, err.Error())
 		return
+	}
+	if resumeContext != nil {
+		filtered := blockedReasons[:0]
+		for _, reason := range blockedReasons {
+			if reason == "target_session_not_empty" || reason == "target_chroma_vectors_not_empty" {
+				continue
+			}
+			if reason == "source_session_has_no_archive_data" && resumeContext.Status == "source_cleaned" {
+				continue
+			}
+			filtered = append(filtered, reason)
+		}
+		blockedReasons = filtered
 	}
 	if len(blockedReasons) > 0 {
 		writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
@@ -290,8 +323,7 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	migrationStore, ok := s.Store.(store.SessionMigrationStore)
-	if !ok {
+	if !migrationStoreAvailable {
 		writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
 			Status:                   "ok",
 			ContractVersion:          sessionMigrationCompleteVersion,
@@ -317,15 +349,78 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	result, err := migrationStore.CompleteSessionMigration(r.Context(), store.SessionMigrationCompleteRequest{
-		SourceSessionID: sourceID,
-		TargetSessionID: targetID,
-		Mode:            mode,
-		OperatorNote:    strings.TrimSpace(req.OperatorNote),
-	})
+	writeResumeBlocked := func(reasons []string) {
+		migrationID := int64(0)
+		migrationStatus := ""
+		if resumeContext != nil {
+			migrationID = resumeContext.MigrationID
+			migrationStatus = resumeContext.Status
+		}
+		writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
+			Status:                   "ok",
+			ContractVersion:          sessionMigrationCompleteVersion,
+			WriteAttempted:           false,
+			VectorWriteAttempted:     false,
+			LLMCallAttempted:         false,
+			MigrationID:              migrationID,
+			MigrationStatus:          migrationStatus,
+			SourceSessionID:          sourceID,
+			TargetSessionID:          targetID,
+			Mode:                     mode,
+			Counts:                   sourceCounts,
+			ManifestVersion:          store.SessionMigrationManifestVersion,
+			ManifestDirectTables:     manifestDirect,
+			ManifestIndirectTables:   manifestIndirect,
+			ManifestExecutorComplete: manifestExecutorComplete,
+			ManifestParityVerified:   false,
+			ReleaseBlocked:           true,
+			ReleaseBlockers:          manifestBlockers,
+			Blocked:                  true,
+			BlockedReasons:           reasons,
+			Warnings:                 warnings,
+			GeneratedAt:              time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+	var result *store.SessionMigrationCompleteResult
+	if resumeContext != nil && resumeContext.Status != "copied" {
+		err = s.sessionMigrationWithExclusiveVectorFence(r.Context(), func(rawVector vector.VectorStore) error {
+			parity, verifyErr := s.sessionMigrationRevalidateCurrentTargetWithVector(
+				r.Context(), resumeContext.MigrationID, store.SessionMigrationProofOperationResume, rawVector,
+			)
+			if verifyErr != nil {
+				return verifyErr
+			}
+			if parity == nil || !parity.Verified {
+				return &store.SessionMigrationBlockerError{
+					Code: "current_vector_id_drift", Phase: "resume",
+				}
+			}
+			var completeErr error
+			result, completeErr = migrationStore.CompleteSessionMigration(r.Context(), migrationRequest)
+			return completeErr
+		})
+	} else {
+		result, err = migrationStore.CompleteSessionMigration(r.Context(), migrationRequest)
+	}
 	if err != nil {
+		var blocker *store.SessionMigrationBlockerError
+		if errors.As(err, &blocker) {
+			writeResumeBlocked([]string{blocker.Code})
+			return
+		}
 		writeInternalError(w, err.Error())
 		return
+	}
+	responseWarnings := append([]string{}, warnings...)
+	if result.Status == "copied" {
+		responseWarnings = append(
+			responseWarnings,
+			"copy_phase_only: target is not live-complete",
+			store.SessionMigrationManifestParityUnverifiedReason,
+			"chroma_reindex_pending: vector parity is necessary but not sufficient for source lock",
+		)
+	} else {
+		responseWarnings = append(responseWarnings, "resume_current_state_revalidated")
 	}
 
 	writeJSON(w, http.StatusOK, sessionMigrationCompleteResponse{
@@ -354,11 +449,8 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		ReleaseBlockers:          manifestBlockers,
 		Blocked:                  false,
 		BlockedReasons:           []string{},
-		Warnings: append(warnings,
-			"copy_phase_only: target is not live-complete",
-			store.SessionMigrationManifestParityUnverifiedReason,
-			"chroma_reindex_pending: vector parity is necessary but not sufficient for source lock"),
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Warnings:                 responseWarnings,
+		GeneratedAt:              time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -373,6 +465,7 @@ type sessionMigrationReindexResponse struct {
 	WriteAttempted          bool     `json:"write_attempted"`
 	VectorWriteAttempted    bool     `json:"vector_write_attempted"`
 	LLMCallAttempted        bool     `json:"llm_call_attempted"`
+	EmbeddingCallAttempted  bool     `json:"embedding_call_attempted"`
 	Candidates              int      `json:"candidates"`
 	Upserted                int      `json:"upserted"`
 	Skipped                 int      `json:"skipped"`
@@ -385,6 +478,10 @@ type sessionMigrationReindexResponse struct {
 	ReadyForLive            bool     `json:"ready_for_live"`
 	ManifestVersion         string   `json:"manifest_version"`
 	ManifestParityVerified  bool     `json:"manifest_parity_verified"`
+	ExpectedVectorIDs       int      `json:"expected_vector_ids"`
+	ActualVectorIDs         int      `json:"actual_vector_ids"`
+	MissingVectorIDs        []string `json:"missing_vector_ids"`
+	UnexpectedVectorIDs     []string `json:"unexpected_vector_ids"`
 	Blocked                 bool     `json:"blocked"`
 	BlockedReasons          []string `json:"blocked_reasons"`
 	Warnings                []string `json:"warnings"`
@@ -431,6 +528,13 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	parityStore, ok := s.Store.(store.SessionMigrationVectorParityStore)
+	if !ok {
+		resp.Blocked = true
+		resp.BlockedReasons = append(resp.BlockedReasons, "session_migration_vector_parity_store_unavailable")
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	if s.Vector == nil {
 		resp.Blocked = true
 		resp.BlockedReasons = append(resp.BlockedReasons, "vector_store_unavailable")
@@ -450,6 +554,19 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	parityContext, err := parityStore.GetSessionMigrationVectorParityContext(r.Context(), req.MigrationID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			resp.Blocked = true
+			resp.BlockedReasons = append(resp.BlockedReasons, "migration_not_found")
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		writeInternalError(w, err.Error())
+		return
+	}
+	resp.TargetSessionID = parityContext.TargetSessionID
+	resp.ExpectedVectorIDs = len(parityContext.ExpectedIDs)
 
 	candidates, err := migrationVectorStore.ListSessionMigrationVectorDocuments(r.Context(), req.MigrationID)
 	if err != nil {
@@ -457,22 +574,82 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	resp.Candidates = len(candidates)
-	docs := make([]vector.VectorDocument, 0, len(candidates))
-	targetSessionID := ""
+	expectedSet := make(map[string]bool, len(parityContext.ExpectedIDs))
+	for _, id := range parityContext.ExpectedIDs {
+		expectedSet[strings.TrimSpace(id)] = true
+	}
+	candidateSet := make(map[string]bool, len(candidates))
+	targetSessionID := strings.TrimSpace(parityContext.TargetSessionID)
 	for _, candidate := range candidates {
-		if targetSessionID == "" {
-			targetSessionID = strings.TrimSpace(candidate.ChatSessionID)
-		}
-		embedding := parseFloat32JSONList(candidate.EmbeddingJSON)
-		if len(embedding) == 0 {
-			resp.Skipped++
-			resp.SkippedIDs = append(resp.SkippedIDs, candidate.ID)
+		candidateID := strings.TrimSpace(candidate.ID)
+		if candidateID == "" || candidateSet[candidateID] {
+			resp.Blocked = true
+			resp.BlockedReasons = append(resp.BlockedReasons, "duplicate_or_empty_vector_candidate_id")
 			continue
+		}
+		candidateSet[candidateID] = true
+		if !expectedSet[candidateID] {
+			resp.UnexpectedVectorIDs = append(resp.UnexpectedVectorIDs, candidateID)
+		}
+		if strings.TrimSpace(candidate.ChatSessionID) != targetSessionID {
+			resp.Blocked = true
+			resp.BlockedReasons = append(resp.BlockedReasons, "vector_candidate_target_session_mismatch")
 		}
 		if strings.TrimSpace(candidate.DocumentText) == "" {
 			resp.Skipped++
 			resp.SkippedIDs = append(resp.SkippedIDs, candidate.ID)
 			continue
+		}
+	}
+	for _, expectedID := range parityContext.ExpectedIDs {
+		if !candidateSet[strings.TrimSpace(expectedID)] {
+			resp.MissingVectorIDs = append(resp.MissingVectorIDs, expectedID)
+		}
+	}
+	if resp.Blocked || resp.Skipped > 0 || len(resp.MissingVectorIDs) > 0 || len(resp.UnexpectedVectorIDs) > 0 || len(candidates) != len(parityContext.ExpectedIDs) {
+		resp.Blocked = true
+		resp.BlockedReasons = append(resp.BlockedReasons, "vector_candidate_expected_id_mismatch")
+		resp.VerificationStatus = "candidate_parity_failed"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	embeddingConfig := s.completeTurnExtractionConfig(map[string]any{}).Embedder
+	needsEmbedding := false
+	for _, candidate := range candidates {
+		if len(parseFloat32JSONList(candidate.EmbeddingJSON)) == 0 {
+			needsEmbedding = true
+			break
+		}
+	}
+	if needsEmbedding && !embeddingConfig.hasConfig() {
+		resp.Blocked = true
+		resp.BlockedReasons = append(resp.BlockedReasons, "embedding_config_unavailable")
+		resp.VerificationStatus = "embedding_preflight_failed"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	docs := make([]vector.VectorDocument, 0, len(candidates))
+	for _, candidate := range candidates {
+		embedding := parseFloat32JSONList(candidate.EmbeddingJSON)
+		if len(embedding) == 0 {
+			resp.EmbeddingCallAttempted = true
+			embeddingJSON, _, err := callEmbedding(r.Context(), embeddingConfig, candidate.DocumentText)
+			if err != nil {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "embedding_failed")
+				resp.Errors = append(resp.Errors, candidate.ID+": "+err.Error())
+				resp.VerificationStatus = "embedding_failed"
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			embedding = parseFloat32JSONList(embeddingJSON)
+			if len(embedding) == 0 {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "embedding_result_invalid")
+				resp.VerificationStatus = "embedding_failed"
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
 		}
 		docs = append(docs, vector.VectorDocument{
 			ID:                    candidate.ID,
@@ -487,14 +664,6 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 			MigratedFromSessionID: candidate.MigratedFromSessionID,
 		})
 	}
-	resp.TargetSessionID = targetSessionID
-	if len(docs) == 0 {
-		resp.Blocked = true
-		resp.BlockedReasons = append(resp.BlockedReasons, "no_vector_candidates")
-		resp.VerificationStatus = "no_vector_candidates"
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
 
 	before, err := s.Vector.Count(r.Context(), targetSessionID)
 	if err != nil {
@@ -505,15 +674,17 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	resp.TargetVectorCountBefore = before
-	resp.VectorWriteAttempted = true
-	if err := s.Vector.Upsert(r.Context(), targetSessionID, docs); err != nil {
-		resp.Errors = append(resp.Errors, err.Error())
-		resp.VerificationStatus = "upsert_failed"
-		_ = migrationVectorStore.UpdateSessionMigrationVectorStatus(r.Context(), req.MigrationID, "vector_reindex_failed", 0, mustCompactJSON(resp.Errors))
-		writeJSON(w, http.StatusOK, resp)
-		return
+	if len(docs) > 0 {
+		resp.VectorWriteAttempted = true
+		if err := s.Vector.Upsert(r.Context(), targetSessionID, docs); err != nil {
+			resp.Errors = append(resp.Errors, err.Error())
+			resp.VerificationStatus = "upsert_failed"
+			_ = migrationVectorStore.UpdateSessionMigrationVectorStatus(r.Context(), req.MigrationID, "vector_reindex_failed", 0, mustCompactJSON(resp.Errors))
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		resp.Upserted = len(docs)
 	}
-	resp.Upserted = len(docs)
 	after, err := s.Vector.Count(r.Context(), targetSessionID)
 	if err != nil {
 		resp.Errors = append(resp.Errors, err.Error())
@@ -523,30 +694,58 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	resp.TargetVectorCountAfter = after
-	expectedMinimum := before
-	if resp.Upserted > expectedMinimum {
-		expectedMinimum = resp.Upserted
-	}
-	if after >= expectedMinimum {
-		resp.WriteAttempted = true
-		resp.VerificationStatus = "vector_verified_manifest_blocked"
-		resp.ReadyForSourceLock = false
-		resp.ReadyForLive = false
+	lister, ok := s.Vector.(vector.DocumentLister)
+	if !ok {
 		resp.Blocked = true
-		resp.BlockedReasons = append(resp.BlockedReasons, store.SessionMigrationManifestParityUnverifiedReason)
-		resp.Warnings = append(resp.Warnings, "vector count verification is not exact expected-ID manifest parity")
-		if err := migrationVectorStore.UpdateSessionMigrationVectorStatus(r.Context(), req.MigrationID, "vector_reindex_unverified", resp.Upserted, mustCompactJSON(resp.BlockedReasons)); err != nil {
-			writeInternalError(w, err.Error())
+		resp.BlockedReasons = append(resp.BlockedReasons, "vector_document_list_unavailable")
+		resp.VerificationStatus = "exact_id_readback_unavailable"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	actualDocuments, err := lister.ListDocuments(r.Context(), targetSessionID)
+	if err != nil {
+		resp.Errors = append(resp.Errors, err.Error())
+		resp.VerificationStatus = "exact_id_readback_failed"
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	actualIDs := make([]string, 0, len(actualDocuments))
+	for _, document := range actualDocuments {
+		actualIDs = append(actualIDs, document.ID)
+	}
+	parity, err := parityStore.VerifySessionMigrationVectorParity(
+		r.Context(), req.MigrationID, store.SessionMigrationProofOperationSourceLock, actualIDs,
+	)
+	if err != nil {
+		var blocker *store.SessionMigrationBlockerError
+		if errors.As(err, &blocker) {
+			resp.Blocked = true
+			resp.VerificationStatus = blocker.Code
+			resp.BlockedReasons = append(resp.BlockedReasons, blocker.Code)
+			if parity != nil {
+				resp.ActualVectorIDs = len(parity.ActualIDs)
+				resp.MissingVectorIDs = append([]string(nil), parity.MissingIDs...)
+				resp.UnexpectedVectorIDs = append([]string(nil), parity.UnexpectedIDs...)
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
+		writeInternalError(w, err.Error())
+		return
+	}
+	resp.WriteAttempted = true
+	resp.ActualVectorIDs = len(parity.ActualIDs)
+	resp.MissingVectorIDs = append([]string(nil), parity.MissingIDs...)
+	resp.UnexpectedVectorIDs = append([]string(nil), parity.UnexpectedIDs...)
+	resp.ManifestParityVerified = parity.Verified
+	if parity.Verified {
+		resp.VerificationStatus = "exact_id_parity_verified"
+		resp.ReadyForSourceLock = true
+		resp.ReadyForLive = false
 	} else {
-		resp.WriteAttempted = true
-		resp.VerificationStatus = "insufficient_target_vectors"
-		resp.Errors = append(resp.Errors, "target vector count is lower than expected migration verification minimum")
-		if err := migrationVectorStore.UpdateSessionMigrationVectorStatus(r.Context(), req.MigrationID, "vector_reindex_unverified", resp.Upserted, mustCompactJSON(resp.Errors)); err != nil {
-			writeInternalError(w, err.Error())
-			return
-		}
+		resp.Blocked = true
+		resp.VerificationStatus = "exact_id_parity_mismatch"
+		resp.BlockedReasons = append(resp.BlockedReasons, "vector_expected_id_parity_mismatch")
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -573,6 +772,69 @@ type sessionMigrationLockSourceResponse struct {
 	Errors               []string       `json:"errors"`
 	Lock                 map[string]any `json:"lock"`
 	GeneratedAt          string         `json:"generated_at"`
+}
+
+func (s *Server) sessionMigrationRevalidateCurrentTarget(
+	ctx context.Context,
+	migrationID int64,
+	operation string,
+) (*store.SessionMigrationVectorParityResult, error) {
+	return s.sessionMigrationRevalidateCurrentTargetWithVector(ctx, migrationID, operation, s.Vector)
+}
+
+func (s *Server) sessionMigrationRevalidateCurrentTargetWithVector(
+	ctx context.Context,
+	migrationID int64,
+	operation string,
+	vectorStore vector.VectorStore,
+) (*store.SessionMigrationVectorParityResult, error) {
+	parityStore, ok := s.Store.(store.SessionMigrationVectorParityStore)
+	if !ok {
+		return nil, &store.SessionMigrationBlockerError{Code: "current_vector_parity_store_unavailable", Phase: "current_revalidation"}
+	}
+	if vectorStore == nil {
+		return nil, &store.SessionMigrationBlockerError{Code: "current_vector_store_unavailable", Phase: "current_revalidation"}
+	}
+	lister, ok := vectorStore.(vector.DocumentLister)
+	if !ok {
+		return nil, &store.SessionMigrationBlockerError{Code: "current_vector_document_list_unavailable", Phase: "current_revalidation"}
+	}
+	parityContext, err := parityStore.GetSessionMigrationVectorParityContext(ctx, migrationID)
+	if err != nil {
+		return nil, err
+	}
+	documents, err := lister.ListDocuments(ctx, parityContext.TargetSessionID)
+	if err != nil {
+		return nil, err
+	}
+	actualIDs := make([]string, 0, len(documents))
+	for _, document := range documents {
+		actualIDs = append(actualIDs, document.ID)
+	}
+	return parityStore.VerifySessionMigrationVectorParity(ctx, migrationID, operation, actualIDs)
+}
+
+func (s *Server) sessionMigrationWithExclusiveVectorFence(
+	ctx context.Context,
+	fn func(vector.VectorStore) error,
+) error {
+	if s.Vector == nil {
+		return &store.SessionMigrationBlockerError{Code: "current_vector_store_unavailable", Phase: "current_revalidation"}
+	}
+	fencer, ok := s.Vector.(vector.MutationFencer)
+	if !ok {
+		return &store.SessionMigrationBlockerError{Code: "current_vector_mutation_fence_unavailable", Phase: "current_revalidation"}
+	}
+	return fencer.WithExclusiveMutationFence(ctx, fn)
+}
+
+func sessionMigrationAppendTypedBlocker(blockedReasons *[]string, err error) bool {
+	var blocker *store.SessionMigrationBlockerError
+	if !errors.As(err, &blocker) {
+		return false
+	}
+	*blockedReasons = append(*blockedReasons, blocker.Code)
+	return true
 }
 
 func (s *Server) handleSessionMigrateLockSource(w http.ResponseWriter, r *http.Request) {
@@ -603,11 +865,64 @@ func (s *Server) handleSessionMigrateLockSource(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	result, err := lockStore.LockSessionMigrationSource(r.Context(), req.MigrationID, req.Reason)
+	fenceStore, ok := s.Store.(store.SessionMigrationSourceLockFenceStore)
+	if !ok {
+		resp.Blocked = true
+		resp.BlockedReasons = append(resp.BlockedReasons, "session_migration_source_lock_fence_store_unavailable")
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	provisional, err := fenceStore.PrepareSessionMigrationSourceLock(
+		r.Context(), req.MigrationID, req.Reason,
+	)
 	if err != nil {
+		if sessionMigrationAppendTypedBlocker(&resp.BlockedReasons, err) {
+			resp.Blocked = true
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		writeInternalError(w, err.Error())
+		return
+	}
+	resp.WriteAttempted = true
+	pendingFence := provisional != nil && provisional.LockStatus == "lock_pending_verification"
+	releasePendingFence := func(reason string) {
+		if !pendingFence {
+			return
+		}
+		if releaseErr := fenceStore.ReleaseSessionMigrationSourceLockFence(
+			r.Context(), req.MigrationID, reason,
+		); releaseErr != nil {
+			resp.BlockedReasons = append(resp.BlockedReasons, "source_lock_fence_release_failed")
+		}
+	}
+	var result *store.SessionMigrationSourceLockResult
+	err = s.sessionMigrationWithExclusiveVectorFence(r.Context(), func(rawVector vector.VectorStore) error {
+		parity, verifyErr := s.sessionMigrationRevalidateCurrentTargetWithVector(
+			r.Context(), req.MigrationID, store.SessionMigrationProofOperationSourceLock, rawVector,
+		)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if parity == nil || !parity.Verified {
+			return &store.SessionMigrationBlockerError{
+				Code: "current_vector_id_drift", Phase: "source_lock",
+			}
+		}
+		var lockErr error
+		result, lockErr = lockStore.LockSessionMigrationSource(r.Context(), req.MigrationID, req.Reason)
+		return lockErr
+	})
+	if err != nil {
+		releasePendingFence(err.Error())
 		if errors.Is(err, store.ErrNotFound) {
 			resp.Blocked = true
 			resp.BlockedReasons = append(resp.BlockedReasons, "migration_not_found")
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		if sessionMigrationAppendTypedBlocker(&resp.BlockedReasons, err) {
+			resp.Blocked = true
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -620,7 +935,6 @@ func (s *Server) handleSessionMigrateLockSource(w http.ResponseWriter, r *http.R
 		writeInternalError(w, err.Error())
 		return
 	}
-	resp.WriteAttempted = true
 	resp.MigrationID = result.MigrationID
 	resp.SourceSessionID = result.SourceSessionID
 	resp.TargetSessionID = result.TargetSessionID
@@ -788,6 +1102,7 @@ type sessionMigrationCleanupSourceResponse struct {
 	LLMCallAttempted     bool                          `json:"llm_call_attempted"`
 	SourceLocked         bool                          `json:"source_locked"`
 	SourceCleaned        bool                          `json:"source_cleaned"`
+	CleanupPrepared      bool                          `json:"cleanup_prepared"`
 	ReadyForCleanup      bool                          `json:"ready_for_cleanup"`
 	ReadyForLive         bool                          `json:"ready_for_live"`
 	SourceRows           sessionMigrationPreviewCounts `json:"source_rows"`
@@ -797,6 +1112,11 @@ type sessionMigrationCleanupSourceResponse struct {
 	Warnings             []string                      `json:"warnings"`
 	Errors               []string                      `json:"errors"`
 	GeneratedAt          string                        `json:"generated_at"`
+}
+
+type sessionMigrationCleanupPreparer interface {
+	PrepareSessionMigrationSourceCleanup(ctx context.Context, migrationID int64, reason string) (*store.SessionMigrationCleanupPreview, error)
+	MarkSessionMigrationSourceVectorCleanup(ctx context.Context, migrationID int64) error
 }
 
 func (s *Server) handleSessionMigrateCleanupSource(w http.ResponseWriter, r *http.Request) {
@@ -853,13 +1173,161 @@ func (s *Server) handleSessionMigrateCleanupSource(w http.ResponseWriter, r *htt
 			resp.SourceVectors = count
 		}
 	}
-	resp.Blocked = true
-	resp.ReadyForCleanup = false
-	resp.ReadyForLive = false
-	if !containsString(resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason) {
-		resp.BlockedReasons = append(resp.BlockedReasons, store.SessionMigrationCleanupManifestUnverifiedReason)
+	if resp.Blocked || resp.DryRun {
+		writeJSON(w, http.StatusOK, resp)
+		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	if s.Vector == nil {
+		resp.Blocked = true
+		resp.ReadyForCleanup = false
+		resp.BlockedReasons = append(resp.BlockedReasons, "vector_store_unavailable")
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if strings.TrimSpace(s.Cfg.ChromaEndpoint) == "" {
+		resp.Blocked = true
+		resp.ReadyForCleanup = false
+		resp.BlockedReasons = append(resp.BlockedReasons, "chroma_endpoint_not_configured")
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if s.VectorOpenError != nil {
+		resp.Blocked = true
+		resp.ReadyForCleanup = false
+		resp.BlockedReasons = append(resp.BlockedReasons, "chroma_open_error")
+		resp.Errors = append(resp.Errors, s.VectorOpenError.Error())
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	preparer, ok := recoveryStore.(sessionMigrationCleanupPreparer)
+	if !ok {
+		resp.Blocked = true
+		resp.ReadyForCleanup = false
+		resp.BlockedReasons = append(resp.BlockedReasons, "session_migration_cleanup_prepare_store_unavailable")
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	fenceErr := s.sessionMigrationWithExclusiveVectorFence(r.Context(), func(rawVector vector.VectorStore) error {
+		currentParity, err := s.sessionMigrationRevalidateCurrentTargetWithVector(
+			r.Context(), req.MigrationID, store.SessionMigrationProofOperationCleanupPrepare, rawVector,
+		)
+		if err != nil {
+			if sessionMigrationAppendTypedBlocker(&resp.BlockedReasons, err) {
+				resp.Blocked = true
+				resp.ReadyForCleanup = false
+				writeJSON(w, http.StatusOK, resp)
+				return nil
+			}
+			writeInternalError(w, err.Error())
+			return nil
+		}
+		if currentParity == nil || !currentParity.Verified {
+			resp.Blocked = true
+			resp.ReadyForCleanup = false
+			resp.BlockedReasons = append(resp.BlockedReasons, "current_vector_id_drift")
+			writeJSON(w, http.StatusOK, resp)
+			return nil
+		}
+		prepared, err := preparer.PrepareSessionMigrationSourceCleanup(
+			r.Context(), req.MigrationID, strings.TrimSpace(req.Reason),
+		)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "migration_not_found")
+				writeJSON(w, http.StatusOK, resp)
+				return nil
+			}
+			writeInternalError(w, err.Error())
+			return nil
+		}
+		resp.MigrationStatus = prepared.Status
+		resp.SourceSessionID = prepared.SourceSessionID
+		resp.TargetSessionID = prepared.TargetSessionID
+		resp.SourceLocked = prepared.SourceLocked
+		resp.ReadyForCleanup = prepared.ReadyForCleanup
+		resp.SourceRows = sessionMigrationCountsFromStore(prepared.Counts)
+		resp.BlockedReasons = append(resp.BlockedReasons, prepared.BlockedReasons...)
+		if !prepared.ReadyForCleanup || len(prepared.BlockedReasons) > 0 {
+			resp.Blocked = true
+			writeJSON(w, http.StatusOK, resp)
+			return nil
+		}
+		resp.CleanupPrepared = true
+		resp.VectorWriteAttempted = true
+		if err := rawVector.DeleteSession(r.Context(), prepared.SourceSessionID); err != nil {
+			resp.Errors = append(resp.Errors, err.Error())
+			writeJSON(w, http.StatusOK, resp)
+			return nil
+		}
+		if err := preparer.MarkSessionMigrationSourceVectorCleanup(r.Context(), req.MigrationID); err != nil {
+			resp.Blocked = true
+			resp.ReadyForCleanup = false
+			resp.BlockedReasons = append(resp.BlockedReasons, "source_vector_cleanup_mark_failed_recovery_required")
+			resp.Errors = append(resp.Errors, err.Error())
+			writeJSON(w, http.StatusOK, resp)
+			return nil
+		}
+		currentParity, err = s.sessionMigrationRevalidateCurrentTargetWithVector(
+			r.Context(), req.MigrationID, store.SessionMigrationProofOperationCleanupFinalize, rawVector,
+		)
+		if err != nil {
+			resp.Blocked = true
+			resp.ReadyForCleanup = false
+			if !sessionMigrationAppendTypedBlocker(&resp.BlockedReasons, err) {
+				resp.BlockedReasons = append(resp.BlockedReasons, "current_state_revalidation_failed_recovery_required")
+			}
+			resp.Errors = append(resp.Errors, err.Error())
+			writeJSON(w, http.StatusOK, resp)
+			return nil
+		}
+		if currentParity == nil || !currentParity.Verified {
+			resp.Blocked = true
+			resp.ReadyForCleanup = false
+			resp.BlockedReasons = append(resp.BlockedReasons, "current_vector_id_drift")
+			writeJSON(w, http.StatusOK, resp)
+			return nil
+		}
+		resp.WriteAttempted = true
+		result, err := recoveryStore.CleanupSessionMigrationSource(r.Context(), req.MigrationID, strings.TrimSpace(req.Reason))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "migration_not_found")
+				writeJSON(w, http.StatusOK, resp)
+				return nil
+			}
+			if strings.Contains(err.Error(), "blocked:") {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, err.Error())
+				writeJSON(w, http.StatusOK, resp)
+				return nil
+			}
+			resp.Blocked = true
+			resp.ReadyForCleanup = false
+			resp.BlockedReasons = append(resp.BlockedReasons, "source_cleanup_finalize_failed_recovery_required")
+			resp.Errors = append(resp.Errors, err.Error())
+			writeJSON(w, http.StatusOK, resp)
+			return nil
+		}
+		resp.MigrationStatus = result.Status
+		resp.SourceSessionID = result.SourceSessionID
+		resp.TargetSessionID = result.TargetSessionID
+		resp.SourceRows = sessionMigrationCountsFromStore(result.Counts)
+		resp.SourceCleaned = result.SourceCleaned
+		resp.ReadyForLive = result.ReadyForLive
+		writeJSON(w, http.StatusOK, resp)
+		return nil
+	})
+	if fenceErr != nil {
+		resp.Blocked = true
+		resp.ReadyForCleanup = false
+		if !sessionMigrationAppendTypedBlocker(&resp.BlockedReasons, fenceErr) {
+			resp.BlockedReasons = append(resp.BlockedReasons, "current_vector_mutation_fence_failed")
+			resp.Errors = append(resp.Errors, fenceErr.Error())
+		}
+		writeJSON(w, http.StatusOK, resp)
+	}
 }
 
 func (s *Server) sessionMigrationSourceLock(ctx context.Context, sessionID string) (*store.SessionMigrationLock, error) {
@@ -1066,12 +1534,19 @@ func sessionMigrationUniqueVectorIDs(docs []store.SessionMigrationVectorDocument
 	seen := map[string]bool{}
 	out := []string{}
 	for _, doc := range docs {
-		id := strings.TrimSpace(doc.ID)
-		if id == "" || seen[id] {
-			continue
+		ids := []string{strings.TrimSpace(doc.ID)}
+		tier := strings.TrimSpace(doc.Tier)
+		sourceRowID := strings.TrimSpace(doc.SourceRowID)
+		if tier != "" && sourceRowID != "" {
+			ids = append(ids, tier+":"+sourceRowID)
 		}
-		seen[id] = true
-		out = append(out, id)
+		for _, id := range ids {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
 	}
 	return out
 }

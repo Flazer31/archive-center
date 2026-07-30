@@ -356,6 +356,17 @@ type SessionMigrationCompleteResult struct {
 	TargetStarterReplaced bool
 }
 
+// SessionMigrationResumeContext identifies an existing migration before the
+// complete endpoint attempts an idempotent resume. Post-vector resumes must
+// acquire a fresh exact-vector proof before CompleteSessionMigration consumes it.
+type SessionMigrationResumeContext struct {
+	MigrationID     int64
+	Status          string
+	SourceSessionID string
+	TargetSessionID string
+	Mode            string
+}
+
 // SessionMigrationVectorDocument is a copied target row that can be reindexed
 // into ChromaDB using an embedding already stored in MariaDB.
 type SessionMigrationVectorDocument struct {
@@ -374,6 +385,7 @@ type SessionMigrationVectorDocument struct {
 // SessionMigrationStore performs the write phase of session migration.
 // Implementations must use one transaction and write row provenance.
 type SessionMigrationStore interface {
+	GetSessionMigrationResumeContext(ctx context.Context, req SessionMigrationCompleteRequest) (*SessionMigrationResumeContext, error)
 	CompleteSessionMigration(ctx context.Context, req SessionMigrationCompleteRequest) (*SessionMigrationCompleteResult, error)
 }
 
@@ -428,6 +440,13 @@ type SessionMigrationSourceLockResult struct {
 type SessionMigrationSourceLockStore interface {
 	LockSessionMigrationSource(ctx context.Context, migrationID int64, reason string) (*SessionMigrationSourceLockResult, error)
 	GetSessionMigrationSourceLock(ctx context.Context, sourceSessionID string) (*SessionMigrationLock, error)
+}
+
+// SessionMigrationSourceLockFenceStore exposes the durable provisional fence
+// that must be committed before current relational/vector validation begins.
+type SessionMigrationSourceLockFenceStore interface {
+	PrepareSessionMigrationSourceLock(ctx context.Context, migrationID int64, reason string) (*SessionMigrationLock, error)
+	ReleaseSessionMigrationSourceLockFence(ctx context.Context, migrationID int64, reason string) error
 }
 
 // SessionMigrationRollbackResult reports a ledger-scoped rollback. It deletes

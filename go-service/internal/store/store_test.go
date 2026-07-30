@@ -519,9 +519,19 @@ func TestMariaDBStoreLockSessionMigrationSourceFailsClosedAfterVectorReindexUnti
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT source_session_id, target_session_id, mode, status, chroma_reindexed_count").
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count",
+		}).AddRow("source", "target", SessionMigrationModeCopyThenLockSource, "vector_reindexed", 2))
+	mock.ExpectQuery("SELECT.*COUNT\\(\\*\\).*FROM session_migration_artifact_parity").
+		WithArgs(int64(42), SessionMigrationManifestVersion).
+		WillReturnRows(sqlmock.NewRows([]string{"total", "relational_verified", "vector_verified"}).AddRow(49, 49, 49))
+	mock.ExpectRollback()
 	result, err := m.LockSessionMigrationSource(context.Background(), 42, "operator confirmed")
-	if result != nil || err == nil || !strings.Contains(err.Error(), SessionMigrationManifestParityUnverifiedReason) {
-		t.Fatalf("result=%+v err=%v, want manifest parity blocker", result, err)
+	if result != nil || err == nil || !strings.Contains(err.Error(), "manifest parity rows 49/50") {
+		t.Fatalf("result=%+v err=%v, want 50-entry manifest parity blocker", result, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -562,10 +572,16 @@ func TestMariaDBStoreLockSessionMigrationSourceBlocksBeforeVectorReindex(t *test
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
-
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT source_session_id, target_session_id, mode, status, chroma_reindexed_count").
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count",
+		}).AddRow("source", "target", SessionMigrationModeCopyThenLockSource, "copied", 0))
+	mock.ExpectRollback()
 	_, err = m.LockSessionMigrationSource(context.Background(), 42, "too early")
-	if err == nil || !strings.Contains(err.Error(), SessionMigrationManifestParityUnverifiedReason) {
-		t.Fatalf("expected manifest parity block before any phase read, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `migration status "copied" is not vector_reindexed`) {
+		t.Fatalf("expected vector phase block, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -580,45 +596,16 @@ func TestMariaDBStoreLockSessionMigrationSourceBlocksCopyKeepSourceMode(t *testi
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
-
-	_, err = m.LockSessionMigrationSource(context.Background(), 42, "should not lock")
-	if err == nil || !strings.Contains(err.Error(), SessionMigrationManifestParityUnverifiedReason) {
-		t.Fatalf("expected manifest parity block before mode read, got %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSessionMigrationDeleteMappedRowsUsesOnlyLedgerTargetIDs(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("FROM session_migration_row_map")).
-		WithArgs(int64(42), "chat_logs").
-		WillReturnRows(sqlmock.NewRows([]string{"target_row_id"}).AddRow(int64(101)).AddRow(int64(102)))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM chat_logs WHERE id IN")).
-		WithArgs(int64(101), int64(102)).
-		WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectCommit()
-
-	tx, err := db.BeginTx(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deleted, err := deleteSessionMigrationMappedRows(context.Background(), tx, 42, "chat_logs")
-	if err != nil {
-		t.Fatalf("deleteSessionMigrationMappedRows failed: %v", err)
-	}
-	if deleted != 2 {
-		t.Fatalf("deleted = %d, want 2", deleted)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
+	mock.ExpectQuery("SELECT source_session_id, target_session_id, mode, status, chroma_reindexed_count").
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count",
+		}).AddRow("source", "target", SessionMigrationModeCopyKeepSource, "vector_reindexed", 2))
+	mock.ExpectRollback()
+	_, err = m.LockSessionMigrationSource(context.Background(), 42, "should not lock")
+	if err == nil || !strings.Contains(err.Error(), "does not lock source") {
+		t.Fatalf("expected copy-keep mode block, got %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

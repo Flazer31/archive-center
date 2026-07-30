@@ -6327,8 +6327,13 @@
       null, "saveCanonicalChatLogOrQueue"
     );
     if (result && result.saved !== false) return true;
-    enqueue("chat_log", body);
-    flushQueueSave().catch(function() {});
+    const queueResult = await persistFailedQueueAdmission("chat_log", body, enqueue("chat_log", body));
+    if (!queueResult || !queueResult.queued) {
+      updateRuntimeState("lastSaveStatus", "fail", {
+        turnIndex: body.turn_index,
+        detail: String(queueResult && queueResult.code || "failed_queue_admission_failed"),
+      });
+    }
     return false;
   }
 
@@ -7242,11 +7247,20 @@
     }
 
     const queuedPayload = buildCompleteTurnQueuePayload(body);
+    let queueResult = null;
     if (queuedPayload) {
-      enqueue("complete_turn", queuedPayload);
-      flushQueueSave().catch(function() {});
+      queueResult = await persistFailedQueueAdmission(
+        "complete_turn",
+        queuedPayload,
+        enqueue("complete_turn", queuedPayload)
+      );
     }
-    return { status: "queued", turnIndex: turn, reason: result && result.status ? result.status : "request_failed" };
+    return {
+      status: queueResult && queueResult.queued ? "queued" : "failed",
+      turnIndex: turn,
+      reason: String(queueResult && queueResult.code || result && result.status || "failed_queue_admission_failed"),
+      queueResult,
+    };
   }
 
   async function ensureActiveChatCompletedTurnsBackfilled(sessionId, options = {}) {
@@ -7261,7 +7275,10 @@
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       if (pairs.length === 0) {
-        updateRuntimeState("lastActiveChatBackfill", "skipped", { detail: "no_completed_pairs" });
+        updateRuntimeState("lastActiveChatBackfill", "skipped", {
+          reason_code: "no_completed_pairs",
+          detail: "no_completed_pairs",
+        });
         return { status: "skipped", reason: "no_completed_pairs" };
       }
       const maxPairs = Math.max(1, Math.min(Number(options.maxPairs || ACTIVE_CHAT_BACKFILL_MAX_PAIRS), ACTIVE_CHAT_BACKFILL_MAX_PAIRS));
@@ -7281,7 +7298,15 @@
       }
       const status = queued > 0 ? "warn" : saved > 0 ? "ok" : "skipped";
       const detail = "active chat backfill " + String(saved) + " saved / " + String(exists) + " existing / " + String(queued) + " queued / " + String(skipped) + " skipped";
-      updateRuntimeState("lastActiveChatBackfill", status, { detail, turnIndex: lastTurn, reason: options.reason || "" });
+      updateRuntimeState("lastActiveChatBackfill", status, {
+        detail,
+        turnIndex: lastTurn,
+        reason: options.reason || "",
+        savedCount: saved,
+        existingCount: exists,
+        queuedCount: queued,
+        skippedCount: skipped,
+      });
       if (saved > 0) {
         updateRuntimeState("lastSaveStatus", "ok", { turnIndex: lastTurn, detail });
       }
@@ -8433,6 +8458,7 @@
       ledger.unshift(item);
       writeRisuForkCopyProvenanceLedger(ledger);
       updateRuntimeState("lastRisuForkCopyCapture", "warn", {
+        reason_code: "risu_fork_copy_observed",
         detail: "observed " + (previousSessionId || previousChatUniqueId.slice(0, 8)) + " -> " + (currentSessionId || currentChatUniqueId.slice(0, 8)),
         sourceSessionId: previousSessionId,
         targetSessionId: currentSessionId,
@@ -14125,15 +14151,95 @@
   const _failedQueue = [];  // { type, payload, attempts, addedAt, lastAttemptAt, _dedupeKey }
   let _queueSaveTimer = null;
 
-  /** dedupe key 생성 — type + session + turn_index 조합 */
+  function stableFailedQueuePayloadFingerprint(payload) {
+    try {
+      const seen = new WeakSet();
+      const normalize = function(value) {
+        if (value == null || typeof value !== "object") return value;
+        if (seen.has(value)) throw new Error("circular failed queue payload");
+        seen.add(value);
+        if (Array.isArray(value)) {
+          const items = value.map(normalize);
+          seen.delete(value);
+          return items;
+        }
+        const normalized = {};
+        for (const key of Object.keys(value).sort()) normalized[key] = normalize(value[key]);
+        seen.delete(value);
+        return normalized;
+      };
+      return JSON.stringify(normalize(payload && typeof payload === "object" ? payload : {}));
+    } catch {
+      return "";
+    }
+  }
+
+  /** transport queue identity — complete-turn uses its durable request identity */
   function makeFailedQueueDedupeKey(item) {
     try {
-      const p = item.payload || {};
-      if (item.type === "chat_log") {
-        return `${item.type}|${p.chat_session_id || ""}|${p.turn_index ?? 0}|${p.role || ""}|${computeOrchestrationDirtyHashOr1c(p.content || "")}`;
+      const type = String(item && item.type || "").trim();
+      const p = item && item.payload && typeof item.payload === "object" ? item.payload : {};
+      if (!type) return "";
+      if (type === "chat_log") {
+        return `${type}|${p.chat_session_id || ""}|${p.turn_index ?? 0}|${p.role || ""}|${computeOrchestrationDirtyHashOr1c(p.content || "")}`;
       }
-      return `${item.type}|${p.chat_session_id || ""}|${p.turn_index ?? 0}`;
-    } catch { return `${Date.now()}_${Math.random()}`; }
+      if (type === "complete_turn") {
+        const meta = p.client_meta && typeof p.client_meta === "object" ? p.client_meta : {};
+        const idempotencyKey = String(meta.idempotency_key || "").trim();
+        if (idempotencyKey) return `${type}|idempotency|${idempotencyKey}`;
+        const observation = meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object"
+          ? meta.source_acceptance_observation
+          : {};
+        const lineage = meta.source_to_final_lineage_observation && typeof meta.source_to_final_lineage_observation === "object"
+          ? meta.source_to_final_lineage_observation
+          : {};
+        const hostRequest = String(
+          lineage.archive_center_request_correlation_id
+          || meta.turn_workflow_request_id
+          || meta.request_id
+          || observation.request_id
+          || ""
+        ).trim();
+        const generation = String(observation.generation_id || lineage.generation_id || "").trim();
+        const sourceRevisionValue = observation.source_revision != null
+          ? observation.source_revision
+          : meta.source_revision != null
+            ? meta.source_revision
+            : lineage.source_revision != null
+              ? lineage.source_revision
+              : observation.observed_revision;
+        const sourceRevision = sourceRevisionValue == null ? "" : String(sourceRevisionValue).trim();
+        const sourceCoordinates = [
+          observation.host_chat_id || "",
+          observation.message_index ?? "",
+          observation.message_chat_id || "",
+          observation.message_time_ms ?? "",
+          observation.observed_content_hash || "",
+        ].join("|");
+        const semanticCoordinates = stableFailedQueuePayloadFingerprint({
+          user_input: String(p.user_input || ""),
+          assistant_content: String(p.assistant_content || ""),
+          context_messages: Array.isArray(p.context_messages) ? p.context_messages : [],
+          improvement_trace: p.improvement_trace || null,
+          output_language_override: p.output_language_override || null,
+          request_type: p.request_type || "",
+        });
+        return [
+          type,
+          "fallback",
+          p.chat_session_id || "",
+          p.turn_index ?? 0,
+          hostRequest || "host_request_unobserved",
+          generation || "generation_unobserved",
+          sourceRevision || "source_revision_unobserved",
+          computeOrchestrationDirtyHashOr1c(sourceCoordinates),
+          computeOrchestrationDirtyHashOr1c(semanticCoordinates),
+        ].join("|");
+      }
+      return `${type}|${p.chat_session_id || ""}|${p.turn_index ?? 0}`;
+    } catch {
+      return "";
+    }
   }
 
   /** 단일 큐 항목을 저장용 JSON으로 변환 (민감정보 제거, payload 크기 제한) */
@@ -14175,10 +14281,14 @@
         }
       }
       return {
-        id: item._dedupeKey || makeFailedQueueDedupeKey(item),
+        id: makeFailedQueueDedupeKey(item) || item._dedupeKey || "",
         type: item.type,
         payload: safePayload,
         attempts: item.attempts || 0,
+        state: String(item.state || "retryable") === "terminal" ? "terminal" : "retryable",
+        retryBlocked: item.retryBlocked === true,
+        terminalCode: String(item.terminalCode || ""),
+        terminalAt: item.terminalAt || null,
         addedAt: item.addedAt || new Date().toISOString(),
         lastAttemptAt: item.lastAttemptAt || null,
         chatSessionId: p.chat_session_id || null,
@@ -14188,10 +14298,38 @@
   }
 
   /** 전체 큐를 JSON 문자열로 직렬화 */
-  function serializeFailedQueue() {
+  function serializeFailedQueue(options = {}) {
     try {
-      const items = _failedQueue.map(serializeFailedQueueItem).filter(Boolean);
-      return JSON.stringify({ v: 1, savedAt: new Date().toISOString(), items });
+      const queueItems = _failedQueue.concat(
+        Array.isArray(options.additionalItems) ? options.additionalItems : []
+      );
+      const seenKeys = new Set();
+      const items = queueItems.map(serializeFailedQueueItem).filter(function(item) {
+        if (!item) return false;
+        const key = String(item.id || "");
+        if (key && seenKeys.has(key)) return false;
+        if (key) seenKeys.add(key);
+        return true;
+      });
+      const transitionIntents = (Array.isArray(options.transitionIntents) ? options.transitionIntents : [])
+        .map(function(intent) {
+          if (!intent || typeof intent !== "object") return null;
+          const queueKey = String(intent.queue_key || "").trim();
+          if (!queueKey) return null;
+          return {
+            queue_key: queueKey,
+            target_state: "terminal",
+            reason_code: String(intent.reason_code || "terminal_failed_queue_result"),
+            transition_at: String(intent.transition_at || new Date().toISOString()),
+          };
+        })
+        .filter(Boolean);
+      return JSON.stringify({
+        v: 1,
+        savedAt: new Date().toISOString(),
+        transition_intents: transitionIntents,
+        items,
+      });
     } catch (err) {
       warnLog("serializeFailedQueue failed:", err.message);
       return null;
@@ -14205,15 +14343,31 @@
       const data = JSON.parse(raw);
       if (!data || !Array.isArray(data.items)) return [];
       if (data.v !== 1) { warnLog("Queue storage version mismatch:", data.v); return []; }
+      const transitionIntents = new Map();
+      for (const intent of Array.isArray(data.transition_intents) ? data.transition_intents : []) {
+        if (!intent || typeof intent !== "object") continue;
+        const queueKey = String(intent.queue_key || "").trim();
+        if (!queueKey || String(intent.target_state || "") !== "terminal") continue;
+        transitionIntents.set(queueKey, {
+          reasonCode: String(intent.reason_code || "terminal_failed_queue_result"),
+          transitionAt: String(intent.transition_at || ""),
+        });
+      }
       return data.items.map(stored => {
         if (!stored || !stored.type || !stored.payload) return null;
+        const queueKey = makeFailedQueueDedupeKey({ type: stored.type, payload: stored.payload }) || stored.id || "";
+        const transitionIntent = transitionIntents.get(queueKey) || null;
         return {
           type: stored.type,
           payload: stored.payload,
           attempts: stored.attempts || 0,
+          state: transitionIntent || String(stored.state || "retryable") === "terminal" ? "terminal" : "retryable",
+          retryBlocked: transitionIntent ? false : stored.retryBlocked === true,
+          terminalCode: String(transitionIntent && transitionIntent.reasonCode || stored.terminalCode || ""),
+          terminalAt: transitionIntent && transitionIntent.transitionAt || stored.terminalAt || null,
           addedAt: stored.addedAt || new Date().toISOString(),
           lastAttemptAt: stored.lastAttemptAt || null,
-          _dedupeKey: stored.id || makeFailedQueueDedupeKey({ type: stored.type, payload: stored.payload }),
+          _dedupeKey: queueKey,
         };
       }).filter(Boolean);
     } catch (err) {
@@ -14257,30 +14411,98 @@
     return key ? "complete|" + key : "";
   }
 
-  function serializePendingFinalConfirmationRecovery() {
+  function serializePendingFinalConfirmationRecovery(options = {}) {
     try {
       const items = Array.from(_pendingFinalConfirmationRecoveryEntries.values()).map(function(entry) {
         const safePayload = serializeCompleteTurnRecoveryPayload(entry && entry.payload);
         if (!entry || !safePayload) return null;
+        const state = String(entry.state || "pending");
         return {
           key: String(entry.key || pendingFinalConfirmationRecoveryKey(safePayload)),
           payload: safePayload,
           reason: String(entry.reason || "pending_confirmation"),
           requiredObservationChangeFrom: String(entry.requiredObservationChangeFrom || ""),
+          state: state === "terminal" || state === "superseded" ? state : "pending",
+          terminalCode: String(entry.terminalCode || ""),
+          terminalAt: entry.terminalAt || null,
           addedAt: entry.addedAt || new Date().toISOString(),
         };
       }).filter(Boolean);
-      return JSON.stringify({ v: 1, savedAt: new Date().toISOString(), items });
+      const transitionIntents = (Array.isArray(options.transitionIntents) ? options.transitionIntents : [])
+        .map(function(intent) {
+          if (!intent || typeof intent !== "object") return null;
+          const recoveryKey = String(intent.recovery_key || "").trim();
+          const targetState = String(intent.target_state || "");
+          if (!recoveryKey || (targetState !== "terminal" && targetState !== "superseded")) return null;
+          return {
+            recovery_key: recoveryKey,
+            target_state: targetState,
+            reason_code: String(intent.reason_code || "pending_recovery_transition"),
+            transition_at: String(intent.transition_at || new Date().toISOString()),
+          };
+        })
+        .filter(Boolean);
+      return JSON.stringify({
+        v: 1,
+        revision: Date.now(),
+        savedAt: new Date().toISOString(),
+        transition_intents: transitionIntents,
+        items,
+      });
     } catch (err) {
       warnLog("serializePendingFinalConfirmationRecovery failed:", err && err.message);
       return null;
     }
   }
 
-  async function savePendingFinalConfirmationRecoveryToStorage() {
-    const serialized = serializePendingFinalConfirmationRecovery();
-    if (serialized == null) throw new Error("pending final confirmation serialize failed");
-    await persistentSet(PENDING_FINAL_CONFIRMATION_STORAGE_KEY, serialized);
+  async function savePendingFinalConfirmationRecoveryToStorage(options = {}) {
+    const serialized = serializePendingFinalConfirmationRecovery({
+      transitionIntents: options.transitionIntents,
+    });
+    if (serialized == null) {
+      return {
+        status: "error",
+        code: "pending_recovery_serialize_failed",
+        durable: false,
+        plugin_persisted: false,
+      };
+    }
+    try {
+      await persistentSet(PENDING_FINAL_CONFIRMATION_STORAGE_KEY, serialized);
+      return {
+        status: "ok",
+        code: "pending_recovery_persisted",
+        durable: true,
+        plugin_persisted: true,
+      };
+    } catch (err) {
+      const failureCode = String(options.failureCode || "pending_recovery_persistence_failed");
+      return {
+        status: "error",
+        code: failureCode,
+        durable: false,
+        plugin_persisted: false,
+        detail: String(err && err.message || "unknown"),
+      };
+    }
+  }
+
+  async function commitPendingFinalConfirmationTransitionIntent(recoveryKey, targetState, reasonCode, transitionAt) {
+    const intent = {
+      recovery_key: String(recoveryKey || ""),
+      target_state: String(targetState || ""),
+      reason_code: String(reasonCode || "pending_recovery_transition"),
+      transition_at: String(transitionAt || new Date().toISOString()),
+    };
+    const saveResult = await savePendingFinalConfirmationRecoveryToStorage({
+      transitionIntents: [intent],
+      failureCode: "pending_" + intent.target_state + "_intent_persistence_failed",
+    });
+    return Object.assign({}, saveResult, {
+      intent,
+      intent_persisted: !!(saveResult && saveResult.plugin_persisted),
+      reconciliation_required: !(saveResult && saveResult.plugin_persisted),
+    });
   }
 
   async function persistPendingFinalConfirmationRecovery(payload, reason, requiredObservationChangeFrom, previousKey) {
@@ -14304,10 +14526,16 @@
       payload: safePayload,
       reason: String(reason || "pending_confirmation"),
       requiredObservationChangeFrom: String(requiredObservationChangeFrom || ""),
+      state: "pending",
+      terminalCode: "",
+      terminalAt: null,
       addedAt: new Date().toISOString(),
     });
     try {
-      await savePendingFinalConfirmationRecoveryToStorage();
+      const saveResult = await savePendingFinalConfirmationRecoveryToStorage();
+      if (!saveResult || !saveResult.plugin_persisted) throw new Error(
+        String(saveResult && saveResult.code || "pending_recovery_persistence_failed")
+      );
       return true;
     } catch (err) {
       if (previousNewEntry) _pendingFinalConfirmationRecoveryEntries.set(key, previousNewEntry);
@@ -14320,19 +14548,92 @@
     }
   }
 
-  async function removePendingFinalConfirmationRecovery(payload, recoveryKey) {
+  async function removePendingFinalConfirmationRecovery(payload, recoveryKey, reasonCode) {
     const key = String(recoveryKey || pendingFinalConfirmationRecoveryKey(payload)).trim();
-    if (!key || !_pendingFinalConfirmationRecoveryEntries.has(key)) return false;
-    const previous = _pendingFinalConfirmationRecoveryEntries.get(key);
-    _pendingFinalConfirmationRecoveryEntries.delete(key);
-    try {
-      await savePendingFinalConfirmationRecoveryToStorage();
-      return true;
-    } catch (err) {
-      _pendingFinalConfirmationRecoveryEntries.set(key, previous);
-      warnLog("removePendingFinalConfirmationRecovery failed:", err && err.message);
-      return false;
+    if (!key || !_pendingFinalConfirmationRecoveryEntries.has(key)) {
+      return {
+        status: "skipped",
+        code: "pending_recovery_missing",
+        durable: true,
+        plugin_persisted: false,
+      };
     }
+    const transitionAt = new Date().toISOString();
+    const intentResult = await commitPendingFinalConfirmationTransitionIntent(
+      key,
+      "superseded",
+      String(reasonCode || "pending_recovery_removed"),
+      transitionAt
+    );
+    if (!intentResult || !intentResult.intent_persisted) {
+      warnLog("removePendingFinalConfirmationRecovery intent failed:", intentResult && intentResult.code);
+      return intentResult;
+    }
+    _pendingFinalConfirmationRecoveryEntries.delete(key);
+    const saveResult = await savePendingFinalConfirmationRecoveryToStorage({
+      transitionIntents: [intentResult.intent],
+      failureCode: "pending_supersede_persistence_failed",
+    });
+    if (!saveResult || !saveResult.plugin_persisted) {
+      warnLog("removePendingFinalConfirmationRecovery failed:", saveResult && saveResult.code);
+      return Object.assign({}, saveResult, {
+        code: "pending_supersede_persistence_failed_intent_retained",
+        durable: true,
+        intent_persisted: true,
+        reconciliation_required: true,
+      });
+    }
+    return Object.assign({}, saveResult, {
+      intent_persisted: true,
+      reconciliation_required: false,
+    });
+  }
+
+  async function markPendingFinalConfirmationRecoveryTerminal(payload, recoveryKey, code) {
+    const key = String(recoveryKey || pendingFinalConfirmationRecoveryKey(payload)).trim();
+    if (!key || !_pendingFinalConfirmationRecoveryEntries.has(key)) {
+      return {
+        status: "error",
+        code: "pending_terminal_recovery_missing",
+        durable: false,
+        plugin_persisted: false,
+      };
+    }
+    const previous = _pendingFinalConfirmationRecoveryEntries.get(key);
+    const terminalCode = String(code || "terminal_pending_final_incident");
+    const terminalAt = new Date().toISOString();
+    const intentResult = await commitPendingFinalConfirmationTransitionIntent(
+      key,
+      "terminal",
+      terminalCode,
+      terminalAt
+    );
+    if (!intentResult || !intentResult.intent_persisted) {
+      warnLog("markPendingFinalConfirmationRecoveryTerminal intent failed:", intentResult && intentResult.code);
+      return intentResult;
+    }
+    _pendingFinalConfirmationRecoveryEntries.set(key, Object.assign({}, previous, {
+      state: "terminal",
+      terminalCode,
+      terminalAt,
+    }));
+    const saveResult = await savePendingFinalConfirmationRecoveryToStorage({
+      transitionIntents: [intentResult.intent],
+      failureCode: "pending_terminal_persistence_failed",
+    });
+    if (!saveResult || !saveResult.plugin_persisted) {
+      warnLog("markPendingFinalConfirmationRecoveryTerminal failed:", saveResult && saveResult.code);
+      return Object.assign({}, saveResult, {
+        code: "pending_terminal_persistence_failed_intent_retained",
+        durable: true,
+        intent_persisted: true,
+        reconciliation_required: true,
+      });
+    }
+    return Object.assign({}, saveResult, {
+      intent_persisted: true,
+      reconciliation_required: false,
+    });
   }
 
   function removeFailedCompleteTurnByIdempotencyKey(idempotencyKey) {
@@ -14367,27 +14668,69 @@
       return 0;
     }
     if (!data || data.v !== 1 || !Array.isArray(data.items)) return 0;
+    const transitionIntents = new Map();
+    for (const intent of Array.isArray(data.transition_intents) ? data.transition_intents : []) {
+      if (!intent || typeof intent !== "object") continue;
+      const recoveryKey = String(intent.recovery_key || "").trim();
+      const targetState = String(intent.target_state || "");
+      if (!recoveryKey || (targetState !== "terminal" && targetState !== "superseded")) continue;
+      transitionIntents.set(recoveryKey, {
+        targetState,
+        reasonCode: String(intent.reason_code || "pending_recovery_transition"),
+        transitionAt: String(intent.transition_at || ""),
+      });
+    }
     let restored = 0;
     let failedQueueChanged = false;
     for (const stored of data.items) {
       const safePayload = serializeCompleteTurnRecoveryPayload(stored && stored.payload);
       const key = pendingFinalConfirmationRecoveryKey(safePayload);
       if (!safePayload || !key) continue;
+      const transitionIntent = transitionIntents.get(key) || null;
+      const storedState = String(stored.state || "pending");
+      const recoveryState = transitionIntent
+        ? transitionIntent.targetState
+        : storedState === "terminal" || storedState === "superseded"
+          ? storedState
+          : "pending";
+      const recoveryTerminalCode = String(
+        transitionIntent && transitionIntent.reasonCode
+        || stored.terminalCode
+        || (recoveryState === "terminal" ? "terminal_pending_final_incident" : "")
+      );
+      if (recoveryState === "superseded") {
+        if (removeFailedCompleteTurnByIdempotencyKey(key.slice("complete|".length))) {
+          failedQueueChanged = true;
+        }
+        continue;
+      }
       _pendingFinalConfirmationRecoveryEntries.set(key, {
         key,
         payload: safePayload,
         reason: String(stored.reason || "pending_confirmation_recovered"),
         requiredObservationChangeFrom: String(stored.requiredObservationChangeFrom || ""),
+        state: recoveryState,
+        terminalCode: recoveryTerminalCode,
+        terminalAt: transitionIntent && transitionIntent.transitionAt || stored.terminalAt || null,
         addedAt: stored.addedAt || new Date().toISOString(),
       });
       if (removeFailedCompleteTurnByIdempotencyKey(key.slice("complete|".length))) {
         failedQueueChanged = true;
       }
+      if (recoveryState === "terminal") {
+        updateRuntimeState("lastCompleteTurnStatus", "fail", {
+          turnIndex: safePayload.turn_index,
+          source: "local",
+          detail: recoveryTerminalCode,
+          failReasons: [recoveryTerminalCode],
+        });
+        continue;
+      }
       const queued = await queuePendingCompleteTurnPayload(
         safePayload,
         String(stored.reason || "pending_confirmation_recovered"),
         String(stored.requiredObservationChangeFrom || ""),
-        { persist: false }
+        { persist: false, reconciliationRequired: true }
       );
       if (queued) restored++;
     }
@@ -14395,9 +14738,9 @@
     return restored;
   }
 
-  async function saveFailedQueueToStorage() {
+  async function saveFailedQueueToStorage(options = {}) {
     try {
-      const serialized = serializeFailedQueue();
+      const serialized = serializeFailedQueue(options);
       if (serialized == null) {
         runtimeState.queuePersistence.lastSave = { status: "error", time: new Date().toISOString(), detail: "serialize failed" };
         return false;
@@ -14425,10 +14768,10 @@
   }
 
   /** 큐 즉시 저장 + 타이머 취소 */
-  async function flushQueueSave() {
+  async function flushQueueSave(options = {}) {
     try {
       if (_queueSaveTimer) { clearTimeout(_queueSaveTimer); _queueSaveTimer = null; }
-      return await saveFailedQueueToStorage();
+      return await saveFailedQueueToStorage(options);
     } catch {
       return false;
     }
@@ -14454,15 +14797,17 @@
       const now = Date.now();
       const maxAge = (settings.failedQueueMaxAgeDays || 7) * 24 * 60 * 60 * 1000;
       const fresh = restored.filter(item => {
+        if (String(item && item.state || "") === "terminal") return true;
         const ageMs = now - new Date(item.addedAt).getTime();
         return !isNaN(ageMs) && ageMs < maxAge;
       });
 
       // 중복 방지: 이미 메모리에 있는 항목은 건너뛴다
-      const existingKeys = new Set(_failedQueue.map(i => i._dedupeKey || makeFailedQueueDedupeKey(i)));
+      const existingKeys = new Set(_failedQueue.map(i => makeFailedQueueDedupeKey(i) || i._dedupeKey).filter(Boolean));
       let addedCount = 0;
       for (const item of fresh) {
-        const key = item._dedupeKey || makeFailedQueueDedupeKey(item);
+        const key = makeFailedQueueDedupeKey(item) || item._dedupeKey;
+        if (!key) continue;
         if (!existingKeys.has(key)) {
           item._dedupeKey = key;
           _failedQueue.push(item);
@@ -14470,9 +14815,6 @@
           addedCount++;
         }
       }
-
-      // 크기 제한 적용
-      while (_failedQueue.length > (settings.failedQueueMaxSize || 50)) _failedQueue.shift();
 
       const expired = restored.length - fresh.length;
       const dupes = fresh.length - addedCount;
@@ -14500,12 +14842,12 @@
       const before = _failedQueue.length;
       let i = _failedQueue.length;
       while (i--) {
+        if (String(_failedQueue[i] && _failedQueue[i].state || "") === "terminal") continue;
         const ageMs = now - new Date(_failedQueue[i].addedAt).getTime();
         if (isNaN(ageMs) || ageMs >= maxAge) {
           _failedQueue.splice(i, 1);
         }
       }
-      while (_failedQueue.length > (settings.failedQueueMaxSize || 50)) _failedQueue.shift();
       const removed = before - _failedQueue.length;
       if (removed > 0) {
         debugLog(`prunePersistedFailedQueue: removed ${removed} items`);
@@ -14540,6 +14882,89 @@
 
   function enqueue(type, payload) {
     try {
+      const dedupeKey = makeFailedQueueDedupeKey({ type, payload });
+      if (!dedupeKey) {
+        return {
+          status: "rejected",
+          code: "failed_queue_identity_missing",
+          state: "terminal",
+          admitted: false,
+          queued: false,
+          duplicate: false,
+          retryable: false,
+          terminal: true,
+          queue_size: _failedQueue.length,
+        };
+      }
+      const existing = _failedQueue.find(function(queuedItem) {
+        if (!queuedItem) return false;
+        const queuedKey = makeFailedQueueDedupeKey(queuedItem) || queuedItem._dedupeKey || "";
+        if (queuedKey && queuedItem._dedupeKey !== queuedKey) queuedItem._dedupeKey = queuedKey;
+        return queuedKey === dedupeKey;
+      });
+      if (existing) {
+        const existingFingerprint = stableFailedQueuePayloadFingerprint(existing.payload);
+        const candidateFingerprint = stableFailedQueuePayloadFingerprint(payload);
+        if (!existingFingerprint || !candidateFingerprint || existingFingerprint !== candidateFingerprint) {
+          return {
+            status: "rejected",
+            code: type === "complete_turn" ? "failed_queue_idempotency_conflict" : "failed_queue_identity_conflict",
+            state: "terminal",
+            admitted: false,
+            queued: false,
+            duplicate: false,
+            retryable: false,
+            terminal: true,
+            dedupe_key: dedupeKey,
+            queue_size: _failedQueue.length,
+          };
+        }
+        if (String(existing.state || "") === "terminal") {
+          return {
+            status: "terminal",
+            code: String(existing.terminalCode || "terminal_failed_queue_incident"),
+            state: "terminal",
+            admitted: false,
+            queued: false,
+            duplicate: true,
+            retryable: false,
+            terminal: true,
+            dedupe_key: dedupeKey,
+            queue_size: _failedQueue.length,
+          };
+        }
+        debugLog(`enqueue: duplicate skipped (${dedupeKey})`);
+        return {
+          status: "duplicate",
+          code: "failed_queue_duplicate",
+          state: "duplicate",
+          admitted: false,
+          queued: true,
+          duplicate: true,
+          retryable: false,
+          terminal: false,
+          dedupe_key: dedupeKey,
+          queue_size: _failedQueue.length,
+        };
+      }
+      const configuredMax = Number(settings.failedQueueMaxSize);
+      const maxSize = Number.isFinite(configuredMax) && configuredMax > 0 ? Math.trunc(configuredMax) : 50;
+      if (_failedQueue.length >= maxSize) {
+        warnLog(`enqueue: admission rejected at capacity (${_failedQueue.length}/${maxSize})`);
+        return {
+          status: "rejected",
+          code: "failed_queue_capacity_reached",
+          state: "terminal",
+          admitted: false,
+          queued: false,
+          duplicate: false,
+          retryable: false,
+          terminal: true,
+          dedupe_key: dedupeKey,
+          queue_size: _failedQueue.length,
+          max_size: maxSize,
+        };
+      }
       const item = {
         type,
         payload,
@@ -14547,38 +14972,131 @@
         state: "retryable",
         addedAt: new Date().toISOString(),
         lastAttemptAt: null,
-        _dedupeKey: makeFailedQueueDedupeKey({ type, payload }),
+        _dedupeKey: dedupeKey,
       };
-      // 중복 방지: 동일 dedupe key가 이미 있으면 추가하지 않는다
-      const exists = _failedQueue.some(q => q._dedupeKey === item._dedupeKey);
-      if (exists) {
-        debugLog(`enqueue: duplicate skipped (${item._dedupeKey})`);
-        return;
-      }
       _failedQueue.push(item);
-      // 큐 크기 제한 — 오래된 것부터 제거
-      while (_failedQueue.length > (settings.failedQueueMaxSize || 50)) _failedQueue.shift();
       debugLog(`enqueue: ${type} queued (queue size: ${_failedQueue.length})`);
       // Sprint 3-C-1: 변경 후 영속 저장 스케줄링
       scheduleQueueSave();
-    } catch { /* 큐 조작 실패는 무시 */ }
+      return {
+        status: "accepted",
+        code: "failed_queue_enqueued",
+        state: "retryable",
+        admitted: true,
+        queued: true,
+        duplicate: false,
+        retryable: true,
+        terminal: false,
+        dedupe_key: dedupeKey,
+        queue_size: _failedQueue.length,
+      };
+    } catch (err) {
+      return {
+        status: "rejected",
+        code: "failed_queue_admission_failed",
+        state: "terminal",
+        admitted: false,
+        queued: false,
+        duplicate: false,
+        retryable: false,
+        terminal: true,
+        detail: String(err && err.message || "unknown"),
+        queue_size: _failedQueue.length,
+      };
+    }
   }
 
-  function removeQueuedItem(type, payload) {
+  function failedQueuePersistenceFailureResult(admission) {
+    return {
+      status: "rejected",
+      code: "failed_queue_persistence_failed",
+      state: "terminal",
+      admitted: false,
+      queued: false,
+      duplicate: false,
+      duplicate_preserved: !!(admission && admission.duplicate),
+      new_admission_rolled_back: !!(admission && admission.admitted),
+      retryable: false,
+      terminal: true,
+      dedupe_key: String(admission && admission.dedupe_key || ""),
+      queue_size: _failedQueue.length,
+    };
+  }
+
+  function removeQueuedItem(type, payload, options = {}) {
     try {
       const key = makeFailedQueueDedupeKey({ type, payload });
-      const idx = _failedQueue.findIndex(q => q && q._dedupeKey === key);
+      if (!key) return false;
+      const idx = _failedQueue.findIndex(q => q && (makeFailedQueueDedupeKey(q) || q._dedupeKey) === key);
       if (idx < 0) return false;
       _failedQueue.splice(idx, 1);
-      scheduleQueueSave();
+      if (options.scheduleSave !== false) scheduleQueueSave();
       return true;
     } catch {
       return false;
     }
   }
 
+  async function persistFailedQueueAdmission(type, payload, admission) {
+    if (!admission || !admission.queued) return admission;
+    if (await flushQueueSave()) return admission;
+    if (admission.admitted) removeQueuedItem(type, payload, { scheduleSave: false });
+    return failedQueuePersistenceFailureResult(admission);
+  }
+
   function failedQueueMaxAttempts() {
     return Math.max(1, Number(settings.failedQueueMaxAttempts || 1));
+  }
+
+  function markFailedQueueItemTerminal(item, code) {
+    if (!item || typeof item !== "object") return item;
+    item.state = "terminal";
+    item.terminalCode = String(code || "terminal_failed_queue_result");
+    item.terminalAt = item.terminalAt || new Date().toISOString();
+    return item;
+  }
+
+  async function commitFailedQueueTransitionIntent(item, code) {
+    const queueKey = makeFailedQueueDedupeKey(item) || String(item && item._dedupeKey || "");
+    if (!queueKey) {
+      return {
+        status: "error",
+        code: "failed_queue_terminal_identity_missing",
+        durable: false,
+        intent_persisted: false,
+      };
+    }
+    const transitionAt = new Date().toISOString();
+    const intent = {
+      queue_key: queueKey,
+      target_state: "terminal",
+      reason_code: String(code || "terminal_failed_queue_result"),
+      transition_at: transitionAt,
+    };
+    const persisted = await flushQueueSave({
+      additionalItems: [item],
+      transitionIntents: [intent],
+    });
+    return {
+      status: persisted ? "ok" : "error",
+      code: persisted ? "failed_queue_terminal_intent_persisted" : "failed_queue_terminal_intent_persistence_failed",
+      durable: !!persisted,
+      intent_persisted: !!persisted,
+      intent,
+    };
+  }
+
+  async function markFailedQueueItemTerminalDurably(item, code) {
+    const intentResult = await commitFailedQueueTransitionIntent(item, code);
+    if (!intentResult || !intentResult.intent_persisted) {
+      markFailedQueueItemTerminal(
+        item,
+        String(intentResult && intentResult.code || "failed_queue_terminal_intent_persistence_failed")
+      );
+      return intentResult;
+    }
+    markFailedQueueItemTerminal(item, code);
+    return intentResult;
   }
 
   async function drainFailedQueue() {
@@ -14588,9 +15106,24 @@
     // 시작 전 prune
     prunePersistedFailedQueue();
 
-    // 한 턴에 처리할 최대 수 (너무 오래 막으면 안 됨)
-    const batch = _failedQueue.splice(0, Math.min(_failedQueue.length, 5));
+    // terminal incidents remain durable and do not consume retry batch slots.
+    // Process one retryable item so a terminal intent snapshot never omits
+    // another in-flight batch item.
+    const batch = [];
+    for (let index = 0; index < _failedQueue.length && batch.length < 1;) {
+      const queuedItem = _failedQueue[index];
+      if (
+        String(queuedItem && queuedItem.state || "") === "terminal"
+        || queuedItem && queuedItem.retryBlocked === true
+      ) {
+        index++;
+        continue;
+      }
+      batch.push(..._failedQueue.splice(index, 1));
+    }
+    if (batch.length === 0) return;
     const stillFailed = [];
+    const retainedIncidents = [];
     let queueChanged = false;
 
     for (const item of batch) {
@@ -14599,6 +15132,7 @@
         updateRuntimeState("lastSaveStatus", "warn", {
           turnIndex: item.payload.turn_index,
           detail: "legacy_startup_message_write_removed",
+          reason_code: "legacy_startup_message_write_removed",
         });
         queueChanged = true;
         continue;
@@ -14614,7 +15148,24 @@
         if (item.type === "complete_turn") {
           if (!await refreshQueuedCompleteTurnSourceObservation(item.payload)) {
             pendingSourceConfirmation = await queuePendingCompleteTurnPayload(item.payload, "pending_confirmation");
-            if (!pendingSourceConfirmation) stillFailed.push(item);
+            if (!pendingSourceConfirmation) {
+              item.attempts = Number(item.attempts || 0) + 1;
+              item.lastAttemptAt = new Date().toISOString();
+              if (item.attempts < failedQueueMaxAttempts()) {
+                item.state = "retryable";
+                stillFailed.push(item);
+              } else {
+                await markFailedQueueItemTerminalDurably(item, "pending_confirmation_persistence_failed");
+                retainedIncidents.push(item);
+                updateRuntimeState("lastCompleteTurnStatus", "fail", {
+                  turnIndex: item.payload.turn_index,
+                  source: "local",
+                  detail: item.terminalCode,
+                  failReasons: [item.terminalCode],
+                });
+              }
+              queueChanged = true;
+            }
             continue;
           }
           const requestKey = String(item.payload?.client_meta?.idempotency_key || "").trim();
@@ -14634,12 +15185,14 @@
             if (item.state === "retryable") {
               stillFailed.push(item);
             } else {
-              updateRuntimeState("lastCompleteTurnStatus", "fail", {
-                turnIndex: item.payload.turn_index,
-                source: "backend",
-                detail: "idempotent_processing_timeout",
-                failReasons: ["idempotent_processing_timeout"],
-              });
+              await markFailedQueueItemTerminalDurably(item, "idempotent_processing_timeout");
+              retainedIncidents.push(item);
+                updateRuntimeState("lastCompleteTurnStatus", "fail", {
+                  turnIndex: item.payload.turn_index,
+                  source: "backend",
+                  detail: item.terminalCode,
+                  failReasons: [item.terminalCode],
+                });
               queueChanged = true;
             }
             continue;
@@ -14672,12 +15225,13 @@
               if (item.attempts < failedQueueMaxAttempts()) {
                 stillFailed.push(item);
               } else {
-                item.state = "terminal";
+                await markFailedQueueItemTerminalDurably(item, "retry_limit_reached");
+                retainedIncidents.push(item);
                 updateRuntimeState("lastCompleteTurnStatus", "fail", {
                   turnIndex: item.payload.turn_index,
                   source: "backend",
-                  detail: "retry_limit_reached",
-                  failReasons: ["retry_limit_reached"],
+                  detail: item.terminalCode,
+                  failReasons: [item.terminalCode],
                 });
                 queueChanged = true;
               }
@@ -14726,7 +15280,9 @@
         debugLog(`drainFailedQueue: moved complete_turn to pending confirmation for turn ${item.payload.turn_index}`);
         queueChanged = true;
       } else if (terminalSourceRejection) {
-        debugLog(`drainFailedQueue: discarded terminal complete_turn result for turn ${item.payload.turn_index}`);
+        await markFailedQueueItemTerminalDurably(item, terminalResultCode || "terminal_complete_turn_result");
+        retainedIncidents.push(item);
+        debugLog(`drainFailedQueue: retained terminal complete_turn result for turn ${item.payload.turn_index}`);
         if (rawSavedTerminalResult) {
           updateRuntimeState("lastSaveStatus", "ok", {
             turnIndex: item.payload.turn_index,
@@ -14736,8 +15292,8 @@
         updateRuntimeState("lastCompleteTurnStatus", rawSavedTerminalResult ? "warn" : "fail", {
           turnIndex: item.payload.turn_index,
           source: "backend",
-          detail: terminalResultCode || "terminal complete-turn result discarded from queue",
-          failReasons: [terminalResultCode || "terminal_complete_turn_result"],
+          detail: item.terminalCode,
+          failReasons: [item.terminalCode],
         });
         queueChanged = true;
       } else if (ok) {
@@ -14773,13 +15329,14 @@
         if (item.attempts < failedQueueMaxAttempts()) {
           stillFailed.push(item);
         } else {
-          item.state = "terminal";
+          await markFailedQueueItemTerminalDurably(item, "retry_limit_reached");
+          retainedIncidents.push(item);
           warnLog(`drainFailedQueue: giving up ${item.type} turn ${item.payload.turn_index} after ${item.attempts} attempts`);
           updateRuntimeState("lastCompleteTurnStatus", "fail", {
             turnIndex: item.payload.turn_index,
             source: "local",
-            detail: "retry_limit_reached",
-            failReasons: ["retry_limit_reached"],
+            detail: item.terminalCode,
+            failReasons: [item.terminalCode],
           });
           queueChanged = true;
         }
@@ -14790,10 +15347,14 @@
     if (stillFailed.length > 0) {
       _failedQueue.unshift(...stillFailed);
     }
+    if (retainedIncidents.length > 0) {
+      _failedQueue.push(...retainedIncidents);
+    }
 
-    // Sprint 3-C-1: 변경이 있었으면 영속 저장
+    // Terminal transitions require an awaited final write. If it fails, the
+    // previously committed transition intent remains authoritative on reload.
     if (queueChanged || stillFailed.length !== batch.length) {
-      scheduleQueueSave();
+      await flushQueueSave();
     }
   }
 
@@ -16142,6 +16703,54 @@
     } catch { return null; }
   }
 
+  async function supersedePendingFinalConfirmation(pendingKey, pending, reason) {
+    if (!pending || typeof pending !== "object") return false;
+    pending.state = "superseded";
+    if (
+      pending.requestContext
+      && pending.requestContext.state !== "accepted"
+      && pending.requestContext.state !== "terminal"
+    ) {
+      pending.requestContext.state = "superseded";
+    }
+    if (_pendingFinalConfirmations.get(pendingKey) === pending) {
+      _pendingFinalConfirmations.delete(pendingKey);
+    }
+    let recoveryTransition = {
+      status: "ok",
+      code: "pending_final_superseded",
+      durable: true,
+      plugin_persisted: true,
+    };
+    if (pending.kind === "backend_observation_retry" && pending.payload) {
+      const recoveryKey = String(pending.recoveryKey || pendingFinalConfirmationRecoveryKey(pending.payload)).trim();
+      if (recoveryKey && _pendingFinalConfirmationRecoveryEntries.has(recoveryKey)) {
+        recoveryTransition = await removePendingFinalConfirmationRecovery(
+          pending.payload,
+          recoveryKey,
+          String(reason || "pending_final_superseded")
+        );
+      }
+    }
+    const recoveryRemoved = !!(recoveryTransition && recoveryTransition.durable);
+    const transitionStatus = !recoveryRemoved
+      ? "fail"
+      : recoveryTransition.plugin_persisted === false
+        ? "warn"
+        : "skipped";
+    const transitionCode = String(
+      recoveryTransition && recoveryTransition.code
+      || (recoveryRemoved ? "pending_final_superseded" : "pending_final_supersede_persistence_failed")
+    );
+    updateRuntimeState("lastCompleteTurnStatus", transitionStatus, {
+      turnIndex: pending.payload && pending.payload.turn_index,
+      source: "local",
+      detail: transitionCode,
+      failReasons: [transitionCode],
+    });
+    return recoveryTransition;
+  }
+
   async function captureFinalConfirmationRequestContext(sessionId, type, requestId) {
     const sid = String(sessionId || "").trim();
     if (!sid || !settings.enabled || !isSaveType(type) || !R) return null;
@@ -16170,12 +16779,11 @@
       for (const [pendingKey, pending] of _pendingFinalConfirmations.entries()) {
         if (
           pending
-          && pending.kind === "host_candidate"
+          && previousContext
           && String(pending.sessionId || "") === sid
           && pending.requestContext === previousContext
         ) {
-          pending.state = "superseded";
-          _pendingFinalConfirmations.delete(pendingKey);
+          await supersedePendingFinalConfirmation(pendingKey, pending, "new_request_superseded_pending_final");
         }
       }
       const hostChatId = typeof chat.id === "string" ? chat.id.trim() : "";
@@ -16425,10 +17033,103 @@
       payload,
       requiredObservationChangeFrom: String(requiredObservationChangeFrom || ""),
       recoveryKey: pendingFinalConfirmationRecoveryKey(payload),
+      reconciliationRequired: options.reconciliationRequired === true,
       inFlight: false,
       resume: null,
     };
     pending.resume = async function resumePendingCompleteTurnPayload(observation) {
+      if (pending.reconciliationRequired) {
+        const requestKey = String(payload && payload.client_meta && payload.client_meta.idempotency_key || "").trim();
+        const requestStatus = requestKey
+          ? await bridgeFetch(
+              "/complete-turn/request-status?idempotency_key=" + encodeURIComponent(requestKey),
+              { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }
+            )
+          : null;
+        const status = String(requestStatus && requestStatus.status || "");
+        if (!requestKey || !requestStatus || status === "error" || status === "processing") {
+          const reconciliationCode = !requestKey
+            ? "pending_recovery_idempotency_key_missing"
+            : status === "processing"
+              ? "pending_recovery_idempotency_processing"
+              : "pending_recovery_idempotency_reconciliation_unavailable";
+          pending.state = "terminal";
+          if (pending.requestContext && pending.requestContext.state !== "superseded") {
+            pending.requestContext.state = "terminal";
+          }
+          const transition = await markPendingFinalConfirmationRecoveryTerminal(
+            payload,
+            pending.recoveryKey,
+            reconciliationCode
+          );
+          const transitionCode = String(
+            transition && transition.plugin_persisted === false
+              ? transition.code
+              : reconciliationCode
+          );
+          updateRuntimeState("lastCompleteTurnStatus", "fail", {
+            turnIndex: payload.turn_index,
+            source: "backend",
+            detail: transitionCode,
+            failReasons: [transitionCode],
+          });
+          return;
+        }
+        if (status === "completed" && (requestStatus.raw_saved === true || requestStatus.save_ok === true)) {
+          await removePendingFinalConfirmationRecovery(
+            payload,
+            pending.recoveryKey,
+            "pending_recovery_reconciled_complete"
+          );
+          updateRuntimeState("lastCompleteTurnStatus", requestStatus.reconciliation_required === true ? "warn" : "ok", {
+            turnIndex: payload.turn_index,
+            source: "backend",
+            detail: String(requestStatus.code || "pending_recovery_reconciled_complete"),
+            failReasons: requestStatus.reconciliation_required === true
+              ? [String(requestStatus.code || "reconciliation_required")]
+              : [],
+          });
+          return;
+        }
+        if (
+          status === "completed"
+          && (requestStatus.retryable === false || requestStatus.queue_action === "discard")
+        ) {
+          await removePendingFinalConfirmationRecovery(
+            payload,
+            pending.recoveryKey,
+            String(requestStatus.code || "pending_recovery_reconciled_terminal")
+          );
+          updateRuntimeState("lastCompleteTurnStatus", "fail", {
+            turnIndex: payload.turn_index,
+            source: "backend",
+            detail: String(requestStatus.code || "pending_recovery_reconciled_terminal"),
+            failReasons: [String(requestStatus.code || "pending_recovery_reconciled_terminal")],
+          });
+          return;
+        }
+        if (status !== "unknown" && status !== "completed") {
+          pending.state = "terminal";
+          const transition = await markPendingFinalConfirmationRecoveryTerminal(
+            payload,
+            pending.recoveryKey,
+            "pending_recovery_idempotency_status_invalid"
+          );
+          const transitionCode = String(
+            transition && transition.plugin_persisted === false
+              ? transition.code
+              : "pending_recovery_idempotency_status_invalid"
+          );
+          updateRuntimeState("lastCompleteTurnStatus", "fail", {
+            turnIndex: payload.turn_index,
+            source: "backend",
+            detail: transitionCode,
+            failReasons: [transitionCode],
+          });
+          return;
+        }
+        pending.reconciliationRequired = false;
+      }
       if (!await refreshQueuedCompleteTurnSourceObservation(payload, { allowSourceReplacement: true })) {
         pending.inFlight = false;
         pending.requiredObservationChangeFrom = String(observation && observation.observationKey || pending.requiredObservationChangeFrom || "");
@@ -16499,16 +17200,41 @@
         });
         return;
       }
-      enqueue("complete_turn", payload);
-      const failedQueuePersisted = await flushQueueSave();
-      if (!failedQueuePersisted) {
-        removeFailedCompleteTurnByIdempotencyKey(
-          payload && payload.client_meta && payload.client_meta.idempotency_key
+      const queueResult = await persistFailedQueueAdmission(
+        "complete_turn",
+        payload,
+        enqueue("complete_turn", payload)
+      );
+      if (!queueResult || !queueResult.queued) {
+        const terminalCode = String(queueResult && queueResult.code || "failed_queue_admission_failed");
+        pending.state = "terminal";
+        if (pending.requestContext && pending.requestContext.state !== "superseded") {
+          pending.requestContext.state = "terminal";
+        }
+        const incidentTransition = await markPendingFinalConfirmationRecoveryTerminal(
+          payload,
+          pending.recoveryKey,
+          terminalCode
         );
-        pending.inFlight = false;
-        queuePendingFinalConfirmation(pending);
+        const incidentDurable = !!(incidentTransition && incidentTransition.durable);
+        const incidentDetail = incidentTransition && incidentTransition.plugin_persisted === false
+          ? String(incidentTransition.code || "pending_terminal_persistence_failed_unfenced")
+          : terminalCode;
         updateRuntimeState("lastError", "error", {
-          detail: "transport queue persistence failed; pending final retained",
+          detail: incidentDurable ? incidentDetail : String(
+            incidentTransition && incidentTransition.code || "pending_terminal_persistence_failed_unfenced"
+          ),
+          queueResult: queueResult || null,
+        });
+        updateRuntimeState("lastCompleteTurnStatus", "fail", {
+          turnIndex: payload.turn_index,
+          source: "local",
+          detail: incidentDurable ? incidentDetail : String(
+            incidentTransition && incidentTransition.code || "pending_terminal_persistence_failed_unfenced"
+          ),
+          failReasons: [incidentDurable ? incidentDetail : String(
+            incidentTransition && incidentTransition.code || "pending_terminal_persistence_failed_unfenced"
+          )],
         });
         return;
       }
@@ -16550,6 +17276,11 @@
             || pending.requestContext !== observation.requestContext
             || (pending.requestContext && pending.requestContext.state === "superseded")
           ) {
+            if (_pendingFinalConfirmations.get(pendingKey) === pending) {
+              await supersedePendingFinalConfirmation(pendingKey, pending, "pending_context_superseded_before_resume");
+            } else {
+              pending.state = "superseded";
+            }
             continue;
           }
           pending.inFlight = true;
@@ -17349,6 +18080,7 @@
         );
         if (updateAutoState) {
           updateRuntimeState("lastAutoRollback", rollbackPartial ? "warn" : "ok", {
+            reason_code: String(reason || ""),
             detail: rollbackPartial
               ? `rollback partial warning (turn ${effectiveRollbackTurn}): ${summarizeRollbackErrors(result)}`
               : `turn ${effectiveRollbackTurn}+ rolled back (${reason})`,
@@ -17420,6 +18152,7 @@
           : false;
         if (!success) {
           updateRuntimeState("lastAutoRollback", "skipped", {
+            reason_code: "unverified_rollback_signal_blocked",
             detail: "unverified rollback signal blocked; waiting active-chat/backend turn-count reconciliation (" + detection.reason + ")",
             sessionId,
             requestedTurnIndex: detection.newTurnIndex,
@@ -17567,6 +18300,7 @@
       const recentTrimGuard = getRecentRisuHistoryTrimGuard(sid);
       if (recentTrimGuard && (!ledgerTailRollback || ledgerTailRollback.status === "incomplete_user_only_tail_candidate")) {
         updateRuntimeState("lastAutoRollback", "skipped", {
+          reason_code: "history_trim_protected",
           detail: "active chat history trim/cut protected; DB rows preserved",
           sessionId: sid,
           activeCompletedTurnCount,
@@ -17579,6 +18313,7 @@
       }
       if (!options.allowBlindTailRollback && !ledgerTailRollback && !baselineTailRollbackAllowed) {
         updateRuntimeState("lastAutoRollback", "skipped", {
+          reason_code: "blind_tail_reconcile_blocked",
           detail: "active chat tail is shorter than backend by " + backendGap + " turns; blind rollback blocked, use explicit Explorer delete to remove DB rows",
           sessionId: sid,
           activeCompletedTurnCount,
@@ -17592,6 +18327,7 @@
       }
       if (!ledgerTailRollback && backendGap > ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS) {
         updateRuntimeState("lastAutoRollback", "skipped", {
+          reason_code: "blind_tail_reconcile_blocked",
           detail: "active chat shorter than backend by " + backendGap + " turns; blind rollback blocked as possible /cut history trim",
           sessionId: sid,
           activeCompletedTurnCount,
@@ -25460,8 +26196,11 @@
       return true;
     } else {
       warnLog("saveTurnToBackend: all retries failed, queuing turn", turnIndex);
-      enqueue("save", body);
-      updateRuntimeState("lastSaveStatus", "fail", { turnIndex, detail: `save failed → queued (${_failedQueue.length})` });
+      const queueResult = await persistFailedQueueAdmission("save", body, enqueue("save", body));
+      const detail = queueResult && queueResult.queued
+        ? `save failed → queued (${_failedQueue.length})`
+        : String(queueResult && queueResult.code || "failed_queue_admission_failed");
+      updateRuntimeState("lastSaveStatus", "fail", { turnIndex, detail });
       return false;
     }
   }
@@ -25506,8 +26245,11 @@
       updateRuntimeState("lastCompleteStatus", "ok", { turnIndex, detail: "accepted" });
     } else {
       warnLog("notifyTurnComplete: all retries failed, queuing turn", turnIndex);
-      enqueue("complete", body);
-      updateRuntimeState("lastCompleteStatus", "fail", { turnIndex, detail: `complete failed → queued (${_failedQueue.length})` });
+      const queueResult = await persistFailedQueueAdmission("complete", body, enqueue("complete", body));
+      const detail = queueResult && queueResult.queued
+        ? `complete failed → queued (${_failedQueue.length})`
+        : String(queueResult && queueResult.code || "failed_queue_admission_failed");
+      updateRuntimeState("lastCompleteStatus", "fail", { turnIndex, detail });
     }
   }
 
@@ -25533,8 +26275,11 @@
       updateRuntimeState("lastCompleteStatus", "ok", { turnIndex, detail: "accepted" });
     } else {
       warnLog("notifyTurnComplete: all retries failed, queuing turn", turnIndex);
-      enqueue("complete", body);
-      updateRuntimeState("lastCompleteStatus", "fail", { turnIndex, detail: `complete failed → queued (${_failedQueue.length})` });
+      const queueResult = await persistFailedQueueAdmission("complete", body, enqueue("complete", body));
+      const detail = queueResult && queueResult.queued
+        ? `complete failed → queued (${_failedQueue.length})`
+        : String(queueResult && queueResult.code || "failed_queue_admission_failed");
+      updateRuntimeState("lastCompleteStatus", "fail", { turnIndex, detail });
     }
     return result;
   }
@@ -25902,6 +26647,9 @@
       ["episode_interval_turns", "long_session_refresh_enabled", "chapter_auto_enabled", "arc_auto_enabled", "saga_auto_enabled", "chapter_interval_turns", "arc_interval_turns", "saga_interval_turns", "request_id", "idempotency_key"].forEach(function(key) {
         if (Object.prototype.hasOwnProperty.call(meta, key)) safeClientMeta[key] = meta[key];
       });
+      if (typeof meta.source_revision === "string" || typeof meta.source_revision === "number") {
+        safeClientMeta.source_revision = meta.source_revision;
+      }
       if (meta.preserve_requested_turn_index === true) safeClientMeta.preserve_requested_turn_index = true;
       if (meta.source_acceptance_required === true) safeClientMeta.source_acceptance_required = true;
       if (meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object") {
@@ -25919,6 +26667,9 @@
           request_id_state: "official_risu_request_id_not_exposed",
           generation_id: lineage.generation_id || null,
           generation_id_state: lineage.generation_id_state || "unobserved",
+          source_revision: typeof lineage.source_revision === "string" || typeof lineage.source_revision === "number"
+            ? lineage.source_revision
+            : null,
           source_refs: Array.isArray(lineage.source_refs) ? lineage.source_refs.slice(0, 128) : [],
           execution_item_refs: Array.isArray(lineage.execution_item_refs) ? lineage.execution_item_refs.slice(0, 128) : [],
           payload_application_status: lineage.payload_application_status || "ambiguous",
@@ -26175,6 +26926,7 @@
       ) {
         const replacedTurn = Number(result.turn_index || turnIdx);
         updateRuntimeState("lastRerollReplacement", "ok", {
+          reason_code: "logical_turn_replaced",
           detail: "logical_turn_replaced",
           turnIndex: Number.isFinite(replacedTurn) && replacedTurn > 0 ? Math.trunc(replacedTurn) : null,
         });
@@ -34562,9 +35314,22 @@
       previous_assistant_hash: computeAssistantSnapshotFingerprint(originalAssistant),
     };
     const queuedPayload = buildCompleteTurnQueuePayload(body);
+    let queueResult = null;
     if (queuedPayload) {
-      enqueue("complete_turn", queuedPayload);
-      await flushQueueSave();
+      queueResult = await persistFailedQueueAdmission(
+        "complete_turn",
+        queuedPayload,
+        enqueue("complete_turn", queuedPayload)
+      );
+      if (!queueResult || !queueResult.queued) {
+        return {
+          handled: true,
+          replaced: false,
+          queued: false,
+          reason: String(queueResult && queueResult.code || "failed_queue_admission_failed"),
+          turnIndex,
+        };
+      }
     }
 
     const rolledBack = await executeAutoRollback(
@@ -34575,7 +35340,7 @@
       { requestSource: "postprocessor_final_replace", updateAutoState: false }
     );
     if (!rolledBack) {
-      if (queuedPayload) {
+      if (queuedPayload && queueResult && queueResult.admitted) {
         removeQueuedItem("complete_turn", queuedPayload);
         await flushQueueSave();
       }
@@ -34593,7 +35358,7 @@
     );
     const saved = !!(result && result.status !== "error" && result.status !== "skeleton" && result.save_ok);
     if (!saved) {
-      return { handled: true, replaced: false, queued: !!queuedPayload, reason: "post_output_resave_queued", turnIndex };
+      return { handled: true, replaced: false, queued: !!(queueResult && queueResult.queued), reason: "post_output_resave_queued", turnIndex };
     }
     if (queuedPayload && removeQueuedItem("complete_turn", queuedPayload)) {
       await flushQueueSave();
@@ -34613,8 +35378,14 @@
 
   function schedulePostOutputFinalReplacement(sessionId, skipRecord, responseContent) {
     const sid = String(sessionId || "").trim();
-    updateRuntimeState("lastSaveStatus", "warn", { detail: "후처리 최종문 반영 대기" });
-    updateRuntimeState("lastCompleteStatus", "warn", { detail: "후처리 최종문 반영 대기" });
+    updateRuntimeState("lastSaveStatus", "warn", {
+      reason_code: "post_output_final_pending",
+      detail: "후처리 최종문 반영 대기",
+    });
+    updateRuntimeState("lastCompleteStatus", "warn", {
+      reason_code: "post_output_final_pending",
+      detail: "후처리 최종문 반영 대기",
+    });
     setTimeout(function() {
       replacePersistedTurnWithPostOutputFinal(sid, skipRecord, responseContent).then(async function(result) {
         const status = result && result.replaced ? "ok" : result && result.queued ? "warn" : "skipped";
@@ -34625,6 +35396,7 @@
             : "후처리 요청은 새 턴으로 저장하지 않음";
         const state = {
           turnIndex: result && result.turnIndex,
+          reason_code: result && result.queued ? "post_output_final_replacement_pending" : "",
           detail,
           reason: result && result.reason,
         };
@@ -35040,6 +35812,7 @@
             beforeRequestRecoveredForRead = true;
             updateRuntimeState("lastInjectionStatus", "warn", {
               applied: false,
+              reason_code: "before_request_payload_recovered",
               detail: (payloadMessageCount > 0 ? "before_request_payload_unusable_messages_recovered:" : "before_request_payload_no_messages_recovered:") + beforeRequestMessageSource,
             });
           } else {
@@ -36017,6 +36790,7 @@
         && !nativePersistableContent;
       if (nativeNonPersistableFragment) {
         updateRuntimeState("lastStreamingAfterRequest", "watching", {
+          reason_code: "fragment_skipped_waiting_final",
           detail: "afterRequest fragment observed; waiting for RisuAI active assistant tail",
           sessionId: chatSessionId,
           requestType: String(type || "model"),
@@ -36715,11 +37489,20 @@
         trackTurnIndex(duplicateTurnIndex, chatSessionId);
         setTurnCounterAtLeast(chatSessionId, duplicateTurnIndex);
         promoteAssistantSnapshot(chatSessionId, persistedAssistantContent, duplicateTurnIndex);
-        updateRuntimeState("lastSaveStatus", "ok", { turnIndex: duplicateTurnIndex, detail: "idempotent pair replay; duplicate save skipped" });
-        updateRuntimeState("lastCompleteStatus", "ok", { turnIndex: duplicateTurnIndex, detail: "accepted (existing pair)" });
+        updateRuntimeState("lastSaveStatus", "ok", {
+          turnIndex: duplicateTurnIndex,
+          reason_code: "idempotent_pair_replay",
+          detail: "idempotent pair replay; duplicate save skipped",
+        });
+        updateRuntimeState("lastCompleteStatus", "ok", {
+          turnIndex: duplicateTurnIndex,
+          reason_code: "accepted_existing_pair",
+          detail: "accepted (existing pair)",
+        });
         updateRuntimeState("lastCompleteTurnStatus", "ok", {
           turnIndex: duplicateTurnIndex,
           source: "local",
+          reason_code: "idempotent_pair_replay",
           detail: "idempotent_pair_replay",
           failReasons: [],
         });
@@ -36935,6 +37718,7 @@
       // ── save ──────────────────────────────────────────────────────────────
       let saveSucceeded;
       let completeTurnRetryQueued = false;
+      let completeTurnQueueFailureCode = "";
       let rawVerify = null;
       if (_ctOk && _ctResult.save_ok) {
         saveSucceeded = true;
@@ -37010,20 +37794,33 @@
           if (pendingPersisted) {
             if (removeQueuedItem("complete_turn", _ctQueuedPayload)) await flushQueueSave();
           } else {
-            enqueue("complete_turn", _ctQueuedPayload);
-            await flushQueueSave();
-            completeTurnRetryQueued = true;
+            const queueResult = await persistFailedQueueAdmission(
+              "complete_turn",
+              _ctQueuedPayload,
+              enqueue("complete_turn", _ctQueuedPayload)
+            );
+            if (queueResult && queueResult.queued) {
+              completeTurnRetryQueued = true;
+            } else {
+              completeTurnQueueFailureCode = String(queueResult && queueResult.code || "failed_queue_admission_failed");
+            }
           }
         }
-        updateRuntimeState("lastSaveStatus", completeTurnRetryQueued ? "fail" : "idle", {
+        updateRuntimeState("lastSaveStatus", completeTurnRetryQueued || completeTurnQueueFailureCode ? "fail" : "idle", {
           turnIndex: persistedTurnIdx,
-          detail: completeTurnRetryQueued ? "pending confirmation persistence failed; transport queue retained" : "pending RisuAI final confirmation",
+          detail: completeTurnRetryQueued
+            ? "pending confirmation persistence failed; transport queue retained"
+            : completeTurnQueueFailureCode || "pending RisuAI final confirmation",
         });
-        updateRuntimeState("lastCompleteTurnStatus", completeTurnRetryQueued ? "fail" : "idle", {
+        updateRuntimeState("lastCompleteTurnStatus", completeTurnRetryQueued || completeTurnQueueFailureCode ? "fail" : "idle", {
           turnIndex: persistedTurnIdx,
           source: "backend",
-          detail: completeTurnRetryQueued ? "pending_confirmation_persistence_failed" : String(_ctResult.code || "pending_confirmation"),
-          failReasons: completeTurnRetryQueued ? ["pending_confirmation_persistence_failed"] : [],
+          detail: completeTurnRetryQueued
+            ? "pending_confirmation_persistence_failed"
+            : completeTurnQueueFailureCode || String(_ctResult.code || "pending_confirmation"),
+          failReasons: completeTurnRetryQueued
+            ? ["pending_confirmation_persistence_failed"]
+            : completeTurnQueueFailureCode ? [completeTurnQueueFailureCode] : [],
         });
       } else if (_ctSourceDiscarded) {
         saveSucceeded = true;
@@ -37060,11 +37857,25 @@
       } else {
         saveSucceeded = false;
         if (_ctQueuedPayload) {
-          enqueue("complete_turn", _ctQueuedPayload);
-          flushQueueSave().catch(function() {});
-          completeTurnRetryQueued = true;
-          updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: `complete-turn failed → queued (${_failedQueue.length})` });
-          updateRuntimeState("lastCompleteTurnStatus", "fail", { turnIndex: persistedTurnIdx, source: "backend", detail: "complete-turn failed → queued", failReasons: ["complete_turn_retry_queued"] });
+          const queueResult = await persistFailedQueueAdmission(
+            "complete_turn",
+            _ctQueuedPayload,
+            enqueue("complete_turn", _ctQueuedPayload)
+          );
+          if (queueResult && queueResult.queued) {
+            completeTurnRetryQueued = true;
+            updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: `complete-turn failed → queued (${_failedQueue.length})` });
+            updateRuntimeState("lastCompleteTurnStatus", "fail", { turnIndex: persistedTurnIdx, source: "backend", detail: "complete-turn failed → queued", failReasons: ["complete_turn_retry_queued"] });
+          } else {
+            completeTurnQueueFailureCode = String(queueResult && queueResult.code || "failed_queue_admission_failed");
+            updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: completeTurnQueueFailureCode });
+            updateRuntimeState("lastCompleteTurnStatus", "fail", {
+              turnIndex: persistedTurnIdx,
+              source: "local",
+              detail: completeTurnQueueFailureCode,
+              failReasons: [completeTurnQueueFailureCode],
+            });
+          }
         } else {
           updateRuntimeState("lastSaveStatus", "fail", { turnIndex: persistedTurnIdx, detail: "complete-turn request build failed" });
           updateRuntimeState("lastCompleteTurnStatus", "fail", { turnIndex: persistedTurnIdx, source: "backend", detail: "complete-turn request build failed", failReasons: ["complete_turn_request_build_failed"] });
@@ -37093,6 +37904,8 @@
           }
         } else if (completeTurnRetryQueued) {
           captureReason = "complete_turn_retry_queued";
+        } else if (completeTurnQueueFailureCode) {
+          captureReason = completeTurnQueueFailureCode;
         } else if (!_ctBody) {
           captureReason = "complete_turn_request_build_failed";
         } else {
@@ -37155,6 +37968,14 @@
       } else if (completeTurnRetryQueued) {
         completeResult = null;
         updateRuntimeState("lastCompleteStatus", "fail", { turnIndex: persistedTurnIdx, detail: `complete-turn retry queued (${_failedQueue.length})` });
+      } else if (completeTurnQueueFailureCode) {
+        completeResult = {
+          status: "error",
+          code: completeTurnQueueFailureCode,
+          retryable: false,
+          terminal: true,
+        };
+        updateRuntimeState("lastCompleteStatus", "fail", { turnIndex: persistedTurnIdx, detail: completeTurnQueueFailureCode });
       } else {
         completeResult = null;
         updateRuntimeState("lastCompleteStatus", "fail", { turnIndex: persistedTurnIdx, detail: "complete-turn unavailable; legacy complete disabled" });
@@ -39881,7 +40702,10 @@
       updateRuntimeState("lastActiveChatBackfill", queued > 0 ? "warn" : "ok", {
         detail: "recent active chat rebuild " + String(saved) + " saved / " + String(exists) + " existing / " + String(queued) + " queued",
         turnIndex: targetTurns.length > 0 ? targetTurns[targetTurns.length - 1] : null,
-        reason: "manual_recent_rebuild",
+        reason_code: queued > 0 ? "recent_active_chat_rebuild_queued" : "",
+        savedCount: saved,
+        existingCount: exists,
+        queuedCount: queued,
       });
       refreshExplorerUI();
       runActiveChatRescanDryRun(sid).catch(function(err) {
@@ -48518,24 +49342,54 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const maxAttempts = failedQueueMaxAttempts();
     for (const item of Array.isArray(_failedQueue) ? _failedQueue.slice(0, 200) : []) {
       const payload = item && item.payload && typeof item.payload === "object" ? item.payload : {};
+      const state = String(item && item.state || "") === "terminal" ? "terminal" : "retryable";
       observations.push({
         queue_kind: "transport_retry",
         session_id: String(payload.chat_session_id || item.chatSessionId || ""),
         request_id: String(turnWorkflowHUDRequestIdFromCompleteBody(payload) || ""),
         turn_index: Number(payload.turn_index || item.turnIndex || 0),
-        state: String(item && item.state || "unobserved"),
+        state,
+        reason_code: state === "terminal" || item && item.retryBlocked === true
+          ? String(item && item.terminalCode || "terminal_failed_queue_incident")
+          : "",
+        terminal_at: state === "terminal" ? String(item && item.terminalAt || "") : "",
         attempts: Number(item && item.attempts || 0),
         max_attempts: maxAttempts,
       });
     }
     for (const pending of _pendingFinalConfirmations.values()) {
       const payload = pending && pending.payload && typeof pending.payload === "object" ? pending.payload : {};
+      const pendingState = String(pending && pending.state || "pending");
+      const state = pendingState === "terminal" || pendingState === "superseded" ? pendingState : "pending";
       observations.push({
         queue_kind: "pending_confirmation",
         session_id: String(pending && pending.sessionId || payload.chat_session_id || ""),
         request_id: String(pending && pending.requestContext && pending.requestContext.requestId || turnWorkflowHUDRequestIdFromCompleteBody(payload) || ""),
         turn_index: Number(payload.turn_index || 0),
-        state: String(pending && pending.state || "pending"),
+        state,
+        reason_code: state === "terminal" || state === "superseded"
+          ? String(pending && pending.terminalCode || state)
+          : "",
+        terminal_at: state === "terminal" || state === "superseded"
+          ? String(pending && pending.terminalAt || "")
+          : "",
+      });
+    }
+    for (const recovery of _pendingFinalConfirmationRecoveryEntries.values()) {
+      const recoveryState = String(recovery && recovery.state || "pending");
+      if (recoveryState !== "terminal" && recoveryState !== "superseded") continue;
+      const payload = recovery && recovery.payload && typeof recovery.payload === "object" ? recovery.payload : {};
+      observations.push({
+        queue_kind: "pending_confirmation_recovery",
+        session_id: String(payload.chat_session_id || ""),
+        request_id: String(turnWorkflowHUDRequestIdFromCompleteBody(payload) || ""),
+        turn_index: Number(payload.turn_index || 0),
+        state: recoveryState,
+        reason_code: String(
+          recovery && recovery.terminalCode
+          || (recoveryState === "superseded" ? "pending_final_superseded" : "terminal_pending_final_incident")
+        ),
+        terminal_at: String(recovery && recovery.terminalAt || ""),
       });
     }
     const maintenance = rs && rs.lastMaintenanceQueueStatus && typeof rs.lastMaintenanceQueueStatus === "object"

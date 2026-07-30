@@ -83,6 +83,8 @@ func NewServer(cfg config.Config) *Server {
 	if referenceVectorErr != nil {
 		referenceVS = vector.NewFakeVectorStore()
 	}
+	vs = vector.NewMutationFencedStore(vs)
+	referenceVS = vector.NewMutationFencedStore(referenceVS)
 	return &Server{
 		Cfg:                      cfg,
 		Started:                  time.Now().UTC(),

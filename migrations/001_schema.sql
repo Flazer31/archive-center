@@ -1826,7 +1826,9 @@ CREATE TABLE IF NOT EXISTS memory_vector_outbox (
 
 -- ---------------------------------------------------------------------------
 -- 3.7-D session route binding and exhaustive migration parity ledgers
--- Existing installations receive the same definitions from migration 007.
+-- The canonical schema command reruns these IF NOT EXISTS definitions as its
+-- existing-install compatibility pass; previously shipped ledgers also remain
+-- recorded in immutable migration 007.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS session_route_bindings (
@@ -1883,6 +1885,25 @@ CREATE TABLE IF NOT EXISTS session_migration_artifact_parity (
         ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-manifest-table count/hash, row-map, FK, and vector expected-ID parity gate.';
+
+CREATE TABLE IF NOT EXISTS session_migration_artifact_row_map (
+    migration_id       BIGINT UNSIGNED NOT NULL,
+    table_name         VARCHAR(100)    NOT NULL,
+    key_column_name    VARCHAR(100)    NOT NULL,
+    source_key         VARCHAR(255)    NOT NULL,
+    target_key         VARCHAR(255)    NOT NULL,
+    row_status         VARCHAR(50)     NOT NULL DEFAULT 'copied',
+    created_at         DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
+    updated_at         DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,
+    PRIMARY KEY (migration_id, table_name, key_column_name, source_key),
+    UNIQUE KEY uq_session_migration_artifact_target
+        (migration_id, table_name, key_column_name, target_key),
+    INDEX idx_session_migration_artifact_row_status (migration_id, row_status),
+    CONSTRAINT fk_session_migration_artifact_row_map
+        FOREIGN KEY (migration_id) REFERENCES session_migrations(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Typed-as-text allowlisted row and alternate-key remap ledger for numeric, UUID, and revision-key artifacts.';
 
 CREATE TABLE IF NOT EXISTS session_migration_vector_expected_ids (
     migration_id       BIGINT UNSIGNED NOT NULL,

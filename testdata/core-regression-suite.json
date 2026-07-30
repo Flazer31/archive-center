@@ -29,7 +29,7 @@
       "name": "rollback_and_session_migration",
       "package": "./internal/httpapi",
       "expected_tests": 6,
-      "run": "^(TestRollbackLiveWriteExecutesDeletions|TestRollbackMinFromTurnClampsAttachedSessionDelete|TestSessionMigratePreviewDryRunBlocksNonEmptyTarget|TestSessionMigratePreviewAllowsEmptyTargetDryRun|TestSessionMigrateCompleteCopiesOnlyAfterEmptyTargetPreview|TestSessionMigrationSourceLockExcludesPrepareSearchAndCompleteTurn)$"
+      "run": "^(TestRollbackLiveWriteExecutesDeletions|TestRollbackMinFromTurnClampsAttachedSessionDelete|TestSessionMigratePreviewDryRunBlocksNonEmptyTarget|TestSessionMigratePreviewAllowsEmptyTargetDryRun|TestSessionMigrateCompleteRunsFullManifestExecutorAndLeavesVectorPhasePending|TestSessionMigrationSourceLockExcludesPrepareSearchAndCompleteTurn)$"
     }
   ]
 }

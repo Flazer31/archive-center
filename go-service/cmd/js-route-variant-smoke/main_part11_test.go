@@ -2273,21 +2273,23 @@ function normalizeLanguageContextTrace(value) { return value; }
 const sourceObservation = {contract_version:"source_acceptance_observation.v1",observed_at_ms:123,message_index:4,active_message_count:5};
 const sourceLineage = {contract_version:"source_to_final_lineage_observation.v1",status:"ready",
   archive_center_request_correlation_id:"correlation-1",prepare_lineage_id:"stl_1",payload_plan_id:"stp_1",
-  generation_id:"generation-1",generation_id_state:"observed",source_refs:["memory:session-1:41"],
+  generation_id:"generation-1",generation_id_state:"observed",source_revision:"source-revision-7",source_refs:["memory:session-1:41"],
   payload_application_status:"applied",payload_observation_stage:"archive_center_before_request_return",
   final_provider_payload_state:"not_exposed",semantic_outcome:"unobserved"};
 const saved = serializeCompleteTurnRecoveryPayload({
   chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],
   client_meta:{source_acceptance_required:true,source_acceptance_observation:sourceObservation,
-    source_to_final_lineage_observation:sourceLineage,idempotency_key:"key-1",
+    source_to_final_lineage_observation:sourceLineage,idempotency_key:"key-1",source_revision:"source-revision-7",
     critic:{api_key:"secret"},authorization:"Bearer secret"}
 });
 if (!saved || saved.client_meta.source_acceptance_required !== true) throw new Error("source fence requirement was lost");
 if (!saved.client_meta.source_acceptance_observation || saved.client_meta.source_acceptance_observation.message_index !== 4) throw new Error("source observation was lost");
 if (saved.client_meta.idempotency_key !== "key-1") throw new Error("idempotency key was lost");
+if (saved.client_meta.source_revision !== "source-revision-7") throw new Error("source revision was lost");
 const savedLineage=saved.client_meta.source_to_final_lineage_observation;
 if (!savedLineage || savedLineage.archive_center_request_correlation_id!=="correlation-1" ||
   savedLineage.prepare_lineage_id!=="stl_1" || savedLineage.payload_plan_id!=="stp_1" ||
+  savedLineage.source_revision!=="source-revision-7" ||
   savedLineage.status!=="ready" || savedLineage.payload_observation_stage!=="archive_center_before_request_return" ||
   savedLineage.final_provider_payload_state!=="not_exposed") throw new Error("source lineage fence was lost");
 if (saved.client_meta.critic || JSON.stringify(saved).includes("secret") || JSON.stringify(saved).includes("Bearer")) throw new Error("credential-bearing config was persisted");
@@ -2316,8 +2318,10 @@ func TestPendingFinalConfirmationPersistsSeparatelyAndRestores(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey"),
 		extractArchiveCenterJSFunction(t, src, "serializePendingFinalConfirmationRecovery"),
 		extractArchiveCenterJSAsyncFunction(t, src, "savePendingFinalConfirmationRecoveryToStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "commitPendingFinalConfirmationTransitionIntent"),
 		extractArchiveCenterJSAsyncFunction(t, src, "persistPendingFinalConfirmationRecovery"),
 		extractArchiveCenterJSFunction(t, src, "removeFailedCompleteTurnByIdempotencyKey"),
+		extractArchiveCenterJSAsyncFunction(t, src, "markPendingFinalConfirmationRecoveryTerminal"),
 		extractArchiveCenterJSAsyncFunction(t, src, "loadPendingFinalConfirmationRecoveryFromStorage"),
 	}, "\n")
 	script := functions + `
@@ -2325,13 +2329,23 @@ const PENDING_FINAL_CONFIRMATION_STORAGE_KEY="pending-final";
 const _pendingFinalConfirmationRecoveryEntries=new Map();
 const _failedQueue=[];
 const settings={failedQueueMaxSize:50};
-let stored="";
-let flushed=0;
+	let stored="";
+	let localStored="";
+	let flushed=0;
 let queued=null;
-function normalizeLanguageContextTrace(value) { return value; }
-async function persistentSet(key,value) {
-  if (key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
-  stored=value;
+	function normalizeLanguageContextTrace(value) { return value; }
+	function safeStorageGet(key) {
+	  if (key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong local storage key");
+	  return localStored;
+	}
+	function safeStorageSet(key,value) {
+	  if (key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong local storage key");
+	  localStored=value;
+	}
+	async function persistentSet(key,value) {
+	  if (key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+	  safeStorageSet(key,value);
+	  stored=value;
 }
 async function persistentGet(key) {
   if (key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
@@ -2343,6 +2357,7 @@ async function queuePendingCompleteTurnPayload(payload,reason,required,options) 
   return true;
 }
 function warnLog() {}
+function updateRuntimeState() {}
 (async function() {
   const payload={chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:"assistant",context_messages:[],
     client_meta:{idempotency_key:"key-4",source_acceptance_required:true,
@@ -2358,7 +2373,8 @@ function warnLog() {}
   _failedQueue.push({type:"complete_turn",payload:{chat_session_id:"session-1",turn_index:4,
     client_meta:{idempotency_key:"key-4"}}});
   const restored=await loadPendingFinalConfirmationRecoveryFromStorage();
-  if(restored!==1 || !queued || queued.required!=="obs-old" || queued.options.persist!==false) {
+  if(restored!==1 || !queued || queued.required!=="obs-old" || queued.options.persist!==false ||
+     queued.options.reconciliationRequired!==true) {
     throw new Error("pending final recovery was not reconstructed");
   }
   if(_failedQueue.length!==0 || flushed!==1) {
@@ -2366,6 +2382,16 @@ function warnLog() {}
   }
   if(queued.payload.client_meta.critic || queued.payload.client_meta.embedding) {
     throw new Error("recovered pending payload unexpectedly contains credentials");
+  }
+	  const terminalTransition=await markPendingFinalConfirmationRecoveryTerminal(payload,"","failed_queue_persistence_failed");
+	  if(!terminalTransition || !terminalTransition.durable || !terminalTransition.plugin_persisted) {
+	    throw new Error("pending terminal incident was not persisted");
+	  }
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  queued=null;
+  const terminalRestored=await loadPendingFinalConfirmationRecoveryFromStorage();
+  if(terminalRestored!==0 || queued!==null) {
+    throw new Error("terminal pending incident was retried after reload");
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -2421,7 +2447,465 @@ async function refreshQueuedCompleteTurnSourceObservation() { return true; }
 	}
 }
 
-func TestFailedQueuePersistenceFailureKeepsPendingFinalSource(t *testing.T) {
+func TestConfirmedPendingFinalQueueFailureBecomesTerminalIncident(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for confirmed pending-final fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey") +
+		extractArchiveCenterJSAsyncFunction(t, src, "queuePendingCompleteTurnPayload")
+	script := functions + `
+const _finalConfirmationRequestBySession=new Map();
+const requestContext={state:"captured"};
+_finalConfirmationRequestBySession.set("session-1",requestContext);
+let queuedCount=0;
+let pending=null;
+let terminalMarked=0;
+let lastComplete=null;
+async function persistPendingFinalConfirmationRecovery() { return true; }
+function queuePendingFinalConfirmation(value) { queuedCount++; pending=value; return true; }
+async function refreshQueuedCompleteTurnSourceObservation() { return true; }
+async function bridgeFetchWithRetry() { return null; }
+function getCompleteTurnTimeoutMs() { return 10; }
+function enqueue() { return {status:"accepted",queued:true,admitted:true,dedupe_key:"key-1"}; }
+async function persistFailedQueueAdmission() {
+  return {status:"rejected",code:"failed_queue_persistence_failed",queued:false,terminal:true};
+}
+async function markPendingFinalConfirmationRecoveryTerminal(payload,recoveryKey,code) {
+  if(code!=="failed_queue_persistence_failed") throw new Error("wrong terminal code");
+  terminalMarked++;
+  return {status:"ok",code:"pending_recovery_persisted",durable:true,plugin_persisted:true};
+}
+function updateRuntimeState(name,status,value) {
+  if(name==="lastCompleteTurnStatus") lastComplete={status,value};
+}
+(async function() {
+  const payload={chat_session_id:"session-1",turn_index:4,assistant_content:"assistant",
+    client_meta:{idempotency_key:"key-1"}};
+  if(!await queuePendingCompleteTurnPayload(payload,"pending_confirmation","old-observation")) {
+    throw new Error("pending payload was not admitted");
+  }
+  if(queuedCount!==1 || !pending) throw new Error("initial pending observation was not queued");
+  await pending.resume({observationKey:"new-observation"});
+  if(queuedCount!==1) throw new Error("confirmed-final transport failure re-entered pending observation");
+  if(pending.state!=="terminal" || requestContext.state!=="terminal" || terminalMarked!==1) {
+    throw new Error("confirmed-final failure was not terminalized");
+  }
+  if(!lastComplete || lastComplete.value.detail!=="failed_queue_persistence_failed") {
+    throw new Error("typed terminal incident was not reported");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("confirmed pending-final terminal fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestBackendPendingSupersessionRemovesRecoveryBeforeReload(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending supersession fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "buildCompleteTurnQueuePayload"),
+		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey"),
+		extractArchiveCenterJSFunction(t, src, "serializePendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "savePendingFinalConfirmationRecoveryToStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "commitPendingFinalConfirmationTransitionIntent"),
+		extractArchiveCenterJSAsyncFunction(t, src, "persistPendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "removePendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "supersedePendingFinalConfirmation"),
+		extractArchiveCenterJSAsyncFunction(t, src, "captureFinalConfirmationRequestContext"),
+		extractArchiveCenterJSFunction(t, src, "removeFailedCompleteTurnByIdempotencyKey"),
+		extractArchiveCenterJSAsyncFunction(t, src, "loadPendingFinalConfirmationRecoveryFromStorage"),
+	}, "\n")
+	script := functions + `
+const PENDING_FINAL_CONFIRMATION_STORAGE_KEY="pending-final";
+const _pendingFinalConfirmationRecoveryEntries=new Map();
+const _pendingFinalConfirmations=new Map();
+const _finalConfirmationRequestBySession=new Map();
+const _failedQueue=[];
+const settings={enabled:true,failedQueueMaxSize:50};
+	let stored="";
+	let localStored="";
+	let restoredCalls=0;
+function normalizeLanguageContextTrace(value) { return value; }
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function isSaveType() { return true; }
+function updateRuntimeState() {}
+function warnLog() {}
+	function debugLog() {}
+	function safeStorageGet(key) {
+	  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong local storage key");
+	  return localStored;
+	}
+	function safeStorageSet(key,value) {
+	  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong local storage key");
+	  localStored=value;
+	}
+	async function persistentSet(key,value) {
+	  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+	  safeStorageSet(key,value);
+	  stored=value;
+}
+async function persistentGet(key) {
+  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+  return stored;
+}
+async function flushQueueSave() {}
+async function queuePendingCompleteTurnPayload() { restoredCalls++; return true; }
+const R={
+  async getCurrentCharacterIndex(){return 1;},
+  async getCurrentChatIndex(){return 2;},
+  async getChatFromIndex(){return {id:"host-chat",message:[]};}
+};
+(async function() {
+  const payload={chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:"assistant",
+    context_messages:[],client_meta:{idempotency_key:"key-4"}};
+  if(!await persistPendingFinalConfirmationRecovery(payload,"pending_confirmation","old-observation","")) {
+    throw new Error("pending recovery was not persisted");
+  }
+  const previousContext={state:"captured",requestId:"request-old"};
+  _finalConfirmationRequestBySession.set("session-1",previousContext);
+  const recoveryKey=pendingFinalConfirmationRecoveryKey(payload);
+  const pending={kind:"backend_observation_retry",sessionId:"session-1",payload,
+    requestContext:previousContext,recoveryKey,state:"pending"};
+  _pendingFinalConfirmations.set(recoveryKey,pending);
+  const next=await captureFinalConfirmationRequestContext("session-1","model","request-new");
+  if(!next || previousContext.state!=="superseded" || pending.state!=="superseded") {
+    throw new Error("backend pending was not superseded with request context");
+  }
+  if(_pendingFinalConfirmations.size!==0 || _pendingFinalConfirmationRecoveryEntries.size!==0) {
+    throw new Error("superseded backend pending leaked in memory");
+  }
+  const persisted=JSON.parse(stored);
+  if(!persisted.items || persisted.items.length!==0) throw new Error("superseded recovery remained durable");
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  restoredCalls=0;
+  const restored=await loadPendingFinalConfirmationRecoveryFromStorage();
+  if(restored!==0 || restoredCalls!==0 || _pendingFinalConfirmations.size!==0) {
+    throw new Error("superseded recovery returned after reload");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending supersession reload fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestPendingFinalTransitionStorageFailureRetainsDurableIntent(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending transition storage-failure fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "buildCompleteTurnQueuePayload"),
+		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey"),
+		extractArchiveCenterJSFunction(t, src, "serializePendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "savePendingFinalConfirmationRecoveryToStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "commitPendingFinalConfirmationTransitionIntent"),
+		extractArchiveCenterJSAsyncFunction(t, src, "persistPendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "removePendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "markPendingFinalConfirmationRecoveryTerminal"),
+		extractArchiveCenterJSFunction(t, src, "removeFailedCompleteTurnByIdempotencyKey"),
+		extractArchiveCenterJSAsyncFunction(t, src, "loadPendingFinalConfirmationRecoveryFromStorage"),
+	}, "\n")
+	script := functions + `
+const PENDING_FINAL_CONFIRMATION_STORAGE_KEY="pending-final";
+const _pendingFinalConfirmationRecoveryEntries=new Map();
+const _failedQueue=[];
+const settings={failedQueueMaxSize:50};
+let remoteStored="";
+let writeCount=0;
+let failOnWrite=0;
+let restoredCalls=0;
+let lastRestoreOptions=null;
+let lastRuntimeDetail="";
+function normalizeLanguageContextTrace(value) { return value; }
+async function persistentSet(key,value) {
+  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+  writeCount++;
+  if(writeCount===failOnWrite) throw new Error("plugin storage transition failure");
+  remoteStored=value;
+}
+async function persistentGet(key) {
+  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+  return remoteStored;
+}
+async function queuePendingCompleteTurnPayload(payload,reason,required,options) {
+  restoredCalls++;
+  lastRestoreOptions=options;
+  return true;
+}
+async function flushQueueSave() {}
+function updateRuntimeState(name,status,value) {
+  if(name==="lastCompleteTurnStatus") lastRuntimeDetail=String(value && value.detail || "");
+}
+function warnLog() {}
+function payload(idempotency) {
+  return {chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:"assistant",
+    context_messages:[],client_meta:{idempotency_key:idempotency}};
+}
+(async function() {
+  const terminalPayload=payload("terminal-storage-failure");
+  if(!await persistPendingFinalConfirmationRecovery(terminalPayload,"pending_confirmation","old-observation","")) {
+    throw new Error("terminal fixture setup was not persisted");
+  }
+  failOnWrite=3;
+  const terminalTransition=await markPendingFinalConfirmationRecoveryTerminal(
+    terminalPayload,
+    "",
+    "failed_queue_persistence_failed"
+  );
+  if(!terminalTransition || !terminalTransition.durable || terminalTransition.plugin_persisted ||
+     !terminalTransition.intent_persisted ||
+     terminalTransition.code!=="pending_terminal_persistence_failed_intent_retained") {
+    throw new Error("terminal transition failure did not retain durable intent");
+  }
+  const terminalIntentSnapshot=JSON.parse(remoteStored);
+  if(terminalIntentSnapshot.items.length!==1 || terminalIntentSnapshot.items[0].state!=="pending" ||
+     terminalIntentSnapshot.transition_intents.length!==1 ||
+     terminalIntentSnapshot.transition_intents[0].target_state!=="terminal") {
+    throw new Error("terminal intent was not committed before final state");
+  }
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  restoredCalls=0;
+  const terminalRestored=await loadPendingFinalConfirmationRecoveryFromStorage();
+  const terminalEntry=_pendingFinalConfirmationRecoveryEntries.get("complete|terminal-storage-failure");
+  if(terminalRestored!==0 || restoredCalls!==0 || !terminalEntry || terminalEntry.state!=="terminal" ||
+     terminalEntry.terminalCode!=="failed_queue_persistence_failed" ||
+     lastRuntimeDetail!=="failed_queue_persistence_failed") {
+    throw new Error("stale durable pending revived after terminal transition storage failure");
+  }
+
+  remoteStored="";
+  writeCount=0;
+  failOnWrite=0;
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  const supersedePayload=payload("supersede-storage-failure");
+  if(!await persistPendingFinalConfirmationRecovery(supersedePayload,"pending_confirmation","old-observation","")) {
+    throw new Error("supersede fixture setup was not persisted");
+  }
+  failOnWrite=3;
+  const supersedeTransition=await removePendingFinalConfirmationRecovery(
+    supersedePayload,
+    "",
+    "new_request_superseded_pending_final"
+  );
+  if(!supersedeTransition || !supersedeTransition.durable || supersedeTransition.plugin_persisted ||
+     !supersedeTransition.intent_persisted ||
+     supersedeTransition.code!=="pending_supersede_persistence_failed_intent_retained") {
+    throw new Error("supersede removal failure did not retain durable intent");
+  }
+  const supersedeIntentSnapshot=JSON.parse(remoteStored);
+  if(supersedeIntentSnapshot.items.length!==1 || supersedeIntentSnapshot.items[0].state!=="pending" ||
+     supersedeIntentSnapshot.transition_intents.length!==1 ||
+     supersedeIntentSnapshot.transition_intents[0].target_state!=="superseded") {
+    throw new Error("supersede intent was not committed before removal");
+  }
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  restoredCalls=0;
+  const supersedeRestored=await loadPendingFinalConfirmationRecoveryFromStorage();
+  if(supersedeRestored!==0 || restoredCalls!==0 || _pendingFinalConfirmationRecoveryEntries.size!==0) {
+    throw new Error("stale durable pending revived after supersede removal storage failure");
+  }
+
+  remoteStored="";
+  writeCount=0;
+  failOnWrite=0;
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  const intentFailurePayload=payload("intent-commit-failure");
+  if(!await persistPendingFinalConfirmationRecovery(intentFailurePayload,"pending_confirmation","old-observation","")) {
+    throw new Error("intent failure fixture setup was not persisted");
+  }
+  failOnWrite=2;
+  const intentFailure=await markPendingFinalConfirmationRecoveryTerminal(
+    intentFailurePayload,
+    "",
+    "failed_queue_persistence_failed"
+  );
+  const pendingEntry=_pendingFinalConfirmationRecoveryEntries.get("complete|intent-commit-failure");
+  if(!intentFailure || intentFailure.durable || intentFailure.intent_persisted ||
+     intentFailure.code!=="pending_terminal_intent_persistence_failed" ||
+     !pendingEntry || pendingEntry.state!=="pending") {
+    throw new Error("failed transition intent incorrectly claimed terminal durability");
+  }
+  _pendingFinalConfirmationRecoveryEntries.clear();
+  restoredCalls=0;
+  lastRestoreOptions=null;
+  const intentFailureRestored=await loadPendingFinalConfirmationRecoveryFromStorage();
+  if(intentFailureRestored!==1 || restoredCalls!==1 || !lastRestoreOptions ||
+     lastRestoreOptions.reconciliationRequired!==true) {
+    throw new Error("intent commit failure did not restore behind reconciliation gate");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending transition storage-failure fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRecoveredPendingRequiresIdempotencyReconciliationBeforeRetry(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending reconciliation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey") +
+		extractArchiveCenterJSAsyncFunction(t, src, "queuePendingCompleteTurnPayload")
+	script := functions + `
+const _finalConfirmationRequestBySession=new Map();
+let pending=null;
+let queueCalls=0;
+let statusCalls=0;
+let postCalls=0;
+let refreshCalls=0;
+let terminalCode="";
+let lastComplete=null;
+async function persistPendingFinalConfirmationRecovery() { throw new Error("recovered pending must not persist again"); }
+function queuePendingFinalConfirmation(value) { queueCalls++; pending=value; return true; }
+async function bridgeFetch(path) {
+  if(!path.startsWith("/complete-turn/request-status?idempotency_key=")) throw new Error("unexpected reconciliation path");
+  statusCalls++;
+  return null;
+}
+async function bridgeFetchWithRetry() { postCalls++; return null; }
+async function refreshQueuedCompleteTurnSourceObservation() { refreshCalls++; return true; }
+async function markPendingFinalConfirmationRecoveryTerminal(payload,recoveryKey,code) {
+  terminalCode=code;
+  return {status:"ok",code:"pending_recovery_persisted",durable:true,plugin_persisted:true,intent_persisted:true};
+}
+async function removePendingFinalConfirmationRecovery() { throw new Error("unreconciled recovery was removed"); }
+function getRequestTimeoutSettingMs() { return 10; }
+function getCompleteTurnTimeoutMs() { return 10; }
+function completeTurnPayloadObservationKey() { return "observation"; }
+function enqueue() { throw new Error("unreconciled recovery entered transport queue"); }
+async function persistFailedQueueAdmission() { throw new Error("unreconciled recovery entered transport queue"); }
+function updateRuntimeState(name,status,value) {
+  if(name==="lastCompleteTurnStatus") lastComplete={status,value};
+}
+(async function() {
+  const payload={chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:"assistant",
+    client_meta:{idempotency_key:"recovered-idempotency"}};
+  if(!await queuePendingCompleteTurnPayload(
+    payload,
+    "pending_confirmation_recovered",
+    "old-observation",
+    {persist:false,reconciliationRequired:true}
+  )) {
+    throw new Error("recovered pending was not staged");
+  }
+  await pending.resume({observationKey:"new-observation"});
+  if(statusCalls!==1 || postCalls!==0 || refreshCalls!==0 || queueCalls!==1) {
+    throw new Error("recovered pending retried before idempotency reconciliation");
+  }
+  if(pending.state!=="terminal" ||
+     terminalCode!=="pending_recovery_idempotency_reconciliation_unavailable" ||
+     !lastComplete ||
+     lastComplete.value.detail!=="pending_recovery_idempotency_reconciliation_unavailable") {
+    throw new Error("unavailable reconciliation was not fail-closed and typed");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending reconciliation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestDashboardQueueObservationsExposeTypedStateWithoutSecrets(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for dashboard queue observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "buildDashboardQueueObservations")
+	script := functionBody + `
+const _failedQueue=[
+  {type:"complete_turn",state:"retryable",attempts:1,payload:{chat_session_id:"session-1",turn_index:4,
+    api_key:"transport-secret",client_meta:{idempotency_key:"retry-request",critic:{api_key:"critic-secret"}}}},
+  {type:"complete_turn",state:"terminal",attempts:4,terminalCode:"idempotency_key_conflict",
+    terminalAt:"2026-07-30T10:00:00.000Z",payload:{chat_session_id:"session-1",turn_index:5,
+      token:"backend-token",client_meta:{idempotency_key:"terminal-request"}}}
+];
+const _pendingFinalConfirmations=new Map([["pending",{
+  state:"pending",sessionId:"session-1",payload:{chat_session_id:"session-1",turn_index:6,
+    secret:"pending-secret",client_meta:{idempotency_key:"pending-request"}}
+}]]);
+const _pendingFinalConfirmationRecoveryEntries=new Map([["complete|recovery-request",{
+  state:"terminal",terminalCode:"failed_queue_persistence_failed",terminalAt:"2026-07-30T11:00:00.000Z",
+  payload:{chat_session_id:"session-1",turn_index:7,password:"recovery-secret",
+    client_meta:{idempotency_key:"recovery-request",embedding:{api_key:"embedding-secret"}}}
+}]]);
+function failedQueueMaxAttempts() { return 4; }
+function turnWorkflowHUDRequestIdFromCompleteBody(payload) {
+  return String(payload && payload.client_meta && payload.client_meta.idempotency_key || "");
+}
+const observations=buildDashboardQueueObservations({});
+const serialized=JSON.stringify(observations);
+for(const secret of ["transport-secret","critic-secret","backend-token","pending-secret","recovery-secret","embedding-secret"]) {
+  if(serialized.includes(secret)) throw new Error("queue observation leaked secret: "+secret);
+}
+const retryable=observations.find(row=>row.queue_kind==="transport_retry" && row.request_id==="retry-request");
+const terminal=observations.find(row=>row.queue_kind==="transport_retry" && row.request_id==="terminal-request");
+const recovery=observations.find(row=>row.queue_kind==="pending_confirmation_recovery");
+if(!retryable || retryable.state!=="retryable" || retryable.reason_code!=="" || retryable.terminal_at!=="") {
+  throw new Error("retryable transport observation was not typed");
+}
+if(!terminal || terminal.state!=="terminal" || terminal.reason_code!=="idempotency_key_conflict" ||
+   terminal.terminal_at!=="2026-07-30T10:00:00.000Z") {
+  throw new Error("terminal transport observation lost reason or timestamp");
+}
+if(!recovery || recovery.state!=="terminal" || recovery.reason_code!=="failed_queue_persistence_failed" ||
+   recovery.terminal_at!=="2026-07-30T11:00:00.000Z") {
+  throw new Error("pending recovery terminal incident was not observed");
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dashboard queue observation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFailedQueuePersistenceFailureRollsBackOnlyNewAdmission(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -2431,30 +2915,51 @@ func TestFailedQueuePersistenceFailureKeepsPendingFinalSource(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	for _, marker := range []string{
-		"const failedQueuePersisted = await flushQueueSave()",
-		"transport queue persistence failed; pending final retained",
-		"queuePendingFinalConfirmation(pending)",
-	} {
-		if !strings.Contains(src, marker) {
-			t.Fatalf("pending source retention marker missing %q", marker)
-		}
-	}
-	functions := extractArchiveCenterJSAsyncFunction(t, src, "saveFailedQueueToStorage") +
-		extractArchiveCenterJSAsyncFunction(t, src, "flushQueueSave")
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "stableFailedQueuePayloadFingerprint"),
+		extractArchiveCenterJSFunction(t, src, "makeFailedQueueDedupeKey"),
+		extractArchiveCenterJSFunction(t, src, "enqueue"),
+		extractArchiveCenterJSFunction(t, src, "failedQueuePersistenceFailureResult"),
+		extractArchiveCenterJSFunction(t, src, "removeQueuedItem"),
+		extractArchiveCenterJSAsyncFunction(t, src, "persistFailedQueueAdmission"),
+		extractArchiveCenterJSAsyncFunction(t, src, "saveFailedQueueToStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "flushQueueSave"),
+	}, "\n")
 	script := functions + `
 const FAILED_QUEUE_STORAGE_KEY="failed";
-const _failedQueue=[{type:"complete_turn"}];
+const _failedQueue=[];
+const settings={failedQueueMaxSize:4};
 const runtimeState={queuePersistence:{}};
 let _queueSaveTimer=null;
-function serializeFailedQueue() { return "{\"v\":1}"; }
-async function persistentSet() { throw new Error("storage unavailable"); }
+let allowStore=false;
+let scheduled=0;
+function computeOrchestrationDirtyHashOr1c(value) { return "h:"+String(value || ""); }
+function serializeFailedQueue() { return JSON.stringify({v:1,count:_failedQueue.length}); }
+async function persistentSet() { if(!allowStore) throw new Error("storage unavailable"); }
+function scheduleQueueSave() { scheduled++; }
 function debugLog() {}
 function warnLog() {}
 (async function() {
-  const saved=await flushQueueSave();
-  if(saved!==false || runtimeState.queuePersistence.lastSave.status!=="error") {
-    throw new Error("failed queue persistence was reported as success");
+  const payload={chat_session_id:"session-1",turn_index:4,user_input:"u",assistant_content:"a",
+    context_messages:[],client_meta:{idempotency_key:"idem-persist"}};
+  const admission=enqueue("complete_turn",payload);
+  const failed=await persistFailedQueueAdmission("complete_turn",payload,admission);
+  if(failed.code!=="failed_queue_persistence_failed" || !failed.terminal ||
+     !failed.new_admission_rolled_back || _failedQueue.length!==0 || scheduled!==1) {
+    throw new Error("new admission was not rolled back after durable write failure");
+  }
+  allowStore=true;
+  const durableAdmission=enqueue("complete_turn",payload);
+  const durable=await persistFailedQueueAdmission("complete_turn",payload,durableAdmission);
+  if(!durable.queued || _failedQueue.length!==1) throw new Error("durable admission was not retained");
+  allowStore=false;
+  const reordered={client_meta:payload.client_meta,context_messages:[],assistant_content:"a",
+    user_input:"u",turn_index:4,chat_session_id:"session-1"};
+  const duplicate=enqueue("complete_turn",reordered);
+  const duplicateFailure=await persistFailedQueueAdmission("complete_turn",reordered,duplicate);
+  if(duplicateFailure.code!=="failed_queue_persistence_failed" || !duplicateFailure.duplicate_preserved ||
+     duplicateFailure.new_admission_rolled_back || _failedQueue.length!==1) {
+    throw new Error("pre-existing duplicate was removed after persistence failure");
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -2462,7 +2967,503 @@ function warnLog() {}
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("queue persistence fixture failed: %v\n%s", err, out)
+		t.Fatalf("queue persistence rollback fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFailedQueueProductionAdmissionKeepsDistinctCompleteTurnRequests(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for failed queue admission fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	keyFunction := extractArchiveCenterJSFunction(t, src, "makeFailedQueueDedupeKey")
+	if strings.Contains(keyFunction, "Date.now") || strings.Contains(keyFunction, "Math.random") {
+		t.Fatal("failed queue identity still hides failures behind time/random fallback")
+	}
+	functions := extractArchiveCenterJSFunction(t, src, "stableFailedQueuePayloadFingerprint") +
+		keyFunction +
+		extractArchiveCenterJSFunction(t, src, "enqueue")
+	script := functions + `
+const _failedQueue=[];
+const settings={failedQueueMaxSize:4};
+let scheduled=0;
+function computeOrchestrationDirtyHashOr1c(value) {
+  const text=String(value || "");
+  let hash=0;
+  for(let i=0;i<text.length;i++) hash=((hash*33)^text.charCodeAt(i))>>>0;
+  return hash.toString(16);
+}
+function debugLog() {}
+function warnLog() {}
+function scheduleQueueSave() { scheduled++; }
+function payload(idempotency,hostRequest,generation,sourceRevision,assistant) {
+  const clientMeta={
+    source_acceptance_observation:{
+      host_chat_id:"host-chat",message_index:3,message_chat_id:"message-3",
+      message_time_ms:123,observed_content_hash:"content-hash",
+      generation_id:generation,source_revision:sourceRevision
+    },
+    source_to_final_lineage_observation:{
+      archive_center_request_correlation_id:hostRequest,generation_id:generation,source_revision:sourceRevision
+    }
+  };
+  if(idempotency) clientMeta.idempotency_key=idempotency;
+  return {chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:assistant || "assistant",
+    context_messages:[{role:"user",content:"user"}],request_type:"model",client_meta:clientMeta};
+}
+const canonicalA=payload("idem-a","host-a","generation-a",1,"assistant-a");
+const canonicalChanged=payload("idem-a","host-b","generation-b",2,"assistant-b");
+if(makeFailedQueueDedupeKey({type:"complete_turn",payload:canonicalA})!=="complete_turn|idempotency|idem-a") {
+  throw new Error("canonical idempotency key was not preferred");
+}
+if(makeFailedQueueDedupeKey({type:"complete_turn",payload:canonicalA})!==
+   makeFailedQueueDedupeKey({type:"complete_turn",payload:canonicalChanged})) {
+  throw new Error("canonical idempotency did not dominate fallback coordinates");
+}
+const first=enqueue("complete_turn",canonicalA);
+if(!first || first.status!=="accepted" || !first.admitted || !first.queued || first.terminal) {
+  throw new Error("first request was not admitted with typed result");
+}
+const canonicalReordered={
+  client_meta:canonicalA.client_meta,request_type:canonicalA.request_type,context_messages:canonicalA.context_messages,
+  assistant_content:canonicalA.assistant_content,user_input:canonicalA.user_input,turn_index:canonicalA.turn_index,
+  chat_session_id:canonicalA.chat_session_id
+};
+const duplicate=enqueue("complete_turn",canonicalReordered);
+if(!duplicate || duplicate.status!=="duplicate" || duplicate.code!=="failed_queue_duplicate" ||
+   duplicate.admitted || !duplicate.queued || !duplicate.duplicate || duplicate.terminal || _failedQueue.length!==1) {
+  throw new Error("exact duplicate was not typed");
+}
+const conflict=enqueue("complete_turn",canonicalChanged);
+if(!conflict || conflict.status!=="rejected" || conflict.code!=="failed_queue_idempotency_conflict" ||
+   conflict.queued || !conflict.terminal || _failedQueue.length!==1) {
+  throw new Error("same idempotency with different payload was not terminal conflict");
+}
+const second=enqueue("complete_turn",payload("idem-b","host-a","generation-a",1,"assistant-a"));
+if(!second || second.status!=="accepted" || _failedQueue.length!==2) {
+  throw new Error("distinct idempotency request was merged");
+}
+const fallback=payload("","host-fallback","generation-fallback",7,"assistant-fallback");
+const fallbackKey=makeFailedQueueDedupeKey({type:"complete_turn",payload:fallback});
+const fallbackReordered={
+  request_type:fallback.request_type,
+  context_messages:[{content:"user",role:"user"}],
+  assistant_content:fallback.assistant_content,
+  user_input:fallback.user_input,
+  turn_index:fallback.turn_index,
+  chat_session_id:fallback.chat_session_id,
+  client_meta:{
+    source_to_final_lineage_observation:{
+      source_revision:7,
+      generation_id:"generation-fallback",
+      archive_center_request_correlation_id:"host-fallback"
+    },
+    source_acceptance_observation:{
+      source_revision:7,
+      generation_id:"generation-fallback",
+      observed_content_hash:"content-hash",
+      message_time_ms:123,
+      message_chat_id:"message-3",
+      message_index:3,
+      host_chat_id:"host-chat"
+    }
+  }
+};
+if(makeFailedQueueDedupeKey({type:"complete_turn",payload:fallbackReordered})!==fallbackKey) {
+  throw new Error("fallback identity changed with object property order");
+}
+for(const changed of [
+  payload("","host-other","generation-fallback",7,"assistant-fallback"),
+  payload("","host-fallback","generation-other",7,"assistant-fallback"),
+  payload("","host-fallback","generation-fallback",8,"assistant-fallback")
+]) {
+  if(makeFailedQueueDedupeKey({type:"complete_turn",payload:changed})===fallbackKey) {
+    throw new Error("fallback request/generation/source revision coordinate was merged");
+  }
+}
+const fallbackFirst=enqueue("complete_turn",fallback);
+const fallbackSecond=enqueue("complete_turn",payload("","host-other","generation-other",8,"assistant-fallback"));
+if(!fallbackFirst.admitted || !fallbackSecond.admitted || _failedQueue.length!==4) {
+  throw new Error("distinct fallback requests were not admitted");
+}
+const before=_failedQueue.map(item=>item._dedupeKey).join("\n");
+const overflow=enqueue("complete_turn",payload("idem-overflow","host-overflow","generation-overflow",9,"overflow"));
+const after=_failedQueue.map(item=>item._dedupeKey).join("\n");
+if(!overflow || overflow.status!=="rejected" || overflow.code!=="failed_queue_capacity_reached" ||
+   overflow.queued || overflow.retryable || !overflow.terminal || overflow.state!=="terminal") {
+  throw new Error("capacity rejection was not typed terminal");
+}
+if(before!==after || _failedQueue.length!==4) throw new Error("capacity overflow evicted an existing item");
+if(scheduled!==4) throw new Error("duplicate or rejected admission scheduled a queue write");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed queue production admission fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFailedQueueProductionReloadAndPruneDoNotEvictForCapacity(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for failed queue reload fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "makeFailedQueueDedupeKey"),
+		extractArchiveCenterJSFunction(t, src, "deserializeFailedQueue"),
+		extractArchiveCenterJSAsyncFunction(t, src, "loadFailedQueueFromStorage"),
+		extractArchiveCenterJSFunction(t, src, "prunePersistedFailedQueue"),
+	}, "\n")
+	script := functions + `
+const FAILED_QUEUE_STORAGE_KEY="failed";
+const _failedQueue=[];
+const settings={failedQueueMaxAgeDays:7,failedQueueMaxSize:2};
+const runtimeState={queuePersistence:{}};
+let scheduled=0;
+function computeOrchestrationDirtyHashOr1c(value) { return "h:"+String(value || ""); }
+function debugLog() {}
+function warnLog() {}
+function scheduleQueueSave() { scheduled++; }
+const addedAt=new Date().toISOString();
+function stored(id,key) {
+  return {id,type:"complete_turn",attempts:0,state:"retryable",addedAt,payload:{
+    chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:key,context_messages:[],
+    client_meta:{idempotency_key:key}
+  }};
+}
+const raw=JSON.stringify({v:1,items:[
+  stored("legacy|session-1|4","idem-1"),
+  stored("legacy|session-1|4","idem-2"),
+  stored("legacy|session-1|4","idem-3"),
+  stored("another-legacy-id","idem-3")
+]});
+async function persistentGet(key) {
+  if(key!==FAILED_QUEUE_STORAGE_KEY) throw new Error("wrong storage key");
+  return raw;
+}
+(async function() {
+  await loadFailedQueueFromStorage();
+  if(_failedQueue.length!==3) throw new Error("reload either merged distinct requests or retained an exact duplicate");
+  if(_failedQueue.some(item=>!String(item._dedupeKey).startsWith("complete_turn|idempotency|idem-"))) {
+    throw new Error("reload trusted a legacy coarse stored id");
+  }
+  prunePersistedFailedQueue();
+  if(_failedQueue.length!==3) throw new Error("capacity pruning evicted restored durable items");
+  if(scheduled!==0) throw new Error("capacity-only reload/prune scheduled destructive persistence");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed queue production reload fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFailedQueueProductionDrainRetainsAndSkipsTerminalIncidents(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for failed queue drain fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "failedQueueMaxAttempts"),
+		extractArchiveCenterJSFunction(t, src, "markFailedQueueItemTerminal"),
+		extractArchiveCenterJSAsyncFunction(t, src, "markFailedQueueItemTerminalDurably"),
+		extractArchiveCenterJSAsyncFunction(t, src, "drainFailedQueue"),
+	}, "\n")
+	script := functions + `
+const _failedQueue=[];
+const settings={failedQueueMaxAttempts:1};
+let mode="post_fail";
+let postCalls=0;
+let refreshCalls=0;
+let scheduled=0;
+function prunePersistedFailedQueue() {}
+function debugLog() {}
+function warnLog() {}
+function updateRuntimeState() {}
+function getRequestTimeoutSettingMs() { return 10; }
+function getCompleteTurnTimeoutMs() { return 1; }
+function completeTurnPayloadObservationKey() { return "observation"; }
+function isBridgeShadowGuardFailure() { return false; }
+function serializeChatLogRecoveryPayload(payload) { return payload; }
+function scheduleQueueSave() { scheduled++; }
+async function flushQueueSave() { scheduled++; return true; }
+async function commitFailedQueueTransitionIntent(item,code) {
+  return {status:"ok",code:"failed_queue_terminal_intent_persisted",durable:true,intent_persisted:true,
+    intent:{queue_key:item._dedupeKey,target_state:"terminal",reason_code:code,transition_at:new Date().toISOString()}};
+}
+async function refreshQueuedCompleteTurnSourceObservation() {
+  refreshCalls++;
+  return mode!=="refresh_fail";
+}
+async function queuePendingCompleteTurnPayload() { return false; }
+async function bridgeFetch() {
+  if(mode==="processing") return {status:"processing"};
+  if(mode==="completed_retryable") return {status:"completed",retryable:true,raw_saved:false,save_ok:false};
+  return null;
+}
+async function bridgeFetchWithRetry() {
+  postCalls++;
+  if(mode==="terminal_response") {
+    return {status:"rejected",queue_action:"discard",retryable:false,code:"idempotency_key_conflict"};
+  }
+  return null;
+}
+function item(key,state) {
+  return {type:"complete_turn",payload:{chat_session_id:"session-1",turn_index:4,
+    user_input:"u",assistant_content:"a",client_meta:{idempotency_key:key}},
+    attempts:0,state:state || "retryable",addedAt:new Date(0).toISOString(),lastAttemptAt:null,
+    _dedupeKey:"complete_turn|idempotency|"+key};
+}
+async function reset(nextMode,maxAttempts) {
+  _failedQueue.length=0;
+  mode=nextMode;
+  settings.failedQueueMaxAttempts=maxAttempts;
+  postCalls=0;
+  refreshCalls=0;
+  scheduled=0;
+}
+(async function() {
+  await reset("post_fail",1);
+  _failedQueue.push(Object.assign(item("terminal-existing","terminal"),{terminalCode:"existing_terminal"}));
+  _failedQueue.push(item("retryable"));
+  await drainFailedQueue();
+  if(postCalls!==1 || _failedQueue.length!==2 || _failedQueue.some(row=>row.state!=="terminal") ||
+     !_failedQueue.some(row=>row.terminalCode==="retry_limit_reached")) {
+    throw new Error("new terminal failure was not retained beside existing incident");
+  }
+  const callsAfterTerminal=postCalls;
+  const schedulesAfterTerminal=scheduled;
+  await drainFailedQueue();
+  if(postCalls!==callsAfterTerminal || scheduled!==schedulesAfterTerminal) {
+    throw new Error("terminal incidents were retried");
+  }
+
+  await reset("refresh_fail",2);
+  _failedQueue.push(item("refresh"));
+  await drainFailedQueue();
+  if(_failedQueue[0].attempts!==1 || _failedQueue[0].state!=="retryable") {
+    throw new Error("failed pending persistence did not consume an attempt");
+  }
+  await drainFailedQueue();
+  if(_failedQueue[0].attempts!==2 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!=="pending_confirmation_persistence_failed") {
+    throw new Error("failed pending persistence bypassed retry limit");
+  }
+
+  await reset("processing",1);
+  _failedQueue.push(item("processing"));
+  await drainFailedQueue();
+  if(_failedQueue.length!==1 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!=="idempotent_processing_timeout") {
+    throw new Error("processing timeout terminal incident was dropped");
+  }
+
+  await reset("completed_retryable",1);
+  _failedQueue.push(item("completed"));
+  await drainFailedQueue();
+  if(_failedQueue.length!==1 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!=="retry_limit_reached") {
+    throw new Error("completed retry limit incident was dropped");
+  }
+
+  await reset("terminal_response",4);
+  _failedQueue.push(item("terminal-response"));
+  await drainFailedQueue();
+  if(_failedQueue.length!==1 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!=="idempotency_key_conflict") {
+    throw new Error("backend terminal result was discarded");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed queue production drain fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFailedQueueTerminalWriteFailureReloadsFromDurableIntent(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for failed queue terminal durability fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "buildCompleteTurnQueuePayload"),
+		extractArchiveCenterJSFunction(t, src, "stableFailedQueuePayloadFingerprint"),
+		extractArchiveCenterJSFunction(t, src, "makeFailedQueueDedupeKey"),
+		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "serializeChatLogRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "serializeFailedQueueItem"),
+		extractArchiveCenterJSFunction(t, src, "serializeFailedQueue"),
+		extractArchiveCenterJSFunction(t, src, "deserializeFailedQueue"),
+		extractArchiveCenterJSAsyncFunction(t, src, "saveFailedQueueToStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "flushQueueSave"),
+		extractArchiveCenterJSAsyncFunction(t, src, "loadFailedQueueFromStorage"),
+		extractArchiveCenterJSFunction(t, src, "failedQueueMaxAttempts"),
+		extractArchiveCenterJSFunction(t, src, "markFailedQueueItemTerminal"),
+		extractArchiveCenterJSAsyncFunction(t, src, "commitFailedQueueTransitionIntent"),
+		extractArchiveCenterJSAsyncFunction(t, src, "markFailedQueueItemTerminalDurably"),
+		extractArchiveCenterJSAsyncFunction(t, src, "drainFailedQueue"),
+		extractArchiveCenterJSFunction(t, src, "buildDashboardQueueObservations"),
+	}, "\n")
+	script := functions + `
+const FAILED_QUEUE_STORAGE_KEY="failed";
+const _failedQueue=[];
+const _pendingFinalConfirmations=new Map();
+const _pendingFinalConfirmationRecoveryEntries=new Map();
+const settings={failedQueueMaxAttempts:1,failedQueueMaxAgeDays:7,failedQueueMaxSize:50};
+const runtimeState={queuePersistence:{}};
+let _queueSaveTimer=null;
+let remoteStored="";
+let writeCount=0;
+let failOnWrite=0;
+let mode="retry_limit";
+let postCalls=0;
+function normalizeLanguageContextTrace(value) { return value; }
+function computeOrchestrationDirtyHashOr1c(value) { return "h:"+String(value || ""); }
+function debugLog() {}
+function warnLog() {}
+function updateRuntimeState() {}
+function scheduleQueueSave() {}
+function prunePersistedFailedQueue() {}
+function getRequestTimeoutSettingMs() { return 10; }
+function getCompleteTurnTimeoutMs() { return 1; }
+function completeTurnPayloadObservationKey() { return "observation"; }
+function turnWorkflowHUDRequestIdFromCompleteBody(payload) {
+  return String(payload && payload.client_meta && payload.client_meta.idempotency_key || "");
+}
+function isBridgeShadowGuardFailure() { return false; }
+async function persistentSet(key,value) {
+  if(key!==FAILED_QUEUE_STORAGE_KEY) throw new Error("wrong storage key");
+  writeCount++;
+  if(writeCount===failOnWrite) throw new Error("terminal final write failed");
+  remoteStored=value;
+}
+async function persistentGet(key) {
+  if(key!==FAILED_QUEUE_STORAGE_KEY) throw new Error("wrong storage key");
+  return remoteStored;
+}
+async function refreshQueuedCompleteTurnSourceObservation() { return true; }
+async function queuePendingCompleteTurnPayload() { return false; }
+async function bridgeFetch() { return null; }
+async function bridgeFetchWithRetry() {
+  postCalls++;
+  if(mode==="terminal_response") {
+    return {status:"rejected",queue_action:"discard",retryable:false,code:"idempotency_key_conflict"};
+  }
+  return null;
+}
+function item(key) {
+  return {type:"complete_turn",payload:{chat_session_id:"session-1",turn_index:4,
+    user_input:"user",assistant_content:"assistant",context_messages:[],
+    client_meta:{idempotency_key:key}},attempts:0,state:"retryable",
+    addedAt:new Date().toISOString(),lastAttemptAt:null,
+    _dedupeKey:"complete_turn|idempotency|"+key};
+}
+async function runScenario(nextMode,key,expectedCode) {
+  _failedQueue.length=0;
+  remoteStored="";
+  writeCount=0;
+  failOnWrite=0;
+  mode=nextMode;
+  postCalls=0;
+  _failedQueue.push(item(key));
+  if(!await flushQueueSave()) throw new Error("initial retryable snapshot was not persisted");
+  failOnWrite=3;
+  await drainFailedQueue();
+  if(_failedQueue.length!==1 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!==expectedCode) {
+    throw new Error("in-memory terminal transition failed");
+  }
+  const intentSnapshot=JSON.parse(remoteStored);
+  if(intentSnapshot.items.length!==1 || intentSnapshot.items[0].state!=="retryable" ||
+     intentSnapshot.transition_intents.length!==1 ||
+     intentSnapshot.transition_intents[0].reason_code!==expectedCode) {
+    throw new Error("remote terminal intent was not retained after final write failure");
+  }
+  _failedQueue.length=0;
+  await loadFailedQueueFromStorage();
+  if(_failedQueue.length!==1 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!==expectedCode) {
+    throw new Error("reload revived stale retryable queue state");
+  }
+  const callsBeforeSecondDrain=postCalls;
+  await drainFailedQueue();
+  if(postCalls!==callsBeforeSecondDrain) throw new Error("reloaded terminal incident was retried");
+}
+async function runIntentFailureScenario() {
+  _failedQueue.length=0;
+  remoteStored="";
+  writeCount=0;
+  failOnWrite=0;
+  mode="retry_limit";
+  postCalls=0;
+  _failedQueue.push(item("intent-write-failure"));
+  if(!await flushQueueSave()) throw new Error("intent failure setup was not persisted");
+  failOnWrite=2;
+  await drainFailedQueue();
+  if(_failedQueue.length!==1 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!=="failed_queue_terminal_intent_persistence_failed") {
+    throw new Error("successful final flush did not establish terminal authority");
+  }
+  const blockedSnapshot=JSON.parse(remoteStored);
+  if(blockedSnapshot.items.length!==1 || blockedSnapshot.items[0].state!=="terminal" ||
+     blockedSnapshot.items[0].terminalCode!=="failed_queue_terminal_intent_persistence_failed") {
+    throw new Error("normal final flush downgraded failed intent stop");
+  }
+  _failedQueue.length=0;
+  await loadFailedQueueFromStorage();
+  if(_failedQueue.length!==1 || _failedQueue[0].state!=="terminal" ||
+     _failedQueue[0].terminalCode!=="failed_queue_terminal_intent_persistence_failed") {
+    throw new Error("reload lost final-flush terminal authority");
+  }
+  const observation=buildDashboardQueueObservations({}).find(function(row) {
+    return row.queue_kind==="transport_retry" && row.request_id==="intent-write-failure";
+  });
+  if(!observation || observation.state!=="terminal" ||
+     observation.reason_code!=="failed_queue_terminal_intent_persistence_failed" ||
+     !observation.terminal_at) {
+    throw new Error("failed intent terminal authority was not typed for dashboard");
+  }
+  const callsBeforeSecondDrain=postCalls;
+  await drainFailedQueue();
+  if(postCalls!==callsBeforeSecondDrain) throw new Error("failed intent item posted after reload");
+}
+(async function() {
+  await runScenario("retry_limit","retry-limit-intent","retry_limit_reached");
+  await runScenario("terminal_response","terminal-response-intent","idempotency_key_conflict");
+  await runIntentFailureScenario();
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed queue terminal durability fixture failed: %v\n%s", err, out)
 	}
 }
 

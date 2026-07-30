@@ -23,6 +23,7 @@ func TestBuildDashboardViewModelOwnsStatusAndLaneCalculation(t *testing.T) {
 			"prepareTurnStatus":    map[string]any{"status": "off"},
 			"lastCompleteTurnStatus": map[string]any{
 				"status":               "ok",
+				"reason_code":          "idempotent_pair_replay",
 				"turnIndex":            7,
 				"detail":               "idempotent pair replay; duplicate save skipped",
 				"chatLogsSaved":        2,
@@ -60,7 +61,7 @@ func TestBuildDashboardViewModelOwnsStatusAndLaneCalculation(t *testing.T) {
 		t.Fatalf("unscoped failed_queue_depth must not be shown as current-turn queue: %+v", vm.Cards)
 	}
 	historicalQueue := requireDashboardCard(t, vm, "historical_queue")
-	if got := requireDashboardRow(t, historicalQueue, "queueHistory.transport_retry"); got.Status != "notice" || got.Detail != "2 pending" || got.Scope != "unknown" {
+	if got := requireDashboardRow(t, historicalQueue, "queueHistory.transport_retry"); got.Status != "notice" || got.Detail != "2 unknown" || got.Scope != "unknown" {
 		t.Fatalf("historical retry row=%+v", got)
 	}
 	if saveQueue.Summary.Warn != 0 {
@@ -97,6 +98,118 @@ func TestDashboardViewModelRoute(t *testing.T) {
 	}
 	if vm.ContractVersion != dashboardViewModelContractVersion || len(vm.Cards) < 3 {
 		t.Fatalf("response=%+v", vm)
+	}
+}
+
+func TestDashboardLegacyRuntimeStateUsesOnlyTypedStatusSeverityAndReason(t *testing.T) {
+	body, err := json.Marshal(dashboardViewModelRequest{
+		PluginEnabled: true,
+		RuntimeState: map[string]any{
+			"lastBridgeHealth": map[string]any{
+				"detail": "native afterRequest missing; recovered from active chat",
+			},
+			"lastInjectionStatus": map[string]any{
+				"severity": "warning",
+				"detail":   "accepted (existing pair)",
+			},
+			"lastSaveStatus": map[string]any{
+				"status": "warn",
+				"detail": "waiting for RisuAI active chat confirmation",
+			},
+			"lastCompleteStatus": map[string]any{
+				"status":      "warn",
+				"reason_code": "pending_sync",
+				"detail":      "arbitrary operator prose",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server := &Server{}
+	server.handleDashboardViewModel(recorder, httptest.NewRequest(http.MethodPost, "/dashboard/view-model", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var vm dashboardViewModel
+	if err := json.Unmarshal(recorder.Body.Bytes(), &vm); err != nil {
+		t.Fatal(err)
+	}
+
+	connection := requireDashboardCard(t, vm, "connection")
+	if got := requireDashboardRow(t, connection, "bridgeHealth"); got.Status != "unknown" || got.DetailCode != "" {
+		t.Fatalf("missing typed fields must stay unknown/unobserved: %+v", got)
+	}
+	saveQueue := requireDashboardCard(t, vm, "save_queue")
+	if got := requireDashboardRow(t, saveQueue, "injection"); got.Status != "warn" || got.DetailCode != "" {
+		t.Fatalf("typed severity was not authoritative: %+v", got)
+	}
+	if got := requireDashboardRow(t, saveQueue, "save"); got.Status != "warn" || got.DetailCode != "" {
+		t.Fatalf("misleading prose changed typed status: %+v", got)
+	}
+	if got := requireDashboardRow(t, saveQueue, "complete"); got.Status != "notice" || got.DetailCode != "pendingSync" {
+		t.Fatalf("typed reason did not drive the stable dashboard disposition: %+v", got)
+	}
+}
+
+func TestDashboardLegacyBackfillUsesTypedCountsForDetailCode(t *testing.T) {
+	tests := []struct {
+		name       string
+		state      map[string]any
+		wantStatus string
+		wantCode   string
+	}{
+		{
+			name: "nothing missing",
+			state: map[string]any{
+				"status":        "skipped",
+				"detail":        "operator prose may change freely",
+				"savedCount":    0,
+				"existingCount": 1,
+				"queuedCount":   0,
+			},
+			wantStatus: "ok",
+			wantCode:   "noMissingBackfill",
+		},
+		{
+			name: "manual rebuild queued",
+			state: map[string]any{
+				"status":      "warn",
+				"reason_code": "recent_active_chat_rebuild_queued",
+				"detail":      "localized prose is not an authority field",
+				"savedCount":  0,
+				"queuedCount": 1,
+			},
+			wantStatus: "notice",
+			wantCode:   "activeChatRebuildQueued",
+		},
+		{
+			name: "skipped backfill is not complete",
+			state: map[string]any{
+				"status":        "skipped",
+				"savedCount":    0,
+				"existingCount": 1,
+				"queuedCount":   0,
+				"skippedCount":  1,
+			},
+			wantStatus: "skipped",
+			wantCode:   "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vm := buildDashboardViewModel(dashboardViewModelRequest{
+				PluginEnabled: true,
+				RuntimeState: map[string]any{
+					"lastActiveChatBackfill": test.state,
+				},
+			})
+			row := requireDashboardRow(t, requireDashboardCard(t, vm, "activity"), "activeChatBackfill")
+			if row.Status != test.wantStatus || row.DetailCode != test.wantCode {
+				t.Fatalf("typed backfill observation did not own row classification: %+v", row)
+			}
+		})
 	}
 }
 
@@ -254,8 +367,9 @@ func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
 				},
 			},
 			"lastSaveStatus": map[string]any{
-				"status": "warn",
-				"detail": "waiting for RisuAI active chat confirmation",
+				"status":      "warn",
+				"reason_code": "pending_sync",
+				"detail":      "waiting for RisuAI active chat confirmation",
 			},
 			"lastCompleteStatus": map[string]any{"status": "ok"},
 			"queuePersistence": map[string]any{
@@ -263,21 +377,25 @@ func TestDashboardAdvisoryRuntimeStatesDoNotBecomeWarnings(t *testing.T) {
 				"lastSave": map[string]any{"status": "ok"},
 			},
 			"lastAutoRollback": map[string]any{
-				"status": "warn",
-				"detail": "active chat tail is shorter than backend; possible /cut",
+				"status":      "warn",
+				"reason_code": "history_trim_protected",
+				"detail":      "active chat tail is shorter than backend; possible /cut",
 			},
 			"lastStreamingAfterRequest": map[string]any{
-				"status": "warn",
-				"detail": "native afterRequest missing; recovered from active chat",
+				"status":      "warn",
+				"reason_code": "native_after_request_active_chat_recovered",
+				"detail":      "native afterRequest missing; recovered from active chat",
 			},
 			"lastRisuForkCopyCapture": map[string]any{
-				"status": "warn",
-				"detail": "observed source-session -> target-session",
+				"status":      "warn",
+				"reason_code": "risu_fork_copy_observed",
+				"detail":      "observed source-session -> target-session",
 			},
 			"lastRerollReplacement": map[string]any{
-				"status":    "ok",
-				"detail":    "logical_turn_replaced",
-				"turnIndex": 7,
+				"status":      "ok",
+				"reason_code": "logical_turn_replaced",
+				"detail":      "logical_turn_replaced",
+				"turnIndex":   7,
 			},
 		},
 	}
@@ -334,7 +452,7 @@ func TestDashboardSeparatesCurrentAndHistoricalQueueObservations(t *testing.T) {
 		WorkflowSnapshot:         &workflow,
 		RuntimeState:             map[string]any{},
 		QueueObservations: []dashboardQueueObservation{
-			{QueueKind: "pending_confirmation", SessionID: "session-current", RequestID: "request-current", TurnIndex: 8, State: "pending"},
+			{QueueKind: "pending_confirmation", SessionID: "session-current", RequestID: "request-current", TurnIndex: 8, State: "terminal", ReasonCode: "pending_reconciliation_failed", TerminalAt: "2026-07-30T04:00:00Z"},
 			{QueueKind: "transport_retry", SessionID: "session-current", RequestID: "request-old", TurnIndex: 8, State: "retryable", Attempts: 2, MaxAttempts: 4},
 			{QueueKind: "maintenance", SessionID: "session-other", TurnIndex: 3, State: "queued", Count: 2},
 		},
@@ -342,7 +460,8 @@ func TestDashboardSeparatesCurrentAndHistoricalQueueObservations(t *testing.T) {
 	vm := buildDashboardViewModel(req)
 	current := requireDashboardCard(t, vm, "current_queue")
 	currentRow := requireDashboardRow(t, current, "queue.pending_confirmation")
-	if currentRow.Scope != "current_request" || currentRow.Status != "notice" {
+	if currentRow.Scope != "current_request" || currentRow.Status != "fail" ||
+		currentRow.DetailCode != "pending_reconciliation_failed" || currentRow.Time != "2026-07-30T04:00:00Z" {
 		t.Fatalf("current queue row=%+v", currentRow)
 	}
 	historical := requireDashboardCard(t, vm, "historical_queue")
@@ -351,6 +470,59 @@ func TestDashboardSeparatesCurrentAndHistoricalQueueObservations(t *testing.T) {
 	}
 	if got := requireDashboardRow(t, historical, "queueHistory.maintenance"); got.Scope != "other_session" || dashboardInt(got.ItemCount) != 2 {
 		t.Fatalf("other-session history row=%+v", got)
+	}
+}
+
+func TestDashboardHistoricalQueuePreservesTerminalAndRetryableStates(t *testing.T) {
+	vm := buildDashboardViewModel(dashboardViewModelRequest{
+		PluginEnabled:    true,
+		CurrentSessionID: "session-current",
+		RuntimeState:     map[string]any{},
+		QueueObservations: []dashboardQueueObservation{
+			{QueueKind: "transport_retry", SessionID: "session-current", RequestID: "old-terminal", State: "terminal", ReasonCode: "retry_limit_reached", TerminalAt: "2026-07-30T04:05:00Z", Count: 2},
+			{QueueKind: "transport_retry", SessionID: "session-current", RequestID: "old-retryable", State: "retryable", Count: 3},
+		},
+	})
+	card := requireDashboardCard(t, vm, "historical_queue")
+	var terminal, retryable *dashboardRow
+	for index := range card.Rows {
+		row := &card.Rows[index]
+		switch row.DetailCode {
+		case "retry_limit_reached":
+			terminal = row
+		case "historical_queue_retryable":
+			retryable = row
+		}
+	}
+	if terminal == nil || terminal.Status != "fail" || terminal.Detail != "2 terminal" ||
+		terminal.Time != "2026-07-30T04:05:00Z" || dashboardInt(terminal.ItemCount) != 2 {
+		t.Fatalf("historical terminal queue=%+v", terminal)
+	}
+	if retryable == nil || retryable.Status != "notice" || retryable.Detail != "3 retryable" || dashboardInt(retryable.ItemCount) != 3 {
+		t.Fatalf("historical retryable queue=%+v", retryable)
+	}
+}
+
+func TestDashboardPendingRecoveryPreservesTerminalReasonAndTime(t *testing.T) {
+	vm := buildDashboardViewModel(dashboardViewModelRequest{
+		PluginEnabled:    true,
+		CurrentSessionID: "session-current",
+		RuntimeState:     map[string]any{},
+		QueueObservations: []dashboardQueueObservation{
+			{
+				QueueKind:  "pending_confirmation_recovery",
+				SessionID:  "session-current",
+				RequestID:  "old-recovery",
+				State:      "terminal",
+				ReasonCode: "pending_terminal_persistence_failed",
+				TerminalAt: "2026-07-30T04:10:00Z",
+			},
+		},
+	})
+	row := requireDashboardRow(t, requireDashboardCard(t, vm, "historical_queue"), "queueHistory.pending_confirmation_recovery")
+	if row.Status != "fail" || row.DetailCode != "pending_terminal_persistence_failed" ||
+		row.Time != "2026-07-30T04:10:00Z" || row.Scope != "current_session_history" {
+		t.Fatalf("pending recovery terminal row=%+v", row)
 	}
 }
 
@@ -428,7 +600,7 @@ func TestDashboardRealWarningsRemainWarnings(t *testing.T) {
 		"rollback partial warning (turn 7): vector cleanup failed",
 		"timeout waiting for native afterRequest/active assistant",
 	} {
-		if got := normalizeDashboardStatus("warn", detail); got != "warn" {
+		if got := normalizeDashboardRuntimeStatus(map[string]any{"status": "warn", "detail": detail}); got != "warn" {
 			t.Fatalf("real warning %q normalized to %q", detail, got)
 		}
 	}
@@ -439,9 +611,10 @@ func TestDashboardConfirmedTurnDeletionIsNotice(t *testing.T) {
 		PluginEnabled: true,
 		RuntimeState: map[string]any{
 			"lastAutoRollback": map[string]any{
-				"status":    "ok",
-				"detail":    "turn 7+ rolled back (assistant_deleted_output_removed)",
-				"turnIndex": 7,
+				"status":      "ok",
+				"reason_code": "assistant_deleted_output_removed",
+				"detail":      "turn 7+ rolled back (assistant_deleted_output_removed)",
+				"turnIndex":   7,
 			},
 		},
 	}

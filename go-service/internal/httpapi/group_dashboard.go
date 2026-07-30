@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +38,8 @@ type dashboardQueueObservation struct {
 	RequestID   string `json:"request_id,omitempty"`
 	TurnIndex   int    `json:"turn_index,omitempty"`
 	State       string `json:"state,omitempty"`
+	ReasonCode  string `json:"reason_code,omitempty"`
+	TerminalAt  string `json:"terminal_at,omitempty"`
 	Attempts    int    `json:"attempts,omitempty"`
 	MaxAttempts int    `json:"max_attempts,omitempty"`
 	Count       int    `json:"count,omitempty"`
@@ -178,6 +179,7 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 		}
 		out := dashboardCloneMap(input)
 		out["status"] = "skipped"
+		out["reason_code"] = "first_turn_light"
 		out["detail"] = "first turn light mode"
 		if dashboardString(out["time"]) == "" {
 			out["time"] = req.FirstTurnEndedAt
@@ -194,9 +196,10 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 	supervisorHealth := state("lastSupervisorWakeup")
 	if dashboardStatus(supervisorHealth) == "unknown" && dashboardStatus(state("lastSupervisorStatus")) == "ok" {
 		supervisorHealth = map[string]any{
-			"status": "skipped",
-			"time":   state("lastSupervisorStatus")["time"],
-			"detail": "health test not run / turn call ok",
+			"status":      "skipped",
+			"reason_code": "health_test_not_run_turn_call_ok",
+			"time":        state("lastSupervisorStatus")["time"],
+			"detail":      "health test not run / turn call ok",
 		}
 	}
 
@@ -212,7 +215,11 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 		newDashboardCard("engine", "⚙️", "Engine", []dashboardRow{
 			dashboardRowFromState("turnEngine", firstTurnState(state("prepareTurnStatus"))),
 			dashboardRowFromState("guideMode", req.GuideModeState),
-			dashboardRowFromState("runtimeSync", map[string]any{"status": dashboardBoolUnknownStatus(req.PrepareTurnEverContacted), "detail": dashboardSyncDetail(req.PrepareTurnEverContacted)}),
+			dashboardRowFromState("runtimeSync", map[string]any{
+				"status":      dashboardBoolUnknownStatus(req.PrepareTurnEverContacted),
+				"reason_code": dashboardSyncReasonCode(req.PrepareTurnEverContacted),
+				"detail":      dashboardSyncDetail(req.PrepareTurnEverContacted),
+			}),
 		}),
 	}
 	if req.WorkflowSnapshot != nil {
@@ -234,11 +241,19 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 	if len(save) > 0 {
 		queueDetail = append(queueDetail, "save:"+dashboardStatus(save))
 	}
+	queueStorageReasonCode := ""
+	if dashboardStatus(load) == "ok" && dashboardStatus(save) == "ok" {
+		queueStorageReasonCode = "queue_storage_ok"
+	}
 	cards = append(cards, newDashboardCard("save_queue", "💾", "Save / Queue", []dashboardRow{
 		dashboardRowFromState("injection", firstTurnState(state("lastInjectionStatus"))),
 		dashboardRowFromState("save", state("lastSaveStatus")),
 		dashboardRowFromState("complete", state("lastCompleteStatus")),
-		dashboardRowFromState("queueStorage", map[string]any{"status": dashboardStatus(save), "detail": dashboardFirstNonEmpty(strings.Join(queueDetail, " / "), "not yet")}),
+		dashboardRowFromState("queueStorage", map[string]any{
+			"status":      dashboardStatus(save),
+			"reason_code": queueStorageReasonCode,
+			"detail":      dashboardFirstNonEmpty(strings.Join(queueDetail, " / "), "not yet"),
+		}),
 	}))
 
 	currentQueue, historicalQueue := buildDashboardQueueCards(req, sessionID)
@@ -324,7 +339,14 @@ func buildCurrentWorkflowDashboardCard(view turnWorkflowHUDViewModel) dashboardC
 
 func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID string) (*dashboardCard, *dashboardCard) {
 	currentRows := []dashboardRow{}
-	historicalCounts := map[string]int{}
+	type historicalQueueKey struct {
+		Scope      string
+		Kind       string
+		State      string
+		ReasonCode string
+		TerminalAt string
+	}
+	historicalCounts := map[historicalQueueKey]int{}
 	observedTransportCount := 0
 	for _, observation := range req.QueueObservations {
 		kind := normalizeDashboardQueueKind(observation.QueueKind)
@@ -339,8 +361,9 @@ func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID st
 			currentRows = append(currentRows, dashboardRow{
 				LabelKey:   "queue." + kind,
 				Status:     dashboardCurrentQueueStatus(kind, observation.State, observation.Attempts, observation.MaxAttempts),
-				DetailCode: dashboardFirstNonEmpty(strings.TrimSpace(observation.State), "pending"),
+				DetailCode: dashboardFirstNonEmpty(strings.TrimSpace(observation.ReasonCode), strings.TrimSpace(observation.State), "pending"),
 				Detail:     dashboardQueueAttemptDetail(observation),
+				Time:       strings.TrimSpace(observation.TerminalAt),
 				TurnIndex:  observation.TurnIndex,
 				ItemCount:  maxInt(1, observation.Count),
 				Scope:      scope,
@@ -348,10 +371,21 @@ func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID st
 			})
 			continue
 		}
-		historicalCounts[scope+":"+kind] += maxInt(1, observation.Count)
+		state := strings.ToLower(strings.TrimSpace(observation.State))
+		if state == "" {
+			state = "unknown"
+		}
+		key := historicalQueueKey{
+			Scope:      scope,
+			Kind:       kind,
+			State:      state,
+			ReasonCode: strings.TrimSpace(observation.ReasonCode),
+			TerminalAt: strings.TrimSpace(observation.TerminalAt),
+		}
+		historicalCounts[key] += maxInt(1, observation.Count)
 	}
 	if req.FailedQueueDepth > observedTransportCount {
-		historicalCounts["unknown:transport_retry"] += req.FailedQueueDepth - observedTransportCount
+		historicalCounts[historicalQueueKey{Scope: "unknown", Kind: "transport_retry", State: "unknown"}] += req.FailedQueueDepth - observedTransportCount
 	}
 	var currentCard *dashboardCard
 	if len(currentRows) > 0 {
@@ -360,23 +394,35 @@ func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID st
 	}
 	var historicalCard *dashboardCard
 	if len(historicalCounts) > 0 {
-		keys := make([]string, 0, len(historicalCounts))
+		keys := make([]historicalQueueKey, 0, len(historicalCounts))
 		for key := range historicalCounts {
 			keys = append(keys, key)
 		}
-		sort.Strings(keys)
+		sort.Slice(keys, func(i, j int) bool {
+			left := strings.Join([]string{keys[i].Scope, keys[i].Kind, keys[i].State, keys[i].ReasonCode, keys[i].TerminalAt}, "\x00")
+			right := strings.Join([]string{keys[j].Scope, keys[j].Kind, keys[j].State, keys[j].ReasonCode, keys[j].TerminalAt}, "\x00")
+			return left < right
+		})
 		rows := make([]dashboardRow, 0, len(keys))
 		for _, key := range keys {
-			parts := strings.SplitN(key, ":", 2)
-			scope, kind := parts[0], parts[1]
+			status := "notice"
+			detailCode := "historical_queue_not_current_turn"
+			if key.State == "terminal" || key.State == "failed" {
+				status = "fail"
+				detailCode = "historical_queue_terminal"
+			} else if key.State == "retryable" {
+				detailCode = "historical_queue_retryable"
+			}
+			detailCode = dashboardFirstNonEmpty(key.ReasonCode, detailCode)
 			rows = append(rows, dashboardRow{
-				LabelKey:   "queueHistory." + kind,
-				Status:     "notice",
-				DetailCode: "historical_queue_not_current_turn",
-				Detail:     strconv.Itoa(historicalCounts[key]) + " pending",
+				LabelKey:   "queueHistory." + key.Kind,
+				Status:     status,
+				DetailCode: detailCode,
+				Detail:     strconv.Itoa(historicalCounts[key]) + " " + key.State,
+				Time:       key.TerminalAt,
 				ItemCount:  historicalCounts[key],
-				Scope:      scope,
-				QueueKind:  kind,
+				Scope:      key.Scope,
+				QueueKind:  key.Kind,
 			})
 		}
 		card := newDashboardCard("historical_queue", "HIS", "Historical Queue", rows)
@@ -423,7 +469,7 @@ func classifyDashboardHistoricalQueueScope(observationSessionID, currentSessionI
 
 func normalizeDashboardQueueKind(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "transport_retry", "pending_confirmation", "maintenance":
+	case "transport_retry", "pending_confirmation", "pending_confirmation_recovery", "maintenance":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""
@@ -550,7 +596,8 @@ func buildCompleteTurnDashboardCard(complete map[string]any) dashboardCard {
 	if _, mok := complete["vectorMemoryUpserted"]; mok {
 		chips = append(chips, dashboardChip{Tone: "num", Label: fmt.Sprintf("vecLane m:%s e:%s r:%s", dashboardNumberString(complete["vectorMemoryUpserted"]), dashboardNumberString(complete["vectorEvidenceUpserted"]), dashboardNumberString(complete["vectorWorldRuleUpserted"]))})
 	}
-	detailCode, detail := classifyDashboardDetail(complete["detail"])
+	detailCode := dashboardRuntimeReasonCode(complete)
+	detail := dashboardStringValue(complete["detail"])
 	if detail != "" {
 		chips = append(chips, dashboardChip{Tone: "num", Label: detail})
 		if detailCode != "" {
@@ -560,9 +607,9 @@ func buildCompleteTurnDashboardCard(complete map[string]any) dashboardCard {
 	for _, reason := range dashboardStrings(complete["failReasons"]) {
 		chips = append(chips, dashboardChip{Tone: "fail", Label: reason})
 	}
-	status := normalizeDashboardStatus(dashboardStatus(complete), complete["detail"])
+	status := normalizeDashboardRuntimeStatus(complete)
 	source := dashboardFirstNonEmpty(dashboardString(complete["source"]), "local")
-	if isDuplicateDashboardDetail(complete["detail"]) {
+	if isDuplicateDashboardState(complete) {
 		source = "@existingAccepted"
 	}
 	chips = append([]dashboardChip{{Tone: dashboardSeverity(status), Label: "[" + source + "]"}}, chips...)
@@ -587,7 +634,7 @@ func buildCompleteTurnDashboardCard(complete map[string]any) dashboardCard {
 }
 
 func buildPersistenceDashboardRows(complete map[string]any) []dashboardRow {
-	if isDuplicateDashboardDetail(complete["detail"]) {
+	if isDuplicateDashboardState(complete) {
 		return []dashboardRow{
 			{LabelKey: "rawSave", Status: "ok", DetailCode: "noNewLaneNeeded", TurnIndex: complete["turnIndex"]},
 			{LabelKey: "derived", Status: "ok", DetailCode: "noNewLaneNeeded", TurnIndex: complete["turnIndex"]},
@@ -696,69 +743,123 @@ func newDashboardCard(id, icon, title string, rows []dashboardRow) dashboardCard
 }
 
 func dashboardRowFromState(label string, input map[string]any) dashboardRow {
-	status := normalizeDashboardStatus(dashboardStatus(input), input["detail"])
-	code, detail := classifyDashboardDetail(input["detail"])
-	if label == "forkCopyCapture" && status == "warn" && strings.HasPrefix(strings.ToLower(detail), "observed ") {
-		status = "notice"
-		code = "forkCopyObserved"
-	}
+	code := dashboardRuntimeReasonCodeForRow(label, input)
+	status := normalizeDashboardRuntimeStatus(input, code)
+	detail := dashboardStringValue(input["detail"])
 	return dashboardRow{LabelKey: label, Status: status, DetailCode: code, Detail: detail, Time: dashboardString(input["time"]), TurnIndex: input["turnIndex"], ItemCount: firstNonNil(input["itemCount"], input["count"]), Placement: input["placement"]}
 }
 
-var dashboardDetailPatterns = []struct {
-	code string
-	re   *regexp.Regexp
-}{
-	{"duplicateExisting", regexp.MustCompile(`(?i)idempotent pair replay|idempotent_pair_replay|duplicate save skipped`)},
-	{"existingAccepted", regexp.MustCompile(`(?i)accepted \(existing pair\)`)},
-	{"supervisorOkByTurn", regexp.MustCompile(`(?i)health test not run\s*/\s*turn call ok`)},
-	{"firstTurnLight", regexp.MustCompile(`(?i)first turn light mode`)},
-	{"streamingWaitFinal", regexp.MustCompile(`(?i)native non-persistable fragment ignored|waiting final output|fragment_skipped_waiting_final`)},
-	{"streamingRecovered", regexp.MustCompile(`(?i)native afterRequest missing; recovered from active chat`)},
-	{"streamingTimeout", regexp.MustCompile(`(?i)timeout waiting for native afterRequest/active assistant`)},
-	{"deletedTurnSynced", regexp.MustCompile(`(?i)(active_chat_tail_missing_from_runtime|assistant_deleted_output_removed).*(rolled back|rollback)|(rolled back|rollback).*(active_chat_tail_missing_from_runtime|assistant_deleted_output_removed)`)},
-	{"rerollReplaced", regexp.MustCompile(`(?i)^logical_turn_replaced$`)},
-	{"rollbackBlockedUnverified", regexp.MustCompile(`(?i)unverified rollback signal blocked`)},
-	{"historyTrimProtected", regexp.MustCompile(`(?i)active chat tail is shorter than backend|history trim/cut protected|possible /cut`)},
-	{"pendingSync", regexp.MustCompile(`(?i)recent_completed_turn_waiting_active_chat_sync|waiting for RisuAI active chat confirmation|waiting_for_risuai_active_chat|source_acceptance_waiting_active_chat`)},
-	{"postOutputPending", regexp.MustCompile(`(?i)후처리 최종문 (반영|재저장) 대기|post_output_final_(replacement_)?pending`)},
-	{"beforeRequestRecovered", regexp.MustCompile(`(?i)before_request_payload_(unusable_messages|no_messages)_recovered:`)},
-	{"legacyQueueItemRemoved", regexp.MustCompile(`(?i)legacy_startup_message_write_removed`)},
-	{"activeChatRebuildQueued", regexp.MustCompile(`(?i)recent active chat rebuild .* queued`)},
-	{"noTrackedTurn", regexp.MustCompile(`(?i)no_tracked_turn_index`)},
-	{"noCompletedPairs", regexp.MustCompile(`(?i)no_completed_pairs`)},
-	{"noMissingBackfill", regexp.MustCompile(`(?i)active chat backfill 0 saved / 1 existing`)},
-	{"queueOk", regexp.MustCompile(`(?i)^load:ok\s*/\s*save:ok$`)},
-	{"localOnly", regexp.MustCompile(`(?i)^local only$`)},
-	{"synced", regexp.MustCompile(`(?i)^synced$`)},
-}
-
-func classifyDashboardDetail(value any) (string, string) {
-	raw := dashboardStringValue(value)
-	for _, pattern := range dashboardDetailPatterns {
-		if pattern.re.MatchString(raw) {
-			return pattern.code, raw
-		}
+func normalizeDashboardRuntimeStatus(input map[string]any, observedReasonCode ...string) string {
+	status := dashboardStatus(input)
+	code := dashboardRuntimeReasonCode(input)
+	if len(observedReasonCode) > 0 {
+		code = strings.TrimSpace(observedReasonCode[0])
 	}
-	return "", raw
-}
-
-func normalizeDashboardStatus(status string, detail any) string {
-	status = dashboardFirstNonEmpty(strings.ToLower(status), "unknown")
-	code, _ := classifyDashboardDetail(detail)
 	switch code {
 	case "duplicateExisting", "existingAccepted", "supervisorOkByTurn", "streamingRecovered", "noMissingBackfill", "queueOk":
 		return "ok"
 	case "streamingWaitFinal":
 		return "running"
-	case "deletedTurnSynced", "rerollReplaced", "historyTrimProtected", "pendingSync", "postOutputPending", "beforeRequestRecovered", "legacyQueueItemRemoved", "activeChatRebuildQueued":
+	case "deletedTurnSynced", "rerollReplaced", "historyTrimProtected", "pendingSync", "postOutputPending", "beforeRequestRecovered", "forkCopyObserved", "legacyQueueItemRemoved", "activeChatRebuildQueued":
 		return "notice"
+	}
+	switch strings.ToLower(dashboardString(input["severity"])) {
+	case "error", "fail":
+		return "fail"
+	case "warning", "warn":
+		return "warn"
+	case "notice", "info", "informational":
+		return "notice"
+	case "neutral":
+		return "neutral"
+	case "unknown", "unobserved":
+		return "unknown"
 	}
 	return status
 }
 
-func isDuplicateDashboardDetail(value any) bool {
-	code, _ := classifyDashboardDetail(value)
+func dashboardRuntimeReasonCodeForRow(label string, input map[string]any) string {
+	if code := dashboardRuntimeReasonCode(input); code != "" {
+		return code
+	}
+	if label != "activeChatBackfill" {
+		return ""
+	}
+	saved := dashboardInt(firstNonNil(input["savedCount"], input["saved_count"]))
+	existing := dashboardInt(firstNonNil(input["existingCount"], input["existing_count"]))
+	queued := dashboardInt(firstNonNil(input["queuedCount"], input["queued_count"]))
+	skipped := dashboardInt(firstNonNil(input["skippedCount"], input["skipped_count"]))
+	if saved == 0 && existing > 0 && queued == 0 && skipped == 0 {
+		return "noMissingBackfill"
+	}
+	return ""
+}
+
+func dashboardRuntimeReasonCode(input map[string]any) string {
+	code := dashboardFirstNonEmpty(
+		dashboardString(input["reason_code"]),
+		dashboardString(input["detail_code"]),
+	)
+	if code == "" {
+		detail := dashboardMap(input["detail"])
+		code = dashboardFirstNonEmpty(
+			dashboardString(detail["reason_code"]),
+			dashboardString(detail["detail_code"]),
+		)
+	}
+	switch strings.ToLower(code) {
+	case "idempotent_pair_replay", "duplicate_existing":
+		return "duplicateExisting"
+	case "accepted_existing_pair", "existing_accepted":
+		return "existingAccepted"
+	case "health_test_not_run_turn_call_ok", "supervisor_ok_by_turn":
+		return "supervisorOkByTurn"
+	case "first_turn_light":
+		return "firstTurnLight"
+	case "fragment_skipped_waiting_final", "streaming_wait_final":
+		return "streamingWaitFinal"
+	case "native_after_request_active_chat_recovered", "streaming_recovered":
+		return "streamingRecovered"
+	case "streaming_timeout":
+		return "streamingTimeout"
+	case "assistant_deleted_output_removed", "active_chat_tail_missing_from_runtime", "deleted_turn_synced":
+		return "deletedTurnSynced"
+	case "logical_turn_replaced", "reroll_replaced":
+		return "rerollReplaced"
+	case "unverified_rollback_signal_blocked", "rollback_blocked_unverified":
+		return "rollbackBlockedUnverified"
+	case "history_trim_protected", "blind_tail_reconcile_blocked":
+		return "historyTrimProtected"
+	case "recent_completed_turn_waiting_active_chat_sync", "waiting_for_risuai_active_chat", "source_acceptance_waiting_active_chat", "pending_sync":
+		return "pendingSync"
+	case "post_output_final_pending", "post_output_final_replacement_pending":
+		return "postOutputPending"
+	case "before_request_payload_recovered":
+		return "beforeRequestRecovered"
+	case "risu_fork_copy_observed":
+		return "forkCopyObserved"
+	case "legacy_startup_message_write_removed":
+		return "legacyQueueItemRemoved"
+	case "recent_active_chat_rebuild_queued":
+		return "activeChatRebuildQueued"
+	case "no_tracked_turn_index":
+		return "noTrackedTurn"
+	case "no_completed_pairs":
+		return "noCompletedPairs"
+	case "no_missing_backfill":
+		return "noMissingBackfill"
+	case "queue_storage_ok":
+		return "queueOk"
+	case "local_only":
+		return "localOnly"
+	case "synced":
+		return "synced"
+	}
+	return strings.TrimSpace(code)
+}
+
+func isDuplicateDashboardState(input map[string]any) bool {
+	code := dashboardRuntimeReasonCode(input)
 	return code == "duplicateExisting" || code == "existingAccepted"
 }
 func dashboardSeverity(status string) string {
@@ -804,6 +905,12 @@ func dashboardSyncDetail(value bool) string {
 	}
 	return "local only"
 }
+func dashboardSyncReasonCode(value bool) string {
+	if value {
+		return "synced"
+	}
+	return "local_only"
+}
 func dashboardWarnIf(value bool) string {
 	if value {
 		return "warn"
@@ -811,26 +918,23 @@ func dashboardWarnIf(value bool) string {
 	return "ok"
 }
 func dashboardLaneStatus(status string, fallback any) string {
-	status = strings.ToLower(status)
+	status = strings.ToLower(strings.TrimSpace(status))
 	if status == "" {
 		if dashboardFloat(fallback) > 0 {
 			return "ok"
 		}
 		return "unknown"
 	}
-	if regexp.MustCompile(`^(ok|saved|present|completed|accepted|upserted|repaired)$`).MatchString(status) {
+	switch status {
+	case "ok", "saved", "present", "completed", "accepted", "upserted", "repaired":
 		return "ok"
-	}
-	if regexp.MustCompile(`^(skipped|not_called|not_configured|disabled|empty|none)$`).MatchString(status) {
+	case "skipped", "not_called", "not_configured", "disabled", "empty", "none":
 		return "skipped"
-	}
-	if regexp.MustCompile(`^(queued|pending|delayed)$`).MatchString(status) {
+	case "queued", "pending", "delayed":
 		return "notice"
-	}
-	if regexp.MustCompile(`^(partial|degraded|fallback|missing_suspected|not_checked_no_raw)$`).MatchString(status) {
+	case "partial", "degraded", "fallback", "missing_suspected", "not_checked_no_raw":
 		return "warn"
-	}
-	if regexp.MustCompile(`^(fail|failed|error|missing|lost|blocked)$`).MatchString(status) {
+	case "fail", "failed", "error", "missing", "lost", "blocked":
 		return "fail"
 	}
 	return "warn"
