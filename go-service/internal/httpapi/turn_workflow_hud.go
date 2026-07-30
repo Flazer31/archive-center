@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -100,6 +101,7 @@ var turnWorkflowHUDFactTemplates = []turnWorkflowHUDFact{
 	{Key: "host_observation", Owner: "risu_host", Scope: "current_request", Status: "unobserved", Severity: turnWorkflowHUDSeverityNormal},
 	{Key: "backend_processing", Owner: "go_backend", Scope: "current_request", Status: "pending", Severity: turnWorkflowHUDSeverityNormal},
 	{Key: "context_selection", Owner: "go_backend", Scope: "current_request", Status: "pending", Severity: turnWorkflowHUDSeverityNormal},
+	{Key: "narrative_guidance", Owner: "go_backend", Scope: "current_request", Status: "pending", Severity: turnWorkflowHUDSeverityNormal},
 	{Key: "payload_delivery", Owner: "risu_host", Scope: "current_request", Status: "unobserved", Severity: turnWorkflowHUDSeverityNormal},
 	{Key: "finality", Owner: "go_backend", Scope: "current_request", Status: "pending", Severity: turnWorkflowHUDSeverityNormal},
 	{Key: "raw_persistence", Owner: "canonical_store", Scope: "current_turn", Status: "pending", Severity: turnWorkflowHUDSeverityNormal},
@@ -144,6 +146,38 @@ type turnWorkflowHUDTurnAlignment struct {
 	ReasonCode  string `json:"reason_code"`
 }
 
+type turnWorkflowHUDMemoryItem struct {
+	SourceRowID   string `json:"source_row_id"`
+	TurnIndex     int    `json:"turn_index,omitempty"`
+	SelectionLane string `json:"selection_lane,omitempty"`
+	Disposition   string `json:"disposition"`
+	ReasonCode    string `json:"reason_code"`
+	Protected     bool   `json:"protected"`
+	Preview       string `json:"preview,omitempty"`
+}
+
+type turnWorkflowHUDMemoryLane struct {
+	Key               string `json:"key"`
+	EligibleCount     int    `json:"eligible_count"`
+	SelectedCount     int    `json:"selected_count"`
+	DeferredCount     int    `json:"deferred_count"`
+	DeduplicatedCount int    `json:"deduplicated_count"`
+}
+
+type turnWorkflowHUDMemorySelection struct {
+	ContractVersion      string                      `json:"contract_version"`
+	Status               string                      `json:"status"`
+	TopKDefinition       string                      `json:"top_k_definition"`
+	VectorCandidateLimit int                         `json:"vector_candidate_limit"`
+	CoreObjective        map[string]any              `json:"core_objective_memory"`
+	DeliveredCount       int                         `json:"delivered_count"`
+	DeferredCount        int                         `json:"deferred_count"`
+	ExclusionReasons     map[string]int              `json:"exclusion_reasons"`
+	Lanes                []turnWorkflowHUDMemoryLane `json:"lanes"`
+	Items                []turnWorkflowHUDMemoryItem `json:"items"`
+	PrivateTextExposed   bool                        `json:"private_text_exposed"`
+}
+
 type turnWorkflowHUDError struct {
 	Code            string                 `json:"code"`
 	MessageKey      string                 `json:"message_key"`
@@ -153,33 +187,34 @@ type turnWorkflowHUDError struct {
 }
 
 type turnWorkflowHUDViewModel struct {
-	ContractVersion  string                       `json:"contract_version"`
-	RequestID        string                       `json:"request_id"`
-	ChatSessionID    string                       `json:"chat_session_id"`
-	LogicalTurn      int                          `json:"logical_turn"`
-	HostTurn         int                          `json:"host_turn,omitempty"`
-	BackendTurn      int                          `json:"backend_turn,omitempty"`
-	TurnAlignment    turnWorkflowHUDTurnAlignment `json:"turn_alignment"`
-	Attempt          int                          `json:"attempt"`
-	Revision         int64                        `json:"revision"`
-	Status           string                       `json:"status"`
-	Severity         string                       `json:"severity"`
-	DismissalPolicy  string                       `json:"dismissal_policy"`
-	StartedAt        time.Time                    `json:"started_at"`
-	UpdatedAt        time.Time                    `json:"updated_at"`
-	EndedAt          *time.Time                   `json:"ended_at,omitempty"`
-	CurrentStage     *turnWorkflowHUDStage        `json:"current_stage,omitempty"`
-	Stages           []turnWorkflowHUDStage       `json:"stages"`
-	Counts           []turnWorkflowHUDCount       `json:"counts"`
-	Facts            []turnWorkflowHUDFact        `json:"facts"`
-	Warnings         []turnWorkflowHUDNotice      `json:"warnings"`
-	Error            *turnWorkflowHUDError        `json:"error,omitempty"`
-	DisplayMode      string                       `json:"display_mode,omitempty"`
-	TitleKey         string                       `json:"title_key,omitempty"`
-	MessageKey       string                       `json:"message_key,omitempty"`
-	NoticeCode       string                       `json:"notice_code,omitempty"`
-	NoticeKind       string                       `json:"notice_kind,omitempty"`
-	PresentationTone string                       `json:"presentation_tone,omitempty"`
+	ContractVersion  string                          `json:"contract_version"`
+	RequestID        string                          `json:"request_id"`
+	ChatSessionID    string                          `json:"chat_session_id"`
+	LogicalTurn      int                             `json:"logical_turn"`
+	HostTurn         int                             `json:"host_turn,omitempty"`
+	BackendTurn      int                             `json:"backend_turn,omitempty"`
+	TurnAlignment    turnWorkflowHUDTurnAlignment    `json:"turn_alignment"`
+	Attempt          int                             `json:"attempt"`
+	Revision         int64                           `json:"revision"`
+	Status           string                          `json:"status"`
+	Severity         string                          `json:"severity"`
+	DismissalPolicy  string                          `json:"dismissal_policy"`
+	StartedAt        time.Time                       `json:"started_at"`
+	UpdatedAt        time.Time                       `json:"updated_at"`
+	EndedAt          *time.Time                      `json:"ended_at,omitempty"`
+	CurrentStage     *turnWorkflowHUDStage           `json:"current_stage,omitempty"`
+	Stages           []turnWorkflowHUDStage          `json:"stages"`
+	Counts           []turnWorkflowHUDCount          `json:"counts"`
+	Facts            []turnWorkflowHUDFact           `json:"facts"`
+	MemorySelection  *turnWorkflowHUDMemorySelection `json:"memory_selection,omitempty"`
+	Warnings         []turnWorkflowHUDNotice         `json:"warnings"`
+	Error            *turnWorkflowHUDError           `json:"error,omitempty"`
+	DisplayMode      string                          `json:"display_mode,omitempty"`
+	TitleKey         string                          `json:"title_key,omitempty"`
+	MessageKey       string                          `json:"message_key,omitempty"`
+	NoticeCode       string                          `json:"notice_code,omitempty"`
+	NoticeKind       string                          `json:"notice_kind,omitempty"`
+	PresentationTone string                          `json:"presentation_tone,omitempty"`
 }
 
 type turnWorkflowHUDEntry struct {
@@ -634,6 +669,21 @@ func (l *turnWorkflowHUDLedger) setCounts(requestID string, values map[string]in
 	if entry.view.Error != nil {
 		entry.view.Error.PreservedCounts = cloneTurnWorkflowHUDCounts(entry.view.Counts)
 	}
+	l.touchLocked(entry, time.Now().UTC())
+}
+
+func (l *turnWorkflowHUDLedger) setMemorySelection(requestID string, selection turnWorkflowHUDMemorySelection) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[strings.TrimSpace(requestID)]
+	if entry == nil {
+		return
+	}
+	copyValue := cloneTurnWorkflowHUDMemorySelection(&selection)
+	entry.view.MemorySelection = copyValue
 	l.touchLocked(entry, time.Now().UTC())
 }
 
@@ -1178,6 +1228,7 @@ func cloneTurnWorkflowHUDView(source turnWorkflowHUDViewModel) turnWorkflowHUDVi
 		}
 	}
 	out.Warnings = append([]turnWorkflowHUDNotice(nil), source.Warnings...)
+	out.MemorySelection = cloneTurnWorkflowHUDMemorySelection(source.MemorySelection)
 	out.CurrentStage = cloneTurnWorkflowHUDStage(source.CurrentStage)
 	if source.Error != nil {
 		errorCopy := *source.Error
@@ -1185,6 +1236,149 @@ func cloneTurnWorkflowHUDView(source turnWorkflowHUDViewModel) turnWorkflowHUDVi
 		out.Error = &errorCopy
 	}
 	return out
+}
+
+func cloneTurnWorkflowHUDMemorySelection(source *turnWorkflowHUDMemorySelection) *turnWorkflowHUDMemorySelection {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	out.Items = append([]turnWorkflowHUDMemoryItem(nil), source.Items...)
+	out.Lanes = append([]turnWorkflowHUDMemoryLane(nil), source.Lanes...)
+	out.ExclusionReasons = map[string]int{}
+	for key, value := range source.ExclusionReasons {
+		out.ExclusionReasons[key] = value
+	}
+	out.CoreObjective = map[string]any{}
+	for key, value := range source.CoreObjective {
+		out.CoreObjective[key] = value
+	}
+	return &out
+}
+
+func buildTurnWorkflowHUDMemorySelection(lineage, plan map[string]any) turnWorkflowHUDMemorySelection {
+	rawCore := mapFromAny(plan["core_objective_memory"])
+	core := map[string]any{}
+	for _, key := range []string{
+		"contract_version", "status", "requested_max_items", "eligible_distinct_count",
+		"candidate_count", "delivered_count", "deferred_by_limit_count",
+		"deferred_by_budget_count", "missing_to_limit", "gap_reason", "garbage_fill",
+		"top_k_reinterpreted", "counted_lane", "all_lanes_remain_char_budgeted",
+	} {
+		if value, exists := rawCore[key]; exists {
+			core[key] = value
+		}
+	}
+	out := turnWorkflowHUDMemorySelection{
+		ContractVersion:      "turn_workflow_memory_selection.v1",
+		Status:               extractionStringFromAny(lineage["status"]),
+		TopKDefinition:       "vector_memory_search_limit_only",
+		VectorCandidateLimit: intFromAny(lineage["top_k_memory_target"], 0),
+		CoreObjective:        core,
+		ExclusionReasons:     map[string]int{},
+		Lanes:                []turnWorkflowHUDMemoryLane{},
+		Items:                []turnWorkflowHUDMemoryItem{},
+		PrivateTextExposed:   false,
+	}
+	for _, raw := range prepareTurnMemoryLineageSlice(plan["classes"]) {
+		class := mapFromAny(raw)
+		out.Lanes = append(out.Lanes, turnWorkflowHUDMemoryLane{
+			Key:               extractionStringFromAny(class["key"]),
+			EligibleCount:     intFromAny(class["eligible_count"], 0),
+			SelectedCount:     intFromAny(class["selected_count"], 0),
+			DeferredCount:     intFromAny(class["deferred_count"], 0),
+			DeduplicatedCount: intFromAny(class["deduplicated_count"], 0),
+		})
+	}
+	for _, raw := range prepareTurnMemoryLineageSlice(lineage["items"]) {
+		item := mapFromAny(raw)
+		delivered := boolFromAny(item["delivered"])
+		disposition := "deferred"
+		if delivered {
+			disposition = "delivered"
+			out.DeliveredCount++
+		} else {
+			out.DeferredCount++
+		}
+		reason := extractionFirstNonEmpty(
+			extractionStringFromAny(item["reason_code"]),
+			extractionStringFromAny(item["delivery_status"]),
+		)
+		if reason == "" {
+			reason = map[bool]string{true: "selected_within_final_delivery_plan", false: "not_selected"}[delivered]
+		}
+		if !delivered {
+			out.ExclusionReasons[reason]++
+		}
+		protected := boolFromAny(item["protected_guard"])
+		preview := ""
+		if delivered && !protected {
+			preview = compactPrepareTurnLine(extractionStringFromAny(item["final_text"]), 140)
+		}
+		sourceRowID := ""
+		if item["source_row_id"] != nil {
+			sourceRowID = strings.TrimSpace(fmt.Sprint(item["source_row_id"]))
+		}
+		out.Items = append(out.Items, turnWorkflowHUDMemoryItem{
+			SourceRowID:   sourceRowID,
+			TurnIndex:     intFromAny(item["turn_index"], 0),
+			SelectionLane: extractionStringFromAny(item["selection_lane"]),
+			Disposition:   disposition,
+			ReasonCode:    reason,
+			Protected:     protected,
+			Preview:       preview,
+		})
+	}
+	for _, key := range []string{"pre_render_protected_duplicates", "protected_relevance_dropped"} {
+		for _, raw := range prepareTurnMemoryLineageSlice(lineage[key]) {
+			item := mapFromAny(raw)
+			reason := extractionFirstNonEmpty(extractionStringFromAny(item["reason_code"]), extractionStringFromAny(item["reason"]))
+			if reason == "" {
+				reason = "not_selected"
+			}
+			out.ExclusionReasons[reason]++
+		}
+	}
+	if out.Status == "" {
+		out.Status = "empty"
+	}
+	return out
+}
+
+func buildTurnWorkflowHUDNarrativeGuidanceFact(status, reasonCode string) turnWorkflowHUDFact {
+	status = strings.TrimSpace(status)
+	fact := turnWorkflowHUDFact{
+		Key:         "narrative_guidance",
+		Owner:       "go_backend",
+		Scope:       "current_request",
+		Status:      status,
+		Disposition: "deferred",
+		ReasonCode:  status,
+		Severity:    turnWorkflowHUDSeverityNotice,
+	}
+	switch status {
+	case "applied":
+		fact.Disposition = "delivered"
+		fact.ReasonCode = "supervisor_source_backed_guidance_delivered"
+		fact.Severity = turnWorkflowHUDSeverityNormal
+	case "valid_empty":
+		fact.Disposition = "selected"
+		fact.ReasonCode = "supervisor_valid_empty"
+		fact.Severity = turnWorkflowHUDSeverityNormal
+	case "unsupported_rejected":
+		fact.Disposition = "dropped"
+		fact.ReasonCode = "supervisor_unsupported_proposal_rejected"
+	case "malformed_failed_open", "failed_open":
+		fact.Disposition = "dropped"
+		fact.Severity = turnWorkflowHUDSeverityWarning
+	case "disabled":
+		fact.Disposition = "dropped"
+		fact.Severity = turnWorkflowHUDSeverityNormal
+	}
+	if reasonCode = strings.TrimSpace(reasonCode); reasonCode != "" {
+		fact.ReasonCode = reasonCode
+	}
+	return fact
 }
 
 func cloneTurnWorkflowHUDCounts(source []turnWorkflowHUDCount) []turnWorkflowHUDCount {

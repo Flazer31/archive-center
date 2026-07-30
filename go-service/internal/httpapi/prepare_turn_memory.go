@@ -291,7 +291,8 @@ func prepareTurnMemoryDeliveryLineageItem(item store.Memory, lane string, laneRa
 		"vector_hit":                   lane == "vector_relevant",
 		"protected_guard":              guard.Active,
 		"protected_identity_pov_scope": guard.POVScoped,
-		"top_k_consumption":            "actual_memory_slot",
+		"top_k_consumption":            "not_applicable_vector_candidate_limit",
+		"core_objective_k_consumption": "objective_event_candidate",
 		"delivered":                    delivered,
 		"delivery_status":              status,
 		"final_text":                   finalText,
@@ -299,7 +300,7 @@ func prepareTurnMemoryDeliveryLineageItem(item store.Memory, lane string, laneRa
 		"final_render_key":             finalKey,
 	}
 	if guard.Active {
-		itemTrace["top_k_consumption"] = "protected_guard_slot"
+		itemTrace["core_objective_k_consumption"] = "item_count_exempt_protected_guard"
 	}
 	if duplicateOf != nil {
 		itemTrace["duplicate_of_source_row_id"] = duplicateOf
@@ -811,7 +812,7 @@ type prepareTurnHierarchyEscalation struct {
 
 func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs []store.ChatLog, memorySelection prepareTurnMemoryLaneSelection, rawUserInput, profile string) prepareTurnHierarchyEscalation {
 	trace := map[string]any{
-		"version":                     "r2.hierarchy_escalation.v1",
+		"version":                     "hierarchy_request_zoom.v1",
 		"status":                      "off",
 		"chapter_selected":            false,
 		"arc_selected":                false,
@@ -824,6 +825,8 @@ func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs 
 		"saga_mode":                   "omitted",
 		"priority":                    "current_user_input_and_direct_evidence_remain_higher_priority",
 		"truth_boundary":              "hierarchy_summaries_are_support_only",
+		"single_resolution_zoom":      true,
+		"garbage_fill":                false,
 		"recent_memory_bound":         len(memorySelection.Recent),
 		"selected_memory_bound":       prepareTurnSelectedMemoryCount(memorySelection),
 		"selection_reason_visibility": true,
@@ -834,61 +837,80 @@ func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs 
 		return out
 	}
 	maxTurn := prepareTurnMaxObservedTurn(chatLogs, resumePack)
-	resumeCue := prepareTurnQuerySuggestsResume(rawUserInput)
-	thinMemoryRecall := prepareTurnNeedsRawFallback(memorySelection)
-	longSession := maxTurn >= 50 || prepareTurnProfileWide(profile)
 	trace["status"] = "ready"
 	trace["max_observed_turn"] = maxTurn
-	trace["resume_query_cue"] = resumeCue
-	trace["thin_memory_recall"] = thinMemoryRecall
-	trace["long_session"] = longSession
 	trace["profile"] = profile
 
-	if resumePack.Chapter != nil {
-		selectChapter := longSession || resumeCue || thinMemoryRecall || maxTurn == 0
-		reason := "omitted_not_needed_for_current_context"
-		if selectChapter {
-			reason = prepareTurnHierarchyReason("chapter", longSession, resumeCue, thinMemoryRecall, maxTurn == 0, resumePack.Chapter.FromTurn, resumePack.Chapter.ToTurn)
-			out.ChapterText = prepareTurnChapterRecallText(*resumePack.Chapter)
-			trace["chapter_selected"] = strings.TrimSpace(out.ChapterText) != ""
-			trace["chapter_reason"] = reason
-			trace["chapter_mode"] = prepareTurnHierarchyMode(out.ChapterText)
-			trace["chapter_range"] = map[string]int{"from_turn": resumePack.Chapter.FromTurn, "to_turn": resumePack.Chapter.ToTurn}
-			trace["chapter_chars"] = len([]rune(strings.TrimSpace(out.ChapterText)))
-		} else {
-			trace["chapter_reason"] = reason
+	queryParts := []string{strings.TrimSpace(rawUserInput)}
+	for _, lane := range [][]store.Memory{memorySelection.VectorRelevant, memorySelection.Relevant, memorySelection.Deep, memorySelection.Recent} {
+		for _, item := range lane {
+			if prepareTurnProtectedMemoryGuard(item).Active {
+				continue
+			}
+			queryParts = append(queryParts, prepareTurnMemorySummary(item))
 		}
+	}
+	query := strings.TrimSpace(strings.Join(nonEmptyStrings(queryParts), "\n"))
+	type hierarchyCandidate struct {
+		kind     string
+		text     string
+		fromTurn int
+		toTurn   int
+		score    int
+	}
+	candidates := []hierarchyCandidate{}
+	if resumePack.Chapter != nil {
+		text := prepareTurnChapterRecallText(*resumePack.Chapter)
+		candidates = append(candidates, hierarchyCandidate{
+			kind: "chapter", text: text, fromTurn: resumePack.Chapter.FromTurn, toTurn: resumePack.Chapter.ToTurn,
+			score: prepareTurnRecallOverlapCount(query, text),
+		})
 	}
 	if resumePack.Arc != nil {
-		activeArc := strings.EqualFold(strings.TrimSpace(resumePack.Arc.ArcStatus), "active") || strings.TrimSpace(resumePack.Arc.ArcStatus) == ""
-		selectArc := longSession || resumeCue || thinMemoryRecall || activeArc || maxTurn == 0
-		reason := "omitted_not_needed_for_current_context"
-		if selectArc {
-			reason = prepareTurnHierarchyReason("arc", longSession || activeArc, resumeCue, thinMemoryRecall, maxTurn == 0, resumePack.Arc.FromTurn, resumePack.Arc.ToTurn)
-			out.ArcText = prepareTurnArcRecallText(*resumePack.Arc)
-			trace["arc_selected"] = strings.TrimSpace(out.ArcText) != ""
-			trace["arc_reason"] = reason
-			trace["arc_mode"] = prepareTurnHierarchyMode(out.ArcText)
-			trace["arc_range"] = map[string]int{"from_turn": resumePack.Arc.FromTurn, "to_turn": resumePack.Arc.ToTurn}
-			trace["arc_chars"] = len([]rune(strings.TrimSpace(out.ArcText)))
-		} else {
-			trace["arc_reason"] = reason
-		}
+		text := prepareTurnArcRecallText(*resumePack.Arc)
+		candidates = append(candidates, hierarchyCandidate{
+			kind: "arc", text: text, fromTurn: resumePack.Arc.FromTurn, toTurn: resumePack.Arc.ToTurn,
+			score: prepareTurnRecallOverlapCount(query, text),
+		})
 	}
 	if resumePack.Saga != nil {
-		selectSaga := maxTurn >= 100 || resumeCue || thinMemoryRecall || prepareTurnProfileUltra(profile) || maxTurn == 0
-		reason := "omitted_not_needed_for_current_context"
-		if selectSaga {
-			reason = prepareTurnHierarchyReason("saga", maxTurn >= 100 || prepareTurnProfileUltra(profile), resumeCue, thinMemoryRecall, maxTurn == 0, resumePack.Saga.FromTurn, resumePack.Saga.ToTurn)
-			out.SagaText = prepareTurnSagaRecallText(*resumePack.Saga)
-			trace["saga_selected"] = strings.TrimSpace(out.SagaText) != ""
-			trace["saga_reason"] = reason
-			trace["saga_mode"] = prepareTurnHierarchyMode(out.SagaText)
-			trace["saga_range"] = map[string]int{"from_turn": resumePack.Saga.FromTurn, "to_turn": resumePack.Saga.ToTurn}
-			trace["saga_chars"] = len([]rune(strings.TrimSpace(out.SagaText)))
-		} else {
-			trace["saga_reason"] = reason
+		text := prepareTurnSagaRecallText(*resumePack.Saga)
+		candidates = append(candidates, hierarchyCandidate{
+			kind: "saga", text: text, fromTurn: resumePack.Saga.FromTurn, toTurn: resumePack.Saga.ToTurn,
+			score: prepareTurnRecallOverlapCount(query, text),
+		})
+	}
+	selectedKind := ""
+	for _, candidate := range candidates {
+		trace[candidate.kind+"_relevance_score"] = candidate.score
+		trace[candidate.kind+"_range"] = map[string]int{"from_turn": candidate.fromTurn, "to_turn": candidate.toTurn}
+		if selectedKind != "" {
+			trace[candidate.kind+"_reason"] = "suppressed_by_narrower_relevant_resolution"
+			continue
 		}
+		if candidate.score <= 0 || strings.TrimSpace(candidate.text) == "" {
+			trace[candidate.kind+"_reason"] = "irrelevant_to_current_request"
+			continue
+		}
+		selectedKind = candidate.kind
+		trace[candidate.kind+"_selected"] = true
+		trace[candidate.kind+"_reason"] = "current_request_relevance"
+		trace[candidate.kind+"_mode"] = prepareTurnHierarchyMode(candidate.text)
+		trace[candidate.kind+"_chars"] = len([]rune(strings.TrimSpace(candidate.text)))
+		switch candidate.kind {
+		case "chapter":
+			out.ChapterText = candidate.text
+		case "arc":
+			out.ArcText = candidate.text
+		case "saga":
+			out.SagaText = candidate.text
+		}
+	}
+	if selectedKind == "" {
+		trace["status"] = "no_support"
+		trace["reason"] = "no_hierarchy_level_relevant_to_current_request"
+	} else {
+		trace["selected_resolution"] = selectedKind
 	}
 	trace["selected_count"] = boolToInt(strings.TrimSpace(out.ChapterText) != "") + boolToInt(strings.TrimSpace(out.ArcText) != "") + boolToInt(strings.TrimSpace(out.SagaText) != "")
 	return out
@@ -913,57 +935,6 @@ func prepareTurnMaxObservedTurn(chatLogs []store.ChatLog, resumePack *store.Resu
 		}
 	}
 	return maxTurn
-}
-
-func prepareTurnProfileWide(profile string) bool {
-	switch strings.ToLower(strings.TrimSpace(profile)) {
-	case "wide", "ultra", "extreme", "wide_context_500k", "ultra_long_1m_plus", "extreme_long_2m_plus":
-		return true
-	default:
-		return false
-	}
-}
-
-func prepareTurnProfileUltra(profile string) bool {
-	switch strings.ToLower(strings.TrimSpace(profile)) {
-	case "ultra", "extreme", "ultra_long_1m_plus", "extreme_long_2m_plus":
-		return true
-	default:
-		return false
-	}
-}
-
-func prepareTurnQuerySuggestsResume(raw string) bool {
-	raw = strings.ToLower(strings.TrimSpace(raw))
-	if raw == "" {
-		return false
-	}
-	for _, cue := range []string{"remember", "recap", "resume", "continue", "previous", "past", "long ago", "기억", "이전", "전에", "계속", "이어", "요약", "정리", "오랜만", "과거"} {
-		if strings.Contains(raw, cue) {
-			return true
-		}
-	}
-	return false
-}
-
-func prepareTurnHierarchyReason(kind string, longSession, resumeCue, thinMemoryRecall, unknownTurn bool, fromTurn, toTurn int) string {
-	reasons := []string{}
-	if longSession {
-		reasons = append(reasons, kind+"_continuity")
-	}
-	if resumeCue {
-		reasons = append(reasons, "resume_query_cue")
-	}
-	if thinMemoryRecall {
-		reasons = append(reasons, "thin_memory_recall_backstop")
-	}
-	if unknownTurn {
-		reasons = append(reasons, "resume_pack_only_backstop")
-	}
-	if len(reasons) == 0 {
-		reasons = append(reasons, kind+"_available")
-	}
-	return strings.Join(reasons, "+") + fmt.Sprintf("_turns_%d_%d", fromTurn, toTurn)
 }
 
 func prepareTurnHierarchyMode(text string) string {

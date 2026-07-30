@@ -989,6 +989,9 @@ type PrepareTurnSettings struct {
 	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
 	// MemoryDeliveryBudgets carries character reservations for the seven Go-owned delivery classes.
 	MemoryDeliveryBudgets map[string]int `json:"memory_delivery_budgets,omitempty"`
+	// PRESENCE: Optional non-null scalar int controlling only the final objective-event memory item ceiling.
+	// DEFAULT: No default: absent callers preserve the legacy character-budget-only delivery behavior.
+	CoreObjectiveMemoryMaxItems *int `json:"core_objective_memory_max_items,omitempty"`
 	// PRESENCE: Optional non-null scalar int carrying the configured memory cap as the reference budget basis.
 	// DEFAULT: No default: absent callers use the effective max_injection_chars for compatibility.
 	ReferenceInjectionBudgetBasisChars *int `json:"reference_injection_budget_basis_chars,omitempty"`

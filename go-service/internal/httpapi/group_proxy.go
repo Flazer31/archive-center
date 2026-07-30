@@ -117,7 +117,7 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			trace["llm_call"] = "failed"
 			trace["fail_open"] = true
-			trace["error"] = scrubProxySecret(err.Error(), llmCfg.APIKey)
+			trace["reason_code"] = "supervisor_provider_failed_open"
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":                "partial",
 				"source":                "runtime_llm_error",
@@ -129,14 +129,27 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 				"upstream_write":        "disabled",
 				"supervisor_result":     nil,
 				"fail_open":             true,
-				"error":                 scrubProxySecret(err.Error(), llmCfg.APIKey),
+				"reason_code":           "supervisor_provider_failed_open",
 				"trace_summary":         trace,
 			})
 			return
 		}
+		responseStatus := "ok"
+		responseSource := "runtime_llm"
+		failOpen := false
+		reasonCode := ""
+		resultProposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+		if extractionStringFromAny(resultProposal["status"]) == "malformed_failed_open" {
+			responseStatus = "partial"
+			responseSource = "runtime_llm_malformed"
+			failOpen = true
+			reasonCode = extractionStringFromAny(resultProposal["reason_code"])
+			trace["fail_open"] = true
+			trace["reason_code"] = reasonCode
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":                "ok",
-			"source":                "runtime_llm",
+			"status":                responseStatus,
+			"source":                responseSource,
 			"note":                  "POST /supervisor used configured runtime LLM settings",
 			"chat_session_id":       sid,
 			"supervisor_input_pack": supervisorPack,
@@ -144,6 +157,8 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 			"would_write":           false,
 			"upstream_write":        "disabled",
 			"supervisor_result":     result,
+			"fail_open":             failOpen,
+			"reason_code":           nilIfEmpty(reasonCode),
 			"trace_summary":         trace,
 		})
 		return
@@ -200,9 +215,6 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	}
 	content := chatCompletionText(upstream)
 	parsed, err := parseJSONFromLLMContent(content)
-	if err != nil {
-		parsed = map[string]any{"directive": map[string]any{"raw_text": strings.TrimSpace(content)}}
-	}
 	trace := map[string]any{
 		"prompt_source": promptSource,
 		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
@@ -211,41 +223,84 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 		trace["request_overrides"] = requestOverrides
 	}
+	if err != nil {
+		trace["parse_status"] = "malformed_failed_open"
+		parsed = nil
+	} else {
+		trace["parse_status"] = "parsed"
+	}
 	bounded, proposalTrace := buildBoundedSupervisorResult(parsed, supervisorPack)
 	trace["proposal_contract"] = proposalTrace
 	return bounded, trace, nil
 }
 
 func supervisorProposalCoverage(strength string) map[string]any {
+	common := map[string]any{
+		"truth_authority":                        false,
+		"canonical_write":                        false,
+		"force_progress":                         false,
+		"proactive_complication_opt_in":          false,
+		"proactive_complication_requires_opt_in": true,
+		"proactive_complication_default":         "off",
+		"strong_implies_proactive":               false,
+		"strong_implies_forced_progress":         false,
+		"blocked_user_action":                    true,
+		"blocked_new_truth":                      true,
+		"blocked_relationship_change":            true,
+		"blocked_unresolved_event_closure":       true,
+	}
+	withCommon := func(coverage map[string]any) map[string]any {
+		for key, value := range common {
+			coverage[key] = value
+		}
+		return coverage
+	}
 	switch normalizeNarrativeGuideStrength(strength) {
 	case "none":
-		return map[string]any{
+		return withCommon(map[string]any{
 			"profile":                  "disabled",
+			"supervisor_call":          "none",
+			"guidance_scope":           "none",
 			"allowed_roles":            []string{},
 			"allowed_expression_kinds": []string{},
-		}
+		})
 	case "strong":
-		return map[string]any{
-			"profile":       "fidelity_expression_reversible",
+		return withCommon(map[string]any{
+			"profile":         "fidelity_expression_reversible",
+			"supervisor_call": "source_backed_optional",
+			"guidance_scope":  "arc_anchor_and_preferred_frontier",
+			"guidance_options": []string{
+				"arc_anchor", "preferred_frontier", "hold_allowed",
+			},
 			"allowed_roles": []string{"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback", "reversible_option"},
 			"allowed_expression_kinds": []string{
-				"portrayal", "pacing", "scene_emphasis", "callback", "reversible_option",
+				"portrayal", "response_focus", "must_account", "pacing", "scene_emphasis", "callback",
+				"may_advance", "hold_allowed", "arc_anchor", "preferred_frontier", "reversible_option",
 			},
-		}
+		})
 	case "medium":
-		return map[string]any{
-			"profile":       "fidelity_expression_contextual",
+		return withCommon(map[string]any{
+			"profile":         "fidelity_expression_contextual",
+			"supervisor_call": "source_backed_optional",
+			"guidance_scope":  "may_advance_or_hold_allowed",
+			"guidance_options": []string{
+				"may_advance", "hold_allowed",
+			},
 			"allowed_roles": []string{"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback"},
 			"allowed_expression_kinds": []string{
-				"portrayal", "pacing", "scene_emphasis", "callback",
+				"portrayal", "response_focus", "must_account", "pacing", "scene_emphasis", "callback",
+				"may_advance", "hold_allowed",
 			},
-		}
+		})
 	default:
-		return map[string]any{
+		return withCommon(map[string]any{
 			"profile":                  "fidelity_expression_low_impact",
+			"supervisor_call":          "source_backed_optional",
+			"guidance_scope":           "response_focus_and_must_account",
+			"guidance_options":         []string{"response_focus", "must_account"},
 			"allowed_roles":            []string{"fidelity_warning", "portrayal"},
-			"allowed_expression_kinds": []string{"portrayal"},
-		}
+			"allowed_expression_kinds": []string{"portrayal", "response_focus", "must_account"},
+		})
 	}
 }
 
@@ -333,11 +388,65 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 		trace["reason_code"] = contractReasonCode
 		return boundedSupervisorEnvelope(proposal), trace
 	}
+	if parsed == nil {
+		proposal["status"] = "malformed_failed_open"
+		proposal["reason_code"] = "supervisor_malformed_json"
+		trace["reason_code"] = "supervisor_malformed_json"
+		trace["fail_open"] = true
+		trace["accepted_items"] = 0
+		trace["rejected_items"] = 0
+		return boundedSupervisorEnvelope(proposal), trace
+	}
 
-	rawProposal := mapFromAny(parsed["supervisor_scene_proposal"])
-	if len(rawProposal) == 0 {
-		rawDirective := mapFromAny(parsed["directive"])
-		rawProposal = mapFromAny(rawDirective["supervisor_scene_proposal"])
+	rawProposal := map[string]any{}
+	proposalEnvelopePresent := false
+	schemaInvalid := false
+	if rawEnvelope, exists := parsed["supervisor_scene_proposal"]; exists {
+		proposalEnvelopePresent = true
+		var ok bool
+		rawProposal, ok = rawEnvelope.(map[string]any)
+		schemaInvalid = !ok
+	} else if rawDirectiveValue, directiveExists := parsed["directive"]; directiveExists {
+		rawDirective, ok := rawDirectiveValue.(map[string]any)
+		if !ok {
+			schemaInvalid = true
+		} else if rawEnvelope, exists := rawDirective["supervisor_scene_proposal"]; exists {
+			proposalEnvelopePresent = true
+			rawProposal, ok = rawEnvelope.(map[string]any)
+			schemaInvalid = !ok
+		}
+	}
+	for _, key := range []string{"fidelity_warnings", "expression_hints", "portrayal_notes", "may_advance"} {
+		rawItems, exists := rawProposal[key]
+		if !exists {
+			continue
+		}
+		items, ok := rawItems.([]any)
+		if !ok {
+			schemaInvalid = true
+			break
+		}
+		if key == "fidelity_warnings" || key == "expression_hints" {
+			for _, rawItem := range items {
+				item, ok := rawItem.(map[string]any)
+				if !ok || !supervisorProposalItemSchemaValid(item, key == "expression_hints") {
+					schemaInvalid = true
+					break
+				}
+			}
+		}
+		if schemaInvalid {
+			break
+		}
+	}
+	if schemaInvalid {
+		proposal["status"] = "malformed_failed_open"
+		proposal["reason_code"] = "supervisor_schema_invalid"
+		trace["reason_code"] = "supervisor_schema_invalid"
+		trace["fail_open"] = true
+		trace["accepted_items"] = 0
+		trace["rejected_items"] = 0
+		return boundedSupervisorEnvelope(proposal), trace
 	}
 	allowedKinds := make(map[string]struct{})
 	for _, kind := range stringSliceFromAny(coverage["allowed_expression_kinds"]) {
@@ -356,13 +465,59 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	rejectedTotal += expressionRejected
 	rejectedTotal += anySliceLength(rawProposal["portrayal_notes"])
 	rejectedTotal += anySliceLength(rawProposal["may_advance"])
+	for key := range rawProposal {
+		switch key {
+		case "contract_version", "fidelity_warnings", "expression_hints", "portrayal_notes", "may_advance":
+			continue
+		default:
+			rejectedTotal++
+		}
+	}
 	if acceptedTotal == 0 {
-		proposal["status"] = "ready_no_supported_proposal"
+		switch {
+		case rejectedTotal > 0 || (!proposalEnvelopePresent && len(parsed) > 0):
+			proposal["status"] = "unsupported_rejected"
+			proposal["reason_code"] = "supervisor_unsupported_proposal_rejected"
+			trace["reason_code"] = "supervisor_unsupported_proposal_rejected"
+		default:
+			proposal["status"] = "valid_empty"
+			proposal["reason_code"] = "supervisor_valid_empty"
+			trace["reason_code"] = "supervisor_valid_empty"
+		}
 	}
 	trace["accepted_items"] = acceptedTotal
 	trace["rejected_items"] = rejectedTotal
 	trace["raw_legacy_fields_discarded"] = len(rawProposal) == 0
 	return boundedSupervisorEnvelope(proposal), trace
+}
+
+func supervisorProposalItemSchemaValid(item map[string]any, requireKind bool) bool {
+	if rawText, exists := item["text"]; exists {
+		if _, ok := rawText.(string); !ok {
+			return false
+		}
+	}
+	if rawRefs, exists := item["source_refs"]; exists {
+		switch refs := rawRefs.(type) {
+		case []any:
+			for _, rawRef := range refs {
+				if _, ok := rawRef.(string); !ok {
+					return false
+				}
+			}
+		case []string:
+		default:
+			return false
+		}
+	}
+	if requireKind {
+		if rawKind, exists := item["kind"]; exists {
+			if _, ok := rawKind.(string); !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func supervisorExecutionContractReady(supervisorPack map[string]any) (bool, string) {

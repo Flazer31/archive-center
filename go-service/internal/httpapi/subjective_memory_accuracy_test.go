@@ -67,16 +67,17 @@ func TestSubjectiveEntityMemoryDuplicateReasonIsConservative(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnCharacterPrivateRecollectionUsesOneMemoryPerCurrentOwner(t *testing.T) {
+func TestPrepareTurnCharacterPrivateRecollectionCoversOwnersBeforeDistinctFill(t *testing.T) {
 	memories := []store.ProtagonistEntityMemory{
-		{ID: 1, OwnerEntityKey: "niv", OwnerEntityName: "Niv", OwnerEntityRole: "npc", MemoryText: "Niv privately remembers the garden promise."},
-		{ID: 4, OwnerEntityKey: "niv", OwnerEntityName: "Niv", OwnerEntityRole: "npc", SourceTurn: 2, MemoryText: "Niv has an older duplicate owner memory."},
+		{ID: 1, OwnerEntityKey: "niv", OwnerEntityName: "Niv", OwnerEntityRole: "npc", Importance10: 9, MemoryText: "Niv privately remembers the garden promise."},
+		{ID: 4, OwnerEntityKey: "niv", OwnerEntityName: "Niv", OwnerEntityRole: "npc", SourceTurn: 2, MemoryText: "Niv remembers the older bridge warning."},
 		{ID: 2, OwnerEntityKey: "ingrid", OwnerEntityName: "Ingrid", OwnerEntityRole: "npc", MemoryText: "Ingrid privately doubts the garden promise."},
 		{ID: 3, OwnerEntityKey: "ashley", OwnerEntityName: "Ashley", OwnerEntityRole: "npc", MemoryText: "Ashley privately fears being overheard."},
+		{ID: 5, OwnerEntityKey: "niv", OwnerEntityName: "Niv", OwnerEntityRole: "npc", MemoryText: "Niv once counted lanterns in the cellar."},
 	}
 
 	trace := filterPrepareTurnEntityRecollections(
-		"Niv and Ingrid discuss Ashley in the garden.",
+		"Niv and Ingrid discuss the garden promise, Ashley fears being overheard, and Niv recalls the older bridge warning.",
 		nil,
 		nil,
 		nil,
@@ -84,21 +85,25 @@ func TestPrepareTurnCharacterPrivateRecollectionUsesOneMemoryPerCurrentOwner(t *
 		nil,
 		&memories,
 	)
-	if len(memories) != 3 {
-		t.Fatalf("selected private recollections = %d, want one for each of three current owners: %#v", len(memories), memories)
+	if len(memories) != 4 {
+		t.Fatalf("selected private recollections = %d, want three-owner coverage before one distinct fill: %#v", len(memories), memories)
 	}
 	if memories[0].OwnerEntityKey != "niv" || memories[1].OwnerEntityKey != "ingrid" || memories[2].OwnerEntityKey != "ashley" {
 		t.Fatalf("private recollection ordering changed unexpectedly: %#v", memories)
+	}
+	if memories[3].OwnerEntityKey != "niv" ||
+		(memories[0].ID != 1 && memories[0].ID != 4) ||
+		(memories[3].ID != 1 && memories[3].ID != 4) ||
+		memories[0].ID == memories[3].ID {
+		t.Fatalf("distinct same-owner fill did not follow owner coverage: %#v", memories)
 	}
 	if trace["character_private_total_cap"] != "final_subjective_relationship_char_budget" {
 		t.Fatalf("character_private_total_cap = %#v, want final char budget ownership", trace["character_private_total_cap"])
 	}
 	dropped, ok := trace["dropped"].([]map[string]any)
-	if !ok || len(dropped) != 1 {
-		t.Fatalf("dropped trace = %#v, want one repeated owner memory", trace["dropped"])
-	}
-	if dropped[0]["owner_entity_key"] != "niv" || dropped[0]["reason"] != "owner_repetition_capped" {
-		t.Fatalf("unexpected owner-cap trace: %#v", dropped[0])
+	if !ok || len(dropped) != 1 || dropped[0]["id"] != int64(5) ||
+		dropped[0]["reason"] != "subjective_memory_irrelevant_to_current_request" {
+		t.Fatalf("unrelated same-owner fill was not rejected: %#v", trace["dropped"])
 	}
 }
 
@@ -211,7 +216,7 @@ func TestRisuPersonaObservationRemovesMisclassifiedStoredPersonaFromNPCLane(t *t
 		t.Fatalf("blocked row ids = %#v, want [17 18]", trace["blocked_row_ids"])
 	}
 	filterPrepareTurnEntityRecollections(
-		"Juno enters the room.",
+		"Juno enters the room and recalls the real NPC memory.",
 		nil,
 		nil,
 		nil,

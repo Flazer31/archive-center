@@ -406,13 +406,15 @@ func normalizeNarrativeGuideMode(mode string) string {
 	}
 }
 
-func resolveNarrativeGuideMode(mode string, contextMessages []map[string]any, wakeUpContext, fallbackUserInput string) string {
+func resolveNarrativeGuideMode(mode string, _ []map[string]any, _, _ string) string {
 	normalized := normalizeNarrativeGuideMode(mode)
 	if normalized != "auto" {
 		return normalized
 	}
-	probe := strings.Join(nonEmptyStrings([]string{fallbackUserInput, latestUserMessageText(contextMessages), wakeUpContext}), "\n")
-	return inferNarrativeGuideModeFromText(probe)
+	// Auto is a stable default, not a prose classifier. Inferring genre from
+	// language-specific keywords made identical requests resolve differently
+	// across languages and gave ordinary words hidden policy authority.
+	return "standard"
 }
 
 func latestUserMessageText(contextMessages []map[string]any) string {
@@ -427,26 +429,6 @@ func latestUserMessageText(contextMessages []map[string]any) string {
 		}
 	}
 	return ""
-}
-
-func inferNarrativeGuideModeFromText(text string) string {
-	source := strings.ToLower(strings.TrimSpace(text))
-	if source == "" {
-		return "standard"
-	}
-	if containsAnyText(source, "r18", "r 18", "explicit", "direct sensual", "mature direct", "adult direct") {
-		return "mature_direct"
-	}
-	if containsAnyText(source, "sensual", "mature", "adult romance", "soft mature", "intimate") {
-		return "mature_soft"
-	}
-	if containsAnyText(source, "romance", "romantic", "love", "date", "crush", "kiss") {
-		return "romantic"
-	}
-	if containsAnyText(source, "action", "battle", "fight", "combat", "mission", "chase", "duel") {
-		return "action"
-	}
-	return "standard"
 }
 
 func containsAnyText(source string, needles ...string) bool {

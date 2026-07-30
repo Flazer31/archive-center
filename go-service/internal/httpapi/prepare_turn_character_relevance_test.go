@@ -144,7 +144,7 @@ func TestPrepareTurnQualifiedOwnerTailMatchesOnlyWhenUnique(t *testing.T) {
 		{ID: 1, OwnerEntityKey: "min_seohyeon", OwnerEntityName: "예조판서 민정호의 딸 민서현", OwnerEntityRole: "npc", MemoryText: "민서현은 강한얼을 마음에 둔 사내로 여긴다."},
 		{ID: 2, OwnerEntityKey: "yun_seula", OwnerEntityName: "윤슬아", OwnerEntityRole: "npc", MemoryText: "윤슬아는 강한얼에게 호감을 품고 있다."},
 	}
-	filterPrepareTurnEntityRecollections("윤슬아 앞에 민서현이 나타났다.", nil, nil, nil, nil, nil, &private)
+	filterPrepareTurnEntityRecollections("윤슬아 앞에 민서현이 나타나 강한얼에게 품은 호감과 마음에 둔 감정을 떠올렸다.", nil, nil, nil, nil, nil, &private)
 	if len(private) != 2 {
 		t.Fatalf("qualified owner memory was dropped after indexed read: %#v", private)
 	}
@@ -352,14 +352,14 @@ func TestPrepareTurnPrivateRecollectionDoesNotLetRecencyOverrideDurableEmotion(t
 		{ID: 2, OwnerEntityKey: "owner", OwnerEntityName: "가나다", OwnerEntityRole: "npc", SourceTurn: 90, MemoryText: "최근의 평범한 관찰", Importance10: 5, EmotionalWeight: 0.1},
 		{ID: 1, OwnerEntityKey: "owner", OwnerEntityName: "가나다", OwnerEntityRole: "npc", SourceTurn: 10, MemoryText: "오래된 핵심 관계 기억", Importance10: 8, EmotionalWeight: 0.9},
 	}
-	filterPrepareTurnEntityRecollections("가나다가 찾아왔다.", nil, nil, nil, nil, nil, &items)
-	if len(items) != 1 || items[0].ID != 1 {
-		t.Fatalf("selected = %#v, want durable high-emotion memory instead of newest row", items)
+	filterPrepareTurnEntityRecollections("가나다가 찾아와 최근의 평범한 관찰과 오래된 핵심 관계 기억을 함께 떠올렸다.", nil, nil, nil, nil, nil, &items)
+	if len(items) != 2 || items[0].ID != 1 || items[1].ID != 2 {
+		t.Fatalf("selected = %#v, want durable high-emotion memory first and distinct relevant fill second", items)
 	}
 }
 
 func TestPrepareTurnExplicitRecollectionsDoNotBecomeOffSceneObjectiveState(t *testing.T) {
-	const rawInput = "소월, 슬아, 서현까지 떠올려보니 하나같이 예쁘고 참된 여성 같아 자신에게 과분하다고 한얼은 생각했다."
+	const rawInput = "소월과 나눈 술자리 대화, 슬아가 약재를 건넨 일, 서현이 자신의 신념과 솔직함을 바라보던 순간까지 떠올려보니 하나같이 예쁘고 참된 여성 같아 자신에게 과분하다고 한얼은 생각했다."
 	activeStates := []store.ActiveState{{
 		StateType: "scene",
 		TurnIndex: 51,

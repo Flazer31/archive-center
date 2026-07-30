@@ -88,6 +88,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if enforceCurrentInputContract {
 		req.RawUserInput = &currentInputDecision.EffectiveUserInput
 	}
+	if req.Settings.CoreObjectiveMemoryMaxItems != nil && *req.Settings.CoreObjectiveMemoryMaxItems <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_setting", "core_objective_memory_max_items must be at least 1 when provided")
+		return
+	}
 
 	migrationStartedAt := time.Now()
 	if lock, err := s.sessionMigrationSourceLock(r.Context(), sid); err != nil {
@@ -457,8 +461,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	recollectionStartedAt := time.Now()
 	var personaRoleTrace map[string]any
 	characterPrivateMemories, personaRoleTrace = excludeRisuPersonaFromStoredNPCMemories(characterPrivateMemories, req.ClientMeta)
+	var personaRelevanceTrace map[string]any
+	personaEntries, personaRelevanceTrace = filterPrepareTurnPersonaRecollections(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, personaEntries, chatLogs)
 	recollectionRelevance := filterPrepareTurnEntityRecollections(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, personaEntries, &characterPrivateMemories, chatLogs)
 	recollectionRelevance["risu_persona_role_resolution"] = personaRoleTrace
+	recollectionRelevance["persona_recollection_relevance"] = personaRelevanceTrace
 	recollectionRelevance["candidate_read_limit"] = entityRecollectionReadLimit
 	recollectionRelevance["relevance_before_delivery_cap"] = true
 	recollectionRelevance["owner_index_count"] = directEntityOwnerIndexCount
@@ -501,6 +508,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		documents = buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, chatLogs)
 		if injectionEnabled {
 			assemblyPerspectiveContext := prepareTurnPerspectiveWithNarrativeState(perspectiveContext, narrativeCurrentValues, activeStates)
+			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
+				assemblyPerspectiveContext["_core_objective_memory_max_items_present"] = true
+				assemblyPerspectiveContext["_core_objective_memory_max_items"] = *req.Settings.CoreObjectiveMemoryMaxItems
+			}
 			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, maxInjectionChars, rawUserInput, profile, documents, vectorShadow, languageContext, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext)
 		}
 	}
@@ -707,6 +718,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	supervisorInputPack["support_packet"] = buildSupervisorSupportPacket(sid, rawUserInput, responseExecutionContract, injectionAssembly.MemoryDeliveryLineage)
 	guidanceItems := []prepareTurnGuidanceItem{}
 	supervisorCallStatus := "disabled"
+	supervisorCallReason := ""
 	var supervisorResult map[string]any
 	supervisorEnabled := req.Settings.SupervisorEnabled == nil || *req.Settings.SupervisorEnabled
 	executionContractReady, _ := supervisorExecutionContractReady(supervisorInputPack)
@@ -758,20 +770,51 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			supervisorInputPack["llm_trace"] = llmTrace
 			if err != nil {
 				supervisorCallStatus = "failed_open"
+				supervisorCallReason = "publisher_llm_failed_open"
 				supervisorInputPack["llm_error"] = scrubProxySecret(err.Error(), llmCfg.APIKey)
 				if s.TurnWorkflows != nil && workflowRequestID != "" {
 					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", "publisher_llm_failed_open")
 					s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_LLM_FAILED_OPEN", "turn_hud.warning.publisher_llm_failed_open", turnWorkflowStagePublisherLLM)
 				}
 			} else {
-				supervisorCallStatus = "applied"
 				supervisorResult = result
-				if s.TurnWorkflows != nil && workflowRequestID != "" {
-					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "")
+				proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+				proposalStatus := extractionStringFromAny(proposal["status"])
+				switch proposalStatus {
+				case "malformed_failed_open":
+					supervisorCallStatus = "malformed_failed_open"
+					supervisorCallReason = extractionFirstNonEmpty(
+						extractionStringFromAny(proposal["reason_code"]),
+						"supervisor_malformed_json",
+					)
+					if s.TurnWorkflows != nil && workflowRequestID != "" {
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", supervisorCallReason)
+						s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_LLM_MALFORMED_FAILED_OPEN", "turn_hud.warning.publisher_llm_malformed_failed_open", turnWorkflowStagePublisherLLM)
+					}
+				case "valid_empty":
+					supervisorCallStatus = "valid_empty"
+					supervisorCallReason = "supervisor_valid_empty"
+					if s.TurnWorkflows != nil && workflowRequestID != "" {
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "supervisor_valid_empty")
+					}
+				case "unsupported_rejected":
+					supervisorCallStatus = "unsupported_rejected"
+					supervisorCallReason = "supervisor_unsupported_proposal_rejected"
+					if s.TurnWorkflows != nil && workflowRequestID != "" {
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", "supervisor_unsupported_proposal_rejected")
+					}
+				default:
+					supervisorCallStatus = "applied"
+					if s.TurnWorkflows != nil && workflowRequestID != "" {
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "")
+					}
 				}
 				guidanceItems = append(guidanceItems, supervisorSceneProposalGuidanceItems(result)...)
 			}
 		}
+	}
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.setFact(workflowRequestID, buildTurnWorkflowHUDNarrativeGuidanceFact(supervisorCallStatus, supervisorCallReason))
 	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStagePayload)
@@ -826,6 +869,12 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	injectionPack["memory_budget_resolution"] = memoryBudgetResolution
 	injectionText = extractionStringFromAny(payloadApplicationPlan["auxiliary_text"])
 	inputContextText = extractionStringFromAny(payloadApplicationPlan["input_context_text"])
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.setMemorySelection(
+			workflowRequestID,
+			buildTurnWorkflowHUDMemorySelection(injectionAssembly.MemoryDeliveryLineage, injectionAssembly.MemoryDeliveryPlan),
+		)
+	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		selectedChars := len([]rune(injectionText)) + len([]rune(inputContextText))
 		contextFact := turnWorkflowHUDFact{
@@ -887,6 +936,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"storyline_selection": supervisorInputPack["storyline_selection"],
 		"materialization":     materializationTrace,
 	}
+	tracePreview["compact_orchestration"] = buildPrepareTurnCompactOrchestrationProjection(
+		supervisorCallStatus,
+		countPrepareTurnSupervisorDirectiveItems(guidanceItems),
+		boundedMemoryDeliveryLineage,
+	)
 	for k, v := range progressionLedgerTracePreviewFields(progressionLedger) {
 		tracePreview[k] = v
 	}
@@ -1771,6 +1825,67 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		},
 		"note": "prepare-turn is a store-backed shadow assembly; no writes performed",
 	})
+}
+
+func countPrepareTurnSupervisorDirectiveItems(items []prepareTurnGuidanceItem) int {
+	count := 0
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Status), "failed") || strings.TrimSpace(item.Text) == "" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func buildPrepareTurnCompactOrchestrationProjection(supervisorStatus string, guidanceItemCount int, lineage map[string]any) map[string]any {
+	memoryCount := maxInt(intFromAny(lineage["final_delivered_count"], 0), 0)
+	supervisorCallCount := 0
+	switch strings.TrimSpace(supervisorStatus) {
+	case "applied", "valid_empty", "unsupported_rejected", "malformed_failed_open", "failed_open":
+		supervisorCallCount = 1
+	}
+	return map[string]any{
+		"contract_version": "prepare_turn.compact_orchestration.v1",
+		"search_result": map[string]any{
+			"status":        "ok",
+			"source":        "prepare_turn.production_compact.v1",
+			"items":         []any{},
+			"paths":         []any{},
+			"itemCount":     memoryCount,
+			"memoryCount":   memoryCount,
+			"fallbackCount": 0,
+			"dedupeStats": map[string]any{
+				"before":  memoryCount,
+				"after":   memoryCount,
+				"removed": 0,
+			},
+			"pathBUsed":       false,
+			"multiMatchCount": 0,
+		},
+		"supervisor": map[string]any{
+			"status":       strings.TrimSpace(supervisorStatus),
+			"hasDirective": guidanceItemCount > 0,
+			"source":       "prepare_turn.production_compact.v1",
+		},
+		"activity": map[string]any{
+			"counts": map[string]any{
+				"memories":        memoryCount,
+				"kgTriples":       0,
+				"episodes":        0,
+				"activeStates":    0,
+				"storylines":      0,
+				"characters":      0,
+				"worldRules":      0,
+				"pendingThreads":  0,
+				"locationContext": 0,
+			},
+			"llmCalls": map[string]any{
+				"supervisor":          supervisorCallCount,
+				"supervisorLatencyMs": 0,
+			},
+		},
+	}
 }
 
 func prepareTurnHistoryBounds(latestTurn int) (int, int) {

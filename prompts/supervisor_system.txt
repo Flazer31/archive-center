@@ -20,7 +20,7 @@ Return this shape:
     ],
     "expression_hints": [
       {
-        "kind": "portrayal|pacing|scene_emphasis|callback|reversible_option",
+        "kind": "portrayal|response_focus|must_account|pacing|scene_emphasis|callback|may_advance|hold_allowed|arc_anchor|preferred_frontier|reversible_option",
         "text": "...",
         "source_refs": ["exact current-input or delivered-memory ref"]
       }
@@ -31,6 +31,10 @@ Return this shape:
 [Source Rules]
 - A `fidelity_warnings` item requires an exact delivered-memory ref.
 - A `callback` expression requires an exact delivered-memory ref.
+- `may_advance`, `hold_allowed`, `arc_anchor`, and `preferred_frontier` are
+  optional response-shaping suggestions only. They never authorize a new fact,
+  user action, relationship change, scene jump, unresolved-event closure, or
+  forced progression.
 - `portrayal`, `pacing`, `scene_emphasis`, and `reversible_option` require an
   exact current-input or delivered-memory ref. A native-system ref alone is
   never support.

@@ -122,7 +122,7 @@ func TestPrepareTurnArcDeliveryPath(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-arc","turn_index":3,"raw_user_input":"What happens next?","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
+	body := `{"chat_session_id":"sess-arc","turn_index":3,"raw_user_input":"Continue The Great Arc and its Man vs Nature conflict.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

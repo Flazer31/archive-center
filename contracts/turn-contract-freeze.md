@@ -86,13 +86,14 @@ Both routes are registered in `group_turn.go` and MUST remain R2 guards until li
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `guide_mode` | str | `"off"` | `"off"`, `"hint"`, `"direct"` |
+| `guide_mode` | str | `"off"` | `"auto"`, `"off"`, `"standard"`, `"romantic"`, `"action"`, `"mature_soft"`, `"mature_direct"`; `auto` resolves to language-neutral `standard` in Go |
 | `narrative_stance` | str | `"balanced"` | `"balanced"`, `"authoritarian"`, `"permissive"` |
 | `apply_mode` | str | `"shadow"` | `"shadow"`, `"live"` (live blocked in R0) |
 | `takeover_mode` | str | `"off"` | `"off"`, `"prompt"`, `"auto"` |
 | `injection_enabled` | bool | `true` | Enable memory injection |
 | `input_context_enabled` | bool | `true` | Enable input context |
 | `max_injection_chars` | int | `3000` | Injection length cap |
+| `core_objective_memory_max_items` | int | none | Optional final-delivery ceiling for distinct objective event summaries; absent preserves legacy delivery; minimum 1; does not reinterpret `top_k` or count separately budgeted support lanes |
 | `reference_injection_budget_basis_chars` | int | none | Configured memory cap used as the independent reference budget basis; remains stable when a turn temporarily suppresses main memory injection |
 | `reference_recall_limit` | int | none | Candidate limit used only by original-work recall; absent inherits `top_k`, explicit 0 disables reference candidates, negative clamps to 0 |
 | `reference_injection_enabled` | bool | none | Controls only the independent reference lane; absent callers inherit `injection_enabled` |

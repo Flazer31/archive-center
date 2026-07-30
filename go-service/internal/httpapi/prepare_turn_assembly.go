@@ -576,7 +576,12 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		"_memory_delivery_budget_mode": memoryDeliveryBudgetMode,
 		"_memory_delivery_budgets":     memoryDeliveryBudgets,
 	}
+	if len(perspectiveContextArg) > 0 {
+		deliveryBudgetContext["_core_objective_memory_max_items_present"] = boolFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items_present"])
+		deliveryBudgetContext["_core_objective_memory_max_items"] = intFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items"], 0)
+	}
 	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, maxChars, deliveryBudgetContext)
+	out.MemoryDeliveryLineage = finalizePrepareTurnMemoryDeliveryLineage(out.MemoryDeliveryLineage, out.MemoryDeliveryPlan)
 
 	addPrepareTurnBlock(&out, "memory", "store.memories", out.MemoryText, len(memoryLines), maxChars)
 	addPrepareTurnBlock(&out, "kg", "store.kg_triples", out.KGText, len(kgLines), maxChars)
@@ -935,8 +940,22 @@ func prepareTurnMemoryRelevanceText(m store.Memory) string {
 }
 
 func compactPrepareTurnLine(text string, limit int) string {
-	_ = limit
 	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if limit <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	cut := limit
+	for i := limit - 1; i > 0; i-- {
+		if runes[i] == ' ' {
+			cut = i
+			break
+		}
+	}
+	text = strings.TrimSpace(string(runes[:cut]))
 	return text
 }
 

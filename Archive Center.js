@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 3.6.0-dev
+//@display-name Archive Center 3.7.0-dev
 //@author memory-scaffold
 //@api 3.0
-//@version 3.6.0-dev
+//@version 3.7.0-dev
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "3.6.0-dev";
-  const BUILD_ID = "3.6-precision-memory.20260729-3";
-  const BUILD_CHANNEL = "3.6-local-test";
-  const BUILD_TIME = "2026-07-29 KST";
-  const BUILD_NOTES = "3.6 Claude automatic prompt caching with typed 5m/1h controls";
+  const VERSION = "3.7.0-dev";
+  const BUILD_ID = "3.7-f-memory-guidance.20260730-1";
+  const BUILD_CHANNEL = "3.7-local-test";
+  const BUILD_TIME = "2026-07-30 KST";
+  const BUILD_NOTES = "3.7-F relevant memory delivery, truthful HUD lineage, and bounded narrative guidance";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
@@ -151,6 +151,7 @@
     injectionEnabled: true,
     debug: false,
     topK: 5,
+    coreObjectiveMemoryMaxItems: 5,
     requestTimeoutMs: 15000,
     auxiliaryInjectionPlacement: "auto",
     auxiliaryInjectionAnchorMarker: "",
@@ -1055,10 +1056,10 @@
       "settings.label.llmRetryCount": "LLM 재시도 횟수",
       "settings.label.llmRetryCount.hint": "0 = 재시도 없음(1회만 시도), 3 = 실패 시 3회 추가 시도",
       "settings.label.maxInjectionChars": "보조 컨텍스트 길이 제한 (chars)",
-      "settings.label.narrativeGuideMode": "서사 가이드 (AI 자동)",
-      "settings.label.narrativeGuideMode.help": "Auto 모드는 현재 입력을 기준으로 Go 백엔드가 판정하고, 결정된 모드를 trace와 대시보드에 표시합니다.",
+      "settings.label.narrativeGuideMode": "서사 가이드 모드",
+      "settings.label.narrativeGuideMode.help": "Auto는 본문 키워드로 장르를 추정하지 않고 Standard로 동작합니다. 특정 장르 모드는 사용자가 직접 선택할 때만 적용됩니다.",
       "settings.label.narrativeGuideStrength": "서사 가이드 강도",
-      "settings.label.narrativeGuideStrength.help": "None은 서사 가이드를 끕니다. Weak는 충실도와 낮은 영향의 표현을, Medium은 페이스·장면 강조·콜백을, Strong은 추가로 가역적 선택지를 지원합니다. 모든 제안은 선택 사항입니다.",
+      "settings.label.narrativeGuideStrength.help": "없음은 감독관 호출만 끄고 기억·비밀 보호는 유지합니다. 약함은 응답 초점, 보통은 진행 또는 유지 제안, 강함은 arc 기준과 우선 frontier까지 제안합니다. 어떤 강도도 진행이나 사용자 행동·새 사실·관계 변화·사건 종결을 강제하지 않습니다.",
       "settings.label.narrativeSupportMaxChars": "서사 안내 예산 (chars)",
       "settings.hint.narrativeSupportMaxChars": "감독관 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
       "settings.label.publisherMaxCompletionTokens": "출판사 Max Completion Tokens",
@@ -1069,6 +1070,8 @@
       "settings.label.supervisorTimeout": "감독관 Timeout (초)",
       "settings.label.topK": "ChromaDB 의미 기억 검색 수",
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
+      "settings.label.coreObjectiveMemoryMaxItems": "핵심 연관 기억 최대 수",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "관련도·인물 coverage·중복 제거 뒤 본문에 전달할 객관적 사건 요약의 최대 수입니다. 직접 근거·비밀 보호·상태·주관 기억·계층 보조 자료는 이 숫자를 소비하지 않지만 전체 문자 예산은 지킵니다.",
       "settings.label.uiDetailMode": "UI 상세 수준",
       "settings.label.uiLanguage": "UI 언어",
       "settings.label.turnWorkflowHUDEnabled": "플로팅 진행 UI",
@@ -1240,6 +1243,19 @@
       "turn_hud.count.vector_index": "Vector 색인",
       "turn_hud.warning.publisher_llm_not_configured": "출판사 LLM이 설정되지 않아 건너뜀",
       "turn_hud.warning.publisher_llm_failed_open": "출판사 LLM 실패 후 본문 요청은 계속됨",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "감독관 응답 형식이 잘못되어 제안을 버렸으며 본문 요청은 계속됨",
+      "turn_hud.memory.title": "기억 전달",
+      "turn_hud.memory.vector_limit": "Vector 후보",
+      "turn_hud.memory.core_requested": "핵심 상한",
+      "turn_hud.memory.core_eligible": "관련 후보",
+      "turn_hud.memory.core_delivered": "최종 전달",
+      "turn_hud.memory.core_deferred_limit": "상한 제외",
+      "turn_hud.memory.core_deferred_budget": "예산 제외",
+      "turn_hud.memory.core_missing": "상한 미달",
+      "turn_hud.memory.lanes": "레인별 전달",
+      "turn_hud.memory.items": "최종 항목·제외 사유",
+      "turn_hud.memory.exclusions": "제외 사유",
+      "turn_hud.memory.protected": "보호 내용 비공개",
       "turn_hud.warning.critic_llm_not_configured": "평론가 LLM이 설정되지 않아 파생 자료를 건너뜀",
       "turn_hud.warning.vector_index_skipped": "Vector 색인을 건너뜀",
       "turn_hud.warning.store_writes_disabled": "저장 기능이 꺼져 있음",
@@ -1330,6 +1346,8 @@
       "settings.hint.reasoningEffort": "none is omitted. Use provider-supported values like low/medium/high.",
       "settings.label.topK": "ChromaDB Semantic Memories",
       "settings.label.topK.hint": "How many semantically relevant memories ChromaDB should retrieve for the current input. MariaDB hydrates selected vector hits as canonical rows.",
+      "settings.label.coreObjectiveMemoryMaxItems": "Core Relevant Memory Maximum",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "Maximum objective event summaries delivered after relevance, entity coverage, and deduplication. Direct evidence, secret guards, states, subjective memories, and hierarchy support do not consume this count, but all remain inside the character budget.",
       "settings.label.llmRetryCount": "LLM Retry Count",
       "settings.label.llmRetryCount.hint": "0 = no retry (1 attempt only), 3 = 3 additional attempts on failure",
       "settings.label.maxInjectionChars": "Helper Context Length Limit (chars)",
@@ -1338,10 +1356,10 @@
       "settings.hint.injectionBudgetExtraChars": "Extra characters allowed above the automatic injection budget. This is a character limit, not a token limit. A higher ceiling is not filled unless relevant memory exists.",
       "settings.label.primaryCanonBaseMaxChars": "Primary-mode Canon Base budget (chars)",
       "settings.hint.primaryCanonBaseMaxChars": "Set to 0 to disable. In primary original-work mode, this is a Canon Base sub-cap within the resolved reference total.",
-      "settings.label.narrativeGuideMode": "Narrative Guide (AI Auto)",
-      "settings.label.narrativeGuideMode.help": "Auto mode is resolved by the Go backend from the current input, then exposed in trace and the dashboard.",
+      "settings.label.narrativeGuideMode": "Narrative Guide Mode",
+      "settings.label.narrativeGuideMode.help": "Auto does not infer genre from story keywords; it uses Standard. Genre-specific modes apply only when selected explicitly.",
       "settings.label.narrativeGuideStrength": "Narrative Guide Strength",
-      "settings.label.narrativeGuideStrength.help": "None disables guidance. Weak allows fidelity and low-impact portrayal support, Medium adds pacing, scene emphasis, and callbacks, and Strong also allows reversible options. Every suggestion remains optional.",
+      "settings.label.narrativeGuideStrength.help": "None skips the Supervisor call while memory and secret guards remain active. Weak proposes response focus, Medium may suggest advance or hold, and Strong adds an arc anchor and preferred frontier. No strength may force progress, user actions, new truth, relationship changes, or event closure.",
       "settings.label.narrativeSupportMaxChars": "Narrative guidance budget (chars)",
       "settings.hint.narrativeSupportMaxChars": "Independent budget for supervisor proposals and response execution guidance. It does not borrow from memory, original-work, or user-input budgets.",
       "settings.label.auxiliaryInjectionPlacement": "Memory Injection Placement",
@@ -2244,6 +2262,19 @@
       "turn_hud.count.vector_index": "Vector index",
       "turn_hud.warning.publisher_llm_not_configured": "Publisher LLM is not configured and was skipped",
       "turn_hud.warning.publisher_llm_failed_open": "Publisher LLM failed; the story request continued",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "The Supervisor response was malformed, so its proposal was discarded and the story request continued",
+      "turn_hud.memory.title": "Memory delivery",
+      "turn_hud.memory.vector_limit": "Vector candidates",
+      "turn_hud.memory.core_requested": "Core limit",
+      "turn_hud.memory.core_eligible": "Relevant",
+      "turn_hud.memory.core_delivered": "Delivered",
+      "turn_hud.memory.core_deferred_limit": "Limit drop",
+      "turn_hud.memory.core_deferred_budget": "Budget drop",
+      "turn_hud.memory.core_missing": "Under limit",
+      "turn_hud.memory.lanes": "Delivery lanes",
+      "turn_hud.memory.items": "Final items and exclusion reasons",
+      "turn_hud.memory.exclusions": "Exclusion reasons",
+      "turn_hud.memory.protected": "Protected text hidden",
       "turn_hud.warning.critic_llm_not_configured": "Critic LLM is not configured; derived artifacts were skipped",
       "turn_hud.warning.vector_index_skipped": "Vector indexing was skipped",
       "turn_hud.warning.store_writes_disabled": "Storage writes are disabled",
@@ -2334,6 +2365,8 @@
       "settings.hint.reasoningEffort": "none は送信しません。low/medium/high など provider 対応値を使用してください。",
       "settings.label.topK": "ChromaDB意味記憶検索数",
       "settings.label.topK.hint": "現在の入力に意味的に近い記憶をChromaDBで何件取得するかを指定します。MariaDBは選ばれたベクトル結果を正本rowとして確認します。",
+      "settings.label.coreObjectiveMemoryMaxItems": "核心関連記憶の最大数",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "関連度・人物coverage・重複除去の後に本文へ渡す客観的事件要約の最大数です。直接根拠、秘密guard、状態、主観記憶、階層supportはこの数を消費しませんが、全体の文字予算には従います。",
       "settings.label.llmRetryCount": "LLMリトライ回数",
       "settings.label.llmRetryCount.hint": "0 = リトライなし（1回のみ）、3 = 失敗時3回追加試行",
       "settings.label.maxInjectionChars": "補助情報の長さ上限（chars）",
@@ -2342,10 +2375,10 @@
       "settings.hint.injectionBudgetExtraChars": "自動注入予算の上に許可する追加文字数です。トークン数ではなく文字数です。関連する記憶がなければ無理に埋めません。",
       "settings.label.primaryCanonBaseMaxChars": "単独モード Canon Base 予算（chars）",
       "settings.hint.primaryCanonBaseMaxChars": "0で無効化します。単独（primary）原作モードで、原作参照の総予算内にある Canon Base の下位上限です。",
-      "settings.label.narrativeGuideMode": "ナラティブガイド（AI自動）",
-      "settings.label.narrativeGuideMode.help": "自動判定は現在の入力を基準にGoバックエンドが判断し、最終モードをtraceとダッシュボードに表示します。",
+      "settings.label.narrativeGuideMode": "ナラティブガイドモード",
+      "settings.label.narrativeGuideMode.help": "Autoは本文キーワードからジャンルを推定せずStandardとして動作します。ジャンル別モードはユーザーが明示的に選んだ場合のみ適用されます。",
       "settings.label.narrativeGuideStrength": "ナラティブガイド強度",
-      "settings.label.narrativeGuideStrength.help": "なしはガイドを無効化します。弱は忠実性と低影響の表現、中はペーシング・場面強調・コールバック、強はさらに可逆的な選択肢を補助します。すべて任意の提案です。",
+      "settings.label.narrativeGuideStrength.help": "なしはSupervisor呼び出しだけを停止し、記憶と秘密保護は維持します。弱は応答の焦点、中は進行または保持、強はarc anchorと優先frontierまで提案します。どの強度も進行、ユーザー行動、新事実、関係変化、事件終結を強制しません。",
       "settings.label.narrativeSupportMaxChars": "ナラティブ案内予算（chars）",
       "settings.hint.narrativeSupportMaxChars": "監督提案と応答実行ガイド専用の独立予算です。長期記憶・原作資料・ユーザー入力の予算は使用しません。",
       "settings.label.auxiliaryInjectionPlacement": "記憶の注入位置",
@@ -3246,6 +3279,19 @@
       "turn_hud.count.vector_index": "Vector索引",
       "turn_hud.warning.publisher_llm_not_configured": "出版社LLMが未設定のためスキップ",
       "turn_hud.warning.publisher_llm_failed_open": "出版社LLM失敗後も本文リクエストは継続",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "Supervisor応答の形式が不正なため提案を破棄し、本文リクエストは継続しました",
+      "turn_hud.memory.title": "記憶の伝達",
+      "turn_hud.memory.vector_limit": "Vector候補",
+      "turn_hud.memory.core_requested": "核心上限",
+      "turn_hud.memory.core_eligible": "関連候補",
+      "turn_hud.memory.core_delivered": "最終伝達",
+      "turn_hud.memory.core_deferred_limit": "上限除外",
+      "turn_hud.memory.core_deferred_budget": "予算除外",
+      "turn_hud.memory.core_missing": "上限未満",
+      "turn_hud.memory.lanes": "レーン別伝達",
+      "turn_hud.memory.items": "最終項目・除外理由",
+      "turn_hud.memory.exclusions": "除外理由",
+      "turn_hud.memory.protected": "保護内容は非表示",
       "turn_hud.warning.critic_llm_not_configured": "批評家LLMが未設定のため派生資料をスキップ",
       "turn_hud.warning.vector_index_skipped": "Vector索引をスキップ",
       "turn_hud.warning.store_writes_disabled": "保存機能が無効",
@@ -10435,6 +10481,10 @@
     const merged = { ...DEFAULT_SETTINGS, ...migrateLegacyInjectionBudgetSettings(raw) };
     // 숫자 검증
     merged.topK = sanitizeTopKSetting(merged.topK, DEFAULT_SETTINGS.topK);
+    merged.coreObjectiveMemoryMaxItems = sanitizeTopKSetting(
+      merged.coreObjectiveMemoryMaxItems,
+      DEFAULT_SETTINGS.coreObjectiveMemoryMaxItems,
+    );
     merged.requestTimeoutMs = getRequestTimeoutSettingMs(merged.requestTimeoutMs);
     // Sprint 3-B: injection budget
     merged.maxInjectionChars = sanitizeNumber(merged.maxInjectionChars, DEFAULT_SETTINGS.maxInjectionChars, 500, 10000);
@@ -10535,8 +10585,11 @@
     merged.rollbackIdleWatcherModePolicyVersion = DEFAULT_SETTINGS.rollbackIdleWatcherModePolicyVersion;
     // bridgeUrl 방어
     merged.bridgeUrl = sanitizeBridgeUrl(merged.bridgeUrl);
-    // 정책: 서사 가이드 모드는 UI 수동 선택 대신 AI 자동 결정으로 고정한다.
-    merged.narrativeGuideMode = "auto";
+    merged.narrativeGuideMode = sanitizeEnumValue(
+      merged.narrativeGuideMode,
+      DEFAULT_SETTINGS.narrativeGuideMode,
+      NARRATIVE_GUIDE_MODES,
+    );
     merged.narrativeGuideStrength = sanitizeEnumValue(
       merged.narrativeGuideStrength,
       DEFAULT_SETTINGS.narrativeGuideStrength,
@@ -12970,6 +13023,7 @@
       raw_persistence: "Raw",
       derived_memory: "Derived",
       vector_index: "Vector",
+      narrative_guidance: "Guide",
     };
     return labels[String(key || "")] || String(key || "");
   }
@@ -13029,6 +13083,84 @@
       + `<span style="${TURN_WORKFLOW_HUD_TOTAL_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(presentation.totalValue)}</span>`
       + `</div>`
       + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${presentation.countHTML}</div>`;
+  }
+
+  function turnWorkflowHUDMemorySelectionHTML(view) {
+    const selection = view && view.memory_selection && typeof view.memory_selection === "object"
+      ? view.memory_selection
+      : null;
+    if (!selection) return "";
+    const core = selection.core_objective_memory && typeof selection.core_objective_memory === "object"
+      ? selection.core_objective_memory
+      : {};
+    const numberText = function(value) {
+      if (value === null || value === undefined || value === "") return "—";
+      const number = Number(value);
+      return Number.isFinite(number) ? String(Math.max(0, Math.trunc(number))) : "—";
+    };
+    const summaryRows = [
+      ["turn_hud.memory.vector_limit", selection.vector_candidate_limit],
+      ["turn_hud.memory.core_requested", core.requested_max_items],
+      ["turn_hud.memory.core_eligible", core.eligible_distinct_count],
+      ["turn_hud.memory.core_delivered", core.delivered_count],
+      ["turn_hud.memory.core_deferred_limit", core.deferred_by_limit_count],
+      ["turn_hud.memory.core_deferred_budget", core.deferred_by_budget_count],
+      ["turn_hud.memory.core_missing", core.missing_to_limit],
+    ].map(function(row) {
+      return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(row[0]))}</span>`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(numberText(row[1]))}</span>`
+        + `</div>`;
+    }).join("");
+    const lanes = Array.isArray(selection.lanes) ? selection.lanes : [];
+    const laneHTML = lanes.map(function(rawLane) {
+      const lane = rawLane && typeof rawLane === "object" ? rawLane : {};
+      const counts = numberText(lane.selected_count) + "/" + numberText(lane.eligible_count)
+        + " · d" + numberText(lane.deferred_count)
+        + " · x" + numberText(lane.deduplicated_count);
+      return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(String(lane.key || "unknown"))}</span>`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(counts)}</span>`
+        + `</div>`;
+    }).join("");
+    const items = Array.isArray(selection.items) ? selection.items : [];
+    const itemHTML = items.map(function(rawItem) {
+      const item = rawItem && typeof rawItem === "object" ? rawItem : {};
+      const identity = [
+        item.source_row_id ? "#" + item.source_row_id : "",
+        Number(item.turn_index || 0) > 0 ? "T" + Math.trunc(Number(item.turn_index)) : "",
+        item.selection_lane || "",
+      ].filter(Boolean).join(" · ");
+      const result = [item.disposition || "deferred", item.reason_code || "unobserved"].join(" · ");
+      const preview = item.protected === true
+        ? t("turn_hud.memory.protected")
+        : String(item.preview || "");
+      return `<div style="padding:4px 0;border-top:1px solid rgba(255,255,255,.05)">`
+        + (identity ? `<div style="${TURN_WORKFLOW_HUD_STAGE_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(identity)}</div>` : "")
+        + `<div style="${TURN_WORKFLOW_HUD_STAGE_META_STYLE}">${escapeTurnWorkflowHUDHTML(result)}</div>`
+        + (preview ? `<div style="${TURN_WORKFLOW_HUD_STAGE_REASON_STYLE}">${escapeTurnWorkflowHUDHTML(preview)}</div>` : "")
+        + `</div>`;
+    }).join("");
+    const exclusions = selection.exclusion_reasons && typeof selection.exclusion_reasons === "object"
+      ? selection.exclusion_reasons
+      : {};
+    const exclusionHTML = Object.keys(exclusions).sort().map(function(reason) {
+      return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(reason)}</span>`
+        + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(numberText(exclusions[reason]))}</span>`
+        + `</div>`;
+    }).join("");
+    return `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.title"))}</div>`
+      + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${summaryRows}</div>`
+      + (laneHTML
+        ? `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.lanes"))}</div><div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${laneHTML}</div>`
+        : "")
+      + (itemHTML
+        ? `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.items"))}</div><div style="max-height:150px;overflow:auto;scrollbar-width:thin">${itemHTML}</div>`
+        : "")
+      + (exclusionHTML
+        ? `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.exclusions"))}</div><div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${exclusionHTML}</div>`
+        : "");
   }
 
   function dismissTurnWorkflowHUD(requestId) {
@@ -13103,6 +13235,7 @@
           + (meta ? `<div style="${failed ? TURN_WORKFLOW_HUD_ERROR_META_STYLE : TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>` : "")
           + turnWorkflowHUDWarningListHTML(view)
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + turnWorkflowHUDMemorySelectionHTML(view)
           + turnWorkflowHUDFactLedgerHTML(view)
           + `</div>`,
       };
@@ -13133,6 +13266,7 @@
           + turnWorkflowHUDWarningListHTML(view)
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + turnWorkflowHUDMemorySelectionHTML(view)
           + turnWorkflowHUDFactLedgerHTML(view)
           + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
@@ -13155,6 +13289,7 @@
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
           + turnWorkflowHUDWarningListHTML(view)
+          + turnWorkflowHUDMemorySelectionHTML(view)
           + turnWorkflowHUDFactLedgerHTML(view)
           + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
@@ -13829,6 +13964,10 @@
           episode_interval_turns: settings.episodeIntervalTurns || DEFAULT_SETTINGS.episodeIntervalTurns,
           supervisor_enabled: !guideDisabled,
           top_k: freshFirstTurnLightMode ? 0 : sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
+          core_objective_memory_max_items: sanitizeTopKSetting(
+            settings.coreObjectiveMemoryMaxItems,
+            DEFAULT_SETTINGS.coreObjectiveMemoryMaxItems,
+          ),
         },
       };
       if (prepareOptions.sourceDecisionOnly === true) {
@@ -19803,7 +19942,7 @@
       return Array.isArray(lane.items) ? lane.items.length : 0;
     }
     let html = "";
-    html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">topK</span><span class="mo-it-dir-val">' + escapeAttr(String(topK || "?") + ' total memory target') + '</span></div>';
+    html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">topK</span><span class="mo-it-dir-val">' + escapeAttr(String(topK || "?") + ' vector candidate limit') + '</span></div>';
     html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">counts</span><span class="mo-it-dir-val">' + escapeAttr(laneDefs.map(function(def) {
       return def[1] + ":" + laneCount(def[2]);
     }).join(" / ")) + '</span></div>';
@@ -26356,32 +26495,27 @@
         && compactPlan.contract_version === "payload_application_plan.v1"
         && compactPlan.owner === "go"
         && compactPlan.apply_rule === "apply_exact_text_without_reassembly") {
-        const compactSearchResult = {
-          status: "ok",
-          source: "prepare_turn.production_compact.v1",
-          items: [],
-          paths: [],
-          dedupeStats: { before: 0, after: 0, removed: 0 },
-          continuityUsed: false,
-          pathBUsed: false,
-          multiMatchCount: 0,
-        };
+        const compactProjection = preparedBundle
+          && preparedBundle.tracePreview
+          && preparedBundle.tracePreview.compact_orchestration
+          && typeof preparedBundle.tracePreview.compact_orchestration === "object"
+          ? preparedBundle.tracePreview.compact_orchestration
+          : {};
+        const compactSearchResult = compactProjection.search_result
+          && typeof compactProjection.search_result === "object"
+          ? compactProjection.search_result
+          : {};
+        const compactSupervisorTrace = compactProjection.supervisor
+          && typeof compactProjection.supervisor === "object"
+          ? compactProjection.supervisor
+          : {};
+        const compactActivity = compactProjection.activity
+          && typeof compactProjection.activity === "object"
+          ? compactProjection.activity
+          : {};
         const compactSupervisorResult = preparedBundle.supervisorResult || null;
-        trace.search = {
-          status: "ok",
-          source: "prepare_turn.production_compact.v1",
-          itemCount: 0,
-          memoryCount: 0,
-          fallbackCount: 0,
-          paths: [],
-          dedupeStats: compactSearchResult.dedupeStats,
-          pathBUsed: false,
-          multiMatchCount: 0,
-        };
-        trace.supervisor = {
-          status: compactSupervisorResult ? "ok" : "skipped",
-          source: "prepare_turn.production_compact.v1",
-        };
+        trace.search = compactSearchResult;
+        trace.supervisor = compactSupervisorTrace;
         trace.injection = { status: "pending", applied: false };
         trace._inputTransparency = buildInputTransparency(
           userInput,
@@ -26407,8 +26541,8 @@
           duration_ms: 0,
           totalMs: 0,
           stages: { compactProjection: 0 },
-          counts: { memories: 0, kgTriples: 0, episodes: 0, activeStates: 0, storylines: 0, characters: 0, worldRules: 0, pendingThreads: 0, locationContext: 0 },
-          llmCalls: { supervisor: compactSupervisorResult ? 1 : 0, supervisorLatencyMs: 0 },
+          counts: compactActivity.counts && typeof compactActivity.counts === "object" ? compactActivity.counts : {},
+          llmCalls: compactActivity.llmCalls && typeof compactActivity.llmCalls === "object" ? compactActivity.llmCalls : {},
           flags: { compactPrepareTurnProjection: true },
         };
         return {
@@ -50632,6 +50766,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <small>${t('settings.label.topK.hint')}</small>
         </div>
         <div class="mo-row mo-range-row">
+          <label>${t('settings.label.coreObjectiveMemoryMaxItems')}</label>
+          <input type="number" id="mo-coreObjectiveMemoryMaxItems" value="${s.coreObjectiveMemoryMaxItems}" min="1" step="1">
+          <small>${t('settings.label.coreObjectiveMemoryMaxItems.hint')}</small>
+        </div>
+        <div class="mo-row mo-range-row">
           <label>${t('settings.label.llmRetryCount')}</label>
           <input type="number" id="mo-llmRetryCount" value="${s.llmRetryCount ?? 3}" min="0" max="10" step="1">
           <input class="mo-range" type="range" id="mo-llmRetryCountRange" data-sync-input="mo-llmRetryCount" value="${s.llmRetryCount ?? 3}" min="0" max="10" step="1">
@@ -50672,6 +50811,19 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <label>${t('settings.label.auxiliaryInjectionAnchorMarker')}</label>
           <input type="text" id="mo-auxiliaryInjectionAnchorMarker" value="${escapeAttr(s.auxiliaryInjectionAnchorMarker || "")}" placeholder="<ARCHIVE_CENTER_MEMORY_ANCHOR>">
           <small>${t('settings.hint.auxiliaryInjectionAnchorMarker')}</small>
+        </div>
+        <div class="mo-row">
+          <label>${t('settings.label.narrativeGuideMode')}</label>
+          <select id="mo-narrativeGuideMode">
+            <option value="auto"${s.narrativeGuideMode === "auto" ? " selected" : ""}>${t('settings.narrativeMode.auto')}</option>
+            <option value="off"${s.narrativeGuideMode === "off" ? " selected" : ""}>${t('settings.narrativeMode.off')}</option>
+            <option value="standard"${s.narrativeGuideMode === "standard" ? " selected" : ""}>${t('settings.narrativeMode.standard')}</option>
+            <option value="romantic"${s.narrativeGuideMode === "romantic" ? " selected" : ""}>${t('settings.narrativeMode.romantic')}</option>
+            <option value="action"${s.narrativeGuideMode === "action" ? " selected" : ""}>${t('settings.narrativeMode.action')}</option>
+            <option value="mature_soft"${s.narrativeGuideMode === "mature_soft" ? " selected" : ""}>${t('settings.narrativeMode.matureSoft')}</option>
+            <option value="mature_direct"${s.narrativeGuideMode === "mature_direct" ? " selected" : ""}>${t('settings.narrativeMode.matureDirect')}</option>
+          </select>
+          <small>${t('settings.label.narrativeGuideMode.help')}</small>
         </div>
         <div class="mo-row">
           <label>${t('settings.label.narrativeGuideStrength')}</label>
@@ -51401,12 +51553,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       syncMemoryDeliveryBudgetControls();
 
       const syncNarrativeGuideControls = () => {
-        const narrativeEl = $("mo-narrativeGuideModeDisplay");
+        const narrativeEl = $("mo-narrativeGuideMode");
         const guideStrengthEl = $("mo-narrativeGuideStrength");
         const isOff = guideStrengthEl && guideStrengthEl.value === "none";
         if (narrativeEl) {
-          narrativeEl.value = isOff ? t("settings.narrativeMode.off") : t("settings.narrativeMode.auto");
-          narrativeEl.disabled = true;
+          narrativeEl.disabled = !!isOff;
         }
       };
       const guideStrengthEl = $("mo-narrativeGuideStrength");
@@ -51683,6 +51834,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             criticTimeout: $("mo-criticTimeout").value,
             embeddingTimeout: $("mo-embeddingTimeout").value,
             topK: $("mo-topK").value,
+            coreObjectiveMemoryMaxItems: $("mo-coreObjectiveMemoryMaxItems").value,
             llmRetryCount: $("mo-llmRetryCount").value,
             injectionBudgetExtraChars: $("mo-injectionBudgetExtraChars").value,
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
@@ -51748,6 +51900,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             failedQueueMaxSize: $("mo-failedQueueMaxSize").value,
             failedQueueMaxAgeDays: $("mo-failedQueueMaxAgeDays").value,
             failedQueueMaxAttempts: $("mo-failedQueueMaxAttempts").value,
+            narrativeGuideMode: $("mo-narrativeGuideMode").value,
             narrativeGuideStrength: $("mo-narrativeGuideStrength").value,
             narrativeSupportMaxChars: $("mo-narrativeSupportMaxChars").value,
             // J-3a: Plugin Main Apply Mode
@@ -51810,6 +51963,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           setValueIfPresent("mo-primaryCanonBaseMaxChars", settings.primaryCanonBaseMaxChars);
           for (let i = 0; i < reasoningSyncRunners.length; i++) reasoningSyncRunners[i]();
           $("mo-topK").value = settings.topK;
+          $("mo-coreObjectiveMemoryMaxItems").value = settings.coreObjectiveMemoryMaxItems;
           $("mo-llmRetryCount").value = settings.llmRetryCount;
           $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars || 0;
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");
@@ -51824,6 +51978,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           syncMemoryDeliveryBudgetControls();
           setValueIfPresent("mo-auxiliaryInjectionPlacement", settings.auxiliaryInjectionPlacement || "auto");
           setValueIfPresent("mo-auxiliaryInjectionAnchorMarker", settings.auxiliaryInjectionAnchorMarker || "");
+          setValueIfPresent("mo-narrativeGuideMode", settings.narrativeGuideMode || "auto");
           $("mo-narrativeGuideStrength").value = settings.narrativeGuideStrength || "weak";
           $("mo-uiDetailMode").value = settings.uiDetailMode || "full";
           setCheckedIfPresent("mo-turnWorkflowHUDEnabled", settings.turnWorkflowHUDEnabled !== false);

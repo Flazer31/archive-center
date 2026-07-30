@@ -1908,7 +1908,16 @@
         "guide_mode": {
           "type": "string",
           "title": "Guide Mode",
-          "default": "off"
+          "default": "off",
+          "enum": [
+            "auto",
+            "off",
+            "standard",
+            "romantic",
+            "action",
+            "mature_soft",
+            "mature_direct"
+          ]
         },
         "narrative_stance": {
           "type": "string",
@@ -1939,6 +1948,12 @@
           "type": "integer",
           "title": "Max Injection Chars",
           "default": 3000
+        },
+        "core_objective_memory_max_items": {
+          "type": "integer",
+          "minimum": 1,
+          "title": "Core Objective Memory Max Items",
+          "description": "Optional final-delivery ceiling for distinct objective event summaries. It does not reinterpret top_k and does not count direct evidence, protected guards, subjective/private recollection, hierarchy, state, world, or unresolved-goal support. Absent callers preserve legacy character-budget-only delivery."
         },
         "reference_injection_budget_basis_chars": {
           "type": "integer",
@@ -2425,7 +2440,16 @@
         "guide_mode": {
           "type": "string",
           "title": "Guide Mode",
-          "default": "off"
+          "default": "off",
+          "enum": [
+            "auto",
+            "off",
+            "standard",
+            "romantic",
+            "action",
+            "mature_soft",
+            "mature_direct"
+          ]
         },
         "guide_suffix": {
           "type": "string",

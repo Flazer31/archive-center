@@ -76,7 +76,7 @@
 | PatchStorylineRequest | 11 | 0 | 0 | 1 |
 | PatchWorldRuleRequest | 6 | 0 | 0 | 1 |
 | PrepareTurnRequest | 9 | 1 | 0 | 1 |
-| PrepareTurnSettings | 14 | 0 | 0 | 0 |
+| PrepareTurnSettings | 16 | 0 | 0 | 0 |
 | PromptUpdateRequest | 1 | 0 | 0 | 1 |
 | ProxyPluginMainRequest | 14 | 1 | 1 | 1 |
 | ReindexRequest | 4 | 1 | 0 | 1 |
@@ -864,7 +864,7 @@
 
 ## PatchStorylineRequest
 
-- **Fields**: 11
+- **Fields**: 15
 - **Required**: 0
 - **Blockers**: 0
 - **Routes**:
@@ -923,7 +923,7 @@
 
 ## PrepareTurnSettings
 
-- **Fields**: 11
+- **Fields**: 16
 - **Required**: 0
 - **Blockers**: 0
 - **Routes**: none
@@ -944,6 +944,7 @@
 | `narrative_stance,omitempty` | NarrativeStance | No | No | Yes | "balanced" | `string` | direct | - | Optional non-null scalar string: absent vs zero-value distinction requ... | Optional field with default ("balanced"): Go handler must apply defaul... |
 | `supervisor_enabled,omitempty` | SupervisorEnabled | No | No | Yes | true | `bool` | direct | - | Optional non-null scalar bool: absent vs zero-value distinction requir... | Optional field with default (true): Go handler must apply default when... |
 | `takeover_mode,omitempty` | TakeoverMode | No | No | Yes | "off" | `string` | direct | - | Optional non-null scalar string: absent vs zero-value distinction requ... | Optional field with default ("off"): Go handler must apply default whe... |
+| `core_objective_memory_max_items,omitempty` | CoreObjectiveMemoryMaxItems | No | Yes | No | - | `*int` | nullable_pointer | - | Optional positive scalar int; pointer presence preserves legacy delivery when absent. | Absent preserves legacy delivery; explicit values cap distinct objective event summaries after selection and deduplication without reinterpreting `top_k`. |
 | `top_k,omitempty` | TopK | No | No | Yes | 5 | `int` | direct | - | Optional non-null scalar int: absent vs zero-value distinction require... | Optional field with default (5): Go handler must apply default when fi... |
 
 ## PromptUpdateRequest

@@ -268,7 +268,7 @@ func TestPrepareTurnStoreBackedAssemblySagaEvidence(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-saga","turn_index":3,"raw_user_input":"What happens next?","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
+	body := `{"chat_session_id":"sess-saga","turn_index":3,"raw_user_input":"Recall the epic saga of mystery and discovery.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -548,7 +548,7 @@ func TestPrepareTurnSagaConsumedEvidence(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-consume","turn_index":3,"raw_user_input":"What happens next?","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
+	body := `{"chat_session_id":"sess-consume","turn_index":3,"raw_user_input":"Continue the epic saga of mystery and discovery.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -952,7 +952,7 @@ func TestPrepareTurnSagaTextInAuxiliaryPrompt(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-saga-aux","turn_index":3,"raw_user_input":"What happens next?","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
+	body := `{"chat_session_id":"sess-saga-aux","turn_index":3,"raw_user_input":"Continue the epic saga of mystery and discovery.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":500,"max_input_context_chars":400,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1033,7 +1033,7 @@ func TestPrepareTurnChapterHierarchyEscalationConsumed(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-chapter-aux","turn_index":61,"raw_user_input":"계속 이어가자. 이전 작전 맥락을 잊지 말아줘.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":900,"max_input_context_chars":400,"top_k":2}}`
+	body := `{"chat_session_id":"sess-chapter-aux","turn_index":61,"raw_user_input":"Luka continues the demolition plan while the unresolved trust tension remains.","settings":{"injection_enabled":true,"input_context_enabled":true,"max_injection_chars":900,"max_input_context_chars":400,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

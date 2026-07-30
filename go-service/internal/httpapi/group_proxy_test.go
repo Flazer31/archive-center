@@ -1856,10 +1856,14 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			!strings.Contains(systemPrompt, "current user input is the only command source") {
 			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)
 		}
-		for _, forbidden := range []string{"Story Initiative", "max_new_beats", "narrative_stance", "auto_advance_trigger", "may_advance"} {
+		for _, forbidden := range []string{"Story Initiative", "max_new_beats", "narrative_stance", "auto_advance_trigger"} {
 			if strings.Contains(systemPrompt, forbidden) || strings.Contains(userPrompt, `"`+forbidden+`"`) {
 				t.Fatalf("supervisor prompt contains story-control field %q: system=%s user=%s", forbidden, systemPrompt, userPrompt)
 			}
+		}
+		if !strings.Contains(systemPrompt, "may_advance") ||
+			!strings.Contains(systemPrompt, "never authorize") {
+			t.Fatalf("supervisor prompt missing bounded optional advance semantics: %s", systemPrompt)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,

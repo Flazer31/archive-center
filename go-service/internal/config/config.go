@@ -184,7 +184,7 @@ func Default() Config {
 		ReferenceChromaCollection: "archive_center_reference_vectors",
 		ChromaAPIPath:             "/api/v2",
 		PromptDir:                 "",
-		BuildVersion:              "3.6.0-dev",
+		BuildVersion:              "3.7.0-dev",
 		BuildCommit:               "unknown",
 		BuildTime:                 time.Now().UTC().Format(time.RFC3339),
 		Readiness: ReadinessConfig{

@@ -990,10 +990,10 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	vectorRecallAttempted := prepareTurnVectorSearchAttempted(vectorShadow)
 	vectorScopeRejected := 0
 	for _, item := range vectorHydration.Items {
-		if len(out.VectorRelevant) >= vectorLimit {
-			break
-		}
 		protected := prepareTurnProtectedMemoryGuard(item).Active
+		if !protected && actualMemoryVectorSelectedCount >= vectorLimit {
+			continue
+		}
 		if queryPresent && !protected && len(directEntitiesOutsideStoredScene) > 0 {
 			evidence := prepareTurnMemoryRecallEvidence(query, item)
 			matchesDirectEntity := len(prepareTurnMemoryDirectEntityMatches(item, directEntitiesOutsideStoredScene)) > 0

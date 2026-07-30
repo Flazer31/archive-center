@@ -397,10 +397,143 @@ func personaMemoryEntryHasTag(tags []string, needle string) bool {
 	return false
 }
 
+func filterPrepareTurnPersonaRecollections(rawUserInput string, memories []store.Memory, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, pendingThreads []store.PendingThread, entries []store.PersonaMemoryEntry, chatLogGroups ...[]store.ChatLog) ([]store.PersonaMemoryEntry, map[string]any) {
+	ctx := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogGroups...)
+	query := ctx.relevanceText()
+	type scoredPersonaEntry struct {
+		entry store.PersonaMemoryEntry
+		score int
+	}
+	eligible := make([]scoredPersonaEntry, 0, len(entries))
+	dropped := []map[string]any{}
+	for _, entry := range entries {
+		tags := personaMemoryEntryTags(entry)
+		relevanceTags := []string{}
+		for _, tag := range tags {
+			tag = strings.TrimSpace(tag)
+			lowerTag := strings.ToLower(tag)
+			if strings.HasPrefix(lowerTag, "owner_") ||
+				strings.HasPrefix(lowerTag, "raw_owner_") ||
+				strings.HasPrefix(lowerTag, "source_chat_session_id:") ||
+				strings.HasPrefix(lowerTag, "target_reveal_policy:") ||
+				strings.HasPrefix(lowerTag, "protected_secret_") ||
+				strings.HasPrefix(lowerTag, "entity_alias_") ||
+				stringSliceContains([]string{
+					"subjective_entity_memory",
+					"secret_guard",
+					"protected_secret",
+					"npc_private",
+					"owner_private",
+				}, lowerTag) {
+				continue
+			}
+			relevanceTags = append(relevanceTags, tag)
+		}
+		text := strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
+			entry.MemoryText,
+			entry.EvidenceExcerpt,
+			strings.Join(relevanceTags, " "),
+		}), "\n"))
+		if text == "" {
+			dropped = append(dropped, map[string]any{"id": entry.ID, "reason": "empty_persona_recollection"})
+			continue
+		}
+		score := prepareTurnRecallOverlapCount(query, text)
+		if score == 0 {
+			score = prepareTurnPersonaInflectionOverlapCount(query, text)
+		}
+		if score <= 0 {
+			dropped = append(dropped, map[string]any{
+				"id":     entry.ID,
+				"reason": "persona_irrelevant_to_current_request",
+			})
+			continue
+		}
+		owner := extractionFirstNonEmpty(
+			personaMemoryEntryTagValue(tags, "owner_entity_name"),
+			personaMemoryEntryTagValue(tags, "owner_entity_key"),
+		)
+		if owner != "" && prepareTurnAnyOwnerTokenMatches(prepareTurnOwnerTokens(owner, owner), query) {
+			score += 2
+		}
+		eligible = append(eligible, scoredPersonaEntry{entry: entry, score: score})
+	}
+	sort.SliceStable(eligible, func(i, j int) bool {
+		if eligible[i].score != eligible[j].score {
+			return eligible[i].score > eligible[j].score
+		}
+		if eligible[i].entry.Importance10 != eligible[j].entry.Importance10 {
+			return eligible[i].entry.Importance10 > eligible[j].entry.Importance10
+		}
+		if eligible[i].entry.SourceTurn != eligible[j].entry.SourceTurn {
+			return eligible[i].entry.SourceTurn > eligible[j].entry.SourceTurn
+		}
+		return eligible[i].entry.ID > eligible[j].entry.ID
+	})
+	filtered := make([]store.PersonaMemoryEntry, 0, len(eligible))
+	for _, candidate := range eligible {
+		filtered = append(filtered, candidate.entry)
+	}
+	return filtered, map[string]any{
+		"contract_version": "persona_recollection_relevance.v1",
+		"status":           "active",
+		"requested_count":  len(entries),
+		"eligible_count":   len(filtered),
+		"deferred_count":   len(dropped),
+		"dropped":          dropped,
+		"selection_policy": "current_request_or_confirmed_current_scene_overlap_then_importance_then_recency",
+		"garbage_fill":     false,
+		"truth_authority":  false,
+		"canonical_write":  false,
+	}
+}
+
+func prepareTurnPersonaInflectionOverlapCount(query, text string) int {
+	queryTerms := prepareTurnRecallTerms(query)
+	textTerms := prepareTurnRecallTerms(text)
+	seen := map[string]bool{}
+	overlap := 0
+	for _, queryTerm := range queryTerms {
+		queryRunes := []rune(queryTerm)
+		if len(queryRunes) < 2 || !prepareTurnContainsNonASCII(queryRunes) {
+			continue
+		}
+		for _, textTerm := range textTerms {
+			textRunes := []rune(textTerm)
+			if len(textRunes) < 2 || !prepareTurnContainsNonASCII(textRunes) {
+				continue
+			}
+			shorter := queryTerm
+			longer := textTerm
+			if len(queryRunes) > len(textRunes) {
+				shorter, longer = textTerm, queryTerm
+			}
+			key := shorter + "\x1f" + longer
+			if seen[key] || len([]rune(shorter)) < 2 || !strings.HasPrefix(longer, shorter) {
+				continue
+			}
+			seen[key] = true
+			overlap++
+			break
+		}
+	}
+	return overlap
+}
+
+func prepareTurnContainsNonASCII(value []rune) bool {
+	for _, r := range value {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
+}
+
 type prepareTurnRecollectionContext struct {
 	rawUserInput              string
 	previousEventSummary      string
 	previousEventGuardSummary string
+	currentAssistantContext   string
 	currentSceneStates        string
 	unresolvedGoals           string
 	currentEntities           string
@@ -413,6 +546,7 @@ func (ctx prepareTurnRecollectionContext) relevanceText() string {
 	return strings.TrimSpace(strings.Join(nonEmptyStrings([]string{
 		ctx.rawUserInput,
 		ctx.previousEventSummary,
+		ctx.currentAssistantContext,
 		ctx.currentSceneStates,
 		ctx.unresolvedGoals,
 		ctx.currentEntities,
@@ -534,7 +668,7 @@ func mergePrepareTurnEntityMemories(priority, fallback []store.ProtagonistEntity
 func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.Memory, activeStates []store.ActiveState, canonicalLayers []store.CanonicalStateLayer, pendingThreads []store.PendingThread, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories *[]store.ProtagonistEntityMemory, chatLogGroups ...[]store.ChatLog) map[string]any {
 	ctx := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogGroups...)
 	beforePrivate := len(*characterPrivateMemories)
-	filteredPrivate := make([]store.ProtagonistEntityMemory, 0, beforePrivate)
+	eligiblePrivate := make([]store.ProtagonistEntityMemory, 0, beforePrivate)
 	ownerNames := make([]string, 0, beforePrivate)
 	for _, item := range *characterPrivateMemories {
 		ownerNames = append(ownerNames, prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName))
@@ -586,8 +720,6 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.
 		}
 		return left.ID > right.ID
 	})
-	selectedOwners := []string{}
-	selectedOwnerKeys := map[string]bool{}
 	droppedOwners := []string{}
 	dropped := []map[string]any{}
 	protectedPrivateGuardIndex := prepareTurnProtectedPrivateGuardIndex(memories)
@@ -625,27 +757,8 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.
 			})
 			continue
 		}
-		if ownerKey != "" && selectedOwnerKeys[ownerKey] {
-			owner := prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName)
-			if owner != "" && !stringSliceContains(droppedOwners, owner) {
-				droppedOwners = append(droppedOwners, owner)
-			}
-			dropped = append(dropped, map[string]any{
-				"id":                item.ID,
-				"owner_entity_key":  item.OwnerEntityKey,
-				"owner_entity_name": item.OwnerEntityName,
-				"reason":            "owner_repetition_capped",
-			})
-			continue
-		}
 		if ok, reason := prepareTurnCharacterPrivateMemoryRelevant(item, ctx, ownerAliases); ok {
-			filteredPrivate = append(filteredPrivate, item)
-			if ownerKey != "" {
-				selectedOwnerKeys[ownerKey] = true
-			}
-			if owner := prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName); owner != "" && !stringSliceContains(selectedOwners, owner) {
-				selectedOwners = append(selectedOwners, owner)
-			}
+			eligiblePrivate = append(eligiblePrivate, item)
 			continue
 		} else {
 			owner := prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName)
@@ -660,6 +773,58 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.
 			})
 		}
 	}
+	filteredPrivate := make([]store.ProtagonistEntityMemory, 0, len(eligiblePrivate))
+	selectedOwners := []string{}
+	selectedOwnerKeys := map[string]bool{}
+	selectedIDs := map[int64]bool{}
+	selectedMemoryKeys := map[string]bool{}
+	appendEligible := func(item store.ProtagonistEntityMemory) bool {
+		if item.ID > 0 && selectedIDs[item.ID] {
+			return false
+		}
+		memoryKey := collapseTextKey(strings.Join(nonEmptyStrings([]string{
+			prepareTurnMemoryOwnerIdentity(item.OwnerEntityKey, item.OwnerEntityName),
+			item.MemoryText,
+			item.EvidenceExcerpt,
+		}), "\n"))
+		if memoryKey != "" && selectedMemoryKeys[memoryKey] {
+			dropped = append(dropped, map[string]any{
+				"id":                item.ID,
+				"owner_entity_key":  item.OwnerEntityKey,
+				"owner_entity_name": item.OwnerEntityName,
+				"reason":            "subjective_memory_semantic_duplicate",
+			})
+			return false
+		}
+		filteredPrivate = append(filteredPrivate, item)
+		if item.ID > 0 {
+			selectedIDs[item.ID] = true
+		}
+		if memoryKey != "" {
+			selectedMemoryKeys[memoryKey] = true
+		}
+		ownerKey := prepareTurnMemoryOwnerIdentity(item.OwnerEntityKey, item.OwnerEntityName)
+		if ownerKey != "" {
+			selectedOwnerKeys[ownerKey] = true
+		}
+		if owner := prepareTurnMemoryOwnerLabel(item.OwnerEntityKey, item.OwnerEntityName); owner != "" && !stringSliceContains(selectedOwners, owner) {
+			selectedOwners = append(selectedOwners, owner)
+		}
+		return true
+	}
+	// Pass one gives each already-eligible owner one relevant recollection.
+	for _, item := range eligiblePrivate {
+		ownerKey := prepareTurnMemoryOwnerIdentity(item.OwnerEntityKey, item.OwnerEntityName)
+		if ownerKey != "" && selectedOwnerKeys[ownerKey] {
+			continue
+		}
+		appendEligible(item)
+	}
+	// Pass two keeps distinct, relevant recollections from the same owner. The
+	// existing subjective_relationship character budget remains the final cap.
+	for _, item := range eligiblePrivate {
+		appendEligible(item)
+	}
 	*characterPrivateMemories = filteredPrivate
 	return map[string]any{
 		"version":                                 "pmc19.prepare_turn_entity_relevance.v1",
@@ -670,12 +835,15 @@ func filterPrepareTurnEntityRecollections(rawUserInput string, memories []store.
 		"character_private_after_filter":          len(filteredPrivate),
 		"character_private_dropped_count":         beforePrivate - len(filteredPrivate),
 		"character_private_gate":                  "owner_entity_must_match_current_user_input_or_observed_current_scene_entity",
-		"character_private_owner_cap":             1,
+		"character_private_owner_cap":             "removed_after_eligibility",
+		"character_private_owner_selection":       "coverage_first_then_relevant_distinct_fill",
+		"character_private_owner_coverage_count":  len(selectedOwnerKeys),
+		"character_private_eligible_count":        len(eligiblePrivate),
 		"character_private_total_cap":             "final_subjective_relationship_char_budget",
 		"character_private_unique_short_aliases":  len(ownerAliases),
 		"character_private_candidate_order":       "direct_owner_then_scene_overlap_then_emotional_weight_then_importance_then_recency",
 		"current_input_owner_count":               len(directOwnerKeys),
-		"current_input_owner_memory_cap":          1,
+		"current_input_owner_memory_cap":          "final_subjective_relationship_char_budget",
 		"protagonist_npc_memory_domains_separate": true,
 		"selected_owner_entities":                 selectedOwners,
 		"dropped_owner_entities":                  droppedOwners,
@@ -708,10 +876,12 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 		}
 	}
 	latestAssistantTurn := 0
+	latestAssistantContext := ""
 	if len(chatLogGroups) > 0 {
 		for _, item := range chatLogGroups[0] {
 			if strings.EqualFold(strings.TrimSpace(item.Role), "assistant") && item.TurnIndex > latestAssistantTurn {
 				latestAssistantTurn = item.TurnIndex
+				latestAssistantContext = compactPrepareTurnLine(item.Content, 480)
 			}
 		}
 	}
@@ -832,6 +1002,7 @@ func buildPrepareTurnRecollectionContext(rawUserInput string, memories []store.M
 		rawUserInput:              strings.TrimSpace(rawUserInput),
 		previousEventSummary:      strings.Join(previousEvents, "\n"),
 		previousEventGuardSummary: previousEventGuardSummary,
+		currentAssistantContext:   latestAssistantContext,
 		currentSceneStates:        strings.Join(state, "\n"),
 		unresolvedGoals:           strings.Join(goals, "\n"),
 		currentEntities:           strings.Join(currentEntities, "\n"),
@@ -862,9 +1033,6 @@ func prepareTurnCharacterPrivateMemoryRelevant(item store.ProtagonistEntityMemor
 	if len(ownerTokens) == 0 {
 		return false, "missing_owner_entity"
 	}
-	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.rawUserInput) {
-		return true, "explicit_current_user_input"
-	}
 	var aliases []string
 	if len(aliasMaps) > 0 {
 		for _, identity := range []string{item.OwnerEntityName, item.OwnerEntityKey, prepareTurnMemoryOwnerIdentity(item.OwnerEntityKey, item.OwnerEntityName)} {
@@ -876,16 +1044,71 @@ func prepareTurnCharacterPrivateMemoryRelevant(item store.ProtagonistEntityMemor
 			}
 		}
 	}
-	if prepareTurnAnyOwnerTokenMatches(aliases, ctx.rawUserInput) {
-		return true, "explicit_current_user_input_unique_short_alias"
+	ownerReason := ""
+	switch {
+	case prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.rawUserInput):
+		ownerReason = "explicit_current_user_input"
+	case prepareTurnAnyOwnerTokenMatches(aliases, ctx.rawUserInput):
+		ownerReason = "explicit_current_user_input_unique_short_alias"
+	case prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.currentEntities):
+		ownerReason = "observed_current_scene_entity"
+	case prepareTurnAnyOwnerTokenMatches(aliases, ctx.currentEntities):
+		ownerReason = "observed_current_scene_entity_unique_short_alias"
+	default:
+		return false, "owner_not_in_current_input_or_observed_scene"
 	}
-	if prepareTurnAnyOwnerTokenMatches(ownerTokens, ctx.currentEntities) {
-		return true, "observed_current_scene_entity"
+	if !prepareTurnCharacterPrivateMemoryContentRelevant(item, ctx, append(ownerTokens, aliases...)) {
+		return false, "subjective_memory_irrelevant_to_current_request"
 	}
-	if prepareTurnAnyOwnerTokenMatches(aliases, ctx.currentEntities) {
-		return true, "observed_current_scene_entity_unique_short_alias"
+	return true, ownerReason + "_and_memory_overlap"
+}
+
+func prepareTurnCharacterPrivateMemoryContentRelevant(item store.ProtagonistEntityMemory, ctx prepareTurnRecollectionContext, ownerTokens []string) bool {
+	ownerTerms := map[string]bool{}
+	for _, token := range ownerTokens {
+		for _, term := range prepareTurnRecallTerms(token) {
+			ownerTerms[term] = true
+		}
 	}
-	return false, "owner_not_in_current_input_or_observed_scene"
+	isOwnerTerm := func(term string) bool {
+		if ownerTerms[term] {
+			return true
+		}
+		termRunes := []rune(term)
+		if !prepareTurnContainsNonASCII(termRunes) {
+			return false
+		}
+		for ownerTerm := range ownerTerms {
+			ownerRunes := []rune(ownerTerm)
+			if len(ownerRunes) >= 2 && prepareTurnContainsNonASCII(ownerRunes) && strings.HasPrefix(term, ownerTerm) {
+				return true
+			}
+		}
+		return false
+	}
+	queryTerms := []string{}
+	for _, term := range prepareTurnRecallTerms(ctx.relevanceText()) {
+		if !isOwnerTerm(term) {
+			queryTerms = append(queryTerms, term)
+		}
+	}
+	memoryTerms := []string{}
+	for _, term := range prepareTurnRecallTerms(strings.Join(nonEmptyStrings([]string{
+		item.MemoryText,
+		item.EvidenceExcerpt,
+		item.TagsJSON,
+	}), "\n")) {
+		if !isOwnerTerm(term) {
+			memoryTerms = append(memoryTerms, term)
+		}
+	}
+	if len(queryTerms) == 0 || len(memoryTerms) == 0 {
+		return false
+	}
+	queryText := strings.Join(queryTerms, "\n")
+	memoryText := strings.Join(memoryTerms, "\n")
+	return prepareTurnRecallOverlapCount(queryText, memoryText) > 0 ||
+		prepareTurnPersonaInflectionOverlapCount(queryText, memoryText) > 0
 }
 
 func prepareTurnOwnerTokens(ownerKey, ownerName string) []string {

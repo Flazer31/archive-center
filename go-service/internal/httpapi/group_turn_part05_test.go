@@ -47,7 +47,7 @@ func TestPrepareTurnCharacterPrivateRecollectionLane(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"target-npc-loop","turn_index":2,"raw_user_input":"He asks Chloe where to go.","settings":{"max_injection_chars":1400,"max_input_context_chars":900,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
+	body := `{"chat_session_id":"target-npc-loop","turn_index":2,"raw_user_input":"He asks Chloe whether they should avoid the broken bridge.","settings":{"max_injection_chars":1400,"max_input_context_chars":900,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -597,7 +597,7 @@ func TestPrepareTurnCharacterPrivateRecollectionAllowsMentionedOffscreenOwner(t 
 	}
 }
 
-func TestPrepareTurnCharacterPrivateRecollectionCapsSameOwnerRepeats(t *testing.T) {
+func TestPrepareTurnCharacterPrivateRecollectionKeepsRelevantSameOwnerFill(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnChatLogs: []store.ChatLog{
 			{ID: 1, ChatSessionID: "target-private-cap", TurnIndex: 7, Role: "user", Content: "Chloe waits in the hallway."},
@@ -639,7 +639,7 @@ func TestPrepareTurnCharacterPrivateRecollectionCapsSameOwnerRepeats(t *testing.
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"target-private-cap","turn_index":8,"raw_user_input":"Chloe asks Siwoo to slow down.","settings":{"max_injection_chars":2200,"max_input_context_chars":1200,"injection_enabled":true,"input_context_enabled":true,"top_k":4}}`
+	body := `{"chat_session_id":"target-private-cap","turn_index":8,"raw_user_input":"Chloe asks Siwoo to slow down after recalling the first and second hallway warnings.","settings":{"max_injection_chars":2200,"max_input_context_chars":1200,"injection_enabled":true,"input_context_enabled":true,"top_k":4}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -653,30 +653,26 @@ func TestPrepareTurnCharacterPrivateRecollectionCapsSameOwnerRepeats(t *testing.
 		t.Fatalf("decode: %v", err)
 	}
 	injectionText, _ := resp["injection_text"].(string)
-	if !strings.Contains(injectionText, "first hallway warning") || strings.Contains(injectionText, "second hallway warning") {
-		t.Fatalf("same-owner private recollection cap failed: %q", injectionText)
+	if !strings.Contains(injectionText, "first hallway warning") || !strings.Contains(injectionText, "second hallway warning") {
+		t.Fatalf("same-owner relevant recollection fill failed: %q", injectionText)
 	}
 	surface, ok := resp["character_private_recollection"].(map[string]any)
 	if !ok {
 		t.Fatalf("character_private_recollection surface missing")
 	}
-	if surface["count"] != float64(1) {
-		t.Fatalf("expected one private recollection after owner cap, got %+v", surface)
+	if surface["count"] != float64(2) {
+		t.Fatalf("expected both relevant private recollections within the lane budget, got %+v", surface)
 	}
 	relevance, ok := resp["entity_recollection_relevance"].(map[string]any)
 	if !ok {
 		t.Fatalf("entity_recollection_relevance surface missing")
 	}
-	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(1) || relevance["character_private_owner_cap"] != float64(1) {
-		t.Fatalf("unexpected owner-cap relevance surface: %+v", relevance)
+	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(2) || relevance["character_private_owner_cap"] != "removed_after_eligibility" {
+		t.Fatalf("unexpected coverage-first relevance surface: %+v", relevance)
 	}
 	dropped, ok := relevance["dropped"].([]any)
-	if !ok || len(dropped) != 1 {
-		t.Fatalf("expected one dropped duplicate owner item: %+v", relevance)
-	}
-	drop, ok := dropped[0].(map[string]any)
-	if !ok || drop["reason"] != "owner_repetition_capped" {
-		t.Fatalf("expected owner_repetition_capped drop reason, got %+v", dropped[0])
+	if !ok || len(dropped) != 0 {
+		t.Fatalf("distinct relevant same-owner recollections were unexpectedly dropped: %+v", relevance)
 	}
 }
 
@@ -938,15 +934,15 @@ func TestPrepareTurnNarrativeGuideAutoModeBundle(t *testing.T) {
 	if !ok {
 		t.Fatalf("supervisor_input_pack is not an object: %+v", resp)
 	}
-	if pack["guide_mode"] != "action" {
-		t.Fatalf("guide_mode = %v, want action", pack["guide_mode"])
+	if pack["guide_mode"] != "standard" {
+		t.Fatalf("guide_mode = %v, want stable standard auto mode", pack["guide_mode"])
 	}
 	if pack["guide_strength"] != "strong" {
 		t.Fatalf("guide_strength = %v, want strong", pack["guide_strength"])
 	}
 	focus := stringSliceFromAny(pack["guide_focus"])
-	if len(focus) == 0 || focus[0] != "clear cause and effect" {
-		t.Fatalf("guide_focus = %#v, want optional action presentation focus", focus)
+	if len(focus) == 0 || focus[0] != "coherent continuity" {
+		t.Fatalf("guide_focus = %#v, want standard continuity focus", focus)
 	}
 	for _, key := range []string{"guide_suffix", "director_overrides", "narrative_stance_bounds", "auto_advance_hint"} {
 		if _, exists := pack[key]; exists {
@@ -961,8 +957,14 @@ func TestPrepareTurnNarrativeGuideAutoModeBundle(t *testing.T) {
 }
 
 func TestNarrativeGuideFocusIsDirectionalOnly(t *testing.T) {
-	if got := resolveNarrativeGuideMode("auto", []map[string]any{{"role": "user", "content": "The romantic mood deepens and the scene moves closer."}}, "", ""); got != "romantic" {
-		t.Fatalf("resolveNarrativeGuideMode(auto romantic) = %q, want romantic", got)
+	for _, input := range []string{
+		"The romantic mood deepens and the scene moves closer.",
+		"전투가 시작되고 추격이 이어진다.",
+		"恋愛と戦闘が同時に描かれる。",
+	} {
+		if got := resolveNarrativeGuideMode("auto", []map[string]any{{"role": "user", "content": input}}, input, input); got != "standard" {
+			t.Fatalf("resolveNarrativeGuideMode(auto, %q) = %q, want language-invariant standard", input, got)
+		}
 	}
 	focus := buildNarrativeGuideFocus("mature_soft")
 	if len(focus) != 2 || focus[0] != "sensory atmosphere" {
@@ -1566,17 +1568,17 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 	if lineage["contract_version"] != "memory_delivery_lineage.v1" {
 		t.Fatalf("lineage contract missing: %#v", lineage)
 	}
-	if lineage["status"] != "protected_guard_dominant" {
-		t.Fatalf("fixture must expose guard-dominant baseline before MEM-B/C: %#v", lineage)
+	if lineage["status"] != "mixed" {
+		t.Fatalf("lineage status = %v, want mixed objective memory plus protected guards: %#v", lineage["status"], lineage)
 	}
 	if got := intFromAny(lineage["top_k_memory_target"], 0); got != 5 {
 		t.Fatalf("top_k target = %d, want 5", got)
 	}
-	if got := intFromAny(lineage["final_delivered_count"], 0); got != 5 {
-		t.Fatalf("final delivered = %d, want 5; lineage=%#v", got, lineage)
+	if got := intFromAny(lineage["final_delivered_count"], 0); got != 3 {
+		t.Fatalf("final delivered = %d, want 3 within the configured character budgets; lineage=%#v", got, lineage)
 	}
-	if got := intFromAny(lineage["final_protected_guard_count"], 0); got != 4 {
-		t.Fatalf("protected guard count = %d, want 4; lineage=%#v", got, lineage)
+	if got := intFromAny(lineage["final_protected_guard_count"], 0); got != 2 {
+		t.Fatalf("protected guard count = %d, want 2 within the protected lane character budget; lineage=%#v", got, lineage)
 	}
 	if got := intFromAny(lineage["final_actual_memory_count"], 0); got != 1 {
 		t.Fatalf("actual memory count = %d, want 1; lineage=%#v", got, lineage)
@@ -1588,9 +1590,8 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 	if len(duplicates) != 1 || intFromAny(mapFromAny(duplicates[0])["source_row_id"], 0) != 9 {
 		t.Fatalf("row 9 must be traced as the duplicate protected identity: %#v", duplicates)
 	}
-	issues := strings.Join(stringsFromAny(lineage["known_issue_codes"]), ",")
-	if !strings.Contains(issues, "protected_guard_dominates_final_memory_lines") {
-		t.Fatalf("known failure code missing: %#v", lineage["known_issue_codes"])
+	if issues := strings.Join(stringsFromAny(lineage["known_issue_codes"]), ","); issues != "" {
+		t.Fatalf("resolved protected-slot issue remained in lineage: %#v", lineage["known_issue_codes"])
 	}
 	memoryText := extractionStringFromAny(pack["memory_text"])
 	if !strings.Contains(memoryText, "Mina secured the archive permit during the council hearing") {
@@ -1611,9 +1612,14 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 			}
 		}
 	}
-	for _, id := range []int{11, 2, 17, 12, 31} {
+	for _, id := range []int{11, 2, 31} {
 		if !deliveredRows[id] {
 			t.Fatalf("source row %d missing from final delivery lineage: %#v", id, lineage["items"])
+		}
+	}
+	for _, id := range []int{17, 12} {
+		if deliveredRows[id] {
+			t.Fatalf("source row %d bypassed the protected-lane character budget: %#v", id, lineage["items"])
 		}
 	}
 	if deliveredRows[9] {

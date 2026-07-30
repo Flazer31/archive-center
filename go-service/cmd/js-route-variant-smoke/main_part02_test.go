@@ -431,7 +431,9 @@ func TestArchiveCenterJSPrepareTurnInjectionPackMarkers(t *testing.T) {
 		"const injectionPack = orchResult && orchResult._injectionPack",
 		`response_projection: "prepare_turn.production_compact.v1"`,
 		`responseProjection: result.response_projection || ""`,
-		`source: "prepare_turn.production_compact.v1"`,
+		`preparedBundle.tracePreview.compact_orchestration`,
+		`trace.search = compactSearchResult`,
+		`trace.supervisor = compactSupervisorTrace`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -440,6 +442,11 @@ func TestArchiveCenterJSPrepareTurnInjectionPackMarkers(t *testing.T) {
 	}
 	if strings.Contains(src, "await runSupervisor(") {
 		t.Fatal("Archive Center.js still performs a separate supervisor call after /prepare-turn")
+	}
+	for _, forbidden := range []string{"compactMemoryLineage", "compactMemoryCount", "compactSupervisorProposal", "compactSupervisorStatus"} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js still derives Go-owned compact status/count %q", forbidden)
+		}
 	}
 }
 
@@ -678,8 +685,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.6.0-dev",
-		`const VERSION = "3.6.0-dev";`,
+		"//@version 3.7.0-dev",
+		`const VERSION = "3.7.0-dev";`,
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 설정`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} Settings`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 設定`",

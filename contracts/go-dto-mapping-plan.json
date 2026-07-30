@@ -4146,7 +4146,7 @@
     {
       "schema_name": "PrepareTurnSettings",
       "go_type_name": "PrepareTurnSettings",
-      "field_count": 14,
+      "field_count": 16,
       "required_count": 0,
       "blocker_count": 0,
       "fields": [
@@ -4345,6 +4345,20 @@
           "default_value": "off",
           "decode_presence_note": "Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
           "default_application_note": "Optional field with default (\"off\"): Go handler must apply default when field is absent in request."
+        },
+        {
+          "name": "core_objective_memory_max_items",
+          "go_field_name": "CoreObjectiveMemoryMaxItems",
+          "json_tag": "core_objective_memory_max_items,omitempty",
+          "required": false,
+          "nullable": true,
+          "proposed_go_type": "*int",
+          "blockers": [],
+          "mapping_strategy": "nullable_pointer",
+          "has_default": false,
+          "default_value": null,
+          "decode_presence_note": "Optional positive scalar int; pointer presence preserves legacy delivery when absent.",
+          "default_application_note": "No backend default: absent preserves legacy final delivery, while an explicit value caps only distinct objective event summaries after selection and deduplication."
         },
         {
           "name": "top_k",

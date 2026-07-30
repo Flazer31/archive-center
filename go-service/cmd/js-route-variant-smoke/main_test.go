@@ -519,8 +519,11 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 		`<select id="mo-narrativeGuideStrength"`,
 		`<option value="none"`,
 		`guide_strength: settings.narrativeGuideStrength || "weak"`,
-		`Weak allows fidelity and low-impact portrayal support`,
-		`Strong also allows reversible options`,
+		`Weak proposes response focus`,
+		`Strong adds an arc anchor and preferred frontier`,
+		`coreObjectiveMemoryMaxItems: 5`,
+		`core_objective_memory_max_items: sanitizeTopKSetting(`,
+		`function turnWorkflowHUDMemorySelectionHTML(view)`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -576,8 +579,8 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: normalizedProvider === "vertex"`,
 		`if (provider !== "vertex") return payload;`,
-		`const BUILD_ID = "3.6-precision-memory.20260729-3"`,
-		`const BUILD_NOTES = "3.6 Claude automatic prompt caching with typed 5m/1h controls"`,
+		`const BUILD_ID = "3.7-f-memory-guidance.20260730-1"`,
+		`const BUILD_NOTES = "3.7-F relevant memory delivery, truthful HUD lineage, and bounded narrative guidance"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {
@@ -694,7 +697,8 @@ func TestSeq01NarrativeGuideAutoTraceDashboardAndLegacyCleanupMarkers(t *testing
 	src := readArchiveCenterJS(t)
 	required := []string{
 		`narrativeGuideMode: "auto"`,
-		`"settings.label.narrativeGuideMode.help": "Auto mode is resolved by the Go backend from the current input, then exposed in trace and the dashboard."`,
+		`"settings.label.narrativeGuideMode.help": "Auto does not infer genre from story keywords; it uses Standard. Genre-specific modes apply only when selected explicitly."`,
+		`<select id="mo-narrativeGuideMode">`,
 		`guide_mode: requestedGuideMode`,
 		`const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)`,
 		`guideModeBasis: (supervisorResult && supervisorResult._guideModeBasis) || "manual"`,
@@ -1120,7 +1124,7 @@ func TestArchiveCenterJSI18nRuntimeSwitchAndPersistenceBehavior(t *testing.T) {
 	if i18nStart < 0 || i18nEnd < 0 || i18nEnd <= i18nStart {
 		t.Fatalf("Archive Center.js missing i18n dictionary block")
 	}
-	script := `const VERSION = "3.6.0-dev";` + "\n" +
+	script := `const VERSION = "3.7.0-dev";` + "\n" +
 		src[i18nStart:i18nEnd] + "\n" +
 		extractJSFunctionBlockForTest(t, src, "function t(key, overrideLang)") + "\n" +
 		extractJSFunctionBlockForTest(t, src, "async function applyUiLanguageChange(nextLang)") + `

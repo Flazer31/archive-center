@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -110,6 +113,241 @@ func TestBuildBoundedSupervisorResultStrengthChangesCoverageNotAuthority(t *test
 				t.Fatalf("%s coverage = %#v, want %q", tc.strength, coverage, tc.coverageProfile)
 			}
 		})
+	}
+}
+
+func TestBuildBoundedSupervisorResultStrengthSpecificGuidanceRemainsOptional(t *testing.T) {
+	raw := map[string]any{
+		"supervisor_scene_proposal": map[string]any{
+			"expression_hints": []any{
+				map[string]any{"kind": "response_focus", "text": "Keep the immediate request in focus.", "source_refs": []any{"input:latest"}},
+				map[string]any{"kind": "must_account", "text": "Account for the delivered promise.", "source_refs": []any{"memory:delivered"}},
+				map[string]any{"kind": "may_advance", "text": "The existing negotiation may advance.", "source_refs": []any{"memory:delivered"}},
+				map[string]any{"kind": "hold_allowed", "text": "Holding the scene is also allowed.", "source_refs": []any{"input:latest"}},
+				map[string]any{"kind": "arc_anchor", "text": "Keep the delivered negotiation as the arc anchor.", "source_refs": []any{"memory:delivered"}},
+				map[string]any{"kind": "preferred_frontier", "text": "Prefer the already-open negotiation frontier.", "source_refs": []any{"memory:delivered"}},
+			},
+		},
+	}
+	tests := []struct {
+		strength string
+		kinds    []string
+	}{
+		{strength: "weak", kinds: []string{"response_focus", "must_account"}},
+		{strength: "medium", kinds: []string{"response_focus", "must_account", "may_advance", "hold_allowed"}},
+		{strength: "strong", kinds: []string{"response_focus", "must_account", "may_advance", "hold_allowed", "arc_anchor", "preferred_frontier"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.strength, func(t *testing.T) {
+			result, _ := buildBoundedSupervisorResult(raw, supervisorBoundaryTestPack(tc.strength))
+			proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+			expressions := anySliceFromAny(proposal["expression_hints"])
+			if len(expressions) != len(tc.kinds) {
+				t.Fatalf("%s accepted %d expression hints, want %d: %#v", tc.strength, len(expressions), len(tc.kinds), expressions)
+			}
+			for index, kind := range tc.kinds {
+				if mapFromAny(expressions[index])["kind"] != kind {
+					t.Fatalf("%s expression %d = %#v, want %q", tc.strength, index, expressions[index], kind)
+				}
+			}
+			if proposal["truth_authority"] != false || proposal["would_write"] != false || proposal["authority"] != "proposal_only" {
+				t.Fatalf("%s strength-specific guidance gained authority: %#v", tc.strength, proposal)
+			}
+			coverage := mapFromAny(proposal["coverage"])
+			if coverage["force_progress"] != false ||
+				coverage["proactive_complication_opt_in"] != false ||
+				coverage["blocked_user_action"] != true ||
+				coverage["blocked_new_truth"] != true ||
+				coverage["blocked_relationship_change"] != true ||
+				coverage["blocked_unresolved_event_closure"] != true {
+				t.Fatalf("%s coverage weakened authority boundaries: %#v", tc.strength, coverage)
+			}
+		})
+	}
+}
+
+func TestBuildBoundedSupervisorResultSeparatesMalformedEmptyAndUnsupported(t *testing.T) {
+	tests := []struct {
+		name       string
+		parsed     map[string]any
+		status     string
+		reasonCode string
+		failOpen   bool
+	}{
+		{
+			name:       "malformed parse failure",
+			parsed:     nil,
+			status:     "malformed_failed_open",
+			reasonCode: "supervisor_malformed_json",
+			failOpen:   true,
+		},
+		{
+			name:       "valid empty JSON",
+			parsed:     map[string]any{},
+			status:     "valid_empty",
+			reasonCode: "supervisor_valid_empty",
+		},
+		{
+			name: "valid empty proposal",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": map[string]any{
+					"fidelity_warnings": []any{},
+					"expression_hints":  []any{},
+				},
+			},
+			status:     "valid_empty",
+			reasonCode: "supervisor_valid_empty",
+		},
+		{
+			name: "unsupported proposal",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": map[string]any{
+					"expression_hints": []any{
+						map[string]any{
+							"kind":        "force_outcome",
+							"text":        "Force a relationship change.",
+							"source_refs": []any{"input:latest"},
+						},
+					},
+				},
+			},
+			status:     "unsupported_rejected",
+			reasonCode: "supervisor_unsupported_proposal_rejected",
+		},
+		{
+			name: "invalid proposal envelope type",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": []any{},
+			},
+			status:     "malformed_failed_open",
+			reasonCode: "supervisor_schema_invalid",
+			failOpen:   true,
+		},
+		{
+			name: "invalid proposal item collection type",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": map[string]any{
+					"fidelity_warnings": "not-an-array",
+				},
+			},
+			status:     "malformed_failed_open",
+			reasonCode: "supervisor_schema_invalid",
+			failOpen:   true,
+		},
+		{
+			name: "invalid proposal item type",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": map[string]any{
+					"expression_hints": []any{"not-an-object"},
+				},
+			},
+			status:     "malformed_failed_open",
+			reasonCode: "supervisor_schema_invalid",
+			failOpen:   true,
+		},
+		{
+			name: "invalid proposal text type",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": map[string]any{
+					"fidelity_warnings": []any{
+						map[string]any{"text": 123, "source_refs": []any{"memory:delivered"}},
+					},
+				},
+			},
+			status:     "malformed_failed_open",
+			reasonCode: "supervisor_schema_invalid",
+			failOpen:   true,
+		},
+		{
+			name: "invalid proposal reference element type",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": map[string]any{
+					"expression_hints": []any{
+						map[string]any{"kind": "portrayal", "text": "typed text", "source_refs": []any{123}},
+					},
+				},
+			},
+			status:     "malformed_failed_open",
+			reasonCode: "supervisor_schema_invalid",
+			failOpen:   true,
+		},
+		{
+			name: "invalid proposal kind type",
+			parsed: map[string]any{
+				"supervisor_scene_proposal": map[string]any{
+					"expression_hints": []any{
+						map[string]any{"kind": []any{"portrayal"}, "text": "typed text", "source_refs": []any{"input:latest"}},
+					},
+				},
+			},
+			status:     "malformed_failed_open",
+			reasonCode: "supervisor_schema_invalid",
+			failOpen:   true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, trace := buildBoundedSupervisorResult(tc.parsed, supervisorBoundaryTestPack("strong"))
+			proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+			if proposal["status"] != tc.status || proposal["reason_code"] != tc.reasonCode {
+				t.Fatalf("proposal classification = %#v, want status=%q reason=%q", proposal, tc.status, tc.reasonCode)
+			}
+			if boolFromAny(trace["fail_open"]) != tc.failOpen {
+				t.Fatalf("trace fail_open = %#v, want %t: %#v", trace["fail_open"], tc.failOpen, trace)
+			}
+			if len(anySliceFromAny(proposal["fidelity_warnings"])) != 0 ||
+				len(anySliceFromAny(proposal["expression_hints"])) != 0 {
+				t.Fatalf("classified empty/rejected proposal delivered items: %#v", proposal)
+			}
+		})
+	}
+}
+
+func TestRunSupervisorLLMMalformedFailsOpenWithoutRawProviderText(t *testing.T) {
+	const rawProviderText = "RAW_PROVIDER_TEXT_MUST_NOT_ESCAPE"
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"supervisor-test","choices":[{"message":{"content":"` + rawProviderText + `"}}]}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	pack := supervisorBoundaryTestPack("strong")
+	pack["guide_mode"] = "standard"
+	result, trace, err := setupTestServer().runSupervisorLLM(
+		context.Background(),
+		"sess-supervisor-malformed",
+		pack,
+		completeTurnLLMConfig{
+			APIKey:    "sk-test",
+			Endpoint:  "https://api.example.com/v1",
+			Model:     "supervisor-test",
+			Provider:  "openai",
+			TimeoutMs: 1000,
+		},
+	)
+	if err != nil {
+		t.Fatalf("malformed provider content must fail open as a bounded result, got error: %v", err)
+	}
+	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+	if proposal["status"] != "malformed_failed_open" ||
+		proposal["reason_code"] != "supervisor_malformed_json" {
+		t.Fatalf("malformed provider result classification = %#v", proposal)
+	}
+	if trace["parse_status"] != "malformed_failed_open" {
+		t.Fatalf("parse trace = %#v", trace)
+	}
+	publicBytes, marshalErr := json.Marshal(map[string]any{"result": result, "trace": trace})
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if strings.Contains(string(publicBytes), rawProviderText) {
+		t.Fatalf("malformed raw provider text escaped into result or trace: %s", publicBytes)
 	}
 }
 

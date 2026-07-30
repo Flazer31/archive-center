@@ -54,6 +54,12 @@ func TestPrepareTurnProductionProjectionPreservesPlanAndShrinksResponse(t *testi
 	if !reflect.DeepEqual(compact["payload_application_plan"], legacy["payload_application_plan"]) {
 		t.Fatal("compact projection changed the Go-owned payload application plan")
 	}
+	trace := mapFromAny(compact["trace_preview"])
+	orchestration := mapFromAny(trace["compact_orchestration"])
+	if orchestration["contract_version"] != "prepare_turn.compact_orchestration.v1" ||
+		extractionStringFromAny(mapFromAny(orchestration["supervisor"])["status"]) != "disabled" {
+		t.Fatalf("compact orchestration projection is not Go-owned or truthful: %#v", orchestration)
+	}
 	if len(compactRec.Body.Bytes()) >= len(legacyRec.Body.Bytes()) {
 		t.Fatalf("compact response bytes=%d, legacy=%d", compactRec.Body.Len(), legacyRec.Body.Len())
 	}
@@ -61,6 +67,37 @@ func TestPrepareTurnProductionProjectionPreservesPlanAndShrinksResponse(t *testi
 		t.Fatalf("compact response did not remove enough legacy material: compact=%d legacy=%d", compactRec.Body.Len(), legacyRec.Body.Len())
 	}
 	t.Logf("prepare-turn response bytes compact=%d legacy=%d", compactRec.Body.Len(), legacyRec.Body.Len())
+}
+
+func TestPrepareTurnCompactOrchestrationProjectionOwnsCountsAndSupervisorStatus(t *testing.T) {
+	projection := buildPrepareTurnCompactOrchestrationProjection(
+		"valid_empty",
+		0,
+		map[string]any{"final_delivered_count": 3},
+	)
+	search := mapFromAny(projection["search_result"])
+	supervisor := mapFromAny(projection["supervisor"])
+	activity := mapFromAny(projection["activity"])
+	if intFromAny(search["memoryCount"], 0) != 3 ||
+		supervisor["status"] != "valid_empty" ||
+		boolFromAny(supervisor["hasDirective"]) ||
+		intFromAny(mapFromAny(activity["llmCalls"])["supervisor"], 0) != 1 {
+		t.Fatalf("compact orchestration facts mismatch: %#v", projection)
+	}
+
+	failedTraceOnly := []prepareTurnGuidanceItem{{
+		Key:        "supervisor_scene_proposal",
+		Status:     "failed",
+		ReasonCode: "supervisor_llm_failed_open",
+	}}
+	failedProjection := buildPrepareTurnCompactOrchestrationProjection(
+		"failed_open",
+		countPrepareTurnSupervisorDirectiveItems(failedTraceOnly),
+		nil,
+	)
+	if boolFromAny(mapFromAny(failedProjection["supervisor"])["hasDirective"]) {
+		t.Fatalf("provider failure trace was presented as an accepted directive: %#v", failedProjection)
+	}
 }
 
 func TestPrepareTurnHistoryBoundsPreserveTwoAndThreeHundredTurnSessions(t *testing.T) {
