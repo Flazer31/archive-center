@@ -667,11 +667,12 @@ func TestDashboardReferenceCardOKWhenRuntimeIsReady(t *testing.T) {
 		Store:           fake,
 		ReferenceVector: &referenceVectorTestStore{},
 		RuntimeConfig: RuntimeConfig{
-			Synced:            true,
-			EmbeddingProvider: "openai",
-			EmbeddingAPIKey:   "test-key",
-			EmbeddingEndpoint: "https://embedding.invalid/v1",
-			EmbeddingModel:    "test-embedding",
+			Synced:              true,
+			EmbeddingProvider:   "openai",
+			EmbeddingAPIKey:     "test-key",
+			EmbeddingEndpoint:   "https://embedding.invalid/v1",
+			EmbeddingModel:      "test-embedding",
+			EmbeddingTimeoutSec: 30,
 		},
 	}
 	vm := requestDashboardViewModel(t, server, "session-1")

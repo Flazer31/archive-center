@@ -984,7 +984,7 @@ func TestCompleteTurnIdempotentReplaySkipsDuplicateDerivedWrites(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-retry","turn_index":5,"user_input":"retry user","assistant_content":"retry assistant","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai"}}}`
+	body := `{"chat_session_id":"sess-retry","turn_index":5,"user_input":"retry user","assistant_content":"retry assistant","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai","timeout_ms":45000}}}`
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1053,7 +1053,7 @@ func TestCompleteTurnExistingRawWithoutDerivedRetriesCriticWithoutDuplicateLogs(
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-raw-only","turn_index":3,"user_input":"Mina found a brass key.","assistant_content":"Mina gave Rowan the brass key.","client_meta":{"critic":{"api_key":"k","endpoint":"https://api.example.com/v1/chat/completions","model":"critic-model","provider":"openai"}}}`
+	body := `{"chat_session_id":"sess-raw-only","turn_index":3,"user_input":"Mina found a brass key.","assistant_content":"Mina gave Rowan the brass key.","client_meta":{"critic":{"api_key":"k","endpoint":"https://api.example.com/v1/chat/completions","model":"critic-model","provider":"openai","timeout_ms":45000}}}`
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1133,7 +1133,7 @@ func TestCompleteTurnConflictingExistingRawPairWithoutPreserveDoesNotDuplicateAr
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-native-conflict","turn_index":14,"user_input":"new user text","assistant_content":"new assistant text","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai"}}}`
+	body := `{"chat_session_id":"sess-native-conflict","turn_index":14,"user_input":"new user text","assistant_content":"new assistant text","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai","timeout_ms":45000}}}`
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1251,7 +1251,7 @@ func TestCompleteTurnExactPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *tes
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-pair-replay","turn_index":8,"user_input":"same user text","assistant_content":"same assistant text","client_meta":{"turn_workflow_request_id":"duplicate-pair-hud","critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai"}}}`
+	body := `{"chat_session_id":"sess-pair-replay","turn_index":8,"user_input":"same user text","assistant_content":"same assistant text","client_meta":{"turn_workflow_request_id":"duplicate-pair-hud","critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai","timeout_ms":45000}}}`
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1317,10 +1317,11 @@ func TestCompleteTurnPostprocessorPairAlreadyPersistedOnAnotherTurnSkipsDuplicat
 		"assistant_content": "final polished text",
 		"client_meta": map[string]any{
 			"critic": map[string]any{
-				"api_key":  "k",
-				"endpoint": "https://example.test/v1/chat/completions",
-				"model":    "m",
-				"provider": "openai",
+				"api_key":    "k",
+				"endpoint":   "https://example.test/v1/chat/completions",
+				"model":      "m",
+				"provider":   "openai",
+				"timeout_ms": 45000,
 			},
 		},
 	})

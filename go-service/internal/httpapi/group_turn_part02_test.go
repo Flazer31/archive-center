@@ -161,7 +161,7 @@ func TestCompleteTurnCriticWaitsForAssistantOutput(t *testing.T) {
 		"chat_session_id": "sess-critic-waits",
 		"turn_index":      1,
 		"user_input":      "user typed, but assistant has not answered yet",
-		"client_meta":     map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai"}},
+		"client_meta":     map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "timeout_ms": 45000}},
 		"request_type":    "model",
 	}
 	raw, _ := json.Marshal(body)
@@ -413,7 +413,7 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 		"assistant_content": "Alice relaxed after Bob helped her.",
 		"context_messages":  []map[string]any{{"role": "user", "content": "Alice hesitated before trusting Bob."}, {"role": "assistant", "content": "Bob helped Alice escape."}},
 		"improvement_trace": map[string]any{"score": 9},
-		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "max_tokens": 1200}, "embedding": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "embed-model", "provider": "openai"}},
+		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "max_tokens": 1200, "timeout_ms": 45000}, "embedding": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "embed-model", "provider": "openai", "timeout_ms": 30000}},
 		"request_type":      "model",
 	}
 	raw, _ := json.Marshal(body)
@@ -623,10 +623,11 @@ func TestCompleteTurnEpisodeCheckpointGeneratesAtIntervalBoundary(t *testing.T) 
 		"client_meta": map[string]any{
 			"episode_interval_turns": 5,
 			"critic": map[string]any{
-				"api_key":  "sk-test",
-				"endpoint": "https://api.example.com/v1",
-				"model":    "critic-model",
-				"provider": "openai",
+				"api_key":    "sk-test",
+				"endpoint":   "https://api.example.com/v1",
+				"model":      "critic-model",
+				"provider":   "openai",
+				"timeout_ms": 45000,
 			},
 		},
 	}
@@ -728,10 +729,11 @@ func TestCompleteTurnAccumulatesCharacterRelationshipAcrossThreeTurns(t *testing
 			"assistant_content": fmt.Sprintf("Alice and Bob relationship beat %d.", turnIndex),
 			"client_meta": map[string]any{
 				"critic": map[string]any{
-					"api_key":  "sk-critic-test",
-					"endpoint": "https://api.example.com/v1",
-					"model":    "critic-model",
-					"provider": "openai",
+					"api_key":    "sk-critic-test",
+					"endpoint":   "https://api.example.com/v1",
+					"model":      "critic-model",
+					"provider":   "openai",
+					"timeout_ms": 45000,
 				},
 			},
 		}
@@ -834,7 +836,7 @@ func TestCompleteTurnCriticGuardsEvidenceKGAndEntityTypes(t *testing.T) {
 		"user_input":        userText,
 		"assistant_content": assistantText,
 		"request_type":      "model",
-		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai"}},
+		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "timeout_ms": 45000}},
 	}
 	raw, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(raw))

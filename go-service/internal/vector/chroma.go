@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 const defaultChromaCollection = "archive_center_vectors"
@@ -38,7 +37,7 @@ type chromaCollection struct {
 // ChromaDB is support-only in Archive Center 2.0; MariaDB remains canonical
 // truth authority.
 func NewChromaStore(endpoint, collectionName, apiPath string) (VectorStore, error) {
-	return NewChromaStoreWithHTTPClient(endpoint, collectionName, apiPath, &http.Client{Timeout: 15 * time.Second})
+	return NewChromaStoreWithHTTPClient(endpoint, collectionName, apiPath, &http.Client{})
 }
 
 func NewChromaStoreWithHTTPClient(endpoint, collectionName, apiPath string, client *http.Client) (VectorStore, error) {
@@ -58,7 +57,7 @@ func NewChromaStoreWithHTTPClient(endpoint, collectionName, apiPath string, clie
 		apiPath = "/api/v2"
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = &http.Client{}
 	}
 	return &chromaStore{
 		endpoint:       endpoint,

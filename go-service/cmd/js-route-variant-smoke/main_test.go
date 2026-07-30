@@ -299,6 +299,8 @@ const settings = {auxiliaryInjectionPlacement:"before_latest_user",auxiliaryInje
 const runtimeUpdates = [];
 function updateRuntimeState(key,status,detail) { runtimeUpdates.push({key,status,detail}); }
 function warnLog() { throw new Error("unexpected production warning"); }
+const RECOMPOSER_BRIDGE_CONTRACT = "archive_center_recomposer_bridge.v1";
+function publishArchiveCenterRecomposerBridge() { return false; }
 const memoryDeliveryPlan = {
   contract_version: "memory_delivery_plan.v1",
   classes: [{key: "event_recent", text: "MEMORY"}]
@@ -732,7 +734,7 @@ func TestSeq01SettingsSaveResetAndBridgeConfigMarkers(t *testing.T) {
 	required := []string{
 		`async function saveSettings()`,
 		`await persistentSet(SETTINGS_KEY, json)`,
-		`await syncConfigToBackend(settings);`,
+		`const syncAck = await syncConfigToBackend(settings);`,
 		`warnLog("Settings save failed:", err.message);`,
 		`return false;`,
 		`function attachSettingsEvents()`,
@@ -769,6 +771,22 @@ func TestSeq01RuntimeStateNarrativeTypeAndSearchCallMarkers(t *testing.T) {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-01 runtime/search marker %q", needle)
 		}
+	}
+}
+
+func TestSeq01BridgeTimeoutAppliesToNativeAndFallbackFetch(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		`Promise.race([R.nativeFetch(url, fetchInit), timeoutPromise])`,
+		`Promise.race([fetch(url, fetchInit), timeoutPromise])`,
+	}
+	for _, needle := range required {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing UI-configured bridge timeout path %q", needle)
+		}
+	}
+	if strings.Contains(src, `response = await fetch(url, fetchInit);`) {
+		t.Fatal("Archive Center.js fallback fetch bypasses the UI-configured timeout")
 	}
 }
 
@@ -906,8 +924,9 @@ func TestArchiveCenterJSSeq03RMG03SessionKeyHotfixMarkers(t *testing.T) {
 		"primary.match(/^(char_\\d+)_(?:cid_.+|chat_\\d+)$/)",
 		"addRawInputSessionKey(keys, seen, charAliasMatch[1])",
 		"addRawInputSessionKey(keys, seen, SESSION_FALLBACK)",
-		"const maxAge = key === SESSION_FALLBACK",
-		"RAW_INPUT_FALLBACK_MAX_AGE_MS",
+		"function bindRawInputObservationToRequest(sessionId, requestId)",
+		"observation.boundRequestId = String(requestId)",
+		"if (candidate === observation) _rawInputBySession.delete(key)",
 		"const _sessionTurnIndices = new Map()",
 		"const SESSION_TURN_MAP_MAX = 50",
 		"function getSessionTurnIndex(sessionId)",

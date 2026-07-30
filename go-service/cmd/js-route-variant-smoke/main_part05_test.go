@@ -211,7 +211,7 @@ func TestArchiveCenterJSSeq165P173DecisionExplicitUserInputSpecificityMarkers(t 
 		"const weakInput = !rawInput || rawInput.length <= 24 || /^(continue|go on|next|more|resume|keep going|계속|계속해|이어서|이어가|다음|다음 장면|다음으로|응|ㅇㅇ|좋아|그래|좋아 계속)$/i.test(rawInput);",
 		"const temporalQuery = isTemporalQueryInput(rawInput);",
 		"const resumePressure = /(continue|resume|pick up|where we left|keep going|이어서|이어가|계속|재개|다시 이어)/i.test(rawInput);",
-		"const longGapResume = idleGapMs >= longGapThresholdMs || continuityTriggerMode === \"idle_reentry\";",
+		"const longGapResume = continuityTriggerMode === \"idle_reentry\";",
 		"const explicitRedirection = /(instead|not that|ignore previous|leave that|move on|new scene|different topic|새로|다른 쪽|말고|이제는|이번 장면|지금 장면|새 갈등|딴 이야기|전 장면 말고)/i.test(rawInput);",
 		"const strongUserIntent = rawInput.length >= 48 || rawInput.split(/\\s+/).filter(Boolean).length >= 10;",
 	}
@@ -219,6 +219,9 @@ func TestArchiveCenterJSSeq165P173DecisionExplicitUserInputSpecificityMarkers(t 
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-16.5-P173 explicit user-input specificity decision marker %q", needle)
 		}
+	}
+	if strings.Contains(src, "idleGapMs >= longGapThresholdMs") {
+		t.Fatal("Archive Center.js restored a hidden elapsed-time resume policy")
 	}
 }
 

@@ -17,7 +17,7 @@ import (
 const (
 	rollbackDecisionContractVersion = "rollback.decision.v1"
 	routingTurnContractVersion      = "session-routing.turn-resolution.v1"
-	rollbackDecisionTTL             = 2 * time.Minute
+	rollbackDecisionMax             = 1024
 )
 
 type routingTurnBaseline struct {
@@ -65,7 +65,6 @@ type rollbackDecisionResponse struct {
 	EffectiveCompleted  int    `json:"effective_completed_turns"`
 	BaselineApplied     bool   `json:"baseline_applied"`
 	DecisionToken       string `json:"decision_token,omitempty"`
-	ExpiresAt           string `json:"expires_at,omitempty"`
 }
 
 type rollbackDecisionRecord struct {
@@ -73,12 +72,13 @@ type rollbackDecisionRecord struct {
 	SessionID     string
 	FromTurn      int
 	RequestSource string
-	ExpiresAt     time.Time
+	Sequence      uint64
 }
 
 type rollbackDecisionLedger struct {
-	mu      sync.Mutex
-	records map[string]rollbackDecisionRecord
+	mu           sync.Mutex
+	records      map[string]rollbackDecisionRecord
+	nextSequence uint64
 }
 
 func newRollbackDecisionLedger() *rollbackDecisionLedger {
@@ -89,19 +89,32 @@ func (l *rollbackDecisionLedger) issue(sessionID string, fromTurn int, requestSo
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now().UTC()
-	for token, record := range l.records {
-		if now.After(record.ExpiresAt) {
-			delete(l.records, token)
-		}
+	if len(l.records) >= rollbackDecisionMax {
+		l.evictOldestLocked()
 	}
 	bytes := make([]byte, 18)
 	if _, err := rand.Read(bytes); err != nil {
 		bytes = []byte(now.Format("20060102150405.000000000"))
 	}
 	token := hex.EncodeToString(bytes)
-	record := rollbackDecisionRecord{Token: token, SessionID: sessionID, FromTurn: fromTurn, RequestSource: requestSource, ExpiresAt: now.Add(rollbackDecisionTTL)}
+	l.nextSequence++
+	record := rollbackDecisionRecord{Token: token, SessionID: sessionID, FromTurn: fromTurn, RequestSource: requestSource, Sequence: l.nextSequence}
 	l.records[token] = record
 	return record
+}
+
+func (l *rollbackDecisionLedger) evictOldestLocked() {
+	oldestToken := ""
+	var oldestSequence uint64
+	for token, record := range l.records {
+		if oldestToken == "" || record.Sequence < oldestSequence {
+			oldestToken = token
+			oldestSequence = record.Sequence
+		}
+	}
+	if oldestToken != "" {
+		delete(l.records, oldestToken)
+	}
 }
 
 func (l *rollbackDecisionLedger) consume(token, sessionID string, fromTurn int) (rollbackDecisionRecord, bool) {
@@ -112,7 +125,7 @@ func (l *rollbackDecisionLedger) consume(token, sessionID string, fromTurn int) 
 		return rollbackDecisionRecord{}, false
 	}
 	delete(l.records, token)
-	if time.Now().UTC().After(record.ExpiresAt) || record.SessionID != sessionID || record.FromTurn != fromTurn {
+	if record.SessionID != sessionID || record.FromTurn != fromTurn {
 		return rollbackDecisionRecord{}, false
 	}
 	return record, true
@@ -166,7 +179,6 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 	if resp.Allowed {
 		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, req.RequestSource)
 		resp.DecisionToken = record.Token
-		resp.ExpiresAt = record.ExpiresAt.Format(time.RFC3339Nano)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

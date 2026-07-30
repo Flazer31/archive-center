@@ -10,17 +10,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
 type memoryVectorProcessorStore struct {
 	store.Store
-	items          []*store.MemoryVectorOutboxItem
-	completed      []int64
-	failed         []int64
-	failureRetryAt []time.Time
-	completeErr    error
+	items            []*store.MemoryVectorOutboxItem
+	completed        []int64
+	failed           []int64
+	failureRetryAt   []time.Time
+	failurePermanent []bool
+	failureReasons   []string
+	auditLogs        []*store.AuditLog
+	completeErr      error
 }
 
 func (f *memoryVectorProcessorStore) EnqueueMemoryVectorOperation(context.Context, *store.MemoryVectorOutboxItem) (bool, error) {
@@ -36,6 +40,7 @@ func (f *memoryVectorProcessorStore) ClaimMemoryVectorOperation(_ context.Contex
 	item.LeaseOwner = owner
 	item.LeaseUntil = now.Add(lease)
 	item.Status = "leased"
+	item.Attempts++
 	return item, nil
 }
 
@@ -44,9 +49,20 @@ func (f *memoryVectorProcessorStore) CompleteMemoryVectorOperation(_ context.Con
 	return f.completeErr
 }
 
-func (f *memoryVectorProcessorStore) FailMemoryVectorOperation(_ context.Context, id int64, _ string, _ time.Time, retryAfter time.Time, _ bool, _ string) error {
+func (f *memoryVectorProcessorStore) FailMemoryVectorOperation(_ context.Context, id int64, _ string, _ time.Time, retryAfter time.Time, permanent bool, failure string) error {
 	f.failed = append(f.failed, id)
 	f.failureRetryAt = append(f.failureRetryAt, retryAfter)
+	f.failurePermanent = append(f.failurePermanent, permanent)
+	f.failureReasons = append(f.failureReasons, failure)
+	return nil
+}
+
+func (f *memoryVectorProcessorStore) SaveAuditLog(_ context.Context, item *store.AuditLog) error {
+	if item == nil {
+		return nil
+	}
+	copy := *item
+	f.auditLogs = append(f.auditLogs, &copy)
 	return nil
 }
 
@@ -93,14 +109,19 @@ func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
 		VectorStore: vector.NewFakeVectorStore(),
 		upsertErr:   errors.New("provider unavailable"),
 	}
-	server := &Server{Store: st, Vector: vec}
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 4,
+		},
+	}
 	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Processed || result.CanonicalState != "retryable" ||
 		len(st.failed) != 1 || len(st.completed) != 0 ||
-		!st.failureRetryAt[0].After(now) {
+		!st.failureRetryAt[0].Equal(now) {
 		t.Fatalf("result=%+v failed=%v completed=%v retry=%v", result, st.failed, st.completed, st.failureRetryAt)
 	}
 }
@@ -115,7 +136,12 @@ func TestMemoryVectorProcessorDeleteReplayIsIdempotent(t *testing.T) {
 		},
 	}
 	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
-	server := &Server{Store: st, Vector: vec}
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 4,
+		},
+	}
 	for range 2 {
 		result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
 		if err != nil || result.CanonicalState != "completed" {
@@ -148,7 +174,12 @@ func TestMemoryVectorProcessorCompensatesStaleUpsertWithoutResurrection(t *testi
 		}},
 	}
 	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
-	server := &Server{Store: st, Vector: vec}
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 4,
+		},
+	}
 	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +226,9 @@ func TestMemoryVectorProcessorMaterializesDeferredEmbedding(t *testing.T) {
 		RuntimeConfig: RuntimeConfig{
 			Synced: true, EmbeddingProvider: "openai",
 			EmbeddingAPIKey: "test-key", EmbeddingEndpoint: "https://example.invalid/v1",
-			EmbeddingModel: "embedding-test",
+			EmbeddingModel:         "embedding-test",
+			EmbeddingTimeoutSec:    30,
+			FailedQueueMaxAttempts: 4,
 		},
 	}
 	result, err := server.processMemoryVectorOutboxOnce(
@@ -208,5 +241,65 @@ func TestMemoryVectorProcessorMaterializesDeferredEmbedding(t *testing.T) {
 		len(vec.upserts) != 1 || len(vec.upserts[0]) != 1 ||
 		len(vec.upserts[0][0].Embedding) != 2 {
 		t.Fatalf("result=%+v completed=%v upserts=%+v", result, st.completed, vec.upserts)
+	}
+}
+
+func TestMemoryVectorProcessorTerminatesAtConfiguredRetryLimitWithTypedAudit(t *testing.T) {
+	now := time.Date(2026, 7, 28, 6, 0, 0, 0, time.UTC)
+	document := vector.VectorDocument{
+		ID: "precise_memory:session:unit", ChatSessionID: "session",
+		SourceTable: "precise_memory_units", SourceRowID: "unit",
+		SchemaVersion: store.PreciseMemoryUnitContract, DocumentText: "grounded",
+		Embedding: []float32{0.1, 0.2},
+	}
+	documentJSON, err := materializedMemoryVectorDocumentJSON(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &memoryVectorProcessorStore{
+		Store: store.NewNoopStore(),
+		items: []*store.MemoryVectorOutboxItem{{
+			ID: 6, Operation: "upsert", ChatSessionID: "session",
+			SourceRevision: "sar_active", DocumentID: document.ID,
+			DocumentJSON: documentJSON, EmbeddingReady: true,
+			RequiredSourceState: "active", Status: "retryable", Attempts: 2,
+		}},
+	}
+	vec := &memoryVectorProcessorVector{
+		VectorStore: vector.NewFakeVectorStore(),
+		upsertErr:   errors.New("provider unavailable"),
+	}
+	server := &Server{
+		Cfg: config.Default(), Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 3,
+		},
+	}
+	result, err := server.processMemoryVectorOutboxOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalState != "permanent" ||
+		result.Failure != memoryVectorRetryLimitReached ||
+		len(st.failed) != 1 ||
+		len(st.failurePermanent) != 1 || !st.failurePermanent[0] ||
+		len(st.failureRetryAt) != 1 || !st.failureRetryAt[0].IsZero() ||
+		len(st.failureReasons) != 1 ||
+		!strings.HasPrefix(st.failureReasons[0], memoryVectorRetryLimitReached) ||
+		len(st.auditLogs) != 1 {
+		t.Fatalf(
+			"result=%+v failed=%v permanent=%v retry=%v reasons=%v audits=%d",
+			result, st.failed, st.failurePermanent, st.failureRetryAt,
+			st.failureReasons, len(st.auditLogs),
+		)
+	}
+	audit := st.auditLogs[0]
+	if audit.EventType != "memory_vector_outbox_permanent" ||
+		audit.TargetType != "memory_vector_outbox" ||
+		audit.TargetID != 6 ||
+		!strings.Contains(audit.DetailsJSON, memoryVectorRetryLimitReached) {
+		t.Fatalf("audit=%+v", audit)
 	}
 }

@@ -2,9 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +28,9 @@ type adminBackgroundJob struct {
 	StartedAt  time.Time
 	UpdatedAt  time.Time
 	FinishedAt *time.Time
+	Revision   uint64
+	changed    chan struct{}
+	cancel     context.CancelFunc
 }
 
 type adminJobManager struct {
@@ -55,7 +61,7 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 		if existing == nil || !strings.EqualFold(strings.TrimSpace(existing.Kind), normalizedKind) || strings.TrimSpace(existing.SessionID) != normalizedSID {
 			continue
 		}
-		if existing.Status != "queued" && existing.Status != "running" {
+		if existing.Status != "queued" && existing.Status != "running" && existing.Status != "cancelling" {
 			continue
 		}
 		snapshot := existing.snapshot()
@@ -64,6 +70,7 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 		return snapshot
 	}
 	now := time.Now().UTC()
+	jobCtx, cancelJob := context.WithCancel(context.Background())
 	id := fmt.Sprintf("%s-%d-%06d", strings.ToLower(normalizedKind), now.UnixNano(), atomic.AddUint64(&m.nextID, 1))
 	job := &adminBackgroundJob{
 		ID:        id,
@@ -86,19 +93,27 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 		},
 		StartedAt: now,
 		UpdatedAt: now,
+		Revision:  1,
+		changed:   make(chan struct{}),
+		cancel:    cancelJob,
 	}
 	m.jobs[id] = job
 	m.order = append(m.order, id)
 	m.pruneLocked()
+	snapshot := job.snapshot()
 	m.mu.Unlock()
 
-	snapshot := job.snapshot()
 	go func() {
+		defer cancelJob()
 		m.update(id, "running", map[string]any{"status": "running", "started": true})
-		result, err := work(context.Background(), func(progress map[string]any) {
+		result, err := work(jobCtx, func(progress map[string]any) {
 			m.update(id, "running", progress)
 		})
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				m.finish(id, "cancelled", result, err.Error())
+				return
+			}
 			m.finish(id, "failed", result, err.Error())
 			return
 		}
@@ -146,7 +161,7 @@ func (m *adminJobManager) update(id, status string, progress map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job := m.jobs[id]
-	if job == nil {
+	if job == nil || adminJobTerminal(job.Status) {
 		return
 	}
 	if strings.TrimSpace(status) != "" {
@@ -159,6 +174,7 @@ func (m *adminJobManager) update(id, status string, progress map[string]any) {
 		job.Progress[k] = v
 	}
 	job.UpdatedAt = time.Now().UTC()
+	job.publishChangeLocked()
 }
 
 func (m *adminJobManager) finish(id, status string, result map[string]any, errText string) {
@@ -168,7 +184,7 @@ func (m *adminJobManager) finish(id, status string, result map[string]any, errTe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job := m.jobs[id]
-	if job == nil {
+	if job == nil || adminJobTerminal(job.Status) {
 		return
 	}
 	now := time.Now().UTC()
@@ -177,6 +193,7 @@ func (m *adminJobManager) finish(id, status string, result map[string]any, errTe
 	job.FinishedAt = &now
 	job.Result = result
 	job.Error = strings.TrimSpace(errText)
+	job.cancel = nil
 	if job.Progress == nil {
 		job.Progress = map[string]any{}
 	}
@@ -190,6 +207,65 @@ func (m *adminJobManager) finish(id, status string, result map[string]any, errTe
 	if status == "completed" {
 		job.Progress["progress_percent"] = 100
 	}
+	job.publishChangeLocked()
+}
+
+func (m *adminJobManager) cancelJob(id string) (map[string]any, bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.mu.Lock()
+	job := m.jobs[strings.TrimSpace(id)]
+	if job == nil {
+		m.mu.Unlock()
+		return nil, false
+	}
+	if adminJobTerminal(job.Status) {
+		snapshot := job.snapshot()
+		m.mu.Unlock()
+		return snapshot, true
+	}
+	cancel := job.cancel
+	now := time.Now().UTC()
+	job.Status = "cancelled"
+	job.UpdatedAt = now
+	job.FinishedAt = &now
+	job.Error = context.Canceled.Error()
+	job.cancel = nil
+	if job.Progress == nil {
+		job.Progress = map[string]any{}
+	}
+	job.Progress["status"] = "cancelled"
+	job.Progress["done"] = false
+	job.Progress["error"] = job.Error
+	job.Progress["finished_at"] = now.Format(time.RFC3339)
+	job.publishChangeLocked()
+	snapshot := job.snapshot()
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return snapshot, true
+}
+
+func (j *adminBackgroundJob) publishChangeLocked() {
+	if j == nil {
+		return
+	}
+	j.Revision++
+	if j.changed != nil {
+		close(j.changed)
+	}
+	j.changed = make(chan struct{})
+}
+
+func adminJobTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *adminJobManager) pruneLocked() {
@@ -199,11 +275,18 @@ func (m *adminJobManager) pruneLocked() {
 	if len(m.order) <= m.maxJobs {
 		return
 	}
-	excess := len(m.order) - m.maxJobs
-	for _, id := range m.order[:excess] {
-		delete(m.jobs, id)
+	remainingToRemove := len(m.order) - m.maxJobs
+	kept := make([]string, 0, len(m.order))
+	for _, id := range m.order {
+		job := m.jobs[id]
+		if remainingToRemove > 0 && job != nil && adminJobTerminal(job.Status) {
+			delete(m.jobs, id)
+			remainingToRemove--
+			continue
+		}
+		kept = append(kept, id)
 	}
-	m.order = append([]string{}, m.order[excess:]...)
+	m.order = kept
 }
 
 func (j *adminBackgroundJob) snapshot() map[string]any {
@@ -211,22 +294,42 @@ func (j *adminBackgroundJob) snapshot() map[string]any {
 		return map[string]any{}
 	}
 	out := map[string]any{
-		"job_id":          j.ID,
-		"kind":            j.Kind,
-		"chat_session_id": j.SessionID,
-		"status":          j.Status,
-		"request":         cloneMapAny(j.Request),
-		"progress":        cloneMapAny(j.Progress),
-		"result":          cloneMapAny(j.Result),
-		"error":           nilIfEmpty(j.Error),
-		"started_at":      j.StartedAt.Format(time.RFC3339),
-		"updated_at":      j.UpdatedAt.Format(time.RFC3339),
-		"background":      true,
+		"job_id":           j.ID,
+		"kind":             j.Kind,
+		"chat_session_id":  j.SessionID,
+		"status":           j.Status,
+		"request":          cloneMapAny(j.Request),
+		"progress":         cloneMapAny(j.Progress),
+		"result":           cloneMapAny(j.Result),
+		"error":            nilIfEmpty(j.Error),
+		"started_at":       j.StartedAt.Format(time.RFC3339),
+		"updated_at":       j.UpdatedAt.Format(time.RFC3339),
+		"background":       true,
+		"contract_version": "admin_background_job.v1",
+		"revision":         j.Revision,
+		"terminal":         adminJobTerminal(j.Status),
 	}
 	if j.FinishedAt != nil {
 		out["finished_at"] = j.FinishedAt.Format(time.RFC3339)
 	}
 	return out
+}
+
+func (m *adminJobManager) observe(id string, afterRevision uint64) (map[string]any, <-chan struct{}, bool) {
+	if m == nil {
+		return nil, nil, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	job := m.jobs[strings.TrimSpace(id)]
+	if job == nil {
+		return nil, nil, false
+	}
+	var snapshot map[string]any
+	if job.Revision > afterRevision || adminJobTerminal(job.Status) {
+		snapshot = job.snapshot()
+	}
+	return snapshot, job.changed, true
 }
 
 func cloneMapAny(in map[string]any) map[string]any {
@@ -295,10 +398,102 @@ func (s *Server) handleAdminJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "job_id": id})
 		return
 	}
+	if r.Method == http.MethodDelete {
+		job, ok := s.AdminJobs.cancelJob(id)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "job_id": id})
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
+		return
+	}
 	job, ok := s.AdminJobs.get(id)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "job_id": id})
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *Server) handleAdminJobEvents(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("job_id"))
+	if id == "" {
+		writeBadRequest(w, "job_id is required")
+		return
+	}
+	if s.AdminJobs == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "job_id": id})
+		return
+	}
+	afterRevision, err := strconv.ParseUint(strings.TrimSpace(r.URL.Query().Get("after_revision")), 10, 64)
+	if err != nil && strings.TrimSpace(r.URL.Query().Get("after_revision")) != "" {
+		writeBadRequest(w, "after_revision must be a non-negative integer")
+		return
+	}
+	if _, _, ok := s.AdminJobs.observe(id, afterRevision); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"status": "not_found", "job_id": id})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{
+			"status":      "stream_transport_unavailable",
+			"reason_code": "http_flusher_unavailable",
+			"job_id":      id,
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	encoder := json.NewEncoder(w)
+	currentRevision := afterRevision
+	for {
+		snapshot, changed, found := s.AdminJobs.observe(id, currentRevision)
+		if !found {
+			return
+		}
+		if snapshot != nil {
+			if err := encoder.Encode(snapshot); err != nil {
+				return
+			}
+			flusher.Flush()
+			currentRevision = uint64FromAny(snapshot["revision"])
+			if boolFromAny(snapshot["terminal"]) {
+				return
+			}
+			continue
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+func uint64FromAny(v any) uint64 {
+	switch value := v.(type) {
+	case uint64:
+		return value
+	case uint:
+		return uint64(value)
+	case int:
+		if value > 0 {
+			return uint64(value)
+		}
+	case int64:
+		if value > 0 {
+			return uint64(value)
+		}
+	case float64:
+		if value > 0 {
+			return uint64(value)
+		}
+	case string:
+		parsed, _ := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+		return parsed
+	}
+	return 0
 }

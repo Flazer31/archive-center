@@ -67,11 +67,22 @@ func main() {
 	binPath := flag.String("bin", "", "Optional archive-center-go binary path. If omitted, builds archive-center-go into a temp dir and runs that binary.")
 	goServiceRoot := flag.String("go-service-root", ".", "Go service root used when -bin is omitted.")
 	outPath := flag.String("out", "", "JSON report path. Defaults to stdout.")
-	startupTimeoutSec := flag.Int("startup-timeout", 45, "Seconds to wait for /health.")
-	probeTimeoutSec := flag.Int("probe-timeout", 3, "Per-probe timeout in seconds.")
+	startupTimeoutSec := flag.Int("startup-timeout", 0, "Seconds to wait for /health (0 = no local deadline).")
+	startupIntervalMs := flag.Int("startup-interval-ms", 0, "Milliseconds between /health probes (0 = one probe, no polling).")
+	probeTimeoutSec := flag.Int("probe-timeout", 0, "Per-probe timeout in seconds (0 = no local deadline).")
 	flag.Parse()
+	if *startupTimeoutSec < 0 || *startupIntervalMs < 0 || *probeTimeoutSec < 0 {
+		fmt.Fprintln(os.Stderr, "startup-timeout, startup-interval-ms, and probe-timeout must not be negative")
+		os.Exit(2)
+	}
 
-	r := run(*binPath, *goServiceRoot, time.Duration(*startupTimeoutSec)*time.Second, time.Duration(*probeTimeoutSec)*time.Second)
+	r := run(
+		*binPath,
+		*goServiceRoot,
+		time.Duration(*startupTimeoutSec)*time.Second,
+		time.Duration(*startupIntervalMs)*time.Millisecond,
+		time.Duration(*probeTimeoutSec)*time.Second,
+	)
 	if err := writeReport(*outPath, r); err != nil {
 		fmt.Fprintf(os.Stderr, "write report: %v\n", err)
 		os.Exit(1)
@@ -81,7 +92,7 @@ func main() {
 	}
 }
 
-func run(binPath, goServiceRoot string, startupTimeout, probeTimeout time.Duration) report {
+func run(binPath, goServiceRoot string, startupTimeout, startupInterval, probeTimeout time.Duration) report {
 	r := report{
 		Status:        "ok",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -162,12 +173,18 @@ func run(binPath, goServiceRoot string, startupTimeout, probeTimeout time.Durati
 	}
 
 	waitDone := make(chan error, 1)
+	processExited := make(chan struct{})
 	go func() {
 		waitDone <- cmd.Wait()
+		close(processExited)
 	}()
 
-	startupCtx, startupCancel := context.WithTimeout(context.Background(), startupTimeout)
-	attempts, elapsed, readyErr := waitForHealth(startupCtx, r.BaseURL, 250*time.Millisecond, probeTimeout)
+	startupCtx := context.Background()
+	startupCancel := func() {}
+	if startupTimeout > 0 {
+		startupCtx, startupCancel = context.WithTimeout(startupCtx, startupTimeout)
+	}
+	attempts, elapsed, readyErr := waitForHealth(startupCtx, r.BaseURL, startupInterval, probeTimeout, processExited)
 	startupCancel()
 	r.StartupAttempts = attempts
 	r.StartupElapsed = elapsed.Milliseconds()
@@ -175,7 +192,7 @@ func run(binPath, goServiceRoot string, startupTimeout, probeTimeout time.Durati
 		r.Status = "failed"
 		r.Errors = append(r.Errors, fmt.Sprintf("wait for /health: %v", readyErr))
 		r.Process.Error = collectProcessOutput(stdout.String(), stderr.String())
-		stopProcess(cmd, cancel, waitDone)
+		stopProcess(cancel, waitDone)
 		r.Process.Stopped = true
 		return r
 	}
@@ -189,7 +206,7 @@ func run(binPath, goServiceRoot string, startupTimeout, probeTimeout time.Durati
 		}
 	}
 
-	stopProcess(cmd, cancel, waitDone)
+	stopProcess(cancel, waitDone)
 	r.Process.Stopped = true
 	if r.Status != "ok" {
 		r.Process.Error = collectProcessOutput(stdout.String(), stderr.String())
@@ -271,7 +288,7 @@ func findAvailablePort(host string, startPort, maxPort int) (int, error) {
 	return 0, fmt.Errorf("no available port in range %d-%d", startPort, maxPort)
 }
 
-func waitForHealth(ctx context.Context, baseURL string, interval time.Duration, probeTimeout time.Duration) (int, time.Duration, error) {
+func waitForHealth(ctx context.Context, baseURL string, interval time.Duration, probeTimeout time.Duration, processExited <-chan struct{}) (int, time.Duration, error) {
 	start := time.Now()
 	client := &http.Client{Timeout: probeTimeout}
 	attempts := 0
@@ -284,7 +301,23 @@ func waitForHealth(ctx context.Context, baseURL string, interval time.Duration, 
 		if err := ctx.Err(); err != nil {
 			return attempts, time.Since(start), err
 		}
-		time.Sleep(interval)
+		if interval <= 0 {
+			return attempts, time.Since(start), fmt.Errorf("backend is not ready and readiness polling is disabled")
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return attempts, time.Since(start), ctx.Err()
+		case <-processExited:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return attempts, time.Since(start), fmt.Errorf("backend process exited before health check succeeded")
+		case <-timer.C:
+		}
 	}
 }
 
@@ -329,20 +362,9 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-func stopProcess(cmd *exec.Cmd, cancel context.CancelFunc, waitDone <-chan error) {
+func stopProcess(cancel context.CancelFunc, waitDone <-chan error) {
 	cancel()
-	select {
-	case <-waitDone:
-		return
-	case <-time.After(2 * time.Second):
-	}
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
-	select {
-	case <-waitDone:
-	case <-time.After(2 * time.Second):
-	}
+	<-waitDone
 }
 
 func collectProcessOutput(stdout, stderr string) string {

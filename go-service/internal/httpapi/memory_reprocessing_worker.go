@@ -13,11 +13,9 @@ import (
 )
 
 const (
-	memoryWorkerPollInterval = 2 * time.Second
-	memoryWorkerLease        = 10 * time.Minute
-
 	criticRetryLimitUnconfigured = "CRITIC_RETRY_LIMIT_UNCONFIGURED"
 	criticRetryLimitReached      = "CRITIC_RETRY_LIMIT_REACHED"
+	memoryWorkerConfigDeferred   = "RUNTIME_CONFIG_NOT_SYNCED"
 )
 
 type memoryReprocessingProcessResult struct {
@@ -50,25 +48,96 @@ func (s *Server) StartMemoryWorkers(ctx context.Context) bool {
 	if _, ok := s.Store.(store.MemoryAdmissionWriter); !ok {
 		return false
 	}
-	owner := fmt.Sprintf("archive-memory-worker:%d", os.Getpid())
-	go s.runMemoryWorkers(ctx, owner)
-	return true
+	started := false
+	s.memoryWorkerStartOnce.Do(func() {
+		started = true
+		owner := fmt.Sprintf("archive-memory-worker:%d", os.Getpid())
+		go s.runMemoryWorkers(ctx, owner)
+		s.wakeMemoryWorkers()
+	})
+	return started
 }
 
 func (s *Server) runMemoryWorkers(ctx context.Context, owner string) {
-	ticker := time.NewTicker(memoryWorkerPollInterval)
-	defer ticker.Stop()
 	for {
-		_, _ = s.processMemoryReprocessingOnce(
-			ctx, owner, time.Now().UTC(), memoryWorkerLease,
-		)
-		s.processMemoryVectorOutboxBatch(
-			ctx, owner+":vector", time.Now().UTC(), memoryWorkerLease, 16,
-		)
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-s.memoryWorkerWakeChannel():
+		}
+		s.processMemoryWorkerWake(ctx, owner, time.Now().UTC())
+	}
+}
+
+func (s *Server) memoryWorkerWakeChannel() chan struct{} {
+	if s == nil {
+		return nil
+	}
+	s.memoryWorkerWakeOnce.Do(func() {
+		if s.memoryWorkerWake == nil {
+			s.memoryWorkerWake = make(chan struct{}, 1)
+		}
+	})
+	return s.memoryWorkerWake
+}
+
+func (s *Server) wakeMemoryWorkers() {
+	if s == nil {
+		return
+	}
+	select {
+	case s.memoryWorkerWakeChannel() <- struct{}{}:
+	default:
+	}
+}
+
+func memoryWorkerLeaseDuration(runtimeConfig RuntimeConfig) time.Duration {
+	var timeoutSeconds int64
+	if runtimeConfig.CriticTimeoutSec > 0 {
+		timeoutSeconds += runtimeConfig.CriticTimeoutSec
+	}
+	if runtimeConfig.EmbeddingTimeoutSec > 0 {
+		timeoutSeconds += runtimeConfig.EmbeddingTimeoutSec
+	}
+	if timeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(timeoutSeconds) * time.Second
+}
+
+func (s *Server) processMemoryWorkerWake(
+	ctx context.Context,
+	owner string,
+	wakeTime time.Time,
+) {
+	runtimeConfig := s.runtimeConfigSnapshot()
+	if !runtimeConfig.Synced {
+		return
+	}
+	leaseDuration := memoryWorkerLeaseDuration(runtimeConfig)
+	if leaseDuration <= 0 {
+		return
+	}
+	for ctx.Err() == nil {
+		result, err := s.processMemoryReprocessingOnce(
+			ctx, owner, wakeTime, leaseDuration,
+		)
+		if err != nil || !result.Processed {
+			break
+		}
+		if result.State == "retryable" {
+			break
+		}
+	}
+	for ctx.Err() == nil {
+		result, err := s.processMemoryVectorOutboxOnce(
+			ctx, owner+":vector", wakeTime, leaseDuration,
+		)
+		if err != nil || !result.Processed {
+			break
+		}
+		if result.CanonicalState == "retryable" {
+			break
 		}
 	}
 }
@@ -82,6 +151,11 @@ func (s *Server) processMemoryReprocessingOnce(
 	var result memoryReprocessingProcessResult
 	if s == nil || s.Store == nil {
 		return result, store.ErrNotEnabled
+	}
+	if !s.runtimeConfigSnapshot().Synced {
+		result.State = "deferred_config_sync"
+		result.Failure = memoryWorkerConfigDeferred
+		return result, nil
 	}
 	jobs, ok := s.Store.(store.MemoryReprocessingJobStore)
 	if !ok {
@@ -175,7 +249,7 @@ func (s *Server) processMemoryReprocessingOnce(
 		}
 		result.State = "retryable"
 		return result, s.retryMemoryReprocessingJob(
-			ctx, jobs, job, leaseOwner, time.Now().UTC(), &result, result.Failure,
+			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
 		)
 	}
 	active, activeErr := sources.IsSourceRevisionActive(ctx, job.ChatSessionID, job.SourceRevision)
@@ -183,7 +257,7 @@ func (s *Server) processMemoryReprocessingOnce(
 		result.State = "retryable"
 		result.Failure = "source_revision_recheck_failed"
 		return result, s.retryMemoryReprocessingJob(
-			ctx, jobs, job, leaseOwner, time.Now().UTC(), &result, result.Failure,
+			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
 		)
 	}
 	if !active {
@@ -216,7 +290,7 @@ func (s *Server) processMemoryReprocessingOnce(
 		result.State = "retryable"
 		result.Failure = "derived_persist_failed"
 		return result, s.retryMemoryReprocessingJob(
-			ctx, jobs, job, leaseOwner, time.Now().UTC(), &result, result.Failure,
+			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
 		)
 	}
 	if err := jobs.CompleteMemoryReprocessingJob(
@@ -346,9 +420,8 @@ func (s *Server) retryMemoryReprocessingJob(
 		result.State = "retryable"
 		result.Failure = strings.TrimSpace(failure)
 	}
-	retryAfter := now.Add(memoryReprocessingRetryDelay(job.Attempts))
 	err := jobs.FailMemoryReprocessingJob(
-		ctx, job.ID, leaseOwner, now, retryAfter, false, failure,
+		ctx, job.ID, leaseOwner, now, now, false, failure,
 	)
 	if errors.Is(err, store.ErrSourceRevisionStale) {
 		if result != nil {
@@ -358,18 +431,4 @@ func (s *Server) retryMemoryReprocessingJob(
 		return nil
 	}
 	return err
-}
-
-func memoryReprocessingRetryDelay(attempt int) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	delay := 15 * time.Second
-	for i := 1; i < attempt && delay < 15*time.Minute; i++ {
-		delay *= 2
-	}
-	if delay > 15*time.Minute {
-		return 15 * time.Minute
-	}
-	return delay
 }

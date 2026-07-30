@@ -4,10 +4,22 @@ param(
     [string]$RuntimeProfile = "",
     [string]$VectorMode = "",
     [int]$MariaDBPort = 3307,
+    [Nullable[int]]$ReadinessTimeoutSeconds = $null,
+    [Nullable[int]]$ReadinessPollIntervalMilliseconds = $null,
+    [Nullable[int]]$RequestTimeoutSeconds = $null,
+    [Nullable[int]]$DependencyProbeTimeoutSeconds = $null,
     [switch]$KeepServices
 )
 
 $ErrorActionPreference = "Stop"
+foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMilliseconds, $RequestTimeoutSeconds, $DependencyProbeTimeoutSeconds)) {
+    if ($null -ne $timeoutSetting -and $timeoutSetting -lt 1) {
+        throw "Explicit timeout and polling values must be greater than zero."
+    }
+}
+if (($null -eq $ReadinessTimeoutSeconds) -ne ($null -eq $ReadinessPollIntervalMilliseconds)) {
+    throw "ReadinessTimeoutSeconds and ReadinessPollIntervalMilliseconds must be supplied together."
+}
 $packagedBuildVersion = "__ARCHIVE_CENTER_PACKAGE_VERSION__"
 $managedChromaDBVersion = "1.5.9"
 
@@ -72,10 +84,8 @@ function Test-PortOpen([int]$Port, [string]$ConnectHost = "127.0.0.1") {
     foreach ($address in $addresses) {
         $client = [System.Net.Sockets.TcpClient]::new($address.AddressFamily)
         try {
-            $iar = $client.BeginConnect($address, $Port, $null, $null)
-            $ok = $iar.AsyncWaitHandle.WaitOne(500, $false)
-            if ($ok) { $client.EndConnect($iar) }
-            if ($ok -and $client.Connected) {
+            $client.Connect($address, $Port)
+            if ($client.Connected) {
                 return $true
             }
         } catch {
@@ -87,12 +97,38 @@ function Test-PortOpen([int]$Port, [string]$ConnectHost = "127.0.0.1") {
     return $false
 }
 
-function Wait-Port([int]$Port, [int]$TimeoutSeconds = 60) {
-    for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
+function Wait-Port {
+    param(
+        [int]$Port,
+        [System.Diagnostics.Process]$Process = $null,
+        [Nullable[int]]$TimeoutSeconds = $null,
+        [Nullable[int]]$PollIntervalMilliseconds = $null
+    )
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
         if (Test-PortOpen $Port) { return }
-        Start-Sleep -Seconds 1
+        if ($null -ne $Process -and $Process.HasExited) {
+            throw "Process exited before port 127.0.0.1:$Port became ready (exit $($Process.ExitCode))."
+        }
+        if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds) {
+            throw "Port 127.0.0.1:$Port is not ready. Supply both readiness timeout and poll interval to wait."
+        }
+        if ($null -ne $TimeoutSeconds -and $watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            throw "Port 127.0.0.1:$Port did not become ready before the caller timeout."
+        }
+        $remainingMilliseconds = [int][Math]::Ceiling(($TimeoutSeconds - $watch.Elapsed.TotalSeconds) * 1000)
+        if ($remainingMilliseconds -le 0) {
+            throw "Port 127.0.0.1:$Port did not become ready before the caller timeout."
+        }
+        $waitMilliseconds = [Math]::Min($PollIntervalMilliseconds, $remainingMilliseconds)
+        if ($null -ne $Process) {
+            if ($Process.WaitForExit($waitMilliseconds)) {
+                throw "Process exited before port 127.0.0.1:$Port became ready (exit $($Process.ExitCode))."
+            }
+        } else {
+            Start-Sleep -Milliseconds $waitMilliseconds
+        }
     }
-    throw "Port did not become ready on 127.0.0.1:$Port"
 }
 
 function Join-Args([string[]]$ArgList) {
@@ -517,43 +553,54 @@ function Wait-BackendMainReady {
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
         [Parameter(Mandatory = $true)][int]$Port,
         [Parameter(Mandatory = $true)][string]$ExpectedVersion,
-        [int]$TimeoutSeconds = 60
+        [Nullable[int]]$TimeoutSeconds = $null,
+        [Nullable[int]]$PollIntervalMilliseconds = $null
     )
 
     $lastError = ""
-    $readyStreak = 0
-    for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
         if ($Process.HasExited) {
             return [pscustomobject]@{ Ready = $false; Detail = "backend exited with code $($Process.ExitCode)" }
         }
         try {
-            $ready = Invoke-RestMethod -Method GET -Uri "http://127.0.0.1:$Port/ready" -TimeoutSec 2
+            $readyArgs = @{ Method = "GET"; Uri = "http://127.0.0.1:$Port/ready" }
+            if ($null -ne $RequestTimeoutSeconds) { $readyArgs.TimeoutSec = $RequestTimeoutSeconds }
+            $ready = Invoke-RestMethod @readyArgs
             # Reference-vector degradation is intentionally not a failure here.
             if ($ready.ready -eq $true) {
-                $version = Invoke-RestMethod -Method GET -Uri "http://127.0.0.1:$Port/version" -TimeoutSec 2
+                $versionArgs = @{ Method = "GET"; Uri = "http://127.0.0.1:$Port/version" }
+                if ($null -ne $RequestTimeoutSeconds) { $versionArgs.TimeoutSec = $RequestTimeoutSeconds }
+                $version = Invoke-RestMethod @versionArgs
                 if ([string]$version.version -eq $ExpectedVersion) {
                     $Process.Refresh()
                     if (-not $Process.HasExited) {
-                        $readyStreak++
-                        if ($readyStreak -ge 2) {
-                            return [pscustomobject]@{ Ready = $true; Detail = "main ready at expected version $ExpectedVersion" }
-                        }
+                        return [pscustomobject]@{ Ready = $true; Detail = "main ready at expected version $ExpectedVersion" }
                     }
                 } else {
-                    $readyStreak = 0
                     $lastError = "version mismatch: expected $ExpectedVersion, got $($version.version)"
                 }
             } else {
-                $readyStreak = 0
                 $lastError = "main ready=false"
             }
         } catch {
-            $readyStreak = 0
             $lastError = $_.Exception.Message
         }
-        Start-Sleep -Seconds 1
+        if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds) {
+            return [pscustomobject]@{ Ready = $false; Detail = "backend is not ready; supply both readiness timeout and poll interval to wait: $lastError" }
+        }
+        if ($null -ne $TimeoutSeconds -and $watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            return [pscustomobject]@{ Ready = $false; Detail = "caller readiness timeout: $lastError" }
+        }
+        $remainingMilliseconds = [int][Math]::Ceiling(($TimeoutSeconds - $watch.Elapsed.TotalSeconds) * 1000)
+        if ($remainingMilliseconds -le 0) {
+            return [pscustomobject]@{ Ready = $false; Detail = "caller readiness timeout: $lastError" }
+        }
+        $waitMilliseconds = [Math]::Min($PollIntervalMilliseconds, $remainingMilliseconds)
+        if ($Process.WaitForExit($waitMilliseconds)) {
+            return [pscustomobject]@{ Ready = $false; Detail = "backend exited with code $($Process.ExitCode)" }
+        }
     }
-    return [pscustomobject]@{ Ready = $false; Detail = "ready timeout: $lastError" }
 }
 
 function Stop-ArchiveChildProcess([System.Diagnostics.Process]$Process) {
@@ -1055,12 +1102,8 @@ try {
             "--console"
         )
         $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
-        Start-Sleep -Seconds 2
-        if ($startedMariaDB.HasExited) {
-            throw "MariaDB exited early with code $($startedMariaDB.ExitCode). Check $dataDir and $logDir for details."
-        }
     }
-    Wait-Port $MariaDBPort 60
+    Wait-Port -Port $MariaDBPort -Process $startedMariaDB -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
 
     $dbName = "archive_center"
     $dbUser = "archive_center"
@@ -1084,7 +1127,7 @@ try {
                 $startedChroma = Start-ManagedChromaDB -PackageRoot $packRoot -RuntimeRoot $chromaRuntimeRoot -Endpoint $chromaUri
             }
             try {
-                Wait-Port $chromaPort 60
+                Wait-Port -Port $chromaPort -Process $startedChroma -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
             } catch {
                 Write-Host "ChromaDB failed to open port $chromaPort."
                 throw
@@ -1126,11 +1169,15 @@ try {
         if (-not (Test-Path -LiteralPath $dependencyProbe -PathType Leaf)) {
             throw "ChromaDB round-trip probe is missing: $dependencyProbe"
         }
-        & $dependencyProbe `
-            -execute `
-            -chroma-endpoint $env:AC_CHROMA_ENDPOINT `
-            -chroma-api-path $env:AC_CHROMA_API_PATH `
-            -timeout "45s"
+        $dependencyProbeArgs = @(
+            "-execute",
+            "-chroma-endpoint", $env:AC_CHROMA_ENDPOINT,
+            "-chroma-api-path", $env:AC_CHROMA_API_PATH
+        )
+        if ($null -ne $DependencyProbeTimeoutSeconds) {
+            $dependencyProbeArgs += @("-timeout", ("{0}s" -f $DependencyProbeTimeoutSeconds))
+        }
+        & $dependencyProbe @dependencyProbeArgs
         if ($LASTEXITCODE -ne 0) {
             throw "ChromaDB endpoint/upsert/readback/delete probe failed."
         }
@@ -1155,7 +1202,7 @@ Write-Host "Starting Archive Center 2.1 full package"
             $backendPort = [int]$Matches[1]
         }
         $candidateBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
-        $health = Wait-BackendMainReady -Process $candidateBackend -Port $backendPort -ExpectedVersion $pendingTargetVersion -TimeoutSeconds 60
+        $health = Wait-BackendMainReady -Process $candidateBackend -Port $backendPort -ExpectedVersion $pendingTargetVersion -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
         if ($health.Ready) {
             $commitFailure = ""
             try {
@@ -1186,11 +1233,11 @@ Write-Host "Starting Archive Center 2.1 full package"
                 }
                 if ($restartManagedMariaDB) {
                     $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
-                    Wait-Port $MariaDBPort 60
+                    Wait-Port -Port $MariaDBPort -Process $startedMariaDB -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
                 }
                 if ($restartManagedChroma) {
                     $startedChroma = Start-ManagedChromaDB -PackageRoot $packRoot -RuntimeRoot $chromaRuntimeRoot -Endpoint $chromaUri
-                    Wait-Port $chromaPort 60
+                    Wait-Port -Port $chromaPort -Process $startedChroma -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
                 }
                 Write-Host "Update commit did not return a clean acknowledgement ($commitFailure). Recovery is safe; starting the verified current backend."
                 & $backendExe
@@ -1211,11 +1258,11 @@ Write-Host "Starting Archive Center 2.1 full package"
             }
             if ($restartManagedMariaDB) {
                 $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
-                Wait-Port $MariaDBPort 60
+                Wait-Port -Port $MariaDBPort -Process $startedMariaDB -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
             }
             if ($restartManagedChroma) {
                 $startedChroma = Start-ManagedChromaDB -PackageRoot $packRoot -RuntimeRoot $chromaRuntimeRoot -Endpoint $chromaUri
-                Wait-Port $chromaPort 60
+                Wait-Port -Port $chromaPort -Process $startedChroma -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
             }
             Write-Host "Updated backend failed main readiness ($($health.Detail)). The verified baseline was restored; starting the old backend."
             & $backendExe

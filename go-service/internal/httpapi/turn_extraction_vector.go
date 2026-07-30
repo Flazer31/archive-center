@@ -179,12 +179,18 @@ func worldRuleVectorDocumentText(wr store.WorldRule) string {
 }
 
 func callEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string) (string, string, error) {
-	timeout := time.Duration(cfg.TimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+	if cfg.TimeoutMs < 0 {
+		return "", "", errors.New("embedding timeout_ms must not be negative")
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	if cfg.TimeoutMs > 0 {
+		timeout := time.Duration(cfg.TimeoutMs) * time.Millisecond
+		if timeout <= 0 || int64(timeout/time.Millisecond) != cfg.TimeoutMs {
+			return "", "", errors.New("embedding timeout_ms is outside the supported duration range")
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	switch provider {
 	case "":

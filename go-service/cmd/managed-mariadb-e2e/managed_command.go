@@ -28,6 +28,13 @@ func managedCommand(exec commandExecutor, name string, args ...string) (string, 
 }
 
 func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConfig) (steps []executedStep, err error) {
+	if cfg.CommandTimeout < 0 {
+		return nil, fmt.Errorf("command timeout must not be negative")
+	}
+	if cfg.PollInterval < 0 {
+		return nil, fmt.Errorf("poll interval must not be negative")
+	}
+
 	// Step: create temp data dir
 	start := time.Now()
 	if !cfg.KeepTemp && strings.TrimSpace(cfg.DataDir) != "" {
@@ -122,7 +129,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 
 	// Step: wait for server readiness
 	start = time.Now()
-	if err := waitForServerReady(ctx, cfg.Port); err != nil {
+	if err := waitForServerReady(ctx, cfg.Port, cfg.PollInterval); err != nil {
 		steps = append(steps, executedStep{
 			Name:       "wait-ready",
 			Status:     "failed",
@@ -182,7 +189,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 	// Step: mariadb-schema
 	start = time.Now()
 	dsn := buildInternalDSN(cfg.DataDir, cfg.Port, cfg.SessionID)
-	schemaArgs := []string{"-dsn", dsn, "-execute"}
+	schemaArgs := []string{"-dsn", dsn, "-execute", "-timeout", cfg.CommandTimeout.String()}
 	schemaCmd, schemaRunArgs, schemaDisplay := managedCommand(r.exec, "mariadb-schema", schemaArgs...)
 	if out, err := r.exec.Run(ctx, schemaCmd, schemaRunArgs...); err != nil {
 		steps = append(steps, executedStep{
@@ -204,7 +211,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 	if !cfg.skipDefaultReadShadow() {
 		// Step: mariadb-import
 		start = time.Now()
-		importArgs := []string{"-export-dir", effectiveExportDir, "-dsn", dsn, "-execute"}
+		importArgs := []string{"-export-dir", effectiveExportDir, "-dsn", dsn, "-execute", "-timeout", cfg.CommandTimeout.String()}
 		importCmd, importRunArgs, importDisplay := managedCommand(r.exec, "mariadb-import", importArgs...)
 		if out, err := r.exec.Run(ctx, importCmd, importRunArgs...); err != nil {
 			steps = append(steps, executedStep{
@@ -225,7 +232,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 
 		// Step: mariadb-compare
 		start = time.Now()
-		compareArgs := []string{"-export-dir", effectiveExportDir, "-dsn", dsn}
+		compareArgs := []string{"-export-dir", effectiveExportDir, "-dsn", dsn, "-timeout", cfg.CommandTimeout.String()}
 		compareCmd, compareRunArgs, compareDisplay := managedCommand(r.exec, "mariadb-compare", compareArgs...)
 		if out, err := r.exec.Run(ctx, compareCmd, compareRunArgs...); err != nil {
 			steps = append(steps, executedStep{
@@ -308,7 +315,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 		}
 		defer pythonFallback.stop()
 
-		waitStep := waitPythonFallbackReady(ctx, fallbackPort)
+		waitStep := waitPythonFallbackReady(ctx, fallbackPort, cfg.PollInterval)
 		steps = append(steps, waitStep)
 		if waitStep.Status != "ok" {
 			return steps, fmt.Errorf("python fallback not ready: %s", waitStep.Error)
@@ -347,7 +354,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 			}
 		}()
 
-		waitStep := waitGoReady(ctx, routePort)
+		waitStep := waitGoReady(ctx, routePort, cfg.PollInterval)
 		waitStep.Name = "route-wait-go-ready"
 		steps = append(steps, waitStep)
 		if waitStep.Status != "ok" {
@@ -410,7 +417,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 			}
 		}()
 
-		waitStep := waitGoReady(ctx, isoPort)
+		waitStep := waitGoReady(ctx, isoPort, cfg.PollInterval)
 		waitStep.Name = "session-isolation-wait-go-ready"
 		steps = append(steps, waitStep)
 		if waitStep.Status != "ok" {
@@ -496,7 +503,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 		}
 	}()
 
-	steps = append(steps, waitGoReady(ctx, goPort))
+	steps = append(steps, waitGoReady(ctx, goPort, cfg.PollInterval))
 	last := steps[len(steps)-1]
 	if last.Status != "ok" {
 		return steps, fmt.Errorf("go backend not ready: %s", last.Error)
@@ -509,6 +516,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 		"-session-id", cfg.SessionID,
 		"-out", filepath.Join(cfg.DataDir, "shadow-value-report.md"),
 		"-json-out", filepath.Join(cfg.DataDir, "shadow-value-report.json"),
+		"-timeout", cfg.CommandTimeout.String(),
 	}
 	if effectivePythonBaseURL != "" {
 		reportArgs = append(reportArgs, "-python-base", effectivePythonBaseURL)
@@ -641,7 +649,7 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 			}
 		}()
 
-		waitStep := waitGoReady(ctx, rollbackPort)
+		waitStep := waitGoReady(ctx, rollbackPort, cfg.PollInterval)
 		waitStep.Name = "rollback-wait-go-ready"
 		steps = append(steps, waitStep)
 		if waitStep.Status != "ok" {
@@ -681,17 +689,29 @@ func (r *osDirectProviderRunner) run(ctx context.Context, cfg directProviderConf
 	return steps, nil
 }
 
-func waitForServerReady(ctx context.Context, port int) error {
+func waitForServerReady(ctx context.Context, port int, interval time.Duration) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	dialer := net.Dialer{}
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err != nil {
-			time.Sleep(500 * time.Millisecond)
+			if interval <= 0 {
+				return fmt.Errorf("MariaDB server is not ready and readiness polling is disabled: %w", err)
+			}
+			timer := time.NewTimer(interval)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return ctx.Err()
+			case <-timer.C:
+			}
 			continue
 		}
 		_ = conn.Close()
@@ -700,7 +720,7 @@ func waitForServerReady(ctx context.Context, port int) error {
 }
 
 func bootstrapDatabase(ctx context.Context, cfg directProviderConfig) error {
-	rootDSN := fmt.Sprintf("root@tcp(127.0.0.1:%d)/?timeout=3s&readTimeout=3s&writeTimeout=3s", cfg.Port)
+	rootDSN := fmt.Sprintf("root@tcp(127.0.0.1:%d)/", cfg.Port)
 	db, err := sql.Open("mysql", rootDSN)
 	if err != nil {
 		return err

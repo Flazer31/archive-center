@@ -71,10 +71,11 @@ func TestCompleteTurnCriticProviderFailureRetriesWithRedactedInput(t *testing.T)
 		"user_input":        "Mina asks Rowan to be gentle.",
 		"assistant_content": "Rowan stayed reassuring. The intimate scene involved penetration.",
 		"client_meta": map[string]any{"critic": map[string]any{
-			"api_key":  "sk-redacted-retry",
-			"endpoint": "https://api.example.com/v1",
-			"model":    "critic-model",
-			"provider": "openai",
+			"api_key":    "sk-redacted-retry",
+			"endpoint":   "https://api.example.com/v1",
+			"model":      "critic-model",
+			"provider":   "openai",
+			"timeout_ms": 45000,
 		}},
 	}
 	raw, _ := json.Marshal(body)
@@ -148,16 +149,18 @@ func TestCompleteTurnEmbeddingProviderFailureReportsWarning(t *testing.T) {
 		"assistant_content": "Rowan promises to keep the blue key safe.",
 		"client_meta": map[string]any{
 			"critic": map[string]any{
-				"api_key":  "sk-critic-ok",
-				"endpoint": "https://api.example.com/v1",
-				"model":    "critic-model",
-				"provider": "openai",
+				"api_key":    "sk-critic-ok",
+				"endpoint":   "https://api.example.com/v1",
+				"model":      "critic-model",
+				"provider":   "openai",
+				"timeout_ms": 45000,
 			},
 			"embedding": map[string]any{
-				"api_key":  "sk-embedding-fail",
-				"endpoint": "https://api.example.com/v1/embeddings",
-				"model":    "embedding-model",
-				"provider": "openai",
+				"api_key":    "sk-embedding-fail",
+				"endpoint":   "https://api.example.com/v1/embeddings",
+				"model":      "embedding-model",
+				"provider":   "openai",
+				"timeout_ms": 30000,
 			},
 		},
 	}
@@ -285,7 +288,7 @@ func TestCompleteTurnStructuredCanonicalContentDoesNotSkipDerivedIngest(t *testi
 		"turn_index":        1,
 		"user_input":        "[Narrative Guide]\nScene Mandate: keep the mood stable\nForbidden Moves:\n- sudden battle",
 		"assistant_content": "Response Template\n{{char}} should answer in the requested style.",
-		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai"}},
+		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "timeout_ms": 45000}},
 	}
 	raw, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(raw))

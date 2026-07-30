@@ -107,7 +107,7 @@ func runAuthorityCutoverReplay(ctx context.Context, exec commandExecutor, cfg di
 		}
 	}()
 
-	waitStep := waitGoReady(ctx, port)
+	waitStep := waitGoReady(ctx, port, cfg.PollInterval)
 	waitStep.Name = "authority-wait-go-ready"
 	steps = append(steps, waitStep)
 	if waitStep.Status != "ok" {
@@ -271,7 +271,7 @@ func probeGET(ctx context.Context, url string) (map[string]any, error) {
 	if err != nil {
 		return map[string]any{"url": url, "status": "failed", "error": err.Error()}, err
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return map[string]any{"url": url, "status": "failed", "error": err.Error()}, err
@@ -326,7 +326,7 @@ func probeStatusOK(probe map[string]any) bool {
 func runBackupRestoreDrill(ctx context.Context, port int, dataDir string) (map[string]any, error) {
 	const sourceDB = "archive_center_temp"
 	const restoreDB = "archive_center_restore_temp"
-	rootDSN := fmt.Sprintf("root@tcp(127.0.0.1:%d)/?timeout=10s&parseTime=true", port)
+	rootDSN := fmt.Sprintf("root@tcp(127.0.0.1:%d)/?parseTime=true", port)
 	db, err := sql.Open("mysql", rootDSN)
 	if err != nil {
 		return backupRestoreReport("failed", sourceDB, restoreDB, nil, err.Error(), ""), err

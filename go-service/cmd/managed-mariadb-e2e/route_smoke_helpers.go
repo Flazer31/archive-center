@@ -245,12 +245,13 @@ func routeSmokeDelta(before map[string]int, after map[string]int) map[string]int
 }
 
 func postJSON(ctx context.Context, url string, payload map[string]any) (map[string]any, error) {
-	return postJSONWithTimeout(ctx, url, payload, 10*time.Second)
+	return postJSONWithTimeout(ctx, url, payload, 0)
 }
 
 func postJSONWithTimeout(ctx context.Context, url string, payload map[string]any, timeout time.Duration) (map[string]any, error) {
-	if timeout <= 0 {
-		timeout = 10 * time.Second
+	if timeout < 0 {
+		err := fmt.Errorf("HTTP timeout must not be negative")
+		return map[string]any{"url": url, "status": "failed", "error": err.Error()}, err
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -294,7 +295,7 @@ func deleteJSON(ctx context.Context, url string) (map[string]any, error) {
 	if err != nil {
 		return map[string]any{"url": url, "status": "failed", "error": err.Error()}, err
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return map[string]any{"url": url, "status": "failed", "error": err.Error()}, err
@@ -332,7 +333,7 @@ func patchJSONProbe(ctx context.Context, url string, payload map[string]any) (ma
 		return map[string]any{"url": url, "status": "failed", "error": err.Error()}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return map[string]any{"url": url, "status": "failed", "error": err.Error()}, err

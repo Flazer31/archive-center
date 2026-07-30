@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -927,7 +928,7 @@ func TestWaitGoReadySuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	step := waitGoReady(ctx, port)
+	step := waitGoReady(ctx, port, time.Millisecond)
 	if step.Status != "ok" {
 		t.Fatalf("status = %q, want ok: %s", step.Status, step.Error)
 	}
@@ -936,12 +937,72 @@ func TestWaitGoReadySuccess(t *testing.T) {
 func TestWaitGoReadyTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	step := waitGoReady(ctx, 59999) // unlikely used port
+	step := waitGoReady(ctx, 59999, time.Millisecond) // unlikely used port
 	if step.Status != "failed" {
 		t.Fatalf("status = %q, want failed", step.Status)
 	}
 	if !strings.Contains(step.Error, "not ready") {
 		t.Fatalf("expected timeout error, got %q", step.Error)
+	}
+}
+
+func TestWaitGoReadyZeroIntervalDoesNotRetry(t *testing.T) {
+	var attempts atomic.Int64
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ln.Close()
+
+	step := waitGoReady(context.Background(), port, 0)
+	if step.Status != "failed" || !strings.Contains(step.Error, "polling is disabled") {
+		t.Fatalf("step = %+v, want polling-disabled failure", step)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want exactly one probe", got)
+	}
+}
+
+func TestWaitPythonFallbackReadyZeroIntervalDoesNotRetry(t *testing.T) {
+	var attempts atomic.Int64
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ln.Close()
+
+	step := waitPythonFallbackReady(context.Background(), port, 0)
+	if step.Status != "failed" || !strings.Contains(step.Error, "polling is disabled") {
+		t.Fatalf("step = %+v, want polling-disabled failure", step)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want exactly one probe", got)
+	}
+}
+
+func TestWaitForServerReadyZeroIntervalFailsWithoutPolling(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	err = waitForServerReady(context.Background(), port, 0)
+	if err == nil || !strings.Contains(err.Error(), "polling is disabled") {
+		t.Fatalf("error = %v, want polling-disabled failure", err)
 	}
 }
 

@@ -1,10 +1,14 @@
 param(
     [string]$EnvFile = ".\.env.live.local",
     [string]$BaseUrl,
-    [string]$SessionId
+    [string]$SessionId,
+    [Nullable[int]]$RequestTimeoutSeconds = $null
 )
 
 $ErrorActionPreference = "Stop"
+if ($null -ne $RequestTimeoutSeconds -and $RequestTimeoutSeconds -lt 1) {
+    throw "RequestTimeoutSeconds must be greater than zero when supplied."
+}
 
 function Import-DotEnv([string]$Path) {
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
@@ -20,11 +24,17 @@ function Import-DotEnv([string]$Path) {
 
 function Invoke-Json($Method, $Path, $Body = $null) {
     $uri = "$BaseUrl$Path"
+    $invokeArgs = @{ Method = $Method; Uri = $uri }
+    if ($null -ne $RequestTimeoutSeconds) {
+        $invokeArgs.TimeoutSec = $RequestTimeoutSeconds
+    }
     if ($null -eq $Body) {
-        return Invoke-RestMethod -Method $Method -Uri $uri -TimeoutSec 30
+        return Invoke-RestMethod @invokeArgs
     }
     $json = $Body | ConvertTo-Json -Depth 12
-    return Invoke-RestMethod -Method $Method -Uri $uri -Body $json -ContentType "application/json" -TimeoutSec 60
+    $invokeArgs.Body = $json
+    $invokeArgs.ContentType = "application/json"
+    return Invoke-RestMethod @invokeArgs
 }
 
 $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path

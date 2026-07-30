@@ -30,7 +30,7 @@ func main() {
 	sessionID := flag.String("session", fmt.Sprintf("mariadb-shadow-smoke-%d", time.Now().UTC().UnixNano()), "Smoke session id.")
 	turnIndex := flag.Int("turn", int(time.Now().UTC().Unix()%1000000000), "Smoke turn index.")
 	write := flag.Bool("write", false, "Actually insert smoke rows into MariaDB shadow tables.")
-	timeout := flag.Duration("timeout", 10*time.Second, "Smoke timeout.")
+	timeout := flag.Duration("timeout", 0, "Smoke timeout (0 = no local deadline).")
 	flag.Parse()
 
 	report := smokeReport{
@@ -50,8 +50,17 @@ func main() {
 		writeReport(report)
 		os.Exit(2)
 	}
+	if *timeout < 0 {
+		report.Error = "-timeout must not be negative"
+		writeReport(report)
+		os.Exit(2)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx := context.Background()
+	cancel := func() {}
+	if *timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+	}
 	defer cancel()
 
 	st, err := store.OpenMariaDB(*dsn)

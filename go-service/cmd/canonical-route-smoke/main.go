@@ -40,6 +40,7 @@ func main() {
 	execute := flag.Bool("execute", false, "Actually run the canonical route smoke session against the Go server stack.")
 	out := flag.String("out", "", "Path to write JSON report. Defaults to stdout.")
 	sessionID := flag.String("session-id", fmt.Sprintf("canonical-route-smoke-%d", time.Now().UTC().UnixNano()), "Smoke session id.")
+	timeout := flag.Duration("timeout", 0, "MariaDB ping timeout (0 = no local deadline).")
 	flag.Parse()
 
 	report := buildSmokeReport(*execute, *dsn, *sessionID)
@@ -50,8 +51,18 @@ func main() {
 		}
 		return
 	}
+	if *timeout < 0 {
+		writeReport(&smokeReport{
+			Status:    "failed",
+			CheckedAt: time.Now().UTC().Format(time.RFC3339),
+			SessionID: *sessionID,
+			Note:      "R1 manual canonical route smoke; not an authority switch.",
+			Error:     "-timeout must not be negative",
+		}, *out)
+		os.Exit(2)
+	}
 
-	handler, closeFn, err := newMariaDBSmokeHandler(*dsn)
+	handler, closeFn, err := newMariaDBSmokeHandler(*dsn, *timeout)
 	if err != nil {
 		writeReport(&smokeReport{
 			Status:    "failed",
@@ -71,7 +82,7 @@ func main() {
 	}
 }
 
-func newMariaDBSmokeHandler(dsn string) (http.Handler, func(), error) {
+func newMariaDBSmokeHandler(dsn string, timeout time.Duration) (http.Handler, func(), error) {
 	maria, err := store.OpenMariaDB(dsn)
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("open mariadb store: %w", err)
@@ -82,7 +93,11 @@ func newMariaDBSmokeHandler(dsn string) (http.Handler, func(), error) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx := context.Background()
+	cancel := func() {}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	}
 	defer cancel()
 	if pinger, ok := maria.(store.Pinger); ok {
 		if err := pinger.Ping(ctx); err != nil {

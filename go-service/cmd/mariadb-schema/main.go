@@ -95,7 +95,7 @@ func main() {
 	schemaPath := flag.String("schema", defaultSchemaPath(), "Path to schema SQL file.")
 	outPath := flag.String("out", "", "Path to write schema JSON report. Defaults to stdout.")
 	execute := flag.Bool("execute", false, "Required to apply schema statements.")
-	timeout := flag.Duration("timeout", 60*time.Second, "Schema apply timeout.")
+	timeout := flag.Duration("timeout", 0, "Schema apply timeout (0 = no local deadline).")
 	managedBootstrap := flag.Bool("managed-bootstrap", false, "Verify and repair the package-managed local MariaDB account before applying the schema.")
 	managedHost := flag.String("managed-host", "127.0.0.1", "Host for the package-managed local MariaDB instance.")
 	managedPort := flag.Int("managed-port", 3307, "Port for the package-managed local MariaDB instance.")
@@ -203,6 +203,11 @@ func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration,
 		report.Errors = append(report.Errors, "missing DSN: provide --dsn or AC_MARIADB_DSN")
 		return report, 2
 	}
+	if timeout < 0 {
+		report.Status = "failed"
+		report.Errors = append(report.Errors, "--timeout must not be negative")
+		return report, 2
+	}
 	var appAccountTargets []localAppAccountProbeTarget
 	if appAccountProbe {
 		appAccountTargets, err = localAppAccountProbeTargets(dsn)
@@ -222,7 +227,11 @@ func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration,
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx := context.Background()
+	cancel := func() {}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	}
 	defer cancel()
 
 	if managed.Enabled {
@@ -298,7 +307,7 @@ func runManagedBootstrap(ctx context.Context, cfg managedBootstrapConfig) (strin
 	}
 
 	address := net.JoinHostPort(host, strconv.Itoa(cfg.Port))
-	adminDSN := fmt.Sprintf("root@tcp(%s)/?timeout=5s&readTimeout=5s&writeTimeout=5s", address)
+	adminDSN := fmt.Sprintf("root@tcp(%s)/", address)
 	adminDB, err := sql.Open("mysql", adminDSN)
 	if err != nil {
 		return "", newManagedBootstrapError(managedErrAdminAuth, "open managed MariaDB administrator connection", err)
@@ -317,7 +326,7 @@ func runManagedBootstrap(ctx context.Context, cfg managedBootstrapConfig) (strin
 	}
 
 	appDSN := fmt.Sprintf(
-		"%s:%s@tcp(%s)/%s?parseTime=true&timeout=5s&readTimeout=5s&writeTimeout=5s",
+		"%s:%s@tcp(%s)/%s?parseTime=true",
 		managedDatabaseUser,
 		managedDatabasePassword,
 		address,

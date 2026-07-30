@@ -4,10 +4,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/httpapi"
@@ -15,6 +17,8 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	appCtx, cancelApp := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancelApp()
 	if httpapi.ConfigureOutboundDNSServers(os.Getenv("AC_DNS_SERVERS")) {
 		logger.Info("configured outbound dns override")
 	}
@@ -37,22 +41,22 @@ func main() {
 
 	mux := http.NewServeMux()
 	server := httpapi.NewServer(cfg)
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := server.ValidateRuntimeDependencies(preflightCtx); err != nil {
-		cancelPreflight()
+	if err := server.ValidateRuntimeDependencies(appCtx); err != nil {
 		logger.Error("runtime dependency preflight failed", "error", err)
 		os.Exit(1)
 	}
-	cancelPreflight()
-	workerCtx, cancelWorkers := context.WithCancel(context.Background())
-	defer cancelWorkers()
-	if server.StartMemoryWorkers(workerCtx) {
+	if server.StartMemoryWorkers(appCtx) {
 		logger.Info("memory reprocessing worker enabled")
 	}
 	server.RegisterRoutes(mux)
 
 	logger.Info("starting server", "bind", cfg.BindAddr, "mode", cfg.Mode)
-	if err := http.ListenAndServe(cfg.BindAddr, mux); err != nil {
+	httpServer := &http.Server{Addr: cfg.BindAddr, Handler: mux}
+	go func() {
+		<-appCtx.Done()
+		_ = httpServer.Close()
+	}()
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)
 	}

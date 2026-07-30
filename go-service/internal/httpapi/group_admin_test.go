@@ -598,7 +598,7 @@ func TestAdminRescanBackfillsWorldRulesFromRawChatLogsWhenMemoriesMissRules(t *t
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-raw-world","max_items":10,"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai"},"derived_backfill_only":true,"force_derived_rebuild":true,"force_world_rule_backfill":true}}`
+	body := `{"chat_session_id":"sess-raw-world","max_items":10,"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai","timeout_ms":45000},"derived_backfill_only":true,"force_derived_rebuild":true,"force_world_rule_backfill":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/rescan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -753,7 +753,7 @@ func TestAdminRescanBackfillsEpisodesAfterRegeneratingMemories(t *testing.T) {
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-post-derived","max_items":5,"turn_indices":[1,2,3,4,5],"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai"},"episode_interval_turns":5,"derived_backfill_only":true,"force_derived_rebuild":true,"force_world_rule_backfill":true,"force_episode_backfill":true}}`
+	body := `{"chat_session_id":"sess-post-derived","max_items":5,"turn_indices":[1,2,3,4,5],"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai","timeout_ms":45000},"episode_interval_turns":5,"derived_backfill_only":true,"force_derived_rebuild":true,"force_world_rule_backfill":true,"force_episode_backfill":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/rescan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -831,7 +831,7 @@ func TestAdminRescanFullSessionBackfillDoesNotClampHierarchyToProcessedTurns(t *
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-full-backfill","max_items":1,"turn_indices":[18],"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai"},"episode_interval_turns":5,"chapter_interval_turns":10,"derived_backfill_only":true,"force_derived_rebuild":true,"force_episode_backfill":true,"force_hierarchy_backfill":true,"full_session_backfill":true}}`
+	body := `{"chat_session_id":"sess-full-backfill","max_items":1,"turn_indices":[18],"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai","timeout_ms":45000},"episode_interval_turns":5,"chapter_interval_turns":10,"derived_backfill_only":true,"force_derived_rebuild":true,"force_episode_backfill":true,"force_hierarchy_backfill":true,"full_session_backfill":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/rescan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

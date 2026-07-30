@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
@@ -391,6 +392,54 @@ func TestRepairReplayWriteStoreDryRunAndReplay(t *testing.T) {
 	}
 	if !foundAudit {
 		t.Fatalf("expected repair_replay audit, got %#v", fake.savedAuditLogs)
+	}
+}
+
+func TestRepairReplayProgressReportsRealEntryCounts(t *testing.T) {
+	existingUser := "already saved"
+	missingAssistant := "missing assistant"
+	newUser := "new user"
+	newAssistant := "new assistant"
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ChatSessionID: "sess-repair-progress", TurnIndex: 1, Role: "user", Content: existingUser},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	progressSnapshots := []map[string]any{}
+	result, err := srv.runChatLogRepairReplayWithProgress(
+		context.Background(),
+		"sess-repair-progress",
+		dto.ChatLogRepairReplayRequest{
+			Entries: []dto.ChatLogRepairEntryRequest{
+				{TurnIndex: 1, UserContent: &existingUser, AssistantContent: &missingAssistant},
+				{TurnIndex: 2, UserContent: &newUser, AssistantContent: &newAssistant},
+			},
+		},
+		func(progress map[string]any) {
+			progressSnapshots = append(progressSnapshots, cloneMapAny(progress))
+		},
+	)
+	if err != nil {
+		t.Fatalf("repair replay with progress: %v", err)
+	}
+	if len(progressSnapshots) != 3 {
+		t.Fatalf("progress snapshot count=%d, want initial plus two entries", len(progressSnapshots))
+	}
+	first := progressSnapshots[0]
+	if first["processed"] != 0 || first["candidate_count"] != 2 {
+		t.Fatalf("initial progress=%#v, want 0/2 rather than 0/0", first)
+	}
+	last := progressSnapshots[len(progressSnapshots)-1]
+	if last["processed"] != 2 || last["candidate_count"] != 2 || last["succeeded"] != 2 || last["progress_percent"] != 100 {
+		t.Fatalf("terminal repair progress=%#v, want 2/2 succeeded", last)
+	}
+	if result["processed"] != 2 || result["succeeded"] != 2 || result["failed"] != 0 {
+		t.Fatalf("repair result progress counts=%#v", result)
 	}
 }
 

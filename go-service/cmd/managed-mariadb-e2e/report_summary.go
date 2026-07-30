@@ -357,7 +357,7 @@ func buildInternalDSN(dataDir string, port int, sessionID string) string {
 	user := "ac_root"
 	password := buildPassword(sessionID)
 	dbName := "archive_center_temp"
-	return fmt.Sprintf("%s:%s@tcp(127.0.0.1:%d)/%s?parseTime=true&timeout=3s&readTimeout=3s&writeTimeout=3s", user, password, port, dbName)
+	return fmt.Sprintf("%s:%s@tcp(127.0.0.1:%d)/%s?parseTime=true", user, password, port, dbName)
 }
 
 func redactDSN(dsn string) string {

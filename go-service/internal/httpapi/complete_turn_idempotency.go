@@ -9,15 +9,11 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
 
-const (
-	completeTurnRequestTTL = 10 * time.Minute
-	completeTurnRequestMax = 1024
-)
+const completeTurnRequestMax = 1024
 
 type completeTurnRecordedResponse struct {
 	status int
@@ -26,7 +22,7 @@ type completeTurnRecordedResponse struct {
 }
 
 type completeTurnRequestEntry struct {
-	createdAt   time.Time
+	sequence    uint64
 	fingerprint string
 	done        chan struct{}
 	response    completeTurnRecordedResponse
@@ -34,39 +30,35 @@ type completeTurnRequestEntry struct {
 }
 
 type completeTurnRequestLedger struct {
-	mu      sync.Mutex
-	entries map[string]*completeTurnRequestEntry
+	mu           sync.Mutex
+	entries      map[string]*completeTurnRequestEntry
+	nextSequence uint64
 }
 
 func newCompleteTurnRequestLedger() *completeTurnRequestLedger {
 	return &completeTurnRequestLedger{entries: map[string]*completeTurnRequestEntry{}}
 }
 
-func (l *completeTurnRequestLedger) begin(key string, now time.Time) (*completeTurnRequestEntry, bool) {
-	entry, owner, _ := l.beginWithFingerprint(key, "", now)
+func (l *completeTurnRequestLedger) begin(key string) (*completeTurnRequestEntry, bool) {
+	entry, owner, _ := l.beginWithFingerprint(key, "")
 	return entry, owner
 }
 
-func (l *completeTurnRequestLedger) beginWithFingerprint(key, fingerprint string, now time.Time) (*completeTurnRequestEntry, bool, bool) {
+func (l *completeTurnRequestLedger) beginWithFingerprint(key, fingerprint string) (*completeTurnRequestEntry, bool, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.pruneLocked(now)
 	if entry := l.entries[key]; entry != nil {
 		conflict := entry.fingerprint != "" && fingerprint != "" && entry.fingerprint != fingerprint
 		return entry, false, conflict
 	}
 	if len(l.entries) >= completeTurnRequestMax {
-		for existingKey, existing := range l.entries {
-			if existing.finished && !completeTurnRecordedResponsePinsOutcome(existing.response) {
-				delete(l.entries, existingKey)
-				break
-			}
-		}
+		l.evictFinishedForCapacityLocked()
 		if len(l.entries) >= completeTurnRequestMax {
 			return nil, false, false
 		}
 	}
-	entry := &completeTurnRequestEntry{createdAt: now, fingerprint: fingerprint, done: make(chan struct{})}
+	l.nextSequence++
+	entry := &completeTurnRequestEntry{sequence: l.nextSequence, fingerprint: fingerprint, done: make(chan struct{})}
 	l.entries[key] = entry
 	return entry, true, false
 }
@@ -118,10 +110,9 @@ func (l *completeTurnRequestLedger) finishOwner(key string, expected *completeTu
 	}
 }
 
-func (l *completeTurnRequestLedger) status(key string, now time.Time) (string, completeTurnRecordedResponse, bool) {
+func (l *completeTurnRequestLedger) status(key string) (string, completeTurnRecordedResponse, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.pruneLocked(now)
 	entry := l.entries[key]
 	if entry == nil {
 		return "unknown", completeTurnRecordedResponse{}, false
@@ -142,24 +133,20 @@ func (l *completeTurnRequestLedger) responseForEntry(key string, expected *compl
 	return entry.response, true
 }
 
-func (l *completeTurnRequestLedger) pruneLocked(now time.Time) {
+func (l *completeTurnRequestLedger) evictFinishedForCapacityLocked() {
+	oldestKey := ""
+	var oldestSequence uint64
 	for key, entry := range l.entries {
-		if entry.finished &&
-			!completeTurnRecordedResponsePinsOutcome(entry.response) &&
-			now.Sub(entry.createdAt) > completeTurnRequestTTL {
-			delete(l.entries, key)
+		if !entry.finished || completeTurnRecordedResponsePinsOutcome(entry.response) {
+			continue
+		}
+		if oldestKey == "" || entry.sequence < oldestSequence {
+			oldestKey = key
+			oldestSequence = entry.sequence
 		}
 	}
-	if len(l.entries) <= completeTurnRequestMax {
-		return
-	}
-	for key, entry := range l.entries {
-		if entry.finished && !completeTurnRecordedResponsePinsOutcome(entry.response) {
-			delete(l.entries, key)
-			if len(l.entries) <= completeTurnRequestMax {
-				return
-			}
-		}
+	if oldestKey != "" {
+		delete(l.entries, oldestKey)
 	}
 }
 
@@ -308,7 +295,7 @@ func (s *Server) executeCompleteTurnIdempotent(ctx context.Context, w http.Respo
 		run(w)
 		return
 	}
-	entry, owner, conflict := s.CompleteTurns.beginWithFingerprint(key, fingerprint, time.Now().UTC())
+	entry, owner, conflict := s.CompleteTurns.beginWithFingerprint(key, fingerprint)
 	if conflict {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":          "error",
@@ -390,7 +377,7 @@ func (s *Server) handleCompleteTurnRequestStatus(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusOK, map[string]any{"status": "unknown", "idempotency_key": key})
 		return
 	}
-	status, response, found := s.CompleteTurns.status(key, time.Now().UTC())
+	status, response, found := s.CompleteTurns.status(key)
 	payload := map[string]any{
 		"status":          status,
 		"idempotency_key": key,

@@ -1,13 +1,17 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +37,124 @@ type memoryAdmissionWorkerStore struct {
 	legacyMemories  int
 	legacyEvidence  int
 	nextEvidenceID  int64
+}
+
+type memoryWorkerEventStore struct {
+	*memoryAdmissionWorkerStore
+	mu               sync.Mutex
+	vectorItems      []*store.MemoryVectorOutboxItem
+	vectorClaimed    map[int64]*store.MemoryVectorOutboxItem
+	vectorClaims     int
+	vectorCompleted  []int64
+	vectorFailed     []int64
+	claimObserved    chan struct{}
+	completeObserved chan int64
+	failObserved     chan int64
+}
+
+func (f *memoryWorkerEventStore) EnqueueMemoryVectorOperation(_ context.Context, item *store.MemoryVectorOutboxItem) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vectorItems = append(f.vectorItems, item)
+	return true, nil
+}
+
+func (f *memoryWorkerEventStore) ClaimMemoryVectorOperation(
+	_ context.Context,
+	owner string,
+	now time.Time,
+	lease time.Duration,
+) (*store.MemoryVectorOutboxItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vectorClaims++
+	if f.claimObserved != nil {
+		select {
+		case f.claimObserved <- struct{}{}:
+		default:
+		}
+	}
+	if len(f.vectorItems) == 0 {
+		return nil, store.ErrNotFound
+	}
+	item := f.vectorItems[0]
+	f.vectorItems = f.vectorItems[1:]
+	item.Attempts++
+	item.Status = "leased"
+	item.LeaseOwner = owner
+	item.LeaseUntil = now.Add(lease)
+	if f.vectorClaimed == nil {
+		f.vectorClaimed = map[int64]*store.MemoryVectorOutboxItem{}
+	}
+	f.vectorClaimed[item.ID] = item
+	copy := *item
+	return &copy, nil
+}
+
+func (f *memoryWorkerEventStore) CompleteMemoryVectorOperation(
+	_ context.Context,
+	id int64,
+	_ string,
+	_ time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vectorCompleted = append(f.vectorCompleted, id)
+	delete(f.vectorClaimed, id)
+	if f.completeObserved != nil {
+		select {
+		case f.completeObserved <- id:
+		default:
+		}
+	}
+	return nil
+}
+
+func (f *memoryWorkerEventStore) FailMemoryVectorOperation(
+	_ context.Context,
+	id int64,
+	_ string,
+	_ time.Time,
+	retryAfter time.Time,
+	permanent bool,
+	failure string,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vectorFailed = append(f.vectorFailed, id)
+	item := f.vectorClaimed[id]
+	delete(f.vectorClaimed, id)
+	if item != nil && !permanent {
+		item.Status = "retryable"
+		item.RetryAfter = retryAfter
+		item.LastError = failure
+		f.vectorItems = append(f.vectorItems, item)
+	}
+	if f.failObserved != nil {
+		select {
+		case f.failObserved <- id:
+		default:
+		}
+	}
+	return nil
+}
+
+func (f *memoryWorkerEventStore) addVectorItems(items ...*store.MemoryVectorOutboxItem) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vectorItems = append(f.vectorItems, items...)
+}
+
+func (f *memoryWorkerEventStore) vectorState() (claims int, completed, failed []int64, attempts []int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	claims = f.vectorClaims
+	completed = append([]int64(nil), f.vectorCompleted...)
+	failed = append([]int64(nil), f.vectorFailed...)
+	for _, item := range f.vectorItems {
+		attempts = append(attempts, item.Attempts)
+	}
+	return
 }
 
 func (f *memoryAdmissionWorkerStore) MemoryDerivationLifecycleEnabled() bool {
@@ -295,6 +417,11 @@ func TestAdminRescanHandsAcceptedSourceToDurableWorker(t *testing.T) {
 		st.enqueuedJobs[0].DerivationVersion != store.MemoryAdmissionContract {
 		t.Fatalf("job=%+v", st.enqueuedJobs[0])
 	}
+	select {
+	case <-srv.memoryWorkerWakeChannel():
+	default:
+		t.Fatal("reprocessing enqueue did not signal the memory worker")
+	}
 }
 
 func TestExplorerRegenerationHandsAcceptedSourceToDurableWorker(t *testing.T) {
@@ -362,7 +489,9 @@ func TestMemoryReprocessingWorkerTerminatesWhenRetryLimitMissingOrInvalid(t *tes
 			st := newMemoryReprocessingWorkerStore(now)
 			srv := &Server{
 				Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
-				RuntimeConfig: RuntimeConfig{FailedQueueMaxAttempts: maxAttempts},
+				RuntimeConfig: RuntimeConfig{
+					Synced: true, FailedQueueMaxAttempts: maxAttempts,
+				},
 			}
 			result, err := srv.processMemoryReprocessingOnce(
 				context.Background(), "worker", now, time.Minute,
@@ -391,7 +520,9 @@ func TestMemoryReprocessingWorkerRetriesBelowConfiguredLimit(t *testing.T) {
 	st := newMemoryReprocessingWorkerStore(now)
 	srv := &Server{
 		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
-		RuntimeConfig: RuntimeConfig{FailedQueueMaxAttempts: 4},
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 4,
+		},
 	}
 	result, err := srv.processMemoryReprocessingOnce(
 		context.Background(), "worker", now, time.Minute,
@@ -402,7 +533,7 @@ func TestMemoryReprocessingWorkerRetriesBelowConfiguredLimit(t *testing.T) {
 	if result.State != "retryable" || result.Failure != "critic_config_missing" ||
 		len(st.failedJobs) != 1 ||
 		len(st.failedPermanent) != 1 || st.failedPermanent[0] ||
-		len(st.completedJobs) != 0 || !st.failedRetryAt[0].After(now) {
+		len(st.completedJobs) != 0 || !st.failedRetryAt[0].Equal(now) {
 		t.Fatalf("result=%+v failed=%v permanent=%v completed=%v retry=%v",
 			result, st.failedJobs, st.failedPermanent, st.completedJobs, st.failedRetryAt)
 	}
@@ -414,7 +545,9 @@ func TestMemoryReprocessingWorkerTerminatesAtConfiguredRetryLimit(t *testing.T) 
 	st.job.Attempts = 3
 	srv := &Server{
 		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
-		RuntimeConfig: RuntimeConfig{FailedQueueMaxAttempts: 4},
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 4,
+		},
 	}
 	result, err := srv.processMemoryReprocessingOnce(
 		context.Background(), "worker", now, time.Minute,
@@ -430,6 +563,164 @@ func TestMemoryReprocessingWorkerTerminatesAtConfiguredRetryLimit(t *testing.T) 
 		!strings.HasPrefix(st.failedReasons[0], criticRetryLimitReached) {
 		t.Fatalf("result=%+v permanent=%v retry=%v reasons=%v",
 			result, st.failedPermanent, st.failedRetryAt, st.failedReasons)
+	}
+}
+
+func TestMemoryReprocessingWorkerDefersWithoutClaimBeforeRuntimeConfigSync(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryReprocessingWorkerStore(now)
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+	}
+	result, err := srv.processMemoryReprocessingOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Processed ||
+		result.State != "deferred_config_sync" ||
+		result.Failure != memoryWorkerConfigDeferred ||
+		st.job == nil ||
+		len(st.failedJobs) != 0 ||
+		len(st.completedJobs) != 0 {
+		t.Fatalf(
+			"result=%+v job=%+v failed=%v completed=%v",
+			result, st.job, st.failedJobs, st.completedJobs,
+		)
+	}
+}
+
+func TestMemoryWorkerProductionLoopContainsNoPollingTicker(t *testing.T) {
+	source, err := os.ReadFile("memory_reprocessing_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(source, []byte("time.NewTicker")) ||
+		bytes.Contains(source, []byte("memoryWorkerPollInterval")) {
+		t.Fatal("memory worker regained a server-lifetime polling ticker")
+	}
+}
+
+func TestMemoryWorkerWaitsForWakeAndDrainsAllDueItems(t *testing.T) {
+	base := newMemoryReprocessingWorkerStore(time.Now().UTC())
+	base.job = nil
+	eventStore := &memoryWorkerEventStore{
+		memoryAdmissionWorkerStore: base,
+		claimObserved:              make(chan struct{}, 8),
+		completeObserved:           make(chan int64, 8),
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := &Server{
+		Cfg: cfg, Store: eventStore,
+		Vector: &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()},
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticTimeoutSec: 2, EmbeddingTimeoutSec: 3,
+			FailedQueueMaxAttempts: 4,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !srv.StartMemoryWorkers(ctx) {
+		t.Fatal("memory workers did not start")
+	}
+	select {
+	case <-eventStore.claimObserved:
+	case <-time.After(time.Second):
+		t.Fatal("startup wake was not drained")
+	}
+	eventStore.addVectorItems(
+		&store.MemoryVectorOutboxItem{
+			ID: 21, Operation: "delete", ChatSessionID: "session",
+			SourceRevision: "revision", DocumentID: "memory:21",
+			EmbeddingReady: true, RequiredSourceState: "inactive", Status: "pending",
+		},
+		&store.MemoryVectorOutboxItem{
+			ID: 22, Operation: "delete", ChatSessionID: "session",
+			SourceRevision: "revision", DocumentID: "memory:22",
+			EmbeddingReady: true, RequiredSourceState: "inactive", Status: "pending",
+		},
+	)
+	select {
+	case id := <-eventStore.completeObserved:
+		t.Fatalf("vector item %d ran without a real wake", id)
+	case <-time.After(25 * time.Millisecond):
+	}
+	srv.wakeMemoryWorkers()
+	completed := []int64{}
+	for len(completed) < 2 {
+		select {
+		case id := <-eventStore.completeObserved:
+			completed = append(completed, id)
+		case <-time.After(time.Second):
+			t.Fatalf("single wake completed=%v, want both due items", completed)
+		}
+	}
+	if completed[0] != 21 || completed[1] != 22 {
+		t.Fatalf("completed=%v, want [21 22]", completed)
+	}
+}
+
+func TestMemoryWorkerRetryWaitsForNextRealWake(t *testing.T) {
+	base := newMemoryReprocessingWorkerStore(time.Now().UTC())
+	base.job = nil
+	item := &store.MemoryVectorOutboxItem{
+		ID: 31, Operation: "delete", ChatSessionID: "session",
+		SourceRevision: "revision", DocumentID: "memory:31",
+		EmbeddingReady: true, RequiredSourceState: "inactive", Status: "pending",
+	}
+	eventStore := &memoryWorkerEventStore{
+		memoryAdmissionWorkerStore: base,
+		vectorItems:                []*store.MemoryVectorOutboxItem{item},
+	}
+	vec := &memoryVectorProcessorVector{
+		VectorStore: vector.NewFakeVectorStore(),
+		deleteErr:   errors.New("provider unavailable"),
+	}
+	srv := &Server{
+		Cfg: config.Default(), Store: eventStore, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticTimeoutSec: 2, EmbeddingTimeoutSec: 3,
+			FailedQueueMaxAttempts: 4,
+		},
+	}
+	firstWake := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
+	srv.processMemoryWorkerWake(context.Background(), "worker", firstWake)
+	claims, completed, failed, _ := eventStore.vectorState()
+	if claims != 1 || len(completed) != 0 || len(failed) != 1 ||
+		item.Attempts != 1 || item.Status != "retryable" ||
+		!item.RetryAfter.Equal(firstWake) {
+		t.Fatalf(
+			"after first wake claims=%d completed=%v failed=%v item=%+v",
+			claims, completed, failed, item,
+		)
+	}
+	vec.deleteErr = nil
+	secondWake := firstWake.Add(time.Second)
+	srv.processMemoryWorkerWake(context.Background(), "worker", secondWake)
+	claims, completed, failed, _ = eventStore.vectorState()
+	if claims != 3 || len(completed) != 1 || completed[0] != item.ID ||
+		len(failed) != 1 || item.Attempts != 2 {
+		t.Fatalf(
+			"after second wake claims=%d completed=%v failed=%v item=%+v",
+			claims, completed, failed, item,
+		)
+	}
+}
+
+func TestRuntimeConfigSyncSignalsMemoryWorker(t *testing.T) {
+	srv := &Server{}
+	wake := srv.memoryWorkerWakeChannel()
+	srv.updateRuntimeConfig(map[string]any{
+		"criticTimeout":          2,
+		"embeddingTimeout":       3,
+		"failedQueueMaxAttempts": 4,
+	})
+	select {
+	case <-wake:
+	default:
+		t.Fatal("runtime config sync did not signal the memory worker")
 	}
 }
 
@@ -469,7 +760,7 @@ func TestMemoryReprocessingWorkerAuditsTypedCriticFailure(t *testing.T) {
 		RuntimeConfig: RuntimeConfig{
 			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
 			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
-			FailedQueueMaxAttempts: 4,
+			CriticTimeoutSec: 30, FailedQueueMaxAttempts: 4,
 		},
 	}
 	result, err := srv.processMemoryReprocessingOnce(
@@ -543,6 +834,7 @@ func TestMemoryReprocessingWorkerUsesSameAdmissionWriterAndCompletes(t *testing.
 		RuntimeConfig: RuntimeConfig{
 			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
 			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30,
 		},
 	}
 	result, err := srv.processMemoryReprocessingOnce(
@@ -589,7 +881,7 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 		RuntimeConfig: RuntimeConfig{
 			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
 			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
-			FailedQueueMaxAttempts: 4,
+			CriticTimeoutSec: 30, FailedQueueMaxAttempts: 4,
 		},
 	}
 	result, err := srv.processMemoryReprocessingOnce(
@@ -629,6 +921,7 @@ func TestMemoryReprocessingWorkerDiscardsProviderResultAfterSourceInvalidation(t
 		RuntimeConfig: RuntimeConfig{
 			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
 			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30,
 		},
 	}
 	type workerOutcome struct {
@@ -636,19 +929,41 @@ func TestMemoryReprocessingWorkerDiscardsProviderResultAfterSourceInvalidation(t
 		err    error
 	}
 	done := make(chan workerOutcome, 1)
+	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	defer cancelWorker()
 	go func() {
 		result, err := srv.processMemoryReprocessingOnce(
-			context.Background(), "worker", now, time.Minute,
+			workerCtx, "worker", now, time.Minute,
 		)
 		done <- workerOutcome{result: result, err: err}
 	}()
-	<-requestStarted
+	select {
+	case <-requestStarted:
+	case outcome := <-done:
+		t.Fatalf("worker exited before provider request: result=%+v err=%v", outcome.result, outcome.err)
+	case <-time.After(time.Second):
+		t.Fatal("provider request did not start")
+	}
 	st.source.LifecycleState = "superseded"
-	srv.invalidateCompleteTurnSourceAcceptances(
-		context.Background(), st.source.ChatSessionID, st.source.TurnIndex,
-		"test_reroll", 1,
-	)
-	outcome := <-done
+	invalidationDone := make(chan struct{})
+	go func() {
+		srv.invalidateCompleteTurnSourceAcceptances(
+			context.Background(), st.source.ChatSessionID, st.source.TurnIndex,
+			"test_reroll", 1,
+		)
+		close(invalidationDone)
+	}()
+	select {
+	case <-invalidationDone:
+	case <-time.After(time.Second):
+		t.Fatal("source invalidation did not cancel the provider request")
+	}
+	var outcome workerOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not finish after source invalidation")
+	}
 	if outcome.err != nil {
 		t.Fatal(outcome.err)
 	}

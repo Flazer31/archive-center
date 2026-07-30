@@ -31,6 +31,8 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/session-normalize", s.handleAdminSessionNormalize)
 	mux.HandleFunc("GET /admin/jobs", s.handleAdminJobs)
 	mux.HandleFunc("GET /admin/jobs/{job_id}", s.handleAdminJob)
+	mux.HandleFunc("GET /admin/jobs/{job_id}/events", s.handleAdminJobEvents)
+	mux.HandleFunc("DELETE /admin/jobs/{job_id}", s.handleAdminJob)
 	mux.HandleFunc("POST /admin/session-migrate", s.handleAdminSessionMigrate)
 }
 

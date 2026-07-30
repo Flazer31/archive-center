@@ -23,13 +23,13 @@ func main() {
 	pathsRaw := flag.String("paths", "/health", "Comma-separated list of paths to probe")
 	method := flag.String("method", "GET", "HTTP method (GET only for now)")
 	count := flag.Int("n", 5, "Number of requests per path")
-	timeoutSec := flag.Int("timeout", 2, "Per-request timeout in seconds")
+	timeoutSec := flag.Int("timeout", 0, "Per-request timeout in seconds (0 = no local deadline)")
 	jsonOut := flag.Bool("json", false, "Emit JSON output instead of table")
 	reportPath := flag.String("report", "", "Write safe baseline run report JSON to file")
 	pid := flag.Int("pid", 0, "Process ID to capture RSS for (0 = not requested)")
 	waitReady := flag.Bool("wait-ready", false, "Wait for /health to succeed before probing")
-	startupTimeout := flag.Int("startup-timeout", 30, "Max seconds to wait for ready (wait-ready only)")
-	startupIntervalMs := flag.Int("startup-interval-ms", 500, "Interval between ready probes in ms (wait-ready only)")
+	startupTimeout := flag.Int("startup-timeout", 0, "Max seconds to wait for ready (0 = no local deadline)")
+	startupIntervalMs := flag.Int("startup-interval-ms", 0, "Interval between ready probes in ms (0 = one probe, no polling)")
 	flag.Parse()
 
 	if err := ValidateFlags(*count, *timeoutSec, *startupTimeout, *startupIntervalMs, *pid, *waitReady); err != nil {
@@ -62,7 +62,11 @@ func main() {
 	readiness := bench.ReadinessInfo{Enabled: *waitReady}
 	if *waitReady {
 		readyURL := strings.TrimRight(*baseURL, "/") + "/health"
-		readyCtx, cancel := context.WithTimeout(context.Background(), time.Duration(*startupTimeout)*time.Second)
+		readyCtx := context.Background()
+		cancel := func() {}
+		if *startupTimeout > 0 {
+			readyCtx, cancel = context.WithTimeout(readyCtx, time.Duration(*startupTimeout)*time.Second)
+		}
 		defer cancel()
 		attempts, elapsed, err := WaitForReady(readyCtx, client, readyURL, time.Duration(*startupIntervalMs)*time.Millisecond)
 		readiness.Attempts = attempts
@@ -184,7 +188,18 @@ func WaitForReady(ctx context.Context, client *http.Client, url string, interval
 		if ctx.Err() != nil {
 			return attempts, time.Since(start), ctx.Err()
 		}
-		time.Sleep(interval)
+		if interval <= 0 {
+			return attempts, time.Since(start), errors.New("backend is not ready and readiness polling is disabled")
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return attempts, time.Since(start), ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 
@@ -193,17 +208,14 @@ func ValidateFlags(count, timeout, startupTimeout, startupIntervalMs, pid int, w
 	if count <= 0 {
 		return errors.New("request count must be > 0")
 	}
-	if timeout <= 0 {
-		return errors.New("timeout must be > 0")
+	if timeout < 0 {
+		return errors.New("timeout must be >= 0")
 	}
-	if startupIntervalMs <= 0 {
-		return errors.New("startup-interval-ms must be > 0")
+	if startupIntervalMs < 0 {
+		return errors.New("startup-interval-ms must be >= 0")
 	}
 	if startupTimeout < 0 {
 		return errors.New("startup-timeout must be >= 0")
-	}
-	if waitReady && startupTimeout == 0 {
-		return errors.New("startup-timeout must be > 0 when wait-ready is enabled")
 	}
 	if pid < 0 {
 		return errors.New("pid must be >= 0")

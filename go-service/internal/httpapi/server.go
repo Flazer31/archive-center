@@ -29,6 +29,9 @@ type Server struct {
 	ReferenceVectorOpenError error
 	RuntimeConfig            RuntimeConfig
 	RuntimeConfigMu          sync.RWMutex
+	memoryWorkerWake         chan struct{}
+	memoryWorkerWakeOnce     sync.Once
+	memoryWorkerStartOnce    sync.Once
 	AdminJobs                *adminJobManager
 	CompleteTurns            *completeTurnRequestLedger
 	TurnWorkflows            *turnWorkflowHUDLedger
@@ -94,6 +97,7 @@ func NewServer(cfg config.Config) *Server {
 		VectorOpenError:          vectorErr,
 		ReferenceVector:          referenceVS,
 		ReferenceVectorOpenError: referenceVectorErr,
+		memoryWorkerWake:         make(chan struct{}, 1),
 		AdminJobs:                newAdminJobManager(),
 		CompleteTurns:            newCompleteTurnRequestLedger(),
 		TurnWorkflows:            newTurnWorkflowHUDLedger(),

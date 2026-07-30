@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -18,9 +19,7 @@ import (
 const (
 	turnWorkflowHUDContractVersion                  = "turn_workflow_hud.v2"
 	turnWorkflowHUDNoticeObservationContractVersion = "turn_workflow_notice_observation.v1"
-	turnWorkflowHUDEntryTTL                         = 15 * time.Minute
 	turnWorkflowHUDMaxEntries                       = 512
-	turnWorkflowHUDMaxWait                          = 20 * time.Second
 )
 
 const (
@@ -219,8 +218,10 @@ type turnWorkflowHUDViewModel struct {
 
 type turnWorkflowHUDEntry struct {
 	view       turnWorkflowHUDViewModel
+	history    []turnWorkflowHUDViewModel
 	changed    chan struct{}
 	attemptKey string
+	sequence   uint64
 }
 
 type turnWorkflowHUDNoticeObservation struct {
@@ -237,8 +238,8 @@ type turnWorkflowHUDLedger struct {
 	activeBySession map[string]string
 	latestByTurn    map[string]string
 	attemptByTurn   map[string]int
-	ttl             time.Duration
 	maxEntries      int
+	nextSequence    uint64
 }
 
 func newTurnWorkflowHUDLedger() *turnWorkflowHUDLedger {
@@ -247,7 +248,6 @@ func newTurnWorkflowHUDLedger() *turnWorkflowHUDLedger {
 		activeBySession: map[string]string{},
 		latestByTurn:    map[string]string{},
 		attemptByTurn:   map[string]int{},
-		ttl:             turnWorkflowHUDEntryTTL,
 		maxEntries:      turnWorkflowHUDMaxEntries,
 	}
 }
@@ -288,7 +288,6 @@ func (l *turnWorkflowHUDLedger) begin(requestID, sessionID string, logicalTurn i
 	now := time.Now().UTC()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.pruneLocked(now)
 	if existing := l.entries[requestID]; existing != nil {
 		if logicalTurn > 0 && existing.view.LogicalTurn <= 0 {
 			existing.view.LogicalTurn = logicalTurn
@@ -339,7 +338,9 @@ func (l *turnWorkflowHUDLedger) begin(requestID, sessionID string, logicalTurn i
 		Key: "backend_processing", Owner: "go_backend", Scope: "current_request",
 		Status: "running", ReasonCode: "prepare_started", Severity: turnWorkflowHUDSeverityNormal,
 	})
+	entry.history = append(entry.history, cloneTurnWorkflowHUDView(entry.view))
 	l.entries[requestID] = entry
+	l.advanceSequenceLocked(entry)
 	l.resolveAttemptLocked(entry, now)
 	l.activeBySession[sessionID] = requestID
 	snapshot := cloneTurnWorkflowHUDView(entry.view)
@@ -781,7 +782,6 @@ func (l *turnWorkflowHUDLedger) snapshot(requestID string) (turnWorkflowHUDViewM
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.pruneLocked(time.Now().UTC())
 	entry := l.entries[strings.TrimSpace(requestID)]
 	if entry == nil {
 		return turnWorkflowHUDViewModel{}, false
@@ -807,14 +807,10 @@ func (l *turnWorkflowHUDLedger) waitSnapshot(ctx context.Context, requestID stri
 	if wait < 0 {
 		wait = 0
 	}
-	if wait > turnWorkflowHUDMaxWait {
-		wait = turnWorkflowHUDMaxWait
-	}
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
 	for {
 		l.mu.Lock()
-		l.pruneLocked(time.Now().UTC())
 		entry := l.entries[strings.TrimSpace(requestID)]
 		if entry == nil {
 			l.mu.Unlock()
@@ -837,12 +833,66 @@ func (l *turnWorkflowHUDLedger) waitSnapshot(ctx context.Context, requestID stri
 	}
 }
 
+func (l *turnWorkflowHUDLedger) streamSnapshots(
+	ctx context.Context,
+	requestID string,
+	afterRevision int64,
+	emit func(turnWorkflowHUDViewModel) error,
+) (bool, error) {
+	if l == nil || emit == nil {
+		return false, nil
+	}
+	l.mu.Lock()
+	entry := l.entries[strings.TrimSpace(requestID)]
+	l.mu.Unlock()
+	if entry == nil {
+		return false, nil
+	}
+	for {
+		l.mu.Lock()
+		pending := make([]turnWorkflowHUDViewModel, 0)
+		for _, historical := range entry.history {
+			if historical.Revision > afterRevision {
+				pending = append(pending, cloneTurnWorkflowHUDView(historical))
+			}
+		}
+		changed := entry.changed
+		terminal := turnWorkflowHUDTerminal(entry.view.Status)
+		l.mu.Unlock()
+
+		for _, snapshot := range pending {
+			if err := emit(snapshot); err != nil {
+				return true, err
+			}
+			afterRevision = snapshot.Revision
+			if turnWorkflowHUDTerminal(snapshot.Status) {
+				return true, nil
+			}
+		}
+		if terminal {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return true, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
 func (l *turnWorkflowHUDLedger) touchLocked(entry *turnWorkflowHUDEntry, now time.Time) {
 	syncTurnWorkflowHUDPresentation(&entry.view)
 	entry.view.Revision++
 	entry.view.UpdatedAt = now
+	l.advanceSequenceLocked(entry)
+	entry.history = append(entry.history, cloneTurnWorkflowHUDView(entry.view))
 	close(entry.changed)
 	entry.changed = make(chan struct{})
+}
+
+func (l *turnWorkflowHUDLedger) advanceSequenceLocked(entry *turnWorkflowHUDEntry) {
+	l.nextSequence++
+	entry.sequence = l.nextSequence
 }
 
 func (l *turnWorkflowHUDLedger) invalidateLocked(entry *turnWorkflowHUDEntry, reasonCode string, now time.Time) {
@@ -927,37 +977,24 @@ func turnWorkflowHUDAttemptKey(sessionID string, logicalTurn int) string {
 	return strings.TrimSpace(sessionID) + "\x00" + strconv.Itoa(logicalTurn)
 }
 
-func (l *turnWorkflowHUDLedger) pruneLocked(now time.Time) {
-	for requestID, entry := range l.entries {
-		if !turnWorkflowHUDTerminal(entry.view.Status) && now.Sub(entry.view.UpdatedAt) > l.ttl {
-			l.invalidateLocked(entry, "workflow_expired", now)
-			continue
-		}
-		if turnWorkflowHUDTerminal(entry.view.Status) && now.Sub(entry.view.UpdatedAt) > l.ttl {
-			l.deleteEntryLocked(requestID)
-		}
-	}
-}
-
 func (l *turnWorkflowHUDLedger) ensureCapacityLocked(now time.Time) {
-	l.pruneLocked(now)
 	for len(l.entries) >= l.maxEntries {
 		oldestID := ""
-		var oldest time.Time
+		var oldestSequence uint64
 		for requestID, entry := range l.entries {
 			if !turnWorkflowHUDTerminal(entry.view.Status) {
 				continue
 			}
-			if oldestID == "" || entry.view.UpdatedAt.Before(oldest) {
+			if oldestID == "" || entry.sequence < oldestSequence {
 				oldestID = requestID
-				oldest = entry.view.UpdatedAt
+				oldestSequence = entry.sequence
 			}
 		}
 		if oldestID == "" {
 			for requestID, entry := range l.entries {
-				if oldestID == "" || entry.view.UpdatedAt.Before(oldest) {
+				if oldestID == "" || entry.sequence < oldestSequence {
 					oldestID = requestID
-					oldest = entry.view.UpdatedAt
+					oldestSequence = entry.sequence
 				}
 			}
 		}
@@ -1171,7 +1208,6 @@ func (l *turnWorkflowHUDLedger) latestSnapshotForSession(sessionID string) (turn
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.pruneLocked(time.Now().UTC())
 	var latest *turnWorkflowHUDEntry
 	for _, entry := range l.entries {
 		if entry == nil || entry.view.ChatSessionID != strings.TrimSpace(sessionID) {
@@ -1194,7 +1230,6 @@ func (l *turnWorkflowHUDLedger) recordOperation(view turnWorkflowHUDViewModel) t
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now().UTC()
-	l.pruneLocked(now)
 	if existing := l.entries[view.RequestID]; existing != nil &&
 		existing.view.ChatSessionID == view.ChatSessionID &&
 		existing.view.NoticeCode == view.NoticeCode {
@@ -1202,8 +1237,13 @@ func (l *turnWorkflowHUDLedger) recordOperation(view turnWorkflowHUDViewModel) t
 	}
 	view = cloneTurnWorkflowHUDView(view)
 	view.UpdatedAt = now
-	entry := &turnWorkflowHUDEntry{view: view, changed: make(chan struct{})}
+	entry := &turnWorkflowHUDEntry{
+		view:    view,
+		history: []turnWorkflowHUDViewModel{cloneTurnWorkflowHUDView(view)},
+		changed: make(chan struct{}),
+	}
 	l.entries[view.RequestID] = entry
+	l.advanceSequenceLocked(entry)
 	l.ensureCapacityLocked(now)
 	return cloneTurnWorkflowHUDView(view)
 }
@@ -1416,9 +1456,6 @@ func (s *Server) handleTurnWorkflowHUDStatus(w http.ResponseWriter, r *http.Requ
 	if waitMS < 0 {
 		waitMS = 0
 	}
-	if waitMS > int(turnWorkflowHUDMaxWait/time.Millisecond) {
-		waitMS = int(turnWorkflowHUDMaxWait / time.Millisecond)
-	}
 	if s.TurnWorkflows == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"contract_version": turnWorkflowHUDContractVersion,
@@ -1437,6 +1474,52 @@ func (s *Server) handleTurnWorkflowHUDStatus(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) handleTurnWorkflowHUDEvents(w http.ResponseWriter, r *http.Request) {
+	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+	if requestID == "" {
+		writeError(w, http.StatusBadRequest, "missing_param", "request_id is required")
+		return
+	}
+	if s.TurnWorkflows == nil {
+		writeError(w, http.StatusNotFound, "unknown_workflow", "turn workflow not found")
+		return
+	}
+	if _, ok := s.TurnWorkflows.snapshot(requestID); !ok {
+		writeError(w, http.StatusNotFound, "unknown_workflow", "turn workflow not found")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "stream_transport_unavailable", "streaming response is unavailable")
+		return
+	}
+	afterRevision, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("after_revision")), 10, 64)
+	waitMS, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("wait_ms")))
+	if waitMS < 0 {
+		waitMS = 0
+	}
+	ctx := r.Context()
+	if waitMS > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(waitMS)*time.Millisecond)
+		defer cancel()
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	encoder := json.NewEncoder(w)
+	_, err := s.TurnWorkflows.streamSnapshots(ctx, requestID, afterRevision, func(view turnWorkflowHUDViewModel) error {
+		if err := encoder.Encode(view); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
 }
 
 func (s *Server) handleTurnWorkflowHUDNotice(w http.ResponseWriter, r *http.Request) {

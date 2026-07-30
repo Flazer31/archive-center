@@ -88,10 +88,8 @@ function Test-LocalPortOpen([int]$Port, [string]$ConnectHost = "127.0.0.1") {
     foreach ($address in $addresses) {
         $client = [System.Net.Sockets.TcpClient]::new($address.AddressFamily)
         try {
-            $result = $client.BeginConnect($address, $Port, $null, $null)
-            $ready = $result.AsyncWaitHandle.WaitOne(500, $false)
-            if ($ready) { $client.EndConnect($result) }
-            if ($ready -and $client.Connected) {
+            $client.Connect($address, $Port)
+            if ($client.Connected) {
                 return $true
             }
         } catch {

@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 )
 
 func ConfigureOutboundDNSServers(raw string) bool {
@@ -17,7 +16,7 @@ func ConfigureOutboundDNSServers(raw string) bool {
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			dialer := net.Dialer{Timeout: 5 * time.Second}
+			dialer := net.Dialer{}
 			var lastErr error
 			for _, server := range servers {
 				conn, err := dialer.DialContext(ctx, "udp", server)
@@ -35,9 +34,7 @@ func ConfigureOutboundDNSServers(raw string) bool {
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Resolver:  resolver,
+		Resolver: resolver,
 	}).DialContext
 
 	client := &http.Client{Transport: transport}

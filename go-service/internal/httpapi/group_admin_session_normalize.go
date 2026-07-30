@@ -100,6 +100,11 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 				"status":                "running",
 				"stage":                 "raw_repair_replay",
 				"repair_entry_count":    len(entries),
+				"candidate_count":       len(entries),
+				"processed":             0,
+				"succeeded":             0,
+				"failed_count":          0,
+				"skipped_count":         0,
 				"review_needed_turns":   reviewNeededTurns,
 				"progress_percent":      8,
 				"non_destructive_scope": "insert_missing_raw_roles_only",
@@ -111,7 +116,12 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			DryRun:        &dryRun,
 			Entries:       entries,
 		}
-		result, err := s.runChatLogRepairReplay(ctx, sid, repairReq)
+		result, err := s.runChatLogRepairReplayWithProgress(
+			ctx,
+			sid,
+			repairReq,
+			adminSessionNormalizeProgressAdapter(progress, "raw_repair_replay", 8, 10),
+		)
 		if err != nil {
 			return nil, err
 		}

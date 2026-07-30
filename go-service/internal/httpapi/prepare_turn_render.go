@@ -168,6 +168,110 @@ func prepareTurnPayloadLane(key, title, text string, budget int, enabled bool, s
 	}
 }
 
+func buildPrepareTurnRecomposerEnhancementContract(
+	sessionID string,
+	turnIndex int,
+	memoryPlan map[string]any,
+	memoryLineage map[string]any,
+	payloadPlan map[string]any,
+	supervisorCallStatus string,
+) map[string]any {
+	classCounts := map[string]int{}
+	for _, rawClass := range prepareTurnMemoryLineageSlice(memoryPlan["classes"]) {
+		class := mapFromAny(rawClass)
+		key := extractionStringFromAny(class["key"])
+		if key == "" {
+			continue
+		}
+		classCounts[key] = intFromAny(class["selected_count"], 0)
+	}
+	countFor := func(keys ...string) int {
+		total := 0
+		for _, key := range keys {
+			total += classCounts[key]
+		}
+		return total
+	}
+	feature := func(count int, sourceMode string) map[string]any {
+		status := "empty"
+		if count > 0 {
+			status = "available"
+		}
+		return map[string]any{
+			"status":         status,
+			"selected_count": count,
+			"source_mode":    sourceMode,
+		}
+	}
+
+	objectiveCount := countFor(
+		"event_recent",
+		"character_objective",
+		"world_state",
+		"direct_evidence",
+		"unresolved_goal",
+	)
+	subjectiveCount := countFor("subjective_relationship")
+	protectedCount := countFor("protected_secret")
+	guidanceTrace := mapFromAny(payloadPlan["guidance_application_trace"])
+	supervisorCount := intFromAny(guidanceTrace["applied_count"], 0)
+	directEvidenceCount := countFor("direct_evidence")
+
+	supervisorFeature := feature(supervisorCount, "current_turn_supervisor_guidance")
+	supervisorFeature["call_status"] = strings.TrimSpace(supervisorCallStatus)
+	criticFeature := feature(directEvidenceCount, "prior_accepted_or_verified_direct_evidence")
+	criticFeature["same_turn_result"] = false
+
+	totalAvailable := objectiveCount + subjectiveCount + protectedCount + supervisorCount
+	status := "ready"
+	if totalAvailable == 0 {
+		status = "empty"
+	} else if supervisorCallStatus == "failed_open" || supervisorCallStatus == "malformed_failed_open" {
+		status = "partial"
+	}
+
+	return map[string]any{
+		"contract_version":                  "archive_center.recomposer_enhancement.v1",
+		"status":                            status,
+		"owner":                             "go",
+		"read_only":                         true,
+		"optional_enhancement":              true,
+		"standalone_fallback_required":      true,
+		"session_id":                        strings.TrimSpace(sessionID),
+		"turn_index":                        turnIndex,
+		"memory_plan_contract_version":      extractionStringFromAny(memoryPlan["contract_version"]),
+		"memory_lineage_contract_version":   extractionStringFromAny(memoryLineage["contract_version"]),
+		"same_turn_critic_result_available": false,
+		"feature_status": map[string]any{
+			"long_term_memory":        feature(objectiveCount, "go_selected_objective_and_grounded_memory"),
+			"subjective_memory":       feature(subjectiveCount, "perspective_scoped_subjective_memory"),
+			"protected_secret":        feature(protectedCount, "writer_only_secret_guard"),
+			"supervisor_guidance":     supervisorFeature,
+			"critic_curated_evidence": criticFeature,
+		},
+		"lane_semantics": map[string]any{
+			"event_recent":            "objective_event_memory",
+			"character_objective":     "objective_character_state",
+			"subjective_relationship": "perspective_scoped_subjective",
+			"world_state":             "objective_world_state",
+			"protected_secret":        "writer_only",
+			"unresolved_goal":         "open_thread_or_goal",
+			"direct_evidence":         "accepted_or_verified_grounded_evidence",
+			"output_guidance":         "supervisor_current_turn",
+		},
+		"privacy": map[string]any{
+			"subjective_not_objective_truth": true,
+			"protected_secret_writer_only":   true,
+			"no_state_write":                 true,
+		},
+		"handoff": map[string]any{
+			"mode":        "transient_current_turn_only",
+			"text_source": "existing_go_memory_and_payload_plans",
+			"copy_policy": "resolve_existing_plan_text_without_backend_reselection",
+		},
+	}
+}
+
 func prepareTurnTextHash(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return fmt.Sprintf("sha256:%x", sum[:])

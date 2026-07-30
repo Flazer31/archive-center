@@ -147,6 +147,10 @@ func buildRepairReplayPlan(sid string, req dto.ChatLogRepairReplayRequest, mutat
 }
 
 func (s *Server) runChatLogRepairReplay(ctx context.Context, sid string, req dto.ChatLogRepairReplayRequest) (map[string]any, error) {
+	return s.runChatLogRepairReplayWithProgress(ctx, sid, req, nil)
+}
+
+func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid string, req dto.ChatLogRepairReplayRequest, progress adminJobProgressFunc) (map[string]any, error) {
 	dryRun := req.DryRun != nil && *req.DryRun
 	now := time.Now().UTC()
 	repairedTurns := []int{}
@@ -156,17 +160,70 @@ func (s *Server) runChatLogRepairReplay(ctx context.Context, sid string, req dto
 	totalRepairedRoles := 0
 	totalConflictRoles := 0
 	totalExistingRoles := 0
+	processedEntries := 0
+	succeededEntries := 0
+	failedEntries := 0
+	skippedEntries := 0
+
+	buildResult := func(status string) map[string]any {
+		return map[string]any{
+			"status":                    status,
+			"source":                    s.storeWriteSource(),
+			"chat_session_id":           sid,
+			"dry_run":                   dryRun,
+			"entries_count":             len(req.Entries),
+			"checked_turns":             uniqueSortedInts(checkedTurns),
+			"repaired_turns":            uniqueSortedInts(repairedTurns),
+			"failed_turns":              failedTurns,
+			"total_missing_role_count":  totalMissingRoles,
+			"total_repaired_role_count": totalRepairedRoles,
+			"total_conflict_role_count": totalConflictRoles,
+			"total_existing_role_count": totalExistingRoles,
+			"processed":                 processedEntries,
+			"succeeded":                 succeededEntries,
+			"failed":                    failedEntries,
+			"skipped":                   skippedEntries,
+			"note":                      "repair-replay checked supplied failed-queue/delete-snapshot/active-chat entries and inserted only missing raw chat_log roles",
+		}
+	}
+	reportProgress := func(turnIndex int) {
+		if progress == nil {
+			return
+		}
+		progress(map[string]any{
+			"status":           "running",
+			"processed":        processedEntries,
+			"candidate_count":  len(req.Entries),
+			"succeeded":        succeededEntries,
+			"failed_count":     failedEntries,
+			"skipped_count":    skippedEntries,
+			"processed_turns":  uniqueSortedInts(checkedTurns),
+			"failed_turns":     append([]map[string]any{}, failedTurns...),
+			"last_processed":   turnIndex,
+			"progress_percent": adminJobProgressPercent(processedEntries, len(req.Entries)),
+		})
+	}
+	reportProgress(-1)
 
 	for _, entry := range req.Entries {
+		if err := ctx.Err(); err != nil {
+			return buildResult("cancelled"), err
+		}
 		turnIndex := entry.TurnIndex
 		if turnIndex < 0 {
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turnIndex, "reason": "invalid_turn_index"})
+			processedEntries++
+			failedEntries++
+			reportProgress(turnIndex)
 			continue
 		}
 		checkedTurns = append(checkedTurns, turnIndex)
 		existingRows, err := s.Store.ListChatLogs(ctx, sid, turnIndex, turnIndex)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turnIndex, "reason": "list_chat_logs_failed: " + err.Error()})
+			processedEntries++
+			failedEntries++
+			reportProgress(turnIndex)
 			continue
 		}
 		existing := map[string]string{}
@@ -182,6 +239,8 @@ func (s *Server) runChatLogRepairReplay(ctx context.Context, sid string, req dto
 
 		createdAt := parseRepairReplayCreatedAt(entry.CreatedAt, now)
 		repairedThisTurn := 0
+		missingBefore := totalMissingRoles
+		failedThisTurn := false
 		for _, candidate := range []struct {
 			role    string
 			content *string
@@ -216,6 +275,7 @@ func (s *Server) runChatLogRepairReplay(ctx context.Context, sid string, req dto
 				CreatedAt:     createdAt,
 			}); err != nil {
 				failedTurns = append(failedTurns, map[string]any{"turn_index": turnIndex, "role": candidate.role, "reason": "save_chat_log_failed: " + err.Error()})
+				failedThisTurn = true
 				continue
 			}
 			totalRepairedRoles++
@@ -225,6 +285,16 @@ func (s *Server) runChatLogRepairReplay(ctx context.Context, sid string, req dto
 		if repairedThisTurn > 0 {
 			repairedTurns = append(repairedTurns, turnIndex)
 		}
+		processedEntries++
+		switch {
+		case failedThisTurn:
+			failedEntries++
+		case repairedThisTurn > 0 || (dryRun && totalMissingRoles > missingBefore):
+			succeededEntries++
+		default:
+			skippedEntries++
+		}
+		reportProgress(turnIndex)
 	}
 
 	if !dryRun && totalRepairedRoles > 0 {
@@ -244,21 +314,7 @@ func (s *Server) runChatLogRepairReplay(ctx context.Context, sid string, req dto
 		})
 	}
 
-	return map[string]any{
-		"status":                    "ok",
-		"source":                    s.storeWriteSource(),
-		"chat_session_id":           sid,
-		"dry_run":                   dryRun,
-		"entries_count":             len(req.Entries),
-		"checked_turns":             uniqueSortedInts(checkedTurns),
-		"repaired_turns":            uniqueSortedInts(repairedTurns),
-		"failed_turns":              failedTurns,
-		"total_missing_role_count":  totalMissingRoles,
-		"total_repaired_role_count": totalRepairedRoles,
-		"total_conflict_role_count": totalConflictRoles,
-		"total_existing_role_count": totalExistingRoles,
-		"note":                      "repair-replay checked supplied failed-queue/delete-snapshot/active-chat entries and inserted only missing raw chat_log roles",
-	}, nil
+	return buildResult("ok"), nil
 }
 
 func parseRepairReplayCreatedAt(raw *string, fallback time.Time) time.Time {

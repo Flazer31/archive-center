@@ -35,18 +35,15 @@ func TestSourceDiscoveryRejectsPrivateAndSecretURLs(t *testing.T) {
 }
 
 func TestSourceDiscoveryLLMTimeoutPreservesConfiguredValue(t *testing.T) {
-	if got := sourceDiscoveryLLMTimeout(180000); got != 180*time.Second {
-		t.Fatalf("timeout=%v", got)
+	if got, err := sourceDiscoveryLLMTimeout(180000); err != nil || got != 180*time.Second {
+		t.Fatalf("timeout=%v err=%v", got, err)
 	}
-	if got := sourceDiscoveryLLMTimeout(0); got != 60*time.Second {
-		t.Fatalf("default timeout=%v", got)
+	if got, err := sourceDiscoveryLLMTimeout(0); err != nil || got != 0 {
+		t.Fatalf("caller-owned timeout=%v err=%v", got, err)
 	}
 	failure := sourceCandidateExtractionFailure(fmt.Errorf("Post %q: %w", "https://provider.example/api/chat", context.DeadlineExceeded))
 	if failure["code"] != "candidate_extraction_timeout" {
 		t.Fatalf("failure=%#v", failure)
-	}
-	if sourceDiscoveryOperationTimeout != 9*time.Minute {
-		t.Fatalf("operation timeout=%v", sourceDiscoveryOperationTimeout)
 	}
 }
 
@@ -970,7 +967,7 @@ func TestOllamaSourceSearchAgentRequiresModelAndToolCall(t *testing.T) {
 	}
 }
 
-func TestOllamaSourceSearchAgentBoundsToolCalls(t *testing.T) {
+func TestOllamaSourceSearchAgentStopsOnReplayedQueryFrontier(t *testing.T) {
 	searchCalls := 0
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -998,7 +995,7 @@ func TestOllamaSourceSearchAgentBoundsToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if searchCalls != ollamaSourceSearchMaxToolCalls || len(results) != 1 {
+	if searchCalls != 4 || len(results) != 1 {
 		t.Fatalf("searchCalls=%d results=%#v", searchCalls, results)
 	}
 }

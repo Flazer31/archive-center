@@ -14,7 +14,7 @@ var (
 	pythonBase = flag.String("python-base", "http://127.0.0.1:8000", "Python 0.8 backend base URL")
 	goBase     = flag.String("go-base", "http://127.0.0.1:28080", "Go shadow backend base URL")
 	out        = flag.String("out", "", "Output file path (empty = stdout)")
-	timeout    = flag.Duration("timeout", 30*time.Second, "Per-request timeout")
+	timeout    = flag.Duration("timeout", 0, "Per-request timeout (0 = no local deadline)")
 )
 
 // probeDef defines a single probe to run.
@@ -27,6 +27,10 @@ type probeDef struct {
 
 func main() {
 	flag.Parse()
+	if *timeout < 0 {
+		fmt.Fprintln(os.Stderr, "-timeout must not be negative")
+		os.Exit(2)
+	}
 
 	fakeSID := "shadow-parity-fake-sid"
 

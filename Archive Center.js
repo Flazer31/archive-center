@@ -43,13 +43,10 @@
   const BUILD_TIME = "2026-07-30 KST";
   const BUILD_NOTES = "3.7-F relevant memory delivery, truthful HUD lineage, and bounded narrative guidance";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
-  const MAX_RETRY = 3;
   const TURN_HISTORY_MAX = 10;
-  const CONTINUITY_IDLE_REENTRY_MS = 30 * 60 * 1000;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
   const PENDING_FINAL_CONFIRMATION_STORAGE_KEY = `${PLUGIN_ID}_pendingFinalConfirmation`;
-  const FAILED_QUEUE_SAVE_DEBOUNCE_MS = 2000;
   const CHATLOG_RESTORE_SNAPSHOT_STORAGE_KEY = `${PLUGIN_ID}_chatLogRestoreSnapshot_v1`;
   const ACTIVE_CHAT_BACKFILL_LEDGER_KEY = `${PLUGIN_ID}_activeChatBackfillLedger_v1`;
   const PERSONA_CAPSULE_CANDIDATE_QUEUE_KEY = `${PLUGIN_ID}_personaCapsuleCandidateQueue_v1`;
@@ -77,7 +74,6 @@
   // ──────────────────────────────────────────────────────────────
   const NARRATIVE_GUIDE_MODES = Object.freeze(["auto", "off", "standard", "romantic", "action", "mature_soft", "mature_direct"]);
   const NARRATIVE_GUIDE_STRENGTH_OPTIONS = Object.freeze(["none", "weak", "medium", "strong"]);
-  const ROLLBACK_IDLE_WATCHER_MODES = Object.freeze(["event", "slow", "fast_debug", "off"]);
   const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto", "before_latest_user", "after_anchor_marker", "after_last_cache_point", "after_first_system", "end"]);
   const VERTEX_FLEX_MODE_OPTIONS = Object.freeze(["off", "provisioned_then_flex", "flex_only"]);
     // J-3a: Plugin Main apply mode 허용값
@@ -86,6 +82,10 @@
   const LANGUAGE_MEMORY_CONTRACT_VERSION = "language_memory.v1";
   const LANGUAGE_MEMORY_SEARCH_TEXT_POLICY = "summary_plus_raw_plus_aliases";
   const UI_DETAIL_MODE_OPTIONS = Object.freeze(["full", "reduced_info", "status_only"]);
+  const RECOMPOSER_BRIDGE_KEY = "__RISU_ARCHIVE_CENTER_RECOMPOSER_V1__";
+  const RECOMPOSER_BRIDGE_CONTRACT = "archive_center.recomposer_bridge.v1";
+  const RECOMPOSER_ENHANCEMENT_CONTRACT = "archive_center.recomposer_enhancement.v1";
+  const RECOMPOSER_BRIDGE_TTL_MS = 15 * 60 * 1000;
   const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vertex", "copilot", "ollama", "custom"]);
   const EMBEDDING_PROVIDER_OPTIONS = Object.freeze(["openai", "gemini", "vertex", "voyageai", "ollama", "custom"]);
   const SOURCE_SEARCH_LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "ollama"]);
@@ -241,8 +241,6 @@
     failedQueueMaxSize: 50,          // 실패 큐 최대 크기 (10-200)
     failedQueueMaxAgeDays: 7,        // 실패 큐 항목 최대 보관 일수 (1-30)
     failedQueueMaxAttempts: 4,       // 실패 큐 transport 최대 시도 횟수 (1-11)
-    rollbackIdleWatcherMode: "slow",  // event / slow / fast_debug / off
-    rollbackIdleWatcherModePolicyVersion: "tail_delete_slow_default.v1",
     // ── E-5: Narrative Guide Mode ──
     narrativeGuideMode: "auto",      // auto / off / standard / romantic / action / mature_soft / mature_direct
     narrativeGuideStrength: "weak",  // none / weak / medium / strong
@@ -3851,16 +3849,10 @@
   const ROLLBACK_TURN_LEDGER_KEY = `${PLUGIN_ID}_rollbackTurnLedger`;
   let _lastAutoRollbackSignature = null;  // 중복 rollback 방지용
   let _lastAutoRollbackSkipSignature = null;
-  let _rollbackIdleWatcherTimer = null;
-  let _rollbackIdleWatcherInFlight = false;
-  const _rollbackIdleWatcherLastSignatureBySession = new Map();
+  let _rollbackHostSignalReconcileInFlight = false;
+  const _rollbackHostSignalLastSignatureBySession = new Map();
   let _rollbackTailReconcileInFlight = false;
-  let _rollbackTailReconcileLastAt = 0;
   const _rollbackHistoryTrimGuardBySession = new Map();
-  const ROLLBACK_IDLE_WATCHER_INTERVAL_MS = 15000;
-  const ROLLBACK_IDLE_WATCHER_DEBUG_INTERVAL_MS = 1200;
-  const ROLLBACK_TAIL_RECONCILE_INTERVAL_MS = 5000;
-  const ROLLBACK_HISTORY_TRIM_GUARD_MS = 5 * 60 * 1000;
   const ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS = 1;
   let _activeChatBackfillLedger = null;
   let _activeChatBackfillLedgerLoadPromise = null;
@@ -3869,15 +3861,17 @@
   const AUTO_CONTINUE_USER_INPUT_MARKER = "[auto-continue]";
   const _rawInputBySession = new Map(); // input hook에서 잡은 raw user input 캐시
   const RAW_INPUT_CACHE_MAX = 50;
-  const RAW_INPUT_MAX_AGE_MS = 30 * 1000;
-  const RAW_INPUT_FALLBACK_MAX_AGE_MS = 5 * 1000;
-  const RAW_INPUT_STRONG_MAX_AGE_MS = 10 * 1000;
+  let _rawInputObservationSeq = 0;
   const _finalConfirmationRequestBySession = new Map();
   const _pendingFinalConfirmations = new Map();
   const _pendingFinalConfirmationRecoveryEntries = new Map();
-  let _finalConfirmationObserver = null;
   let _pendingFinalConfirmationDrainInFlight = false;
   let _pendingFinalConfirmationDrainRequested = false;
+  const _risuHookLifecycle = {
+    input: "unrequested",
+    beforeRequest: "unrequested",
+    afterRequest: "unrequested",
+  };
   const _step23CaptureVerificationPosted = new Set();
   const STEP23_CAPTURE_VERIFICATION_POSTED_MAX = 200;
   const _lastBridgeFailureByPath = new Map();
@@ -3933,7 +3927,8 @@
     lastActiveChatBackfill: { status: "idle", time: null, detail: null, turnIndex: null },
     // Persona Memory Capsule UI: manual carry-over memories attached to target sessions.
     lastPersonaCapsuleStatus: { status: "idle", time: null, detail: null, itemCount: 0 },
-    // RisuAI/PocketRisu streaming path: native afterRequest or active-chat poller fallback.
+    // RisuAI API v3 host lifecycle: afterRequest is only a non-stream candidate.
+    // The next observed input/beforeRequest callback confirms the committed active-chat message.
     lastStreamingAfterRequest: { status: "idle", time: null, detail: null },
     // 2.1-4: read-only Critic Archive Ledger operator probe.
     lastCriticLedgerProbe: { status: "idle", time: null, detail: null, sessionId: null, dashboard: null, trace: null },
@@ -4202,6 +4197,8 @@
         historyTrimCommand: isRisuHistoryTrimCommandText(rawText),
         capturedAt: Date.now(),
         primarySessionId: String(sessionId || "").trim() || SESSION_FALLBACK,
+        observationId: ++_rawInputObservationSeq,
+        boundRequestId: "",
       };
       for (const key of keys) {
         _rawInputBySession.set(key, entry);
@@ -4218,14 +4215,7 @@
       const keys = buildRawInputSessionKeys(sessionId);
       for (const key of keys) {
         const cached = _rawInputBySession.get(key);
-        if (!cached) continue;
-        const maxAge = key === SESSION_FALLBACK
-          ? RAW_INPUT_FALLBACK_MAX_AGE_MS
-          : RAW_INPUT_MAX_AGE_MS;
-        if ((Date.now() - (cached.capturedAt || 0)) > maxAge) {
-          _rawInputBySession.delete(key);
-          continue;
-        }
+        if (!cached || cached.boundRequestId) continue;
         return cached;
       }
       return null;
@@ -4234,23 +4224,14 @@
     }
   }
 
-  function peekActualEmptyRawInputForSession(sessionId) {
-    try {
-      const keys = buildRawInputSessionKeys(sessionId);
-      for (const key of keys) {
-        if (key === SESSION_FALLBACK) continue;
-        const cached = _rawInputBySession.get(key);
-        if (!cached || !cached.actualEmptyInput) continue;
-        if ((Date.now() - (cached.capturedAt || 0)) > RAW_INPUT_MAX_AGE_MS) {
-          _rawInputBySession.delete(key);
-          continue;
-        }
-        return cached;
-      }
-      return null;
-    } catch {
-      return null;
+  function bindRawInputObservationToRequest(sessionId, requestId) {
+    const observation = peekRawInputForSession(sessionId);
+    if (!observation || !requestId) return null;
+    observation.boundRequestId = String(requestId);
+    for (const [key, candidate] of _rawInputBySession.entries()) {
+      if (candidate === observation) _rawInputBySession.delete(key);
     }
+    return observation;
   }
 
   function isRisuHistoryTrimCommandText(text) {
@@ -4270,8 +4251,22 @@
     }
   }
 
+  // Host callback observation cannot be backend-owned: only the thin RisuAI adapter
+  // can distinguish a requested registration from a callback that actually fired.
+  function recordRisuHookLifecycle(hookName, state) {
+    if (!Object.prototype.hasOwnProperty.call(_risuHookLifecycle, hookName)) return;
+    _risuHookLifecycle[hookName] = String(state || "unrequested");
+    updateRuntimeState("lastStreamingAfterRequest", state === "callback_observed" ? "watching" : "idle", {
+      detail: state === "callback_observed"
+        ? String(hookName) + " callback observed"
+        : String(hookName) + " registration requested; host acceptance unconfirmed",
+      hookRegistration: Object.assign({}, _risuHookLifecycle),
+    });
+  }
+
   async function onInputHook(rawInput) {
     try {
+      recordRisuHookLifecycle("input", "callback_observed");
       const sessionId = await getCurrentChatSessionId();
       cacheRawInputForSession(sessionId, rawInput);
       if (isRisuHistoryTrimCommandText(rawInput)) {
@@ -4279,11 +4274,65 @@
           commandPreview: String(rawInput || "").trim().slice(0, 40),
           action: "preserve_archive_db",
         });
+      } else {
+        _rollbackHistoryTrimGuardBySession.delete(String(sessionId || "").trim() || "default");
       }
+      observePendingFinalConfirmationAtHostSignal(sessionId, "input").catch(function(err) {
+        debugLog("[final-confirmation] input host-signal observation failed:", err && err.message);
+      });
     } catch (err) {
       warnLog("onInputHook failed:", err.message);
     }
     return rawInput;
+  }
+
+  async function removeRegisteredRisuHooksOnUnload() {
+    cancelTurnWorkflowHUDStream();
+    cancelAllAdminBackgroundJobStreams();
+    for (const pending of _pendingFinalConfirmations.values()) {
+      if (!pending || typeof pending !== "object") continue;
+      pending.state = "superseded";
+      if (
+        pending.requestContext
+        && pending.requestContext.state !== "accepted"
+        && pending.requestContext.state !== "terminal"
+      ) {
+        pending.requestContext.state = "superseded";
+      }
+    }
+    _pendingFinalConfirmations.clear();
+    _pendingFinalConfirmationDrainRequested = false;
+    for (const requestContext of _finalConfirmationRequestBySession.values()) {
+      if (
+        requestContext
+        && requestContext.state !== "accepted"
+        && requestContext.state !== "terminal"
+      ) {
+        requestContext.state = "superseded";
+      }
+    }
+    _finalConfirmationRequestBySession.clear();
+    try {
+      await unloadTurnWorkflowHUD();
+    } catch (err) {
+      debugLog("[unload] turn workflow HUD cleanup failed:", err && err.message);
+    }
+    if (!R) return;
+    try {
+      if (typeof R.removeRisuScriptHandler === "function") {
+        await R.removeRisuScriptHandler("input", onInputHook);
+      }
+    } catch (err) {
+      debugLog("[unload] input handler cleanup failed:", err && err.message);
+    }
+    try {
+      if (typeof R.removeRisuReplacer === "function") {
+        await R.removeRisuReplacer("beforeRequest", onBeforeRequest);
+        await R.removeRisuReplacer("afterRequest", onAfterRequest);
+      }
+    } catch (err) {
+      debugLog("[unload] replacer cleanup failed:", err && err.message);
+    }
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -5561,16 +5610,12 @@
   const SESSION_DURABLE_PIN_PREFIX = `${PLUGIN_ID}_session_id_pin_v3`;
   const SESSION_PIN_RECORD_VERSION = "v3";
   const SESSION_NEW_CHAT_HISTORY_MAX = 2;
-  const SESSION_WRITE_CANONICAL_CACHE_MS = 10000;
   const SESSION_DELETE_LEDGER_KEY = `${PLUGIN_ID}_session_delete_ledger_v1`;
   const SESSION_DISPLAY_LOOKUP_KEY = `${PLUGIN_ID}_session_display_lookup_v1`;
   const SESSION_ROUTING_BASELINE_PREFIX = `${PLUGIN_ID}_session_routing_baseline_v1`;
   const SESSION_DISPLAY_LOOKUP_MAX = 600;
   const SESSION_DELETE_LEDGER_VERSION = "risu_chat_delete_sync.v1";
   const SESSION_DELETE_LEDGER_MAX = 80;
-  const SESSION_DELETE_RECONCILE_COOLDOWN_MS = 5000;
-  const SESSION_DELETE_LEDGER_SAVE_THROTTLE_MS = 2000;
-  const SESSION_DELETE_LEDGER_IDLE_TOUCH_MS = 60000;
   let _sessionDeleteLedger = { loaded: false, bySession: {}, lastSavedAt: 0, lastReconcileAt: 0 };
   const _sessionDeleteNotifyInFlight = new Set();
 
@@ -6258,7 +6303,7 @@
     if (!sid || !Number.isFinite(turn) || turn < 0) return null;
     const path = "/canonical/" + encodeURIComponent(sid) + "/chat-logs?from_turn=" + encodeURIComponent(String(turn)) + "&to_turn=" + encodeURIComponent(String(turn));
     const result = await safeCall(
-      () => bridgeFetch(path, { method: "GET", timeoutMs: Math.min(getRequestTimeoutSettingMs(), 2500) }),
+      () => bridgeFetch(path, { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }),
       null, "fetchCanonicalChatLogsForTurn"
     );
     return result && Array.isArray(result.items) ? result.items : null;
@@ -6271,7 +6316,7 @@
     if (!sid || !Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < from) return null;
     const path = "/canonical/" + encodeURIComponent(sid) + "/chat-logs?from_turn=" + encodeURIComponent(String(from)) + "&to_turn=" + encodeURIComponent(String(to));
     const result = await safeCall(
-      () => bridgeFetch(path, { method: "GET", timeoutMs: Math.min(getRequestTimeoutSettingMs(), 2500) }),
+      () => bridgeFetch(path, { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }),
       null, "fetchCanonicalChatLogsForTurnRange"
     );
     return result && Array.isArray(result.items) ? result.items : null;
@@ -7155,6 +7200,10 @@
   async function backfillOneActiveChatCompletedTurn(sessionId, pair, options = {}) {
     const sid = String(sessionId || "").trim();
     const opts = options && typeof options === "object" ? options : {};
+    const sourceAcceptanceFinality = opts.sourceAcceptanceFinality
+      && typeof opts.sourceAcceptanceFinality === "object"
+      ? opts.sourceAcceptanceFinality
+      : null;
     if (!sid || !pair || !pair.userContent || !pair.assistantContent) {
       return { status: "skipped", reason: "invalid_pair" };
     }
@@ -7175,7 +7224,8 @@
     const existing = await fetchCanonicalChatLogsForTurn(sid, turn);
     if (Array.isArray(existing)
         && chatLogItemsContainRoleContent(existing, "user", pair.userContent)
-        && chatLogItemsContainRoleContent(existing, "assistant", pair.assistantContent)) {
+        && chatLogItemsContainRoleContent(existing, "assistant", pair.assistantContent)
+        && !sourceAcceptanceFinality) {
       setTurnCounterAtLeast(sid, turn);
       await markActiveChatBackfillSaved(sid, Object.assign({}, pair, { turnIndex: turn }));
       return {
@@ -7188,7 +7238,8 @@
     if (Array.isArray(existing)
         && chatLogItemsContainRole(existing, "user")
         && chatLogItemsContainRole(existing, "assistant")
-        && !opts.forceCompleteTurn) {
+        && !opts.forceCompleteTurn
+        && !sourceAcceptanceFinality) {
       setTurnCounterAtLeast(sid, turn);
       return { status: "exists", turnIndex: turn, reason: "raw_turn_content_conflict_existing" };
     }
@@ -7200,23 +7251,34 @@
       pair.contextMessages || [],
       sid,
       null,
-      { allowExistingActiveMessage: true }
+      sourceAcceptanceFinality
+        ? { sourceAcceptanceFinality }
+        : { allowExistingActiveMessage: true }
     );
     if (!body) return { status: "queued", reason: "request_build_failed", turnIndex: turn };
     body.client_meta = body.client_meta || {};
-    body.client_meta.active_chat_backfill = {
-      version: opts.forceCompleteTurn ? "active_chat_recent_rebuild.v1" : "active_chat_complete_turn_backfill.v1",
-      source: opts.source || pair.source || "risu_active_chat_complete_turn_backfill",
-      pair_hash: pair.hash || "",
-      requested_turn_index: turn,
-      local_turn_index: turnResolution.localTurnIndex,
-      turn_resolution: turnResolution.status,
-      routing_baseline_reason: turnResolution.baseline ? String(turnResolution.baseline.reason || "") : "",
-      routing_baseline_backend_turn: turnResolution.baseline ? Number(turnResolution.baseline.backendTurnAtRoute || 0) : 0,
-      routing_baseline_local_pairs: turnResolution.baseline ? Number(turnResolution.baseline.localPairCountAtRoute || 0) : 0,
-      preserve_requested_turn_index: true,
-      force_complete_turn: !!opts.forceCompleteTurn,
-    };
+    if (sourceAcceptanceFinality) {
+      body.client_meta.risu_host_final_confirmation = {
+        version: "risu_next_host_signal_confirmation.v1",
+        signal_source: String(sourceAcceptanceFinality.host_signal_source || ""),
+        persistence_visibility: "next_turn_or_later",
+        pair_hash: pair.hash || "",
+      };
+    } else {
+      body.client_meta.active_chat_backfill = {
+        version: opts.forceCompleteTurn ? "active_chat_recent_rebuild.v1" : "active_chat_complete_turn_backfill.v1",
+        source: opts.source || pair.source || "risu_active_chat_complete_turn_backfill",
+        pair_hash: pair.hash || "",
+        requested_turn_index: turn,
+        local_turn_index: turnResolution.localTurnIndex,
+        turn_resolution: turnResolution.status,
+        routing_baseline_reason: turnResolution.baseline ? String(turnResolution.baseline.reason || "") : "",
+        routing_baseline_backend_turn: turnResolution.baseline ? Number(turnResolution.baseline.backendTurnAtRoute || 0) : 0,
+        routing_baseline_local_pairs: turnResolution.baseline ? Number(turnResolution.baseline.localPairCountAtRoute || 0) : 0,
+        preserve_requested_turn_index: true,
+        force_complete_turn: !!opts.forceCompleteTurn,
+      };
+    }
 
     const result = await tryCompleteTurn(turn, pair.userContent, pair.assistantContent, pair.contextMessages || [], sid, null, body);
     const failReasons = result && Array.isArray(result.fail_reasons) ? result.fail_reasons : [];
@@ -7532,7 +7594,7 @@
     byCharKey: new Map(),
     loaded: false,
     persistentLoaded: false,
-    saveTimer: 0,
+    saveScheduled: false,
   };
   const _runtimeChatSessionInventory = {
     byRawSessionId: new Set(),
@@ -7606,9 +7668,11 @@
   }
 
   function saveSessionDisplayLookupCacheSoon() {
-    if (_sessionDisplayLookup.saveTimer) return;
-    _sessionDisplayLookup.saveTimer = setTimeout(function() {
-      _sessionDisplayLookup.saveTimer = 0;
+    if (_sessionDisplayLookup.saveScheduled) return;
+    _sessionDisplayLookup.saveScheduled = true;
+    Promise.resolve().then(function() {
+      if (!_sessionDisplayLookup.saveScheduled) return;
+      _sessionDisplayLookup.saveScheduled = false;
       try {
         const payload = JSON.stringify({
           version: 1,
@@ -7621,7 +7685,7 @@
         safeStorageSet(SESSION_DISPLAY_LOOKUP_KEY, payload);
         persistentSet(SESSION_DISPLAY_LOOKUP_KEY, payload).catch(function() {});
       } catch {}
-    }, 250);
+    });
   }
 
   function clearRuntimeChatSessionInventory() {
@@ -8018,9 +8082,6 @@
   function saveSessionDeleteLedger(force) {
     try {
       const now = Date.now();
-      if (!force && (now - Number(_sessionDeleteLedger.lastSavedAt || 0)) < SESSION_DELETE_LEDGER_SAVE_THROTTLE_MS) {
-        return;
-      }
       _sessionDeleteLedger.lastSavedAt = now;
       pruneSessionDeleteLedger();
       safeStorageSet(SESSION_DELETE_LEDGER_KEY, JSON.stringify({
@@ -8050,13 +8111,12 @@
       const nextChatIdx = Number.isInteger(meta.chatIdx) ? meta.chatIdx : (Number.isInteger(parsed.chatIdx) ? parsed.chatIdx : null);
       const nextChatUniqueId = String(meta.chatUniqueId || parsed.chatUniqueId || prev.chatUniqueId || "").trim();
       const nextMessageCount = Number(meta.messageCount || prev.messageCount || 0);
-      const lastSeenAt = Number(prev.lastSeenAt || 0);
       const meaningfulChange = !prev.sessionId
         || prev.charIdx !== nextCharIdx
         || prev.chatIdx !== nextChatIdx
         || String(prev.chatUniqueId || "") !== nextChatUniqueId
         || Number(prev.messageCount || 0) !== nextMessageCount;
-      if (!meaningfulChange && lastSeenAt > 0 && (now - lastSeenAt) < SESSION_DELETE_LEDGER_IDLE_TOUCH_MS) return;
+      if (!meaningfulChange) return;
       _sessionDeleteLedger.bySession[sid] = Object.assign({}, prev, {
         sessionId: sid,
         charIdx: nextCharIdx,
@@ -8157,11 +8217,7 @@
 
   async function reconcileDeletedActiveSessionsWithBackend(currentSessionId, options = {}) {
     try {
-      const now = Date.now();
-      if (!options.force && (now - Number(_sessionDeleteLedger.lastReconcileAt || 0)) < SESSION_DELETE_RECONCILE_COOLDOWN_MS) {
-        return false;
-      }
-      _sessionDeleteLedger.lastReconcileAt = now;
+      _sessionDeleteLedger.lastReconcileAt = Date.now();
       loadSessionDeleteLedger();
       const entries = _sessionDeleteLedger.bySession || {};
       if (Object.keys(entries).length === 0) return false;
@@ -8190,11 +8246,7 @@
   async function reconcileDeletedBackendSessionsFromList(sessions, currentSessionId, options = {}) {
     try {
       if (!Array.isArray(sessions) || sessions.length === 0) return false;
-      const now = Date.now();
-      if (!options.force && (now - Number(_sessionDeleteLedger.lastReconcileAt || 0)) < SESSION_DELETE_RECONCILE_COOLDOWN_MS) {
-        return false;
-      }
-      _sessionDeleteLedger.lastReconcileAt = now;
+      _sessionDeleteLedger.lastReconcileAt = Date.now();
       loadSessionDeleteLedger();
       await refreshSessionDisplayLookupFromRuntime();
       if (!runtimeInventoryHasFullCoverage()) {
@@ -8695,7 +8747,6 @@
     }
   }
 
-  const SESSION_READ_COMPAT_CACHE_MS = 5000;
   let _sessionReadCompatCache = { cacheKey: "", plan: null, cachedAt: 0 };
   let _sessionWriteCanonicalCache = { cacheKey: "", sessionId: "", rawSessionId: "", reason: "", cachedAt: 0 };
 
@@ -8711,12 +8762,9 @@
   const SESSION_MIGRATION_AUDIT_MAX_PRIMARY = 120;
   const SESSION_MIGRATION_AUDIT_MAX_SESSION_ROWS = 24;
   const SESSION_MIGRATION_AUDIT_MAX_LABEL_ROWS = 24;
-  const SESSION_MIGRATION_AUDIT_SAVE_THROTTLE_MS = 2000;
   const SESSION_MIGRATION_APPLY_KEY = `${PLUGIN_ID}_session_migration_apply_v1`;
   const SESSION_MIGRATION_APPLY_VERSION = "hs1j.safe_apply.v1";
-  const SESSION_MIGRATION_APPLY_COOLDOWN_MS = 15000;
   const SESSION_MIGRATION_APPLY_MAX_PAIRS = 160;
-  const SESSION_MIGRATION_APPLY_SAVE_THROTTLE_MS = 2000;
   let _sessionMigrationAudit = {
     loaded: false,
     byPrimary: {},
@@ -8728,7 +8776,6 @@
     lastSavedAt: 0,
   };
   const _sessionMigrationApplyInFlight = new Set();
-  const _sessionMigrationApplyLastAttemptAt = {};
 
   function normalizeSessionId(sessionId) {
     return String(sessionId || "").trim();
@@ -8761,9 +8808,6 @@
   function saveSessionMigrationAudit(force) {
     try {
       const now = Date.now();
-      if (!force && (now - Number(_sessionMigrationAudit.lastSavedAt || 0)) < SESSION_MIGRATION_AUDIT_SAVE_THROTTLE_MS) {
-        return;
-      }
       _sessionMigrationAudit.lastSavedAt = now;
       safeStorageSet(SESSION_MIGRATION_AUDIT_KEY, JSON.stringify({
         version: SESSION_MIGRATION_AUDIT_VERSION,
@@ -9044,9 +9088,6 @@
   function saveSessionMigrationApplyState(force) {
     try {
       const now = Date.now();
-      if (!force && (now - Number(_sessionMigrationApply.lastSavedAt || 0)) < SESSION_MIGRATION_APPLY_SAVE_THROTTLE_MS) {
-        return;
-      }
       _sessionMigrationApply.lastSavedAt = now;
       safeStorageSet(SESSION_MIGRATION_APPLY_KEY, JSON.stringify({
         version: SESSION_MIGRATION_APPLY_VERSION,
@@ -9155,13 +9196,6 @@
         return { status: "skipped", reason: "in_flight", primarySessionId: primary, sourceSessionId: decision.sourceSessionId };
       }
 
-      const now = Date.now();
-      const lastAttemptAt = Number(_sessionMigrationApplyLastAttemptAt[pairKey] || 0);
-      if ((now - lastAttemptAt) < SESSION_MIGRATION_APPLY_COOLDOWN_MS) {
-        return { status: "skipped", reason: "cooldown", primarySessionId: primary, sourceSessionId: decision.sourceSessionId };
-      }
-
-      _sessionMigrationApplyLastAttemptAt[pairKey] = now;
       _sessionMigrationApplyInFlight.add(pairKey);
 
       updateRuntimeState("lastSessionMigrationApply", "running", {
@@ -9325,11 +9359,6 @@
     }
     const baseKey = [primarySessionId || SESSION_FALLBACK, charIdx == null ? "x" : String(charIdx), chatIdx == null ? "x" : String(chatIdx)].join("|");
     const now = Date.now();
-    if (_sessionReadCompatCache.plan &&
-        _sessionReadCompatCache.cacheKey.startsWith(baseKey + "|") &&
-        (now - _sessionReadCompatCache.cachedAt) <= SESSION_READ_COMPAT_CACHE_MS) {
-      return _sessionReadCompatCache.plan;
-    }
 
     let activeChatIdentity = { chatUniqueId: "", messageCount: 0, isFreshChat: false };
     let chatUniqueId = null;
@@ -9562,12 +9591,6 @@
         };
         return durableTarget;
       }
-      if (_sessionWriteCanonicalCache.sessionId &&
-          _sessionWriteCanonicalCache.cacheKey === cacheKey &&
-          (now - Number(_sessionWriteCanonicalCache.cachedAt || 0)) <= SESSION_WRITE_CANONICAL_CACHE_MS) {
-        return _sessionWriteCanonicalCache.sessionId;
-      }
-
       const activeCidSessionId = (charIdx != null && chatUniqueId)
         ? `char_${charIdx}_cid_${chatUniqueId}`
         : "";
@@ -9595,7 +9618,7 @@
         allowLooseFallback: true,
       });
       const result = await safeCall(
-        () => bridgeFetch("/sessions", { timeoutMs: Math.min(getRequestTimeoutSettingMs(), 2500) }),
+        () => bridgeFetch("/sessions", { timeoutMs: getRequestTimeoutSettingMs() }),
         null,
         "resolveCanonicalWriteSessionId"
       );
@@ -10369,7 +10392,8 @@
 
   function resolveRequestTimeoutMs(overrideMs) {
     if (overrideMs !== undefined && overrideMs !== null) {
-      return sanitizeNumber(overrideMs, getRequestTimeoutSettingMs(), 1, 600000);
+      const parsed = Number(overrideMs);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : getRequestTimeoutSettingMs();
     }
     return getRequestTimeoutSettingMs();
   }
@@ -10378,7 +10402,7 @@
     const base = getRequestTimeoutSettingMs();
     const critic = getCriticTimeoutMs();
     const embedding = getEmbeddingTimeoutMs();
-    return sanitizeNumber(Math.max(base, critic + embedding), base, 1000, 600000);
+    return Math.max(base, critic + embedding);
   }
 
   function getPluginMainTimeoutSettingMs(value) {
@@ -10418,7 +10442,8 @@
 
   function resolvePluginMainTimeoutMs(overrideMs) {
     if (overrideMs !== undefined && overrideMs !== null) {
-      return sanitizeNumber(overrideMs, getPluginMainTimeoutSettingMs(), 1, 300000);
+      const parsed = Number(overrideMs);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : getPluginMainTimeoutSettingMs();
     }
     return getPluginMainTimeoutSettingMs();
   }
@@ -10446,6 +10471,11 @@
   function getSubLlmTimeoutSettingMs(value) {
     const source = value !== undefined ? value : (settings && settings.subLlmTimeoutMs);
     return sanitizeNumber(source, DEFAULT_SETTINGS.subLlmTimeoutMs, 5000, 300000);
+  }
+
+  function getSourceSearchPlannerTimeoutSettingMs(value) {
+    const source = value !== undefined ? value : (settings && settings.sourceSearchPlannerTimeoutMs);
+    return sanitizeNumber(source, DEFAULT_SETTINGS.sourceSearchPlannerTimeoutMs, 5000, 300000);
   }
 
   function getSubLlmProviderSetting(value) {
@@ -10546,7 +10576,7 @@
     merged.pluginMainExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraHeadersJson);
     merged.pluginMainExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraBodyJson);
     merged.supervisorTimeout = sanitizeNumber(merged.supervisorTimeout, 60, 5, 6000);
-    merged.criticTimeout = sanitizeNumber(merged.criticTimeout, 90, 5, 6000);
+    merged.criticTimeout = sanitizeNumber(merged.criticTimeout, DEFAULT_SETTINGS.criticTimeout, 5, 6000);
     merged.subLlmProvider = getSubLlmProviderSetting(merged.subLlmProvider);
     merged.subLlmTimeoutMs = getSubLlmTimeoutSettingMs(merged.subLlmTimeoutMs);
     merged.subLlmTemperature = getSubLlmTemperatureSetting(merged.subLlmTemperature);
@@ -10566,7 +10596,7 @@
     merged.subLlmExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraHeadersJson);
     merged.subLlmExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.subLlmExtraBodyJson);
     merged.embeddingProvider = normalizeEmbeddingProvider(merged.embeddingProvider, DEFAULT_SETTINGS.embeddingProvider);
-    merged.embeddingTimeout = sanitizeNumber(merged.embeddingTimeout, 30, 5, 3000);
+    merged.embeddingTimeout = sanitizeNumber(merged.embeddingTimeout, DEFAULT_SETTINGS.embeddingTimeout, 5, 3000);
     merged.sourceSearchPlannerProvider = normalizeSourceSearchLlmProvider(merged.sourceSearchPlannerProvider);
     merged.sourceSearchPlannerTimeoutMs = sanitizeNumber(merged.sourceSearchPlannerTimeoutMs, DEFAULT_SETTINGS.sourceSearchPlannerTimeoutMs, 5000, 300000);
     merged.sourceSearchPlannerTemperature = sanitizeNumber(merged.sourceSearchPlannerTemperature, DEFAULT_SETTINGS.sourceSearchPlannerTemperature, 0, 2);
@@ -10598,17 +10628,6 @@
     merged.dbEnabled = true;
     // 저장 무결성 정책: turn 삭제 감지는 비활성화하지 않는다.
     merged.rollbackAutoEnabled = true;
-    if (raw
-        && raw.rollbackIdleWatcherMode === "event"
-        && raw.rollbackIdleWatcherModePolicyVersion !== DEFAULT_SETTINGS.rollbackIdleWatcherModePolicyVersion) {
-      merged.rollbackIdleWatcherMode = DEFAULT_SETTINGS.rollbackIdleWatcherMode;
-    }
-    merged.rollbackIdleWatcherMode = sanitizeEnumValue(
-      merged.rollbackIdleWatcherMode,
-      DEFAULT_SETTINGS.rollbackIdleWatcherMode,
-      ROLLBACK_IDLE_WATCHER_MODES,
-    );
-    merged.rollbackIdleWatcherModePolicyVersion = DEFAULT_SETTINGS.rollbackIdleWatcherModePolicyVersion;
     // bridgeUrl 방어
     merged.bridgeUrl = sanitizeBridgeUrl(merged.bridgeUrl);
     merged.narrativeGuideMode = sanitizeEnumValue(
@@ -10719,8 +10738,16 @@
       const json = JSON.stringify(settings);
       await persistentSet(SETTINGS_KEY, json);
       debugLog("Settings saved (persistent)");
-      // 백엔드 런타임 설정 동기화 (API key, endpoint, model, timeout 등)
-      await syncConfigToBackend(settings);
+      const syncAck = await syncConfigToBackend(settings);
+      if (!syncAck.ok) {
+        warnLog("Settings saved locally but backend runtime sync failed:", syncAck.code);
+        updateRuntimeState("lastConfigSync", "fail", {
+          detail: "settings_saved_locally_backend_unsynced",
+          reason_code: syncAck.code,
+        });
+        return false;
+      }
+      updateRuntimeState("lastConfigSync", "ok", { detail: "settings_runtime_synced" });
       return true;
     } catch (err) {
       warnLog("Settings save failed:", err.message);
@@ -10728,10 +10755,7 @@
     }
   }
 
-  /**
-   * 플러그인 UI 설정값을 백엔드 런타임에 동기화한다.
-   * 실패해도 무시 — 백엔드가 .env 기본값을 사용하면 된다.
-   */
+  /** 플러그인 UI 설정값을 백엔드 런타임에 동기화하고 typed acknowledgement를 반환한다. */
   async function syncConfigToBackend(s) {
     const effectiveCritic = resolveEffectiveCriticConfig(s);
       const mainProvider = getPluginMainProviderSetting(s.pluginMainProvider);
@@ -10803,11 +10827,17 @@
       failedQueueMaxAttempts: failedQueueMaxAttempts(),
     };
 
-    return safeCall(() => bridgeFetch("/config/update", {
+    const result = await safeCall(() => bridgeFetch("/config/update", {
       method: "POST",
       body,
       timeoutMs: getRequestTimeoutSettingMs(s.requestTimeoutMs),
-    }), undefined, "syncConfigToBackend");
+    }), null, "syncConfigToBackend");
+    const ok = !!(result && result.status === "ok");
+    return {
+      ok,
+      code: ok ? "config_sync_ok" : String(result && (result.code || result.reason_code) || "config_sync_unavailable"),
+      result,
+    };
   }
 
   function buildAdminRuntimeClientMeta(overrides = {}) {
@@ -10940,7 +10970,7 @@
   }
 
   function getSourceDiscoveryRequestTimeoutMs() {
-    return resolveRequestTimeoutMs(600000);
+    return getSourceSearchPlannerTimeoutSettingMs();
   }
 
   async function referenceLibraryUpdateWork(title, workType, defaultLanguage) {
@@ -11050,7 +11080,7 @@
     const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/documents", {
       method: "POST",
       body: { continuity_id: continuityId, source_type: "file", filename: String(file.name || "reference.txt"), content },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     if (!data || !data.document) {
       referenceLibrarySetStatus("error", "", "파일을 저장하지 못했습니다.");
@@ -11071,7 +11101,7 @@
     const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/documents/" + referenceLibraryPath(documentId) + "/extract", {
       method: "POST",
       body: { auto_review: false, client_meta: buildAdminRuntimeClientMeta({ source: "reference_document_extract" }) },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     if (!data || !data.job_id) {
       referenceLibrarySetStatus("error", "", "자동 추출 작업을 시작하지 못했습니다. 평론가 설정을 확인하세요.");
@@ -11089,7 +11119,7 @@
     }
     const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(state.selectedWorkId) + "/vector/status?continuity_id=" + encodeURIComponent(state.selectedContinuityId), {
       method: "GET",
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     if (data && data.status === "ok") {
       state.vectorStatus = data;
@@ -11126,7 +11156,7 @@
         continuity_id: state.selectedContinuityId,
         client_meta: buildAdminRuntimeClientMeta({ source: "reference_vector_reindex" }),
       },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     if (!data || !data.job_id) {
       state.vectorLoading = false;
@@ -11159,7 +11189,7 @@
         query: text,
         client_meta: buildAdminRuntimeClientMeta({ source: "reference_vector_search" }),
       },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     state.vectorLoading = false;
     if (!data || data.status !== "ok") {
@@ -11174,12 +11204,10 @@
   }
 
   async function referenceLibraryPollJob(jobId) {
-    for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      const data = await bridgeFetch("/reference-jobs/" + referenceLibraryPath(jobId), { method: "GET", timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000) });
+      const data = await bridgeFetch("/reference-jobs/" + referenceLibraryPath(jobId), { method: "GET", timeoutMs: resolveRequestTimeoutMs() });
       if (!data) {
         referenceLibrarySetStatus("error", "", "추출 작업 상태를 확인하지 못했습니다.");
-        return;
+        return null;
       }
       _referenceLibraryState.job = data;
       referenceLibraryRefreshUI();
@@ -11248,9 +11276,10 @@
         const warnings = data.result && Array.isArray(data.result.warnings) ? data.result.warnings.filter(Boolean) : [];
         const detail = warnings.length > 0 ? " · " + warnings.join(" · ") : "";
         referenceLibrarySetStatus("error", "", "자동 추출에 실패했습니다: " + String(data.error || "원인 미확인") + detail);
-        return;
+        return data;
       }
-    }
+      referenceLibrarySetStatus("running", "백엔드 작업이 실행 중입니다. 상태 새로고침으로 최신 상태를 확인하세요.", "");
+      return data;
   }
 
   async function referenceLibraryLoadData() {
@@ -11776,7 +11805,7 @@
       body: bytes,
       rawBody: true,
       headers: { "Content-Type": "application/zip" },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 60000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     state.canonLoading = false;
     state.canonPreview = data && typeof data === "object" ? data : null;
@@ -11812,7 +11841,7 @@
       body: bytes,
       rawBody: true,
       headers: { "Content-Type": "application/zip" },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 90000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     state.canonLoading = false;
     if (!data || !data.install_id) {
@@ -11843,7 +11872,7 @@
     const data = await bridgeFetch("/canon-packs/" + referenceLibraryPath(id) + "/lifecycle/v1", {
       method: "POST",
       body: { action: command, client_meta: buildAdminRuntimeClientMeta({ source: "canon_pack_lifecycle_ui" }) },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 90000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     state.canonLoading = false;
     if (!data || !data.lifecycle_status) {
@@ -11928,7 +11957,7 @@
       const preview = await bridgeFetch("/source-discovery/preview/v1", {
         method: "POST",
         body,
-        timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+        timeoutMs: resolveRequestTimeoutMs(),
       });
       state.discoveryLoading = false;
       if (!preview) {
@@ -12011,7 +12040,7 @@
     const data = await bridgeFetch("/source-discovery/jobs/" + referenceLibraryPath(jobId) + "/complete/v1", {
       method: "POST",
       body: { client_meta: buildAdminRuntimeClientMeta({ source: "source_discovery_corpus_analysis" }) },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     state.discoveryLoading = false;
     if (!data || !data.job_id) {
@@ -12044,7 +12073,7 @@
         confirm_evidence_validated_batch: true,
         client_meta: buildAdminRuntimeClientMeta({ source: "source_discovery_batch_admission" }),
       },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 120000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     state.discoveryLoading = false;
     if (!data || data.status !== "admitted") {
@@ -12185,7 +12214,7 @@
       + '<div class="mo-row"><label>API Key</label><input type="password" id="mo-sourceSearchPlannerApiKey" value="' + escapeAttr(s.sourceSearchPlannerApiKey || "") + '" autocomplete="off"><button type="button" class="mo-btn-toggle" id="mo-sourceSearchPlannerApiKeyToggle">👁</button></div>'
       + '<div class="mo-row"><label>API 기본 Endpoint (선택)</label><input type="text" id="mo-sourceSearchPlannerEndpoint" value="' + escapeAttr(s.sourceSearchPlannerEndpoint || "") + '"></div>'
       + '<div class="mo-section-desc">Ollama는 선택한 Model이 제한된 검색 에이전트로 작동합니다. 검색 도구 호출은 최대 3회이며 실제 페이지 수집은 Go 백엔드의 보안 검증 경로를 사용합니다.</div>'
-      + '<div class="mo-row"><label>Timeout (ms)</label><input type="number" id="mo-sourceSearchPlannerTimeoutMs" value="' + Number(s.sourceSearchPlannerTimeoutMs ?? 60000) + '" min="5000" max="300000" step="5000"></div>'
+      + '<div class="mo-row"><label>Timeout (ms)</label><input type="number" id="mo-sourceSearchPlannerTimeoutMs" value="' + Number(s.sourceSearchPlannerTimeoutMs ?? DEFAULT_SETTINGS.sourceSearchPlannerTimeoutMs) + '" min="5000" max="300000" step="5000"></div>'
       + '<div id="mo-sourceSearchPlannerGenerationOptions"><div class="mo-row"><label>Model</label><input type="text" id="mo-sourceSearchPlannerModel" value="' + escapeAttr(s.sourceSearchPlannerModel || "") + '"></div>'
       + '<div class="mo-row"><label>Temperature</label><input type="number" id="mo-sourceSearchPlannerTemperature" value="' + Number(s.sourceSearchPlannerTemperature ?? 0.1) + '" min="0" max="2" step="0.1"></div>'
       + '<div class="mo-row"><label>Reasoning Preset</label><select id="mo-sourceSearchPlannerReasoningPreset"><option value="auto"' + ((s.sourceSearchPlannerReasoningPreset || "auto") === "auto" ? " selected" : "") + '>auto</option><option value="gpt"' + (s.sourceSearchPlannerReasoningPreset === "gpt" ? " selected" : "") + '>gpt</option><option value="gemini"' + (s.sourceSearchPlannerReasoningPreset === "gemini" ? " selected" : "") + '>gemini</option><option value="claude"' + (s.sourceSearchPlannerReasoningPreset === "claude" ? " selected" : "") + '>claude</option><option value="glm"' + (s.sourceSearchPlannerReasoningPreset === "glm" ? " selected" : "") + '>glm</option><option value="custom"' + (s.sourceSearchPlannerReasoningPreset === "custom" ? " selected" : "") + '>custom</option></select></div>'
@@ -12207,6 +12236,11 @@
     const continuityOptions = ['<option value="">이야기 흐름 선택</option>'].concat(state.continuities.map((item) => '<option value="' + escapeAttr(item.continuity_id) + '"' + (String(item.continuity_id) === state.selectedContinuityId ? ' selected' : '') + '>' + escapeAttr(item.label) + '</option>')).join("");
     const jobProgress = state.job && state.job.progress ? Number(state.job.progress.progress_percent || 0) : 0;
     const statusText = state.error || state.message || (state.loading ? "불러오는 중입니다." : "작품을 선택하거나 새로 만드세요.");
+    const jobId = String(state.job && state.job.job_id || "").trim();
+    const jobStatus = String(state.job && state.job.status || "").toLowerCase();
+    const jobRefreshAction = jobId && !["completed", "failed", "cancelled", "canceled"].includes(jobStatus)
+      ? '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-job-refresh">작업 상태 새로고침</button></div>'
+      : '';
     const selectedWork = state.works.find((item) => String(item.work_id || "") === state.selectedWorkId) || null;
     const workTypeOptions = selectedWork ? [
       ["novel", "소설"], ["animation", "애니메이션"], ["game", "게임"], ["comic", "만화"], ["other", "기타"], ["custom", "기타"],
@@ -12240,7 +12274,7 @@
         + '<div class="mo-dash-card"><div class="mo-row"><label>새 작품</label><input id="mo-reference-work-title" type="text" placeholder="작품 이름"><select id="mo-reference-work-type"><option value="novel">소설</option><option value="animation">애니메이션</option><option value="game">게임</option><option value="comic">만화</option><option value="other">기타</option></select><button type="button" class="mo-btn mo-btn-success" id="mo-reference-work-create">만들기</button></div>'
         + '<div class="mo-row"><label>새 흐름</label><input id="mo-reference-continuity-label" type="text" placeholder="예: 애니메이션 본편"><input id="mo-reference-continuity-key" type="text" placeholder="선택 키"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-continuity-create">추가</button></div></div>'
         + '<div class="mo-dash-card"><div class="mo-row"><label>자료 파일</label><input id="mo-reference-file" type="file" accept=".txt,.md,.markdown,.json,text/plain,application/json"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-file-import">파일 저장</button><button type="button" class="mo-btn mo-btn-success" id="mo-reference-extract"' + (state.document ? '' : ' disabled') + '>평론가 자동 생성</button></div>'
-        + '<div class="mo-section-desc">' + escapeAttr(statusText) + (state.job ? ' · 진행률 ' + jobProgress + '%' : '') + '</div></div>';
+        + '<div class="mo-section-desc">' + escapeAttr(statusText) + (state.job ? ' · 진행률 ' + jobProgress + '%' : '') + '</div>' + jobRefreshAction + '</div>';
     }
     const entitiesByType = (type) => (library.entities || []).filter((item) => String(item.entity_type || "") === type);
     const otherEntities = (library.entities || []).filter((item) => !["character", "location", "item", "faction"].includes(String(item.entity_type || "")));
@@ -12283,7 +12317,7 @@
         : '';
       return '<div class="mo-memory-item mo-reference-document"><div class="mo-reference-document-main"><div class="mo-dash-card-title">' + escapeAttr(String(item.document_title || "입력 문서")) + '</div><div class="mo-section-desc"><strong>' + escapeAttr(String(item.source_type || "source")) + '</strong> · ' + escapeAttr(String(item.import_status || "pending")) + ' · 보존 ' + escapeAttr(String(item.raw_retention || "none")) + '</div><div class="mo-section-desc">' + escapeAttr(String(item.source_uri || "출처 URL 없음")) + '</div><div class="mo-section-desc">SHA-256 ' + escapeAttr(String(item.content_hash || "")) + ' · 본문 ' + Number(item.raw_text_length || 0) + '자</div></div>' + action + '</div>';
     }).join("");
-    return '<div class="mo-section">원작 자료</div>' + tabs + selector + renderReferenceVectorPanel() + legacyAutoReviewPreview + filters + diagnosticSummary + timelineActions + empty
+    return '<div class="mo-section">원작 자료</div>' + tabs + selector + jobRefreshAction + renderReferenceVectorPanel() + legacyAutoReviewPreview + filters + diagnosticSummary + timelineActions + empty
       + ((libraryView === "all" || libraryView === "documents") && sourceDocuments.length ? '<div class="mo-section">원문 문서</div>' + sourceDocumentRows : '')
       + ((libraryView === "all" || libraryView === "character") && entitiesByType("character").length ? '<div class="mo-section">인물</div>' + referenceLibraryRows("entity", entitiesByType("character"), false) : '')
       + ((libraryView === "all" || libraryView === "location") && entitiesByType("location").length ? '<div class="mo-section">장소</div>' + referenceLibraryRows("entity", entitiesByType("location"), false) : '')
@@ -12326,7 +12360,7 @@
     const data = await bridgeFetch("/reference-works/" + referenceLibraryPath(workId) + "/library/timeline/normalize?continuity_id=" + encodeURIComponent(continuityId), {
       method: "POST",
       body: { continuity_id: continuityId, client_meta: buildAdminRuntimeClientMeta({ source: "reference_timeline_chronology" }) },
-      timeoutMs: Math.max(resolveRequestTimeoutMs(), 30000),
+      timeoutMs: resolveRequestTimeoutMs(),
     });
     if (!data || !data.job_id) {
       referenceLibrarySetStatus("error", "", "연표 시간순 정리 작업을 시작하지 못했습니다. 평론가 설정을 확인하세요.");
@@ -12503,6 +12537,11 @@
     if (importFile) importFile.addEventListener("click", () => referenceLibraryImportFile(byId("mo-reference-file")?.files?.[0]));
     const extract = byId("mo-reference-extract");
     if (extract) extract.addEventListener("click", () => referenceLibraryStartExtraction());
+    const refreshJob = byId("mo-reference-job-refresh");
+    if (refreshJob) refreshJob.addEventListener("click", () => {
+      const jobId = String(_referenceLibraryState.job && _referenceLibraryState.job.job_id || "").trim();
+      if (jobId) referenceLibraryPollJob(jobId);
+    });
     document.querySelectorAll("[data-reference-document-extract]").forEach((button) => {
       button.addEventListener("click", () => referenceLibraryStartExtraction(button.getAttribute("data-reference-document-extract")));
     });
@@ -12718,7 +12757,7 @@
           response = await Promise.race([R.nativeFetch(url, fetchInit), timeoutPromise]);
         } else {
           // fallback: 일반 fetch (브라우저 콘솔 디버깅용)
-          response = await fetch(url, fetchInit);
+          response = await Promise.race([fetch(url, fetchInit), timeoutPromise]);
         }
       } finally {
         if (timeoutTimer !== null) clearTimeout(timeoutTimer);
@@ -12801,8 +12840,6 @@
       if (result !== null) return result;
       if (attempt < retries) {
         debugLog(`bridgeFetchWithRetry: attempt ${attempt}/${retries} failed for ${path}, retrying...`);
-        // 짧은 대기 후 재시도 (1초 * 시도 횟수)
-        await new Promise(r => setTimeout(r, 1000 * attempt));
       }
     }
     debugLog(`bridgeFetchWithRetry: all ${retries} attempts failed for ${path}`);
@@ -12857,12 +12894,18 @@
   let _turnWorkflowHUDWatchToken = 0;
   let _turnWorkflowHUDWatchRunning = false;
   let _turnWorkflowHUDLastRevision = 0;
-  let _turnWorkflowHUDTimer = null;
+  let _turnWorkflowHUDStreamAbortController = null;
+  let _turnWorkflowHUDStreamReader = null;
+  let _turnWorkflowHUDAnimationFrame = null;
   let _turnWorkflowHUDMainDocument = null;
   let _turnWorkflowHUDRootUnavailableLogged = false;
   let _turnWorkflowHUDElapsedElement = null;
   let _turnWorkflowHUDElapsedStartedAt = "";
+  let _turnWorkflowHUDElapsedLastSecond = -1;
   let _turnWorkflowHUDRenderChain = Promise.resolve();
+  let _turnWorkflowHUDDismissListenerIds = [];
+  let _turnWorkflowHUDRootOwned = false;
+  let _turnWorkflowHUDUnloaded = false;
 
   function queueTurnWorkflowHUDOperation(label, operation) {
     const queued = _turnWorkflowHUDRenderChain
@@ -12876,6 +12919,7 @@
   }
 
   async function getTurnWorkflowHUDMainDocument() {
+    if (_turnWorkflowHUDUnloaded) return null;
     if (_turnWorkflowHUDMainDocument) return _turnWorkflowHUDMainDocument;
     if (!R || typeof R.getRootDocument !== "function") {
       if (!_turnWorkflowHUDRootUnavailableLogged) {
@@ -12897,6 +12941,7 @@
   }
 
   async function ensureTurnWorkflowHUDRoot() {
+    if (_turnWorkflowHUDUnloaded) return null;
     const rootDocument = await getTurnWorkflowHUDMainDocument();
     if (!rootDocument) return null;
     let root = await rootDocument.querySelector(TURN_WORKFLOW_HUD_ROOT_SELECTOR);
@@ -12905,6 +12950,7 @@
       if (!body) throw new Error("RisuAI main DOM body is unavailable");
       root = await rootDocument.createElement("div");
       await root.addClass("mo-turn-workflow-hud-root");
+      _turnWorkflowHUDRootOwned = true;
       await root.setInnerHTML(
         `<div aria-live="polite" style="${TURN_WORKFLOW_HUD_ROOT_STYLE}"></div>`
       );
@@ -12922,12 +12968,57 @@
   }
 
   function clearTurnWorkflowHUDTimer() {
-    if (_turnWorkflowHUDTimer != null) {
-      clearInterval(_turnWorkflowHUDTimer);
-      _turnWorkflowHUDTimer = null;
+    if (_turnWorkflowHUDAnimationFrame != null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(_turnWorkflowHUDAnimationFrame);
     }
+    _turnWorkflowHUDAnimationFrame = null;
     _turnWorkflowHUDElapsedElement = null;
     _turnWorkflowHUDElapsedStartedAt = "";
+    _turnWorkflowHUDElapsedLastSecond = -1;
+  }
+
+  function takeTurnWorkflowHUDDismissListenerIds() {
+    const listenerIds = _turnWorkflowHUDDismissListenerIds;
+    _turnWorkflowHUDDismissListenerIds = [];
+    return listenerIds;
+  }
+
+  async function removeTurnWorkflowHUDDismissListeners(listenerIds) {
+    const ids = Array.isArray(listenerIds)
+      ? listenerIds
+      : takeTurnWorkflowHUDDismissListenerIds();
+    if (!R || typeof R.removeRisuEventListener !== "function") return;
+    for (const listenerId of ids) {
+      try {
+        await R.removeRisuEventListener(listenerId);
+      } catch (err) {
+        debugLog("turn workflow HUD listener cleanup failed:", err && err.message);
+      }
+    }
+  }
+
+  async function unloadTurnWorkflowHUD() {
+    if (_turnWorkflowHUDUnloaded) return;
+    _turnWorkflowHUDUnloaded = true;
+    _turnWorkflowHUDWatchToken++;
+    _turnWorkflowHUDWatchRunning = false;
+    _turnWorkflowHUDActiveRequestId = "";
+    _turnWorkflowHUDLastRevision = 0;
+    clearTurnWorkflowHUDTimer();
+    await _turnWorkflowHUDRenderChain;
+    await removeTurnWorkflowHUDDismissListeners();
+    const rootDocument = _turnWorkflowHUDMainDocument;
+    if (rootDocument) {
+      const root = await rootDocument.querySelector(TURN_WORKFLOW_HUD_ROOT_SELECTOR);
+      if (_turnWorkflowHUDRootOwned && root && typeof root.remove === "function") {
+        await root.remove();
+      } else {
+        const surface = await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
+        if (surface) await surface.setInnerHTML("");
+      }
+    }
+    _turnWorkflowHUDRootOwned = false;
+    _turnWorkflowHUDMainDocument = null;
   }
 
   async function updateTurnWorkflowHUDElapsed() {
@@ -12937,8 +13028,20 @@
       if (!target) return;
       if (!Number.isFinite(startedAt)) return;
       const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      if (seconds === _turnWorkflowHUDElapsedLastSecond) return;
+      _turnWorkflowHUDElapsedLastSecond = seconds;
       await target.setTextContent(" · " + tf("turn_hud.elapsed_seconds", { n: seconds }));
     } catch { /* UI timer is best-effort only. */ }
+  }
+
+  function scheduleTurnWorkflowHUDElapsedFrame() {
+    if (!_turnWorkflowHUDElapsedElement || typeof requestAnimationFrame !== "function") return;
+    _turnWorkflowHUDAnimationFrame = requestAnimationFrame(function turnWorkflowHUDElapsedFrame() {
+      _turnWorkflowHUDAnimationFrame = null;
+      void updateTurnWorkflowHUDElapsed().finally(function() {
+        if (_turnWorkflowHUDElapsedElement) scheduleTurnWorkflowHUDElapsedFrame();
+      });
+    });
   }
 
   function turnWorkflowHUDTurnLabel(view) {
@@ -13191,12 +13294,15 @@
 
   function dismissTurnWorkflowHUD(requestId) {
     if (requestId && _turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
+    const listenerIds = takeTurnWorkflowHUDDismissListenerIds();
+    cancelTurnWorkflowHUDStream();
     _turnWorkflowHUDWatchToken++;
     _turnWorkflowHUDWatchRunning = false;
     _turnWorkflowHUDActiveRequestId = "";
     _turnWorkflowHUDLastRevision = 0;
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("dismiss", async function() {
+      await removeTurnWorkflowHUDDismissListeners(listenerIds);
       const rootDocument = await getTurnWorkflowHUDMainDocument();
       const surface = rootDocument && await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
       if (surface) {
@@ -13206,17 +13312,44 @@
   }
 
   async function attachTurnWorkflowHUDDismiss(card, requestId, closeButtonOnly) {
+    if (_turnWorkflowHUDUnloaded) return;
     if (!card || typeof card.addEventListener !== "function") return;
     const target = closeButtonOnly && typeof card.querySelector === "function"
       ? await card.querySelector("button")
       : card;
-    if (!target || typeof target.addEventListener !== "function") return;
+    if (
+      !target
+      || typeof target.addEventListener !== "function"
+      || typeof target.getBoundingClientRect !== "function"
+    ) return;
     const dismiss = async function(event) {
-      if (event && String(event.type || "") === "keydown" && event.key !== "Enter" && event.key !== " ") return;
+      const clientX = Number(event && event.clientX);
+      const clientY = Number(event && event.clientY);
+      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+      const rect = await target.getBoundingClientRect();
+      const left = Number(rect && (rect.left != null ? rect.left : rect.x));
+      const top = Number(rect && (rect.top != null ? rect.top : rect.y));
+      const right = Number(rect && (rect.right != null ? rect.right : left + Number(rect.width)));
+      const bottom = Number(rect && (rect.bottom != null ? rect.bottom : top + Number(rect.height)));
+      if (
+        !Number.isFinite(left)
+        || !Number.isFinite(top)
+        || !Number.isFinite(right)
+        || !Number.isFinite(bottom)
+        || clientX < left
+        || clientX > right
+        || clientY < top
+        || clientY > bottom
+      ) return;
       await dismissTurnWorkflowHUD(requestId);
     };
-    await target.addEventListener("click", dismiss);
-    await target.addEventListener("keydown", dismiss);
+    const listenerId = await target.addEventListener("click", dismiss);
+    if (listenerId === null || listenerId === undefined) return;
+    if (_turnWorkflowHUDUnloaded) {
+      await removeTurnWorkflowHUDDismissListeners([listenerId]);
+      return;
+    }
+    _turnWorkflowHUDDismissListenerIds.push(listenerId);
   }
 
   function turnWorkflowHUDCloseButtonOnly(view) {
@@ -13351,6 +13484,7 @@
   }
 
   function renderTurnWorkflowHUD(view) {
+    if (_turnWorkflowHUDUnloaded) return;
     if (!turnWorkflowHUDIsEnabled()) {
       dismissTurnWorkflowHUD();
       return;
@@ -13366,6 +13500,7 @@
     return queueTurnWorkflowHUDOperation("render", async function() {
       if (requestId !== _turnWorkflowHUDActiveRequestId) return;
       if (revision > 0 && revision < _turnWorkflowHUDLastRevision) return;
+      await removeTurnWorkflowHUDDismissListeners();
       const root = await ensureTurnWorkflowHUDRoot();
       if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
       clearTurnWorkflowHUDTimer();
@@ -13375,9 +13510,7 @@
         _turnWorkflowHUDElapsedStartedAt = presentation.elapsedStartedAt;
         if (_turnWorkflowHUDElapsedElement) {
           await updateTurnWorkflowHUDElapsed();
-          _turnWorkflowHUDTimer = setInterval(function() {
-            void updateTurnWorkflowHUDElapsed();
-          }, 1000);
+          scheduleTurnWorkflowHUDElapsedFrame();
         }
       }
       if (presentation.terminal) {
@@ -13392,15 +13525,29 @@
 
   // The backend cannot classify its own unreachability. This is the one
   // transport-only error owned by the host adapter.
-  function renderTurnWorkflowHUDTransportError(requestId) {
+  function renderTurnWorkflowHUDTransportError(requestId, reasonCode) {
+    if (_turnWorkflowHUDUnloaded) return;
     if (!turnWorkflowHUDIsEnabled()) {
       dismissTurnWorkflowHUD();
       return;
     }
     if (!requestId || requestId !== _turnWorkflowHUDActiveRequestId) return;
+    const normalizedReasonCode = String(reasonCode || "hud_transport_unavailable").trim() || "hud_transport_unavailable";
+    const transportFactHTML = turnWorkflowHUDFactLedgerHTML({
+      facts: [{
+        key: "stream_transport",
+        owner: "risu_host",
+        scope: "current_request",
+        status: "unavailable",
+        disposition: "dropped",
+        reason_code: normalizedReasonCode,
+        severity: "error",
+      }],
+    });
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("transport error render", async function() {
       if (requestId !== _turnWorkflowHUDActiveRequestId) return;
+      await removeTurnWorkflowHUDDismissListeners();
       const root = await ensureTurnWorkflowHUDRoot();
       if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
       await root.setInnerHTML(
@@ -13410,7 +13557,8 @@
         + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
         + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
         + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
-        + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">HUD_TRANSPORT_UNAVAILABLE</div>`
+        + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">${escapeTurnWorkflowHUDHTML(normalizedReasonCode)}</div>`
+        + transportFactHTML
         + `</div>`
       );
       await attachTurnWorkflowHUDDismiss(await root.querySelector("div"), requestId, true);
@@ -13435,6 +13583,7 @@
     if (!requestId) return false;
     _turnWorkflowHUDWatchToken++;
     _turnWorkflowHUDWatchRunning = false;
+    cancelTurnWorkflowHUDStream();
     _turnWorkflowHUDActiveRequestId = "";
     _turnWorkflowHUDLastRevision = 0;
     clearTurnWorkflowHUDTimer();
@@ -13468,11 +13617,116 @@
   }
 
   function stopTurnWorkflowHUDWatch(requestId, removeEmpty) {
+    clearTurnWorkflowHUDTimer();
     if (requestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
+    cancelTurnWorkflowHUDStream();
     _turnWorkflowHUDWatchToken++;
     _turnWorkflowHUDWatchRunning = false;
     if (removeEmpty && _turnWorkflowHUDLastRevision <= 0) {
       dismissTurnWorkflowHUD(requestId);
+    }
+  }
+
+  function cancelTurnWorkflowHUDStream() {
+    const reader = _turnWorkflowHUDStreamReader;
+    const controller = _turnWorkflowHUDStreamAbortController;
+    _turnWorkflowHUDStreamReader = null;
+    _turnWorkflowHUDStreamAbortController = null;
+    try {
+      if (controller) controller.abort();
+    } catch { /* no-op */ }
+    try {
+      if (reader && typeof reader.cancel === "function") {
+        const cancellation = reader.cancel();
+        if (cancellation && typeof cancellation.catch === "function") cancellation.catch(function() {});
+      }
+    } catch { /* no-op */ }
+  }
+
+  function turnWorkflowHUDStreamFailure(code, message) {
+    const error = new Error(String(message || code || "turn workflow HUD stream failed"));
+    error.code = String(code || "hud_transport_unavailable");
+    return error;
+  }
+
+  async function openTurnWorkflowHUDStream(url, signal) {
+    if (typeof AbortController !== "function" || typeof TextDecoder !== "function") {
+      throw turnWorkflowHUDStreamFailure("stream_transport_unavailable", "stream primitives are unavailable");
+    }
+    let streamFetch = null;
+    if (R && typeof R.nativeFetch === "function") {
+      streamFetch = function(streamUrl, init) {
+        return R.nativeFetch(streamUrl, init);
+      };
+    } else if (
+      typeof fetch === "function"
+      && typeof ReadableStream === "function"
+      && typeof Response === "function"
+      && Response.prototype
+      && "body" in Response.prototype
+    ) {
+      streamFetch = fetch;
+    }
+    if (!streamFetch) {
+      throw turnWorkflowHUDStreamFailure("stream_transport_unavailable", "stream fetch is unavailable");
+    }
+    const response = await streamFetch(url, {
+      method: "GET",
+      headers: { "Accept": "application/x-ndjson" },
+      signal,
+    });
+    const status = response && Number(response.status || 0);
+    if (!response || !(response.ok === true || (status >= 200 && status < 300))) {
+      throw turnWorkflowHUDStreamFailure("hud_transport_unavailable", "stream request failed");
+    }
+    if (!response.body || typeof response.body.getReader !== "function") {
+      throw turnWorkflowHUDStreamFailure("stream_transport_unavailable", "stream reader is unavailable");
+    }
+    return response.body.getReader();
+  }
+
+  async function consumeTurnWorkflowHUDStreamLine(line, token, requestId) {
+    const normalized = String(line || "").trim();
+    if (!normalized) return false;
+    let view;
+    try {
+      view = JSON.parse(normalized);
+    } catch {
+      throw turnWorkflowHUDStreamFailure("stream_decode_failed", "invalid NDJSON event");
+    }
+    if (token !== _turnWorkflowHUDWatchToken || requestId !== _turnWorkflowHUDActiveRequestId) return true;
+    if (String(view && view.request_id || "") !== requestId) {
+      throw turnWorkflowHUDStreamFailure("stream_request_mismatch", "stream request mismatch");
+    }
+    if (consumeTurnWorkflowHUD(view)) {
+      await _turnWorkflowHUDRenderChain;
+    }
+    return view && (
+      view.status === "completed"
+      || view.status === "completed_with_warning"
+      || view.status === "failed"
+      || view.status === "invalidated"
+    );
+  }
+
+  async function consumeTurnWorkflowHUDStream(reader, token, requestId) {
+    const decoder = new TextDecoder();
+    let buffered = "";
+    while (token === _turnWorkflowHUDWatchToken && requestId === _turnWorkflowHUDActiveRequestId) {
+      const chunk = await reader.read();
+      if (chunk && chunk.value) buffered += decoder.decode(chunk.value, { stream: chunk.done !== true });
+      let newlineIndex = buffered.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffered.slice(0, newlineIndex);
+        buffered = buffered.slice(newlineIndex + 1);
+        if (await consumeTurnWorkflowHUDStreamLine(line, token, requestId)) return;
+        newlineIndex = buffered.indexOf("\n");
+      }
+      if (chunk && chunk.done === true) {
+        buffered += decoder.decode();
+        if (buffered.trim()) await consumeTurnWorkflowHUDStreamLine(buffered, token, requestId);
+        return;
+      }
     }
   }
 
@@ -13484,53 +13738,49 @@
     const normalizedRequestId = String(requestId || "").trim();
     if (!normalizedRequestId) return;
     if (_turnWorkflowHUDWatchRunning && _turnWorkflowHUDActiveRequestId === normalizedRequestId) return;
+    const sameRequestId = _turnWorkflowHUDActiveRequestId === normalizedRequestId;
+    cancelTurnWorkflowHUDStream();
     _turnWorkflowHUDWatchToken++;
     const token = _turnWorkflowHUDWatchToken;
     _turnWorkflowHUDWatchRunning = true;
     _turnWorkflowHUDActiveRequestId = normalizedRequestId;
-    _turnWorkflowHUDLastRevision = 0;
+    if (!sameRequestId) _turnWorkflowHUDLastRevision = 0;
     clearTurnWorkflowHUDTimer();
-    queueTurnWorkflowHUDOperation("start", async function() {
-      const root = await ensureTurnWorkflowHUDRoot();
-      if (root && normalizedRequestId === _turnWorkflowHUDActiveRequestId) {
-        await root.setInnerHTML("");
-      }
-    });
+    if (!sameRequestId) {
+      queueTurnWorkflowHUDOperation("start", async function() {
+        await removeTurnWorkflowHUDDismissListeners();
+        const root = await ensureTurnWorkflowHUDRoot();
+        if (root && normalizedRequestId === _turnWorkflowHUDActiveRequestId) {
+          await root.setInnerHTML("");
+        }
+      });
+    }
     (async function() {
-      let revision = 0;
-      let transportFailures = 0;
-      while (token === _turnWorkflowHUDWatchToken && _turnWorkflowHUDActiveRequestId === normalizedRequestId) {
-        const path = "/turn-workflow/status?request_id=" + encodeURIComponent(normalizedRequestId)
-          + "&after_revision=" + encodeURIComponent(String(revision))
-          + "&wait_ms=20000";
-        const view = await bridgeFetch(path, { method: "GET", timeoutMs: 23000 });
-        if (token !== _turnWorkflowHUDWatchToken || _turnWorkflowHUDActiveRequestId !== normalizedRequestId) break;
-        if (!view) {
-          transportFailures++;
-          if (transportFailures >= 2) {
-            renderTurnWorkflowHUDTransportError(normalizedRequestId);
-            break;
-          }
-          await new Promise(function(resolve) { setTimeout(resolve, 600); });
-          continue;
-        }
-        transportFailures = 0;
-        if (view.status === "unknown") {
-          await new Promise(function(resolve) { setTimeout(resolve, 120); });
-          continue;
-        }
-        if (!consumeTurnWorkflowHUD(view)) continue;
-        revision = Math.max(revision, Number(view.revision || 0));
-        if (view.status === "completed" || view.status === "completed_with_warning" || view.status === "failed" || view.status === "invalidated") {
-          break;
-        }
+      const revision = sameRequestId ? _turnWorkflowHUDLastRevision : 0;
+      const waitMs = getRequestTimeoutSettingMs();
+      const path = "/turn-workflow/events?request_id=" + encodeURIComponent(normalizedRequestId)
+        + "&after_revision=" + encodeURIComponent(String(revision))
+        + "&wait_ms=" + encodeURIComponent(String(waitMs));
+      const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
+      if (!bridgeRoute.url) {
+        throw turnWorkflowHUDStreamFailure("hud_transport_unavailable", "bridge URL is unavailable");
       }
-      if (token === _turnWorkflowHUDWatchToken) _turnWorkflowHUDWatchRunning = false;
+      const controller = new AbortController();
+      _turnWorkflowHUDStreamAbortController = controller;
+      const reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
+      if (token !== _turnWorkflowHUDWatchToken || _turnWorkflowHUDActiveRequestId !== normalizedRequestId) return;
+      _turnWorkflowHUDStreamReader = reader;
+      await consumeTurnWorkflowHUDStream(reader, token, normalizedRequestId);
     })().catch(function(err) {
       debugLog("turn workflow HUD watcher failed:", err && err.message);
       if (token === _turnWorkflowHUDWatchToken) {
+        renderTurnWorkflowHUDTransportError(normalizedRequestId, err && err.code);
+      }
+    }).finally(function() {
+      if (token === _turnWorkflowHUDWatchToken) {
+        _turnWorkflowHUDStreamAbortController = null;
+        _turnWorkflowHUDStreamReader = null;
         _turnWorkflowHUDWatchRunning = false;
-        renderTurnWorkflowHUDTransportError(normalizedRequestId);
       }
     });
   }
@@ -13648,10 +13898,10 @@
   }
 
   async function refreshArchiveCenterUpdateStatus() {
-    const statusEl = $("mo-update-status");
+    const statusEl = document.getElementById("mo-update-status");
     if (!statusEl) return null;
     try {
-      const data = await withUiBridgeSettings(() => fetchArchiveCenterUpdateStatus());
+      const data = await fetchArchiveCenterUpdateStatus();
       statusEl.innerHTML = formatArchiveCenterUpdateStatus(data);
       return data;
     } catch (_) {
@@ -14149,7 +14399,7 @@
   // ──────────────────────────────────────────────────────────────
 
   const _failedQueue = [];  // { type, payload, attempts, addedAt, lastAttemptAt, _dedupeKey }
-  let _queueSaveTimer = null;
+  let _queueSaveScheduled = false;
 
   function stableFailedQueuePayloadFingerprint(payload) {
     try {
@@ -14756,21 +15006,23 @@
     }
   }
 
-  /** debounce 기반 큐 저장 스케줄링 — 빈번한 쓰기 방지 */
+  /** 같은 JavaScript turn의 연속 변경을 한 번의 durable write로 합친다. */
   function scheduleQueueSave() {
     try {
-      if (_queueSaveTimer) clearTimeout(_queueSaveTimer);
-      _queueSaveTimer = setTimeout(() => {
-        _queueSaveTimer = null;
+      if (_queueSaveScheduled) return;
+      _queueSaveScheduled = true;
+      Promise.resolve().then(() => {
+        if (!_queueSaveScheduled) return;
+        _queueSaveScheduled = false;
         saveFailedQueueToStorage().catch(() => {});
-      }, FAILED_QUEUE_SAVE_DEBOUNCE_MS);
+      });
     } catch { /* 스케줄링 실패는 무시 */ }
   }
 
-  /** 큐 즉시 저장 + 타이머 취소 */
+  /** 큐 즉시 저장 + 예약된 microtask 무효화 */
   async function flushQueueSave(options = {}) {
     try {
-      if (_queueSaveTimer) { clearTimeout(_queueSaveTimer); _queueSaveTimer = null; }
+      _queueSaveScheduled = false;
       return await saveFailedQueueToStorage(options);
     } catch {
       return false;
@@ -15659,12 +15911,7 @@
         _rollbackHistoryTrimGuardBySession.delete(sid);
         return null;
       }
-      const ageMs = Date.now() - Number(entry.recordedAtMs || 0);
-      if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > ROLLBACK_HISTORY_TRIM_GUARD_MS) {
-        _rollbackHistoryTrimGuardBySession.delete(sid);
-        return null;
-      }
-      return Object.assign({}, entry, { ageMs });
+      return Object.assign({}, entry);
     } catch {
       return null;
     }
@@ -16767,13 +17014,12 @@
       const chat = await R.getChatFromIndex(characterIndex, chatIndex);
       if (!chat || !Array.isArray(chat.message)) return null;
       const previousContext = _finalConfirmationRequestBySession.get(sid) || null;
-      const overlapAmbiguous = !!(
+      if (
         previousContext
         && previousContext.state !== "accepted"
         && previousContext.state !== "terminal"
         && previousContext.state !== "superseded"
-      );
-      if (overlapAmbiguous) {
+      ) {
         previousContext.state = "superseded";
       }
       for (const [pendingKey, pending] of _pendingFinalConfirmations.entries()) {
@@ -16787,19 +17033,44 @@
         }
       }
       const hostChatId = typeof chat.id === "string" ? chat.id.trim() : "";
-      const baselineTailIndex = chat.message.length - 1;
-      const baselineTail = baselineTailIndex >= 0 ? chat.message[baselineTailIndex] : null;
-      const replacesAssistant = !!(
-        baselineTail
-        && baselineTail.role === "char"
-        && typeof baselineTail.data === "string"
-        && baselineTail.disabled !== true
-      );
-      const baselineGenerationId = replacesAssistant
-        && baselineTail.generationInfo
-        && typeof baselineTail.generationInfo.generationId === "string"
-        ? baselineTail.generationInfo.generationId.trim()
+      const baselineAssistantIndex = chat.message.length - 1;
+      const baselineAssistant = baselineAssistantIndex >= 0
+        && chat.message[baselineAssistantIndex]
+        && chat.message[baselineAssistantIndex].role === "char"
+        && chat.message[baselineAssistantIndex].disabled !== true
+        ? chat.message[baselineAssistantIndex]
+        : null;
+      const baselineGenerationId = baselineAssistant
+        && baselineAssistant.generationInfo
+        && typeof baselineAssistant.generationInfo.generationId === "string"
+        ? baselineAssistant.generationInfo.generationId.trim()
         : "";
+      let userMessageIndex = -1;
+      let userMessageChatId = "";
+      let userMessageTimeMs = 0;
+      let userObservedContentHash = "";
+      let userObservedContent = "";
+      for (let index = chat.message.length - 1; index >= 0; index--) {
+        const message = chat.message[index];
+        if (
+          !message
+          || message.role !== "user"
+          || typeof message.data !== "string"
+          || message.disabled === true
+        ) {
+          continue;
+        }
+        userMessageIndex = index;
+        userObservedContent = String(message.data || "").trim();
+        userObservedContentHash = computeOrchestrationDirtyHashOr1c(userObservedContent);
+        if (typeof message.chatId === "string" && message.chatId.trim()) {
+          userMessageChatId = message.chatId.trim();
+        }
+        if (typeof message.time === "number" && Number.isFinite(message.time)) {
+          userMessageTimeMs = Math.trunc(message.time);
+        }
+        break;
+      }
       const context = {
         sessionId: sid,
         requestId: String(requestId || ""),
@@ -16807,18 +17078,32 @@
         characterIndex: Number(characterIndex),
         chatIndex: Number(chatIndex),
         hostChatId,
-        baselineMessageCount: chat.message.length,
-        expectedAssistantIndex: replacesAssistant ? baselineTailIndex : chat.message.length,
-        expectedMessageCount: replacesAssistant ? chat.message.length : chat.message.length + 1,
-        replacementMode: replacesAssistant ? "replace_assistant_tail" : "append_assistant_tail",
-        baselineAssistantContent: replacesAssistant
-          ? normalizeAssistantPersistenceCandidate(baselineTail.data)
+        requestMessageCount: chat.message.length,
+        userMessageIndex,
+        userMessageChatId,
+        userMessageTimeMs,
+        userObservedContentHash,
+        userObservedContent,
+        baselineAssistantIndex: baselineAssistant ? baselineAssistantIndex : -1,
+        baselineAssistantContentHash: baselineAssistant
+          ? computeOrchestrationDirtyHashOr1c(String(baselineAssistant.data || "").trim())
           : "",
         baselineGenerationId,
-        overlapAmbiguous,
+        baselineAssistantTimeMs: baselineAssistant
+          && typeof baselineAssistant.time === "number"
+          && Number.isFinite(baselineAssistant.time)
+          ? Math.trunc(baselineAssistant.time)
+          : 0,
         state: hostChatId ? "captured" : "unavailable",
       };
       _finalConfirmationRequestBySession.set(sid, context);
+      updateRuntimeState("lastStreamingAfterRequest", "watching", {
+        detail: "candidate deferred until next observed input/beforeRequest callback",
+        reason_code: "deferred_until_next_official_host_signal",
+        sessionId: sid,
+        requestType: String(type || "model"),
+        promptMemoryAvailability: "one_turn_late",
+      });
       return context;
     } catch (err) {
       debugLog("[final-confirmation] request context unavailable:", err && err.message);
@@ -16826,102 +17111,297 @@
     }
   }
 
-  async function observePendingFinalConfirmation(pending) {
-    const context = pending && pending.requestContext;
-    if (!context || !R) return { confirmed: false, reason: "request_context_missing" };
-    if (context.state === "superseded" || pending.state === "superseded") {
-      return { confirmed: false, reason: "request_superseded" };
+  function recordRisuAfterRequestCandidate(sessionId, type, pendingContext, requestContext, assistantContent) {
+    const sid = String(sessionId || "").trim();
+    const requestType = String(type || "model");
+    if (!requestContext) return { observed: false, reason: "request_context_missing" };
+    if (requestContext.state === "accepted") {
+      return { observed: false, duplicate: true, reason: "already_accepted_by_host_signal" };
     }
-    if (context.overlapAmbiguous) {
-      return { confirmed: false, reason: "overlapping_request_unobservable" };
+    if (requestContext.state === "superseded" || requestContext.state === "terminal") {
+      return { observed: false, reason: "request_superseded_or_terminal" };
     }
-    if (!context.hostChatId) {
-      return { confirmed: false, reason: "host_chat_id_unobserved" };
+    if (requestContext.state !== "captured" && requestContext.state !== "candidate_observed") {
+      return { observed: false, reason: "request_context_not_captured" };
     }
-    try {
-      const characterIndex = await R.getCurrentCharacterIndex();
-      const chatIndex = await R.getCurrentChatIndex();
-      if (
-        Number(characterIndex) !== Number(context.characterIndex)
-        || Number(chatIndex) !== Number(context.chatIndex)
-      ) {
-        return { confirmed: false, reason: "request_chat_not_active" };
-      }
-      const chat = await R.getChatFromIndex(characterIndex, chatIndex);
-      if (!chat || !Array.isArray(chat.message)) {
-        return { confirmed: false, reason: "active_chat_unavailable" };
-      }
-      const hostChatId = typeof chat.id === "string" ? chat.id.trim() : "";
-      if (!hostChatId || hostChatId !== context.hostChatId) {
-        return { confirmed: false, reason: "host_chat_id_changed" };
-      }
-      if (chat.isStreaming !== false) {
-        return { confirmed: false, reason: chat.isStreaming === true ? "chat_streaming" : "streaming_state_unobserved" };
-      }
-      const tailIndex = chat.message.length - 1;
-      if (
-        chat.message.length !== Number(context.expectedMessageCount)
-        || tailIndex !== Number(context.expectedAssistantIndex)
-      ) {
-        return { confirmed: false, reason: "assistant_tail_not_committed" };
-      }
-      const message = chat.message[tailIndex];
-      if (!message || message.role !== "char" || typeof message.data !== "string" || message.disabled === true) {
-        return { confirmed: false, reason: "active_assistant_tail_unavailable" };
-      }
-      const observedContent = normalizeAssistantPersistenceCandidate(message.data);
-      if (!observedContent) {
-        return { confirmed: false, reason: "active_assistant_tail_empty" };
-      }
-      const expectedContent = normalizeAssistantPersistenceCandidate(String(pending.candidateContent || ""));
-      if (!expectedContent) {
-        return { confirmed: false, reason: "after_request_candidate_unavailable" };
-      }
-      if (!isSameAssistantComparableText(observedContent, expectedContent)) {
-        return { confirmed: false, reason: "after_request_candidate_mismatch" };
-      }
-      const generationId = message.generationInfo && typeof message.generationInfo.generationId === "string"
-        ? message.generationInfo.generationId.trim()
-        : "";
-      if (
-        context.replacementMode === "replace_assistant_tail"
-        && isSameAssistantComparableText(observedContent, String(context.baselineAssistantContent || ""))
-        && (!generationId || generationId === String(context.baselineGenerationId || ""))
-      ) {
-        return { confirmed: false, reason: "replacement_generation_unobserved" };
-      }
-      const observationKey = [
-        hostChatId,
-        tailIndex,
-        generationId || "generation_unobserved",
-        computeOrchestrationDirtyHashOr1c(observedContent),
-      ].join("|");
-      if (pending.requiredObservationChangeFrom && observationKey === pending.requiredObservationChangeFrom) {
-        return { confirmed: false, reason: "new_host_observation_required" };
-      }
-      return {
-        confirmed: true,
-        reason: "risu_active_assistant_tail_confirmed",
-        assistantContent: observedContent,
-        characterIndex: Number(characterIndex),
-        chatIndex: Number(chatIndex),
-        hostChatId,
-        messageIndex: tailIndex,
-        generationId,
-        observationKey,
-        requestContext: context,
-      };
-    } catch (err) {
-      debugLog("[final-confirmation] active chat observation failed:", err && err.message);
-      return { confirmed: false, reason: "active_chat_observation_failed" };
+    const correlationId = String(requestContext.requestId || "").trim();
+    const pendingCorrelationId = String(pendingContext && pendingContext.requestId || "").trim();
+    if (
+      !sid
+      || requestContext.sessionId !== sid
+      || requestContext.requestType !== requestType
+      || !correlationId
+      || pendingCorrelationId !== correlationId
+      || (pendingContext && pendingContext.orchResult && pendingContext.orchResult !== lastOrchResult)
+    ) {
+      requestContext.state = "terminal";
+      return { observed: false, reason: "after_request_correlation_mismatch" };
     }
+    const candidateContent = normalizeAssistantPersistenceCandidate(String(assistantContent || ""));
+    if (!candidateContent) {
+      return { observed: false, reason: "after_request_candidate_unavailable" };
+    }
+    const candidateHash = computeOrchestrationDirtyHashOr1c(candidateContent);
+    if (requestContext.state === "candidate_observed" && requestContext.afterRequestCandidateHash === candidateHash) {
+      return { observed: false, duplicate: true, reason: "duplicate_after_request_candidate" };
+    }
+    requestContext.state = "candidate_observed";
+    requestContext.afterRequestCandidateHash = candidateHash;
+    requestContext.afterRequestCandidateObservedAtMs = Date.now();
+    return {
+      observed: true,
+      accepted: false,
+      reason: "after_request_candidate_waiting_for_next_host_signal",
+      candidateContent,
+      candidateHash,
+    };
+  }
+
+  // The adapter validates only host facts. Go owns source acceptance, logical-turn
+  // binding, revision replacement, deletion fences, and all persistence.
+  function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource) {
+    const sid = String(sessionId || "").trim();
+    const requestContext = _finalConfirmationRequestBySession.get(sid) || null;
+    if (!requestContext) return Promise.resolve({ accepted: false, reason: "request_context_missing" });
+    if (requestContext.state === "accepted") {
+      return Promise.resolve({ accepted: true, duplicate: true, reason: "host_final_already_scheduled" });
+    }
+    if (requestContext.hostSignalObservationPromise) return requestContext.hostSignalObservationPromise;
+    if (requestContext.state !== "captured" && requestContext.state !== "candidate_observed") {
+      return Promise.resolve({ accepted: false, reason: "request_context_not_observable" });
+    }
+    const priorState = requestContext.state;
+    requestContext.state = "observing_host_signal";
+    const observationPromise = (async function observeCommittedAssistant() {
+      try {
+        if (
+          !R
+          || typeof R.getCurrentCharacterIndex !== "function"
+          || typeof R.getCurrentChatIndex !== "function"
+          || typeof R.getChatFromIndex !== "function"
+        ) {
+          requestContext.state = priorState;
+          return { accepted: false, reason: "active_chat_api_not_exposed" };
+        }
+        const characterIndex = await R.getCurrentCharacterIndex();
+        const chatIndex = await R.getCurrentChatIndex();
+        if (
+          Number(characterIndex) !== Number(requestContext.characterIndex)
+          || Number(chatIndex) !== Number(requestContext.chatIndex)
+        ) {
+          requestContext.state = priorState;
+          return { accepted: false, reason: "host_signal_for_different_chat" };
+        }
+        const chat = await R.getChatFromIndex(characterIndex, chatIndex);
+        const messages = chat && Array.isArray(chat.message) ? chat.message : null;
+        if (!messages) {
+          requestContext.state = priorState;
+          return { accepted: false, reason: "active_chat_unavailable" };
+        }
+        const hostChatId = typeof chat.id === "string" ? chat.id.trim() : "";
+        if (!hostChatId || hostChatId !== String(requestContext.hostChatId || "")) {
+          requestContext.state = "terminal";
+          return { accepted: false, reason: "host_chat_identity_changed" };
+        }
+        if (chat.isStreaming === true) {
+          requestContext.state = priorState;
+          return { accepted: false, reason: "active_chat_still_streaming" };
+        }
+        const userIndex = Number.isInteger(requestContext.userMessageIndex)
+          ? requestContext.userMessageIndex
+          : -1;
+        const userMessage = userIndex >= 0 ? messages[userIndex] : null;
+        const userContent = userMessage && userMessage.role === "user" && userMessage.disabled !== true
+          ? String(userMessage.data || "").trim()
+          : "";
+        if (
+          !userContent
+          || computeOrchestrationDirtyHashOr1c(userContent) !== String(requestContext.userObservedContentHash || "")
+        ) {
+          requestContext.state = "terminal";
+          return { accepted: false, reason: "user_anchor_changed_or_deleted" };
+        }
+        let messageIndex = -1;
+        for (let index = userIndex + 1; index < messages.length; index++) {
+          const message = messages[index];
+          if (!message || message.disabled === true) continue;
+          if (message.role === "user") break;
+          if (message.role !== "char" || typeof message.data !== "string") continue;
+          const observedHash = computeOrchestrationDirtyHashOr1c(
+            normalizeAssistantPersistenceCandidate(message.data)
+          );
+          const generationId = message.generationInfo
+            && typeof message.generationInfo.generationId === "string"
+            ? message.generationInfo.generationId.trim()
+            : "";
+          const messageTimeMs = typeof message.time === "number" && Number.isFinite(message.time)
+            ? Math.trunc(message.time)
+            : 0;
+          const replacesBaseline = index === Number(requestContext.baselineAssistantIndex)
+            && (
+              observedHash !== String(requestContext.baselineAssistantContentHash || "")
+              || (!!generationId && generationId !== String(requestContext.baselineGenerationId || ""))
+              || (messageTimeMs > 0 && messageTimeMs !== Number(requestContext.baselineAssistantTimeMs || 0))
+            );
+          if (index >= Number(requestContext.requestMessageCount || 0) || replacesBaseline) {
+            messageIndex = index;
+          }
+        }
+        if (messageIndex < 0) {
+          requestContext.state = priorState;
+          return { accepted: false, reason: "committed_assistant_not_observed" };
+        }
+        const message = messages[messageIndex];
+        const assistantContent = normalizeAssistantPersistenceCandidate(String(message.data || ""));
+        if (!assistantContent || message.disabled === true) {
+          requestContext.state = "terminal";
+          return { accepted: false, reason: "committed_assistant_empty_or_disabled" };
+        }
+        let laterActiveTurnMessageCount = 0;
+        let laterDisabledTurnMessageCount = 0;
+        let laterNonTurnMessageCount = 0;
+        let nextSignalUserIndex = -1;
+        let nextSignalUserObservedContentHash = "";
+        let nextSignalActiveRole = "";
+        for (let index = messageIndex + 1; index < messages.length; index++) {
+          const later = messages[index];
+          if (!later || (later.role !== "user" && later.role !== "char")) {
+            laterNonTurnMessageCount++;
+          } else if (later.disabled === true) {
+            laterDisabledTurnMessageCount++;
+          } else {
+            laterActiveTurnMessageCount++;
+            nextSignalActiveRole = laterActiveTurnMessageCount === 1 ? String(later.role || "") : "multiple";
+            if (laterActiveTurnMessageCount === 1 && later.role === "user") {
+              nextSignalUserIndex = index;
+              nextSignalUserObservedContentHash = computeOrchestrationDirtyHashOr1c(
+                String(later.data || "").trim()
+              );
+            }
+          }
+        }
+        const generationId = message.generationInfo
+          && typeof message.generationInfo.generationId === "string"
+          ? message.generationInfo.generationId.trim()
+          : "";
+        const messageChatId = typeof message.chatId === "string" ? message.chatId.trim() : "";
+        const messageTimeMs = typeof message.time === "number" && Number.isFinite(message.time)
+          ? Math.trunc(message.time)
+          : 0;
+        const observedContentHash = computeOrchestrationDirtyHashOr1c(assistantContent);
+        const observation = {
+          accepted: true,
+          contract_version: "source_acceptance_observation.v2",
+          host_lifecycle_contract_version: "risu_host_lifecycle_observation.v1",
+          observed_at_ms: Date.now(),
+          session_id: sid,
+          finality_source: "risu_next_host_signal_active_chat",
+          finality_state: "committed_assistant_observed",
+          host_signal_source: String(signalSource || "beforeRequest"),
+          archive_center_request_correlation_id: String(requestContext.requestId || ""),
+          request_id_provenance: "archive_center_correlation",
+          request_correlation_state: "matched_before_request_context",
+          request_type: String(requestContext.requestType || "model"),
+          response_role: "assistant",
+          after_request_content_hash: String(requestContext.afterRequestCandidateHash || ""),
+          after_request_candidate_state: requestContext.afterRequestCandidateHash
+            ? (requestContext.afterRequestCandidateHash === observedContentHash ? "matched_committed_content" : "different_from_committed_content")
+            : "not_observed_streaming_or_unexposed",
+          host_chat_id: hostChatId,
+          host_chat_id_state: "observed",
+          chat_streaming_state: typeof chat.isStreaming === "boolean"
+            ? (chat.isStreaming ? "streaming" : "not_streaming")
+            : "unobserved",
+          active_message_count: messages.length,
+          message_index: messageIndex,
+          message_role: "char",
+          message_chat_id: messageChatId,
+          message_chat_id_state: messageChatId ? "observed" : "unobserved",
+          generation_id: generationId,
+          generation_id_state: generationId ? "observed" : "unobserved",
+          message_time_ms: messageTimeMs,
+          message_time_state: messageTimeMs > 0 ? "observed" : "unobserved",
+          request_message_count: Number(requestContext.requestMessageCount || 0),
+          user_message_index: userIndex,
+          user_message_chat_id: String(requestContext.userMessageChatId || ""),
+          user_message_chat_id_state: requestContext.userMessageChatId ? "observed_before_request" : "unobserved",
+          user_message_time_ms: Number(requestContext.userMessageTimeMs || 0),
+          user_message_time_state: requestContext.userMessageTimeMs > 0 ? "observed_before_request" : "unobserved",
+          user_observed_content_hash: String(requestContext.userObservedContentHash || ""),
+          user_persistence_content_hash: computeOrchestrationDirtyHashOr1c(userContent),
+          observed_content_hash: observedContentHash,
+          persistence_content_hash: observedContentHash,
+          hash_algorithm: "or1c_utf16_djb2.v1",
+          position_observation: "committed_before_next_host_signal",
+          later_active_turn_message_count: laterActiveTurnMessageCount,
+          later_disabled_turn_message_count: laterDisabledTurnMessageCount,
+          later_non_turn_message_count: laterNonTurnMessageCount,
+          next_signal_active_role: nextSignalActiveRole,
+          next_signal_user_index: nextSignalUserIndex,
+          next_signal_user_observed_content_hash: nextSignalUserObservedContentHash,
+          message_disabled_state: "not_disabled",
+          revision_state: "not_exposed_by_risuai",
+          prompt_memory_availability: "one_turn_late",
+        };
+        const observationKey = [
+          observation.finality_source,
+          observation.archive_center_request_correlation_id,
+          observation.message_chat_id || observation.message_index,
+          observation.generation_id || observation.message_time_ms,
+          observedContentHash,
+        ].join("|");
+        requestContext.state = "accepted";
+        requestContext.acceptedObservationKey = observationKey;
+        const comparable = extractActiveChatComparableMessages(chat);
+        const pair = {
+          userContent,
+          assistantContent,
+          contextMessages: comparable
+            .filter(function(item) {
+              return Number(item && item.risuMessageIndex) < userIndex;
+            })
+            .slice(-ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES)
+            .map(function(item) {
+              return { role: item.role, content: String(item.content || "").slice(0, 2000) };
+            }),
+          risuUserMessageIndex: userIndex,
+          risuAssistantMessageIndex: messageIndex,
+          hash: computeOrchestrationDirtyHashOr1c(userContent + "\n---assistant---\n" + assistantContent),
+          source: "risu_next_host_signal_active_chat",
+        };
+        Promise.resolve().then(function persistAcceptedHostFinalWithoutBlockingRequest() {
+          return backfillOneActiveChatCompletedTurn(sid, pair, {
+            source: "risu_next_host_signal_active_chat",
+            sourceAcceptanceFinality: observation,
+          });
+        }).then(function(result) {
+          updateRuntimeState("lastStreamingAfterRequest", result && result.status === "saved" ? "ok" : "warn", {
+            detail: "host final persistence " + String(result && result.status || "unknown"),
+            reason_code: String(result && result.reason || ""),
+            signalSource: String(signalSource || "beforeRequest"),
+            promptMemoryAvailability: "one_turn_late",
+          });
+        }).catch(function(err) {
+          warnLog("[final-confirmation] host-final persistence failed:", err && err.message);
+        });
+        updateRuntimeState("lastStreamingAfterRequest", "ok", {
+          detail: "committed assistant accepted; persistence scheduled",
+          signalSource: String(signalSource || "beforeRequest"),
+          promptMemoryAvailability: "one_turn_late",
+        });
+        return { accepted: true, scheduled: true, observationKey };
+      } catch (err) {
+        requestContext.state = priorState;
+        return { accepted: false, reason: String(err && err.message || "host_signal_observation_failed") };
+      }
+    })();
+    requestContext.hostSignalObservationPromise = observationPromise.finally(function() {
+      delete requestContext.hostSignalObservationPromise;
+    });
+    return requestContext.hostSignalObservationPromise;
   }
 
   function pendingFinalConfirmationKey(pending) {
-    const contextRequestId = String(pending && pending.requestContext && pending.requestContext.requestId || "").trim();
-    if (contextRequestId && pending && pending.kind === "host_candidate") {
-      return "host|" + contextRequestId;
-    }
     const payloadKey = String(
       pending
       && pending.payload
@@ -16947,13 +17427,6 @@
     if (!sid || !pending || typeof pending.resume !== "function") return false;
     const pendingKey = pendingFinalConfirmationKey(pending);
     if (!pendingKey) return false;
-    if (pending.requestContext && (
-      pending.requestContext.state === "accepted"
-      || pending.requestContext.state === "superseded"
-      || pending.requestContext.state === "terminal"
-    ) && pending.kind === "host_candidate") {
-      return false;
-    }
     const current = _pendingFinalConfirmations.get(pendingKey);
     if (current === pending || (current && current.inFlight)) {
       return false;
@@ -17267,9 +17740,11 @@
         const entries = Array.from(_pendingFinalConfirmations.entries());
         for (const [pendingKey, pending] of entries) {
           if (!pending || pending.inFlight || _pendingFinalConfirmations.get(pendingKey) !== pending) continue;
-          const observation = pending.kind === "backend_observation_retry"
-            ? await observePendingCompleteTurnFinalObservation(pending)
-            : await observePendingFinalConfirmation(pending);
+          if (pending.kind !== "backend_observation_retry") {
+            await supersedePendingFinalConfirmation(pendingKey, pending, "unsupported_pending_finality_kind");
+            continue;
+          }
+          const observation = await observePendingCompleteTurnFinalObservation(pending);
           if (!observation.confirmed) continue;
           if (
             _pendingFinalConfirmations.get(pendingKey) !== pending
@@ -17286,10 +17761,6 @@
           pending.inFlight = true;
           pending.state = "accepted";
           _pendingFinalConfirmations.delete(pendingKey);
-          if (pending.kind === "host_candidate" && pending.requestContext) {
-            pending.requestContext.state = "accepted";
-            pending.requestContext.acceptedObservationKey = observation.observationKey;
-          }
           updateRuntimeState("lastStreamingAfterRequest", "ok", {
             detail: "RisuAI active assistant tail confirmed",
             sessionId: pending.sessionId,
@@ -17309,27 +17780,6 @@
       } while (_pendingFinalConfirmationDrainRequested);
     } finally {
       _pendingFinalConfirmationDrainInFlight = false;
-    }
-  }
-
-  async function registerFinalConfirmationObserver() {
-    if (_finalConfirmationObserver || !R) return false;
-    if (typeof R.createMutationObserver !== "function" || typeof R.getRootDocument !== "function") return false;
-    try {
-      const rootDocument = await R.getRootDocument();
-      if (!rootDocument) return false;
-      const observer = await R.createMutationObserver(function onRisuHostMutation() {
-        drainPendingFinalConfirmations("risu_dom_mutation").catch(function(err) {
-          debugLog("[final-confirmation] mutation wake failed:", err && err.message);
-        });
-      });
-      if (!observer || typeof observer.observe !== "function") return false;
-      await observer.observe(rootDocument, { childList: true, subtree: true, characterData: true });
-      _finalConfirmationObserver = observer;
-      return true;
-    } catch (err) {
-      debugLog("[final-confirmation] observer unavailable:", err && err.message);
-      return false;
     }
   }
 
@@ -18276,9 +18726,6 @@
     const sid = String(sessionId || "").trim();
     if (!settings.enabled || !settings.dbEnabled || !sid || sid === SESSION_FALLBACK || !activeChat) return false;
     if (_rollbackTailReconcileInFlight) return false;
-    const now = Date.now();
-    if (!options.force && (now - _rollbackTailReconcileLastAt) < ROLLBACK_TAIL_RECONCILE_INTERVAL_MS) return false;
-    _rollbackTailReconcileLastAt = now;
     _rollbackTailReconcileInFlight = true;
     try {
       const rawMessages = extractActiveChatMessageList(activeChat);
@@ -18377,12 +18824,12 @@
     }
   }
 
-  async function pollRollbackWatcherOnce() {
-    if (_rollbackIdleWatcherInFlight) return false;
+  async function reconcileRollbackFromHostSignal() {
+    if (_rollbackHostSignalReconcileInFlight) return false;
     if (!settings.enabled || !settings.rollbackAutoEnabled || !R || typeof R.getCharacter !== "function") {
       return false;
     }
-    _rollbackIdleWatcherInFlight = true;
+    _rollbackHostSignalReconcileInFlight = true;
     try {
       const sessionId = await getCurrentChatSessionId();
       if (!sessionId) return false;
@@ -18393,62 +18840,23 @@
         messages.length,
         computeTailHash(messages),
       ].join("|");
-      const previousWatcherSignature = _rollbackIdleWatcherLastSignatureBySession.get(sessionId || "default");
+      const previousWatcherSignature = _rollbackHostSignalLastSignatureBySession.get(sessionId || "default");
       if (previousWatcherSignature === watcherSignature) return false;
-      _rollbackIdleWatcherLastSignatureBySession.set(sessionId || "default", watcherSignature);
+      _rollbackHostSignalLastSignatureBySession.set(sessionId || "default", watcherSignature);
       const reconciled = await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, {
-        reason: "rollback_idle_watcher_pre_snapshot",
+        reason: "rollback_host_signal_pre_snapshot",
         force: true,
       });
       if (reconciled) return true;
       await checkAndAutoRollback(sessionId, messages);
-      await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, { reason: "rollback_idle_watcher" });
+      await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, { reason: "rollback_host_signal" });
       return true;
     } catch (err) {
-      debugLog("pollRollbackWatcherOnce failed:", err && err.message);
+      debugLog("reconcileRollbackFromHostSignal failed:", err && err.message);
       return false;
     } finally {
-      _rollbackIdleWatcherInFlight = false;
+      _rollbackHostSignalReconcileInFlight = false;
     }
-  }
-
-  function getRollbackIdleWatcherMode() {
-    return sanitizeEnumValue(
-      settings && settings.rollbackIdleWatcherMode,
-      DEFAULT_SETTINGS.rollbackIdleWatcherMode,
-      ROLLBACK_IDLE_WATCHER_MODES,
-    );
-  }
-
-  function getRollbackIdleWatcherIntervalMs(mode) {
-    if (mode === "fast_debug") return ROLLBACK_IDLE_WATCHER_DEBUG_INTERVAL_MS;
-    if (mode === "slow") return ROLLBACK_IDLE_WATCHER_INTERVAL_MS;
-    return 0;
-  }
-
-  function stopRollbackIdleWatcher() {
-    if (_rollbackIdleWatcherTimer && typeof clearInterval === "function") {
-      clearInterval(_rollbackIdleWatcherTimer);
-    }
-    _rollbackIdleWatcherTimer = null;
-  }
-
-  function rollbackIdleWatcherUsesTimer() {
-    return getRollbackIdleWatcherIntervalMs(getRollbackIdleWatcherMode()) > 0;
-  }
-
-  function startRollbackIdleWatcher() {
-    const mode = getRollbackIdleWatcherMode();
-    const intervalMs = getRollbackIdleWatcherIntervalMs(mode);
-    if (intervalMs <= 0) {
-      stopRollbackIdleWatcher();
-      return false;
-    }
-    if (_rollbackIdleWatcherTimer || typeof setInterval !== "function") return true;
-    _rollbackIdleWatcherTimer = setInterval(() => {
-      pollRollbackWatcherOnce();
-    }, intervalMs);
-    return true;
   }
 
 
@@ -18483,7 +18891,6 @@
   // OOC 턴은 저장/요약/분석 파이프라인을 건너뛴다.
   const _pendingPersistenceSkipBySession = new Map();
   const _nonMainRequestSkipBySession = new Map();
-  const NON_MAIN_REQUEST_SKIP_TTL_MS = 15000;
   let _orchRequestSeq = 0;
   function makeOrchRequestId(sessionId) {
     _orchRequestSeq += 1;
@@ -18528,7 +18935,7 @@
       }
       var idleGapMs = Math.max(0, nowMs - lastActivityAt);
       return {
-        triggered: idleGapMs >= CONTINUITY_IDLE_REENTRY_MS,
+        triggered: false,
         lastActivityAt: lastActivityAt,
         idleGapMs: idleGapMs,
       };
@@ -21689,7 +22096,7 @@
         idleState = {
           triggered: true,
           lastActivityAt: idleState.lastActivityAt,
-          idleGapMs: Math.max(idleState.idleGapMs || 0, CONTINUITY_IDLE_REENTRY_MS),
+          idleGapMs: idleState.idleGapMs || 0,
           debugForced: true,
         };
       }
@@ -22954,14 +23361,6 @@
     }
   }
 
-  function isFreshStrongRawInput(rawCached) {
-    try {
-      return !!(rawCached && rawCached.text && (Date.now() - (rawCached.capturedAt || 0)) <= RAW_INPUT_STRONG_MAX_AGE_MS);
-    } catch {
-      return false;
-    }
-  }
-
   function isAssembledPromptMessageList(messages) {
     try {
       if (!Array.isArray(messages) || messages.length === 0) return false;
@@ -23235,7 +23634,7 @@
         : 0);
     const timeoutMs = typeof opts.timeoutMs === "number"
       ? opts.timeoutMs
-      : (typeof resolvePluginMainTimeoutMs === "function" ? resolvePluginMainTimeoutMs() : 60000);
+      : resolvePluginMainTimeoutMs();
     const maxTokensRaw = typeof opts.maxTokens === "number" ? opts.maxTokens : defaultMaxCompletionTokens;
     const maxTokens = Math.max(1, parseInt(maxTokensRaw, 10) || defaultMaxCompletionTokens);
     const maxCompletionTokensRaw = typeof opts.maxCompletionTokens === "number"
@@ -23452,7 +23851,7 @@
     const opts      = options || {};
     const timeoutMs = typeof opts.timeoutMs === "number"
       ? opts.timeoutMs
-      : (typeof resolvePluginMainTimeoutMs === "function" ? resolvePluginMainTimeoutMs() : 60000);
+      : resolvePluginMainTimeoutMs();
     const startMs   = Date.now();
 
     try {
@@ -23642,7 +24041,7 @@
       throw new Error("[J-2b] Sub LLM not configured (provider/subLlmApiKey/endpoint/model 중 하나 이상 비어있음)");
     }
     const opts = options || {};
-    const defaultTimeoutMs = (typeof getSubLlmTimeoutSettingMs === "function") ? getSubLlmTimeoutSettingMs() : 90000;
+    const defaultTimeoutMs = getSubLlmTimeoutSettingMs();
     const defaultMaxCompletionTokens = (typeof getSubLlmMaxCompletionTokensSetting === "function")
       ? getSubLlmMaxCompletionTokensSetting()
       : (function() {
@@ -23749,7 +24148,7 @@
     const opts      = options || {};
     const timeoutMs = typeof opts.timeoutMs === "number"
       ? opts.timeoutMs
-      : (typeof getSubLlmTimeoutSettingMs === "function" ? getSubLlmTimeoutSettingMs() : 90000);
+      : getSubLlmTimeoutSettingMs();
     const startMs   = Date.now();
 
     try {
@@ -26296,6 +26695,31 @@
    */
   async function buildCompleteTurnSourceAcceptanceObservation(chatSessionId, assistantContent, options = {}) {
     const observedAtMs = Date.now();
+    const sourceAcceptanceFinality = options
+      && options.sourceAcceptanceFinality
+      && typeof options.sourceAcceptanceFinality === "object"
+      ? options.sourceAcceptanceFinality
+      : null;
+    if (
+      sourceAcceptanceFinality
+      && sourceAcceptanceFinality.accepted === true
+      && sourceAcceptanceFinality.contract_version === "source_acceptance_observation.v2"
+      && sourceAcceptanceFinality.host_lifecycle_contract_version === "risu_host_lifecycle_observation.v1"
+      && sourceAcceptanceFinality.finality_source === "risu_next_host_signal_active_chat"
+    ) {
+      return Object.assign({}, sourceAcceptanceFinality, {
+        accepted: undefined,
+        observed_at_ms: Number(sourceAcceptanceFinality.observed_at_ms || observedAtMs),
+        session_id: String(chatSessionId || ""),
+        user_persistence_content_hash: computeOrchestrationDirtyHashOr1c(
+          String(options && options.userInput || "").trim()
+        ),
+        persistence_content_hash: computeOrchestrationDirtyHashOr1c(
+          String(assistantContent || "").trim()
+        ),
+        hash_algorithm: "or1c_utf16_djb2.v1",
+      });
+    }
     const observation = {
       contract_version: "source_acceptance_observation.v1",
       observed_at_ms: observedAtMs,
@@ -26570,6 +26994,8 @@
         String(typeof turnIdx === "number" ? turnIdx : 0),
         computeOrchestrationDirtyHashOr1c(String(userInput || "")),
         computeOrchestrationDirtyHashOr1c(String(assistantContent || "")),
+        String(sourceAcceptanceObservation.finality_source || "active_chat"),
+        String(sourceAcceptanceObservation.archive_center_request_correlation_id || "unobserved"),
         String(sourceAcceptanceObservation.generation_id || "unobserved"),
         String(sourceAcceptanceObservation.message_chat_id || "unobserved"),
         String(sourceAcceptanceObservation.observed_content_hash || "unobserved"),
@@ -26598,6 +27024,7 @@
           user_input_kind: actualEmptyUserInput ? "auto_continue" : "normal",
           source_acceptance_required: true,
           source_acceptance_observation: sourceAcceptanceObservation,
+          archive_center_request_correlation_id: sourceAcceptanceObservation.archive_center_request_correlation_id || null,
           risu_persona_observation: risuPersonaObservation,
           critic: {
             api_key: effectiveCritic.apiKey || "",
@@ -26883,7 +27310,7 @@
         payload_rewrite: false,
       };
       return await safeCall(
-        () => bridgeFetch("/step23/capture-verification", { method: "POST", body, timeoutMs: Math.min(getRequestTimeoutSettingMs(), 5000) }),
+        () => bridgeFetch("/step23/capture-verification", { method: "POST", body, timeoutMs: getRequestTimeoutSettingMs() }),
         null,
         "recordStep23CaptureVerification"
       );
@@ -29392,12 +29819,11 @@
         : (orchResult && orchResult._trace && orchResult._trace.continuity && typeof orchResult._trace.continuity === "object" ? orchResult._trace.continuity : null);
       const idleGapMs = Math.max(0, Number(helperContext.idleGapMs != null ? helperContext.idleGapMs : (continuityTrace && continuityTrace.idleGapMs) || 0));
       const continuityTriggerMode = String(helperContext.triggerMode || (continuityTrace && continuityTrace.triggerMode) || "").trim();
-      const longGapThresholdMs = Math.max(20 * 60 * 1000, Number(helperContext.longGapThresholdMs || 0) || 0);
       const rawInput = String(userInput || "").trim();
       const weakInput = !rawInput || rawInput.length <= 24 || /^(continue|go on|next|more|resume|keep going|계속|계속해|이어서|이어가|다음|다음 장면|다음으로|응|ㅇㅇ|좋아|그래|좋아 계속)$/i.test(rawInput);
       const temporalQuery = isTemporalQueryInput(rawInput);
       const resumePressure = /(continue|resume|pick up|where we left|keep going|이어서|이어가|계속|재개|다시 이어)/i.test(rawInput);
-      const longGapResume = idleGapMs >= longGapThresholdMs || continuityTriggerMode === "idle_reentry";
+      const longGapResume = continuityTriggerMode === "idle_reentry";
       const explicitRedirection = /(instead|not that|ignore previous|leave that|move on|new scene|different topic|새로|다른 쪽|말고|이제는|이번 장면|지금 장면|새 갈등|딴 이야기|전 장면 말고)/i.test(rawInput);
       const strongUserIntent = rawInput.length >= 48 || rawInput.split(/\s+/).filter(Boolean).length >= 10;
 
@@ -30093,8 +30519,7 @@
       const combinedOldArcDecisions = helperOldArcDecisions.concat(continuityOldArcDecisions);
       const oldArcTaxonomy = buildOldArcFailureTaxonomy(combinedOldArcDecisions);
       const oldArcReplayGate = buildOldArcReplayGate(oldArcTaxonomy, combinedOldArcDecisions);
-      const idleGapMs = Math.max(0, Number((continuityTrace && continuityTrace.idleGapMs) || 0));
-      const longGapResume = idleGapMs >= (20 * 60 * 1000) || String((continuityTrace && continuityTrace.triggerMode) || "") === "idle_reentry";
+      const longGapResume = String((continuityTrace && continuityTrace.triggerMode) || "") === "idle_reentry";
       const weakInput = !rawInput || rawInput.length <= 24 || /^(continue|go on|next|more|resume|keep going|계속|계속해|이어서|이어가|다음|다음 장면|다음으로|응|ㅇㅇ|좋아|그래|좋아 계속)$/i.test(rawInput);
       const temporalQuery = isTemporalQueryInput(rawInput);
       const resumePressure = /(continue|resume|pick up|where we left|keep going|이어서|이어가|계속|재개|다시 이어)/i.test(rawInput);
@@ -32988,7 +33413,6 @@
     const helperGovernorContinuity = helperGovernorContext && helperGovernorContext.continuity && typeof helperGovernorContext.continuity === "object"
       ? helperGovernorContext.continuity
       : null;
-    const helperGovernorIdleGapMs = Math.max(0, Number((helperGovernorContext && helperGovernorContext.idleGapMs) || (helperGovernorContinuity && helperGovernorContinuity.idleGapMs) || 0));
     const helperGovernorTriggerMode = String((helperGovernorContext && helperGovernorContext.triggerMode) || (helperGovernorContinuity && helperGovernorContinuity.triggerMode) || "").trim();
     const helperGovernorWeakInput = !!(helperGovernorRawInput && (
       helperGovernorRawInput.length <= 24 ||
@@ -33057,7 +33481,7 @@
     const helperGovernorNeedSignals = [];
     if (helperGovernorWeakInput) helperGovernorNeedSignals.push("weak_input");
     if (helperGovernorTemporalQuery) helperGovernorNeedSignals.push("temporal_query");
-    if (helperGovernorIdleGapMs >= (20 * 60 * 1000) || helperGovernorTriggerMode === "idle_reentry") helperGovernorNeedSignals.push("long_gap_resume");
+    if (helperGovernorTriggerMode === "idle_reentry") helperGovernorNeedSignals.push("long_gap_resume");
     if (helperGovernorEntityPressureCount > 1) helperGovernorNeedSignals.push("multi_entity_pressure");
     if (helperGovernorPendingThreadCount > 0) helperGovernorNeedSignals.push("unresolved_thread_pressure");
     if (helperGovernorSceneTransition) helperGovernorNeedSignals.push("scene_transition_pressure");
@@ -34753,6 +35177,98 @@
     return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);
   }
 
+  function archiveCenterRecomposerInputDigest(value) {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (`00000000${(hash >>> 0).toString(16)}`).slice(-8);
+  }
+
+  function clearArchiveCenterRecomposerBridge() {
+    try {
+      const current = globalThis[RECOMPOSER_BRIDGE_KEY];
+      if (current && current.contract_version === RECOMPOSER_BRIDGE_CONTRACT) {
+        delete globalThis[RECOMPOSER_BRIDGE_KEY];
+      }
+    } catch {
+      // Optional cross-plugin handoff must never affect Archive Center runtime.
+    }
+  }
+
+  function publishArchiveCenterRecomposerBridge(orchResult, injectionPack, plan, observation) {
+    try {
+      const contract = plan && plan.recomposer_enhancement_contract;
+      const memoryPlan = injectionPack && injectionPack.memory_delivery_plan;
+      const memoryLineage = injectionPack && injectionPack.memory_delivery_lineage;
+      if (!contract
+        || contract.contract_version !== RECOMPOSER_ENHANCEMENT_CONTRACT
+        || contract.owner !== "go"
+        || contract.read_only !== true
+        || !memoryPlan
+        || memoryPlan.contract_version == null) {
+        clearArchiveCenterRecomposerBridge();
+        return false;
+      }
+      const payloadApplied = !!(observation
+        && observation.payload_application_status === "applied");
+      if (!payloadApplied) {
+        clearArchiveCenterRecomposerBridge();
+        return false;
+      }
+      const now = Date.now();
+      const inputCandidates = Array.isArray(orchResult && orchResult._recomposerBridgeInputCandidates)
+        ? orchResult._recomposerBridgeInputCandidates.slice()
+        : [];
+      inputCandidates.push(String(orchResult && orchResult._userInput || ""));
+      const inputBindings = [];
+      const seenBindings = new Set();
+      inputCandidates.forEach(function(candidate) {
+        const text = String(candidate || "");
+        const binding = {
+          digest: archiveCenterRecomposerInputDigest(text),
+          chars: text.length,
+        };
+        const key = binding.digest + ":" + binding.chars;
+        if (seenBindings.has(key)) return;
+        seenBindings.add(key);
+        inputBindings.push(binding);
+      });
+      const primaryBinding = inputBindings[inputBindings.length - 1]
+        || { digest: archiveCenterRecomposerInputDigest(""), chars: 0 };
+      const envelope = {
+        contract_version: RECOMPOSER_BRIDGE_CONTRACT,
+        owner: "archive_center_host_adapter",
+        transport_only: true,
+        published_at_ms: now,
+        expires_at_ms: now + RECOMPOSER_BRIDGE_TTL_MS,
+        input_digest: primaryBinding.digest,
+        input_chars: primaryBinding.chars,
+        input_bindings: inputBindings,
+        session_id: String(orchResult && orchResult._chatSessionId || contract.session_id || ""),
+        turn_index: Number(contract.turn_index || 0),
+        enhancement_contract: contract,
+        memory_delivery_plan: memoryPlan,
+        memory_delivery_lineage: memoryLineage || null,
+        guidance_application_trace: plan.guidance_application_trace || null,
+        payload_application_observation: {
+          status: observation.status || "unobserved",
+          payload_application_status: observation.payload_application_status || "unobserved",
+          reason_code: observation.reason_code || "",
+          payload_plan_id: observation.payload_plan_id || plan.payload_plan_id || null,
+        },
+      };
+      globalThis[RECOMPOSER_BRIDGE_KEY] = envelope;
+      return true;
+    } catch (err) {
+      debugLog("Recomposer transient bridge publish failed:", err && err.message);
+      clearArchiveCenterRecomposerBridge();
+      return false;
+    }
+  }
+
   function observeGoPayloadApplication(finalPayload, plan, sourceLineage) {
     try {
       const lineage = sourceLineage && typeof sourceLineage === "object" ? sourceLineage : {};
@@ -34988,6 +35504,20 @@
         placement,
         guidanceApplicationTrace: guidanceTrace,
       });
+      const recomposerBridgePublished = publishArchiveCenterRecomposerBridge(
+        orchResult,
+        injectionPack,
+        plan,
+        payloadApplicationObservation
+      );
+      result.recomposerBridge = {
+        contractVersion: RECOMPOSER_BRIDGE_CONTRACT,
+        published: recomposerBridgePublished,
+        enhancementStatus: plan.recomposer_enhancement_contract
+          ? plan.recomposer_enhancement_contract.status || "unknown"
+          : "unavailable",
+        transport: "transient_current_turn_only",
+      };
       return { payload: finalPayload, injectionResult: result };
     } catch (err) {
       warnLog("applyGoPayloadApplicationPlan failed:", err && err.message ? err.message : String(err || "unknown"));
@@ -35206,11 +35736,6 @@
         postOutputReplacement: decision && decision.postOutputReplacement
           ? decision.postOutputReplacement
           : null,
-        expiresAt: Date.now() + (
-          decision && decision.reason === "post_output_secondary_request"
-            ? Math.max(600000, getPluginMainTimeoutSettingMs() + 60000)
-            : NON_MAIN_REQUEST_SKIP_TTL_MS
-        ),
       });
     } catch {
       // non-fatal
@@ -35223,10 +35748,6 @@
       if (!sid) return null;
       const item = _nonMainRequestSkipBySession.get(sid);
       if (!item) return null;
-      if (Date.now() > Number(item.expiresAt || 0)) {
-        _nonMainRequestSkipBySession.delete(sid);
-        return null;
-      }
       const requestType = String(type || "model");
       const incomingAuxType = requestType === "submodel" || requestType === "otherAx";
       if (!incomingAuxType && item.requestType && item.requestType !== requestType) {
@@ -35256,29 +35777,12 @@
     });
   }
 
-  async function resolvePostOutputFinalAssistant(sessionId, replacement, fallbackContent) {
-    const sid = String(sessionId || "").trim();
-    const originalUser = normalizeMainTurnCompareText(replacement && replacement.userContent);
-    const originalAssistant = normalizeAssistantPersistenceCandidate(String((replacement && replacement.assistantContent) || ""));
-    for (let attempt = 0; attempt < 20; attempt++) {
-      await new Promise(function(resolve) { setTimeout(resolve, 150); });
-      const activeMessages = await getCurrentActiveChatComparableMessages(sid);
-      const current = buildPostOutputSecondaryRequestContext(activeMessages);
-      const currentUser = normalizeMainTurnCompareText(current && current.userContent);
-      const currentAssistant = normalizeAssistantPersistenceCandidate(String((current && current.assistantContent) || ""));
-      if (currentUser && currentUser === originalUser && currentAssistant && !isSameAssistantComparableText(currentAssistant, originalAssistant)) {
-        return currentAssistant;
-      }
-    }
-    return normalizeAssistantPersistenceCandidate(String(fallbackContent || ""));
-  }
-
   async function replacePersistedTurnWithPostOutputFinal(sessionId, skipRecord, responseContent) {
     const sid = String(sessionId || "").trim();
     const replacement = skipRecord && skipRecord.postOutputReplacement;
     const originalUser = String((replacement && replacement.userContent) || "").trim();
     const originalAssistant = normalizeAssistantPersistenceCandidate(String((replacement && replacement.assistantContent) || ""));
-    const finalAssistant = await resolvePostOutputFinalAssistant(sid, replacement, responseContent);
+    const finalAssistant = normalizeAssistantPersistenceCandidate(String(responseContent || ""));
     if (!sid || !originalUser || !originalAssistant || !finalAssistant) {
       return { handled: true, replaced: false, reason: "post_output_replacement_content_missing" };
     }
@@ -35386,7 +35890,7 @@
       reason_code: "post_output_final_pending",
       detail: "후처리 최종문 반영 대기",
     });
-    setTimeout(function() {
+    Promise.resolve().then(function() {
       replacePersistedTurnWithPostOutputFinal(sid, skipRecord, responseContent).then(async function(result) {
         const status = result && result.replaced ? "ok" : result && result.queued ? "warn" : "skipped";
         const detail = result && result.replaced
@@ -35415,7 +35919,7 @@
         warnLog("post-output final replacement failed:", err && err.message);
         updateRuntimeState("lastSaveStatus", "warn", { detail: "후처리 요청은 새 턴으로 저장하지 않음", reason: "post_output_replace_error" });
       });
-    }, 0);
+    });
   }
 
   function isChatMessageLike(value) {
@@ -35791,8 +36295,10 @@
     let orchestrationDirtySignals = null;
     let orchestrationCacheDescriptor = null;
     try {
+      recordRisuHookLifecycle("beforeRequest", "callback_observed");
       debugLog("beforeRequest hook fired, type:", type);
       if (!settings.enabled || !isSaveType(type)) return payload;
+      clearArchiveCenterRecomposerBridge();
 
       const extractedMessages = extractMessages(payload);
       let messages = Array.isArray(extractedMessages.messages) ? extractedMessages.messages : [];
@@ -35840,8 +36346,22 @@
       } catch {
         mainRequestActiveMessages = [];
       }
-      const rawInputObservation = peekRawInputForSession(orchSessionId);
       const orchRequestId = makeOrchRequestId(orchSessionId);
+      // Observe/capture at the supported host callback boundary even when the
+      // backend prepare lane later fails open. Only this bounded snapshot work is
+      // awaited; complete-turn/critic persistence remains fire-and-forget.
+      const priorHostFinal = await observePendingFinalConfirmationAtHostSignal(
+        orchSessionId,
+        "beforeRequest"
+      );
+      if (!priorHostFinal || priorHostFinal.accepted !== true) {
+        ensureActiveChatCompletedTurnsBackfilled(orchSessionId, { reason: "before_request", maxPairs: ACTIVE_CHAT_BACKFILL_MAX_PAIRS }).catch(function(err) {
+          debugLog("active chat backfill beforeRequest failed:", err && err.message);
+        });
+      }
+      await captureAssistantPrefillSeedForSession(orchSessionId, messages);
+      await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);
+      const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
       const observedChatId = _sessionCache && _sessionCache.sessionId === orchSessionId
         ? String(_sessionCache.observedChatUniqueId || "").trim()
         : "";
@@ -36037,12 +36557,6 @@
       }
       currentInputDecision = fullCurrentInputDecision;
 
-      ensureActiveChatCompletedTurnsBackfilled(orchSessionId, { reason: "before_request", maxPairs: ACTIVE_CHAT_BACKFILL_MAX_PAIRS }).catch(function(err) {
-        debugLog("active chat backfill beforeRequest failed:", err && err.message);
-      });
-      await captureAssistantPrefillSeedForSession(orchSessionId, messages);
-      await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);
-
       // Sprint 3-E-2: rollback 자동 감지 (두 Go source 검증 이후, orchestration 전에)
       try {
         const rollbackComparable = await resolveRollbackComparableMessages(orchSessionId, messages, userInput);
@@ -36167,6 +36681,7 @@
         startedAt: Date.now(),
         status: "running",
         userInput,
+        rawInputObservation,
         recentContext,
         orchResult: null,
       });
@@ -36379,6 +36894,7 @@
       }
 
       lastOrchResult._userInput = String(userInput || "");
+      lastOrchResult._recomposerBridgeInputCandidates = [String(userInput || "")];
       lastOrchResult._userInputSource = userInputInfo.source;
       lastOrchResult._actualEmptyUserInput = !!userInputInfo.actualEmptyInput;
       if (shouldRewriteEffectiveUserInput) {
@@ -36474,6 +36990,7 @@
         startedAt: Date.now(),
         status: "ready",
         userInput,
+        rawInputObservation,
         recentContext,
         orchResult: lastOrchResult,
         cacheDescriptor: orchestrationCacheDescriptor,
@@ -36733,12 +37250,21 @@
 
   async function onAfterRequest(content, type) {
     try {
+      recordRisuHookLifecycle("afterRequest", "callback_observed");
       debugLog("afterRequest hook fired, type:", type);
       if (!isNarrativeType(type) || !settings.enabled) return content;
       const persistenceOrchResult = lastOrchResult;
       const chatSessionId = await resolveAfterRequestWriteSessionId(persistenceOrchResult);
       const persistencePendingCtx = _pendingOrchBySession.get(chatSessionId) || null;
       const persistenceSkipState = _pendingPersistenceSkipBySession.get(chatSessionId) || null;
+      const pendingRequestId = String(persistencePendingCtx && persistencePendingCtx.requestId || "");
+      const pendingRawInputObservation = persistencePendingCtx && persistencePendingCtx.rawInputObservation || null;
+      const rawInputObservationForRequest = pendingRawInputObservation
+        && pendingRequestId
+        && String(pendingRawInputObservation.boundRequestId || "") === pendingRequestId
+        && (!persistencePendingCtx.orchResult || persistencePendingCtx.orchResult === persistenceOrchResult)
+          ? pendingRawInputObservation
+          : null;
       let persistenceRequestContext = null;
       function clearPersistencePendingContext() {
         if (_pendingOrchBySession.get(chatSessionId) === persistencePendingCtx) {
@@ -36790,8 +37316,8 @@
         && !nativePersistableContent;
       if (nativeNonPersistableFragment) {
         updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          reason_code: "fragment_skipped_waiting_final",
-          detail: "afterRequest fragment observed; waiting for RisuAI active assistant tail",
+          reason_code: "deferred_until_next_host_signal",
+          detail: "deferred_until_next_host_signal",
           sessionId: chatSessionId,
           requestType: String(type || "model"),
         });
@@ -36804,124 +37330,46 @@
       let displayContent = typeof normalizedContent === "string"
         ? stripAssistantPrefillFromResponse(normalizedContent, assistantPrefillSeed)
         : normalizedContent;
-      let recoveredAssistantContent = "";
-      if (typeof displayContent === "string") {
-        recoveredAssistantContent = nativePersistableContent || normalizeAssistantPersistenceCandidate(displayContent);
-        if (!recoveredAssistantContent) {
-          const activeChatAssistant = await recoverAssistantContentFromActiveChat(
-            chatSessionId,
-            assistantPrefillSeed,
-            lastOrchResult && lastOrchResult._userInput
-          );
-          if (activeChatAssistant) {
-            recoveredAssistantContent = activeChatAssistant;
-            if (!String(displayContent || "").trim()) {
-              displayContent = activeChatAssistant;
-            }
-            if (nativeNonPersistableFragment && lastOrchResult && lastOrchResult._trace) {
-              lastOrchResult._trace.assistantContentCapture = {
-                status: "recovered_after_nonpersistable_fragment",
-                source: "active_chat_fallback",
-                rawContentChars: rawAfterRequestText.length,
-                recoveredChars: activeChatAssistant.length,
-              };
-            }
-            debugLog("[M-4c] assistant content recovered from active chat fallback:", activeChatAssistant.length, "chars");
-          }
-        }
-      }
+      let recoveredAssistantContent = typeof displayContent === "string"
+        ? normalizeAssistantPersistenceCandidate(displayContent)
+        : "";
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
       if (isSaveType(type)) {
         const requestContext = _finalConfirmationRequestBySession.get(chatSessionId) || null;
         persistenceRequestContext = requestContext;
         const candidateContent = recoveredAssistantContent || normalizeAssistantPersistenceCandidate(String(displayContent || ""));
-        const contextMatchesRequest = !!(
-          requestContext
-          && persistencePendingCtx
-          && String(persistencePendingCtx.requestId || "") === String(requestContext.requestId || "")
+        const candidateObservation = recordRisuAfterRequestCandidate(
+          chatSessionId,
+          type,
+          persistencePendingCtx,
+          requestContext,
+          candidateContent
         );
-        if (
-          !requestContext
-          || (requestContext.state !== "captured" && requestContext.state !== "candidate_observed")
-          || requestContext.overlapAmbiguous
-          || !requestContext.hostChatId
-          || !contextMatchesRequest
-          || !candidateContent
-        ) {
-          if (requestContext && requestContext.state === "accepted") {
-            updateRuntimeState("lastStreamingAfterRequest", "skipped", {
-              detail: "duplicate afterRequest ignored for accepted RisuAI request",
-              sessionId: chatSessionId,
-              requestType: String(type || "model"),
-            });
-            return responseReturnContent;
-          }
-          if (requestContext) requestContext.state = "terminal";
-          updateRuntimeState("lastSaveStatus", "fail", {
-            detail: "RisuAI finality evidence unavailable; active-chat backfill required",
-          });
-          updateRuntimeState("lastCompleteTurnStatus", "fail", {
-            source: "local",
-            detail: "host_finality_evidence_unavailable",
-            failReasons: ["host_finality_evidence_unavailable"],
-          });
-          updateRuntimeState("lastError", "error", {
-            detail: "RisuAI request/output correlation could not be proven",
-          });
-          return responseReturnContent;
-        }
-        requestContext.state = "candidate_observed";
-        for (const pending of _pendingFinalConfirmations.values()) {
-          if (pending && pending.kind === "backend_observation_retry" && pending.sessionId === chatSessionId) {
-            pending.requestContext = requestContext;
-            pending.candidateContent = candidateContent;
-          }
-        }
-        let acceptedFinalObservation = null;
-        const pendingConfirmation = {
-          kind: "host_candidate",
+        updateRuntimeState("lastStreamingAfterRequest", "watching", {
+          detail: String(candidateObservation.reason || "deferred_until_next_official_host_signal"),
+          reason_code: "after_request_candidate_only",
           sessionId: chatSessionId,
           requestType: String(type || "model"),
-          requestContext,
-          candidateContent,
-          inFlight: false,
-          resume: async function resumeAcceptedFinal(observation) {
-            acceptedFinalObservation = observation || null;
-            const acceptedContent = String(observation && observation.assistantContent || "");
-            if (acceptedContent) {
-              recoveredAssistantContent = acceptedContent;
-              displayContent = acceptedContent;
-            }
-            if (lastOrchResult === persistenceOrchResult) {
-              lastOrchResult = null;
-            }
-            await continueAcceptedFinalPersistence(persistenceOrchResult, acceptedFinalObservation);
-          },
-        };
-        if (!queuePendingFinalConfirmation(pendingConfirmation)) {
-          updateRuntimeState("lastStreamingAfterRequest", "skipped", {
-            detail: "duplicate or terminal RisuAI finality candidate ignored",
-            sessionId: chatSessionId,
-            requestType: String(type || "model"),
-          });
-          return responseReturnContent;
-        }
-        updateRuntimeState("lastSaveStatus", "idle", {
-          detail: "waiting for RisuAI active assistant tail",
+          promptMemoryAvailability: "one_turn_late",
         });
-        updateRuntimeState("lastCompleteTurnStatus", "idle", {
+        updateRuntimeState("lastSaveStatus", "skipped", {
+          detail: "candidate_waiting_for_next_official_host_signal",
+        });
+        updateRuntimeState("lastCompleteTurnStatus", "skipped", {
           source: "local",
-          detail: "pending_confirmation",
+          detail: "candidate_waiting_for_next_official_host_signal",
           failReasons: [],
-        });
-        drainPendingFinalConfirmations("native_afterRequest").catch(function(err) {
-          debugLog("[final-confirmation] native wake failed:", err && err.message);
         });
         return responseReturnContent;
       }
       return await continueAcceptedFinalPersistence(persistenceOrchResult, null);
 
-      async function continueAcceptedFinalPersistence(lastOrchResult = persistenceOrchResult, acceptedFinalObservation = null) {
+      async function continueAcceptedFinalPersistence(lastOrchResult = persistenceOrchResult, sourceAcceptanceFinality = null) {
+        const hostFinalityAccepted = !!(
+          sourceAcceptanceFinality
+          && sourceAcceptanceFinality.accepted === true
+          && sourceAcceptanceFinality.finality_source === "risu_next_host_signal_active_chat"
+        );
         if (lastOrchResult && lastOrchResult._trace) {
           attachSanitizeTrace(lastOrchResult._trace, displaySanitizeTrace);
         }
@@ -37064,8 +37512,22 @@
       let userInputRecoverySource = "";
       let activeChatLatestSavePair = null;
       let actualEmptyUserInput = !!(lastOrchResult && lastOrchResult._actualEmptyUserInput);
-      const actualEmptyRawInput = peekActualEmptyRawInputForSession(chatSessionId);
-      if (shouldSkipUserInputPersistence(userInput)) {
+      const actualEmptyRawInput = rawInputObservationForRequest && rawInputObservationForRequest.actualEmptyInput
+        ? rawInputObservationForRequest
+        : null;
+      if (actualEmptyRawInput) {
+        actualEmptyUserInput = true;
+      }
+      if (
+        hostFinalityAccepted
+        && !actualEmptyUserInput
+        && shouldSkipUserInputPersistence(userInput)
+        && isCanonicalHostUserInputText(sourceAcceptanceFinality.user_content)
+      ) {
+        userInput = String(sourceAcceptanceFinality.user_content || "");
+        userInputRecoverySource = "before_request_host_user_anchor";
+      }
+      if (!hostFinalityAccepted && !actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
         const activeChatUserInput = await recoverUserInputFromActiveChatPair(chatSessionId, recoveredAssistantContent || displayContent);
         if (isCanonicalHostUserInputText(activeChatUserInput)) {
           userInput = String(activeChatUserInput || "");
@@ -37074,13 +37536,13 @@
         }
       }
       if (!actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
-        const cachedRawInput = peekRawInputForSession(chatSessionId);
+        const cachedRawInput = rawInputObservationForRequest;
         if (cachedRawInput && !cachedRawInput.actualEmptyInput && isCanonicalHostUserInputText(cachedRawInput.text)) {
           userInput = String(cachedRawInput.text || "");
           userInputRecoverySource = "raw_input_cache";
         }
       }
-      if (!actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
+      if (!hostFinalityAccepted && !actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
         activeChatLatestSavePair = await findLatestActiveChatUnsavedCompletedTurnPair(chatSessionId);
         if (activeChatLatestSavePair && isCanonicalHostUserInputText(activeChatLatestSavePair.userContent)) {
           userInput = String(activeChatLatestSavePair.userContent || "");
@@ -37091,8 +37553,7 @@
         }
       }
       if (!actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)
-        && actualEmptyRawInput
-        && (Date.now() - (actualEmptyRawInput.capturedAt || 0)) <= RAW_INPUT_STRONG_MAX_AGE_MS) {
+        && actualEmptyRawInput) {
         actualEmptyUserInput = true;
       }
       if (actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
@@ -37142,7 +37603,7 @@
             source: String((lastOrchResult && lastOrchResult._userInputSource) || userInputRecoverySource || "unknown"),
             chars: String(safeSavedUserInput || "").length,
             removedChars: saveUserOocScrub.removedChars,
-            rawCacheHit: !!peekRawInputForSession(chatSessionId),
+            rawCacheHit: !!rawInputObservationForRequest,
           };
         }
       }
@@ -37154,7 +37615,7 @@
           actualEmptyInput: !!actualEmptyUserInput,
           logicalUserTurnKey: actualEmptyUserInput ? AUTO_CONTINUE_USER_INPUT_MARKER : "",
           recentContextCount: recentCtx.length,
-          rawCacheHit: !!peekRawInputForSession(chatSessionId),
+          rawCacheHit: !!rawInputObservationForRequest,
         };
       }
       if (!String(safeSavedUserInput || "").trim()) {
@@ -37172,7 +37633,7 @@
             status: "missing",
             safeSaveBlocked: true,
             recentContextCount: recentCtx.length,
-            rawCacheHit: !!peekRawInputForSession(chatSessionId),
+            rawCacheHit: !!rawInputObservationForRequest,
           };
           lastOrchResult._trace.endedAt = new Date().toISOString();
           lastTurnTrace = lastOrchResult._trace;
@@ -37186,7 +37647,7 @@
             request_type: String(type || "model"),
             source: "afterRequest_user_input_missing",
             recovery_source: userInputRecoverySource || "",
-            raw_cache_hit: !!peekRawInputForSession(chatSessionId),
+            raw_cache_hit: !!rawInputObservationForRequest,
           },
           evidence: { capture: "user_input_missing" },
         }).catch(function() {});
@@ -37242,8 +37703,8 @@
           }
         }
       }
-      let activeChatPairAlignment = activeChatLatestSavePair || null;
-      if (!turnOocGuardApplied && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
+      let activeChatPairAlignment = hostFinalityAccepted ? null : (activeChatLatestSavePair || null);
+      if (!hostFinalityAccepted && !turnOocGuardApplied && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
         const currentUserComparableForAssistantLookup = normalizeTurnPairCompareText(safeSavedUserInput);
         const currentUserIsAutoContinueForAssistantLookup =
           currentUserComparableForAssistantLookup
@@ -37294,7 +37755,7 @@
                 previousChars: currentUserComparable.length,
                 activeChatTurnIndex: activePairByAssistant.turnIndex,
                 activeChatPairCount: activePairByAssistant.pairCount,
-                rawCacheHit: !!peekRawInputForSession(chatSessionId),
+                rawCacheHit: !!rawInputObservationForRequest,
               };
             }
           } else if (!allowActiveChatUserReplace && activeUserComparable && activeUserComparable !== currentUserComparable && lastOrchResult && lastOrchResult._trace) {
@@ -37306,7 +37767,7 @@
               activeChatPairCount: activePairByAssistant.pairCount,
               actualEmptyInput: !!actualEmptyUserInput,
               logicalUserTurnKey: actualEmptyUserInput ? AUTO_CONTINUE_USER_INPUT_MARKER : "",
-              rawCacheHit: !!peekRawInputForSession(chatSessionId),
+              rawCacheHit: !!rawInputObservationForRequest,
             };
           }
           activeChatPairAlignment = activePairByAssistant;
@@ -37330,7 +37791,7 @@
           attachSanitizeTrace(lastOrchResult._trace, buildSanitizeTrace("ooc_scrub_user_input_after_alignment", beforePostAlignmentUserOocScrub, safeSavedUserInput));
         }
       }
-      if (!turnOocGuardApplied && String(safeSavedUserInput || "").trim()) {
+      if (!hostFinalityAccepted && !turnOocGuardApplied && String(safeSavedUserInput || "").trim()) {
         const allowUserOnlyAssistantRecovery = !normalizeTurnPairCompareText(persistedAssistantContent);
         activeChatPairAlignment = activeChatPairAlignment || (allowUserOnlyAssistantRecovery
           ? await findActiveChatCompletedTurnPairForUserContent(chatSessionId, safeSavedUserInput)
@@ -37401,7 +37862,7 @@
         && !!activePairCurrentUserComparable
         && !!safeSavedCurrentUserComparable
         && activePairCurrentUserComparable === safeSavedCurrentUserComparable;
-      if (!turnOocGuardApplied && hasPersistedAssistantContent && !activePairMatchesCurrentUser) {
+      if (!hostFinalityAccepted && !turnOocGuardApplied && hasPersistedAssistantContent && !activePairMatchesCurrentUser) {
         const previousSnapshot = getSessionSnapshot(chatSessionId);
         const previousAssistant = getLastNonEmptyAssistantComparableContent(
           previousSnapshot && Array.isArray(previousSnapshot.messagesPreview)
@@ -37622,7 +38083,10 @@
               criticCtx,
               chatSessionId,
               _improvementTrace,
-              { orchestrationResult: lastOrchResult }
+              {
+                orchestrationResult: lastOrchResult,
+                sourceAcceptanceFinality,
+              }
             ),
             null, "buildCompleteTurnRequestBody"
           );
@@ -37789,7 +38253,7 @@
           const pendingPersisted = await queuePendingCompleteTurnPayload(
             _ctQueuedPayload,
             String(_ctResult.code || "pending_confirmation"),
-            acceptedFinalObservation && acceptedFinalObservation.observationKey
+            sourceAcceptanceFinality && sourceAcceptanceFinality.observationKey
           );
           if (pendingPersisted) {
             if (removeQueuedItem("complete_turn", _ctQueuedPayload)) await flushQueueSave();
@@ -38163,9 +38627,6 @@
         }
       } catch { /* 버퍼 업데이트 실패는 무시 */ }
       fireMaintenancePass(persistedTurnIdx, chatSessionId, persistedAssistantContent, lastTurnTrace, _recentAssistantResponses);
-      ensureActiveChatCompletedTurnsBackfilled(chatSessionId, { reason: "after_request", maxPairs: 1 }).catch(function(err) {
-        debugLog("active chat backfill afterRequest failed:", err && err.message);
-      });
 
       if (panelOpen) {
         await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRender");
@@ -39118,9 +39579,7 @@
     _sessionReadCompatCache = { cacheKey: "", plan: null, cachedAt: 0 };
     _sessionRoutingTurnBaselines.clear();
     _sessionMigrationApplyInFlight.clear();
-    Object.keys(_sessionMigrationApplyLastAttemptAt).forEach(function(key) {
-      delete _sessionMigrationApplyLastAttemptAt[key];
-    });
+    _rawInputBySession.clear();
   }
 
   function resetSessionMigrationStorageState() {
@@ -39372,7 +39831,7 @@
         confirm: "RESET_ARCHIVE_CENTER_DB",
         reset_vector: true,
       },
-      timeoutMs: 90000,
+      timeoutMs: getRequestTimeoutSettingMs(),
     });
     if (!data || data.status !== "ok") {
       alert(t("databaseReset.failed"));
@@ -39551,7 +40010,7 @@
           textarea.select();
           document.execCommand("copy");
           const btn = document.getElementById("mo-export-copy-btn");
-          if (btn) { btn.textContent = t('export.copied'); setTimeout(() => { btn.textContent = t('export.copyBtn'); }, 2000); }
+          if (btn) btn.textContent = t('export.copied');
         }
       } catch {
         alert(t('export.copyFailed'));
@@ -39564,15 +40023,7 @@
   // ──────────────────────────────────────────────────────────────
 
   let _reindexState = { loading: false, error: null, result: null, job: null };
-  const _adminJobPollTimers = {};
-
-  function clearAdminJobPollTimer(kind) {
-    const key = String(kind || "job");
-    if (_adminJobPollTimers[key]) {
-      clearTimeout(_adminJobPollTimers[key]);
-      delete _adminJobPollTimers[key];
-    }
-  }
+  const _adminBackgroundJobStreams = new Map();
 
   function adminJobProgressValue(progress, keys, fallback) {
     const p = progress && typeof progress === "object" ? progress : {};
@@ -39582,7 +40033,7 @@
     return fallback;
   }
 
-  function renderAdminJobProgressHtml(job, label) {
+  function renderAdminJobProgressHtml(job, label, kind) {
     if (!job || typeof job !== "object") return "";
     const progress = job.progress && typeof job.progress === "object" ? job.progress : {};
     const status = String(job.status || progress.status || "running");
@@ -39629,6 +40080,19 @@
     if (progress.error) {
       html += '<br><span style="font-size:11px;color:#f87171">error: ' + escapeAttr(String(progress.error)) + '</span>';
     }
+    const transportNotice = job.transport_notice && typeof job.transport_notice === "object"
+      ? job.transport_notice
+      : null;
+    if (transportNotice) {
+      html += '<br><span style="font-size:11px;color:#f59e0b" data-admin-job-transport-notice="' +
+        escapeAttr(String(transportNotice.reason_code || "admin_job_stream_transport_unavailable")) + '">' +
+        'stream: ' + escapeAttr(String(transportNotice.reason_code || "admin_job_stream_transport_unavailable")) +
+        ' — live updates unavailable; use Refresh job status.' +
+        '</span>';
+    }
+    if (job.terminal !== true) {
+      html += '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" data-admin-job-refresh="' + escapeAttr(String(kind || "job")) + '">Refresh job status</button></div>';
+    }
     html += '</div>';
     return html;
   }
@@ -39636,56 +40100,199 @@
   function acceptAdminBackgroundJob(kind, state, result) {
     if (!result || !result.job_id) return false;
     const key = String(kind || "job");
-    clearAdminJobPollTimer(key);
     state.loading = true;
     state.error = null;
     state.result = null;
     state.job = result;
-    pollAdminBackgroundJob(key, state, result.job_id);
+    startAdminBackgroundJobStream(key, state, result.job_id, Number(result.revision || 0));
+    return true;
+  }
+
+  function cancelAdminBackgroundJobStream(kind, jobId) {
+    const key = String(kind || "job");
+    const active = _adminBackgroundJobStreams.get(key);
+    if (!active || (jobId && String(active.jobId || "") !== String(jobId))) return false;
+    _adminBackgroundJobStreams.delete(key);
+    try {
+      if (active.controller) active.controller.abort();
+    } catch { /* no-op */ }
+    try {
+      if (active.reader && typeof active.reader.cancel === "function") {
+        const cancellation = active.reader.cancel();
+        if (cancellation && typeof cancellation.catch === "function") cancellation.catch(function() {});
+      }
+    } catch { /* no-op */ }
+    return true;
+  }
+
+  function cancelAllAdminBackgroundJobStreams() {
+    for (const kind of Array.from(_adminBackgroundJobStreams.keys())) {
+      cancelAdminBackgroundJobStream(kind);
+    }
+  }
+
+  function markAdminBackgroundJobStreamUnavailable(kind, state, jobId, reasonCode, detail) {
+    if (!state || String(state.job && state.job.job_id || "") !== String(jobId || "")) return;
+    const job = Object.assign({}, state.job || {});
+    job.transport_notice = {
+      contract_version: "admin_job_transport_notice.v1",
+      owner: "risu_host",
+      kind: String(kind || "job"),
+      status: "unavailable",
+      reason_code: String(reasonCode || "admin_job_stream_transport_unavailable"),
+      detail: String(detail || ""),
+      terminal: false,
+    };
+    state.job = job;
+    refreshExplorerUI({ preserveScroll: true });
+  }
+
+  function applyAdminBackgroundJobSnapshot(kind, state, jobId, snapshot) {
+    if (!state || !snapshot || String(snapshot.job_id || "") !== String(jobId || "")) return false;
+    const priorTransportNotice = state.job && state.job.transport_notice && typeof state.job.transport_notice === "object"
+      ? state.job.transport_notice
+      : null;
+    const job = Object.assign({}, snapshot);
+    if (job.terminal !== true && priorTransportNotice && !_adminBackgroundJobStreams.has(String(kind || "job"))) {
+      job.transport_notice = priorTransportNotice;
+    } else {
+      delete job.transport_notice;
+    }
+    state.job = job;
+    const terminal = job.terminal === true;
+    state.loading = !terminal;
+    if (!terminal) {
+      refreshExplorerUI({ preserveScroll: true });
+      return false;
+    }
+    const status = String(job.status || "");
+    if (status === "completed") {
+      state.error = null;
+      state.result = job.result || job;
+    } else if (status === "failed" || status === "cancelled" || status === "canceled") {
+      state.result = job.result || null;
+      state.error = String(job.error || (job.progress && job.progress.error) || "background job failed");
+    }
+    refreshExplorerUI({ preserveScroll: true });
+    cancelAdminBackgroundJobStream(kind, jobId);
+    return true;
+  }
+
+  async function consumeAdminBackgroundJobStream(kind, state, jobId, reader, active) {
+    const decoder = new TextDecoder();
+    let buffered = "";
+    while (_adminBackgroundJobStreams.get(kind) === active) {
+      const chunk = await reader.read();
+      if (chunk && chunk.value) buffered += decoder.decode(chunk.value, { stream: chunk.done !== true });
+      let newlineIndex = buffered.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffered.slice(0, newlineIndex).trim();
+        buffered = buffered.slice(newlineIndex + 1);
+        if (line) {
+          let snapshot;
+          try {
+            snapshot = JSON.parse(line);
+          } catch {
+            throw turnWorkflowHUDStreamFailure("admin_job_stream_decode_failed", "invalid admin job NDJSON event");
+          }
+          if (applyAdminBackgroundJobSnapshot(kind, state, jobId, snapshot)) return true;
+        }
+        newlineIndex = buffered.indexOf("\n");
+      }
+      if (chunk && chunk.done === true) {
+        buffered += decoder.decode();
+        const line = buffered.trim();
+        if (line) {
+          let snapshot;
+          try {
+            snapshot = JSON.parse(line);
+          } catch {
+            throw turnWorkflowHUDStreamFailure("admin_job_stream_decode_failed", "invalid admin job NDJSON event");
+          }
+          if (applyAdminBackgroundJobSnapshot(kind, state, jobId, snapshot)) return true;
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+
+  function startAdminBackgroundJobStream(kind, state, jobId, afterRevision) {
+    const key = String(kind || "job");
+    const normalizedJobId = String(jobId || "").trim();
+    if (!normalizedJobId) return false;
+    cancelAdminBackgroundJobStream(key);
+    if (typeof AbortController !== "function" || typeof TextDecoder !== "function") {
+      markAdminBackgroundJobStreamUnavailable(key, state, normalizedJobId, "stream_transport_unavailable", "stream primitives are unavailable");
+      return false;
+    }
+    const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
+    if (!bridgeRoute.url) {
+      markAdminBackgroundJobStreamUnavailable(key, state, normalizedJobId, "admin_job_stream_transport_unavailable", "bridge URL is unavailable");
+      return false;
+    }
+    const controller = new AbortController();
+    const active = { jobId: normalizedJobId, controller, reader: null };
+    _adminBackgroundJobStreams.set(key, active);
+    const revision = Math.max(0, Math.trunc(Number(afterRevision || 0)));
+    const path = "/admin/jobs/" + encodeURIComponent(normalizedJobId) +
+      "/events?after_revision=" + encodeURIComponent(String(revision));
+    (async function() {
+      const reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
+      if (_adminBackgroundJobStreams.get(key) !== active) {
+        try { await reader.cancel(); } catch { /* no-op */ }
+        return;
+      }
+      active.reader = reader;
+      const terminal = await consumeAdminBackgroundJobStream(key, state, normalizedJobId, reader, active);
+      if (!terminal && _adminBackgroundJobStreams.get(key) === active) {
+        throw turnWorkflowHUDStreamFailure("admin_job_stream_transport_unavailable", "admin job stream closed before terminal");
+      }
+    })().catch(function(err) {
+      if (_adminBackgroundJobStreams.get(key) !== active) return;
+      const reasonCode = err && err.code === "stream_transport_unavailable"
+        ? "stream_transport_unavailable"
+        : "admin_job_stream_transport_unavailable";
+      markAdminBackgroundJobStreamUnavailable(key, state, normalizedJobId, reasonCode, err && err.message);
+    }).finally(function() {
+      if (_adminBackgroundJobStreams.get(key) === active) {
+        cancelAdminBackgroundJobStream(key, normalizedJobId);
+      }
+    });
     return true;
   }
 
   async function pollAdminBackgroundJob(kind, state, jobId) {
-    const key = String(kind || "job");
-    clearAdminJobPollTimer(key);
     if (!jobId) return;
     try {
       const job = await safeCall(
         () => bridgeFetch("/admin/jobs/" + encodeURIComponent(jobId), {
           method: "GET",
-          timeoutMs: Math.min(8000, getRequestTimeoutSettingMs()),
+          timeoutMs: getRequestTimeoutSettingMs(),
         }),
         null, "pollAdminBackgroundJob"
       );
-      if (!job || job.status === "not_found") {
+      if (!job) {
+        markAdminBackgroundJobStreamUnavailable(kind, state, jobId, "admin_job_status_transport_unavailable", "manual job status request failed");
+        return null;
+      }
+      if (job.status === "not_found") {
         state.loading = false;
         state.error = "background job not found: " + jobId;
         refreshExplorerUI({ preserveScroll: true });
-        return;
+        return job;
       }
-      state.job = job;
-      const status = String(job.status || "");
-      if (status === "completed") {
-        state.loading = false;
-        state.result = job.result || job;
-        refreshExplorerUI({ preserveScroll: true });
-        return;
-      }
-      if (status === "failed" || status === "cancelled" || status === "canceled") {
-        state.loading = false;
-        state.result = job.result || null;
-        state.error = String(job.error || (job.progress && job.progress.error) || "background job failed");
-        refreshExplorerUI({ preserveScroll: true });
-        return;
-      }
-      refreshExplorerUI({ preserveScroll: true });
-      _adminJobPollTimers[key] = setTimeout(function() {
-        pollAdminBackgroundJob(key, state, jobId);
-      }, 1200);
+      applyAdminBackgroundJobSnapshot(kind, state, jobId, job);
+      return job;
     } catch (err) {
-      state.loading = false;
-      state.error = err && err.message ? err.message : "background job poll failed";
-      refreshExplorerUI({ preserveScroll: true });
+      markAdminBackgroundJobStreamUnavailable(
+        kind,
+        state,
+        jobId,
+        "admin_job_status_transport_unavailable",
+        err && err.message ? err.message : "manual job status request failed"
+      );
+      return null;
     }
   }
 
@@ -40711,11 +41318,9 @@
       runActiveChatRescanDryRun(sid).catch(function(err) {
         debugLog("recent rebuild post-scan failed:", err && err.message);
       });
-      setTimeout(function() {
-        loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true }).catch(function(err) {
-          debugLog("recent rebuild timeline refresh failed:", err && err.message);
-        });
-      }, 400);
+      await loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true }).catch(function(err) {
+        debugLog("recent rebuild timeline refresh failed:", err && err.message);
+      });
       return true;
     } catch (err) {
       _activeChatRecentRebuildState.loading = false;
@@ -41396,12 +42001,9 @@
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
         debugLog("Memory #" + memoryId + " 수정 완료:", result.updated_fields);
-        // 편집 모드 종료 후 목록 갱신
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerLoadTab("memories", true);
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerLoadTab("memories", true);
+        await refreshExplorerUI();
         return true;
       } else {
         _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -41440,12 +42042,10 @@
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
         debugLog("KGTriple #" + tripleId + " 수정 완료:", result.updated_fields);
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerLoadTab("kg_triples", true);
-          await explorerFetchEntities();
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerLoadTab("kg_triples", true);
+        await explorerFetchEntities();
+        await refreshExplorerUI();
         return true;
       } else {
         _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -41497,11 +42097,9 @@
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
         debugLog("Character speech style 수정 완료:", name, result.updated_fields || result.character || result);
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerLoadTab("entities", true);
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerLoadTab("entities", true);
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -41556,11 +42154,9 @@
       );
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerFetchEntities();
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerFetchEntities();
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -41621,12 +42217,10 @@
       });
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerFetchEntities();
-          await explorerFetchSelectedEntityMemoryItems();
-          await refreshExplorerUI();
-        }, 500);
+        explorerCancelEdit();
+        await explorerFetchEntities();
+        await explorerFetchSelectedEntityMemoryItems();
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.entities.memoryPatchFailed');
@@ -41767,11 +42361,9 @@
       });
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerLoadTab("direct_evidence", true);
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerLoadTab("direct_evidence", true);
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -42070,11 +42662,9 @@
       });
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerFetchEpisodes(true);
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerFetchEpisodes(true);
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -42161,11 +42751,9 @@
       });
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerFetchTrust();
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerFetchTrust();
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -42238,13 +42826,11 @@
       });
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerFetchTrust();
-          await explorerFetchWorldGraph();
-          await explorerFetchEntities();
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerFetchTrust();
+        await explorerFetchWorldGraph();
+        await explorerFetchEntities();
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -42310,11 +42896,9 @@
       });
       if (result && result.status === "ok") {
         _explorer.editStatus = "success";
-        setTimeout(async () => {
-          explorerCancelEdit();
-          await explorerFetchTrust();
-          await refreshExplorerUI();
-        }, 800);
+        explorerCancelEdit();
+        await explorerFetchTrust();
+        await refreshExplorerUI();
         return true;
       }
       _explorer.editError = (result && result.detail) || t('explorer.edit.patchFailed');
@@ -42385,11 +42969,6 @@
       if (result && result.status === "ok") {
         debugLog("turn " + turnIndex + " 메모리 재생성 요청 완료");
         _regenStatus[turnIndex] = "done";
-        // Critic은 백그라운드에서 실행되므로 잠시 후 메모리 목록 갱신
-        setTimeout(async () => {
-          await explorerLoadTab("memories", true);
-          refreshExplorerUI();
-        }, 3000);
         refreshExplorerUI();
         return true;
       } else {
@@ -45612,7 +46191,7 @@
     if (selectedSid) {
       let normalizeResultHtml = '';
       if (_sessionNormalizeState.job && (_sessionNormalizeState.loading || String(_sessionNormalizeState.job.status || "") !== "completed")) {
-        normalizeResultHtml += renderAdminJobProgressHtml(_sessionNormalizeState.job, "Session Normalize Background Job");
+        normalizeResultHtml += renderAdminJobProgressHtml(_sessionNormalizeState.job, "Session Normalize Background Job", "session_normalize");
       }
       if (_sessionNormalizeState.result) {
         normalizeResultHtml += renderSessionNormalizeResultHtml(_sessionNormalizeState.result);
@@ -45647,7 +46226,7 @@
     if (selectedSid && debugToolsVisible) {
       let reindexResultHtml = '';
       if (_reindexState.job && (_reindexState.loading || String(_reindexState.job.status || "") !== "completed")) {
-        reindexResultHtml += renderAdminJobProgressHtml(_reindexState.job, "Reindex Background Job");
+        reindexResultHtml += renderAdminJobProgressHtml(_reindexState.job, "Reindex Background Job", "reindex");
       }
       if (_reindexState.result) {
         const r = _reindexState.result;
@@ -45843,7 +46422,7 @@
     if (selectedSid && debugToolsVisible) {
       let rescanResultHtml = '';
       if (_rescanState.job && (_rescanState.loading || String(_rescanState.job.status || "") !== "completed")) {
-        rescanResultHtml += renderAdminJobProgressHtml(_rescanState.job, "Rescan Background Job");
+        rescanResultHtml += renderAdminJobProgressHtml(_rescanState.job, "Rescan Background Job", "rescan");
       }
       if (_rescanState.result) {
         const r = _rescanState.result;
@@ -46009,8 +46588,7 @@
         requestAnimationFrame(apply);
       });
     } catch {
-      setTimeout(apply, 0);
-      setTimeout(apply, 60);
+      apply();
     }
   }
 
@@ -46048,7 +46626,7 @@
     try {
       requestAnimationFrame(apply);
     } catch {
-      setTimeout(apply, 0);
+      apply();
     }
   }
 
@@ -46072,6 +46650,20 @@
 
   function attachExplorerEvents() {
     try {
+      document.querySelectorAll("[data-admin-job-refresh]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const kind = String(button.getAttribute("data-admin-job-refresh") || "");
+          const stateByKind = {
+            reindex: _reindexState,
+            rescan: _rescanState,
+            session_normalize: _sessionNormalizeState,
+          };
+          const state = stateByKind[kind];
+          const jobId = String(state && state.job && state.job.job_id || "").trim();
+          if (state && jobId) await pollAdminBackgroundJob(kind, state, jobId);
+        });
+      });
+
       // Session selection
       document.querySelectorAll(".mo-ex-session").forEach(el => {
         el.addEventListener("click", async () => {
@@ -47824,7 +48416,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         if (!item || String(timelineItemTurnText(item)) !== pendingTurn) return false;
         return derivedTypes.has(String(item.type || "").toLowerCase());
       });
-      return !hasDerived && Number(pending.expires_at_ms || 0) > Date.now();
+      return !hasDerived;
     });
   }
 
@@ -47876,7 +48468,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         ].join("\n"),
         created_at: new Date().toISOString(),
         detail_ref: key,
-        expires_at_ms: Date.now() + 4500,
       };
       const existing = Array.isArray(_timelineState.pendingItems) ? _timelineState.pendingItems : [];
       _timelineState.pendingItems = [item].concat(existing.filter((candidate) => timelineItemKey(candidate) !== timelineItemKey(item))).slice(0, 8);
@@ -47893,17 +48484,15 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const sid = String(sessionId || "").trim();
     const turn = Number(turnIndex || 0);
     if (!sid || !Number.isFinite(turn) || turn <= 0) return;
-    [400, 1400, 3200].forEach((delayMs) => {
-      setTimeout(function completeTurnTargetedRefresh() {
+    Promise.resolve().then(function completeTurnTargetedRefresh() {
         try {
           const selectedSid = String(_timelineState.selectedSessionId || _timelineState.sessionId || _timelineState.currentSessionId || "");
           if (selectedSid && selectedSid !== sid) return;
-          debugLog("complete_turn_targeted_refresh", sid, turn, delayMs);
+          debugLog("complete_turn_targeted_refresh", sid, turn);
           loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true, skipSessionListRefresh: true, preserveExpandedTurnKey: true, skipRollbackPreflight: true });
         } catch (err) {
           debugLog("complete_turn_targeted_refresh failed:", err && err.message);
         }
-      }, delayMs);
     });
   }
 
@@ -48110,8 +48699,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     refreshTimelineUI();
     try {
       if (!append && !options.skipRollbackPreflight) {
-        startRollbackIdleWatcher();
-        await safeCall(() => pollRollbackWatcherOnce(), false, "timelineRollbackPreflight");
+        await safeCall(() => reconcileRollbackFromHostSignal(), false, "timelineRollbackPreflight");
       }
       const sid = skipRuntimeSessionResolve
         ? String(_timelineState.currentSessionId || "")
@@ -48479,7 +49067,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           mode: "copy_keep_source",
           operator_note: "timeline_ui_copy_wizard",
         },
-        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 30000),
+        timeoutMs: getRequestTimeoutSettingMs(),
       };
       const complete = await bridgeFetchSessionCopyStep("complete", "/sessions/migrate-complete", completeOptions);
       if (!complete || complete.blocked || !Number(complete.migration_id || 0)) {
@@ -48492,7 +49080,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const reindex = await bridgeFetchSessionCopyStep("reindex", "/sessions/migrate-reindex", {
         method: "POST",
         body: { migration_id: migrationID },
-        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 60000),
+        timeoutMs: getRequestTimeoutSettingMs(),
       });
       if (!reindex || reindex.blocked) {
         throw new Error(sessionMigrationBlockedReason(reindex, "reindex_blocked", "/sessions/migrate-reindex"));
@@ -48594,7 +49182,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           mode: "copy_then_lock_source",
           operator_note: "timeline_ui_migration_wizard",
         },
-        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 30000),
+        timeoutMs: getRequestTimeoutSettingMs(),
       });
       if (!complete || complete.blocked || !Number(complete.migration_id || 0)) {
         throw new Error(sessionMigrationBlockedReason(complete, "complete_blocked", "/sessions/migrate-complete"));
@@ -48605,7 +49193,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const reindex = await bridgeFetch("/sessions/migrate-reindex", {
         method: "POST",
         body: { migration_id: migrationID },
-        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 60000),
+        timeoutMs: getRequestTimeoutSettingMs(),
       });
       if (!reindex || reindex.blocked || reindex.ready_for_source_lock !== true) {
         throw new Error(sessionMigrationBlockedReason(reindex, "reindex_blocked", "/sessions/migrate-reindex"));
@@ -48698,7 +49286,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           migration_id: migrationID,
           reason: "timeline_ui_operator_rollback",
         },
-        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 60000),
+        timeoutMs: getRequestTimeoutSettingMs(),
       });
       if (!result || result.blocked || result.rolled_back !== true) {
         throw new Error(sessionMigrationBlockedReason(result, "rollback_blocked"));
@@ -48767,7 +49355,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           confirm_source_cleanup: true,
           reason: "timeline_ui_operator_source_cleanup",
         },
-        timeoutMs: Math.max(getRequestTimeoutSettingMs(), 60000),
+        timeoutMs: getRequestTimeoutSettingMs(),
       });
       if (!result || result.blocked || result.source_cleaned !== true) {
         throw new Error(sessionMigrationBlockedReason(result, "cleanup_blocked"));
@@ -48833,7 +49421,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     try {
       requestAnimationFrame(apply);
     } catch {
-      setTimeout(apply, 0);
+      apply();
     }
   }
 
@@ -49071,10 +49659,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       _timelineEditState.error = "";
       timelineApplyEditedItemLocal(type, id, body);
       refreshTimelineUI();
-      setTimeout(() => {
-        timelineResetEditState();
-        refreshTimelineUI();
-      }, 800);
       return true;
     } catch (err) {
       _timelineEditState.status = "error";
@@ -49417,7 +50001,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       );
       return await bridgeFetch("/dashboard/view-model", {
         method: "POST",
-        timeoutMs: Math.min(getRequestTimeoutSettingMs(), 5000),
+        timeoutMs: getRequestTimeoutSettingMs(),
         body: {
           runtime_state: rs,
           plugin_enabled: !!s.enabled,
@@ -49450,7 +50034,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
       const result = await bridgeFetch("/presentation/view-model", {
         method: "POST",
-        timeoutMs: Math.min(getRequestTimeoutSettingMs(), 5000),
+        timeoutMs: getRequestTimeoutSettingMs(),
         body: {
           timeline: {
             items: Array.isArray(_timelineState.items) ? _timelineState.items : [],
@@ -51377,8 +51961,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       </div>
       <div class="mo-row mo-range-row">
         <label>Timeout (ms)</label>
-        <input type="number" id="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? 60000}" min="5000" max="300000" step="5000">
-        <input class="mo-range" type="range" id="mo-pluginMainTimeoutMsRange" data-sync-input="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? 60000}" min="5000" max="300000" step="5000">
+        <input type="number" id="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? DEFAULT_SETTINGS.pluginMainTimeoutMs}" min="5000" max="300000" step="5000">
+        <input class="mo-range" type="range" id="mo-pluginMainTimeoutMsRange" data-sync-input="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? DEFAULT_SETTINGS.pluginMainTimeoutMs}" min="5000" max="300000" step="5000">
         <small style="color:#888;font-size:11px;">감독관 LLM 타임아웃.<br><br>느린 모델은 60000 이상 권장.</small>
       </div>
       <div class="mo-row mo-range-row">
@@ -51494,8 +52078,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       </div>
       <div class="mo-row mo-range-row">
         <label>Timeout (ms)</label>
-        <input type="number" id="mo-subLlmTimeoutMs" value="${s.subLlmTimeoutMs ?? 90000}" min="5000" max="300000" step="5000">
-        <input class="mo-range" type="range" id="mo-subLlmTimeoutMsRange" data-sync-input="mo-subLlmTimeoutMs" value="${s.subLlmTimeoutMs ?? 90000}" min="5000" max="300000" step="5000">
+        <input type="number" id="mo-subLlmTimeoutMs" value="${s.subLlmTimeoutMs ?? DEFAULT_SETTINGS.subLlmTimeoutMs}" min="5000" max="300000" step="5000">
+        <input class="mo-range" type="range" id="mo-subLlmTimeoutMsRange" data-sync-input="mo-subLlmTimeoutMs" value="${s.subLlmTimeoutMs ?? DEFAULT_SETTINGS.subLlmTimeoutMs}" min="5000" max="300000" step="5000">
         <small style="color:#888;font-size:11px;">평론가 LLM 타임아웃.<br><br>느린 모델은 60000 이상 권장.</small>
       </div>
       <div class="mo-row mo-range-row">
@@ -51603,13 +52187,13 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         </div>
         <div class="mo-row mo-range-row">
           <label>${t('settings.label.criticTimeout')}</label>
-          <input type="number" id="mo-criticTimeout" value="${s.criticTimeout ?? 90}" min="5" max="6000" step="5">
-          <input class="mo-range" type="range" id="mo-criticTimeoutRange" data-sync-input="mo-criticTimeout" value="${s.criticTimeout ?? 90}" min="5" max="6000" step="5">
+          <input type="number" id="mo-criticTimeout" value="${s.criticTimeout ?? DEFAULT_SETTINGS.criticTimeout}" min="5" max="6000" step="5">
+          <input class="mo-range" type="range" id="mo-criticTimeoutRange" data-sync-input="mo-criticTimeout" value="${s.criticTimeout ?? DEFAULT_SETTINGS.criticTimeout}" min="5" max="6000" step="5">
         </div>
         <div class="mo-row mo-range-row">
           <label>${t('settings.label.embeddingTimeout')}</label>
-          <input type="number" id="mo-embeddingTimeout" value="${s.embeddingTimeout ?? 30}" min="5" max="3000" step="5">
-          <input class="mo-range" type="range" id="mo-embeddingTimeoutRange" data-sync-input="mo-embeddingTimeout" value="${s.embeddingTimeout ?? 30}" min="5" max="3000" step="5">
+          <input type="number" id="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
+          <input class="mo-range" type="range" id="mo-embeddingTimeoutRange" data-sync-input="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
         </div>
         <div class="mo-note">여기는 backend 감독관·평론가·임베딩 호출 시간입니다. 아래 출판사/평론가 LLM 간의 Timeout (ms)와는 별개입니다.</div>
       </div>
@@ -52211,8 +52795,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
               requestAnimationFrame(restoreTabScroll);
             });
           } catch {
-            setTimeout(restoreTabScroll, 0);
-            setTimeout(restoreTabScroll, 60);
+            restoreTabScroll();
           }
         }
       }
@@ -52329,7 +52912,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           } else if (statusEl) {
             statusEl.textContent = t('settings.status.saved');
             statusEl.style.color = "#5dbb5d";
-            setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 1200);
           }
 
 
@@ -52708,7 +53290,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             pluginMainProvider: $("mo-pluginMainProvider").value,
             pluginMainEndpoint: $("mo-pluginMainEndpoint").value.trim(),
             pluginMainModel: $("mo-pluginMainModel").value.trim(),
-            pluginMainTimeoutMs: parseInt($("mo-pluginMainTimeoutMs").value, 10) || 60000,
+            pluginMainTimeoutMs: getPluginMainTimeoutSettingMs($("mo-pluginMainTimeoutMs").value),
             pluginMainTemperature: $("mo-pluginMainTemperature").value,
             pluginMainMaxCompletionTokens: $("mo-pluginMainMaxCompletionTokens").value,
             pluginMainReasoningPreset: $("mo-pluginMainReasoningPreset").value.trim(),
@@ -52723,7 +53305,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             subLlmProvider: $("mo-subLlmProvider").value,
             subLlmEndpoint: $("mo-subLlmEndpoint").value.trim(),
             subLlmModel: $("mo-subLlmModel").value.trim(),
-            subLlmTimeoutMs: parseInt($("mo-subLlmTimeoutMs").value, 10) || 90000,
+            subLlmTimeoutMs: getSubLlmTimeoutSettingMs($("mo-subLlmTimeoutMs").value),
             subLlmTemperature: $("mo-subLlmTemperature").value,
             subLlmMaxCompletionTokens: $("mo-subLlmMaxCompletionTokens").value,
             subLlmReasoningPreset: $("mo-subLlmReasoningPreset").value.trim(),
@@ -52790,7 +53372,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           $("mo-pluginMainReasoningEffort").value = settings.pluginMainReasoningEffort || "none";
           $("mo-pluginMainReasoningBudgetTokens").value = settings.pluginMainReasoningBudgetTokens || 0;
           $("mo-subLlmProvider").value = settings.subLlmProvider || "openai";
-          $("mo-subLlmTimeoutMs").value = settings.subLlmTimeoutMs || 90000;
+          $("mo-subLlmTimeoutMs").value = settings.subLlmTimeoutMs || DEFAULT_SETTINGS.subLlmTimeoutMs;
           $("mo-subLlmTemperature").value = settings.subLlmTemperature;
           $("mo-subLlmMaxCompletionTokens").value = settings.subLlmMaxCompletionTokens;
           $("mo-subLlmReasoningPreset").value = settings.subLlmReasoningPreset || "auto";
@@ -52843,7 +53425,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           if (statusEl) {
             statusEl.textContent = t('settings.status.saved');
             statusEl.style.color = "#5dbb5d";
-            setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 2500);
           }
           debugLog("Settings saved from UI:", safeSettingsForLog(getSettings()));
           // Plugin Main 설정 확인 로그
@@ -53237,15 +53818,21 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       if (R) {
         try {
           if (typeof R.addRisuScriptHandler === "function") {
+            recordRisuHookLifecycle("input", "registration_requested_unconfirmed");
             await R.addRisuScriptHandler("input", onInputHook);
-            console.log(LOG_PREFIX, "addRisuScriptHandler input OK");
+            console.log(LOG_PREFIX, "addRisuScriptHandler input requested (host acceptance unconfirmed)");
           }
           if (typeof R.addRisuReplacer === "function") {
+            recordRisuHookLifecycle("beforeRequest", "registration_requested_unconfirmed");
             await R.addRisuReplacer("beforeRequest", onBeforeRequest);
-            console.log(LOG_PREFIX, "addRisuReplacer beforeRequest OK");
+            console.log(LOG_PREFIX, "addRisuReplacer beforeRequest requested (host acceptance unconfirmed)");
+            recordRisuHookLifecycle("afterRequest", "registration_requested_unconfirmed");
             await R.addRisuReplacer("afterRequest", onAfterRequest);
-            console.log(LOG_PREFIX, "addRisuReplacer afterRequest OK");
-            await registerFinalConfirmationObserver();
+            console.log(LOG_PREFIX, "addRisuReplacer afterRequest requested (host acceptance unconfirmed)");
+          }
+          if (typeof R.onUnload === "function") {
+            await R.onUnload(removeRegisteredRisuHooksOnUnload);
+            console.log(LOG_PREFIX, "onUnload hook cleanup registered");
           }
         } catch (regErr) {
           warnLog("addRisuReplacer failed:", regErr.message);
@@ -53267,13 +53854,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           }
         }
       } catch { /* 턴 카운터 복원 실패는 무시 */ }
-
-      if (rollbackIdleWatcherUsesTimer()) {
-        startRollbackIdleWatcher();
-        pollRollbackWatcherOnce();
-      } else {
-        stopRollbackIdleWatcher();
-      }
 
       // ── 4.5단계: pluginStorage에서 실패 큐 복원 (Sprint 3-C-1) ──
       try {
@@ -53352,7 +53932,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
       // ── 7단계: 백엔드 런타임 설정 초기 동기화 ──
       if (settings.enabled) {
-        syncConfigToBackend(settings);
+        const syncAck = await syncConfigToBackend(settings);
+        updateRuntimeState("lastConfigSync", syncAck.ok ? "ok" : "fail", {
+          detail: syncAck.ok ? "settings_runtime_synced" : "settings_saved_locally_backend_unsynced",
+          reason_code: syncAck.code,
+        });
+        if (!syncAck.ok) warnLog("Initial backend config sync unavailable:", syncAck.code);
       }
 
     } catch (err) {

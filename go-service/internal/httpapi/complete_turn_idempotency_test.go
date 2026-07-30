@@ -15,11 +15,11 @@ import (
 
 func TestCompleteTurnRequestLedgerSharesCompletedResponse(t *testing.T) {
 	ledger := newCompleteTurnRequestLedger()
-	entry, owner := ledger.begin("req-1", time.Now().UTC())
+	entry, owner := ledger.begin("req-1")
 	if !owner || entry == nil {
 		t.Fatal("first request must own the idempotency key")
 	}
-	duplicate, duplicateOwner := ledger.begin("req-1", time.Now().UTC())
+	duplicate, duplicateOwner := ledger.begin("req-1")
 	if duplicateOwner || duplicate != entry {
 		t.Fatal("duplicate request must join the in-flight entry")
 	}
@@ -29,7 +29,7 @@ func TestCompleteTurnRequestLedgerSharesCompletedResponse(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("duplicate request did not observe completion")
 	}
-	status, response, found := ledger.status("req-1", time.Now().UTC())
+	status, response, found := ledger.status("req-1")
 	if !found || status != "completed" || response.status != http.StatusOK {
 		t.Fatalf("unexpected completed status: found=%v status=%q response=%+v", found, status, response)
 	}
@@ -37,20 +37,38 @@ func TestCompleteTurnRequestLedgerSharesCompletedResponse(t *testing.T) {
 
 func TestCompleteTurnRequestLedgerBoundsUnfinishedOwners(t *testing.T) {
 	ledger := newCompleteTurnRequestLedger()
-	now := time.Now().UTC()
 	for index := 0; index < completeTurnRequestMax; index++ {
 		entry, owner, conflict := ledger.beginWithFingerprint(
 			fmt.Sprintf("pending-%d", index),
 			fmt.Sprintf("fingerprint-%d", index),
-			now,
 		)
 		if entry == nil || !owner || conflict {
 			t.Fatalf("entry %d was not admitted", index)
 		}
 	}
-	entry, owner, conflict := ledger.beginWithFingerprint("over-capacity", "fingerprint", now)
+	entry, owner, conflict := ledger.beginWithFingerprint("over-capacity", "fingerprint")
 	if entry != nil || owner || conflict {
 		t.Fatalf("over-capacity request was admitted: entry=%v owner=%v conflict=%v", entry, owner, conflict)
+	}
+}
+
+func TestCompleteTurnRequestLedgerEvictsOldestFinishedEntryAtCapacity(t *testing.T) {
+	ledger := newCompleteTurnRequestLedger()
+	for index := 0; index < completeTurnRequestMax; index++ {
+		key := fmt.Sprintf("finished-%d", index)
+		if _, owner := ledger.begin(key); !owner {
+			t.Fatalf("entry %d was not admitted", index)
+		}
+		ledger.finish(key, completeTurnRecordedResponse{
+			status: http.StatusOK,
+			body:   []byte(`{"status":"ok","save_ok":true}`),
+		})
+	}
+	if _, owner := ledger.begin("capacity-replacement"); !owner {
+		t.Fatal("finished capacity did not admit a replacement")
+	}
+	if _, _, found := ledger.status("finished-0"); found {
+		t.Fatal("oldest finished entry was not evicted at capacity")
 	}
 }
 
@@ -112,7 +130,7 @@ func TestCompleteTurnCancelledOwnerIsUnknownUntilOwnerResolves(t *testing.T) {
 
 	deadline := time.Now().Add(time.Second)
 	for {
-		status, response, found := server.CompleteTurns.status("cancel-key", time.Now().UTC())
+		status, response, found := server.CompleteTurns.status("cancel-key")
 		if found && status == "completed" {
 			if got := string(response.body); !strings.Contains(got, `"commit_state":"unknown"`) {
 				t.Fatalf("cancelled owner did not publish unknown outcome: %s", got)
@@ -127,7 +145,7 @@ func TestCompleteTurnCancelledOwnerIsUnknownUntilOwnerResolves(t *testing.T) {
 
 	close(release)
 	<-done
-	status, response, found := server.CompleteTurns.status("cancel-key", time.Now().UTC())
+	status, response, found := server.CompleteTurns.status("cancel-key")
 	if !found || status != "completed" || !strings.Contains(string(response.body), `"save_ok":true`) {
 		t.Fatalf("resolved owner did not replace provisional outcome: found=%v status=%q body=%s", found, status, response.body)
 	}
@@ -181,11 +199,11 @@ func TestCompleteTurnRequestFingerprintCoversDerivedProcessingInputs(t *testing.
 
 func TestCompleteTurnServerErrorAllowsLaterRetry(t *testing.T) {
 	ledger := newCompleteTurnRequestLedger()
-	if _, owner := ledger.begin("retry-key", time.Now().UTC()); !owner {
+	if _, owner := ledger.begin("retry-key"); !owner {
 		t.Fatal("first request did not acquire key")
 	}
 	ledger.finish("retry-key", completeTurnRecordedResponse{status: http.StatusInternalServerError})
-	if _, owner := ledger.begin("retry-key", time.Now().UTC()); !owner {
+	if _, owner := ledger.begin("retry-key"); !owner {
 		t.Fatal("server-error request key must be available for retry")
 	}
 }
@@ -212,7 +230,7 @@ func TestCompleteTurnFailedSaveAllowsLaterRetry(t *testing.T) {
 
 func TestCompleteTurnUnknownCommitOutcomeStaysTerminalInLedger(t *testing.T) {
 	ledger := newCompleteTurnRequestLedger()
-	entry, owner := ledger.begin("unknown-commit-key", time.Now().UTC())
+	entry, owner := ledger.begin("unknown-commit-key")
 	if !owner || entry == nil {
 		t.Fatal("first request did not acquire key")
 	}
@@ -222,23 +240,19 @@ func TestCompleteTurnUnknownCommitOutcomeStaysTerminalInLedger(t *testing.T) {
 			`"save_ok":false,"raw_committed":false,"commit_state":"unknown",` +
 			`"reconciliation_required":true,"retryable":false,"queue_action":"discard"}`),
 	})
-	duplicate, duplicateOwner := ledger.begin("unknown-commit-key", time.Now().UTC())
+	duplicate, duplicateOwner := ledger.begin("unknown-commit-key")
 	if duplicateOwner || duplicate != entry {
 		t.Fatal("unknown commit outcome must not allow raw replacement replay")
 	}
-	status, _, found := ledger.status("unknown-commit-key", time.Now().UTC())
+	status, _, found := ledger.status("unknown-commit-key")
 	if !found || status != "completed" {
 		t.Fatalf("unknown commit outcome was not retained: found=%v status=%q", found, status)
-	}
-	status, _, found = ledger.status("unknown-commit-key", time.Now().UTC().Add(completeTurnRequestTTL+time.Second))
-	if !found || status != "completed" {
-		t.Fatalf("unknown commit outcome expired into a replayable key: found=%v status=%q", found, status)
 	}
 }
 
 func TestCompleteTurnTerminalFailedSaveStaysInLedger(t *testing.T) {
 	ledger := newCompleteTurnRequestLedger()
-	entry, owner := ledger.begin("terminal-save-key", time.Now().UTC())
+	entry, owner := ledger.begin("terminal-save-key")
 	if !owner || entry == nil {
 		t.Fatal("first request did not acquire key")
 	}
@@ -246,7 +260,7 @@ func TestCompleteTurnTerminalFailedSaveStaysInLedger(t *testing.T) {
 		status: http.StatusOK,
 		body:   []byte(`{"status":"error","save_ok":false,"retryable":false,"queue_action":"discard"}`),
 	})
-	duplicate, duplicateOwner := ledger.begin("terminal-save-key", time.Now().UTC())
+	duplicate, duplicateOwner := ledger.begin("terminal-save-key")
 	if duplicateOwner || duplicate != entry {
 		t.Fatal("terminal failed save must return the recorded response without re-running")
 	}
@@ -261,14 +275,14 @@ func TestCompleteTurnSemanticSuccessChecksSaveOK(t *testing.T) {
 
 func TestCompleteTurnDerivedRetryRequirementKeepsRawSaveCompletion(t *testing.T) {
 	ledger := newCompleteTurnRequestLedger()
-	if _, owner := ledger.begin("retry-derived-key", time.Now().UTC()); !owner {
+	if _, owner := ledger.begin("retry-derived-key"); !owner {
 		t.Fatal("first request did not acquire key")
 	}
 	ledger.finish("retry-derived-key", completeTurnRecordedResponse{
 		status: http.StatusOK,
 		body:   []byte(`{"status":"ok","save_ok":true,"derived_retry_required":true}`),
 	})
-	if _, owner := ledger.begin("retry-derived-key", time.Now().UTC()); owner {
+	if _, owner := ledger.begin("retry-derived-key"); owner {
 		t.Fatal("raw-saved request must remain completed while derived retry is handled separately")
 	}
 }
@@ -287,7 +301,7 @@ func TestCompleteTurnResponseBufferKeepsFirstStatus(t *testing.T) {
 
 func TestCompleteTurnRequestStatusDistinguishesFailedCompletion(t *testing.T) {
 	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
-	if _, owner := server.CompleteTurns.begin("failed-key", time.Now().UTC()); !owner {
+	if _, owner := server.CompleteTurns.begin("failed-key"); !owner {
 		t.Fatal("failed to acquire test key")
 	}
 	server.CompleteTurns.finish("failed-key", completeTurnRecordedResponse{status: http.StatusBadRequest})
@@ -305,7 +319,7 @@ func TestCompleteTurnRequestStatusDistinguishesFailedCompletion(t *testing.T) {
 
 func TestCompleteTurnRequestStatusSeparatesRawSaveFromDerivedRetry(t *testing.T) {
 	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
-	if _, owner := server.CompleteTurns.begin("derived-key", time.Now().UTC()); !owner {
+	if _, owner := server.CompleteTurns.begin("derived-key"); !owner {
 		t.Fatal("failed to acquire test key")
 	}
 	server.CompleteTurns.finish("derived-key", completeTurnRecordedResponse{
@@ -326,7 +340,7 @@ func TestCompleteTurnRequestStatusSeparatesRawSaveFromDerivedRetry(t *testing.T)
 
 func TestCompleteTurnRequestStatusPreservesReconciliationTruth(t *testing.T) {
 	server := &Server{CompleteTurns: newCompleteTurnRequestLedger()}
-	if _, owner := server.CompleteTurns.begin("reconcile-key", time.Now().UTC()); !owner {
+	if _, owner := server.CompleteTurns.begin("reconcile-key"); !owner {
 		t.Fatal("failed to acquire test key")
 	}
 	server.CompleteTurns.finish("reconcile-key", completeTurnRecordedResponse{

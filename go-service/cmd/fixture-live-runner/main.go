@@ -26,12 +26,15 @@ var (
 	fixtureDir   = flag.String("fixture-dir", "", "Go fixture NDJSON export directory; defaults to benchmarks/sqlite-export-r1-52-2026-05-26-a")
 	r1Tag        = flag.String("r1-tag", "r1-77-fixture-live", "Report R1 tag")
 	maxDiffs     = flag.Int("max-diffs", 80, "Max diffs for shadow-value-report")
-	timeout      = flag.Duration("timeout", 2*time.Minute, "Health check timeout per backend")
+	timeout      = flag.Duration("timeout", 0, "Health check and report request timeout (0 = no local deadline)")
+	pollInterval = flag.Duration("poll-interval", 0, "Health check polling interval (0 = one probe, no polling)")
 )
 
 type managedProcess struct {
-	cmd     *exec.Cmd
-	logFile *os.File
+	cmd      *exec.Cmd
+	logFile  *os.File
+	waitDone chan error
+	exited   chan struct{}
 }
 
 func (p *managedProcess) stop() {
@@ -44,11 +47,12 @@ func (p *managedProcess) stop() {
 			_ = p.cmd.Process.Kill()
 		}
 	}
-	_ = p.cmd.Wait()
+	if p.waitDone != nil {
+		<-p.waitDone
+	}
 	if p.logFile != nil {
 		_ = p.logFile.Close()
 	}
-	time.Sleep(250 * time.Millisecond)
 }
 
 func main() {
@@ -62,6 +66,12 @@ func run() error {
 	ctx := context.Background()
 	if strings.TrimSpace(*srcDir) == "" {
 		return fmt.Errorf("--src-dir is required")
+	}
+	if *timeout < 0 {
+		return fmt.Errorf("--timeout must not be negative")
+	}
+	if *pollInterval < 0 {
+		return fmt.Errorf("--poll-interval must not be negative")
 	}
 
 	tempDir, err := os.MkdirTemp("", "fixture-live-runner-0.8-*")
@@ -97,18 +107,32 @@ func run() error {
 	}
 	defer goProc.stop()
 
-	if err := waitForHealthy(ctx, pythonBase, *timeout); err != nil {
+	pythonHealthCtx := ctx
+	cancelPythonHealth := func() {}
+	if *timeout > 0 {
+		pythonHealthCtx, cancelPythonHealth = context.WithTimeout(ctx, *timeout)
+	}
+	if err := waitForHealthy(pythonHealthCtx, pythonBase, *pollInterval, pythonProc.exited); err != nil {
+		cancelPythonHealth()
 		return fmt.Errorf("python backend health: %w", err)
 	}
-	if err := waitForHealthy(ctx, goBase, *timeout); err != nil {
+	cancelPythonHealth()
+	goHealthCtx := ctx
+	cancelGoHealth := func() {}
+	if *timeout > 0 {
+		goHealthCtx, cancelGoHealth = context.WithTimeout(ctx, *timeout)
+	}
+	if err := waitForHealthy(goHealthCtx, goBase, *pollInterval, goProc.exited); err != nil {
+		cancelGoHealth()
 		return fmt.Errorf("go backend health: %w", err)
 	}
+	cancelGoHealth()
 
 	dateStr := time.Now().Format("2006-01-02")
 	outPath := filepath.Join(*benchmarkDir, fmt.Sprintf("shadow-value-parity-report-%s-%s.md", dateStr, *r1Tag))
 	jsonPath := filepath.Join(*benchmarkDir, fmt.Sprintf("shadow-value-parity-report-%s-%s.json", dateStr, *r1Tag))
 
-	if err := runShadowValueReport(*goServiceDir, pythonBase, goBase, outPath, jsonPath, *maxDiffs); err != nil {
+	if err := runShadowValueReport(*goServiceDir, pythonBase, goBase, outPath, jsonPath, *maxDiffs, *timeout); err != nil {
 		return fmt.Errorf("shadow-value-report: %w", err)
 	}
 
@@ -173,7 +197,13 @@ func startPythonBackend(tempDir string, port int) (*managedProcess, error) {
 		logFile.Close()
 		return nil, err
 	}
-	return &managedProcess{cmd: cmd, logFile: logFile}, nil
+	waitDone := make(chan error, 1)
+	exited := make(chan struct{})
+	go func() {
+		waitDone <- cmd.Wait()
+		close(exited)
+	}()
+	return &managedProcess{cmd: cmd, logFile: logFile, waitDone: waitDone, exited: exited}, nil
 }
 
 func goBackendEnv(port int, fixtureDir string, referenceDir ...string) []string {
@@ -205,7 +235,13 @@ func startGoBackend(goServiceDir string, port int, fixtureDir string, logDir str
 		logFile.Close()
 		return nil, err
 	}
-	return &managedProcess{cmd: cmd, logFile: logFile}, nil
+	waitDone := make(chan error, 1)
+	exited := make(chan struct{})
+	go func() {
+		waitDone <- cmd.Wait()
+		close(exited)
+	}()
+	return &managedProcess{cmd: cmd, logFile: logFile, waitDone: waitDone, exited: exited}, nil
 }
 
 func readDotEnvValue(path, key string) string {
@@ -226,10 +262,9 @@ func readDotEnvValue(path, key string) string {
 	return ""
 }
 
-func waitForHealthy(ctx context.Context, baseURL string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 5 * time.Second}
-	for time.Now().Before(deadline) {
+func waitForHealthy(ctx context.Context, baseURL string, interval time.Duration, processExited <-chan struct{}) error {
+	client := &http.Client{}
+	for {
 		req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/health", nil)
 		if err != nil {
 			return err
@@ -242,22 +277,27 @@ func waitForHealthy(ctx context.Context, baseURL string, timeout time.Duration) 
 				return nil
 			}
 		}
+		if interval <= 0 {
+			return fmt.Errorf("backend is not healthy and health polling is disabled")
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-processExited:
+			return fmt.Errorf("backend process exited before health check succeeded")
+		case <-time.After(interval):
 		}
 	}
-	return fmt.Errorf("health check failed after %v", timeout)
 }
 
-func runShadowValueReport(goServiceDir, pythonBase, goBase, outPath, jsonPath string, maxDiffs int) error {
+func runShadowValueReport(goServiceDir, pythonBase, goBase, outPath, jsonPath string, maxDiffs int, timeout time.Duration) error {
 	cmd := exec.Command("go", "run", "./cmd/shadow-value-report",
 		"-python-base", pythonBase,
 		"-go-base", goBase,
 		"-out", outPath,
 		"-json-out", jsonPath,
 		"-max-diffs", fmt.Sprintf("%d", maxDiffs),
+		"-timeout", timeout.String(),
 	)
 	cmd.Dir = goServiceDir
 	cmd.Stdout = os.Stdout

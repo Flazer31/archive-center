@@ -6,6 +6,9 @@ param(
     [string]$GoBinary = "",
     [string]$GoCacheDir = "",
     [string]$Out = "",
+    [Nullable[int]]$ReadinessTimeoutSeconds = $null,
+    [Nullable[int]]$ReadinessPollIntervalMilliseconds = $null,
+    [Nullable[int]]$RequestTimeoutSeconds = $null,
     [switch]$UseExistingBinary,
     [switch]$WriteSmoke,
     [switch]$SmokeOnly
@@ -13,6 +16,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMilliseconds, $RequestTimeoutSeconds)) {
+    if ($null -ne $timeoutSetting -and $timeoutSetting -lt 1) {
+        throw "Explicit timeout and polling values must be greater than zero."
+    }
+}
+if (($null -eq $ReadinessTimeoutSeconds) -ne ($null -eq $ReadinessPollIntervalMilliseconds)) {
+    throw "ReadinessTimeoutSeconds and ReadinessPollIntervalMilliseconds must be supplied together."
+}
 
 function Resolve-FullPath {
     param([string]$Path)
@@ -39,11 +51,7 @@ function Test-PortOpen {
     param([int]$Port)
     $client = New-Object System.Net.Sockets.TcpClient
     try {
-        $iar = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
-        if (-not $iar.AsyncWaitHandle.WaitOne(400)) {
-            return $false
-        }
-        $client.EndConnect($iar)
+        $client.Connect("127.0.0.1", $Port)
         return $true
     } catch {
         return $false
@@ -60,17 +68,6 @@ function Get-FreeTcpPort {
     } finally {
         $listener.Stop()
     }
-}
-
-function Wait-TcpPort {
-    param([int]$Port, [int]$TimeoutSeconds = 60)
-    for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
-        if (Test-PortOpen $Port) {
-            return
-        }
-        Start-Sleep -Seconds 1
-    }
-    throw "TCP port did not become ready on 127.0.0.1:$Port"
 }
 
 function Find-MariaDBProvider {
@@ -156,8 +153,18 @@ function Start-ManagedProcess {
 }
 
 function Wait-MariaDB {
-    param([string]$AdminExe, [int]$Port)
-    for ($i = 0; $i -lt 60; $i++) {
+    param(
+        [string]$AdminExe,
+        [int]$Port,
+        [System.Diagnostics.Process]$Process = $null,
+        [Nullable[int]]$TimeoutSeconds = $null,
+        [Nullable[int]]$PollIntervalMilliseconds = $null
+    )
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        if ($null -ne $Process -and $Process.HasExited) {
+            throw "MariaDB exited before readiness with code $($Process.ExitCode)."
+        }
         $oldPreference = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         & $AdminExe --protocol=tcp --ssl=0 -h 127.0.0.1 -P $Port -u root ping *> $null
@@ -165,24 +172,84 @@ function Wait-MariaDB {
         if ($LASTEXITCODE -eq 0) {
             return
         }
-        Start-Sleep -Seconds 1
+        if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds) {
+            throw "MariaDB is not ready. Supply both readiness timeout and poll interval to wait."
+        }
+        if ($null -ne $TimeoutSeconds -and $watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            throw "MariaDB did not become ready on 127.0.0.1:$Port before the caller timeout."
+        }
+        $remainingMilliseconds = [int][Math]::Ceiling(($TimeoutSeconds - $watch.Elapsed.TotalSeconds) * 1000)
+        if ($remainingMilliseconds -le 0) {
+            throw "MariaDB did not become ready on 127.0.0.1:$Port before the caller timeout."
+        }
+        $waitMilliseconds = [Math]::Min($PollIntervalMilliseconds, $remainingMilliseconds)
+        if ($null -ne $Process) {
+            if ($Process.WaitForExit($waitMilliseconds)) {
+                throw "MariaDB exited before readiness with code $($Process.ExitCode)."
+            }
+        } else {
+            Start-Sleep -Milliseconds $waitMilliseconds
+        }
     }
-    throw "MariaDB did not become ready on 127.0.0.1:$Port"
 }
 
 function Wait-GoReady {
-    param([string]$BaseUrl)
-    for ($i = 0; $i -lt 60; $i++) {
+    param(
+        [string]$BaseUrl,
+        [System.Diagnostics.Process]$Process,
+        [Nullable[int]]$TimeoutSeconds = $null,
+        [Nullable[int]]$PollIntervalMilliseconds = $null
+    )
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        if ($Process.HasExited) {
+            throw "Go backend exited before readiness with code $($Process.ExitCode)."
+        }
         try {
-            $ready = Invoke-RestMethod -Uri "$BaseUrl/ready" -TimeoutSec 2
+            $ready = Invoke-HttpJson -Uri "$BaseUrl/ready"
             if ($ready.ready -eq $true) {
                 return $ready
             }
         } catch {
         }
-        Start-Sleep -Seconds 1
+        if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds) {
+            throw "Go backend is not ready. Supply both readiness timeout and poll interval to wait."
+        }
+        if ($null -ne $TimeoutSeconds -and $watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+            throw "Go backend did not become ready at $BaseUrl before the caller timeout."
+        }
+        $remainingMilliseconds = [int][Math]::Ceiling(($TimeoutSeconds - $watch.Elapsed.TotalSeconds) * 1000)
+        if ($remainingMilliseconds -le 0) {
+            throw "Go backend did not become ready at $BaseUrl before the caller timeout."
+        }
+        $waitMilliseconds = [Math]::Min($PollIntervalMilliseconds, $remainingMilliseconds)
+        if ($Process.WaitForExit($waitMilliseconds)) {
+            throw "Go backend exited before readiness with code $($Process.ExitCode)."
+        }
     }
-    throw "Go backend did not become ready at $BaseUrl"
+}
+
+function Invoke-HttpJson {
+    param(
+        [string]$Uri,
+        [string]$Method = "GET",
+        [string]$ContentType = "",
+        [string]$Body = ""
+    )
+    $invokeArgs = @{
+        Method = $Method
+        Uri = $Uri
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ContentType)) {
+        $invokeArgs.ContentType = $ContentType
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Body)) {
+        $invokeArgs.Body = $Body
+    }
+    if ($null -ne $RequestTimeoutSeconds) {
+        $invokeArgs.TimeoutSec = $RequestTimeoutSeconds
+    }
+    Invoke-RestMethod @invokeArgs
 }
 
 function Get-StatNumber {
@@ -288,12 +355,8 @@ $startedMariaDB = $null
 if (-not (Test-PortOpen $MariaDBPort)) {
     $mariaArgs = @("--no-defaults", "--datadir=$dataDir", "--port=$MariaDBPort", "--socket=$(Join-Path $dataDir "mysql.sock")", "--skip-networking=0", "--bind-address=127.0.0.1", "--pid-file=$(Join-Path $dataDir "mysqld.pid")", "--console")
     $startedMariaDB = Start-Process -FilePath $provider -ArgumentList (Join-CommandArgs -ArgList $mariaArgs) -WorkingDirectory $dataDir -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 2
-    if ($startedMariaDB.HasExited) {
-        throw "MariaDB exited early with code $($startedMariaDB.ExitCode). See $dataDir\mysqld.err for details."
-    }
 }
-Wait-MariaDB $admin $MariaDBPort
+Wait-MariaDB -AdminExe $admin -Port $MariaDBPort -Process $startedMariaDB -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
 
 $dbName = "archive_center_temp"
 $dbUser = "ac_root"
@@ -361,8 +424,8 @@ if ($SmokeOnly) {
         $goProcess = Start-ManagedProcess -FileName $goCmd -ArgList @("run", "-buildvcs=false", "./cmd/archive-center-go") -WorkingDirectory $goServiceRoot -Environment $goEnv
     }
     try {
-        $ready = Wait-GoReady $baseUrl
-        $beforeStats = Invoke-RestMethod -Uri "$baseUrl/stats" -TimeoutSec 3
+        $ready = Wait-GoReady -BaseUrl $baseUrl -Process $goProcess -TimeoutSeconds $ReadinessTimeoutSeconds -PollIntervalMilliseconds $ReadinessPollIntervalMilliseconds
+        $beforeStats = Invoke-HttpJson -Uri "$baseUrl/stats"
         $afterStats = $beforeStats
         $writeSmokeReport = $null
 
@@ -378,12 +441,12 @@ if ($SmokeOnly) {
                     source = "windows_live_smoke"
                 }
             } | ConvertTo-Json -Depth 8
-            $complete = Invoke-RestMethod -Method Post -Uri "$baseUrl/complete-turn" -ContentType "application/json; charset=utf-8" -Body $payload -TimeoutSec 5
-            $afterStats = Invoke-RestMethod -Uri "$baseUrl/stats" -TimeoutSec 3
-            $chatLogs = Invoke-RestMethod -Uri "$baseUrl/canonical/$sessionId/chat-logs" -TimeoutSec 3
-            $memories = Invoke-RestMethod -Uri "$baseUrl/canonical/$sessionId/memories" -TimeoutSec 3
-            $evidence = Invoke-RestMethod -Uri "$baseUrl/canonical/$sessionId/evidence" -TimeoutSec 3
-            $kgTriples = Invoke-RestMethod -Uri "$baseUrl/canonical/$sessionId/kg-triples" -TimeoutSec 3
+            $complete = Invoke-HttpJson -Method Post -Uri "$baseUrl/complete-turn" -ContentType "application/json; charset=utf-8" -Body $payload
+            $afterStats = Invoke-HttpJson -Uri "$baseUrl/stats"
+            $chatLogs = Invoke-HttpJson -Uri "$baseUrl/canonical/$sessionId/chat-logs"
+            $memories = Invoke-HttpJson -Uri "$baseUrl/canonical/$sessionId/memories"
+            $evidence = Invoke-HttpJson -Uri "$baseUrl/canonical/$sessionId/evidence"
+            $kgTriples = Invoke-HttpJson -Uri "$baseUrl/canonical/$sessionId/kg-triples"
 
             $delta = [pscustomobject]@{
                 chat_logs = (Get-StatNumber $afterStats "chat_logs") - (Get-StatNumber $beforeStats "chat_logs")

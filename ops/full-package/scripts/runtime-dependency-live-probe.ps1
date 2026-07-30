@@ -5,7 +5,7 @@ param(
     [string]$ChromaEndpoint = $env:AC_CHROMA_ENDPOINT,
     [string]$MariaDBDSN = $env:AC_MARIADB_DSN,
     [string]$OutputPath = "",
-    [int]$TimeoutSeconds = 60,
+    [Nullable[int]]$TimeoutSeconds = $null,
     [string]$GoCommand = "go"
 )
 
@@ -47,7 +47,7 @@ if ($SkipChroma -and $SkipMariaDB) {
     $report.errors = @("both dependency probes were skipped")
     Write-ProbeReport $report 2
 }
-if ($TimeoutSeconds -lt 1) {
+if ($null -ne $TimeoutSeconds -and $TimeoutSeconds -lt 1) {
     $report.status = "failed"
     $report.executed = $true
     $report.errors = @("TimeoutSeconds must be greater than zero")
@@ -90,10 +90,15 @@ try {
     Push-Location $goServiceRoot
     try {
         if (-not $SkipChroma) {
-            $chromaOutput = & $GoCommand run -buildvcs=false ./cmd/runtime-dependency-live-probe `
-                -execute `
-                -chroma-endpoint $ChromaEndpoint `
-                -timeout ("{0}s" -f $TimeoutSeconds)
+            $chromaArgs = @(
+                "run", "-buildvcs=false", "./cmd/runtime-dependency-live-probe",
+                "-execute",
+                "-chroma-endpoint", $ChromaEndpoint
+            )
+            if ($null -ne $TimeoutSeconds) {
+                $chromaArgs += @("-timeout", ("{0}s" -f $TimeoutSeconds))
+            }
+            $chromaOutput = & $GoCommand @chromaArgs
             $chromaExit = $LASTEXITCODE
             if ($chromaExit -ne 0) {
                 throw "ChromaDB live probe exited with code $chromaExit"
@@ -103,11 +108,16 @@ try {
 
         if (-not $SkipMariaDB) {
             $env:AC_MARIADB_DSN = $MariaDBDSN
-            $mariaOutput = & $GoCommand run -buildvcs=false ./cmd/mariadb-schema `
-                -schema $schemaPath `
-                -execute `
-                -app-account-probe `
-                -timeout ("{0}s" -f $TimeoutSeconds)
+            $mariaArgs = @(
+                "run", "-buildvcs=false", "./cmd/mariadb-schema",
+                "-schema", $schemaPath,
+                "-execute",
+                "-app-account-probe"
+            )
+            if ($null -ne $TimeoutSeconds) {
+                $mariaArgs += @("-timeout", ("{0}s" -f $TimeoutSeconds))
+            }
+            $mariaOutput = & $GoCommand @mariaArgs
             $mariaExit = $LASTEXITCODE
             if ($mariaExit -ne 0) {
                 throw "MariaDB schema/application-account probe exited with code $mariaExit"

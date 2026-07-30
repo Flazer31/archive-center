@@ -949,6 +949,21 @@ func TestRollbackDecisionTokenIsOneUseAndBoundToRange(t *testing.T) {
 	}
 }
 
+func TestRollbackDecisionLedgerEvictsOldestTokenAtCapacity(t *testing.T) {
+	ledger := newRollbackDecisionLedger()
+	first := ledger.issue("s", 4, "auto")
+	var latest rollbackDecisionRecord
+	for index := 1; index <= rollbackDecisionMax; index++ {
+		latest = ledger.issue("s", 4+index, "auto")
+	}
+	if _, ok := ledger.consume(first.Token, "s", 4); ok {
+		t.Fatal("oldest rollback token survived capacity eviction")
+	}
+	if _, ok := ledger.consume(latest.Token, latest.SessionID, latest.FromTurn); !ok {
+		t.Fatal("latest rollback token was not retained")
+	}
+}
+
 func TestRollbackHandlerRejectsInvalidDecisionTokenBeforeMutation(t *testing.T) {
 	server := &Server{RollbackDecisions: newRollbackDecisionLedger()}
 	req := httptest.NewRequest(http.MethodDelete, "/rollback/4?chat_session_id=s&req_source=auto&decision_token=invalid", nil)

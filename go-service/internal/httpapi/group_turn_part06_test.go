@@ -847,7 +847,8 @@ func TestPrepareTurnChromaRecallAutoEmbedsRawUserInput(t *testing.T) {
 				"api_key":"embed-key",
 				"endpoint":"https://api.example.test/v1",
 				"model":"embed-model",
-				"provider":"openai"
+				"provider":"openai",
+				"timeout_ms":30000
 			}
 		},
 		"settings":{"top_k":2}

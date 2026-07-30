@@ -793,10 +793,7 @@ type routeSmokeCriticStub struct {
 
 func routeSmokeLiveConfigFromEnv() routeSmokeLiveConfig {
 	enabled := routeSmokeEnvBool("AC_RMG02_ROUTE_SMOKE_LIVE_PROVIDER")
-	waitMs := routeSmokeEnvInt64("AC_RMG02_ROUTE_SMOKE_HTTP_TIMEOUT_MS", 180000)
-	if waitMs <= 0 {
-		waitMs = 180000
-	}
+	waitMs := routeSmokeEnvInt64("AC_RMG02_ROUTE_SMOKE_HTTP_TIMEOUT_MS", 0)
 	return routeSmokeLiveConfig{
 		Enabled:  enabled,
 		HTTPWait: time.Duration(waitMs) * time.Millisecond,
@@ -805,7 +802,7 @@ func routeSmokeLiveConfigFromEnv() routeSmokeLiveConfig {
 			Endpoint:            routeSmokeEnv("AC_RMG02_CRITIC_ENDPOINT", "http://127.0.0.1:11434/v1"),
 			APIKey:              routeSmokeEnv("AC_RMG02_CRITIC_API_KEY", "ollama-local"),
 			Model:               routeSmokeEnv("AC_RMG02_CRITIC_MODEL", "glm-5.1:cloud"),
-			TimeoutMs:           routeSmokeEnvInt64("AC_RMG02_CRITIC_TIMEOUT_MS", 120000),
+			TimeoutMs:           routeSmokeEnvInt64("AC_RMG02_CRITIC_TIMEOUT_MS", 0),
 			Temperature:         routeSmokeEnvFloat("AC_RMG02_CRITIC_TEMPERATURE", 0),
 			MaxTokens:           routeSmokeEnvInt64("AC_RMG02_CRITIC_MAX_TOKENS", 1800),
 			MaxCompletionTokens: routeSmokeEnvInt64("AC_RMG02_CRITIC_MAX_COMPLETION_TOKENS", 1800),
@@ -816,7 +813,7 @@ func routeSmokeLiveConfigFromEnv() routeSmokeLiveConfig {
 			Endpoint:  routeSmokeEnv("AC_RMG02_EMBEDDING_ENDPOINT", "http://127.0.0.1:11434"),
 			APIKey:    routeSmokeEnv("AC_RMG02_EMBEDDING_API_KEY", "ollama-local"),
 			Model:     routeSmokeEnv("AC_RMG02_EMBEDDING_MODEL", "nomic-embed-text"),
-			TimeoutMs: routeSmokeEnvInt64("AC_RMG02_EMBEDDING_TIMEOUT_MS", 60000),
+			TimeoutMs: routeSmokeEnvInt64("AC_RMG02_EMBEDDING_TIMEOUT_MS", 0),
 		},
 	}
 }
@@ -868,7 +865,6 @@ func routeSmokeStubClientMeta(criticEndpoint string) map[string]any {
 			"endpoint":    criticEndpoint,
 			"api_key":     "managed-route-smoke-key",
 			"model":       "route-smoke-critic",
-			"timeout_ms":  10000,
 			"temperature": 0,
 			"max_tokens":  800,
 		},

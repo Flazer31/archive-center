@@ -52,7 +52,7 @@ func run(args []string, runner chromaProbeRunner) (*runtimeDependencyProbeReport
 	endpoint := flags.String("chroma-endpoint", os.Getenv("AC_CHROMA_ENDPOINT"), "ChromaDB endpoint. Defaults to AC_CHROMA_ENDPOINT.")
 	apiPath := flags.String("chroma-api-path", firstNonEmpty(os.Getenv("AC_CHROMA_API_PATH"), "/api/v2"), "ChromaDB API path.")
 	collectionPrefix := flags.String("collection-prefix", "archive_center_windows_probe", "Temporary ChromaDB collection prefix.")
-	timeout := flags.Duration("timeout", 45*time.Second, "Overall probe timeout.")
+	timeout := flags.Duration("timeout", 0, "Overall probe timeout (0 = no local deadline).")
 	if err := flags.Parse(args); err != nil {
 		report.Status = "failed"
 		report.Errors = append(report.Errors, "invalid arguments")
@@ -68,13 +68,17 @@ func run(args []string, runner chromaProbeRunner) (*runtimeDependencyProbeReport
 		report.Errors = append(report.Errors, "missing ChromaDB endpoint: provide -chroma-endpoint or AC_CHROMA_ENDPOINT")
 		return report, 2
 	}
-	if *timeout <= 0 {
+	if *timeout < 0 {
 		report.Status = "failed"
-		report.Errors = append(report.Errors, "timeout must be greater than zero")
+		report.Errors = append(report.Errors, "timeout must not be negative")
 		return report, 2
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx := context.Background()
+	cancel := func() {}
+	if *timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+	}
 	defer cancel()
 	chromaReport, err := runner(ctx, vector.ChromaRoundTripProbeConfig{
 		Endpoint:         *endpoint,

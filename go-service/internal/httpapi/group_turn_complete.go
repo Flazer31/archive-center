@@ -573,9 +573,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if rawTurnDurable {
-		s.processMemoryVectorOutboxBatch(
-			ctx, fmt.Sprintf("complete-turn:%s", sid), now, 30*time.Second, 16,
-		)
+		s.wakeMemoryWorkers()
 	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		if !s.usesShadowWriteStore() {

@@ -25,6 +25,10 @@ Options:
   --install-only    Install/bootstrap dependencies, then exit.
   --no-install      Do not use package managers; only use existing/bundled tools.
   --keep-services   Do not stop MariaDB/ChromaDB when the Go backend exits.
+  --readiness-timeout-seconds N
+                    Overall readiness bound. Must be supplied with poll interval.
+  --readiness-poll-interval-seconds N
+                    Poll interval. Must be supplied with readiness timeout.
   --help            Show this help.
 
 Environment:
@@ -35,6 +39,9 @@ Environment:
   AC_CHROMA_ENDPOINT           Required for vector_external; defaults to local
                                only for local vector profiles.
   AC_MARIADB_PORT              Defaults to 3307.
+  AC_READINESS_TIMEOUT_SECONDS Optional caller-supplied readiness bound.
+  AC_READINESS_POLL_INTERVAL_SECONDS
+                               Optional caller-supplied readiness poll interval.
 EOF
 }
 
@@ -137,18 +144,14 @@ run_sudo() {
 	fi
 }
 
-wait_port() {
+port_is_open() {
 	port=$1
-	label=$2
 	python_for_probe=${PYTHON_BIN:-python3}
-	i=0
-	while [ "$i" -lt 90 ]; do
-		if "$python_for_probe" - "$port" >/dev/null 2>&1 <<'PY'
+	"$python_for_probe" - "$port" >/dev/null 2>&1 <<'PY'
 import socket
 import sys
 port = int(sys.argv[1])
 s = socket.socket()
-s.settimeout(0.4)
 try:
     s.connect(("127.0.0.1", port))
 except OSError:
@@ -156,11 +159,35 @@ except OSError:
 finally:
     s.close()
 PY
-		then
+}
+
+readiness_polling_enabled() {
+	[ -n "${READINESS_TIMEOUT_SECONDS:-}" ] && [ -n "${READINESS_POLL_INTERVAL_SECONDS:-}" ]
+}
+
+wait_port() {
+	port=$1
+	label=$2
+	process_id=${3:-}
+	if readiness_polling_enabled; then
+		readiness_deadline=$(( $(date +%s) + READINESS_TIMEOUT_SECONDS ))
+	else
+		readiness_deadline=
+	fi
+	while :; do
+		if [ -n "$process_id" ] && ! kill -0 "$process_id" >/dev/null 2>&1; then
+			break
+		fi
+		if port_is_open "$port"; then
 			return 0
 		fi
-		i=$((i + 1))
-		sleep 1
+		if ! readiness_polling_enabled; then
+			break
+		fi
+		if [ "$(date +%s)" -ge "$readiness_deadline" ]; then
+			break
+		fi
+		sleep "$READINESS_POLL_INTERVAL_SECONDS"
 	done
 	if [ "$label" = "MariaDB" ] && [ -f "${LOG_DIR:-}/mariadb.log" ]; then
 		log "MariaDB log tail:"
@@ -271,8 +298,12 @@ wait_candidate_backend_ready() {
 	target=$2
 	port=$(printf '%s' "$AC_BIND_ADDR" | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')
 	[ -n "$port" ] || port=28080
-	i=0
-	while [ "$i" -lt 60 ]; do
+	if readiness_polling_enabled; then
+		readiness_deadline=$(( $(date +%s) + READINESS_TIMEOUT_SECONDS ))
+	else
+		readiness_deadline=
+	fi
+	while :; do
 		if ! kill -0 "$pid" >/dev/null 2>&1; then
 			return 1
 		fi
@@ -283,10 +314,14 @@ wait_candidate_backend_ready() {
 		if [ "$ready_status" = "ready" ] && [ "$observed_version" = "$target" ]; then
 			return 0
 		fi
-		i=$((i + 1))
-		sleep 1
+		if ! readiness_polling_enabled; then
+			return 1
+		fi
+		if [ "$(date +%s)" -ge "$readiness_deadline" ]; then
+			return 1
+		fi
+		sleep "$READINESS_POLL_INTERVAL_SECONDS"
 	done
-	return 1
 }
 
 finalize_pending_update() {
@@ -601,19 +636,7 @@ init_mariadb_data() {
 
 start_mariadb() {
 	init_mariadb_data
-	if "$PYTHON_BIN" - "$MARIADB_PORT" >/dev/null 2>&1 <<'PY'
-import socket
-import sys
-s=socket.socket()
-s.settimeout(0.3)
-try:
-    s.connect(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    s.close()
-PY
-	then
+	if port_is_open "$MARIADB_PORT"; then
 		MARIADB_STARTED_BY_SCRIPT=false
 		export MARIADB_STARTED_BY_SCRIPT
 		return
@@ -631,7 +654,7 @@ PY
 	MARIADB_PID=$!
 	MARIADB_STARTED_BY_SCRIPT=true
 	export MARIADB_PID MARIADB_STARTED_BY_SCRIPT
-	wait_port "$MARIADB_PORT" "MariaDB"
+	wait_port "$MARIADB_PORT" "MariaDB" "$MARIADB_PID"
 }
 
 bootstrap_mariadb_schema() {
@@ -670,19 +693,7 @@ start_chromadb() {
 	if [ -z "$chroma_port" ]; then
 		chroma_port=8000
 	fi
-	if "$PYTHON_BIN" - "$chroma_port" >/dev/null 2>&1 <<'PY'
-import socket
-import sys
-s=socket.socket()
-s.settimeout(0.3)
-try:
-    s.connect(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    s.close()
-PY
-	then
+	if port_is_open "$chroma_port"; then
 		CHROMA_STARTED_BY_SCRIPT=false
 		export CHROMA_STARTED_BY_SCRIPT
 		return
@@ -694,7 +705,7 @@ PY
 		CHROMA_PID=$!
 		CHROMA_STARTED_BY_SCRIPT=true
 		export CHROMA_PID CHROMA_STARTED_BY_SCRIPT
-		wait_port "$chroma_port" "ChromaDB"
+		wait_port "$chroma_port" "ChromaDB" "$CHROMA_PID"
 		return
 	fi
 	chroma_bin=$(find_executable "$RUNTIME_DIR/chromadb-venv/bin/chroma" || true)
@@ -706,7 +717,7 @@ PY
 	CHROMA_PID=$!
 	CHROMA_STARTED_BY_SCRIPT=true
 	export CHROMA_PID CHROMA_STARTED_BY_SCRIPT
-	wait_port "$chroma_port" "ChromaDB"
+	wait_port "$chroma_port" "ChromaDB" "$CHROMA_PID"
 }
 
 cleanup() {
@@ -761,6 +772,8 @@ PREFLIGHT=false
 INSTALL_ONLY=false
 NO_INSTALL=false
 KEEP_SERVICES=false
+READINESS_TIMEOUT_SECONDS=${AC_READINESS_TIMEOUT_SECONDS:-}
+READINESS_POLL_INTERVAL_SECONDS=${AC_READINESS_POLL_INTERVAL_SECONDS:-}
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -795,6 +808,16 @@ while [ "$#" -gt 0 ]; do
 			KEEP_SERVICES=true
 			shift
 			;;
+		--readiness-timeout-seconds)
+			[ "$#" -ge 2 ] || die "missing value for --readiness-timeout-seconds"
+			READINESS_TIMEOUT_SECONDS=$2
+			shift 2
+			;;
+		--readiness-poll-interval-seconds)
+			[ "$#" -ge 2 ] || die "missing value for --readiness-poll-interval-seconds"
+			READINESS_POLL_INTERVAL_SECONDS=$2
+			shift 2
+			;;
 		--help|-h)
 			usage
 			exit 0
@@ -806,6 +829,17 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$PLATFORM" ] || die "missing --platform"
+case "$READINESS_TIMEOUT_SECONDS" in
+	"") ;;
+	*[!0-9]*|0) die "readiness timeout must be a positive integer" ;;
+esac
+case "$READINESS_POLL_INTERVAL_SECONDS" in
+	"") ;;
+	*[!0-9]*|0) die "readiness poll interval must be a positive integer" ;;
+esac
+if { [ -n "$READINESS_TIMEOUT_SECONDS" ] && [ -z "$READINESS_POLL_INTERVAL_SECONDS" ]; } || { [ -z "$READINESS_TIMEOUT_SECONDS" ] && [ -n "$READINESS_POLL_INTERVAL_SECONDS" ]; }; then
+	die "readiness timeout and poll interval must be supplied together"
+fi
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 PWD_DIR=$(pwd -P 2>/dev/null || pwd)

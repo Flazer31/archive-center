@@ -154,7 +154,10 @@ func embeddingEnvSource(keys ...string) runtimeSourceValue {
 func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	updated := []string{}
 	s.RuntimeConfigMu.Lock()
-	defer s.RuntimeConfigMu.Unlock()
+	defer func() {
+		s.RuntimeConfigMu.Unlock()
+		s.wakeMemoryWorkers()
+	}()
 	s.RuntimeConfig.Synced = true
 
 	setString := func(pluginKey string, target *string) {
@@ -275,9 +278,9 @@ func (s *Server) runtimeConfigSnapshot() RuntimeConfig {
 	return s.RuntimeConfig
 }
 
-func runtimeTimeoutMs(seconds int64, fallbackMs int64) int64 {
+func runtimeTimeoutMs(seconds int64) int64 {
 	if seconds <= 0 {
-		return fallbackMs
+		return 0
 	}
 	return seconds * 1000
 }
@@ -297,7 +300,7 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 		Endpoint:              rt.SupervisorEndpoint,
 		Model:                 rt.SupervisorModel,
 		Provider:              rt.SupervisorProvider,
-		TimeoutMs:             runtimeTimeoutMs(rt.SupervisorTimeoutSec, 60000),
+		TimeoutMs:             runtimeTimeoutMs(rt.SupervisorTimeoutSec),
 		Temperature:           temperature,
 		MaxTokens:             maxTokens,
 		ReasoningPreset:       rt.SupervisorReasoningPreset,
@@ -332,7 +335,7 @@ func (s *Server) sourceSearchPlannerLLMConfig() completeTurnLLMConfig {
 	return completeTurnLLMConfig{
 		APIKey: rt.SourceSearchPlannerAPIKey, Endpoint: rt.SourceSearchPlannerEndpoint,
 		Model: rt.SourceSearchPlannerModel, Provider: rt.SourceSearchPlannerProvider,
-		TimeoutMs:   runtimeTimeoutMs(rt.SourceSearchPlannerTimeoutSec, 60000),
+		TimeoutMs:   runtimeTimeoutMs(rt.SourceSearchPlannerTimeoutSec),
 		Temperature: temperature, MaxTokens: maxTokens,
 		ReasoningPreset:       reasoningPreset,
 		ReasoningEffort:       reasoningEffort,
@@ -355,7 +358,7 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 		Endpoint:              rt.MainEndpoint,
 		Model:                 rt.MainModel,
 		Provider:              rt.MainProvider,
-		TimeoutMs:             runtimeTimeoutMs(rt.MainTimeoutSec, 60000),
+		TimeoutMs:             runtimeTimeoutMs(rt.MainTimeoutSec),
 		Temperature:           temperature,
 		MaxTokens:             maxTokens,
 		ReasoningPreset:       rt.MainReasoningPreset,

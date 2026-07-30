@@ -31,7 +31,7 @@ func contextWithEntityIdentitySource(ctx context.Context, decision completeTurnS
 		return ctx
 	}
 	messageID := ""
-	if decision.Observation.HostChatID != "" || decision.Observation.MessageIndex >= 0 {
+	if decision.Observation.MessageIndex >= 0 {
 		messageID = fmt.Sprintf("%s:index:%d", decision.Observation.HostChatID, decision.Observation.MessageIndex)
 	}
 	return context.WithValue(ctx, entityIdentitySourceContextKey{}, entityIdentitySourceContext{

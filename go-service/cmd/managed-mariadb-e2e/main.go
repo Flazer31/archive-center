@@ -382,6 +382,8 @@ type directProviderConfig struct {
 	DefaultSwitch         bool
 	DefaultSwitchActual   bool
 	SessionIsolationSmoke bool
+	CommandTimeout        time.Duration
+	PollInterval          time.Duration
 }
 
 func (cfg directProviderConfig) skipDefaultReadShadow() bool {
@@ -503,21 +505,26 @@ func startPythonFallbackBackend(ctx context.Context, tempDir string, port int) (
 	}, nil
 }
 
-func waitPythonFallbackReady(ctx context.Context, port int) executedStep {
+func waitPythonFallbackReady(ctx context.Context, port int, interval time.Duration) executedStep {
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
+	for {
 		probe, err := probeGET(ctx, baseURL+"/health")
 		if err == nil && probeStatusOK(probe) {
 			return executedStep{Name: "python-fallback-wait-ready", Status: "ok"}
 		}
+		if interval <= 0 {
+			return executedStep{Name: "python-fallback-wait-ready", Status: "failed", Error: "python fallback is not ready and readiness polling is disabled"}
+		}
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return executedStep{Name: "python-fallback-wait-ready", Status: "failed", Error: ctx.Err().Error()}
-		case <-time.After(500 * time.Millisecond):
+		case <-timer.C:
 		}
 	}
-	return executedStep{Name: "python-fallback-wait-ready", Status: "failed", Error: "health check timed out"}
 }
 
 type goBackendStartConfig struct {
@@ -575,43 +582,15 @@ func startGoBackend(ctx context.Context, exec commandExecutor, cfg goBackendStar
 	return cmd, step, nil
 }
 
-func waitGoReady(ctx context.Context, port int) executedStep {
+func waitGoReady(ctx context.Context, port int, interval time.Duration) executedStep {
 	start := time.Now()
 	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
-	deadline, hasDeadline := ctx.Deadline()
-	if !hasDeadline {
-		deadline = time.Now().Add(30 * time.Second)
-	} else if capDeadline := time.Now().Add(30 * time.Second); capDeadline.Before(deadline) {
-		deadline = capDeadline
-	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			if time.Now().After(deadline) {
-				return executedStep{
-					Name:       "wait-go-ready",
-					Status:     "failed",
-					DurationMs: time.Since(start).Milliseconds(),
-					Error:      fmt.Sprintf("go backend not ready on port %d within timeout", port),
-				}
-			}
-			return executedStep{
-				Name:       "wait-go-ready",
-				Status:     "failed",
-				DurationMs: time.Since(start).Milliseconds(),
-				Error:      "context cancelled before go backend became ready",
-			}
-		case <-ticker.C:
-			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-			if err != nil {
-				continue
-			}
-			resp, err := http.DefaultClient.Do(req)
-			if err == nil {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err == nil {
+			resp, requestErr := http.DefaultClient.Do(req)
+			if requestErr == nil {
 				_ = resp.Body.Close()
 				if resp.StatusCode == http.StatusOK {
 					return executedStep{
@@ -621,14 +600,28 @@ func waitGoReady(ctx context.Context, port int) executedStep {
 					}
 				}
 			}
-			if time.Now().After(deadline) {
-				return executedStep{
-					Name:       "wait-go-ready",
-					Status:     "failed",
-					DurationMs: time.Since(start).Milliseconds(),
-					Error:      fmt.Sprintf("go backend not ready on port %d within timeout", port),
-				}
+		}
+		if interval <= 0 {
+			return executedStep{
+				Name:       "wait-go-ready",
+				Status:     "failed",
+				DurationMs: time.Since(start).Milliseconds(),
+				Error:      fmt.Sprintf("go backend is not ready on port %d and readiness polling is disabled", port),
 			}
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return executedStep{
+				Name:       "wait-go-ready",
+				Status:     "failed",
+				DurationMs: time.Since(start).Milliseconds(),
+				Error:      fmt.Sprintf("go backend not ready on port %d: %v", port, ctx.Err()),
+			}
+		case <-timer.C:
 		}
 	}
 }

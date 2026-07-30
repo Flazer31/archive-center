@@ -769,7 +769,7 @@ func completeTurnExtractionConfigFromMeta(meta map[string]any) completeTurnExtra
 			Endpoint:              stringFromMap(criticMap, "endpoint"),
 			Model:                 stringFromMap(criticMap, "model"),
 			Provider:              stringFromMap(criticMap, "provider"),
-			TimeoutMs:             int64FromMap(criticMap, "timeout_ms", 60000),
+			TimeoutMs:             int64FromMap(criticMap, "timeout_ms", 0),
 			Temperature:           floatFromMap(criticMap, "temperature", 0.2),
 			MaxTokens:             int64FromMap(criticMap, "max_tokens", 1600),
 			MaxCompletionTokens:   int64FromMap(criticMap, "max_completion_tokens", 1600),
@@ -789,7 +789,7 @@ func completeTurnExtractionConfigFromMeta(meta map[string]any) completeTurnExtra
 			Endpoint:  stringFromMap(embeddingMap, "endpoint"),
 			Model:     stringFromMap(embeddingMap, "model"),
 			Provider:  stringFromMap(embeddingMap, "provider"),
-			TimeoutMs: int64FromMap(embeddingMap, "timeout_ms", 30000),
+			TimeoutMs: int64FromMap(embeddingMap, "timeout_ms", 0),
 		},
 	}
 }
@@ -801,7 +801,7 @@ func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnE
 
 	cfg.Critic = selectCompleteTurnLLMCoreConfig(cfg.Critic, criticMap, rt.CriticProvider, rt.CriticAPIKey, rt.CriticEndpoint, rt.CriticModel, "critic")
 	if rt.CriticTimeoutSec > 0 {
-		cfg.Critic.TimeoutMs = runtimeTimeoutMs(rt.CriticTimeoutSec, cfg.Critic.TimeoutMs)
+		cfg.Critic.TimeoutMs = runtimeTimeoutMs(rt.CriticTimeoutSec)
 	}
 	if rt.CriticTemperature != nil && criticMap["temperature"] == nil {
 		cfg.Critic.Temperature = *rt.CriticTemperature
@@ -873,12 +873,9 @@ func selectCompleteTurnLLMCoreConfig(metaCfg completeTurnLLMConfig, metaMap map[
 
 func (s *Server) selectCompleteTurnEmbeddingConfig(meta map[string]any, metaCfg completeTurnEmbeddingConfig, rt RuntimeConfig) completeTurnEmbeddingConfig {
 	metaCfg.APIKey = normalizeConfigSecret(metaCfg.APIKey)
-	if metaCfg.TimeoutMs <= 0 {
-		metaCfg.TimeoutMs = 30000
-	}
 	timeoutMs := metaCfg.TimeoutMs
 	if rt.EmbeddingTimeoutSec > 0 {
-		timeoutMs = runtimeTimeoutMs(rt.EmbeddingTimeoutSec, timeoutMs)
+		timeoutMs = runtimeTimeoutMs(rt.EmbeddingTimeoutSec)
 	}
 	metaCfg.TimeoutMs = timeoutMs
 	metaEmbedding := mapFromAny(meta["embedding"])
@@ -933,7 +930,11 @@ func (c completeTurnLLMConfig) hasConfig() bool {
 }
 
 func (c completeTurnLLMConfig) missingFields() []string {
-	return configMissingFieldsWithProvider(c.Provider, c.APIKey, c.Endpoint, c.Model)
+	missing := configMissingFieldsWithProvider(c.Provider, c.APIKey, c.Endpoint, c.Model)
+	if c.TimeoutMs <= 0 {
+		missing = append(missing, "timeout_ms")
+	}
+	return missing
 }
 
 func (c completeTurnLLMConfig) hasAnyAuthorityConfigField() bool {
@@ -947,7 +948,11 @@ func (c completeTurnEmbeddingConfig) hasConfig() bool {
 }
 
 func (c completeTurnEmbeddingConfig) missingFields() []string {
-	return configMissingFieldsWithProvider(c.Provider, c.APIKey, c.Endpoint, c.Model)
+	missing := configMissingFieldsWithProvider(c.Provider, c.APIKey, c.Endpoint, c.Model)
+	if c.TimeoutMs <= 0 {
+		missing = append(missing, "timeout_ms")
+	}
+	return missing
 }
 
 func (c completeTurnEmbeddingConfig) hasAnyConfigField() bool {

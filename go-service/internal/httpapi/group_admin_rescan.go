@@ -344,6 +344,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 				processedTurns = append(processedTurns, turn)
 				queued++
 				reopened++
+				s.wakeMemoryWorkers()
 				if auditErr := s.Store.SaveAuditLog(ctx, &store.AuditLog{
 					ChatSessionID: sid,
 					EventType:     "memory_reprocessing_reopened",

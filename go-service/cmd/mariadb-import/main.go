@@ -212,7 +212,7 @@ func main() {
 	dsn := flag.String("dsn", os.Getenv("AC_MARIADB_DSN"), "MariaDB DSN. Defaults to AC_MARIADB_DSN.")
 	outPath := flag.String("out", "", "Path to write import JSON report. Defaults to stdout.")
 	execute := flag.Bool("execute", false, "Required to write rows into MariaDB.")
-	timeout := flag.Duration("timeout", 60*time.Second, "Import timeout.")
+	timeout := flag.Duration("timeout", 0, "Import timeout (0 = no local deadline).")
 	flag.Parse()
 
 	if *exportDir == "" {
@@ -239,6 +239,12 @@ func main() {
 		writeReport(report, *outPath)
 		os.Exit(2)
 	}
+	if *timeout < 0 {
+		report.Status = "failed"
+		report.Errors = append(report.Errors, "--timeout must not be negative")
+		writeReport(report, *outPath)
+		os.Exit(2)
+	}
 
 	db, err := sql.Open("mysql", *dsn)
 	if err != nil {
@@ -249,7 +255,11 @@ func main() {
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx := context.Background()
+	cancel := func() {}
+	if *timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+	}
 	defer cancel()
 
 	report, err = importExport(ctx, db, absExportDir, *execute)

@@ -491,13 +491,18 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if lifecycleOutbox {
-		results := s.processMemoryVectorOutboxBatch(
-			ctx,
-			fmt.Sprintf("session-delete:%s", sid),
-			time.Now().UTC(),
-			30*time.Second,
-			128,
-		)
+		runtimeConfig := s.runtimeConfigSnapshot()
+		results := []memoryVectorProcessResult{}
+		if leaseDuration := memoryWorkerLeaseDuration(runtimeConfig); runtimeConfig.Synced && leaseDuration > 0 {
+			results = s.processMemoryVectorOutboxBatch(
+				ctx,
+				fmt.Sprintf("session-delete:%s", sid),
+				time.Now().UTC(),
+				leaseDuration,
+				128,
+			)
+		}
+		s.wakeMemoryWorkers()
 		completed := 0
 		retryable := 0
 		permanent := 0

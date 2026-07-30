@@ -189,13 +189,18 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		deletions["narrative_current_state_restore"] = map[string]any{"ok": true, "restored": restored}
 	}
 	if lifecycleOutbox {
-		results := s.processMemoryVectorOutboxBatch(
-			ctx,
-			fmt.Sprintf("rollback:%s:%d", sid, turnIndex),
-			time.Now().UTC(),
-			30*time.Second,
-			64,
-		)
+		runtimeConfig := s.runtimeConfigSnapshot()
+		results := []memoryVectorProcessResult{}
+		if leaseDuration := memoryWorkerLeaseDuration(runtimeConfig); runtimeConfig.Synced && leaseDuration > 0 {
+			results = s.processMemoryVectorOutboxBatch(
+				ctx,
+				fmt.Sprintf("rollback:%s:%d", sid, turnIndex),
+				time.Now().UTC(),
+				leaseDuration,
+				64,
+			)
+		}
+		s.wakeMemoryWorkers()
 		completed := 0
 		retryable := 0
 		permanent := 0

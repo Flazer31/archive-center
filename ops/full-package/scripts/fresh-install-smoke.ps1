@@ -3,10 +3,21 @@ param(
     [int]$Port = 28180,
     [string]$RuntimeProfile = "",
     [string]$VectorMode = "",
-    [string]$ChromaEndpoint = ""
+    [string]$ChromaEndpoint = "",
+    [Nullable[int]]$ReadinessTimeoutSeconds = $null,
+    [Nullable[int]]$ReadinessPollIntervalMilliseconds = $null,
+    [Nullable[int]]$RequestTimeoutSeconds = $null
 )
 
 $ErrorActionPreference = "Stop"
+foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMilliseconds, $RequestTimeoutSeconds)) {
+    if ($null -ne $timeoutSetting -and $timeoutSetting -lt 1) {
+        throw "Explicit timeout and polling values must be greater than zero."
+    }
+}
+if (($null -eq $ReadinessTimeoutSeconds) -ne ($null -eq $ReadinessPollIntervalMilliseconds)) {
+    throw "ReadinessTimeoutSeconds and ReadinessPollIntervalMilliseconds must be supplied together."
+}
 
 function Find-MariaDBProvider([string]$Root) {
     $hit = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
@@ -32,7 +43,11 @@ function Find-ChromaRuntime([string]$Root) {
 }
 
 function Invoke-Json($Uri) {
-    Invoke-RestMethod -Method GET -Uri $Uri -TimeoutSec 2
+    $invokeArgs = @{ Method = "GET"; Uri = $Uri }
+    if ($null -ne $RequestTimeoutSeconds) {
+        $invokeArgs.TimeoutSec = $RequestTimeoutSeconds
+    }
+    Invoke-RestMethod @invokeArgs
 }
 
 $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -123,6 +138,16 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     foreach ($marker in @("archive-center-updater.exe", "apply-pending", "applied_pending_health", "Wait-BackendMainReady", "/version", "statePreviousMarker", "Using preserved updater recovery runner", 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "status"', 'safety.Status -in @("no_state", "rolled_back", "nothing_to_rollback")', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "commit"', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback"', 'Warning: Archive Center updater is not installed. No pending state exists, so normal startup will continue.')) {
         if (-not $launcherScriptText.Contains($marker)) {
             [void]$failures.Add("launcher_update_marker_missing:$marker")
+        }
+    }
+    foreach ($marker in @('$ReadinessTimeoutSeconds = $null', '$ReadinessPollIntervalMilliseconds = $null', '$RequestTimeoutSeconds = $null', '$DependencyProbeTimeoutSeconds = $null', '$Process.HasExited', '$ready.ready -eq $true', 'if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds)', '$Process.WaitForExit($waitMilliseconds)')) {
+        if (-not $launcherScriptText.Contains($marker)) {
+            [void]$failures.Add("launcher_signal_readiness_marker_missing:$marker")
+        }
+    }
+    foreach ($forbiddenPattern in @('Start-Sleep\s+-(?:Seconds|Milliseconds)\s+\d+', 'WaitOne\(\d+', 'TimeoutSec\s+\d+', 'TimeoutSeconds\s*=\s*\d+', '-timeout\s+"?\d+')) {
+        if ($launcherScriptText -match $forbiddenPattern) {
+            [void]$failures.Add("launcher_hidden_fixed_time_policy_present:$forbiddenPattern")
         }
     }
     if ($launcherScriptText.Contains("archive-center-go.new.exe")) {
@@ -239,10 +264,8 @@ if (Test-Path -LiteralPath $backend -PathType Leaf) {
     $process = Start-Process -FilePath $backend -WorkingDirectory $packRoot -WindowStyle Hidden -PassThru
     try {
         $ok = $false
-        for ($i = 0; $i -lt 30; $i++) {
-            if ($process.HasExited) {
-                break
-            }
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $process.HasExited) {
             try {
                 $health = Invoke-Json "http://127.0.0.1:$Port/health"
                 if ($health.status -eq "ok") {
@@ -251,7 +274,20 @@ if (Test-Path -LiteralPath $backend -PathType Leaf) {
                 }
             } catch {
             }
-            Start-Sleep -Seconds 1
+            if ($null -eq $ReadinessTimeoutSeconds -or $null -eq $ReadinessPollIntervalMilliseconds) {
+                break
+            }
+            if ($null -ne $ReadinessTimeoutSeconds -and $watch.Elapsed.TotalSeconds -ge $ReadinessTimeoutSeconds) {
+                break
+            }
+            $remainingMilliseconds = [int][Math]::Ceiling(($ReadinessTimeoutSeconds - $watch.Elapsed.TotalSeconds) * 1000)
+            if ($remainingMilliseconds -le 0) {
+                break
+            }
+            $waitMilliseconds = [Math]::Min($ReadinessPollIntervalMilliseconds, $remainingMilliseconds)
+            if ($process.WaitForExit($waitMilliseconds)) {
+                break
+            }
         }
         if (-not $ok) {
             [void]$failures.Add("backend_shadow_health_failed")

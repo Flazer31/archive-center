@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -77,12 +78,24 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 		}
 	}
 
-	timeout := time.Duration(int64Value(req.TimeoutMs, 60000)) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 60 * time.Second
+	if req.TimeoutMs != nil && *req.TimeoutMs < 0 {
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "configuration",
+			Cause: errors.New("timeout_ms must not be negative"),
+		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	if req.TimeoutMs != nil && *req.TimeoutMs > 0 {
+		timeout := time.Duration(*req.TimeoutMs) * time.Millisecond
+		if timeout <= 0 || int64(timeout/time.Millisecond) != *req.TimeoutMs {
+			return nil, http.StatusBadRequest, &proxyLocalRequestError{
+				Stage: "configuration",
+				Cause: errors.New("timeout_ms is outside the supported duration range"),
+			}
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	switch provider {
 	case "claude":

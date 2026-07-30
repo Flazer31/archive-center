@@ -130,9 +130,7 @@ func runAppAccountPermissionProbe(ctx context.Context, db appAccountProbeDB, tab
 			return nil
 		}
 		cleanupAttempted = true
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		if _, err := db.ExecContext(cleanupCtx, "DROP TABLE IF EXISTS "+quotedTable); err != nil {
+		if _, err := db.ExecContext(context.WithoutCancel(ctx), "DROP TABLE IF EXISTS "+quotedTable); err != nil {
 			report.CleanupStatus = "failed"
 			report.Stages = append(report.Stages, failedAppAccountProbeStage("cleanup_drop", "DROP", err))
 			return err

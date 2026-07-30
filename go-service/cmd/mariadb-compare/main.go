@@ -111,11 +111,15 @@ func main() {
 	exportDir := flag.String("export-dir", "", "Path to export directory containing manifest.json and canonical NDJSON files.")
 	dsn := flag.String("dsn", os.Getenv("AC_MARIADB_DSN"), "MariaDB DSN. Defaults to AC_MARIADB_DSN.")
 	outPath := flag.String("out", "", "Path to write compare JSON report. Defaults to stdout.")
-	timeout := flag.Duration("timeout", 60*time.Second, "Compare timeout.")
+	timeout := flag.Duration("timeout", 0, "Compare timeout (0 = no local deadline).")
 	flag.Parse()
 
 	if *exportDir == "" {
 		fmt.Fprintln(os.Stderr, "error: --export-dir is required")
+		os.Exit(2)
+	}
+	if *timeout < 0 {
+		fmt.Fprintln(os.Stderr, "error: --timeout must not be negative")
 		os.Exit(2)
 	}
 
@@ -125,7 +129,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx := context.Background()
+	cancel := func() {}
+	if *timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+	}
 	defer cancel()
 
 	report, err := runCompare(ctx, absExportDir, *dsn)

@@ -29,8 +29,6 @@ func OpenMariaDB(dsn string) (Store, error) {
 	}
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
-	db.SetConnMaxIdleTime(2 * time.Minute)
-	db.SetConnMaxLifetime(30 * time.Minute)
 	return &mariadbStore{db: db}, nil
 }
 

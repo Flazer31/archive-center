@@ -269,6 +269,7 @@ func TestCanonPackLifecycleRefreshesOnlyReferenceVectorCollection(t *testing.T) 
 		RuntimeConfig: RuntimeConfig{
 			Synced: true, EmbeddingProvider: "openai", EmbeddingAPIKey: "key",
 			EmbeddingEndpoint: embeddingServer.URL, EmbeddingModel: "embed-reference",
+			EmbeddingTimeoutSec: 30,
 		},
 	}
 	status, result := srv.refreshCanonPackReferenceIndex(context.Background(), &store.CanonPackInstall{WorkID: "work-1"}, nil)

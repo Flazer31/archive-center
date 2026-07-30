@@ -53,7 +53,7 @@ func NewHarness(pythonURL, goURL string) *Harness {
 	return &Harness{
 		PythonBaseURL: strings.TrimRight(pythonURL, "/"),
 		GoBaseURL:     strings.TrimRight(goURL, "/"),
-		HTTPClient:    &http.Client{Timeout: 10 * time.Second},
+		HTTPClient:    &http.Client{},
 	}
 }
 

@@ -80,12 +80,10 @@ func (s *Server) replaceCompleteTurnLogicalTail(ctx context.Context, sid string,
 			"logical_turn_replace_transaction_failed", "canonical_replace", true, false, err,
 		)
 	}
-	// Canonical replacement is already committed. Vector work is drained from
-	// the durable outbox; provider failure records retry state and cannot undo
-	// or falsely complete the MariaDB source transition.
-	s.processMemoryVectorOutboxBatch(
-		ctx, fmt.Sprintf("complete-turn:%s", sid), now, 30*time.Second, 64,
-	)
+	// Canonical replacement is already committed. Wake the durable outbox
+	// worker; provider failure records retry state and cannot undo or falsely
+	// complete the MariaDB source transition.
+	s.wakeMemoryWorkers()
 	if _, err := clearReferenceRuntimeCandidatesAfterRollback(ctx, s.Store, sid, turnIndex); err != nil {
 		return newLogicalTurnReplacementError(
 			"logical_turn_reference_cleanup_failed", "reference_cleanup", true, true, err,

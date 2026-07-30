@@ -160,3 +160,27 @@ func TestRunChromaRoundTripProbeRejectsMissingEndpointWithoutMutation(t *testing
 		t.Fatalf("unexpected report: %+v", report)
 	}
 }
+
+func TestRunChromaRoundTripProbeCleanupUsesParentContextWithoutSuppliedTimeout(t *testing.T) {
+	state := &chromaProbeServerState{}
+	server := newChromaProbeServer(t, state)
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	report, err := RunChromaRoundTripProbe(ctx, ChromaRoundTripProbeConfig{
+		Endpoint: server.URL,
+		APIPath:  "/api/v2",
+		RunID:    "cancelled-parent",
+	})
+	if err == nil {
+		t.Fatal("expected cancelled parent context failure")
+	}
+	if report.CleanupStatus != "failed" {
+		t.Fatalf("cleanup escaped cancelled parent without a caller timeout: %+v", report)
+	}
+	if len(report.Stages) < 2 || report.Stages[len(report.Stages)-1].Name != "cleanup_collection" ||
+		report.Stages[len(report.Stages)-1].Status != "failed" {
+		t.Fatalf("cleanup stage=%+v", report.Stages)
+	}
+}

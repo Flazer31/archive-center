@@ -17,7 +17,7 @@ var (
 	goBase     = flag.String("go-base", "http://127.0.0.1:28080", "Go shadow backend base URL")
 	out        = flag.String("out", "", "Output file path (empty = stdout)")
 	jsonOut    = flag.String("json-out", "", "JSON output file path (empty = none)")
-	timeout    = flag.Duration("timeout", 30*time.Second, "Per-request timeout")
+	timeout    = flag.Duration("timeout", 0, "Per-request timeout (0 = no local deadline)")
 	maxDiffs   = flag.Int("max-diffs", 20, "Maximum diffs to report per endpoint")
 	sessionID  = flag.String("session-id", "shadow-parity-fake-sid", "Session id used for session-scoped probes; non-default values enable data-backed explorer/KG probe query params.")
 )
@@ -123,6 +123,9 @@ func main() {
 }
 
 func run(pythonBase, goBase, out, jsonOut string, timeout time.Duration, maxDiffs int, sessionID string) error {
+	if timeout < 0 {
+		return fmt.Errorf("timeout must not be negative")
+	}
 	fakeSID := strings.TrimSpace(sessionID)
 	if fakeSID == "" {
 		fakeSID = "shadow-parity-fake-sid"

@@ -194,10 +194,11 @@ func TestSessionNormalizeRescanMetadataDoesNotReplaySuccessfulCriticCalls(t *tes
 
 	meta := adminSessionNormalizeClientMeta(map[string]any{
 		"critic": map[string]any{
-			"api_key":  "sk-normalize",
-			"endpoint": "https://api.example.com/v1",
-			"model":    "normalize-critic",
-			"provider": "openai",
+			"api_key":    "sk-normalize",
+			"endpoint":   "https://api.example.com/v1",
+			"model":      "normalize-critic",
+			"provider":   "openai",
+			"timeout_ms": 45000,
 		},
 	})
 	req := adminRescanRequest{ChatSessionID: sessionID, MaxItems: 1000, ClientMeta: meta}

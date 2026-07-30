@@ -254,6 +254,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	result.PreciseMemoryUnits += committed.PreciseInserted + committed.PreciseReactivated
 	if committed.VectorOperations > 0 {
 		result.VectorStatus = "queued"
+		s.wakeMemoryWorkers()
 	}
 	if len(preciseUnits) > 0 {
 		result.Attempted += len(preciseUnits)

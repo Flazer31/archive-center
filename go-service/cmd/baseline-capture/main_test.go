@@ -18,6 +18,9 @@ func TestValidateFlags(t *testing.T) {
 	if err := ValidateFlags(5, 2, 30, 500, 0, false); err != nil {
 		t.Errorf("unexpected error for count=5, timeout=2: %v", err)
 	}
+	if err := ValidateFlags(1, 0, 0, 0, 0, true); err != nil {
+		t.Errorf("unexpected error for caller-unbounded timing: %v", err)
+	}
 
 	cases := []struct {
 		count             int
@@ -30,10 +33,9 @@ func TestValidateFlags(t *testing.T) {
 	}{
 		{0, 1, 30, 500, 0, false, "request count must be > 0"},
 		{-1, 1, 30, 500, 0, false, "request count must be > 0"},
-		{1, 0, 30, 500, 0, false, "timeout must be > 0"},
-		{1, -1, 30, 500, 0, false, "timeout must be > 0"},
-		{1, 1, 0, 500, 0, true, "startup-timeout must be > 0 when wait-ready is enabled"},
-		{1, 1, 30, 0, 0, false, "startup-interval-ms must be > 0"},
+		{1, -1, 30, 500, 0, false, "timeout must be >= 0"},
+		{1, 1, -1, 500, 0, true, "startup-timeout must be >= 0"},
+		{1, 1, 30, -1, 0, true, "startup-interval-ms must be >= 0"},
 		{1, 1, 30, 500, -1, false, "pid must be >= 0"},
 	}
 
@@ -71,6 +73,23 @@ func TestWaitForReadySuccess(t *testing.T) {
 	}
 	if elapsed <= 0 {
 		t.Error("elapsed should be > 0")
+	}
+}
+
+func TestWaitForReadyZeroIntervalDoesNotRetry(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	gotAttempts, _, err := WaitForReady(context.Background(), ts.Client(), ts.URL, 0)
+	if err == nil || !strings.Contains(err.Error(), "polling is disabled") {
+		t.Fatalf("error = %v, want polling-disabled failure", err)
+	}
+	if gotAttempts != 1 || attempts != 1 {
+		t.Fatalf("attempt counts = function:%d server:%d, want exactly one probe", gotAttempts, attempts)
 	}
 }
 

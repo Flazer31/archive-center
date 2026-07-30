@@ -2,7 +2,7 @@
 //@display-name Risu Recomposer
 //@author recomposer
 //@api 3.0
-//@version 0.1.29
+//@version 0.1.31
 
 
 /*
@@ -14,8 +14,8 @@
   "use strict";
 
   const PLUGIN_ID = "risu_recomposer";
-  const VERSION = "0.1.29";
-  const BUILD_MARKER = "VISIBLE-DRAFT-QUALITY-PROOF-20260729";
+  const VERSION = "0.1.31";
+  const BUILD_MARKER = "ARCHIVE-CENTER-OPTIONAL-ENHANCEMENT-20260730";
   const LOG_PREFIX = "[Recomposer]";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings_v1`;
   const TRACE_KEY = `${PLUGIN_ID}_trace_v1`;
@@ -29,6 +29,9 @@
   const PLANNER_MAX_ITEMS_PER_FIELD = 2;
   const PLANNER_MAX_ITEMS_TOTAL = 12;
   const INPUT_CONTRACT_MARKER = "[Risu Recomposer Turn Contract v1]";
+  const ARCHIVE_CENTER_BRIDGE_KEY = "__RISU_ARCHIVE_CENTER_RECOMPOSER_V1__";
+  const ARCHIVE_CENTER_BRIDGE_CONTRACT = "archive_center.recomposer_bridge.v1";
+  const ARCHIVE_CENTER_ENHANCEMENT_CONTRACT = "archive_center.recomposer_enhancement.v1";
   const INPUT_DEADLINE_MS = Object.freeze({
     fast: 8000,
     balanced: 50000,
@@ -40,7 +43,7 @@
     quality: 4,
   });
   const OUTPUT_HTTP_ATTEMPT_BUDGET = Object.freeze({
-    fast: 7,
+    fast: 8,
     balanced: 9,
     quality: 12,
   });
@@ -598,6 +601,145 @@
     return [];
   }
 
+  function readArchiveCenterEnhancement(latestUserInput) {
+    try {
+      const envelope = asObject(globalThis[ARCHIVE_CENTER_BRIDGE_KEY]);
+      const contract = asObject(envelope.enhancement_contract);
+      const observation = asObject(envelope.payload_application_observation);
+      if (envelope.contract_version !== ARCHIVE_CENTER_BRIDGE_CONTRACT
+        || envelope.owner !== "archive_center_host_adapter"
+        || envelope.transport_only !== true
+        || contract.contract_version !== ARCHIVE_CENTER_ENHANCEMENT_CONTRACT
+        || contract.owner !== "go"
+        || contract.read_only !== true
+        || contract.optional_enhancement !== true
+        || contract.standalone_fallback_required !== true
+        || observation.payload_application_status !== "applied") {
+        return null;
+      }
+      const expiresAt = Number(envelope.expires_at_ms || 0);
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
+      const input = safeString(latestUserInput);
+      const expectedDigest = stableDigest(input);
+      const bindings = arrayFromCollection(envelope.input_bindings);
+      const bound = bindings.length
+        ? bindings.some((binding) => (
+            safeString(binding && binding.digest) === expectedDigest
+            && Number(binding && binding.chars || 0) === input.length
+          ))
+        : (
+            safeString(envelope.input_digest) === expectedDigest
+            && Number(envelope.input_chars || 0) === input.length
+          );
+      if (!bound) return null;
+      return deepClone(envelope);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function archiveCenterEnhancementTrace(envelope, lanes) {
+    const contract = asObject(envelope && envelope.enhancement_contract);
+    const features = asObject(contract.feature_status);
+    const featureSummary = {};
+    Object.keys(features).forEach((key) => {
+      const feature = asObject(features[key]);
+      featureSummary[key] = {
+        status: safeString(feature.status, "empty"),
+        selected_count: clampNumber(feature.selected_count, 0, 100000, 0),
+        source_mode: safeString(feature.source_mode),
+        call_status: safeString(feature.call_status),
+      };
+    });
+    return {
+      detected: true,
+      mode: "archive_center_enhanced",
+      contract_version: safeString(contract.contract_version),
+      status: safeString(contract.status, "empty"),
+      session_id: safeString(envelope && envelope.session_id),
+      turn_index: clampNumber(envelope && envelope.turn_index, 0, 1000000000, 0),
+      lane_count: arrayFromCollection(lanes).length,
+      evidence_chars: arrayFromCollection(lanes).reduce(
+        (total, lane) => total + safeString(lane && lane.text).length,
+        0
+      ),
+      features: featureSummary,
+      same_turn_critic_result_available: contract.same_turn_critic_result_available === true,
+      transport: "transient_current_turn_only",
+    };
+  }
+
+  function applyArchiveCenterEnhancement(ctx, envelope, settings, trace) {
+    if (!ctx || !envelope) return ctx;
+    const contract = asObject(envelope.enhancement_contract);
+    const memoryPlan = asObject(envelope.memory_delivery_plan);
+    const semantics = asObject(contract.lane_semantics);
+    const lanes = [];
+    arrayFromCollection(memoryPlan.classes).forEach((rawClass) => {
+      const lane = asObject(rawClass);
+      const key = safeString(lane.key).trim();
+      const text = redactSensitiveText(filterExcludedContext(lane.text));
+      const selectedCount = clampNumber(lane.selected_count, 0, 100000, 0);
+      if (!key || !text.trim() || selectedCount < 1 || !safeString(semantics[key])) return;
+      lanes.push({
+        key,
+        evidence_ref: `archive_center_${key}`,
+        semantic_role: safeString(semantics[key]),
+        text,
+        selected_count: selectedCount,
+        used_chars: clampNumber(lane.used_chars, 0, 1000000, text.length),
+      });
+    });
+    const guidance = asObject(envelope.guidance_application_trace);
+    const guidanceText = redactSensitiveText(filterExcludedContext(guidance.final_text));
+    if (guidanceText.trim() && clampNumber(guidance.applied_count, 0, 100000, 0) > 0) {
+      lanes.push({
+        key: "output_guidance",
+        evidence_ref: "archive_center_supervisor_guidance",
+        semantic_role: safeString(semantics.output_guidance, "supervisor_current_turn"),
+        text: guidanceText,
+        selected_count: clampNumber(guidance.applied_count, 0, 100000, 0),
+        used_chars: guidanceText.length,
+      });
+    }
+    if (!lanes.length && safeString(contract.status) === "empty") {
+      if (trace) trace.archive_center = archiveCenterEnhancementTrace(envelope, lanes);
+      return ctx;
+    }
+    ctx.archive_center_context = {
+      contract_version: safeString(contract.contract_version),
+      status: safeString(contract.status, "ready"),
+      owner: "go",
+      read_only: true,
+      session_id: safeString(envelope.session_id),
+      turn_index: clampNumber(envelope.turn_index, 0, 1000000000, 0),
+      privacy: deepClone(asObject(contract.privacy)),
+      feature_status: deepClone(asObject(contract.feature_status)),
+      lanes,
+      memory_lineage: deepClone(asObject(envelope.memory_delivery_lineage)),
+      payload_application_observation: deepClone(asObject(envelope.payload_application_observation)),
+    };
+    ctx.sources.archive_center = {
+      available: lanes.length > 0,
+      source: ARCHIVE_CENTER_ENHANCEMENT_CONTRACT,
+      count: lanes.reduce((total, lane) => total + lane.selected_count, 0),
+      active_count: lanes.length,
+    };
+    const limit = settings
+      ? clampNumber(settings.context_char_limit, 500, 50000, 6000)
+      : 6000;
+    ctx.bounded_context_block = buildBoundedContextBlock(ctx, limit);
+    ctx.manifest = buildContextManifest(ctx, settings);
+    if (trace) {
+      trace.archive_center = archiveCenterEnhancementTrace(envelope, lanes);
+      if (trace.input_enhance) {
+        trace.input_enhance.manifest_id = ctx.manifest.snapshot_id;
+        trace.input_enhance.source_availability = ctx.manifest.source_availability;
+      }
+    }
+    return ctx;
+  }
+
   function truncate(text, max) {
     const s = safeString(text);
     const n = clampNumber(max, 1, 100000, 200);
@@ -916,6 +1058,9 @@
         residual_quality_checked: 0,
         residual_quality_issues: 0,
         realized_contributions: [],
+        structured_recovery_attempted: false,
+        structured_recovery_succeeded: false,
+        validation_diagnostics: [],
         reason: "",
       },
       fusion_plan: {
@@ -948,6 +1093,19 @@
         retry_reuse_count: 0,
         transport_cancellation: "not_requested",
       },
+      archive_center: {
+        detected: false,
+        mode: "standalone",
+        contract_version: "",
+        status: "not_detected",
+        session_id: "",
+        turn_index: 0,
+        lane_count: 0,
+        evidence_chars: 0,
+        features: {},
+        same_turn_critic_result_available: false,
+        transport: "",
+      },
       director_evidence: [],
       applied_evidence: [],
       attempted_evidence: [],
@@ -972,6 +1130,7 @@
         established_facts: 0,
         scene_beats: 0,
         unresolved_hooks: 0,
+        response_directives: 0,
         hard_constraints: 0,
         protected_structures: 0,
         unknown_semantics: [],
@@ -1180,7 +1339,24 @@
   function isWhollyMetaArtifactText(text) {
     const value = safeString(text).trim();
     if (!value) return false;
-    return /^<(thoughts?|analysis|thinking|think)\b[^>]*>[\s\S]*<\/\1>$/i.test(value);
+    const extracted = extractVisibleAssistantOutput(value);
+    return extracted.removed_block_count > 0 && !extracted.text.trim();
+  }
+
+  function normalizeEscapedReasoningTags(text) {
+    return safeString(text).replace(
+      /&lt;\s*(\/?)\s*(thoughts?|analysis|thinking|think)\b((?:(?!&gt;)[\s\S])*?)&gt;/gi,
+      (_match, slash, name, suffix) => `<${slash || ""}${name}${suffix || ""}>`
+    );
+  }
+
+  function isMetaOnlyHeadingTitle(text) {
+    const title = safeString(text)
+      .replace(/[*_`~]+/g, "")
+      .replace(/[:：]\s*$/, "")
+      .trim()
+      .toLowerCase();
+    return /^(?:thinking(?:\s+process)?|analysis|reasoning|chain\s+of\s+thought|approved)\b/.test(title);
   }
 
   function visibleResponseBoundary(text) {
@@ -1200,19 +1376,31 @@
       };
       if (!selected || candidate.start < selected.start) selected = candidate;
     });
+    const headingPattern = /(?:^|\n)([ \t]*#{1,6}[ \t]+([^\n]+)(?:\n|$))/g;
+    let headingMatch;
+    while ((headingMatch = headingPattern.exec(source))) {
+      if (isMetaOnlyHeadingTitle(headingMatch[2])) continue;
+      const newlinePrefix = headingMatch[0][0] === "\n" ? 1 : 0;
+      const headingStart = headingMatch.index + newlinePrefix;
+      const candidate = {
+        start: headingStart,
+        content_start: headingStart,
+        marker: headingMatch[1],
+      };
+      if (!selected || candidate.start < selected.start) selected = candidate;
+      break;
+    }
     return selected;
   }
 
   function extractVisibleAssistantOutput(text) {
     const source = safeString(text);
-    let visible = source;
+    let visible = normalizeEscapedReasoningTags(source);
     let removedBlocks = 0;
-    let removedChars = 0;
     let ambiguousUnclosed = false;
     const closedPattern = /<(thoughts?|analysis|thinking|think)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
-    visible = visible.replace(closedPattern, (match) => {
+    visible = visible.replace(closedPattern, () => {
       removedBlocks++;
-      removedChars += match.length;
       return "";
     });
 
@@ -1223,23 +1411,37 @@
       if (boundary) {
         const visibleStart = remainderStart + boundary.content_start;
         removedBlocks++;
-        removedChars += visibleStart;
         visible = visible.slice(visibleStart);
       } else {
         ambiguousUnclosed = true;
         removedBlocks++;
-        removedChars += visible.length;
+        visible = "";
+      }
+    }
+
+    const markdownHeader = /^\s*(?:\*{1,2}|_{1,2})?\s*(?:thinking(?:\s+process)?|analysis|reasoning|chain\s+of\s+thought)\s*[:：]?\s*(?:\*{1,2}|_{1,2})?\s*(?:\n|$)/i.exec(visible);
+    if (markdownHeader) {
+      const remainderStart = markdownHeader.index + markdownHeader[0].length;
+      const boundary = visibleResponseBoundary(visible.slice(remainderStart));
+      if (boundary) {
+        visible = visible.slice(remainderStart + boundary.content_start);
+        removedBlocks++;
+      } else {
+        ambiguousUnclosed = true;
+        removedBlocks++;
         visible = "";
       }
     }
 
     if (removedBlocks > 0) {
       visible = visible.replace(/^\s*\n+/, "").replace(/\n{3,}/g, "\n\n");
+    } else {
+      visible = source;
     }
     return {
       text: visible,
       removed_block_count: removedBlocks,
-      removed_chars: removedChars,
+      removed_chars: Math.max(0, source.length - visible.length),
       ambiguous_unclosed: ambiguousUnclosed,
       changed: visible !== source,
     };
@@ -1649,7 +1851,14 @@
     if (sourceAvailability.lorebook && sourceAvailability.lorebook.unknown_activation_count > 0) {
       warnings.push("lorebook_activation_unproven");
     }
+    const archiveEvidence = {};
+    arrayFromCollection(ctx.archive_center_context && ctx.archive_center_context.lanes).forEach((lane) => {
+      const ref = safeString(lane && lane.evidence_ref);
+      const text = safeString(lane && lane.text);
+      if (ref && text) archiveEvidence[ref] = text;
+    });
     const evidence = {
+      ...archiveEvidence,
       payload_system: ctx.system_context,
       payload_recent_chat: ctx.recent_chat,
       payload_user_input: ctx.latest_user_input,
@@ -1662,7 +1871,7 @@
     };
     const manifestCore = {
       schema: "context_manifest.v1",
-      mode: "standalone",
+      mode: Object.keys(archiveEvidence).length ? "archive_center_enhanced" : "standalone",
       latest_user_input: ctx.latest_user_input,
       recent_messages: ctx.recent_chat,
       system_and_character_instructions: ctx.system_context,
@@ -1684,6 +1893,9 @@
       collection_warnings: uniqueList(warnings),
       evidence_refs: Object.keys(evidence).filter((key) => !!evidence[key]),
       character_budget: clampNumber(settings && settings.context_char_limit, 500, 50000, 6000),
+      archive_center_context: ctx.archive_center_context
+        ? deepClone(ctx.archive_center_context)
+        : null,
     };
     manifestCore.snapshot_id = `ctx_${Date.now()}_${stableDigest(manifestCore)}`;
     return manifestCore;
@@ -1691,6 +1903,12 @@
 
   function buildBoundedContextBlock(ctx, limit) {
     const parts = [];
+    arrayFromCollection(ctx.archive_center_context && ctx.archive_center_context.lanes).forEach((lane) => {
+      const ref = safeString(lane && lane.evidence_ref);
+      const semanticRole = safeString(lane && lane.semantic_role);
+      const text = safeString(lane && lane.text);
+      if (ref && text) parts.push(`[${ref}] [${semanticRole}]\n${text}`);
+    });
     if (ctx.system_context) parts.push(`[payload_system]\n${ctx.system_context}`);
     if (ctx.recent_chat) parts.push(`[Payload Recent Chat] [payload_recent_chat]\n${ctx.recent_chat}`);
     if (ctx.character) parts.push(`[character]\n${ctx.character}`);
@@ -1808,6 +2026,10 @@
 
     ctx.bounded_context_block = buildBoundedContextBlock(ctx, limit);
     ctx.manifest = buildContextManifest(ctx, settings);
+    const archiveEnvelope = readArchiveCenterEnhancement(ctx.latest_user_input);
+    if (archiveEnvelope) {
+      applyArchiveCenterEnhancement(ctx, archiveEnvelope, settings, trace);
+    }
     if (trace && trace.input_enhance) {
       trace.input_enhance.manifest_id = ctx.manifest.snapshot_id;
       trace.input_enhance.source_availability = ctx.manifest.source_availability;
@@ -2942,7 +3164,7 @@
   function fuseTurnContract(manifest, fragments) {
     const contract = {
       schema: "turn_contract.v1",
-      mode: "standalone",
+      mode: safeString(manifest && manifest.mode, "standalone"),
       source_snapshot_id: safeString(manifest && manifest.snapshot_id),
       immutable_constraints: [],
       writer_only_secrets: [],
@@ -2961,6 +3183,9 @@
       source_availability: asObject(manifest && manifest.source_availability),
       planner_roles: [],
       fusion_state: fragments && fragments.length ? "planner_fused" : "manifest_fallback",
+      archive_center_context: manifest && manifest.archive_center_context
+        ? deepClone(manifest.archive_center_context)
+        : null,
     };
     const fieldMap = {
       required_facts: "immutable_constraints",
@@ -3017,6 +3242,32 @@
     return contract;
   }
 
+  function attachArchiveCenterContextToTurnContract(turnContract, manifest) {
+    const archiveContext = manifest && manifest.archive_center_context;
+    if (!archiveContext) return turnContract;
+    const contract = deepClone(asObject(turnContract));
+    contract.schema = safeString(contract.schema, "turn_contract.v1");
+    contract.mode = "archive_center_enhanced";
+    contract.archive_center_context = deepClone(archiveContext);
+    contract.evidence_refs = uniqueList(
+      arrayFromCollection(contract.evidence_refs)
+        .concat(arrayFromCollection(manifest.evidence_refs))
+        .map((ref) => safeString(ref))
+        .filter(Boolean)
+    );
+    contract.source_availability = Object.assign(
+      {},
+      asObject(contract.source_availability),
+      asObject(manifest.source_availability)
+    );
+    const digestSource = Object.assign({}, contract);
+    delete digestSource.contract_id;
+    delete digestSource.contract_digest;
+    contract.contract_digest = stableDigest(digestSource);
+    contract.contract_id = `turn_${Date.now()}_${contract.contract_digest}`;
+    return contract;
+  }
+
   function compactManifestForPlanner(manifest) {
     const maxChars = clampNumber(manifest && manifest.character_budget, 500, 50000, 6000);
     const sourceMap = asObject(manifest && manifest.evidence_sources);
@@ -3034,11 +3285,25 @@
     return {
       schema: "context_manifest.v1",
       snapshot_id: safeString(manifest && manifest.snapshot_id),
-      mode: "standalone",
+      mode: safeString(manifest && manifest.mode, "standalone"),
       evidence_sources: evidenceSources,
       evidence_refs: Object.keys(evidenceSources),
       source_availability: asObject(manifest && manifest.source_availability),
       collection_warnings: arrayFromCollection(manifest && manifest.collection_warnings),
+      archive_center_context: manifest && manifest.archive_center_context
+        ? {
+            contract_version: safeString(manifest.archive_center_context.contract_version),
+            status: safeString(manifest.archive_center_context.status),
+            feature_status: deepClone(asObject(manifest.archive_center_context.feature_status)),
+            privacy: deepClone(asObject(manifest.archive_center_context.privacy)),
+            lanes: arrayFromCollection(manifest.archive_center_context.lanes).map((lane) => ({
+              key: safeString(lane && lane.key),
+              evidence_ref: safeString(lane && lane.evidence_ref),
+              semantic_role: safeString(lane && lane.semantic_role),
+              selected_count: clampNumber(lane && lane.selected_count, 0, 100000, 0),
+            })),
+          }
+        : null,
       bounded_chars: maxChars - remaining,
     };
   }
@@ -3076,6 +3341,20 @@
     });
     projection.source_availability = contract.source_availability;
     projection.planner_roles = contract.planner_roles;
+    if (contract.archive_center_context) {
+      projection.archive_center_context = {
+        contract_version: safeString(contract.archive_center_context.contract_version),
+        status: safeString(contract.archive_center_context.status),
+        feature_status: deepClone(asObject(contract.archive_center_context.feature_status)),
+        privacy: deepClone(asObject(contract.archive_center_context.privacy)),
+        lane_refs: arrayFromCollection(contract.archive_center_context.lanes).map((lane) => ({
+          key: safeString(lane && lane.key),
+          evidence_ref: safeString(lane && lane.evidence_ref),
+          semantic_role: safeString(lane && lane.semantic_role),
+          selected_count: clampNumber(lane && lane.selected_count, 0, 100000, 0),
+        })),
+      };
+    }
     let encoded = JSON.stringify(projection);
     while (encoded.length > maxChars) {
       let trimmed = false;
@@ -3164,6 +3443,16 @@
     });
   }
 
+  function isPayloadUserDirectiveDuplicate(item, responseDirectives) {
+    const refs = uniqueList(arrayFromCollection(item && item.evidence_refs)
+      .map((ref) => safeString(ref))
+      .filter(Boolean));
+    if (!refs.length || refs.some((ref) => ref !== "payload_user_input")) return false;
+    return arrayFromCollection(responseDirectives).some((directive) =>
+      contractItemsConflict(item, directive)
+    );
+  }
+
   function uniqueDraftLedgerItems(items) {
     const seen = new Set();
     const result = [];
@@ -3182,21 +3471,87 @@
     return result;
   }
 
+  function archiveCenterLedgerItems(contract, keys, kind) {
+    const archive = asObject(asObject(contract).archive_center_context);
+    const allowed = new Set(arrayFromCollection(keys).map((key) => safeString(key)));
+    const result = [];
+    arrayFromCollection(archive.lanes).forEach((lane) => {
+      const key = safeString(lane && lane.key);
+      const evidenceRef = safeString(lane && lane.evidence_ref);
+      if (!allowed.has(key) || !evidenceRef) return;
+      const lines = safeString(lane && lane.text)
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !/^\[[^\]]+\]$/.test(line))
+        .slice(0, 16);
+      lines.forEach((line) => {
+        const text = truncate(line.replace(/^[-*]\s*/, ""), 700).trim();
+        if (!text) return;
+        const item = {
+          kind: safeString(kind),
+          text,
+          evidence_refs: [evidenceRef],
+          evidence_quote: truncate(line, 240),
+          status: "archive_center_go_selected",
+          archive_lane: key,
+          semantic_role: safeString(lane && lane.semantic_role),
+        };
+        item.ledger_id = `ledger_${stableDigest(item)}`;
+        result.push(item);
+      });
+    });
+    return uniqueDraftLedgerItems(result);
+  }
+
   function buildDraftLedger(draftZero, segments, turnContract) {
     const contract = asObject(turnContract);
+    const archiveObjectiveFacts = archiveCenterLedgerItems(
+      contract,
+      ["event_recent", "character_objective", "world_state", "direct_evidence"],
+      "archive_grounded_fact"
+    );
+    const archiveRelationshipState = archiveCenterLedgerItems(
+      contract,
+      ["subjective_relationship"],
+      "archive_subjective_relationship"
+    );
+    const archiveSecrets = archiveCenterLedgerItems(
+      contract,
+      ["protected_secret"],
+      "archive_writer_only_secret"
+    );
+    const archiveOpenThreads = archiveCenterLedgerItems(
+      contract,
+      ["unresolved_goal"],
+      "archive_open_thread"
+    );
+    const archiveSupervisorGuidance = archiveCenterLedgerItems(
+      contract,
+      ["output_guidance"],
+      "archive_supervisor_directive"
+    );
+    const responseDirectives = uniqueDraftLedgerItems(
+      draftLedgerItems(contract, "turn_objectives", "response_directive")
+        .concat(draftLedgerItems(contract, "prose_targets", "prose_directive"))
+        .concat(archiveSupervisorGuidance)
+    );
     const establishedFacts = uniqueDraftLedgerItems(
       draftLedgerItems(contract, "immutable_constraints", "established_fact")
         .concat(draftLedgerItems(contract, "character_visible_facts", "character_visible_fact"))
         .concat(draftLedgerItems(contract, "scene_state", "scene_state"))
+        .concat(archiveObjectiveFacts)
+    ).filter((item) => !isPayloadUserDirectiveDuplicate(item, responseDirectives));
+    const unresolvedHooks = uniqueDraftLedgerItems(
+      draftLedgerItems(contract, "open_threads", "unresolved_hook")
+        .concat(archiveOpenThreads)
     );
-    const unresolvedHooks = draftLedgerItems(contract, "open_threads", "unresolved_hook");
-    const sceneBeats = uniqueDraftLedgerItems(
-      unresolvedHooks.concat(draftLedgerItems(contract, "turn_objectives", "turn_objective"))
-    );
-    const relationshipState = draftLedgerItems(
-      contract,
-      "relationship_and_emotion_state",
-      "relationship_state"
+    const sceneBeats = uniqueDraftLedgerItems(unresolvedHooks);
+    const relationshipState = uniqueDraftLedgerItems(
+      draftLedgerItems(
+        contract,
+        "relationship_and_emotion_state",
+        "relationship_state"
+      ).concat(archiveRelationshipState)
     );
     const speakerAndPov = draftLedgerItems(
       contract,
@@ -3207,15 +3562,14 @@
       draftLedgerItems(contract, "writer_only_secrets", "writer_only_secret")
         .concat(draftLedgerItems(contract, "character_knowledge_scopes", "knowledge_scope"))
         .concat(draftLedgerItems(contract, "identity_and_alias_map", "identity_reveal_state"))
+        .concat(archiveSecrets)
     );
-    const userOwnedDecisions = speakerAndPov.concat(
-      draftLedgerItems(contract, "turn_objectives", "user_turn_objective")
-        .filter((item) => item.evidence_refs.indexOf("payload_user_input") >= 0)
-    );
+    const userOwnedDecisions = speakerAndPov.concat(responseDirectives);
     const hardConstraints = uniqueDraftLedgerItems(
       establishedFacts
         .concat(secretsAndReveal)
         .concat(speakerAndPov)
+        .concat(responseDirectives)
         .concat(draftLedgerItems(contract, "forbidden_regressions", "forbidden_regression"))
     );
     const protectedStructures = (segments || [])
@@ -3250,6 +3604,7 @@
       established_facts: establishedFacts,
       scene_beats: sceneBeats,
       unresolved_hooks: unresolvedHooks,
+      response_directives: responseDirectives,
       character_intentions: [],
       relationship_state: relationshipState,
       speaker_and_pov: speakerAndPov,
@@ -3260,6 +3615,17 @@
       mutable_sources: mutableSources,
       candidate_factual_additions: [],
       unknown_semantics: uniqueList(unknownSemantics),
+      archive_center: contract.archive_center_context
+        ? {
+            status: safeString(contract.archive_center_context.status),
+            lane_count: arrayFromCollection(contract.archive_center_context.lanes).length,
+            objective_fact_count: archiveObjectiveFacts.length,
+            subjective_memory_count: archiveRelationshipState.length,
+            writer_only_secret_count: archiveSecrets.length,
+            open_thread_count: archiveOpenThreads.length,
+            supervisor_directive_count: archiveSupervisorGuidance.length,
+          }
+        : null,
     };
     ledger.ledger_digest = stableDigest(ledger);
     return ledger;
@@ -3274,9 +3640,11 @@
       established_facts: arrayFromCollection(source.established_facts).length,
       scene_beats: arrayFromCollection(source.scene_beats).length,
       unresolved_hooks: arrayFromCollection(source.unresolved_hooks).length,
+      response_directives: arrayFromCollection(source.response_directives).length,
       hard_constraints: arrayFromCollection(source.hard_constraints).length,
       protected_structures: arrayFromCollection(source.protected_structures).length,
       unknown_semantics: uniqueList(arrayFromCollection(source.unknown_semantics).map((item) => safeString(item))),
+      archive_center: source.archive_center ? deepClone(source.archive_center) : null,
     };
   }
 
@@ -3284,8 +3652,21 @@
 
   function buildRolePrompt(role, profile, mutableSegs, contextBlock, allSegments, directorInfo) {
     const systemPrompt = safeString(profile.system_prompt || role.default_prompt);
-    const contextSection = contextBlock ? `\n\n--- Runtime Context (read-only) ---\n${contextBlock}\n--- End Context ---\n` : "";
     const draftLedger = asObject(directorInfo && directorInfo.draft_ledger);
+    const archiveContext = asObject(draftLedger.archive_center);
+    const archivePolicy = archiveContext.status
+      ? [
+          "Archive Center enhancement is active for this turn.",
+          "- Treat archive_grounded_fact as selected objective or verified evidence.",
+          "- Treat archive_subjective_relationship as one perspective's memory, belief, or relationship state, never universal truth.",
+          "- Treat archive_writer_only_secret as writer-only knowledge. Do not expose it through a character who lacks that knowledge.",
+          "- Treat archive_supervisor_directive as a current-turn composition requirement.",
+          "- Archive Center Critic evidence is accepted prior-turn evidence, not a same-turn Critic verdict.",
+        ].join("\n")
+      : "";
+    const contextSection = contextBlock
+      ? `\n\n--- Runtime Context (read-only) ---\n${archivePolicy ? archivePolicy + "\n\n" : ""}${contextBlock}\n--- End Context ---\n`
+      : "";
     const draftLedgerSection = draftLedger.schema === "draft_ledger.v1"
       ? `\n\n--- Draft Ledger (binding source map) ---\n${JSON.stringify(draftLedger)}\n--- End Draft Ledger ---\n`
       : "";
@@ -3328,7 +3709,7 @@
         type: segment.type,
         text: segment.type === "mutable" ? mutableFullText(segment) : preview(segment.text, 240),
       }));
-      userPrompt = `Prove or reject the FINAL Composer output against every binding semantic unit and required Fusion contribution.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nFinal Composer segments:\n${JSON.stringify(finalSegments)}\n\nSemantic Judgment:\n${JSON.stringify(asObject(directorInfo && directorInfo.semantic_judgment))}\n\nFusion Plan:\n${JSON.stringify(asObject(directorInfo && directorInfo.fusion_plan))}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Cover every established_facts ledger_id exactly once in fact_checks.\n- Cover every scene_beats ledger_id exactly once in beat_checks.\n- Cover every hard_constraints ledger_id exactly once in constraint_checks.\n- Cover every fusion_plan.required_contributions contribution_id exactly once in quality_gain_checks.\n- A quality gain is realized only when its exact evidence_quote appears in the required final segment and that exact wording was not already present in the corresponding original segment. Missing, unchanged, or regressed gains cannot pass.\n- Return exactly one residual_quality_checks item for each check_id: mechanics_and_wording, register_and_era, repetition_and_exposition, grounded_psychology_and_relationship, scene_coherence_and_ending.\n- Mark a residual check issue when the final scene retains an awkward or erroneous phrase, typo, register/era mismatch, repeated or flattened exposition, unsupported motive/emotion/relationship/knowledge assertion, weak opening or transition, or generic/explanatory ending. An issue requires an exact final-text quote and segment_id and cannot pass.\n- Mark missing, contradicted, violated, uncertain, regressed, or issue honestly. Uncertain is not a pass.\n- Record every secret, POV, identity, agency, meta, or output-contract failure as a hard_violation.\n- Record every new factual, relationship, location, object-state, backstory, event, motive, emotion, knowledge state, or personality assertion without original, Draft Ledger, or runtime evidence as an unsupported_addition.\n- output_contract fields must be booleans grounded in the final text.\n- Use verdict repair only when one targeted Composer repair can resolve all failures; then provide concrete segment-scoped repair_instructions for every missing contribution and residual issue.\n- Use verdict fail when the scene cannot be repaired without replacing its grounded event structure.\n- Do not write prose, advice, markdown, or reasoning.\n\nReturn compact JSON only:\n{"schema":"semantic_proof.v1","declared_verdict":"pass|repair|fail","fact_checks":[{"ledger_id":"fact_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"beat_checks":[{"ledger_id":"beat_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"constraint_checks":[{"ledger_id":"constraint_1","status":"satisfied|violated|uncertain","detail":"","evidence_quote":""}],"quality_gain_checks":[{"contribution_id":"gain_id","status":"realized|missing|regressed","detail":"","evidence_quote":"","segment_ids":["mutable_1"]}],"residual_quality_checks":[{"check_id":"mechanics_and_wording|register_and_era|repetition_and_exposition|grounded_psychology_and_relationship|scene_coherence_and_ending","status":"clean|issue","detail":"","evidence_quote":"","segment_ids":[]}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"unsupported_additions":[{"claim":"","reason":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[{"segment_id":"mutable_1","instruction":"","evidence_refs":[],"prohibited":[]}]}`;
+      userPrompt = `Prove or reject the FINAL Composer output against every binding semantic unit and required Fusion contribution.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nFinal Composer segments:\n${JSON.stringify(finalSegments)}\n\nSemantic Judgment:\n${JSON.stringify(asObject(directorInfo && directorInfo.semantic_judgment))}\n\nFusion Plan:\n${JSON.stringify(asObject(directorInfo && directorInfo.fusion_plan))}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Cover every established_facts ledger_id exactly once in fact_checks.\n- Cover every scene_beats ledger_id exactly once in beat_checks.\n- Cover every hard_constraints ledger_id exactly once in constraint_checks.\n- response_directives are execution constraints, not story facts or scene beats. Judge whether the final scene obeys them through constraint_checks; the user's command wording does not need to appear in the prose.\n- A preserved fact or beat evidence_quote must be an exact quote from the FINAL Composer prose. Never cite the user command, Draft Ledger wording, runtime context, or the original draft when that wording is absent from the final prose.\n- Cover every fusion_plan.required_contributions contribution_id exactly once in quality_gain_checks.\n- A quality gain is realized only when its exact evidence_quote appears in the required final segment and that exact wording was not already present in the corresponding original segment. Missing, unchanged, or regressed gains cannot pass.\n- Return exactly one residual_quality_checks item for each check_id: mechanics_and_wording, register_and_era, repetition_and_exposition, grounded_psychology_and_relationship, scene_coherence_and_ending.\n- Mark a residual check issue when the final scene retains an awkward or erroneous phrase, typo, register/era mismatch, repeated or flattened exposition, unsupported motive/emotion/relationship/knowledge assertion, weak opening or transition, or generic/explanatory ending. An issue requires an exact final-text quote and segment_id and cannot pass.\n- Mark missing, contradicted, violated, uncertain, regressed, or issue honestly. Uncertain is not a pass.\n- Record every secret, POV, identity, agency, meta, or output-contract failure as a hard_violation.\n- Record every new factual, relationship, location, object-state, backstory, event, motive, emotion, knowledge state, or personality assertion without original, Draft Ledger, or runtime evidence as an unsupported_addition.\n- output_contract fields must be booleans grounded in the final text.\n- Use verdict repair only when one targeted Composer repair can resolve all failures; then provide concrete segment-scoped repair_instructions for every missing contribution and residual issue.\n- Use verdict fail when the scene cannot be repaired without replacing its grounded event structure.\n- Do not write prose, advice, markdown, or reasoning.\n\nReturn compact JSON only:\n{"schema":"semantic_proof.v1","declared_verdict":"pass|repair|fail","fact_checks":[{"ledger_id":"fact_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"beat_checks":[{"ledger_id":"beat_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"constraint_checks":[{"ledger_id":"constraint_1","status":"satisfied|violated|uncertain","detail":"","evidence_quote":""}],"quality_gain_checks":[{"contribution_id":"gain_id","status":"realized|missing|regressed","detail":"","evidence_quote":"","segment_ids":["mutable_1"]}],"residual_quality_checks":[{"check_id":"mechanics_and_wording|register_and_era|repetition_and_exposition|grounded_psychology_and_relationship|scene_coherence_and_ending","status":"clean|issue","detail":"","evidence_quote":"","segment_ids":[]}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"unsupported_additions":[{"claim":"","reason":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[{"segment_id":"mutable_1","instruction":"","evidence_refs":[],"prohibited":[]}]}`;
     } else if (role.is_composer) {
       const mutableList = mutableSegs.map((s) => {
         const candidates = (directorInfo && directorInfo.candidateBundles && directorInfo.candidateBundles[s.id]) || [];
@@ -3721,6 +4102,17 @@
     "format_ok",
   ]);
 
+  function rejectSemanticProof(diagnostics, field, reason, detail) {
+    if (Array.isArray(diagnostics)) {
+      diagnostics.push({
+        code: `semantic_proof_${safeString(reason)}`,
+        field: safeString(field),
+        detail: truncate(detail, 500).trim(),
+      });
+    }
+    return null;
+  }
+
   function draftLedgerIdsForField(draftLedger, field) {
     return uniqueList(
       arrayFromCollection(asObject(draftLedger)[field])
@@ -3729,18 +4121,34 @@
     );
   }
 
-  function normalizeProofChecks(values, expectedIds, statuses) {
-    if (!Array.isArray(values)) return null;
+  function normalizeProofChecks(values, expectedIds, statuses, fieldName, diagnostics) {
+    if (!Array.isArray(values)) {
+      return rejectSemanticProof(diagnostics, fieldName, "expected_array", `received=${typeof values}`);
+    }
     const expected = new Set(expectedIds);
-    if (values.length !== expected.size) return null;
+    if (values.length !== expected.size) {
+      return rejectSemanticProof(
+        diagnostics,
+        fieldName,
+        "coverage_count_mismatch",
+        `expected=${expected.size} actual=${values.length}`
+      );
+    }
     const seen = new Set();
     const normalized = [];
-    for (const raw of values) {
+    for (let index = 0; index < values.length; index++) {
+      const raw = values[index];
       const item = asObject(raw);
       const ledgerId = safeString(item.ledger_id);
       const status = safeString(item.status);
-      if (!expected.has(ledgerId) || seen.has(ledgerId) || statuses.indexOf(status) < 0) {
-        return null;
+      if (!expected.has(ledgerId)) {
+        return rejectSemanticProof(diagnostics, `${fieldName}[${index}].ledger_id`, "unknown_id", ledgerId);
+      }
+      if (seen.has(ledgerId)) {
+        return rejectSemanticProof(diagnostics, `${fieldName}[${index}].ledger_id`, "duplicate_id", ledgerId);
+      }
+      if (statuses.indexOf(status) < 0) {
+        return rejectSemanticProof(diagnostics, `${fieldName}[${index}].status`, "invalid_status", status);
       }
       seen.add(ledgerId);
       normalized.push({
@@ -3759,26 +4167,47 @@
     allowedSegments,
     finalEvidenceText,
     finalTextBySegment,
-    originalTextBySegment
+    originalTextBySegment,
+    diagnostics
   ) {
     const required = arrayFromCollection(requiredContributions);
     if (!required.length) {
-      return values == null || (Array.isArray(values) && values.length === 0) ? [] : null;
+      return values == null || (Array.isArray(values) && values.length === 0)
+        ? []
+        : rejectSemanticProof(diagnostics, "quality_gain_checks", "unexpected_items", `actual=${arrayFromCollection(values).length}`);
     }
-    if (!Array.isArray(values) || values.length !== required.length) return null;
+    if (!Array.isArray(values)) {
+      return rejectSemanticProof(diagnostics, "quality_gain_checks", "expected_array", `received=${typeof values}`);
+    }
+    if (values.length !== required.length) {
+      return rejectSemanticProof(
+        diagnostics,
+        "quality_gain_checks",
+        "coverage_count_mismatch",
+        `expected=${required.length} actual=${values.length}`
+      );
+    }
     const expected = {};
     required.forEach((item) => {
       expected[safeString(item.contribution_id)] = item;
     });
     const seen = new Set();
     const normalized = [];
-    for (const raw of values) {
+    for (let index = 0; index < values.length; index++) {
+      const raw = values[index];
       const item = asObject(raw);
       const contributionId = safeString(item.contribution_id);
       const status = safeString(item.status);
       const expectedItem = expected[contributionId];
-      if (!expectedItem || seen.has(contributionId)
-          || PROOF_QUALITY_STATUSES.indexOf(status) < 0) return null;
+      if (!expectedItem) {
+        return rejectSemanticProof(diagnostics, `quality_gain_checks[${index}].contribution_id`, "unknown_id", contributionId);
+      }
+      if (seen.has(contributionId)) {
+        return rejectSemanticProof(diagnostics, `quality_gain_checks[${index}].contribution_id`, "duplicate_id", contributionId);
+      }
+      if (PROOF_QUALITY_STATUSES.indexOf(status) < 0) {
+        return rejectSemanticProof(diagnostics, `quality_gain_checks[${index}].status`, "invalid_status", status);
+      }
       seen.add(contributionId);
       let segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
         .map((id) => safeString(id))
@@ -3789,9 +4218,18 @@
       if (!segmentIds.length) {
         segmentIds = expectedSegmentIds.slice();
       }
-      if (segmentIds.some((id) => !allowedSegments.has(id))) return null;
+      if (segmentIds.some((id) => !allowedSegments.has(id))) {
+        return rejectSemanticProof(diagnostics, `quality_gain_checks[${index}].segment_ids`, "unknown_segment", segmentIds.join(","));
+      }
       if (segmentIds.slice().sort().join("\u0000")
-          !== expectedSegmentIds.slice().sort().join("\u0000")) return null;
+          !== expectedSegmentIds.slice().sort().join("\u0000")) {
+        return rejectSemanticProof(
+          diagnostics,
+          `quality_gain_checks[${index}].segment_ids`,
+          "segment_coverage_mismatch",
+          `expected=${expectedSegmentIds.join(",")} actual=${segmentIds.join(",")}`
+        );
+      }
       const evidenceQuote = truncate(item.evidence_quote, 320).trim();
       const normalizedQuote = evidenceQuote.replace(/\s+/g, " ").toLowerCase();
       const expectedSegmentEvidence = expectedSegmentIds
@@ -3812,7 +4250,12 @@
           || !finalEvidenceText.includes(normalizedQuote)
           || !expectedSegmentEvidence.includes(normalizedQuote)
           || !quoteIsNewMaterialEvidence)) {
-        return null;
+        return rejectSemanticProof(
+          diagnostics,
+          `quality_gain_checks[${index}].evidence_quote`,
+          "realized_quote_not_new_in_final",
+          preview(evidenceQuote, 120)
+        );
       }
       normalized.push({
         contribution_id: contributionId,
@@ -3827,26 +4270,39 @@
     return normalized;
   }
 
-  function normalizeResidualQualityChecks(values, allowedSegments, finalTextBySegment) {
+  function normalizeResidualQualityChecks(values, allowedSegments, finalTextBySegment, diagnostics) {
     if (!Array.isArray(values) || values.length !== PROOF_RESIDUAL_QUALITY_IDS.length) {
-      return null;
+      return rejectSemanticProof(
+        diagnostics,
+        "residual_quality_checks",
+        "coverage_count_mismatch",
+        `expected=${PROOF_RESIDUAL_QUALITY_IDS.length} actual=${arrayFromCollection(values).length}`
+      );
     }
     const expected = new Set(PROOF_RESIDUAL_QUALITY_IDS);
     const seen = new Set();
     const normalized = [];
-    for (const raw of values) {
+    for (let index = 0; index < values.length; index++) {
+      const raw = values[index];
       const item = asObject(raw);
       const checkId = safeString(item.check_id);
       const status = safeString(item.status);
       if (!expected.has(checkId) || seen.has(checkId)
           || PROOF_RESIDUAL_QUALITY_STATUSES.indexOf(status) < 0) {
-        return null;
+        return rejectSemanticProof(
+          diagnostics,
+          `residual_quality_checks[${index}]`,
+          "invalid_check",
+          `check_id=${checkId} status=${status}`
+        );
       }
       seen.add(checkId);
       const segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
         .map((id) => safeString(id))
         .filter(Boolean));
-      if (segmentIds.some((id) => !allowedSegments.has(id))) return null;
+      if (segmentIds.some((id) => !allowedSegments.has(id))) {
+        return rejectSemanticProof(diagnostics, `residual_quality_checks[${index}].segment_ids`, "unknown_segment", segmentIds.join(","));
+      }
       const evidenceQuote = truncate(item.evidence_quote, 320).trim();
       if (status === "issue") {
         const normalizedQuote = evidenceQuote.replace(/\s+/g, " ").toLowerCase();
@@ -3856,7 +4312,14 @@
             .toLowerCase()
             .includes(normalizedQuote)
         );
-        if (!normalizedQuote || !segmentIds.length || !quotedInDeclaredSegment) return null;
+        if (!normalizedQuote || !segmentIds.length || !quotedInDeclaredSegment) {
+          return rejectSemanticProof(
+            diagnostics,
+            `residual_quality_checks[${index}].evidence_quote`,
+            "issue_quote_not_in_final_segment",
+            preview(evidenceQuote, 120)
+          );
+        }
       }
       normalized.push({
         check_id: checkId,
@@ -3869,25 +4332,40 @@
     return normalized;
   }
 
-  function validateSemanticProof(parsed, draftLedger, mutableSegs, finalSegments, fusionPlan) {
-    if (!parsed || safeString(parsed.schema) !== "semantic_proof.v1") return null;
+  function validateSemanticProof(parsed, draftLedger, mutableSegs, finalSegments, fusionPlan, diagnostics) {
+    if (!parsed || safeString(parsed.schema) !== "semantic_proof.v1") {
+      return rejectSemanticProof(
+        diagnostics,
+        "schema",
+        "invalid_schema",
+        safeString(parsed && parsed.schema)
+      );
+    }
     const declaredVerdict = safeString(parsed.declared_verdict);
-    if (["pass", "repair", "fail"].indexOf(declaredVerdict) < 0) return null;
+    if (["pass", "repair", "fail"].indexOf(declaredVerdict) < 0) {
+      return rejectSemanticProof(diagnostics, "declared_verdict", "invalid_status", declaredVerdict);
+    }
 
     const factChecks = normalizeProofChecks(
       parsed.fact_checks,
       draftLedgerIdsForField(draftLedger, "established_facts"),
-      PROOF_ITEM_STATUSES
+      PROOF_ITEM_STATUSES,
+      "fact_checks",
+      diagnostics
     );
     const beatChecks = normalizeProofChecks(
       parsed.beat_checks,
       draftLedgerIdsForField(draftLedger, "scene_beats"),
-      PROOF_ITEM_STATUSES
+      PROOF_ITEM_STATUSES,
+      "beat_checks",
+      diagnostics
     );
     const constraintChecks = normalizeProofChecks(
       parsed.constraint_checks,
       draftLedgerIdsForField(draftLedger, "hard_constraints"),
-      PROOF_CONSTRAINT_STATUSES
+      PROOF_CONSTRAINT_STATUSES,
+      "constraint_checks",
+      diagnostics
     );
     if (!factChecks || !beatChecks || !constraintChecks) return null;
     const finalEvidenceText = arrayFromCollection(finalSegments)
@@ -3908,12 +4386,31 @@
       const segmentId = safeString(segment && segment.id);
       if (segmentId) originalTextBySegment[segmentId] = mutableFullText(segment);
     });
-    const unsupportedPreservedClaim = factChecks.concat(beatChecks).some((item) => {
+    const unsupportedFactIndex = factChecks.findIndex((item) => {
       if (item.status !== "preserved") return false;
       const quote = safeString(item.evidence_quote).replace(/\s+/g, " ").trim().toLowerCase();
       return !quote || !finalEvidenceText.includes(quote);
     });
-    if (unsupportedPreservedClaim) return null;
+    const unsupportedBeatIndex = unsupportedFactIndex < 0
+      ? beatChecks.findIndex((item) => {
+        if (item.status !== "preserved") return false;
+        const quote = safeString(item.evidence_quote).replace(/\s+/g, " ").trim().toLowerCase();
+        return !quote || !finalEvidenceText.includes(quote);
+      })
+      : -1;
+    const unsupportedPreservedClaim = unsupportedFactIndex >= 0
+      ? factChecks[unsupportedFactIndex]
+      : (unsupportedBeatIndex >= 0 ? beatChecks[unsupportedBeatIndex] : null);
+    if (unsupportedPreservedClaim) {
+      return rejectSemanticProof(
+        diagnostics,
+        unsupportedFactIndex >= 0
+          ? `fact_checks[${unsupportedFactIndex}].evidence_quote`
+          : `beat_checks[${unsupportedBeatIndex}].evidence_quote`,
+        "preserved_quote_not_in_final",
+        `ledger_id=${unsupportedPreservedClaim.ledger_id} quote=${preview(unsupportedPreservedClaim.evidence_quote, 120)}`
+      );
+    }
 
     const allowedSegments = new Set(arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id)));
     const qualityGainChecks = normalizeQualityGainChecks(
@@ -3922,25 +4419,37 @@
       allowedSegments,
       finalEvidenceText,
       finalTextBySegment,
-      originalTextBySegment
+      originalTextBySegment,
+      diagnostics
     );
     if (!qualityGainChecks) return null;
     const residualQualityChecks = normalizeResidualQualityChecks(
       parsed.residual_quality_checks,
       allowedSegments,
-      finalTextBySegment
+      finalTextBySegment,
+      diagnostics
     );
     if (!residualQualityChecks) return null;
     const hardViolations = [];
-    if (!Array.isArray(parsed.hard_violations)) return null;
-    for (const raw of parsed.hard_violations.slice(0, 32)) {
+    if (!Array.isArray(parsed.hard_violations)) {
+      return rejectSemanticProof(diagnostics, "hard_violations", "expected_array", `received=${typeof parsed.hard_violations}`);
+    }
+    for (let index = 0; index < parsed.hard_violations.slice(0, 32).length; index++) {
+      const raw = parsed.hard_violations[index];
       const item = asObject(raw);
       const type = safeString(item.type);
       const detail = truncate(item.detail, 500).trim();
       const segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
         .map((id) => safeString(id)).filter(Boolean));
       if (JUDGE_HARD_VIOLATIONS.indexOf(type) < 0 || !detail
-          || segmentIds.some((id) => !allowedSegments.has(id))) return null;
+          || segmentIds.some((id) => !allowedSegments.has(id))) {
+        return rejectSemanticProof(
+          diagnostics,
+          `hard_violations[${index}]`,
+          "invalid_violation",
+          `type=${type} segments=${segmentIds.join(",")}`
+        );
+      }
       hardViolations.push({
         type,
         detail,
@@ -3951,13 +4460,23 @@
     }
 
     const unsupportedAdditions = [];
-    if (!Array.isArray(parsed.unsupported_additions)) return null;
-    for (const raw of parsed.unsupported_additions.slice(0, 32)) {
+    if (!Array.isArray(parsed.unsupported_additions)) {
+      return rejectSemanticProof(diagnostics, "unsupported_additions", "expected_array", `received=${typeof parsed.unsupported_additions}`);
+    }
+    for (let index = 0; index < parsed.unsupported_additions.slice(0, 32).length; index++) {
+      const raw = parsed.unsupported_additions[index];
       const item = asObject(raw);
       const claim = truncate(item.claim, 500).trim();
       const segmentIds = uniqueList(arrayFromCollection(item.segment_ids)
         .map((id) => safeString(id)).filter(Boolean));
-      if (!claim || segmentIds.some((id) => !allowedSegments.has(id))) return null;
+      if (!claim || segmentIds.some((id) => !allowedSegments.has(id))) {
+        return rejectSemanticProof(
+          diagnostics,
+          `unsupported_additions[${index}]`,
+          "invalid_addition",
+          `claim=${preview(claim, 120)} segments=${segmentIds.join(",")}`
+        );
+      }
       unsupportedAdditions.push({
         claim,
         reason: truncate(item.reason, 500).trim(),
@@ -3969,7 +4488,13 @@
 
     const outputContract = asObject(parsed.output_contract);
     if (PROOF_OUTPUT_CONTRACT_KEYS.some((key) => typeof outputContract[key] !== "boolean")) {
-      return null;
+      const invalidKey = PROOF_OUTPUT_CONTRACT_KEYS.find((key) => typeof outputContract[key] !== "boolean");
+      return rejectSemanticProof(
+        diagnostics,
+        `output_contract.${invalidKey}`,
+        "expected_boolean",
+        `received=${typeof outputContract[invalidKey]}`
+      );
     }
     const normalizedOutputContract = {};
     PROOF_OUTPUT_CONTRACT_KEYS.forEach((key) => {
@@ -3977,12 +4502,22 @@
     });
 
     const repairInstructions = [];
-    if (!Array.isArray(parsed.repair_instructions)) return null;
-    for (const raw of parsed.repair_instructions.slice(0, 24)) {
+    if (!Array.isArray(parsed.repair_instructions)) {
+      return rejectSemanticProof(diagnostics, "repair_instructions", "expected_array", `received=${typeof parsed.repair_instructions}`);
+    }
+    for (let index = 0; index < parsed.repair_instructions.slice(0, 24).length; index++) {
+      const raw = parsed.repair_instructions[index];
       const item = asObject(raw);
       const segmentId = safeString(item.segment_id);
       const instruction = truncate(item.instruction, 800).trim();
-      if (!allowedSegments.has(segmentId) || !instruction) return null;
+      if (!allowedSegments.has(segmentId) || !instruction) {
+        return rejectSemanticProof(
+          diagnostics,
+          `repair_instructions[${index}]`,
+          "invalid_instruction",
+          `segment_id=${segmentId} instruction=${preview(instruction, 120)}`
+        );
+      }
       repairInstructions.push({
         segment_id: segmentId,
         instruction,
@@ -4394,6 +4929,87 @@
     };
   }
 
+  function semanticProverStructuredRecoveryPrompts(
+    role,
+    previousFailure,
+    diagnostics,
+    mutableSegs,
+    directorInfo
+  ) {
+    const ledger = asObject(directorInfo && directorInfo.draft_ledger);
+    const fusionPlan = asObject(directorInfo && directorInfo.fusion_plan);
+    const finalSegments = arrayFromCollection(directorInfo && directorInfo.final_segments)
+      .filter((segment) => segment && segment.type === "mutable")
+      .map((segment) => ({
+        id: safeString(segment.id),
+        final_text: safeString(segment.final_text != null ? segment.final_text : segment.text),
+      }));
+    const originalSegments = arrayFromCollection(mutableSegs).map((segment) => ({
+      id: safeString(segment.id),
+      original_text: mutableFullText(segment),
+    }));
+    const targetShape = {
+      schema: "semantic_proof.v1",
+      declared_verdict: "pass|repair|fail",
+      fact_checks: draftLedgerIdsForField(ledger, "established_facts").map((ledgerId) => ({
+        ledger_id: ledgerId,
+        status: "preserved|missing|contradicted|uncertain",
+        detail: "",
+        evidence_quote: "",
+      })),
+      beat_checks: draftLedgerIdsForField(ledger, "scene_beats").map((ledgerId) => ({
+        ledger_id: ledgerId,
+        status: "preserved|missing|contradicted|uncertain",
+        detail: "",
+        evidence_quote: "",
+      })),
+      constraint_checks: draftLedgerIdsForField(ledger, "hard_constraints").map((ledgerId) => ({
+        ledger_id: ledgerId,
+        status: "satisfied|violated|uncertain",
+        detail: "",
+        evidence_quote: "",
+      })),
+      quality_gain_checks: arrayFromCollection(fusionPlan.required_contributions).map((item) => ({
+        contribution_id: safeString(item && item.contribution_id),
+        status: "realized|missing|regressed",
+        detail: "",
+        evidence_quote: "",
+        segment_ids: arrayFromCollection(item && item.segment_ids),
+      })),
+      residual_quality_checks: PROOF_RESIDUAL_QUALITY_IDS.map((checkId) => ({
+        check_id: checkId,
+        status: "clean|issue",
+        detail: "",
+        evidence_quote: "",
+        segment_ids: [],
+      })),
+      hard_violations: [],
+      unsupported_additions: [],
+      output_contract: {
+        language_ok: true,
+        turn_boundary_ok: true,
+        user_agency_ok: true,
+        meta_free: true,
+        format_ok: true,
+      },
+      repair_instructions: [],
+    };
+    const recoveryPayload = {
+      validation_failures: arrayFromCollection(diagnostics),
+      previous_invalid_response: previousFailure && typeof previousFailure === "object"
+        ? previousFailure
+        : truncate(previousFailure, 50000),
+      original_segments: originalSegments,
+      final_segments: finalSegments,
+      draft_ledger: ledger,
+      fusion_plan: fusionPlan,
+    };
+    return {
+      system: "You are the final semantic proof structured-response recovery pass. Recheck the supplied final scene and return one valid semantic_proof.v1 JSON object. Do not write prose, markdown, code fences, or reasoning.",
+      user: `Repair the prior Semantic Prover response using this payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return every required fact, beat, constraint, contribution, and residual check exactly once using the IDs already present in TARGET SHAPE.\n- Preserved fact/beat evidence_quote must be an exact quote from final_segments. Never quote a user command or ledger wording absent from final prose.\n- response_directives are constraints, not facts or scene beats; their literal wording need not appear in final prose.\n- A realized contribution requires an exact quote in its required final segment that was absent from the corresponding original segment.\n- Every issue requires exact final evidence and segment IDs. Use repair only with segment-scoped repair instructions covering every failure.\n- Output one compact JSON object only.\n\nTARGET SHAPE:\n${JSON.stringify(targetShape)}\n\nRole: ${safeString(role && role.role_id)}`,
+    };
+  }
+
   function specialistStructuredRecoveryPrompts(prompts, role, parsed, mixedIds, mutableSegs, allSegments, directorInfo, contextBlock) {
     const allowedIds = arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id));
     const shape = {};
@@ -4771,7 +5387,8 @@
             directorInfo && directorInfo.draft_ledger,
             mutableSegs,
             directorInfo && directorInfo.final_segments,
-            directorInfo && directorInfo.fusion_plan
+            directorInfo && directorInfo.fusion_plan,
+            validationDiagnostics
           );
         } else if (role.is_composer) {
           validated = validateComposerSchema(parsed, allowedSegIds, mutableSegs);
@@ -4856,11 +5473,27 @@
     );
     const allowRetry = !runtimeControl || runtimeControl.allowRetry !== false;
     const allowFallback = !runtimeControl || runtimeControl.allowFallback !== false;
+    const retryErrorCodes = arrayFromCollection(runtimeControl && runtimeControl.retryErrorCodes)
+      .map((code) => safeString(code))
+      .filter(Boolean);
     if (outcome && outcome.__error && outcome.classification.retryable && allowRetry
+        && (!retryErrorCodes.length || retryErrorCodes.indexOf(outcome.classification.code) >= 0)
         && !role.is_input_planner && !(abortSignal && abortSignal.aborted)
         && (!runtimeControl || typeof runtimeControl.canContinue !== "function" || runtimeControl.canContinue())) {
       retryCount++;
-      if (role.is_composer && outcome.classification.code === "reasoning_only_response") {
+      if (role.is_prover) {
+        outcome = await executeAttempt(
+          structuredRecoveryProfile(profile),
+          semanticProverStructuredRecoveryPrompts(
+            role,
+            outcome.classification.recovery_payload || outcome.classification.recovery_source,
+            outcome.classification.validation_diagnostics,
+            mutableSegs,
+            directorInfo
+          ),
+          "semantic_prover_json_recovery"
+        );
+      } else if (role.is_composer && outcome.classification.code === "reasoning_only_response") {
         outcome = await executeAttempt(
           structuredRecoveryProfile(profile),
           composerStructuredRecoveryPrompts(
@@ -4906,6 +5539,9 @@
 
     if (outcome && !outcome.__error) {
       const finalAttempt = attemptTrace[attemptTrace.length - 1] || {};
+      const allValidationDiagnostics = attemptTrace.flatMap((attempt) =>
+        arrayFromCollection(attempt && attempt.validation_diagnostics)
+      );
       traceRole(trace, {
         role_id: role.role_id,
         stage: role.stage || "output",
@@ -4931,7 +5567,7 @@
                 ? Object.keys(outcome.segments).length
                 : outcome.candidates.length))),
         request_overrides: requestOverrides,
-        validation_diagnostics: finalAttempt.validation_diagnostics,
+        validation_diagnostics: allValidationDiagnostics,
       });
       return outcome;
     }
@@ -4979,6 +5615,9 @@
     }
 
     const finalProfile = usedFallback && fallbackProfile ? fallbackProfile : profile;
+    const allValidationDiagnostics = attemptTrace.flatMap((attempt) =>
+      arrayFromCollection(attempt && attempt.validation_diagnostics)
+    );
     traceRole(trace, {
       role_id: role.role_id,
       stage: role.stage || "output",
@@ -4997,9 +5636,7 @@
       request_overrides: requestOverrides,
       error_class: lastErrorClass,
       error: lastError,
-      validation_diagnostics: outcome && outcome.classification
-        ? outcome.classification.validation_diagnostics
-        : [],
+      validation_diagnostics: allValidationDiagnostics,
     });
     return null;
   }
@@ -5050,6 +5687,12 @@
     const hasLorebook = !!(context && context.lorebook);
     const hasMemory = !!(context && context.memory);
     const hasCharacter = !!(context && context.character);
+    const archiveContext = asObject(context && context.archive_center_context);
+    const archiveFeatures = asObject(archiveContext.feature_status);
+    const archiveFeatureCount = (key) => clampNumber(
+      asObject(archiveFeatures[key]).selected_count,
+      0, 100000, 0
+    );
 
     // Mutable segment count and average length
     const mutableCount = mutableSegs.length;
@@ -5087,6 +5730,41 @@
     if (hasCharacter) {
       signals.push({ id: "character_available", severity: "low", metrics: {} });
     }
+    if (archiveContext.contract_version === ARCHIVE_CENTER_ENHANCEMENT_CONTRACT) {
+      signals.push({
+        id: "archive_center_available",
+        severity: "medium",
+        metrics: { lanes: arrayFromCollection(archiveContext.lanes).length },
+      });
+    }
+    if (archiveFeatureCount("subjective_memory") > 0) {
+      signals.push({
+        id: "archive_subjective_memory",
+        severity: "high",
+        metrics: { count: archiveFeatureCount("subjective_memory") },
+      });
+    }
+    if (archiveFeatureCount("protected_secret") > 0) {
+      signals.push({
+        id: "archive_protected_secret",
+        severity: "high",
+        metrics: { count: archiveFeatureCount("protected_secret") },
+      });
+    }
+    if (archiveFeatureCount("supervisor_guidance") > 0) {
+      signals.push({
+        id: "archive_supervisor_guidance",
+        severity: "high",
+        metrics: { count: archiveFeatureCount("supervisor_guidance") },
+      });
+    }
+    if (archiveFeatureCount("critic_curated_evidence") > 0) {
+      signals.push({
+        id: "archive_critic_evidence",
+        severity: "medium",
+        metrics: { count: archiveFeatureCount("critic_curated_evidence") },
+      });
+    }
 
     return signals;
   }
@@ -5102,6 +5780,11 @@
     lorebook_available: ["plot_continuity_reader"],
     memory_available: ["plot_continuity_reader"],
     character_available: ["character_reader"],
+    archive_center_available: ["character_reader", "plot_continuity_reader"],
+    archive_subjective_memory: ["character_reader", "plot_continuity_reader"],
+    archive_protected_secret: ["character_reader", "plot_continuity_reader"],
+    archive_supervisor_guidance: ["plot_continuity_reader", "style_reader"],
+    archive_critic_evidence: ["plot_continuity_reader"],
   });
 
   function selectRoles(roles, signals, preset, settings) {
@@ -5449,6 +6132,11 @@
 
   function summarizeSemanticProof(trace, proof, attemptLabel) {
     const target = trace.semantic_prover;
+    const proverTrace = arrayFromCollection(trace.roles)
+      .filter((entry) => safeString(entry && entry.role_id) === PROVER_ROLE_ID)
+      .slice(-1)[0];
+    const recoveryAttempted = arrayFromCollection(proverTrace && proverTrace.attempts)
+      .some((attempt) => safeString(attempt && attempt.kind) === "semantic_prover_json_recovery");
     target.attempts = Math.max(0, Number(target.attempts) || 0) + 1;
     target.status = proof ? "fulfilled" : "failed";
     target.verdict = proof ? proof.verdict : "failed";
@@ -5490,6 +6178,12 @@
         evidence_quote: item.evidence_quote,
       }))
       : [];
+    target.structured_recovery_attempted = target.structured_recovery_attempted || recoveryAttempted;
+    target.structured_recovery_succeeded = target.structured_recovery_succeeded
+      || (recoveryAttempted && !!proof);
+    target.validation_diagnostics = arrayFromCollection(target.validation_diagnostics)
+      .concat(arrayFromCollection(proverTrace && proverTrace.validation_diagnostics))
+      .slice(-20);
     target.reason = proof ? proof.reason_codes.join(",") : "semantic_prover_call_failed";
   }
 
@@ -5505,6 +6199,8 @@
     completionWait,
     attemptLabel
   ) {
+    const structuredRecoveryAvailable = !(trace.semantic_prover
+      && trace.semantic_prover.structured_recovery_attempted);
     const proof = await callRole(
       proverRole,
       profile,
@@ -5521,8 +6217,13 @@
       },
       Date.now(),
       {
-        allowRetry: false,
-        allowFallback: true,
+        allowRetry: structuredRecoveryAvailable,
+        allowFallback: false,
+        retryErrorCodes: [
+          "json_parse_failed",
+          "schema_validation_failed",
+          "reasoning_only_response",
+        ],
         completionWait: !!completionWait,
       }
     );
@@ -6142,7 +6843,7 @@
       trace.budget.judge_attempt_used = 0;
       trace.budget.prover_attempt_reserved = proverRole && proverProfile
         && proverProfile.enabled && isProfileConfigured(proverProfile)
-        ? (configuredFallbackProfile(proverProfile) ? 2 : 1)
+        ? 2
         : 0;
       trace.budget.prover_attempt_used = 0;
       trace.budget.specialist_primary_remaining = specialistTasks.length;
@@ -7002,11 +7703,31 @@
         return content;
       }
 
+      traceTimeline(trace, "context_start");
+      const context = snapshot.context
+        || await collectContext(snapshot.original_messages || snapshot.messages, settings, trace, deadline);
+      const snapshotUserInput = safeString(
+        context && context.latest_user_input
+          ? context.latest_user_input
+          : snapshot.context_manifest && snapshot.context_manifest.latest_user_input
+      );
+      const archiveEnvelope = readArchiveCenterEnhancement(snapshotUserInput);
+      if (archiveEnvelope) {
+        applyArchiveCenterEnhancement(context, archiveEnvelope, settings, trace);
+      }
+      const effectiveTurnContract = attachArchiveCenterContextToTurnContract(
+        snapshot.turn_contract,
+        context && context.manifest
+      );
+      trace.snapshot.contract_id = safeString(effectiveTurnContract && effectiveTurnContract.contract_id);
+      trace.snapshot.contract_digest = safeString(effectiveTurnContract && effectiveTurnContract.contract_digest);
+      traceTimeline(trace, "context_done");
+
       traceTimeline(trace, "segment_start");
       const segments = buildSegmentMap(originalText, settings);
       const segSummary = summarizeSegments(segments);
       trace.segments = segSummary;
-      const draftLedger = buildDraftLedger(originalText, segments, snapshot.turn_contract);
+      const draftLedger = buildDraftLedger(originalText, segments, effectiveTurnContract);
       trace.draft_ledger = summarizeDraftLedger(draftLedger);
       traceTimeline(trace, "segment_done");
 
@@ -7016,9 +7737,6 @@
         return content;
       }
 
-      traceTimeline(trace, "context_start");
-      const context = snapshot.context || await collectContext(snapshot.original_messages || snapshot.messages, settings, trace, deadline);
-      traceTimeline(trace, "context_done");
       const rewriteContextBlock = buildPostRewriteContext(snapshot, context, settings);
       if (rewriteContextBlock) {
         trace.context_block_chars = rewriteContextBlock.length;
@@ -7192,7 +7910,9 @@
             if (settings_trace_enabled()) await saveTrace(trace);
             return content;
           }
-          trace.budget.prover_attempt_reserved = 1;
+          trace.budget.prover_attempt_reserved = trace.semantic_prover.structured_recovery_attempted
+            ? 1
+            : 2;
           const previousSegments = {};
           assembled.finalSegments.filter((segment) => segment.type === "mutable").forEach((segment) => {
             previousSegments[segment.id] = segment.final_text;
@@ -7241,7 +7961,9 @@
             if (settings_trace_enabled()) await saveTrace(trace);
             return content;
           }
-          trace.budget.prover_attempt_reserved = 1;
+          trace.budget.prover_attempt_reserved = trace.semantic_prover.structured_recovery_attempted
+            ? 1
+            : 2;
           traceTimeline(trace, "semantic_reproof_start");
           semanticProof = await runSemanticProver(
             proverRole,
@@ -8391,7 +9113,7 @@
             : "";
           const transportLabel = overrides.transport ? ` transport:${overrides.transport}` : "";
           const validationSummary = (r.validation_diagnostics || [])
-            .map((item) => `${item.code}${item.segment_ids && item.segment_ids.length ? ":" + item.segment_ids.join(",") : ""}`)
+            .map((item) => `${item.code}${item.field ? "@" + item.field : ""}${item.segment_ids && item.segment_ids.length ? ":" + item.segment_ids.join(",") : ""}${item.detail ? "(" + item.detail + ")" : ""}`)
             .join(",");
           return `[${r.stage || "output"}] ${r.role_id}: ${r.status} (${r.provider}/${r.model}${r.endpoint_group ? " @ " + r.endpoint_group : ""}) queue:${queueMs}ms run:${r.elapsed_ms}ms http:${r.http_attempts || 0}${r.retry ? " retry:" + r.retry : ""}${r.fallback ? " fallback" : ""}${r.candidate_count ? " cand:" + r.candidate_count : ""}${attemptSummary ? " [" + attemptSummary + "]" : ""}${transportLabel}${reasoningLabel}${validationSummary ? " normalized:[" + validationSummary + "]" : ""}${appliedOverrideKeys.length ? " override+:" + appliedOverrideKeys.join(",") : ""}${skippedOverrideKeys.length ? " override-skip:" + skippedOverrideKeys.join(",") : ""}${r.error_class ? " class:" + r.error_class : ""}${r.error ? " ERR:" + r.error : ""}`;
         }).join("\n");
@@ -8414,18 +9136,29 @@
         const judge = t.semantic_judge || {};
         const prover = t.semantic_prover || {};
         const plan = t.fusion_plan || {};
+        const archive = t.archive_center || {};
         const sourceSummary = Object.keys(ie.source_availability || {}).map((key) => {
           const source = ie.source_availability[key] || {};
           return `${key}:${source.available ? "used" : "missing"}${source.count ? "/" + source.count : ""}${source.active_count ? "/active:" + source.active_count : ""}${source.unknown_activation_count ? "/unknown:" + source.unknown_activation_count : ""}`;
         }).join(", ");
         const inputLine = `state:${ie.status || "not_run"} contract:${ie.contract_id || "none"} digest:${ie.contract_digest || "none"} planners:${ie.planner_succeeded || 0}ok/${ie.planner_failed || 0}fail injected:${ie.injected_chars || 0} chars active:${ie.active_calls_final || 0} retry-reuse:${ie.retry_reuse_count || 0} transport-cancel:${ie.transport_cancellation || "not_requested"}${ie.fallback_reason ? " fallback:" + ie.fallback_reason : ""}`;
         const summaryLine = `specialists:${s.specialist_calls} successful:${s.successful_roles} http:${s.specialist_http_calls || 0} scene-candidates:${s.candidate_count} composer:${s.composer_state} changed:${s.changed_segment_count} material-segments:${s.material_changed_segment_count || 0} material-rewrite:${s.material_rewrite === true} semantic:${s.semantic_verified || "not_run"} quality:${s.quality_preferred || "not_run"} unchanged:${s.unchanged_segment_count} state:${s.final_state} reason:${escapeHtml(s.final_reason || "")}`;
-        const ledgerLine = `digest:${ledger.digest || "none"} facts:${ledger.established_facts || 0} beats:${ledger.scene_beats || 0} hooks:${ledger.unresolved_hooks || 0} hard:${ledger.hard_constraints || 0} protected:${ledger.protected_structures || 0} unknown:[${(ledger.unknown_semantics || []).join(",")}]`;
+        const ledgerLine = `digest:${ledger.digest || "none"} facts:${ledger.established_facts || 0} beats:${ledger.scene_beats || 0} hooks:${ledger.unresolved_hooks || 0} directives:${ledger.response_directives || 0} hard:${ledger.hard_constraints || 0} protected:${ledger.protected_structures || 0} unknown:[${(ledger.unknown_semantics || []).join(",")}]`;
         const judgeLine = `status:${judge.status || "not_run"} accept:${judge.accepted_candidates || 0} constrained:${judge.constrained_candidates || 0} reject:${judge.rejected_candidates || 0} contributions:${judge.required_contributions || 0} missing:${judge.missing_facts || 0} unsupported:${judge.unsupported_additions || 0} hard:${judge.hard_violations || 0}`;
-        const proverLine = `status:${prover.status || "not_run"} verdict:${prover.verdict || "not_run"} attempts:${prover.attempts || 0} repair:${prover.repair_attempted === true} gains:${prover.quality_gains_required || 0}/${prover.quality_gains_missing || 0}/${prover.quality_gains_regressed || 0} residual:${prover.residual_quality_checked || 0}/${prover.residual_quality_issues || 0} facts:${prover.facts_missing || 0}/${prover.facts_contradicted || 0} beats:${prover.beats_missing || 0} constraints:${prover.constraints_violated || 0} unsupported:${prover.unsupported_additions || 0} hard:${prover.hard_violations || 0} contract:${prover.output_contract_failures || 0}${prover.reason ? " reason:" + prover.reason : ""}`;
+        const proverValidation = arrayFromCollection(prover.validation_diagnostics)
+          .map((item) => `${item.code}${item.field ? "@" + item.field : ""}${item.detail ? "(" + item.detail + ")" : ""}`)
+          .join(",");
+        const proverLine = `status:${prover.status || "not_run"} verdict:${prover.verdict || "not_run"} attempts:${prover.attempts || 0} repair:${prover.repair_attempted === true} structure-recovery:${prover.structured_recovery_attempted === true}/${prover.structured_recovery_succeeded === true} gains:${prover.quality_gains_required || 0}/${prover.quality_gains_missing || 0}/${prover.quality_gains_regressed || 0} residual:${prover.residual_quality_checked || 0}/${prover.residual_quality_issues || 0} facts:${prover.facts_missing || 0}/${prover.facts_contradicted || 0} beats:${prover.beats_missing || 0} constraints:${prover.constraints_violated || 0} unsupported:${prover.unsupported_additions || 0} hard:${prover.hard_violations || 0} contract:${prover.output_contract_failures || 0}${proverValidation ? " validation:[" + proverValidation + "]" : ""}${prover.reason ? " reason:" + prover.reason : ""}`;
         const planLine = `status:${plan.status || "not_run"} accepted:${plan.accepted_candidates || 0} rejected:${plan.rejected_candidates || 0} required:${plan.required_contributions || 0} consensus:${plan.consensus_claims || 0} complement:${plan.complementary_claims || 0} conflicts:${plan.conflicts || 0} prohibited:${plan.prohibited_additions || 0}`;
         const visible = t.visible_output || {};
         const visibleLine = `raw:${visible.raw_chars || 0} visible:${visible.visible_chars || 0} removed-blocks:${visible.removed_block_count || 0} removed-chars:${visible.removed_chars || 0} ambiguous:${visible.ambiguous_unclosed === true}`;
+        const archiveFeatures = Object.keys(archive.features || {}).map((key) => {
+          const feature = archive.features[key] || {};
+          return `${key}:${feature.status || "empty"}/${feature.selected_count || 0}${feature.call_status ? "/" + feature.call_status : ""}`;
+        }).join(", ");
+        const archiveLine = archive.detected
+          ? `mode:${archive.mode || "archive_center_enhanced"} status:${archive.status || "unknown"} lanes:${archive.lane_count || 0} chars:${archive.evidence_chars || 0} critic-same-turn:${archive.same_turn_critic_result_available === true} features:[${archiveFeatures}]`
+          : "mode:standalone status:not_detected";
         const scheduler = t.scheduler || {};
         const schedulerLines = (scheduler.endpoint_groups || []).map((group) =>
           `${group.stage}:${group.endpoint_group} calls:${group.selected_calls} concurrency:${group.effective_concurrency}/${group.base_concurrency} reason:${group.reason}`
@@ -8438,6 +9171,7 @@
           Visible Output: ${escapeHtml(visibleLine)}<br>
           ${routerLine ? `Router: ${escapeHtml(routerLine)}<br>` : ""}
           Input Enhance: ${escapeHtml(inputLine)}<br>
+          Archive Center: ${escapeHtml(archiveLine)}<br>
           Draft Ledger: ${escapeHtml(ledgerLine)}<br>
           Semantic Judge: ${escapeHtml(judgeLine)}<br>
           Fusion Plan: ${escapeHtml(planLine)}<br>
@@ -9364,11 +10098,30 @@
       if (!ambiguous.ambiguous_unclosed || !ambiguous.changed || ambiguous.text !== '') {
         throw new Error(`ambiguous reasoning leaked:${JSON.stringify(ambiguous)}`);
       }
+      const escaped = extractVisibleAssistantOutput(
+        '&lt;Thoughts&gt;Escaped private reasoning.&lt;/Thoughts&gt;\n### Chapter 2\nThe gate opened.'
+      );
+      if (escaped.text !== '### Chapter 2\nThe gate opened.'
+          || escaped.removed_block_count !== 1) {
+        throw new Error(`escaped reasoning leaked:${JSON.stringify(escaped)}`);
+      }
+      const markdown = extractVisibleAssistantOutput(
+        '**Thinking Process:**\n1. Inspect the request.\n2. Plan the response.\n\n### Chapter 3\n비가 처마를 두드렸다.'
+      );
+      if (markdown.text !== '### Chapter 3\n비가 처마를 두드렸다.'
+          || markdown.removed_block_count !== 1) {
+        throw new Error(`markdown reasoning leaked:${JSON.stringify(markdown)}`);
+      }
+      const narrative = '그는 문서의 **analysis:** 항목을 손가락으로 짚었다.\n\n다음 문단도 그대로 이어졌다.';
+      const untouchedNarrative = extractVisibleAssistantOutput(narrative);
+      if (untouchedNarrative.changed || untouchedNarrative.text !== narrative) {
+        throw new Error(`narrative false positive:${JSON.stringify(untouchedNarrative)}`);
+      }
       const visibleSegments = buildSegmentMap(closed.text, defaultSettings());
       if (visibleSegments.some((segment) => safeString(segment.text).indexOf('Private chain') >= 0)) {
         throw new Error('segmentation received removed reasoning');
       }
-      return 'closed/multiple/bounded-unclosed removed; ambiguous reasoning suppressed';
+      return 'xml/escaped/markdown reasoning removed; narrative occurrence preserved';
     });
 
     await test('after_request_returns_visible_output_only', async () => {
@@ -9538,6 +10291,65 @@
           throw new Error('semantic prover production call did not pass');
         }
         return 'provider response validated through semantic_proof.v1';
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('semantic_prover_repairs_schema_once_with_field_diagnostics', async () => {
+      const originalFetch = globalThis.fetch;
+      const settings = defaultSettings();
+      const role = DEFAULT_ROLES.find((item) => item.role_id === PROVER_ROLE_ID);
+      const profile = settings.role_profiles[PROVER_ROLE_ID];
+      profile.endpoint = 'https://test.example.com/v1/chat/completions';
+      profile.model = 'semantic-prover-recovery-model';
+      profile.timeout_ms = 5000;
+      let calls = 0;
+      const invalidProof = semanticProofObject('pass');
+      invalidProof.fact_checks[0].evidence_quote = 'Go ahead.';
+      globalThis.fetch = async () => {
+        calls++;
+        return response(JSON.stringify(calls === 1 ? invalidProof : semanticProofObject('pass')));
+      };
+      try {
+        const trace = newTrace('test', 'test');
+        const deadline = createDeadline(30000);
+        const segments = [{ id: 'mutable_1', type: 'mutable', text: 'Original.', leading_ws: '', trailing_ws: '' }];
+        const finalSegments = [{
+          id: 'mutable_1',
+          type: 'mutable',
+          original_text: 'Original.',
+          final_text: 'They met and remained in the room.',
+        }];
+        const proof = await runSemanticProver(
+          role,
+          profile,
+          segments,
+          finalSegments,
+          {
+            semantic_judgment: judgmentObject(['cand_1']),
+            fusion_plan: { schema: 'fusion_plan.v1', required_contributions: [] },
+            draft_ledger: ledger(),
+          },
+          '',
+          deadline.signal,
+          trace,
+          false,
+          'schema_recovery_test'
+        );
+        deadline.cancel();
+        const roleTrace = trace.roles.filter((entry) => entry.role_id === PROVER_ROLE_ID).slice(-1)[0];
+        const diagnostic = arrayFromCollection(roleTrace && roleTrace.validation_diagnostics)
+          .find((item) => item.code === 'semantic_proof_preserved_quote_not_in_final'
+            && item.field === 'fact_checks[0].evidence_quote');
+        const recoveryAttempts = arrayFromCollection(roleTrace && roleTrace.attempts)
+          .filter((attempt) => attempt.kind === 'semantic_prover_json_recovery');
+        if (!proof || proof.verdict !== 'pass' || calls !== 2 || recoveryAttempts.length !== 1
+            || !diagnostic || trace.semantic_prover.structured_recovery_attempted !== true
+            || trace.semantic_prover.structured_recovery_succeeded !== true) {
+          throw new Error(`prover recovery mismatch:${JSON.stringify({ calls, roleTrace, prover: trace.semantic_prover })}`);
+        }
+        return 'one schema recovery; exact failed field retained in trace';
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -9894,6 +10706,184 @@
       }
     });
 
+    await test('archive_center_optional_enhancement_builds_typed_ledger', () => {
+      const originalBridge = globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
+      const input = 'Continue the rain-soaked council scene.';
+      const settings = defaultSettings();
+      try {
+        globalThis[ARCHIVE_CENTER_BRIDGE_KEY] = {
+          contract_version: ARCHIVE_CENTER_BRIDGE_CONTRACT,
+          owner: 'archive_center_host_adapter',
+          transport_only: true,
+          published_at_ms: Date.now(),
+          expires_at_ms: Date.now() + 60000,
+          input_digest: stableDigest(input),
+          input_chars: input.length,
+          input_bindings: [{ digest: stableDigest(input), chars: input.length }],
+          session_id: 'archive-test-session',
+          turn_index: 9,
+          enhancement_contract: {
+            contract_version: ARCHIVE_CENTER_ENHANCEMENT_CONTRACT,
+            status: 'ready',
+            owner: 'go',
+            read_only: true,
+            optional_enhancement: true,
+            standalone_fallback_required: true,
+            same_turn_critic_result_available: false,
+            lane_semantics: {
+              event_recent: 'objective_event_memory',
+              subjective_relationship: 'perspective_scoped_subjective',
+              protected_secret: 'writer_only',
+              unresolved_goal: 'open_thread_or_goal',
+              direct_evidence: 'accepted_or_verified_grounded_evidence',
+              output_guidance: 'supervisor_current_turn',
+            },
+            privacy: {
+              subjective_not_objective_truth: true,
+              protected_secret_writer_only: true,
+              no_state_write: true,
+            },
+            feature_status: {
+              long_term_memory: { status: 'available', selected_count: 2 },
+              subjective_memory: { status: 'available', selected_count: 1 },
+              protected_secret: { status: 'available', selected_count: 1 },
+              supervisor_guidance: { status: 'available', selected_count: 1 },
+              critic_curated_evidence: {
+                status: 'available',
+                selected_count: 1,
+                source_mode: 'prior_accepted_or_verified_direct_evidence',
+                same_turn_result: false,
+              },
+            },
+          },
+          memory_delivery_plan: {
+            contract_version: 'memory_delivery_plan.v1',
+            classes: [
+              { key: 'event_recent', selected_count: 1, text: '[Recent Event]\n- The council convened during the storm.' },
+              { key: 'subjective_relationship', selected_count: 1, text: '[Subjective Relationship]\n- Mira privately distrusts the envoy.' },
+              { key: 'protected_secret', selected_count: 1, text: '[Protected Secret]\n- The envoy is the missing heir.' },
+              { key: 'unresolved_goal', selected_count: 1, text: '[Unresolved Goal]\n- Decide whether to open the sealed letter.' },
+              { key: 'direct_evidence', selected_count: 1, text: '[Direct Evidence]\n- Mira previously hid the signet ring.' },
+            ],
+          },
+          memory_delivery_lineage: {
+            contract_version: 'memory_delivery_lineage.v1',
+          },
+          guidance_application_trace: {
+            contract_version: 'guidance_application_trace.v1',
+            applied_count: 1,
+            final_text: '[Supervisor Guidance]\nEscalate the council conflict through action and dialogue.',
+          },
+          payload_application_observation: {
+            status: 'ready',
+            payload_application_status: 'applied',
+          },
+        };
+        const envelope = readArchiveCenterEnhancement(input);
+        if (!envelope) throw new Error('valid Archive Center envelope was rejected');
+        const context = {
+          system_context: '',
+          recent_chat: '',
+          latest_user_input: input,
+          character: '',
+          persona: '',
+          current_chat: '',
+          lorebook: '',
+          lorebook_active: '',
+          memory: '',
+          memory_fields: [],
+          bounded_context_block: '',
+          manifest: null,
+          sources: {},
+        };
+        const trace = newTrace('afterRequest', 'model');
+        applyArchiveCenterEnhancement(context, envelope, settings, trace);
+        const attached = attachArchiveCenterContextToTurnContract({
+          schema: 'turn_contract.v1',
+          contract_id: 'standalone-contract',
+          evidence_refs: [],
+          source_availability: {},
+        }, context.manifest);
+        const segments = buildSegmentMap('The council doors opened.', settings);
+        const draftLedger = buildDraftLedger('The council doors opened.', segments, attached);
+        const establishedText = draftLedger.established_facts.map((item) => item.text).join('\n');
+        const relationshipText = draftLedger.relationship_state.map((item) => item.text).join('\n');
+        const secretText = draftLedger.secrets_and_reveal.map((item) => item.text).join('\n');
+        const directiveText = draftLedger.response_directives.map((item) => item.text).join('\n');
+        if (!/council convened|signet ring/i.test(establishedText)) {
+          throw new Error(`objective Archive memory missing:${establishedText}`);
+        }
+        if (/privately distrusts/i.test(establishedText) || !/privately distrusts/i.test(relationshipText)) {
+          throw new Error('subjective memory escaped its perspective-scoped ledger lane');
+        }
+        if (!/missing heir/i.test(secretText)) {
+          throw new Error('writer-only secret missing from protected ledger lane');
+        }
+        if (!/action and dialogue/i.test(directiveText)) {
+          throw new Error('Supervisor guidance missing from response directives');
+        }
+        const signalIds = detectSceneSignals(segments, context).map((signal) => signal.id);
+        [
+          'archive_center_available',
+          'archive_subjective_memory',
+          'archive_protected_secret',
+          'archive_supervisor_guidance',
+          'archive_critic_evidence',
+        ].forEach((signalId) => {
+          if (!signalIds.includes(signalId)) throw new Error(`missing Archive router signal:${signalId}`);
+        });
+        if (trace.archive_center.same_turn_critic_result_available !== false) {
+          throw new Error('prior Critic evidence was misrepresented as a same-turn result');
+        }
+        return `lanes=${context.archive_center_context.lanes.length} signals=${signalIds.length}`;
+      } finally {
+        if (originalBridge === undefined) delete globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
+        else globalThis[ARCHIVE_CENTER_BRIDGE_KEY] = originalBridge;
+      }
+    });
+
+    await test('archive_center_bridge_binding_failures_keep_standalone_path', () => {
+      const originalBridge = globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
+      const input = 'Continue this scene.';
+      try {
+        globalThis[ARCHIVE_CENTER_BRIDGE_KEY] = {
+          contract_version: ARCHIVE_CENTER_BRIDGE_CONTRACT,
+          owner: 'archive_center_host_adapter',
+          transport_only: true,
+          expires_at_ms: Date.now() + 60000,
+          input_bindings: [{ digest: stableDigest('a different turn'), chars: 16 }],
+          enhancement_contract: {
+            contract_version: ARCHIVE_CENTER_ENHANCEMENT_CONTRACT,
+            owner: 'go',
+            read_only: true,
+            optional_enhancement: true,
+            standalone_fallback_required: true,
+          },
+          payload_application_observation: {
+            payload_application_status: 'applied',
+          },
+        };
+        if (readArchiveCenterEnhancement(input) !== null) {
+          throw new Error('cross-turn Archive Center bridge was accepted');
+        }
+        globalThis[ARCHIVE_CENTER_BRIDGE_KEY].input_bindings = [
+          { digest: stableDigest(input), chars: input.length },
+        ];
+        globalThis[ARCHIVE_CENTER_BRIDGE_KEY].expires_at_ms = Date.now() - 1;
+        if (readArchiveCenterEnhancement(input) !== null) {
+          throw new Error('expired Archive Center bridge was accepted');
+        }
+        delete globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
+        if (readArchiveCenterEnhancement(input) !== null) {
+          throw new Error('missing Archive Center bridge changed standalone behavior');
+        }
+        return 'mismatch, expiry, and absence all rejected';
+      } finally {
+        if (originalBridge === undefined) delete globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
+        else globalThis[ARCHIVE_CENTER_BRIDGE_KEY] = originalBridge;
+      }
+    });
+
     await test('protected_segments_remain_exact', () => {
       const source = 'Before <img src="x"> after.';
       const segments = buildSegmentMap(source, defaultSettings());
@@ -10182,7 +11172,59 @@
       return "writer-only classification wins";
     });
 
-    await check("input_13_planner_provider_response_fuses", async () => withMockRisu(baseMock({
+    await check("input_13_user_directive_not_promoted_to_narrative_fact", async () => {
+      const directive = {
+        text: "Continue the response in concise prose.",
+        evidence_refs: ["payload_user_input"],
+        evidence_quote: "Continue the response in concise prose.",
+      };
+      const narrativeFact = {
+        text: "The bridge collapsed before dawn.",
+        evidence_refs: ["payload_recent_chat"],
+        evidence_quote: "The bridge collapsed before dawn.",
+      };
+      const openThread = {
+        text: "Mira still needs to cross the river.",
+        evidence_refs: ["payload_recent_chat"],
+        evidence_quote: "Mira still needs to cross the river.",
+      };
+      const contract = {
+        contract_id: "directive_separation",
+        contract_digest: "directive_separation_digest",
+        immutable_constraints: [directive, narrativeFact],
+        character_visible_facts: [],
+        scene_state: [],
+        open_threads: [openThread],
+        turn_objectives: [directive],
+        prose_targets: [],
+        relationship_and_emotion_state: [],
+        agency_and_pov_constraints: [],
+        writer_only_secrets: [],
+        character_knowledge_scopes: [],
+        identity_and_alias_map: [],
+        forbidden_regressions: [],
+      };
+      const source = "Mira watched the river from the broken bridge.";
+      const ledger = buildDraftLedger(source, buildSegmentMap(source, defaultSettings()), contract);
+      const texts = (items) => arrayFromCollection(items).map((item) => safeString(item.text));
+      if (texts(ledger.established_facts).includes(directive.text)) {
+        throw new Error("user_directive_promoted_to_fact");
+      }
+      if (!texts(ledger.established_facts).includes(narrativeFact.text)) {
+        throw new Error("grounded_narrative_fact_removed");
+      }
+      if (texts(ledger.scene_beats).includes(directive.text)
+          || !texts(ledger.scene_beats).includes(openThread.text)) {
+        throw new Error("scene_beat_separation_failed");
+      }
+      if (!texts(ledger.response_directives).includes(directive.text)
+          || !texts(ledger.hard_constraints).includes(directive.text)) {
+        throw new Error("response_directive_contract_missing");
+      }
+      return "user command remains a response directive; narrative facts and hooks remain separate";
+    });
+
+    await check("input_14_planner_provider_response_fuses", async () => withMockRisu(baseMock({
       nativeFetch: async () => ({
         ok: true,
         status: 200,
@@ -10519,7 +11561,7 @@
       if (INPUT_HTTP_ATTEMPT_BUDGET.fast !== 0
           || INPUT_HTTP_ATTEMPT_BUDGET.balanced !== 3
           || INPUT_HTTP_ATTEMPT_BUDGET.quality !== 4
-          || OUTPUT_HTTP_ATTEMPT_BUDGET.fast !== 7
+          || OUTPUT_HTTP_ATTEMPT_BUDGET.fast !== 8
           || OUTPUT_HTTP_ATTEMPT_BUDGET.balanced !== 9
           || OUTPUT_HTTP_ATTEMPT_BUDGET.quality !== 12) {
         throw new Error("wrong_stage_attempt_budget");
@@ -10528,7 +11570,7 @@
       if (trace.budget.http_attempt_max !== OUTPUT_HTTP_ATTEMPT_BUDGET.balanced) {
         throw new Error("default_output_budget_not_initialized");
       }
-      return "input=0/3/4 output=7/9/12";
+      return "input=0/3/4 output=8/9/12";
     });
 
     await check("batch1_risu_native_fetch_precedes_browser_fetch", async () => {

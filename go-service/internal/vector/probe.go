@@ -128,11 +128,11 @@ func RunChromaRoundTripProbe(ctx context.Context, cfg ChromaRoundTripProbeConfig
 			return nil
 		}
 		cleanupAttempted = true
-		timeout := cfg.CleanupTimeout
-		if timeout <= 0 {
-			timeout = 10 * time.Second
+		cleanupCtx := ctx
+		cancel := func() {}
+		if cfg.CleanupTimeout > 0 {
+			cleanupCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), cfg.CleanupTimeout)
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 		defer cancel()
 		if err := store.ResetAll(cleanupCtx); err != nil {
 			report.CleanupStatus = "failed"

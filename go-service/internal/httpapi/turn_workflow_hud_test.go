@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -477,7 +479,7 @@ func TestTurnWorkflowHUDDuplicateReplayAndConflictUseDifferentSeverity(t *testin
 	}
 }
 
-func TestTurnWorkflowHUDUnknownRouteAndTTLBound(t *testing.T) {
+func TestTurnWorkflowHUDUnknownRouteAndCapacityBound(t *testing.T) {
 	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
 	request := httptest.NewRequest("GET", "/turn-workflow/status?request_id=missing&after_revision=0&wait_ms=0", nil)
 	recorder := httptest.NewRecorder()
@@ -496,12 +498,95 @@ func TestTurnWorkflowHUDUnknownRouteAndTTLBound(t *testing.T) {
 	}
 
 	ledger := newTurnWorkflowHUDLedger()
-	ledger.ttl = time.Millisecond
-	ledger.begin("expired", "session-expired", 1)
-	ledger.complete("expired")
-	time.Sleep(3 * time.Millisecond)
-	if _, ok := ledger.snapshot("expired"); ok {
-		t.Fatal("terminal workflow was not pruned after TTL")
+	ledger.maxEntries = 1
+	ledger.begin("capacity-old", "session-capacity-old", 1)
+	ledger.complete("capacity-old")
+	ledger.begin("capacity-new", "session-capacity-new", 1)
+	if _, ok := ledger.snapshot("capacity-old"); ok {
+		t.Fatal("oldest terminal workflow was not evicted at capacity")
+	}
+	if _, ok := ledger.snapshot("capacity-new"); !ok {
+		t.Fatal("new workflow was not retained at capacity")
+	}
+}
+
+func TestTurnWorkflowHUDEventsPreserveRevisionOrderAndCloseOnTerminal(t *testing.T) {
+	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
+	initial := server.TurnWorkflows.begin("events-order", "session-events", 3)
+	if initial == nil {
+		t.Fatal("begin returned nil")
+	}
+	server.TurnWorkflows.setHostTurn("events-order", 3, true)
+	server.TurnWorkflows.setHostTurn("events-order", 4, true)
+	server.TurnWorkflows.complete("events-order")
+
+	request := httptest.NewRequest(
+		"GET",
+		"/turn-workflow/events?request_id=events-order&after_revision=0&wait_ms=0",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	server.registerTurnRoutes(mux)
+	mux.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/x-ndjson" {
+		t.Fatalf("content type = %q", contentType)
+	}
+	decoder := json.NewDecoder(recorder.Body)
+	var revisions []int64
+	var final turnWorkflowHUDViewModel
+	for {
+		var view turnWorkflowHUDViewModel
+		if err := decoder.Decode(&view); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("decode event: %v", err)
+		}
+		revisions = append(revisions, view.Revision)
+		final = view
+	}
+	if len(revisions) != 4 {
+		t.Fatalf("revisions = %v, want four events", revisions)
+	}
+	for index, revision := range revisions {
+		want := int64(index + 1)
+		if revision != want {
+			t.Fatalf("revisions = %v, want contiguous revision %d at index %d", revisions, want, index)
+		}
+	}
+	if final.Status != "completed" {
+		t.Fatalf("final status = %q, want completed", final.Status)
+	}
+}
+
+func TestTurnWorkflowHUDEventsCloseOnRequestCancellation(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	initial := ledger.begin("events-cancel", "session-events", 4)
+	if initial == nil {
+		t.Fatal("begin returned nil")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	unexpected := make(chan struct{}, 1)
+	go func() {
+		_, err := ledger.streamSnapshots(ctx, "events-cancel", initial.Revision, func(turnWorkflowHUDViewModel) error {
+			unexpected <- struct{}{}
+			return nil
+		})
+		done <- err
+	}()
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("stream error = %v, want context canceled", err)
+	}
+	select {
+	case <-unexpected:
+		t.Fatal("unexpected event after current revision")
+	default:
 	}
 }
 

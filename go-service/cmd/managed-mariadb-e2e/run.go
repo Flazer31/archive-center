@@ -33,6 +33,8 @@ func main() {
 	pythonFallbackPort := flag.Int("python-fallback-port", 18106, "Preferred Python fallback temp backend port")
 	goBin := flag.String("go-bin", "", "Optional archive-center-go binary path for read-shadow value report")
 	providerBin := flag.String("provider-bin", "", "Explicit path to MariaDB server binary (mariadbd or mysqld)")
+	timeout := flag.Duration("timeout", 0, "Overall execution timeout (0 = no local deadline)")
+	pollInterval := flag.Duration("poll-interval", 0, "Readiness polling interval (0 = one probe, no polling)")
 	flag.Parse()
 	if *providerBin == "" {
 		*providerBin = os.Getenv("AC_MARIADB_PROVIDER_BIN")
@@ -44,7 +46,19 @@ func main() {
 	if *authorityCutoverReplay {
 		*productReadProof = true
 	}
-	r := runWithOptions(*sqliteDB, *exportDir, *pythonBaseURL, *execute, *keepTemp, *sessionID, *productReadProof, *routeWriteSmoke, *backupRestoreDrill, *authorityCutoverReplay, *defaultSwitchRehearsal, *defaultSwitchActual, *sessionIsolationSmoke, *pythonFallbackSrc, *pythonFallbackPort, *goBin, *providerBin, bundledLookup{fallback: osExecLookup{}})
+	ctx := context.Background()
+	cancel := func() {}
+	if *execute {
+		if *timeout < 0 || *pollInterval < 0 {
+			fmt.Fprintln(os.Stderr, "-timeout and -poll-interval must not be negative")
+			os.Exit(2)
+		}
+		if *timeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, *timeout)
+		}
+	}
+	defer cancel()
+	r := runWithOptionsContext(ctx, *timeout, *pollInterval, *sqliteDB, *exportDir, *pythonBaseURL, *execute, *keepTemp, *sessionID, *productReadProof, *routeWriteSmoke, *backupRestoreDrill, *authorityCutoverReplay, *defaultSwitchRehearsal, *defaultSwitchActual, *sessionIsolationSmoke, *pythonFallbackSrc, *pythonFallbackPort, *goBin, *providerBin, bundledLookup{fallback: osExecLookup{}})
 	reportJSON, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to marshal report: %v\n", err)
@@ -76,6 +90,10 @@ func run(sqliteDB, exportDir, pythonBaseURL string, execute, keepTemp bool, sess
 }
 
 func runWithOptions(sqliteDB, exportDir, pythonBaseURL string, execute, keepTemp bool, sessionID string, productReadProof bool, routeWriteSmoke bool, backupRestoreDrill bool, authorityCutoverReplay bool, defaultSwitchRehearsal bool, defaultSwitchActual bool, sessionIsolationSmoke bool, pythonFallbackSrc string, pythonFallbackPort int, goBinPath string, explicitProviderBin string, lookup providerLookup) *report {
+	return runWithOptionsContext(context.Background(), 0, 0, sqliteDB, exportDir, pythonBaseURL, execute, keepTemp, sessionID, productReadProof, routeWriteSmoke, backupRestoreDrill, authorityCutoverReplay, defaultSwitchRehearsal, defaultSwitchActual, sessionIsolationSmoke, pythonFallbackSrc, pythonFallbackPort, goBinPath, explicitProviderBin, lookup)
+}
+
+func runWithOptionsContext(ctx context.Context, commandTimeout, pollInterval time.Duration, sqliteDB, exportDir, pythonBaseURL string, execute, keepTemp bool, sessionID string, productReadProof bool, routeWriteSmoke bool, backupRestoreDrill bool, authorityCutoverReplay bool, defaultSwitchRehearsal bool, defaultSwitchActual bool, sessionIsolationSmoke bool, pythonFallbackSrc string, pythonFallbackPort int, goBinPath string, explicitProviderBin string, lookup providerLookup) *report {
 	sessionOnly := (directProviderConfig{
 		ProductReadProof:      productReadProof,
 		RouteWriteSmoke:       routeWriteSmoke,
@@ -332,9 +350,9 @@ func runWithOptions(sqliteDB, exportDir, pythonBaseURL string, execute, keepTemp
 		DefaultSwitch:         defaultSwitchRehearsal,
 		DefaultSwitchActual:   defaultSwitchActual,
 		GoBinPath:             goBinPath,
+		CommandTimeout:        commandTimeout,
+		PollInterval:          pollInterval,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
 	steps, runErr := defaultDirectRunner.run(ctx, cfg)
 	r.ExecutedSteps = steps
 	r.RollbackProof = summarizeRollbackProof(steps, productReadProof)

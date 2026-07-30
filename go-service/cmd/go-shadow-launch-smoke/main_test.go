@@ -76,3 +76,21 @@ func TestProbeRequiresJSONAndSuccessStatus(t *testing.T) {
 		t.Fatalf("down probe = %#v", down)
 	}
 }
+
+func TestWaitForHealthZeroIntervalDoesNotRetry(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "starting"})
+	}))
+	defer ts.Close()
+
+	gotAttempts, _, err := waitForHealth(context.Background(), ts.URL, 0, 0, make(chan struct{}))
+	if err == nil || !strings.Contains(err.Error(), "polling is disabled") {
+		t.Fatalf("error = %v, want polling-disabled failure", err)
+	}
+	if gotAttempts != 1 || attempts != 1 {
+		t.Fatalf("attempt counts = function:%d server:%d, want exactly one probe", gotAttempts, attempts)
+	}
+}

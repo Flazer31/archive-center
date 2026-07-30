@@ -31,7 +31,7 @@ func completeTurnMemorySourceRevision(
 		return nil, fmt.Errorf("source_revision_raw_pair_missing")
 	}
 	messageID := ""
-	if decision.Observation.HostChatID != "" || decision.Observation.MessageIndex >= 0 {
+	if decision.Observation.MessageIndex >= 0 {
 		messageID = fmt.Sprintf("%s:index:%d", decision.Observation.HostChatID, decision.Observation.MessageIndex)
 	}
 	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))
@@ -170,5 +170,9 @@ func (s *Server) enqueueSourceRevisionReprocessingJob(
 		job.ExtractorVersion,
 		job.IndexVersion,
 	)
-	return writer.EnqueueMemoryReprocessingJob(ctx, job)
+	inserted, err := writer.EnqueueMemoryReprocessingJob(ctx, job)
+	if err == nil {
+		s.wakeMemoryWorkers()
+	}
+	return inserted, err
 }

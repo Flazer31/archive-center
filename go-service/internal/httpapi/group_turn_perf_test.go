@@ -100,6 +100,77 @@ func TestPrepareTurnCompactOrchestrationProjectionOwnsCountsAndSupervisorStatus(
 	}
 }
 
+func TestPrepareTurnRecomposerEnhancementContractUsesExistingPlans(t *testing.T) {
+	memoryPlan := map[string]any{
+		"contract_version": "memory_delivery_plan.v1",
+		"classes": []map[string]any{
+			{"key": "event_recent", "selected_count": 2, "text": "[Event]\n- objective"},
+			{"key": "subjective_relationship", "selected_count": 3, "text": "[Subjective]\n- private"},
+			{"key": "protected_secret", "selected_count": 1, "text": "[Secret]\n- hidden"},
+			{"key": "direct_evidence", "selected_count": 4, "text": "[Evidence]\n- verified"},
+		},
+	}
+	lineage := map[string]any{"contract_version": "memory_delivery_lineage.v1"}
+	payloadPlan := map[string]any{
+		"guidance_application_trace": map[string]any{"applied_count": 2},
+	}
+	contract := buildPrepareTurnRecomposerEnhancementContract(
+		"recomposer-session",
+		12,
+		memoryPlan,
+		lineage,
+		payloadPlan,
+		"applied",
+	)
+
+	if contract["contract_version"] != "archive_center.recomposer_enhancement.v1" ||
+		contract["owner"] != "go" ||
+		!boolFromAny(contract["read_only"]) ||
+		!boolFromAny(contract["optional_enhancement"]) ||
+		!boolFromAny(contract["standalone_fallback_required"]) {
+		t.Fatalf("invalid Recomposer enhancement contract: %#v", contract)
+	}
+	features := mapFromAny(contract["feature_status"])
+	if intFromAny(mapFromAny(features["subjective_memory"])["selected_count"], 0) != 3 {
+		t.Fatalf("subjective feature=%#v", features["subjective_memory"])
+	}
+	if intFromAny(mapFromAny(features["protected_secret"])["selected_count"], 0) != 1 ||
+		extractionStringFromAny(mapFromAny(contract["lane_semantics"])["protected_secret"]) != "writer_only" {
+		t.Fatalf("protected secret semantics=%#v", contract)
+	}
+	if intFromAny(mapFromAny(features["supervisor_guidance"])["selected_count"], 0) != 2 ||
+		extractionStringFromAny(mapFromAny(features["supervisor_guidance"])["call_status"]) != "applied" {
+		t.Fatalf("supervisor feature=%#v", features["supervisor_guidance"])
+	}
+	critic := mapFromAny(features["critic_curated_evidence"])
+	if intFromAny(critic["selected_count"], 0) != 4 ||
+		boolFromAny(critic["same_turn_result"]) ||
+		boolFromAny(contract["same_turn_critic_result_available"]) ||
+		extractionStringFromAny(critic["source_mode"]) != "prior_accepted_or_verified_direct_evidence" {
+		t.Fatalf("critic feature misrepresented: %#v", critic)
+	}
+}
+
+func TestPrepareTurnProductionProjectionExposesRecomposerEnhancementContract(t *testing.T) {
+	_, compact := prepareTurnPerfRequest(t, setupTestServer(), `{
+		"chat_session_id":"perf-recomposer-contract",
+		"raw_user_input":"Continue the current scene.",
+		"response_projection":"prepare_turn.production_compact.v1",
+		"settings":{"guide_strength":"none"}
+	}`)
+	plan := mapFromAny(compact["payload_application_plan"])
+	contract := mapFromAny(plan["recomposer_enhancement_contract"])
+	if contract["contract_version"] != "archive_center.recomposer_enhancement.v1" ||
+		contract["owner"] != "go" {
+		t.Fatalf("compact response omitted Recomposer contract: %#v", contract)
+	}
+	pack := mapFromAny(compact["injection_pack"])
+	packPlan := mapFromAny(pack["payload_application_plan"])
+	if !reflect.DeepEqual(packPlan["recomposer_enhancement_contract"], contract) {
+		t.Fatalf("compact injection pack contract drifted: pack=%#v top=%#v", packPlan["recomposer_enhancement_contract"], contract)
+	}
+}
+
 func TestPrepareTurnHistoryBoundsPreserveTwoAndThreeHundredTurnSessions(t *testing.T) {
 	for _, test := range []struct {
 		latest   int

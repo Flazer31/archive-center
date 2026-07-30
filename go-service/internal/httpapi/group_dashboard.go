@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
@@ -142,9 +141,7 @@ func (s *Server) buildReferenceDashboardCard(ctx context.Context, sessionID stri
 	if s.ReferenceVector == nil {
 		return fail("referenceVectorUnavailable")
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	health, healthErr := s.ReferenceVector.Health(probeCtx)
-	cancel()
+	health, healthErr := s.ReferenceVector.Health(ctx)
 	if healthErr != nil {
 		return fail("referenceVectorHealthFailed")
 	}

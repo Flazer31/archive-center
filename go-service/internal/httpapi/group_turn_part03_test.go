@@ -687,7 +687,7 @@ func TestExplorerRegenerateMemoryUsesCompleteTurnArtifactPipeline(t *testing.T) 
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-explorer-regen","turn_index":4,"client_meta":{"critic":{"api_key":"sk-test","endpoint":"https://api.example.com/v1","model":"critic-test","provider":"openai"}}}`
+	body := `{"chat_session_id":"sess-explorer-regen","turn_index":4,"client_meta":{"critic":{"api_key":"sk-test","endpoint":"https://api.example.com/v1","model":"critic-test","provider":"openai","timeout_ms":45000}}}`
 	req := httptest.NewRequest(http.MethodPost, "/explorer/memories/regenerate", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -759,7 +759,7 @@ func TestCompleteTurnCriticLedgerWiringBehindFeatureFlag(t *testing.T) {
 		mux := http.NewServeMux()
 		srv.RegisterRoutes(mux)
 
-		body := `{"chat_session_id":"sess-ledger-wiring","turn_index":6,"user_input":"Mina asks what Rowan remembers.","assistant_content":"Rowan answers with a new visible reply.","request_type":"model","output_language_override":{"language":"ko"},"client_meta":{"critic":{"api_key":"sk-test","endpoint":"https://api.example.com/v1","model":"critic-ledger-test","provider":"openai"}}}`
+		body := `{"chat_session_id":"sess-ledger-wiring","turn_index":6,"user_input":"Mina asks what Rowan remembers.","assistant_content":"Rowan answers with a new visible reply.","request_type":"model","output_language_override":{"language":"ko"},"client_meta":{"critic":{"api_key":"sk-test","endpoint":"https://api.example.com/v1","model":"critic-ledger-test","provider":"openai","timeout_ms":45000}}}`
 		req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -886,7 +886,7 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	updateBody := `{"criticApiKey":"sk-runtime","criticEndpoint":"https://api.example.com/v1","criticModel":"runtime-critic","criticProvider":"openai","embeddingApiKey":"sk-embed","embeddingEndpoint":"https://api.example.com/v1/embeddings","embeddingModel":"embed-model","embeddingProvider":"openai"}`
+	updateBody := `{"criticApiKey":"sk-runtime","criticEndpoint":"https://api.example.com/v1","criticModel":"runtime-critic","criticProvider":"openai","criticTimeout":45,"embeddingApiKey":"sk-embed","embeddingEndpoint":"https://api.example.com/v1/embeddings","embeddingModel":"embed-model","embeddingProvider":"openai","embeddingTimeout":30}`
 	updateReq := httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader([]byte(updateBody)))
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateRec := httptest.NewRecorder()
@@ -983,7 +983,7 @@ func TestImportHypamemoryScoringPassRaisesLowCriticImportance(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	updateBody := `{"criticApiKey":"sk-runtime","criticEndpoint":"https://api.example.com/v1","criticModel":"runtime-critic","criticProvider":"openai","embeddingApiKey":"sk-embed","embeddingEndpoint":"https://api.example.com/v1/embeddings","embeddingModel":"embed-model","embeddingProvider":"openai"}`
+	updateBody := `{"criticApiKey":"sk-runtime","criticEndpoint":"https://api.example.com/v1","criticModel":"runtime-critic","criticProvider":"openai","criticTimeout":45,"embeddingApiKey":"sk-embed","embeddingEndpoint":"https://api.example.com/v1/embeddings","embeddingModel":"embed-model","embeddingProvider":"openai","embeddingTimeout":30}`
 	updateReq := httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader([]byte(updateBody)))
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateRec := httptest.NewRecorder()
@@ -1056,10 +1056,11 @@ func TestCompleteTurnCriticProviderFailurePreservesRawTurnAndReportsReason(t *te
 		"user_input":        "Mina asks Rowan to remember the blue key.",
 		"assistant_content": "Rowan promises to keep the blue key safe.",
 		"client_meta": map[string]any{"critic": map[string]any{
-			"api_key":  apiKey,
-			"endpoint": "https://api.example.com/v1",
-			"model":    "critic-model",
-			"provider": "openai",
+			"api_key":    apiKey,
+			"endpoint":   "https://api.example.com/v1",
+			"model":      "critic-model",
+			"provider":   "openai",
+			"timeout_ms": 45000,
 		}},
 	}
 	raw, _ := json.Marshal(body)

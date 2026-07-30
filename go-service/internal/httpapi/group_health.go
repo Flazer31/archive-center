@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -94,8 +93,6 @@ type readyResponse struct {
 	Timestamp               string            `json:"timestamp"`
 }
 
-const referenceReadinessProbeTimeout = 500 * time.Millisecond
-
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	checks := map[string]string{}
 	if s.Cfg.IsLiveCutoverAllowed() {
@@ -135,9 +132,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	vectorReady := false
 	vectorDegraded := false
 	if s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.VectorOpenError == nil {
-		probeCtx, cancelProbe := context.WithTimeout(r.Context(), 5*time.Second)
-		health, healthErr := s.Vector.Health(probeCtx)
-		cancelProbe()
+		health, healthErr := s.Vector.Health(r.Context())
 		if healthErr == nil && strings.TrimSpace(health.Status) == "ok" && health.ModelReady {
 			checks["chromadb_vector"] = "enabled"
 			vectorReady = true
@@ -198,9 +193,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		checks["reference_chromadb_vector_error"] = "reference vector store is not initialized"
 		referenceVectorDegraded = true
 	case s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "":
-		probeCtx, cancelProbe := context.WithTimeout(r.Context(), referenceReadinessProbeTimeout)
-		health, healthErr := s.ReferenceVector.Health(probeCtx)
-		cancelProbe()
+		health, healthErr := s.ReferenceVector.Health(r.Context())
 		if healthErr == nil && strings.TrimSpace(health.Status) == "ok" && health.ModelReady {
 			checks["reference_chromadb_vector"] = "enabled"
 			checks["reference_chromadb_vector_error"] = "none"

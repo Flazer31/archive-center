@@ -452,7 +452,12 @@ func TestRollbackLifecycleUsesDurableOutboxAndProviderFailureStaysRetryable(t *t
 	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
 	lifecycle := &rollbackLifecycleStore{rollbackRecordingStore: base}
 	vec := &turnRecordingVectorStore{deleteErr: errors.New("chroma unavailable")}
-	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: vec}
+	srv := &Server{
+		Cfg: cfg, Store: lifecycle, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, EmbeddingTimeoutSec: 30, FailedQueueMaxAttempts: 4,
+		},
+	}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
@@ -501,7 +506,12 @@ func TestRollbackLifecyclePermanentVectorFailureIsPartialError(t *testing.T) {
 		rollbackRecordingStore: base,
 		outboxOperation:        "unsupported",
 	}
-	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: &turnRecordingVectorStore{}}
+	srv := &Server{
+		Cfg: cfg, Store: lifecycle, Vector: &turnRecordingVectorStore{},
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, EmbeddingTimeoutSec: 30, FailedQueueMaxAttempts: 4,
+		},
+	}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
@@ -595,7 +605,12 @@ func TestSessionDeleteLifecycleUsesOutboxInsteadOfDirectVectorSessionDelete(t *t
 	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
 	lifecycle := &rollbackLifecycleStore{rollbackRecordingStore: base}
 	vec := &turnRecordingVectorStore{deleteErr: errors.New("chroma unavailable")}
-	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: vec}
+	srv := &Server{
+		Cfg: cfg, Store: lifecycle, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, EmbeddingTimeoutSec: 30, FailedQueueMaxAttempts: 4,
+		},
+	}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
@@ -925,7 +940,7 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 		"assistant_content": "Alice relaxed after Bob helped her.",
 		"context_messages":  []any{},
 		"improvement_trace": map[string]any{"score": 9},
-		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "max_tokens": 1200}, "embedding": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "embed-model", "provider": "openai"}},
+		"client_meta":       map[string]any{"critic": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "max_tokens": 1200, "timeout_ms": 45000}, "embedding": map[string]any{"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "embed-model", "provider": "openai", "timeout_ms": 30000}},
 		"request_type":      "model",
 	}
 	raw, _ := json.Marshal(body)

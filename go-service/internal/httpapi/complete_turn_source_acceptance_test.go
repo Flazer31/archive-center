@@ -63,11 +63,157 @@ func completeTurnAnchoredAcceptanceTestRequest(sid string, turn int, user, assis
 	return req
 }
 
+func completeTurnNextHostSignalAcceptanceTestRequest(sid string, turn int, user, assistant string, observedAt int64, correlationID string) dto.M4CompleteTurnRequest {
+	return dto.M4CompleteTurnRequest{
+		ChatSessionID:    sid,
+		TurnIndex:        turn,
+		UserInput:        &user,
+		AssistantContent: &assistant,
+		ClientMeta: map[string]any{
+			"source_acceptance_required":            true,
+			"archive_center_request_correlation_id": correlationID,
+			"source_acceptance_observation": map[string]any{
+				"contract_version":                       completeTurnNextHostSignalAcceptanceContract,
+				"host_lifecycle_contract_version":        completeTurnRisuHostLifecycleContract,
+				"observed_at_ms":                         observedAt,
+				"session_id":                             sid,
+				"finality_source":                        "risu_next_host_signal_active_chat",
+				"finality_state":                         "committed_assistant_observed",
+				"host_signal_source":                     "beforeRequest",
+				"archive_center_request_correlation_id":  correlationID,
+				"request_id_provenance":                  "archive_center_correlation",
+				"request_correlation_state":              "matched_before_request_context",
+				"request_type":                           "model",
+				"response_role":                          "assistant",
+				"after_request_content_hash":             prepareOR1CHash(assistant),
+				"host_chat_id":                           "chat-1",
+				"host_chat_id_state":                     "observed",
+				"chat_streaming_state":                   "not_streaming",
+				"active_message_count":                   4,
+				"message_index":                          2,
+				"message_role":                           "char",
+				"message_chat_id":                        "assistant-message-1",
+				"message_chat_id_state":                  "observed",
+				"generation_id":                          "generation-1",
+				"generation_id_state":                    "observed",
+				"message_time_ms":                        int64(900),
+				"message_time_state":                     "observed",
+				"request_message_count":                  2,
+				"user_message_index":                     1,
+				"user_message_chat_id":                   "user-message-1",
+				"user_message_chat_id_state":             "observed_before_request",
+				"user_message_time_ms":                   int64(500),
+				"user_message_time_state":                "observed_before_request",
+				"user_observed_content_hash":             prepareOR1CHash(user),
+				"user_persistence_content_hash":          prepareOR1CHash(user),
+				"observed_content_hash":                  prepareOR1CHash(assistant),
+				"persistence_content_hash":               prepareOR1CHash(assistant),
+				"hash_algorithm":                         "or1c_utf16_djb2.v1",
+				"position_observation":                   "committed_before_next_host_signal",
+				"later_active_turn_message_count":        1,
+				"next_signal_active_role":                "user",
+				"next_signal_user_index":                 3,
+				"next_signal_user_observed_content_hash": prepareOR1CHash("next user"),
+				"message_disabled_state":                 "not_disabled",
+				"revision_state":                         "not_exposed_by_risuai",
+			},
+		},
+	}
+}
+
 func newCompleteTurnAcceptanceTestServer() *Server {
 	return &Server{
 		Cfg:               config.Config{StoreMode: config.StoreModeDualShadow},
 		Store:             store.NewNoopStore(),
 		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(),
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceAcceptsCorrelatedNextHostSignalCommit(t *testing.T) {
+	req := completeTurnNextHostSignalAcceptanceTestRequest("session-1", 2, "user", "final answer", 1000, "archive-request-1")
+	decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if !decision.Accepted || decision.Reason != "next_host_signal_finality_observation_accepted" || decision.Revision == "" {
+		t.Fatalf("decision=%+v", decision)
+	}
+	if decision.Observation.GenerationID != "generation-1" ||
+		decision.Observation.MessageIndex != 2 ||
+		decision.Observation.NextSignalUserIndex != 3 ||
+		decision.Observation.NextSignalUserContentHash == "" {
+		t.Fatalf("next-host-signal commit facts missing: %+v", decision.Observation)
+	}
+	source, err := completeTurnMemorySourceRevision(decision, "session-1", 2, "user", "final answer", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("completeTurnMemorySourceRevision: %v", err)
+	}
+	if source == nil || source.SourceMessageID == "" || source.SourceGenerationID != "generation-1" {
+		t.Fatalf("next-host-signal source identity missing: %+v", source)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceRejectsAfterRequestCandidateAndInvalidNextSignalProvenance(t *testing.T) {
+	req := completeTurnNextHostSignalAcceptanceTestRequest("session-1", 2, "user", "final answer", 1000, "archive-request-1")
+	observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+	observation["finality_source"] = "risu_afterRequest"
+	observation["finality_state"] = "received_success_response"
+	if decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req); decision.Accepted || decision.Reason != "source_acceptance_next_host_signal_lifecycle_invalid" {
+		t.Fatalf("afterRequest candidate decision=%+v", decision)
+	}
+
+	req = completeTurnNextHostSignalAcceptanceTestRequest("session-1", 2, "user", "final answer", 1000, "archive-request-1")
+	observation = req.ClientMeta["source_acceptance_observation"].(map[string]any)
+	observation["request_id_provenance"] = "risu_request_id"
+	if decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req); decision.Accepted || decision.Reason != "source_acceptance_next_host_signal_correlation_invalid" {
+		t.Fatalf("invalid provenance decision=%+v", decision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceNextHostSignalIsIdempotentAndSupersedesByCorrelation(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnNextHostSignalAcceptanceTestRequest("session-1", 2, "same user", "same answer", 1000, "archive-request-1")
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !firstDecision.Accepted {
+		t.Fatalf("first=%+v", firstDecision)
+	}
+	duplicate := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !duplicate.Accepted || duplicate.Reason != "active_final_observation_idempotent" || duplicate.Revision != firstDecision.Revision {
+		t.Fatalf("duplicate=%+v first=%+v", duplicate, firstDecision)
+	}
+	second := completeTurnNextHostSignalAcceptanceTestRequest("session-1", 2, "same user", "same answer", 2000, "archive-request-2")
+	secondObservation := second.ClientMeta["source_acceptance_observation"].(map[string]any)
+	secondObservation["generation_id"] = "generation-2"
+	secondObservation["message_chat_id"] = "assistant-message-2"
+	secondObservation["message_time_ms"] = int64(1900)
+	secondDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), second)
+	if !secondDecision.Accepted || !secondDecision.ReplaceExisting || secondDecision.Revision == firstDecision.Revision {
+		t.Fatalf("second=%+v first=%+v", secondDecision, firstDecision)
+	}
+	stale := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if stale.Accepted || stale.Reason != "source_acceptance_stale_or_superseded" {
+		t.Fatalf("stale=%+v", stale)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceRejectsNextHostSignalRevisionInvalidatedByDelete(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	req := completeTurnNextHostSignalAcceptanceTestRequest("session-1", 2, "user", "answer", 1000, "archive-request-1")
+	decision := server.beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if !decision.Accepted {
+		t.Fatalf("decision=%+v", decision)
+	}
+	server.invalidateCompleteTurnSourceAcceptances(context.Background(), "session-1", 2, "test_delete", 1500)
+	replayed := server.beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if replayed.Accepted || replayed.Reason != "source_acceptance_deleted_or_rolled_back" {
+		t.Fatalf("replayed=%+v", replayed)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceRejectsLaterAssistantBeyondNextSignalUser(t *testing.T) {
+	req := completeTurnNextHostSignalAcceptanceTestRequest("session-1", 2, "user", "answer", 1000, "archive-request-1")
+	observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+	observation["active_message_count"] = 5
+	observation["later_active_turn_message_count"] = 2
+	if decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req); decision.Accepted || decision.Reason != "source_acceptance_stale_or_superseded" {
+		t.Fatalf("later assistant decision=%+v", decision)
 	}
 }
 
@@ -225,7 +371,7 @@ func TestCompleteTurnSourceAcceptanceRejectionDoesNotCompleteIdempotencyCache(t 
 	if response["status"] != "rejected" || response["queue_action"] != "retry_after_new_observation" {
 		t.Fatalf("response=%v", response)
 	}
-	if _, _, found := server.CompleteTurns.status("candidate-key", time.Now().UTC()); found {
+	if _, _, found := server.CompleteTurns.status("candidate-key"); found {
 		t.Fatal("candidate rejection polluted complete-turn idempotency cache")
 	}
 }

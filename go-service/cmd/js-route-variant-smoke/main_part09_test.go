@@ -967,7 +967,8 @@ func TestArchiveCenterJSActiveChatCompleteTurnBackfillMarkers(t *testing.T) {
 		"rawRepairStatus",
 		"setTurnCounterAtLeast",
 		`ensureActiveChatCompletedTurnsBackfilled(orchSessionId, { reason: "before_request"`,
-		`ensureActiveChatCompletedTurnsBackfilled(chatSessionId, { reason: "after_request"`,
+		`source: "risu_next_host_signal_active_chat"`,
+		"persistAcceptedHostFinalWithoutBlockingRequest",
 		`ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh"`,
 		"lastActiveChatBackfill",
 		"Active Chat Backfill",
@@ -984,7 +985,8 @@ func TestArchiveCenterJSAutoContinueEmptyInputMarkers(t *testing.T) {
 	required := []string{
 		"AUTO_CONTINUE_USER_INPUT_MARKER",
 		"actualEmptyInput",
-		"function peekActualEmptyRawInputForSession",
+		"function bindRawInputObservationToRequest",
+		"const actualEmptyRawInput = rawInputObservationForRequest",
 		`current_user_input_backend_unavailable`,
 		"recoverCurrentUserInputFromActiveChatTail",
 		"function shouldAllowActiveChatAssistantPairUserReplace",
@@ -1011,8 +1013,13 @@ func TestArchiveCenterJSActiveChatInputPrecedesAutoContinueFallback(t *testing.T
 	if activePair < 0 || autoContinue < 0 || activePair >= autoContinue {
 		t.Fatalf("Active Chat user recovery must run before auto-continue fallback: active=%d auto=%d", activePair, autoContinue)
 	}
-	if !strings.Contains(src, `(Date.now() - (actualEmptyRawInput.capturedAt || 0)) <= RAW_INPUT_STRONG_MAX_AGE_MS`) {
-		t.Fatal("empty input fallback must require a fresh input-hook observation")
+	boundEmpty := strings.Index(src, `if (actualEmptyRawInput) {`)
+	activeRecovery := strings.Index(src, `const activeChatUserInput = await recoverUserInputFromActiveChatPair`)
+	if boundEmpty < 0 || activeRecovery < 0 || boundEmpty >= activeRecovery {
+		t.Fatal("request-bound empty input must become authoritative before Active Chat recovery")
+	}
+	if !strings.Contains(src, `if (!actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {`) {
+		t.Fatal("Active Chat recovery must be blocked by a request-bound empty input")
 	}
 	if !strings.Contains(src, `let safeSavedUserInput = isCanonicalHostUserInputText(userInput) ? userInput : ""`) {
 		t.Fatal("save-layer user input must preserve verified host text without prompt-content classification")

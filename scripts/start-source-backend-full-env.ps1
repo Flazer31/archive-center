@@ -21,10 +21,8 @@ function Import-DotEnv([string]$Path) {
 function Test-PortOpen([int]$Port) {
     $client = New-Object Net.Sockets.TcpClient
     try {
-        $iar = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
-        $ok = $iar.AsyncWaitHandle.WaitOne(500, $false)
-        if ($ok) { $client.EndConnect($iar) }
-        return $ok
+        $client.Connect("127.0.0.1", $Port)
+        return $client.Connected
     } catch {
         return $false
     } finally {

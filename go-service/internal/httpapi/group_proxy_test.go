@@ -445,9 +445,10 @@ func TestHandleProxyPluginMainOllamaLoopbackWithoutAPIKey(t *testing.T) {
 
 func TestOllamaRuntimeLLMConfigDoesNotRequireAPIKey(t *testing.T) {
 	cfg := completeTurnLLMConfig{
-		Provider: "ollama",
-		Endpoint: "http://127.0.0.1:11434/v1",
-		Model:    "local-model",
+		Provider:  "ollama",
+		Endpoint:  "http://127.0.0.1:11434/v1",
+		Model:     "local-model",
+		TimeoutMs: 45_000,
 	}
 	if !cfg.hasConfig() {
 		t.Fatalf("local Ollama config should be complete without an API key; missing=%v", cfg.missingFields())
@@ -1675,6 +1676,31 @@ func TestCallEmbeddingOllamaNative(t *testing.T) {
 	}
 	if embedding != `[0.1,0.2,0.3]` {
 		t.Fatalf("embedding = %q", embedding)
+	}
+}
+
+func TestProviderAndEmbeddingCallsWithoutRuntimeTimeoutInheritCallerCancellation(t *testing.T) {
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, status, err := callProxyProvider(cancelledCtx, dto.ProxyPluginMainRequest{
+		Provider: strPtr("openai"),
+		Endpoint: strPtr("https://api.example.com/v1"),
+		Model:    strPtr("test-model"),
+		APIKey:   strPtr("test-key"),
+	})
+	if status != http.StatusBadGateway || !errors.Is(err, context.Canceled) {
+		t.Fatalf("proxy cancellation: status=%d err=%T %v", status, err, err)
+	}
+
+	_, _, err = callEmbedding(cancelledCtx, completeTurnEmbeddingConfig{
+		Provider: "openai",
+		Endpoint: "https://api.example.com/v1",
+		Model:    "test-embedding",
+		APIKey:   "test-key",
+	}, "embed me")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("embedding cancellation error=%T %v", err, err)
 	}
 }
 

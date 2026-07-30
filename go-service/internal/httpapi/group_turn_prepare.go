@@ -853,6 +853,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	guidanceApplicationTrace["requested_budget_chars"] = narrativeSupportMaxChars
 	guidanceApplicationTrace["guide_eligibility"] = guideEligibility
 	payloadApplicationPlan["guidance_application_trace"] = guidanceApplicationTrace
+	payloadApplicationPlan["recomposer_enhancement_contract"] = buildPrepareTurnRecomposerEnhancementContract(
+		sid,
+		turnIndex,
+		injectionAssembly.MemoryDeliveryPlan,
+		boundedMemoryDeliveryLineage,
+		payloadApplicationPlan,
+		supervisorCallStatus,
+	)
 	requestCorrelationID := stringPtrValue(prepareSourceContract.LaneStatus.RequestCorrelationID, "")
 	if strings.TrimSpace(requestCorrelationID) == "" {
 		requestCorrelationID = extractionStringFromAny(req.ClientMeta["archive_center_request_correlation_id"])

@@ -166,8 +166,9 @@ func TestSourceDiscoveryUsesSelectedWorkWithoutDuplicateTitleInput(t *testing.T)
 	if !strings.Contains(library, `tabs + selector + renderReferenceCanonPackPanel()`) {
 		t.Fatalf("work selector is missing from the discovery panel")
 	}
-	if !strings.Contains(timeout, `resolveRequestTimeoutMs(600000)`) {
-		t.Fatalf("source discovery transport must outlive the bounded backend pipeline: %s", timeout)
+	if !strings.Contains(timeout, `getSourceSearchPlannerTimeoutSettingMs()`) ||
+		strings.Contains(timeout, `600000`) {
+		t.Fatalf("source discovery transport must use the explicit UI timeout without a hidden fallback: %s", timeout)
 	}
 }
 
@@ -450,6 +451,146 @@ func extractArchiveCenterJSAsyncFunction(t *testing.T, src, name string) string 
 	return strings.TrimSpace(src[start:end])
 }
 
+func TestTurnWorkflowHUDEventStreamUsesOneConnectionAndNoPolling(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for turn workflow HUD watch runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	cancelStream := extractArchiveCenterJSFunction(t, src, "cancelTurnWorkflowHUDStream")
+	streamFailure := extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDStreamFailure")
+	openStream := extractArchiveCenterJSAsyncFunction(t, src, "openTurnWorkflowHUDStream")
+	consumeLine := extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStreamLine")
+	consumeStream := extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStream")
+	startWatch := extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDWatch")
+	streamSource := strings.Join([]string{cancelStream, openStream, consumeStream, startWatch}, "\n")
+	for _, forbidden := range []string{"/turn-workflow/status", "setInterval(", "setTimeout(", "llmRetryCount"} {
+		if strings.Contains(streamSource, forbidden) {
+			t.Fatalf("turn workflow HUD stream retained forbidden automatic transport %q", forbidden)
+		}
+	}
+	if !strings.Contains(startWatch, "/turn-workflow/events") ||
+		!strings.Contains(openStream, "R.nativeFetch") ||
+		!strings.Contains(openStream, "response.body.getReader") {
+		t.Fatal("turn workflow HUD stream is not using the nativeFetch readable-stream feature probe")
+	}
+	script := `
+const settings = {turnWorkflowHUDEnabled:true,requestTimeoutMs:17000};
+const encoder = new TextEncoder();
+let _turnWorkflowHUDWatchToken = 0;
+let _turnWorkflowHUDWatchRunning = false;
+let _turnWorkflowHUDActiveRequestId = "";
+let _turnWorkflowHUDLastRevision = 0;
+let _turnWorkflowHUDStreamAbortController = null;
+let _turnWorkflowHUDStreamReader = null;
+let _turnWorkflowHUDRenderChain = Promise.resolve();
+let streamResponses = [];
+let streamPaths = [];
+let consumedStatuses = [];
+let transportErrors = [];
+let fallbackFetchCalls = 0;
+const R = {
+  nativeFetch: async function(path) {
+    streamPaths.push(String(path || ""));
+    if (streamResponses.length === 0) throw new Error("unexpected extra stream request");
+    return streamResponses.shift();
+  },
+};
+function turnWorkflowHUDIsEnabled() { return settings.turnWorkflowHUDEnabled !== false; }
+function getRequestTimeoutSettingMs() { return settings.requestTimeoutMs; }
+function dismissTurnWorkflowHUD() {}
+function clearTurnWorkflowHUDTimer() {}
+async function removeTurnWorkflowHUDDismissListeners() {}
+function queueTurnWorkflowHUDOperation(_label, operation) {
+  _turnWorkflowHUDRenderChain = _turnWorkflowHUDRenderChain.then(operation);
+  return _turnWorkflowHUDRenderChain;
+}
+async function ensureTurnWorkflowHUDRoot() { return null; }
+function resolveBridgeRuntimeRoute() { return {url:"http://127.0.0.1:28080"}; }
+function consumeTurnWorkflowHUD(view) {
+  consumedStatuses.push(String(view && view.status || ""));
+  _turnWorkflowHUDLastRevision = Math.max(_turnWorkflowHUDLastRevision, Number(view && view.revision || 0));
+  queueTurnWorkflowHUDOperation("render", async function() {});
+  return true;
+}
+function renderTurnWorkflowHUDTransportError(requestId, reasonCode) {
+  transportErrors.push(String(requestId || "") + ":" + String(reasonCode || ""));
+}
+function debugLog() {}
+function fetch() { fallbackFetchCalls++; throw new Error("unproven fallback fetch used"); }
+function assert(condition, message) { if (!condition) throw new Error(message); }
+async function settleWatch(label) {
+  for (let index = 0; index < 20 && _turnWorkflowHUDWatchRunning; index++) {
+    await new Promise(function(resolve) { setImmediate(resolve); });
+  }
+  assert(!_turnWorkflowHUDWatchRunning, label + " did not settle");
+}
+function responseFromLines(lines) {
+  const chunks = [encoder.encode(lines.join("\n") + "\n")];
+  return {
+    status: 200,
+    ok: true,
+    body: {
+      getReader: function() {
+        return {
+          read: async function() {
+            if (chunks.length > 0) return {value:chunks.shift(),done:false};
+            return {done:true};
+          },
+          cancel: async function() {},
+        };
+      },
+    },
+  };
+}
+` + "\n" + cancelStream + "\n" + streamFailure + "\n" + openStream + "\n" + consumeLine + "\n" + consumeStream + "\n" + startWatch + `
+(async function() {
+  streamResponses = [responseFromLines([
+    JSON.stringify({contract_version:"turn_workflow_hud.v2",request_id:"registered-request",status:"running",revision:1}),
+    JSON.stringify({contract_version:"turn_workflow_hud.v2",request_id:"registered-request",status:"running",revision:2}),
+    JSON.stringify({contract_version:"turn_workflow_hud.v2",request_id:"registered-request",status:"completed",revision:3}),
+  ])];
+  startTurnWorkflowHUDWatch("registered-request");
+  await settleWatch("registered stream");
+  assert(streamPaths.length === 1, "workflow used more than one HTTP connection");
+  assert(streamPaths[0].includes("/turn-workflow/events?"), "workflow did not use the event stream endpoint");
+  assert(streamPaths[0].includes("after_revision=0"), "new request did not begin after revision zero");
+  assert(streamPaths[0].includes("wait_ms=17000"), "stream did not carry the UI-configured wait");
+  assert(consumedStatuses.join(",") === "running,running,completed", "stream revisions were not rendered sequentially");
+  assert(transportErrors.length === 0, "valid stream produced a transport error");
+
+  streamPaths = [];
+  consumedStatuses = [];
+  streamResponses = [{status:200,ok:true,body:null}];
+  startTurnWorkflowHUDWatch("unsupported-request");
+  await settleWatch("unsupported stream");
+  assert(streamPaths.length === 1, "unsupported stream retried or polled");
+  assert(fallbackFetchCalls === 0, "unsupported native stream fell back to unproven fetch");
+  assert(transportErrors.join(",") === "unsupported-request:stream_transport_unavailable", "unsupported stream lost its typed HUD fact");
+  process.stdout.write("ok");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	scriptPath := t.TempDir() + "/turn-workflow-hud-watch-runtime.js"
+	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
+		t.Fatalf("write turn workflow HUD watch runtime fixture: %v", err)
+	}
+	command := exec.Command(nodePath, scriptPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("turn workflow HUD watch runtime fixture failed: %v\n%s", err, output)
+	}
+	if strings.TrimSpace(string(output)) != "ok" {
+		t.Fatalf("turn workflow HUD watch runtime fixture output=%q, want ok", output)
+	}
+}
+
 func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -472,12 +613,27 @@ func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
 	hudRuntime := strings.TrimSpace(src[start : start+endOffset])
 	script := `
 const nodesByClass = new Map();
-const intervals = [];
-function setInterval(fn, ms) {
-  intervals.push({fn, ms});
-  return intervals.length;
+let animationFrameSequence = 0;
+const animationFrames = new Map();
+const cancelledAnimationFrames = [];
+let risuEventListenerSequence = 0;
+const risuEventListeners = new Map();
+async function dispatchRisuEvent(type, event) {
+  for (const listener of Array.from(risuEventListeners.values())) {
+    if (listener.type === type) {
+      await listener.handler(Object.assign({type}, event || {}));
+    }
+  }
 }
-function clearInterval() {}
+function requestAnimationFrame(fn) {
+  const id = ++animationFrameSequence;
+  animationFrames.set(id, fn);
+  return id;
+}
+function cancelAnimationFrame(id) {
+  cancelledAnimationFrames.push(id);
+  animationFrames.delete(id);
+}
 class FakeRemoteNode {
   constructor(tag) {
     this.tag = tag;
@@ -486,6 +642,8 @@ class FakeRemoteNode {
     this.innerHTML = "";
     this.textContent = "";
     this.listeners = {};
+    this.listenerIds = {};
+    this.parent = null;
     this.card = null;
     this.elapsed = null;
     this.button = null;
@@ -536,7 +694,17 @@ class FakeRemoteNode {
     this.textContent = String(value);
   }
   async appendChild(child) {
+    child.parent = this;
     this.children.push(child);
+  }
+  async remove() {
+    if (this.parent) {
+      this.parent.children = this.parent.children.filter(child => child !== this);
+      this.parent = null;
+    }
+    for (const [className, node] of Array.from(nodesByClass.entries())) {
+      if (node === this) nodesByClass.delete(className);
+    }
   }
   async querySelector(selector) {
     if (selector === "div") return this.card;
@@ -545,8 +713,17 @@ class FakeRemoteNode {
     return null;
   }
   async addEventListener(name, handler) {
+    const listenerId = "listener-" + (++risuEventListenerSequence);
     this.listeners[name] = handler;
-    return name + "-listener";
+    this.listenerIds[name] = listenerId;
+    risuEventListeners.set(listenerId, {type:name, handler, node:this});
+    return listenerId;
+  }
+  async getBoundingClientRect() {
+    if (this.tag === "button") {
+      return {left:110, top:10, right:128, bottom:28, width:18, height:18};
+    }
+    return {left:0, top:0, right:140, bottom:200, width:140, height:200};
   }
 }
 const head = new FakeRemoteNode("head");
@@ -572,7 +749,17 @@ const rootDocument = {
     return new FakeRemoteNode(tag);
   }
 };
-const R = {getRootDocument: async () => rootDocument};
+const R = {
+  getRootDocument: async () => rootDocument,
+  async removeRisuEventListener(listenerId) {
+    const listener = risuEventListeners.get(listenerId);
+    if (listener && listener.node.listenerIds[listener.type] === listenerId) {
+      delete listener.node.listenerIds[listener.type];
+      delete listener.node.listeners[listener.type];
+    }
+    risuEventListeners.delete(listenerId);
+  }
+};
 const settings = {turnWorkflowHUDEnabled:true};
 const translations = {
   "turn_hud.completed": "완료",
@@ -710,10 +897,25 @@ function assert(condition, message) {
   }
   assert(surface.card && typeof surface.card.listeners.click !== "function", "warning HUD still has a card-wide dismiss listener");
   assert(surface.button && typeof surface.button.listeners.click === "function", "warning HUD close button listener missing");
+  assert(risuEventListeners.size === 1, "warning HUD registered more than one global listener");
   assert(surface.innerHTML !== "", "warning HUD disappeared before the close button was used");
-  await surface.button.listeners.click({type:"click"});
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML !== "", "global click outside the close button dismissed the warning HUD");
+  const warningListenerId = surface.button.listenerIds.click;
+  await renderTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-a",revision:2,
+    logical_turn:55,status:"completed_with_warning",severity:"warning",
+    dismissal_policy:"x_only",counts,stages,facts,
+    warnings:[{code:"PUBLISHER_SKIPPED",message_key:"warn.publisher",stage_key:"stage-4"}]
+  });
+  await _turnWorkflowHUDRenderChain;
+  assert(risuEventListeners.size === 1, "HUD rerender leaked a global click listener");
+  assert(!risuEventListeners.has(warningListenerId), "HUD rerender retained its prior global click listener");
+  await dispatchRisuEvent("click", {clientX:120, clientY:20});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "warning HUD close button did not dismiss HUD");
+  assert(risuEventListeners.size === 0, "warning HUD dismissal retained its global listener");
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-info",revision:1,
@@ -721,7 +923,7 @@ function assert(condition, message) {
   }), "normal completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.card && typeof surface.card.listeners.click === "function", "normal completed HUD lost card-wide dismissal");
-  await surface.card.listeners.click({type:"click"});
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "normal completed HUD card click did not dismiss HUD");
 
@@ -733,10 +935,17 @@ function assert(condition, message) {
   }), "running HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.elapsed && /초$/.test(surface.elapsed.textContent), "LLM elapsed seconds were not rendered");
-  assert(intervals.length === 1 && intervals[0].ms === 1000, "LLM elapsed timer is not one second");
+  assert(animationFrames.size === 1, "LLM elapsed display did not schedule an animation frame");
+  const firstAnimationFrame = Array.from(animationFrames.entries())[0];
+  animationFrames.delete(firstAnimationFrame[0]);
+  firstAnimationFrame[1]();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert(animationFrames.size === 1, "LLM elapsed display did not continue through animation frames");
   assert(surface.innerHTML.includes("height:3px") && surface.innerHTML.includes("width:42.9%"), "running HUD progress bar does not reflect the backend stage ordinal");
   await dismissTurnWorkflowHUD("running-b");
   await _turnWorkflowHUDRenderChain;
+  assert(cancelledAnimationFrames.length >= 1, "HUD dismissal did not cancel the elapsed animation frame");
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"ooc-running",revision:1,
@@ -753,7 +962,7 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("color:#F5C451"), "OOC notice title did not use the yellow attention color");
   assert(_turnWorkflowHUDWatchRunning === false, "OOC notice left the workflow status watcher running");
   assert(surface.card && typeof surface.card.listeners.click === "function", "OOC informational notice lost normal card dismissal");
-  await surface.card.listeners.click({type:"click"});
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "OOC informational notice did not dismiss");
   settings.turnWorkflowHUDEnabled = false;
@@ -778,7 +987,7 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("삭제 확인 테스트"), "backend deletion notice title was not rendered");
   assert(surface.innerHTML.includes("삭제 출력 정리 테스트"), "backend deletion notice detail was not rendered");
   assert(surface.card && typeof surface.card.listeners.click === "function", "successful deletion notice lost card dismissal");
-  await surface.card.listeners.click({type:"click"});
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "successful deletion notice did not dismiss");
 
@@ -792,7 +1001,7 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("리롤 확인 테스트"), "backend reroll notice title was not rendered");
   assert(surface.innerHTML.includes("기존 턴 교체 테스트"), "backend reroll notice detail was not rendered");
   assert(surface.card && typeof surface.card.listeners.click === "function", "successful reroll notice lost card dismissal");
-  await surface.card.listeners.click({type:"click"});
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "successful reroll notice did not dismiss");
 
@@ -820,11 +1029,12 @@ function assert(condition, message) {
   const failedCard = surface.card;
   assert(typeof failedCard.listeners.click !== "function", "failed HUD still has a card-wide dismiss listener");
   assert(typeof failedCard.listeners.keydown !== "function", "failed HUD still has a card-wide keyboard dismiss listener");
-  assert(typeof surface.button.listeners.keydown === "function", "failed HUD close button keyboard listener missing");
-  await surface.button.listeners.keydown({type:"keydown",key:"x"});
+  assert(typeof surface.button.listeners.keydown !== "function", "failed HUD registered an unidentifiable global keydown listener");
+  assert(risuEventListeners.size === 1, "failed HUD registered more than one global listener");
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML !== "", "unrelated key dismissed terminal HUD");
-  await surface.button.listeners.keydown({type:"keydown",key:"Enter"});
+  assert(surface.innerHTML !== "", "global click outside the failed HUD close button dismissed it");
+  await dispatchRisuEvent("click", {clientX:120, clientY:20});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "failed HUD close button did not dismiss HUD");
 
@@ -846,7 +1056,7 @@ function assert(condition, message) {
   assert(surface.button, "invalidated HUD has no visible close button");
   assert(typeof surface.card.listeners.click !== "function", "invalidated HUD still has a card-wide dismiss listener");
   assert(typeof surface.button.listeners.click === "function", "invalidated HUD close button listener missing");
-  await surface.button.listeners.click({type:"click"});
+  await dispatchRisuEvent("click", {clientX:120, clientY:20});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "invalidated HUD close button did not dismiss HUD");
 
@@ -859,6 +1069,22 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(_turnWorkflowHUDActiveRequestId === "", "disabled HUD started a request watch");
   assert(surface.innerHTML === "", "disabled HUD left visible content behind");
+
+  settings.turnWorkflowHUDEnabled = true;
+  await renderTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"unload-final",revision:1,
+    logical_turn:60,status:"completed",severity:"normal",dismissal_policy:"card_or_x",counts,stages
+  });
+  await _turnWorkflowHUDRenderChain;
+  assert(risuEventListeners.size === 1, "unload fixture did not register its global listener");
+  const unloadAnimationFrame = requestAnimationFrame(function() {});
+  _turnWorkflowHUDAnimationFrame = unloadAnimationFrame;
+  await unloadTurnWorkflowHUD();
+  assert(cancelledAnimationFrames.includes(unloadAnimationFrame), "HUD unload did not cancel its animation frame");
+  assert(risuEventListeners.size === 0, "HUD unload retained a global listener");
+  assert(!body.children.includes(root), "HUD unload left its owned root attached");
+  assert(!nodesByClass.has("mo-turn-workflow-hud-root"), "HUD unload left its owned root queryable");
+  assert(_turnWorkflowHUDMainDocument === null, "HUD unload retained the main RootDocument handle");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);
@@ -1157,6 +1383,8 @@ func TestBeforeRequestNonModelSkipsPrepareTurnRuntime(t *testing.T) {
 	script := fn + `
 const settings = {enabled: true};
 function debugLog() {}
+function warnLog() {}
+function recordRisuHookLifecycle() {}
 function isSaveType(type) { return type === "model"; }
 let prepareCalls = 0;
 async function tryPrepareTurn() { prepareCalls++; throw new Error("prepare-turn must not run"); }
@@ -1185,16 +1413,20 @@ func TestBeforeRequestModelRunsDecisionThenFullWithContextRuntime(t *testing.T) 
 	}
 	src := readArchiveCenterJS(t)
 	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
-	script := fn + `
+	classifyFn := extractArchiveCenterJSFunction(t, src, "classifyLlmFailureReason")
+	gateFn := extractArchiveCenterJSFunction(t, src, "buildLlmGateBlock")
+	script := classifyFn + "\n" + gateFn + "\n" + fn + `
 const settings = {enabled: true, debug: false};
 const ACTIVE_CHAT_BACKFILL_MAX_PAIRS = 20;
 let _sessionCache = null;
 let _effectiveInputAwaitingNewTurn = false;
 const _pendingPersistenceSkipBySession = new Map();
+const _pendingOrchBySession = new Map();
 let activePairs = 0;
 let latestBackendTurn = 0;
 let prepareCalls = [];
 let preFullSideEffects = 0;
+let boundedHostLifecycleCalls = 0;
 const hostObservationsFixture = {request_id: "request-runtime", payload: [{role: "user", raw_content: "actual input", message_index: 1}]};
 const bootstrapObservationFixture = {request_id: "request-runtime"};
 const languageContextFixture = {session_output_language: "ko", output_language_override: "ko"};
@@ -1202,6 +1434,8 @@ const continuityFixture = {triggerMode: "manual_resume", query: "unresolved thre
 let currentContinuity = null;
 function debugLog() {}
 function warnLog() {}
+function clearArchiveCenterRecomposerBridge() {}
+function recordRisuHookLifecycle() {}
 function isSaveType(type) { return type === "model"; }
 function extractMessages(payload) { return {messages: payload.messages, path: ["messages"], hasMessageSlot: true}; }
 function normalizeMessagesForOrchestration(messages) { return messages; }
@@ -1209,14 +1443,18 @@ function extractRuntimeCurrentChatTokenInfo() { return {}; }
 async function getCurrentChatSessionId() { return "session-runtime"; }
 async function resolveCanonicalWriteSessionId(value) { return value; }
 async function getCurrentActiveChatSourceObservationMessages() { return [{role: "user", content: "actual input", risuMessageIndex: 1}]; }
-function peekRawInputForSession() { return {text: "actual input", capturedAt: 1}; }
+function bindRawInputObservationToRequest(_sessionId, requestId) {
+  return {text: "actual input", actualEmptyInput: false, observationId: 1, boundRequestId: requestId};
+}
 function makeOrchRequestId() { return "request-runtime"; }
 function buildPrepareTurnHostObservations() { return hostObservationsFixture; }
 async function observePrepareTurnBootstrap() { return bootstrapObservationFixture; }
 function buildPrepareTurnSourceObservations() { return {sourceObservation: {request_id: "request-runtime"}, capabilityObservation: {capabilities: {}}}; }
 function updateRuntimeState() {}
 function ensureActiveChatCompletedTurnsBackfilled() { preFullSideEffects++; return Promise.resolve(); }
-async function captureAssistantPrefillSeedForSession() { preFullSideEffects++; }
+async function observePendingFinalConfirmationAtHostSignal() { boundedHostLifecycleCalls++; return {accepted:true}; }
+async function captureAssistantPrefillSeedForSession() { boundedHostLifecycleCalls++; }
+async function captureFinalConfirmationRequestContext() { boundedHostLifecycleCalls++; }
 async function resolveRollbackComparableMessages() { preFullSideEffects++; return {messages: null, source: "fixture"}; }
 function scrubOocDirectivesFromUserInput(text) { return {fullyOoc: false, changed: false, text}; }
 function detectCurrentTurnOocInfo() { return {isOoc: false}; }
@@ -1239,11 +1477,13 @@ async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, ty
 async function runFixture(expectedFresh, expectedContinuity) {
   prepareCalls = [];
   preFullSideEffects = 0;
+  boundedHostLifecycleCalls = 0;
   const payload = {messages: [{role: "system", content: "preset"}, {role: "user", content: "actual input"}, {role: "user", content: "later host prompt"}]};
   const result = await onBeforeRequest(payload, "model");
   if (result !== payload) throw new Error("fixture stop did not preserve original payload");
   if (prepareCalls.length !== 2) throw new Error("model prepare calls=" + prepareCalls.length + ", want 2");
   if (preFullSideEffects !== 0) throw new Error("full source failure allowed pre-validation side effects=" + preFullSideEffects);
+  if (boundedHostLifecycleCalls !== 3) throw new Error("official host lifecycle was not observed/captured before fail-open="+boundedHostLifecycleCalls);
   const decision = prepareCalls[0];
   const full = prepareCalls[1];
   if (!decision.options.sourceDecisionOnly || decision.userInput !== "" || decision.continuityInfo !== null || decision.languageContext !== null) {
@@ -1961,50 +2201,43 @@ function debugLog() {}
 	}
 }
 
-func TestRisuHostSignalDrainsAcceptedFinalExactlyOnce(t *testing.T) {
+func TestRisuAfterRequestRecordsCandidateWithoutAcceptingFinality(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
 		nodePath, err = exec.LookPath("node")
 		if err != nil {
-			t.Skip("node is required for accepted-final signal fixture")
+			t.Skip("node is required for afterRequest candidate fixture")
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "drainPendingFinalConfirmations")
+	functionBody := extractArchiveCenterJSFunction(t, src, "recordRisuAfterRequestCandidate")
 	script := functionBody + `
-const pending = {
-  sessionId:"session-1",
-  requestType:"model",
-  inFlight:false,
-  resumeCalls:0,
-  async resume(observation) {
-    if (!observation || observation.assistantContent !== "accepted final") {
-      throw new Error("unconfirmed assistant content reached persistence continuation");
-    }
-    this.resumeCalls++;
-  },
+const lastOrchResult = {id:"orch-1"};
+const pending = {requestId:"archive-request-1",orchResult:lastOrchResult};
+const requestContext = {
+  sessionId:"session-1",requestId:"archive-request-1",requestType:"model",
+  hostChatId:"chat-1",requestMessageCount:2,userMessageIndex:1,
+  userMessageChatId:"user-1",userMessageTimeMs:500,
+  userObservedContentHash:"hash:user",userObservedContent:"user",
+  state:"captured",
 };
-const _pendingFinalConfirmations = new Map([["session-1", pending]]);
-let _pendingFinalConfirmationDrainInFlight = false;
-let _pendingFinalConfirmationDrainRequested = false;
-let confirmationStates = 0;
-async function observePendingFinalConfirmation(item) {
-  if (item !== pending) throw new Error("unexpected pending item");
-  return {confirmed:true,assistantContent:"accepted final"};
-}
-function updateRuntimeState(name, status) {
-  if (name === "lastStreamingAfterRequest" && status === "ok") confirmationStates++;
-}
-function warnLog() {}
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || ""); }
 (async function() {
-  await Promise.all([
-    drainPendingFinalConfirmations("native_afterRequest"),
-    drainPendingFinalConfirmations("host_dom_mutation"),
-  ]);
-  await drainPendingFinalConfirmations("duplicate_signal");
-  if (pending.resumeCalls !== 1 || confirmationStates !== 1 || _pendingFinalConfirmations.size !== 0) {
-    throw new Error("accepted final must drain exactly once: resume=" + pending.resumeCalls + " states=" + confirmationStates);
+  const candidate = recordRisuAfterRequestCandidate("session-1","model",pending,requestContext,"candidate");
+  if (!candidate.observed || candidate.accepted || requestContext.state !== "candidate_observed" ||
+      requestContext.afterRequestCandidateHash !== "hash:candidate") {
+    throw new Error("afterRequest did not remain candidate-only");
+  }
+  const duplicate = recordRisuAfterRequestCandidate("session-1","model",pending,requestContext,"candidate");
+  if (duplicate.observed || !duplicate.duplicate || duplicate.reason !== "duplicate_after_request_candidate") {
+    throw new Error("duplicate candidate was not ignored");
+  }
+  const superseded = {...requestContext,state:"superseded",requestId:"archive-request-old"};
+  const oldPending = {requestId:"archive-request-old",orchResult:lastOrchResult};
+  if (recordRisuAfterRequestCandidate("session-1","model",oldPending,superseded,"old").observed) {
+    throw new Error("superseded request recorded a candidate");
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -2012,11 +2245,79 @@ function warnLog() {}
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("accepted-final signal fixture failed: %v\n%s", err, out)
+		t.Fatalf("afterRequest candidate-only fixture failed: %v\n%s", err, out)
 	}
 }
 
-func TestRisuHostFinalConfirmationRequiresExactAppendOrReplacementSlot(t *testing.T) {
+func TestRisuNextHostSignalObservationPreservesCommittedChatFacts(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for next-host-signal observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	script := functionBody + `
+function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").trim(); }
+async function resolveCurrentActiveChatObject() { throw new Error("next-host-signal v2 reread active chat"); }
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function isSameAssistantComparableText(a,b) { return a === b; }
+function getSessionSnapshot() { return null; }
+function debugLog() {}
+(async function() {
+  const finality = {
+    accepted:true,contract_version:"source_acceptance_observation.v2",
+    host_lifecycle_contract_version:"risu_host_lifecycle_observation.v1",
+    observed_at_ms:1000,session_id:"session-1",finality_source:"risu_next_host_signal_active_chat",
+    finality_state:"committed_assistant_observed",host_signal_source:"beforeRequest",
+    archive_center_request_correlation_id:"archive-request-1",
+    request_id_provenance:"archive_center_correlation",
+    request_correlation_state:"matched_before_request_context",request_type:"model",
+    after_request_content_hash:"hash:persisted answer",host_chat_id:"chat-1",
+    host_chat_id_state:"observed",chat_streaming_state:"not_streaming",
+    active_message_count:4,message_index:2,message_role:"char",
+    message_chat_id:"assistant-1",message_chat_id_state:"observed",
+    generation_id:"generation-1",generation_id_state:"observed",
+    message_time_ms:900,message_time_state:"observed",request_message_count:2,
+    user_message_index:1,user_message_chat_id:"user-1",
+    user_message_chat_id_state:"observed_before_request",
+    user_message_time_ms:500,user_message_time_state:"observed_before_request",
+    user_observed_content_hash:"hash:user",
+    observed_content_hash:"hash:persisted answer",
+    position_observation:"committed_before_next_host_signal",
+    later_active_turn_message_count:1,next_signal_active_role:"user",
+    next_signal_user_index:3,next_signal_user_observed_content_hash:"hash:next user",
+    message_disabled_state:"not_disabled",revision_state:"not_exposed_by_risuai",
+  };
+  const observation = await buildCompleteTurnSourceAcceptanceObservation(
+    "session-1","persisted answer",{sourceAcceptanceFinality:finality,userInput:"user"}
+  );
+  if (observation.contract_version !== "source_acceptance_observation.v2" ||
+      observation.finality_source !== "risu_next_host_signal_active_chat" ||
+      observation.generation_id !== "generation-1" ||
+      observation.message_index !== 2 ||
+      observation.next_signal_user_index !== 3 ||
+      observation.position_observation !== "committed_before_next_host_signal") {
+    throw new Error("next-host-signal v2 lost active-chat commit facts");
+  }
+  if (observation.observed_content_hash !== "hash:persisted answer" ||
+      observation.persistence_content_hash !== "hash:persisted answer") {
+    throw new Error("committed and persisted hashes lost provenance");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("next-host-signal observation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRisuHostFinalConfirmationAcceptsExactSlotAndOneTrailingCurrentUser(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -2026,66 +2327,82 @@ func TestRisuHostFinalConfirmationRequiresExactAppendOrReplacementSlot(t *testin
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "observePendingFinalConfirmation")
+	functionBody := extractArchiveCenterJSFunction(t, src, "observePendingFinalConfirmationAtHostSignal")
 	script := functionBody + `
-let activeChat = null;
+let activeChat = {id:"chat-a",isStreaming:false,message:[
+  {role:"char",data:"greeting"},
+  {role:"user",data:"question",chatId:"user-1",time:100},
+  {role:"char",data:"append final",chatId:"assistant-1",time:200,generationInfo:{generationId:"g-append"}},
+  {role:"user",data:"next question",chatId:"user-2",time:300},
+]};
 const R = {
   async getCurrentCharacterIndex() { return 7; },
   async getCurrentChatIndex() { return 3; },
   async getChatFromIndex() { return activeChat; },
 };
+const _finalConfirmationRequestBySession = new Map();
+const ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES = 8;
+let persisted = [];
 function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
-function isSameAssistantComparableText(a, b) { return a === b; }
-function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || ""); }
+function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || "").trim(); }
+function extractActiveChatComparableMessages(chat) {
+  return chat.message.map((item,index)=>({
+    role:item.role==="char"?"assistant":item.role,
+    content:item.data,risuMessageIndex:index,
+  }));
+}
+async function backfillOneActiveChatCompletedTurn(sid,pair,options) {
+  persisted.push({sid,pair,observation:options.sourceAcceptanceFinality});
+  return {status:"saved"};
+}
+function updateRuntimeState() {}
+function warnLog() {}
 function debugLog() {}
 
 (async function() {
   const appendContext = {
-    state:"candidate_observed", characterIndex:7, chatIndex:3, hostChatId:"chat-a",
-    expectedMessageCount:3, expectedAssistantIndex:2, replacementMode:"append_assistant_tail",
+    state:"candidate_observed",sessionId:"session-1",requestId:"request-1",requestType:"model",
+    characterIndex:7,chatIndex:3,hostChatId:"chat-a",requestMessageCount:2,
+    userMessageIndex:1,userMessageChatId:"user-1",userMessageTimeMs:100,
+    userObservedContentHash:"h:question",userObservedContent:"question",
+    baselineAssistantIndex:-1,afterRequestCandidateHash:"h:append final",
   };
-  activeChat = {id:"chat-a",isStreaming:false,message:[
-    {role:"char",data:"prior"},
-    {role:"user",data:"question"},
-    {role:"char",data:"append final",generationInfo:{generationId:"g-append"}},
-  ]};
-  const append = await observePendingFinalConfirmation({
-    requestContext:appendContext,candidateContent:"append final",
-  });
-  if (!append.confirmed || append.messageIndex !== 2 || append.requestContext !== appendContext) {
+  _finalConfirmationRequestBySession.set("session-1",appendContext);
+  const append = await observePendingFinalConfirmationAtHostSignal("session-1","beforeRequest");
+  await Promise.resolve();
+  if (!append.accepted || appendContext.state !== "accepted" || persisted.length !== 1) {
     throw new Error("exact append slot was not confirmed");
   }
-
-  activeChat.message.push({role:"user",data:"later turn"});
-  const laterTail = await observePendingFinalConfirmation({
-    requestContext:appendContext,candidateContent:"append final",
-  });
-  if (laterTail.confirmed || laterTail.reason !== "assistant_tail_not_committed") {
-    throw new Error("later tail incorrectly satisfied prior request");
+  const observed = persisted[0].observation;
+  if (observed.later_active_turn_message_count !== 1 ||
+      observed.next_signal_active_role !== "user" ||
+      observed.next_signal_user_index !== 3 ||
+      observed.next_signal_user_observed_content_hash !== "h:next question" ||
+      observed.prompt_memory_availability !== "one_turn_late") {
+    throw new Error("trailing current-user anchor was not preserved");
   }
-
+  const duplicate = await observePendingFinalConfirmationAtHostSignal("session-1","input");
+  if (!duplicate.accepted || !duplicate.duplicate || persisted.length !== 1) {
+    throw new Error("accepted host final persisted more than once");
+  }
   const replaceContext = {
-    state:"candidate_observed", characterIndex:7, chatIndex:3, hostChatId:"chat-a",
-    expectedMessageCount:2, expectedAssistantIndex:1, replacementMode:"replace_assistant_tail",
-    baselineAssistantContent:"old final",baselineGenerationId:"g-old",
+    state:"captured",sessionId:"session-2",requestId:"request-2",requestType:"model",
+    characterIndex:7,chatIndex:3,hostChatId:"chat-a",requestMessageCount:2,
+    userMessageIndex:0,userObservedContentHash:"h:question",
+    baselineAssistantIndex:1,baselineAssistantContentHash:"h:old final",
+    baselineGenerationId:"g-old",baselineAssistantTimeMs:150,
   };
   activeChat = {id:"chat-a",isStreaming:false,message:[
-    {role:"user",data:"question"},
-    {role:"char",data:"rerolled final",generationInfo:{generationId:"g-new"}},
+    {role:"user",data:"question",chatId:"user-reroll",time:100},
+    {role:"char",data:"rerolled final",chatId:"assistant-reroll",time:250,generationInfo:{generationId:"g-new"}},
   ]};
-  const reroll = await observePendingFinalConfirmation({
-    requestContext:replaceContext,candidateContent:"rerolled final",
-  });
-  if (!reroll.confirmed || reroll.messageIndex !== 1) {
+  _finalConfirmationRequestBySession.set("session-2",replaceContext);
+  const reroll = await observePendingFinalConfirmationAtHostSignal("session-2","input");
+  await Promise.resolve();
+  if (!reroll.accepted || persisted.length !== 2 ||
+      persisted[1].observation.message_index !== 1 ||
+      persisted[1].observation.generation_id !== "g-new") {
     throw new Error("same-length reroll replacement was not confirmed");
-  }
-
-  activeChat.message[1] = {role:"char",data:"old final",generationInfo:{generationId:"g-old"}};
-  const unchanged = await observePendingFinalConfirmation({
-    requestContext:replaceContext,candidateContent:"old final",
-  });
-  if (unchanged.confirmed || unchanged.reason !== "replacement_generation_unobserved") {
-    throw new Error("unchanged replacement was accepted without new generation proof");
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -2094,61 +2411,6 @@ function debugLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("exact host-final fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestRisuHostFinalConfirmationRechecksIdentityAndDoesNotLoseWake(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for final-confirmation race fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "drainPendingFinalConfirmations")
-	script := functionBody + `
-const oldContext = {state:"candidate_observed"};
-const newContext = {state:"candidate_observed"};
-const oldPending = {
-  kind:"host_candidate",sessionId:"session-1",requestType:"model",requestContext:oldContext,inFlight:false,
-  resumeCalls:0,async resume(){ this.resumeCalls++; },
-};
-const newPending = {
-  kind:"host_candidate",sessionId:"session-1",requestType:"model",requestContext:newContext,inFlight:false,
-  resumeCalls:0,async resume(){ this.resumeCalls++; },
-};
-const _pendingFinalConfirmations = new Map([["host|request-1", oldPending]]);
-let _pendingFinalConfirmationDrainInFlight = false;
-let _pendingFinalConfirmationDrainRequested = false;
-let releaseOld;
-const oldObservation = new Promise(resolve => { releaseOld = resolve; });
-async function observePendingFinalConfirmation(item) {
-  if (item === oldPending) return await oldObservation;
-  return {confirmed:true,assistantContent:"new",requestContext:newContext,observationKey:"new-key"};
-}
-function updateRuntimeState() {}
-function warnLog() {}
-
-(async function() {
-  const firstDrain = drainPendingFinalConfirmations("native_afterRequest");
-  await Promise.resolve();
-  _pendingFinalConfirmations.set("host|request-1", newPending);
-  const overlappingWake = drainPendingFinalConfirmations("host_dom_mutation");
-  releaseOld({confirmed:true,assistantContent:"old",requestContext:oldContext,observationKey:"old-key"});
-  await firstDrain;
-  await overlappingWake;
-  if (oldPending.resumeCalls !== 0 || newPending.resumeCalls !== 1 || _pendingFinalConfirmations.size !== 0) {
-    throw new Error("identity recheck/lost-wake fence failed: old=" + oldPending.resumeCalls + " new=" + newPending.resumeCalls);
-  }
-})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("final-confirmation race fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -2930,7 +3192,7 @@ const FAILED_QUEUE_STORAGE_KEY="failed";
 const _failedQueue=[];
 const settings={failedQueueMaxSize:4};
 const runtimeState={queuePersistence:{}};
-let _queueSaveTimer=null;
+let _queueSaveScheduled=false;
 let allowStore=false;
 let scheduled=0;
 function computeOrchestrationDirtyHashOr1c(value) { return "h:"+String(value || ""); }
@@ -3337,7 +3599,7 @@ const _pendingFinalConfirmations=new Map();
 const _pendingFinalConfirmationRecoveryEntries=new Map();
 const settings={failedQueueMaxAttempts:1,failedQueueMaxAgeDays:7,failedQueueMaxSize:50};
 const runtimeState={queuePersistence:{}};
-let _queueSaveTimer=null;
+let _queueSaveScheduled=false;
 let remoteStored="";
 let writeCount=0;
 let failOnWrite=0;
@@ -3543,6 +3805,8 @@ func TestOutputFidelity35BProductionJSLineageBoundaries(t *testing.T) {
 const runtimeUpdates=[];
 function updateRuntimeState(key,status,detail) { runtimeUpdates.push({key,status,detail}); }
 function warnLog() { throw new Error("unexpected production warning"); }
+const RECOMPOSER_BRIDGE_CONTRACT="archive_center_recomposer_bridge.v1";
+function publishArchiveCenterRecomposerBridge() { return false; }
 const exact="[Archive Center — Auxiliary Context]\n\nmemory guidance";
 const plan={auxiliary_text:"memory guidance",input_context_text:"",
   auxiliary_observation_hash:computeOrchestrationDirtyHashOr1c(exact),payload_plan_id:"stp_1",
@@ -4030,7 +4294,6 @@ func TestPostprocessorReplacementRebuildsDeletionSnapshot(t *testing.T) {
 	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "replacePersistedTurnWithPostOutputFinal")
 	script := functionBody + `
 let snapshotMessages = null;
-async function resolvePostOutputFinalAssistant() { return "final output"; }
 function normalizeMainTurnCompareText(text) { return String(text || "").trim(); }
 function normalizeAssistantPersistenceCandidate(text) { return String(text || "").trim(); }
 function isSameAssistantComparableText(left, right) { return left === right; }
@@ -4068,5 +4331,498 @@ function scheduleTimelinePostCompleteTurnRefresh() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("postprocessor snapshot JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestAdapterLifecycleStateRuntimeContracts(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for adapter lifecycle runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "addRawInputSessionKey"),
+		extractArchiveCenterJSFunction(t, src, "buildRawInputSessionKeys"),
+		extractArchiveCenterJSFunction(t, src, "cacheRawInputForSession"),
+		extractArchiveCenterJSFunction(t, src, "peekRawInputForSession"),
+		extractArchiveCenterJSFunction(t, src, "bindRawInputObservationToRequest"),
+		extractArchiveCenterJSFunction(t, src, "isRisuHistoryTrimCommandText"),
+		extractArchiveCenterJSAsyncFunction(t, src, "saveSettings"),
+		extractArchiveCenterJSAsyncFunction(t, src, "refreshArchiveCenterUpdateStatus"),
+		extractArchiveCenterJSFunction(t, src, "stopTurnWorkflowHUDWatch"),
+		extractArchiveCenterJSFunction(t, src, "schedulePostOutputFinalReplacement"),
+	}, "\n")
+	script := `
+const SESSION_FALLBACK = "default";
+const RAW_INPUT_CACHE_MAX = 100;
+const _rawInputBySession = new Map();
+let _rawInputObservationSeq = 0;
+let settings = {enabled:true};
+const SETTINGS_KEY = "settings";
+let persisted = [];
+let syncAck = {ok:false,code:"backend_down"};
+let runtimeStates = [];
+async function persistentSet(key, value) { persisted.push({key,value}); }
+async function syncConfigToBackend() { return syncAck; }
+function updateRuntimeState(key, status, state) { runtimeStates.push({key,status,state}); }
+function debugLog() {}
+function warnLog() {}
+const updateStatusEl = {innerHTML:""};
+const document = {getElementById:function(id) { return id === "mo-update-status" ? updateStatusEl : null; }};
+const archiveUpdateState = {lastStatus:null};
+let updateFetchCalls = 0;
+async function fetchArchiveCenterUpdateStatus() { updateFetchCalls++; return {status:"ok"}; }
+function formatArchiveCenterUpdateStatus(data) { return data ? "ready" : "missing"; }
+let _turnWorkflowHUDActiveRequestId = "active-request";
+let _turnWorkflowHUDWatchToken = 10;
+let _turnWorkflowHUDWatchRunning = true;
+let _turnWorkflowHUDLastRevision = 0;
+let hudCleanupCalls = 0;
+function clearTurnWorkflowHUDTimer() { hudCleanupCalls++; }
+function dismissTurnWorkflowHUD() {}
+let replacementCalls = 0;
+let panelOpen = false;
+async function replacePersistedTurnWithPostOutputFinal(_sid, _skip, response) {
+  replacementCalls++;
+  if (response !== "final output") throw new Error("post-output response was not forwarded");
+  return {replaced:true,turnIndex:3};
+}
+async function renderSettingsPanel() {}
+function assert(condition, message) { if (!condition) throw new Error(message); }
+` + "\n" + functions + `
+(async function() {
+  cacheRawInputForSession("char_7_chat_1", "first turn");
+  const first = bindRawInputObservationToRequest("char_7_chat_1", "request-1");
+  assert(first && first.text === "first turn" && first.boundRequestId === "request-1", "first raw observation was not bound");
+  assert(peekRawInputForSession("char_7_chat_1") === null, "bound observation remained reusable");
+  assert(bindRawInputObservationToRequest("char_7_chat_1", "request-2") === null, "second turn reused the first raw observation");
+  cacheRawInputForSession("char_7_chat_1", "second turn");
+  const second = bindRawInputObservationToRequest("char_7_chat_1", "request-2");
+  assert(second && second.text === "second turn" && second.observationId !== first.observationId, "second turn did not require a new observation");
+  assert(bindRawInputObservationToRequest("missing", "request-3") === null, "missing correlation synthesized a raw observation");
+
+  const failedSave = await saveSettings();
+  assert(failedSave === false, "backend sync failure was reported as a successful save");
+  assert(persisted.length === 1, "local settings were not retained on backend sync failure");
+  assert(runtimeStates.some(function(item) {
+    return item.key === "lastConfigSync" && item.status === "fail" &&
+      item.state && item.state.detail === "settings_saved_locally_backend_unsynced";
+  }), "backend sync failure was not made visible");
+  syncAck = {ok:true,code:"config_sync_ok"};
+  assert(await saveSettings(), "successful backend sync was not acknowledged");
+
+  const updateStatus = await refreshArchiveCenterUpdateStatus();
+  assert(updateStatus && updateStatus.status === "ok" && updateFetchCalls === 1, "global updater helper did not fetch status");
+  assert(updateStatusEl.innerHTML === "ready", "global updater helper did not update its DOM target");
+
+  stopTurnWorkflowHUDWatch("different-request", true);
+  assert(hudCleanupCalls === 1, "mismatched HUD stop did not clear elapsed UI work");
+  assert(_turnWorkflowHUDWatchToken === 10, "mismatched HUD stop terminated the active watcher");
+
+  schedulePostOutputFinalReplacement("s", {}, "final output");
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert(replacementCalls === 1, "post-output replacement did not run as a single microtask");
+  process.stdout.write("ok");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("adapter lifecycle JS runtime fixture failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("adapter lifecycle JS runtime fixture output=%q, want ok", out)
+	}
+}
+
+func TestAdapterRecurringPathsAreExplicitOneShotRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for one-shot adapter runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSAsyncFunction(t, src, "referenceLibraryPollJob"),
+		extractArchiveCenterJSFunction(t, src, "cancelAdminBackgroundJobStream"),
+		extractArchiveCenterJSFunction(t, src, "markAdminBackgroundJobStreamUnavailable"),
+		extractArchiveCenterJSFunction(t, src, "applyAdminBackgroundJobSnapshot"),
+		extractArchiveCenterJSAsyncFunction(t, src, "pollAdminBackgroundJob"),
+		extractArchiveCenterJSAsyncFunction(t, src, "reconcileRollbackFromHostSignal"),
+	}, "\n")
+	script := `
+const _referenceLibraryState = {job:null};
+let referenceCalls = 0;
+let adminCalls = 0;
+let explorerRefreshes = 0;
+let rollbackReconcileCalls = 0;
+let rollbackCheckCalls = 0;
+let _rollbackHostSignalReconcileInFlight = false;
+const _rollbackHostSignalLastSignatureBySession = new Map();
+const _adminBackgroundJobStreams = new Map();
+const settings = {enabled:true,rollbackAutoEnabled:true};
+const R = {getCharacter:function() {}};
+function referenceLibraryPath(value) { return encodeURIComponent(String(value || "")); }
+function resolveRequestTimeoutMs() { return 19000; }
+function getRequestTimeoutSettingMs() { return 19000; }
+async function bridgeFetch(path, options) {
+  if (options && options.timeoutMs !== 19000) throw new Error("one-shot request lost UI timeout");
+  if (String(path).startsWith("/reference-jobs/")) {
+    referenceCalls++;
+    return {status:"running",kind:"reference_import"};
+  }
+  if (String(path).startsWith("/admin/jobs/")) {
+    adminCalls++;
+    return adminCalls === 1
+      ? {job_id:"admin-1",status:"running",terminal:false}
+      : {job_id:"admin-1",status:"completed",terminal:true,result:{done:true}};
+  }
+  throw new Error("unexpected path " + path);
+}
+function referenceLibraryRefreshUI() {}
+function referenceLibrarySetStatus(status) {
+  if (status !== "running") throw new Error("running reference job was misclassified");
+}
+async function referenceDiscoveryLoadLatestJob() {}
+async function referenceLibraryLoadData() {}
+async function referenceLibraryLoadVectorStatus() {}
+async function safeCall(fn) { return await fn(); }
+function refreshExplorerUI() { explorerRefreshes++; }
+async function getCurrentChatSessionId() { return "session"; }
+async function resolveCurrentActiveChatObject() {
+  return {chat:{message:[{role:"user",content:"u"},{role:"assistant",content:"a"}]}};
+}
+function extractActiveChatRollbackMessages(chat) { return chat.message; }
+function computeTailHash(messages) { return JSON.stringify(messages); }
+async function reconcileActiveChatTailDeletionWithBackend() { rollbackReconcileCalls++; return false; }
+async function checkAndAutoRollback() { rollbackCheckCalls++; }
+function debugLog() {}
+function setTimeout() { throw new Error("one-shot path scheduled a timer"); }
+function setInterval() { throw new Error("one-shot path scheduled an interval"); }
+function assert(condition, message) { if (!condition) throw new Error(message); }
+` + "\n" + functions + `
+(async function() {
+  const referenceRunning = await referenceLibraryPollJob("ref-1");
+  assert(referenceRunning && referenceRunning.status === "running" && referenceCalls === 1, "reference job call was not one-shot");
+  await Promise.resolve();
+  assert(referenceCalls === 1, "reference job scheduled recursive polling");
+  await referenceLibraryPollJob("ref-1");
+  assert(referenceCalls === 2, "explicit reference refresh did not make exactly one request");
+
+  const adminState = {loading:true,error:null,result:null,job:{job_id:"admin-1"}};
+  const adminRunning = await pollAdminBackgroundJob("reindex", adminState, "admin-1");
+  assert(adminRunning && adminRunning.status === "running" && adminCalls === 1 && adminState.loading, "admin job call was not one-shot");
+  await Promise.resolve();
+  assert(adminCalls === 1, "admin job scheduled recursive polling");
+  await pollAdminBackgroundJob("reindex", adminState, "admin-1");
+  assert(adminCalls === 2 && adminState.loading === false && adminState.result.done, "explicit admin refresh did not consume terminal status");
+
+  assert(await reconcileRollbackFromHostSignal(), "first host lifecycle signal did not reconcile rollback state");
+  assert(rollbackReconcileCalls === 2 && rollbackCheckCalls === 1, "rollback signal did not run the expected bounded reconciliation");
+  assert(!(await reconcileRollbackFromHostSignal()), "unchanged host signature reconciled more than once");
+  assert(rollbackReconcileCalls === 2 && rollbackCheckCalls === 1, "unchanged rollback signature repeated backend work");
+  process.stdout.write("ok");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("adapter one-shot JS runtime fixture failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("adapter one-shot JS runtime fixture output=%q, want ok", out)
+	}
+}
+
+func TestAdminBackgroundJobUsesSingleNDJSONStreamAndCleansUp(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for admin background job stream runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	openStream := extractArchiveCenterJSAsyncFunction(t, src, "openTurnWorkflowHUDStream")
+	streamFailure := extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDStreamFailure")
+	cancelStream := extractArchiveCenterJSFunction(t, src, "cancelAdminBackgroundJobStream")
+	cancelAll := extractArchiveCenterJSFunction(t, src, "cancelAllAdminBackgroundJobStreams")
+	markUnavailable := extractArchiveCenterJSFunction(t, src, "markAdminBackgroundJobStreamUnavailable")
+	applySnapshot := extractArchiveCenterJSFunction(t, src, "applyAdminBackgroundJobSnapshot")
+	consumeStream := extractArchiveCenterJSAsyncFunction(t, src, "consumeAdminBackgroundJobStream")
+	startStream := extractArchiveCenterJSFunction(t, src, "startAdminBackgroundJobStream")
+	acceptJob := extractArchiveCenterJSFunction(t, src, "acceptAdminBackgroundJob")
+	renderProgress := extractArchiveCenterJSFunction(t, src, "renderAdminJobProgressHtml")
+	unload := extractArchiveCenterJSAsyncFunction(t, src, "removeRegisteredRisuHooksOnUnload")
+	streamSource := strings.Join([]string{
+		openStream, cancelStream, cancelAll, markUnavailable, applySnapshot, consumeStream, startStream, acceptJob,
+	}, "\n")
+	for _, forbidden := range []string{"setTimeout(", "setInterval(", "pollAdminBackgroundJob(", `bridgeFetch("/admin/jobs/`} {
+		if strings.Contains(streamSource, forbidden) {
+			t.Fatalf("admin job stream retained forbidden recurring transport %q", forbidden)
+		}
+	}
+	for _, required := range []string{"/events?after_revision=", "openTurnWorkflowHUDStream", "job.terminal === true"} {
+		if !strings.Contains(streamSource, required) {
+			t.Fatalf("admin job stream missing %q", required)
+		}
+	}
+	if !strings.Contains(renderProgress, "data-admin-job-transport-notice") ||
+		!strings.Contains(renderProgress, "Refresh job status") ||
+		!strings.Contains(renderProgress, "job.terminal !== true") ||
+		!strings.Contains(unload, "cancelAllAdminBackgroundJobStreams") {
+		t.Fatal("admin job stream lost typed transport notice, manual Refresh, or unload cleanup")
+	}
+
+	script := `
+const settings = {bridgeUrl:"http://127.0.0.1:28080"};
+const encoder = new TextEncoder();
+const _adminBackgroundJobStreams = new Map();
+let streamResponses = [];
+let streamPaths = [];
+let readerCancels = 0;
+let controllerAborts = 0;
+let observedState = null;
+let observedStatuses = [];
+class AbortController {
+  constructor() { this.signal = {}; this.aborted = false; }
+  abort() { if (!this.aborted) { this.aborted = true; controllerAborts++; } }
+}
+const R = {
+  nativeFetch: async function(path) {
+    streamPaths.push(String(path || ""));
+    if (streamResponses.length === 0) throw new Error("unexpected extra admin stream connection");
+    return streamResponses.shift();
+  },
+};
+function resolveBridgeRuntimeRoute() { return {url:"http://127.0.0.1:28080"}; }
+function refreshExplorerUI() {
+  if (observedState && observedState.job) observedStatuses.push(String(observedState.job.status || ""));
+}
+function responseFromLines(lines) {
+  const chunks = [encoder.encode(lines.join("\n") + "\n")];
+  return {
+    status:200,
+    ok:true,
+    body:{
+      getReader:function() {
+        return {
+          read:async function() {
+            if (chunks.length > 0) return {value:chunks.shift(),done:false};
+            return {done:true};
+          },
+          cancel:async function() { readerCancels++; },
+        };
+      },
+    },
+  };
+}
+function hangingResponse() {
+  let finishRead = null;
+  return {
+    status:200,
+    ok:true,
+    body:{
+      getReader:function() {
+        return {
+          read:function() {
+            return new Promise(function(resolve) { finishRead = resolve; });
+          },
+          cancel:async function() {
+            readerCancels++;
+            if (finishRead) finishRead({done:true});
+          },
+        };
+      },
+    },
+  };
+}
+function assert(condition, message) { if (!condition) throw new Error(message); }
+async function settle(predicate, label) {
+  for (let index = 0; index < 40 && !predicate(); index++) {
+    await new Promise(function(resolve) { setImmediate(resolve); });
+  }
+  assert(predicate(), label + " did not settle");
+}
+` + "\n" + streamFailure + "\n" + openStream + "\n" + cancelStream + "\n" + cancelAll +
+		"\n" + markUnavailable + "\n" + applySnapshot + "\n" + consumeStream + "\n" + startStream + "\n" + acceptJob + `
+(async function() {
+  const completedState = {loading:false,error:null,result:null,job:null};
+  observedState = completedState;
+  streamResponses = [responseFromLines([
+    JSON.stringify({contract_version:"admin_background_job.v1",job_id:"job-1",status:"running",revision:2,terminal:false,progress:{progress_percent:8}}),
+    JSON.stringify({contract_version:"admin_background_job.v1",job_id:"job-1",status:"completed",revision:3,terminal:true,result:{done:true}}),
+  ])];
+  assert(acceptAdminBackgroundJob("session_normalize", completedState, {
+    contract_version:"admin_background_job.v1",job_id:"job-1",status:"accepted",revision:1,terminal:false
+  }), "accepted admin job was rejected");
+  await settle(function() { return _adminBackgroundJobStreams.size === 0; }, "terminal stream");
+  assert(streamPaths.length === 1, "admin job used more than one stream connection");
+  assert(streamPaths[0].includes("/admin/jobs/job-1/events?after_revision=1"), "admin job used the wrong event route");
+  assert(observedStatuses.join(",") === "running,completed", "running to completed revisions were not rendered in order");
+  assert(completedState.loading === false && completedState.error === null && completedState.result.done, "terminal completion was not applied");
+  assert(readerCancels === 1 && controllerAborts === 1, "terminal stream did not clean reader and controller");
+
+  const authorityState = {loading:true,error:null,result:null,job:{job_id:"job-authority"}};
+  applyAdminBackgroundJobSnapshot("reindex", authorityState, "job-authority", {
+    job_id:"job-authority",status:"completed",revision:2,terminal:false,result:{done:true}
+  });
+  assert(authorityState.loading === true && authorityState.result === null, "status text bypassed backend terminal authority");
+
+  const unsupportedState = {loading:false,error:null,result:null,job:null};
+  observedState = unsupportedState;
+  streamResponses = [{status:200,ok:true,body:null}];
+  assert(acceptAdminBackgroundJob("reindex", unsupportedState, {
+    job_id:"job-unsupported",status:"accepted",revision:1,terminal:false
+  }), "unsupported transport job was rejected");
+  await settle(function() { return _adminBackgroundJobStreams.size === 0; }, "unsupported stream");
+  assert(unsupportedState.loading === true && unsupportedState.error === null, "unsupported stream was misclassified as a job failure");
+  assert(
+    unsupportedState.job.transport_notice &&
+    unsupportedState.job.transport_notice.reason_code === "stream_transport_unavailable",
+    "unsupported stream lost its typed transport notice"
+  );
+  applyAdminBackgroundJobSnapshot("reindex", unsupportedState, "job-unsupported", {
+    job_id:"job-unsupported",status:"running",revision:2,terminal:false,progress:{progress_percent:12}
+  });
+  assert(
+    unsupportedState.job.transport_notice &&
+    unsupportedState.job.transport_notice.reason_code === "stream_transport_unavailable",
+    "manual running refresh removed the typed transport notice"
+  );
+
+  const oldState = {loading:false,error:null,result:null,job:null};
+  observedState = oldState;
+  streamResponses = [hangingResponse()];
+  acceptAdminBackgroundJob("rescan", oldState, {job_id:"job-old",status:"accepted",revision:1,terminal:false});
+  await settle(function() {
+    const active = _adminBackgroundJobStreams.get("rescan");
+    return !!(active && active.reader);
+  }, "old stream reader");
+  const cancelsBeforeReplacement = readerCancels;
+  const abortsBeforeReplacement = controllerAborts;
+  const newState = {loading:false,error:null,result:null,job:null};
+  observedState = newState;
+  streamResponses = [responseFromLines([
+    JSON.stringify({job_id:"job-new",status:"completed",revision:2,terminal:true,result:{done:true}})
+  ])];
+  acceptAdminBackgroundJob("rescan", newState, {job_id:"job-new",status:"accepted",revision:1,terminal:false});
+  await settle(function() { return _adminBackgroundJobStreams.size === 0; }, "replacement stream");
+  assert(readerCancels >= cancelsBeforeReplacement + 2, "same-kind replacement or terminal did not cancel readers");
+  assert(controllerAborts >= abortsBeforeReplacement + 2, "same-kind replacement or terminal did not abort controllers");
+  cancelAllAdminBackgroundJobStreams();
+  process.stdout.write("ok");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("admin background job stream runtime fixture failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("admin background job stream runtime fixture output=%q, want ok", out)
+	}
+}
+
+func TestAdapterTimerAndConfigAcknowledgementSourceContract(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	if got := strings.Count(src, "setTimeout("); got != 1 {
+		t.Fatalf("production adapter setTimeout count=%d, want only the UI-configured fetch abort timer", got)
+	}
+	if strings.Contains(src, "setInterval(") || strings.Contains(src, "clearInterval(") {
+		t.Fatal("production adapter still contains a fixed interval")
+	}
+	for _, forbidden := range []string{
+		"resolvePostOutputFinalAssistant",
+		"rollbackIdleWatcherMode",
+		"FAILED_QUEUE_SAVE_DEBOUNCE_MS",
+		"persistenceOrchResult._rawInputObservation",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("production adapter retained removed recurring policy %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		`const ok = !!(result && result.status === "ok");`,
+		`code: ok ? "config_sync_ok"`,
+		`settings_saved_locally_backend_unsynced`,
+		`String(pendingRawInputObservation.boundRequestId || "") === pendingRequestId`,
+		`requestAnimationFrame(function turnWorkflowHUDElapsedFrame()`,
+		`cancelAnimationFrame(_turnWorkflowHUDAnimationFrame)`,
+	} {
+		if !strings.Contains(src, required) {
+			t.Fatalf("production adapter missing lifecycle/config contract marker %q", required)
+		}
+	}
+}
+
+func TestRuntimeTimeoutResolversPreserveExplicitUIValues(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for timeout resolver runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "resolveRequestTimeoutMs"),
+		extractArchiveCenterJSFunction(t, src, "getCompleteTurnTimeoutMs"),
+		extractArchiveCenterJSFunction(t, src, "resolvePluginMainTimeoutMs"),
+	}, "\n")
+	script := `
+function getRequestTimeoutSettingMs() { return 800000; }
+function getCriticTimeoutMs() { return 900000; }
+function getEmbeddingTimeoutMs() { return 200000; }
+function getPluginMainTimeoutSettingMs() { return 450000; }
+function assert(condition, message) { if (!condition) throw new Error(message); }
+` + "\n" + functions + `
+assert(resolveRequestTimeoutMs(700000) === 700000, "request override was silently clamped");
+assert(resolveRequestTimeoutMs(-1) === 800000, "invalid request override did not use the UI setting");
+assert(getCompleteTurnTimeoutMs() === 1100000, "derived complete-turn timeout was silently clamped");
+assert(resolvePluginMainTimeoutMs(500000) === 500000, "plugin-main override was silently clamped");
+assert(resolvePluginMainTimeoutMs(NaN) === 450000, "invalid plugin-main override did not use the UI setting");
+process.stdout.write("ok");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("timeout resolver JS runtime fixture failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("timeout resolver JS runtime fixture output=%q, want ok", out)
+	}
+	for _, forbidden := range []string{
+		"sanitizeNumber(overrideMs, getRequestTimeoutSettingMs(), 1, 600000)",
+		"sanitizeNumber(Math.max(base, critic + embedding), base, 1000, 600000)",
+		"sanitizeNumber(overrideMs, getPluginMainTimeoutSettingMs(), 1, 300000)",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("runtime timeout helper retained hidden clamp %q", forbidden)
+		}
 	}
 }

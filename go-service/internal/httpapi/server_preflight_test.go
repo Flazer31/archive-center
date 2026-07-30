@@ -105,7 +105,7 @@ func TestReadyReportsUnavailableReferenceCollectionWithoutBlockingMainReadiness(
 	}
 }
 
-func TestReadyLimitsSlowReferenceProbeWithoutBlockingMainReadiness(t *testing.T) {
+func TestReadyCallerCancellationLimitsSlowReferenceProbeWithoutBlockingMainReadiness(t *testing.T) {
 	cfg := config.Default()
 	cfg.ChromaEnabled = true
 	cfg.ChromaEndpoint = "http://reference-probe.test"
@@ -121,7 +121,10 @@ func TestReadyLimitsSlowReferenceProbeWithoutBlockingMainReadiness(t *testing.T)
 
 	started := time.Now()
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelRequest()
+	request := httptest.NewRequest(http.MethodGet, "/ready", nil).WithContext(requestCtx)
+	mux.ServeHTTP(rec, request)
 	elapsed := time.Since(started)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("ready status=%d body=%s", rec.Code, rec.Body.String())
