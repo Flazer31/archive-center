@@ -525,7 +525,6 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 		`Strong adds an arc anchor and preferred frontier`,
 		`coreObjectiveMemoryMaxItems: 5`,
 		`core_objective_memory_max_items: sanitizeTopKSetting(`,
-		`function turnWorkflowHUDMemorySelectionHTML(view)`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {

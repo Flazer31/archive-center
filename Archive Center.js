@@ -38,7 +38,7 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.7.0-dev";
-  const BUILD_ID = "3.7-pocketrisu-reroll-return.20260731-1";
+  const BUILD_ID = "3.7-hud-success-compact.20260731-1";
   const BUILD_CHANNEL = "3.7-local-test";
   const BUILD_TIME = "2026-07-31 KST";
   const BUILD_NOTES = "3.7 provider JSON, Flex, cache observability, and terminal HUD stream continuity";
@@ -13561,84 +13561,6 @@
       + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${presentation.countHTML}</div>`;
   }
 
-  function turnWorkflowHUDMemorySelectionHTML(view) {
-    const selection = view && view.memory_selection && typeof view.memory_selection === "object"
-      ? view.memory_selection
-      : null;
-    if (!selection) return "";
-    const core = selection.core_objective_memory && typeof selection.core_objective_memory === "object"
-      ? selection.core_objective_memory
-      : {};
-    const numberText = function(value) {
-      if (value === null || value === undefined || value === "") return "—";
-      const number = Number(value);
-      return Number.isFinite(number) ? String(Math.max(0, Math.trunc(number))) : "—";
-    };
-    const summaryRows = [
-      ["turn_hud.memory.vector_limit", selection.vector_candidate_limit],
-      ["turn_hud.memory.core_requested", core.requested_max_items],
-      ["turn_hud.memory.core_eligible", core.eligible_distinct_count],
-      ["turn_hud.memory.core_delivered", core.delivered_count],
-      ["turn_hud.memory.core_deferred_limit", core.deferred_by_limit_count],
-      ["turn_hud.memory.core_deferred_budget", core.deferred_by_budget_count],
-      ["turn_hud.memory.core_missing", core.missing_to_limit],
-    ].map(function(row) {
-      return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
-        + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(row[0]))}</span>`
-        + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(numberText(row[1]))}</span>`
-        + `</div>`;
-    }).join("");
-    const lanes = Array.isArray(selection.lanes) ? selection.lanes : [];
-    const laneHTML = lanes.map(function(rawLane) {
-      const lane = rawLane && typeof rawLane === "object" ? rawLane : {};
-      const counts = numberText(lane.selected_count) + "/" + numberText(lane.eligible_count)
-        + " · d" + numberText(lane.deferred_count)
-        + " · x" + numberText(lane.deduplicated_count);
-      return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
-        + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(String(lane.key || "unknown"))}</span>`
-        + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(counts)}</span>`
-        + `</div>`;
-    }).join("");
-    const items = Array.isArray(selection.items) ? selection.items : [];
-    const itemHTML = items.map(function(rawItem) {
-      const item = rawItem && typeof rawItem === "object" ? rawItem : {};
-      const identity = [
-        item.source_row_id ? "#" + item.source_row_id : "",
-        Number(item.turn_index || 0) > 0 ? "T" + Math.trunc(Number(item.turn_index)) : "",
-        item.selection_lane || "",
-      ].filter(Boolean).join(" · ");
-      const result = [item.disposition || "deferred", item.reason_code || "unobserved"].join(" · ");
-      const preview = item.protected === true
-        ? t("turn_hud.memory.protected")
-        : String(item.preview || "");
-      return `<div style="padding:4px 0;border-top:1px solid rgba(255,255,255,.05)">`
-        + (identity ? `<div style="${TURN_WORKFLOW_HUD_STAGE_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(identity)}</div>` : "")
-        + `<div style="${TURN_WORKFLOW_HUD_STAGE_META_STYLE}">${escapeTurnWorkflowHUDHTML(result)}</div>`
-        + (preview ? `<div style="${TURN_WORKFLOW_HUD_STAGE_REASON_STYLE}">${escapeTurnWorkflowHUDHTML(preview)}</div>` : "")
-        + `</div>`;
-    }).join("");
-    const exclusions = selection.exclusion_reasons && typeof selection.exclusion_reasons === "object"
-      ? selection.exclusion_reasons
-      : {};
-    const exclusionHTML = Object.keys(exclusions).sort().map(function(reason) {
-      return `<div style="${TURN_WORKFLOW_HUD_LEDGER_ROW_STYLE}">`
-        + `<span style="${TURN_WORKFLOW_HUD_COUNT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(reason)}</span>`
-        + `<span style="${TURN_WORKFLOW_HUD_COUNT_VALUE_STYLE}">${escapeTurnWorkflowHUDHTML(numberText(exclusions[reason]))}</span>`
-        + `</div>`;
-    }).join("");
-    return `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.title"))}</div>`
-      + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${summaryRows}</div>`
-      + (laneHTML
-        ? `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.lanes"))}</div><div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${laneHTML}</div>`
-        : "")
-      + (itemHTML
-        ? `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.items"))}</div><div style="max-height:150px;overflow:auto;scrollbar-width:thin">${itemHTML}</div>`
-        : "")
-      + (exclusionHTML
-        ? `<div style="${TURN_WORKFLOW_HUD_SECTION_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.memory.exclusions"))}</div><div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${exclusionHTML}</div>`
-        : "");
-  }
-
   function dismissTurnWorkflowHUD(requestId) {
     if (requestId && _turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
     const listenerIds = takeTurnWorkflowHUDDismissListenerIds();
@@ -13742,8 +13664,6 @@
           + (meta ? `<div style="${failed ? TURN_WORKFLOW_HUD_ERROR_META_STYLE : TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>` : "")
           + turnWorkflowHUDWarningListHTML(view)
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
-          + turnWorkflowHUDMemorySelectionHTML(view)
-          + turnWorkflowHUDFactLedgerHTML(view)
           + `</div>`,
       };
     }
@@ -13773,8 +13693,6 @@
           + turnWorkflowHUDWarningListHTML(view)
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
-          + turnWorkflowHUDMemorySelectionHTML(view)
-          + turnWorkflowHUDFactLedgerHTML(view)
           + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
       };
@@ -13796,8 +13714,6 @@
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
           + turnWorkflowHUDWarningListHTML(view)
-          + turnWorkflowHUDMemorySelectionHTML(view)
-          + turnWorkflowHUDFactLedgerHTML(view)
           + turnWorkflowHUDStageLedgerHTML(view)
           + `</div>`,
       };

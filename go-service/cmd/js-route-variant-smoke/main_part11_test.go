@@ -871,11 +871,19 @@ function assert(condition, message) {
     {key:"derived_memory",status:"ok",disposition:"delivered",reason_code:"ok",severity:"normal",count:10},
     {key:"vector_index",status:"vector_not_configured",disposition:"dropped",reason_code:"vector_not_configured",severity:"warning",count:0}
   ];
+  const memorySelection = {
+    vector_candidate_limit:5,
+    core_objective_memory:{requested_max_items:5,eligible_distinct_count:5,delivered_count:5,deferred_by_limit_count:0,deferred_by_budget_count:0,missing_to_limit:0},
+    lanes:[{key:"direct_evidence",selected_count:12,eligible_count:13,deferred_count:0,deduplicated_count:1}],
+    items:[{source_row_id:46,turn_index:22,selection_lane:"vector_relevant",disposition:"delivered",reason_code:"selected_within_final_delivery_plan",preview:"민감한 기억 상세 본문"}],
+    exclusion_reasons:{protected_entity_not_in_current_input:2}
+  };
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-a",revision:1,
     logical_turn:55,host_turn:56,backend_turn:55,
     turn_alignment:{host_turn:56,backend_turn:55,state:"host_ahead",reason_code:"host_turn_ahead_of_backend"},
     status:"completed_with_warning",severity:"warning",dismissal_policy:"x_only",counts,stages,facts,
+    memory_selection:memorySelection,
     warnings:[{code:"PUBLISHER_SKIPPED",message_key:"warn.publisher",stage_key:"stage-4"}]
   }), "completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
@@ -900,9 +908,12 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("지원 근거 없음"), "completed HUD omitted the visible stage reason");
   assert(surface.innerHTML.includes("감독관 호출을 건너뜀 · PUBLISHER_SKIPPED"), "completed HUD omitted warning details");
   assert(surface.innerHTML.includes("Host 56 / Backend 55"), "completed HUD omitted host/backend turn mismatch");
-  assert(surface.innerHTML.includes("WORKFLOW FACTS"), "completed HUD omitted typed workflow facts");
-  assert(surface.innerHTML.includes("eligible · accepted"), "completed HUD omitted eligible host observation");
-  assert(surface.innerHTML.includes("dropped · vector_not_configured"), "completed HUD omitted dropped vector state");
+  assert(!surface.innerHTML.includes("WORKFLOW FACTS"), "completed HUD still exposes internal workflow facts");
+  assert(!surface.innerHTML.includes("eligible · accepted"), "completed HUD still exposes internal host disposition");
+  assert(!surface.innerHTML.includes("dropped · vector_not_configured"), "completed HUD still exposes internal vector disposition");
+  assert(!surface.innerHTML.includes("direct_evidence"), "completed HUD still exposes memory delivery lanes");
+  assert(!surface.innerHTML.includes("민감한 기억 상세 본문"), "completed HUD still exposes final memory item previews");
+  assert(!surface.innerHTML.includes("protected_entity_not_in_current_input"), "completed HUD still exposes exclusion reason codes");
   for (let index = 1; index <= 12; index++) {
     assert(surface.innerHTML.includes("stage.label." + index), "completed HUD omitted stage " + index);
   }
@@ -1030,6 +1041,8 @@ function assert(condition, message) {
         ? {...stage,status:"failed",duration_ms:800,reason_code:"CRITIC_LLM_FAILED"}
         : stage;
     }),
+    facts,
+    memory_selection:memorySelection,
     error:{code:"BAD_<CODE>",message_key:"turn_hud.transport_unavailable",retryable:false,preserved_counts:counts}
   }), "failed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
@@ -1039,6 +1052,8 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("실패 · 0.8초"), "failed HUD omitted failed stage status or duration");
   assert(surface.innerHTML.includes("CRITIC_LLM_FAILED"), "failed HUD omitted the failed stage reason code");
   assert(surface.innerHTML.includes(">21</span>"), "failed HUD omitted preserved generated counts");
+  assert(!surface.innerHTML.includes("WORKFLOW FACTS"), "failed HUD still exposes internal workflow facts");
+  assert(!surface.innerHTML.includes("민감한 기억 상세 본문"), "failed HUD still exposes memory item previews");
   for (let index = 1; index <= 12; index++) {
     assert(surface.innerHTML.includes("stage.label." + index), "failed HUD omitted stage " + index);
   }
