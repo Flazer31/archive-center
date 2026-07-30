@@ -265,7 +265,7 @@ func (r *rollbackLifecycleStore) ClaimMemoryVectorOperation(_ context.Context, o
 	if r.outbox == nil || (r.outbox.Status != "pending" && r.outbox.Status != "retryable") {
 		return nil, store.ErrNotFound
 	}
-	if !r.outbox.RetryAfter.IsZero() && r.outbox.RetryAfter.After(now) {
+	if !r.outbox.RetryAfter.IsZero() && !r.outbox.RetryAfter.Before(now) {
 		return nil, store.ErrNotFound
 	}
 	copy := *r.outbox

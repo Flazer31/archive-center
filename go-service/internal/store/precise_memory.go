@@ -125,6 +125,49 @@ type MemoryAdmissionResult struct {
 	CommittedAt         time.Time
 }
 
+// MemoryAdmissionProjectionExpectation is the read-side counterpart of one
+// committed admission. Callers derive it from the committed result JSON and
+// accepted raw source; stores compare it with the durable rows without
+// changing source or projection state.
+type MemoryAdmissionProjectionExpectation struct {
+	ChatSessionID            string
+	SourceRevision           string
+	TurnIndex                int
+	DerivationVersion        string
+	ExtractorVersion         string
+	IndexVersion             string
+	ResultHash               string
+	ResultJSON               string
+	MemoryExpected           bool
+	MemorySummaryJSON        string
+	EvidenceTexts            []string
+	PreciseUnitCount         int
+	PreciseDependencyCount   int
+	AdmissionVectorArtifacts []string
+}
+
+// MemoryAdmissionProjectionInspection is complete only when every expected
+// atomic projection, dependency, and vector-outbox row is present and current.
+// A legitimate zero-count lane is represented by an expected count of zero
+// and must also have zero active rows.
+type MemoryAdmissionProjectionInspection struct {
+	Complete       bool
+	ExpectedCounts map[string]int
+	ActualCounts   map[string]int
+	MissingLanes   []string
+	StaleLanes     []string
+}
+
+// MemoryAdmissionProjectionInspector proves whether a committed source marker
+// still has all of its durable atomic projections. Stores that cannot provide
+// this proof must not be treated as complete by administrative replay.
+type MemoryAdmissionProjectionInspector interface {
+	InspectMemoryAdmissionProjection(
+		context.Context,
+		MemoryAdmissionProjectionExpectation,
+	) (MemoryAdmissionProjectionInspection, error)
+}
+
 // MemoryAdmissionWriter is the canonical 3.6 memory write boundary. Stores
 // advertising this interface must commit the compatibility aggregate,
 // evidence, precise rows, dependencies, source admission marker, and vector

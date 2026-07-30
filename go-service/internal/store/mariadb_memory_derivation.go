@@ -40,24 +40,103 @@ func (m *mariadbStore) RegisterAcceptedSourceRevision(ctx context.Context, sourc
 		}
 	}()
 
-	var activeRevision, activeHash, activeUser, activeAssistant string
-	err = tx.QueryRowContext(ctx, `
+	var canonicalTailTurn int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT turn_index
+		FROM chat_logs
+		WHERE chat_session_id = ?
+		ORDER BY turn_index DESC, id DESC
+		LIMIT 1 FOR UPDATE
+	`, source.ChatSessionID).Scan(&canonicalTailTurn); err != nil {
+		return result, err
+	}
+
+	activeRows, err := tx.QueryContext(ctx, `
 		SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content
 		FROM memory_source_revisions
-		WHERE chat_session_id = ? AND logical_turn_id = ? AND lifecycle_state = 'active'
+		WHERE chat_session_id = ?
+		  AND lifecycle_state = 'active'
+		  AND (logical_turn_id = ? OR turn_index = ?)
 		ORDER BY host_observed_at_ms DESC, id DESC
-		LIMIT 1 FOR UPDATE
-	`, source.ChatSessionID, source.LogicalTurnID).Scan(&activeRevision, &activeHash, &activeUser, &activeAssistant)
+		LIMIT 2 FOR UPDATE
+	`, source.ChatSessionID, source.LogicalTurnID, source.TurnIndex)
+	if err != nil {
+		return result, err
+	}
+	type activeSourceSnapshot struct {
+		revision  string
+		hash      string
+		user      string
+		assistant string
+	}
+	activeSources := []activeSourceSnapshot{}
+	for activeRows.Next() {
+		var item activeSourceSnapshot
+		if err := activeRows.Scan(&item.revision, &item.hash, &item.user, &item.assistant); err != nil {
+			_ = activeRows.Close()
+			return result, err
+		}
+		activeSources = append(activeSources, item)
+	}
+	if err := activeRows.Close(); err != nil {
+		return result, err
+	}
+	if err := activeRows.Err(); err != nil {
+		return result, err
+	}
+	if len(activeSources) > 1 {
+		return result, ErrSourceRevisionConflict
+	}
+
+	canonicalRows, err := tx.QueryContext(ctx, `
+		SELECT role, content
+		FROM chat_logs
+		WHERE chat_session_id = ? AND turn_index = ?
+		ORDER BY id
+		FOR UPDATE
+	`, source.ChatSessionID, source.TurnIndex)
+	if err != nil {
+		return result, err
+	}
+	var canonicalUser, canonicalAssistant string
+	userRows := 0
+	assistantRows := 0
+	for canonicalRows.Next() {
+		var role, content string
+		if err := canonicalRows.Scan(&role, &content); err != nil {
+			_ = canonicalRows.Close()
+			return result, err
+		}
+		switch strings.ToLower(strings.TrimSpace(role)) {
+		case "user":
+			userRows++
+			canonicalUser = content
+		case "assistant":
+			assistantRows++
+			canonicalAssistant = content
+		}
+	}
+	if err := canonicalRows.Close(); err != nil {
+		return result, err
+	}
+	if err := canonicalRows.Err(); err != nil {
+		return result, err
+	}
+	if userRows != 1 || assistantRows != 1 ||
+		canonicalUser != source.UserContent ||
+		canonicalAssistant != source.AssistantContent {
+		return result, ErrSourceRevisionConflict
+	}
+
 	switch {
-	case err == nil && activeRevision == source.SourceRevision:
-		if activeHash != source.CombinedContentHash || activeUser != source.UserContent || activeAssistant != source.AssistantContent {
+	case len(activeSources) == 1 && activeSources[0].revision == source.SourceRevision:
+		active := activeSources[0]
+		if active.hash != source.CombinedContentHash || active.user != source.UserContent || active.assistant != source.AssistantContent {
 			return result, ErrSourceRevisionConflict
 		}
 		result.Idempotent = true
-	case err == nil:
+	case len(activeSources) == 1:
 		return result, ErrSourceRevisionConflict
-	case err != sql.ErrNoRows:
-		return result, err
 	default:
 		if err := insertMemorySourceRevisionTx(ctx, tx, source); err != nil {
 			if preciseMemoryDuplicateKeyError(err) {
@@ -237,8 +316,9 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 	}
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT source_revision, chat_session_id, logical_turn_id, turn_index,
-		       source_message_id, source_generation_id, raw_user_content,
-		       raw_assistant_content, combined_content_hash, lifecycle_state
+		       source_message_id, source_generation_id, branch_id, branch_state,
+		       raw_user_content, raw_assistant_content, combined_content_hash,
+		       host_observed_at_ms, lifecycle_state
 		FROM memory_source_revisions
 		WHERE `+where+`
 		ORDER BY turn_index, id
@@ -250,18 +330,20 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 	out := []MemorySourceRevision{}
 	for rows.Next() {
 		var item MemorySourceRevision
-		var sourceMessageID, sourceGenerationID sql.NullString
+		var sourceMessageID, sourceGenerationID, branchID sql.NullString
 		if err := rows.Scan(
 			&item.SourceRevision, &item.ChatSessionID, &item.LogicalTurnID,
 			&item.TurnIndex, &sourceMessageID, &sourceGenerationID,
-			&item.UserContent, &item.AssistantContent,
-			&item.CombinedContentHash, &item.LifecycleState,
+			&branchID, &item.BranchState, &item.UserContent,
+			&item.AssistantContent, &item.CombinedContentHash,
+			&item.HostObservedAtMS, &item.LifecycleState,
 		); err != nil {
 			return nil, err
 		}
 		item.ContractVersion = MemorySourceRevisionContract
 		item.SourceMessageID = sourceMessageID.String
 		item.SourceGenerationID = sourceGenerationID.String
+		item.BranchID = branchID.String
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -725,6 +807,8 @@ func (m *mariadbStore) ClaimMemoryReprocessingJob(ctx context.Context, leaseOwne
 	return job, nil
 }
 
+// selectMemoryReprocessingJobForLease treats retry_after as an exclusive wake
+// cursor so a job failed in this wake cannot be reclaimed by the same drain.
 func selectMemoryReprocessingJobForLease(ctx context.Context, tx *sql.Tx, now time.Time) (*MemoryReprocessingJob, error) {
 	job := &MemoryReprocessingJob{}
 	var retryAfter, leaseUntil sql.NullTime
@@ -739,7 +823,7 @@ func selectMemoryReprocessingJobForLease(ctx context.Context, tx *sql.Tx, now ti
 		JOIN memory_source_revisions s ON s.source_revision = j.source_revision
 		WHERE s.lifecycle_state = 'active'
 		  AND (
-		    (j.status IN ('pending', 'retryable') AND (j.retry_after IS NULL OR j.retry_after <= ?))
+		    (j.status IN ('pending', 'retryable') AND (j.retry_after IS NULL OR j.retry_after < ?))
 		    OR (j.status = 'leased' AND j.lease_until < ?)
 		  )
 		ORDER BY j.created_at, j.id
@@ -987,13 +1071,13 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 		    (
 		      o.embedding_ready = TRUE
 		      AND o.status IN ('pending', 'retryable')
-		      AND (o.retry_after IS NULL OR o.retry_after <= ?)
+		      AND (o.retry_after IS NULL OR o.retry_after < ?)
 		    )
 		    OR (
 		      o.operation = 'upsert'
 		      AND o.embedding_ready = FALSE
 		      AND o.status IN ('needs_embedding', 'retryable')
-		      AND (o.retry_after IS NULL OR o.retry_after <= ?)
+		      AND (o.retry_after IS NULL OR o.retry_after < ?)
 		    )
 		    OR (o.status = 'leased' AND o.lease_until < ?)
 		  )

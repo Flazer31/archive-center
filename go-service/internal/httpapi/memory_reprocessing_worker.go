@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +25,15 @@ type memoryReprocessingProcessResult struct {
 	SourceRevision string
 	State          string
 	Failure        string
+}
+
+type acceptedSourceDerivationResult struct {
+	State              string
+	Failure            string
+	SaveResult         artifactSaveResult
+	CriticFailure      map[string]any
+	CriticTrace        map[string]any
+	AuditCriticFailure bool
 }
 
 // StartMemoryWorkers starts the authority-owned reprocessing and vector-outbox
@@ -126,7 +136,9 @@ func (s *Server) processMemoryWorkerWake(
 			break
 		}
 		if result.State == "retryable" {
-			break
+			// retry_after is an exclusive wake cursor. The failed job is not
+			// eligible again in this wake, so other pending jobs can drain.
+			continue
 		}
 	}
 	for ctx.Err() == nil {
@@ -137,7 +149,9 @@ func (s *Server) processMemoryWorkerWake(
 			break
 		}
 		if result.CanonicalState == "retryable" {
-			break
+			// retry_after is an exclusive wake cursor. Continue draining other
+			// eligible vector operations without reclaiming this item.
+			continue
 		}
 	}
 }
@@ -192,78 +206,192 @@ func (s *Server) processMemoryReprocessingOnce(
 		}
 		return result, finishErr
 	}
-	processingCtx, releaseSourceWorker := s.completeTurnStoredSourceProcessingContext(ctx, source)
-	defer releaseSourceWorker()
-
-	extractionCfg := s.completeTurnExtractionConfig(nil)
-	if !extractionCfg.Critic.hasConfig() {
-		result.State = "retryable"
-		result.Failure = "critic_config_missing"
-		return result, s.retryMemoryReprocessingJob(
-			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
-		)
-	}
-	extraction, criticTrace, err := s.runCompleteTurnCriticWithInputPolicy(
-		processingCtx,
-		source.ChatSessionID,
-		source.TurnIndex,
-		source.UserContent,
-		source.AssistantContent,
-		nil,
-		nil,
-		extractionCfg.Critic,
-		true,
+	derivation := s.processAcceptedSourceRevision(
+		ctx,
+		source,
+		s.completeTurnExtractionConfig(nil),
 	)
-	if err != nil {
-		if processingCtx.Err() != nil {
-			return result, finishSupersededMemoryReprocessingJob(
-				ctx, jobs, job, leaseOwner, time.Now().UTC(), &result,
-			)
-		}
-		sourceStillActive, sourceStateErr := sources.IsSourceRevisionActive(
-			ctx, job.ChatSessionID, job.SourceRevision,
-		)
-		if sourceStateErr == nil && !sourceStillActive {
-			return result, finishSupersededMemoryReprocessingJob(
-				ctx, jobs, job, leaseOwner, time.Now().UTC(), &result,
-			)
-		}
-		failure := criticPipelineErrorDetails(err)
-		result.Failure = strings.TrimSpace(stringFromMap(failure, "code"))
-		if result.Failure == "" {
-			result.Failure = "CRITIC_UNKNOWN_FAILED"
-		}
-		if preview := strings.TrimSpace(stringFromMap(criticTrace, "raw_preview")); preview != "" {
-			result.Failure += ": " + truncateRunes(preview, 240)
-		}
-		if sourceStateErr == nil && sourceStillActive {
-			s.recordMemoryReprocessingCriticFailure(
-				context.WithoutCancel(processingCtx), job, source.TurnIndex, failure, criticTrace,
-			)
-		}
-		if !boolFromAny(failure["retryable"]) {
-			result.State = "terminal"
-			return result, jobs.FailMemoryReprocessingJob(
-				ctx, job.ID, leaseOwner, time.Now().UTC(), time.Time{}, true, result.Failure,
-			)
-		}
-		result.State = "retryable"
-		return result, s.retryMemoryReprocessingJob(
-			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
+	result.State = derivation.State
+	result.Failure = derivation.Failure
+	if derivation.AuditCriticFailure {
+		s.recordMemoryReprocessingCriticFailure(
+			context.WithoutCancel(ctx),
+			job,
+			source.TurnIndex,
+			derivation.CriticFailure,
+			derivation.CriticTrace,
 		)
 	}
-	active, activeErr := sources.IsSourceRevisionActive(ctx, job.ChatSessionID, job.SourceRevision)
-	if activeErr != nil {
-		result.State = "retryable"
-		result.Failure = "source_revision_recheck_failed"
-		return result, s.retryMemoryReprocessingJob(
-			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
-		)
-	}
-	if !active {
+	switch derivation.State {
+	case "completed", "skipped_ooc":
+		if err := jobs.CompleteMemoryReprocessingJob(
+			ctx, job.ID, leaseOwner, time.Now().UTC(),
+		); err != nil {
+			if errors.Is(err, store.ErrSourceRevisionStale) {
+				result.State = "stale_rejected"
+				return result, nil
+			}
+			return result, err
+		}
+		return result, nil
+	case "stale_rejected":
 		return result, finishSupersededMemoryReprocessingJob(
 			ctx, jobs, job, leaseOwner, time.Now().UTC(), &result,
 		)
+	case "terminal":
+		return result, jobs.FailMemoryReprocessingJob(
+			ctx, job.ID, leaseOwner, time.Now().UTC(), time.Time{}, true, result.Failure,
+		)
+	case "retryable":
+		return result, s.retryMemoryReprocessingJob(
+			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
+		)
+	default:
+		return result, fmt.Errorf(
+			"accepted source derivation returned unknown state %q",
+			derivation.State,
+		)
+	}
+}
+
+func (s *Server) processAcceptedSourceRevision(
+	ctx context.Context,
+	source *store.MemorySourceRevision,
+	extractionCfg completeTurnExtractionConfig,
+) acceptedSourceDerivationResult {
+	var result acceptedSourceDerivationResult
+	if s == nil || s.Store == nil || source == nil {
+		result.State = "terminal"
+		result.Failure = "accepted_source_revision_missing"
+		return result
+	}
+	sources, ok := s.Store.(store.SourceRevisionStore)
+	if !ok {
+		result.State = "terminal"
+		result.Failure = "source_revision_store_unavailable"
+		return result
+	}
+	active, err := sources.IsSourceRevisionActive(
+		ctx,
+		source.ChatSessionID,
+		source.SourceRevision,
+	)
+	if err != nil {
+		result.State = "retryable"
+		result.Failure = "source_revision_recheck_failed"
+		return result
+	}
+	if !active || source.LifecycleState != "active" {
+		result.State = "stale_rejected"
+		result.Failure = "CRITIC_RESULT_SUPERSEDED"
+		return result
+	}
+	if shouldApplyCompleteTurnOOCGuard(
+		source.UserContent,
+		source.AssistantContent,
+		nil,
+	) {
+		result.State = "skipped_ooc"
+		result.Failure = "ooc_guard"
+		return result
+	}
+	processingCtx, releaseSourceWorker := s.completeTurnStoredSourceProcessingContext(ctx, source)
+	defer releaseSourceWorker()
+
+	extraction := map[string]any(nil)
+	if source.DerivedAdmissionState == "committed" &&
+		source.DerivedAdmissionVersion == store.MemoryAdmissionContract &&
+		source.DerivedExtractorVersion == completeTurnCriticPipelineVersion &&
+		source.DerivedIndexVersion == memoryAdmissionIndexVersion &&
+		strings.TrimSpace(source.DerivedResultHash) != "" &&
+		strings.TrimSpace(source.DerivedResultJSON) != "" {
+		if err := json.Unmarshal([]byte(source.DerivedResultJSON), &extraction); err != nil || extraction == nil {
+			result.State = "retryable"
+			result.Failure = "committed_derived_result_invalid"
+			return result
+		}
+		if memoryAdmissionResultHash(
+			source.SourceRevision,
+			extraction,
+			store.MemoryAdmissionContract,
+			completeTurnCriticPipelineVersion,
+			memoryAdmissionIndexVersion,
+		) != source.DerivedResultHash {
+			result.State = "retryable"
+			result.Failure = "committed_derived_result_hash_mismatch"
+			return result
+		}
+		result.CriticTrace = map[string]any{
+			"stage":           "committed_result_replay",
+			"source_revision": source.SourceRevision,
+		}
+	} else {
+		if !extractionCfg.Critic.hasConfig() {
+			result.State = "retryable"
+			result.Failure = "critic_config_missing"
+			return result
+		}
+		criticExtraction, criticTrace, err := s.runCompleteTurnCriticWithInputPolicy(
+			processingCtx,
+			source.ChatSessionID,
+			source.TurnIndex,
+			source.UserContent,
+			source.AssistantContent,
+			nil,
+			nil,
+			extractionCfg.Critic,
+			true,
+		)
+		result.CriticTrace = criticTrace
+		if err != nil {
+			if processingCtx.Err() != nil {
+				result.State = "stale_rejected"
+				result.Failure = "CRITIC_RESULT_SUPERSEDED"
+				return result
+			}
+			sourceStillActive, sourceStateErr := sources.IsSourceRevisionActive(
+				ctx, source.ChatSessionID, source.SourceRevision,
+			)
+			if sourceStateErr == nil && !sourceStillActive {
+				result.State = "stale_rejected"
+				result.Failure = "CRITIC_RESULT_SUPERSEDED"
+				return result
+			}
+			failure := criticPipelineErrorDetails(err)
+			result.CriticFailure = failure
+			result.Failure = strings.TrimSpace(stringFromMap(failure, "code"))
+			if result.Failure == "" {
+				result.Failure = "CRITIC_UNKNOWN_FAILED"
+			}
+			if preview := strings.TrimSpace(stringFromMap(criticTrace, "raw_preview")); preview != "" {
+				result.Failure += ": " + truncateRunes(preview, 240)
+			}
+			if sourceStateErr == nil && sourceStillActive {
+				result.AuditCriticFailure = true
+			}
+			if !boolFromAny(failure["retryable"]) {
+				result.State = "terminal"
+				return result
+			}
+			result.State = "retryable"
+			return result
+		}
+		extraction = criticExtraction
+	}
+	active, activeErr := sources.IsSourceRevisionActive(
+		ctx,
+		source.ChatSessionID,
+		source.SourceRevision,
+	)
+	if activeErr != nil {
+		result.State = "retryable"
+		result.Failure = "source_revision_recheck_failed"
+		return result
+	}
+	if !active {
+		result.State = "stale_rejected"
+		result.Failure = "CRITIC_RESULT_SUPERSEDED"
+		return result
 	}
 	extraction, _ = applyRisuPersonaSubjectiveMemoryRoles(extraction, nil)
 	content := strings.TrimSpace(strings.Join(
@@ -281,29 +409,19 @@ func (s *Server) processMemoryReprocessingOnce(
 		time.Now().UTC(),
 		existingEvidence,
 	)
+	result.SaveResult = saveResult
 	if saveResult.Errors > 0 {
 		if processingCtx.Err() != nil {
-			return result, finishSupersededMemoryReprocessingJob(
-				ctx, jobs, job, leaseOwner, time.Now().UTC(), &result,
-			)
+			result.State = "stale_rejected"
+			result.Failure = "CRITIC_RESULT_SUPERSEDED"
+			return result
 		}
 		result.State = "retryable"
 		result.Failure = "derived_persist_failed"
-		return result, s.retryMemoryReprocessingJob(
-			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
-		)
-	}
-	if err := jobs.CompleteMemoryReprocessingJob(
-		ctx, job.ID, leaseOwner, time.Now().UTC(),
-	); err != nil {
-		if errors.Is(err, store.ErrSourceRevisionStale) {
-			result.State = "stale_rejected"
-			return result, nil
-		}
-		return result, err
+		return result
 	}
 	result.State = "completed"
-	return result, nil
+	return result
 }
 
 func (s *Server) recordMemoryReprocessingCriticFailure(

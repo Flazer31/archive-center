@@ -6,12 +6,10 @@ Archive Center 패키지에 포함하지 않습니다.
 
 ## 처음 실행
 
-`.env.full.local`에서 다음 제한값을 사용 환경에 맞게 직접 정하십시오.
-Archive Center는 여기에 숨은 고정 초를 대신 넣지 않습니다.
-
-- `AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS`: MariaDB/Python/Chroma 다운로드와 설치, 업데이터 실행
-- `AC_REQUEST_TIMEOUT_SECONDS`: 로컬 HTTP 상태 확인
-- `AC_READINESS_TIMEOUT_SECONDS`와 `AC_READINESS_POLL_INTERVAL_MILLISECONDS`: 준비 상태를 반복 확인할 때 반드시 함께 지정
+별도의 제한시간 값을 `.env.full.local`에 입력할 필요가 없습니다.
+Windows 실행기는 3.5 관리형 실행기와 같은 설치·준비 확인 흐름을 사용합니다.
+로컬 전체판은 ChromaDB 연결을 필수로 하며, 설치·기동·endpoint와
+upsert/readback/delete 검증이 실패하면 백엔드를 시작하지 않습니다.
 
 1. `01_start_archive_center_windows.bat`를 더블클릭합니다.
 2. MariaDB가 없으면 공식 MariaDB 12.3.2 ZIP을 직접 다운로드합니다.
@@ -49,9 +47,9 @@ AC_MARIADB_RUNTIME_DIR=C:\path\to\MariaDB
 
 별도로 운영하는 ChromaDB를 사용하려면 endpoint를 `AC_CHROMA_ENDPOINT`에
 지정하고 runtime/vector profile을 `vector_external`/`external`로
-설정합니다. 로컬 vector 검색이 필요하지 않으면 `core_lite`/`fallback`을
-선택할 수 있습니다. ChromaDB 실행 파일은 어느 경우에도 이 ZIP에 들어
-있지 않습니다.
+설정합니다. Windows 로컬 백엔드에서는 ChromaDB를 끌 수 없으며,
+`core_lite`/`fallback`은 지원하지 않습니다. ChromaDB 실행 파일은 어느
+경우에도 이 ZIP에 들어 있지 않습니다.
 
 ## 주의
 

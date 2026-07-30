@@ -157,22 +157,26 @@ func (s *Server) processMemoryVectorOutboxBatch(
 	leaseDuration time.Duration,
 	limit int,
 ) []memoryVectorProcessResult {
-	if limit <= 0 {
-		limit = 16
+	capacity := limit
+	if capacity < 0 {
+		capacity = 0
 	}
-	results := make([]memoryVectorProcessResult, 0, limit)
-	for len(results) < limit {
-		batchNow := now
-		if len(results) > 0 {
-			batchNow = time.Now().UTC()
-		}
-		result, err := s.processMemoryVectorOutboxOnce(ctx, leaseOwner, batchNow, leaseDuration)
+	results := make([]memoryVectorProcessResult, 0, capacity)
+	seen := map[int64]struct{}{}
+	for limit <= 0 || len(results) < limit {
+		result, err := s.processMemoryVectorOutboxOnce(ctx, leaseOwner, now, leaseDuration)
 		if err != nil || !result.Processed {
 			break
 		}
+		if result.OutboxID > 0 {
+			if _, duplicate := seen[result.OutboxID]; duplicate {
+				break
+			}
+			seen[result.OutboxID] = struct{}{}
+		}
 		results = append(results, result)
 		if result.CanonicalState == "retryable" {
-			break
+			continue
 		}
 	}
 	return results

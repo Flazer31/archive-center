@@ -291,15 +291,9 @@ func (m *mariadbStore) SearchChapterSummaries(ctx context.Context, chatSessionID
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
 	q := strings.TrimSpace(query)
 	like := "%" + q + "%"
-	rows, err := m.db.QueryContext(ctx, `
+	querySQL := `
 		SELECT id, chat_session_id, from_turn, to_turn, chapter_index, chapter_title, summary_text,
 		       open_loops_json, relationship_changes_json, world_changes_json, callback_candidates_json,
 		       resume_text, embedding_vector, embedding_model, created_at
@@ -311,8 +305,13 @@ func (m *mariadbStore) SearchChapterSummaries(ctx context.Context, chatSessionID
 		  AND (? = 0 OR to_turn >= ?)
 		  AND (? = 0 OR from_turn <= ?)
 		ORDER BY chapter_index DESC, id DESC
-		LIMIT ?
-	`, chatSessionID, q, like, like, like, like, like, like, like, fromTurn, fromTurn, toTurn, toTurn, limit)
+	`
+	args := []any{chatSessionID, q, like, like, like, like, like, like, like, fromTurn, fromTurn, toTurn, toTurn}
+	if limit > 0 {
+		querySQL += "\nLIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := m.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -404,15 +403,9 @@ func (m *mariadbStore) SearchArcSummaries(ctx context.Context, chatSessionID, qu
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
 	q := strings.TrimSpace(query)
 	like := "%" + q + "%"
-	rows, err := m.db.QueryContext(ctx, `
+	querySQL := `
 		SELECT id, chat_session_id, from_turn, to_turn, arc_index, arc_name, arc_status, core_conflict,
 		       key_turning_points_json, active_promises_json, unresolved_debts_json, resolved_payoffs_json,
 		       callback_candidates_json, future_payoff_candidates_json, irreversible_turns_json, callback_debts_json,
@@ -426,8 +419,13 @@ func (m *mariadbStore) SearchArcSummaries(ctx context.Context, chatSessionID, qu
 		  AND (? = 0 OR to_turn >= ?)
 		  AND (? = 0 OR from_turn <= ?)
 		ORDER BY arc_index DESC, id DESC
-		LIMIT ?
-	`, chatSessionID, q, like, like, like, like, like, like, like, like, like, like, like, fromTurn, fromTurn, toTurn, toTurn, limit)
+	`
+	args := []any{chatSessionID, q, like, like, like, like, like, like, like, like, like, like, like, fromTurn, fromTurn, toTurn, toTurn}
+	if limit > 0 {
+		querySQL += "\nLIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := m.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -513,15 +511,9 @@ func (m *mariadbStore) SearchSagaDigests(ctx context.Context, chatSessionID, que
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
 	q := strings.TrimSpace(query)
 	like := "%" + q + "%"
-	rows, err := m.db.QueryContext(ctx, `
+	querySQL := `
 		SELECT id, chat_session_id, from_turn, to_turn, era_label, saga_summary,
 		       persistent_facts_json, never_drop_candidates_json, resume_pack_text,
 		       embedding_vector, embedding_model, created_at
@@ -531,8 +523,13 @@ func (m *mariadbStore) SearchSagaDigests(ctx context.Context, chatSessionID, que
 		  AND (? = 0 OR to_turn >= ?)
 		  AND (? = 0 OR from_turn <= ?)
 		ORDER BY to_turn DESC, id DESC
-		LIMIT ?
-	`, chatSessionID, q, like, like, like, fromTurn, fromTurn, toTurn, toTurn, limit)
+	`
+	args := []any{chatSessionID, q, like, like, like, fromTurn, fromTurn, toTurn, toTurn}
+	if limit > 0 {
+		querySQL += "\nLIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := m.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}

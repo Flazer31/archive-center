@@ -186,8 +186,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		sanitizedUserInput = sanitizeTextForCriticInput(userInput)
 		sanitizedAssistantContent = sanitizeTextForCriticInput(assistantContent)
 	}
-	safeUserInput := boundCompleteTurnCriticInput(sanitizedUserInput, 4000)
-	safeAssistantContent := boundCompleteTurnCriticInput(sanitizedAssistantContent, 9000)
+	safeUserInput := boundCompleteTurnCriticInput(sanitizedUserInput, 0)
+	safeAssistantContent := boundCompleteTurnCriticInput(sanitizedAssistantContent, 0)
 	if strings.TrimSpace(safeUserInput+"\n"+safeAssistantContent) == "" {
 		err := newCriticPipelineError("CRITIC_INPUT_EMPTY", "input", false, 0, errors.New("critic_input_empty_after_sanitize"))
 		trace := criticFailureTrace(promptSource, cfg, 0, err, "")
@@ -430,20 +430,11 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	}
 	prompt := buildCompleteTurnWorldRuleAuditPrompt(sid, turnIndex, userInput, assistantContent, contextMessages, previewPass, initialExtraction)
 	maxTokens := cfg.MaxTokens
-	if maxTokens <= 0 || maxTokens > 1200 {
-		maxTokens = 1200
-	}
 	maxCompletionTokens := cfg.MaxCompletionTokens
-	if maxCompletionTokens <= 0 || maxCompletionTokens > 1200 {
+	if maxCompletionTokens <= 0 {
 		maxCompletionTokens = maxTokens
 	}
-	if maxCompletionTokens < 700 {
-		maxCompletionTokens = 700
-	}
 	temp := cfg.Temperature
-	if temp > 0.3 {
-		temp = 0.2
-	}
 	req := dto.ProxyPluginMainRequest{
 		APIKey:              &cfg.APIKey,
 		Endpoint:            &cfg.Endpoint,

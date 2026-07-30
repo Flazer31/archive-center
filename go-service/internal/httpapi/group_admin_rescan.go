@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,12 +14,13 @@ import (
 )
 
 type adminRescanRequest struct {
-	ChatSessionID string         `json:"chat_session_id"`
-	MaxItems      int            `json:"max_items"`
-	TurnIndices   []int          `json:"turn_indices"`
-	ClientMeta    map[string]any `json:"client_meta"`
-	DryRun        bool           `json:"dry_run"`
-	Background    bool           `json:"background"`
+	ChatSessionID      string         `json:"chat_session_id"`
+	MaxItems           int            `json:"max_items"`
+	TurnIndices        []int          `json:"turn_indices"`
+	ClientMeta         map[string]any `json:"client_meta"`
+	DryRun             bool           `json:"dry_run"`
+	Background         bool           `json:"background"`
+	CanonicalRawReplay bool           `json:"-"`
 }
 
 func (s *Server) runAdminRescan(ctx context.Context, sid string, req adminRescanRequest) (map[string]any, error) {
@@ -26,12 +29,6 @@ func (s *Server) runAdminRescan(ctx context.Context, sid string, req adminRescan
 
 func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req adminRescanRequest, progress adminJobProgressFunc) (map[string]any, error) {
 	maxItems := req.MaxItems
-	if maxItems <= 0 {
-		maxItems = 50
-	}
-	if maxItems > 1000 {
-		maxItems = 1000
-	}
 
 	logs, err := s.Store.ListChatLogs(ctx, sid, 0, 0)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -83,7 +80,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 
 	turns := []int{}
 	for turn, roleMap := range turnLogs {
-		if memoryTurns[turn] && !forceDerivedRebuild {
+		if memoryTurns[turn] && !forceDerivedRebuild && !req.CanonicalRawReplay {
 			continue
 		}
 		if strings.TrimSpace(roleMap["user"]) == "" && strings.TrimSpace(roleMap["assistant"]) == "" {
@@ -92,7 +89,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		turns = append(turns, turn)
 	}
 	turns = uniqueSortedNonNegativeInts(turns)
-	if len(turns) > maxItems {
+	if maxItems > 0 && len(turns) > maxItems {
 		turns = turns[:maxItems]
 	}
 	if progress != nil {
@@ -117,10 +114,12 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 	llmTrace := completeTurnLLMConfigTrace(extractionCfg)
 	failedTurns := []map[string]any{}
 	skippedTurns := []map[string]any{}
+	deferredTurns := []map[string]any{}
 	processedTurns := []int{}
 	succeeded := 0
 	failed := 0
 	skipped := 0
+	deferred := 0
 	artifactCounts := map[string]int{
 		"memories":          0,
 		"evidence":          0,
@@ -238,8 +237,9 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 	if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); ok &&
 		availability.MemoryDerivationLifecycleEnabled() {
 		lister, listOK := s.Store.(store.ActiveSourceRevisionLister)
+		sourceWriter, writerOK := s.Store.(store.SourceRevisionStore)
 		queue, queueOK := s.Store.(store.MemoryReprocessingJobStore)
-		if !listOK || !queueOK {
+		if !listOK || !writerOK || !queueOK {
 			return nil, fmt.Errorf("durable rescan queue is unavailable")
 		}
 		sources, err := lister.ListActiveSourceRevisions(ctx, sid, 0, 0)
@@ -254,7 +254,192 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		reopened := 0
 		now := time.Now().UTC()
 		for _, turn := range turns {
+			roleMap := turnLogs[turn]
+			if shouldApplyCompleteTurnOOCGuard(
+				sanitizeCriticStorageText(roleMap["user"]),
+				sanitizeCriticStorageText(roleMap["assistant"]),
+				nil,
+			) {
+				skipped++
+				skippedTurns = append(skippedTurns, map[string]any{
+					"turn_index": turn,
+					"reason":     "ooc_guard",
+				})
+				if progress != nil {
+					progressValue := adminRescanProgress(
+						succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+						skipped, processedTurns, failedTurns, skippedTurns,
+						artifactCounts, turn, "ooc_guard",
+					)
+					progressValue["deferred_count"] = deferred
+					progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+					progress(progressValue)
+				}
+				continue
+			}
 			candidates := sourcesByTurn[turn]
+			if len(candidates) == 0 && req.CanonicalRawReplay {
+				if req.DryRun {
+					skipped++
+					skippedTurns = append(skippedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "canonical_raw_source_registration_required",
+					})
+					if progress != nil {
+						progressValue := adminRescanProgress(
+							succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+							skipped, processedTurns, failedTurns, skippedTurns,
+							artifactCounts, turn, "canonical_raw_source_registration_required",
+						)
+						progressValue["deferred_count"] = deferred
+						progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+						progress(progressValue)
+					}
+					continue
+				}
+				source := adminRescanCanonicalRawSourceRevision(
+					sid,
+					turn,
+					roleMap["user"],
+					roleMap["assistant"],
+					now,
+				)
+				if source != nil {
+					registration, registerErr := sourceWriter.RegisterAcceptedSourceRevision(ctx, source)
+					if registerErr == nil && (registration.Inserted || registration.Idempotent) {
+						candidates = []store.MemorySourceRevision{*source}
+						sourcesByTurn[turn] = candidates
+					} else {
+						failed++
+						reason := "canonical_source_registration_failed"
+						if errors.Is(registerErr, store.ErrSourceRevisionConflict) {
+							reason = "canonical_source_revision_conflict"
+						} else if registerErr == nil {
+							reason = "canonical_source_registration_unconfirmed"
+						}
+						failedTurns = append(failedTurns, map[string]any{
+							"turn_index": turn,
+							"reason":     reason,
+						})
+						if progress != nil {
+							progressValue := adminRescanProgress(
+								succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+								skipped, processedTurns, failedTurns, skippedTurns,
+								artifactCounts, turn, reason,
+							)
+							progressValue["deferred_count"] = deferred
+							progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+							progress(progressValue)
+						}
+						continue
+					}
+				} else {
+					failed++
+					failedTurns = append(failedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "canonical_raw_pair_incomplete",
+					})
+					if progress != nil {
+						progressValue := adminRescanProgress(
+							succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+							skipped, processedTurns, failedTurns, skippedTurns,
+							artifactCounts, turn, "canonical_raw_pair_incomplete",
+						)
+						progressValue["deferred_count"] = deferred
+						progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+						progress(progressValue)
+					}
+					continue
+				}
+			}
+			if len(candidates) == 1 &&
+				(sanitizeCriticStorageText(candidates[0].UserContent) != sanitizeCriticStorageText(roleMap["user"]) ||
+					sanitizeCriticStorageText(candidates[0].AssistantContent) != sanitizeCriticStorageText(roleMap["assistant"])) {
+				failed++
+				failedTurns = append(failedTurns, map[string]any{
+					"turn_index": turn,
+					"reason":     "active_source_raw_mismatch",
+				})
+				if progress != nil {
+					progressValue := adminRescanProgress(
+						succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+						skipped, processedTurns, failedTurns, skippedTurns,
+						artifactCounts, turn, "active_source_raw_mismatch",
+					)
+					progressValue["deferred_count"] = deferred
+					progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+					progress(progressValue)
+				}
+				continue
+			}
+			if req.CanonicalRawReplay && len(candidates) == 1 {
+				inspectedSource, inspectErr := sourceWriter.GetSourceRevision(
+					ctx,
+					sid,
+					candidates[0].SourceRevision,
+				)
+				if inspectErr != nil || inspectedSource == nil {
+					failed++
+					failedTurns = append(failedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "canonical_source_inspection_failed",
+					})
+					if progress != nil {
+						progressValue := adminRescanProgress(
+							succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+							skipped, processedTurns, failedTurns, skippedTurns,
+							artifactCounts, turn, "canonical_source_inspection_failed",
+						)
+						progressValue["deferred_count"] = deferred
+						progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+						progress(progressValue)
+					}
+					continue
+				}
+				candidates[0] = *inspectedSource
+				if !forceDerivedRebuild {
+					projectionComplete, projectionErr := s.adminRescanSourceProjectionComplete(
+						ctx,
+						inspectedSource,
+					)
+					if projectionErr != nil {
+						failed++
+						failedTurns = append(failedTurns, map[string]any{
+							"turn_index": turn,
+							"reason":     "derived_projection_inspection_failed",
+						})
+						if progress != nil {
+							progressValue := adminRescanProgress(
+								succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+								skipped, processedTurns, failedTurns, skippedTurns,
+								artifactCounts, turn, "derived_projection_inspection_failed",
+							)
+							progressValue["deferred_count"] = deferred
+							progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+							progress(progressValue)
+						}
+						continue
+					}
+					if projectionComplete {
+						skipped++
+						skippedTurns = append(skippedTurns, map[string]any{
+							"turn_index": turn,
+							"reason":     "derived_projection_complete",
+						})
+						if progress != nil {
+							progressValue := adminRescanProgress(
+								succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
+								skipped, processedTurns, failedTurns, skippedTurns,
+								artifactCounts, turn, "derived_projection_complete",
+							)
+							progressValue["deferred_count"] = deferred
+							progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+							progress(progressValue)
+						}
+						continue
+					}
+				}
+			}
 			switch {
 			case len(candidates) == 0:
 				failed++
@@ -274,6 +459,53 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 					"turn_index": turn,
 					"reason":     "dry_run",
 				})
+			case req.CanonicalRawReplay:
+				derivation := s.processAcceptedSourceRevision(
+					ctx,
+					&candidates[0],
+					extractionCfg,
+				)
+				switch derivation.State {
+				case "completed":
+					succeeded++
+					processedTurns = append(processedTurns, turn)
+					addAdminRescanArtifactCounts(artifactCounts, derivation.SaveResult)
+					warnings = append(warnings, derivation.SaveResult.Warnings...)
+				case "skipped_ooc":
+					skipped++
+					skippedTurns = append(skippedTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     derivation.Failure,
+					})
+				default:
+					failed++
+					failedItem := map[string]any{
+						"turn_index": turn,
+						"reason":     derivation.Failure,
+						"state":      derivation.State,
+					}
+					if len(derivation.CriticTrace) > 0 {
+						failedItem["trace"] = derivation.CriticTrace
+					}
+					failedTurns = append(failedTurns, failedItem)
+					if derivation.State == "retryable" {
+						inserted, enqueueErr := s.enqueueSourceRevisionReprocessingJob(
+							ctx,
+							queue,
+							&candidates[0],
+							derivation.Failure,
+							now,
+						)
+						if enqueueErr != nil {
+							warnings = append(
+								warnings,
+								"reprocessing_enqueue_failed: "+enqueueErr.Error(),
+							)
+						} else if inserted {
+							queued++
+						}
+					}
+				}
 			default:
 				inserted, enqueueErr := s.enqueueSourceRevisionReprocessingJob(
 					ctx, queue, &candidates[0], "admin_rescan_requested", now,
@@ -287,16 +519,19 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 					break
 				}
 				if inserted {
-					succeeded++
-					processedTurns = append(processedTurns, turn)
+					deferred++
+					deferredTurns = append(deferredTurns, map[string]any{
+						"turn_index": turn,
+						"reason":     "reprocessing_queued",
+					})
 					queued++
 					break
 				}
 				if !forceDerivedRebuild {
-					skipped++
-					skippedTurns = append(skippedTurns, map[string]any{
+					deferred++
+					deferredTurns = append(deferredTurns, map[string]any{
 						"turn_index": turn,
-						"reason":     "reprocessing_job_already_exists",
+						"reason":     "reprocessing_job_already_pending",
 					})
 					break
 				}
@@ -340,8 +575,11 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 					})
 					break
 				}
-				succeeded++
-				processedTurns = append(processedTurns, turn)
+				deferred++
+				deferredTurns = append(deferredTurns, map[string]any{
+					"turn_index": turn,
+					"reason":     "reprocessing_reopened",
+				})
 				queued++
 				reopened++
 				s.wakeMemoryWorkers()
@@ -365,15 +603,48 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 				}
 			}
 			if progress != nil {
-				progress(adminRescanProgress(
-					succeeded+failed+skipped, len(turns), succeeded, failed,
+				phase := "durable_reprocessing_queue"
+				if req.CanonicalRawReplay {
+					phase = "canonical_raw_source_replay"
+				}
+				progressValue := adminRescanProgress(
+					succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
 					skipped, processedTurns, failedTurns, skippedTurns,
-					artifactCounts, turn, "durable_reprocessing_queue",
-				))
+					artifactCounts, turn, phase,
+				)
+				progressValue["deferred_count"] = deferred
+				progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
+				progress(progressValue)
 			}
 		}
+		if req.CanonicalRawReplay {
+			backfillTargets := targetTurns
+			if fullSessionBackfill {
+				backfillTargets = map[int]bool{}
+			} else if len(processedTurns) > 0 {
+				backfillTargets = intsToSet(processedTurns)
+			}
+			postLogs, postMemories, postEvidence := logs, memories, []store.DirectEvidence(nil)
+			if listed, listErr := s.Store.ListChatLogs(ctx, sid, 0, 0); listErr == nil {
+				postLogs = listed
+			}
+			if listed, listErr := s.Store.ListMemories(ctx, sid, 0, 0); listErr == nil {
+				postMemories = listed
+			}
+			if listed, listErr := s.Store.ListEvidence(ctx, sid); listErr == nil {
+				postEvidence = listed
+			}
+			runBackfills(postLogs, postMemories, postEvidence, backfillTargets)
+		}
+		status := "ok"
+		switch {
+		case failed > 0:
+			status = "partial_error"
+		case deferred > 0:
+			status = "deferred"
+		}
 		return map[string]any{
-			"status":              "ok",
+			"status":              status,
 			"source":              s.storeWriteSource(),
 			"chat_session_id":     sid,
 			"dry_run":             req.DryRun,
@@ -381,18 +652,25 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			"succeeded":           succeeded,
 			"failed":              failed,
 			"skipped":             skipped,
+			"deferred":            deferred,
 			"queued":              queued,
 			"reopened":            reopened,
 			"processed_turns":     processedTurns,
 			"failed_turns":        failedTurns,
 			"skipped_turns":       skippedTurns,
+			"deferred_turns":      deferredTurns,
 			"artifact_counts":     artifactCounts,
 			"episode_backfill":    episodeBackfill,
 			"world_rule_backfill": worldRuleBackfill,
 			"hierarchy_backfill":  hierarchyBackfill,
 			"warnings":            warnings,
 			"llm_config_trace":    llmTrace,
-			"note":                "rescan candidates were handed to the durable source-fenced reprocessing worker",
+			"note": func() string {
+				if req.CanonicalRawReplay {
+					return "canonical raw pairs were rebuilt synchronously through the shared source-fenced derivation owner"
+				}
+				return "rescan candidates were handed to the durable source-fenced reprocessing worker"
+			}(),
 		}, nil
 	}
 
@@ -405,7 +683,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			progress(adminRescanProgress(len(turns), len(turns), 0, len(turns), 0, []int{}, failedTurns, []map[string]any{}, artifactCounts, 0, "critic_config_missing"))
 		}
 		return map[string]any{
-			"status":              "ok",
+			"status":              "partial_error",
 			"source":              s.storeWriteSource(),
 			"chat_session_id":     sid,
 			"dry_run":             req.DryRun,
@@ -582,6 +860,112 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		})
 	}
 	return result, nil
+}
+
+func adminRescanCanonicalRawSourceRevision(
+	sid string,
+	turn int,
+	userText string,
+	assistantText string,
+	observedAt time.Time,
+) *store.MemorySourceRevision {
+	sid = strings.TrimSpace(sid)
+	if sid == "" || turn <= 0 || userText == "" || assistantText == "" {
+		return nil
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))
+	contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	userHash := fmt.Sprintf("%x", sha256.Sum256([]byte(userText)))
+	assistantHash := fmt.Sprintf("%x", sha256.Sum256([]byte(assistantText)))
+	revisionSeed := strings.Join([]string{
+		"canonical_raw_reprocessing.v1",
+		sid,
+		fmt.Sprint(turn),
+		contentHash,
+		observedAt.UTC().Format(time.RFC3339Nano),
+	}, "\x1f")
+	revisionHash := fmt.Sprintf("%x", sha256.Sum256([]byte(revisionSeed)))
+	return &store.MemorySourceRevision{
+		ContractVersion:              store.MemorySourceRevisionContract,
+		SourceRevision:               "sar_" + revisionHash,
+		ChatSessionID:                sid,
+		LogicalTurnID:                "canonical_turn_" + revisionHash,
+		TurnIndex:                    turn,
+		BranchState:                  "not_exposed",
+		UserContent:                  userText,
+		AssistantContent:             assistantText,
+		CombinedContentHash:          contentHash,
+		UserObservedContentHash:      userHash,
+		AssistantObservedContentHash: assistantHash,
+		HashAlgorithm:                "sha256",
+		HostObservedAtMS:             observedAt.UnixMilli(),
+		LifecycleState:               "active",
+		CreatedAt:                    observedAt,
+		UpdatedAt:                    observedAt,
+	}
+}
+
+func (s *Server) adminRescanSourceProjectionComplete(
+	ctx context.Context,
+	source *store.MemorySourceRevision,
+) (bool, error) {
+	if s == nil || s.Store == nil || source == nil ||
+		source.LifecycleState != "active" ||
+		source.DerivedAdmissionState != "committed" ||
+		source.DerivedAdmissionVersion != store.MemoryAdmissionContract ||
+		source.DerivedExtractorVersion != completeTurnCriticPipelineVersion ||
+		source.DerivedIndexVersion != memoryAdmissionIndexVersion ||
+		strings.TrimSpace(source.DerivedResultHash) == "" ||
+		strings.TrimSpace(source.DerivedResultJSON) == "" {
+		return false, nil
+	}
+	logs, err := s.Store.ListAuditLogs(
+		ctx,
+		source.ChatSessionID,
+		"critic_ingest_trace",
+		0,
+	)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return false, err
+	}
+	for _, item := range logs {
+		if item.ChatSessionID != source.ChatSessionID ||
+			item.TargetType != "turn" ||
+			item.TargetID != int64(source.TurnIndex) {
+			continue
+		}
+		details := map[string]any{}
+		if json.Unmarshal([]byte(strings.TrimSpace(item.DetailsJSON)), &details) != nil {
+			continue
+		}
+		if !boolFromAny(details["pipeline_complete"]) ||
+			strings.TrimSpace(stringFromMap(details, "source_revision")) != source.SourceRevision ||
+			strings.TrimSpace(stringFromMap(details, "derivation_version")) != store.MemoryAdmissionContract ||
+			strings.TrimSpace(stringFromMap(details, "extractor_version")) != completeTurnCriticPipelineVersion ||
+			strings.TrimSpace(stringFromMap(details, "index_version")) != memoryAdmissionIndexVersion {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func addAdminRescanArtifactCounts(counts map[string]int, result artifactSaveResult) {
+	counts["memories"] += result.Memories
+	counts["evidence"] += result.Evidence
+	counts["kg_triples"] += result.KGTriples
+	counts["character_events"] += result.CharacterEvents
+	counts["storylines"] += result.Storylines
+	counts["world_rules"] += result.WorldRules
+	counts["character_states"] += result.CharacterStates
+	counts["pending_threads"] += result.PendingThreads
+	counts["active_states"] += result.ActiveStates
+	counts["entities"] += result.Entities
+	counts["trust_states"] += result.TrustStates
+	counts["vectors_upserted"] += result.VectorsUpserted
 }
 
 func adminRescanProgress(processed, total, succeeded, failed, skipped int, processedTurns []int, failedTurns, skippedTurns []map[string]any, artifactCounts map[string]int, lastTurn int, lastReason string) map[string]any {

@@ -388,6 +388,7 @@ func (s *Server) saveCriticIngestTrace(ctx context.Context, sid string, turnInde
 	}
 	details := map[string]any{
 		"policy_version":              "critic_ingest_trace.v1",
+		"pipeline_complete":           result.Errors == 0,
 		"turn_index":                  turnIndex,
 		"memories":                    result.Memories,
 		"direct_evidence":             result.Evidence,
@@ -413,6 +414,14 @@ func (s *Server) saveCriticIngestTrace(ctx context.Context, sid string, turnInde
 		"vectors_evidence_upserted":   result.VectorsEvidenceUpserted,
 		"vectors_world_rule_upserted": result.VectorsWorldRuleUpserted,
 		"artifact_save_errors":        result.ErrorDetails,
+	}
+	if source, ok := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext); ok &&
+		source.ContractVersion == completeTurnSourceAcceptanceContract &&
+		strings.TrimSpace(source.Revision) != "" {
+		details["source_revision"] = source.Revision
+		details["derivation_version"] = store.MemoryAdmissionContract
+		details["extractor_version"] = completeTurnCriticPipelineVersion
+		details["index_version"] = memoryAdmissionIndexVersion
 	}
 	result.trySave("SaveAuditLog(critic_ingest_trace)", func() error {
 		return s.Store.SaveAuditLog(ctx, &store.AuditLog{

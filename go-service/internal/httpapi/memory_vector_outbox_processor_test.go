@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -68,10 +69,11 @@ func (f *memoryVectorProcessorStore) SaveAuditLog(_ context.Context, item *store
 
 type memoryVectorProcessorVector struct {
 	vector.VectorStore
-	upsertErr error
-	deleteErr error
-	upserts   [][]vector.VectorDocument
-	deletes   [][]string
+	upsertErr  error
+	upsertErrs []error
+	deleteErr  error
+	upserts    [][]vector.VectorDocument
+	deletes    [][]string
 }
 
 type blockingMemoryVectorProcessorVector struct {
@@ -85,6 +87,11 @@ func (f *blockingMemoryVectorProcessorVector) Upsert(ctx context.Context, _ stri
 
 func (f *memoryVectorProcessorVector) Upsert(_ context.Context, _ string, docs []vector.VectorDocument) error {
 	f.upserts = append(f.upserts, docs)
+	if len(f.upsertErrs) > 0 {
+		err := f.upsertErrs[0]
+		f.upsertErrs = f.upsertErrs[1:]
+		return err
+	}
 	return f.upsertErr
 }
 
@@ -132,6 +139,52 @@ func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
 		len(st.failed) != 1 || len(st.completed) != 0 ||
 		!st.failureRetryAt[0].Equal(now) {
 		t.Fatalf("result=%+v failed=%v completed=%v retry=%v", result, st.failed, st.completed, st.failureRetryAt)
+	}
+}
+
+func TestMemoryVectorProcessorUnboundedDrainDoesNotLetRetryBlockLaterItem(t *testing.T) {
+	now := time.Date(2026, 7, 30, 4, 10, 0, 0, time.UTC)
+	makeItem := func(id int64) *store.MemoryVectorOutboxItem {
+		document := vector.VectorDocument{
+			ID:            fmt.Sprintf("precise_memory:session:%d", id),
+			ChatSessionID: "session", SourceTable: "precise_memory_units",
+			SourceRowID: fmt.Sprint(id), SchemaVersion: store.PreciseMemoryUnitContract,
+			DocumentText: "grounded", Embedding: []float32{0.1, 0.2},
+		}
+		documentJSON, err := materializedMemoryVectorDocumentJSON(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &store.MemoryVectorOutboxItem{
+			ID: id, Operation: "upsert", ChatSessionID: "session",
+			SourceRevision: fmt.Sprintf("sar_%d", id), DocumentID: document.ID,
+			DocumentJSON: documentJSON, EmbeddingReady: true,
+			RequiredSourceState: "active", Status: "pending",
+		}
+	}
+	st := &memoryVectorProcessorStore{
+		Store: store.NewNoopStore(),
+		items: []*store.MemoryVectorOutboxItem{makeItem(1), makeItem(2)},
+	}
+	vec := &memoryVectorProcessorVector{
+		VectorStore: vector.NewFakeVectorStore(),
+		upsertErrs:  []error{errors.New("provider unavailable"), nil},
+	}
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 4,
+		},
+	}
+	results := server.processMemoryVectorOutboxBatch(
+		context.Background(), "worker", now, time.Minute, 0,
+	)
+	if len(results) != 2 ||
+		results[0].CanonicalState != "retryable" ||
+		results[1].CanonicalState != "completed" ||
+		len(st.failed) != 1 || st.failed[0] != 1 ||
+		len(st.completed) != 1 || st.completed[0] != 2 {
+		t.Fatalf("results=%+v failed=%v completed=%v", results, st.failed, st.completed)
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 
 const (
 	prepareTurnProductionProjectionV1 = "prepare_turn.production_compact.v1"
-	prepareTurnHistoryWindowTurns     = 300
 )
 
 func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
@@ -228,12 +227,15 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	readErrs := []error{}
 	readsOK := 0
 	sessionStateReads := map[string]bool{}
-	historyFromTurn := 0
-	historyToTurn := 0
-	boundedHistoryRead := false
+	const historyFromTurn = 0
+	const historyToTurn = 0
+	fullSessionRangeRead := false
 	materializationTrace := map[string]any{
 		"contract_version":              "prepare_turn.materialization_trace.v1",
-		"history_window_turns":          prepareTurnHistoryWindowTurns,
+		"history_scope":                 "full_session",
+		"history_from_turn":             historyFromTurn,
+		"history_to_turn":               historyToTurn,
+		"range_store_used":              false,
 		"bounded_history_store":         false,
 		"vector_memory_include_count":   len(vectorMemoryIDs),
 		"vector_evidence_include_count": len(vectorEvidenceIDs),
@@ -244,18 +246,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		rangeStore, hasRangeStore := s.Store.(store.PrepareTurnRangeStore)
 		if hasRangeStore {
-			if latest, err := rangeStore.LatestSessionTurnIndex(ctx, sid); err == nil {
-				historyFromTurn, historyToTurn = prepareTurnHistoryBounds(latest)
-				boundedHistoryRead = true
-				materializationTrace["bounded_history_store"] = true
-				materializationTrace["history_from_turn"] = historyFromTurn
-				materializationTrace["history_to_turn"] = historyToTurn
-			} else if !errors.Is(err, store.ErrNotEnabled) {
-				readErrs = append(readErrs, err)
-			}
+			fullSessionRangeRead = true
+			materializationTrace["range_store_used"] = true
 		}
 		var memoryReadErr error
-		if boundedHistoryRead {
+		if fullSessionRangeRead {
 			memories, memoryReadErr = rangeStore.ListMemoriesRange(ctx, sid, historyFromTurn, historyToTurn, vectorMemoryIDs)
 		} else {
 			memories, memoryReadErr = s.Store.ListMemories(ctx, sid, 0, 0)
@@ -266,7 +261,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			readErrs = append(readErrs, memoryReadErr)
 		}
 		var kgReadErr error
-		if boundedHistoryRead {
+		if fullSessionRangeRead {
 			kgTriples, kgReadErr = rangeStore.ListKGTriplesRange(ctx, sid, historyFromTurn, historyToTurn)
 		} else {
 			kgTriples, kgReadErr = s.Store.ListKGTriples(ctx, sid)
@@ -277,7 +272,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			readErrs = append(readErrs, kgReadErr)
 		}
 		var evidenceReadErr error
-		if boundedHistoryRead {
+		if fullSessionRangeRead {
 			evidence, evidenceReadErr = rangeStore.ListEvidenceRange(ctx, sid, historyFromTurn, historyToTurn, vectorEvidenceIDs)
 		} else {
 			evidence, evidenceReadErr = s.Store.ListEvidence(ctx, sid)
@@ -314,7 +309,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			readErrs = append(readErrs, err)
 		}
 		var characterStateReadErr error
-		if boundedHistoryRead {
+		if fullSessionRangeRead {
 			charStates, characterStateReadErr = rangeStore.ListCharacterStatesCurrent(ctx, sid)
 		} else {
 			charStates, characterStateReadErr = s.Store.ListCharacterStates(ctx, sid)
@@ -341,7 +336,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			readErrs = append(readErrs, err)
 		}
 		var activeStateReadErr error
-		if boundedHistoryRead {
+		if fullSessionRangeRead {
 			activeStates, activeStateReadErr = rangeStore.ListActiveStatesRange(ctx, sid, historyFromTurn, historyToTurn)
 		} else {
 			activeStates, activeStateReadErr = s.Store.ListActiveStates(ctx, sid, "")
@@ -353,7 +348,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			readErrs = append(readErrs, activeStateReadErr)
 		}
 		var canonicalStateReadErr error
-		if boundedHistoryRead {
+		if fullSessionRangeRead {
 			canonicalLayers, canonicalStateReadErr = rangeStore.ListCanonicalStateLayersRange(ctx, sid, historyFromTurn, historyToTurn)
 		} else {
 			canonicalLayers, canonicalStateReadErr = s.Store.ListCanonicalStateLayers(ctx, sid, "")
@@ -1894,17 +1889,6 @@ func buildPrepareTurnCompactOrchestrationProjection(supervisorStatus string, gui
 			},
 		},
 	}
-}
-
-func prepareTurnHistoryBounds(latestTurn int) (int, int) {
-	if latestTurn <= 0 {
-		return 0, 0
-	}
-	fromTurn := latestTurn - prepareTurnHistoryWindowTurns + 1
-	if fromTurn < 1 {
-		fromTurn = 1
-	}
-	return fromTurn, latestTurn
 }
 
 func (s *Server) handleEffectiveInputs(w http.ResponseWriter, r *http.Request) {

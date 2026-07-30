@@ -197,7 +197,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("rollback:%s:%d", sid, turnIndex),
 				time.Now().UTC(),
 				leaseDuration,
-				64,
+				0,
 			)
 		}
 		s.wakeMemoryWorkers()

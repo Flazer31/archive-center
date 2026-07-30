@@ -948,7 +948,6 @@ func TestArchiveCenterJSActiveChatCompleteTurnBackfillMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"ACTIVE_CHAT_BACKFILL_LEDGER_KEY",
-		"ACTIVE_CHAT_BACKFILL_MAX_PAIRS",
 		"function buildCompletedTurnPairsFromActiveChatMessages",
 		"function findActiveChatCompletedTurnPairForUserContent",
 		"function ensureActiveChatCompletedTurnsBackfilled",
@@ -976,6 +975,15 @@ func TestArchiveCenterJSActiveChatCompleteTurnBackfillMarkers(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing active chat complete-turn backfill marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		"ACTIVE_CHAT_BACKFILL_MAX_" + "PAIRS",
+		"ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_" + "MESSAGES",
+		"max" + "Pairs:",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains hidden active-chat backfill limit %q", forbidden)
 		}
 	}
 }
@@ -1029,8 +1037,6 @@ func TestArchiveCenterJSActiveChatInputPrecedesAutoContinueFallback(t *testing.T
 func TestArchiveCenterJSActiveChatRescanDryRunMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"ACTIVE_CHAT_RESCAN_DRY_RUN_TIMELINE_PAGE_LIMIT",
-		"ACTIVE_CHAT_RESCAN_DRY_RUN_CHATLOG_PAGE_LIMIT",
 		"ACTIVE_CHAT_RECENT_REBUILD_DEFAULT_TURNS",
 		"ACTIVE_CHAT_RECENT_REBUILD_MAX_TURNS",
 		"ACTIVE_CHAT_REBUILD_DEFAULT_ORDER",
@@ -1039,6 +1045,7 @@ func TestArchiveCenterJSActiveChatRescanDryRunMarkers(t *testing.T) {
 		"function runActiveChatRecentRebuild",
 		"function computeActiveChatRescanDryRunPlan",
 		"function explorerFetchTimelineItemsForSessionDryRun",
+		"const seenBeforeTurns = new Set()",
 		"function buildActiveChatRescanDryRunRows",
 		"function buildActiveChatRescanPairsFromDbRawFallback",
 		"function isLikelyRisuMemorySummaryRecord",

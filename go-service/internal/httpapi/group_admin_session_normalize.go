@@ -46,18 +46,6 @@ func (s *Server) handleAdminSessionNormalize(w http.ResponseWriter, r *http.Requ
 		writeBadRequest(w, "chat_session_id is required")
 		return
 	}
-	if req.MaxItems <= 0 {
-		req.MaxItems = 1000
-	}
-	if req.MaxItems > 5000 {
-		req.MaxItems = 5000
-	}
-	if req.BatchSize <= 0 {
-		req.BatchSize = 50
-	}
-	if req.BatchSize > 200 {
-		req.BatchSize = 200
-	}
 	if s.AdminJobs == nil {
 		s.AdminJobs = newAdminJobManager()
 	}
@@ -140,12 +128,13 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 	if !req.SkipRescan {
 		meta := adminSessionNormalizeClientMeta(req.ClientMeta)
 		rescanReq := adminRescanRequest{
-			ChatSessionID: sid,
-			MaxItems:      req.MaxItems,
-			TurnIndices:   uniqueSortedNonNegativeInts(req.TurnIndices),
-			ClientMeta:    meta,
-			DryRun:        req.DryRun,
-			Background:    false,
+			ChatSessionID:      sid,
+			MaxItems:           req.MaxItems,
+			TurnIndices:        uniqueSortedNonNegativeInts(req.TurnIndices),
+			ClientMeta:         meta,
+			DryRun:             req.DryRun,
+			Background:         false,
+			CanonicalRawReplay: true,
 		}
 		res, err := s.runAdminRescanWithProgress(ctx, sid, rescanReq, adminSessionNormalizeProgressAdapter(progress, "critic_rescan_backfill", 18, 52))
 		if err != nil {
@@ -162,7 +151,8 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 	}
 
 	var reindexResult map[string]any
-	if !req.SkipReindex {
+	reindexDeferredReasons := adminSessionNormalizeReindexDeferredReasons(rescanResult)
+	if !req.SkipReindex && len(reindexDeferredReasons) == 0 {
 		reindexReq := map[string]any{
 			"chat_session_id": sid,
 			"max_items":       req.MaxItems,
@@ -177,6 +167,15 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			return nil, err
 		}
 		reindexResult = res
+	} else if !req.SkipReindex {
+		reindexResult = map[string]any{
+			"status":          "deferred",
+			"chat_session_id": sid,
+			"dry_run":         req.DryRun,
+			"reason":          "derived_reprocessing_incomplete",
+			"deferred_by":     reindexDeferredReasons,
+		}
+		warnings = append(warnings, "vector_reindex_deferred_until_derived_reprocessing_completes")
 	} else {
 		reindexResult = map[string]any{
 			"status":          "skipped",
@@ -188,7 +187,12 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 
 	after, afterWarnings := s.adminSessionNormalizeSnapshot(ctx, sid)
 	warnings = append(warnings, afterWarnings...)
-	status := adminSessionNormalizeStatus(repairResult, rescanResult, reindexResult, warnings)
+	status := adminSessionNormalizeStatus(
+		repairResult,
+		rescanResult,
+		reindexResult,
+		warnings,
+	)
 	result := map[string]any{
 		"status":              status,
 		"contract_version":    "session-normalize.v1",
@@ -207,14 +211,14 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 		"review_needed_turns": reviewNeededTurns,
 		"warnings":            uniqueStrings(warnings),
 		"generated_at":        time.Now().UTC(),
-		"note":                "session normalize orchestrated safe raw repair, Critic artifact backfill, hierarchy backfill, and vector reindex without rollback or destructive trim",
+		"note":                "session normalize repaired canonical raw logs, rebuilt derived artifacts from canonical backend state, and reported vector reindex separately without rollback or destructive trim",
 	}
 	s.saveAuditLogBestEffort(ctx, &store.AuditLog{
 		ChatSessionID: sid,
 		EventType:     "session_normalize",
 		TargetType:    "session",
 		TargetID:      0,
-		Summary:       "Session Normalize completed",
+		Summary:       "Session Normalize finished",
 		DetailsJSON: mustCompactJSON(map[string]any{
 			"status":              status,
 			"dry_run":             req.DryRun,
@@ -228,9 +232,14 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 		CreatedAt: time.Now().UTC(),
 	})
 	if progress != nil {
+		finalStage := "completed"
+		if status != "ok" {
+			finalStage = status
+		}
 		progress(map[string]any{
 			"status":              "completed",
-			"stage":               "completed",
+			"stage":               finalStage,
+			"outcome_status":      status,
 			"progress_percent":    100,
 			"review_needed_turns": reviewNeededTurns,
 			"counts_after":        after,
@@ -460,7 +469,7 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 		counts["starter_turn_present"] = starterTurnPresent
 		counts["min_turn"] = minTurn
 		counts["max_turn"] = maxTurn
-		counts["partial_turn_preview"] = adminSessionNormalizeLimitInts(uniqueSortedNonNegativeInts(partialTurns), 20)
+		counts["partial_turn_preview"] = uniqueSortedNonNegativeInts(partialTurns)
 	}
 	if memories, err := s.Store.ListMemories(ctx, sid, 0, 0); err == nil {
 		counts["memories"] = len(memories)
@@ -538,15 +547,7 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 }
 
 func adminSessionNormalizeConflictTurns(snapshot map[string]any) []int {
-	return adminSessionNormalizeLimitInts(intSliceFromAny(snapshot["partial_turn_preview"]), 50)
-}
-
-func adminSessionNormalizeLimitInts(values []int, limit int) []int {
-	values = uniqueSortedInts(values)
-	if limit > 0 && len(values) > limit {
-		return values[:limit]
-	}
-	return values
+	return uniqueSortedInts(intSliceFromAny(snapshot["partial_turn_preview"]))
 }
 
 func intSliceFromAny(v any) []int {
@@ -577,6 +578,7 @@ func adminSessionNormalizeSkipReason(skipped bool, count int, fallback string) s
 }
 
 func adminSessionNormalizeStatus(repairResult, rescanResult, reindexResult map[string]any, warnings []string) string {
+	deferred := false
 	for _, result := range []map[string]any{repairResult, rescanResult, reindexResult} {
 		status := strings.ToLower(strings.TrimSpace(stringFromMap(result, "status")))
 		if status == "failed" || status == "error" {
@@ -585,14 +587,40 @@ func adminSessionNormalizeStatus(repairResult, rescanResult, reindexResult map[s
 		if status == "blocked" {
 			return "blocked"
 		}
+		if status == "deferred" {
+			deferred = true
+		}
 		if intFromAny(result["failed"], 0) > 0 || len(sliceFromAny(result["failed_turns"])) > 0 || len(sliceFromAny(result["errors"])) > 0 {
 			return "partial_error"
 		}
+	}
+	if deferred {
+		return "partial_deferred"
 	}
 	if len(warnings) > 0 {
 		return "partial_warning"
 	}
 	return "ok"
+}
+
+func adminSessionNormalizeReindexDeferredReasons(rescanResult map[string]any) []string {
+	reasons := []string{}
+	for label, result := range map[string]map[string]any{
+		"rescan": rescanResult,
+	} {
+		status := strings.ToLower(strings.TrimSpace(stringFromMap(result, "status")))
+		switch status {
+		case "failed", "error", "blocked", "cancelled", "partial_error", "deferred":
+			reasons = append(reasons, label+":"+status)
+		}
+		if intFromAny(result["failed"], 0) > 0 || len(sliceFromAny(result["failed_turns"])) > 0 {
+			reasons = append(reasons, label+":failed_items")
+		}
+		if intFromAny(result["deferred"], 0) > 0 || intFromAny(result["queued"], 0) > 0 {
+			reasons = append(reasons, label+":pending_reprocessing")
+		}
+	}
+	return uniqueStrings(reasons)
 }
 
 func uniqueStrings(values []string) []string {

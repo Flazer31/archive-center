@@ -784,6 +784,27 @@ func TestMariaDBStoreListAuditLogsQueriesRows(t *testing.T) {
 	}
 }
 
+func TestMariaDBStoreListAuditLogsZeroLimitReadsAllRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	mock.ExpectQuery(`(?s)FROM audit_logs.*ORDER BY created_at DESC, id DESC\s*$`).
+		WithArgs("sess-all", "sess-all", "", "").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "created_at", "event_type", "chat_session_id", "target_type",
+			"target_id", "summary", "details_json", "source",
+		}))
+	if _, err := m.ListAuditLogs(context.Background(), "sess-all", "", 0); err != nil {
+		t.Fatalf("ListAuditLogs zero limit: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBStoreSaveSupersessionResolutionWritesAuditAndEvidenceState(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -1209,6 +1230,36 @@ func TestMariaDBStoreSearchChapterSummariesReturnsRows(t *testing.T) {
 	}
 	if items[0].ChapterTitle != "Archive Gate" || items[0].CallbackCandidatesJSON != `["gate"]` {
 		t.Fatalf("unexpected item: %+v", items[0])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBHierarchyZeroLimitDoesNotAddHiddenLimit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+
+	mock.ExpectQuery(`(?s)FROM chapter_summaries.*ORDER BY chapter_index DESC, id DESC\s*$`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	if _, err := m.SearchChapterSummaries(context.Background(), "session", "", 0, 0, 0); err != nil {
+		t.Fatalf("chapter search: %v", err)
+	}
+
+	mock.ExpectQuery(`(?s)FROM arc_summaries.*ORDER BY arc_index DESC, id DESC\s*$`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	if _, err := m.SearchArcSummaries(context.Background(), "session", "", 0, 0, 0); err != nil {
+		t.Fatalf("arc search: %v", err)
+	}
+
+	mock.ExpectQuery(`(?s)FROM saga_digests.*ORDER BY to_turn DESC, id DESC\s*$`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	if _, err := m.SearchSagaDigests(context.Background(), "session", "", 0, 0, 0); err != nil {
+		t.Fatalf("saga search: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

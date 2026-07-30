@@ -52,11 +52,6 @@
   const PERSONA_CAPSULE_CANDIDATE_QUEUE_KEY = `${PLUGIN_ID}_personaCapsuleCandidateQueue_v1`;
   const PERSONA_CAPSULE_CANDIDATE_QUEUE_MAX = 30;
   const STARTUP_MESSAGE_TURN_INDEX = 0;
-  const STARTUP_MESSAGE_MAX_CHARS = 120000;
-  const ACTIVE_CHAT_BACKFILL_MAX_PAIRS = 3;
-  const ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES = 20;
-  const ACTIVE_CHAT_RESCAN_DRY_RUN_TIMELINE_PAGE_LIMIT = 30;
-  const ACTIVE_CHAT_RESCAN_DRY_RUN_CHATLOG_PAGE_LIMIT = 30;
   const ACTIVE_CHAT_RECENT_REBUILD_DEFAULT_TURNS = 5;
   const ACTIVE_CHAT_RECENT_REBUILD_MAX_TURNS = 10;
   const ACTIVE_CHAT_REBUILD_DEFAULT_ORDER = "oldest";
@@ -6264,12 +6259,24 @@
     return compactSnapshotMessages(extractActiveChatMessageList(activeChat));
   }
 
+  // RisuAI excludes the allBefore marker and every earlier message from the
+  // active prompt. Preserve original indexes while exposing only that window.
+  function getRisuActiveMessageWindowStart(messages) {
+    const list = Array.isArray(messages) ? messages : [];
+    for (let index = list.length - 1; index >= 0; index--) {
+      if (list[index] && list[index].disabled === "allBefore") return index + 1;
+    }
+    return 0;
+  }
+
   function extractActiveChatComparableMessages(activeChat) {
     try {
       const out = [];
       const rawMessages = extractActiveChatMessageList(activeChat);
-      for (let rawMessageIndex = 0; rawMessageIndex < rawMessages.length; rawMessageIndex++) {
+      const activeWindowStart = getRisuActiveMessageWindowStart(rawMessages);
+      for (let rawMessageIndex = activeWindowStart; rawMessageIndex < rawMessages.length; rawMessageIndex++) {
         const raw = rawMessages[rawMessageIndex];
+        if (raw && (raw.disabled === true || raw.disabled === "allBefore")) continue;
         const comparable = extractComparableMessageRoleAndContent(raw);
         if (comparable && (comparable.content || comparable.role === "user")) {
           out.push({
@@ -6410,7 +6417,7 @@
       chat_session_id: sid,
       turn_index: Number.isFinite(turn) ? turn : 0,
       role: String(role || ""),
-      content: String(content || "").slice(0, STARTUP_MESSAGE_MAX_CHARS),
+      content: String(content || ""),
       source: source || "canonical_chat_log_repair",
     };
     if (!sid || !body.role || !body.content.trim()) return false;
@@ -6586,14 +6593,6 @@
   async function saveActiveChatBackfillLedger() {
     try {
       const ledger = await loadActiveChatBackfillLedger();
-      const entries = Object.entries(ledger.entries || {})
-        .sort(function(a, b) {
-          return Number((b[1] && b[1].savedAt) || 0) - Number((a[1] && a[1].savedAt) || 0);
-        });
-      const keep = new Set(entries.slice(0, 200).map(function(entry) { return entry[0]; }));
-      for (const key of Object.keys(ledger.entries || {})) {
-        if (!keep.has(key)) delete ledger.entries[key];
-      }
       await persistentSet(ACTIVE_CHAT_BACKFILL_LEDGER_KEY, JSON.stringify(ledger));
     } catch (err) {
       debugLog("saveActiveChatBackfillLedger failed:", err && err.message);
@@ -6610,8 +6609,6 @@
         hash: String(pair.hash || ""),
         turnIndex: Number(pair.turnIndex || 0),
         savedAt: Date.now(),
-        userPreview: String(pair.userContent || "").slice(0, 120),
-        assistantPreview: String(pair.assistantContent || "").slice(0, 120),
       };
       await saveActiveChatBackfillLedger();
     } catch (err) {
@@ -7188,9 +7185,9 @@
           : null;
         const observedPairOrdinal = pairs.length + 1;
         const contextMessages = comparable
-          .slice(Math.max(0, pendingStartIndex - ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES), pendingStartIndex)
+          .slice(0, pendingStartIndex)
           .map(function(msg) {
-            return { role: msg.role, content: String(msg.content || "").slice(0, 2000) };
+            return { role: msg.role, content: String(msg.content || "") };
           });
         pairs.push({
           observedPairOrdinal,
@@ -7262,14 +7259,13 @@
       contract_version: "accepted_final_transport_recovery.v1",
       chat_session_id: String(p.chat_session_id || "").slice(0, 512),
       turn_index: Math.max(0, Math.trunc(Number(p.turn_index || 0))),
-      user_content: String(p.user_content || "").slice(0, STARTUP_MESSAGE_MAX_CHARS),
-      assistant_content: String(p.assistant_content || "").slice(0, STARTUP_MESSAGE_MAX_CHARS),
+      user_content: String(p.user_content || ""),
+      assistant_content: String(p.assistant_content || ""),
       context_messages: (Array.isArray(p.context_messages) ? p.context_messages : [])
-        .slice(-ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES)
         .map(function(message) {
           return {
             role: String(message && message.role || "").slice(0, 32),
-            content: String(message && message.content || "").slice(0, 2000),
+            content: String(message && message.content || ""),
           };
         }),
       risu_user_message_index: Number.isInteger(p.risu_user_message_index) ? p.risu_user_message_index : null,
@@ -7574,8 +7570,18 @@
         });
         return { status: "skipped", reason: "no_completed_pairs" };
       }
-      const maxPairs = Math.max(1, Math.min(Number(options.maxPairs || ACTIVE_CHAT_BACKFILL_MAX_PAIRS), ACTIVE_CHAT_BACKFILL_MAX_PAIRS));
-      const targetPairs = pairs.slice(-maxPairs);
+      const ledger = await loadActiveChatBackfillLedger();
+      const savedHashes = new Set(
+        Object.entries(ledger.entries || {})
+          .filter(function(entry) { return String(entry[0] || "").startsWith(sid + ":"); })
+          .map(function(entry) { return String(entry[1] && entry[1].hash || ""); })
+          .filter(Boolean),
+      );
+      const targetPairs = pairs.filter(function(pair) {
+        const hash = String(pair && pair.hash || "");
+        return !hash || !savedHashes.has(hash);
+      });
+      const activeTailPair = pairs[pairs.length - 1] || null;
       let saved = 0;
       let exists = 0;
       let queued = 0;
@@ -7585,7 +7591,7 @@
         const pair = targetPairs[pairIndex];
         const pairOptions = Object.assign({}, options, {
           hostObservedActiveTailReplacement: options.reason === "before_request"
-            && pairIndex === targetPairs.length - 1,
+            && pair === activeTailPair,
         });
         const result = await backfillOneActiveChatCompletedTurn(sid, pair, pairOptions);
         lastTurn = Number(result && result.turnIndex) || lastTurn;
@@ -14785,7 +14791,7 @@
       chat_session_id: String(p.chat_session_id || ""),
       turn_index: typeof p.turn_index === "number" ? p.turn_index : STARTUP_MESSAGE_TURN_INDEX,
       role: String(p.role || "assistant").slice(0, 32),
-      content: String(p.content || "").slice(0, STARTUP_MESSAGE_MAX_CHARS),
+      content: String(p.content || ""),
       source: String(p.source || "").slice(0, 80),
     };
   }
@@ -15634,29 +15640,32 @@
     return intentResult;
   }
 
-  async function drainFailedQueue() {
+  async function drainOneFailedQueueItem(targetDedupeKey) {
     if (_failedQueue.length === 0) return;
-    debugLog(`drainFailedQueue: ${_failedQueue.length} items pending`);
 
     // 시작 전 prune
     prunePersistedFailedQueue();
 
     // terminal incidents remain durable and do not consume retry batch slots.
-    // Process one retryable item so a terminal intent snapshot never omits
-    // another in-flight batch item.
+    // Keep every other item queued while this item is in flight so a durable
+    // transition snapshot cannot omit another pending item.
     const batch = [];
-    for (let index = 0; index < _failedQueue.length && batch.length < 1;) {
+    for (let index = 0; index < _failedQueue.length;) {
       const queuedItem = _failedQueue[index];
+      const queuedKey = makeFailedQueueDedupeKey(queuedItem)
+        || String(queuedItem && queuedItem._dedupeKey || "");
       if (
         String(queuedItem && queuedItem.state || "") === "terminal"
         || queuedItem && queuedItem.retryBlocked === true
+        || (targetDedupeKey && queuedKey !== targetDedupeKey)
       ) {
         index++;
         continue;
       }
       batch.push(..._failedQueue.splice(index, 1));
+      break;
     }
-    if (batch.length === 0) return;
+    if (batch.length === 0) return false;
     const stillFailed = [];
     const retainedIncidents = [];
     let queueChanged = false;
@@ -15919,6 +15928,32 @@
     // previously committed transition intent remains authoritative on reload.
     if (queueChanged || stillFailed.length !== batch.length) {
       await flushQueueSave();
+    }
+    return true;
+  }
+
+  async function drainFailedQueue() {
+    if (_failedQueue.length === 0) return;
+    debugLog(`drainFailedQueue: ${_failedQueue.length} items pending`);
+
+    // RisuAI host lifecycle signals are the only wake-up source. Each item
+    // present at this signal is attempted once; there is no timer or polling.
+    const retryKeys = [];
+    const seen = new Set();
+    for (const queuedItem of _failedQueue) {
+      if (
+        !queuedItem
+        || String(queuedItem.state || "") === "terminal"
+        || queuedItem.retryBlocked === true
+      ) continue;
+      const key = makeFailedQueueDedupeKey(queuedItem)
+        || String(queuedItem._dedupeKey || "");
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      retryKeys.push(key);
+    }
+    for (const key of retryKeys) {
+      await drainOneFailedQueueItem(key);
     }
   }
 
@@ -17676,9 +17711,8 @@
             .filter(function(item) {
               return Number(item && item.risuMessageIndex) < userIndex;
             })
-            .slice(-ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES)
             .map(function(item) {
-              return { role: item.role, content: String(item.content || "").slice(0, 2000) };
+              return { role: item.role, content: String(item.content || "") };
             }),
           risuUserMessageIndex: userIndex,
           risuAssistantMessageIndex: messageIndex,
@@ -22108,21 +22142,20 @@
   // runtimeState에 각 호출 결과를 반영한다.
   // ──────────────────────────────────────────────────────────────
 
-  function getRecentContextMessages(formattedMessages, maxCount = 10) {
+  function getHostContextMessages(formattedMessages) {
     try {
       if (!Array.isArray(formattedMessages) || formattedMessages.length === 0) return [];
       return formattedMessages
         .map(function(m) {
           const parsed = getPayloadMessageRoleAndText(m);
           if (parsed.role !== "user" && parsed.role !== "assistant") return null;
-          var clean = sanitizeForCritic(String(parsed.text || "").slice(0, 2000));
+          var clean = sanitizeForCritic(String(parsed.text || ""));
           if (!clean) return null;
           return { role: parsed.role, content: clean };
         })
-        .filter(Boolean)
-        .slice(-maxCount);
+        .filter(Boolean);
     } catch (err) {
-      warnLog("getRecentContextMessages failed:", err.message);
+      warnLog("getHostContextMessages failed:", err.message);
       return [];
     }
   }
@@ -27141,6 +27174,7 @@
       const chat = resolved && resolved.chat && typeof resolved.chat === "object" ? resolved.chat : null;
       if (!chat || !Array.isArray(chat.message)) return observation;
       const messages = chat.message;
+      const activeWindowStart = getRisuActiveMessageWindowStart(messages);
       observation.active_message_count = messages.length;
       if (typeof chat.id === "string" && chat.id.trim()) {
         observation.host_chat_id = chat.id.trim();
@@ -27152,9 +27186,13 @@
 
       const wanted = normalizeAssistantPersistenceCandidate(String(assistantContent || ""));
       let selectedIndex = -1;
-      for (let index = messages.length - 1; index >= 0; index--) {
+      for (let index = messages.length - 1; index >= activeWindowStart; index--) {
         const message = messages[index];
-        if (!message || message.role !== "char" || typeof message.data !== "string") continue;
+        if (!message
+            || message.disabled === true
+            || message.disabled === "allBefore"
+            || message.role !== "char"
+            || typeof message.data !== "string") continue;
         const observedPersistenceText = normalizeAssistantPersistenceCandidate(message.data);
         if (wanted && observedPersistenceText && isSameAssistantComparableText(observedPersistenceText, wanted)) {
           selectedIndex = index;
@@ -27174,9 +27212,10 @@
       const message = messages[selectedIndex];
       observation.message_index = selectedIndex;
       observation.message_role = "char";
-      if (Object.prototype.hasOwnProperty.call(message, "disabled") && typeof message.disabled === "boolean") {
-        observation.message_disabled_state = message.disabled ? "disabled" : "not_disabled";
-      }
+      observation.message_disabled_state =
+        message.disabled === true || message.disabled === "allBefore"
+          ? "disabled"
+          : "not_disabled";
       for (let index = selectedIndex + 1; index < messages.length; index++) {
         const later = messages[index];
         const laterRole = later && typeof later.role === "string" ? later.role : "";
@@ -27211,9 +27250,13 @@
         observation.message_time_ms = Math.trunc(message.time);
         observation.message_time_state = "observed";
       }
-      for (let index = selectedIndex - 1; index >= 0; index--) {
+      for (let index = selectedIndex - 1; index >= activeWindowStart; index--) {
         const userMessage = messages[index];
-        if (!userMessage || userMessage.role !== "user" || typeof userMessage.data !== "string") continue;
+        if (!userMessage
+            || userMessage.disabled === true
+            || userMessage.disabled === "allBefore"
+            || userMessage.role !== "user"
+            || typeof userMessage.data !== "string") continue;
         observation.user_message_index = index;
         observation.user_observed_content_hash = computeOrchestrationDirtyHashOr1c(userMessage.data);
         if (typeof userMessage.chatId === "string" && userMessage.chatId.trim()) {
@@ -27446,11 +27489,11 @@
   function buildCompleteTurnQueuePayload(body) {
     try {
       if (!body || typeof body !== "object") return null;
-      const boundedContext = Array.isArray(body.context_messages)
-        ? body.context_messages.slice(-20).map(function(msg) {
+      const exactContext = Array.isArray(body.context_messages)
+        ? body.context_messages.map(function(msg) {
             return {
               role: String((msg && msg.role) || "").slice(0, 32),
-              content: String((msg && msg.content) || "").slice(0, 2000),
+              content: String((msg && msg.content) || ""),
             };
           })
         : [];
@@ -27508,7 +27551,7 @@
         turn_index: typeof body.turn_index === "number" ? body.turn_index : 0,
         user_input: String(body.user_input || "").slice(0, 120000),
         assistant_content: String(body.assistant_content || "").slice(0, 120000),
-        context_messages: boundedContext,
+        context_messages: exactContext,
         improvement_trace: body.improvement_trace || null,
         output_language_override: body.output_language_override || null,
         request_type: body.request_type || "model",
@@ -36118,7 +36161,7 @@
       return {
         userContent,
         assistantContent,
-        contextMessages: list.slice(-20).map(function(item) {
+        contextMessages: list.map(function(item) {
           return {
             role: String((item && item.role) || ""),
             content: String((item && item.content) || ""),
@@ -36794,7 +36837,7 @@
         "beforeRequest"
       );
       if (!priorHostFinal || priorHostFinal.accepted !== true) {
-        ensureActiveChatCompletedTurnsBackfilled(orchSessionId, { reason: "before_request", maxPairs: ACTIVE_CHAT_BACKFILL_MAX_PAIRS }).catch(function(err) {
+        ensureActiveChatCompletedTurnsBackfilled(orchSessionId, { reason: "before_request" }).catch(function(err) {
           debugLog("active chat backfill beforeRequest failed:", err && err.message);
         });
       }
@@ -37091,7 +37134,7 @@
         }
       }
 
-      const recentContext = getRecentContextMessages(messages);
+      const recentContext = getHostContextMessages(messages);
 
       // Sprint 4-A-1: session별 동시 실행 보호
       const existingPending = _pendingOrchBySession.get(orchSessionId);
@@ -40806,13 +40849,18 @@
       return;
     }
     if (_reindexState.loading) return;
+    const requestedBatchSize = parseInt(batchSize, 10);
+    const requestedMaxItems = parseInt(maxItems, 10);
+    const normalizedBatchSize = Number.isFinite(requestedBatchSize) && requestedBatchSize > 0 ? requestedBatchSize : 0;
+    const normalizedMaxItems = Number.isFinite(requestedMaxItems) && requestedMaxItems > 0 ? requestedMaxItems : 0;
 
     const shortId = sessionId.length > 30 ? sessionId.slice(0, 15) + "…" + sessionId.slice(-10) : sessionId;
     const confirmed = await showConfirmModal("Reindex Batch",
       "[Reindex Batch]\n\n" +
       t('reindex.confirmTarget') + " " + shortId + "\n" +
       "force: " + (force ? "YES" : "NO") + "\n" +
-      "batch_size: " + batchSize + ", max_items: " + maxItems + "\n\n" +
+      "batch_size: " + (normalizedBatchSize > 0 ? normalizedBatchSize : "unbounded") +
+      ", max_items: " + (normalizedMaxItems > 0 ? normalizedMaxItems : "all") + "\n\n" +
       t('reindex.confirmDesc') + "\n" + t('common.confirmContinue')
     );
     if (!confirmed) return;
@@ -40830,8 +40878,8 @@
           body: {
             chat_session_id: sessionId,
             force: !!force,
-            batch_size: parseInt(batchSize) || 20,
-            max_items: parseInt(maxItems) || 200,
+            batch_size: normalizedBatchSize,
+            max_items: normalizedMaxItems,
             background: true,
             client_meta: buildAdminRuntimeClientMeta({ source: "explorer_reindex" }),
           },
@@ -41112,14 +41160,14 @@
 
   async function explorerFetchAllChatLogsForSession(sessionId) {
     const sid = String(sessionId || "").trim();
-    if (!sid) return [];
+    if (!sid) return { items: [], limited: false };
 
     const items = [];
     const pageSize = 200;
     let offset = 0;
-    let loopGuard = 0;
+    let limited = false;
 
-    while (loopGuard < ACTIVE_CHAT_RESCAN_DRY_RUN_CHATLOG_PAGE_LIMIT) {
+    while (true) {
       const params = new URLSearchParams();
       params.set("chat_session_id", sid);
       params.set("limit", String(pageSize));
@@ -41132,11 +41180,16 @@
       if (!result || !Array.isArray(result.items) || result.items.length === 0) break;
       items.push(...result.items);
       if (!result.has_more) break;
-      offset = items.length;
-      loopGuard += 1;
+      const nextOffset = items.length;
+      const total = Number(result.total);
+      if (nextOffset <= offset || (Number.isFinite(total) && total >= 0 && nextOffset >= total)) {
+        limited = true;
+        break;
+      }
+      offset = nextOffset;
     }
 
-    return items;
+    return { items, limited };
   }
 
   async function explorerFetchTimelineItemsForSessionDryRun(sessionId) {
@@ -41145,10 +41198,10 @@
 
     const items = [];
     let beforeTurn = 0;
-    let loopGuard = 0;
     let limited = false;
+    const seenBeforeTurns = new Set();
 
-    while (loopGuard < ACTIVE_CHAT_RESCAN_DRY_RUN_TIMELINE_PAGE_LIMIT) {
+    while (true) {
       const params = new URLSearchParams();
       params.set("sessionId", sid);
       params.set("limit", "200");
@@ -41162,12 +41215,12 @@
       items.push(...result.items);
       const nextBeforeTurn = Number((result.meta || {}).next_before_turn || 0);
       if (!nextBeforeTurn || nextBeforeTurn <= 0) break;
+      if (seenBeforeTurns.has(nextBeforeTurn) || (beforeTurn > 0 && nextBeforeTurn >= beforeTurn)) {
+        limited = true;
+        break;
+      }
+      seenBeforeTurns.add(nextBeforeTurn);
       beforeTurn = nextBeforeTurn;
-      loopGuard += 1;
-    }
-
-    if (loopGuard >= ACTIVE_CHAT_RESCAN_DRY_RUN_TIMELINE_PAGE_LIMIT) {
-      limited = true;
     }
     return { items, limited };
   }
@@ -41345,7 +41398,8 @@
     const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
     const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
     const rawShape = summarizeActiveChatRawMessageShape(resolvedActiveChat.chat, messages);
-    const dbRows = await explorerFetchAllChatLogsForSession(sid);
+    const dbResult = await explorerFetchAllChatLogsForSession(sid);
+    const dbRows = Array.isArray(dbResult.items) ? dbResult.items : [];
     const timelineResult = await explorerFetchTimelineItemsForSessionDryRun(sid);
     let worldRulesResult = { items: [], count: 0, fetched: false };
     try {
@@ -41404,6 +41458,7 @@
       messages,
       rawShape,
       dbRows,
+      dbScanLimited: !!dbResult.limited,
       dbRawMap,
       timelineResult,
       worldRulesResult,
@@ -41466,7 +41521,7 @@
         db_chat_log_rows_checked: plan.dbRows.length,
         db_raw_turns_checked: plan.dbRawMap.size,
         timeline_items_checked: plan.timelineResult.items.length,
-        scan_limited: !!plan.timelineResult.limited || plan.dbRows.length >= ACTIVE_CHAT_RESCAN_DRY_RUN_CHATLOG_PAGE_LIMIT * 200,
+        scan_limited: !!plan.timelineResult.limited || !!plan.dbScanLimited,
         raw_missing_count: plan.rawMissingTurns.length,
         raw_mismatch_or_partial_count: plan.rawMismatchTurns.length,
         derived_missing_suspected_count: plan.derivedMissingTurns.length,
@@ -41529,6 +41584,25 @@
     const hierarchyBlocked = hierarchy ? formatHierarchyBlockedSummary(hierarchy) : "";
     const reindexReason = reindex.reason != null ? String(reindex.reason) : "";
     const reindexAction = reindex.ui_action != null ? String(reindex.ui_action) : "";
+    const resultStatus = String(result.status || "unknown").trim().toLowerCase();
+    let resultHeading = "ℹ️ 세션 정상화 종료";
+    let resultHeadingColor = "#93c5fd";
+    if (resultStatus === "ok") {
+      resultHeading = "✅ 세션 정상화 완료";
+      resultHeadingColor = "#86efac";
+    } else if (resultStatus === "partial_error") {
+      resultHeading = "⚠️ 세션 정상화 오류 포함 종료";
+      resultHeadingColor = "#f59e0b";
+    } else if (resultStatus === "partial_warning") {
+      resultHeading = "⚠️ 세션 정상화 경고 포함 종료";
+      resultHeadingColor = "#fbbf24";
+    } else if (resultStatus === "blocked") {
+      resultHeading = "⛔ 세션 정상화 중단";
+      resultHeadingColor = "#fb923c";
+    } else if (resultStatus === "failed" || resultStatus === "error") {
+      resultHeading = "❌ 세션 정상화 실패";
+      resultHeadingColor = "#f87171";
+    }
     const artifactSummary = [
       "mem:" + Number(artifactCounts.memories || 0),
       "evi:" + Number(artifactCounts.evidence || 0),
@@ -41541,7 +41615,7 @@
       "vec:" + Number((artifactCounts.vectors_upserted || 0) + (reindex.upserted || 0)),
     ].join(" / ");
     return '<div class="mo-reindex-result">' +
-      '<strong>✅ 세션 정상화 완료</strong> ' + escapeAttr(String(result.status || "")) +
+      '<strong style="color:' + resultHeadingColor + '">' + resultHeading + '</strong> ' + escapeAttr(String(result.status || "")) +
       '<br>raw turns: ' + Number(after.raw_complete_turns || 0) + '/' + Number(after.raw_turns || 0) +
       ' / memories: ' + Number(after.memories || 0) +
       ' / evidence: ' + Number(after.direct_evidence || 0) +
@@ -41558,6 +41632,8 @@
       ' / succeeded ' + Number(rescan.succeeded || 0) +
       ' / failed ' + Number(rescan.failed || 0) +
       ' / skipped ' + Number(rescan.skipped || 0) +
+      ' / deferred ' + Number(rescan.deferred || 0) +
+      ' / queued ' + Number(rescan.queued || 0) +
       '<br>reindex: candidates ' + Number(reindex.candidates || reindex.candidate_count || 0) +
       ' / upserted ' + Number(reindex.upserted || 0) +
       ' / skipped ' + Number(reindex.skipped || reindex.skipped_count || 0) +
@@ -41580,13 +41656,14 @@
       return false;
     }
     if (_sessionNormalizeState.loading) return false;
-    const limit = Math.max(1, Math.min(parseInt(maxItems, 10) || 1000, 5000));
+    const requestedLimit = parseInt(maxItems, 10);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 0;
     const shortId = sid.length > 30 ? sid.slice(0, 15) + "…" + sid.slice(-10) : sid;
     const confirmed = await showConfirmModal(
       "Session Normalize",
       "[Session Normalize]\n\n" +
       "대상 세션: " + shortId + "\n" +
-      "max_items: " + String(limit) + "\n\n" +
+      "max_items: " + (limit > 0 ? String(limit) : "all") + "\n\n" +
       "현재 챗과 DB를 비교해 누락 원문, 파생 기억, 세계 규칙, 에피소드/계층 요약, 벡터 색인을 순서대로 복구합니다.\n" +
       "이 작업은 DB 삭제나 rollback을 하지 않으며 /cut, /del, context trim으로 보이는 기록이 줄어도 DB 행을 삭제하지 않습니다.\n\n" +
       t('common.confirmContinue')
@@ -41633,7 +41710,7 @@
           body: {
             chat_session_id: sid,
             max_items: limit,
-            batch_size: 50,
+            batch_size: 0,
             repair_entries: repairEntries,
             turn_indices: turnIndices,
             force_reindex: false,
@@ -41968,7 +42045,8 @@
     if (_explorer.selectedSessionId === sid && !_explorer.chatLogs.hasMore) {
       sourceRows = currentRows.filter(row => row && row.chat_session_id === sid);
     } else {
-      sourceRows = await explorerFetchAllChatLogsForSession(sid);
+      const sourceResult = await explorerFetchAllChatLogsForSession(sid);
+      sourceRows = Array.isArray(sourceResult.items) ? sourceResult.items : [];
     }
 
     const snapshotRows = sourceRows.filter(row => row && parseInt(row.turn_index, 10) >= targetTurn);
@@ -46713,7 +46791,7 @@
             '현재 챗과 DB를 점검한 뒤 누락 원문, 기억, 세계 규칙, 에피소드/챕터/아크/사가, 벡터 색인을 한 번에 채웁니다. 삭제나 rollback은 하지 않습니다.' +
           '</div>' +
           '<div class="mo-reindex-row">' +
-            '<label>max_items: <input type="number" id="mo-session-normalize-max" value="1000" min="1" max="5000" style="width:80px"></label>' +
+            '<label>max_items (0=all): <input type="number" id="mo-session-normalize-max" value="0" min="0" style="width:80px"></label>' +
             ' <label><input type="checkbox" id="mo-session-normalize-skip-rescan"> skip_rescan</label>' +
             '<button class="mo-btn mo-btn-primary" id="mo-session-normalize-btn"' +
               (_sessionNormalizeState.loading ? ' disabled' : '') + '>' +
@@ -46765,8 +46843,8 @@
             '<label><input type="checkbox" id="mo-reindex-force"> force (전체 재생성)</label>' +
           '</div>' +
           '<div class="mo-reindex-row">' +
-            '<label>batch_size: <input type="number" id="mo-reindex-batch" value="20" min="1" max="100" style="width:60px"></label>' +
-            ' <label>max_items: <input type="number" id="mo-reindex-max" value="200" min="1" max="5000" style="width:70px"></label>' +
+            '<label>batch_size (0=unbounded): <input type="number" id="mo-reindex-batch" value="0" min="0" style="width:60px"></label>' +
+            ' <label>max_items (0=all): <input type="number" id="mo-reindex-max" value="0" min="0" style="width:70px"></label>' +
           '</div>' +
           '<div class="mo-reindex-row">' +
             '<button class="mo-btn mo-btn-primary" id="mo-reindex-btn"' +
@@ -47939,7 +48017,7 @@
           const maxEl = document.getElementById("mo-session-normalize-max");
           const skipRescanEl = document.getElementById("mo-session-normalize-skip-rescan");
           if (sid) {
-            await normalizeSession(sid, maxEl ? maxEl.value : 1000, { skipRescan: !!(skipRescanEl && skipRescanEl.checked) });
+            await normalizeSession(sid, maxEl ? maxEl.value : 0, { skipRescan: !!(skipRescanEl && skipRescanEl.checked) });
           }
         });
       }
@@ -47957,8 +48035,8 @@
             await reindexSession(
               sid,
               force ? force.checked : false,
-              batchEl ? batchEl.value : 20,
-              maxEl ? maxEl.value : 200
+              batchEl ? batchEl.value : 0,
+              maxEl ? maxEl.value : 0
             );
           }
         });
@@ -49242,7 +49320,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         _timelineState.detailError = "";
       }
       if (!append && requestedSessionId && runtimeSid && requestedSessionId === runtimeSid) {
-        await ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh", maxPairs: 1 });
+        await ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh" });
       }
       const params = new URLSearchParams();
       if (requestedSessionId) params.set("sessionId", requestedSessionId);

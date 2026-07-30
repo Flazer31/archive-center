@@ -1420,7 +1420,6 @@ func TestBeforeRequestModelRunsDecisionThenFullWithContextRuntime(t *testing.T) 
 	gateFn := extractArchiveCenterJSFunction(t, src, "buildLlmGateBlock")
 	script := classifyFn + "\n" + gateFn + "\n" + fn + `
 const settings = {enabled: true, debug: false};
-const ACTIVE_CHAT_BACKFILL_MAX_PAIRS = 20;
 let _sessionCache = null;
 let _effectiveInputAwaitingNewTurn = false;
 const _pendingPersistenceSkipBySession = new Map();
@@ -1909,7 +1908,6 @@ func TestRisuMessageIndexesDriveLogicalTurnPairs(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	functionBody := extractArchiveCenterJSFunction(t, src, "buildCompletedTurnPairsFromActiveChatMessages")
 	script := functionBody + `
-const ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES = 20;
 const AUTO_CONTINUE_USER_INPUT_MARKER = "[continue]";
 function extractComparableMessageRoleAndContent(msg) { return msg; }
 function selectBestAssistantCandidateRecord(items) { return items[items.length - 1] || null; }
@@ -1936,6 +1934,17 @@ assertEqual(JSON.stringify(pairs.map(p => p.observedPairOrdinal)), JSON.stringif
 assertEqual(pairs.some(p => Object.prototype.hasOwnProperty.call(p, "turnIndex")), false, "adapter must not calculate authoritative turn indexes");
 pairs = buildCompletedTurnPairsFromActiveChatMessages(messages.slice(0, -2));
 assertEqual(pairs[pairs.length - 1].risuUserMessageIndex, 10, "tail deletion exposes the preceding raw Risu index");
+const fullContextMessages = [];
+for (let turn = 1; turn <= 13; turn++) {
+  const longPrefix = turn === 1 ? "x".repeat(2100) : "";
+  fullContextMessages.push(
+    {role:"user",content:"context-user-"+turn+longPrefix,risuMessageIndex:(turn-1)*2},
+    {role:"assistant",content:"context-assistant-"+turn,risuMessageIndex:(turn-1)*2+1}
+  );
+}
+pairs = buildCompletedTurnPairsFromActiveChatMessages(fullContextMessages);
+assertEqual(pairs[12].contextMessages.length, 24, "critic context must include every preceding host message");
+assertEqual(pairs[12].contextMessages[0].content, fullContextMessages[0].content, "critic context must preserve full exact content");
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
@@ -1997,7 +2006,6 @@ func TestSessionNormalizeUsesCanonicalRisuChatPairsWithoutLiveFilters(t *testing
 	script := extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "buildCompletedTurnPairsFromActiveChatMessages") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "buildSessionNormalizeCompletedTurnPairs") + `
-const ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES = 20;
 const AUTO_CONTINUE_USER_INPUT_MARKER = "[continue]";
 function extractActiveChatComparableMessages(chat) {
   return chat.message.map(function(item, index) {
@@ -2041,6 +2049,8 @@ result = buildSessionNormalizeCompletedTurnPairs({message:longMessages});
 assertEqual(result.pairs.length, 120, "long canonical chat must not collapse to its recent tail");
 assertEqual(result.pairs[0].userContent, "user 1", "long chat first turn");
 assertEqual(result.pairs[119].assistantContent, "assistant 120", "long chat last turn");
+assertEqual(result.pairs[119].contextMessages.length, 238, "long chat critic context must not collapse to a recent fixed window");
+assertEqual(result.pairs[119].contextMessages[0].content, "user 1", "long chat critic context must retain the earliest exact message");
 const indexedGapChat = {message:[
   {role:"user",data:"gap user one"}, {role:"char",data:"gap assistant one"},
   {role:"system",data:"host metadata"}, {role:"system",data:"host metadata 2"},
@@ -2171,8 +2181,9 @@ func TestCompleteTurnObservationUsesRealUserAnchorForAppendStyleReroll(t *testin
 		}
 	}
 	src := readArchiveCenterJS(t)
+	activeWindowBody := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
 	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
-	script := functionBody + `
+	script := activeWindowBody + functionBody + `
 const _streamingAfterRequestSyntheticCallDepth = 0;
 const chat = {id:"chat-1",isStreaming:false,message:[
   {role:"user",data:"same user",chatId:"user-1",time:100},
@@ -2201,6 +2212,56 @@ function debugLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("source acceptance observation JS fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestCompleteTurnObservationDoesNotCrossRisuAllBeforeBoundary(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for allBefore source observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	activeWindowBody := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
+	observationBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	script := activeWindowBody + observationBody + `
+const _streamingAfterRequestSyntheticCallDepth = 0;
+const chat = {id:"chat-1",isStreaming:false,message:[
+  {role:"user",data:"disabled user",chatId:"user-old",time:100},
+  {role:"char",data:"disabled answer",chatId:"assistant-old",time:200,disabled:"allBefore"},
+  {role:"user",data:"active user",chatId:"user-new",time:300},
+  {role:"char",data:"active answer",chatId:"assistant-new",time:400,generationInfo:{generationId:"generation-new"}},
+]};
+function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").trim(); }
+async function resolveCurrentActiveChatObject() { return {chat}; }
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function isSameAssistantComparableText(a,b) { return a === b; }
+function getSessionSnapshot() { return {msgCount:0}; }
+function debugLog() {}
+(async function() {
+  const disabled = await buildCompleteTurnSourceAcceptanceObservation(
+    "session-1", "disabled answer", {allowExistingActiveMessage:true,userInput:"disabled user"}
+  );
+  if (disabled.message_index !== -1 || disabled.user_message_index !== -1) {
+    throw new Error("allBefore-disabled source was accepted: "+JSON.stringify(disabled));
+  }
+  const active = await buildCompleteTurnSourceAcceptanceObservation(
+    "session-1", "active answer", {allowExistingActiveMessage:true,userInput:"active user"}
+  );
+  if (active.message_index !== 3 || active.user_message_index !== 2 ||
+      active.message_chat_id !== "assistant-new" || active.user_message_chat_id !== "user-new") {
+    throw new Error("active source after allBefore was not preserved: "+JSON.stringify(active));
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("allBefore source observation JS fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -2344,7 +2405,6 @@ const R = {
   async getChatFromIndex() { return activeChat; },
 };
 const _finalConfirmationRequestBySession = new Map();
-const ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES = 8;
 let persisted = [];
 function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
 function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || "").trim(); }
@@ -2541,8 +2601,12 @@ const sourceLineage = {contract_version:"source_to_final_lineage_observation.v1"
   generation_id:"generation-1",generation_id_state:"observed",source_revision:"source-revision-7",source_refs:["memory:session-1:41"],
   payload_application_status:"applied",payload_observation_stage:"archive_center_before_request_return",
   final_provider_payload_state:"not_exposed",semantic_outcome:"unobserved"};
+const exactContext=Array.from({length:25},(_,index)=>({
+  role:index%2===0?"user":"assistant",
+  content:index===0?"x".repeat(2101):"context-"+index,
+}));
 const saved = serializeCompleteTurnRecoveryPayload({
-  chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],
+  chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:exactContext,
   client_meta:{source_acceptance_required:true,source_acceptance_observation:sourceObservation,
     source_to_final_lineage_observation:sourceLineage,idempotency_key:"key-1",source_revision:"source-revision-7",
     critic:{api_key:"secret"},authorization:"Bearer secret"}
@@ -2557,6 +2621,8 @@ if (!savedLineage || savedLineage.archive_center_request_correlation_id!=="corre
   savedLineage.source_revision!=="source-revision-7" ||
   savedLineage.status!=="ready" || savedLineage.payload_observation_stage!=="archive_center_before_request_return" ||
   savedLineage.final_provider_payload_state!=="not_exposed") throw new Error("source lineage fence was lost");
+if (saved.context_messages.length!==exactContext.length ||
+    saved.context_messages[0].content!==exactContext[0].content) throw new Error("retry queue truncated exact critic context");
 if (saved.client_meta.critic || JSON.stringify(saved).includes("secret") || JSON.stringify(saved).includes("Bearer")) throw new Error("credential-bearing config was persisted");
 `
 	cmd := exec.Command(nodePath, "-")
@@ -3451,6 +3517,7 @@ func TestFailedQueueProductionDrainRetainsAndSkipsTerminalIncidents(t *testing.T
 		extractArchiveCenterJSFunction(t, src, "failedQueueMaxAttempts"),
 		extractArchiveCenterJSFunction(t, src, "markFailedQueueItemTerminal"),
 		extractArchiveCenterJSAsyncFunction(t, src, "markFailedQueueItemTerminalDurably"),
+		extractArchiveCenterJSAsyncFunction(t, src, "drainOneFailedQueueItem"),
 		extractArchiveCenterJSAsyncFunction(t, src, "drainFailedQueue"),
 	}, "\n")
 	script := functions + `
@@ -3471,6 +3538,7 @@ function isBridgeShadowGuardFailure() { return false; }
 function serializeChatLogRecoveryPayload(payload) { return payload; }
 function scheduleQueueSave() { scheduled++; }
 async function flushQueueSave() { scheduled++; return true; }
+function makeFailedQueueDedupeKey(value) { return String(value && value._dedupeKey || ""); }
 async function commitFailedQueueTransitionIntent(item,code) {
   return {status:"ok",code:"failed_queue_terminal_intent_persisted",durable:true,intent_persisted:true,
     intent:{queue_key:item._dedupeKey,target_state:"terminal",reason_code:code,transition_at:new Date().toISOString()}};
@@ -3507,6 +3575,14 @@ async function reset(nextMode,maxAttempts) {
   scheduled=0;
 }
 (async function() {
+  await reset("post_fail",1);
+  _failedQueue.push(item("first"));
+  _failedQueue.push(item("second"));
+  await drainFailedQueue();
+  if(postCalls!==2 || _failedQueue.length!==2 || _failedQueue.some(row=>row.state!=="terminal")) {
+    throw new Error("one host signal did not process every retryable item exactly once");
+  }
+
   await reset("post_fail",1);
   _failedQueue.push(Object.assign(item("terminal-existing","terminal"),{terminalCode:"existing_terminal"}));
   _failedQueue.push(item("retryable"));
@@ -3593,6 +3669,7 @@ func TestFailedQueueTerminalWriteFailureReloadsFromDurableIntent(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "markFailedQueueItemTerminal"),
 		extractArchiveCenterJSAsyncFunction(t, src, "commitFailedQueueTransitionIntent"),
 		extractArchiveCenterJSAsyncFunction(t, src, "markFailedQueueItemTerminalDurably"),
+		extractArchiveCenterJSAsyncFunction(t, src, "drainOneFailedQueueItem"),
 		extractArchiveCenterJSAsyncFunction(t, src, "drainFailedQueue"),
 		extractArchiveCenterJSFunction(t, src, "buildDashboardQueueObservations"),
 	}, "\n")

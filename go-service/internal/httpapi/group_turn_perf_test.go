@@ -171,26 +171,10 @@ func TestPrepareTurnProductionProjectionExposesRecomposerEnhancementContract(t *
 	}
 }
 
-func TestPrepareTurnHistoryBoundsPreserveTwoAndThreeHundredTurnSessions(t *testing.T) {
-	for _, test := range []struct {
-		latest   int
-		wantFrom int
-		wantTo   int
-	}{
-		{latest: 200, wantFrom: 1, wantTo: 200},
-		{latest: 300, wantFrom: 1, wantTo: 300},
-		{latest: 450, wantFrom: 151, wantTo: 450},
-	} {
-		fromTurn, toTurn := prepareTurnHistoryBounds(test.latest)
-		if fromTurn != test.wantFrom || toTurn != test.wantTo {
-			t.Fatalf("latest=%d bounds=%d..%d, want %d..%d", test.latest, fromTurn, toTurn, test.wantFrom, test.wantTo)
-		}
-	}
-}
-
 type prepareTurnPerfRangeStore struct {
 	*turnRecordingStore
 	latestTurn          int
+	latestTurnCalls     int
 	memoryRangeCalls    int
 	evidenceRangeCalls  int
 	kgRangeCalls        int
@@ -206,6 +190,7 @@ type prepareTurnPerfRangeStore struct {
 }
 
 func (s *prepareTurnPerfRangeStore) LatestSessionTurnIndex(context.Context, string) (int, error) {
+	s.latestTurnCalls++
 	return s.latestTurn, nil
 }
 
@@ -219,6 +204,9 @@ func (s *prepareTurnPerfRangeStore) ListMemoriesRange(_ context.Context, sid str
 	s.fromTurn = fromTurn
 	s.toTurn = toTurn
 	s.includedMemoryIDs = append([]int64(nil), includeIDs...)
+	if (fromTurn > 0 && 25 < fromTurn) || (toTurn > 0 && 25 > toTurn) {
+		return nil, nil
+	}
 	return []store.Memory{{
 		ID:            25,
 		ChatSessionID: sid,
@@ -267,8 +255,8 @@ func (s *prepareTurnPerfRangeStore) ListChatLogs(_ context.Context, sid string, 
 	s.fromTurn = fromTurn
 	s.toTurn = toTurn
 	return []store.ChatLog{
-		{ChatSessionID: sid, TurnIndex: toTurn, Role: "user", Content: "Mina checked the observatory map."},
-		{ChatSessionID: sid, TurnIndex: toTurn, Role: "assistant", Content: "The brass key mark remained beside the old vow."},
+		{ChatSessionID: sid, TurnIndex: s.latestTurn, Role: "user", Content: "Mina checked the observatory map."},
+		{ChatSessionID: sid, TurnIndex: s.latestTurn, Role: "assistant", Content: "The brass key mark remained beside the old vow."},
 	}, nil
 }
 
@@ -281,9 +269,9 @@ func (s *prepareTurnPerfVectorStore) Search(context.Context, string, []float32, 
 	return append([]vector.VectorDocument(nil), s.results...), nil
 }
 
-func TestPrepareTurnBoundsHistoryAndHydratesOldVectorMemory(t *testing.T) {
+func TestPrepareTurnReadsFullSessionAndHydratesOldVectorMemory(t *testing.T) {
 	base := &turnRecordingStore{}
-	rangeStore := &prepareTurnPerfRangeStore{turnRecordingStore: base, latestTurn: 450}
+	rangeStore := &prepareTurnPerfRangeStore{turnRecordingStore: base, latestTurn: 1_000_000}
 	vectorStore := &prepareTurnPerfVectorStore{
 		turnRecordingVectorStore: &turnRecordingVectorStore{},
 		results: []vector.VectorDocument{{
@@ -310,8 +298,11 @@ func TestPrepareTurnBoundsHistoryAndHydratesOldVectorMemory(t *testing.T) {
 		"settings":{"top_k":1,"guide_strength":"none","max_injection_chars":4500}
 	}`)
 
-	if rangeStore.fromTurn != 151 || rangeStore.toTurn != 450 {
-		t.Fatalf("history range=%d..%d, want 151..450", rangeStore.fromTurn, rangeStore.toTurn)
+	if rangeStore.fromTurn != 0 || rangeStore.toTurn != 0 {
+		t.Fatalf("history range=%d..%d, want full-session 0..0", rangeStore.fromTurn, rangeStore.toTurn)
+	}
+	if rangeStore.latestTurnCalls != 0 {
+		t.Fatalf("latest turn was queried %d times; full-session reads must not derive a bounded window", rangeStore.latestTurnCalls)
 	}
 	if rangeStore.memoryRangeCalls != 1 || rangeStore.evidenceRangeCalls != 1 || rangeStore.kgRangeCalls != 1 {
 		t.Fatalf("bounded calls memory=%d evidence=%d kg=%d", rangeStore.memoryRangeCalls, rangeStore.evidenceRangeCalls, rangeStore.kgRangeCalls)
@@ -331,7 +322,12 @@ func TestPrepareTurnBoundsHistoryAndHydratesOldVectorMemory(t *testing.T) {
 	}
 	trace := mapFromAny(response["trace_preview"])
 	materialization := mapFromAny(trace["materialization"])
-	if !boolFromAny(materialization["bounded_history_store"]) || intFromAny(materialization["history_window_turns"], 0) != prepareTurnHistoryWindowTurns {
+	if extractionStringFromAny(materialization["history_scope"]) != "full_session" ||
+		boolFromAny(materialization["bounded_history_store"]) ||
+		!boolFromAny(materialization["range_store_used"]) {
 		t.Fatalf("materialization trace=%#v", materialization)
+	}
+	if _, exists := materialization["history_window_turns"]; exists {
+		t.Fatalf("materialization trace still exposes a fixed history window: %#v", materialization)
 	}
 }

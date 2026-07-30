@@ -57,7 +57,7 @@ $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $failures = [System.Collections.Generic.List[string]]::new()
 $warnings = [System.Collections.Generic.List[string]]::new()
 
-foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "bin\runtime-dependency-live-probe.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses\Apache-2.0.txt", "migrations", "prompts", "scripts", "tools\install-windows.ps1", "01_start_archive_center_windows.bat", ".env.full.example", "FULL_PACKAGE_MANIFEST.json", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
+foreach ($rel in @("bin\archive-center-go.exe", "bin\archive-center-updater.exe", "bin\mariadb-schema.exe", "Archive Center.js", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses\Apache-2.0.txt", "migrations", "prompts", "scripts", "tools\install-windows.ps1", "01_start_archive_center_windows.bat", ".env.full.example", "FULL_PACKAGE_MANIFEST.json", "PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")) {
     $path = Join-Path $packRoot $rel
     if (-not (Test-Path -LiteralPath $path)) {
         [void]$failures.Add("missing:$rel")
@@ -158,12 +158,12 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
             [void]$failures.Add("launcher_update_marker_missing:$marker")
         }
     }
-    foreach ($marker in @('$ReadinessTimeoutSeconds = $null', '$ReadinessPollIntervalMilliseconds = $null', '$RequestTimeoutSeconds = $null', '$DependencyProbeTimeoutSeconds = $null', '$ExternalOperationTimeoutSeconds = $null', 'AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS', '$Process.HasExited', '$ready.ready -eq $true', 'if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds)', '$Process.WaitForExit($waitMilliseconds)')) {
+    foreach ($marker in @('function Wait-Port([int]$Port, [int]$TimeoutSeconds = 60)', 'Start-Sleep -Seconds 1', '$Process.HasExited', '$ready.ready -eq $true', '$process.WaitForExit()', 'This Windows full package requires an active ChromaDB vector mode')) {
         if (-not $launcherScriptText.Contains($marker)) {
             [void]$failures.Add("launcher_signal_readiness_marker_missing:$marker")
         }
     }
-    foreach ($forbiddenPattern in @('Start-Sleep\s+-(?:Seconds|Milliseconds)\s+\d+', 'WaitOne\(\d+', 'TimeoutSec\s+\d+', 'TimeoutSeconds\s*=\s*\d+', '-timeout\s+"?\d+')) {
+    foreach ($forbiddenPattern in @('AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS', 'External child operation requires', 'Managed ChromaDB installation requires', 'Invoke-BoundedArchiveChildProcess', 'SpinWait', 'adaptiveWait')) {
         if ($launcherScriptText -match $forbiddenPattern) {
             [void]$failures.Add("launcher_hidden_fixed_time_policy_present:$forbiddenPattern")
         }
@@ -227,8 +227,9 @@ if (Test-Path -LiteralPath $installerScriptPath -PathType Leaf) {
         "Python installer Authenticode verification failed",
         "Test-CompatiblePythonBootstrap",
         "Python registration exists but the runtime is incomplete",
-        "ExternalOperationTimeoutSeconds",
-        "Invoke-BoundedProcess",
+        "Start-Process",
+        "-Wait",
+        "Invoke-WebRequest",
         "chromadb==`$ChromaDBVersion",
         "package_bundled = `$false"
     )) {

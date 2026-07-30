@@ -39,19 +39,13 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, job)
 		return
 	}
-	maxItems := intFromAny(req["max_items"], 200)
-	if maxItems <= 0 {
-		maxItems = 200
+	maxItems := intFromAny(req["max_items"], 0)
+	if maxItems < 0 {
+		maxItems = 0
 	}
-	if maxItems > 5000 {
-		maxItems = 5000
-	}
-	batchSize := intFromAny(req["batch_size"], 20)
-	if batchSize <= 0 {
-		batchSize = 20
-	}
-	if batchSize > 100 {
-		batchSize = 100
+	batchSize := intFromAny(req["batch_size"], 0)
+	if batchSize < 0 {
+		batchSize = 0
 	}
 	force := completeTurnBoolFromAny(req["force"])
 	dryRun := completeTurnBoolFromAny(req["dry_run"])
@@ -89,7 +83,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 	allEvidence := append([]store.DirectEvidence(nil), evidence...)
 	allWorldRules := append([]store.WorldRule(nil), worldRules...)
 	preIntegrity := s.adminReindexIntegrityReport(r.Context(), sid, allMemories, allEvidence, allWorldRules, strings.TrimSpace(cfg.Embedder.Model))
-	if len(memories) > maxItems {
+	if maxItems > 0 && len(memories) > maxItems {
 		memories = memories[:maxItems]
 	}
 
@@ -154,7 +148,10 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 	}
 	processedBatches := 0
 	if processed > 0 {
-		processedBatches = (processed + batchSize - 1) / batchSize
+		processedBatches = 1
+		if batchSize > 0 {
+			processedBatches = (processed + batchSize - 1) / batchSize
+		}
 	}
 	qualityStatus := "not_run"
 	if dryRun {
@@ -246,19 +243,13 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[string]any, progress adminJobProgressFunc) (map[string]any, error) {
-	maxItems := intFromAny(req["max_items"], 200)
-	if maxItems <= 0 {
-		maxItems = 200
+	maxItems := intFromAny(req["max_items"], 0)
+	if maxItems < 0 {
+		maxItems = 0
 	}
-	if maxItems > 5000 {
-		maxItems = 5000
-	}
-	batchSize := intFromAny(req["batch_size"], 20)
-	if batchSize <= 0 {
-		batchSize = 20
-	}
-	if batchSize > 100 {
-		batchSize = 100
+	batchSize := intFromAny(req["batch_size"], 0)
+	if batchSize < 0 {
+		batchSize = 0
 	}
 	force := completeTurnBoolFromAny(req["force"])
 	dryRun := completeTurnBoolFromAny(req["dry_run"])
@@ -329,7 +320,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 		}
 		return result, nil
 	}
-	if len(memories) > maxItems {
+	if maxItems > 0 && len(memories) > maxItems {
 		memories = memories[:maxItems]
 	}
 	derivedEvidenceCandidates, derivedWorldRuleCandidates := adminReindexDerivedArtifactCandidateCounts(maxItems, allEvidence, allWorldRules)
@@ -470,7 +461,10 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 	}
 	processedBatches := 0
 	if processed > 0 {
-		processedBatches = (processed + batchSize - 1) / batchSize
+		processedBatches = 1
+		if batchSize > 0 {
+			processedBatches = (processed + batchSize - 1) / batchSize
+		}
 	}
 	qualityStatus := "not_run"
 	if dryRun {

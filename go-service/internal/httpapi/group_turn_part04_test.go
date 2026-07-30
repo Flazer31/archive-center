@@ -239,6 +239,20 @@ func TestCompleteTurnOOCGuardSkipsWrites(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnOOCGuardDoesNotLeakFromPriorContext(t *testing.T) {
+	contextMessages := []map[string]any{
+		{"role": "user", "content": "OOC: keep the next answer concise."},
+		{"role": "assistant", "content": "Understood."},
+	}
+	if shouldApplyCompleteTurnOOCGuard(
+		"Mina opens the brass-bound ledger.",
+		"The first page lists three unpaid debts.",
+		contextMessages,
+	) {
+		t.Fatal("prior OOC context incorrectly cancelled the current accepted source")
+	}
+}
+
 func TestCompleteTurnKoreanOOCGuardSkipsWrites(t *testing.T) {
 	fake := &turnRecordingStore{}
 	cfg := config.Default()

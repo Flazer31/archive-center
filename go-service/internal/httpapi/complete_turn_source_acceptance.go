@@ -824,7 +824,7 @@ func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.
 	if st == nil {
 		return
 	}
-	if events, err := st.ListAuditLogs(ctx, sid, sourceAcceptanceTransitionEvent, 500); err == nil {
+	if events, err := st.ListAuditLogs(ctx, sid, sourceAcceptanceTransitionEvent, 0); err == nil {
 		for _, event := range events {
 			var state completeTurnSourceAcceptanceState
 			if json.Unmarshal([]byte(event.DetailsJSON), &state) != nil || state.TurnIndex <= 0 || state.Revision == "" {
@@ -840,7 +840,7 @@ func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.
 			}
 		}
 	}
-	if events, err := st.ListAuditLogs(ctx, sid, sourceAcceptanceInvalidationEvent, 100); err == nil {
+	if events, err := st.ListAuditLogs(ctx, sid, sourceAcceptanceInvalidationEvent, 0); err == nil {
 		for _, event := range events {
 			var invalidation sourceAcceptanceInvalidation
 			if json.Unmarshal([]byte(event.DetailsJSON), &invalidation) != nil || invalidation.FromTurn <= 0 {
@@ -848,6 +848,29 @@ func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.
 			}
 			if invalidation.ObservedAtMS > l.invalidations[sid].ObservedAtMS {
 				l.invalidations[sid] = invalidation
+			}
+		}
+	}
+	if lister, ok := st.(store.ActiveSourceRevisionLister); ok {
+		if sources, err := lister.ListActiveSourceRevisions(ctx, sid, 0, 0); err == nil {
+			for _, source := range sources {
+				if source.TurnIndex <= 0 || strings.TrimSpace(source.SourceRevision) == "" {
+					continue
+				}
+				l.current[sourceAcceptanceStateKey(sid, source.TurnIndex)] = completeTurnSourceAcceptanceState{
+					SessionID:         sid,
+					TurnIndex:         source.TurnIndex,
+					Revision:          source.SourceRevision,
+					GenerationID:      source.SourceGenerationID,
+					MessageChatID:     source.SourceMessageID,
+					BranchID:          source.BranchID,
+					BranchIDState:     source.BranchState,
+					ContentHash:       source.CombinedContentHash,
+					ObservedAtMS:      source.HostObservedAtMS,
+					Lifecycle:         "active_final",
+					LogicalTurnID:     source.LogicalTurnID,
+					ReplacementStatus: "",
+				}
 			}
 		}
 	}

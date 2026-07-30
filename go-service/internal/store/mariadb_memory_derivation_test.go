@@ -23,9 +23,11 @@ func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	source := testMemorySourceRevision(now)
 
 	mock.ExpectBegin()
+	expectSourceRegistrationTailLock(mock, source)
 	mock.ExpectQuery("SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content").
-		WithArgs(source.ChatSessionID, source.LogicalTurnID).
+		WithArgs(source.ChatSessionID, source.LogicalTurnID, source.TurnIndex).
 		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}))
+	expectSourceRegistrationCanonicalPair(mock, source)
 	mock.ExpectExec("INSERT INTO memory_source_revisions").WillReturnResult(sqlmock.NewResult(11, 1))
 	mock.ExpectCommit()
 	registered, err := m.RegisterAcceptedSourceRevision(context.Background(), source)
@@ -34,10 +36,12 @@ func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	expectSourceRegistrationTailLock(mock, source)
 	mock.ExpectQuery("SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content").
-		WithArgs(source.ChatSessionID, source.LogicalTurnID).
+		WithArgs(source.ChatSessionID, source.LogicalTurnID, source.TurnIndex).
 		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}).
 			AddRow(source.SourceRevision, source.CombinedContentHash, source.UserContent, source.AssistantContent))
+	expectSourceRegistrationCanonicalPair(mock, source)
 	mock.ExpectCommit()
 	registered, err = m.RegisterAcceptedSourceRevision(context.Background(), source)
 	if err != nil || registered.Inserted || !registered.Idempotent {
@@ -47,10 +51,12 @@ func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	conflict := *source
 	conflict.SourceRevision = "sar_newer"
 	mock.ExpectBegin()
+	expectSourceRegistrationTailLock(mock, source)
 	mock.ExpectQuery("SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content").
-		WithArgs(source.ChatSessionID, source.LogicalTurnID).
+		WithArgs(source.ChatSessionID, source.LogicalTurnID, source.TurnIndex).
 		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}).
 			AddRow(source.SourceRevision, source.CombinedContentHash, source.UserContent, source.AssistantContent))
+	expectSourceRegistrationCanonicalPair(mock, source)
 	mock.ExpectRollback()
 	if _, err := m.RegisterAcceptedSourceRevision(context.Background(), &conflict); !errors.Is(err, ErrSourceRevisionConflict) {
 		t.Fatalf("conflict error = %v", err)
@@ -60,11 +66,12 @@ func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	concurrent.SourceRevision = "sar_concurrent"
 	concurrent.LogicalTurnID = "logical-concurrent"
 	mock.ExpectBegin()
+	expectSourceRegistrationTailLock(mock, &concurrent)
 	mock.ExpectQuery("SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content").
-		WithArgs(concurrent.ChatSessionID, concurrent.LogicalTurnID).
-		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}))
-	mock.ExpectExec("INSERT INTO memory_source_revisions").
-		WillReturnError(&mysql.MySQLError{Number: 1062, Message: "uq_memory_source_active_turn"})
+		WithArgs(concurrent.ChatSessionID, concurrent.LogicalTurnID, concurrent.TurnIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}).
+			AddRow(source.SourceRevision, source.CombinedContentHash, source.UserContent, source.AssistantContent))
+	expectSourceRegistrationCanonicalPair(mock, &concurrent)
 	mock.ExpectRollback()
 	if _, err := m.RegisterAcceptedSourceRevision(context.Background(), &concurrent); !errors.Is(err, ErrSourceRevisionConflict) {
 		t.Fatalf("database active-slot conflict error = %v", err)
@@ -72,6 +79,75 @@ func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestMariaDBSourceRevisionRegistrationRejectsAmbiguousActiveSources(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	source := testMemorySourceRevision(time.Date(2026, 7, 30, 4, 5, 6, 0, time.UTC))
+
+	mock.ExpectBegin()
+	expectSourceRegistrationTailLock(mock, source)
+	mock.ExpectQuery("SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content").
+		WithArgs(source.ChatSessionID, source.LogicalTurnID, source.TurnIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}).
+			AddRow(source.SourceRevision, source.CombinedContentHash, source.UserContent, source.AssistantContent).
+			AddRow("sar_duplicate_active", source.CombinedContentHash, source.UserContent, source.AssistantContent))
+	mock.ExpectRollback()
+
+	if _, err := m.RegisterAcceptedSourceRevision(context.Background(), source); !errors.Is(err, ErrSourceRevisionConflict) {
+		t.Fatalf("ambiguous active source error = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBSourceRevisionRegistrationRejectsStaleCanonicalRaw(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	source := testMemorySourceRevision(time.Date(2026, 7, 30, 4, 5, 6, 0, time.UTC))
+
+	mock.ExpectBegin()
+	expectSourceRegistrationTailLock(mock, source)
+	mock.ExpectQuery("SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content").
+		WithArgs(source.ChatSessionID, source.LogicalTurnID, source.TurnIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}))
+	mock.ExpectQuery("SELECT role, content").
+		WithArgs(source.ChatSessionID, source.TurnIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"role", "content"}).
+			AddRow("user", source.UserContent).
+			AddRow("assistant", "replacement assistant"))
+	mock.ExpectRollback()
+
+	if _, err := m.RegisterAcceptedSourceRevision(context.Background(), source); !errors.Is(err, ErrSourceRevisionConflict) {
+		t.Fatalf("stale canonical raw error = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func expectSourceRegistrationTailLock(mock sqlmock.Sqlmock, source *MemorySourceRevision) {
+	mock.ExpectQuery("SELECT turn_index").
+		WithArgs(source.ChatSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"turn_index"}).AddRow(source.TurnIndex))
+}
+
+func expectSourceRegistrationCanonicalPair(mock sqlmock.Sqlmock, source *MemorySourceRevision) {
+	mock.ExpectQuery("SELECT role, content").
+		WithArgs(source.ChatSessionID, source.TurnIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"role", "content"}).
+			AddRow("user", source.UserContent).
+			AddRow("assistant", source.AssistantContent))
 }
 
 func TestMariaDBSourceRevisionReadsCommittedAdmissionSnapshot(t *testing.T) {
@@ -161,7 +237,7 @@ func TestMariaDBReprocessingJobReplayLeaseRecoveryAndStaleCompletion(t *testing.
 	expired := now.Add(-time.Minute)
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE memory_reprocessing_jobs j").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT j.id, j.contract_version").
+	mock.ExpectQuery(`(?s)SELECT j\.id, j\.contract_version.*j\.retry_after IS NULL OR j\.retry_after < \?.*j\.lease_until < \?`).
 		WithArgs(now, now).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "contract_version", "idempotency_key", "chat_session_id",
@@ -365,13 +441,14 @@ func TestMariaDBListsOnlyActiveSourceRevisionsForDurableRescan(t *testing.T) {
 		WithArgs("session", 3, 7).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"source_revision", "chat_session_id", "logical_turn_id", "turn_index",
-			"source_message_id", "source_generation_id", "raw_user_content",
-			"raw_assistant_content", "combined_content_hash", "lifecycle_state",
+			"source_message_id", "source_generation_id", "branch_id", "branch_state",
+			"raw_user_content", "raw_assistant_content", "combined_content_hash",
+			"host_observed_at_ms", "lifecycle_state",
 		}).AddRow(
 			"revision", "session", "turn:4", 4, "message:4", "generation:4",
-			"user", "assistant",
+			"branch:4", "observed", "user", "assistant",
 			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			"active",
+			int64(1234), "active",
 		))
 	items, err := st.ListActiveSourceRevisions(
 		context.Background(), "session", 3, 7,
@@ -380,7 +457,9 @@ func TestMariaDBListsOnlyActiveSourceRevisionsForDurableRescan(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].SourceRevision != "revision" ||
-		items[0].TurnIndex != 4 || items[0].ContractVersion != MemorySourceRevisionContract {
+		items[0].TurnIndex != 4 || items[0].HostObservedAtMS != 1234 ||
+		items[0].BranchID != "branch:4" ||
+		items[0].ContractVersion != MemorySourceRevisionContract {
 		t.Fatalf("items=%+v", items)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

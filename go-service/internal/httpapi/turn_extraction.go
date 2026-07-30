@@ -344,23 +344,8 @@ var sourceControlFieldPattern = regexp.MustCompile(`(?i)(?:preset|template|contr
 var criticRetrySensitivePattern = regexp.MustCompile(`(?i)(?:\b(?:penis|vagina|clitoris|ejaculat\w*|orgasm\w*|semen|cum|penetrat\w*)\b|성기|음경|질|귀두|사정|삽입|오르가즘|정액|클리토리스)`)
 
 func shouldApplyCompleteTurnOOCGuard(userInput, assistantContent string, contextMessages []map[string]any) bool {
-	if looksLikeOOCText(userInput) || looksLikeOOCText(assistantContent) {
-		return true
-	}
-	start := len(contextMessages) - 3
-	if start < 0 {
-		start = 0
-	}
-	for i := len(contextMessages) - 1; i >= start; i-- {
-		item := contextMessages[i]
-		if !strings.EqualFold(strings.TrimSpace(stringFromMap(item, "role")), "user") {
-			continue
-		}
-		if looksLikeOOCText(stringFromMap(item, "content")) {
-			return true
-		}
-	}
-	return false
+	_ = contextMessages
+	return looksLikeOOCText(userInput) || looksLikeOOCText(assistantContent)
 }
 
 func looksLikeOOCText(text string) bool {

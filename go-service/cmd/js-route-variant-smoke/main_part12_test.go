@@ -38,6 +38,7 @@ func TestPocketRisuSwipeIdentityIsObservedWithoutInventingAnEditSignal(t *testin
 		}
 	}
 	src := readArchiveCenterJS(t)
+	activeWindow := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
 	observe := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
 	script := `
 const _streamingAfterRequestSyntheticCallDepth = 0;
@@ -64,7 +65,7 @@ function normalizeAssistantPersistenceCandidate(value){ return String(value||"")
 function isSameAssistantComparableText(a,b){ return a===b; }
 function getSessionSnapshot(){ return {msgCount:0}; }
 function debugLog(){}
-` + observe + `
+` + activeWindow + observe + `
 (async()=>{
   const second = await buildCompleteTurnSourceAcceptanceObservation(
     "session-1","second swipe",{allowExistingActiveMessage:true,userInput:"same user"}
@@ -175,7 +176,6 @@ func TestOfficialActiveTailContentChangeCanReachCanonicalReplacement(t *testing.
 	ensure := extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled")
 	script := `
 const SESSION_FALLBACK = "default";
-const ACTIVE_CHAT_BACKFILL_MAX_PAIRS = 20;
 const settings = {enabled:true,dbEnabled:true};
 const _activeChatBackfillInFlight = new Set();
 let completeTurnCalls = 0;
@@ -194,6 +194,8 @@ function chatLogItemsContainRole(items,role){ return items.some(item=>item.role=
 function chatLogItemsContainRoleContent(items,role,content){ return items.some(item=>item.role===role&&item.content===content); }
 function setTurnCounterAtLeast(){}
 async function markActiveChatBackfillSaved(){}
+let ledgerEntries = {"session-1:2":{hash:"saved-hash"}};
+async function loadActiveChatBackfillLedger(){ return {entries:ledgerEntries}; }
 async function buildCompleteTurnRequestBody(turn,user,assistant,context,sid,unused,options){
   builtOptions = options;
   return {chat_session_id:sid,turn_index:turn,user_content:user,assistant_content:assistant,client_meta:{}};
@@ -213,8 +215,10 @@ async function resolveCurrentActiveChatObject(){ return {chat:{message:[]}}; }
 function extractActiveChatComparableMessages(){ return []; }
 function buildCompletedTurnPairsFromActiveChatMessages(){
   return [
-    {userContent:"older user",assistantContent:"older answer",risuUserMessageIndex:0,risuAssistantMessageIndex:1},
-    {userContent:"edited user",assistantContent:"edited answer",risuUserMessageIndex:2,risuAssistantMessageIndex:3},
+    {userContent:"oldest user",assistantContent:"oldest answer",risuUserMessageIndex:0,risuAssistantMessageIndex:1,hash:"unsaved-oldest"},
+    {userContent:"saved user",assistantContent:"saved answer",risuUserMessageIndex:2,risuAssistantMessageIndex:3,hash:"saved-hash"},
+    {userContent:"older user",assistantContent:"older answer",risuUserMessageIndex:4,risuAssistantMessageIndex:5,hash:"unsaved-older"},
+    {userContent:"edited user",assistantContent:"edited answer",risuUserMessageIndex:6,risuAssistantMessageIndex:7,hash:"unsaved-tail"},
   ];
 }
 ` + backfill + "\n" + ensure + `
@@ -251,15 +255,31 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
   }
 
   const flags = [];
+  const observedHashes = [];
   const original = backfillOneActiveChatCompletedTurn;
   backfillOneActiveChatCompletedTurn = async function(sid,observedPair,options){
     flags.push(options.hostObservedActiveTailReplacement === true);
+    observedHashes.push(observedPair.hash);
     return {status:"exists",turnIndex:flags.length};
   };
-  await ensureActiveChatCompletedTurnsBackfilled("session-1",{reason:"before_request",maxPairs:2});
+  await ensureActiveChatCompletedTurnsBackfilled("session-1",{reason:"before_request"});
+  if (JSON.stringify(observedHashes) !== JSON.stringify(["unsaved-oldest","unsaved-older","unsaved-tail"])) {
+    throw new Error("all and only unsaved pairs must be considered: "+JSON.stringify(observedHashes));
+  }
+  if (JSON.stringify(flags) !== JSON.stringify([false,false,true])) {
+    throw new Error("only the actual latest visible pair must be replacement-eligible: "+JSON.stringify(flags));
+  }
+  flags.length = 0;
+  observedHashes.length = 0;
+  ledgerEntries = {
+    "session-1:1":{hash:"unsaved-oldest"},
+    "session-1:2":{hash:"saved-hash"},
+    "session-1:4":{hash:"unsaved-tail"},
+  };
+  await ensureActiveChatCompletedTurnsBackfilled("session-1",{reason:"before_request"});
   backfillOneActiveChatCompletedTurn = original;
-  if (flags.length !== 2 || flags[0] || !flags[1]) {
-    throw new Error("only latest official completed pair must be replacement-eligible: "+JSON.stringify(flags));
+  if (JSON.stringify(observedHashes) !== JSON.stringify(["unsaved-older"]) || flags[0] !== false) {
+    throw new Error("a saved active tail must not make an older unsaved pair replacement-eligible: "+JSON.stringify({observedHashes,flags}));
   }
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
@@ -511,8 +531,6 @@ func TestAcceptedFinalQueueAdmissionFailureKeepsHostContextRecoverable(t *testin
 	backfill := extractArchiveCenterJSAsyncFunction(t, src, "backfillOneActiveChatCompletedTurn")
 	observe := extractJSFunctionBlockForTest(t, src, "function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource)")
 	script := `
-const STARTUP_MESSAGE_MAX_CHARS = 120000;
-const ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES = 20;
 const _finalConfirmationRequestBySession = new Map();
 let admissionType = "";
 let admissionPayload = null;
@@ -552,6 +570,18 @@ async function verifyAndRepairCompleteTurnChatLogs(){}
 function buildCompleteTurnQueuePayload(){ return null; }
 ` + serialize + "\n" + build + "\n" + admit + "\n" + backfill + "\n" + observe + `
 (async()=>{
+  const exactRecoveryContext = Array.from({length:25},(_,index)=>({
+    role:index%2===0?"user":"assistant",
+    content:index===0?"x".repeat(2101):"context-"+index,
+  }));
+  const exactRecovery = serializeAcceptedFinalRecoveryPayload({
+    chat_session_id:"session-1",
+    context_messages:exactRecoveryContext,
+  });
+  if (exactRecovery.context_messages.length !== exactRecoveryContext.length ||
+      exactRecovery.context_messages[0].content !== exactRecoveryContext[0].content) {
+    throw new Error("accepted-final recovery truncated exact critic context");
+  }
   const context = {
     sessionId:"session-1",
     state:"candidate_observed",
@@ -585,6 +615,83 @@ function buildCompleteTurnQueuePayload(){ return null; }
 	cmd := exec.Command(nodePath, "-e", script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("accepted-final recovery fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestSessionNormalizeResultRenderingSeparatesCompletionErrorsAndDeferredWork(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for session-normalize rendering fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	render := extractArchiveCenterJSFunction(t, src, "renderSessionNormalizeResultHtml")
+	script := render + `
+function escapeAttr(value){ return String(value || ""); }
+function formatHierarchyBlockedSummary(){ return ""; }
+function formatTurnIndexPreview(){ return ""; }
+function assertIncludes(text, needle, label) {
+  if (!String(text).includes(needle)) throw new Error(label + ": " + text);
+}
+const ok = renderSessionNormalizeResultHtml({
+  status:"ok",
+  counts_after:{},
+  rescan:{candidate_count:2,succeeded:2,deferred:0,queued:0},
+  reindex:{},
+});
+assertIncludes(ok, "✅ 세션 정상화 완료", "ok heading");
+const partial = renderSessionNormalizeResultHtml({
+  status:"partial_error",
+  counts_after:{},
+  rescan:{candidate_count:3,succeeded:1,failed:1,skipped:0,deferred:1,queued:2},
+  reindex:{},
+});
+assertIncludes(partial, "⚠️ 세션 정상화 오류 포함 종료", "partial-error heading");
+if (partial.includes("✅ 세션 정상화 완료")) throw new Error("partial error was rendered as completed");
+assertIncludes(partial, "deferred 1 / queued 2", "deferred and queued counts");
+const failed = renderSessionNormalizeResultHtml({status:"failed",counts_after:{},rescan:{},reindex:{}});
+assertIncludes(failed, "❌ 세션 정상화 실패", "failed heading");
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("session-normalize rendering fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestPostOutputSecondaryPersistenceKeepsFullHostContext(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for post-output persistence context fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	build := extractArchiveCenterJSFunction(t, src, "buildPostOutputSecondaryRequestContext")
+	script := build + `
+const messages=Array.from({length:50},(_,index)=>({
+  role:index%2===0?"user":"assistant",
+  content:index===0?"x".repeat(2101):"message-"+index,
+}));
+function getLastNonEmptyComparableMessage(list){ return list[list.length-1]; }
+function buildCompletedTurnPairsFromActiveChatMessages(){
+  return [{userContent:"user-tail",assistantContent:"message-49"}];
+}
+function normalizeAssistantPersistenceCandidate(value){ return String(value || "").trim(); }
+function isSameAssistantComparableText(left,right){ return left===right; }
+const result=buildPostOutputSecondaryRequestContext(messages);
+if (!result || result.contextMessages.length!==messages.length ||
+    result.contextMessages[0].content!==messages[0].content) {
+  throw new Error("post-output persistence truncated exact host context");
+}
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("post-output persistence context fixture failed: %v\n%s", err, out)
 	}
 }
 

@@ -685,16 +685,18 @@ func (m *mariadbStore) ListAuditLogs(ctx context.Context, chatSessionID string, 
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 100
-	}
-	rows, err := m.db.QueryContext(ctx, `
+	querySQL := `
 		SELECT id, created_at, event_type, chat_session_id, target_type, target_id, summary, details_json, source
 		FROM audit_logs
 		WHERE (? = '' OR chat_session_id = ?) AND (? = '' OR event_type = ?)
 		ORDER BY created_at DESC, id DESC
-		LIMIT ?
-	`, strings.TrimSpace(chatSessionID), chatSessionID, strings.TrimSpace(eventType), eventType, limit)
+	`
+	args := []any{strings.TrimSpace(chatSessionID), chatSessionID, strings.TrimSpace(eventType), eventType}
+	if limit > 0 {
+		querySQL += "\nLIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := m.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}

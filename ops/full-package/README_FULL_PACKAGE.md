@@ -21,15 +21,12 @@ installed into a dedicated managed Python environment.
 The standard runtime profile is `full_local` with vector mode `bundled`, so the
 normal first start prepares and starts both MariaDB and local ChromaDB. The
 first start requires an internet connection and can take several minutes.
-Before that first start, set the caller-owned timeout fields in
-`.env.full.local`. In particular, managed downloads and installers require
-`AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS`; local HTTP checks use
-`AC_REQUEST_TIMEOUT_SECONDS`; readiness polling, when wanted, requires both
-`AC_READINESS_TIMEOUT_SECONDS` and
-`AC_READINESS_POLL_INTERVAL_MILLISECONDS`. Empty values are not replaced with
-hidden seconds.
-Users may still select `core_lite`/`fallback` or configure an external
-ChromaDB endpoint when local vector search is not wanted.
+No timeout value must be added to `.env.full.local`; the Windows launcher uses
+the same blocking install and readiness flow as the 3.5 managed launcher.
+The local full package requires ChromaDB. It installs and starts the pinned
+managed ChromaDB runtime by default, or it can verify a configured external
+ChromaDB endpoint. Startup stops if the endpoint and its upsert/readback/delete
+round trip cannot be verified.
 
 ## Start
 

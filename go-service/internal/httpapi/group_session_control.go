@@ -506,7 +506,7 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("session-delete:%s", sid),
 				time.Now().UTC(),
 				leaseDuration,
-				128,
+				0,
 			)
 		}
 		s.wakeMemoryWorkers()
