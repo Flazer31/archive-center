@@ -17,6 +17,7 @@ import (
 const (
 	completeTurnSourceAcceptanceContract         = "source_acceptance_observation.v1"
 	completeTurnNextHostSignalAcceptanceContract = "source_acceptance_observation.v2"
+	completeTurnAfterRequestAcceptanceContract   = "source_acceptance_observation.v3"
 	completeTurnRisuHostLifecycleContract        = "risu_host_lifecycle_observation.v1"
 	completeTurnSourceLifecycleContract          = "source_acceptance_lifecycle.v1"
 	sourceAcceptanceTransitionEvent              = "source_acceptance_transition"
@@ -165,6 +166,26 @@ func completeTurnSourceObservationFromMeta(meta map[string]any) (completeTurnSou
 }
 
 func completeTurnSourceRevision(sid string, turnIndex int, observation completeTurnSourceObservation) string {
+	if observation.ContractVersion == completeTurnAfterRequestAcceptanceContract {
+		seed := strings.Join([]string{
+			sid,
+			strconv.Itoa(turnIndex),
+			observation.ContractVersion,
+			observation.HostLifecycleContractVersion,
+			observation.FinalitySource,
+			observation.HostSignalSource,
+			observation.ArchiveCenterCorrelationID,
+			observation.RequestIDProvenance,
+			observation.RequestCorrelationState,
+			observation.HostChatID,
+			strconv.Itoa(observation.UserMessageIndex),
+			observation.UserMessageChatID,
+			strconv.FormatInt(observation.UserMessageTimeMS, 10),
+			observation.UserObservedContentHash,
+			observation.PersistenceContentHash,
+		}, "\x1f")
+		return "sar_" + strings.TrimPrefix(prepareOR1CHash(seed), "or1c_")
+	}
 	if observation.ContractVersion == completeTurnNextHostSignalAcceptanceContract {
 		seed := strings.Join([]string{
 			sid,
@@ -302,7 +323,8 @@ func rejectedCompleteTurnSourceAcceptance(reason string, retryable bool, observa
 func validateCompleteTurnSourceObservation(req dto.M4CompleteTurnRequest, observation completeTurnSourceObservation) completeTurnSourceAcceptanceDecision {
 	sid := strings.TrimSpace(req.ChatSessionID)
 	if observation.ContractVersion != completeTurnSourceAcceptanceContract &&
-		observation.ContractVersion != completeTurnNextHostSignalAcceptanceContract {
+		observation.ContractVersion != completeTurnNextHostSignalAcceptanceContract &&
+		observation.ContractVersion != completeTurnAfterRequestAcceptanceContract {
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_contract_incompatible", false, observation)
 	}
 	if observation.SessionID != sid || observation.ObservedAtMS <= 0 {
@@ -316,6 +338,9 @@ func validateCompleteTurnSourceObservation(req dto.M4CompleteTurnRequest, observ
 	}
 	if observation.ContractVersion == completeTurnNextHostSignalAcceptanceContract {
 		return validateCompleteTurnNextHostSignalObservation(req, observation)
+	}
+	if observation.ContractVersion == completeTurnAfterRequestAcceptanceContract {
+		return validateCompleteTurnAfterRequestObservation(req, observation)
 	}
 	if observation.ChatStreamingState == "streaming" {
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_streaming_candidate", true, observation)
@@ -364,6 +389,103 @@ func validateCompleteTurnSourceObservation(req dto.M4CompleteTurnRequest, observ
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_persistence_content_mismatch", false, observation)
 	}
 	return completeTurnSourceAcceptanceDecision{Enabled: true, Accepted: true, Status: "accepted", Reason: "active_final_observation_accepted", QueueAction: "remove", Observation: observation}
+}
+
+func validateCompleteTurnAfterRequestObservation(req dto.M4CompleteTurnRequest, observation completeTurnSourceObservation) completeTurnSourceAcceptanceDecision {
+	if observation.HostLifecycleContractVersion != completeTurnRisuHostLifecycleContract ||
+		observation.FinalitySource != "risu_afterRequest" ||
+		observation.FinalityState != "received_final_response" ||
+		observation.HostSignalSource != "afterRequest" {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_lifecycle_invalid", false, observation)
+	}
+	if observation.RequestIDProvenance != "archive_center_correlation" ||
+		observation.RequestCorrelationState != "matched_before_request_context" ||
+		observation.RequestType != "model" ||
+		observation.ResponseRole != "assistant" ||
+		strings.TrimSpace(observation.ArchiveCenterCorrelationID) == "" {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_correlation_invalid", false, observation)
+	}
+	metaCorrelation, _ := req.ClientMeta["archive_center_request_correlation_id"].(string)
+	if strings.TrimSpace(metaCorrelation) == "" ||
+		strings.TrimSpace(metaCorrelation) != strings.TrimSpace(observation.ArchiveCenterCorrelationID) {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_correlation_mismatch", false, observation)
+	}
+	if observation.HostChatIDState != "observed_before_request" ||
+		strings.TrimSpace(observation.HostChatID) == "" {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_chat_identity_missing", false, observation)
+	}
+	userMessageChatIDObserved := observation.UserMessageChatIDState == "observed_before_request" &&
+		strings.TrimSpace(observation.UserMessageChatID) != ""
+	userMessageChatIDUnobserved := observation.UserMessageChatIDState == "unobserved" &&
+		strings.TrimSpace(observation.UserMessageChatID) == ""
+	userMessageTimeObserved := observation.UserMessageTimeState == "observed_before_request" &&
+		observation.UserMessageTimeMS > 0
+	userMessageTimeUnobserved := observation.UserMessageTimeState == "unobserved" &&
+		observation.UserMessageTimeMS == 0
+	if observation.RequestMessageCount <= 0 ||
+		observation.UserMessageIndex < 0 ||
+		observation.UserMessageIndex >= observation.RequestMessageCount ||
+		(!userMessageChatIDObserved && !userMessageChatIDUnobserved) ||
+		(!userMessageTimeObserved && !userMessageTimeUnobserved) ||
+		strings.TrimSpace(observation.UserObservedContentHash) == "" ||
+		strings.TrimSpace(observation.UserPersistenceContentHash) == "" {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_user_anchor_missing", false, observation)
+	}
+	if req.UserInput == nil {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_user_anchor_missing", false, observation)
+	}
+	userHash := prepareOR1CHash(strings.TrimSpace(*req.UserInput))
+	if observation.UserObservedContentHash != userHash ||
+		observation.UserPersistenceContentHash != userHash {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_user_anchor_mismatch", false, observation)
+	}
+	if observation.ChatStreamingState != "not_exposed_by_risu_afterRequest" ||
+		observation.ActiveMessageCount != 0 ||
+		observation.MessageIndex != -1 ||
+		observation.MessageRole != "" ||
+		observation.MessageChatID != "" ||
+		observation.MessageChatIDState != "not_exposed_by_risu_afterRequest" ||
+		observation.GenerationID != "" ||
+		observation.GenerationIDState != "not_exposed_by_risu_afterRequest" ||
+		observation.BranchID != "" ||
+		observation.BranchIDState != "not_exposed_by_risuai" ||
+		observation.MessageSwipeID != -1 ||
+		observation.MessageSwipeIDState != "unobserved" ||
+		observation.MessageTimeMS != 0 ||
+		observation.MessageTimeState != "not_exposed_by_risu_afterRequest" ||
+		observation.PositionObservation != "not_exposed_by_risu_afterRequest" ||
+		observation.LaterActiveTurnMessageCount != 0 ||
+		observation.LaterDisabledTurnMessageCount != 0 ||
+		observation.LaterNonTurnMessageCount != 0 ||
+		observation.NextSignalActiveRole != "" ||
+		(observation.NextSignalUserIndex != 0 && observation.NextSignalUserIndex != -1) ||
+		observation.NextSignalUserContentHash != "" ||
+		observation.MessageDisabledState != "not_exposed_by_risu_afterRequest" ||
+		observation.RevisionState != "not_exposed_by_risuai" {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_active_chat_facts_invalid", false, observation)
+	}
+	if observation.HashAlgorithm != "or1c_utf16_djb2.v1" ||
+		strings.TrimSpace(observation.AfterRequestContentHash) == "" ||
+		strings.TrimSpace(observation.ObservedContentHash) == "" ||
+		strings.TrimSpace(observation.PersistenceContentHash) == "" {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_content_observation_missing", false, observation)
+	}
+	if req.AssistantContent == nil {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_persistence_content_missing", false, observation)
+	}
+	assistantHash := prepareOR1CHash(sanitizeCriticStorageText(*req.AssistantContent))
+	if observation.AfterRequestContentHash != assistantHash {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_after_request_content_mismatch", false, observation)
+	}
+	if observation.ObservedContentHash != assistantHash ||
+		observation.PersistenceContentHash != assistantHash {
+		return rejectedCompleteTurnSourceAcceptance("source_acceptance_persistence_content_mismatch", false, observation)
+	}
+	return completeTurnSourceAcceptanceDecision{
+		Enabled: true, Accepted: true, Status: "accepted",
+		Reason:      "after_request_final_response_observation_accepted",
+		QueueAction: "remove", Observation: observation,
+	}
 }
 
 func validateCompleteTurnNextHostSignalObservation(req dto.M4CompleteTurnRequest, observation completeTurnSourceObservation) completeTurnSourceAcceptanceDecision {

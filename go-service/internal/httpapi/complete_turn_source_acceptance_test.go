@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,10 +109,10 @@ func completeTurnNextHostSignalAcceptanceTestRequest(sid string, turn int, user,
 				"message_time_state":                     "observed",
 				"request_message_count":                  2,
 				"user_message_index":                     1,
-				"user_message_chat_id":                   "user-message-1",
-				"user_message_chat_id_state":             "observed_before_request",
-				"user_message_time_ms":                   int64(500),
-				"user_message_time_state":                "observed_before_request",
+				"user_message_chat_id":                   "",
+				"user_message_chat_id_state":             "unobserved",
+				"user_message_time_ms":                   int64(0),
+				"user_message_time_state":                "unobserved",
 				"user_observed_content_hash":             prepareOR1CHash(user),
 				"user_persistence_content_hash":          prepareOR1CHash(user),
 				"observed_content_hash":                  prepareOR1CHash(assistant),
@@ -129,11 +130,190 @@ func completeTurnNextHostSignalAcceptanceTestRequest(sid string, turn int, user,
 	}
 }
 
+func completeTurnAfterRequestAcceptanceTestRequest(sid string, turn int, user, assistant string, observedAt int64, correlationID string) dto.M4CompleteTurnRequest {
+	assistantHash := prepareOR1CHash(sanitizeCriticStorageText(assistant))
+	userHash := prepareOR1CHash(strings.TrimSpace(user))
+	return dto.M4CompleteTurnRequest{
+		ChatSessionID:    sid,
+		TurnIndex:        turn,
+		UserInput:        &user,
+		AssistantContent: &assistant,
+		ClientMeta: map[string]any{
+			"source_acceptance_required":            true,
+			"archive_center_request_correlation_id": correlationID,
+			"source_acceptance_observation": map[string]any{
+				"contract_version":                      completeTurnAfterRequestAcceptanceContract,
+				"host_lifecycle_contract_version":       completeTurnRisuHostLifecycleContract,
+				"observed_at_ms":                        observedAt,
+				"session_id":                            sid,
+				"finality_source":                       "risu_afterRequest",
+				"finality_state":                        "received_final_response",
+				"host_signal_source":                    "afterRequest",
+				"archive_center_request_correlation_id": correlationID,
+				"request_id_provenance":                 "archive_center_correlation",
+				"request_correlation_state":             "matched_before_request_context",
+				"request_type":                          "model",
+				"response_role":                         "assistant",
+				"after_request_content_hash":            assistantHash,
+				"host_chat_id":                          "chat-1",
+				"host_chat_id_state":                    "observed_before_request",
+				"chat_streaming_state":                  "not_exposed_by_risu_afterRequest",
+				"active_message_count":                  0,
+				"message_index":                         -1,
+				"message_role":                          "",
+				"message_chat_id":                       "",
+				"message_chat_id_state":                 "not_exposed_by_risu_afterRequest",
+				"generation_id":                         "",
+				"generation_id_state":                   "not_exposed_by_risu_afterRequest",
+				"branch_id":                             "",
+				"branch_id_state":                       "not_exposed_by_risuai",
+				"message_swipe_id":                      -1,
+				"message_swipe_id_state":                "unobserved",
+				"message_time_ms":                       int64(0),
+				"message_time_state":                    "not_exposed_by_risu_afterRequest",
+				"request_message_count":                 2,
+				"user_message_index":                    1,
+				"user_message_chat_id":                  "user-message-1",
+				"user_message_chat_id_state":            "observed_before_request",
+				"user_message_time_ms":                  int64(500),
+				"user_message_time_state":               "observed_before_request",
+				"user_observed_content_hash":            userHash,
+				"user_persistence_content_hash":         userHash,
+				"observed_content_hash":                 assistantHash,
+				"persistence_content_hash":              assistantHash,
+				"hash_algorithm":                        "or1c_utf16_djb2.v1",
+				"position_observation":                  "not_exposed_by_risu_afterRequest",
+				"later_active_turn_message_count":       0,
+				"later_disabled_turn_message_count":     0,
+				"later_non_turn_message_count":          0,
+				"message_disabled_state":                "not_exposed_by_risu_afterRequest",
+				"revision_state":                        "not_exposed_by_risuai",
+			},
+		},
+	}
+}
+
 func newCompleteTurnAcceptanceTestServer() *Server {
 	return &Server{
 		Cfg:               config.Config{StoreMode: config.StoreModeDualShadow},
 		Store:             store.NewNoopStore(),
 		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(),
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceAcceptsCorrelatedAfterRequestFinalResponse(t *testing.T) {
+	req := completeTurnAfterRequestAcceptanceTestRequest(
+		"session-1", 2, "user", " final answer ", 1000, "archive-request-1",
+	)
+	decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if !decision.Accepted ||
+		decision.Reason != "after_request_final_response_observation_accepted" ||
+		decision.Revision == "" ||
+		decision.LogicalTurnID == "" {
+		t.Fatalf("decision=%+v", decision)
+	}
+	if decision.Observation.MessageIndex != -1 ||
+		decision.Observation.MessageChatID != "" ||
+		decision.Observation.GenerationID != "" ||
+		decision.Observation.BranchID != "" {
+		t.Fatalf("afterRequest observation fabricated active-chat identity: %+v", decision.Observation)
+	}
+	source, err := completeTurnMemorySourceRevision(
+		decision, "session-1", decision.BoundTurn, "user", " final answer ", time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("completeTurnMemorySourceRevision: %v", err)
+	}
+	if source == nil || source.SourceMessageID != "" || source.SourceGenerationID != "" || source.BranchID != "" {
+		t.Fatalf("afterRequest source fabricated active-chat identity: %+v", source)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceRejectsInvalidAfterRequestCorrelationAndContent(t *testing.T) {
+	t.Run("correlation", func(t *testing.T) {
+		req := completeTurnAfterRequestAcceptanceTestRequest(
+			"session-1", 2, "user", "final answer", 1000, "archive-request-1",
+		)
+		observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+		observation["archive_center_request_correlation_id"] = "different-request"
+		decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+		if decision.Accepted || decision.Reason != "source_acceptance_after_request_correlation_mismatch" {
+			t.Fatalf("decision=%+v", decision)
+		}
+	})
+
+	t.Run("after_request_content", func(t *testing.T) {
+		req := completeTurnAfterRequestAcceptanceTestRequest(
+			"session-1", 2, "user", "final answer", 1000, "archive-request-1",
+		)
+		observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+		observation["after_request_content_hash"] = prepareOR1CHash("different answer")
+		decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+		if decision.Accepted || decision.Reason != "source_acceptance_after_request_content_mismatch" {
+			t.Fatalf("decision=%+v", decision)
+		}
+	})
+
+	t.Run("persistence_content", func(t *testing.T) {
+		req := completeTurnAfterRequestAcceptanceTestRequest(
+			"session-1", 2, "user", "final answer", 1000, "archive-request-1",
+		)
+		observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+		observation["persistence_content_hash"] = prepareOR1CHash("different answer")
+		decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+		if decision.Accepted || decision.Reason != "source_acceptance_persistence_content_mismatch" {
+			t.Fatalf("decision=%+v", decision)
+		}
+	})
+
+	t.Run("fabricated_active_chat_fact", func(t *testing.T) {
+		req := completeTurnAfterRequestAcceptanceTestRequest(
+			"session-1", 2, "user", "final answer", 1000, "archive-request-1",
+		)
+		observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+		observation["message_index"] = 2
+		decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+		if decision.Accepted || decision.Reason != "source_acceptance_after_request_active_chat_facts_invalid" {
+			t.Fatalf("decision=%+v", decision)
+		}
+	})
+}
+
+func TestCompleteTurnSourceAcceptanceAfterRequestCorrelationOwnsRevisionAndReplacement(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnAfterRequestAcceptanceTestRequest(
+		"session-1", 2, "same user", "same answer", 1000, "archive-request-1",
+	)
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !firstDecision.Accepted {
+		t.Fatalf("first=%+v", firstDecision)
+	}
+	second := completeTurnAfterRequestAcceptanceTestRequest(
+		"session-1", 3, "same user", "same answer", 2000, "archive-request-2",
+	)
+	secondDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), second)
+	if !secondDecision.Accepted ||
+		!secondDecision.ReplaceExisting ||
+		secondDecision.Revision == firstDecision.Revision ||
+		secondDecision.LogicalTurnID != firstDecision.LogicalTurnID ||
+		secondDecision.BoundTurn != firstDecision.BoundTurn {
+		t.Fatalf("second=%+v first=%+v", secondDecision, firstDecision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceAfterRequestSameCorrelationIsIdempotent(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	req := completeTurnAfterRequestAcceptanceTestRequest(
+		"session-1", 2, "same user", "same answer", 1000, "archive-request-1",
+	)
+	first := server.beginCompleteTurnSourceAcceptance(context.Background(), req)
+	duplicate := server.beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if !first.Accepted ||
+		!duplicate.Accepted ||
+		duplicate.Reason != "active_final_observation_idempotent" ||
+		duplicate.Revision != first.Revision ||
+		duplicate.ReplaceExisting {
+		t.Fatalf("first=%+v duplicate=%+v", first, duplicate)
 	}
 }
 

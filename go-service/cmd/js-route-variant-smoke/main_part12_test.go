@@ -748,13 +748,15 @@ let _turnWorkflowHUDWatchToken = 0;
 let _turnWorkflowHUDActiveRequestId = "";
 let _turnWorkflowHUDWatchRunning = false;
 let _turnWorkflowHUDLastRevision = 0;
+let _turnWorkflowHUDTerminalRequestId = "";
 let _turnWorkflowHUDStreamAbortController = null;
 let _turnWorkflowHUDStreamReader = null;
 let _turnWorkflowHUDRenderChain = Promise.resolve();
 const opened = [];
 let transportError = "";
+let dismissedRequest = "";
 function turnWorkflowHUDIsEnabled(){ return true; }
-function dismissTurnWorkflowHUD(){}
+function dismissTurnWorkflowHUD(requestId){ dismissedRequest=String(requestId||""); _turnWorkflowHUDActiveRequestId=""; }
 function cancelTurnWorkflowHUDStream(){
   if (_turnWorkflowHUDStreamAbortController) _turnWorkflowHUDStreamAbortController.abort();
   _turnWorkflowHUDStreamAbortController = null;
@@ -788,9 +790,10 @@ async function openTurnWorkflowHUDStream(url){
 (async()=>{
   startTurnWorkflowHUDWatch("req-1");
   for(let i=0;i<50 && _turnWorkflowHUDWatchRunning;i++) await new Promise(resolve=>setTimeout(resolve,1));
-  if (transportError !== "hud_transport_nonterminal_eof") throw new Error("missing typed EOF transport error: "+transportError);
+  if (transportError) throw new Error("nonterminal EOF was misreported as turn failure: "+transportError);
+  if (dismissedRequest) throw new Error("HUD-only stream loss discarded the active workflow identity: "+dismissedRequest);
+  if (_turnWorkflowHUDActiveRequestId !== "req-1") throw new Error("HUD-only stream loss cleared the active request");
   if (opened.length !== 1) throw new Error("nonterminal EOF caused hidden reconnect count="+opened.length);
-  if (_turnWorkflowHUDLastRevision !== 1) throw new Error("running revision was not consumed");
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
 	cmd := exec.Command(nodePath, "-e", script)

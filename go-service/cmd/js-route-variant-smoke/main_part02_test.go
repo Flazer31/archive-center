@@ -995,9 +995,14 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 		"const _pendingFinalConfirmations = new Map();",
 		"const _risuHookLifecycle = {",
 		"async function captureFinalConfirmationRequestContext(sessionId, type, requestId)",
-		"function recordRisuAfterRequestCandidate(sessionId, type, pendingContext, requestContext, assistantContent)",
+		"function acceptRisuAfterRequestFinal(sessionId, type, pendingContext, requestContext, assistantContent)",
 		"function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource)",
 		"async function drainPendingFinalConfirmations(signalSource)",
+		`contract_version: "source_acceptance_observation.v3"`,
+		`finality_source: "risu_afterRequest"`,
+		`finality_state: "received_final_response"`,
+		`prompt_memory_availability: "same_turn"`,
+		"persistOfficialAfterRequestFinalWithoutBlockingResponse",
 		`contract_version: "source_acceptance_observation.v2"`,
 		`host_lifecycle_contract_version: "risu_host_lifecycle_observation.v1"`,
 		`finality_source: "risu_next_host_signal_active_chat"`,
@@ -1005,7 +1010,6 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 		`position_observation: "committed_before_next_host_signal"`,
 		`next_signal_user_observed_content_hash: nextSignalUserObservedContentHash`,
 		`request_id_provenance: "archive_center_correlation"`,
-		`reason: "after_request_candidate_waiting_for_next_host_signal"`,
 		"persistAcceptedHostFinalWithoutBlockingRequest",
 		`prompt_memory_availability: "one_turn_late"`,
 		`recordRisuHookLifecycle("input", "callback_observed");`,
@@ -1057,8 +1061,6 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 		"registerFinalConfirmationObserver",
 		"R.createMutationObserver",
 		"acceptRisuAfterRequestFinality",
-		`finality_source: "risu_afterRequest"`,
-		"not_exposed_by_risu_afterRequest",
 		"addRisuChatListener",
 		"removeRisuChatListener",
 		"persistAcceptedAfterRequestWithoutBlockingDisplay",
@@ -1076,6 +1078,44 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 	rollbackAt := strings.Index(onBeforeRequest, "await checkAndAutoRollback(orchSessionId, rollbackComparable.messages")
 	if captureAt < 0 || rollbackAt < 0 || captureAt > rollbackAt {
 		t.Fatal("RisuAI request coordinates must be captured before removed-tail evaluation")
+	}
+}
+
+func TestArchiveCenterJSAfterRequestSchedulesSameTurnPersistenceOnceWithoutBlockingResponse(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	afterRequestAt := strings.Index(src, "async function onAfterRequest")
+	if afterRequestAt < 0 {
+		t.Fatal("Archive Center.js missing onAfterRequest")
+	}
+	afterRequest := src[afterRequestAt:]
+	acceptAt := strings.Index(afterRequest, "const finalObservation = acceptRisuAfterRequestFinal(")
+	scheduleMarker := "function persistOfficialAfterRequestFinalWithoutBlockingResponse()"
+	scheduleAt := strings.Index(afterRequest, scheduleMarker)
+	persistAt := strings.Index(afterRequest, "return continueAcceptedFinalPersistence(")
+	returnAt := strings.Index(afterRequest, "return responseReturnContent;")
+	if acceptAt < 0 || scheduleAt < 0 || persistAt < 0 || returnAt < 0 {
+		t.Fatal("afterRequest same-turn acceptance, persistence schedule, or response return is missing")
+	}
+	if !(acceptAt < scheduleAt && scheduleAt < persistAt && persistAt < returnAt) {
+		t.Fatal("afterRequest must accept, schedule persistence, and return the host response in that order")
+	}
+	if strings.Count(afterRequest, scheduleMarker) != 1 {
+		t.Fatal("afterRequest persistence schedule must have exactly one entry point")
+	}
+	if strings.Contains(afterRequest[acceptAt:returnAt], "await continueAcceptedFinalPersistence(") {
+		t.Fatal("afterRequest blocks visible output on persistence")
+	}
+	duplicateAt := strings.Index(afterRequest, "finalObservation.duplicate === true")
+	if duplicateAt < 0 {
+		t.Fatal("afterRequest duplicate acceptance guard is missing")
+	}
+	duplicateReturnAt := strings.Index(afterRequest[duplicateAt:], "return responseReturnContent;")
+	if duplicateReturnAt < 0 {
+		t.Fatal("duplicate afterRequest final does not return without a second persistence schedule")
+	}
+	duplicateBranch := afterRequest[duplicateAt : duplicateAt+duplicateReturnAt]
+	if strings.Contains(duplicateBranch, scheduleMarker) || strings.Contains(duplicateBranch, "continueAcceptedFinalPersistence(") {
+		t.Fatal("duplicate afterRequest final schedules persistence again")
 	}
 }
 

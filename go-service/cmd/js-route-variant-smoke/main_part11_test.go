@@ -485,6 +485,7 @@ let _turnWorkflowHUDWatchToken = 0;
 let _turnWorkflowHUDWatchRunning = false;
 let _turnWorkflowHUDActiveRequestId = "";
 let _turnWorkflowHUDLastRevision = 0;
+let _turnWorkflowHUDTerminalRequestId = "";
 let _turnWorkflowHUDStreamAbortController = null;
 let _turnWorkflowHUDStreamReader = null;
 let _turnWorkflowHUDRenderChain = Promise.resolve();
@@ -492,6 +493,7 @@ let streamResponses = [];
 let streamPaths = [];
 let consumedStatuses = [];
 let transportErrors = [];
+let dismissedRequests = [];
 let fallbackFetchCalls = 0;
 const R = {
   nativeFetch: async function(path) {
@@ -502,7 +504,12 @@ const R = {
 };
 function turnWorkflowHUDIsEnabled() { return settings.turnWorkflowHUDEnabled !== false; }
 function getRequestTimeoutSettingMs() { return settings.requestTimeoutMs; }
-function dismissTurnWorkflowHUD() {}
+function dismissTurnWorkflowHUD(requestId) {
+  dismissedRequests.push(String(requestId || ""));
+  _turnWorkflowHUDActiveRequestId = "";
+  _turnWorkflowHUDLastRevision = 0;
+  _turnWorkflowHUDTerminalRequestId = "";
+}
 function clearTurnWorkflowHUDTimer() {}
 async function removeTurnWorkflowHUDDismissListeners() {}
 function queueTurnWorkflowHUDOperation(_label, operation) {
@@ -514,10 +521,14 @@ function resolveBridgeRuntimeRoute() { return {url:"http://127.0.0.1:28080"}; }
 function consumeTurnWorkflowHUD(view) {
   consumedStatuses.push(String(view && view.status || ""));
   _turnWorkflowHUDLastRevision = Math.max(_turnWorkflowHUDLastRevision, Number(view && view.revision || 0));
+  if (view && (view.status === "completed" || view.status === "failed" || view.status === "invalidated")) {
+    _turnWorkflowHUDTerminalRequestId = String(view.request_id || "");
+  }
   queueTurnWorkflowHUDOperation("render", async function() {});
   return true;
 }
 function renderTurnWorkflowHUDTransportError(requestId, reasonCode) {
+  if (!requestId || requestId !== _turnWorkflowHUDActiveRequestId) return;
   transportErrors.push(String(requestId || "") + ":" + String(reasonCode || ""));
 }
 function debugLog() {}
@@ -569,7 +580,14 @@ function responseFromLines(lines) {
   await settleWatch("unsupported stream");
   assert(streamPaths.length === 1, "unsupported stream retried or polled");
   assert(fallbackFetchCalls === 0, "unsupported native stream fell back to unproven fetch");
-  assert(transportErrors.join(",") === "unsupported-request:stream_transport_unavailable", "unsupported stream lost its typed HUD fact");
+  assert(transportErrors.length === 0, "HUD-only transport loss was rendered as a turn failure");
+  assert(dismissedRequests.length === 0, "HUD-only transport loss discarded the active workflow identity");
+  assert(_turnWorkflowHUDActiveRequestId === "unsupported-request", "HUD-only transport loss cleared the active workflow identity");
+  renderTurnWorkflowHUDTransportError("unsupported-request", "complete_turn_transport_unavailable");
+  assert(
+    transportErrors.join(",") === "unsupported-request:complete_turn_transport_unavailable",
+    "later complete-turn transport failure was hidden after HUD stream loss"
+  );
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);
@@ -2264,17 +2282,17 @@ function debugLog() {}
 	}
 }
 
-func TestRisuAfterRequestRecordsCandidateWithoutAcceptingFinality(t *testing.T) {
+func TestRisuAfterRequestAcceptsCorrelatedFinalWithoutActiveChatFabrication(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
 		nodePath, err = exec.LookPath("node")
 		if err != nil {
-			t.Skip("node is required for afterRequest candidate fixture")
+			t.Skip("node is required for afterRequest final fixture")
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSFunction(t, src, "recordRisuAfterRequestCandidate")
+	functionBody := extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal")
 	script := functionBody + `
 const lastOrchResult = {id:"orch-1"};
 const pending = {requestId:"archive-request-1",orchResult:lastOrchResult};
@@ -2288,19 +2306,29 @@ const requestContext = {
 function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
 function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || ""); }
 (async function() {
-  const candidate = recordRisuAfterRequestCandidate("session-1","model",pending,requestContext,"candidate");
-  if (!candidate.observed || candidate.accepted || requestContext.state !== "candidate_observed" ||
-      requestContext.afterRequestCandidateHash !== "hash:candidate") {
-    throw new Error("afterRequest did not remain candidate-only");
+  const accepted = acceptRisuAfterRequestFinal("session-1","model",pending,requestContext,"final answer");
+  if (!accepted.observed || !accepted.accepted || requestContext.state !== "accepted" ||
+      requestContext.afterRequestCandidateHash !== "hash:final answer") {
+    throw new Error("official afterRequest final was not accepted");
   }
-  const duplicate = recordRisuAfterRequestCandidate("session-1","model",pending,requestContext,"candidate");
-  if (duplicate.observed || !duplicate.duplicate || duplicate.reason !== "duplicate_after_request_candidate") {
-    throw new Error("duplicate candidate was not ignored");
+  const observation = accepted.observation;
+  if (!observation || observation.contract_version !== "source_acceptance_observation.v3" ||
+      observation.finality_source !== "risu_afterRequest" ||
+      observation.prompt_memory_availability !== "same_turn" ||
+      observation.archive_center_request_correlation_id !== "archive-request-1" ||
+      observation.message_index !== -1 || observation.message_chat_id ||
+      observation.generation_id || observation.branch_id) {
+    throw new Error("afterRequest observation lost correlation or fabricated active-chat facts");
+  }
+  const duplicate = acceptRisuAfterRequestFinal("session-1","model",pending,requestContext,"final answer");
+  if (duplicate.observed || !duplicate.accepted || !duplicate.duplicate ||
+      duplicate.reason !== "already_accepted_after_request") {
+    throw new Error("duplicate afterRequest final was not ignored");
   }
   const superseded = {...requestContext,state:"superseded",requestId:"archive-request-old"};
   const oldPending = {requestId:"archive-request-old",orchResult:lastOrchResult};
-  if (recordRisuAfterRequestCandidate("session-1","model",oldPending,superseded,"old").observed) {
-    throw new Error("superseded request recorded a candidate");
+  if (acceptRisuAfterRequestFinal("session-1","model",oldPending,superseded,"old").observed) {
+    throw new Error("superseded request accepted a final");
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -2308,7 +2336,73 @@ function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value 
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("afterRequest candidate-only fixture failed: %v\n%s", err, out)
+		t.Fatalf("afterRequest final fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRisuAfterRequestObservationBypassesActiveChatReread(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for afterRequest observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	script := functionBody + `
+function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").trim(); }
+async function resolveCurrentActiveChatObject() { throw new Error("v3 reread active chat"); }
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function isSameAssistantComparableText(a,b) { return a === b; }
+function getSessionSnapshot() { return null; }
+function debugLog() {}
+(async function() {
+  const finality = {
+    accepted:true,contract_version:"source_acceptance_observation.v3",
+    host_lifecycle_contract_version:"risu_host_lifecycle_observation.v1",
+    observed_at_ms:1000,session_id:"session-1",finality_source:"risu_afterRequest",
+    finality_state:"received_final_response",host_signal_source:"afterRequest",
+    archive_center_request_correlation_id:"archive-request-1",
+    request_id_provenance:"archive_center_correlation",
+    request_correlation_state:"matched_before_request_context",request_type:"model",
+    response_role:"assistant",after_request_content_hash:"hash:persisted answer",
+    host_chat_id:"chat-1",host_chat_id_state:"observed_before_request",
+    chat_streaming_state:"not_exposed_by_risu_afterRequest",
+    active_message_count:0,request_message_count:2,message_index:-1,message_role:"",
+    message_chat_id:"",message_chat_id_state:"not_exposed_by_risu_afterRequest",
+    generation_id:"",generation_id_state:"not_exposed_by_risu_afterRequest",
+    branch_id:"",branch_id_state:"not_exposed_by_risuai",
+    message_swipe_id:-1,message_swipe_id_state:"unobserved",
+    message_time_ms:0,message_time_state:"not_exposed_by_risu_afterRequest",
+    user_message_index:1,user_message_chat_id:"user-1",
+    user_message_chat_id_state:"observed_before_request",
+    user_message_time_ms:500,user_message_time_state:"observed_before_request",
+    user_observed_content_hash:"hash:user",user_persistence_content_hash:"hash:user",
+    observed_content_hash:"hash:persisted answer",persistence_content_hash:"hash:persisted answer",
+    hash_algorithm:"or1c_utf16_djb2.v1",
+    position_observation:"not_exposed_by_risu_afterRequest",
+    later_active_turn_message_count:0,later_disabled_turn_message_count:0,later_non_turn_message_count:0,
+    message_disabled_state:"not_exposed_by_risu_afterRequest",revision_state:"not_exposed_by_risuai",
+    prompt_memory_availability:"same_turn",
+  };
+  const observation = await buildCompleteTurnSourceAcceptanceObservation(
+    "session-1","persisted answer",{sourceAcceptanceFinality:finality,userInput:"user"}
+  );
+  if (observation.contract_version !== "source_acceptance_observation.v3" ||
+      observation.finality_source !== "risu_afterRequest" ||
+      observation.user_persistence_content_hash !== "hash:user" ||
+      observation.persistence_content_hash !== "hash:persisted answer") {
+    throw new Error("official afterRequest observation was not preserved");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("afterRequest observation fixture failed: %v\n%s", err, out)
 	}
 }
 
