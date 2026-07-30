@@ -886,6 +886,9 @@ func (s *Server) handleSessionMigrateLockSource(w http.ResponseWriter, r *http.R
 	}
 	resp.WriteAttempted = true
 	pendingFence := provisional != nil && provisional.LockStatus == "lock_pending_verification"
+	if pendingFence && strings.TrimSpace(provisional.SourceSessionID) != "" {
+		s.cancelCompleteTurnSourceWorkers(provisional.SourceSessionID, 1)
+	}
 	releasePendingFence := func(reason string) {
 		if !pendingFence {
 			return

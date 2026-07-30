@@ -115,11 +115,12 @@ func TestCriticRedactedRetryFailureTraceIsSerializableAndKeepsFinalPreview(t *te
 		nil,
 		nil,
 		completeTurnLLMConfig{
-			Provider:  "openai",
-			Endpoint:  "https://example.invalid/v1",
-			APIKey:    "test-key",
-			Model:     "critic-test",
-			TimeoutMs: 30_000,
+			Provider:    "openai",
+			Endpoint:    "https://example.invalid/v1",
+			APIKey:      "test-key",
+			Model:       "critic-test",
+			TimeoutMs:   30_000,
+			RetryBudget: newLLMRetryBudget(1),
 		},
 	)
 	if err == nil || callCount != 2 {
@@ -134,6 +135,38 @@ func TestCriticRedactedRetryFailureTraceIsSerializableAndKeepsFinalPreview(t *te
 	}
 	if _, err := json.Marshal(trace); err != nil {
 		t.Fatalf("retry failure trace is cyclic or unserializable: %v; trace=%+v", err, trace)
+	}
+}
+
+func TestCriticSensitiveRedactionRespectsZeroRetryBudget(t *testing.T) {
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{Cfg: config.Default(), Store: store.NewNoopStore()}
+	_, trace, err := srv.runCompleteTurnCritic(
+		context.Background(), "session", 1,
+		"Mina asks Rowan to be gentle.",
+		"The intimate scene involved penetration.",
+		nil, nil,
+		completeTurnLLMConfig{
+			Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key",
+			Model: "critic-test", TimeoutMs: 30_000, RetryBudget: newLLMRetryBudget(0),
+		},
+	)
+	if err == nil || callCount != 1 {
+		t.Fatalf("error=%v calls=%d trace=%+v", err, callCount, trace)
+	}
+	if len(mapFromAny(trace["provider_retry"])) != 0 {
+		t.Fatalf("zero retry budget unexpectedly recorded a retry: %+v", trace)
 	}
 }
 

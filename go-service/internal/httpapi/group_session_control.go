@@ -472,10 +472,17 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	deleteFenceObservedAtMS := time.Now().UTC().UnixMilli()
+	s.invalidateCompleteTurnSourceAcceptances(
+		ctx, sid, 1, "session_delete", deleteFenceObservedAtMS,
+	)
 	if err := rollbackStore.DeleteSession(ctx, sid); err != nil {
 		writeInternalError(w, err.Error())
 		return
 	}
+	s.invalidateCompleteTurnSourceAcceptances(
+		ctx, sid, 1, "session_delete", time.Now().UTC().UnixMilli(),
+	)
 
 	vectorCleanup := map[string]any{
 		"attempted": false,

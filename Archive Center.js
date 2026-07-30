@@ -85,7 +85,6 @@
   const RECOMPOSER_BRIDGE_KEY = "__RISU_ARCHIVE_CENTER_RECOMPOSER_V1__";
   const RECOMPOSER_BRIDGE_CONTRACT = "archive_center.recomposer_bridge.v1";
   const RECOMPOSER_ENHANCEMENT_CONTRACT = "archive_center.recomposer_enhancement.v1";
-  const RECOMPOSER_BRIDGE_TTL_MS = 15 * 60 * 1000;
   const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vertex", "copilot", "ollama", "custom"]);
   const EMBEDDING_PROVIDER_OPTIONS = Object.freeze(["openai", "gemini", "vertex", "voyageai", "ollama", "custom"]);
   const SOURCE_SEARCH_LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "ollama"]);
@@ -4289,6 +4288,7 @@
   async function removeRegisteredRisuHooksOnUnload() {
     cancelTurnWorkflowHUDStream();
     cancelAllAdminBackgroundJobStreams();
+    clearArchiveCenterRecomposerBridge();
     for (const pending of _pendingFinalConfirmations.values()) {
       if (!pending || typeof pending !== "object") continue;
       pending.state = "superseded";
@@ -4328,10 +4328,58 @@
     try {
       if (typeof R.removeRisuReplacer === "function") {
         await R.removeRisuReplacer("beforeRequest", onBeforeRequest);
+      }
+    } catch (err) {
+      debugLog("[unload] beforeRequest replacer cleanup failed:", err && err.message);
+    }
+    try {
+      if (typeof R.removeRisuReplacer === "function") {
         await R.removeRisuReplacer("afterRequest", onAfterRequest);
       }
     } catch (err) {
-      debugLog("[unload] replacer cleanup failed:", err && err.message);
+      debugLog("[unload] afterRequest replacer cleanup failed:", err && err.message);
+    }
+  }
+
+  async function registerRisuLifecycleHooks() {
+    if (!R) return;
+    try {
+      if (typeof R.addRisuScriptHandler === "function") {
+        recordRisuHookLifecycle("input", "registration_requested_unconfirmed");
+        await R.addRisuScriptHandler("input", onInputHook);
+        console.log(LOG_PREFIX, "addRisuScriptHandler input requested (host acceptance unconfirmed)");
+      }
+    } catch (regErr) {
+      recordRisuHookLifecycle("input", "registration_failed");
+      warnLog("addRisuScriptHandler input failed:", regErr && regErr.message);
+    }
+    try {
+      if (typeof R.addRisuReplacer === "function") {
+        recordRisuHookLifecycle("beforeRequest", "registration_requested_unconfirmed");
+        await R.addRisuReplacer("beforeRequest", onBeforeRequest);
+        console.log(LOG_PREFIX, "addRisuReplacer beforeRequest requested (host acceptance unconfirmed)");
+      }
+    } catch (regErr) {
+      recordRisuHookLifecycle("beforeRequest", "registration_failed");
+      warnLog("addRisuReplacer beforeRequest failed:", regErr && regErr.message);
+    }
+    try {
+      if (typeof R.addRisuReplacer === "function") {
+        recordRisuHookLifecycle("afterRequest", "registration_requested_unconfirmed");
+        await R.addRisuReplacer("afterRequest", onAfterRequest);
+        console.log(LOG_PREFIX, "addRisuReplacer afterRequest requested (host acceptance unconfirmed)");
+      }
+    } catch (regErr) {
+      recordRisuHookLifecycle("afterRequest", "registration_failed");
+      warnLog("addRisuReplacer afterRequest failed:", regErr && regErr.message);
+    }
+    try {
+      if (typeof R.onUnload === "function") {
+        await R.onUnload(removeRegisteredRisuHooksOnUnload);
+        console.log(LOG_PREFIX, "onUnload hook cleanup registered");
+      }
+    } catch (regErr) {
+      warnLog("onUnload cleanup registration failed:", regErr && regErr.message);
     }
   }
 
@@ -7197,6 +7245,103 @@
     return pairs;
   }
 
+  function serializeAcceptedFinalRecoveryPayload(payload) {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const source = p.source_acceptance_finality && typeof p.source_acceptance_finality === "object"
+      ? p.source_acceptance_finality
+      : {};
+    const sourceAcceptanceFinality = {};
+    for (const [key, value] of Object.entries(source)) {
+      if (/api.?key|secret|token|auth|password/i.test(key)) continue;
+      if (typeof value === "string") sourceAcceptanceFinality[key] = value.slice(0, 2000);
+      else if (typeof value === "number" || typeof value === "boolean" || value == null) {
+        sourceAcceptanceFinality[key] = value;
+      }
+    }
+    return {
+      contract_version: "accepted_final_transport_recovery.v1",
+      chat_session_id: String(p.chat_session_id || "").slice(0, 512),
+      turn_index: Math.max(0, Math.trunc(Number(p.turn_index || 0))),
+      user_content: String(p.user_content || "").slice(0, STARTUP_MESSAGE_MAX_CHARS),
+      assistant_content: String(p.assistant_content || "").slice(0, STARTUP_MESSAGE_MAX_CHARS),
+      context_messages: (Array.isArray(p.context_messages) ? p.context_messages : [])
+        .slice(-ACTIVE_CHAT_BACKFILL_MAX_CONTEXT_MESSAGES)
+        .map(function(message) {
+          return {
+            role: String(message && message.role || "").slice(0, 32),
+            content: String(message && message.content || "").slice(0, 2000),
+          };
+        }),
+      risu_user_message_index: Number.isInteger(p.risu_user_message_index) ? p.risu_user_message_index : null,
+      risu_assistant_message_index: Number.isInteger(p.risu_assistant_message_index) ? p.risu_assistant_message_index : null,
+      pair_hash: String(p.pair_hash || "").slice(0, 128),
+      source: String(p.source || "risu_next_host_signal_active_chat").slice(0, 120),
+      recovery_reason: String(p.recovery_reason || "accepted_final_transport_failure").slice(0, 160),
+      source_acceptance_finality: sourceAcceptanceFinality,
+    };
+  }
+
+  function buildAcceptedFinalRecoveryPayload(sessionId, pair, sourceAcceptanceFinality, reason, turnIndex) {
+    return serializeAcceptedFinalRecoveryPayload({
+      chat_session_id: sessionId,
+      turn_index: turnIndex,
+      user_content: pair && pair.userContent,
+      assistant_content: pair && pair.assistantContent,
+      context_messages: pair && pair.contextMessages,
+      risu_user_message_index: pair && pair.risuUserMessageIndex,
+      risu_assistant_message_index: pair && pair.risuAssistantMessageIndex,
+      pair_hash: pair && pair.hash,
+      source: pair && pair.source,
+      recovery_reason: reason,
+      source_acceptance_finality: sourceAcceptanceFinality,
+    });
+  }
+
+  async function admitAcceptedFinalTransportRecovery(sessionId, pair, sourceAcceptanceFinality, reason, turnIndex) {
+    const payload = buildAcceptedFinalRecoveryPayload(
+      sessionId,
+      pair,
+      sourceAcceptanceFinality,
+      reason,
+      turnIndex
+    );
+    const queueResult = await persistFailedQueueAdmission(
+      "accepted_final",
+      payload,
+      enqueue("accepted_final", payload)
+    );
+    return {
+      status: queueResult && queueResult.queued ? "queued" : "failed",
+      turnIndex: Math.max(0, Math.trunc(Number(turnIndex || 0))),
+      reason: String(queueResult && queueResult.code || reason || "failed_queue_admission_failed"),
+      queueResult,
+    };
+  }
+
+  async function recoverAcceptedFinalTransport(payload) {
+    const p = serializeAcceptedFinalRecoveryPayload(payload);
+    if (!p.chat_session_id || !p.user_content || !p.assistant_content) {
+      return { status: "failed", reason: "accepted_final_recovery_payload_invalid" };
+    }
+    return backfillOneActiveChatCompletedTurn(
+      p.chat_session_id,
+      {
+        userContent: p.user_content,
+        assistantContent: p.assistant_content,
+        contextMessages: p.context_messages,
+        risuUserMessageIndex: p.risu_user_message_index,
+        risuAssistantMessageIndex: p.risu_assistant_message_index,
+        hash: p.pair_hash,
+        source: p.source,
+      },
+      {
+        source: p.source,
+        sourceAcceptanceFinality: p.source_acceptance_finality,
+        skipRecoveryAdmission: true,
+      }
+    );
+  }
+
   async function backfillOneActiveChatCompletedTurn(sessionId, pair, options = {}) {
     const sid = String(sessionId || "").trim();
     const opts = options && typeof options === "object" ? options : {};
@@ -7207,7 +7352,33 @@
     if (!sid || !pair || !pair.userContent || !pair.assistantContent) {
       return { status: "skipped", reason: "invalid_pair" };
     }
-    const turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair);
+    let turnResolution;
+    try {
+      turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair);
+    } catch (err) {
+      if (sourceAcceptanceFinality && opts.skipRecoveryAdmission !== true) {
+        return admitAcceptedFinalTransportRecovery(
+          sid,
+          pair,
+          sourceAcceptanceFinality,
+          "turn_resolution_failed",
+          0
+        );
+      }
+      return { status: "failed", reason: "turn_resolution_failed", turnIndex: 0 };
+    }
+    if (!turnResolution || typeof turnResolution !== "object") {
+      if (sourceAcceptanceFinality && opts.skipRecoveryAdmission !== true) {
+        return admitAcceptedFinalTransportRecovery(
+          sid,
+          pair,
+          sourceAcceptanceFinality,
+          "turn_resolution_unavailable",
+          0
+        );
+      }
+      return { status: "failed", reason: "turn_resolution_unavailable", turnIndex: 0 };
+    }
     if (turnResolution.status === "skip_pre_route_visible_pair") {
       return {
         status: "skipped",
@@ -7219,13 +7390,28 @@
     }
     const turn = Number(turnResolution.turnIndex);
     if (!Number.isFinite(turn) || turn < 1) {
-      return { status: "queued", reason: "turn_resolution_unavailable", turnIndex: 0 };
+      if (sourceAcceptanceFinality && opts.skipRecoveryAdmission !== true) {
+        return admitAcceptedFinalTransportRecovery(
+          sid,
+          pair,
+          sourceAcceptanceFinality,
+          "turn_resolution_unavailable",
+          0
+        );
+      }
+      return { status: "failed", reason: "turn_resolution_unavailable", turnIndex: 0 };
     }
     const existing = await fetchCanonicalChatLogsForTurn(sid, turn);
-    if (Array.isArray(existing)
-        && chatLogItemsContainRoleContent(existing, "user", pair.userContent)
-        && chatLogItemsContainRoleContent(existing, "assistant", pair.assistantContent)
-        && !sourceAcceptanceFinality) {
+    const rawTurnHasBothRoles = Array.isArray(existing)
+      && chatLogItemsContainRole(existing, "user")
+      && chatLogItemsContainRole(existing, "assistant");
+    const rawTurnContentMatches = rawTurnHasBothRoles
+      && chatLogItemsContainRoleContent(existing, "user", pair.userContent)
+      && chatLogItemsContainRoleContent(existing, "assistant", pair.assistantContent);
+    const hostObservedActiveTailReplacement = opts.hostObservedActiveTailReplacement === true
+      && Number.isInteger(pair.risuUserMessageIndex)
+      && Number.isInteger(pair.risuAssistantMessageIndex);
+    if (rawTurnContentMatches && !sourceAcceptanceFinality) {
       setTurnCounterAtLeast(sid, turn);
       await markActiveChatBackfillSaved(sid, Object.assign({}, pair, { turnIndex: turn }));
       return {
@@ -7235,27 +7421,42 @@
         derivedRescanNeeded: !!opts.forceCompleteTurn,
       };
     }
-    if (Array.isArray(existing)
-        && chatLogItemsContainRole(existing, "user")
-        && chatLogItemsContainRole(existing, "assistant")
+    if (rawTurnHasBothRoles
+        && !hostObservedActiveTailReplacement
         && !opts.forceCompleteTurn
         && !sourceAcceptanceFinality) {
       setTurnCounterAtLeast(sid, turn);
       return { status: "exists", turnIndex: turn, reason: "raw_turn_content_conflict_existing" };
     }
 
-    const body = await buildCompleteTurnRequestBody(
-      turn,
-      pair.userContent,
-      pair.assistantContent,
-      pair.contextMessages || [],
-      sid,
-      null,
-      sourceAcceptanceFinality
-        ? { sourceAcceptanceFinality }
-        : { allowExistingActiveMessage: true }
-    );
-    if (!body) return { status: "queued", reason: "request_build_failed", turnIndex: turn };
+    let body = null;
+    try {
+      body = await buildCompleteTurnRequestBody(
+        turn,
+        pair.userContent,
+        pair.assistantContent,
+        pair.contextMessages || [],
+        sid,
+        null,
+        sourceAcceptanceFinality
+          ? { sourceAcceptanceFinality }
+          : { allowExistingActiveMessage: true }
+      );
+    } catch (err) {
+      body = null;
+    }
+    if (!body) {
+      if (sourceAcceptanceFinality && opts.skipRecoveryAdmission !== true) {
+        return admitAcceptedFinalTransportRecovery(
+          sid,
+          pair,
+          sourceAcceptanceFinality,
+          "request_build_failed",
+          turn
+        );
+      }
+      return { status: "failed", reason: "request_build_failed", turnIndex: turn };
+    }
     body.client_meta = body.client_meta || {};
     if (sourceAcceptanceFinality) {
       body.client_meta.risu_host_final_confirmation = {
@@ -7277,6 +7478,12 @@
         routing_baseline_local_pairs: turnResolution.baseline ? Number(turnResolution.baseline.localPairCountAtRoute || 0) : 0,
         preserve_requested_turn_index: true,
         force_complete_turn: !!opts.forceCompleteTurn,
+        replacement_observation: hostObservedActiveTailReplacement
+          ? "host_observed_active_completed_tail_content_change"
+          : "",
+        replacement_observation_state: hostObservedActiveTailReplacement ? "observed" : "not_applicable",
+        risu_user_message_index: Number.isInteger(pair.risuUserMessageIndex) ? pair.risuUserMessageIndex : null,
+        risu_assistant_message_index: Number.isInteger(pair.risuAssistantMessageIndex) ? pair.risuAssistantMessageIndex : null,
       };
     }
 
@@ -7285,6 +7492,30 @@
     if (failReasons.includes("raw_turn_content_conflict")) {
       setTurnCounterAtLeast(sid, turn);
       return { status: "exists", turnIndex: turn, reason: "raw_turn_content_conflict" };
+    }
+    if (completeTurnNeedsFreshReconciliationRetry(result)) {
+      const queuedPayload = buildCompleteTurnQueuePayload(body);
+      const retryKeyApplied = queuedPayload
+        && applyBackendCompleteTurnReconciliationRetryKey(queuedPayload, result);
+      const queueResult = retryKeyApplied
+        ? await persistFailedQueueAdmission(
+            "complete_turn",
+            queuedPayload,
+            enqueue("complete_turn", queuedPayload)
+          )
+        : null;
+      return {
+        status: queueResult && queueResult.queued ? "queued" : "failed",
+        turnIndex: turn,
+        reason: String(
+          queueResult && queueResult.code
+          || (retryKeyApplied ? result.code : "reconciliation_retry_key_missing")
+          || "reconciliation_retry_queue_failed"
+        ),
+        queueResult,
+        rawCommitted: true,
+        reconciliationRequired: true,
+      };
     }
     const ok = !!(result && result.status !== "skeleton" && result.status !== "error" && result.save_ok !== false);
     if (ok) {
@@ -7350,8 +7581,13 @@
       let queued = 0;
       let skipped = 0;
       let lastTurn = null;
-      for (const pair of targetPairs) {
-        const result = await backfillOneActiveChatCompletedTurn(sid, pair, options);
+      for (let pairIndex = 0; pairIndex < targetPairs.length; pairIndex++) {
+        const pair = targetPairs[pairIndex];
+        const pairOptions = Object.assign({}, options, {
+          hostObservedActiveTailReplacement: options.reason === "before_request"
+            && pairIndex === targetPairs.length - 1,
+        });
+        const result = await backfillOneActiveChatCompletedTurn(sid, pair, pairOptions);
         lastTurn = Number(result && result.turnIndex) || lastTurn;
         if (result.status === "saved") saved++;
         else if (result.status === "exists") exists++;
@@ -8576,14 +8812,20 @@
         : "";
       const pinnedRecord = await loadPinnedSessionId(charIdx, chatIdx, stableCharacterId, chatUniqueId);
       const pinnedObservedChatUniqueId = String(pinnedRecord && pinnedRecord.observedChatUniqueId || "").trim();
+      const routePinnedRecord = chatUniqueId
+        && pinnedRecord
+        && pinnedRecord.pinKeyMode === "legacy_index_fallback"
+        && pinnedObservedChatUniqueId !== chatUniqueId
+          ? null
+          : pinnedRecord;
       const pinnedCidLostRuntimeId = !chatUniqueId
         && pinnedRecord
         && isCidSessionId(pinnedRecord.sessionId)
         && !!pinnedObservedChatUniqueId;
 
       if (chatUniqueId) {
-        if (pinnedRecord && pinnedRecord.sessionId) {
-          const pinnedSessionId = pinnedRecord.sessionId;
+        if (routePinnedRecord && routePinnedRecord.sessionId) {
+          const pinnedSessionId = routePinnedRecord.sessionId;
 
           if (pinnedObservedChatUniqueId && pinnedObservedChatUniqueId === chatUniqueId) {
             sessionId = (cidSessionId && isIndexSessionId(pinnedSessionId)) ? cidSessionId : pinnedSessionId;
@@ -8601,8 +8843,8 @@
         if (!sessionId) {
           sessionId = cidSessionId;
         }
-      } else if (pinnedRecord && pinnedRecord.sessionId && !pinnedCidLostRuntimeId) {
-        sessionId = pinnedRecord.sessionId;
+      } else if (routePinnedRecord && routePinnedRecord.sessionId && !pinnedCidLostRuntimeId) {
+        sessionId = routePinnedRecord.sessionId;
       } else if (chatIdx != null && charIdx != null) {
         sessionId = fallbackIndexSessionId;
       } else if (charIdx != null) {
@@ -8619,7 +8861,7 @@
           hostChatIdState: "observed",
           stableCharacterId,
           stableCharacterIdState: activeChatIdentity.stableCharacterIdState,
-          bindingMode: pinnedRecord && pinnedRecord.pinKeyMode === "legacy_index_fallback"
+          bindingMode: routePinnedRecord && routePinnedRecord.pinKeyMode === "legacy_index_fallback"
             ? "legacy_promotion"
             : "",
           latestUserHash: activeChatIdentity.latestUserHash,
@@ -10791,6 +11033,12 @@
       criticClaudePromptCacheMode: criticOverrides.claudePromptCacheMode,
       criticExtraHeadersJson: criticOverrides.extraHeadersJson,
       criticExtraBodyJson: criticOverrides.extraBodyJson,
+      llmRetryCount: Math.trunc(sanitizeNumber(
+        s.llmRetryCount,
+        DEFAULT_SETTINGS.llmRetryCount,
+        0,
+        10
+      )),
       supervisorProvider: mainProvider,
       supervisorApiKey: typeof s.pluginMainApiKey === "string" ? s.pluginMainApiKey : "",
       supervisorEndpoint: typeof s.pluginMainEndpoint === "string" ? s.pluginMainEndpoint : "",
@@ -10856,6 +11104,12 @@
         max_tokens: getSubLlmMaxCompletionTokensSetting(settings.subLlmMaxCompletionTokens),
         max_completion_tokens: getSubLlmMaxCompletionTokensSetting(settings.subLlmMaxCompletionTokens),
         timeout_ms: getCriticTimeoutMs(settings.criticTimeout),
+        retry_count: Math.trunc(sanitizeNumber(
+          settings.llmRetryCount,
+          DEFAULT_SETTINGS.llmRetryCount,
+          0,
+          10
+        )),
         reasoning_preset: getSubLlmReasoningPresetSetting(settings.subLlmReasoningPreset),
         reasoning_effort: getSubLlmReasoningEffortSetting(settings.subLlmReasoningEffort),
         reasoning_budget_tokens: getSubLlmReasoningBudgetTokensSetting(settings.subLlmReasoningBudgetTokens),
@@ -13719,15 +13973,16 @@
       while (newlineIndex >= 0) {
         const line = buffered.slice(0, newlineIndex);
         buffered = buffered.slice(newlineIndex + 1);
-        if (await consumeTurnWorkflowHUDStreamLine(line, token, requestId)) return;
+        if (await consumeTurnWorkflowHUDStreamLine(line, token, requestId)) return true;
         newlineIndex = buffered.indexOf("\n");
       }
       if (chunk && chunk.done === true) {
         buffered += decoder.decode();
-        if (buffered.trim()) await consumeTurnWorkflowHUDStreamLine(buffered, token, requestId);
-        return;
+        if (buffered.trim() && await consumeTurnWorkflowHUDStreamLine(buffered, token, requestId)) return true;
+        return false;
       }
     }
+    return true;
   }
 
   function startTurnWorkflowHUDWatch(requestId) {
@@ -13756,21 +14011,31 @@
       });
     }
     (async function() {
-      const revision = sameRequestId ? _turnWorkflowHUDLastRevision : 0;
-      const waitMs = getRequestTimeoutSettingMs();
-      const path = "/turn-workflow/events?request_id=" + encodeURIComponent(normalizedRequestId)
-        + "&after_revision=" + encodeURIComponent(String(revision))
-        + "&wait_ms=" + encodeURIComponent(String(waitMs));
       const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
       if (!bridgeRoute.url) {
         throw turnWorkflowHUDStreamFailure("hud_transport_unavailable", "bridge URL is unavailable");
       }
       const controller = new AbortController();
       _turnWorkflowHUDStreamAbortController = controller;
+      const revision = _turnWorkflowHUDLastRevision;
+      const waitMs = getRequestTimeoutSettingMs();
+      const path = "/turn-workflow/events?request_id=" + encodeURIComponent(normalizedRequestId)
+        + "&after_revision=" + encodeURIComponent(String(revision))
+        + "&wait_ms=" + encodeURIComponent(String(waitMs));
       const reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
-      if (token !== _turnWorkflowHUDWatchToken || _turnWorkflowHUDActiveRequestId !== normalizedRequestId) return;
+      if (token !== _turnWorkflowHUDWatchToken || _turnWorkflowHUDActiveRequestId !== normalizedRequestId) {
+        try { await reader.cancel(); } catch { /* no-op */ }
+        return;
+      }
       _turnWorkflowHUDStreamReader = reader;
-      await consumeTurnWorkflowHUDStream(reader, token, normalizedRequestId);
+      const terminal = await consumeTurnWorkflowHUDStream(reader, token, normalizedRequestId);
+      _turnWorkflowHUDStreamReader = null;
+      if (!terminal) {
+        throw turnWorkflowHUDStreamFailure(
+          "hud_transport_nonterminal_eof",
+          "HUD stream ended before a terminal backend state"
+        );
+      }
     })().catch(function(err) {
       debugLog("turn workflow HUD watcher failed:", err && err.message);
       if (token === _turnWorkflowHUDWatchToken) {
@@ -14433,6 +14698,22 @@
       if (type === "chat_log") {
         return `${type}|${p.chat_session_id || ""}|${p.turn_index ?? 0}|${p.role || ""}|${computeOrchestrationDirtyHashOr1c(p.content || "")}`;
       }
+      if (type === "accepted_final") {
+        const observation = p.source_acceptance_finality && typeof p.source_acceptance_finality === "object"
+          ? p.source_acceptance_finality
+          : {};
+        return [
+          type,
+          p.chat_session_id || "",
+          observation.archive_center_request_correlation_id || "request_unobserved",
+          observation.host_chat_id || "",
+          observation.message_index ?? p.risu_assistant_message_index ?? "",
+          observation.generation_id || observation.message_time_ms || "generation_unobserved",
+          p.pair_hash || computeOrchestrationDirtyHashOr1c(
+            String(p.user_content || "") + "\n---assistant---\n" + String(p.assistant_content || "")
+          ),
+        ].join("|");
+      }
       if (type === "complete_turn") {
         const meta = p.client_meta && typeof p.client_meta === "object" ? p.client_meta : {};
         const idempotencyKey = String(meta.idempotency_key || "").trim();
@@ -14516,8 +14797,10 @@
         ? serializeCompleteTurnRecoveryPayload(p)
         : item.type === "chat_log"
           ? serializeChatLogRecoveryPayload(p)
+          : item.type === "accepted_final"
+            ? serializeAcceptedFinalRecoveryPayload(p)
           : {};
-      if (item.type !== "complete_turn" && item.type !== "chat_log") {
+      if (item.type !== "complete_turn" && item.type !== "chat_log" && item.type !== "accepted_final") {
         for (const [k, v] of Object.entries(p)) {
           // 민감정보 제거
           if (/api.?key|secret|token|auth|password/i.test(k)) continue;
@@ -15397,7 +15680,15 @@
       let reconciliationRequired = false;
       let rawSavedTerminalResult = false;
       try {
-        if (item.type === "complete_turn") {
+        if (item.type === "accepted_final") {
+          const recoveryResult = await recoverAcceptedFinalTransport(item.payload);
+          ok = !!(recoveryResult && (
+            recoveryResult.status === "saved"
+            || recoveryResult.status === "exists"
+            || recoveryResult.status === "queued"
+          ));
+          terminalResultCode = String(recoveryResult && recoveryResult.reason || "");
+        } else if (item.type === "complete_turn") {
           if (!await refreshQueuedCompleteTurnSourceObservation(item.payload)) {
             pendingSourceConfirmation = await queuePendingCompleteTurnPayload(item.payload, "pending_confirmation");
             if (!pendingSourceConfirmation) {
@@ -15460,7 +15751,14 @@
             reconciliationRequired = requestStatus.reconciliation_required === true
               || requestStatus.derived_retry_required === true
               || completedResultStatus === "partial";
-            if (completedResultStatus === "rejected" || completedResultStatus === "error") {
+            if (completeTurnNeedsFreshReconciliationRetry(requestStatus)) {
+              if (!applyBackendCompleteTurnReconciliationRetryKey(item.payload, requestStatus)) {
+                terminalSourceRejection = true;
+                rawSavedTerminalResult = true;
+                terminalResultCode = "reconciliation_retry_key_missing";
+              }
+              ok = false;
+            } else if (completedResultStatus === "rejected" || completedResultStatus === "error") {
               terminalSourceRejection = true;
               rawSavedTerminalResult = true;
               ok = false;
@@ -15506,9 +15804,18 @@
               && (res.queue_action === "discard" || res.retryable === false)
             );
             terminalResultCode = String(res && res.code || "");
-            ok = !!(res && res.save_ok === true);
             rawSavedTerminalResult = terminalSourceRejection && !!(res && (res.save_ok === true || res.raw_committed === true));
             reconciliationRequired = !!(res && res.reconciliation_required === true);
+            if (completeTurnNeedsFreshReconciliationRetry(res)) {
+              if (!applyBackendCompleteTurnReconciliationRetryKey(item.payload, res)) {
+                terminalSourceRejection = true;
+                rawSavedTerminalResult = true;
+                terminalResultCode = "reconciliation_retry_key_missing";
+              }
+              ok = false;
+            } else {
+              ok = !!(res && res.save_ok === true);
+            }
           }
         } else if (item.type === "save") {
           const res = await bridgeFetchWithRetry("/turns", { method: "POST", body: item.payload }, 1);
@@ -15550,7 +15857,12 @@
         queueChanged = true;
       } else if (ok) {
         debugLog(`drainFailedQueue: ${item.type} turn ${item.payload.turn_index} recovered`);
-        if (item.type === "complete_turn") {
+        if (item.type === "accepted_final") {
+          updateRuntimeState("lastStreamingAfterRequest", "ok", {
+            turnIndex: item.payload.turn_index,
+            detail: "accepted host final recovered from durable transport queue",
+          });
+        } else if (item.type === "complete_turn") {
           updateRuntimeState("lastSaveStatus", "ok", { turnIndex: item.payload.turn_index, detail: "recovered via complete-turn queue" });
           updateRuntimeState("lastCompleteStatus", "ok", { turnIndex: item.payload.turn_index, detail: "recovered via complete-turn queue" });
           updateRuntimeState("lastCompleteTurnStatus", reconciliationRequired ? "warn" : "ok", {
@@ -17319,6 +17631,10 @@
           message_chat_id_state: messageChatId ? "observed" : "unobserved",
           generation_id: generationId,
           generation_id_state: generationId ? "observed" : "unobserved",
+          branch_id: "",
+          branch_id_state: "not_exposed_by_risuai",
+          message_swipe_id: Number.isInteger(message.swipeId) ? message.swipeId : -1,
+          message_swipe_id_state: Number.isInteger(message.swipeId) ? "observed" : "not_present",
           message_time_ms: messageTimeMs,
           message_time_state: messageTimeMs > 0 ? "observed" : "unobserved",
           request_message_count: Number(requestContext.requestMessageCount || 0),
@@ -17375,13 +17691,29 @@
             sourceAcceptanceFinality: observation,
           });
         }).then(function(result) {
-          updateRuntimeState("lastStreamingAfterRequest", result && result.status === "saved" ? "ok" : "warn", {
+          const durable = !!(result && (
+            result.status === "saved"
+            || result.status === "exists"
+            || (result.status === "queued" && result.queueResult && result.queueResult.queued === true)
+          ));
+          if (!durable
+            && requestContext.state === "accepted"
+            && requestContext.acceptedObservationKey === observationKey) {
+            requestContext.state = "candidate_observed";
+            requestContext.acceptedObservationKey = "";
+          }
+          updateRuntimeState("lastStreamingAfterRequest", durable ? "ok" : "warn", {
             detail: "host final persistence " + String(result && result.status || "unknown"),
             reason_code: String(result && result.reason || ""),
             signalSource: String(signalSource || "beforeRequest"),
             promptMemoryAvailability: "one_turn_late",
           });
         }).catch(function(err) {
+          if (requestContext.state === "accepted"
+            && requestContext.acceptedObservationKey === observationKey) {
+            requestContext.state = "candidate_observed";
+            requestContext.acceptedObservationKey = "";
+          }
           warnLog("[final-confirmation] host-final persistence failed:", err && err.message);
         });
         updateRuntimeState("lastStreamingAfterRequest", "ok", {
@@ -17651,6 +17983,53 @@
           source: "backend",
           detail: String(result.code || "terminal_complete_turn_result"),
           failReasons: Array.isArray(result.fail_reasons) ? result.fail_reasons : [],
+        });
+        return;
+      }
+      if (completeTurnNeedsFreshReconciliationRetry(result)) {
+        if (!applyBackendCompleteTurnReconciliationRetryKey(payload, result)) {
+          await removePendingFinalConfirmationRecovery(
+            payload,
+            pending.recoveryKey,
+            "reconciliation_retry_key_missing"
+          );
+          updateRuntimeState("lastCompleteTurnStatus", "fail", {
+            turnIndex: result.turn_index || payload.turn_index,
+            source: "backend",
+            detail: "reconciliation_retry_key_missing",
+            failReasons: ["reconciliation_retry_key_missing"],
+          });
+          return;
+        }
+        const queueResult = await persistFailedQueueAdmission(
+          "complete_turn",
+          payload,
+          enqueue("complete_turn", payload)
+        );
+        if (queueResult && queueResult.queued) {
+          await removePendingFinalConfirmationRecovery(
+            payload,
+            pending.recoveryKey,
+            "moved_to_fresh_reconciliation_retry"
+          );
+        } else {
+          pending.inFlight = false;
+          await persistPendingFinalConfirmationRecovery(
+            payload,
+            "fresh_reconciliation_retry_queue_failed",
+            "",
+            pending.recoveryKey
+          );
+          pending.recoveryKey = pendingFinalConfirmationRecoveryKey(payload);
+          queuePendingFinalConfirmation(pending);
+        }
+        updateRuntimeState("lastCompleteTurnStatus", queueResult && queueResult.queued ? "warn" : "fail", {
+          turnIndex: result.turn_index || payload.turn_index,
+          source: "backend",
+          detail: queueResult && queueResult.queued
+            ? "raw saved; reconciliation retry retained with fresh idempotency"
+            : String(queueResult && queueResult.code || "reconciliation_retry_queue_failed"),
+          failReasons: Array.isArray(result.fail_reasons) ? result.fail_reasons : ["reconciliation_required"],
         });
         return;
       }
@@ -26734,6 +27113,10 @@
       message_chat_id_state: "unobserved",
       generation_id: "",
       generation_id_state: "unobserved",
+      branch_id: "",
+      branch_id_state: "not_exposed_by_risuai",
+      message_swipe_id: -1,
+      message_swipe_id_state: "unobserved",
       message_time_ms: 0,
       message_time_state: "unobserved",
       user_message_index: -1,
@@ -26822,6 +27205,8 @@
         observation.generation_id = generationInfo.generationId.trim();
         observation.generation_id_state = "observed";
       }
+      observation.message_swipe_id = Number.isInteger(message.swipeId) ? message.swipeId : -1;
+      observation.message_swipe_id_state = Number.isInteger(message.swipeId) ? "observed" : "not_present";
       if (typeof message.time === "number" && Number.isFinite(message.time)) {
         observation.message_time_ms = Math.trunc(message.time);
         observation.message_time_state = "observed";
@@ -27071,7 +27456,7 @@
         : [];
       const meta = body.client_meta && typeof body.client_meta === "object" ? body.client_meta : {};
       const safeClientMeta = {};
-      ["episode_interval_turns", "long_session_refresh_enabled", "chapter_auto_enabled", "arc_auto_enabled", "saga_auto_enabled", "chapter_interval_turns", "arc_interval_turns", "saga_interval_turns", "request_id", "idempotency_key"].forEach(function(key) {
+      ["episode_interval_turns", "long_session_refresh_enabled", "chapter_auto_enabled", "arc_auto_enabled", "saga_auto_enabled", "chapter_interval_turns", "arc_interval_turns", "saga_interval_turns", "request_id", "idempotency_key", "reconciliation_retry_pending"].forEach(function(key) {
         if (Object.prototype.hasOwnProperty.call(meta, key)) safeClientMeta[key] = meta[key];
       });
       if (typeof meta.source_revision === "string" || typeof meta.source_revision === "number") {
@@ -27132,6 +27517,31 @@
     } catch {
       return null;
     }
+  }
+
+  function completeTurnNeedsFreshReconciliationRetry(result) {
+    return !!(result
+      && result.save_ok === true
+      && result.raw_committed === true
+      && result.reconciliation_required === true
+      && result.derived_retry_required === false
+      && result.queue_action === "retry"
+      && result.retryable === true);
+  }
+
+  function applyBackendCompleteTurnReconciliationRetryKey(payload, result) {
+    if (!payload || typeof payload !== "object") return false;
+    const freshKey = String(
+      result && result.reconciliation_retry_idempotency_key || ""
+    ).trim();
+    if (!freshKey) return false;
+    const meta = payload.client_meta && typeof payload.client_meta === "object"
+      ? payload.client_meta
+      : (payload.client_meta = {});
+    meta.reconciliation_retry_pending = true;
+    meta.idempotency_key = freshKey;
+    meta.request_id = freshKey;
+    return true;
   }
 
   async function refreshQueuedCompleteTurnSourceObservation(payload, options = {}) {
@@ -27198,6 +27608,12 @@
       }
       const refreshedPayload = buildCompleteTurnQueuePayload(rebuilt);
       if (!refreshedPayload) return false;
+      if (meta.reconciliation_retry_pending === true && meta.idempotency_key) {
+        refreshedPayload.client_meta = refreshedPayload.client_meta || {};
+        refreshedPayload.client_meta.reconciliation_retry_pending = true;
+        refreshedPayload.client_meta.idempotency_key = String(meta.idempotency_key);
+        refreshedPayload.client_meta.request_id = String(meta.idempotency_key);
+      }
       // Recovery storage is credential-free, but a live retry must use the
       // current runtime provider configuration. The next storage serialization
       // strips these fields again through buildCompleteTurnQueuePayload.
@@ -35218,7 +35634,6 @@
         clearArchiveCenterRecomposerBridge();
         return false;
       }
-      const now = Date.now();
       const inputCandidates = Array.isArray(orchResult && orchResult._recomposerBridgeInputCandidates)
         ? orchResult._recomposerBridgeInputCandidates.slice()
         : [];
@@ -35238,17 +35653,40 @@
       });
       const primaryBinding = inputBindings[inputBindings.length - 1]
         || { digest: archiveCenterRecomposerInputDigest(""), chars: 0 };
+      const lifecycleState = "current_request_payload_applied";
+      const sessionId = String(orchResult && orchResult._chatSessionId || contract.session_id || "").trim();
+      const turnIndex = Math.trunc(Number(contract.turn_index || 0));
+      const payloadPlanId = String(observation.payload_plan_id || plan.payload_plan_id || "").trim();
+      if (!sessionId
+        || sessionId !== String(contract.session_id || "").trim()
+        || turnIndex < 1
+        || turnIndex !== Math.trunc(Number(contract.turn_index || 0))
+        || !payloadPlanId) {
+        clearArchiveCenterRecomposerBridge();
+        return false;
+      }
+      inputBindings.forEach(function(binding) {
+        binding.lifecycle_digest = archiveCenterRecomposerInputDigest([
+          sessionId,
+          turnIndex,
+          binding.digest,
+          binding.chars,
+          payloadPlanId,
+          lifecycleState,
+        ].join("|"));
+      });
       const envelope = {
         contract_version: RECOMPOSER_BRIDGE_CONTRACT,
         owner: "archive_center_host_adapter",
         transport_only: true,
-        published_at_ms: now,
-        expires_at_ms: now + RECOMPOSER_BRIDGE_TTL_MS,
+        lifecycle_state: lifecycleState,
         input_digest: primaryBinding.digest,
         input_chars: primaryBinding.chars,
+        lifecycle_digest: primaryBinding.lifecycle_digest,
         input_bindings: inputBindings,
-        session_id: String(orchResult && orchResult._chatSessionId || contract.session_id || ""),
-        turn_index: Number(contract.turn_index || 0),
+        session_id: sessionId,
+        turn_index: turnIndex,
+        payload_plan_id: payloadPlanId,
         enhancement_contract: contract,
         memory_delivery_plan: memoryPlan,
         memory_delivery_lineage: memoryLineage || null,
@@ -35257,7 +35695,8 @@
           status: observation.status || "unobserved",
           payload_application_status: observation.payload_application_status || "unobserved",
           reason_code: observation.reason_code || "",
-          payload_plan_id: observation.payload_plan_id || plan.payload_plan_id || null,
+          lifecycle_state: lifecycleState,
+          payload_plan_id: payloadPlanId,
         },
       };
       globalThis[RECOMPOSER_BRIDGE_KEY] = envelope;
@@ -36297,8 +36736,8 @@
     try {
       recordRisuHookLifecycle("beforeRequest", "callback_observed");
       debugLog("beforeRequest hook fired, type:", type);
-      if (!settings.enabled || !isSaveType(type)) return payload;
       clearArchiveCenterRecomposerBridge();
+      if (!settings.enabled || !isSaveType(type)) return payload;
 
       const extractedMessages = extractMessages(payload);
       let messages = Array.isArray(extractedMessages.messages) ? extractedMessages.messages : [];
@@ -38186,7 +38625,34 @@
       let rawVerify = null;
       if (_ctOk && _ctResult.save_ok) {
         saveSucceeded = true;
-        if (_ctResult.derived_retry_required === true) {
+        if (completeTurnNeedsFreshReconciliationRetry(_ctResult)) {
+          const retryKeyApplied = _ctQueuedPayload
+            && applyBackendCompleteTurnReconciliationRetryKey(_ctQueuedPayload, _ctResult);
+          const queueResult = retryKeyApplied
+            ? await persistFailedQueueAdmission(
+                "complete_turn",
+                _ctQueuedPayload,
+                enqueue("complete_turn", _ctQueuedPayload)
+              )
+            : null;
+          completeTurnRetryQueued = !!(queueResult && queueResult.queued);
+          completeTurnQueueFailureCode = completeTurnRetryQueued
+            ? ""
+            : String(
+                queueResult && queueResult.code
+                || (retryKeyApplied ? "reconciliation_retry_queue_failed" : "reconciliation_retry_key_missing")
+              );
+          updateRuntimeState("lastCompleteTurnStatus", completeTurnRetryQueued ? "warn" : "fail", {
+            turnIndex: persistedTurnIdx,
+            source: _ctSource,
+            detail: completeTurnRetryQueued
+              ? "raw saved; reconciliation retry retained with fresh idempotency"
+              : completeTurnQueueFailureCode,
+            failReasons: Array.isArray(_ctResult.fail_reasons)
+              ? _ctResult.fail_reasons
+              : ["reconciliation_required"],
+          });
+        } else if (_ctResult.derived_retry_required === true) {
           if (_ctQueuedPayload && removeQueuedItem("complete_turn", _ctQueuedPayload)) {
             flushQueueSave().catch(function() {});
           }
@@ -40040,7 +40506,7 @@
     const stage = String(progress.stage || "running");
     const pct = Math.max(0, Math.min(100, Number(progress.progress_percent || 0)));
     const processed = Number(adminJobProgressValue(progress, ["processed", "processed_count"], 0) || 0);
-    const total = Number(adminJobProgressValue(progress, ["candidate_count", "total_candidates", "total"], 0) || 0);
+    const total = Number(adminJobProgressValue(progress, ["display_total", "candidate_count", "total_candidates", "total"], 0) || 0);
     const succeeded = Number(adminJobProgressValue(progress, ["succeeded", "upserted", "saved"], 0) || 0);
     const failed = Number(adminJobProgressValue(progress, ["failed_count", "failed"], 0) || 0);
     const skipped = Number(adminJobProgressValue(progress, ["skipped_count", "skipped"], 0) || 0);
@@ -40091,7 +40557,11 @@
         '</span>';
     }
     if (job.terminal !== true) {
-      html += '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" data-admin-job-refresh="' + escapeAttr(String(kind || "job")) + '">Refresh job status</button></div>';
+      const jobKind = escapeAttr(String(kind || "job"));
+      html += '<div class="mo-inline-actions">' +
+        '<button type="button" class="mo-btn mo-btn-info" data-admin-job-refresh="' + jobKind + '">Refresh job status</button>' +
+        '<button type="button" class="mo-btn mo-btn-danger" data-admin-job-cancel="' + jobKind + '">Cancel job</button>' +
+        '</div>';
     }
     html += '</div>';
     return html;
@@ -40169,7 +40639,10 @@
     if (status === "completed") {
       state.error = null;
       state.result = job.result || job;
-    } else if (status === "failed" || status === "cancelled" || status === "canceled") {
+    } else if (status === "cancelled" || status === "canceled") {
+      state.result = job.result || null;
+      state.error = null;
+    } else if (status === "failed") {
       state.result = job.result || null;
       state.error = String(job.error || (job.progress && job.progress.error) || "background job failed");
     }
@@ -40294,6 +40767,37 @@
       );
       return null;
     }
+  }
+
+  async function cancelAdminBackgroundJob(kind, state, jobId) {
+    const normalizedJobId = String(jobId || "").trim();
+    if (!state || !normalizedJobId) return null;
+    const job = await safeCall(
+      () => bridgeFetch("/admin/jobs/" + encodeURIComponent(normalizedJobId), {
+        method: "DELETE",
+        timeoutMs: getRequestTimeoutSettingMs(),
+      }),
+      null, "cancelAdminBackgroundJob"
+    );
+    if (!job) {
+      markAdminBackgroundJobStreamUnavailable(
+        kind,
+        state,
+        normalizedJobId,
+        "admin_job_cancel_transport_unavailable",
+        "job cancellation request failed"
+      );
+      return null;
+    }
+    if (job.status === "not_found") {
+      state.loading = false;
+      state.error = "background job not found: " + normalizedJobId;
+      cancelAdminBackgroundJobStream(kind, normalizedJobId);
+      refreshExplorerUI({ preserveScroll: true });
+      return job;
+    }
+    applyAdminBackgroundJobSnapshot(kind, state, normalizedJobId, job);
+    return job;
   }
 
   async function reindexSession(sessionId, force, batchSize, maxItems) {
@@ -46661,6 +47165,19 @@
           const state = stateByKind[kind];
           const jobId = String(state && state.job && state.job.job_id || "").trim();
           if (state && jobId) await pollAdminBackgroundJob(kind, state, jobId);
+        });
+      });
+      document.querySelectorAll("[data-admin-job-cancel]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const kind = String(button.getAttribute("data-admin-job-cancel") || "");
+          const stateByKind = {
+            reindex: _reindexState,
+            rescan: _rescanState,
+            session_normalize: _sessionNormalizeState,
+          };
+          const state = stateByKind[kind];
+          const jobId = String(state && state.job && state.job.job_id || "").trim();
+          if (state && jobId) await cancelAdminBackgroundJob(kind, state, jobId);
         });
       });
 
@@ -53815,29 +54332,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       // ── 2단계: RisuAI Orchestration hook 먼저 등록 (최우선) ──
       //    첫 채팅이 hook 등록 전에 발생하지 않도록
       //    다른 비동기 작업(health check 등)보다 먼저 실행한다.
-      if (R) {
-        try {
-          if (typeof R.addRisuScriptHandler === "function") {
-            recordRisuHookLifecycle("input", "registration_requested_unconfirmed");
-            await R.addRisuScriptHandler("input", onInputHook);
-            console.log(LOG_PREFIX, "addRisuScriptHandler input requested (host acceptance unconfirmed)");
-          }
-          if (typeof R.addRisuReplacer === "function") {
-            recordRisuHookLifecycle("beforeRequest", "registration_requested_unconfirmed");
-            await R.addRisuReplacer("beforeRequest", onBeforeRequest);
-            console.log(LOG_PREFIX, "addRisuReplacer beforeRequest requested (host acceptance unconfirmed)");
-            recordRisuHookLifecycle("afterRequest", "registration_requested_unconfirmed");
-            await R.addRisuReplacer("afterRequest", onAfterRequest);
-            console.log(LOG_PREFIX, "addRisuReplacer afterRequest requested (host acceptance unconfirmed)");
-          }
-          if (typeof R.onUnload === "function") {
-            await R.onUnload(removeRegisteredRisuHooksOnUnload);
-            console.log(LOG_PREFIX, "onUnload hook cleanup registered");
-          }
-        } catch (regErr) {
-          warnLog("addRisuReplacer failed:", regErr.message);
-        }
-      }
+      await registerRisuLifecycleHooks();
 
       // ── 3단계: pluginStorage에서 영속 설정 로드 (비동기) ──
       //    재시작/새로고침 후에도 API Key 등이 복원된다.

@@ -81,6 +81,38 @@ func TestAdminJobDeleteCancelsManagerOwnedContextAndStaysTerminal(t *testing.T) 
 	}
 }
 
+func TestAdminJobProgressPublishesStageScopedDisplayTotal(t *testing.T) {
+	manager := newAdminJobManager()
+	manager.jobs["job-display-total"] = &adminBackgroundJob{
+		ID:       "job-display-total",
+		Status:   "running",
+		Progress: map[string]any{"stage": "queued", "candidate_count": 0, "display_total": 0},
+		changed:  make(chan struct{}),
+	}
+	manager.order = append(manager.order, "job-display-total")
+
+	manager.update("job-display-total", "running", map[string]any{
+		"stage": "raw_repair_replay", "candidate_count": 3,
+	})
+	first, ok := manager.get("job-display-total")
+	if !ok {
+		t.Fatal("job disappeared")
+	}
+	firstProgress := first["progress"].(map[string]any)
+	if got := intFromAny(firstProgress["display_total"], -1); got != 3 {
+		t.Fatalf("raw repair display_total=%d, want 3", got)
+	}
+
+	manager.update("job-display-total", "running", map[string]any{
+		"stage": "inspect_after", "progress_percent": 90,
+	})
+	second, _ := manager.get("job-display-total")
+	secondProgress := second["progress"].(map[string]any)
+	if got := intFromAny(secondProgress["display_total"], -1); got != 0 {
+		t.Fatalf("stage transition retained stale display_total=%d", got)
+	}
+}
+
 func TestAdminJobEventsStreamPublishesChangedRevisionsUntilTerminal(t *testing.T) {
 	manager := newAdminJobManager()
 	started := make(chan struct{})

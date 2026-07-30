@@ -30,6 +30,7 @@ const (
 	ollamaSourceSearchToolResultRunes = 12000
 	SourceDiscoveryUserAgent          = "ArchiveCenter-SourceDiscovery/1.0"
 	sourceCandidateExtractionContract = "source-candidate-extraction.v3"
+	ollamaSourceSearchMaxToolCalls    = 3
 )
 
 func (s *Server) registerSourceDiscoveryRoutes(mux *http.ServeMux) {
@@ -1657,6 +1658,9 @@ func executeOllamaSourceSearchAgent(ctx context.Context, cfg completeTurnLLMConf
 	seenQueries := map[string]bool{}
 	toolCallsUsed := 0
 	for {
+		if toolCallsUsed >= ollamaSourceSearchMaxToolCalls {
+			break
+		}
 		body := map[string]any{
 			"model": cfg.Model, "messages": messages, "tools": []any{tool}, "stream": false,
 			"think": ollamaSourceSearchThink(cfg.ReasoningEffort),
@@ -1685,6 +1689,9 @@ func executeOllamaSourceSearchAgent(ctx context.Context, cfg completeTurnLLMConf
 		messages = append(messages, message)
 		novelToolCall := false
 		for _, rawCall := range toolCalls {
+			if toolCallsUsed >= ollamaSourceSearchMaxToolCalls {
+				break
+			}
 			call := mapFromAny(rawCall)
 			function := mapFromAny(call["function"])
 			if !strings.EqualFold(strings.TrimSpace(stringFromMap(function, "name")), "web_search") {
@@ -1819,6 +1826,9 @@ func executeOpenAINativeSourceSearch(ctx context.Context, cfg completeTurnLLMCon
 		fallback := cloneMap(body)
 		delete(fallback, "temperature")
 		delete(fallback, "reasoning")
+		if !cfg.RetryBudget.take() {
+			return nil, fmt.Errorf("OpenAI web search returned HTTP %d: %s", status, scrubProxySecret(proxyErrorDetail(status, data, raw), cfg.APIKey))
+		}
 		status, data, raw, err = proxyDoJSON(ctx, target, map[string]string{
 			"Content-Type": "application/json", "Accept": "application/json", "Authorization": "Bearer " + strings.TrimSpace(cfg.APIKey),
 		}, fallback)
@@ -2437,7 +2447,7 @@ func runSourceCandidateExtractionBatch(ctx context.Context, cfg completeTurnLLMC
 	}
 	parsed, err := parseJSONFromLLMContent(content)
 	formatRetryCount := 0
-	if err != nil {
+	if err != nil && cfg.RetryBudget.take() {
 		formatRetryCount = 1
 		retryRequest := request
 		retryRequest.Messages = append(append([]any{}, request.Messages...),
@@ -2683,7 +2693,7 @@ func sourceCandidateDerivedText(candidate map[string]any) string {
 
 func callSourceCandidateExtractionLLM(ctx context.Context, cfg completeTurnLLMConfig, request dto.ProxyPluginMainRequest) (string, error) {
 	if !strings.EqualFold(strings.TrimSpace(cfg.Provider), "ollama") {
-		upstream, _, err := performProxyPluginMain(ctx, request)
+		upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, request, cfg.RetryBudget)
 		if err != nil {
 			return "", err
 		}
@@ -2887,9 +2897,20 @@ func reconcileSourceCandidates(existing, incoming []map[string]any) ([]map[strin
 	duplicates := 0
 	for _, raw := range incoming {
 		candidate := cloneMap(raw)
-		evidence := sourceCandidateEvidence(candidate)
-		candidateEvidence := []map[string]any{evidence}
-		candidateEvidence = append(candidateEvidence, sliceMapFromAny(candidate["corroborating_evidence"])...)
+		candidateEvidence := sliceMapFromAny(candidate["evidence_set"])
+		if len(candidateEvidence) == 0 {
+			candidateEvidence = []map[string]any{sourceCandidateEvidence(candidate)}
+		}
+		seenEvidence := map[string]bool{}
+		for _, item := range candidateEvidence {
+			seenEvidence[sourceEvidenceKey(item)] = true
+		}
+		for _, item := range sliceMapFromAny(candidate["corroborating_evidence"]) {
+			if key := sourceEvidenceKey(item); !seenEvidence[key] {
+				candidateEvidence = append(candidateEvidence, item)
+				seenEvidence[key] = true
+			}
+		}
 		delete(candidate, "corroborating_evidence")
 		key := sourceCandidateLogicalKey(candidate)
 		if key == "\x00\x00\x00" {

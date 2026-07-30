@@ -29,6 +29,10 @@ Options:
                     Overall readiness bound. Must be supplied with poll interval.
   --readiness-poll-interval-seconds N
                     Poll interval. Must be supplied with readiness timeout.
+  --request-timeout-seconds N
+                    Caller-selected bound for each local readiness HTTP request.
+  --external-operation-timeout-seconds N
+                    Caller-selected bound for updater/install subprocesses.
   --help            Show this help.
 
 Environment:
@@ -42,6 +46,9 @@ Environment:
   AC_READINESS_TIMEOUT_SECONDS Optional caller-supplied readiness bound.
   AC_READINESS_POLL_INTERVAL_SECONDS
                                Optional caller-supplied readiness poll interval.
+  AC_REQUEST_TIMEOUT_SECONDS   Optional caller-supplied local HTTP bound.
+  AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS
+                               Optional caller-supplied subprocess bound.
 EOF
 }
 
@@ -136,22 +143,71 @@ resolve_package_root() {
 
 run_sudo() {
 	if [ "$(id -u 2>/dev/null || printf 1)" = "0" ]; then
-		"$@"
+		run_external "$@"
 	elif has_cmd sudo; then
-		sudo "$@"
+		run_external sudo "$@"
 	else
 		die "sudo is required to install packages on this platform"
 	fi
 }
 
+run_external() {
+	[ -n "${EXTERNAL_OPERATION_TIMEOUT_SECONDS:-}" ] || die "external operation requires --external-operation-timeout-seconds or AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS"
+	timeout_marker=$(mktemp "${TMPDIR:-/tmp}/archive-center-external-timeout.XXXXXX")
+	rm -f -- "$timeout_marker"
+	EXTERNAL_TIMEOUT_MARKER=$timeout_marker
+	export EXTERNAL_TIMEOUT_MARKER
+	"$@" &
+	EXTERNAL_OPERATION_PID=$!
+	export EXTERNAL_OPERATION_PID
+	(
+		sleep "$EXTERNAL_OPERATION_TIMEOUT_SECONDS"
+		if kill -0 "$EXTERNAL_OPERATION_PID" >/dev/null 2>&1; then
+			: >"$timeout_marker"
+			kill "$EXTERNAL_OPERATION_PID" >/dev/null 2>&1 || true
+		fi
+	) &
+	external_guard_pid=$!
+	EXTERNAL_GUARD_PID=$external_guard_pid
+	export EXTERNAL_GUARD_PID
+	if wait "$EXTERNAL_OPERATION_PID"; then
+		external_status=0
+	else
+		external_status=$?
+	fi
+	EXTERNAL_OPERATION_PID=
+	EXTERNAL_GUARD_PID=
+	export EXTERNAL_OPERATION_PID
+	export EXTERNAL_GUARD_PID
+	kill "$external_guard_pid" >/dev/null 2>&1 || true
+	wait "$external_guard_pid" >/dev/null 2>&1 || true
+	if [ -f "$timeout_marker" ]; then
+		rm -f -- "$timeout_marker"
+		EXTERNAL_TIMEOUT_MARKER=
+		export EXTERNAL_TIMEOUT_MARKER
+		return 124
+	fi
+	EXTERNAL_TIMEOUT_MARKER=
+	export EXTERNAL_TIMEOUT_MARKER
+	return "$external_status"
+}
+
+run_captured_external() {
+	output_path=$1
+	shift
+	run_external "$@" >"$output_path" 2>&1
+}
+
 port_is_open() {
 	port=$1
+	[ -n "${REQUEST_TIMEOUT_SECONDS:-}" ] || die "local port probes require --request-timeout-seconds or AC_REQUEST_TIMEOUT_SECONDS"
 	python_for_probe=${PYTHON_BIN:-python3}
-	"$python_for_probe" - "$port" >/dev/null 2>&1 <<'PY'
+	"$python_for_probe" - "$port" "$REQUEST_TIMEOUT_SECONDS" >/dev/null 2>&1 <<'PY'
 import socket
 import sys
 port = int(sys.argv[1])
 s = socket.socket()
+s.settimeout(float(sys.argv[2]))
 try:
     s.connect(("127.0.0.1", port))
 except OSError:
@@ -218,11 +274,14 @@ run_archive_updater() {
 	UPDATER_STATUS=
 	UPDATER_CURRENT_VERSION=
 	UPDATER_TARGET_VERSION=
-	if UPDATER_OUTPUT=$("$UPDATER_RUNNER" "$action" --root "$PACKAGE_ROOT" 2>&1); then
+	updater_capture="$EXEC_BIN_DIR/updater-$action-$$.log"
+	if run_captured_external "$updater_capture" "$UPDATER_RUNNER" "$action" --root "$PACKAGE_ROOT"; then
 		UPDATER_EXIT=0
 	else
 		UPDATER_EXIT=$?
 	fi
+	UPDATER_OUTPUT=$(cat "$updater_capture" 2>/dev/null || true)
+	rm -f -- "$updater_capture"
 	UPDATER_STATUS=$(json_string_field status "$UPDATER_OUTPUT")
 	UPDATER_CURRENT_VERSION=$(json_string_field current_version "$UPDATER_OUTPUT")
 	UPDATER_TARGET_VERSION=$(json_string_field target_version "$UPDATER_OUTPUT")
@@ -232,6 +291,9 @@ run_archive_updater() {
 prepare_updater_runner() {
 	UPDATER_RUNNER=
 	updater_source="$PACKAGE_ROOT/bin/archive-center-updater"
+	if [ ! -f "$PACKAGE_ROOT/.updates/pending-update.json" ] && [ ! -f "$PACKAGE_ROOT/.updates/update-state.json" ]; then
+		return
+	fi
 	if [ ! -f "$updater_source" ]; then
 		if [ -f "$PACKAGE_ROOT/.updates/pending-update.json" ] || [ -f "$PACKAGE_ROOT/.updates/update-state.json" ]; then
 			die "pending update state exists but bin/archive-center-updater is missing"
@@ -307,8 +369,9 @@ wait_candidate_backend_ready() {
 		if ! kill -0 "$pid" >/dev/null 2>&1; then
 			return 1
 		fi
-		ready_body=$(curl -fsS "http://127.0.0.1:$port/ready" 2>/dev/null || true)
-		version_body=$(curl -fsS "http://127.0.0.1:$port/version" 2>/dev/null || true)
+		[ -n "${REQUEST_TIMEOUT_SECONDS:-}" ] || die "pending update health verification requires --request-timeout-seconds or AC_REQUEST_TIMEOUT_SECONDS"
+		ready_body=$(curl --connect-timeout "$REQUEST_TIMEOUT_SECONDS" --max-time "$REQUEST_TIMEOUT_SECONDS" -fsS "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+		version_body=$(curl --connect-timeout "$REQUEST_TIMEOUT_SECONDS" --max-time "$REQUEST_TIMEOUT_SECONDS" -fsS "http://127.0.0.1:$port/version" 2>/dev/null || true)
 		ready_status=$(json_string_field status "$ready_body")
 		observed_version=$(json_string_field version "$version_body")
 		if [ "$ready_status" = "ready" ] && [ "$observed_version" = "$target" ]; then
@@ -461,7 +524,9 @@ ensure_homebrew() {
 	fi
 	log "Homebrew was not found. Archive Center will bootstrap Homebrew automatically."
 	log "macOS may ask for your password while installing Apple's command line tools or Homebrew."
-	NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+	[ -n "${EXTERNAL_OPERATION_TIMEOUT_SECONDS:-}" ] || die "Homebrew bootstrap requires --external-operation-timeout-seconds or AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS"
+	homebrew_installer=$(curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)
+	run_external env NONINTERACTIVE=1 /bin/bash -c "$homebrew_installer"
 	if ! load_homebrew_env; then
 		die "Homebrew bootstrap finished, but brew was still not found"
 	fi
@@ -472,8 +537,8 @@ install_macos_deps() {
 		return
 	fi
 	ensure_homebrew
-	"$BREW_BIN" update || true
-	"$BREW_BIN" install mariadb python || true
+	run_external "$BREW_BIN" update || true
+	run_external "$BREW_BIN" install mariadb python || true
 }
 
 install_termux_deps() {
@@ -483,10 +548,10 @@ install_termux_deps() {
 	if ! has_cmd pkg; then
 		die "Termux pkg command was not found"
 	fi
-	pkg update -y
-	pkg install -y mariadb python curl
+	run_external pkg update -y
+	run_external pkg install -y mariadb python curl
 	if [ "$AC_VECTOR_MODE" = "local_proot" ]; then
-		pkg install -y proot-distro
+		run_external pkg install -y proot-distro
 	fi
 }
 
@@ -538,7 +603,7 @@ local_chromadb_requested() {
 ensure_termux_proot_chromadb() {
 	if ! has_cmd proot-distro; then
 		if has_cmd pkg && [ "$NO_INSTALL" != "true" ]; then
-			pkg install -y proot-distro
+			run_external pkg install -y proot-distro
 		fi
 	fi
 	has_cmd proot-distro || die "proot-distro was not found. Termux local ChromaDB requires a managed Ubuntu/proot runtime."
@@ -549,18 +614,18 @@ ensure_termux_proot_chromadb() {
 	PROOT_CHROMA_DATA="$PROOT_CHROMA_ROOT/chromadb-data"
 	export PROOT_CHROMA_DISTRO PROOT_CHROMA_ROOT PROOT_CHROMA_VENV PROOT_CHROMA_DATA
 
-	if ! proot-distro login "$PROOT_CHROMA_DISTRO" -- true >/dev/null 2>&1; then
+	if ! run_external proot-distro login "$PROOT_CHROMA_DISTRO" -- true >/dev/null 2>&1; then
 		log "Installing Termux proot distro for ChromaDB: $PROOT_CHROMA_DISTRO"
-		proot-distro install "$PROOT_CHROMA_DISTRO"
+		run_external proot-distro install "$PROOT_CHROMA_DISTRO"
 	fi
 
-	if proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "test -x '$PROOT_CHROMA_VENV/bin/python' && '$PROOT_CHROMA_VENV/bin/python' -c 'import chromadb'" >/dev/null 2>&1; then
+	if run_external proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "test -x '$PROOT_CHROMA_VENV/bin/python' && '$PROOT_CHROMA_VENV/bin/python' -c 'import chromadb'" >/dev/null 2>&1; then
 		return
 	fi
 
 	log "Preparing ChromaDB inside Termux proot distro: $PROOT_CHROMA_DISTRO"
-	proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl ca-certificates"
-	proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "mkdir -p '$PROOT_CHROMA_ROOT' '$PROOT_CHROMA_DATA' && python3 -m venv '$PROOT_CHROMA_VENV' && '$PROOT_CHROMA_VENV/bin/python' -m pip install --upgrade pip wheel setuptools && '$PROOT_CHROMA_VENV/bin/python' -m pip install 'chromadb==1.5.9'"
+	run_external proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip curl ca-certificates"
+	run_external proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "mkdir -p '$PROOT_CHROMA_ROOT' '$PROOT_CHROMA_DATA' && python3 -m venv '$PROOT_CHROMA_VENV' && '$PROOT_CHROMA_VENV/bin/python' -m pip install --upgrade pip wheel setuptools && '$PROOT_CHROMA_VENV/bin/python' -m pip install 'chromadb==1.5.9'"
 }
 
 ensure_chromadb() {
@@ -579,13 +644,13 @@ ensure_chromadb() {
 	venv_dir="$RUNTIME_DIR/chromadb-venv"
 	if [ ! -x "$venv_dir/bin/python" ]; then
 		log "Creating ChromaDB Python runtime"
-		"$PYTHON_BIN" -m venv "$venv_dir" 2>/dev/null || "$PYTHON_BIN" -m virtualenv "$venv_dir"
+		run_external "$PYTHON_BIN" -m venv "$venv_dir" 2>/dev/null || run_external "$PYTHON_BIN" -m virtualenv "$venv_dir"
 	fi
 	venv_python="$venv_dir/bin/python"
-	"$venv_python" -m pip install --upgrade pip wheel setuptools
+	run_external "$venv_python" -m pip install --upgrade pip wheel setuptools
 	if ! "$venv_python" -c 'from importlib.metadata import version; assert version("chromadb") == "1.5.9"' >/dev/null 2>&1; then
 		log "Installing pinned ChromaDB 1.5.9 into managed runtime"
-		"$venv_python" -m pip install --upgrade "chromadb==1.5.9"
+		run_external "$venv_python" -m pip install --upgrade "chromadb==1.5.9"
 	fi
 	CHROMA_PYTHON=$venv_python
 	export CHROMA_PYTHON
@@ -620,13 +685,13 @@ init_mariadb_data() {
 	log "Initializing MariaDB data directory"
 	mkdir -p "$MARIADB_DATA" "$LOG_DIR"
 	if [ -n "$MARIA_INSTALL_DB" ]; then
-		if ! "$MARIA_INSTALL_DB" --datadir="$MARIADB_DATA" --auth-root-authentication-method=normal >"$LOG_DIR/mariadb-init.log" 2>&1; then
+		if ! run_external "$MARIA_INSTALL_DB" --datadir="$MARIADB_DATA" --auth-root-authentication-method=normal >"$LOG_DIR/mariadb-init.log" 2>&1; then
 			log "MariaDB init log tail:"
 			tail -n 80 "$LOG_DIR/mariadb-init.log" >&2 || true
 			return 1
 		fi
 	else
-		if ! "$MARIADBD" --initialize-insecure --datadir="$MARIADB_DATA" >"$LOG_DIR/mariadb-init.log" 2>&1; then
+		if ! run_external "$MARIADBD" --initialize-insecure --datadir="$MARIADB_DATA" >"$LOG_DIR/mariadb-init.log" 2>&1; then
 			log "MariaDB init log tail:"
 			tail -n 80 "$LOG_DIR/mariadb-init.log" >&2 || true
 			return 1
@@ -665,7 +730,7 @@ bootstrap_mariadb_schema() {
 	export AC_MARIADB_DSN
 	SCHEMA_FILE="$PACKAGE_ROOT/migrations/001_schema.sql"
 	[ -f "$SCHEMA_FILE" ] || die "schema file was not found: $SCHEMA_FILE"
-	"$MARIADB_SCHEMA_RUN" \
+	run_external "$MARIADB_SCHEMA_RUN" \
 		-dsn "$AC_MARIADB_DSN" \
 		-schema "$SCHEMA_FILE" \
 		-execute=true \
@@ -722,6 +787,15 @@ start_chromadb() {
 
 cleanup() {
 	cleanup_updater_runner
+	if [ -n "${EXTERNAL_OPERATION_PID:-}" ]; then
+		kill "$EXTERNAL_OPERATION_PID" >/dev/null 2>&1 || true
+	fi
+	if [ -n "${EXTERNAL_GUARD_PID:-}" ]; then
+		kill "$EXTERNAL_GUARD_PID" >/dev/null 2>&1 || true
+	fi
+	if [ -n "${EXTERNAL_TIMEOUT_MARKER:-}" ]; then
+		rm -f -- "$EXTERNAL_TIMEOUT_MARKER" >/dev/null 2>&1 || true
+	fi
 	if [ "$KEEP_SERVICES" = "true" ]; then
 		return
 	fi
@@ -774,6 +848,8 @@ NO_INSTALL=false
 KEEP_SERVICES=false
 READINESS_TIMEOUT_SECONDS=${AC_READINESS_TIMEOUT_SECONDS:-}
 READINESS_POLL_INTERVAL_SECONDS=${AC_READINESS_POLL_INTERVAL_SECONDS:-}
+REQUEST_TIMEOUT_SECONDS=${AC_REQUEST_TIMEOUT_SECONDS:-}
+EXTERNAL_OPERATION_TIMEOUT_SECONDS=${AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS:-}
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -818,6 +894,16 @@ while [ "$#" -gt 0 ]; do
 			READINESS_POLL_INTERVAL_SECONDS=$2
 			shift 2
 			;;
+		--request-timeout-seconds)
+			[ "$#" -ge 2 ] || die "missing value for --request-timeout-seconds"
+			REQUEST_TIMEOUT_SECONDS=$2
+			shift 2
+			;;
+		--external-operation-timeout-seconds)
+			[ "$#" -ge 2 ] || die "missing value for --external-operation-timeout-seconds"
+			EXTERNAL_OPERATION_TIMEOUT_SECONDS=$2
+			shift 2
+			;;
 		--help|-h)
 			usage
 			exit 0
@@ -836,6 +922,14 @@ esac
 case "$READINESS_POLL_INTERVAL_SECONDS" in
 	"") ;;
 	*[!0-9]*|0) die "readiness poll interval must be a positive integer" ;;
+esac
+case "$REQUEST_TIMEOUT_SECONDS" in
+	"") ;;
+	*[!0-9]*|0) die "request timeout must be a positive integer" ;;
+esac
+case "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" in
+	"") ;;
+	*[!0-9]*|0) die "external operation timeout must be a positive integer" ;;
 esac
 if { [ -n "$READINESS_TIMEOUT_SECONDS" ] && [ -z "$READINESS_POLL_INTERVAL_SECONDS" ]; } || { [ -z "$READINESS_TIMEOUT_SECONDS" ] && [ -n "$READINESS_POLL_INTERVAL_SECONDS" ]; }; then
 	die "readiness timeout and poll interval must be supplied together"
@@ -975,11 +1069,11 @@ if [ "$INSTALL_ONLY" = "true" ]; then
 	exit 0
 fi
 
+trap cleanup EXIT INT TERM
+
 prepare_updater_runner
 apply_pending_update
 prepare_package_binaries
-
-trap cleanup EXIT INT TERM
 
 start_mariadb
 bootstrap_mariadb_schema

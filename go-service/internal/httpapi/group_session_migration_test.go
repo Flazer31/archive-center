@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,6 +62,44 @@ type sessionMigrationPreviewStore struct {
 	cleanupReason       string
 	cleanupResult       *store.SessionMigrationCleanupResult
 	cleanupErr          error
+}
+
+type sourceLockDrainObservingStore struct {
+	*sessionMigrationPreviewStore
+	verifyStarted chan struct{}
+	verifyOnce    sync.Once
+}
+
+type delayedMigrationSourceLockStore struct {
+	*sessionMigrationPreviewStore
+	lockReads int
+}
+
+func (s *delayedMigrationSourceLockStore) GetSessionMigrationSourceLock(
+	ctx context.Context,
+	sourceSessionID string,
+) (*store.SessionMigrationLock, error) {
+	s.lockReads++
+	if s.lockReads == 1 {
+		return nil, store.ErrNotFound
+	}
+	return &store.SessionMigrationLock{
+		MigrationID: 42, SourceSessionID: sourceSessionID,
+		TargetSessionID: "char_59_cid_target", Locked: true,
+		LockStatus: "lock_pending_verification",
+	}, nil
+}
+
+func (s *sourceLockDrainObservingStore) VerifySessionMigrationVectorParity(
+	ctx context.Context,
+	migrationID int64,
+	operation string,
+	actualIDs []string,
+) (*store.SessionMigrationVectorParityResult, error) {
+	s.verifyOnce.Do(func() { close(s.verifyStarted) })
+	return s.sessionMigrationPreviewStore.VerifySessionMigrationVectorParity(
+		ctx, migrationID, operation, actualIDs,
+	)
 }
 
 func (s *sessionMigrationPreviewStore) ListChatLogs(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]store.ChatLog, error) {
@@ -849,6 +888,75 @@ func TestSessionMigrateLockSourceReleasesProvisionalFenceOnCurrentVectorDrift(t 
 	}
 }
 
+func TestSessionMigrateLockSourceDrainsAcceptedFinalWorkerBeforeParityRevalidation(t *testing.T) {
+	const sourceID = "char_59_cid_source"
+	base := &sessionMigrationPreviewStore{}
+	st := &sourceLockDrainObservingStore{
+		sessionMigrationPreviewStore: base,
+		verifyStarted:                make(chan struct{}),
+	}
+	srv := &Server{
+		Store:  st,
+		Vector: vector.NewMutationFencedStore(&sessionMigrationPreviewVector{}),
+	}
+	srv.SourceAcceptances = newCompleteTurnSourceAcceptanceLedger()
+	decision := completeTurnSourceAcceptanceDecision{
+		Enabled: true, Accepted: true, Revision: "revision-migration-drain",
+	}
+	srv.SourceAcceptances.current[sourceAcceptanceStateKey(sourceID, 1)] = completeTurnSourceAcceptanceState{
+		SessionID: sourceID, TurnIndex: 1, Revision: decision.Revision,
+		ObservedAtMS: 1000, Lifecycle: "active_final",
+	}
+	workerCtx, releaseWorker := srv.completeTurnSourceAcceptanceProcessingContext(
+		context.Background(), decision, sourceID, 1,
+	)
+
+	body := bytes.NewBufferString(`{"migration_id":42,"reason":"drain before lock"}`)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/migrate-lock-source", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		mux.ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-workerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("provisional migration fence did not cancel the in-flight complete-turn worker")
+	}
+	select {
+	case <-st.verifyStarted:
+		t.Fatal("migration parity revalidation started before the canceled worker drained")
+	default:
+	}
+
+	releaseWorker()
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("migration source lock did not resume after the complete-turn worker drained")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response sessionMigrationLockSourceResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Blocked || !response.SourceLocked || !base.lockCalled {
+		t.Fatalf("migration source lock response=%+v events=%v", response, base.events)
+	}
+	select {
+	case <-st.verifyStarted:
+	default:
+		t.Fatal("migration parity revalidation was not reached after drain")
+	}
+}
+
 func TestSessionMigrateRollbackDeletesTargetVectorsAndRows(t *testing.T) {
 	targetID := "char_59_cid_target"
 	st := &sessionMigrationPreviewStore{
@@ -1012,6 +1120,27 @@ func TestSessionMigrationSourceLockExcludesPrepareSearchAndCompleteTurn(t *testi
 	complete := performSessionMigrationCompleteTurn(t, st, vec, `{"chat_session_id":"`+sourceID+`","turn_index":9,"user_input":"u","assistant_content":"a"}`)
 	if complete["status"] != "blocked" || complete["save_ok"] != false || complete["save_error"] != "source_session_migrated_away" {
 		t.Fatalf("complete-turn source lock did not block writes: %+v", complete)
+	}
+}
+
+func TestCompleteTurnRechecksDurableMigrationFenceBeforeRawPersistence(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	st := &delayedMigrationSourceLockStore{
+		sessionMigrationPreviewStore: &sessionMigrationPreviewStore{},
+	}
+	complete := performSessionMigrationCompleteTurn(
+		t,
+		st,
+		&sessionMigrationPreviewVector{},
+		`{"chat_session_id":"`+sourceID+`","turn_index":9,"user_input":"u","assistant_content":"a"}`,
+	)
+	if complete["status"] != "blocked" ||
+		complete["save_ok"] != false ||
+		complete["save_error"] != "source_session_migrated_away" {
+		t.Fatalf("complete-turn crossed delayed durable migration fence: %+v", complete)
+	}
+	if st.lockReads < 2 {
+		t.Fatalf("migration source lock reads=%d, want preflight plus persistence-boundary recheck", st.lockReads)
 	}
 }
 

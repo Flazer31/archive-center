@@ -4,7 +4,8 @@ param(
     [string]$UpdateZip = "",
     [string]$HistoricalV300PackageZip = "",
     [string]$HistoricalV301PackageZip = "",
-    [string]$HistoricalV350PackageZip = ""
+    [string]$HistoricalV350PackageZip = "",
+    [Parameter(Mandatory = $true)][int]$ExternalOperationTimeoutSeconds
 )
 
 $ErrorActionPreference = "Stop"
@@ -297,7 +298,8 @@ function Invoke-HistoricalCompatibilityBridge {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script `
             -PackageRoot $Scenario.Root `
             -UpdateZip $CandidateZip `
-            -CurrentVersion $Scenario.Version
+            -CurrentVersion $Scenario.Version `
+            -ExternalOperationTimeoutSeconds $ExternalOperationTimeoutSeconds
     )
     Assert-Equal $LASTEXITCODE 0 "Historical $($Scenario.Version) bridge exit"
     $payload = (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) | ConvertFrom-Json

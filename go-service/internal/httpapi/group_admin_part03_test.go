@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
@@ -467,5 +469,101 @@ func TestAdminSessionNormalizePreservesExplicitForceOptions(t *testing.T) {
 	resume := false
 	if !adminSessionNormalizeForceReindex(adminSessionNormalizeRequest{ForceReindex: &force, ResumeExisting: &resume}) {
 		t.Fatal("explicit force_reindex=true must remain available")
+	}
+}
+
+type blockingSessionNormalizeStore struct {
+	*memoryFakeStore
+	entered chan struct{}
+}
+
+func (f *blockingSessionNormalizeStore) ListChatLogs(ctx context.Context, sid string, from, to int) ([]store.ChatLog, error) {
+	if from == 1 && to == 1 {
+		close(f.entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return f.memoryFakeStore.ListChatLogs(ctx, sid, from, to)
+}
+
+func TestAdminSessionNormalizeRawRepairReportsRealCandidateCountAndCompletes(t *testing.T) {
+	userText := "The traveler reaches the old gate."
+	assistantText := "The guard refuses entry until dawn."
+	srv := NewServer(config.Default())
+	srv.Store = &memoryFakeStore{}
+	srv.StoreOpenError = nil
+
+	updates := []map[string]any{}
+	result, err := srv.runAdminSessionNormalize(context.Background(), "sess-normalize-complete", adminSessionNormalizeRequest{
+		RepairEntries: []dto.ChatLogRepairEntryRequest{{
+			TurnIndex:        1,
+			UserContent:      &userText,
+			AssistantContent: &assistantText,
+		}},
+		SkipRescan:  true,
+		SkipReindex: true,
+	}, func(progress map[string]any) {
+		updates = append(updates, cloneMapAny(progress))
+	})
+	if err != nil {
+		t.Fatalf("runAdminSessionNormalize: %v", err)
+	}
+	if result["status"] != "ok" {
+		t.Fatalf("result = %#v, want ok", result)
+	}
+	sawRawRepair := false
+	for _, update := range updates {
+		if update["stage"] != "raw_repair_replay" {
+			continue
+		}
+		sawRawRepair = true
+		if got := intFromAny(update["candidate_count"], 0); got != 1 {
+			t.Fatalf("raw repair candidate_count = %d, want 1: %#v", got, update)
+		}
+	}
+	if !sawRawRepair {
+		t.Fatalf("raw_repair_replay progress missing: %#v", updates)
+	}
+}
+
+func TestAdminSessionNormalizeCancellationReachesBlockedRawChatQuery(t *testing.T) {
+	userText := "The traveler reaches the old gate."
+	assistantText := "The guard refuses entry until dawn."
+	fake := &blockingSessionNormalizeStore{
+		memoryFakeStore: &memoryFakeStore{},
+		entered:         make(chan struct{}),
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := srv.runAdminSessionNormalize(ctx, "sess-normalize-cancel", adminSessionNormalizeRequest{
+			RepairEntries: []dto.ChatLogRepairEntryRequest{{
+				TurnIndex:        1,
+				UserContent:      &userText,
+				AssistantContent: &assistantText,
+			}},
+			SkipRescan:  true,
+			SkipReindex: true,
+		}, nil)
+		resultCh <- err
+	}()
+
+	select {
+	case <-fake.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session normalize did not reach raw chat query")
+	}
+	cancel()
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runAdminSessionNormalize error = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session normalize did not stop after caller cancellation")
 	}
 }

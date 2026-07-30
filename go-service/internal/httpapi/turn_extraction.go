@@ -31,6 +31,7 @@ type completeTurnLLMConfig struct {
 	LLMGatewayServiceTier string
 	ClaudePromptCacheMode string
 	ForceWorldRuleAudit   bool
+	RetryBudget           *llmRetryBudget
 }
 
 type completeTurnEmbeddingConfig struct {
@@ -841,6 +842,7 @@ func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnE
 	if strings.TrimSpace(cfg.Critic.ClaudePromptCacheMode) == "" {
 		cfg.Critic.ClaudePromptCacheMode = rt.CriticClaudePromptCacheMode
 	}
+	cfg.Critic.RetryBudget = newLLMRetryBudget(rt.LLMRetryCount)
 
 	cfg.Embedder = s.selectCompleteTurnEmbeddingConfig(meta, cfg.Embedder, rt)
 	return cfg

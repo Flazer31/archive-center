@@ -74,6 +74,15 @@ type memoryVectorProcessorVector struct {
 	deletes   [][]string
 }
 
+type blockingMemoryVectorProcessorVector struct {
+	vector.VectorStore
+}
+
+func (f *blockingMemoryVectorProcessorVector) Upsert(ctx context.Context, _ string, _ []vector.VectorDocument) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (f *memoryVectorProcessorVector) Upsert(_ context.Context, _ string, docs []vector.VectorDocument) error {
 	f.upserts = append(f.upserts, docs)
 	return f.upsertErr
@@ -123,6 +132,49 @@ func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
 		len(st.failed) != 1 || len(st.completed) != 0 ||
 		!st.failureRetryAt[0].Equal(now) {
 		t.Fatalf("result=%+v failed=%v completed=%v retry=%v", result, st.failed, st.completed, st.failureRetryAt)
+	}
+}
+
+func TestMemoryVectorProcessorBoundsBlockingVectorCallByLease(t *testing.T) {
+	now := time.Date(2026, 7, 30, 4, 0, 0, 0, time.UTC)
+	document := vector.VectorDocument{
+		ID: "precise_memory:session:bounded", ChatSessionID: "session",
+		SourceTable: "precise_memory_units", SourceRowID: "bounded",
+		SchemaVersion: store.PreciseMemoryUnitContract, DocumentText: "grounded",
+		Embedding: []float32{0.1, 0.2},
+	}
+	documentJSON, err := materializedMemoryVectorDocumentJSON(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &memoryVectorProcessorStore{
+		Store: store.NewNoopStore(),
+		items: []*store.MemoryVectorOutboxItem{{
+			ID: 9, Operation: "upsert", ChatSessionID: "session",
+			SourceRevision: "sar_active", DocumentID: document.ID,
+			DocumentJSON: documentJSON, EmbeddingReady: true,
+			RequiredSourceState: "active", Status: "pending",
+		}},
+	}
+	server := &Server{
+		Store:  st,
+		Vector: &blockingMemoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()},
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, FailedQueueMaxAttempts: 4,
+		},
+	}
+	started := time.Now()
+	result, err := server.processMemoryVectorOutboxOnce(
+		context.Background(), "worker", now, 20*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalState != "retryable" || len(st.failed) != 1 {
+		t.Fatalf("result=%+v failed=%v", result, st.failed)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("blocking vector call exceeded lease deadline: %s", elapsed)
 	}
 }
 

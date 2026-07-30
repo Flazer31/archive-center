@@ -427,12 +427,21 @@ func TestRepairReplayProgressReportsRealEntryCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repair replay with progress: %v", err)
 	}
-	if len(progressSnapshots) != 3 {
-		t.Fatalf("progress snapshot count=%d, want initial plus two entries", len(progressSnapshots))
+	if len(progressSnapshots) < 3 {
+		t.Fatalf("progress snapshot count=%d, want initial, operation phases, and completed entries", len(progressSnapshots))
 	}
 	first := progressSnapshots[0]
 	if first["processed"] != 0 || first["candidate_count"] != 2 {
 		t.Fatalf("initial progress=%#v, want 0/2 rather than 0/0", first)
+	}
+	seenPhases := map[string]bool{}
+	for _, snapshot := range progressSnapshots {
+		seenPhases[strings.TrimSpace(fmt.Sprint(snapshot["phase"]))] = true
+	}
+	for _, phase := range []string{"repair_replay_start", "list_chat_logs", "repair_roles", "entry_complete"} {
+		if !seenPhases[phase] {
+			t.Fatalf("progress phase %q missing: %#v", phase, progressSnapshots)
+		}
 	}
 	last := progressSnapshots[len(progressSnapshots)-1]
 	if last["processed"] != 2 || last["candidate_count"] != 2 || last["succeeded"] != 2 || last["progress_percent"] != 100 {

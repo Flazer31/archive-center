@@ -61,6 +61,13 @@ func (s *Server) processMemoryVectorOutboxOnce(
 	result.OutboxID = item.ID
 	result.Operation = item.Operation
 	result.DocumentID = item.DocumentID
+	if leaseDuration <= 0 {
+		result.CanonicalState = "retryable"
+		result.Failure = "vector operation timeout is not configured"
+		return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+	}
+	vectorCtx, cancelVector := context.WithTimeout(ctx, leaseDuration)
+	defer cancelVector()
 	if s.Vector == nil {
 		result.CanonicalState = "retryable"
 		result.Failure = "vector store is not configured"
@@ -75,7 +82,7 @@ func (s *Server) processMemoryVectorOutboxOnce(
 			result.Failure = "vector store does not support document deletion"
 			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, "vector store does not support document deletion")
 		}
-		if err := deleter.DeleteDocuments(ctx, []string{item.DocumentID}); err != nil {
+		if err := deleter.DeleteDocuments(vectorCtx, []string{item.DocumentID}); err != nil {
 			result.CanonicalState = "retryable"
 			result.Failure = err.Error()
 			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, err.Error())
@@ -105,7 +112,7 @@ func (s *Server) processMemoryVectorOutboxOnce(
 				result.Failure = "materialized vector document has no searchable text"
 				return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, result.Failure)
 			}
-			embeddingJSON, _, embedErr := callEmbedding(ctx, embeddingCfg, document.DocumentText)
+			embeddingJSON, _, embedErr := callEmbedding(vectorCtx, embeddingCfg, document.DocumentText)
 			if embedErr != nil {
 				result.CanonicalState = "retryable"
 				result.Failure = "embedding materialization failed"
@@ -118,7 +125,7 @@ func (s *Server) processMemoryVectorOutboxOnce(
 				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
 			}
 		}
-		if err := s.Vector.Upsert(ctx, item.ChatSessionID, []vector.VectorDocument{document}); err != nil {
+		if err := s.Vector.Upsert(vectorCtx, item.ChatSessionID, []vector.VectorDocument{document}); err != nil {
 			result.CanonicalState = "retryable"
 			result.Failure = err.Error()
 			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, err.Error())
@@ -132,7 +139,7 @@ func (s *Server) processMemoryVectorOutboxOnce(
 	if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, now); err != nil {
 		if errors.Is(err, store.ErrSourceRevisionStale) && item.Operation == "upsert" {
 			if deleter, ok := s.Vector.(vector.DocumentDeleter); ok {
-				_ = deleter.DeleteDocuments(ctx, []string{item.DocumentID})
+				_ = deleter.DeleteDocuments(vectorCtx, []string{item.DocumentID})
 			}
 			result.CanonicalState = "stale_rejected"
 			return result, nil

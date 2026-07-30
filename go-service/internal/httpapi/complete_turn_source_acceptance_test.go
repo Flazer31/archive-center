@@ -39,6 +39,10 @@ func completeTurnAcceptanceTestRequest(sid string, turn int, assistant string, o
 				"message_chat_id_state":    "observed",
 				"generation_id":            generationID,
 				"generation_id_state":      "observed",
+				"branch_id":                "",
+				"branch_id_state":          "not_exposed_by_risuai",
+				"message_swipe_id":         -1,
+				"message_swipe_id_state":   "not_present",
 				"message_time_ms":          observedAt - 10,
 				"message_time_state":       "observed",
 				"observed_content_hash":    observedHash,
@@ -96,6 +100,10 @@ func completeTurnNextHostSignalAcceptanceTestRequest(sid string, turn int, user,
 				"message_chat_id_state":                  "observed",
 				"generation_id":                          "generation-1",
 				"generation_id_state":                    "observed",
+				"branch_id":                              "",
+				"branch_id_state":                        "not_exposed_by_risuai",
+				"message_swipe_id":                       -1,
+				"message_swipe_id_state":                 "not_present",
 				"message_time_ms":                        int64(900),
 				"message_time_state":                     "observed",
 				"request_message_count":                  2,
@@ -218,13 +226,151 @@ func TestCompleteTurnSourceAcceptanceRejectsLaterAssistantBeyondNextSignalUser(t
 }
 
 func TestCompleteTurnSourceAcceptanceUsesOfficialActiveChatObservation(t *testing.T) {
-	req := completeTurnAcceptanceTestRequest("session-1", 2, "final answer", 1000, "or1c_host", "generation-1", "unobserved", "current_active_chat_tail", 3, 4)
+	req := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 2, "user", "final answer", 1000,
+		"generation-1", "unobserved", 2, 3, 4,
+	)
 	decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
 	if !decision.Accepted || decision.Status != "accepted" || decision.Revision == "" {
 		t.Fatalf("decision=%+v, want accepted Go-owned revision", decision)
 	}
 	if decision.Observation.RevisionState != "not_exposed_by_risuai" {
 		t.Fatalf("host revision state=%q, want not_exposed_by_risuai", decision.Observation.RevisionState)
+	}
+	if decision.Observation.BranchID != "" || decision.Observation.BranchIDState != "not_exposed_by_risuai" {
+		t.Fatalf("branch observation=%q/%q, want typed not-exposed", decision.Observation.BranchID, decision.Observation.BranchIDState)
+	}
+	source, err := completeTurnMemorySourceRevision(decision, "session-1", 2, "user", "final answer", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("completeTurnMemorySourceRevision: %v", err)
+	}
+	if source.BranchID != "" || source.BranchState != "not_exposed" {
+		t.Fatalf("persisted branch=%q/%q, want not_exposed without invented identity", source.BranchID, source.BranchState)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceRejectsBranchIdentityWithoutObservedState(t *testing.T) {
+	req := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 1, "user", "answer", 1000,
+		"generation-1", "not_streaming", 0, 1, 2,
+	)
+	observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+	observation["branch_id"] = "invented-branch"
+	observation["branch_id_state"] = "not_exposed_by_risuai"
+	decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if decision.Accepted || decision.Reason != "source_acceptance_branch_identity_state_invalid" {
+		t.Fatalf("invented branch identity must be rejected: %+v", decision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceCarriesExplicitObservedBranchIdentity(t *testing.T) {
+	req := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 1, "user", "answer", 1000,
+		"generation-1", "not_streaming", 0, 1, 2,
+	)
+	observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+	observation["branch_id"] = "official-host-branch"
+	observation["branch_id_state"] = "observed"
+	decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if !decision.Accepted {
+		t.Fatalf("explicit observed branch decision=%+v", decision)
+	}
+	source, err := completeTurnMemorySourceRevision(decision, "session-1", 1, "user", "answer", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("completeTurnMemorySourceRevision: %v", err)
+	}
+	if source.BranchID != "official-host-branch" || source.BranchState != "observed" {
+		t.Fatalf("persisted branch=%q/%q", source.BranchID, source.BranchState)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceClassifiesOfficialMessageEditAndReroll(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 1, "same user", "first", 1000,
+		"generation-1", "not_streaming", 0, 1, 2,
+	)
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !firstDecision.Accepted {
+		t.Fatalf("first=%+v", firstDecision)
+	}
+
+	edit := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 2, "same user", "edited", 2000,
+		"generation-1", "not_streaming", 0, 1, 2,
+	)
+	editDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), edit)
+	if !editDecision.Accepted || !editDecision.ReplaceExisting ||
+		editDecision.ReplacementKind != "host_observed_edit" ||
+		editDecision.BoundTurn != firstDecision.BoundTurn {
+		t.Fatalf("edit=%+v first=%+v", editDecision, firstDecision)
+	}
+
+	reroll := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 3, "same user", "rerolled", 3000,
+		"generation-2", "not_streaming", 0, 1, 2,
+	)
+	rerollDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), reroll)
+	if !rerollDecision.Accepted || !rerollDecision.ReplaceExisting ||
+		rerollDecision.ReplacementKind != "host_observed_reroll" ||
+		rerollDecision.BoundTurn != firstDecision.BoundTurn {
+		t.Fatalf("reroll=%+v first=%+v", rerollDecision, firstDecision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceClassifiesPocketRisuSwipeAsReroll(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 1, "same user", "second swipe", 1000,
+		"generation-2", "not_streaming", 0, 1, 2,
+	)
+	firstObservation := first.ClientMeta["source_acceptance_observation"].(map[string]any)
+	firstObservation["message_swipe_id"] = 1
+	firstObservation["message_swipe_id_state"] = "observed"
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !firstDecision.Accepted {
+		t.Fatalf("first=%+v", firstDecision)
+	}
+
+	previousSwipe := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 2, "same user", "first swipe", 2000,
+		"generation-2", "not_streaming", 0, 1, 2,
+	)
+	previousSwipeObservation := previousSwipe.ClientMeta["source_acceptance_observation"].(map[string]any)
+	previousSwipeObservation["message_swipe_id"] = 0
+	previousSwipeObservation["message_swipe_id_state"] = "observed"
+	previousSwipeDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), previousSwipe)
+	if !previousSwipeDecision.Accepted || !previousSwipeDecision.ReplaceExisting ||
+		previousSwipeDecision.ReplacementKind != "host_observed_reroll" ||
+		previousSwipeDecision.BoundTurn != firstDecision.BoundTurn {
+		t.Fatalf("PocketRisu swipe replacement=%+v first=%+v", previousSwipeDecision, firstDecision)
+	}
+
+	editedSwipe := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 3, "same user", "manually edited first swipe", 3000,
+		"generation-2", "not_streaming", 0, 1, 2,
+	)
+	editedSwipeObservation := editedSwipe.ClientMeta["source_acceptance_observation"].(map[string]any)
+	editedSwipeObservation["message_swipe_id"] = 0
+	editedSwipeObservation["message_swipe_id_state"] = "observed"
+	editedSwipeDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), editedSwipe)
+	if !editedSwipeDecision.Accepted || !editedSwipeDecision.ReplaceExisting ||
+		editedSwipeDecision.ReplacementKind != "host_observed_edit" {
+		t.Fatalf("same PocketRisu swipe content edit=%+v", editedSwipeDecision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceRejectsInvalidSwipeObservation(t *testing.T) {
+	req := completeTurnAnchoredAcceptanceTestRequest(
+		"session-1", 1, "user", "answer", 1000,
+		"generation-1", "not_streaming", 0, 1, 2,
+	)
+	observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
+	observation["message_swipe_id"] = -1
+	observation["message_swipe_id_state"] = "observed"
+	decision := newCompleteTurnAcceptanceTestServer().beginCompleteTurnSourceAcceptance(context.Background(), req)
+	if decision.Accepted || decision.Reason != "source_acceptance_swipe_identity_missing" {
+		t.Fatalf("invalid swipe observation must be rejected: %+v", decision)
 	}
 }
 

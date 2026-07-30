@@ -41,14 +41,16 @@ of running a raw source checkout as the backend.
 POSIX:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/scripts/install-github-release.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/scripts/install-github-release.sh |
+  AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=<seconds> sh
 ```
 
 Windows PowerShell:
 
 ```powershell
 iwr https://raw.githubusercontent.com/Flazer31/archive-center/main/scripts/install-github-release.ps1 -OutFile install-github-release.ps1
-powershell -ExecutionPolicy Bypass -File .\install-github-release.ps1
+powershell -ExecutionPolicy Bypass -File .\install-github-release.ps1 `
+  -ExternalOperationTimeoutSeconds <seconds>
 ```
 
 Raw `git clone` is a source/operator path. It does not by itself configure

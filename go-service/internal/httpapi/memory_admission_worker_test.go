@@ -881,7 +881,7 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 		RuntimeConfig: RuntimeConfig{
 			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
 			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
-			CriticTimeoutSec: 30, FailedQueueMaxAttempts: 4,
+			CriticTimeoutSec: 30, LLMRetryCount: 1, FailedQueueMaxAttempts: 4,
 		},
 	}
 	result, err := srv.processMemoryReprocessingOnce(

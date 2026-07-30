@@ -8,6 +8,8 @@ START_AFTER=false
 SYSTEMD=false
 SERVICE_NAME="archive-center"
 RUN_USER="${SUDO_USER:-$(id -un 2>/dev/null || printf archive-center)}"
+EXTERNAL_OPERATION_TIMEOUT_SECONDS="${AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS:-}"
+SERVICE_RESTART_SECONDS="${AC_SERVICE_RESTART_SECONDS:-}"
 
 usage() {
 	cat <<'EOF'
@@ -21,6 +23,12 @@ Options:
   --systemd               Linux only: install/update systemd service.
   --service-name NAME     systemd service name. Default: archive-center
   --user NAME             systemd service user. Default: $SUDO_USER/current user
+  --external-operation-timeout-seconds N
+                          Caller-selected bound for each GitHub HTTP operation.
+                          Or set AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS.
+  --service-restart-seconds N
+                          systemd restart delay. Required with --systemd, or
+                          set AC_SERVICE_RESTART_SECONDS.
   --help                  Show this help.
 
 This installs from GitHub Release assets, not from raw git source.
@@ -120,6 +128,16 @@ while [ "$#" -gt 0 ]; do
 			RUN_USER=$2
 			shift 2
 			;;
+		--external-operation-timeout-seconds)
+			[ "$#" -ge 2 ] || die "missing value for --external-operation-timeout-seconds"
+			EXTERNAL_OPERATION_TIMEOUT_SECONDS=$2
+			shift 2
+			;;
+		--service-restart-seconds)
+			[ "$#" -ge 2 ] || die "missing value for --service-restart-seconds"
+			SERVICE_RESTART_SECONDS=$2
+			shift 2
+			;;
 		--help|-h)
 			usage
 			exit 0
@@ -134,6 +152,19 @@ case "$REPO" in
 	*/*) ;;
 	*) die "repo must be OWNER/REPO" ;;
 esac
+
+case "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" in
+	''|*[!0-9]*|0)
+		die "supply --external-operation-timeout-seconds or AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS as a positive integer; no hidden download deadline is used"
+		;;
+esac
+case "$SERVICE_RESTART_SECONDS" in
+	"") ;;
+	*[!0-9]*|0) die "service restart seconds must be a positive integer" ;;
+esac
+if [ "$SYSTEMD" = "true" ] && [ -z "$SERVICE_RESTART_SECONDS" ]; then
+	die "--systemd requires --service-restart-seconds or AC_SERVICE_RESTART_SECONDS; no hidden restart delay is used"
+fi
 
 need_cmd curl
 need_cmd python3
@@ -163,7 +194,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 release_json="$WORK_DIR/release.json"
-curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: Archive-Center-Installer" "$API_URL" -o "$release_json"
+curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: Archive-Center-Installer" "$API_URL" -o "$release_json"
 
 release_tag=$(python3 - "$release_json" <<'PY'
 import json, sys
@@ -228,8 +259,8 @@ PY
 
 zip_path="$WORK_DIR/$asset_name"
 sums_path="$WORK_DIR/$sums_name"
-curl -fsSL -H "User-Agent: Archive-Center-Installer" "$sums_url" -o "$sums_path"
-curl -fL -H "User-Agent: Archive-Center-Installer" "$asset_url" -o "$zip_path"
+curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fsSL -H "User-Agent: Archive-Center-Installer" "$sums_url" -o "$sums_path"
+curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fL -H "User-Agent: Archive-Center-Installer" "$asset_url" -o "$zip_path"
 
 expected=$(python3 - "$sums_path" "$asset_name" <<'PY'
 import re
@@ -317,7 +348,7 @@ WorkingDirectory=$INSTALL_DIR/current
 Environment="ARCHIVE_CENTER_DATA_DIR=$data_dir_escaped"
 ExecStart=/bin/sh $INSTALL_DIR/current/start-archive-center-linux.sh --no-install
 Restart=on-failure
-RestartSec=5
+RestartSec=$SERVICE_RESTART_SECONDS
 NoNewPrivileges=true
 
 [Install]

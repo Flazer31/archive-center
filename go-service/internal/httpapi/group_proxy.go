@@ -5,11 +5,37 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
 
 var proxyHTTPClient = http.DefaultClient
+
+type llmRetryBudget struct {
+	mu        sync.Mutex
+	remaining int
+}
+
+func newLLMRetryBudget(retries int) *llmRetryBudget {
+	if retries < 0 {
+		retries = 0
+	}
+	return &llmRetryBudget{remaining: retries}
+}
+
+func (b *llmRetryBudget) take() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.remaining <= 0 {
+		return false
+	}
+	b.remaining--
+	return true
+}
 
 // registerProxyRoutes mounts supervisor, proxy plugin, and critic endpoints.
 func (s *Server) registerProxyRoutes(mux *http.ServeMux) {
@@ -209,7 +235,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		TimeoutMs:   &cfg.TimeoutMs,
 	}
 	applyProxyOverridesFromLLMConfig(&reqBody, cfg)
-	upstream, _, err := performProxyPluginMain(ctx, reqBody)
+	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, reqBody, cfg.RetryBudget)
 	if err != nil {
 		return nil, map[string]any{"prompt_source": promptSource, "model": cfg.Model}, err
 	}
@@ -738,7 +764,11 @@ func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, status, err := performProxyPluginMain(r.Context(), req)
+	resp, status, err := performProxyPluginMainWithRetryBudget(
+		r.Context(),
+		req,
+		newLLMRetryBudget(s.runtimeConfigSnapshot().LLMRetryCount),
+	)
 	if err != nil {
 		code := "upstream_error"
 		upstreamCallEnabled := true
@@ -766,11 +796,19 @@ func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
 }
 
 func performProxyPluginMain(ctx context.Context, req dto.ProxyPluginMainRequest) (map[string]any, int, error) {
-	return callProxyProvider(ctx, req)
+	return performProxyPluginMainWithRetryBudget(ctx, req, nil)
 }
 
 func performProxyPluginMainWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy) (map[string]any, int, error) {
-	return callProxyProviderWithPolicy(ctx, req, policy)
+	return performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, nil, policy)
+}
+
+func performProxyPluginMainWithRetryBudget(ctx context.Context, req dto.ProxyPluginMainRequest, retryBudget *llmRetryBudget) (map[string]any, int, error) {
+	return callProxyProviderWithPolicy(ctx, req, proxyRequestPolicy{}, retryBudget)
+}
+
+func performProxyPluginMainWithRetryBudgetAndPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, retryBudget *llmRetryBudget, policy proxyRequestPolicy) (map[string]any, int, error) {
+	return callProxyProviderWithPolicy(ctx, req, policy, retryBudget)
 }
 
 func scrubProxySecret(text, apiKey string) string {

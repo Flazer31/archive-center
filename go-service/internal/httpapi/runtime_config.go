@@ -69,6 +69,7 @@ type RuntimeConfig struct {
 	SourceSearchPlannerReasoningPreset string
 	SourceSearchPlannerReasoningEffort string
 	SourceSearchPlannerReasoningBudget *int64
+	LLMRetryCount                      int
 	FailedQueueMaxAttempts             int
 	TopK                               int64
 }
@@ -266,6 +267,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setString("sourceSearchPlannerReasoningPreset", &s.RuntimeConfig.SourceSearchPlannerReasoningPreset)
 	setString("sourceSearchPlannerReasoningEffort", &s.RuntimeConfig.SourceSearchPlannerReasoningEffort)
 	setIntPtr("sourceSearchPlannerReasoningBudgetTokens", &s.RuntimeConfig.SourceSearchPlannerReasoningBudget)
+	setClampedInt("llmRetryCount", &s.RuntimeConfig.LLMRetryCount, 0, 10)
 	setClampedInt("failedQueueMaxAttempts", &s.RuntimeConfig.FailedQueueMaxAttempts, 1, 11)
 	setInt("topK", &s.RuntimeConfig.TopK)
 
@@ -311,6 +313,7 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 		VertexFlexMode:        rt.SupervisorVertexFlexMode,
 		LLMGatewayServiceTier: rt.SupervisorLLMGatewayServiceTier,
 		ClaudePromptCacheMode: rt.SupervisorClaudePromptCacheMode,
+		RetryBudget:           newLLMRetryBudget(rt.LLMRetryCount),
 	}
 }
 
@@ -340,6 +343,7 @@ func (s *Server) sourceSearchPlannerLLMConfig() completeTurnLLMConfig {
 		ReasoningPreset:       reasoningPreset,
 		ReasoningEffort:       reasoningEffort,
 		ReasoningBudgetTokens: int64PtrValue(rt.SourceSearchPlannerReasoningBudget, 0),
+		RetryBudget:           newLLMRetryBudget(rt.LLMRetryCount),
 	}
 }
 
@@ -369,6 +373,7 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 		VertexFlexMode:        rt.MainVertexFlexMode,
 		LLMGatewayServiceTier: rt.MainLLMGatewayServiceTier,
 		ClaudePromptCacheMode: rt.MainClaudePromptCacheMode,
+		RetryBudget:           newLLMRetryBudget(rt.LLMRetryCount),
 	}
 }
 
@@ -560,6 +565,7 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 		"critic":            criticTrace,
 		"embedding":         embeddingTrace,
 		"source_search_llm": sourceSearchPlannerTrace,
+		"llm_retry_count":   rt.LLMRetryCount,
 		"top_k":             rt.TopK,
 	}
 }

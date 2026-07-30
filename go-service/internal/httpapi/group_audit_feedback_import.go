@@ -549,7 +549,7 @@ func (s *Server) scoreHypaMemoryImport(ctx context.Context, sid string, summary 
 	}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, req, cfg.RetryBudget)
 	if err != nil {
 		return fallback, nil, err
 	}

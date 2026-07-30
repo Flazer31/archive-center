@@ -18,6 +18,9 @@ foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMi
 if (($null -eq $ReadinessTimeoutSeconds) -ne ($null -eq $ReadinessPollIntervalMilliseconds)) {
     throw "ReadinessTimeoutSeconds and ReadinessPollIntervalMilliseconds must be supplied together."
 }
+if ($null -eq $RequestTimeoutSeconds) {
+    throw "RequestTimeoutSeconds is required for bounded package HTTP smoke probes."
+}
 
 function Find-MariaDBProvider([string]$Root) {
     $hit = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
@@ -67,6 +70,21 @@ if (Test-Path -LiteralPath $managedManifestPath -PathType Leaf) {
         $managedManifest = Get-Content -LiteralPath $managedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($managedManifest.scope -ne "managed_package_payloads") {
             [void]$failures.Add("managed_manifest_scope_invalid:$($managedManifest.scope)")
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$managedManifest.package_version)) {
+            [void]$failures.Add("managed_manifest_package_version_missing")
+        }
+        if ([string]$managedManifest.source_commit -ne "unknown" -and [string]$managedManifest.source_commit -notmatch '^[0-9a-f]{40}$') {
+            [void]$failures.Add("managed_manifest_source_commit_invalid:$($managedManifest.source_commit)")
+        }
+        if ($managedManifest.source_dirty -isnot [bool] -and [string]$managedManifest.source_dirty -ne "unknown") {
+            [void]$failures.Add("managed_manifest_source_dirty_invalid:$($managedManifest.source_dirty)")
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$managedManifest.source_dirty_scope)) {
+            [void]$failures.Add("managed_manifest_source_dirty_scope_missing")
+        }
+        if ([string]$managedManifest.build_command -notmatch '^ops/build-full-package\.ps1 -PackageKind \S+ -PackageVersion \S+ -Zip:(True|False) -UpdateZip:(True|False) -CodeSigning:(True|False)$') {
+            [void]$failures.Add("managed_manifest_build_descriptor_invalid")
         }
         $managedPaths = @($managedManifest.files | ForEach-Object { ([string]$_.path).Replace('\', '/') })
         foreach ($requiredManagedPath in @("bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js")) {
@@ -140,7 +158,7 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
             [void]$failures.Add("launcher_update_marker_missing:$marker")
         }
     }
-    foreach ($marker in @('$ReadinessTimeoutSeconds = $null', '$ReadinessPollIntervalMilliseconds = $null', '$RequestTimeoutSeconds = $null', '$DependencyProbeTimeoutSeconds = $null', '$Process.HasExited', '$ready.ready -eq $true', 'if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds)', '$Process.WaitForExit($waitMilliseconds)')) {
+    foreach ($marker in @('$ReadinessTimeoutSeconds = $null', '$ReadinessPollIntervalMilliseconds = $null', '$RequestTimeoutSeconds = $null', '$DependencyProbeTimeoutSeconds = $null', '$ExternalOperationTimeoutSeconds = $null', 'AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS', '$Process.HasExited', '$ready.ready -eq $true', 'if ($null -eq $TimeoutSeconds -or $null -eq $PollIntervalMilliseconds)', '$Process.WaitForExit($waitMilliseconds)')) {
         if (-not $launcherScriptText.Contains($marker)) {
             [void]$failures.Add("launcher_signal_readiness_marker_missing:$marker")
         }
@@ -209,6 +227,8 @@ if (Test-Path -LiteralPath $installerScriptPath -PathType Leaf) {
         "Python installer Authenticode verification failed",
         "Test-CompatiblePythonBootstrap",
         "Python registration exists but the runtime is incomplete",
+        "ExternalOperationTimeoutSeconds",
+        "Invoke-BoundedProcess",
         "chromadb==`$ChromaDBVersion",
         "package_bundled = `$false"
     )) {
@@ -310,7 +330,7 @@ if (Test-Path -LiteralPath $backend -PathType Leaf) {
     } finally {
         if ($process -and -not $process.HasExited) {
             $process.Kill()
-            $process.WaitForExit()
+            $null = $process.WaitForExit([int64]$RequestTimeoutSeconds * 1000)
         }
     }
 }

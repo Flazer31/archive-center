@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
 
@@ -526,7 +527,7 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 		MaxCompletionTokens: int64Ptr(256),
 		ReasoningEffort:     &effort,
 	}
-	resp, status, err := performProxyPluginMain(context.Background(), req)
+	resp, status, err := performProxyPluginMainWithRetryBudget(context.Background(), req, newLLMRetryBudget(1))
 	if err != nil {
 		t.Fatalf("performProxyPluginMain error: %v", err)
 	}
@@ -544,6 +545,64 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 	}
 	if fallbackBody["max_tokens"] != float64(5) && fallbackBody["max_tokens"] != int64(5) {
 		t.Fatalf("fallback max_tokens = %v, want 5", fallbackBody["max_tokens"])
+	}
+}
+
+func TestProxyOpenAILikeReasoningFallbackRespectsZeroRetryBudget(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"unsupported parameter: reasoning_effort"}}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	effort := "low"
+	req := dto.ProxyPluginMainRequest{
+		APIKey:              strPtr("sk-test"),
+		Endpoint:            strPtr("https://api.example.com/v1"),
+		Model:               strPtr("gpt-test"),
+		Provider:            strPtr("openai"),
+		Messages:            []any{map[string]any{"role": "user", "content": "ping"}},
+		MaxTokens:           int64Ptr(5),
+		MaxCompletionTokens: int64Ptr(256),
+		ReasoningEffort:     &effort,
+	}
+	if _, status, err := performProxyPluginMainWithRetryBudget(context.Background(), req, newLLMRetryBudget(0)); err == nil || status != http.StatusBadRequest {
+		t.Fatalf("status=%d err=%v, want original 400 without compatibility retry", status, err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want exactly one upstream attempt", calls)
+	}
+}
+
+func TestRuntimeConfigPropagatesClampedLLMRetryBudget(t *testing.T) {
+	srv := NewServer(config.Default())
+	updated := srv.updateRuntimeConfig(map[string]any{"llmRetryCount": 99})
+	if !containsString(updated, "llmRetryCount") {
+		t.Fatalf("updated=%v", updated)
+	}
+	if got := srv.runtimeConfigSnapshot().LLMRetryCount; got != 10 {
+		t.Fatalf("retry count=%d, want clamped 10", got)
+	}
+	budget := srv.supervisorLLMConfig().RetryBudget
+	for i := 0; i < 10; i++ {
+		if !budget.take() {
+			t.Fatalf("budget exhausted at retry %d", i)
+		}
+	}
+	if budget.take() {
+		t.Fatal("clamped retry budget allowed an eleventh retry")
+	}
+
+	srv.updateRuntimeConfig(map[string]any{"llmRetryCount": 0})
+	if srv.supervisorLLMConfig().RetryBudget.take() {
+		t.Fatal("retry=0 allowed a second LLM call")
 	}
 }
 

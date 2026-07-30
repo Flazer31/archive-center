@@ -47,6 +47,10 @@ type completeTurnSourceObservation struct {
 	MessageChatIDState            string `json:"message_chat_id_state"`
 	GenerationID                  string `json:"generation_id"`
 	GenerationIDState             string `json:"generation_id_state"`
+	BranchID                      string `json:"branch_id"`
+	BranchIDState                 string `json:"branch_id_state"`
+	MessageSwipeID                int    `json:"message_swipe_id"`
+	MessageSwipeIDState           string `json:"message_swipe_id_state"`
 	MessageTimeMS                 int64  `json:"message_time_ms"`
 	MessageTimeState              string `json:"message_time_state"`
 	UserMessageIndex              int    `json:"user_message_index"`
@@ -76,7 +80,12 @@ type completeTurnSourceAcceptanceState struct {
 	TurnIndex         int    `json:"turn_index"`
 	Revision          string `json:"revision"`
 	GenerationID      string `json:"generation_id,omitempty"`
+	MessageChatID     string `json:"message_chat_id,omitempty"`
 	HostChatID        string `json:"host_chat_id,omitempty"`
+	BranchID          string `json:"branch_id,omitempty"`
+	BranchIDState     string `json:"branch_id_state,omitempty"`
+	MessageSwipeID    int    `json:"message_swipe_id,omitempty"`
+	MessageSwipeState string `json:"message_swipe_id_state,omitempty"`
 	ContentHash       string `json:"content_hash"`
 	ObservedAtMS      int64  `json:"observed_at_ms"`
 	Lifecycle         string `json:"lifecycle"`
@@ -96,6 +105,7 @@ type completeTurnSourceAcceptanceDecision struct {
 	BoundTurn       int
 	LogicalTurnID   string
 	ReplaceExisting bool
+	ReplacementKind string
 	Observation     completeTurnSourceObservation
 }
 
@@ -173,6 +183,8 @@ func completeTurnSourceRevision(sid string, turnIndex int, observation completeT
 			observation.UserObservedContentHash,
 			observation.MessageChatID,
 			observation.GenerationID,
+			observedCompleteTurnBranchIdentity(observation),
+			observedCompleteTurnSwipeIdentity(observation),
 			strconv.FormatInt(observation.MessageTimeMS, 10),
 			strconv.Itoa(observation.MessageIndex),
 			observation.PersistenceContentHash,
@@ -185,6 +197,8 @@ func completeTurnSourceRevision(sid string, turnIndex int, observation completeT
 		observation.HostChatID,
 		observation.MessageChatID,
 		observation.GenerationID,
+		observedCompleteTurnBranchIdentity(observation),
+		observedCompleteTurnSwipeIdentity(observation),
 		strconv.FormatInt(observation.MessageTimeMS, 10),
 		strconv.Itoa(observation.MessageIndex),
 		observation.ObservedContentHash,
@@ -206,8 +220,72 @@ func completeTurnLogicalTurnID(sid string, observation completeTurnSourceObserva
 			observation.UserObservedContentHash,
 		}, "\x1f")
 	}
-	seed := strings.Join([]string{sid, chatIdentity, userIdentity}, "\x1f")
+	seed := strings.Join([]string{sid, chatIdentity, observedCompleteTurnBranchIdentity(observation), userIdentity}, "\x1f")
 	return "lt_" + strings.TrimPrefix(prepareOR1CHash(seed), "or1c_")
+}
+
+func observedCompleteTurnBranchIdentity(observation completeTurnSourceObservation) string {
+	if observation.BranchIDState != "observed" {
+		return ""
+	}
+	return strings.TrimSpace(observation.BranchID)
+}
+
+func validateCompleteTurnBranchObservation(observation completeTurnSourceObservation) string {
+	state := strings.TrimSpace(observation.BranchIDState)
+	branchID := strings.TrimSpace(observation.BranchID)
+	switch state {
+	case "", "unobserved", "not_exposed_by_risuai":
+		if branchID != "" {
+			return "source_acceptance_branch_identity_state_invalid"
+		}
+	case "observed":
+		if branchID == "" {
+			return "source_acceptance_branch_identity_missing"
+		}
+	default:
+		return "source_acceptance_branch_identity_state_invalid"
+	}
+	return ""
+}
+
+func observedCompleteTurnSwipeIdentity(observation completeTurnSourceObservation) string {
+	if observation.MessageSwipeIDState != "observed" || observation.MessageSwipeID < 0 {
+		return ""
+	}
+	return "swipe:" + strconv.Itoa(observation.MessageSwipeID)
+}
+
+func validateCompleteTurnSwipeObservation(observation completeTurnSourceObservation) string {
+	switch strings.TrimSpace(observation.MessageSwipeIDState) {
+	case "", "unobserved":
+		return ""
+	case "not_present":
+		if observation.MessageSwipeID != -1 {
+			return "source_acceptance_swipe_identity_state_invalid"
+		}
+	case "observed":
+		if observation.MessageSwipeID < 0 {
+			return "source_acceptance_swipe_identity_missing"
+		}
+	default:
+		return "source_acceptance_swipe_identity_state_invalid"
+	}
+	return ""
+}
+
+func completeTurnObservedSwipeTransition(previous completeTurnSourceAcceptanceState, observation completeTurnSourceObservation) bool {
+	previousKnown := previous.MessageSwipeState == "observed" || previous.MessageSwipeState == "not_present"
+	currentKnown := observation.MessageSwipeIDState == "observed" || observation.MessageSwipeIDState == "not_present"
+	if !previousKnown || !currentKnown {
+		return false
+	}
+	previousObserved := previous.MessageSwipeState == "observed" && previous.MessageSwipeID >= 0
+	currentObserved := observation.MessageSwipeIDState == "observed" && observation.MessageSwipeID >= 0
+	if previousObserved && currentObserved {
+		return previous.MessageSwipeID != observation.MessageSwipeID
+	}
+	return previousObserved != currentObserved
 }
 
 func rejectedCompleteTurnSourceAcceptance(reason string, retryable bool, observation completeTurnSourceObservation) completeTurnSourceAcceptanceDecision {
@@ -229,6 +307,12 @@ func validateCompleteTurnSourceObservation(req dto.M4CompleteTurnRequest, observ
 	}
 	if observation.SessionID != sid || observation.ObservedAtMS <= 0 {
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_identity_missing_or_mismatch", false, observation)
+	}
+	if reason := validateCompleteTurnBranchObservation(observation); reason != "" {
+		return rejectedCompleteTurnSourceAcceptance(reason, false, observation)
+	}
+	if reason := validateCompleteTurnSwipeObservation(observation); reason != "" {
+		return rejectedCompleteTurnSourceAcceptance(reason, false, observation)
 	}
 	if observation.ContractVersion == completeTurnNextHostSignalAcceptanceContract {
 		return validateCompleteTurnNextHostSignalObservation(req, observation)
@@ -496,6 +580,31 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 	decision.ReplaceExisting = (previous.Revision != "" &&
 		previous.LogicalTurnID == decision.LogicalTurnID &&
 		previous.Revision != decision.Revision) || legacyLogicalTurnMatch
+	if decision.ReplaceExisting {
+		switch {
+		case previous.Revision == "":
+			decision.ReplacementKind = "canonical_content_replacement"
+		case previous.MessageChatID != "" || observation.MessageChatID != "":
+			if previous.MessageChatID == observation.MessageChatID &&
+				previous.GenerationID == observation.GenerationID {
+				if completeTurnObservedSwipeTransition(previous, observation) {
+					decision.ReplacementKind = "host_observed_reroll"
+				} else {
+					decision.ReplacementKind = "host_observed_edit"
+				}
+			} else {
+				decision.ReplacementKind = "host_observed_reroll"
+			}
+		case previous.GenerationID != "" && previous.GenerationID == observation.GenerationID:
+			if completeTurnObservedSwipeTransition(previous, observation) {
+				decision.ReplacementKind = "host_observed_reroll"
+			} else {
+				decision.ReplacementKind = "host_observed_edit"
+			}
+		default:
+			decision.ReplacementKind = "host_observed_reroll"
+		}
+	}
 	var superseded *completeTurnSourceAcceptanceState
 	if decision.ReplaceExisting {
 		prior := previous
@@ -507,7 +616,10 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 	}
 	state := completeTurnSourceAcceptanceState{
 		SessionID: sid, TurnIndex: turnIndex, Revision: decision.Revision,
-		GenerationID: observation.GenerationID, HostChatID: observation.HostChatID,
+		GenerationID: observation.GenerationID, MessageChatID: observation.MessageChatID,
+		HostChatID: observation.HostChatID, BranchID: observedCompleteTurnBranchIdentity(observation),
+		BranchIDState:  firstNonEmpty(observation.BranchIDState, "not_exposed_by_risuai"),
+		MessageSwipeID: observation.MessageSwipeID, MessageSwipeState: observation.MessageSwipeIDState,
 		ContentHash: observation.ObservedContentHash, ObservedAtMS: observation.ObservedAtMS,
 		Lifecycle: "active_final", LogicalTurnID: decision.LogicalTurnID,
 	}
@@ -864,6 +976,7 @@ func completeTurnSourceAcceptancePayload(decision completeTurnSourceAcceptanceDe
 		"accepted": decision.Accepted, "retryable": decision.Retryable, "queue_action": decision.QueueAction,
 		"revision": decision.Revision, "previous_revision": decision.Previous,
 		"logical_turn_id": decision.LogicalTurnID, "replace_existing": decision.ReplaceExisting,
+		"replacement_kind":                      nilIfEmpty(decision.ReplacementKind),
 		"observation_contract_version":          decision.Observation.ContractVersion,
 		"host_lifecycle_contract_version":       nilIfEmpty(decision.Observation.HostLifecycleContractVersion),
 		"finality_source":                       nilIfEmpty(decision.Observation.FinalitySource),
@@ -873,6 +986,10 @@ func completeTurnSourceAcceptancePayload(decision completeTurnSourceAcceptanceDe
 		"lifecycle":                             lifecycle,
 		"generation_id":                         nilIfEmpty(decision.Observation.GenerationID),
 		"generation_id_state":                   decision.Observation.GenerationIDState,
+		"branch_id":                             nilIfEmpty(observedCompleteTurnBranchIdentity(decision.Observation)),
+		"branch_id_state":                       firstNonEmpty(decision.Observation.BranchIDState, "not_exposed_by_risuai"),
+		"message_swipe_id":                      decision.Observation.MessageSwipeID,
+		"message_swipe_id_state":                firstNonEmpty(decision.Observation.MessageSwipeIDState, "unobserved"),
 		"message_index":                         decision.Observation.MessageIndex,
 		"observed_content_hash":                 nilIfEmpty(decision.Observation.ObservedContentHash),
 		"persistence_content_hash":              nilIfEmpty(decision.Observation.PersistenceContentHash),

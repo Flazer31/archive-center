@@ -1385,6 +1385,8 @@ const settings = {enabled: true};
 function debugLog() {}
 function warnLog() {}
 function recordRisuHookLifecycle() {}
+let recomposerClears = 0;
+function clearArchiveCenterRecomposerBridge() { recomposerClears++; }
 function isSaveType(type) { return type === "model"; }
 let prepareCalls = 0;
 async function tryPrepareTurn() { prepareCalls++; throw new Error("prepare-turn must not run"); }
@@ -1393,6 +1395,7 @@ async function tryPrepareTurn() { prepareCalls++; throw new Error("prepare-turn 
   const result = await onBeforeRequest(payload, "submodel");
   if (result !== payload) throw new Error("non-model payload identity changed");
   if (prepareCalls !== 0) throw new Error("non-model prepare calls=" + prepareCalls);
+  if (recomposerClears !== 1) throw new Error("non-model request left stale Recomposer context");
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-")
@@ -2719,7 +2722,8 @@ func TestConfirmedPendingFinalQueueFailureBecomesTerminalIncident(t *testing.T) 
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functions := extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey") +
+	functions := extractArchiveCenterJSFunction(t, src, "completeTurnNeedsFreshReconciliationRetry") +
+		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey") +
 		extractArchiveCenterJSAsyncFunction(t, src, "queuePendingCompleteTurnPayload")
 	script := functions + `
 const _finalConfirmationRequestBySession=new Map();

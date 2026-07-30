@@ -95,7 +95,7 @@ func (s *Server) callChapterSummaryLLM(ctx context.Context, sid string, fromTurn
 		TimeoutMs:           &cfg.TimeoutMs,
 	}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, req, cfg.RetryBudget)
 	if err != nil {
 		return store.ChapterSummary{}, map[string]any{
 			"configured":    true,
@@ -443,7 +443,7 @@ func (s *Server) callHierarchySummaryLLM(ctx context.Context, kind string, sid s
 		TimeoutMs:           &cfg.TimeoutMs,
 	}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, req, cfg.RetryBudget)
 	if err != nil {
 		return nil, map[string]any{"configured": true, "endpoint_host": endpointHost(cfg.Endpoint), "model": cfg.Model}, err
 	}

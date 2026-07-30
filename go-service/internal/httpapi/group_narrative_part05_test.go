@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
@@ -341,6 +342,16 @@ func (f *narrativeFakeVectorStore) Count(ctx context.Context, sessionID string) 
 
 func (f *narrativeFakeVectorStore) Close(ctx context.Context) error { return nil }
 
+type drainingSessionDeleteStore struct {
+	*narrativeFakeStore
+	deleteStarted chan struct{}
+}
+
+func (f *drainingSessionDeleteStore) DeleteSession(ctx context.Context, sid string) error {
+	close(f.deleteStarted)
+	return f.narrativeFakeStore.DeleteSession(ctx, sid)
+}
+
 func TestSessionDeleteShadowNoMutation(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := setupTestServer()
@@ -420,15 +431,93 @@ func TestSessionDeleteLiveExecutes(t *testing.T) {
 	if len(fake.auditLogs) == 0 {
 		t.Fatal("expected session_delete audit log")
 	}
-	audit := fake.auditLogs[0]
-	if audit.EventType != "session_delete" {
-		t.Fatalf("event_type = %q, want session_delete", audit.EventType)
+	var audit *store.AuditLog
+	for i := range fake.auditLogs {
+		if fake.auditLogs[i].EventType == "session_delete" {
+			audit = &fake.auditLogs[i]
+			break
+		}
+	}
+	if audit == nil {
+		t.Fatalf("session_delete audit missing from %#v", fake.auditLogs)
 	}
 	if audit.ChatSessionID != "sess-live" {
 		t.Fatalf("chat_session_id = %q, want sess-live", audit.ChatSessionID)
 	}
 	if audit.TargetType != "session" {
 		t.Fatalf("target_type = %q, want session", audit.TargetType)
+	}
+}
+
+func TestSessionDeleteDrainsAcceptedFinalWorkerBeforeDeleting(t *testing.T) {
+	const sid = "sess-delete-drain"
+	base := &narrativeFakeStore{}
+	fake := &drainingSessionDeleteStore{
+		narrativeFakeStore: base,
+		deleteStarted:      make(chan struct{}),
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	srv.SourceAcceptances = newCompleteTurnSourceAcceptanceLedger()
+	decision := completeTurnSourceAcceptanceDecision{
+		Enabled: true, Accepted: true, Revision: "revision-delete-drain",
+	}
+	srv.SourceAcceptances.current[sourceAcceptanceStateKey(sid, 1)] = completeTurnSourceAcceptanceState{
+		SessionID: sid, TurnIndex: 1, Revision: decision.Revision,
+		ObservedAtMS: 1000, Lifecycle: "active_final",
+	}
+	workerCtx, releaseWorker := srv.completeTurnSourceAcceptanceProcessingContext(
+		context.Background(), decision, sid, 1,
+	)
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/"+sid, nil)
+	rec := httptest.NewRecorder()
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		mux.ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-workerCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("session delete did not cancel the in-flight accepted-final worker")
+	}
+	select {
+	case <-fake.deleteStarted:
+		t.Fatal("DeleteSession started before the canceled complete-turn worker drained")
+	default:
+	}
+
+	releaseWorker()
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("session delete did not resume after the complete-turn worker drained")
+	}
+	if rec.Code != http.StatusOK || !base.deleteSessionCalled {
+		t.Fatalf("delete response=%d body=%s called=%v", rec.Code, rec.Body.String(), base.deleteSessionCalled)
+	}
+	srv.SourceAcceptances.mu.Lock()
+	invalidation := srv.SourceAcceptances.invalidations[sid]
+	srv.SourceAcceptances.mu.Unlock()
+	if invalidation.FromTurn != 1 || invalidation.ObservedAtMS <= 1000 {
+		t.Fatalf("post-delete source acceptance fence=%+v", invalidation)
+	}
+	hasInvalidationAudit := false
+	for i := range base.auditLogs {
+		if base.auditLogs[i].EventType == sourceAcceptanceInvalidationEvent {
+			hasInvalidationAudit = true
+			break
+		}
+	}
+	if !hasInvalidationAudit {
+		t.Fatalf("durable source acceptance invalidation audit missing: %#v", base.auditLogs)
 	}
 }
 

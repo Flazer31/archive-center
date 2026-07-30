@@ -21,11 +21,6 @@
   const TRACE_KEY = `${PLUGIN_ID}_trace_v1`;
   const TRACE_LIMIT = 30;
   const DEFAULT_DEADLINE_MS = 120000;
-  const COMPOSER_RESERVE_MS = 30000;
-  const COMPOSER_RESERVE_GUARD_MS = 5000;
-  const ENDPOINT_SERIAL_THRESHOLD = 3;
-  const CONTEXT_TIMEOUT_MS = 12000;
-  const MAX_ROLE_HTTP_ATTEMPTS = 3;
   const PLANNER_MAX_ITEMS_PER_FIELD = 2;
   const PLANNER_MAX_ITEMS_TOTAL = 12;
   const INPUT_CONTRACT_MARKER = "[Risu Recomposer Turn Contract v1]";
@@ -606,30 +601,53 @@
       const envelope = asObject(globalThis[ARCHIVE_CENTER_BRIDGE_KEY]);
       const contract = asObject(envelope.enhancement_contract);
       const observation = asObject(envelope.payload_application_observation);
+      const lifecycleState = "current_request_payload_applied";
+      const sessionId = safeString(envelope.session_id).trim();
+      const contractSessionId = safeString(contract.session_id).trim();
+      const turnIndex = Math.trunc(Number(envelope.turn_index || 0));
+      const contractTurnIndex = Math.trunc(Number(contract.turn_index || 0));
+      const payloadPlanId = safeString(envelope.payload_plan_id).trim();
+      const observedPayloadPlanId = safeString(observation.payload_plan_id).trim();
       if (envelope.contract_version !== ARCHIVE_CENTER_BRIDGE_CONTRACT
         || envelope.owner !== "archive_center_host_adapter"
         || envelope.transport_only !== true
+        || envelope.lifecycle_state !== lifecycleState
         || contract.contract_version !== ARCHIVE_CENTER_ENHANCEMENT_CONTRACT
         || contract.owner !== "go"
         || contract.read_only !== true
         || contract.optional_enhancement !== true
         || contract.standalone_fallback_required !== true
-        || observation.payload_application_status !== "applied") {
+        || observation.payload_application_status !== "applied"
+        || observation.lifecycle_state !== lifecycleState
+        || !sessionId
+        || sessionId !== contractSessionId
+        || turnIndex < 1
+        || turnIndex !== contractTurnIndex
+        || !payloadPlanId
+        || payloadPlanId !== observedPayloadPlanId) {
         return null;
       }
-      const expiresAt = Number(envelope.expires_at_ms || 0);
-      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return null;
       const input = safeString(latestUserInput);
       const expectedDigest = stableDigest(input);
       const bindings = arrayFromCollection(envelope.input_bindings);
+      const expectedLifecycleDigest = stableDigest([
+        sessionId,
+        turnIndex,
+        expectedDigest,
+        input.length,
+        payloadPlanId,
+        lifecycleState,
+      ].join("|"));
       const bound = bindings.length
         ? bindings.some((binding) => (
             safeString(binding && binding.digest) === expectedDigest
             && Number(binding && binding.chars || 0) === input.length
+            && safeString(binding && binding.lifecycle_digest) === expectedLifecycleDigest
           ))
         : (
             safeString(envelope.input_digest) === expectedDigest
             && Number(envelope.input_chars || 0) === input.length
+            && safeString(envelope.lifecycle_digest) === expectedLifecycleDigest
           );
       if (!bound) return null;
       return deepClone(envelope);
@@ -1075,7 +1093,6 @@
       router: { signals: [], selected: [], skipped: [] },
       scheduler: {
         completion_wait: false,
-        endpoint_serial_threshold: ENDPOINT_SERIAL_THRESHOLD,
         endpoint_groups: [],
       },
       input_enhance: {
@@ -1539,25 +1556,12 @@
     if (deadline && deadline.check()) {
       return { ok: false, value: null, source: name, error: "pipeline_deadline" };
     }
-    const timeoutMs = deadline
-      ? Math.max(1, Math.min(CONTEXT_TIMEOUT_MS, deadline.remaining()))
-      : CONTEXT_TIMEOUT_MS;
-    return Promise.race([
-      (async () => {
-        try {
-          const value = await RR[name].apply(RR, Array.isArray(args) ? args : []);
-          return { ok: true, value, source: name, error: "" };
-        } catch (err) {
-          return { ok: false, value: null, source: name, error: err && err.message ? err.message : String(err) };
-        }
-      })(),
-      new Promise((resolve) => setTimeout(() => resolve({
-        ok: false,
-        value: null,
-        source: name,
-        error: deadline && deadline.check() ? "pipeline_deadline" : "timeout",
-      }), timeoutMs)),
-    ]);
+    try {
+      const value = await RR[name].apply(RR, Array.isArray(args) ? args : []);
+      return { ok: true, value, source: name, error: "" };
+    } catch (err) {
+      return { ok: false, value: null, source: name, error: err && err.message ? err.message : String(err) };
+    }
   }
 
   async function loadCharacter(deadline) {
@@ -6494,10 +6498,6 @@
     function remaining() {
       return Math.max(0, deadline - Date.now());
     }
-    function reserveComposer() {
-      const r = remaining();
-      return r > COMPOSER_RESERVE_MS ? r - COMPOSER_RESERVE_MS : 0;
-    }
     function cancel() {
       if (!aborted) {
         aborted = true;
@@ -6505,7 +6505,7 @@
       }
       clearTimeout(timer);
     }
-    return { check, remaining, reserveComposer, signal: controller.signal, aborted: () => aborted, cancel };
+    return { check, remaining, signal: controller.signal, aborted: () => aborted, cancel };
   }
 
   function createCompletionDeadline(startedAt) {
@@ -6523,7 +6523,6 @@
       started_at: Number.isFinite(Number(startedAt)) ? Number(startedAt) : Date.now(),
       check: () => aborted,
       remaining: () => Number.POSITIVE_INFINITY,
-      reserveComposer: () => Number.POSITIVE_INFINITY,
       signal: controller.signal,
       aborted: () => aborted,
       cancel,
@@ -6586,13 +6585,8 @@
     });
     Object.keys(groups).forEach((key) => {
       const group = groups[key];
-      const densitySerial = group.selected_calls >= ENDPOINT_SERIAL_THRESHOLD;
-      group.effective_concurrency = densitySerial
-        ? 1
-        : Math.max(1, Math.min(group.base_concurrency, group.selected_calls));
-      group.reason = densitySerial
-        ? `endpoint_density_${group.selected_calls}_serial`
-        : "provider_default";
+      group.effective_concurrency = Math.max(1, Math.min(group.base_concurrency, group.selected_calls));
+      group.reason = "provider_concurrency";
     });
     return groups;
   }
@@ -6602,7 +6596,6 @@
     if (!trace.scheduler) {
       trace.scheduler = {
         completion_wait: false,
-        endpoint_serial_threshold: ENDPOINT_SERIAL_THRESHOLD,
         endpoint_groups: [],
       };
     }
@@ -6663,15 +6656,15 @@
     const configured = arrayFromCollection(roleProfiles).filter((profile) => profile && isProfileConfigured(profile));
     if (!deadline || !configured.length) return 0;
     const remaining = deadline.remaining();
-    if (remaining <= COMPOSER_RESERVE_GUARD_MS) return 0;
+    if (remaining <= 0) return 0;
     const requested = configured.reduce((sum, profile) => (
       sum + clampNumber(profile.timeout_ms, 5000, 300000, 60000)
         * (configuredFallbackProfile(profile) ? 2 : 1)
-    ), COMPOSER_RESERVE_GUARD_MS);
-    const dynamicShare = Math.max(COMPOSER_RESERVE_MS * 2, Math.floor(remaining * 0.72));
+    ), 0);
+    const dynamicShare = Math.floor(remaining * 0.72);
     return Math.max(
       0,
-      Math.min(requested, dynamicShare, remaining - COMPOSER_RESERVE_GUARD_MS)
+      Math.min(requested, dynamicShare, remaining)
     );
   }
 
@@ -6877,7 +6870,7 @@
                 || role.role_id === "style_reader",
               completionWait: !!deadline.completion_wait,
               canContinue: () => !specialistController.signal.aborted
-                && deadline.remaining() > downstreamReserveMs + COMPOSER_RESERVE_GUARD_MS,
+                && deadline.remaining() > downstreamReserveMs,
             }
           )
             .then((result) => {
@@ -6918,12 +6911,6 @@
       allSems().forEach((sem) => { try { sem.cancel(); } catch (_) {} });
     }
     specialistPromises.forEach((p) => { try { p.catch(() => null); } catch (_) {} });
-    if (raceResult !== "settled") {
-      await Promise.race([
-        allSettled,
-        new Promise((resolve) => setTimeout(resolve, 500)),
-      ]);
-    }
     if (reserveTimer) clearTimeout(reserveTimer);
     try { deadline.signal.removeEventListener("abort", onPipelineAbort); } catch (_) {}
     trace.composer.specialist_stop_reason = raceResult === "settled" ? "" : raceResult;
@@ -6950,7 +6937,7 @@
     for (const record of recoveryQueue) {
       if (trace.candidates.structured_recovery_succeeded >= recoveryLimit) break;
       if (deadline.check()
-          || deadline.remaining() <= downstreamReserveMs + COMPOSER_RESERVE_GUARD_MS) break;
+          || deadline.remaining() <= downstreamReserveMs) break;
       trace.candidates.structured_recovery_attempted++;
       const recovered = await callRole(
         record.role,
@@ -6973,7 +6960,7 @@
           allowFallback: false,
           completionWait: !!deadline.completion_wait,
           canContinue: () => !deadline.check()
-            && deadline.remaining() > downstreamReserveMs + COMPOSER_RESERVE_GUARD_MS,
+            && deadline.remaining() > downstreamReserveMs,
         }
       );
       if (!recovered || !Array.isArray(recovered.candidates) || !recovered.candidates.length) {
@@ -7033,7 +7020,7 @@
       };
     }
     let semanticJudgment = null;
-    if (!deadline.check() && deadline.remaining() > COMPOSER_RESERVE_GUARD_MS) {
+    if (!deadline.check() && deadline.remaining() > 0) {
       semanticJudgment = await callRole(
         judgeRole,
         judgeProfile,
@@ -7110,7 +7097,7 @@
       sceneCandidates, semanticJudgment, fusionPlan, segments, draftLedger
     );
     let composerResult = null;
-    if (composerRole && !deadline.check() && deadline.remaining() > COMPOSER_RESERVE_GUARD_MS) {
+    if (composerRole && !deadline.check() && deadline.remaining() > 0) {
       if (composerProfile && composerProfile.enabled && isProfileConfigured(composerProfile)) {
         composerResult = await runComposer(
           composerRole,
@@ -7269,10 +7256,6 @@
     if (outcome === "deadline") {
       allSems().forEach((sem) => { try { sem.cancel(); } catch (_) {} });
       trace.input_enhance.transport_cancellation = "requested_unverified";
-      await Promise.race([
-        settled,
-        new Promise((resolve) => setTimeout(resolve, 300)),
-      ]);
     }
     tasks.forEach((task) => { try { task.catch(() => null); } catch (_) {} });
     trace.input_enhance.active_calls_final = activeCalls;
@@ -9178,7 +9161,7 @@
           Semantic Prover: ${escapeHtml(proverLine)}<br>
           ${sourceSummary ? `Sources: ${escapeHtml(sourceSummary)}<br>` : ""}
           Summary: ${escapeHtml(summaryLine)}<br>
-          Scheduler: ${scheduler.completion_wait ? "completion_wait" : "deadline"} · serial threshold:${scheduler.endpoint_serial_threshold || ENDPOINT_SERIAL_THRESHOLD}<br>
+          Scheduler: ${scheduler.completion_wait ? "completion_wait" : "deadline"} · provider concurrency<br>
           Candidates: scenes:${t.candidates.total} segment-variants:${t.candidates.segment_variant_total || 0} partial:${t.candidates.partial_salvage_count || 0} normalized:${t.candidates.normalized_field_count || 0} recovery:${t.candidates.structured_recovery_succeeded || 0}/${t.candidates.structured_recovery_attempted || 0}/${t.candidates.structured_recovery_queued || 0} deduped:${t.candidates.duplicate_scene_candidates || 0}<br>
           Composer: ${t.composer.used} (${t.composer.status} ${t.composer.elapsed_ms}ms, reserve:${t.composer.reserve_ms || 0}ms, semantic-retry:${t.composer.semantic_retry || 0}${t.composer.specialist_stop_reason ? ", specialist-stop:" + escapeHtml(t.composer.specialist_stop_reason) : ""})<br>
           ${t.final.original_preview ? `Orig: ${escapeHtml(t.final.original_preview)}<br>` : ""}
@@ -10710,18 +10693,27 @@
       const originalBridge = globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
       const input = 'Continue the rain-soaked council scene.';
       const settings = defaultSettings();
+      const lifecycleState = 'current_request_payload_applied';
+      const sessionId = 'archive-test-session';
+      const turnIndex = 9;
+      const payloadPlanId = 'archive-test-plan';
+      const inputDigest = stableDigest(input);
+      const lifecycleDigest = stableDigest([
+        sessionId, turnIndex, inputDigest, input.length, payloadPlanId, lifecycleState,
+      ].join('|'));
       try {
         globalThis[ARCHIVE_CENTER_BRIDGE_KEY] = {
           contract_version: ARCHIVE_CENTER_BRIDGE_CONTRACT,
           owner: 'archive_center_host_adapter',
           transport_only: true,
-          published_at_ms: Date.now(),
-          expires_at_ms: Date.now() + 60000,
-          input_digest: stableDigest(input),
+          lifecycle_state: lifecycleState,
+          input_digest: inputDigest,
           input_chars: input.length,
-          input_bindings: [{ digest: stableDigest(input), chars: input.length }],
-          session_id: 'archive-test-session',
-          turn_index: 9,
+          lifecycle_digest: lifecycleDigest,
+          input_bindings: [{ digest: inputDigest, chars: input.length, lifecycle_digest: lifecycleDigest }],
+          session_id: sessionId,
+          turn_index: turnIndex,
+          payload_plan_id: payloadPlanId,
           enhancement_contract: {
             contract_version: ARCHIVE_CENTER_ENHANCEMENT_CONTRACT,
             status: 'ready',
@@ -10729,6 +10721,8 @@
             read_only: true,
             optional_enhancement: true,
             standalone_fallback_required: true,
+            session_id: sessionId,
+            turn_index: turnIndex,
             same_turn_critic_result_available: false,
             lane_semantics: {
               event_recent: 'objective_event_memory',
@@ -10777,6 +10771,8 @@
           payload_application_observation: {
             status: 'ready',
             payload_application_status: 'applied',
+            lifecycle_state: lifecycleState,
+            payload_plan_id: payloadPlanId,
           },
         };
         const envelope = readArchiveCenterEnhancement(input);
@@ -10842,42 +10838,66 @@
       }
     });
 
-    await test('archive_center_bridge_binding_failures_keep_standalone_path', () => {
+    await test('archive_center_bridge_lifecycle_fences_and_long_generation', () => {
       const originalBridge = globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
       const input = 'Continue this scene.';
+      const lifecycleState = 'current_request_payload_applied';
+      const sessionId = 'archive-long-generation-session';
+      const turnIndex = 12;
+      const payloadPlanId = 'archive-long-generation-plan';
+      const boundDigest = stableDigest(input);
+      const boundLifecycleDigest = stableDigest([
+        sessionId, turnIndex, boundDigest, input.length, payloadPlanId, lifecycleState,
+      ].join('|'));
       try {
         globalThis[ARCHIVE_CENTER_BRIDGE_KEY] = {
           contract_version: ARCHIVE_CENTER_BRIDGE_CONTRACT,
           owner: 'archive_center_host_adapter',
           transport_only: true,
-          expires_at_ms: Date.now() + 60000,
+          lifecycle_state: lifecycleState,
+          published_at_ms: Date.now() - (16 * 60 * 1000),
           input_bindings: [{ digest: stableDigest('a different turn'), chars: 16 }],
+          session_id: sessionId,
+          turn_index: turnIndex,
+          payload_plan_id: payloadPlanId,
           enhancement_contract: {
             contract_version: ARCHIVE_CENTER_ENHANCEMENT_CONTRACT,
             owner: 'go',
             read_only: true,
             optional_enhancement: true,
             standalone_fallback_required: true,
+            session_id: sessionId,
+            turn_index: turnIndex,
           },
           payload_application_observation: {
             payload_application_status: 'applied',
+            lifecycle_state: lifecycleState,
+            payload_plan_id: payloadPlanId,
           },
         };
         if (readArchiveCenterEnhancement(input) !== null) {
           throw new Error('cross-turn Archive Center bridge was accepted');
         }
         globalThis[ARCHIVE_CENTER_BRIDGE_KEY].input_bindings = [
-          { digest: stableDigest(input), chars: input.length },
+          { digest: boundDigest, chars: input.length, lifecycle_digest: boundLifecycleDigest },
         ];
-        globalThis[ARCHIVE_CENTER_BRIDGE_KEY].expires_at_ms = Date.now() - 1;
+        if (!readArchiveCenterEnhancement(input)) {
+          throw new Error('lifecycle-bound bridge was rejected after a generation longer than 15 minutes');
+        }
+        globalThis[ARCHIVE_CENTER_BRIDGE_KEY].enhancement_contract.session_id = 'different-session';
         if (readArchiveCenterEnhancement(input) !== null) {
-          throw new Error('expired Archive Center bridge was accepted');
+          throw new Error('cross-session Archive Center bridge was accepted');
+        }
+        globalThis[ARCHIVE_CENTER_BRIDGE_KEY].enhancement_contract.session_id = sessionId;
+        globalThis[ARCHIVE_CENTER_BRIDGE_KEY].lifecycle_state = 'superseded_request';
+        if (readArchiveCenterEnhancement(input) !== null) {
+          throw new Error('superseded Archive Center bridge was accepted');
         }
         delete globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
         if (readArchiveCenterEnhancement(input) !== null) {
           throw new Error('missing Archive Center bridge changed standalone behavior');
         }
-        return 'mismatch, expiry, and absence all rejected';
+        return 'input/session/lifecycle fences enforced; long generation accepted';
       } finally {
         if (originalBridge === undefined) delete globalThis[ARCHIVE_CENTER_BRIDGE_KEY];
         else globalThis[ARCHIVE_CENTER_BRIDGE_KEY] = originalBridge;
@@ -11121,10 +11141,13 @@
           trace,
           1
         );
-        if (trace.input_enhance.active_calls_final !== 0) {
-          throw new Error(`active_calls:${trace.input_enhance.active_calls_final}`);
+        if (trace.input_enhance.transport_cancellation !== "requested_unverified"
+            || trace.input_enhance.active_calls_final !== 1) {
+          throw new Error(
+            `cancellation:${trace.input_enhance.transport_cancellation}/active_calls:${trace.input_enhance.active_calls_final}`
+          );
         }
-        return "deadline aborted planner; active calls 0";
+        return "deadline requested cancellation; uncooperative transport remains explicitly unverified";
       } finally {
         deadline.cancel();
       }

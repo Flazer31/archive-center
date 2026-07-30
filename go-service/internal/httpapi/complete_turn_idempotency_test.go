@@ -346,7 +346,8 @@ func TestCompleteTurnRequestStatusPreservesReconciliationTruth(t *testing.T) {
 	server.CompleteTurns.finish("reconcile-key", completeTurnRecordedResponse{
 		status: http.StatusOK,
 		body: []byte(`{"status":"partial","code":"logical_turn_reference_cleanup_failed","save_ok":true,` +
-			`"raw_committed":true,"commit_state":"committed","reconciliation_required":true,"queue_action":"discard"}`),
+			`"raw_committed":true,"commit_state":"committed","reconciliation_required":true,` +
+			`"reconciliation_retry_idempotency_key":"reconcile:backend-owned","queue_action":"retry"}`),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/complete-turn/request-status?idempotency_key=reconcile-key", nil)
@@ -358,11 +359,24 @@ func TestCompleteTurnRequestStatusPreservesReconciliationTruth(t *testing.T) {
 		`"raw_committed":true`,
 		`"commit_state":"committed"`,
 		`"reconciliation_required":true`,
+		`"reconciliation_retry_idempotency_key":"reconcile:backend-owned"`,
 		`"result_status":"partial"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("status endpoint missing %s: %s", want, got)
 		}
+	}
+}
+
+func TestCompleteTurnReconciliationRetryIdempotencyKeyIsBackendOwnedAndStable(t *testing.T) {
+	meta := map[string]any{"idempotency_key": "original-request"}
+	first := completeTurnReconciliationRetryIdempotencyKey(meta)
+	second := completeTurnReconciliationRetryIdempotencyKey(meta)
+	if first == "" || first == "original-request" || first != second {
+		t.Fatalf("retry key must be fresh and stable: first=%q second=%q", first, second)
+	}
+	if got := completeTurnReconciliationRetryIdempotencyKey(map[string]any{}); got != "" {
+		t.Fatalf("missing original idempotency must not synthesize a key: %q", got)
 	}
 }
 

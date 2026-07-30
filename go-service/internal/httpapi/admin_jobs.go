@@ -82,6 +82,7 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 			"status":             "queued",
 			"processed":          0,
 			"candidate_count":    0,
+			"display_total":      0,
 			"failed_count":       0,
 			"skipped_count":      0,
 			"progress_percent":   0,
@@ -170,8 +171,29 @@ func (m *adminJobManager) update(id, status string, progress map[string]any) {
 	if job.Progress == nil {
 		job.Progress = map[string]any{}
 	}
+	previousStage := strings.TrimSpace(stringFromAny(job.Progress["stage"]))
+	incomingStage := strings.TrimSpace(stringFromAny(progress["stage"]))
+	if incomingStage != "" && incomingStage != previousStage {
+		if _, ok := progress["display_total"]; !ok {
+			if _, candidateOK := progress["candidate_count"]; !candidateOK {
+				if _, totalOK := progress["total_candidates"]; !totalOK {
+					if _, genericTotalOK := progress["total"]; !genericTotalOK {
+						job.Progress["display_total"] = 0
+					}
+				}
+			}
+		}
+	}
 	for k, v := range progress {
 		job.Progress[k] = v
+	}
+	if _, ok := progress["display_total"]; !ok {
+		for _, key := range []string{"candidate_count", "total_candidates", "total"} {
+			if value, found := progress[key]; found {
+				job.Progress["display_total"] = intFromAny(value, 0)
+				break
+			}
+		}
 	}
 	job.UpdatedAt = time.Now().UTC()
 	job.publishChangeLocked()

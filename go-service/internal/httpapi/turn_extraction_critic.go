@@ -235,7 +235,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	jsonPolicy := proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"}
 
-	upstream, upstreamStatus, err := performProxyPluginMainWithPolicy(ctx, req, jsonPolicy)
+	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, cfg.RetryBudget, jsonPolicy)
 	providerRetryTrace := map[string]any{}
 	if err != nil {
 		providerErr := classifyCriticProviderError(err, upstreamStatus)
@@ -248,11 +248,14 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		if !userRedacted && !assistantRedacted {
 			return nil, firstFailureTrace, providerErr
 		}
+		if !cfg.RetryBudget.take() {
+			return nil, firstFailureTrace, providerErr
+		}
 		retryPreviewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, retryUserInput, retryAssistantContent)
 		retryPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, retryUserInput, retryAssistantContent, safeContextMessages, outputLanguageOverride, retryPreviewPass, languageContext, criticArchiveLedgerPromptInput)
 		retryReq := req
 		retryReq.Messages = []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": retryPrompt}}
-		retryUpstream, retryStatus, retryErr := performProxyPluginMainWithPolicy(ctx, retryReq, jsonPolicy)
+		retryUpstream, retryStatus, retryErr := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, retryReq, cfg.RetryBudget, jsonPolicy)
 		providerRetryTrace = map[string]any{
 			"mode":                "sensitive_input_redacted_retry",
 			"user_input_redacted": userRedacted,
@@ -467,7 +470,7 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	trace["llm_call_attempt"] = true
-	upstream, _, err := performProxyPluginMainWithPolicy(ctx, req, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_world_rule_audit"})
+	upstream, _, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, cfg.RetryBudget, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_world_rule_audit"})
 	if err != nil {
 		trace["status"] = "error"
 		trace["error"] = err.Error()

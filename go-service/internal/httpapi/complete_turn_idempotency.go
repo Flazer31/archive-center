@@ -255,15 +255,16 @@ func completeTurnRecordedResponseSuccessful(response completeTurnRecordedRespons
 }
 
 type completeTurnRecordedResponseState struct {
-	Status                 string `json:"status"`
-	Code                   string `json:"code"`
-	SaveOK                 *bool  `json:"save_ok"`
-	RawCommitted           bool   `json:"raw_committed"`
-	CommitState            string `json:"commit_state"`
-	DerivedRetryRequired   bool   `json:"derived_retry_required"`
-	ReconciliationRequired bool   `json:"reconciliation_required"`
-	Retryable              *bool  `json:"retryable"`
-	QueueAction            string `json:"queue_action"`
+	Status                            string `json:"status"`
+	Code                              string `json:"code"`
+	SaveOK                            *bool  `json:"save_ok"`
+	RawCommitted                      bool   `json:"raw_committed"`
+	CommitState                       string `json:"commit_state"`
+	DerivedRetryRequired              bool   `json:"derived_retry_required"`
+	ReconciliationRequired            bool   `json:"reconciliation_required"`
+	ReconciliationRetryIdempotencyKey string `json:"reconciliation_retry_idempotency_key"`
+	Retryable                         *bool  `json:"retryable"`
+	QueueAction                       string `json:"queue_action"`
 }
 
 func parseCompleteTurnRecordedResponseState(response completeTurnRecordedResponse) (completeTurnRecordedResponseState, bool) {
@@ -280,6 +281,15 @@ func completeTurnIdempotencyKey(clientMeta map[string]any) string {
 		key = key[:240]
 	}
 	return key
+}
+
+func completeTurnReconciliationRetryIdempotencyKey(clientMeta map[string]any) string {
+	current := completeTurnIdempotencyKey(clientMeta)
+	if current == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("complete_turn_reconciliation_retry.v1|" + current))
+	return "reconcile:" + fmt.Sprintf("%x", sum[:])
 }
 
 func completeTurnRequestFingerprint(req dto.M4CompleteTurnRequest) string {
@@ -396,6 +406,9 @@ func (s *Server) handleCompleteTurnRequestStatus(w http.ResponseWriter, r *http.
 			}
 			payload["derived_retry_required"] = recorded.DerivedRetryRequired
 			payload["reconciliation_required"] = recorded.ReconciliationRequired
+			if recorded.ReconciliationRetryIdempotencyKey != "" {
+				payload["reconciliation_retry_idempotency_key"] = recorded.ReconciliationRetryIdempotencyKey
+			}
 			if recorded.Code != "" {
 				payload["code"] = recorded.Code
 			}

@@ -44,6 +44,7 @@ type schemaReport struct {
 
 type sqlExecer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 type managedAdminConnection interface {
@@ -493,6 +494,9 @@ func applyStatements(ctx context.Context, db sqlExecer, statements []string, rep
 
 func compatibilityMigrationStatements() []string {
 	statements := []string{
+		"UPDATE chat_logs SET role = LOWER(TRIM(role)) WHERE role <> LOWER(TRIM(role))",
+		"DELETE duplicate FROM chat_logs duplicate INNER JOIN chat_logs keep ON duplicate.chat_session_id = keep.chat_session_id AND duplicate.turn_index = keep.turn_index AND duplicate.role = keep.role AND duplicate.id > keep.id AND BINARY TRIM(duplicate.content) = BINARY TRIM(keep.content)",
+		"ALTER TABLE chat_logs ADD UNIQUE INDEX IF NOT EXISTS uq_chat_logs_turn_role (chat_session_id, turn_index, role)",
 		"ALTER TABLE storylines ADD COLUMN IF NOT EXISTS confidence DOUBLE",
 		"ALTER TABLE storylines ADD COLUMN IF NOT EXISTS evidence_count INT",
 		"ALTER TABLE storylines ADD COLUMN IF NOT EXISTS last_evidence_turn INT",
@@ -533,6 +537,25 @@ func compatibilityMigrationStatements() []string {
 }
 
 func applyCompatibilityMigrations(ctx context.Context, db sqlExecer, report *schemaReport) error {
+	var conflictingChatLogs int
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM chat_logs a
+			INNER JOIN chat_logs b
+				ON a.chat_session_id = b.chat_session_id
+				AND a.turn_index = b.turn_index
+				AND LOWER(TRIM(a.role)) = LOWER(TRIM(b.role))
+				AND a.id < b.id
+			WHERE NOT (BINARY TRIM(a.content) <=> BINARY TRIM(b.content))
+			LIMIT 1
+		)
+	`).Scan(&conflictingChatLogs); err != nil {
+		return fmt.Errorf("chat_logs uniqueness preflight failed: %w", err)
+	}
+	if conflictingChatLogs != 0 {
+		return errors.New("chat_logs uniqueness preflight found conflicting content for the same session, turn, and role")
+	}
 	statements := compatibilityMigrationStatements()
 	for i, stmt := range statements {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {

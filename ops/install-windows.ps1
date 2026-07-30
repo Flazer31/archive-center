@@ -15,11 +15,66 @@
     [string]$PythonVersion = "3.11.9",
     [string]$PythonDownloadUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
     [string]$PythonSha256 = "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
-    [string]$ChromaDBVersion = "1.5.9"
+    [string]$ChromaDBVersion = "1.5.9",
+    [Nullable[int]]$ExternalOperationTimeoutSeconds = $null
 )
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = "Stop"
+
+if ($null -eq $ExternalOperationTimeoutSeconds -and -not [string]::IsNullOrWhiteSpace($env:AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS)) {
+    $parsedExternalOperationTimeoutSeconds = 0
+    if (-not [int]::TryParse($env:AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS, [ref]$parsedExternalOperationTimeoutSeconds) -or
+        $parsedExternalOperationTimeoutSeconds -lt 1) {
+        throw "AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS must be a positive integer."
+    }
+    $ExternalOperationTimeoutSeconds = $parsedExternalOperationTimeoutSeconds
+}
+if ($null -ne $ExternalOperationTimeoutSeconds -and $ExternalOperationTimeoutSeconds -lt 1) {
+    throw "ExternalOperationTimeoutSeconds must be greater than zero when supplied."
+}
+
+function Assert-ExternalOperationTimeout {
+    if ($null -eq $ExternalOperationTimeoutSeconds) {
+        throw "Supply -ExternalOperationTimeoutSeconds or AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS for managed downloads and child installers. Archive Center does not invent a hidden deadline."
+    }
+}
+
+function Invoke-BoundedProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [switch]$Hidden
+    )
+    Assert-ExternalOperationTimeout
+    $startArgs = @{
+        FilePath = $FilePath
+        ArgumentList = (($ArgumentList | ForEach-Object {
+            $value = [string]$_
+            if ($value -match '[\s"]') {
+                '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+            } else {
+                $value
+            }
+        }) -join " ")
+        PassThru = $true
+    }
+    if ($Hidden) {
+        $startArgs.WindowStyle = "Hidden"
+    } else {
+        $startArgs.NoNewWindow = $true
+    }
+    $process = Start-Process @startArgs
+    $waitMilliseconds = [int64]$ExternalOperationTimeoutSeconds * 1000
+    if (-not $process.WaitForExit($waitMilliseconds)) {
+        try {
+            $process.Kill()
+        } catch {
+        }
+        throw "External process exceeded the caller-selected timeout: $FilePath"
+    }
+    return $process.ExitCode
+}
 
 function Resolve-ExistingPathOrRaw {
     param([string]$Path)
@@ -628,9 +683,10 @@ function Invoke-InstallMariaDBRuntime {
     New-Item -ItemType Directory -Force -Path $versionRoot | Out-Null
     $archivePath = Join-Path ([System.IO.Path]::GetTempPath()) ("archive-center-mariadb-$MariaDBVersion-$PID.zip")
     try {
+        Assert-ExternalOperationTimeout
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Write-Host "Downloading MariaDB $MariaDBVersion from the official MariaDB distribution service."
-        Invoke-WebRequest -UseBasicParsing -Uri $MariaDBDownloadUrl -OutFile $archivePath
+        Invoke-WebRequest -UseBasicParsing -Uri $MariaDBDownloadUrl -OutFile $archivePath -TimeoutSec $ExternalOperationTimeoutSeconds
         $actualSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
         $expectedSha256 = $MariaDBSha256.Trim().ToLowerInvariant()
         if ($actualSha256 -ne $expectedSha256) {
@@ -710,9 +766,10 @@ function Invoke-InstallChromaDBRuntime {
     $bootstrapPython = Find-CompatiblePythonBootstrap $pythonExe
     try {
         if ([string]::IsNullOrWhiteSpace($bootstrapPython)) {
+            Assert-ExternalOperationTimeout
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             Write-Host "Downloading Python $PythonVersion from python.org for the managed ChromaDB runtime."
-            Invoke-WebRequest -UseBasicParsing -Uri $PythonDownloadUrl -OutFile $installerPath
+            Invoke-WebRequest -UseBasicParsing -Uri $PythonDownloadUrl -OutFile $installerPath -TimeoutSec $ExternalOperationTimeoutSeconds
             $downloadedPython = $true
             $actualSha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
             $expectedSha256 = $PythonSha256.Trim().ToLowerInvariant()
@@ -737,16 +794,16 @@ function Invoke-InstallChromaDBRuntime {
                 "Include_tcltk=0",
                 "Include_pip=1"
             )
-            $installProcess = Start-Process -FilePath $installerPath -ArgumentList $pythonArgs -Wait -PassThru -WindowStyle Hidden
-            if ($installProcess.ExitCode -ne 0) {
-                throw "Python installer failed with exit code $($installProcess.ExitCode)."
+            $installExitCode = Invoke-BoundedProcess -FilePath $installerPath -ArgumentList $pythonArgs -Hidden
+            if ($installExitCode -ne 0) {
+                throw "Python installer failed with exit code $installExitCode."
             }
             $bootstrapPython = Find-CompatiblePythonBootstrap $pythonExe
             if ([string]::IsNullOrWhiteSpace($bootstrapPython)) {
                 Write-Host "Python registration exists but the runtime is incomplete. Running the verified installer repair path."
-                $repairProcess = Start-Process -FilePath $installerPath -ArgumentList @("/quiet", "/repair") -Wait -PassThru -WindowStyle Hidden
-                if ($repairProcess.ExitCode -ne 0) {
-                    throw "Python installer repair failed with exit code $($repairProcess.ExitCode)."
+                $repairExitCode = Invoke-BoundedProcess -FilePath $installerPath -ArgumentList @("/quiet", "/repair") -Hidden
+                if ($repairExitCode -ne 0) {
+                    throw "Python installer repair failed with exit code $repairExitCode."
                 }
                 $bootstrapPython = Find-CompatiblePythonBootstrap $pythonExe
             }
@@ -757,16 +814,16 @@ function Invoke-InstallChromaDBRuntime {
         $bootstrapPythonVersion = Get-PythonRuntimeVersion $bootstrapPython
 
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $chromaRoot) | Out-Null
-        & $bootstrapPython -m venv $chromaRoot 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $chromaPython -PathType Leaf)) {
+        $venvExitCode = Invoke-BoundedProcess -FilePath $bootstrapPython -ArgumentList @("-m", "venv", $chromaRoot)
+        if ($venvExitCode -ne 0 -or -not (Test-Path -LiteralPath $chromaPython -PathType Leaf)) {
             throw "Managed ChromaDB virtual environment creation failed."
         }
-        & $chromaPython -m pip install --disable-pip-version-check --no-input --upgrade pip wheel setuptools 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) {
+        $pipBootstrapExitCode = Invoke-BoundedProcess -FilePath $chromaPython -ArgumentList @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "wheel", "setuptools")
+        if ($pipBootstrapExitCode -ne 0) {
             throw "Managed ChromaDB pip bootstrap failed."
         }
-        & $chromaPython -m pip install --disable-pip-version-check --no-input --upgrade "chromadb==$ChromaDBVersion" 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) {
+        $chromaInstallExitCode = Invoke-BoundedProcess -FilePath $chromaPython -ArgumentList @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "chromadb==$ChromaDBVersion")
+        if ($chromaInstallExitCode -ne 0) {
             throw "pip install chromadb==$ChromaDBVersion failed."
         }
         if (-not (Test-ChromaDBRuntimeVersion $chromaPython)) {

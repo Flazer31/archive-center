@@ -1,10 +1,23 @@
 param(
     [string]$Repo = "Flazer31/archive-center",
     [string]$InstallDir = "",
+    [Nullable[int]]$ExternalOperationTimeoutSeconds = $null,
     [switch]$Start
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($null -eq $ExternalOperationTimeoutSeconds -and -not [string]::IsNullOrWhiteSpace($env:AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS)) {
+    $parsedExternalOperationTimeoutSeconds = 0
+    if (-not [int]::TryParse($env:AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS, [ref]$parsedExternalOperationTimeoutSeconds) -or
+        $parsedExternalOperationTimeoutSeconds -lt 1) {
+        throw "AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS must be a positive integer."
+    }
+    $ExternalOperationTimeoutSeconds = $parsedExternalOperationTimeoutSeconds
+}
+if ($null -eq $ExternalOperationTimeoutSeconds -or $ExternalOperationTimeoutSeconds -lt 1) {
+    throw "Supply -ExternalOperationTimeoutSeconds or AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS. Archive Center does not invent a hidden download deadline."
+}
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Join-Path $env:LOCALAPPDATA "ArchiveCenter"
@@ -308,7 +321,7 @@ $persistentDataDir = if ([string]::IsNullOrWhiteSpace($env:ARCHIVE_CENTER_DATA_D
 } else {
     $env:ARCHIVE_CENTER_DATA_DIR
 }
-$release = Invoke-RestMethod -Method Get -Uri $apiUrl -Headers $headers
+$release = Invoke-RestMethod -Method Get -Uri $apiUrl -Headers $headers -TimeoutSec $ExternalOperationTimeoutSeconds
 $asset = Find-ReleaseAsset $release $needle
 if ($null -eq $asset) {
     throw "No release package asset matched platform $platform."
@@ -323,8 +336,8 @@ New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 try {
     $zipPath = Join-Path $workDir ([string]$asset.name)
     $sumsPath = Join-Path $workDir ([string]$sumsAsset.name)
-    Invoke-WebRequest -Uri ([string]$sumsAsset.browser_download_url) -Headers $headers -OutFile $sumsPath
-    Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -Headers $headers -OutFile $zipPath
+    Invoke-WebRequest -Uri ([string]$sumsAsset.browser_download_url) -Headers $headers -OutFile $sumsPath -TimeoutSec $ExternalOperationTimeoutSeconds
+    Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -Headers $headers -OutFile $zipPath -TimeoutSec $ExternalOperationTimeoutSeconds
 
     $expected = Get-ExpectedSHA256 $sumsPath ([string]$asset.name)
     if ([string]::IsNullOrWhiteSpace($expected)) {

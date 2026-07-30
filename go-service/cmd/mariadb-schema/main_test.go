@@ -374,6 +374,8 @@ func TestApplyCompatibilityMigrationsAddsStorylineQualityColumns(t *testing.T) {
 	defer db.Close()
 
 	statements := compatibilityMigrationStatements()
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(.*FROM chat_logs a.*INNER JOIN chat_logs b`).
+		WillReturnRows(sqlmock.NewRows([]string{"conflicting"}).AddRow(0))
 	for _, stmt := range statements {
 		mock.ExpectExec(regexp.QuoteMeta(stmt)).
 			WillReturnResult(sqlmock.NewResult(0, 0))
@@ -388,6 +390,64 @@ func TestApplyCompatibilityMigrationsAddsStorylineQualityColumns(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApplyCompatibilityMigrationsRejectsConflictingChatLogsBeforeMutation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery(`(?s)SELECT EXISTS\(.*FROM chat_logs a.*INNER JOIN chat_logs b`).
+		WillReturnRows(sqlmock.NewRows([]string{"conflicting"}).AddRow(1))
+
+	report := newReport("schema.sql", true)
+	err = applyCompatibilityMigrations(context.Background(), db, report)
+	if err == nil || !strings.Contains(err.Error(), "conflicting content") {
+		t.Fatalf("expected chat log conflict preflight error, got %v", err)
+	}
+	if report.CompatibilityStatementsRun != 0 {
+		t.Fatalf("compatibility statements run = %d, want 0", report.CompatibilityStatementsRun)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompatibilityMigrationsIncludeChatLogUniquenessRepair(t *testing.T) {
+	joined := strings.Join(compatibilityMigrationStatements(), "\n")
+	for _, required := range []string{
+		"UPDATE chat_logs SET role = LOWER(TRIM(role))",
+		"DELETE duplicate FROM chat_logs",
+		"ADD UNIQUE INDEX IF NOT EXISTS uq_chat_logs_turn_role",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("compatibility migration statements missing %q", required)
+		}
+	}
+}
+
+func TestChatLogUniquenessMigrationIsRegisteredInCompatibilityPass(t *testing.T) {
+	migrationPath := filepath.Join("..", "..", "..", "migrations", "008_chat_log_turn_role_uniqueness.sql")
+	migrationStatements, err := loadStatements(migrationPath)
+	if err != nil {
+		t.Fatalf("load chat log uniqueness migration: %v", err)
+	}
+	if len(migrationStatements) != 1 {
+		t.Fatalf("migration statements=%d, want 1", len(migrationStatements))
+	}
+	normalizedMigration := strings.Join(strings.Fields(migrationStatements[0]), " ")
+	found := false
+	for _, statement := range compatibilityMigrationStatements() {
+		if strings.Join(strings.Fields(statement), " ") == normalizedMigration {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("migration statement is not registered in compatibility pass: %s", normalizedMigration)
 	}
 }
 

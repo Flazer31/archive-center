@@ -63,10 +63,10 @@ func (e *proxyLocalRequestError) Unwrap() error {
 }
 
 func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map[string]any, int, error) {
-	return callProxyProviderWithPolicy(ctx, req, proxyRequestPolicy{})
+	return callProxyProviderWithPolicy(ctx, req, proxyRequestPolicy{}, nil)
 }
 
-func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy) (map[string]any, int, error) {
+func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (map[string]any, int, error) {
 	endpoint := strings.TrimSpace(stringPtrValue(req.Endpoint, ""))
 	apiKey := strings.TrimSpace(stringPtrValue(req.APIKey, ""))
 	model := strings.TrimSpace(stringPtrValue(req.Model, ""))
@@ -105,7 +105,7 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 	case "vertex":
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, true, policy)
 	case "openai", "openrouter", "llmgateway", "copilot", "ollama", "custom":
-		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider)
+		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider, retryBudget)
 	default:
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{
 			Stage: "configuration",
@@ -114,7 +114,7 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 	}
 }
 
-func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string) (map[string]any, int, error) {
+func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string, retryBudget *llmRetryBudget) (map[string]any, int, error) {
 	isGLM := proxyIsGLMLike(model, endpoint, provider)
 	target := proxyOpenAIChatEndpoint(proxyOpenAIBaseURL(provider, endpoint), provider, isGLM)
 
@@ -185,7 +185,8 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	if status == http.StatusBadRequest &&
 		proxyHasAdvancedParams(body) &&
 		proxyUnsupportedParameter(raw, data) &&
-		!proxyServiceTierError(raw, data) {
+		!proxyServiceTierError(raw, data) &&
+		retryBudget.take() {
 		fallback := cloneMap(body)
 		delete(fallback, "reasoning_effort")
 		delete(fallback, "max_completion_tokens")

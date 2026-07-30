@@ -22,6 +22,7 @@ func TestCompleteTurnCriticProviderFailureRetriesWithRedactedInput(t *testing.T)
 	srv := NewServer(cfg)
 	srv.Store = fake
 	srv.StoreOpenError = nil
+	srv.RuntimeConfig.LLMRetryCount = 1
 
 	extractionBytes, _ := json.Marshal(map[string]any{
 		"turn_summary":      "Mina and Rowan crossed an intimate threshold while Rowan stayed reassuring.",

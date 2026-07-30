@@ -1082,8 +1082,8 @@ func TestCompleteTurnCriticProviderFailurePreservesRawTurnAndReportsReason(t *te
 	if resp["save_ok"] != true || resp["critic_triggered"] != false {
 		t.Fatalf("expected raw save with critic failure, got %+v", resp)
 	}
-	if resp["derived_retry_required"] != true {
-		t.Fatalf("critic failure must keep derived retry eligible: %+v", resp)
+	if resp["derived_retry_required"] != false || resp["queue_action"] != "retry" || resp["retryable"] != true {
+		t.Fatalf("non-durable critic failure must request transport retry without claiming backend ownership: %+v", resp)
 	}
 	if resp["chat_logs_saved"] != float64(2) || resp["derived_artifacts_saved"] != float64(0) {
 		t.Fatalf("unexpected save counters: %+v", resp)

@@ -71,6 +71,22 @@ func TestValidateRuntimeDependenciesAllowsUnavailableReferenceCollection(t *test
 	}
 }
 
+func TestValidateRuntimeDependenciesHonorsCallerCancellation(t *testing.T) {
+	cfg := config.Default()
+	cfg.ChromaEnabled = true
+	cfg.ChromaEndpoint = "http://blocking-chroma.test"
+	srv := NewServer(cfg)
+	srv.Vector = &blockingHealthVectorStore{fakeVectorStore: &fakeVectorStore{}}
+	srv.VectorOpenError = nil
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := srv.ValidateRuntimeDependencies(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want caller cancellation", err)
+	}
+}
+
 func TestReadyReportsUnavailableReferenceCollectionWithoutBlockingMainReadiness(t *testing.T) {
 	server := newMainHealthyReferenceUnavailableChroma(t)
 	defer server.Close()

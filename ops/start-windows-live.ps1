@@ -17,6 +17,14 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+if ($null -eq $RequestTimeoutSeconds -and -not [string]::IsNullOrWhiteSpace($env:AC_REQUEST_TIMEOUT_SECONDS)) {
+    $parsedRequestTimeoutSeconds = 0
+    if (-not [int]::TryParse($env:AC_REQUEST_TIMEOUT_SECONDS, [ref]$parsedRequestTimeoutSeconds) -or
+        $parsedRequestTimeoutSeconds -lt 1) {
+        throw "AC_REQUEST_TIMEOUT_SECONDS must be a positive integer."
+    }
+    $RequestTimeoutSeconds = $parsedRequestTimeoutSeconds
+}
 foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMilliseconds, $RequestTimeoutSeconds)) {
     if ($null -ne $timeoutSetting -and $timeoutSetting -lt 1) {
         throw "Explicit timeout and polling values must be greater than zero."
@@ -24,6 +32,9 @@ foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMi
 }
 if (($null -eq $ReadinessTimeoutSeconds) -ne ($null -eq $ReadinessPollIntervalMilliseconds)) {
     throw "ReadinessTimeoutSeconds and ReadinessPollIntervalMilliseconds must be supplied together."
+}
+if ($null -eq $RequestTimeoutSeconds) {
+    throw "Supply -RequestTimeoutSeconds or AC_REQUEST_TIMEOUT_SECONDS. Live HTTP probes do not use a hidden request deadline."
 }
 
 function Resolve-FullPath {

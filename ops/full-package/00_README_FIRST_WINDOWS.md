@@ -6,6 +6,13 @@ Archive Center 패키지에 포함하지 않습니다.
 
 ## 처음 실행
 
+`.env.full.local`에서 다음 제한값을 사용 환경에 맞게 직접 정하십시오.
+Archive Center는 여기에 숨은 고정 초를 대신 넣지 않습니다.
+
+- `AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS`: MariaDB/Python/Chroma 다운로드와 설치, 업데이터 실행
+- `AC_REQUEST_TIMEOUT_SECONDS`: 로컬 HTTP 상태 확인
+- `AC_READINESS_TIMEOUT_SECONDS`와 `AC_READINESS_POLL_INTERVAL_MILLISECONDS`: 준비 상태를 반복 확인할 때 반드시 함께 지정
+
 1. `01_start_archive_center_windows.bat`를 더블클릭합니다.
 2. MariaDB가 없으면 공식 MariaDB 12.3.2 ZIP을 직접 다운로드합니다.
 3. Python/ChromaDB가 없으면 공식 CPython 설치 파일을 다운로드하고 ChromaDB

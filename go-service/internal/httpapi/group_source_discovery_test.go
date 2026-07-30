@@ -543,9 +543,30 @@ func TestSourceCandidateExtractionRetriesMalformedJSONOnce(t *testing.T) {
 	}}}
 	candidates, _, trace, err := runSourceCandidateExtraction(context.Background(), completeTurnLLMConfig{
 		Provider: "openai", APIKey: "fixture-key", Endpoint: provider.URL, Model: "fixture", TimeoutMs: 5000,
+		RetryBudget: newLLMRetryBudget(1),
 	}, store.SourceDiscoveryInput{WorkQuery: "Neutral"}, result)
 	if err != nil || calls != 2 || len(candidates) != 1 || trace["format_retry_count"] != 1 {
 		t.Fatalf("calls=%d candidates=%#v trace=%#v err=%v", calls, candidates, trace, err)
+	}
+}
+
+func TestSourceCandidateExtractionMalformedJSONRespectsZeroRetryBudget(t *testing.T) {
+	calls := 0
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "not json"}}}})
+	}))
+	defer provider.Close()
+	result := map[string]any{"section_candidates": []any{map[string]any{
+		"source_url": "https://reference.example/entities/mina", "locator": map[string]any{"type": "p", "value": "1"}, "excerpt": "Mina is the archivist.",
+	}}}
+	_, _, _, err := runSourceCandidateExtraction(context.Background(), completeTurnLLMConfig{
+		Provider: "openai", APIKey: "fixture-key", Endpoint: provider.URL, Model: "fixture", TimeoutMs: 5000,
+		RetryBudget: newLLMRetryBudget(0),
+	}, store.SourceDiscoveryInput{WorkQuery: "Neutral"}, result)
+	if err == nil || calls != 1 {
+		t.Fatalf("calls=%d err=%v, want one failed attempt without format repair", calls, err)
 	}
 }
 
@@ -967,7 +988,7 @@ func TestOllamaSourceSearchAgentRequiresModelAndToolCall(t *testing.T) {
 	}
 }
 
-func TestOllamaSourceSearchAgentStopsOnReplayedQueryFrontier(t *testing.T) {
+func TestOllamaSourceSearchAgentCapsMultipleToolCallsAtAdvertisedBudget(t *testing.T) {
 	searchCalls := 0
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -995,8 +1016,8 @@ func TestOllamaSourceSearchAgentStopsOnReplayedQueryFrontier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if searchCalls != 4 || len(results) != 1 {
-		t.Fatalf("searchCalls=%d results=%#v", searchCalls, results)
+	if searchCalls != ollamaSourceSearchMaxToolCalls || len(results) != 1 {
+		t.Fatalf("searchCalls=%d want=%d results=%#v", searchCalls, ollamaSourceSearchMaxToolCalls, results)
 	}
 }
 

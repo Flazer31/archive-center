@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,10 @@ import (
 
 type completeTurnReprocessingStore struct {
 	*turnRecordingStore
-	sources map[string]*store.MemorySourceRevision
-	jobs    map[string]*store.MemoryReprocessingJob
+	sources            map[string]*store.MemorySourceRevision
+	jobs               map[string]*store.MemoryReprocessingJob
+	enqueueErr         error
+	failEffectiveInput bool
 }
 
 func (f *completeTurnReprocessingStore) MemoryDerivationLifecycleEnabled() bool {
@@ -63,6 +66,9 @@ func (f *completeTurnReprocessingStore) InvalidateSourceRevisions(_ context.Cont
 }
 
 func (f *completeTurnReprocessingStore) EnqueueMemoryReprocessingJob(_ context.Context, job *store.MemoryReprocessingJob) (bool, error) {
+	if f.enqueueErr != nil {
+		return false, f.enqueueErr
+	}
 	if f.jobs == nil {
 		f.jobs = map[string]*store.MemoryReprocessingJob{}
 	}
@@ -72,6 +78,13 @@ func (f *completeTurnReprocessingStore) EnqueueMemoryReprocessingJob(_ context.C
 	copy := *job
 	f.jobs[job.IdempotencyKey] = &copy
 	return true, nil
+}
+
+func (f *completeTurnReprocessingStore) SaveEffectiveInput(ctx context.Context, input *store.EffectiveInput) error {
+	if f.failEffectiveInput {
+		return errors.New("effective input store unavailable")
+	}
+	return f.turnRecordingStore.SaveEffectiveInput(ctx, input)
 }
 
 func (f *completeTurnReprocessingStore) ClaimMemoryReprocessingJob(context.Context, string, time.Time, time.Duration) (*store.MemoryReprocessingJob, error) {
@@ -150,7 +163,7 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	)
 	reqBody.ClientMeta["critic"] = map[string]any{
 		"api_key": "test-key", "endpoint": "https://api.example.com/v1",
-		"model": "critic", "provider": "openai",
+		"model": "critic", "provider": "openai", "timeout_ms": 45000,
 	}
 	raw, _ := json.Marshal(reqBody)
 	recorder := httptest.NewRecorder()
@@ -188,4 +201,105 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 			t.Fatalf("idempotency key changed: %q", firstKey)
 		}
 	}
+}
+
+func TestCompleteTurnSuccessfulCriticDerivedWriteFailureEnqueuesDurableRevisionJob(t *testing.T) {
+	recording := &completeTurnReprocessingStore{
+		turnRecordingStore: &turnRecordingStore{},
+		failEffectiveInput: true,
+	}
+	response := runCompleteTurnDerivedFailureReprocessingTest(t, recording)
+	for field, want := range map[string]any{
+		"critic_triggered":        true,
+		"derived_retry_required":  true,
+		"reconciliation_required": true,
+		"queue_action":            "discard",
+		"retryable":               false,
+	} {
+		if got := response[field]; got != want {
+			t.Fatalf("%s=%v, want %v; response=%#v", field, got, want, response)
+		}
+	}
+	if len(recording.jobs) != 1 {
+		t.Fatalf("durable reprocessing jobs=%d, want 1", len(recording.jobs))
+	}
+	queue, _ := response["memory_reprocessing_queue"].(map[string]any)
+	if queue["durable_or_existing"] != true || queue["reason_code"] != "derived_persist_failed" {
+		t.Fatalf("memory_reprocessing_queue=%#v", queue)
+	}
+}
+
+func TestCompleteTurnDerivedRecoveryEnqueueFailureDoesNotClaimBackendOwnership(t *testing.T) {
+	recording := &completeTurnReprocessingStore{
+		turnRecordingStore: &turnRecordingStore{},
+		failEffectiveInput: true,
+		enqueueErr:         errors.New("reprocessing queue unavailable"),
+	}
+	response := runCompleteTurnDerivedFailureReprocessingTest(t, recording)
+	for field, want := range map[string]any{
+		"critic_triggered":        true,
+		"derived_retry_required":  false,
+		"reconciliation_required": true,
+		"queue_action":            "retry",
+		"retryable":               true,
+	} {
+		if got := response[field]; got != want {
+			t.Fatalf("%s=%v, want %v; response=%#v", field, got, want, response)
+		}
+	}
+	if len(recording.jobs) != 0 {
+		t.Fatalf("non-durable reprocessing jobs=%d, want 0", len(recording.jobs))
+	}
+	queue, _ := response["memory_reprocessing_queue"].(map[string]any)
+	if queue["durable_or_existing"] != false || queue["reason_code"] != "derived_persist_failed" {
+		t.Fatalf("memory_reprocessing_queue=%#v", queue)
+	}
+}
+
+func runCompleteTurnDerivedFailureReprocessingTest(
+	t *testing.T,
+	recording *completeTurnReprocessingStore,
+) map[string]any {
+	t.Helper()
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = recording
+	srv.StoreOpenError = nil
+
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"choices":[{"message":{"content":"{\"turn_summary\":\"accepted final summary\",\"importance_score\":1}"}}]}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	reqBody := completeTurnAnchoredAcceptanceTestRequest(
+		"session-derived-reprocess", 1, "user source", "assistant source",
+		1000, "generation-1", "not_streaming", 0, 1, 2,
+	)
+	reqBody.ClientMeta["critic"] = map[string]any{
+		"api_key": "test-key", "endpoint": "https://api.example.com/v1",
+		"model": "critic", "provider": "openai", "timeout_ms": 45000,
+	}
+	raw, _ := json.Marshal(reqBody)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(raw))
+	request.Header.Set("Content-Type", "application/json")
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return response
 }

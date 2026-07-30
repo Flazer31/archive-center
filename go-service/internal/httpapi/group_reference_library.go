@@ -984,7 +984,7 @@ SOURCE:
 	temp := cfg.Temperature
 	req := dto.ProxyPluginMainRequest{APIKey: &cfg.APIKey, Endpoint: &cfg.Endpoint, Model: &cfg.Model, Provider: &cfg.Provider, Messages: []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": userPrompt}}, MaxTokens: &maxTokens, MaxCompletionTokens: &maxCompletion, Temperature: &temp, TimeoutMs: &cfg.TimeoutMs}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, req, cfg.RetryBudget)
 	if err != nil {
 		return nil, err
 	}
@@ -1209,7 +1209,7 @@ EXISTING_APPROVED_REFERENCE (context only; never return decisions for these IDs)
 	temp := cfg.Temperature
 	req := dto.ProxyPluginMainRequest{APIKey: &cfg.APIKey, Endpoint: &cfg.Endpoint, Model: &cfg.Model, Provider: &cfg.Provider, Messages: []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": userPrompt}}, MaxTokens: &maxTokens, MaxCompletionTokens: &maxCompletion, Temperature: &temp, TimeoutMs: &cfg.TimeoutMs}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, req, cfg.RetryBudget)
 	if err != nil {
 		return nil, err
 	}
@@ -1242,7 +1242,7 @@ TIMELINE ITEMS:
 	temp := cfg.Temperature
 	req := dto.ProxyPluginMainRequest{APIKey: &cfg.APIKey, Endpoint: &cfg.Endpoint, Model: &cfg.Model, Provider: &cfg.Provider, Messages: []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": userPrompt}}, MaxTokens: &maxTokens, MaxCompletionTokens: &maxCompletion, Temperature: &temp, TimeoutMs: &cfg.TimeoutMs}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
-	upstream, _, err := performProxyPluginMain(ctx, req)
+	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, req, cfg.RetryBudget)
 	if err != nil {
 		return nil, err
 	}

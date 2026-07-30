@@ -8,11 +8,12 @@ param(
     [Nullable[int]]$ReadinessPollIntervalMilliseconds = $null,
     [Nullable[int]]$RequestTimeoutSeconds = $null,
     [Nullable[int]]$DependencyProbeTimeoutSeconds = $null,
+    [Nullable[int]]$ExternalOperationTimeoutSeconds = $null,
     [switch]$KeepServices
 )
 
 $ErrorActionPreference = "Stop"
-foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMilliseconds, $RequestTimeoutSeconds, $DependencyProbeTimeoutSeconds)) {
+foreach ($timeoutSetting in @($ReadinessTimeoutSeconds, $ReadinessPollIntervalMilliseconds, $RequestTimeoutSeconds, $DependencyProbeTimeoutSeconds, $ExternalOperationTimeoutSeconds)) {
     if ($null -ne $timeoutSetting -and $timeoutSetting -lt 1) {
         throw "Explicit timeout and polling values must be greater than zero."
     }
@@ -334,6 +335,46 @@ function Test-LocalChromaRequested([string]$Value) {
     @("local_native", "local_proot", "bundled") -contains $Value
 }
 
+function Invoke-BoundedArchiveChildProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [string]$WorkingDirectory = ""
+    )
+    if ($null -eq $ExternalOperationTimeoutSeconds) {
+        throw "External child operation requires AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS or -ExternalOperationTimeoutSeconds."
+    }
+    $process = Start-ArchiveChildProcess -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory
+    $waitMilliseconds = [int64]$ExternalOperationTimeoutSeconds * 1000
+    if (-not $process.WaitForExit($waitMilliseconds)) {
+        try {
+            $process.Kill()
+        } catch {
+        }
+        throw "External child operation exceeded the caller-selected timeout: $FilePath"
+    }
+    return $process.ExitCode
+}
+
+function Resolve-ExplicitTimeoutFromEnvFile {
+    param(
+        [Nullable[int]]$CurrentValue,
+        [string]$Name
+    )
+    if ($null -ne $CurrentValue) {
+        return $CurrentValue
+    }
+    $rawValue = Get-DotEnvValue $EnvFile $Name
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+        return $null
+    }
+    $parsedValue = 0
+    if (-not [int]::TryParse($rawValue, [ref]$parsedValue) -or $parsedValue -lt 1) {
+        throw "$Name must be a positive integer when supplied."
+    }
+    return [Nullable[int]]$parsedValue
+}
+
 function Get-LowerSHA256([string]$Path) {
     (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
@@ -366,7 +407,8 @@ function Invoke-ArchiveUpdater {
     param(
         [Parameter(Mandatory = $true)][string]$RunnerPath,
         [Parameter(Mandatory = $true)][string]$Command,
-        [Parameter(Mandatory = $true)][string]$PackageRoot
+        [Parameter(Mandatory = $true)][string]$PackageRoot,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
 
     if (-not (Test-Path -LiteralPath $RunnerPath -PathType Leaf)) {
@@ -392,7 +434,14 @@ function Invoke-ArchiveUpdater {
     }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    $process.WaitForExit()
+    $waitMilliseconds = [int64]$TimeoutSeconds * 1000
+    if (-not $process.WaitForExit($waitMilliseconds)) {
+        try {
+            $process.Kill()
+        } catch {
+        }
+        throw "Archive Center updater exceeded the caller-selected timeout for '$Command'."
+    }
     $stdout = ([string]$stdoutTask.GetAwaiter().GetResult()).Trim()
     $stderr = ([string]$stderrTask.GetAwaiter().GetResult()).Trim()
     $exitCode = $process.ExitCode
@@ -603,10 +652,15 @@ function Wait-BackendMainReady {
     }
 }
 
-function Stop-ArchiveChildProcess([System.Diagnostics.Process]$Process) {
+function Stop-ArchiveChildProcess([System.Diagnostics.Process]$Process, [Nullable[int]]$TimeoutSeconds = $null) {
     if ($null -ne $Process -and -not $Process.HasExited) {
         $Process.Kill()
-        $Process.WaitForExit()
+        if ($null -ne $TimeoutSeconds) {
+            $waitMilliseconds = [int64]$TimeoutSeconds * 1000
+            if (-not $Process.WaitForExit($waitMilliseconds)) {
+                throw "Child process did not exit before the caller-selected timeout."
+            }
+        }
     }
 }
 
@@ -800,6 +854,15 @@ function Import-LegacyRuntimeDataOnce([string]$PackageRoot, [string]$DataRoot, [
 $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $packRoot
 
+$ReadinessTimeoutSeconds = Resolve-ExplicitTimeoutFromEnvFile $ReadinessTimeoutSeconds "AC_READINESS_TIMEOUT_SECONDS"
+$ReadinessPollIntervalMilliseconds = Resolve-ExplicitTimeoutFromEnvFile $ReadinessPollIntervalMilliseconds "AC_READINESS_POLL_INTERVAL_MILLISECONDS"
+$RequestTimeoutSeconds = Resolve-ExplicitTimeoutFromEnvFile $RequestTimeoutSeconds "AC_REQUEST_TIMEOUT_SECONDS"
+$DependencyProbeTimeoutSeconds = Resolve-ExplicitTimeoutFromEnvFile $DependencyProbeTimeoutSeconds "AC_DEPENDENCY_PROBE_TIMEOUT_SECONDS"
+$ExternalOperationTimeoutSeconds = Resolve-ExplicitTimeoutFromEnvFile $ExternalOperationTimeoutSeconds "AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS"
+if (($null -eq $ReadinessTimeoutSeconds) -ne ($null -eq $ReadinessPollIntervalMilliseconds)) {
+    throw "AC_READINESS_TIMEOUT_SECONDS and AC_READINESS_POLL_INTERVAL_MILLISECONDS must be supplied together."
+}
+
 $backendExe = Join-Path $packRoot "bin\archive-center-go.exe"
 $profileBeforeApply = if (-not [string]::IsNullOrWhiteSpace($RuntimeProfile)) {
     $RuntimeProfile
@@ -863,7 +926,10 @@ if ($profileBeforeApply -eq "client_only") {
         $updaterRunnerCleanupAllowed = $false
         Write-Host "Using preserved updater recovery runner: $updaterRunner"
         Unblock-PackageFile $updaterRunner
-        $clientRollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot
+        if ($null -eq $ExternalOperationTimeoutSeconds) {
+            throw "Active update recovery requires AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS or -ExternalOperationTimeoutSeconds."
+        }
+        $clientRollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot -TimeoutSeconds $ExternalOperationTimeoutSeconds
         if ($clientRollback.ExitCode -ne 0 -or $clientRollback.Status -notin @("rolled_back", "nothing_to_rollback")) {
             throw "client_only profile could not safely roll back active update state '$clientStateStatus'. Startup stopped to avoid a mixed package."
         }
@@ -879,7 +945,7 @@ if ($profileBeforeApply -eq "client_only") {
         $updaterRunner = Resolve-BoundUpdaterRunner -PackageRoot $packRoot -State $observedState
         $updaterRunnerCleanupAllowed = $false
         Write-Host "Using preserved updater recovery runner: $updaterRunner"
-    } elseif (Test-Path -LiteralPath $updaterExe -PathType Leaf) {
+    } elseif ($updateStatePresent -and (Test-Path -LiteralPath $updaterExe -PathType Leaf)) {
         $updaterRunner = New-BoundUpdaterRunner -PackageRoot $packRoot -UpdaterPath $updaterExe -TargetVersion $pendingMarkerTargetVersion
         if ($pendingMarkerPresent) {
             $updaterRunnerCleanupAllowed = $false
@@ -891,10 +957,13 @@ if ($profileBeforeApply -eq "client_only") {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($updaterRunner)) {
+        if ($null -eq $ExternalOperationTimeoutSeconds) {
+            throw "Pending update processing requires AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS or -ExternalOperationTimeoutSeconds."
+        }
         Unblock-PackageFile $updaterRunner
         $applyFailure = ""
         try {
-            $pendingApply = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "apply-pending" -PackageRoot $packRoot
+            $pendingApply = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "apply-pending" -PackageRoot $packRoot -TimeoutSeconds $ExternalOperationTimeoutSeconds
             $pendingApplyStatus = $pendingApply.Status
             $pendingTargetVersion = ([string]$pendingApply.Result.target_version).Trim()
             $pendingCurrentVersion = ([string]$pendingApply.Result.current_version).Trim()
@@ -907,7 +976,7 @@ if ($profileBeforeApply -eq "client_only") {
 
         if (-not [string]::IsNullOrWhiteSpace($applyFailure)) {
             try {
-                $safety = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "status" -PackageRoot $packRoot
+                $safety = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "status" -PackageRoot $packRoot -TimeoutSeconds $ExternalOperationTimeoutSeconds
             } catch {
                 throw "Updater apply-pending failed ($applyFailure), and update state could not be verified. Startup stopped to avoid a mixed package.`n$($_.Exception.Message)"
             }
@@ -1013,7 +1082,10 @@ if (@($mariadbd, $installDb, $client, $admin) | Where-Object { [string]::IsNullO
         throw "Separate MariaDB runtime is missing and the installer was not found: $runtimeInstaller"
     }
     Write-Host "MariaDB is not bundled with Archive Center. Installing the verified official runtime for this user."
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller -InstallMariaDBRuntime -InstallDir $mariaInstallRoot
+    if ($null -eq $ExternalOperationTimeoutSeconds) {
+        throw "Managed MariaDB installation requires AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS or -ExternalOperationTimeoutSeconds."
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller -InstallMariaDBRuntime -InstallDir $mariaInstallRoot -ExternalOperationTimeoutSeconds $ExternalOperationTimeoutSeconds
     if ($LASTEXITCODE -ne 0) {
         throw "Separate MariaDB runtime installation failed. Check the download connection and retry."
     }
@@ -1058,7 +1130,10 @@ if (Test-LocalChromaRequested $env:AC_VECTOR_MODE) {
         }
         Write-Host "Managed ChromaDB is missing, incomplete, or has the wrong version."
         Write-Host "Repairing the per-user runtime with verified official Python and pinned ChromaDB $managedChromaDBVersion."
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller -InstallChromaDBRuntime -InstallDir $managedRuntimeInstallRoot
+        if ($null -eq $ExternalOperationTimeoutSeconds) {
+            throw "Managed ChromaDB installation requires AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS or -ExternalOperationTimeoutSeconds."
+        }
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimeInstaller -InstallChromaDBRuntime -InstallDir $managedRuntimeInstallRoot -ExternalOperationTimeoutSeconds $ExternalOperationTimeoutSeconds
         if ($LASTEXITCODE -ne 0) {
             throw "Separate ChromaDB runtime installation failed. Check the download connection and retry."
         }
@@ -1081,8 +1156,8 @@ $logDir = Join-Path $env:ARCHIVE_CENTER_DATA_DIR "logs"
 New-Item -ItemType Directory -Force -Path $dataDir, $logDir | Out-Null
 
 if (-not (Test-Path -LiteralPath (Join-Path $dataDir "mysql") -PathType Container)) {
-    & $installDb "--datadir=$dataDir" "--password="
-    if ($LASTEXITCODE -ne 0) {
+    $installDbExitCode = Invoke-BoundedArchiveChildProcess -FilePath $installDb -ArgumentList @("--datadir=$dataDir", "--password=") -WorkingDirectory $dataDir
+    if ($installDbExitCode -ne 0) {
         throw "MariaDB data directory initialization failed."
     }
 }
@@ -1151,16 +1226,20 @@ try {
     $env:AC_PROMPT_DIR = Join-Path $packRoot "prompts"
 
     $schemaPath = Join-Path $packRoot "migrations\001_schema.sql"
-    & (Join-Path $packRoot "bin\mariadb-schema.exe") `
-        -dsn $env:AC_MARIADB_DSN `
-        -schema $schemaPath `
-        -execute `
-        -app-account-probe `
-        -managed-bootstrap `
-        -managed-host "127.0.0.1" `
-        -managed-port $MariaDBPort `
-        -expected-datadir $dataDir
-    if ($LASTEXITCODE -ne 0) {
+    $schemaExitCode = Invoke-BoundedArchiveChildProcess `
+        -FilePath (Join-Path $packRoot "bin\mariadb-schema.exe") `
+        -ArgumentList @(
+            "-dsn", $env:AC_MARIADB_DSN,
+            "-schema", $schemaPath,
+            "-execute",
+            "-app-account-probe",
+            "-managed-bootstrap",
+            "-managed-host", "127.0.0.1",
+            "-managed-port", [string]$MariaDBPort,
+            "-expected-datadir", $dataDir
+        ) `
+        -WorkingDirectory $packRoot
+    if ($schemaExitCode -ne 0) {
         throw "MariaDB managed account bootstrap or schema apply failed."
     }
 
@@ -1177,8 +1256,8 @@ try {
         if ($null -ne $DependencyProbeTimeoutSeconds) {
             $dependencyProbeArgs += @("-timeout", ("{0}s" -f $DependencyProbeTimeoutSeconds))
         }
-        & $dependencyProbe @dependencyProbeArgs
-        if ($LASTEXITCODE -ne 0) {
+        $dependencyProbeExitCode = Invoke-BoundedArchiveChildProcess -FilePath $dependencyProbe -ArgumentList $dependencyProbeArgs -WorkingDirectory $packRoot
+        if ($dependencyProbeExitCode -ne 0) {
             throw "ChromaDB endpoint/upsert/readback/delete probe failed."
         }
     }
@@ -1197,6 +1276,9 @@ Write-Host "Starting Archive Center 2.1 full package"
     Write-Host ""
     Write-Host "Stop with Ctrl+C."
     if ($pendingApplyStatus -eq "applied_pending_health") {
+        if ($null -eq $RequestTimeoutSeconds) {
+            throw "Pending update health verification requires AC_REQUEST_TIMEOUT_SECONDS or -RequestTimeoutSeconds."
+        }
         $backendPort = 28080
         if ($env:AC_BIND_ADDR -match ':(\d+)$') {
             $backendPort = [int]$Matches[1]
@@ -1206,7 +1288,7 @@ Write-Host "Starting Archive Center 2.1 full package"
         if ($health.Ready) {
             $commitFailure = ""
             try {
-                $commit = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "commit" -PackageRoot $packRoot
+                $commit = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "commit" -PackageRoot $packRoot -TimeoutSeconds $ExternalOperationTimeoutSeconds
                 if ($commit.ExitCode -ne 0 -or $commit.Status -ne "committed") {
                     $commitFailure = "status '$($commit.Status)' (exit $($commit.ExitCode))"
                 }
@@ -1216,14 +1298,16 @@ Write-Host "Starting Archive Center 2.1 full package"
             if ([string]::IsNullOrWhiteSpace($commitFailure)) {
                 $updaterRunnerCleanupAllowed = $true
                 Write-Host "Pending Archive Center package committed after main readiness passed."
+                # This is the foreground server lifetime, not a readiness or
+                # finality timer. The caller ends it with Ctrl+C or process exit.
                 $candidateBackend.WaitForExit()
             } else {
-                Stop-ArchiveChildProcess $candidateBackend
+                Stop-ArchiveChildProcess $candidateBackend $ExternalOperationTimeoutSeconds
                 $restartManagedMariaDB = $null -ne $startedMariaDB
                 $restartManagedChroma = $null -ne $startedChroma
-                Stop-ArchiveChildProcess $startedChroma
-                Stop-ArchiveChildProcess $startedMariaDB
-                $rollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot
+                Stop-ArchiveChildProcess $startedChroma $ExternalOperationTimeoutSeconds
+                Stop-ArchiveChildProcess $startedMariaDB $ExternalOperationTimeoutSeconds
+                $rollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot -TimeoutSeconds $ExternalOperationTimeoutSeconds
                 if (-not (Test-UpdaterSafeBaselineStatus $rollback.Status)) {
                     throw "Update commit failed ($commitFailure) and rollback was not reported safe (status '$($rollback.Status)'). Startup stopped to avoid a mixed package."
                 }
@@ -1243,12 +1327,12 @@ Write-Host "Starting Archive Center 2.1 full package"
                 & $backendExe
             }
         } else {
-            Stop-ArchiveChildProcess $candidateBackend
+            Stop-ArchiveChildProcess $candidateBackend $ExternalOperationTimeoutSeconds
             $restartManagedMariaDB = $null -ne $startedMariaDB
             $restartManagedChroma = $null -ne $startedChroma
-            Stop-ArchiveChildProcess $startedChroma
-            Stop-ArchiveChildProcess $startedMariaDB
-            $rollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot
+            Stop-ArchiveChildProcess $startedChroma $ExternalOperationTimeoutSeconds
+            Stop-ArchiveChildProcess $startedMariaDB $ExternalOperationTimeoutSeconds
+            $rollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot -TimeoutSeconds $ExternalOperationTimeoutSeconds
             if (-not (Test-UpdaterSafeBaselineStatus $rollback.Status)) {
                 throw "Updated backend failed main readiness ($($health.Detail)) and rollback was not reported safe (status '$($rollback.Status)'). Startup stopped to avoid a mixed package."
             }
@@ -1273,10 +1357,10 @@ Write-Host "Starting Archive Center 2.1 full package"
 } catch {
     $startupError = $_
     if ($pendingApplyStatus -eq "applied_pending_health" -and -not [string]::IsNullOrWhiteSpace($updaterRunner)) {
-        Stop-ArchiveChildProcess $startedChroma
-        Stop-ArchiveChildProcess $startedMariaDB
+        Stop-ArchiveChildProcess $startedChroma $ExternalOperationTimeoutSeconds
+        Stop-ArchiveChildProcess $startedMariaDB $ExternalOperationTimeoutSeconds
         try {
-            $startupRollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot
+            $startupRollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot -TimeoutSeconds $ExternalOperationTimeoutSeconds
             if ($startupRollback.ExitCode -ne 0 -or $startupRollback.Status -notin @("rolled_back", "nothing_to_rollback")) {
                 throw "rollback status '$($startupRollback.Status)' (exit $($startupRollback.ExitCode))"
             }

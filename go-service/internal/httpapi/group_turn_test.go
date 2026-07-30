@@ -821,9 +821,10 @@ func TestCompleteTurnRawSaveSurvivesDerivedAuditFailure(t *testing.T) {
 			"save_ok":                 true,
 			"raw_committed":           true,
 			"commit_state":            "committed",
-			"derived_retry_required":  true,
+			"derived_retry_required":  false,
 			"reconciliation_required": true,
-			"queue_action":            "discard",
+			"queue_action":            "retry",
+			"retryable":               true,
 		} {
 			if got := resp[field]; got != want {
 				t.Fatalf("attempt %d %s=%v, want %v; body=%s", attempt+1, field, got, want, rec.Body.String())

@@ -1,11 +1,24 @@
 param(
     [Parameter(Mandatory = $true)][string]$PackageRoot,
     [string]$UpdateZip = "",
-    [string]$CurrentVersion = ""
+    [string]$CurrentVersion = "",
+    [Nullable[int]]$ExternalOperationTimeoutSeconds = $null
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
+
+if ($null -eq $ExternalOperationTimeoutSeconds -and -not [string]::IsNullOrWhiteSpace($env:AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS)) {
+    $parsedExternalOperationTimeoutSeconds = 0
+    if (-not [int]::TryParse($env:AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS, [ref]$parsedExternalOperationTimeoutSeconds) -or
+        $parsedExternalOperationTimeoutSeconds -lt 1) {
+        throw "AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS must be a positive integer."
+    }
+    $ExternalOperationTimeoutSeconds = $parsedExternalOperationTimeoutSeconds
+}
+if ($null -eq $ExternalOperationTimeoutSeconds -or $ExternalOperationTimeoutSeconds -lt 1) {
+    throw "Supply -ExternalOperationTimeoutSeconds or AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS. The compatibility bridge does not invent a hidden updater deadline."
+}
 
 function Get-LowerSHA256([string]$Path) {
     (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -46,7 +59,7 @@ function Quote-ProcessArgument([string]$Value) {
     return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
 }
 
-function Invoke-BridgeUpdater([string]$Runner, [string]$Root) {
+function Invoke-BridgeUpdater([string]$Runner, [string]$Root, [int]$TimeoutSeconds) {
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $Runner
     $startInfo.Arguments = (Quote-ProcessArgument "apply-pending") + " --root " + (Quote-ProcessArgument $Root)
@@ -62,7 +75,14 @@ function Invoke-BridgeUpdater([string]$Runner, [string]$Root) {
     }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    $process.WaitForExit()
+    $waitMilliseconds = [int64]$TimeoutSeconds * 1000
+    if (-not $process.WaitForExit($waitMilliseconds)) {
+        try {
+            $process.Kill()
+        } catch {
+        }
+        throw "Compatibility bridge updater exceeded the caller-selected timeout."
+    }
     $stdout = ([string]$stdoutTask.GetAwaiter().GetResult()).Trim()
     $stderr = ([string]$stderrTask.GetAwaiter().GetResult()).Trim()
     if ($process.ExitCode -ne 0) {
@@ -199,7 +219,7 @@ $runnerIdentity = [ordered]@{
 }
 Write-Utf8NoBomAtomic -Path (Join-Path $updatesRoot "runner-identity.json") -Value $runnerIdentity
 
-$result = Invoke-BridgeUpdater -Runner $runner -Root $packageRootFull
+$result = Invoke-BridgeUpdater -Runner $runner -Root $packageRootFull -TimeoutSeconds $ExternalOperationTimeoutSeconds
 [ordered]@{
     contract_version = "archive-center.external-update-bridge-result.v1"
     status = "applied_pending_health"

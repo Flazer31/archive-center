@@ -36,6 +36,10 @@ func completeTurnMemorySourceRevision(
 	}
 	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))
 	contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	branchState := strings.TrimSpace(decision.Observation.BranchIDState)
+	if branchState != "observed" {
+		branchState = "not_exposed"
+	}
 	return &store.MemorySourceRevision{
 		ContractVersion:              store.MemorySourceRevisionContract,
 		SourceRevision:               decision.Revision,
@@ -44,8 +48,8 @@ func completeTurnMemorySourceRevision(
 		TurnIndex:                    turnIndex,
 		SourceMessageID:              messageID,
 		SourceGenerationID:           decision.Observation.GenerationID,
-		BranchID:                     "",
-		BranchState:                  "not_exposed",
+		BranchID:                     observedCompleteTurnBranchIdentity(decision.Observation),
+		BranchState:                  branchState,
 		UserContent:                  userText,
 		AssistantContent:             assistantText,
 		CombinedContentHash:          contentHash,

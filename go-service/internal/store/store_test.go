@@ -2,10 +2,10 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -248,22 +248,26 @@ func TestMariaDBStoreSaveChatLogExecutesInsert(t *testing.T) {
 
 	m := &mariadbStore{db: db}
 	created := time.Date(2026, 5, 24, 10, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, content")).
-		WithArgs("sess-1", 1, "user").
-		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
 		WithArgs("sess-1", 1, "user", "hello", created).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, content")).
+		WithArgs("sess-1", 1, "user").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "content"}).AddRow(1, "hello"))
 
-	err = m.SaveChatLog(context.Background(), &ChatLog{
+	log := &ChatLog{
 		ChatSessionID: "sess-1",
 		TurnIndex:     1,
 		Role:          "user",
 		Content:       "hello",
 		CreatedAt:     created,
-	})
+	}
+	err = m.SaveChatLog(context.Background(), log)
 	if err != nil {
 		t.Fatalf("SaveChatLog failed: %v", err)
+	}
+	if log.ID != 1 {
+		t.Fatalf("inserted log ID = %d, want 1", log.ID)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -278,6 +282,9 @@ func TestMariaDBStoreSaveChatLogSkipsExactDuplicate(t *testing.T) {
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
+		WithArgs("sess-1", 1, "assistant", "hello", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(42, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, content")).
 		WithArgs("sess-1", 1, "assistant").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "content"}).AddRow(42, "hello"))
@@ -302,6 +309,9 @@ func TestMariaDBStoreSaveChatLogRejectsRoleConflict(t *testing.T) {
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
+		WithArgs("sess-1", 1, "assistant", "new text", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(42, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, content")).
 		WithArgs("sess-1", 1, "assistant").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "content"}).AddRow(42, "old text"))
@@ -309,6 +319,54 @@ func TestMariaDBStoreSaveChatLogRejectsRoleConflict(t *testing.T) {
 	err = m.SaveChatLog(context.Background(), &ChatLog{ChatSessionID: "sess-1", TurnIndex: 1, Role: "assistant", Content: "new text"})
 	if err == nil || !strings.Contains(err.Error(), "chat log role conflict") {
 		t.Fatalf("expected chat log role conflict, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBStoreSaveChatLogConcurrentExactDuplicateConvergesOnOneRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.MatchExpectationsInOrder(false)
+
+	m := &mariadbStore{db: db}
+	for i := 0; i < 2; i++ {
+		mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
+			WithArgs("sess-concurrent", 7, "assistant", "same final", sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(91, int64(1-i)))
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id, content")).
+			WithArgs("sess-concurrent", 7, "assistant").
+			WillReturnRows(sqlmock.NewRows([]string{"id", "content"}).AddRow(91, "same final"))
+	}
+
+	logs := []*ChatLog{
+		{ChatSessionID: "sess-concurrent", TurnIndex: 7, Role: " Assistant ", Content: "same final"},
+		{ChatSessionID: "sess-concurrent", TurnIndex: 7, Role: "assistant", Content: "same final"},
+	}
+	errs := make(chan error, len(logs))
+	var wg sync.WaitGroup
+	for _, log := range logs {
+		wg.Add(1)
+		go func(log *ChatLog) {
+			defer wg.Done()
+			errs <- m.SaveChatLog(context.Background(), log)
+		}(log)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent SaveChatLog failed: %v", err)
+		}
+	}
+	for _, log := range logs {
+		if log.ID != 91 || log.Role != "assistant" {
+			t.Fatalf("concurrent log = %#v, want ID 91 and normalized assistant role", log)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

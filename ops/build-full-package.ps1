@@ -356,7 +356,46 @@ function Write-PackageMigrationUpdateManifest([string]$Root, [string]$TargetVers
     return $path
 }
 
-function Write-PackageTrustEvidence([string]$Root) {
+function Get-SourceBuildIdentity([string]$Root) {
+    $excludedPathspecs = @(
+        ":(exclude)_dist/**",
+        ":(exclude)release/**",
+        ":(exclude)output/**",
+        ":(exclude)go-service/.gocache*/**",
+        ":(exclude)go-service/.gotmp*/**",
+        ":(exclude)go-service/.codex-audit-cache*/**"
+    )
+    $commit = "unknown"
+    $dirty = "unknown"
+    try {
+        $observedCommitLines = @(& git -C $Root rev-parse --verify HEAD 2>$null)
+        $observedCommit = if ($observedCommitLines.Count -gt 0) { [string]$observedCommitLines[0] } else { "" }
+        if ($LASTEXITCODE -eq 0 -and $observedCommit -match '^[0-9a-fA-F]{40}$') {
+            $commit = ([string]$observedCommit).ToLowerInvariant()
+        }
+    } catch {
+    }
+    try {
+        $statusArgs = @("-C", $Root, "status", "--porcelain=v1", "--untracked-files=all", "--", ".") + $excludedPathspecs
+        $observedStatus = @(& git @statusArgs 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            $dirty = [bool]($observedStatus.Count -gt 0)
+        }
+    } catch {
+    }
+    return [ordered]@{
+        commit = $commit
+        dirty = $dirty
+        dirty_scope = "git status --porcelain=v1 excluding _dist, release, output, Go cache/temp, and Codex audit-cache roots"
+    }
+}
+
+function Write-PackageTrustEvidence(
+    [string]$Root,
+    [string]$PackageVersion,
+    $SourceIdentity,
+    [string]$BuildDescriptor
+) {
     $payloadExts = @(".exe", ".dll", ".ps1", ".psm1", ".bat", ".cmd", ".msi")
     $selfFiles = @(
         "FULL_PACKAGE_MANIFEST.json",
@@ -402,6 +441,11 @@ function Write-PackageTrustEvidence([string]$Root) {
     $manifest = [ordered]@{
         schema_version = "archive-center.package-file-manifest.v1"
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
+        package_version = $PackageVersion
+        source_commit = [string]$SourceIdentity.commit
+        source_dirty = $SourceIdentity.dirty
+        source_dirty_scope = [string]$SourceIdentity.dirty_scope
+        build_command = $BuildDescriptor
         scope = "managed_package_payloads"
         signature_scope = "executable_and_script_payloads"
         package_root = "."
@@ -567,7 +611,9 @@ if ($chromaCopied) {
     Install-ChromaRuntimeLicenseFiles (Join-Path $runtimeRoot "ChromaDB")
 }
 $codeSigning = Set-OwnPayloadSignatures $targetFull $CodeSigningCertThumbprint $TimestampServer
-$trustEvidence = Write-PackageTrustEvidence $targetFull
+$sourceIdentity = Get-SourceBuildIdentity $repoRoot
+$canonicalBuildDescriptor = "ops/build-full-package.ps1 -PackageKind $PackageKind -PackageVersion $PackageVersion -Zip:$([bool]$Zip) -UpdateZip:$([bool]$UpdateZip) -CodeSigning:$(-not [string]::IsNullOrWhiteSpace($CodeSigningCertThumbprint))"
+$trustEvidence = Write-PackageTrustEvidence $targetFull $PackageVersion $sourceIdentity $canonicalBuildDescriptor
 $missing = @()
 if ($PackageKind -eq "full" -and [string]::IsNullOrWhiteSpace($chromaRuntimeFound)) {
     $missing += "chromadb_runtime"

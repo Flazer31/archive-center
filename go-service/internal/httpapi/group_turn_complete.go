@@ -75,43 +75,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		writeInternalError(w, err.Error())
 		return
 	} else if lock != nil {
-		if s.TurnWorkflows != nil && workflowRequestID != "" {
-			s.TurnWorkflows.invalidate(workflowRequestID, "source_session_migrated_away")
-		}
-		now := time.Now().UTC()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":                           "blocked",
-			"source":                           s.storeWriteSource(),
-			"chat_session_id":                  sid,
-			"turn_index":                       req.TurnIndex,
-			"generated_at":                     now.Format(time.RFC3339),
-			"save_ok":                          false,
-			"save_error":                       "source_session_migrated_away",
-			"chat_logs_saved":                  0,
-			"memories_saved":                   0,
-			"evidence_saved":                   0,
-			"kg_triples_saved":                 0,
-			"persona_capsule_candidates":       0,
-			"subjective_entity_memories_saved": 0,
-			"derived_artifacts_saved":          0,
-			"critic_triggered":                 false,
-			"critic_result":                    nil,
-			"maintenance_enqueued":             false,
-			"fail_reasons":                     []string{"source_session_migrated_away"},
-			"migration_source_lock":            sessionMigrationLockPayload(lock),
-			"trace_handoff": map[string]any{
-				"skeleton":              false,
-				"turn_index":            req.TurnIndex,
-				"save_ok":               false,
-				"critic_triggered":      false,
-				"store_mode":            string(s.Cfg.StoreMode),
-				"store_write_source":    s.storeWriteSource(),
-				"migration_source_lock": sessionMigrationLockPayload(lock),
-				"note":                  "complete-turn refused writes for a migrated-away source session",
-			},
-			"warnings": []string{"source_session_migrated_away: continue in target_session_id " + lock.TargetSessionID},
-			"note":     "complete-turn blocked because this source session has been migrated away",
-		})
+		s.writeCompleteTurnMigrationSourceLockBlocked(w, req, sid, workflowRequestID, lock)
 		return
 	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
@@ -534,6 +498,13 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	ctx = context.WithoutCancel(ctx)
 	ctx, releaseSourceAcceptanceWorker := s.completeTurnSourceAcceptanceProcessingContext(ctx, sourceAcceptance, sid, turnIndex)
 	defer releaseSourceAcceptanceWorker()
+	if lock, err := s.sessionMigrationSourceLock(context.WithoutCancel(ctx), sid); err != nil {
+		writeInternalError(w, err.Error())
+		return
+	} else if lock != nil {
+		s.writeCompleteTurnMigrationSourceLockBlocked(w, req, sid, workflowRequestID, lock)
+		return
+	}
 	if !s.completeTurnSourceAcceptanceStillCurrent(sourceAcceptance, sid, turnIndex) {
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			s.TurnWorkflows.invalidate(workflowRequestID, "source_acceptance_revision_superseded_before_persistence")
@@ -835,30 +806,6 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				auditSaved++
 			}
 		}
-		if reprocessingReason != "" && rawTurnDurable &&
-			sourceAcceptance.Enabled && sourceAcceptance.Accepted &&
-			strings.TrimSpace(sourceAcceptance.Revision) != "" {
-			_, supported := s.Store.(store.MemoryReprocessingJobStore)
-			if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); ok &&
-				!availability.MemoryDerivationLifecycleEnabled() {
-				supported = false
-			}
-			if supported {
-				storeWriteAttempted++
-				if _, err := s.enqueueCompleteTurnReprocessingJob(
-					ctx, sourceAcceptance, sid, reprocessingReason, now,
-				); err != nil {
-					storeWriteErrors++
-					storeWriteErrorDetails = append(
-						storeWriteErrorDetails,
-						"EnqueueMemoryReprocessingJob: "+err.Error(),
-					)
-				} else {
-					reprocessingDurable = true
-				}
-			}
-		}
-
 		var existingEvidence []store.DirectEvidence
 		if s.Store != nil {
 			existingEvidence, _ = s.Store.ListEvidence(ctx, sid)
@@ -918,6 +865,32 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			}
 			embeddingStatus = artifactResult.EmbeddingStatus
 			vectorStatus = artifactResult.VectorStatus
+		}
+		if reprocessingReason == "" && storeWriteErrors > rawSave.Errors {
+			reprocessingReason = "derived_persist_failed"
+		}
+		if reprocessingReason != "" && rawTurnDurable &&
+			sourceAcceptance.Enabled && sourceAcceptance.Accepted &&
+			strings.TrimSpace(sourceAcceptance.Revision) != "" {
+			_, supported := s.Store.(store.MemoryReprocessingJobStore)
+			if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); ok &&
+				!availability.MemoryDerivationLifecycleEnabled() {
+				supported = false
+			}
+			if supported {
+				storeWriteAttempted++
+				if _, err := s.enqueueCompleteTurnReprocessingJob(
+					ctx, sourceAcceptance, sid, reprocessingReason, now,
+				); err != nil {
+					storeWriteErrors++
+					storeWriteErrorDetails = append(
+						storeWriteErrorDetails,
+						"EnqueueMemoryReprocessingJob: "+err.Error(),
+					)
+				} else {
+					reprocessingDurable = true
+				}
+			}
 		}
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			switch {
@@ -1131,9 +1104,11 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		},
 	}
 	backendTiming := timing.snapshot()
-	derivedRetryRequired := rawTurnDurable &&
-		(criticFailureReason != "" || (reprocessingReason != "" && reprocessingDurable) || derivedPersistenceFailed)
+	derivedRetryRequired := rawTurnDurable && reprocessingReason != "" && reprocessingDurable
 	reconciliationRequired := rawTurnDurable && derivedPersistenceFailed
+	nonDurableDerivedRetryRequired := rawTurnDurable &&
+		(criticFailureReason != "" || derivedPersistenceFailed) &&
+		!derivedRetryRequired
 	responseStatus := "ok"
 	queueAction := ""
 	retryable := false
@@ -1141,81 +1116,90 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	if rawTurnDurable {
 		commitState = "committed"
 	}
-	if rawTurnDurable && (derivedRetryRequired || reconciliationRequired) {
+	if rawTurnDurable && derivedRetryRequired {
 		responseStatus = "partial"
 		queueAction = "discard"
+	} else if nonDurableDerivedRetryRequired {
+		responseStatus = "partial"
+		queueAction = "retry"
+		retryable = true
 	} else if !rawTurnDurable && s.usesShadowWriteStore() {
 		responseStatus = "error"
 		queueAction = "retry"
 		retryable = true
 	}
+	reconciliationRetryIdempotencyKey := ""
+	if nonDurableDerivedRetryRequired {
+		reconciliationRetryIdempotencyKey = completeTurnReconciliationRetryIdempotencyKey(req.ClientMeta)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":                           responseStatus,
-		"source":                           writeSource,
-		"chat_session_id":                  sid,
-		"turn_index":                       turnIndex,
-		"generated_at":                     time.Now().UTC().Format(time.RFC3339),
-		"save_ok":                          saveOK,
-		"save_error":                       saveErr,
-		"raw_committed":                    rawTurnDurable,
-		"commit_state":                     commitState,
-		"reconciliation_required":          reconciliationRequired,
-		"retryable":                        retryable,
-		"queue_action":                     queueAction,
-		"memories_saved":                   memoriesSaved,
-		"precise_memory_units_saved":       preciseMemoryUnitsSaved,
-		"evidence_saved":                   evidenceSaved,
-		"kg_triples_saved":                 kgTriplesSaved,
-		"persona_capsule_candidates":       personaCapsuleCandidates,
-		"subjective_entity_memories_saved": subjectiveEntityMemoriesSaved,
-		"character_events_saved":           characterEventsSaved,
-		"storylines_saved":                 storylinesSaved,
-		"world_rules_saved":                worldRulesSaved,
-		"character_states_saved":           characterStatesSaved,
-		"physical_conditions_saved":        physicalConditionsSaved,
-		"entity_conditions_saved":          entityConditionsSaved,
-		"status_schema_definitions_saved":  statusSchemaDefinitionsSaved,
-		"status_effects_saved":             statusEffectsSaved,
-		"narrative_current_states_saved":   narrativeCurrentStatesSaved,
-		"narrative_state_events_saved":     narrativeStateEventsSaved,
-		"pending_threads_saved":            pendingThreadsSaved,
-		"active_states_saved":              activeStatesSaved,
-		"canonical_state_layers_saved":     canonicalStateLayersSaved,
-		"entities_saved":                   entitiesSaved,
-		"entity_identities_saved":          entityIdentitiesSaved,
-		"identity_surfaces_saved":          identitySurfacesSaved,
-		"identity_bindings_saved":          identityBindingsSaved,
-		"speaker_attributions_saved":       speakerAttributionsSaved,
-		"trust_states_saved":               trustStatesSaved,
-		"vectors_upserted":                 vectorsUpserted,
-		"vectors_memory_upserted":          vectorsMemoryUpserted,
-		"vectors_evidence_upserted":        vectorsEvidenceUpserted,
-		"vectors_world_rule_upserted":      vectorsWorldRuleUpserted,
-		"chat_logs_saved":                  chatLogsSaved,
-		"effective_input_saved":            effectiveInputSaved,
-		"audit_saved":                      auditSaved,
-		"critic_feedback_saved":            criticFeedbackSaved,
-		"store_write_attempted":            storeWriteAttempted,
-		"store_write_errors":               storeWriteErrors,
-		"store_write_error_details":        storeWriteErrorDetails,
-		"critic_triggered":                 criticTriggered,
-		"critic_result":                    criticResult,
-		"critic_failure":                   criticFailure,
-		"language_context":                 languageContext,
-		"llm_config_trace":                 llmConfigTrace,
-		"derived_artifacts_saved":          derivedArtifactsSaved,
-		"derived_retry_required":           derivedRetryRequired,
-		"source_acceptance":                completeTurnSourceAcceptancePayload(sourceAcceptance),
-		"source_to_final_lineage":          buildSourceToFinalLineage(req, sourceAcceptance),
-		"episode_result":                   episodeResult,
-		"chapter_result":                   nil,
-		"hierarchy_promotion_result":       hierarchyPromotionResult,
-		"persistence_pipeline":             persistencePipeline,
-		"backend_timing":                   backendTiming,
-		"turn_workflow_hud":                s.turnWorkflowHUDSnapshot(workflowRequestID),
-		"maintenance_enqueued":             maintenanceHandoff.Enqueued,
-		"maintenance_audit_recorded":       maintenanceHandoff.AuditRecorded,
+		"status":                               responseStatus,
+		"source":                               writeSource,
+		"chat_session_id":                      sid,
+		"turn_index":                           turnIndex,
+		"generated_at":                         time.Now().UTC().Format(time.RFC3339),
+		"save_ok":                              saveOK,
+		"save_error":                           saveErr,
+		"raw_committed":                        rawTurnDurable,
+		"commit_state":                         commitState,
+		"reconciliation_required":              reconciliationRequired,
+		"reconciliation_retry_idempotency_key": nilIfEmpty(reconciliationRetryIdempotencyKey),
+		"retryable":                            retryable,
+		"queue_action":                         queueAction,
+		"memories_saved":                       memoriesSaved,
+		"precise_memory_units_saved":           preciseMemoryUnitsSaved,
+		"evidence_saved":                       evidenceSaved,
+		"kg_triples_saved":                     kgTriplesSaved,
+		"persona_capsule_candidates":           personaCapsuleCandidates,
+		"subjective_entity_memories_saved":     subjectiveEntityMemoriesSaved,
+		"character_events_saved":               characterEventsSaved,
+		"storylines_saved":                     storylinesSaved,
+		"world_rules_saved":                    worldRulesSaved,
+		"character_states_saved":               characterStatesSaved,
+		"physical_conditions_saved":            physicalConditionsSaved,
+		"entity_conditions_saved":              entityConditionsSaved,
+		"status_schema_definitions_saved":      statusSchemaDefinitionsSaved,
+		"status_effects_saved":                 statusEffectsSaved,
+		"narrative_current_states_saved":       narrativeCurrentStatesSaved,
+		"narrative_state_events_saved":         narrativeStateEventsSaved,
+		"pending_threads_saved":                pendingThreadsSaved,
+		"active_states_saved":                  activeStatesSaved,
+		"canonical_state_layers_saved":         canonicalStateLayersSaved,
+		"entities_saved":                       entitiesSaved,
+		"entity_identities_saved":              entityIdentitiesSaved,
+		"identity_surfaces_saved":              identitySurfacesSaved,
+		"identity_bindings_saved":              identityBindingsSaved,
+		"speaker_attributions_saved":           speakerAttributionsSaved,
+		"trust_states_saved":                   trustStatesSaved,
+		"vectors_upserted":                     vectorsUpserted,
+		"vectors_memory_upserted":              vectorsMemoryUpserted,
+		"vectors_evidence_upserted":            vectorsEvidenceUpserted,
+		"vectors_world_rule_upserted":          vectorsWorldRuleUpserted,
+		"chat_logs_saved":                      chatLogsSaved,
+		"effective_input_saved":                effectiveInputSaved,
+		"audit_saved":                          auditSaved,
+		"critic_feedback_saved":                criticFeedbackSaved,
+		"store_write_attempted":                storeWriteAttempted,
+		"store_write_errors":                   storeWriteErrors,
+		"store_write_error_details":            storeWriteErrorDetails,
+		"critic_triggered":                     criticTriggered,
+		"critic_result":                        criticResult,
+		"critic_failure":                       criticFailure,
+		"language_context":                     languageContext,
+		"llm_config_trace":                     llmConfigTrace,
+		"derived_artifacts_saved":              derivedArtifactsSaved,
+		"derived_retry_required":               derivedRetryRequired,
+		"source_acceptance":                    completeTurnSourceAcceptancePayload(sourceAcceptance),
+		"source_to_final_lineage":              buildSourceToFinalLineage(req, sourceAcceptance),
+		"episode_result":                       episodeResult,
+		"chapter_result":                       nil,
+		"hierarchy_promotion_result":           hierarchyPromotionResult,
+		"persistence_pipeline":                 persistencePipeline,
+		"backend_timing":                       backendTiming,
+		"turn_workflow_hud":                    s.turnWorkflowHUDSnapshot(workflowRequestID),
+		"maintenance_enqueued":                 maintenanceHandoff.Enqueued,
+		"maintenance_audit_recorded":           maintenanceHandoff.AuditRecorded,
 		"memory_reprocessing_queue": map[string]any{
 			"required":            reprocessingReason != "",
 			"durable_or_existing": reprocessingDurable,
@@ -1286,6 +1270,52 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"writeback_plan": writebackPlan,
 		"warnings":       warnings,
 		"note":           note,
+	})
+}
+
+func (s *Server) writeCompleteTurnMigrationSourceLockBlocked(
+	w http.ResponseWriter,
+	req dto.M4CompleteTurnRequest,
+	sid string,
+	workflowRequestID string,
+	lock *store.SessionMigrationLock,
+) {
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.invalidate(workflowRequestID, "source_session_migrated_away")
+	}
+	now := time.Now().UTC()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                           "blocked",
+		"source":                           s.storeWriteSource(),
+		"chat_session_id":                  sid,
+		"turn_index":                       req.TurnIndex,
+		"generated_at":                     now.Format(time.RFC3339),
+		"save_ok":                          false,
+		"save_error":                       "source_session_migrated_away",
+		"chat_logs_saved":                  0,
+		"memories_saved":                   0,
+		"evidence_saved":                   0,
+		"kg_triples_saved":                 0,
+		"persona_capsule_candidates":       0,
+		"subjective_entity_memories_saved": 0,
+		"derived_artifacts_saved":          0,
+		"critic_triggered":                 false,
+		"critic_result":                    nil,
+		"maintenance_enqueued":             false,
+		"fail_reasons":                     []string{"source_session_migrated_away"},
+		"migration_source_lock":            sessionMigrationLockPayload(lock),
+		"trace_handoff": map[string]any{
+			"skeleton":              false,
+			"turn_index":            req.TurnIndex,
+			"save_ok":               false,
+			"critic_triggered":      false,
+			"store_mode":            string(s.Cfg.StoreMode),
+			"store_write_source":    s.storeWriteSource(),
+			"migration_source_lock": sessionMigrationLockPayload(lock),
+			"note":                  "complete-turn refused writes for a migrated-away source session",
+		},
+		"warnings": []string{"source_session_migrated_away: continue in target_session_id " + lock.TargetSessionID},
+		"note":     "complete-turn blocked because this source session has been migrated away",
 	})
 }
 
