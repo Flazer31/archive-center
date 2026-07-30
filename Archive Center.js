@@ -38,7 +38,7 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.7.0-dev";
-  const BUILD_ID = "3.7-afterrequest-finality-hud.20260731-1";
+  const BUILD_ID = "3.7-pocketrisu-reroll-return.20260731-1";
   const BUILD_CHANNEL = "3.7-local-test";
   const BUILD_TIME = "2026-07-31 KST";
   const BUILD_NOTES = "3.7 provider JSON, Flex, cache observability, and terminal HUD stream continuity";
@@ -4047,8 +4047,8 @@
     lastActiveChatBackfill: { status: "idle", time: null, detail: null, turnIndex: null },
     // Persona Memory Capsule UI: manual carry-over memories attached to target sessions.
     lastPersonaCapsuleStatus: { status: "idle", time: null, detail: null, itemCount: 0 },
-    // RisuAI API v3 host lifecycle: afterRequest is only a non-stream candidate.
-    // The next observed input/beforeRequest callback confirms the committed active-chat message.
+    // RisuAI API v3 host lifecycle: the official afterRequest callback owns the
+    // current response observation. Next input/beforeRequest is recovery only.
     lastStreamingAfterRequest: { status: "idle", time: null, detail: null },
     // 2.1-4: read-only Critic Archive Ledger operator probe.
     lastCriticLedgerProbe: { status: "idle", time: null, detail: null, sessionId: null, dashboard: null, trace: null },
@@ -10082,46 +10082,6 @@
       if (isSessionRouteAcknowledgementFailure(err)) throw err;
       return primary;
     }
-  }
-
-  async function resolveAfterRequestWriteSessionId(orchResult) {
-    const orchRawSessionId = normalizeSessionId(orchResult && orchResult._chatSessionId);
-    const currentRawSessionId = normalizeSessionId(await getCurrentChatSessionId());
-    const currentSessionId = await resolveCanonicalWriteSessionId(currentRawSessionId || orchRawSessionId, {
-      stage: "after_request_current",
-    });
-
-    if (!orchRawSessionId) {
-      return currentSessionId;
-    }
-
-    const orchSessionId = await resolveCanonicalWriteSessionId(orchRawSessionId, {
-      stage: "after_request_orch",
-    });
-
-    // A provisional pre-request session may resolve to its real CID while the
-    // request is running. Once the request already owns a CID, however, keep
-    // that origin even if the user opens another chat before afterRequest.
-    if (!isCidSessionId(orchSessionId) && isCidSessionId(currentSessionId) && currentSessionId !== orchSessionId) {
-      updateRuntimeState("sessionWriteRouting", "canonicalized", {
-        detail: orchSessionId + " -> " + currentSessionId + " (fresh active cid)",
-        rawSessionId: orchSessionId,
-        targetSessionId: currentSessionId,
-        reason: "fresh_active_cid_after_request",
-      });
-      if (orchResult && orchResult._trace && typeof orchResult._trace === "object") {
-        orchResult._trace.sessionWriteRouting = {
-          status: "canonicalized",
-          rawSessionId: orchSessionId,
-          targetSessionId: currentSessionId,
-          reason: "fresh_active_cid_after_request",
-        };
-        orchResult._trace.chatSessionId = currentSessionId;
-      }
-      return currentSessionId;
-    }
-
-    return orchSessionId || currentSessionId;
   }
 
   function getMemorySearchCompatKey(item, idx) {
@@ -37966,13 +37926,22 @@
     }
   }
 
-  async function onAfterRequest(content, type) {
+  function onAfterRequest(content, type) {
     try {
       recordRisuHookLifecycle("afterRequest", "callback_observed");
       debugLog("afterRequest hook fired, type:", type);
       if (!isNarrativeType(type) || !settings.enabled) return content;
       const persistenceOrchResult = lastOrchResult;
-      const chatSessionId = await resolveAfterRequestWriteSessionId(persistenceOrchResult);
+      // RisuAI applies this replacer's return value as the new response. Reuse
+      // the coordinates captured in beforeRequest; never perform host reads or
+      // backend session routing on the visible-output path.
+      const capturedWriteSessionId = normalizeSessionId(
+        persistenceOrchResult && persistenceOrchResult._chatSessionId
+      );
+      const cachedWriteSessionId = normalizeSessionId(
+        _sessionCache && _sessionCache.sessionId
+      );
+      const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;
       const persistencePendingCtx = _pendingOrchBySession.get(chatSessionId) || null;
       const persistenceSkipState = _pendingPersistenceSkipBySession.get(chatSessionId) || null;
       const pendingRequestId = String(persistencePendingCtx && persistencePendingCtx.requestId || "");
@@ -38120,7 +38089,7 @@
         });
         return responseReturnContent;
       }
-      return await continueAcceptedFinalPersistence(persistenceOrchResult, null);
+      return continueAcceptedFinalPersistence(persistenceOrchResult, null);
 
       async function continueAcceptedFinalPersistence(lastOrchResult = persistenceOrchResult, sourceAcceptanceFinality = null) {
         const hostFinalityAccepted = !!(

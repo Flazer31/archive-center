@@ -813,21 +813,26 @@ func TestArchiveCenterJSCIDSessionDeleteLifecycleMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSFreshActiveCIDWriteRoutingMarkers(t *testing.T) {
+func TestArchiveCenterJSAfterRequestReusesCapturedCIDWithoutRoutingBlock(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"function resolveAfterRequestWriteSessionId",
-		"fresh_active_cid_after_request",
-		"sessionWriteRouting",
-		"Session Routing",
-		"async function resolveCurrentActiveChatObject",
-		`await R.getChatFromIndex(charIdx, chatIdx)`,
-		"orchResult._trace.chatSessionId = currentSessionId",
-		"const chatSessionId = await resolveAfterRequestWriteSessionId(persistenceOrchResult)",
+		"function onAfterRequest(content, type)",
+		"const capturedWriteSessionId = normalizeSessionId(",
+		"persistenceOrchResult && persistenceOrchResult._chatSessionId",
+		"const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing fresh active CID write routing marker %q", needle)
+			t.Fatalf("Archive Center.js missing captured CID afterRequest marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		"function resolveAfterRequestWriteSessionId",
+		"fresh_active_cid_after_request",
+		"const chatSessionId = await resolveAfterRequestWriteSessionId(persistenceOrchResult)",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains blocking afterRequest routing marker %q", forbidden)
 		}
 	}
 }

@@ -2340,6 +2340,106 @@ function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value 
 	}
 }
 
+func TestRisuAfterRequestReturnsPocketRisuRerollBeforePersistence(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for PocketRisu afterRequest return fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "onAfterRequest")
+	script := `
+const settings = {enabled:true};
+const SESSION_FALLBACK = "session-default";
+const orch = {_chatSessionId:"session-1"};
+let lastOrchResult = orch;
+const _sessionCache = {sessionId:"session-1"};
+const pending = {requestId:"request-reroll",orchResult:orch};
+const requestContext = {requestId:"request-reroll"};
+const _pendingOrchBySession = new Map([["session-1",pending]]);
+const _pendingPersistenceSkipBySession = new Map();
+const _finalConfirmationRequestBySession = new Map([["session-1",requestContext]]);
+const _failedQueue = [];
+let scheduled = 0;
+let accepted = false;
+let resolverCalls = 0;
+function recordRisuHookLifecycle(){}
+function debugLog(){}
+function warnLog(){}
+function updateRuntimeState(){}
+function isNarrativeType(type){ return !type || type === "model"; }
+function isSaveType(type){ return !type || type === "model"; }
+function normalizeSessionId(value){ return String(value || "").trim(); }
+function takeNonMainRequestSkip(){ return null; }
+function schedulePostOutputFinalReplacement(){ throw new Error("unexpected secondary replacement"); }
+function markNonMainRequestHookSkipped(){ throw new Error("unexpected non-main skip"); }
+function normalizeAssistantPersistenceCandidate(value){ return String(value || "").trim(); }
+function takeAssistantPrefillSeedForSession(){ return ""; }
+function sanitizeNarrativeOutputForDisplay(value){ return String(value || ""); }
+function buildSanitizeTrace(){ return null; }
+function stripAssistantPrefillFromResponse(value){ return String(value || ""); }
+function acceptRisuAfterRequestFinal(){
+  if (accepted) {
+    return {accepted:true,duplicate:true,reason:"already_accepted_after_request"};
+  }
+  accepted = true;
+  return {
+    accepted:true,
+    duplicate:false,
+    observation:{accepted:true,finality_source:"risu_afterRequest"},
+    observationKey:"reroll-observation",
+  };
+}
+function resolveAfterRequestWriteSessionId(){
+  resolverCalls++;
+  return new Promise(function(){});
+}
+const originalResolve = Promise.resolve;
+Promise.resolve = function(){
+  return {
+    then(callback){
+      scheduled++;
+      return {catch(){}};
+    },
+  };
+};
+` + functionBody + `
+try {
+  const first = onAfterRequest("new PocketRisu reroll", "model");
+  if (first && typeof first.then === "function") {
+    throw new Error("afterRequest returned a promise and can withhold the reroll output");
+  }
+  if (first !== "new PocketRisu reroll") {
+    throw new Error("reroll output was not returned immediately: "+String(first));
+  }
+  if (resolverCalls !== 0) {
+    throw new Error("afterRequest called the blocking session resolver");
+  }
+  if (scheduled !== 1) {
+    throw new Error("accepted reroll persistence was not scheduled exactly once: "+scheduled);
+  }
+  const duplicate = onAfterRequest("new PocketRisu reroll", "model");
+  if (duplicate !== "new PocketRisu reroll") {
+    throw new Error("duplicate callback changed the visible reroll output");
+  }
+  if (scheduled !== 1) {
+    throw new Error("duplicate afterRequest scheduled persistence twice: "+scheduled);
+  }
+} finally {
+  Promise.resolve = originalResolve;
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PocketRisu afterRequest return fixture failed: %v\n%s", err, out)
+	}
+}
+
 func TestRisuAfterRequestObservationBypassesActiveChatReread(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {

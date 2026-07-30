@@ -1083,7 +1083,7 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 
 func TestArchiveCenterJSAfterRequestSchedulesSameTurnPersistenceOnceWithoutBlockingResponse(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	afterRequestAt := strings.Index(src, "async function onAfterRequest")
+	afterRequestAt := strings.Index(src, "function onAfterRequest")
 	if afterRequestAt < 0 {
 		t.Fatal("Archive Center.js missing onAfterRequest")
 	}
@@ -1098,6 +1098,15 @@ func TestArchiveCenterJSAfterRequestSchedulesSameTurnPersistenceOnceWithoutBlock
 	}
 	if !(acceptAt < scheduleAt && scheduleAt < persistAt && persistAt < returnAt) {
 		t.Fatal("afterRequest must accept, schedule persistence, and return the host response in that order")
+	}
+	if strings.Contains(src, "async function onAfterRequest") {
+		t.Fatal("afterRequest remains async and can withhold the replacement response")
+	}
+	if strings.Contains(afterRequest[:returnAt], "await ") {
+		t.Fatal("afterRequest performs awaited work before returning the visible response")
+	}
+	if strings.Contains(afterRequest[:returnAt], "resolveAfterRequestWriteSessionId") {
+		t.Fatal("afterRequest performs session routing before returning the visible response")
 	}
 	if strings.Count(afterRequest, scheduleMarker) != 1 {
 		t.Fatal("afterRequest persistence schedule must have exactly one entry point")
@@ -1119,18 +1128,20 @@ func TestArchiveCenterJSAfterRequestSchedulesSameTurnPersistenceOnceWithoutBlock
 	}
 }
 
-func TestArchiveCenterJSAfterRequestKeepsEstablishedOriginCID(t *testing.T) {
+func TestArchiveCenterJSAfterRequestUsesBeforeRequestSessionCoordinates(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"async function resolveAfterRequestWriteSessionId(orchResult)",
-		"!isCidSessionId(orchSessionId) && isCidSessionId(currentSessionId) && currentSessionId !== orchSessionId",
-		`reason: "fresh_active_cid_after_request"`,
-		"return orchSessionId || currentSessionId;",
+		"const capturedWriteSessionId = normalizeSessionId(",
+		"persistenceOrchResult && persistenceOrchResult._chatSessionId",
+		"const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;",
 	}
 	for _, marker := range required {
 		if !strings.Contains(src, marker) {
-			t.Fatalf("Archive Center.js missing afterRequest origin-session guard %q", marker)
+			t.Fatalf("Archive Center.js missing captured afterRequest session marker %q", marker)
 		}
+	}
+	if strings.Contains(src, "resolveAfterRequestWriteSessionId") {
+		t.Fatal("obsolete afterRequest session reread path remains")
 	}
 }
 
