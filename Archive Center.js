@@ -1268,6 +1268,48 @@
       "turn_hud.notice.ooc_recognized_detail": "OOC 판정으로 입력 처리를 취소했습니다.",
       "turn_hud.error.logical_turn_replace_failed": "리롤 턴 교체에 실패했습니다.",
       "turn_hud.error.user_input_missing": "저장할 사용자 원문이 없습니다.",
+      "sessionNormalize.title": "세션 정상화 / 콜드 스타트",
+      "sessionNormalize.running": "콜드 스타트 진행 중",
+      "sessionNormalize.completed": "콜드 스타트 완료",
+      "sessionNormalize.completedWithErrors": "오류를 포함해 종료됨",
+      "sessionNormalize.failed": "콜드 스타트 실패",
+      "sessionNormalize.description": "현재 채팅과 DB를 점검하고 누락된 원문·기억·관계·장기 요약·벡터 색인을 복구합니다. 삭제나 롤백은 수행하지 않습니다.",
+      "sessionNormalize.execute": "세션 정상화 실행",
+      "sessionNormalize.normalizing": "정상화 중…",
+      "sessionNormalize.stageLabel": "현재 단계",
+      "sessionNormalize.stage.inspect_before": "저장 상태 확인",
+      "sessionNormalize.stage.raw_repair_replay": "원문 검사·복구",
+      "sessionNormalize.stage.critic_rescan_backfill": "기억·근거 생성",
+      "sessionNormalize.stage.vector_reindex": "벡터 색인 확인",
+      "sessionNormalize.stage.completed": "마무리",
+      "sessionNormalize.progress": "진행",
+      "sessionNormalize.succeeded": "성공",
+      "sessionNormalize.failures": "실패",
+      "sessionNormalize.skipped": "건너뜀",
+      "sessionNormalize.deferred": "대기",
+      "sessionNormalize.backgroundNote": "이 화면을 이동해도 백엔드에서 계속 진행됩니다.",
+      "sessionNormalize.refresh": "상태 새로고침",
+      "sessionNormalize.cancel": "작업 취소",
+      "sessionNormalize.close": "닫기",
+      "sessionNormalize.technicalDetails": "기술 정보",
+      "sessionNormalize.count.raw": "원문",
+      "sessionNormalize.count.memories": "기억",
+      "sessionNormalize.count.evidence": "직접 근거",
+      "sessionNormalize.count.kg": "관계 지식",
+      "sessionNormalize.count.rules": "세계 규칙",
+      "sessionNormalize.count.episodes": "에피소드",
+      "sessionNormalize.count.chapters": "챕터",
+      "sessionNormalize.count.arcs": "아크",
+      "sessionNormalize.count.sagas": "사가",
+      "sessionNormalize.count.vector": "벡터",
+      "sessionNormalize.failureTurn": "{turn}턴 실패",
+      "sessionNormalize.moreFailures": "외 {count}건",
+      "sessionNormalize.error.critic_provider_timeout": "평론가 LLM 응답이 설정된 제한시간을 넘겼습니다. LLM Gateway 상태와 평론가 제한시간을 확인하세요.",
+      "sessionNormalize.error.critic_llm_failed": "평론가 LLM 호출에 실패했습니다. 프로바이더 연결과 모델 설정을 확인하세요.",
+      "sessionNormalize.error.accepted_source_revision_missing": "확정된 원문 버전을 찾지 못해 이 턴의 기억 생성을 진행하지 못했습니다.",
+      "sessionNormalize.error.canonical_source_revision_conflict": "저장된 원문 버전이 현재 턴과 충돌해 안전하게 처리를 중단했습니다.",
+      "sessionNormalize.error.derived_persist_failed": "생성된 요약·근거·관계 정보를 저장하지 못했습니다.",
+      "sessionNormalize.error.generic": "이 턴을 처리하지 못했습니다. 기술 정보에서 원문 오류를 확인하세요.",
       "turn_hud.error.raw_turn_persist_failed": "사용자·Assistant 원문 저장에 실패했습니다.",
       "turn_hud.error.critic_llm_failed": "평론가 LLM 호출에 실패했습니다.",
       "turn_hud.error.derived_persist_failed": "요약·근거·관계 저장에 실패했습니다.",
@@ -2287,6 +2329,48 @@
       "turn_hud.notice.ooc_recognized_detail": "Input processing was cancelled after the OOC decision.",
       "turn_hud.error.logical_turn_replace_failed": "Failed to replace the rerolled turn.",
       "turn_hud.error.user_input_missing": "The user source required for saving is missing.",
+      "sessionNormalize.title": "Session Normalize / Cold Start",
+      "sessionNormalize.running": "Cold start in progress",
+      "sessionNormalize.completed": "Cold start complete",
+      "sessionNormalize.completedWithErrors": "Finished with errors",
+      "sessionNormalize.failed": "Cold start failed",
+      "sessionNormalize.description": "Checks the current chat against the database and restores missing source turns, memories, relationships, long-range summaries, and vector indexes. It does not delete or roll back data.",
+      "sessionNormalize.execute": "Run session normalize",
+      "sessionNormalize.normalizing": "Normalizing…",
+      "sessionNormalize.stageLabel": "Current stage",
+      "sessionNormalize.stage.inspect_before": "Inspecting stored data",
+      "sessionNormalize.stage.raw_repair_replay": "Checking and repairing source turns",
+      "sessionNormalize.stage.critic_rescan_backfill": "Building memories and evidence",
+      "sessionNormalize.stage.vector_reindex": "Checking the vector index",
+      "sessionNormalize.stage.completed": "Finishing",
+      "sessionNormalize.progress": "Progress",
+      "sessionNormalize.succeeded": "Succeeded",
+      "sessionNormalize.failures": "Failed",
+      "sessionNormalize.skipped": "Skipped",
+      "sessionNormalize.deferred": "Deferred",
+      "sessionNormalize.backgroundNote": "The backend keeps running if you leave this screen.",
+      "sessionNormalize.refresh": "Refresh status",
+      "sessionNormalize.cancel": "Cancel job",
+      "sessionNormalize.close": "Close",
+      "sessionNormalize.technicalDetails": "Technical details",
+      "sessionNormalize.count.raw": "Source",
+      "sessionNormalize.count.memories": "Memories",
+      "sessionNormalize.count.evidence": "Evidence",
+      "sessionNormalize.count.kg": "Relationships",
+      "sessionNormalize.count.rules": "World rules",
+      "sessionNormalize.count.episodes": "Episodes",
+      "sessionNormalize.count.chapters": "Chapters",
+      "sessionNormalize.count.arcs": "Arcs",
+      "sessionNormalize.count.sagas": "Sagas",
+      "sessionNormalize.count.vector": "Vectors",
+      "sessionNormalize.failureTurn": "Turn {turn} failed",
+      "sessionNormalize.moreFailures": "{count} more",
+      "sessionNormalize.error.critic_provider_timeout": "The Critic LLM exceeded its configured response timeout. Check LLM Gateway status and the Critic timeout setting.",
+      "sessionNormalize.error.critic_llm_failed": "The Critic LLM call failed. Check the provider connection and model settings.",
+      "sessionNormalize.error.accepted_source_revision_missing": "The accepted source revision was unavailable, so memory generation for this turn could not run.",
+      "sessionNormalize.error.canonical_source_revision_conflict": "The stored source revision conflicted with the current turn, so processing stopped safely.",
+      "sessionNormalize.error.derived_persist_failed": "Generated summaries, evidence, or relationships could not be saved.",
+      "sessionNormalize.error.generic": "This turn could not be processed. Open Technical details to inspect the original error.",
       "turn_hud.error.raw_turn_persist_failed": "Failed to save the user and Assistant source.",
       "turn_hud.error.critic_llm_failed": "The Critic LLM call failed.",
       "turn_hud.error.derived_persist_failed": "Failed to save summaries, evidence, or relationships.",
@@ -3304,6 +3388,48 @@
       "turn_hud.notice.ooc_recognized_detail": "OOC判定により入力処理をキャンセルしました。",
       "turn_hud.error.logical_turn_replace_failed": "再生成ターンの置換に失敗しました。",
       "turn_hud.error.user_input_missing": "保存するユーザー原文がありません。",
+      "sessionNormalize.title": "セッション正規化 / コールドスタート",
+      "sessionNormalize.running": "コールドスタート実行中",
+      "sessionNormalize.completed": "コールドスタート完了",
+      "sessionNormalize.completedWithErrors": "エラーを含めて終了",
+      "sessionNormalize.failed": "コールドスタート失敗",
+      "sessionNormalize.description": "現在のチャットとDBを確認し、不足している原文・記憶・関係・長期要約・Vector索引を復旧します。削除やロールバックは行いません。",
+      "sessionNormalize.execute": "セッション正規化を実行",
+      "sessionNormalize.normalizing": "正規化中…",
+      "sessionNormalize.stageLabel": "現在の段階",
+      "sessionNormalize.stage.inspect_before": "保存状態を確認中",
+      "sessionNormalize.stage.raw_repair_replay": "原文の確認・修復",
+      "sessionNormalize.stage.critic_rescan_backfill": "記憶・根拠を生成中",
+      "sessionNormalize.stage.vector_reindex": "Vector索引を確認中",
+      "sessionNormalize.stage.completed": "完了処理",
+      "sessionNormalize.progress": "進行",
+      "sessionNormalize.succeeded": "成功",
+      "sessionNormalize.failures": "失敗",
+      "sessionNormalize.skipped": "スキップ",
+      "sessionNormalize.deferred": "保留",
+      "sessionNormalize.backgroundNote": "この画面から移動してもバックエンドで処理は継続します。",
+      "sessionNormalize.refresh": "状態を更新",
+      "sessionNormalize.cancel": "処理を中止",
+      "sessionNormalize.close": "閉じる",
+      "sessionNormalize.technicalDetails": "技術情報",
+      "sessionNormalize.count.raw": "原文",
+      "sessionNormalize.count.memories": "記憶",
+      "sessionNormalize.count.evidence": "直接根拠",
+      "sessionNormalize.count.kg": "関係知識",
+      "sessionNormalize.count.rules": "世界ルール",
+      "sessionNormalize.count.episodes": "エピソード",
+      "sessionNormalize.count.chapters": "チャプター",
+      "sessionNormalize.count.arcs": "アーク",
+      "sessionNormalize.count.sagas": "サーガ",
+      "sessionNormalize.count.vector": "Vector",
+      "sessionNormalize.failureTurn": "ターン{turn}失敗",
+      "sessionNormalize.moreFailures": "ほか{count}件",
+      "sessionNormalize.error.critic_provider_timeout": "評論家LLMが設定された応答時間を超えました。LLM Gatewayの状態と評論家のタイムアウト設定を確認してください。",
+      "sessionNormalize.error.critic_llm_failed": "評論家LLMの呼び出しに失敗しました。プロバイダー接続とモデル設定を確認してください。",
+      "sessionNormalize.error.accepted_source_revision_missing": "確定済みの原文リビジョンが見つからず、このターンの記憶生成を実行できませんでした。",
+      "sessionNormalize.error.canonical_source_revision_conflict": "保存済み原文のリビジョンが現在のターンと競合したため、安全のため処理を停止しました。",
+      "sessionNormalize.error.derived_persist_failed": "生成した要約・根拠・関係情報を保存できませんでした。",
+      "sessionNormalize.error.generic": "このターンを処理できませんでした。技術情報で元のエラーを確認してください。",
       "turn_hud.error.raw_turn_persist_failed": "ユーザー・Assistant原文の保存に失敗しました。",
       "turn_hud.error.critic_llm_failed": "批評家LLMの呼び出しに失敗しました。",
       "turn_hud.error.derived_persist_failed": "要約・根拠・関係の保存に失敗しました。",
@@ -40542,8 +40668,159 @@
     return fallback;
   }
 
+  function sessionNormalizeStageLabel(stage) {
+    const normalized = String(stage || "inspect_before").trim().toLowerCase();
+    const key = "sessionNormalize.stage." + normalized;
+    const localized = t(key);
+    return localized === key ? normalized.replace(/_/g, " ") : localized;
+  }
+
+  function normalizeSessionNormalizeFailure(item) {
+    const source = item && typeof item === "object" ? item : {};
+    const raw = String(
+      source.reason ||
+      source.error ||
+      source.detail ||
+      (typeof item === "string" ? item : "") ||
+      "failed"
+    ).trim();
+    const knownCodes = [
+      "CRITIC_PROVIDER_TIMEOUT",
+      "CRITIC_LLM_FAILED",
+      "accepted_source_revision_missing",
+      "canonical_source_revision_conflict",
+      "derived_persist_failed",
+    ];
+    let code = String(source.code || source.reason_code || "").trim();
+    if (!code) {
+      code = knownCodes.find(function(candidate) {
+        return raw.toLowerCase().includes(candidate.toLowerCase());
+      }) || "";
+    }
+    const turn = source.turn_index != null ? String(source.turn_index) : "";
+    return { code: code, raw: raw, turn: turn };
+  }
+
+  function localizeSessionNormalizeFailure(failure) {
+    const code = String(failure && failure.code || "").trim().toLowerCase();
+    if (code) {
+      const key = "sessionNormalize.error." + code;
+      const localized = t(key);
+      if (localized !== key) return localized;
+    }
+    return t("sessionNormalize.error.generic");
+  }
+
+  function renderSessionNormalizeJobProgressHtml(job) {
+    const progress = job && job.progress && typeof job.progress === "object" ? job.progress : {};
+    const status = String(job && (job.status || progress.status) || "running").trim().toLowerCase();
+    const stage = String(progress.stage || "inspect_before");
+    const pct = Math.max(0, Math.min(100, Number(progress.progress_percent || 0)));
+    const processed = Number(adminJobProgressValue(progress, ["processed", "processed_count"], 0) || 0);
+    const total = Number(adminJobProgressValue(progress, ["display_total", "candidate_count", "total_candidates", "total"], 0) || 0);
+    const succeeded = Number(adminJobProgressValue(progress, ["succeeded", "upserted", "saved"], 0) || 0);
+    const failed = Number(adminJobProgressValue(progress, ["failed_count", "failed"], 0) || 0);
+    const skipped = Number(adminJobProgressValue(progress, ["skipped_count", "skipped"], 0) || 0);
+    const failedTurns = Array.isArray(progress.failed_turns) ? progress.failed_turns : [];
+    const failedIds = Array.isArray(progress.failed_ids) ? progress.failed_ids : [];
+    const failures = failedTurns.map(normalizeSessionNormalizeFailure);
+    if (failures.length === 0 && failedIds.length > 0) {
+      failedIds.forEach(function(id) {
+        failures.push(normalizeSessionNormalizeFailure({ turn_index: id, reason: "failed" }));
+      });
+    }
+    if (failures.length === 0 && progress.error) {
+      failures.push(normalizeSessionNormalizeFailure({ error: progress.error }));
+    }
+    const hasFailure = failed > 0 || failures.length > 0 || status === "failed";
+    if (hasFailure && failures.length === 0) {
+      failures.push(normalizeSessionNormalizeFailure({ reason: progress.reason || status }));
+    }
+    const title = status === "failed" ? t("sessionNormalize.failed") : t("sessionNormalize.running");
+    const cardClass = hasFailure
+      ? "mo-session-normalize-status mo-session-normalize-status-fail"
+      : "mo-session-normalize-status";
+    let html = '<div class="' + cardClass + '">' +
+      '<div class="mo-session-normalize-status-head">' +
+        '<strong>' + escapeAttr(title) + '</strong>' +
+        '<span>' + pct + '%</span>' +
+      '</div>' +
+      '<div class="mo-session-normalize-stage">' +
+        escapeAttr(t("sessionNormalize.stageLabel")) + ': ' +
+        '<strong>' + escapeAttr(sessionNormalizeStageLabel(stage)) + '</strong>' +
+      '</div>' +
+      '<div class="mo-session-normalize-counts">' +
+        '<span>' + escapeAttr(t("sessionNormalize.progress")) + ' <strong>' + processed + '/' + total + '</strong></span>' +
+        '<span>' + escapeAttr(t("sessionNormalize.succeeded")) + ' <strong>' + succeeded + '</strong></span>' +
+        '<span class="' + (hasFailure ? "is-fail" : "") + '">' + escapeAttr(t("sessionNormalize.failures")) + ' <strong>' + failed + '</strong></span>' +
+        '<span>' + escapeAttr(t("sessionNormalize.skipped")) + ' <strong>' + skipped + '</strong></span>' +
+      '</div>' +
+      '<div class="mo-session-normalize-progress"><span style="width:' + pct + '%"></span></div>';
+    if (failures.length > 0) {
+      html += '<div class="mo-session-normalize-failures">';
+      failures.slice(0, 3).forEach(function(failure) {
+        const failureTitle = failure.turn
+          ? tf("sessionNormalize.failureTurn", { turn: failure.turn })
+          : t("sessionNormalize.failed");
+        html += '<div class="mo-session-normalize-failure">' +
+          '<strong>' + escapeAttr(failureTitle) + '</strong>' +
+          '<span>' + escapeAttr(localizeSessionNormalizeFailure(failure)) + '</span>' +
+          '</div>';
+      });
+      if (failures.length > 3) {
+        html += '<div class="mo-session-normalize-more">' +
+          escapeAttr(tf("sessionNormalize.moreFailures", { count: failures.length - 3 })) +
+          '</div>';
+      }
+      html += '</div>';
+    }
+    html += '<div class="mo-session-normalize-note">' +
+      escapeAttr(t("sessionNormalize.backgroundNote")) +
+      '</div>';
+    const technicalLines = [
+      "job: " + String(job && job.job_id || ""),
+      "status: " + status,
+      "stage: " + stage,
+    ];
+    if (progress.phase) technicalLines.push("phase: " + String(progress.phase));
+    if (progress.reason) technicalLines.push("reason: " + String(progress.reason));
+    if (progress.ui_action) technicalLines.push("action: " + String(progress.ui_action));
+    failures.forEach(function(failure) {
+      technicalLines.push((failure.turn ? "#" + failure.turn + ": " : "") + failure.raw);
+    });
+    const transportNotice = job && job.transport_notice && typeof job.transport_notice === "object"
+      ? job.transport_notice
+      : null;
+    if (transportNotice) {
+      technicalLines.push(
+        "stream: " +
+        String(transportNotice.reason_code || "admin_job_stream_transport_unavailable") +
+        (transportNotice.detail ? " / " + String(transportNotice.detail) : "")
+      );
+    }
+    html += '<details class="mo-session-normalize-technical">' +
+      '<summary>' + escapeAttr(t("sessionNormalize.technicalDetails")) + '</summary>' +
+      '<div>' + escapeAttr(technicalLines.join("\n")) + '</div>' +
+      '</details>';
+    if (job && job.terminal !== true) {
+      html += '<div class="mo-inline-actions">' +
+        '<button type="button" class="mo-btn mo-btn-info" data-admin-job-refresh="session_normalize">' +
+          escapeAttr(t("sessionNormalize.refresh")) +
+        '</button>' +
+        '<button type="button" class="mo-btn mo-btn-danger" data-admin-job-cancel="session_normalize">' +
+          escapeAttr(t("sessionNormalize.cancel")) +
+        '</button>' +
+        '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
   function renderAdminJobProgressHtml(job, label, kind) {
     if (!job || typeof job !== "object") return "";
+    if (String(kind || "").trim() === "session_normalize") {
+      return renderSessionNormalizeJobProgressHtml(job);
+    }
     const progress = job.progress && typeof job.progress === "object" ? job.progress : {};
     const status = String(job.status || progress.status || "running");
     const stage = String(progress.stage || "running");
@@ -40617,6 +40894,7 @@
     state.error = null;
     state.result = null;
     state.job = result;
+    if (key === "session_normalize") state.panelOpen = true;
     startAdminBackgroundJobStream(key, state, result.job_id, Number(result.revision || 0));
     return true;
   }
@@ -40915,7 +41193,7 @@
   // ──────────────────────────────────────────────────────────────
 
   let _rescanState = { loading: false, error: null, result: null, job: null };
-  let _sessionNormalizeState = { loading: false, error: null, result: null, job: null, planWarning: "" };
+  let _sessionNormalizeState = { loading: false, error: null, result: null, job: null, planWarning: "", panelOpen: true };
   let _activeChatRescanDryRunState = { loading: false, error: null, result: null };
   let _activeChatRecentRebuildState = { loading: false, error: null, result: null };
   let _chatLogRepairState = { loading: false, error: null, progress: null, result: null };
@@ -41585,67 +41863,102 @@
     const reindexReason = reindex.reason != null ? String(reindex.reason) : "";
     const reindexAction = reindex.ui_action != null ? String(reindex.ui_action) : "";
     const resultStatus = String(result.status || "unknown").trim().toLowerCase();
-    let resultHeading = "ℹ️ 세션 정상화 종료";
-    let resultHeadingColor = "#93c5fd";
-    if (resultStatus === "ok") {
-      resultHeading = "✅ 세션 정상화 완료";
-      resultHeadingColor = "#86efac";
-    } else if (resultStatus === "partial_error") {
-      resultHeading = "⚠️ 세션 정상화 오류 포함 종료";
-      resultHeadingColor = "#f59e0b";
-    } else if (resultStatus === "partial_warning") {
-      resultHeading = "⚠️ 세션 정상화 경고 포함 종료";
-      resultHeadingColor = "#fbbf24";
-    } else if (resultStatus === "blocked") {
-      resultHeading = "⛔ 세션 정상화 중단";
-      resultHeadingColor = "#fb923c";
-    } else if (resultStatus === "failed" || resultStatus === "error") {
-      resultHeading = "❌ 세션 정상화 실패";
-      resultHeadingColor = "#f87171";
+    const failedTurns = Array.isArray(rescan.failed_turns) ? rescan.failed_turns : [];
+    const failures = failedTurns.map(normalizeSessionNormalizeFailure);
+    const failedCount = Number(rescan.failed || 0);
+    const hasFailure = failedCount > 0 ||
+      ["partial_error", "failed", "error", "blocked"].includes(resultStatus);
+    if (hasFailure && failures.length === 0) {
+      failures.push(normalizeSessionNormalizeFailure({
+        reason: warnings[0] || reindexReason || resultStatus,
+      }));
     }
-    const artifactSummary = [
-      "mem:" + Number(artifactCounts.memories || 0),
-      "evi:" + Number(artifactCounts.evidence || 0),
-      "kg:" + Number(artifactCounts.kg_triples || 0),
-      "rule:" + Number(artifactCounts.world_rules || 0),
-      "ep:" + Number(artifactCounts.episode_summaries || 0),
-      "ch:" + Number(artifactCounts.chapter_summaries || 0),
-      "arc:" + Number(artifactCounts.arc_summaries || 0),
-      "saga:" + Number(artifactCounts.saga_digests || 0),
-      "vec:" + Number((artifactCounts.vectors_upserted || 0) + (reindex.upserted || 0)),
-    ].join(" / ");
-    return '<div class="mo-reindex-result">' +
-      '<strong style="color:' + resultHeadingColor + '">' + resultHeading + '</strong> ' + escapeAttr(String(result.status || "")) +
-      '<br>raw turns: ' + Number(after.raw_complete_turns || 0) + '/' + Number(after.raw_turns || 0) +
-      ' / memories: ' + Number(after.memories || 0) +
-      ' / evidence: ' + Number(after.direct_evidence || 0) +
-      ' / kg: ' + Number(after.kg_triples || 0) +
-      ' / world rules: ' + Number(after.world_rules || 0) +
-      ' / episodes: ' + Number(after.episode_summaries || 0) +
-      ' / chapters: ' + Number(after.chapter_summaries || 0) +
-      ' / arcs: ' + Number(after.arc_summaries || 0) +
-      ' / sagas: ' + Number(after.saga_digests || 0) +
-      '<br>repair: missing roles ' + Number(repair.total_missing_role_count || 0) +
-      ' / repaired roles ' + Number(repair.total_repaired_role_count || 0) +
-      ' / conflicts ' + Number(repair.total_conflict_role_count || 0) +
-      '<br>rescan: candidates ' + Number(rescan.candidate_count || 0) +
-      ' / succeeded ' + Number(rescan.succeeded || 0) +
-      ' / failed ' + Number(rescan.failed || 0) +
-      ' / skipped ' + Number(rescan.skipped || 0) +
-      ' / deferred ' + Number(rescan.deferred || 0) +
-      ' / queued ' + Number(rescan.queued || 0) +
-      '<br>reindex: candidates ' + Number(reindex.candidates || reindex.candidate_count || 0) +
-      ' / upserted ' + Number(reindex.upserted || 0) +
-      ' / skipped ' + Number(reindex.skipped || reindex.skipped_count || 0) +
-      (reindexReason ? ' / reason: ' + escapeAttr(reindexReason) : '') +
-      '<br>artifacts: ' + escapeAttr(artifactSummary) +
-      (Number(plan.raw_import_candidates || 0) > 0 ? '<br>raw import candidates: ' + Number(plan.raw_import_candidates || 0) : '') +
-      (reviewTurns.length > 0 ? '<br><span style="color:#f59e0b">review needed: ' + escapeAttr(formatTurnIndexPreview(reviewTurns, 16)) + '</span>' : '') +
-      (reindexAction ? '<br><span style="color:#93c5fd">reindex action: ' + escapeAttr(reindexAction) + '</span>' : '') +
-      (hierarchyBlocked ? '<br><span style="color:#f59e0b">hierarchy blocked: ' + escapeAttr(hierarchyBlocked) + '</span>' : '') +
-      (warnings.length > 0 ? '<br><span style="font-size:11px;color:#f59e0b">warnings: ' + escapeAttr(warnings.slice(0, 6).join(" / ")) + '</span>' : '') +
-      '<br><span style="font-size:11px;color:#888">삭제/rollback 없음 · visible trim은 DB 삭제 근거로 사용하지 않음</span>' +
+    const heading = resultStatus === "ok"
+      ? t("sessionNormalize.completed")
+      : (["failed", "error", "blocked"].includes(resultStatus)
+        ? t("sessionNormalize.failed")
+        : (hasFailure ? t("sessionNormalize.completedWithErrors") : t("sessionNormalize.completed")));
+    const countItems = [
+      [t("sessionNormalize.count.raw"), Number(after.raw_complete_turns || 0) + "/" + Number(after.raw_turns || 0)],
+      [t("sessionNormalize.count.memories"), Number(after.memories || 0)],
+      [t("sessionNormalize.count.evidence"), Number(after.direct_evidence || 0)],
+      [t("sessionNormalize.count.kg"), Number(after.kg_triples || 0)],
+      [t("sessionNormalize.count.rules"), Number(after.world_rules || 0)],
+      [t("sessionNormalize.count.episodes"), Number(after.episode_summaries || 0)],
+      [t("sessionNormalize.count.chapters"), Number(after.chapter_summaries || 0)],
+      [t("sessionNormalize.count.arcs"), Number(after.arc_summaries || 0)],
+      [t("sessionNormalize.count.sagas"), Number(after.saga_digests || 0)],
+      [t("sessionNormalize.count.vector"), Number((artifactCounts.vectors_upserted || 0) + (reindex.upserted || 0))],
+    ];
+    let html = '<div class="mo-session-normalize-result' + (hasFailure ? ' is-fail' : '') + '">' +
+      '<div class="mo-session-normalize-result-head">' +
+        '<strong>' + escapeAttr(heading) + '</strong>' +
+        '<button type="button" class="mo-session-normalize-dismiss" data-session-normalize-dismiss aria-label="' +
+          escapeAttr(t("sessionNormalize.close")) + '">' +
+          escapeAttr(t("sessionNormalize.close")) +
+        '</button>' +
+      '</div>' +
+      '<div class="mo-session-normalize-result-counts">';
+    countItems.forEach(function(item) {
+      html += '<span><small>' + escapeAttr(item[0]) + '</small><strong>' + escapeAttr(String(item[1])) + '</strong></span>';
+    });
+    html += '</div>' +
+      '<div class="mo-session-normalize-result-summary">' +
+        '<span>' + escapeAttr(t("sessionNormalize.succeeded")) + ' <strong>' + Number(rescan.succeeded || 0) + '</strong></span>' +
+        '<span class="' + (failedCount > 0 ? "is-fail" : "") + '">' + escapeAttr(t("sessionNormalize.failures")) + ' <strong>' + failedCount + '</strong></span>' +
+        '<span>' + escapeAttr(t("sessionNormalize.skipped")) + ' <strong>' + Number(rescan.skipped || 0) + '</strong></span>' +
+        '<span>' + escapeAttr(t("sessionNormalize.deferred")) + ' <strong>' + Number(rescan.deferred || 0) + '</strong></span>' +
       '</div>';
+    if (failures.length > 0) {
+      html += '<div class="mo-session-normalize-failures">';
+      failures.slice(0, 3).forEach(function(failure) {
+        const failureTitle = failure.turn
+          ? tf("sessionNormalize.failureTurn", { turn: failure.turn })
+          : t("sessionNormalize.failed");
+        html += '<div class="mo-session-normalize-failure">' +
+          '<strong>' + escapeAttr(failureTitle) + '</strong>' +
+          '<span>' + escapeAttr(localizeSessionNormalizeFailure(failure)) + '</span>' +
+          '</div>';
+      });
+      if (failures.length > 3) {
+        html += '<div class="mo-session-normalize-more">' +
+          escapeAttr(tf("sessionNormalize.moreFailures", { count: failures.length - 3 })) +
+          '</div>';
+      }
+      html += '</div>';
+    }
+    const technicalLines = [
+      "status: " + resultStatus,
+      "repair: missing=" + Number(repair.total_missing_role_count || 0) +
+        " repaired=" + Number(repair.total_repaired_role_count || 0) +
+        " conflicts=" + Number(repair.total_conflict_role_count || 0),
+      "rescan: candidates=" + Number(rescan.candidate_count || 0) +
+        " succeeded=" + Number(rescan.succeeded || 0) +
+        " failed=" + failedCount +
+        " skipped=" + Number(rescan.skipped || 0) +
+        " deferred=" + Number(rescan.deferred || 0) +
+        " queued=" + Number(rescan.queued || 0),
+      "reindex: candidates=" + Number(reindex.candidates || reindex.candidate_count || 0) +
+        " upserted=" + Number(reindex.upserted || 0) +
+        " skipped=" + Number(reindex.skipped || reindex.skipped_count || 0),
+    ];
+    if (Number(plan.raw_import_candidates || 0) > 0) {
+      technicalLines.push("raw import candidates: " + Number(plan.raw_import_candidates || 0));
+    }
+    if (reviewTurns.length > 0) technicalLines.push("review needed: " + formatTurnIndexPreview(reviewTurns, 16));
+    if (reindexReason) technicalLines.push("reindex reason: " + reindexReason);
+    if (reindexAction) technicalLines.push("reindex action: " + reindexAction);
+    if (hierarchyBlocked) technicalLines.push("hierarchy blocked: " + hierarchyBlocked);
+    if (warnings.length > 0) technicalLines.push("warnings: " + warnings.join(" / "));
+    failures.forEach(function(failure) {
+      technicalLines.push((failure.turn ? "#" + failure.turn + ": " : "") + failure.raw);
+    });
+    html += '<details class="mo-session-normalize-technical">' +
+      '<summary>' + escapeAttr(t("sessionNormalize.technicalDetails")) + '</summary>' +
+      '<div>' + escapeAttr(technicalLines.join("\n")) + '</div>' +
+      '</details>' +
+      '</div>';
+    return html;
   }
 
   async function normalizeSession(sessionId, maxItems, options = {}) {
@@ -41675,6 +41988,7 @@
     _sessionNormalizeState.result = null;
     _sessionNormalizeState.job = null;
     _sessionNormalizeState.planWarning = "";
+    _sessionNormalizeState.panelOpen = true;
     refreshExplorerUI();
 
     let repairEntries = [];
@@ -46782,20 +47096,38 @@
         normalizeResultHtml += '<div class="mo-reindex-row" style="font-size:11px;color:#f59e0b">active chat plan warning: ' + escapeAttr(_sessionNormalizeState.planWarning) + '</div>';
       }
       if (_sessionNormalizeState.error) {
-        normalizeResultHtml = '<div class="mo-reindex-error">❌ ' + escapeAttr(_sessionNormalizeState.error) + '</div>';
+        const normalizeError = normalizeSessionNormalizeFailure({ error: _sessionNormalizeState.error });
+        normalizeResultHtml = '<div class="mo-session-normalize-result is-fail">' +
+          '<div class="mo-session-normalize-result-head">' +
+            '<strong>' + escapeAttr(t("sessionNormalize.failed")) + '</strong>' +
+            '<button type="button" class="mo-session-normalize-dismiss" data-session-normalize-dismiss>' +
+              escapeAttr(t("sessionNormalize.close")) +
+            '</button>' +
+          '</div>' +
+          '<div class="mo-session-normalize-failure">' +
+            '<span>' + escapeAttr(localizeSessionNormalizeFailure(normalizeError)) + '</span>' +
+          '</div>' +
+          '<details class="mo-session-normalize-technical">' +
+            '<summary>' + escapeAttr(t("sessionNormalize.technicalDetails")) + '</summary>' +
+            '<div>' + escapeAttr(normalizeError.raw) + '</div>' +
+          '</details>' +
+          '</div>';
       }
       sessionNormalizePanel = '<div class="mo-reindex-panel">' +
-        '<details open><summary class="mo-reindex-summary">🧭 세션 정상화 / 콜드스타트</summary>' +
+        '<details data-session-normalize-panel' + (_sessionNormalizeState.panelOpen !== false ? ' open' : '') + '>' +
+        '<summary class="mo-reindex-summary">🧭 ' + escapeAttr(t("sessionNormalize.title")) + '</summary>' +
         '<div class="mo-reindex-body">' +
           '<div class="mo-reindex-row" style="font-size:11px;color:#888">' +
-            '현재 챗과 DB를 점검한 뒤 누락 원문, 기억, 세계 규칙, 에피소드/챕터/아크/사가, 벡터 색인을 한 번에 채웁니다. 삭제나 rollback은 하지 않습니다.' +
+            escapeAttr(t("sessionNormalize.description")) +
           '</div>' +
           '<div class="mo-reindex-row">' +
             '<label>max_items (0=all): <input type="number" id="mo-session-normalize-max" value="0" min="0" style="width:80px"></label>' +
             ' <label><input type="checkbox" id="mo-session-normalize-skip-rescan"> skip_rescan</label>' +
             '<button class="mo-btn mo-btn-primary" id="mo-session-normalize-btn"' +
               (_sessionNormalizeState.loading ? ' disabled' : '') + '>' +
-              (_sessionNormalizeState.loading ? '⏳ 정상화 중...' : '▶ 세션 정상화 실행') +
+              (_sessionNormalizeState.loading
+                ? '⏳ ' + escapeAttr(t("sessionNormalize.normalizing"))
+                : '▶ ' + escapeAttr(t("sessionNormalize.execute"))) +
             '</button>' +
           '</div>' +
           normalizeResultHtml +
@@ -47232,6 +47564,25 @@
 
   function attachExplorerEvents() {
     try {
+      const sessionNormalizePanel = document.querySelector("[data-session-normalize-panel]");
+      if (sessionNormalizePanel) {
+        sessionNormalizePanel.addEventListener("toggle", () => {
+          _sessionNormalizeState.panelOpen = !!sessionNormalizePanel.open;
+        });
+      }
+      document.querySelectorAll("[data-session-normalize-dismiss]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const jobId = String(_sessionNormalizeState.job && _sessionNormalizeState.job.job_id || "").trim();
+          if (jobId) cancelAdminBackgroundJobStream("session_normalize", jobId);
+          _sessionNormalizeState.loading = false;
+          _sessionNormalizeState.error = null;
+          _sessionNormalizeState.result = null;
+          _sessionNormalizeState.job = null;
+          _sessionNormalizeState.planWarning = "";
+          _sessionNormalizeState.panelOpen = false;
+          refreshExplorerUI({ preserveScroll: true });
+        });
+      });
       document.querySelectorAll("[data-admin-job-refresh]").forEach((button) => {
         button.addEventListener("click", async () => {
           const kind = String(button.getAttribute("data-admin-job-refresh") || "");
@@ -48693,6 +49044,35 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-reindex-row input[type=checkbox]{accent-color:#533483}
 .mo-reindex-result{margin-top:6px;padding:6px 8px;background:#1c3a1c;border:1px solid #2a5a2a;border-radius:4px;font-size:11px;color:#9ddb9d;line-height:1.5}
 .mo-reindex-error{margin-top:6px;padding:6px 8px;background:#3a1c1c;border:1px solid #5a2a2a;border-radius:4px;font-size:11px;color:#e74c3c;line-height:1.5}
+.mo-session-normalize-status,.mo-session-normalize-result{margin-top:8px;padding:10px 12px;background:#151a24;border:1px solid #354158;border-radius:8px;color:#d8dfeb;font-size:11px;line-height:1.45;box-shadow:0 8px 22px rgba(0,0,0,.18)}
+.mo-session-normalize-status-fail,.mo-session-normalize-result.is-fail{background:#271218;border-color:#8e3344;color:#f2d5dc}
+.mo-session-normalize-status-head,.mo-session-normalize-result-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
+.mo-session-normalize-status-head strong,.mo-session-normalize-result-head strong{font-size:12px;color:#f4f5f7}
+.mo-session-normalize-status-head span{color:#9dafd1;font-variant-numeric:tabular-nums}
+.mo-session-normalize-stage{color:#9aa6b8;margin-bottom:7px}
+.mo-session-normalize-stage strong{color:#dbe5f4;font-weight:600}
+.mo-session-normalize-counts,.mo-session-normalize-result-summary{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:#929dad;font-variant-numeric:tabular-nums}
+.mo-session-normalize-counts strong,.mo-session-normalize-result-summary strong{color:#eef2f8}
+.mo-session-normalize-counts .is-fail,.mo-session-normalize-result-summary .is-fail{color:#ff879b}
+.mo-session-normalize-counts .is-fail strong,.mo-session-normalize-result-summary .is-fail strong{color:#ff9aac}
+.mo-session-normalize-progress{height:5px;margin-top:8px;overflow:hidden;border-radius:999px;background:#252d3a}
+.mo-session-normalize-progress span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#6476bd,#8a6ac8)}
+.mo-session-normalize-status-fail .mo-session-normalize-progress span{background:#d65068}
+.mo-session-normalize-note{margin-top:7px;color:#778293;font-size:10px}
+.mo-session-normalize-failures{display:grid;gap:6px;margin-top:8px}
+.mo-session-normalize-failure{display:grid;gap:2px;padding:7px 8px;border-radius:6px;background:#35151d;border:1px solid #7c293b;color:#f4c7d0}
+.mo-session-normalize-failure strong{color:#ff8da2}
+.mo-session-normalize-more{color:#ff9aab;font-size:10px}
+.mo-session-normalize-technical{margin-top:7px;color:#7f8a9b}
+.mo-session-normalize-technical summary{cursor:pointer;user-select:none}
+.mo-session-normalize-technical div{margin-top:5px;padding:7px 8px;border-radius:5px;background:#0e1219;border:1px solid #293241;color:#9aa6b8;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;max-height:180px;overflow:auto}
+.mo-session-normalize-result-counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(86px,1fr));gap:6px;margin:8px 0}
+.mo-session-normalize-result-counts span{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 7px;border-radius:6px;background:#10151e;border:1px solid #293346}
+.mo-session-normalize-result-counts small{color:#8995a8}
+.mo-session-normalize-result-counts strong{color:#f3f5f8;font-size:12px;font-variant-numeric:tabular-nums}
+.mo-session-normalize-dismiss{border:1px solid #46536a;background:#1b2230;color:#cbd5e4;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer}
+.mo-session-normalize-dismiss:hover{border-color:#71809a;color:#fff}
+.mo-session-normalize-result.is-fail .mo-session-normalize-dismiss{border-color:#8e3344;background:#35151d;color:#ffd4dc}
 .mo-export-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10001;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif;color:#e0e0e0}
 .mo-export-panel{width:min(95%,700px);max-height:88vh;background:#1a1a2e;border:1px solid #533483;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(83,52,131,0.3)}
 .mo-export-hdr{background:#16213e;border-bottom:1px solid #2a2a4a;padding:10px 16px;display:flex;align-items:center;justify-content:space-between}

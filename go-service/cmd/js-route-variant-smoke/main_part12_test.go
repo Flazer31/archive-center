@@ -628,11 +628,39 @@ func TestSessionNormalizeResultRenderingSeparatesCompletionErrorsAndDeferredWork
 		}
 	}
 	src := readArchiveCenterJS(t)
+	normalizeFailure := extractArchiveCenterJSFunction(t, src, "normalizeSessionNormalizeFailure")
+	localizeFailure := extractArchiveCenterJSFunction(t, src, "localizeSessionNormalizeFailure")
 	render := extractArchiveCenterJSFunction(t, src, "renderSessionNormalizeResultHtml")
-	script := render + `
+	script := normalizeFailure + "\n" + localizeFailure + "\n" + render + `
 function escapeAttr(value){ return String(value || ""); }
 function formatHierarchyBlockedSummary(){ return ""; }
 function formatTurnIndexPreview(){ return ""; }
+const labels = {
+  "sessionNormalize.completed":"콜드 스타트 완료",
+  "sessionNormalize.completedWithErrors":"오류를 포함해 종료됨",
+  "sessionNormalize.failed":"콜드 스타트 실패",
+  "sessionNormalize.close":"닫기",
+  "sessionNormalize.succeeded":"성공",
+  "sessionNormalize.failures":"실패",
+  "sessionNormalize.skipped":"건너뜀",
+  "sessionNormalize.deferred":"대기",
+  "sessionNormalize.technicalDetails":"기술 정보",
+  "sessionNormalize.failureTurn":"{turn}턴 실패",
+  "sessionNormalize.moreFailures":"외 {count}건",
+  "sessionNormalize.error.critic_provider_timeout":"평론가 LLM 응답이 설정된 제한시간을 넘겼습니다.",
+  "sessionNormalize.error.generic":"이 턴을 처리하지 못했습니다.",
+};
+[
+  ["raw","원문"],["memories","기억"],["evidence","직접 근거"],["kg","관계 지식"],
+  ["rules","세계 규칙"],["episodes","에피소드"],["chapters","챕터"],["arcs","아크"],
+  ["sagas","사가"],["vector","벡터"],
+].forEach(([key,value])=>labels["sessionNormalize.count."+key]=value);
+function t(key){ return labels[key] || key; }
+function tf(key,vars){
+  let text=t(key);
+  Object.keys(vars||{}).forEach(name=>{ text=text.replaceAll("{"+name+"}",String(vars[name])); });
+  return text;
+}
 function assertIncludes(text, needle, label) {
   if (!String(text).includes(needle)) throw new Error(label + ": " + text);
 }
@@ -642,18 +670,24 @@ const ok = renderSessionNormalizeResultHtml({
   rescan:{candidate_count:2,succeeded:2,deferred:0,queued:0},
   reindex:{},
 });
-assertIncludes(ok, "✅ 세션 정상화 완료", "ok heading");
+assertIncludes(ok, "콜드 스타트 완료", "ok heading");
+assertIncludes(ok, 'data-session-normalize-dismiss', "terminal close button");
 const partial = renderSessionNormalizeResultHtml({
   status:"partial_error",
   counts_after:{},
-  rescan:{candidate_count:3,succeeded:1,failed:1,skipped:0,deferred:1,queued:2},
+  rescan:{
+    candidate_count:3,succeeded:1,failed:1,skipped:0,deferred:1,queued:2,
+    failed_turns:[{turn_index:1,reason:"CRITIC_PROVIDER_TIMEOUT: context deadline exceeded"}],
+  },
   reindex:{},
 });
-assertIncludes(partial, "⚠️ 세션 정상화 오류 포함 종료", "partial-error heading");
-if (partial.includes("✅ 세션 정상화 완료")) throw new Error("partial error was rendered as completed");
-assertIncludes(partial, "deferred 1 / queued 2", "deferred and queued counts");
+assertIncludes(partial, "오류를 포함해 종료됨", "partial-error heading");
+assertIncludes(partial, "mo-session-normalize-result is-fail", "partial-error severity");
+assertIncludes(partial, "평론가 LLM 응답이 설정된 제한시간을 넘겼습니다.", "localized failure cause");
+assertIncludes(partial, "queued=2", "deferred queue technical count");
+if (partial.includes("콜드 스타트 완료")) throw new Error("partial error was rendered as completed");
 const failed = renderSessionNormalizeResultHtml({status:"failed",counts_after:{},rescan:{},reindex:{}});
-assertIncludes(failed, "❌ 세션 정상화 실패", "failed heading");
+assertIncludes(failed, "콜드 스타트 실패", "failed heading");
 `
 	cmd := exec.Command(nodePath, "-e", script)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -776,6 +810,10 @@ func TestAdminJobCancelAndColdStartProgressUseBackendSnapshot(t *testing.T) {
 	}
 	src := readArchiveCenterJS(t)
 	value := extractJSFunctionBlockForTest(t, src, "function adminJobProgressValue(progress, keys, fallback)")
+	stageLabel := extractJSFunctionBlockForTest(t, src, "function sessionNormalizeStageLabel(stage)")
+	normalizeFailure := extractJSFunctionBlockForTest(t, src, "function normalizeSessionNormalizeFailure(item)")
+	localizeFailure := extractJSFunctionBlockForTest(t, src, "function localizeSessionNormalizeFailure(failure)")
+	renderNormalize := extractJSFunctionBlockForTest(t, src, "function renderSessionNormalizeJobProgressHtml(job)")
 	render := extractJSFunctionBlockForTest(t, src, "function renderAdminJobProgressHtml(job, label, kind)")
 	applySnapshot := extractJSFunctionBlockForTest(t, src, "function applyAdminBackgroundJobSnapshot(kind, state, jobId, snapshot)")
 	cancel := extractJSFunctionBlockForTest(t, src, "async function cancelAdminBackgroundJob(kind, state, jobId)")
@@ -784,6 +822,30 @@ let requestPath = "";
 let requestMethod = "";
 const _adminBackgroundJobStreams = new Map();
 function escapeAttr(value){ return String(value==null?"":value); }
+const labels = {
+  "sessionNormalize.running":"콜드 스타트 진행 중",
+  "sessionNormalize.failed":"콜드 스타트 실패",
+  "sessionNormalize.stageLabel":"현재 단계",
+  "sessionNormalize.stage.inspect_before":"저장 상태 확인",
+  "sessionNormalize.progress":"진행",
+  "sessionNormalize.succeeded":"성공",
+  "sessionNormalize.failures":"실패",
+  "sessionNormalize.skipped":"건너뜀",
+  "sessionNormalize.backgroundNote":"이 화면을 이동해도 백엔드에서 계속 진행됩니다.",
+  "sessionNormalize.technicalDetails":"기술 정보",
+  "sessionNormalize.refresh":"상태 새로고침",
+  "sessionNormalize.cancel":"작업 취소",
+  "sessionNormalize.failureTurn":"{turn}턴 실패",
+  "sessionNormalize.moreFailures":"외 {count}건",
+  "sessionNormalize.error.critic_provider_timeout":"평론가 LLM 응답이 설정된 제한시간을 넘겼습니다.",
+  "sessionNormalize.error.generic":"이 턴을 처리하지 못했습니다.",
+};
+function t(key){ return labels[key] || key; }
+function tf(key,vars){
+  let text=t(key);
+  Object.keys(vars||{}).forEach(name=>{ text=text.replaceAll("{"+name+"}",String(vars[name])); });
+  return text;
+}
 function refreshExplorerUI(){}
 function cancelAdminBackgroundJobStream(){ return true; }
 function markAdminBackgroundJobStreamUnavailable(){ throw new Error("unexpected cancel transport failure"); }
@@ -793,7 +855,7 @@ async function bridgeFetch(path,options){
   return {job_id:"job-1",status:"cancelled",terminal:true,progress:{stage:"cancelled"}};
 }
 async function safeCall(fn){ return await fn(); }
-` + value + "\n" + render + "\n" + applySnapshot + "\n" + cancel + `
+` + value + "\n" + stageLabel + "\n" + normalizeFailure + "\n" + localizeFailure + "\n" + renderNormalize + "\n" + render + "\n" + applySnapshot + "\n" + cancel + `
 (async()=>{
   const html = renderAdminJobProgressHtml({
     job_id:"job-1",
@@ -802,13 +864,28 @@ async function safeCall(fn){ return await fn(); }
     request:{repair_entry_count:99},
     progress:{progress_percent:8,processed:0,display_total:3,candidate_count:3},
   },"Normalize","session_normalize");
-  if (!html.includes("8% (0/3)")) throw new Error("cold-start total did not render backend progress ViewModel: "+html);
+  if (!html.includes("8%") || !html.includes("진행 <strong>0/3</strong>")) {
+    throw new Error("cold-start total did not render backend progress ViewModel: "+html);
+  }
   const laterStage = renderAdminJobProgressHtml({
     job_id:"job-1",status:"running",terminal:false,request:{repair_entry_count:99},
     progress:{stage:"inspect_after",progress_percent:90,processed:0,display_total:0},
   },"Normalize","session_normalize");
-  if (!laterStage.includes("90% (0/0)") || laterStage.includes("0/99")) {
+  if (!laterStage.includes("90%") || !laterStage.includes("진행 <strong>0/0</strong>") || laterStage.includes("0/99")) {
     throw new Error("request raw-repair count leaked into another stage: "+laterStage);
+  }
+  const failed = renderAdminJobProgressHtml({
+    job_id:"job-1",status:"running",terminal:false,
+    progress:{
+      stage:"critic_rescan_backfill",progress_percent:23,processed:3,display_total:26,
+      succeeded:2,failed_count:1,failed_turns:[
+        {turn_index:1,reason:"CRITIC_PROVIDER_TIMEOUT: context deadline exceeded"},
+      ],
+    },
+  },"Normalize","session_normalize");
+  if (!failed.includes("mo-session-normalize-status-fail") ||
+      !failed.includes("평론가 LLM 응답이 설정된 제한시간을 넘겼습니다.")) {
+    throw new Error("localized cold-start failure was not emphasized: "+failed);
   }
   if (!html.includes('data-admin-job-cancel="session_normalize"')) throw new Error("cancel UI is missing");
   const state={loading:true,error:null,result:null,job:{job_id:"job-1",status:"running",terminal:false}};
