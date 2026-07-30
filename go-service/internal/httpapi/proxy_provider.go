@@ -104,8 +104,8 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
 	case "vertex":
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, true, policy)
-	case "openai", "openrouter", "llmgateway", "copilot", "ollama", "custom":
-		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider, retryBudget)
+	case "openai", "openrouter", "llmgateway", "vercel", "copilot", "ollama", "custom":
+		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider, policy, retryBudget)
 	default:
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{
 			Stage: "configuration",
@@ -114,7 +114,7 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 	}
 }
 
-func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string, retryBudget *llmRetryBudget) (map[string]any, int, error) {
+func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (map[string]any, int, error) {
 	isGLM := proxyIsGLMLike(model, endpoint, provider)
 	target := proxyOpenAIChatEndpoint(proxyOpenAIBaseURL(provider, endpoint), provider, isGLM)
 
@@ -169,6 +169,12 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
+	}
+	if policyErr := proxyApplyOpenAIJSONResponsePolicy(body, overrideTrace, provider, policy); policyErr != nil {
+		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "request_build",
+			Cause: policyErr,
+		}
 	}
 	if provider == "copilot" {
 		token, status, err := proxyGetCopilotToken(ctx, apiKey)
@@ -343,6 +349,7 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		return nil, status, &proxyEmptyContentError{Provider: geminiProvider}
 	}
 	resp := proxyNormalizeChatResponse(content, model, "stop")
+	proxyAttachGeminiUsage(resp, data, overrideTrace)
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
 	return resp, http.StatusOK, nil
 }
@@ -401,6 +408,75 @@ func proxyApplyJSONResponsePolicy(body map[string]any, trace map[string]any, pol
 		trace["json_response_existing_value"] = strings.TrimSpace(existingText)
 	}
 	return fmt.Errorf("json_response_mime_conflict: generationConfig.responseMimeType must be application/json")
+}
+
+func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]any, provider string, policy proxyRequestPolicy) error {
+	if !policy.JSONResponse {
+		return nil
+	}
+	if trace == nil {
+		trace = map[string]any{}
+	}
+	trace["json_response_requested"] = true
+	if purpose := strings.TrimSpace(policy.Purpose); purpose != "" {
+		trace["json_response_purpose"] = purpose
+	}
+
+	const requiredType = "json_object"
+	existing, exists := body["response_format"]
+	if !exists {
+		appliedType := requiredType
+		if strings.EqualFold(strings.TrimSpace(provider), "vercel") {
+			appliedType = "json_schema"
+			body["response_format"] = map[string]any{
+				"type": appliedType,
+				"json_schema": map[string]any{
+					"name":   "archive_center_json",
+					"schema": map[string]any{"type": "object"},
+				},
+			}
+		} else {
+			body["response_format"] = map[string]any{"type": appliedType}
+		}
+		trace["json_response_applied"] = true
+		trace["json_response_source"] = "backend_policy"
+		trace["json_response_format"] = appliedType
+		return nil
+	}
+
+	format, ok := existing.(map[string]any)
+	if !ok {
+		trace["json_response_applied"] = false
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_conflict"] = true
+		trace["json_response_conflict_reason"] = "response_format must be a JSON object"
+		trace["json_response_existing_type"] = fmt.Sprintf("%T", existing)
+		return fmt.Errorf("json_response_format_conflict: response_format must be a JSON object")
+	}
+	formatType, isString := format["type"].(string)
+	formatType = strings.ToLower(strings.TrimSpace(formatType))
+	vercelLegacyJSON := strings.EqualFold(strings.TrimSpace(provider), "vercel") && formatType == "json"
+	if isString && (formatType == requiredType || formatType == "json_schema" || vercelLegacyJSON) {
+		trace["json_response_applied"] = true
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_format"] = formatType
+		return nil
+	}
+	trace["json_response_applied"] = false
+	trace["json_response_source"] = "extra_body_json"
+	trace["json_response_conflict"] = true
+	trace["json_response_conflict_reason"] = "response_format.type must be json_object or json_schema"
+	if strings.EqualFold(strings.TrimSpace(provider), "vercel") {
+		trace["json_response_conflict_reason"] = "response_format.type must be json_object, json_schema, or json"
+	}
+	trace["json_response_existing_type"] = fmt.Sprintf("%T", format["type"])
+	if isString {
+		trace["json_response_existing_value"] = formatType
+	}
+	if strings.EqualFold(strings.TrimSpace(provider), "vercel") {
+		return fmt.Errorf("json_response_format_conflict: response_format.type must be json_object, json_schema, or json")
+	}
+	return fmt.Errorf("json_response_format_conflict: response_format.type must be json_object or json_schema")
 }
 
 func proxyGetCopilotToken(ctx context.Context, apiKey string) (string, int, error) {
@@ -743,10 +819,10 @@ func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMai
 		return fmt.Errorf("llm_gateway_service_tier must be standard, flex, or priority")
 	}
 	trace["llm_gateway_service_tier_requested"] = tier
-	if !strings.EqualFold(strings.TrimSpace(provider), "llmgateway") {
+	if !proxyProviderSupportsServiceTier(provider) {
 		trace["llm_gateway_service_tier_applied"] = false
-		trace["llm_gateway_service_tier_skip_reason"] = "provider_not_llmgateway"
-		return fmt.Errorf("llm_gateway_service_tier requires provider llmgateway")
+		trace["llm_gateway_service_tier_skip_reason"] = "provider_not_openai_compatible_service_tier"
+		return fmt.Errorf("llm_gateway_service_tier requires provider openai, llmgateway, vercel, or custom")
 	}
 	if existing, exists := body["service_tier"]; exists {
 		existingText, isString := existing.(string)
@@ -763,6 +839,15 @@ func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMai
 	body["service_tier"] = tier
 	trace["llm_gateway_service_tier_applied"] = true
 	return nil
+}
+
+func proxyProviderSupportsServiceTier(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "llmgateway", "vercel", "custom":
+		return true
+	default:
+		return false
+	}
 }
 
 func proxyNormalizeClaudePromptCacheMode(value string) (string, bool) {
@@ -861,6 +946,32 @@ func proxyAttachClaudeUsage(resp, upstream map[string]any, trace map[string]any)
 	}
 }
 
+func proxyAttachGeminiUsage(resp, upstream map[string]any, trace map[string]any) {
+	if resp == nil || upstream == nil {
+		return
+	}
+	usage, ok := upstream["usageMetadata"].(map[string]any)
+	if !ok || len(usage) == 0 {
+		return
+	}
+	resp["usageMetadata"] = usage
+	usageTrace := map[string]any{}
+	for _, key := range []string{
+		"promptTokenCount",
+		"candidatesTokenCount",
+		"totalTokenCount",
+		"cachedContentTokenCount",
+		"trafficType",
+	} {
+		if value, exists := usage[key]; exists {
+			usageTrace[key] = value
+		}
+	}
+	if len(usageTrace) > 0 {
+		trace["gemini_usage"] = usageTrace
+	}
+}
+
 func proxyAttachLLMGatewayServiceTierTrace(resp map[string]any, trace map[string]any) {
 	if resp == nil || trace["llm_gateway_service_tier_applied"] != true {
 		return
@@ -889,6 +1000,8 @@ func proxyOpenAIBaseURL(provider, endpoint string) string {
 		return "https://openrouter.ai/api"
 	case "llmgateway":
 		return "https://api.llmgateway.io/v1"
+	case "vercel":
+		return "https://ai-gateway.vercel.sh/v1"
 	case "copilot":
 		return "https://api.githubcopilot.com"
 	default:

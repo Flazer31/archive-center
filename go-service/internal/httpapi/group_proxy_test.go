@@ -673,7 +673,7 @@ func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.
 	}{
 		{name: "invalid", tier: "economy", wantError: "must be standard, flex, or priority"},
 		{name: "conflict", tier: "flex", extraBody: `{"service_tier":"priority"}`, wantError: "conflicts with extra_body_json"},
-		{name: "wrong provider", tier: "flex", wantError: "requires provider llmgateway"},
+		{name: "wrong provider", tier: "flex", wantError: "requires provider openai, llmgateway, vercel, or custom"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -688,7 +688,7 @@ func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.
 
 			provider := "llmgateway"
 			if tc.name == "wrong provider" {
-				provider = "openai"
+				provider = "openrouter"
 			}
 			req := dto.ProxyPluginMainRequest{
 				APIKey:                strPtr("llmg-test"),
@@ -707,6 +707,138 @@ func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.
 			}
 			if upstreamCalls != 0 {
 				t.Fatalf("upstreamCalls = %d, want 0", upstreamCalls)
+			}
+		})
+	}
+}
+
+func TestProxyOpenAICompatibleServiceTierProviders(t *testing.T) {
+	tests := []struct {
+		provider string
+		endpoint string
+	}{
+		{provider: "openai", endpoint: "https://api.openai.com/v1"},
+		{provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1"},
+		{provider: "vercel", endpoint: "https://ai-gateway.vercel.sh/v1"},
+		{provider: "custom", endpoint: "https://custom.example/v1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.provider, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				if body["service_tier"] != "flex" {
+					t.Fatalf("service_tier = %v, want flex; body=%+v", body["service_tier"], body)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"service_tier":"flex","choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("test-key"),
+				Endpoint:              strPtr(tc.endpoint),
+				Model:                 strPtr("provider/model"),
+				Provider:              strPtr(tc.provider),
+				LLMGatewayServiceTier: strPtr("flex"),
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if trace["llm_gateway_service_tier_applied"] != true {
+				t.Fatalf("service tier trace = %+v", trace)
+			}
+		})
+	}
+	if got := proxyOpenAIBaseURL("vercel", ""); got != "https://ai-gateway.vercel.sh/v1" {
+		t.Fatalf("Vercel default base = %q", got)
+	}
+}
+
+func TestProxyOpenAICompatibleExtraOverridesSupportVercelCachingAndCustomJSON(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		endpoint    string
+		extraHeader string
+		extraBody   string
+		assert      func(t *testing.T, r *http.Request, body map[string]any)
+	}{
+		{
+			name:      "Vercel automatic provider caching",
+			provider:  "vercel",
+			endpoint:  "https://ai-gateway.vercel.sh/v1",
+			extraBody: `{"providerOptions":{"gateway":{"caching":"auto"}}}`,
+			assert: func(t *testing.T, _ *http.Request, body map[string]any) {
+				gateway := mapFromAny(mapFromAny(body["providerOptions"])["gateway"])
+				if gateway["caching"] != "auto" {
+					t.Fatalf("Vercel caching override = %+v", body)
+				}
+			},
+		},
+		{
+			name:        "Custom headers and body",
+			provider:    "custom",
+			endpoint:    "https://custom.example/v1",
+			extraHeader: `{"X-Custom-Route":"economy"}`,
+			extraBody:   `{"cache_control":{"type":"ephemeral"}}`,
+			assert: func(t *testing.T, r *http.Request, body map[string]any) {
+				if r.Header.Get("X-Custom-Route") != "economy" {
+					t.Fatalf("custom header = %q", r.Header.Get("X-Custom-Route"))
+				}
+				if mapFromAny(body["cache_control"])["type"] != "ephemeral" {
+					t.Fatalf("custom body override = %+v", body)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				tc.assert(t, r, body)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:           strPtr("test-key"),
+				Endpoint:         strPtr(tc.endpoint),
+				Model:            strPtr("provider/model"),
+				Provider:         strPtr(tc.provider),
+				ExtraHeadersJSON: strPtr(tc.extraHeader),
+				ExtraBodyJSON:    strPtr(tc.extraBody),
+				Messages:         []any{map[string]any{"role": "user", "content": "ping"}},
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if trace["extra_body_applied"] != true {
+				t.Fatalf("extra body trace = %+v", trace)
+			}
+			if tc.extraHeader != "" && trace["extra_headers_applied"] != true {
+				t.Fatalf("extra header trace = %+v", trace)
 			}
 		})
 	}
@@ -1183,7 +1315,15 @@ func TestProxyGeminiNormalizesNativeResponse(t *testing.T) {
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"gemini ok"}]}}]}`)),
+			Body: io.NopCloser(strings.NewReader(`{
+				"candidates":[{"content":{"parts":[{"text":"gemini ok"}]}}],
+				"usageMetadata":{
+					"promptTokenCount":4200,
+					"candidatesTokenCount":12,
+					"totalTokenCount":4212,
+					"cachedContentTokenCount":4096
+				}
+			}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -1204,6 +1344,15 @@ func TestProxyGeminiNormalizesNativeResponse(t *testing.T) {
 	got := chatCompletionText(resp)
 	if got != "gemini ok" {
 		t.Fatalf("content = %q, want gemini ok", got)
+	}
+	usage := mapFromAny(resp["usageMetadata"])
+	if usage["cachedContentTokenCount"] != float64(4096) || usage["totalTokenCount"] != float64(4212) {
+		t.Fatalf("Gemini cache usage was not preserved: %+v", usage)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	usageTrace := mapFromAny(trace["gemini_usage"])
+	if usageTrace["cachedContentTokenCount"] != float64(4096) {
+		t.Fatalf("Gemini cache usage trace missing: %+v", trace)
 	}
 }
 
@@ -1351,7 +1500,137 @@ func TestProxyGeminiJSONPolicyRejectsNonObjectGenerationConfigWithoutCall(t *tes
 	}
 }
 
-func TestProxyJSONPolicyDoesNotAlterOpenAILikeRequest(t *testing.T) {
+func TestProxyJSONPolicyAddsOpenAICompatibleResponseFormatAndTrace(t *testing.T) {
+	for _, provider := range []string{"openai", "llmgateway", "vercel", "custom"} {
+		t.Run(provider, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				format := mapFromAny(body["response_format"])
+				wantFormat := "json_object"
+				if provider == "vercel" {
+					wantFormat = "json_schema"
+					schema := mapFromAny(mapFromAny(format["json_schema"])["schema"])
+					if schema["type"] != "object" {
+						t.Fatalf("Vercel JSON schema = %+v, want object schema", format)
+					}
+				}
+				if format["type"] != wantFormat {
+					t.Fatalf("response_format = %+v, want %s; body=%+v", format, wantFormat, body)
+				}
+				if body["generationConfig"] != nil {
+					t.Fatalf("OpenAI-compatible request received Gemini generationConfig: %+v", body)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"model":"test","choices":[{"message":{"content":"{}"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:   strPtr("sk-test"),
+				Endpoint: strPtr("https://api.example.com/v1"),
+				Model:    strPtr("provider/model"),
+				Provider: strPtr(provider),
+				Messages: []any{map[string]any{"role": "user", "content": "return json"}},
+			}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMainWithPolicy status=%d err=%v", status, err)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			wantFormat := "json_object"
+			if provider == "vercel" {
+				wantFormat = "json_schema"
+			}
+			if trace["json_response_applied"] != true ||
+				trace["json_response_source"] != "backend_policy" ||
+				trace["json_response_format"] != wantFormat ||
+				trace["json_response_purpose"] != "complete_turn_critic" {
+				t.Fatalf("unexpected JSON response trace: %+v", trace)
+			}
+		})
+	}
+}
+
+func TestProxyOpenAICompatibleJSONPolicyPreservesSchemaAndRejectsConflict(t *testing.T) {
+	t.Run("preserves json schema", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode upstream body: %v", err)
+			}
+			format := mapFromAny(body["response_format"])
+			if format["type"] != "json_schema" || mapFromAny(format["json_schema"])["name"] != "critic" {
+				t.Fatalf("json schema override was not preserved: %+v", format)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{}"}}]}`)),
+			}, nil
+		})}
+		defer func() { proxyHTTPClient = oldClient }()
+
+		extraBody := `{"response_format":{"type":"json_schema","json_schema":{"name":"critic","schema":{"type":"object"}}}}`
+		resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:        strPtr("sk-test"),
+			Endpoint:      strPtr("https://api.example.com/v1"),
+			Model:         strPtr("gpt-test"),
+			Provider:      strPtr("custom"),
+			ExtraBodyJSON: &extraBody,
+			Messages:      []any{map[string]any{"role": "user", "content": "return json"}},
+		}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("status=%d err=%v", status, err)
+		}
+		trace := mapFromAny(resp["_proxy_request_overrides"])
+		if trace["json_response_source"] != "extra_body_json" || trace["json_response_format"] != "json_schema" {
+			t.Fatalf("unexpected schema trace: %+v", trace)
+		}
+	})
+
+	t.Run("rejects conflicting format before upstream", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		upstreamCalls := 0
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			upstreamCalls++
+			return nil, fmt.Errorf("unexpected upstream call")
+		})}
+		defer func() { proxyHTTPClient = oldClient }()
+
+		extraBody := `{"response_format":{"type":"text"}}`
+		resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:        strPtr("sk-test"),
+			Endpoint:      strPtr("https://api.example.com/v1"),
+			Model:         strPtr("gpt-test"),
+			Provider:      strPtr("custom"),
+			ExtraBodyJSON: &extraBody,
+			Messages:      []any{map[string]any{"role": "user", "content": "return json"}},
+		}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+		if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "json_response_format_conflict") {
+			t.Fatalf("status=%d err=%v, want JSON format conflict", status, err)
+		}
+		if upstreamCalls != 0 {
+			t.Fatalf("upstreamCalls=%d, want 0", upstreamCalls)
+		}
+		trace := mapFromAny(resp["_proxy_request_overrides"])
+		if trace["json_response_conflict"] != true || trace["json_response_applied"] != false {
+			t.Fatalf("unexpected conflict trace: %+v", trace)
+		}
+	})
+}
+
+func TestProxyOpenAILikeRequestWithoutJSONPolicyHasNoResponseFormat(t *testing.T) {
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		raw, _ := io.ReadAll(r.Body)
@@ -1359,27 +1638,27 @@ func TestProxyJSONPolicyDoesNotAlterOpenAILikeRequest(t *testing.T) {
 		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Fatalf("decode upstream body: %v", err)
 		}
-		if body["response_format"] != nil || body["generationConfig"] != nil {
-			t.Fatalf("OpenAI-like request was altered by native JSON policy: %+v", body)
+		if body["response_format"] != nil {
+			t.Fatalf("ordinary request unexpectedly forced JSON: %+v", body)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"model":"gpt-test","choices":[{"message":{"content":"{}"}}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
 
-	_, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
 		APIKey:   strPtr("sk-test"),
 		Endpoint: strPtr("https://api.example.com/v1"),
 		Model:    strPtr("gpt-test"),
 		Provider: strPtr("openai"),
-		Messages: []any{map[string]any{"role": "user", "content": "return json"}},
-	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+		Messages: []any{map[string]any{"role": "user", "content": "normal reply"}},
+	})
 	if err != nil || status != http.StatusOK {
-		t.Fatalf("performProxyPluginMainWithPolicy status=%d err=%v", status, err)
+		t.Fatalf("status=%d err=%v", status, err)
 	}
 }
 
@@ -1469,7 +1748,16 @@ func TestProxyVertexNormalizesNativeResponse(t *testing.T) {
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",
 				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"vertex ok"}]}}]}`)),
+				Body: io.NopCloser(strings.NewReader(`{
+					"candidates":[{"content":{"parts":[{"text":"vertex ok"}]}}],
+					"usageMetadata":{
+						"promptTokenCount":5000,
+						"candidatesTokenCount":10,
+						"totalTokenCount":5010,
+						"cachedContentTokenCount":4096,
+						"trafficType":"ON_DEMAND_FLEX"
+					}
+				}`)),
 			}, nil
 		default:
 			t.Fatalf("unexpected request URL: %s", r.URL.String())
@@ -1504,6 +1792,15 @@ func TestProxyVertexNormalizesNativeResponse(t *testing.T) {
 	}
 	if got := chatCompletionText(resp); got != "vertex ok" {
 		t.Fatalf("content = %q, want vertex ok", got)
+	}
+	usage := mapFromAny(resp["usageMetadata"])
+	if usage["cachedContentTokenCount"] != float64(4096) || usage["trafficType"] != "ON_DEMAND_FLEX" {
+		t.Fatalf("Vertex cache/tier usage was not preserved: %+v", usage)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	usageTrace := mapFromAny(trace["gemini_usage"])
+	if usageTrace["cachedContentTokenCount"] != float64(4096) || usageTrace["trafficType"] != "ON_DEMAND_FLEX" {
+		t.Fatalf("Vertex cache/tier trace missing: %+v", trace)
 	}
 }
 

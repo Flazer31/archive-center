@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.7.0-dev";
-  const BUILD_ID = "3.7-f-memory-guidance.20260730-1";
+  const BUILD_ID = "3.7-provider-json-flex-cache.20260731-1";
   const BUILD_CHANNEL = "3.7-local-test";
-  const BUILD_TIME = "2026-07-30 KST";
-  const BUILD_NOTES = "3.7-F relevant memory delivery, truthful HUD lineage, and bounded narrative guidance";
+  const BUILD_TIME = "2026-07-31 KST";
+  const BUILD_NOTES = "3.7 provider JSON, Flex, cache observability, and terminal HUD stream continuity";
   const BUILD_LABEL = `${VERSION} / ${BUILD_ID}`;
   const TURN_HISTORY_MAX = 10;
   // Sprint 3-C-1: 실패 큐 영속화
@@ -80,7 +80,7 @@
   const RECOMPOSER_BRIDGE_KEY = "__RISU_ARCHIVE_CENTER_RECOMPOSER_V1__";
   const RECOMPOSER_BRIDGE_CONTRACT = "archive_center.recomposer_bridge.v1";
   const RECOMPOSER_ENHANCEMENT_CONTRACT = "archive_center.recomposer_enhancement.v1";
-  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vertex", "copilot", "ollama", "custom"]);
+  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vercel", "vertex", "copilot", "ollama", "custom"]);
   const EMBEDDING_PROVIDER_OPTIONS = Object.freeze(["openai", "gemini", "vertex", "voyageai", "ollama", "custom"]);
   const SOURCE_SEARCH_LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "ollama"]);
   const REASONING_PRESET_OPTIONS = Object.freeze(["auto", "gpt", "gemini", "claude", "glm", "custom"]);
@@ -10667,21 +10667,25 @@
     if (!payload || typeof payload !== "object") return payload;
     const isSub = source === "sub";
     const provider = normalizeLlmProvider(payload.provider || (isSub ? settings.subLlmProvider : settings.pluginMainProvider), "openai");
-    if (provider === "llmgateway") {
-      payload.llm_gateway_service_tier = normalizeLlmGatewayServiceTierSetting(
+    if (["openai", "llmgateway", "vercel", "custom"].includes(provider)) {
+      const serviceTier = normalizeLlmGatewayServiceTierSetting(
         isSub ? settings.subLlmLlmGatewayServiceTier : settings.pluginMainLlmGatewayServiceTier,
       );
+      if (provider === "llmgateway" || serviceTier !== "standard") {
+        payload.llm_gateway_service_tier = serviceTier;
+      }
     }
     if (provider === "claude") {
       payload.claude_prompt_cache_mode = normalizeClaudePromptCacheModeSetting(
         isSub ? settings.subLlmClaudePromptCacheMode : settings.pluginMainClaudePromptCacheMode,
       );
     }
-    if (provider !== "vertex") return payload;
-    const flexMode = normalizeVertexFlexModeSetting(isSub ? settings.subLlmVertexFlexMode : settings.pluginMainVertexFlexMode);
     const extraHeaders = sanitizeProviderOverrideJsonSetting(isSub ? settings.subLlmExtraHeadersJson : settings.pluginMainExtraHeadersJson);
     const extraBody = sanitizeProviderOverrideJsonSetting(isSub ? settings.subLlmExtraBodyJson : settings.pluginMainExtraBodyJson);
-    if (flexMode && flexMode !== "off") payload.vertex_flex_mode = flexMode;
+    if (provider === "vertex") {
+      const flexMode = normalizeVertexFlexModeSetting(isSub ? settings.subLlmVertexFlexMode : settings.pluginMainVertexFlexMode);
+      if (flexMode && flexMode !== "off") payload.vertex_flex_mode = flexMode;
+    }
     if (extraHeaders) payload.extra_headers_json = extraHeaders;
     if (extraBody) payload.extra_body_json = extraBody;
     return payload;
@@ -10695,18 +10699,16 @@
       vertexFlexMode: normalizedProvider === "vertex"
         ? normalizeVertexFlexModeSetting(isSub ? cfg.subLlmVertexFlexMode : cfg.pluginMainVertexFlexMode)
         : "off",
-      llmGatewayServiceTier: normalizedProvider === "llmgateway"
-        ? normalizeLlmGatewayServiceTierSetting(isSub ? cfg.subLlmLlmGatewayServiceTier : cfg.pluginMainLlmGatewayServiceTier)
-        : "",
+      llmGatewayServiceTier: (() => {
+        if (!["openai", "llmgateway", "vercel", "custom"].includes(normalizedProvider)) return "";
+        const tier = normalizeLlmGatewayServiceTierSetting(isSub ? cfg.subLlmLlmGatewayServiceTier : cfg.pluginMainLlmGatewayServiceTier);
+        return normalizedProvider === "llmgateway" || tier !== "standard" ? tier : "";
+      })(),
       claudePromptCacheMode: normalizedProvider === "claude"
         ? normalizeClaudePromptCacheModeSetting(isSub ? cfg.subLlmClaudePromptCacheMode : cfg.pluginMainClaudePromptCacheMode)
         : "",
-      extraHeadersJson: normalizedProvider === "vertex"
-        ? sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraHeadersJson : cfg.pluginMainExtraHeadersJson)
-        : "",
-      extraBodyJson: normalizedProvider === "vertex"
-        ? sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraBodyJson : cfg.pluginMainExtraBodyJson)
-        : "",
+      extraHeadersJson: sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraHeadersJson : cfg.pluginMainExtraHeadersJson),
+      extraBodyJson: sanitizeProviderOverrideJsonSetting(isSub ? cfg.subLlmExtraBodyJson : cfg.pluginMainExtraBodyJson),
     };
   }
 
@@ -14150,10 +14152,8 @@
       const controller = new AbortController();
       _turnWorkflowHUDStreamAbortController = controller;
       const revision = _turnWorkflowHUDLastRevision;
-      const waitMs = getRequestTimeoutSettingMs();
       const path = "/turn-workflow/events?request_id=" + encodeURIComponent(normalizedRequestId)
-        + "&after_revision=" + encodeURIComponent(String(revision))
-        + "&wait_ms=" + encodeURIComponent(String(waitMs));
+        + "&after_revision=" + encodeURIComponent(String(revision));
       const reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
       if (token !== _turnWorkflowHUDWatchToken || _turnWorkflowHUDActiveRequestId !== normalizedRequestId) {
         try { await reader.cancel(); } catch { /* no-op */ }
@@ -52885,6 +52885,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <option value="gemini"${s.pluginMainProvider === "gemini" ? " selected" : ""}>Gemini</option>
           <option value="openrouter"${s.pluginMainProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
           <option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
+          <option value="vercel"${s.pluginMainProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
           <option value="vertex"${s.pluginMainProvider === "vertex" ? " selected" : ""}>Vertex</option>
           <option value="copilot"${s.pluginMainProvider === "copilot" ? " selected" : ""}>Copilot</option>
           <option value="ollama"${s.pluginMainProvider === "ollama" ? " selected" : ""}>Ollama</option>
@@ -52909,7 +52910,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         </select>
       </div>
       <div class="mo-row" id="mo-pluginMainLlmGatewayServiceTierRow">
-        <label>LLM Gateway Service Tier</label>
+        <label>OpenAI-Compatible Service Tier</label>
         <select id="mo-pluginMainLlmGatewayServiceTier">
           <option value="standard"${(s.pluginMainLlmGatewayServiceTier || "standard") === "standard" ? " selected" : ""}>Standard</option>
           <option value="flex"${s.pluginMainLlmGatewayServiceTier === "flex" ? " selected" : ""}>Flex</option>
@@ -52933,6 +52934,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       <div class="mo-row" id="mo-pluginMainExtraBodyJsonRow">
         <label>Extra Body JSON</label>
         <textarea id="mo-pluginMainExtraBodyJson" rows="2" spellcheck="false" placeholder="{}">${escapeAttr(s.pluginMainExtraBodyJson || "")}</textarea>
+        <small style="color:#888;font-size:11px;">공급자 전용 옵션입니다. 예: Vercel 자동 캐싱은 {"providerOptions":{"gateway":{"caching":"auto"}}}.</small>
       </div>
       <div class="mo-row mo-range-row">
         <label>Timeout (ms)</label>
@@ -53002,6 +53004,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <option value="gemini"${s.subLlmProvider === "gemini" ? " selected" : ""}>Gemini</option>
           <option value="openrouter"${s.subLlmProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
           <option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
+          <option value="vercel"${s.subLlmProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
           <option value="vertex"${s.subLlmProvider === "vertex" ? " selected" : ""}>Vertex</option>
           <option value="copilot"${s.subLlmProvider === "copilot" ? " selected" : ""}>Copilot</option>
           <option value="ollama"${s.subLlmProvider === "ollama" ? " selected" : ""}>Ollama</option>
@@ -53026,7 +53029,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         </select>
       </div>
       <div class="mo-row" id="mo-subLlmLlmGatewayServiceTierRow">
-        <label>LLM Gateway Service Tier</label>
+        <label>OpenAI-Compatible Service Tier</label>
         <select id="mo-subLlmLlmGatewayServiceTier">
           <option value="standard"${(s.subLlmLlmGatewayServiceTier || "standard") === "standard" ? " selected" : ""}>Standard</option>
           <option value="flex"${s.subLlmLlmGatewayServiceTier === "flex" ? " selected" : ""}>Flex</option>
@@ -53050,6 +53053,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       <div class="mo-row" id="mo-subLlmExtraBodyJsonRow">
         <label>Extra Body JSON</label>
         <textarea id="mo-subLlmExtraBodyJson" rows="2" spellcheck="false" placeholder="{}">${escapeAttr(s.subLlmExtraBodyJson || "")}</textarea>
+        <small style="color:#888;font-size:11px;">공급자 전용 옵션입니다. 예: Vercel 자동 캐싱은 {"providerOptions":{"gateway":{"caching":"auto"}}}.</small>
       </div>
       <div class="mo-row mo-range-row">
         <label>Timeout (ms)</label>
@@ -54142,6 +54146,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const vertexHintText = "LIBRA native 방식: 서비스 계정 JSON 전체와 /publishers/google/models까지의 endpoint prefix를 사용합니다. PROJECT_ID는 JSON의 project_id로 자동 치환됩니다. 모델은 gemini-3.5-flash처럼 google/ 없이 입력하세요.";
       const llmGatewayEndpointPlaceholder = "https://api.llmgateway.io/v1";
       const llmGatewayHintText = "LLM Gateway의 OpenAI 호환 endpoint입니다. 모델 ID는 LLM Gateway 모델 페이지의 provider/model 표기를 사용하세요.";
+      const vercelEndpointPlaceholder = "https://ai-gateway.vercel.sh/v1";
+      const vercelHintText = "Vercel AI Gateway의 OpenAI Chat Completions 호환 endpoint입니다. 모델은 creator/model 형식을 사용하세요.";
       const syncVertexOverrideRows = (providerId, rowIds) => {
         const providerEl = $(providerId);
         if (!providerEl) return;
@@ -54164,7 +54170,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         const row = $(rowId);
         if (!providerEl || !row) return;
         const sync = () => {
-          const enabled = String(providerEl.value || "").trim().toLowerCase() === expectedProvider;
+          const expected = Array.isArray(expectedProvider) ? expectedProvider : [expectedProvider];
+          const enabled = expected.includes(String(providerEl.value || "").trim().toLowerCase());
           row.style.display = enabled ? "" : "none";
           row.querySelectorAll("input,select,textarea,button").forEach((el) => {
             el.disabled = !enabled;
@@ -54180,6 +54187,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const provider = (providerEl.value || "").trim().toLowerCase();
           const isVertex = provider === "vertex";
           const isLlmGateway = provider === "llmgateway";
+          const isVercel = provider === "vercel";
           const apiLabel = $(apiLabelId);
           const apiInput = $(apiInputId);
           const endpointLabel = $(endpointLabelId);
@@ -54191,9 +54199,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           if (endpointLabel) endpointLabel.textContent = isVertex ? "Vertex Endpoint" : "Endpoint";
           if (endpointInput) endpointInput.placeholder = isVertex
             ? vertexEndpointPlaceholder
-            : (isLlmGateway ? llmGatewayEndpointPlaceholder : (defaults.endpoint || ""));
+            : (isLlmGateway ? llmGatewayEndpointPlaceholder : (isVercel ? vercelEndpointPlaceholder : (defaults.endpoint || "")));
           if (modelInput) modelInput.placeholder = isVertex ? (defaults.vertexModel || "예: gemini-2.5-flash") : (defaults.model || "");
-          if (hint) hint.textContent = isVertex ? vertexHintText : (isLlmGateway ? llmGatewayHintText : "");
+          if (hint) hint.textContent = isVertex ? vertexHintText : (isLlmGateway ? llmGatewayHintText : (isVercel ? vercelHintText : ""));
         };
         providerEl.addEventListener("change", sync);
         sync();
@@ -54215,10 +54223,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         vertexModel: "예: text-embedding-005",
       });
       // 저장
-      syncVertexOverrideRows("mo-pluginMainProvider", ["mo-pluginMainVertexFlexRow", "mo-pluginMainExtraHeadersJsonRow", "mo-pluginMainExtraBodyJsonRow"]);
-      syncVertexOverrideRows("mo-subLlmProvider", ["mo-subLlmVertexFlexRow", "mo-subLlmExtraHeadersJsonRow", "mo-subLlmExtraBodyJsonRow"]);
-      syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainLlmGatewayServiceTierRow", "llmgateway");
-      syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmLlmGatewayServiceTierRow", "llmgateway");
+      syncVertexOverrideRows("mo-pluginMainProvider", ["mo-pluginMainVertexFlexRow"]);
+      syncVertexOverrideRows("mo-subLlmProvider", ["mo-subLlmVertexFlexRow"]);
+      syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainLlmGatewayServiceTierRow", ["openai", "llmgateway", "vercel", "custom"]);
+      syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmLlmGatewayServiceTierRow", ["openai", "llmgateway", "vercel", "custom"]);
       syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainClaudePromptCacheModeRow", "claude");
       syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmClaudePromptCacheModeRow", "claude");
 
@@ -54487,10 +54495,13 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
           if (testProvider === "vertex") {
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
-            if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
-            if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
           }
-          if (testProvider === "llmgateway") {
+          if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
+          if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
+          if (
+            ["openai", "llmgateway", "vercel", "custom"].includes(testProvider)
+            && (testProvider === "llmgateway" || testLlmGatewayServiceTier !== "standard")
+          ) {
             testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
           }
           if (testProvider === "claude") {
@@ -54554,10 +54565,13 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
           if (testProvider === "vertex") {
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
-            if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
-            if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
           }
-          if (testProvider === "llmgateway") {
+          if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
+          if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
+          if (
+            ["openai", "llmgateway", "vercel", "custom"].includes(testProvider)
+            && (testProvider === "llmgateway" || testLlmGatewayServiceTier !== "standard")
+          ) {
             testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
           }
           if (testProvider === "claude") {

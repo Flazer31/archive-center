@@ -468,7 +468,7 @@ func TestTurnWorkflowHUDEventStreamUsesOneConnectionAndNoPolling(t *testing.T) {
 	consumeStream := extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStream")
 	startWatch := extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDWatch")
 	streamSource := strings.Join([]string{cancelStream, openStream, consumeStream, startWatch}, "\n")
-	for _, forbidden := range []string{"/turn-workflow/status", "setInterval(", "setTimeout(", "llmRetryCount"} {
+	for _, forbidden := range []string{"/turn-workflow/status", "wait_ms", "setInterval(", "setTimeout(", "llmRetryCount"} {
 		if strings.Contains(streamSource, forbidden) {
 			t.Fatalf("turn workflow HUD stream retained forbidden automatic transport %q", forbidden)
 		}
@@ -559,7 +559,6 @@ function responseFromLines(lines) {
   assert(streamPaths.length === 1, "workflow used more than one HTTP connection");
   assert(streamPaths[0].includes("/turn-workflow/events?"), "workflow did not use the event stream endpoint");
   assert(streamPaths[0].includes("after_revision=0"), "new request did not begin after revision zero");
-  assert(streamPaths[0].includes("wait_ms=17000"), "stream did not carry the UI-configured wait");
   assert(consumedStatuses.join(",") === "running,running,completed", "stream revisions were not rendered sequentially");
   assert(transportErrors.length === 0, "valid stream produced a transport error");
 

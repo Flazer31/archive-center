@@ -339,16 +339,17 @@ Flex only
   Force cheaper shared Flex traffic. May be slower.
 ```
 
-## LLM Gateway Provider and Service Tiers
+## OpenAI-Compatible Gateways and Service Tiers
 
-Archive Center 3.6 exposes LLM Gateway as the independent generation provider
-ID `llmgateway`. It uses LLM Gateway's OpenAI-compatible Chat Completions
-transport, but it is not stored or reported as `openai` or `custom`.
+Archive Center exposes LLM Gateway and Vercel AI Gateway as independent
+generation providers. Both use an OpenAI-compatible Chat Completions transport,
+but they are not stored or reported as `openai` or `custom`.
 
-Configured endpoint:
+Default endpoints:
 
 ```text
-https://api.llmgateway.io/v1
+LLM Gateway:      https://api.llmgateway.io/v1
+Vercel AI Gateway: https://ai-gateway.vercel.sh/v1
 ```
 
 Role-specific settings:
@@ -368,8 +369,10 @@ Backend request field:
 }
 ```
 
-The Go provider owner normalizes the setting and writes the upstream
-OpenAI-compatible `service_tier` field:
+The field name remains backward-compatible with the earlier LLM Gateway-only
+setting. The Go provider owner normalizes it and writes the upstream
+OpenAI-compatible `service_tier` field for provider `openai`, `llmgateway`,
+`vercel`, or `custom`:
 
 | UI value | Upstream value |
 |---|---|
@@ -379,7 +382,11 @@ OpenAI-compatible `service_tier` field:
 
 Rules:
 
-- The typed tier is accepted only with provider `llmgateway`.
+- The typed tier is accepted only with provider `openai`, `llmgateway`,
+  `vercel`, or `custom`.
+- `standard` is omitted for OpenAI, Vercel, and Custom so the provider keeps
+  its normal default. LLM Gateway continues to receive `default` for the
+  backward-compatible explicit Standard selection.
 - Invalid values and a conflicting `extra_body_json.service_tier` fail before
   an upstream request.
 - Existing untyped `extra_body_json.service_tier` remains usable when the
@@ -390,20 +397,95 @@ Rules:
   `service_tier` as the served tier, or `not_reported` when the gateway omits
   it.
 
-LLM Gateway documents `flex`, `priority`, and `default`/`auto`, but only for
-provider/model mappings that advertise the selected tier. Unsupported
-combinations return HTTP 400 `unsupported_service_tier`.
+OpenAI documents `service_tier:flex` as lower-cost, slower, best-effort
+processing with limited model availability. LLM Gateway documents `flex`,
+`priority`, and `default`/`auto`, but only for provider/model mappings that
+advertise the selected tier. Vercel AI Gateway forwards OpenAI service tiers
+for supported OpenAI models. Custom OpenAI-compatible endpoints receive the
+field only when the user explicitly selects Flex or Priority; Archive Center
+does not claim that every custom server supports it.
 
 Official reference:
 
+- https://developers.openai.com/api/docs/guides/flex-processing
 - https://docs.llmgateway.io/features/service-tiers
+- https://vercel.com/docs/ai-gateway/capabilities/service-tiers
 
 Implementation status:
 
-- source and automated regression: implemented;
-- real LLM Gateway account/model call: unverified;
+- source and automated regression: implemented for OpenAI, LLM Gateway,
+  Vercel, and Custom request construction;
+- real paid provider/model calls: unverified;
 - release status: `implemented_unverified`, not a live-provider acceptance
   result.
+
+## Prompt Caching Across Supported Providers
+
+Archive Center does not expose one fake universal cache switch because the
+provider contracts are different:
+
+- OpenAI prompt caching is automatic for eligible requests. Recent model
+  families also expose explicit breakpoints and `prompt_cache_key`; these can
+  be sent through Extra Body JSON when the selected endpoint supports them.
+- Gemini API and Vertex Gemini implicit caching are automatic. Explicit context
+  caching requires creating a provider cache resource first; an existing
+  `cachedContent` resource reference can be sent through Extra Body JSON.
+- LLM Gateway provider caching is automatic for most mappings and injects
+  Anthropic/Bedrock cache markers when required. Gateway-level byte-identical
+  response caching remains a project setting, not a per-request Archive Center
+  toggle.
+- Vercel AI Gateway automatic provider-aware caching is available through:
+
+```json
+{
+  "providerOptions": {
+    "gateway": {
+      "caching": "auto"
+    }
+  }
+}
+```
+
+- Custom providers have no portable cache field. Extra Headers JSON and Extra
+  Body JSON are therefore the explicit compatibility path; unsupported
+  provider errors are returned rather than hidden.
+
+Gemini and Vertex normalized responses preserve the provider's complete
+`usageMetadata`. The trace copies `promptTokenCount`,
+`candidatesTokenCount`, `totalTokenCount`, `cachedContentTokenCount`, and
+`trafficType` when they are actually returned. Archive Center never invents a
+cache hit.
+
+Official reference:
+
+- https://developers.openai.com/api/docs/guides/prompt-caching
+- https://docs.llmgateway.io/features/caching/provider-cache-control
+- https://vercel.com/docs/ai-gateway/models-and-providers/provider-options
+- https://cloud.google.com/vertex-ai/generative-ai/docs/context-cache/context-cache-overview
+
+## Critic JSON Response Enforcement
+
+The Critic/extraction path requests structured JSON at the provider request
+boundary. Ordinary narrative generation is not forced into JSON.
+
+- Gemini and Vertex receive
+  `generationConfig.responseMimeType=application/json`.
+- OpenAI-compatible providers receive
+  `response_format.type=json_object`.
+- Vercel receives its documented `response_format.type=json_schema` with a
+  minimal object schema. User-supplied `json_schema` and Vercel's legacy
+  `type=json` are preserved.
+- A matching user-supplied structured-output setting is preserved. A
+  conflicting setting fails before the upstream call.
+- The provider adapter does not retry by silently deleting the JSON request.
+  A provider/model that does not support structured output returns a visible
+  provider error, while the already accepted raw turn remains durable and the
+  derived Critic work remains retryable.
+
+Official reference:
+
+- https://developers.openai.com/api/docs/guides/structured-outputs
+- https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/structured-outputs
 
 ## Anthropic Claude Automatic Prompt Caching
 
@@ -459,10 +541,9 @@ Rules:
 - When the typed field is absent or `off`, an existing manual
   `extra_body_json.cache_control` remains unchanged.
 - Manual `extra_body_json.cache_control` is backend request compatibility for
-  callers that explicitly send that field. The Archive Center settings UI
-  does not expose Claude manual body JSON and does not reuse the Vertex Extra
-  Body JSON setting for Claude; the typed mode above is the normal plugin
-  path.
+  callers that explicitly send that field. The typed mode above remains the
+  normal Claude path; the generic Extra Body JSON field is available only for
+  advanced provider-specific options and is checked for conflicts.
 - The normalized response preserves Anthropic's raw `usage` object when it is
   present. Trace copies `cache_creation_input_tokens`,
   `cache_read_input_tokens`, and `usage.service_tier` only when Anthropic
@@ -489,7 +570,6 @@ Scope exclusions:
 - no priority or service-tier selector;
 - no Claude Flex mode;
 - no changes to retry policy or HUD design.
-- no expansion of the Vertex Extra Body JSON UI/runtime setting to Claude.
 
 ## Non-Goals
 

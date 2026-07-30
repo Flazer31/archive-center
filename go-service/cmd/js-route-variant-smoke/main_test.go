@@ -534,16 +534,19 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSLLMGatewayProviderAndServiceTierMarkers(t *testing.T) {
+func TestArchiveCenterJSOpenAICompatibleGatewayAndServiceTierMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`"openrouter", "llmgateway", "vertex"`,
+		`"openrouter", "llmgateway", "vercel", "vertex"`,
 		`<option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
 		`<option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
+		`<option value="vercel"${s.pluginMainProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>`,
+		`<option value="vercel"${s.subLlmProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>`,
 		`pluginMainLlmGatewayServiceTier: "standard"`,
 		`subLlmLlmGatewayServiceTier: "standard"`,
 		`function normalizeLlmGatewayServiceTierSetting(value)`,
-		`payload.llm_gateway_service_tier = normalizeLlmGatewayServiceTierSetting(`,
+		`["openai", "llmgateway", "vercel", "custom"].includes(provider)`,
+		`payload.llm_gateway_service_tier = serviceTier`,
 		`mainLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier`,
 		`criticLlmGatewayServiceTier: criticOverrides.llmGatewayServiceTier`,
 		`supervisorLlmGatewayServiceTier: mainOverrides.llmGatewayServiceTier`,
@@ -551,6 +554,8 @@ func TestArchiveCenterJSLLMGatewayProviderAndServiceTierMarkers(t *testing.T) {
 		`id="mo-pluginMainLlmGatewayServiceTier"`,
 		`id="mo-subLlmLlmGatewayServiceTier"`,
 		`https://api.llmgateway.io/v1`,
+		`https://ai-gateway.vercel.sh/v1`,
+		`OpenAI-Compatible Service Tier`,
 		`testBody.llm_gateway_service_tier = testLlmGatewayServiceTier`,
 	}
 	for _, needle := range required {
@@ -579,10 +584,10 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainClaudePromptCacheModeRow", "claude")`,
 		`syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmClaudePromptCacheModeRow", "claude")`,
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
-		`extraBodyJson: normalizedProvider === "vertex"`,
-		`if (provider !== "vertex") return payload;`,
-		`const BUILD_ID = "3.7-f-memory-guidance.20260730-1"`,
-		`const BUILD_NOTES = "3.7-F relevant memory delivery, truthful HUD lineage, and bounded narrative guidance"`,
+		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
+		`if (extraBody) payload.extra_body_json = extraBody;`,
+		`const BUILD_ID = "3.7-provider-json-flex-cache.20260731-1"`,
+		`const BUILD_NOTES = "3.7 provider JSON, Flex, cache observability, and terminal HUD stream continuity"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {
