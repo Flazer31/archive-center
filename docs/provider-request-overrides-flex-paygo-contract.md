@@ -2,7 +2,7 @@
 
 Status: Archive Center backend and adapter implemented; live provider verification pending
 
-Last updated: 2026-07-29
+Last updated: 2026-07-31
 
 ## Purpose
 
@@ -384,9 +384,10 @@ Rules:
 
 - The typed tier is accepted only with provider `openai`, `llmgateway`,
   `vercel`, or `custom`.
-- `standard` is omitted for OpenAI, Vercel, and Custom so the provider keeps
-  its normal default. LLM Gateway continues to receive `default` for the
-  backward-compatible explicit Standard selection.
+- `standard` is omitted so the provider keeps its normal default. Only an
+  explicit Flex or Priority selection is forwarded. Provider applicability,
+  normalization, and conflicts are owned by Go; JavaScript uses its provider
+  list only to present the relevant settings row.
 - Invalid values and a conflicting `extra_body_json.service_tier` fail before
   an upstream request.
 - Existing untyped `extra_body_json.service_tier` remains usable when the
@@ -470,11 +471,18 @@ boundary. Ordinary narrative generation is not forced into JSON.
 
 - Gemini and Vertex receive
   `generationConfig.responseMimeType=application/json`.
-- OpenAI-compatible providers receive
+- OpenAI, OpenRouter, and LLM Gateway receive
   `response_format.type=json_object`.
 - Vercel receives its documented `response_format.type=json_schema` with a
-  minimal object schema. User-supplied `json_schema` and Vercel's legacy
+  Critic top-level object schema. User-supplied `json_schema` and Vercel's legacy
   `type=json` are preserved.
+- Claude receives `output_config.format.type=json_schema` with the same Critic
+  top-level schema. This is applied only to Critic/extraction calls; ordinary
+  Claude narrative calls are unchanged.
+- Custom, Ollama, and Copilot do not share one verified native structured-output
+  field. Archive Center therefore does not invent `response_format` for them.
+  A user-supplied provider-native Extra Body JSON setting is preserved and
+  checked for conflict.
 - A matching user-supplied structured-output setting is preserved. A
   conflicting setting fails before the upstream call.
 - The provider adapter does not retry by silently deleting the JSON request.
@@ -486,6 +494,7 @@ Official reference:
 
 - https://developers.openai.com/api/docs/guides/structured-outputs
 - https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/structured-outputs
+- https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 
 ## Anthropic Claude Automatic Prompt Caching
 

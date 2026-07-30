@@ -99,7 +99,7 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 
 	switch provider {
 	case "claude":
-		return proxyCallClaude(ctx, req, endpoint, apiKey, model)
+		return proxyCallClaude(ctx, req, endpoint, apiKey, model, policy)
 	case "gemini":
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
 	case "vertex":
@@ -214,7 +214,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	return data, http.StatusOK, nil
 }
 
-func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model string) (map[string]any, int, error) {
+func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model string, policy proxyRequestPolicy) (map[string]any, int, error) {
 	target := strings.TrimRight(endpoint, "/")
 	if !strings.Contains(target, "/v1/") {
 		target += "/v1/messages"
@@ -247,6 +247,12 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, "claude", false)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
+	}
+	if policyErr := proxyApplyClaudeJSONResponsePolicy(body, overrideTrace, policy); policyErr != nil {
+		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, &proxyLocalRequestError{
+			Stage: "request_build",
+			Cause: policyErr,
+		}
 	}
 	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
 	if err != nil {
@@ -425,14 +431,20 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 	const requiredType = "json_object"
 	existing, exists := body["response_format"]
 	if !exists {
+		if !proxyProviderSupportsAutomaticOpenAIJSONResponse(provider) {
+			trace["json_response_applied"] = false
+			trace["json_response_source"] = "backend_policy"
+			trace["json_response_skip_reason"] = "provider_native_contract_not_verified"
+			return nil
+		}
 		appliedType := requiredType
 		if strings.EqualFold(strings.TrimSpace(provider), "vercel") {
 			appliedType = "json_schema"
 			body["response_format"] = map[string]any{
 				"type": appliedType,
 				"json_schema": map[string]any{
-					"name":   "archive_center_json",
-					"schema": map[string]any{"type": "object"},
+					"name":   "archive_center_critic",
+					"schema": proxyCriticTopLevelJSONSchema(),
 				},
 			}
 		} else {
@@ -477,6 +489,105 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 		return fmt.Errorf("json_response_format_conflict: response_format.type must be json_object, json_schema, or json")
 	}
 	return fmt.Errorf("json_response_format_conflict: response_format.type must be json_object or json_schema")
+}
+
+func proxyProviderSupportsAutomaticOpenAIJSONResponse(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "openrouter", "llmgateway", "vercel":
+		return true
+	default:
+		return false
+	}
+}
+
+func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]any, policy proxyRequestPolicy) error {
+	if !policy.JSONResponse {
+		return nil
+	}
+	if trace == nil {
+		trace = map[string]any{}
+	}
+	trace["json_response_requested"] = true
+	if purpose := strings.TrimSpace(policy.Purpose); purpose != "" {
+		trace["json_response_purpose"] = purpose
+	}
+	existing, exists := body["output_config"]
+	if !exists {
+		body["output_config"] = map[string]any{
+			"format": map[string]any{
+				"type":   "json_schema",
+				"schema": proxyCriticTopLevelJSONSchema(),
+			},
+		}
+		trace["json_response_applied"] = true
+		trace["json_response_source"] = "backend_policy"
+		trace["json_response_format"] = "json_schema"
+		return nil
+	}
+	outputConfig, ok := existing.(map[string]any)
+	if !ok {
+		trace["json_response_applied"] = false
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_conflict"] = true
+		trace["json_response_conflict_reason"] = "output_config must be a JSON object"
+		return fmt.Errorf("json_response_format_conflict: output_config must be a JSON object")
+	}
+	format, ok := outputConfig["format"].(map[string]any)
+	if !ok {
+		trace["json_response_applied"] = false
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_conflict"] = true
+		trace["json_response_conflict_reason"] = "output_config.format must be a JSON object"
+		return fmt.Errorf("json_response_format_conflict: output_config.format must be a JSON object")
+	}
+	formatType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(format["type"])))
+	_, schemaOK := format["schema"].(map[string]any)
+	if formatType != "json_schema" || !schemaOK {
+		trace["json_response_applied"] = false
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_conflict"] = true
+		trace["json_response_conflict_reason"] = "output_config.format requires type json_schema and object schema"
+		return fmt.Errorf("json_response_format_conflict: output_config.format requires type json_schema and object schema")
+	}
+	trace["json_response_applied"] = true
+	trace["json_response_source"] = "extra_body_json"
+	trace["json_response_format"] = "json_schema"
+	return nil
+}
+
+func proxyCriticTopLevelJSONSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"turn_summary":                map[string]any{"type": "string"},
+			"importance_score":            map[string]any{"type": "number"},
+			"relationship_memory":         map[string]any{},
+			"entities":                    map[string]any{},
+			"kg_triples":                  map[string]any{"type": "array", "items": map[string]any{}},
+			"archive_hint":                map[string]any{},
+			"world_rule_audit":            map[string]any{},
+			"world_rules":                 map[string]any{"type": "array", "items": map[string]any{}},
+			"world_state":                 map[string]any{},
+			"subjective_entity_memories":  map[string]any{"type": "array", "items": map[string]any{}},
+			"protected_secrets":           map[string]any{"type": "array", "items": map[string]any{}},
+			"character_identity_accuracy": map[string]any{"type": "array", "items": map[string]any{}},
+			"persona_capsule_candidates":  map[string]any{"type": "array", "items": map[string]any{}},
+			"narrative_events":            map[string]any{"type": "array", "items": map[string]any{}},
+			"state_claims":                map[string]any{"type": "array", "items": map[string]any{}},
+			"belief_updates":              map[string]any{"type": "array", "items": map[string]any{}},
+			"prune_targets":               map[string]any{"type": "array", "items": map[string]any{}},
+			"evidence_excerpts":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"emotional_intensity":         map[string]any{"type": "number"},
+			"narrative_significance":      map[string]any{"type": "number"},
+			"state_deltas":                map[string]any{},
+			"character_deltas":            map[string]any{"type": "array", "items": map[string]any{}},
+			"physical_conditions":         map[string]any{"type": "array", "items": map[string]any{}},
+			"entity_conditions":           map[string]any{"type": "array", "items": map[string]any{}},
+			"pending_threads":             map[string]any{"type": "array", "items": map[string]any{}},
+		},
+		"required":             []string{"turn_summary", "importance_score", "evidence_excerpts"},
+		"additionalProperties": false,
+	}
 }
 
 func proxyGetCopilotToken(ctx context.Context, apiKey string) (string, int, error) {

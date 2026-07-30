@@ -38,7 +38,7 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "3.7.0-dev";
-  const BUILD_ID = "3.7-provider-json-flex-cache.20260731-1";
+  const BUILD_ID = "3.7-provider-json-flex-cache.20260731-2";
   const BUILD_CHANNEL = "3.7-local-test";
   const BUILD_TIME = "2026-07-31 KST";
   const BUILD_NOTES = "3.7 provider JSON, Flex, cache observability, and terminal HUD stream continuity";
@@ -10667,13 +10667,11 @@
     if (!payload || typeof payload !== "object") return payload;
     const isSub = source === "sub";
     const provider = normalizeLlmProvider(payload.provider || (isSub ? settings.subLlmProvider : settings.pluginMainProvider), "openai");
-    if (["openai", "llmgateway", "vercel", "custom"].includes(provider)) {
-      const serviceTier = normalizeLlmGatewayServiceTierSetting(
-        isSub ? settings.subLlmLlmGatewayServiceTier : settings.pluginMainLlmGatewayServiceTier,
-      );
-      if (provider === "llmgateway" || serviceTier !== "standard") {
-        payload.llm_gateway_service_tier = serviceTier;
-      }
+    const serviceTier = normalizeLlmGatewayServiceTierSetting(
+      isSub ? settings.subLlmLlmGatewayServiceTier : settings.pluginMainLlmGatewayServiceTier,
+    );
+    if (serviceTier !== "standard") {
+      payload.llm_gateway_service_tier = serviceTier;
     }
     if (provider === "claude") {
       payload.claude_prompt_cache_mode = normalizeClaudePromptCacheModeSetting(
@@ -10700,9 +10698,8 @@
         ? normalizeVertexFlexModeSetting(isSub ? cfg.subLlmVertexFlexMode : cfg.pluginMainVertexFlexMode)
         : "off",
       llmGatewayServiceTier: (() => {
-        if (!["openai", "llmgateway", "vercel", "custom"].includes(normalizedProvider)) return "";
         const tier = normalizeLlmGatewayServiceTierSetting(isSub ? cfg.subLlmLlmGatewayServiceTier : cfg.pluginMainLlmGatewayServiceTier);
-        return normalizedProvider === "llmgateway" || tier !== "standard" ? tier : "";
+        return tier !== "standard" ? tier : "";
       })(),
       claudePromptCacheMode: normalizedProvider === "claude"
         ? normalizeClaudePromptCacheModeSetting(isSub ? cfg.subLlmClaudePromptCacheMode : cfg.pluginMainClaudePromptCacheMode)
@@ -54498,10 +54495,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           }
           if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
           if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
-          if (
-            ["openai", "llmgateway", "vercel", "custom"].includes(testProvider)
-            && (testProvider === "llmgateway" || testLlmGatewayServiceTier !== "standard")
-          ) {
+          if (testLlmGatewayServiceTier !== "standard") {
             testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
           }
           if (testProvider === "claude") {
@@ -54568,10 +54562,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           }
           if (testExtraHeadersJson) testBody.extra_headers_json = testExtraHeadersJson;
           if (testExtraBodyJson) testBody.extra_body_json = testExtraBodyJson;
-          if (
-            ["openai", "llmgateway", "vercel", "custom"].includes(testProvider)
-            && (testProvider === "llmgateway" || testLlmGatewayServiceTier !== "standard")
-          ) {
+          if (testLlmGatewayServiceTier !== "standard") {
             testBody.llm_gateway_service_tier = testLlmGatewayServiceTier;
           }
           if (testProvider === "claude") {

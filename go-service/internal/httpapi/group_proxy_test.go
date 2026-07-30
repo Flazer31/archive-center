@@ -1501,7 +1501,7 @@ func TestProxyGeminiJSONPolicyRejectsNonObjectGenerationConfigWithoutCall(t *tes
 }
 
 func TestProxyJSONPolicyAddsOpenAICompatibleResponseFormatAndTrace(t *testing.T) {
-	for _, provider := range []string{"openai", "llmgateway", "vercel", "custom"} {
+	for _, provider := range []string{"openai", "openrouter", "llmgateway", "vercel"} {
 		t.Run(provider, func(t *testing.T) {
 			oldClient := proxyHTTPClient
 			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -1554,6 +1554,48 @@ func TestProxyJSONPolicyAddsOpenAICompatibleResponseFormatAndTrace(t *testing.T)
 				trace["json_response_format"] != wantFormat ||
 				trace["json_response_purpose"] != "complete_turn_critic" {
 				t.Fatalf("unexpected JSON response trace: %+v", trace)
+			}
+		})
+	}
+}
+
+func TestProxyJSONPolicySkipsUnverifiedOpenAILikeProviderWithoutExplicitOverride(t *testing.T) {
+	for _, provider := range []string{"custom", "ollama"} {
+		t.Run(provider, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				if body["response_format"] != nil {
+					t.Fatalf("unverified provider received forced response_format: %+v", body)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"model":"test","choices":[{"message":{"content":"{}"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:   strPtr("sk-test"),
+				Endpoint: strPtr("https://api.example.com/v1"),
+				Model:    strPtr("provider/model"),
+				Provider: strPtr(provider),
+				Messages: []any{map[string]any{"role": "user", "content": "return json"}},
+			}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMainWithPolicy status=%d err=%v", status, err)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if trace["json_response_requested"] != true ||
+				trace["json_response_applied"] != false ||
+				trace["json_response_skip_reason"] != "provider_native_contract_not_verified" {
+				t.Fatalf("unexpected capability skip trace: %+v", trace)
 			}
 		})
 	}
@@ -1626,6 +1668,124 @@ func TestProxyOpenAICompatibleJSONPolicyPreservesSchemaAndRejectsConflict(t *tes
 		trace := mapFromAny(resp["_proxy_request_overrides"])
 		if trace["json_response_conflict"] != true || trace["json_response_applied"] != false {
 			t.Fatalf("unexpected conflict trace: %+v", trace)
+		}
+	})
+}
+
+func TestProxyClaudeJSONPolicyAddsOutputConfigAndTrace(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		format := mapFromAny(mapFromAny(body["output_config"])["format"])
+		if format["type"] != "json_schema" {
+			t.Fatalf("Claude output_config.format = %+v, want json_schema", format)
+		}
+		schema := mapFromAny(format["schema"])
+		properties := mapFromAny(schema["properties"])
+		if schema["type"] != "object" || schema["additionalProperties"] != false ||
+			mapFromAny(properties["turn_summary"])["type"] != "string" ||
+			mapFromAny(properties["evidence_excerpts"])["type"] != "array" {
+			t.Fatalf("Claude critic schema is incomplete: %+v", schema)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"{\"turn_summary\":\"ok\",\"importance_score\":5,\"evidence_excerpts\":[]}"}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("claude-key"),
+		Endpoint: strPtr("https://api.anthropic.com"),
+		Model:    strPtr("claude-opus-5"),
+		Provider: strPtr("claude"),
+		Messages: []any{map[string]any{"role": "user", "content": "return json"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("performProxyPluginMainWithPolicy status=%d err=%v", status, err)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["json_response_applied"] != true ||
+		trace["json_response_source"] != "backend_policy" ||
+		trace["json_response_format"] != "json_schema" ||
+		trace["json_response_purpose"] != "complete_turn_critic" {
+		t.Fatalf("unexpected Claude JSON trace: %+v", trace)
+	}
+}
+
+func TestProxyClaudeJSONPolicyPreservesMatchingExtraBodyAndRejectsConflict(t *testing.T) {
+	t.Run("preserves matching output config", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatalf("decode upstream body: %v", err)
+			}
+			format := mapFromAny(mapFromAny(body["output_config"])["format"])
+			if format["type"] != "json_schema" || mapFromAny(format["schema"])["type"] != "object" {
+				t.Fatalf("matching Claude output_config was not preserved: %+v", body)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"{}"}]}`)),
+			}, nil
+		})}
+		defer func() { proxyHTTPClient = oldClient }()
+
+		extraBody := `{"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{},"additionalProperties":false}}}}`
+		resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:        strPtr("claude-key"),
+			Endpoint:      strPtr("https://api.anthropic.com"),
+			Model:         strPtr("claude-opus-5"),
+			Provider:      strPtr("claude"),
+			ExtraBodyJSON: &extraBody,
+			Messages:      []any{map[string]any{"role": "user", "content": "return json"}},
+		}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("status=%d err=%v", status, err)
+		}
+		trace := mapFromAny(resp["_proxy_request_overrides"])
+		if trace["json_response_source"] != "extra_body_json" || trace["json_response_applied"] != true {
+			t.Fatalf("unexpected matching Claude trace: %+v", trace)
+		}
+	})
+
+	t.Run("rejects conflicting output config before upstream", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		upstreamCalls := 0
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			upstreamCalls++
+			return nil, fmt.Errorf("unexpected upstream call")
+		})}
+		defer func() { proxyHTTPClient = oldClient }()
+
+		extraBody := `{"output_config":{"format":{"type":"text"}}}`
+		resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:        strPtr("claude-key"),
+			Endpoint:      strPtr("https://api.anthropic.com"),
+			Model:         strPtr("claude-opus-5"),
+			Provider:      strPtr("claude"),
+			ExtraBodyJSON: &extraBody,
+			Messages:      []any{map[string]any{"role": "user", "content": "return json"}},
+		}, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"})
+		if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "json_response_format_conflict") {
+			t.Fatalf("status=%d err=%v, want Claude JSON format conflict", status, err)
+		}
+		if upstreamCalls != 0 {
+			t.Fatalf("upstreamCalls=%d, want 0", upstreamCalls)
+		}
+		trace := mapFromAny(resp["_proxy_request_overrides"])
+		if trace["json_response_conflict"] != true || trace["json_response_applied"] != false {
+			t.Fatalf("unexpected Claude conflict trace: %+v", trace)
 		}
 	})
 }
