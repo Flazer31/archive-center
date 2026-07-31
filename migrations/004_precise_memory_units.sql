@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS precise_memory_units (
     source_span_end            INT NOT NULL,
     evidence_excerpt           TEXT NOT NULL,
     evidence_hash              CHAR(64) NOT NULL,
-    root_evidence_id           BIGINT UNSIGNED NOT NULL,
+    root_evidence_id           BIGINT UNSIGNED NULL,
     direct_evidence_ids_json   JSON NOT NULL,
     memory_kind                VARCHAR(80) NOT NULL,
     memory_subtype             VARCHAR(120) NULL,
@@ -49,15 +49,20 @@ CREATE TABLE IF NOT EXISTS precise_memory_units (
     INDEX idx_precise_memory_kind (chat_session_id(120), memory_kind, lifecycle_state, source_turn_start),
     INDEX idx_precise_memory_review (chat_session_id(120), admission_state, review_state, updated_at),
     INDEX idx_precise_memory_root_evidence (root_evidence_id),
-    CONSTRAINT fk_precise_memory_root_evidence FOREIGN KEY (root_evidence_id) REFERENCES direct_evidence_records(id) ON DELETE CASCADE,
-    CONSTRAINT fk_precise_memory_actor FOREIGN KEY (actor_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_precise_memory_subject FOREIGN KEY (subject_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_precise_memory_affected FOREIGN KEY (affected_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_precise_memory_location FOREIGN KEY (location_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_precise_memory_object FOREIGN KEY (object_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_precise_memory_knower FOREIGN KEY (knowledge_holder_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE RESTRICT,
-    CONSTRAINT chk_precise_memory_kind CHECK (memory_kind IN ('event', 'state', 'utterance', 'observation')),
+    CONSTRAINT fk_precise_memory_root_evidence FOREIGN KEY (root_evidence_id) REFERENCES direct_evidence_records(id) ON DELETE SET NULL,
+    CONSTRAINT fk_precise_memory_actor FOREIGN KEY (actor_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE SET NULL,
+    CONSTRAINT fk_precise_memory_subject FOREIGN KEY (subject_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE SET NULL,
+    CONSTRAINT fk_precise_memory_affected FOREIGN KEY (affected_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE SET NULL,
+    CONSTRAINT fk_precise_memory_location FOREIGN KEY (location_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE SET NULL,
+    CONSTRAINT fk_precise_memory_object FOREIGN KEY (object_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE SET NULL,
+    CONSTRAINT fk_precise_memory_knower FOREIGN KEY (knowledge_holder_entity_id) REFERENCES entity_identities(stable_entity_id) ON DELETE SET NULL,
+    CONSTRAINT chk_precise_memory_kind CHECK (memory_kind IN ('event', 'state', 'utterance', 'observation', 'boundary', 'profile')),
     CONSTRAINT chk_precise_memory_span CHECK (source_span_start >= 0 AND source_span_end > source_span_start),
     CONSTRAINT chk_precise_memory_turn_range CHECK (source_turn_start > 0 AND source_turn_end >= source_turn_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='precise_memory_unit.v1 exact-source atomic projection; legacy aggregate memories remain unchanged.';
+
+ALTER TABLE precise_memory_units DROP CONSTRAINT IF EXISTS chk_precise_memory_kind;
+ALTER TABLE precise_memory_units
+    ADD CONSTRAINT chk_precise_memory_kind
+    CHECK (memory_kind IN ('event', 'state', 'utterance', 'observation', 'boundary', 'profile'));

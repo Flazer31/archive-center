@@ -678,17 +678,9 @@ func (s *Server) saveStoryClockFromExtraction(ctx context.Context, sid string, t
 		return
 	}
 	currentStore, currentOK := s.Store.(store.StatusCurrentValueStore)
-	lifecycle, lifecycleOK := s.Store.(store.StatusLifecycleStore)
-	eventLookup, lookupOK := s.Store.(store.StatusChangeEventSourceLookupStore)
-	if !currentOK || !lifecycleOK || !lookupOK {
-		result.addSkipReason("story_clock", "status_current_lifecycle_or_source_lookup_unavailable", nil)
-		return
-	}
-	if _, err := eventLookup.GetStatusChangeEventBySourceRevision(ctx, sid, storyClockStatusKey, source.Revision, turnIndex); err == nil {
-		result.addSkipReason("story_clock", "source_replay_idempotent", map[string]any{"source_revision": source.Revision})
-		return
-	} else if !errors.Is(err, store.ErrNotFound) {
-		result.addSkipReason("story_clock", "source_event_lookup_failed", err.Error())
+	atomicStore, atomicOK := s.Store.(store.ReversibleStatusTransitionStore)
+	if !currentOK || !atomicOK {
+		result.addSkipReason("story_clock", "atomic_status_transition_unavailable", nil)
 		return
 	}
 	definition, ok := s.ensureStoryClockDefinition(ctx, sid, now, result)
@@ -727,6 +719,8 @@ func (s *Server) saveStoryClockFromExtraction(ctx context.Context, sid string, t
 		eventOwnerID = "source:" + source.Revision
 	}
 	evidencePayload := storyClockEvidencePayload(source, turnIndex, proposal, evidenceIDs)
+	sourceUnitID := "story_clock:" + source.Revision
+	evidencePayload["source_unit_id"] = sourceUnitID
 	evidencePayload["current_projection"] = len(resolved) > 0
 	if unresolvedReason != "" {
 		evidencePayload["resolution_status"] = unresolvedReason
@@ -743,10 +737,9 @@ func (s *Server) saveStoryClockFromExtraction(ctx context.Context, sid string, t
 		}
 		newValueJSON = mustCompactJSON(resolved)
 	}
-	var saved store.StatusCurrentValue
+	var currentValue *store.StatusCurrentValue
 	if len(resolved) > 0 {
-		result.Attempted++
-		saved, err = currentStore.SaveStatusCurrentValue(ctx, store.StatusCurrentValue{
+		currentValue = &store.StatusCurrentValue{
 			ChatSessionID: sid,
 			RegistryID:    definition.ID,
 			StatusKey:     storyClockStatusKey,
@@ -760,13 +753,7 @@ func (s *Server) saveStoryClockFromExtraction(ctx context.Context, sid string, t
 			WriteState:    "current",
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		})
-		if err != nil {
-			result.Errors++
-			result.ErrorDetails = append(result.ErrorDetails, "SaveStatusCurrentValue(story_clock): "+err.Error())
-			return
 		}
-		result.NarrativeCurrentStates++
 	}
 	eventKind := "observation_recorded"
 	if len(resolved) > 0 {
@@ -787,26 +774,38 @@ func (s *Server) saveStoryClockFromExtraction(ctx context.Context, sid string, t
 		eventState = "retracted"
 	}
 	result.Attempted++
-	_, err = lifecycle.SaveStatusChangeEvent(ctx, store.StatusChangeEvent{
-		ChatSessionID:     sid,
-		RegistryID:        definition.ID,
-		StatusValueID:     saved.ID,
-		StatusKey:         storyClockStatusKey,
-		OwnerScope:        storyClockOwnerScope,
-		OwnerID:           eventOwnerID,
-		EventKind:         eventKind,
-		PreviousValueJSON: previous.ValueJSON,
-		NewValueJSON:      newValueJSON,
-		EvidenceJSON:      mustCompactJSON(evidencePayload),
-		SourceTurn:        turnIndex,
-		StoryClockJSON:    newValueJSON,
-		EventState:        eventState,
-		CreatedAt:         now,
+	saved, err := atomicStore.ApplyReversibleStatusTransition(ctx, store.ReversibleStatusTransition{
+		SourceContract: source.ContractVersion,
+		SourceRevision: source.Revision,
+		SourceUnitID:   sourceUnitID,
+		CurrentValue:   currentValue,
+		Event: store.StatusChangeEvent{
+			ChatSessionID:     sid,
+			RegistryID:        definition.ID,
+			StatusKey:         storyClockStatusKey,
+			OwnerScope:        storyClockOwnerScope,
+			OwnerID:           eventOwnerID,
+			EventKind:         eventKind,
+			PreviousValueJSON: previous.ValueJSON,
+			NewValueJSON:      newValueJSON,
+			EvidenceJSON:      mustCompactJSON(evidencePayload),
+			SourceTurn:        turnIndex,
+			StoryClockJSON:    newValueJSON,
+			EventState:        eventState,
+			CreatedAt:         now,
+		},
 	})
 	if err != nil {
 		result.Errors++
-		result.ErrorDetails = append(result.ErrorDetails, "SaveStatusChangeEvent(story_clock): "+err.Error())
+		result.ErrorDetails = append(result.ErrorDetails, "ApplyReversibleStatusTransition(story_clock): "+err.Error())
 		return
+	}
+	if saved.Replayed {
+		result.addSkipReason("story_clock", "source_replay_idempotent", map[string]any{"source_revision": source.Revision})
+		return
+	}
+	if currentValue != nil {
+		result.NarrativeCurrentStates++
 	}
 	result.NarrativeStateEvents++
 }

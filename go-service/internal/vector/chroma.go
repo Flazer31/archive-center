@@ -339,6 +339,54 @@ func (s *chromaStore) DeleteDocuments(ctx context.Context, ids []string) error {
 	return err
 }
 
+func (s *chromaStore) GetDocuments(ctx context.Context, ids []string) ([]VectorDocument, error) {
+	clean := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		clean = append(clean, id)
+	}
+	if len(clean) == 0 {
+		return []VectorDocument{}, nil
+	}
+	ref, err := s.ensureCollection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{
+		"ids":     clean,
+		"include": []string{"metadatas", "documents"},
+	}
+	var out struct {
+		IDs       []string         `json:"ids"`
+		Documents []string         `json:"documents"`
+		Metadatas []map[string]any `json:"metadatas"`
+	}
+	if _, err := s.doJSON(ctx, http.MethodPost, s.collectionOperationPath(ref, "get"), body, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	docs := make([]VectorDocument, 0, len(out.IDs))
+	for i, id := range out.IDs {
+		if !seen[strings.TrimSpace(id)] {
+			continue
+		}
+		meta := map[string]any{}
+		if i < len(out.Metadatas) && out.Metadatas[i] != nil {
+			meta = out.Metadatas[i]
+		}
+		text := ""
+		if i < len(out.Documents) {
+			text = out.Documents[i]
+		}
+		docs = append(docs, vectorDocumentFromChroma(id, text, meta))
+	}
+	return docs, nil
+}
+
 func (s *chromaStore) ListDocuments(ctx context.Context, sessionID string) ([]VectorDocument, error) {
 	ref, err := s.ensureCollection(ctx)
 	if err != nil {

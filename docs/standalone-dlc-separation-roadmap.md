@@ -1,31 +1,32 @@
-# Archive Center 5.0
+# Archive Center 독립 DLC 분리·연동 로드맵
 
 주제: Persona Capsule과 Original Work DB의 독립 DLC 모듈화
 
-상태: 구현 전 권위 로드맵, `preparatory`
+상태: 버전 미배정 구현 전 권위 로드맵, `preparatory`
 
-기준일: 2026-07-24
+기준일: 2026-07-31
 
 대상:
 
 - Persona Capsule DLC
 - Original Work DB DLC
-- Archive Center 5.0 DLC 통합 adapter와 기존 내부 구현의 안전한 제거
+- Archive Center DLC 통합 adapter와 기존 내부 구현의 안전한 제거
 
 ## 0. 결정 스냅샷
 
 - [`Archive Center 3.6~4.1`](3.6-4.1-precision-long-term-memory-roadmap.md)은 정밀 장기 기억의
   lifecycle·복구·라이브 release gate를 그대로 소유한다.
-- [`Archive Center 4.X`](4.x-model-adaptive-rp-simulation-roadmap.md)는 4.1 기억과 원작 자료를
-  읽는 모델 능력 적응형 RP simulation 계층을 그대로 소유한다.
-- 5.0은 4.X의 목적을 취소·축소·흡수하지 않는다. 각 DLC는 4.X 없이도 독립 작동하고,
-  Archive Center와 결합하면 4.1 기억과 선택적으로 활성화된 4.X에 versioned read-only 근거를
-  제공할 수 있다. 5.0은 장면·전개·활성 인물·서사 압력이나 모델 적응 정책을 다시 구현하지 않는다.
+- [`Archive Center 4.6~5.0`](4.6-5.0-model-adaptive-rp-publishing-roadmap.md)는 4.1 기억과 원작 자료를
+  읽는 관계 graph·인물·세계·고급 출판·출력 충실도 계층을 그대로 소유한다.
+- DLC 분리는 4.6~5.0의 목적을 취소·축소·흡수하지 않는다. 각 DLC는 고급 RP 지원 없이도
+  독립 작동하고, Archive Center와 결합하면 4.1 기억과 선택적으로 활성화된 4.6~5.0 기능에
+  versioned read-only 근거를 제공할 수 있다. DLC 분리는 장면·전개·활성 인물·서사 압력이나
+  모델 적응 정책을 다시 구현하지 않는다.
 - 페르소나 캡슐과 원작 DB의 실제 독립 제품화, 저장소·UI·패키지 분리, single-owner cutover와
-  기존 Archive Center 내부 구현 제거는 **Archive Center 5.0**이 소유한다.
-- 4.1과 4.X에서는 5.0을 위해 현재 기능을 미리 제거하거나 임시 외부 저장소·병렬 writer·두 번째
-  주입 경로를 만들지 않는다.
-- 현재 Archive Center 내부 구현은 5.0 cutover gate가 통과할 때까지 production 기준 동작으로
+  기존 Archive Center 내부 구현 제거는 이 버전 미배정 DLC 로드맵이 소유한다.
+- 4.1과 4.6~5.0에서는 DLC 분리를 위해 현재 기능을 미리 제거하거나 임시 외부
+  저장소·병렬 writer·두 번째 주입 경로를 만들지 않는다.
+- 현재 Archive Center 내부 구현은 DLC cutover gate가 통과할 때까지 production 기준 동작으로
   유지한다.
 - 각 DLC는 Archive Center 없이도 설치·시작·관리·기본 사용이 가능한 독립 제품이어야 한다.
 - Archive Center가 명시적인 versioned capability 계약으로 DLC를 인식하면, DLC의 근거를
@@ -35,12 +36,12 @@
 - shadow 비교를 위한 bounded dual-read는 허용할 수 있지만 silent dual-write, 공유 table 직접
   접근, 두 제품의 동시 주입과 last-known 결과 재사용은 허용하지 않는다.
 - Persona Capsule DLC와 Original Work DB DLC는 Archive Center 버전과 독립된 자체 `1.x`
-  제품 버전을 사용한다. Archive Center 5.0은 지원하는 DLC contract 범위와 최소 제품 버전만
-  명시한다.
+  제품 버전을 사용한다. Archive Center adapter는 지원하는 DLC contract 범위와 최소 제품
+  버전만 명시한다.
 
-## 1. 5.0의 목표
+## 1. 독립 DLC 분리의 목표
 
-Archive Center 5.0의 목표는 기능 수를 늘리는 것이 아니라 현재 한 제품 안에 함께 들어 있는
+이 작업의 목표는 기능 수를 늘리는 것이 아니라 현재 한 제품 안에 함께 들어 있는
 두 선택 기능을 독립 제품으로 분리하고 Archive Center를 얇은 통합 허브로 만드는 것이다.
 
 ```text
@@ -49,9 +50,9 @@ Archive Center.js
   -> archive-center-go
   -> 메인 기억 + 페르소나 캡슐 + 원작 DB
 
-5.0 목표
+독립 DLC 목표
 Persona Capsule DLC ─┐
-                     ├─ versioned read-only integration ─> Archive Center 5.0
+                     ├─ versioned read-only integration ─> Archive Center adapter
 Original Work DB DLC ┘                                  -> Go 최종 계획
                                                          -> RisuAI payload 적용
 ```
@@ -66,7 +67,7 @@ Original Work DB DLC ┘                                  -> Go 최종 계획
 - RisuAI Host 관찰과 실제 payload 적용만 담당하는 JavaScript 경계;
 - DLC가 없거나 실패해도 Archive Center 메인 시작·ready·저장·삭제·회상이 유지되는 장애 격리.
 
-### 1.1 5.0으로 배치하는 이유
+### 1.1 별도 버전 미배정 트랙으로 분리하는 이유
 
 이 작업은 단순 파일 이동이나 UI 탭 분리가 아니다. 다음을 동시에 변경한다.
 
@@ -79,21 +80,21 @@ Original Work DB DLC ┘                                  -> Go 최종 계획
 - updater, backup, 복구와 지원 OS 검증;
 - 기존 내부 코드와 schema 사용 중단.
 
-따라서 정밀 장기 기억의 release closure인 4.1이나 simulation 소비 계층인 4.X에 섞지 않는다.
-물리적 분리와 기존 경로 제거는 breaking lifecycle 작업으로 취급하고 5.0에서 독립적으로
-검증한다.
+따라서 정밀 장기 기억의 release closure인 4.1이나 RP 출판·simulation 계층인
+4.6~5.0에 섞지 않는다. 물리적 분리와 기존 경로 제거는 breaking lifecycle 작업으로
+취급하고 별도 제품 release에서 독립적으로 검증한다.
 
 ## 2. 버전과 제품 소유권
 
 | 구간 | 소유하는 범위 | 소유하지 않는 범위 |
 |---|---|---|
 | Archive Center 4.1 | 메인 정밀 장기 기억, capability·namespace·read-only export 기반, lifecycle·복구·release gate | DLC 독립 패키징, 외부 저장소 cutover, 기존 내부 기능 제거 |
-| Archive Center 4.X | 검증된 기억·원작 자료를 소비하는 인물·세계·세력 simulation과 모델 능력 적응 | 페르소나·원작 canonical storage, DLC 배포와 migration |
+| Archive Center 4.6~5.0 | 검증된 기억·원작 자료를 소비하는 graph, 인물·세계·세력 simulation, 모델 적응형 출판과 출력 충실도 | 페르소나·원작 canonical storage, DLC 배포와 migration |
 | Persona Capsule DLC 1.x | 독립 capsule/entry, privacy, import/export, standalone UI·저장·기본 적용 | Archive Center 메인 기억과 session canonical truth |
 | Original Work DB DLC 1.x | 작품·판본·continuity·원문·provenance·review·Canon Pack·Local Overlay·원작 검색 | Archive Center 세션 사건·관계·profile과 메인 기억 |
-| Archive Center 5.0 | capability 협상, session binding, read-only adapter, 최종 Go 예산·조립, cutover와 내부 본체 제거 | DLC canonical row 직접 수정, DLC 내부 ranking·review 재구현 |
+| Archive Center DLC adapter | capability 협상, session binding, read-only adapter, 최종 Go 예산·조립, cutover와 내부 본체 제거 | DLC canonical row 직접 수정, DLC 내부 ranking·review 재구현 |
 
-4.X의 4.2~4.7 단계 번호는 기존 simulation 로드맵을 유지한다. 5.0 준비를 이유로 이 번호를
+4.6~5.0의 단계 번호는 RP 출판·simulation 로드맵이 소유한다. DLC 분리를 이유로 이 번호를
 재사용하거나 기존 완료 조건을 축소하지 않는다.
 
 ## 3. 현재 상태와 출발점
@@ -114,7 +115,7 @@ Original Work DB DLC ┘                                  -> Go 최종 계획
   revision과 content hash가 완전한 경계로 존재하지 않는다.
 
 현재 `support_only_persona_recollection`, `canonical_write=false`,
-`current_world_truth=false`, explicit target attachment 원칙은 5.0에서도 보존한다.
+`current_world_truth=false`, explicit target attachment 원칙은 독립 DLC 전환 뒤에도 보존한다.
 
 ### 3.2 Original Work DB
 
@@ -322,9 +323,9 @@ source 보존, provenance, review와 exact search는 작동해야 한다.
 - 기존 pack을 자동 신뢰하거나 새로운 stable work/edition ID로 추측 병합하지 않는다.
 - migration preview는 DB와 Chroma를 수정하지 않고 예상 mapping·충돌·누락을 먼저 반환한다.
 
-## 8. Archive Center 5.0에 남는 얇은 adapter
+## 8. Archive Center에 남는 얇은 adapter
 
-5.0 cutover 뒤 Archive Center에 남는 책임은 다음뿐이다.
+DLC cutover 뒤 Archive Center에 남는 책임은 다음뿐이다.
 
 - DLC capability와 contract version 확인;
 - 사용자 설정과 session binding;
@@ -344,11 +345,11 @@ source 보존, provenance, review와 exact search는 작동해야 한다.
 - 호환 기간이 끝난 legacy adapter와 silent fallback.
 
 MariaDB table이나 기존 사용자 데이터를 제거하는 것은 코드 제거와 별도 승인 작업이다.
-5.0 release가 성공했다는 이유만으로 legacy data를 자동 삭제하지 않는다.
+DLC release가 성공했다는 이유만으로 legacy data를 자동 삭제하지 않는다.
 
 ## 9. 구현 packet과 cutover 순서
 
-### 5.0-A 현재 동작과 데이터 inventory
+### DLC-A 현재 동작과 데이터 inventory
 
 - Persona와 reference의 API, UI, store, schema, index, job, provider 설정과 `/prepare-turn`
   결합 지점을 고정한다.
@@ -360,7 +361,7 @@ Exit gate:
 - 모든 read/write/injection owner와 migration 대상이 누락 없이 ledger에 연결되고 실제 사용자
   데이터 mutation 없이 preview할 수 있다.
 
-### 5.0-B Portable contract와 capability
+### DLC-B Portable contract와 capability
 
 - 공통 capability, request/result와 stable outcome을 확정한다.
 - Persona stable ID·privacy·import/export contract를 확정한다.
@@ -372,7 +373,7 @@ Exit gate:
 - contract mismatch, missing capability, stale revision과 privacy ceiling 위반이 stable negative
   result로 차단되고 제품명·파일·DOM 추측이 없다.
 
-### 5.0-C 독립 제품 완성
+### DLC-C 독립 제품 완성
 
 - Persona Capsule DLC와 Original Work DB DLC가 Archive Center 없이 각각 standalone gate를
   통과한다.
@@ -383,7 +384,7 @@ Exit gate:
 
 - Archive Center process, store, session API나 내부 row ID 없이 독립 기능이 완성된다.
 
-### 5.0-D Read-only adapter와 shadow 비교
+### DLC-D Read-only adapter와 shadow 비교
 
 - Archive Center가 외부 DLC capability와 revision을 확인한다.
 - 내부 현재 결과와 외부 DLC 결과를 bounded dual-read로 비교한다.
@@ -395,7 +396,7 @@ Exit gate:
 - 동일 fixture와 사용자 승인 DB clone에서 의미·ID·provenance·예산 차이가 설명되고 blocker가
   0개이며 DLC 장애 시 Archive Center base plan이 불변이다.
 
-### 5.0-E Single-owner cutover
+### DLC-E Single-owner cutover
 
 - 명시적 사용자·release 설정으로 external DLC를 canonical owner로 전환한다.
 - 전환 transaction은 한 시점에 하나의 writer와 하나의 injection owner만 활성화한다.
@@ -407,7 +408,7 @@ Exit gate:
 - restart·timeout·stale response·DLC crash·version mismatch·rollback rehearsal에서 dual-write,
   duplicate injection, stale resurrection과 data loss가 없다.
 
-### 5.0-F 내부 본체 제거와 release closure
+### DLC-F 내부 본체 제거와 release closure
 
 - 안정화 기간과 rollback rehearsal 뒤 Archive Center 내부 CRUD·UI·ranking·storage owner를
   제거한다.
@@ -432,7 +433,7 @@ Exit gate:
 ### 10.2 Archive Center without DLC
 
 - 두 DLC가 모두 없거나 OFF여도 시작·ready·prepare·complete·삭제·리롤·rollback·장기 기억이
-  4.1/4.X 기준과 동일;
+  4.1/4.6~5.0 기준과 동일;
 - DLC 설정·placeholder·empty block이 실제 payload에 들어가지 않음;
 - JavaScript가 과거 내부 조립 경로를 silent fallback으로 되살리지 않음.
 
@@ -464,7 +465,7 @@ Exit gate:
 
 ## 11. Migration과 rollback 원칙
 
-- 기존 내부 구현은 5.0-E 전까지 canonical owner다.
+- 기존 내부 구현은 DLC-E 전까지 canonical owner다.
 - schema·data migration은 항상 preview, count, mapping, conflict와 checksum을 먼저 반환한다.
 - migration은 idempotent하고 중단·재개 가능해야 한다.
 - source text, review state, attachment, binding, provenance와 stable user choice를 보존한다.
@@ -475,7 +476,7 @@ Exit gate:
 
 ## 12. Stop condition
 
-다음 중 하나라도 발생하면 5.0 cutover 또는 내부 제거를 중단한다.
+다음 중 하나라도 발생하면 DLC cutover 또는 내부 제거를 중단한다.
 
 - DLC가 없을 때 Archive Center 기본 동작이 달라짐;
 - shared table 직접 접근이나 양쪽 canonical dual-write가 필요함;
@@ -486,11 +487,11 @@ Exit gate:
 - private raw source, secret, 사용자 OOC profile이나 인증 정보가 경계를 넘어 노출됨;
 - migration fingerprint나 rollback rehearsal 없이 기존 내부 owner를 제거함;
 - standalone gate가 실패한 상태에서 integrated mode만 통과시켜 완료를 주장함;
-- 4.1 또는 4.X의 release blocker를 5.0 fallback으로 우회함.
+- 4.1 또는 4.6~5.0의 release blocker를 DLC fallback으로 우회함.
 
 ## 13. 비목표
 
-5.0 DLC 분리 작업은 다음을 자동으로 포함하지 않는다.
+DLC 분리 작업은 다음을 자동으로 포함하지 않는다.
 
 - 새로운 AI 역할이나 추가 LLM 호출;
 - 원작 사실·persona candidate의 자동 승인;
@@ -499,7 +500,7 @@ Exit gate:
 - 원작 완전성의 고정 score·레코드 수 기준;
 - plugin marketplace, 원격 Canon registry나 cloud sync;
 - 사용자 승인 없는 실데이터 reindex·dedupe·orphan 삭제·session 병합;
-- 기존 4.1/4.X requirement의 축소.
+- 기존 4.1/4.6~5.0 requirement의 축소.
 
 추가 기능은 독립 requirement, 비용·privacy·lifecycle 검토와 사용자 승인을 받아 별도 버전으로
 배치한다.
@@ -507,7 +508,7 @@ Exit gate:
 ## 14. 완료 판정
 
 현재 문서 상태는 `preparatory`다. 문서, DTO, schema 초안, mock server, UI placeholder,
-syntax test나 일부 in-memory test만으로 5.0을 구현 또는 완료로 표시하지 않는다.
+syntax test나 일부 in-memory test만으로 DLC 분리를 구현 또는 완료로 표시하지 않는다.
 
 최종 evidence manifest는 최소 다음을 연결한다.
 
@@ -522,5 +523,6 @@ syntax test나 일부 in-memory test만으로 5.0을 구현 또는 완료로 표
 - 내부 경로 제거와 legacy data 보존 확인;
 - open, blocked, implemented_unverified와 release_gate_verified 상태.
 
-5.0 완료는 두 DLC의 독립 실행, Archive Center 결합, absence/degraded parity, single-owner cutover,
-rollback과 내부 본체 제거가 실제 release artifact에서 모두 검증된 경우에만 선언한다.
+DLC 분리 완료는 두 DLC의 독립 실행, Archive Center 결합, absence/degraded parity,
+single-owner cutover, rollback과 내부 본체 제거가 실제 release artifact에서 모두 검증된
+경우에만 선언한다.

@@ -1085,6 +1085,13 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 		    (o.required_source_state = 'active' AND s.lifecycle_state = 'active')
 		    OR (o.required_source_state = 'inactive' AND s.lifecycle_state <> 'active')
 		  )
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM memory_vector_outbox prior
+		    WHERE prior.document_id = o.document_id
+		      AND prior.id < o.id
+		      AND prior.status IN ('pending', 'leased', 'retryable', 'needs_embedding')
+		  )
 		ORDER BY o.created_at, o.id
 		LIMIT 1 FOR UPDATE
 	`, now, now, now).Scan(&item.ID, &item.ContractVersion, &item.OperationKey,
@@ -1130,21 +1137,25 @@ func (m *mariadbStore) finishMemoryVectorOperation(ctx context.Context, outboxID
 		}
 	}()
 	now = nonZeroTime(now)
-	var currentOwner, requiredState, sourceState string
-	var leaseUntil time.Time
+	var currentStatus, requiredState, sourceState string
+	var currentOwner sql.NullString
+	var leaseUntil sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT o.lease_owner, o.lease_until, o.required_source_state, s.lifecycle_state
+		SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state, s.lifecycle_state
 		FROM memory_vector_outbox o
 		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
-		WHERE o.id = ? AND o.status = 'leased'
+		WHERE o.id = ?
 		FOR UPDATE
-	`, outboxID).Scan(&currentOwner, &leaseUntil, &requiredState, &sourceState); err != nil {
+	`, outboxID).Scan(&currentStatus, &currentOwner, &leaseUntil, &requiredState, &sourceState); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrLeaseExpired
 		}
 		return err
 	}
-	if currentOwner != leaseOwner || leaseUntil.Before(now) {
+	if currentStatus == "stale_rejected" {
+		return ErrSourceRevisionStale
+	}
+	if currentStatus != "leased" || !leaseUntil.Valid || currentOwner.String != leaseOwner || leaseUntil.Time.Before(now) {
 		return ErrLeaseExpired
 	}
 	sourceFenceSatisfied := (requiredState == "active" && sourceState == "active") ||

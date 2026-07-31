@@ -11,6 +11,51 @@ import (
 	"testing"
 )
 
+func TestChromaExactDocumentReadUsesRequestedIDsOnly(t *testing.T) {
+	var getBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/collections/archive_center_vectors"):
+			_, _ = w.Write([]byte(`{"id":"collection-1","name":"archive_center_vectors"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/collections/collection-1/get"):
+			if err := json.NewDecoder(r.Body).Decode(&getBody); err != nil {
+				t.Fatalf("decode exact get: %v", err)
+			}
+			_, _ = w.Write([]byte(`{
+				"ids":["memory:session:7"],
+				"documents":["verified memory"],
+				"metadatas":[{"chat_session_id":"session","tier":"memory"}]
+			}`))
+		default:
+			http.Error(w, r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	raw, err := NewChromaStore(ts.URL, "archive_center_vectors", "/api/v2")
+	if err != nil {
+		t.Fatalf("NewChromaStore: %v", err)
+	}
+	reader, ok := raw.(ExactDocumentReader)
+	if !ok {
+		t.Fatal("Chroma store does not implement ExactDocumentReader")
+	}
+	documents, err := reader.GetDocuments(context.Background(), []string{"memory:session:7", "memory:session:7", " "})
+	if err != nil {
+		t.Fatalf("GetDocuments: %v", err)
+	}
+	if len(documents) != 1 || documents[0].ID != "memory:session:7" || documents[0].DocumentText != "verified memory" {
+		t.Fatalf("unexpected exact readback: %+v", documents)
+	}
+	ids, _ := getBody["ids"].([]any)
+	include, _ := getBody["include"].([]any)
+	if len(ids) != 1 || ids[0] != "memory:session:7" ||
+		!reflect.DeepEqual(include, []any{"metadatas", "documents"}) {
+		t.Fatalf("exact get body = %#v", getBody)
+	}
+}
+
 func TestChromaExactQueryPreservesRawRankDistanceAndQuerySensitivity(t *testing.T) {
 	var queryBodies []map[string]any
 	var upsertBody map[string]any

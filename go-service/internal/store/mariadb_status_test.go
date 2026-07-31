@@ -49,6 +49,7 @@ func TestMariaDBStoreApplyReversibleStatusTransitionCommitsCurrentAndEventTogeth
 			current.SourceTurn, current.WriteState, current.CreatedAt,
 		).
 		WillReturnResult(sqlmock.NewResult(101, 1))
+	expectPriorActiveStatusEvent(mock, event, 88)
 	mock.ExpectExec("INSERT INTO status_change_events").
 		WithArgs(
 			event.ChatSessionID, event.RegistryID, int64(101), event.StatusKey, event.OwnerScope, event.OwnerID,
@@ -56,6 +57,10 @@ func TestMariaDBStoreApplyReversibleStatusTransitionCommitsCurrentAndEventTogeth
 			event.SourceTurn, event.StoryClockJSON, event.EventState, event.CreatedAt,
 		).
 		WillReturnResult(sqlmock.NewResult(202, 1))
+	for i := 0; i < 3; i++ {
+		mock.ExpectExec("INSERT INTO memory_derivation_dependencies").
+			WillReturnResult(sqlmock.NewResult(int64(303+i), 1))
+	}
 	mock.ExpectCommit()
 
 	got, err := m.ApplyReversibleStatusTransition(context.Background(), transition)
@@ -94,6 +99,7 @@ func TestMariaDBStoreApplyReversibleStatusTransitionRollsBackWhenEventInsertFail
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WillReturnResult(sqlmock.NewResult(101, 1))
+	expectNoPriorActiveStatusEvent(mock, event)
 	mock.ExpectExec("INSERT INTO status_change_events").
 		WillReturnError(eventInsertErr)
 	mock.ExpectRollback()
@@ -195,6 +201,8 @@ func TestMariaDBStoreListReversibleStatusCurrentValuesReadsCompleteOwnerScopeWit
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(requiredSQLMatcher(
 		[]string{
 			"from status_current_values",
+			"join memory_source_revisions",
+			"source_revision.lifecycle_state = 'active'",
 			"write_state = 'current'",
 			"owner_scope = ?",
 			"status_key in (?,?)",
@@ -294,7 +302,7 @@ func TestMariaDBStoreListLatestReversibleCurrentProjectionEventsUsesActiveLatest
 
 func reversibleStatusTransitionFixture() ReversibleStatusTransition {
 	now := reversibleStatusTestTime()
-	evidence := `{"source_revision":"revision-1","source_unit_id":"unit-1","current_projection":true}`
+	evidence := `{"source_revision":"revision-1","source_unit_id":"unit-1","current_projection":true,"direct_evidence_ids":[9]}`
 	current := StatusCurrentValue{
 		ChatSessionID: "session-1",
 		RegistryID:    7,
@@ -348,6 +356,18 @@ func expectNoReversibleStatusEvent(mock sqlmock.Sqlmock, chatSessionID, sourceRe
 	mock.ExpectQuery("FROM status_change_events").
 		WithArgs(chatSessionID, sourceRevision, sourceUnitID).
 		WillReturnRows(sqlmock.NewRows(reversibleStatusEventColumns))
+}
+
+func expectNoPriorActiveStatusEvent(mock sqlmock.Sqlmock, event StatusChangeEvent) {
+	mock.ExpectQuery("SELECT prior.id").
+		WithArgs(event.ChatSessionID, event.StatusKey, event.OwnerScope, event.OwnerID).
+		WillReturnError(sql.ErrNoRows)
+}
+
+func expectPriorActiveStatusEvent(mock sqlmock.Sqlmock, event StatusChangeEvent, id int64) {
+	mock.ExpectQuery("SELECT prior.id").
+		WithArgs(event.ChatSessionID, event.StatusKey, event.OwnerScope, event.OwnerID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(id))
 }
 
 func reversibleStatusCurrentRows(id int64, current StatusCurrentValue) *sqlmock.Rows {

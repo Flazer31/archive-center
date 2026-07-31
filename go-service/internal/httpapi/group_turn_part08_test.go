@@ -201,9 +201,11 @@ func (r *rollbackRecordingStore) SaveAuditLog(ctx context.Context, a *store.Audi
 
 type rollbackLifecycleStore struct {
 	*rollbackRecordingStore
-	invalidationErr error
-	outboxOperation string
-	outbox          *store.MemoryVectorOutboxItem
+	invalidationErr    error
+	outboxOperation    string
+	outbox             *store.MemoryVectorOutboxItem
+	lastRollback       store.LogicalTurnRollback
+	lastLifecycleState string
 }
 
 func (r *rollbackLifecycleStore) MemoryDerivationLifecycleEnabled() bool {
@@ -223,6 +225,7 @@ func (r *rollbackLifecycleStore) IsSourceRevisionActive(context.Context, string,
 }
 
 func (r *rollbackLifecycleStore) InvalidateSourceRevisions(_ context.Context, sid string, fromTurn int, lifecycleState, reason string, now time.Time) error {
+	r.lastLifecycleState = lifecycleState
 	if r.invalidationErr != nil {
 		return r.invalidationErr
 	}
@@ -238,6 +241,11 @@ func (r *rollbackLifecycleStore) InvalidateSourceRevisions(_ context.Context, si
 		CreatedAt: now, UpdatedAt: now,
 	}
 	return nil
+}
+
+func (r *rollbackLifecycleStore) RollbackCanonicalTail(ctx context.Context, rollback store.LogicalTurnRollback) error {
+	r.lastRollback = rollback
+	return r.InvalidateSourceRevisions(ctx, rollback.ChatSessionID, rollback.TurnIndex, rollback.LifecycleAction, rollback.Reason, rollback.CreatedAt)
 }
 
 func (r *rollbackLifecycleStore) DeleteSession(_ context.Context, sid string) error {
@@ -481,6 +489,9 @@ func TestRollbackLifecycleUsesDurableOutboxAndProviderFailureStaysRetryable(t *t
 	}
 	if lifecycle.outbox == nil || lifecycle.outbox.Status != "retryable" {
 		t.Fatalf("outbox=%+v", lifecycle.outbox)
+	}
+	if lifecycle.lastLifecycleState != store.LogicalTurnLifecycleDeleted {
+		t.Fatalf("typed delete lifecycle was not applied: %q", lifecycle.lastLifecycleState)
 	}
 	if len(base.deletes) == 0 {
 		t.Fatal("canonical rollback did not run")

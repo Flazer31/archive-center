@@ -47,6 +47,7 @@ type rollbackDecisionRequest struct {
 	DuplicateBlocked              bool                 `json:"duplicate_blocked"`
 	PendingOutputGuard            bool                 `json:"pending_output_guard"`
 	HostLifecycleObservation      string               `json:"host_lifecycle_observation"`
+	LifecycleActionObservation    string               `json:"lifecycle_action_observation"`
 	AllowManualCandidate          bool                 `json:"allow_manual_candidate"`
 	Baseline                      *routingTurnBaseline `json:"baseline,omitempty"`
 }
@@ -65,14 +66,16 @@ type rollbackDecisionResponse struct {
 	EffectiveCompleted  int    `json:"effective_completed_turns"`
 	BaselineApplied     bool   `json:"baseline_applied"`
 	DecisionToken       string `json:"decision_token,omitempty"`
+	LifecycleAction     string `json:"lifecycle_action"`
 }
 
 type rollbackDecisionRecord struct {
-	Token         string
-	SessionID     string
-	FromTurn      int
-	RequestSource string
-	Sequence      uint64
+	Token           string
+	SessionID       string
+	FromTurn        int
+	RequestSource   string
+	LifecycleAction string
+	Sequence        uint64
 }
 
 type rollbackDecisionLedger struct {
@@ -85,7 +88,7 @@ func newRollbackDecisionLedger() *rollbackDecisionLedger {
 	return &rollbackDecisionLedger{records: map[string]rollbackDecisionRecord{}}
 }
 
-func (l *rollbackDecisionLedger) issue(sessionID string, fromTurn int, requestSource string) rollbackDecisionRecord {
+func (l *rollbackDecisionLedger) issue(sessionID string, fromTurn int, requestSource, lifecycleAction string) rollbackDecisionRecord {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now().UTC()
@@ -98,7 +101,7 @@ func (l *rollbackDecisionLedger) issue(sessionID string, fromTurn int, requestSo
 	}
 	token := hex.EncodeToString(bytes)
 	l.nextSequence++
-	record := rollbackDecisionRecord{Token: token, SessionID: sessionID, FromTurn: fromTurn, RequestSource: requestSource, Sequence: l.nextSequence}
+	record := rollbackDecisionRecord{Token: token, SessionID: sessionID, FromTurn: fromTurn, RequestSource: requestSource, LifecycleAction: lifecycleAction, Sequence: l.nextSequence}
 	l.records[token] = record
 	return record
 }
@@ -177,7 +180,7 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	resp := calculateRollbackDecision(req)
 	if resp.Allowed {
-		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, req.RequestSource)
+		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, req.RequestSource, resp.LifecycleAction)
 		resp.DecisionToken = record.Token
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -204,6 +207,17 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 	}
 	if req.PendingOutputGuard || rollbackObservationHasPendingGeneration(req.HostLifecycleObservation) {
 		resp.Reason = "pending_output_guard"
+		return resp
+	}
+	lifecycleAction := strings.ToLower(strings.TrimSpace(req.LifecycleActionObservation))
+	switch lifecycleAction {
+	case "":
+		// This decision contract only admits a verified host deletion. Callers
+		// performing an output replacement must explicitly observe supersession.
+		lifecycleAction = store.LogicalTurnLifecycleDeleted
+	case store.LogicalTurnLifecycleDeleted, store.LogicalTurnLifecycleSuperseded:
+	default:
+		resp.Reason = "lifecycle_action_observation_invalid"
 		return resp
 	}
 	manual := strings.EqualFold(strings.TrimSpace(req.RequestSource), "manual")
@@ -269,6 +283,7 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 	resp.MinFromTurn = minFrom
 	resp.EffectiveCompleted = effectiveCompleted
 	resp.BaselineApplied = baselineApplied
+	resp.LifecycleAction = lifecycleAction
 	return resp
 }
 

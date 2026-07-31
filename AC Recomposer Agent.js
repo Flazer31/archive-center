@@ -1,12 +1,12 @@
-//@name Risu Recomposer
-//@display-name Risu Recomposer
+//@name AC Recomposer Agent
+//@display-name AC Recomposer Agent Beta 0.02
 //@author recomposer
 //@api 3.0
-//@version 0.1.33
+//@version 0.0.2
 
 
 /*
- * Standalone RisuAI scene recomposer: turn contract -> scene variants ->
+ * Standalone AC Recomposer Agent for RisuAI: turn contract -> scene variants ->
  * Semantic Judge -> Fusion Plan -> Composer -> structural verifier -> Semantic Prover. Protected and inspect-only
  * segments are preserved while mutable prose is rebuilt.
  */
@@ -14,9 +14,10 @@
   "use strict";
 
   const PLUGIN_ID = "risu_recomposer";
-  const VERSION = "0.1.33";
-  const BUILD_MARKER = "ADAPTIVE-SCENE-RECOMPOSITION-20260730";
-  const LOG_PREFIX = "[Recomposer]";
+  const VERSION = "0.0.2";
+  const RELEASE_LABEL = "Beta 0.02";
+  const BUILD_MARKER = "AC-RECOMPOSER-AGENT-BETA-002-20260731-SCENE-FRAME";
+  const LOG_PREFIX = "[AC Recomposer Agent]";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings_v1`;
   const TRACE_KEY = `${PLUGIN_ID}_trace_v1`;
   const TRACE_LIMIT = 30;
@@ -1633,6 +1634,248 @@
       });
     }
     return segments.filter((seg) => seg.end > seg.start || seg.type !== "mutable");
+  }
+
+  const SCENE_REWRITE_SEGMENT_ID = "scene_1";
+  const SCENE_FRAME_TOKEN_RE = /\[\[ACR_EXACT_[a-z0-9]+_\d{4}\]\]/gi;
+
+  function sceneFrameToken(digest, index) {
+    return `[[ACR_EXACT_${safeString(digest).slice(0, 10)}_${String(index + 1).padStart(4, "0")}]]`;
+  }
+
+  function extractSceneFrameTokens(text) {
+    return safeString(text).match(SCENE_FRAME_TOKEN_RE) || [];
+  }
+
+  function validateSceneFrameText(segment, text) {
+    const required = arrayFromCollection(segment && segment.required_preservation_tokens)
+      .map((token) => safeString(token));
+    if (!required.length) return { pass: true, code: "", expected: [], actual: [] };
+    const actual = extractSceneFrameTokens(text);
+    const pass = actual.length === required.length
+      && actual.every((token, index) => token === required[index]);
+    return {
+      pass,
+      code: pass ? "" : "scene_frame_placeholder_mismatch",
+      expected: required,
+      actual,
+    };
+  }
+
+  function buildSceneRewriteFrame(physicalSegments, originalText) {
+    const source = safeString(originalText);
+    let digest = stableDigest(source);
+    let digestSalt = 0;
+    while (source.indexOf(`[[ACR_EXACT_${digest}_`) >= 0) {
+      digest = stableDigest(`${source}:${++digestSalt}`);
+    }
+    const tokens = [];
+    const preservationManifest = [];
+    const slotSegmentIds = [null];
+    const maskedParts = [];
+
+    arrayFromCollection(physicalSegments).forEach((segment) => {
+      if (segment.type === "mutable") {
+        const slotIndex = slotSegmentIds.length - 1;
+        if (slotSegmentIds[slotIndex]) {
+          throw new Error(`scene_frame_multiple_mutable_slot:${slotIndex}`);
+        }
+        slotSegmentIds[slotIndex] = segment.id;
+        maskedParts.push(mutableFullText(segment));
+        return;
+      }
+      const token = sceneFrameToken(digest, tokens.length);
+      tokens.push(token);
+      preservationManifest.push({
+        token,
+        segment_id: safeString(segment.id),
+        type: safeString(segment.type),
+        kind: safeString(segment.kind),
+        chars: safeString(segment.text).length,
+        preview: preview(segment.text, 160),
+      });
+      maskedParts.push(token);
+      slotSegmentIds.push(null);
+    });
+
+    const maskedText = maskedParts.join("");
+    const ws = splitMutableWhitespace(maskedText);
+    const logicalSegment = {
+      id: SCENE_REWRITE_SEGMENT_ID,
+      type: "mutable",
+      start: 0,
+      end: maskedText.length,
+      text: maskedText,
+      leading_ws: ws.leadingWs,
+      core_text: ws.core,
+      trailing_ws: ws.trailingWs,
+      required_preservation_tokens: tokens.slice(),
+      preservation_manifest: preservationManifest,
+    };
+    return {
+      schema: "scene_rewrite_frame.v1",
+      digest,
+      original_text: source,
+      physical_segments: arrayFromCollection(physicalSegments),
+      logical_segments: [logicalSegment],
+      semantic_segments: [{
+        id: SCENE_REWRITE_SEGMENT_ID,
+        type: "mutable",
+        start: 0,
+        end: source.length,
+        text: source,
+        leading_ws: "",
+        core_text: source,
+        trailing_ws: "",
+      }],
+      tokens,
+      preservation_manifest: preservationManifest,
+      slot_segment_ids: slotSegmentIds,
+    };
+  }
+
+  function splitSceneFrameText(frame, text) {
+    const source = safeString(text);
+    const logicalSegment = frame && frame.logical_segments && frame.logical_segments[0];
+    const tokenCheck = validateSceneFrameText(logicalSegment, source);
+    if (!tokenCheck.pass) {
+      return { pass: false, code: tokenCheck.code, chunks: [], token_check: tokenCheck };
+    }
+    const chunks = [];
+    let cursor = 0;
+    arrayFromCollection(frame && frame.tokens).forEach((token) => {
+      const index = source.indexOf(token, cursor);
+      if (index < 0) return;
+      chunks.push(source.slice(cursor, index));
+      cursor = index + token.length;
+    });
+    chunks.push(source.slice(cursor));
+    if (chunks.length !== arrayFromCollection(frame && frame.slot_segment_ids).length) {
+      return { pass: false, code: "scene_frame_slot_count_mismatch", chunks: [], token_check: tokenCheck };
+    }
+    const unanchored = chunks.findIndex((chunk, index) =>
+      !frame.slot_segment_ids[index] && safeString(chunk).trim().length > 0
+    );
+    if (unanchored >= 0) {
+      return { pass: false, code: `scene_frame_unanchored_text:${unanchored}`, chunks: [], token_check: tokenCheck };
+    }
+    return { pass: true, code: "", chunks, token_check: tokenCheck };
+  }
+
+  function restoreSceneRewriteFrame(frame, rewrittenMaskedText) {
+    const split = splitSceneFrameText(frame, rewrittenMaskedText);
+    if (!split.pass) return { pass: false, code: split.code, output: "", final_segments: [] };
+    const physicalById = {};
+    arrayFromCollection(frame.physical_segments).forEach((segment) => {
+      physicalById[safeString(segment.id)] = segment;
+    });
+    const rewrittenByMutableId = {};
+    arrayFromCollection(frame.slot_segment_ids).forEach((segmentId, slotIndex) => {
+      if (!segmentId) return;
+      const original = physicalById[segmentId];
+      const finalCore = replacementCoreText(split.chunks[slotIndex]);
+      rewrittenByMutableId[segmentId] = safeString(original.leading_ws)
+        + finalCore
+        + safeString(original.trailing_ws);
+    });
+    const finalSegments = arrayFromCollection(frame.physical_segments).map((segment) => {
+      if (segment.type !== "mutable") {
+        return {
+          id: segment.id,
+          type: segment.type,
+          kind: segment.kind,
+          original_text: segment.text,
+          final_text: segment.text,
+          source: "preserved",
+        };
+      }
+      const originalFull = mutableFullText(segment);
+      const finalFull = Object.prototype.hasOwnProperty.call(rewrittenByMutableId, segment.id)
+        ? rewrittenByMutableId[segment.id]
+        : originalFull;
+      const materiality = rewriteMateriality(originalFull, finalFull);
+      return {
+        id: segment.id,
+        type: "mutable",
+        original_text: originalFull,
+        final_text: finalFull,
+        source: finalFull === originalFull ? "original" : "composer",
+        operation: finalFull === originalFull ? "none" : "replace",
+        applied_role_id: finalFull === originalFull ? "" : COMPOSER_ROLE_ID,
+        composer_unchanged: finalFull === originalFull,
+        material_change: finalFull !== originalFull && materiality.material,
+        original_meta_only: materiality.original_meta_only,
+        sequence_similarity: materiality.sequence_similarity,
+        changed_span_ratio: materiality.changed_span_ratio,
+      };
+    });
+    return {
+      pass: true,
+      code: "",
+      output: finalSegments.map((segment) => segment.final_text).join(""),
+      final_segments: finalSegments,
+    };
+  }
+
+  function assembleSceneRewriteFrame(frame, composerResult) {
+    const logicalAssembly = assembleOutput(frame.logical_segments, composerResult);
+    const restored = restoreSceneRewriteFrame(frame, logicalAssembly.output);
+    if (!restored.pass) {
+      return Object.assign({}, logicalAssembly, {
+        output: frame.original_text,
+        finalSegments: [{
+          id: SCENE_REWRITE_SEGMENT_ID,
+          type: "mutable",
+          original_text: frame.original_text,
+          final_text: frame.original_text,
+          source: "original",
+          operation: "none",
+          material_change: false,
+        }],
+        physicalFinalSegments: [],
+        logicalFinalSegments: logicalAssembly.finalSegments,
+        changed: false,
+        composerApplied: 0,
+        materialComposerApplied: 0,
+        frame_error: restored.code,
+      });
+    }
+    const originalText = frame.original_text;
+    const finalText = restored.output;
+    const logicalEvidence = logicalAssembly.finalSegments.find((segment) =>
+      segment.id === SCENE_REWRITE_SEGMENT_ID
+    );
+    const materiality = rewriteMateriality(
+      logicalEvidence ? logicalEvidence.original_text : originalText,
+      logicalEvidence ? logicalEvidence.final_text : finalText
+    );
+    const changed = finalText !== originalText;
+    return {
+      output: finalText,
+      finalSegments: [{
+        id: SCENE_REWRITE_SEGMENT_ID,
+        type: "mutable",
+        original_text: originalText,
+        final_text: finalText,
+        source: changed ? "composer" : "original",
+        operation: changed ? "replace" : "none",
+        applied_role_id: changed ? COMPOSER_ROLE_ID : "",
+        composer_unchanged: !changed,
+        material_change: changed && materiality.material,
+        original_meta_only: materiality.original_meta_only,
+        sequence_similarity: materiality.sequence_similarity,
+        changed_span_ratio: materiality.changed_span_ratio,
+      }],
+      physicalFinalSegments: restored.final_segments,
+      logicalFinalSegments: logicalAssembly.finalSegments,
+      changed,
+      composerApplied: changed ? 1 : 0,
+      materialComposerApplied: changed && materiality.material && !materiality.original_meta_only ? 1 : 0,
+      materialChanged: changed && materiality.material ? 1 : 0,
+      metaOnlyChanged: changed && materiality.original_meta_only ? 1 : 0,
+      unchangedSegments: changed ? 0 : 1,
+      frame_error: "",
+    };
   }
 
   function summarizeSegments(segments) {
@@ -3780,6 +4023,17 @@
     const draftLedgerSection = draftLedger.schema === "draft_ledger.v1"
       ? `\n\n--- Draft Ledger (binding source map) ---\n${JSON.stringify(draftLedger)}\n--- End Draft Ledger ---\n`
       : "";
+    const preservationManifest = arrayFromCollection(mutableSegs).flatMap((segment) =>
+      arrayFromCollection(segment && segment.preservation_manifest).map((item) => ({
+        token: safeString(item && item.token),
+        segment_id: safeString(item && item.segment_id),
+        type: safeString(item && item.type),
+        kind: safeString(item && item.kind),
+      }))
+    );
+    const preservationSection = preservationManifest.length
+      ? `\n\n--- Exact Preservation Placeholders ---\n${JSON.stringify(preservationManifest)}\nEvery listed token represents original protected or inspect-only bytes. Copy every token exactly once and in the same order inside the rewritten scene value. Never alter, remove, duplicate, reorder, translate, or invent a placeholder. The host restores the original bytes after composition.\n--- End Exact Preservation Placeholders ---\n`
+      : "";
     let userPrompt;
     if (role.is_input_planner) {
       const manifest = asObject(directorInfo && directorInfo.context_manifest);
@@ -3848,14 +4102,14 @@
       const retrySection = arrayFromCollection(revisionFeedback.weak_segment_ids).length
         ? `\n--- Recomposition Retry ---\nThe previous composition was rejected as a near-copy.\nWeak segment IDs: ${revisionFeedback.weak_segment_ids.join(", ")}\nPrevious rejected segments:\n${JSON.stringify(revisionFeedback.previous_segments || {})}\nFor every weak segment, discard the previous sentence structure and reconstruct the prose materially. Preserve facts, not wording. Do not answer with spelling, punctuation, synonym, or isolated-line edits.\n--- End Retry ---\n`
         : "";
-      userPrompt = `Compose the FINAL mutable prose from the original, accepted scene candidates, Semantic Judgment, Fusion Plan, and Draft Ledger.\n\nMutable segments:\n${mutableList}\n\nPreserved segments (never output or rewrite):\n${preservedList}\n${directorSection}${retrySection}${draftLedgerSection}${contextSection}\n\nRules:\n- Follow fusion_plan.v1. Preserve every required fact, beat, constraint, user-owned decision, secret/reveal state, POV boundary, and cross-segment consequence.\n- Realize every fusion_plan.required_contributions item in its specified segment_ids. Integrate compatible contributions from every accepted specialist role rather than collapsing to one top candidate.\n- Use only accepted candidate elements and permitted additions. Exclude every rejected element, prohibited addition, unsupported claim, and hard violation.\n- Resolve conflicts exactly as the Fusion Plan states; do not choose by confidence, score, verbosity, or surface elegance.\n- Synthesize compatible strengths into new prose. Never concatenate candidate passages or copy one candidate unchanged.\n- The supplied mutable text is already the visible response; do not recreate removed model reasoning, prompt residue, approval labels, assistant commentary, or output-contract violations.\n- Materially reconstruct every substantive segment through stronger scene architecture, causality, voice, subtext, dramatic pressure, imagery, pacing, transitions, and cadence.\n- After drafting all segment values, read them in assembled order and perform one final whole-scene polish. Correct awkward or erroneous wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, weak boundary transitions, and generic or explanatory ending cadence.\n- Do not introduce a motive, emotion, relationship interpretation, knowledge state, or personality judgment unless grounded in the original, Draft Ledger, accepted evidence, or runtime context.\n- Do not cross the current turn boundary or decide the user's unexpressed thought, speech, consent, emotion, or next action.\n- Include every requested mutable segment ID exactly once. Output no protected or inspect-only segment.\n\nReturn compact JSON only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}`;
+      userPrompt = `Compose the FINAL mutable prose from the original, accepted scene candidates, Semantic Judgment, Fusion Plan, and Draft Ledger.\n\nMutable segments:\n${mutableList}\n\nPreserved segments (never output or rewrite):\n${preservedList}\n${directorSection}${retrySection}${draftLedgerSection}${preservationSection}${contextSection}\n\nRules:\n- Follow fusion_plan.v1. Preserve every required fact, beat, constraint, user-owned decision, secret/reveal state, POV boundary, and cross-segment consequence.\n- Realize every fusion_plan.required_contributions item in its specified segment_ids. Integrate compatible contributions from every accepted specialist role rather than collapsing to one top candidate.\n- Use only accepted candidate elements and permitted additions. Exclude every rejected element, prohibited addition, unsupported claim, and hard violation.\n- Resolve conflicts exactly as the Fusion Plan states; do not choose by confidence, score, verbosity, or surface elegance.\n- Synthesize compatible strengths into new prose. Never concatenate candidate passages or copy one candidate unchanged.\n- The supplied mutable text is already the visible response; do not recreate removed model reasoning, prompt residue, approval labels, assistant commentary, or output-contract violations.\n- Materially reconstruct every substantive segment through stronger scene architecture, causality, voice, subtext, dramatic pressure, imagery, pacing, transitions, and cadence.\n- After drafting all segment values, read them in assembled order and perform one final whole-scene polish. Correct awkward or erroneous wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, weak boundary transitions, and generic or explanatory ending cadence.\n- Do not introduce a motive, emotion, relationship interpretation, knowledge state, or personality judgment unless grounded in the original, Draft Ledger, accepted evidence, or runtime context.\n- Do not cross the current turn boundary or decide the user's unexpressed thought, speech, consent, emotion, or next action.\n- Include every requested mutable segment ID exactly once. Output no protected or inspect-only segment.\n\nReturn compact JSON only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}`;
     } else {
       const segIds = mutableSegs.map((s) => s.id);
       const revisionRound = asObject(directorInfo && directorInfo.revision_round);
       const revisionSection = revisionRound.round
         ? `\n\n--- Adaptive Revision Round ${revisionRound.round} ---\nThe mutable segments above are the most recent Judge-accepted complete draft, not draft_zero.\nParent candidate: ${safeString(revisionRound.parent_candidate_id)}\nUnresolved requirements owned by this lane:\n${JSON.stringify(arrayFromCollection(revisionRound.requirements))}\nCurrent Semantic Judgment:\n${JSON.stringify(asObject(revisionRound.semantic_judgment))}\nCurrent Fusion Plan:\n${JSON.stringify(asObject(revisionRound.fusion_plan))}\nDevelop this complete draft further. Preserve its valid gains and resolve every listed requirement through your lane. Do not restart from weaker draft_zero wording.\n--- End Adaptive Revision Round ---\n`
         : "";
-      userPrompt = `Produce one complete scene-wide rewrite candidate through this lane.\n\nYou are seeing the full ordered visible response for continuity. Model reasoning containers were removed before this call. Protected and inspect-only segments are [PRESERVED] context and must never be returned or rewritten.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [PRESERVED]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${revisionSection}${draftLedgerSection}${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return exactly one candidate whose segments object contains every allowed substantive mutable segment ID exactly once, or return an empty candidates array.\n- The candidate must be readable from the first mutable segment through the last as one complete version of this turn. Missing IDs, partial excerpts, patch fragments, and implicit passthrough are rejected as an incomplete scene.\n- Reconstruct the full scene through this lane; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Preserve Draft Ledger facts, beats, secrets, POV, identity state, user-owned decisions, and the current turn boundary. Wording and paragraph architecture are not protected.\n- Do not recreate model reasoning, approval labels, assistant commentary, prompt residue, or other meta artifacts.\n- No substantive scene segment may be empty. An empty value is allowed only to delete a wholly meta-only mutable segment and must include meta_artifact in addressed_issues.\n- evidence_refs must name Draft Ledger ledger_id, source_ref, or runtime context refs actually used.\n- retained_beats must identify the Draft Ledger units preserved in the scene.\n- proposed_additions must disclose every new factual claim, relationship fact, event, location fact, object state, backstory detail, motive, emotion, knowledge state, or personality judgment introduced by the candidate. Use [] when none.\n- confidence is trace-only metadata and never guarantees selection.\n- If this lane cannot materially improve the whole scene, return {"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[]}. That response is traced as no_candidate, not as a successful rewrite.\n- Identify the concrete issues addressed and summarize the actual scene-level revision.\n\nReturn one compact JSON object only:\n{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"complete replacement text for every allowed ID"},"evidence_refs":["ledger_or_context_ref"],"retained_beats":[{"id":"ledger_id","text":"retained beat"}],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.75,"change_summary":"what materially changed across the complete scene"}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
+      userPrompt = `Produce one complete scene-wide rewrite candidate through this lane.\n\nYou are seeing the full ordered visible response for continuity. Model reasoning containers were removed before this call. Protected and inspect-only bytes are represented by exact placeholders and must never be rewritten.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [PRESERVED]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${revisionSection}${draftLedgerSection}${preservationSection}${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return exactly one candidate whose segments object contains every allowed substantive mutable segment ID exactly once, or return an empty candidates array.\n- The candidate must be readable from the first mutable segment through the last as one complete version of this turn. Missing IDs, partial excerpts, patch fragments, and implicit passthrough are rejected as an incomplete scene.\n- Reconstruct the full scene through this lane; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Preserve Draft Ledger facts, beats, secrets, POV, identity state, user-owned decisions, and the current turn boundary. Wording and paragraph architecture are not protected.\n- Do not recreate model reasoning, approval labels, assistant commentary, prompt residue, or other meta artifacts.\n- No substantive scene segment may be empty. An empty value is allowed only to delete a wholly meta-only mutable segment and must include meta_artifact in addressed_issues.\n- evidence_refs must name Draft Ledger ledger_id, source_ref, or runtime context refs actually used.\n- retained_beats must identify the Draft Ledger units preserved in the scene.\n- proposed_additions must disclose every new factual claim, relationship fact, event, location fact, object state, backstory detail, motive, emotion, knowledge state, or personality judgment introduced by the candidate. Use [] when none.\n- confidence is trace-only metadata and never guarantees selection.\n- If this lane cannot materially improve the whole scene, return {"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[]}. That response is traced as no_candidate, not as a successful rewrite.\n- Identify the concrete issues addressed and summarize the actual scene-level revision.\n\nReturn one compact JSON object only:\n{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"complete replacement text for every allowed ID"},"evidence_refs":["ledger_or_context_ref"],"retained_beats":[{"id":"ledger_id","text":"retained beat"}],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.75,"change_summary":"what materially changed across the complete scene"}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
     }
     return { system: systemPrompt, user: userPrompt };
   }
@@ -4023,6 +4277,18 @@
           candidateIndex,
           emptySubstantiveSegmentIds,
           "complete scene candidates cannot leave substantive segments empty"
+        ));
+        return;
+      }
+      const placeholderMismatchIds = allowedIds.filter((segmentId) =>
+        !validateSceneFrameText(mutableById[segmentId], safeString(rawSegments[segmentId])).pass
+      );
+      if (placeholderMismatchIds.length) {
+        diagnostics.push(candidateValidationDiagnostic(
+          "scene_frame_placeholder_mismatch",
+          candidateIndex,
+          placeholderMismatchIds,
+          "every exact-preservation placeholder must appear once in the original order"
         ));
         return;
       }
@@ -5011,6 +5277,7 @@
     Object.keys(segments).forEach((segId) => {
       if (!allowed.has(segId)) return;
       const text = safeString(segments[segId]);
+      if (!validateSceneFrameText(mutableById[segId], text).pass) return;
       if (text || isWhollyMetaArtifactText(mutableFullText(mutableById[segId]))) {
         result[segId] = text;
         count++;
@@ -5018,6 +5285,18 @@
     });
     if (!count || count !== allowed.size) return null;
     return { segments: result };
+  }
+
+  function validateComposerPlainScene(text, allowedSegmentIds, mutableSegs) {
+    if (!Array.isArray(allowedSegmentIds) || allowedSegmentIds.length !== 1) return null;
+    const raw = safeString(text);
+    if (!raw.trim() || /^\s*[\[{]/.test(raw) || /"segments"\s*:/.test(raw)) return null;
+    const visible = extractVisibleAssistantOutput(raw);
+    if (!visible.text.trim() || visible.ambiguous_unclosed) return null;
+    const segmentId = allowedSegmentIds[0];
+    const mutable = arrayFromCollection(mutableSegs).find((segment) => segment.id === segmentId);
+    if (!mutable || !validateSceneFrameText(mutable, visible.text).pass) return null;
+    return { segments: { [segmentId]: visible.text } };
   }
 
   function isProfileConfigured(profile) {
@@ -5127,46 +5406,21 @@
     return uniqueList(ids);
   }
 
-  function composerStructuredRecoveryPrompts(prompts, mutableSegs, allSegments, directorInfo, contextBlock) {
+  function composerStructuredRecoveryPrompts(mutableSegs, previousFailure) {
     const segmentIds = arrayFromCollection(mutableSegs).map((segment) => safeString(segment.id));
-    const candidateBundles = {};
-    segmentIds.forEach((segmentId) => {
-      candidateBundles[segmentId] = arrayFromCollection(
-        directorInfo && directorInfo.candidateBundles && directorInfo.candidateBundles[segmentId]
-      ).map((candidate) => ({
-        candidate_id: safeString(candidate.candidate_id),
-        role: safeString(candidate.role),
-        judge_verdict: safeString(candidate.judge_verdict),
-        rewrite: safeString(candidate.rewrite),
-        evidence_refs: arrayFromCollection(candidate.evidence_refs),
-        retained_beats: arrayFromCollection(candidate.retained_beats),
-        proposed_additions: arrayFromCollection(candidate.proposed_additions),
-        change_summary: safeString(candidate.change_summary),
-      }));
-    });
     const shape = {};
     segmentIds.forEach((segmentId) => { shape[segmentId] = "final rewritten text"; });
-    const recoveryPayload = {
-      mutable_segments: arrayFromCollection(mutableSegs).map((segment) => ({
-        id: safeString(segment.id),
-        original: mutableFullText(segment),
-      })),
-      preserved_segments: arrayFromCollection(allSegments)
-        .filter((segment) => segment.type !== "mutable")
-        .map((segment) => ({ id: safeString(segment.id), type: safeString(segment.type), kind: safeString(segment.kind) })),
-      accepted_candidates: candidateBundles,
-      semantic_judgment: asObject(directorInfo && directorInfo.semantic_judgment),
-      fusion_plan: asObject(directorInfo && directorInfo.fusion_plan),
-      draft_ledger: asObject(directorInfo && directorInfo.draft_ledger),
-      revision_lineage: arrayFromCollection(directorInfo && directorInfo.revision_lineage),
-      last_valid_candidate: asObject(directorInfo && directorInfo.last_valid_candidate),
-      composer_revision_feedback: asObject(directorInfo && directorInfo.composer_revision_feedback),
-      semantic_proof_repair: asObject(directorInfo && directorInfo.semantic_proof_repair),
-      runtime_context: safeString(contextBlock),
-    };
+    const placeholderContract = arrayFromCollection(mutableSegs).map((segment) => ({
+      segment_id: safeString(segment.id),
+      required_tokens: arrayFromCollection(segment && segment.required_preservation_tokens),
+    }));
+    const failedResponse = truncate(
+      typeof previousFailure === "string" ? previousFailure : JSON.stringify(previousFailure || {}),
+      120000
+    );
     return {
-      system: `${prompts.system}\n\nSTRUCTURED RECOVERY: Return the final Composer JSON object directly. Do not emit analysis, reasoning, markdown, or prose outside JSON.`,
-      user: `The prior Composer response used only the reasoning channel. Compose the final mutable scene now from this recovery payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return every requested mutable segment ID exactly once.\n- Materially reconstruct every substantive segment. Preserve grounded facts and constraints, not original wording.\n- Use accepted candidate strengths and the Fusion Plan; exclude rejected or prohibited content.\n- The mutable payload contains visible prose only. Do not recreate model reasoning or output-contract artifacts.\n- Read the returned segment values in assembled order and correct awkward wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, transitions, and ending cadence.\n- Preserve the original output language and current turn boundary.\n\nReturn exactly this compact JSON shape and nothing else:\n${JSON.stringify({ segments: shape })}`,
+      system: "You repair one already-written Composer response into valid compact JSON. Output JSON only. Do not analyze, explain, continue, shorten, or rewrite the prose.",
+      user: `Recover the complete scene text already present in the failed response below.\n\nAllowed segment IDs:\n${JSON.stringify(segmentIds)}\n\nExact placeholder contract:\n${JSON.stringify(placeholderContract)}\n\nFailed Composer response:\n${failedResponse}\n\nRules:\n- Return every allowed segment ID exactly once and no other key.\n- Preserve the scene wording from the failed response; this is format recovery, not another composition pass.\n- Preserve every required placeholder exactly once in the listed order.\n- If the failed response contains a JSON wrapper, repair only its structure and escaping.\n- Output no reasoning, markdown fence, label, or commentary.\n\nReturn exactly this JSON shape:\n${JSON.stringify({ segments: shape })}`,
     };
   }
 
@@ -5613,9 +5867,14 @@
           : null;
         if (pseudoToolPayload) structuredTransport = "pseudo_tool_recovered";
         const parsed = structuredPayload || pseudoToolPayload || tryParseJson(structuredRaw) || tryParseJson(content);
-        if (!parsed) throw new Error("json_parse_failed");
         let validated;
-        if (role.is_input_planner) {
+        if (role.is_composer && !parsed) {
+          validated = validateComposerPlainScene(content || structuredRaw, allowedSegIds, mutableSegs);
+          if (validated) structuredTransport = "composer_plain_scene";
+          else throw new Error("json_parse_failed");
+        } else if (!parsed) {
+          throw new Error("json_parse_failed");
+        } else if (role.is_input_planner) {
           validated = validateTurnContractFragment(
             parsed,
             role.role_id,
@@ -5751,15 +6010,13 @@
           ),
           "semantic_prover_json_recovery"
         );
-      } else if (role.is_composer && outcome.classification.code === "reasoning_only_response") {
+      } else if (role.is_composer
+          && /^(?:json_parse_failed|schema_validation_failed|reasoning_only_response)$/.test(outcome.classification.code)) {
         outcome = await executeAttempt(
           structuredRecoveryProfile(profile),
           composerStructuredRecoveryPrompts(
-            prompts,
             mutableSegs,
-            allSegments,
-            directorInfo,
-            contextBlock
+            outcome.classification.recovery_source || outcome.classification.recovery_payload
           ),
           "composer_json_recovery"
         );
@@ -5904,7 +6161,7 @@
     return null;
   }
 
-  /* ── Router (Fugu role selection) ──────────────────────── */
+  /* ── Adaptive role selection ───────────────────────────── */
 
   function detectSceneSignals(segments, context, draftLedger) {
     const signals = [];
@@ -6370,8 +6627,13 @@
       composerRole, composerProfile, workingMutableSegs, contextBlock, workingSegments,
       abortSignal, trace, directorInfo, composerStarted,
       {
-        allowRetry: false,
+        allowRetry: true,
         allowFallback: true,
+        retryErrorCodes: [
+          "json_parse_failed",
+          "schema_validation_failed",
+          "reasoning_only_response",
+        ],
         completionWait: !!completionWait,
       }
     );
@@ -7430,7 +7692,7 @@
     if (trace && trace.budget) {
       trace.budget.composer_attempt_reserved = composerRole && composerProfile
         && composerProfile.enabled && isProfileConfigured(composerProfile)
-        ? (configuredFallbackProfile(composerProfile) ? 2 : 1)
+        ? 2
         : 0;
       trace.budget.composer_attempt_used = 0;
       trace.budget.judge_attempt_reserved = judgeRole && judgeProfile
@@ -7994,7 +8256,7 @@
     pruneCompletedOutputCache(entry.created_at);
   }
 
-  function updateLatestAppliedComparison(trace, finalSegments) {
+  function updateLatestAppliedComparison(trace, finalSegments, originalText, returnedText) {
     const appliedBySegment = {};
     arrayFromCollection(trace && trace.applied_evidence).forEach((item) => {
       appliedBySegment[safeString(item.segment_id)] = item;
@@ -8019,6 +8281,9 @@
       state: safeString(trace && trace.summary && trace.summary.final_state) || "unchanged",
       reason: safeString(trace && trace.final && trace.final.reason),
       changes,
+      original_text: safeString(originalText),
+      returned_text: safeString(returnedText),
+      applied: changes.length > 0,
     };
     if (uiRoot) {
       const container = uiRoot.querySelector(".recomposer-compare-list");
@@ -8300,6 +8565,8 @@
     let deadline = null;
     let comparisonFinalSegments = null;
     let comparisonTurn = false;
+    let comparisonOriginalText = "";
+    let comparisonReturnedText = "";
 
     try {
       const settings = await loadSettings();
@@ -8335,6 +8602,8 @@
       };
       content = visibleOutput.text;
       const originalText = visibleOutput.text;
+      comparisonOriginalText = originalText;
+      comparisonReturnedText = originalText;
       if (!originalText.trim()) {
         setFinalTraceState(
           trace, false, "bypassed",
@@ -8368,6 +8637,7 @@
         traceTimeline(trace, "output_reuse_hit");
         comparisonTurn = true;
         comparisonFinalSegments = cloneSnapshotValue(completedReuse.final_segments || []);
+        comparisonReturnedText = safeString(completedReuse.output);
         if (settings_trace_enabled()) await saveTrace(trace);
         return safeString(completedReuse.output);
       }
@@ -8439,10 +8709,18 @@
       traceTimeline(trace, "context_done");
 
       traceTimeline(trace, "segment_start");
-      const segments = buildSegmentMap(originalText, settings);
-      const segSummary = summarizeSegments(segments);
+      const physicalSegments = buildSegmentMap(originalText, settings);
+      const segSummary = summarizeSegments(physicalSegments);
+      const rewriteFrame = buildSceneRewriteFrame(physicalSegments, originalText);
+      const segments = rewriteFrame.logical_segments;
       trace.segments = segSummary;
-      const draftLedger = buildDraftLedger(originalText, segments, effectiveTurnContract);
+      trace.rewrite_frame = {
+        schema: rewriteFrame.schema,
+        logical_mutable_count: segments.length,
+        placeholder_count: rewriteFrame.tokens.length,
+        physical_segment_count: physicalSegments.length,
+      };
+      const draftLedger = buildDraftLedger(originalText, physicalSegments, effectiveTurnContract);
       trace.draft_ledger = summarizeDraftLedger(draftLedger);
       trace.lineage.draft_zero_digest = safeString(draftLedger.draft_digest);
       traceTimeline(trace, "segment_done");
@@ -8468,7 +8746,7 @@
       }
 
       traceTimeline(trace, "router_start");
-      const signals = detectSceneSignals(segments, context, draftLedger);
+      const signals = detectSceneSignals(physicalSegments, context, draftLedger);
       const routerResult = selectRoles(settings.roles, signals, settings.preset, settings);
       const selectedRoles = routerResult.roles;
       traceTimeline(trace, "router_done");
@@ -8510,8 +8788,19 @@
         }
 
         traceTimeline(trace, "assemble_start");
-        let assembled = assembleOutput(segments, composerResult);
+        let assembled = assembleSceneRewriteFrame(rewriteFrame, composerResult);
         traceTimeline(trace, "assemble_done");
+        if (assembled.frame_error) {
+          const reason = `scene_frame_restore_failed:${assembled.frame_error}`;
+          setFinalTraceState(trace, false, "rejected", reason, {
+            material_rewrite: false,
+            semantic_verified: null,
+            quality_preferred: null,
+          });
+          traceError(trace, reason);
+          if (settings_trace_enabled()) await saveTrace(trace);
+          return content;
+        }
 
         /* ── R4: Director evidence ── */
         if (directorResult && directorResult.ranked) {
@@ -8534,7 +8823,12 @@
 
         /* ── R4: Final summary ── */
         traceTimeline(trace, "verify_start");
-        let verification = verifyOutput(segments, assembled.finalSegments, assembled.output, originalText);
+        let verification = verifyOutput(
+          physicalSegments,
+          assembled.physicalFinalSegments,
+          assembled.output,
+          originalText
+        );
         traceTimeline(trace, "verify_done");
 
         if (!verification.pass) {
@@ -8592,7 +8886,7 @@
         let semanticProof = await runSemanticProver(
           proverRole,
           proverProfile,
-          segments,
+          rewriteFrame.semantic_segments,
           assembled.finalSegments,
           directorResult,
           rewriteContextBlock,
@@ -8630,7 +8924,7 @@
             ? 1
             : 2;
           const previousSegments = {};
-          assembled.finalSegments.filter((segment) => segment.type === "mutable").forEach((segment) => {
+          assembled.logicalFinalSegments.filter((segment) => segment.type === "mutable").forEach((segment) => {
             previousSegments[segment.id] = segment.final_text;
           });
           traceTimeline(trace, "semantic_repair_start");
@@ -8662,8 +8956,15 @@
             return content;
           }
           composerResult = repairedComposerResult;
-          assembled = assembleOutput(segments, composerResult);
-          verification = verifyOutput(segments, assembled.finalSegments, assembled.output, originalText);
+          assembled = assembleSceneRewriteFrame(rewriteFrame, composerResult);
+          verification = assembled.frame_error
+            ? { pass: false, errors: [`scene_frame_restore_failed:${assembled.frame_error}`] }
+            : verifyOutput(
+                physicalSegments,
+                assembled.physicalFinalSegments,
+                assembled.output,
+                originalText
+              );
           if (!verification.pass || !assembled.changed || assembled.materialComposerApplied <= 0) {
             holdAttemptedEvidence(trace, assembled);
             const reason = !verification.pass
@@ -8684,7 +8985,7 @@
           semanticProof = await runSemanticProver(
             proverRole,
             proverProfile,
-            segments,
+            rewriteFrame.semantic_segments,
             assembled.finalSegments,
             directorResult,
             rewriteContextBlock,
@@ -8730,6 +9031,7 @@
         trace.lineage.proof_digest = stableDigest(semanticProof);
         trace.lineage.returned_output_digest = stableDigest(assembled.output);
         comparisonFinalSegments = assembled.finalSegments;
+        comparisonReturnedText = assembled.output;
 
         storeCompletedOutputReuse(
           rawOriginalText,
@@ -8753,7 +9055,14 @@
       return content;
     } finally {
       if (deadline) deadline.cancel();
-      if (comparisonTurn) updateLatestAppliedComparison(trace, comparisonFinalSegments);
+      if (comparisonTurn) {
+        updateLatestAppliedComparison(
+          trace,
+          comparisonFinalSegments,
+          comparisonOriginalText,
+          comparisonReturnedText
+        );
+      }
     }
   }
 
@@ -8991,7 +9300,33 @@
       return '<div class="recomposer-compare-empty">현재 세션에서 비교할 main 턴이 없습니다.</div>';
     }
     if (!snapshot.changes.length) {
-      return `<div class="recomposer-compare-empty">최근 main 턴에는 실제 적용된 문장 변경이 없습니다. (${escapeHtml(snapshot.reason || snapshot.state)})</div>`;
+      if (!snapshot.original_text && !snapshot.returned_text) {
+        return `<div class="recomposer-compare-empty">최근 main 턴에는 실제 적용된 문장 변경이 없습니다. (${escapeHtml(snapshot.reason || snapshot.state)})</div>`;
+      }
+      return `
+        <div class="recomposer-compare-entry">
+          <div class="recomposer-compare-head">
+            <strong>${new Date(snapshot.timestamp).toLocaleString()}</strong>
+            <span>변경 미적용 · ${escapeHtml(snapshot.reason || snapshot.state)}</span>
+          </div>
+          <section class="recomposer-compare-item">
+            <div class="recomposer-compare-meta">
+              <span>${SCENE_REWRITE_SEGMENT_ID}</span>
+              <span>원문 반환</span>
+              <span>실제 변경 0개</span>
+            </div>
+            <div class="recomposer-compare-grid">
+              <div class="recomposer-compare-column">
+                <span class="recomposer-compare-label">전</span>
+                <pre>${escapeHtml(snapshot.original_text)}</pre>
+              </div>
+              <div class="recomposer-compare-column is-after">
+                <span class="recomposer-compare-label">후 (반환본)</span>
+                <pre>${escapeHtml(snapshot.returned_text)}</pre>
+              </div>
+            </div>
+          </section>
+        </div>`;
     }
     const items = snapshot.changes.map((change) => {
       const finalText = change.operation === "delete" && !change.final_text
@@ -9716,8 +10051,8 @@
             <div class="recomposer-brand">
               <span class="recomposer-brand-mark" aria-hidden="true"></span>
               <span class="recomposer-brand-copy">
-                <strong>Risu Recomposer</strong>
-                <small>Build ${VERSION} · ${escapeHtml(BUILD_MARKER)}</small>
+                <strong>AC Recomposer Agent</strong>
+                <small>${RELEASE_LABEL} · ${escapeHtml(BUILD_MARKER)}</small>
               </span>
             </div>
             <div class="recomposer-trust"><span class="recomposer-trust-dot"></span>Read-only context · local trace</div>
@@ -9888,6 +10223,10 @@
         const lineageLine = `draft:${lineage.draft_zero_digest || "none"} candidates:${arrayFromCollection(lineage.candidate_ids).length} judgments:${arrayFromCollection(lineage.judgment_digests).length} plans:${arrayFromCollection(lineage.plan_ids).length} composer:${lineage.composer_output_digest || "none"} proof:${lineage.proof_digest || "none"} returned:${lineage.returned_output_digest || "none"}`;
         const visible = t.visible_output || {};
         const visibleLine = `raw:${visible.raw_chars || 0} visible:${visible.visible_chars || 0} removed-blocks:${visible.removed_block_count || 0} removed-chars:${visible.removed_chars || 0} ambiguous:${visible.ambiguous_unclosed === true}`;
+        const rewriteFrame = t.rewrite_frame || {};
+        const rewriteFrameLine = rewriteFrame.schema
+          ? `logical-mutable:${rewriteFrame.logical_mutable_count || 0} placeholders:${rewriteFrame.placeholder_count || 0} physical-segments:${rewriteFrame.physical_segment_count || 0}`
+          : "not_run";
         const archiveFeatures = Object.keys(archive.features || {}).map((key) => {
           const feature = archive.features[key] || {};
           return `${key}:${feature.status || "empty"}/${feature.selected_count || 0}${feature.call_status ? "/" + feature.call_status : ""}`;
@@ -9904,6 +10243,7 @@
           <strong>${escapeHtml(t.stage)} ${new Date(t.timestamp).toLocaleString()}</strong><br>
           Enhanced: ${finalEvidence.enhanced === true} · material:${finalEvidence.material_rewrite === true} · semantic:${escapeHtml(finalEvidence.semantic_verified || "not_run")} · quality:${escapeHtml(finalEvidence.quality_preferred || "not_run")} — ${escapeHtml(finalEvidence.reason || "")}<br>
           Segments: P:${t.segments.protected} I:${t.segments.inspect_only} M:${t.segments.mutable}<br>
+          Rewrite Frame: ${escapeHtml(rewriteFrameLine)}<br>
           Visible Output: ${escapeHtml(visibleLine)}<br>
           ${routerLine ? `Router: ${escapeHtml(routerLine)}<br>` : ""}
           Input Enhance: ${escapeHtml(inputLine)}<br>
@@ -10118,7 +10458,7 @@
     function response(content) {
       return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content } }] }) };
     }
-    function sceneCandidateJson(roleId, text) {
+    function sceneCandidateJson(roleId, text, segmentId) {
       const issueByRole = {
         character_reader: 'character_voice',
         plot_continuity_reader: 'scene_logic',
@@ -10129,7 +10469,7 @@
         schema: 'scene_rewrite_candidates.v1',
         role_id: roleId,
         candidates: [{
-          segments: { mutable_1: text },
+          segments: { [segmentId || 'mutable_1']: text },
           evidence_refs: ['fact_1'],
           retained_beats: [{ id: 'fact_1', text: 'Keep the meeting fact.' }],
           proposed_additions: [],
@@ -11823,7 +12163,7 @@
               repairReference = 'output_contract:turn_boundary_ok';
             }
             proof.repair_instructions = [{
-              segment_id: 'mutable_1',
+              segment_id: SCENE_REWRITE_SEGMENT_ID,
               instruction: `Restore ${repairReference} while preserving the full scene.`,
               evidence_refs: [repairReference],
               prohibited: ['Do not add a new event.'],
@@ -11834,7 +12174,7 @@
         if (model.indexOf(COMPOSER_ROLE_ID) >= 0) {
           composerCalls++;
           return response(JSON.stringify({
-            segments: { mutable_1: composerCalls === 1 ? initialComposerText : finalComposerText },
+            segments: { [SCENE_REWRITE_SEGMENT_ID]: composerCalls === 1 ? initialComposerText : finalComposerText },
           }));
         }
         if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
@@ -11862,10 +12202,18 @@
           }
         }
         if (model.indexOf('character_reader') >= 0) {
-          return response(sceneCandidateJson('character_reader', 'Mira read the ledger while withholding the secret.'));
+          return response(sceneCandidateJson(
+            'character_reader',
+            'Mira read the ledger while withholding the secret.',
+            SCENE_REWRITE_SEGMENT_ID
+          ));
         }
         if (model.indexOf('style_reader') >= 0) {
-          return response(sceneCandidateJson('style_reader', 'Rain pressed softly at the window while Mira studied the ledger.'));
+          return response(sceneCandidateJson(
+            'style_reader',
+            'Rain pressed softly at the window while Mira studied the ledger.',
+            SCENE_REWRITE_SEGMENT_ID
+          ));
         }
         throw new Error(`unexpected model:${model}`);
       };
@@ -12987,6 +13335,214 @@
       return "shared Ollama group concurrency=2";
     });
 
+    await check("batch1_dense_html_uses_one_logical_scene", async () => {
+      const html = Array.from({ length: 48 }, (_item, index) =>
+        `<span data-i="${index}">line ${index}</span>`
+      ).join("\n");
+      const source = `Scene start.\n${html}\nScene end.`;
+      const physical = buildSegmentMap(source, defaultSettings());
+      const summary = summarizeSegments(physical);
+      const frame = buildSceneRewriteFrame(physical, source);
+      if (summary.protected < 90 || summary.mutable < 40) {
+        throw new Error(`dense_fixture_not_reproduced:${JSON.stringify(summary)}`);
+      }
+      if (frame.logical_segments.length !== 1
+          || frame.logical_segments[0].id !== SCENE_REWRITE_SEGMENT_ID
+          || frame.tokens.length !== summary.protected + summary.inspect_only) {
+        throw new Error(`logical_scene_not_compacted:${JSON.stringify({
+          logical: frame.logical_segments.length,
+          tokens: frame.tokens.length,
+          summary,
+        })}`);
+      }
+      return `physical=${physical.length} logical=${frame.logical_segments.length} placeholders=${frame.tokens.length}`;
+    });
+
+    await check("batch1_scene_frame_rejects_placeholder_damage", async () => {
+      const source = "Before <b>bold</b> and <i>italic</i> after.";
+      const frame = buildSceneRewriteFrame(buildSegmentMap(source, defaultSettings()), source);
+      const segment = frame.logical_segments[0];
+      const validText = segment.text.replace("Before", "Rewritten before");
+      const validCandidate = {
+        schema: "scene_rewrite_candidates.v1",
+        role_id: "style_reader",
+        candidates: [{
+          segments: { [SCENE_REWRITE_SEGMENT_ID]: validText },
+          evidence_refs: [],
+          retained_beats: [],
+          proposed_additions: [],
+          addressed_issues: ["rhythm"],
+          confidence: 0.8,
+          change_summary: "scene rewrite",
+        }],
+      };
+      if (!validateCandidateSchema(
+        validCandidate,
+        "style_reader",
+        [SCENE_REWRITE_SEGMENT_ID],
+        frame.logical_segments
+      )) throw new Error("valid_placeholder_candidate_rejected");
+      if (!validateComposerSchema(
+        { segments: { [SCENE_REWRITE_SEGMENT_ID]: validText } },
+        [SCENE_REWRITE_SEGMENT_ID],
+        frame.logical_segments
+      )) throw new Error("valid_placeholder_composer_rejected");
+      if (!validateComposerPlainScene(
+        validText,
+        [SCENE_REWRITE_SEGMENT_ID],
+        frame.logical_segments
+      )) throw new Error("valid_plain_scene_composer_rejected");
+      if (validateComposerPlainScene(
+        `{"segments":{"${SCENE_REWRITE_SEGMENT_ID}":`,
+        [SCENE_REWRITE_SEGMENT_ID],
+        frame.logical_segments
+      )) throw new Error("malformed_json_accepted_as_plain_scene");
+
+      const tokens = frame.tokens;
+      const damaged = [
+        validText.replace(tokens[0], ""),
+        validText.replace(tokens[0], `${tokens[0]}${tokens[0]}`),
+        validText.replace(tokens[0], "[[ACR_EXACT_foreign_9999]]"),
+        validText.replace(tokens[0], "__SWAP__")
+          .replace(tokens[1], tokens[0])
+          .replace("__SWAP__", tokens[1]),
+      ];
+      damaged.forEach((text, index) => {
+        const candidate = deepClone(validCandidate);
+        candidate.candidates[0].segments[SCENE_REWRITE_SEGMENT_ID] = text;
+        if (validateCandidateSchema(
+          candidate,
+          "style_reader",
+          [SCENE_REWRITE_SEGMENT_ID],
+          frame.logical_segments
+        )) throw new Error(`damaged_candidate_accepted:${index}`);
+        if (validateComposerSchema(
+          { segments: { [SCENE_REWRITE_SEGMENT_ID]: text } },
+          [SCENE_REWRITE_SEGMENT_ID],
+          frame.logical_segments
+        )) throw new Error(`damaged_composer_accepted:${index}`);
+      });
+      return "missing duplicate foreign and reordered placeholders rejected";
+    });
+
+    await check("batch1_scene_frame_restores_exact_structures_and_whitespace", async () => {
+      const source = "  Before.\n<img src=\"x\">\n```status\nHP: 10\n```\n<div class=\"box\">value</div>\n`code`\nAfter.  ";
+      const physical = buildSegmentMap(source, defaultSettings());
+      const frame = buildSceneRewriteFrame(physical, source);
+      const rewritten = frame.logical_segments[0].text
+        .replace("Before.", "The scene now opens with pressure.")
+        .replace("After.", "The scene closes on a sharper choice.");
+      const assembled = assembleSceneRewriteFrame(frame, {
+        segments: { [SCENE_REWRITE_SEGMENT_ID]: rewritten },
+      });
+      const verification = verifyOutput(
+        physical,
+        assembled.physicalFinalSegments,
+        assembled.output,
+        source
+      );
+      const exactStructures = [
+        '<img src="x">',
+        '```status\nHP: 10\n```',
+        '<div class="box">',
+        '</div>',
+        '`code`',
+      ];
+      if (!verification.pass || assembled.frame_error
+          || !exactStructures.every((item) => assembled.output.indexOf(item) >= 0)
+          || assembled.output.indexOf('\n<img src="x">\n') < 0
+          || !assembled.output.startsWith("  ")
+          || !assembled.output.endsWith("  ")) {
+        throw new Error(`scene_frame_restore_failed:${assembled.frame_error}:${verification.errors.join(",")}`);
+      }
+      return `restored ${frame.tokens.length} exact structures`;
+    });
+
+    await check("batch1_composer_accepts_complete_plain_scene", async () => {
+      const originalFetch = globalThis.fetch;
+      const originalRisu = globalThis.Risuai;
+      const source = 'Before <img src="x"> after.';
+      const frame = buildSceneRewriteFrame(buildSegmentMap(source, defaultSettings()), source);
+      const plainScene = frame.logical_segments[0].text
+        .replace("Before", "A stronger opening arrives before")
+        .replace("after.", "the consequence lands after.");
+      const settings = defaultSettings();
+      const role = DEFAULT_ROLES.find((item) => item.role_id === COMPOSER_ROLE_ID);
+      const profile = settings.role_profiles[COMPOSER_ROLE_ID];
+      profile.endpoint = "https://test.example.com/v1/chat/completions";
+      profile.model = "plain-scene-composer";
+      globalThis.Risuai = null;
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: plainScene } }] }),
+      });
+      try {
+        const trace = newTrace("test", "main");
+        const result = await callRole(
+          role,
+          profile,
+          frame.logical_segments,
+          "",
+          frame.logical_segments,
+          null,
+          trace,
+          { candidateBundles: {}, draft_ledger: {} },
+          Date.now(),
+          { allowRetry: false, allowFallback: false, completionWait: true }
+        );
+        const roleTrace = trace.roles[trace.roles.length - 1];
+        const attempt = roleTrace && roleTrace.attempts && roleTrace.attempts[0];
+        if (!result
+            || result.segments[SCENE_REWRITE_SEGMENT_ID] !== plainScene
+            || !attempt
+            || attempt.structured_transport !== "composer_plain_scene") {
+          throw new Error(`plain_scene_transport_failed:${JSON.stringify({ result, attempt })}`);
+        }
+      } finally {
+        globalThis.fetch = originalFetch;
+        globalThis.Risuai = originalRisu;
+      }
+      return "plain whole-scene Composer output accepted without JSON wrapper";
+    });
+
+    await check("batch1_comparison_shows_applied_and_original_return", async () => {
+      const original = "Original full scene.";
+      const changed = "Rewritten full scene with stronger dramatic movement.";
+      const trace = newTrace("test", "main");
+      trace.summary.final_state = "enhanced";
+      trace.final.reason = "composer_rewrite_semantic_proof_passed";
+      trace.applied_evidence = [{ segment_id: SCENE_REWRITE_SEGMENT_ID, role_contributions: [] }];
+      updateLatestAppliedComparison(trace, [{
+        id: SCENE_REWRITE_SEGMENT_ID,
+        type: "mutable",
+        original_text: original,
+        final_text: changed,
+        source: "composer",
+        operation: "replace",
+        applied_role_id: COMPOSER_ROLE_ID,
+        material_change: true,
+      }], original, changed);
+      if (!latestAppliedComparison.applied
+          || latestAppliedComparison.changes.length !== 1
+          || renderLatestComparison().indexOf(changed) < 0) {
+        throw new Error("applied_whole_scene_comparison_missing");
+      }
+
+      trace.summary.final_state = "rejected";
+      trace.final.reason = "composer_failed";
+      updateLatestAppliedComparison(trace, null, original, original);
+      const failedHtml = renderLatestComparison();
+      if (latestAppliedComparison.applied
+          || latestAppliedComparison.changes.length
+          || failedHtml.indexOf("composer_failed") < 0
+          || failedHtml.indexOf(original) < 0
+          || failedHtml.indexOf("변경 미적용") < 0) {
+        throw new Error("original_return_comparison_missing");
+      }
+      return "whole-scene applied and original-return comparison rendered";
+    });
+
     const passed = results.filter((item) => item.pass).length;
     const failed = results.length - passed;
     return { passed, failed, total: results.length, results };
@@ -13008,7 +13564,7 @@
       }
       try {
         if (RR && typeof RR.registerSetting === "function") {
-          await RR.registerSetting("Risu Recomposer", openSettingsUI, "🔧", "html", "risu-recomposer-settings");
+          await RR.registerSetting("AC Recomposer Agent", openSettingsUI, "🔧", "html", "risu-recomposer-settings");
         }
       } catch (err) {
         error("registerSetting error:", err);
@@ -13016,7 +13572,7 @@
       try {
         if (RR && typeof RR.registerButton === "function") {
           await RR.registerButton({
-            name: "Risu Recomposer Settings",
+            name: "AC Recomposer Agent Settings",
             icon: "🔧",
             iconType: "html",
             location: "chat",

@@ -38,7 +38,15 @@ func (s *logicalReplacementStoryClockStore) ReplaceLogicalTurn(_ context.Context
 	return nil
 }
 
+func (s *logicalReplacementStoryClockStore) RollbackCanonicalTail(context.Context, store.LogicalTurnRollback) error {
+	return nil
+}
+
 func (s *logicalReplacementFailureStore) ReplaceLogicalTurn(context.Context, store.LogicalTurnReplacement) error {
+	return s.err
+}
+
+func (s *logicalReplacementFailureStore) RollbackCanonicalTail(context.Context, store.LogicalTurnRollback) error {
 	return s.err
 }
 

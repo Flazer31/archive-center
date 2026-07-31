@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,7 +74,6 @@ func (s *Server) processMemoryVectorOutboxOnce(
 		result.Failure = "vector store is not configured"
 		return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, "vector store is not configured")
 	}
-
 	switch item.Operation {
 	case "delete":
 		deleter, ok := s.Vector.(vector.DocumentDeleter)
@@ -86,6 +86,25 @@ func (s *Server) processMemoryVectorOutboxOnce(
 			result.CanonicalState = "retryable"
 			result.Failure = err.Error()
 			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, err.Error())
+		}
+		reader, ok := s.Vector.(vector.ExactDocumentReader)
+		if !ok {
+			result.CanonicalState = "retryable"
+			result.Failure = "vector exact readback is not supported"
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+		}
+		readback, readErr := reader.GetDocuments(vectorCtx, []string{item.DocumentID})
+		if readErr != nil {
+			result.CanonicalState = "retryable"
+			result.Failure = "vector delete readback failed: " + readErr.Error()
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+		}
+		for _, document := range readback {
+			if strings.TrimSpace(document.ID) == strings.TrimSpace(item.DocumentID) {
+				result.CanonicalState = "retryable"
+				result.Failure = "vector delete readback still contains document"
+				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+			}
 		}
 	case "upsert":
 		var document vector.VectorDocument
@@ -130,6 +149,23 @@ func (s *Server) processMemoryVectorOutboxOnce(
 			result.Failure = err.Error()
 			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, err.Error())
 		}
+		reader, ok := s.Vector.(vector.ExactDocumentReader)
+		if !ok {
+			result.CanonicalState = "retryable"
+			result.Failure = "vector exact readback is not supported"
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+		}
+		readback, readErr := reader.GetDocuments(vectorCtx, []string{item.DocumentID})
+		if readErr != nil {
+			result.CanonicalState = "retryable"
+			result.Failure = "vector upsert readback failed: " + readErr.Error()
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+		}
+		if verifyErr := verifyMemoryVectorUpsertReadback(item, document, readback); verifyErr != nil {
+			result.CanonicalState = "retryable"
+			result.Failure = verifyErr.Error()
+			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+		}
 	default:
 		result.CanonicalState = "permanent"
 		result.Failure = "unknown vector operation"
@@ -148,6 +184,42 @@ func (s *Server) processMemoryVectorOutboxOnce(
 	}
 	result.CanonicalState = "completed"
 	return result, nil
+}
+
+func verifyMemoryVectorUpsertReadback(item *store.MemoryVectorOutboxItem, expected vector.VectorDocument, readback []vector.VectorDocument) error {
+	if item == nil {
+		return fmt.Errorf("vector upsert readback item is missing")
+	}
+	expectedMetadata := expected.Metadata
+	expectedRevision := strings.TrimSpace(extractionStringFromAny(expectedMetadata["source_revision"]))
+	expectedContract := strings.TrimSpace(extractionStringFromAny(expectedMetadata["source_contract"]))
+	expectedIndexIdentity := strings.TrimSpace(extractionStringFromAny(expectedMetadata["index_identity"]))
+	expectedFingerprint := strings.TrimSpace(extractionStringFromAny(expectedMetadata["content_fingerprint"]))
+	computedExpectedFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(expected.DocumentText)))
+	if expectedRevision == "" || expectedRevision != strings.TrimSpace(item.SourceRevision) ||
+		expectedContract == "" || expectedIndexIdentity == "" ||
+		expectedFingerprint == "" || expectedFingerprint != computedExpectedFingerprint {
+		return fmt.Errorf("vector upsert verification metadata is invalid")
+	}
+	matched := 0
+	for _, actual := range readback {
+		if strings.TrimSpace(actual.ID) != strings.TrimSpace(item.DocumentID) {
+			continue
+		}
+		matched++
+		actualFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(actual.DocumentText)))
+		if strings.TrimSpace(extractionStringFromAny(actual.Metadata["source_revision"])) != expectedRevision ||
+			strings.TrimSpace(extractionStringFromAny(actual.Metadata["source_contract"])) != expectedContract ||
+			strings.TrimSpace(extractionStringFromAny(actual.Metadata["index_identity"])) != expectedIndexIdentity ||
+			strings.TrimSpace(extractionStringFromAny(actual.Metadata["content_fingerprint"])) != expectedFingerprint ||
+			actualFingerprint != expectedFingerprint {
+			return fmt.Errorf("vector upsert readback metadata or content mismatch")
+		}
+	}
+	if matched != 1 {
+		return fmt.Errorf("vector upsert readback exact document count is %d", matched)
+	}
+	return nil
 }
 
 func (s *Server) processMemoryVectorOutboxBatch(

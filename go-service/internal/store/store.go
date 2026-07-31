@@ -705,11 +705,12 @@ type ChatLog struct {
 	CreatedAt     time.Time
 }
 
-// LogicalTurnReplacementStore atomically replaces the canonical tail turn and
-// removes every MariaDB-derived artifact whose provenance reaches that turn.
-// Host adapters only report observations; this mutation remains store-owned.
+// LogicalTurnReplacementStore owns canonical-tail mutation. Replacement and
+// rollback both remove every MariaDB-derived artifact whose provenance reaches
+// the affected turn in one transaction. Host adapters only report observations.
 type LogicalTurnReplacementStore interface {
 	ReplaceLogicalTurn(ctx context.Context, replacement LogicalTurnReplacement) error
+	RollbackCanonicalTail(ctx context.Context, rollback LogicalTurnRollback) error
 }
 
 // LogicalTurnReplacementError exposes the canonical transaction stage without
@@ -747,6 +748,23 @@ type LogicalTurnReplacement struct {
 	AssistantContent string
 	CreatedAt        time.Time
 	SourceRevision   *MemorySourceRevision
+}
+
+const (
+	LogicalTurnLifecycleInvalidated = "invalidated"
+	LogicalTurnLifecycleSuperseded  = "superseded"
+	LogicalTurnLifecycleDeleted     = "deleted"
+)
+
+// LogicalTurnRollback removes the canonical tail beginning at TurnIndex.
+// It deliberately carries no branch identifier: RisuAI has not exposed a
+// durable branch contract, so rollback remains scoped to the active session.
+type LogicalTurnRollback struct {
+	ChatSessionID   string
+	TurnIndex       int
+	LifecycleAction string
+	Reason          string
+	CreatedAt       time.Time
 }
 
 // EffectiveInput is the processed user intent per turn.

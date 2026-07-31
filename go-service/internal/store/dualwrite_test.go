@@ -551,3 +551,35 @@ func TestDualWritePreciseMemoryShadowFailureIsRecordedNotSurfaced(t *testing.T) 
 		t.Fatalf("shadow failure not recorded: failures=%d err=%v calls=%d", failures, lastErr, shadow.calls)
 	}
 }
+
+type canonicalTailTestStore struct {
+	Store
+	rollbackErr   error
+	rollbackCalls int
+}
+
+func (s *canonicalTailTestStore) ReplaceLogicalTurn(context.Context, LogicalTurnReplacement) error {
+	return nil
+}
+
+func (s *canonicalTailTestStore) RollbackCanonicalTail(context.Context, LogicalTurnRollback) error {
+	s.rollbackCalls++
+	return s.rollbackErr
+}
+
+func TestDualWriteCanonicalRollbackDoesNotHidePrimaryFailure(t *testing.T) {
+	primaryErr := errors.New("primary canonical rollback failed")
+	primary := &canonicalTailTestStore{Store: NewNoopStore(), rollbackErr: primaryErr}
+	shadow := &canonicalTailTestStore{Store: NewNoopStore()}
+	dual := NewDualWriteStore(primary, shadow).(*dualWriteStore)
+
+	err := dual.RollbackCanonicalTail(context.Background(), LogicalTurnRollback{
+		ChatSessionID: "session", TurnIndex: 4,
+	})
+	if !errors.Is(err, primaryErr) {
+		t.Fatalf("rollback error = %v, want primary failure", err)
+	}
+	if primary.rollbackCalls != 1 || shadow.rollbackCalls != 0 {
+		t.Fatalf("rollback calls primary=%d shadow=%d, want 1/0", primary.rollbackCalls, shadow.rollbackCalls)
+	}
+}

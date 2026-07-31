@@ -610,6 +610,7 @@ func enqueueAdmissionVectorsTx(
 		}
 		rowID := strconv.FormatInt(sourceRowID, 10)
 		documentID := item.ArtifactType + ":" + admission.ChatSessionID + ":" + rowID
+		documentText := strings.TrimSpace(item.DocumentText)
 		documentJSON, err := json.Marshal(map[string]any{
 			"ID":                    documentID,
 			"Embedding":             item.Embedding,
@@ -618,12 +619,16 @@ func enqueueAdmissionVectorsTx(
 			"SourceTable":           item.SourceTable,
 			"SourceRowID":           rowID,
 			"SchemaVersion":         item.SchemaVersion,
-			"DocumentText":          strings.TrimSpace(item.DocumentText),
+			"DocumentText":          documentText,
 			"SearchTextPolicy":      item.SearchTextPolicy,
 			"RawLanguage":           item.RawLanguage,
 			"SummaryLanguage":       item.SummaryLanguage,
 			"SessionOutputLanguage": item.SessionOutputLanguage,
 			"AliasCount":            item.AliasCount,
+			"Metadata": memoryVectorVerificationMetadata(
+				admission.SourceRevision, MemorySourceRevisionContract,
+				admission.IndexVersion, documentText,
+			),
 		})
 		if err != nil {
 			return queued, err
@@ -656,6 +661,16 @@ func enqueueAdmissionVectorsTx(
 		}
 	}
 	return queued, nil
+}
+
+func memoryVectorVerificationMetadata(sourceRevision, sourceContract, indexIdentity, documentText string) map[string]any {
+	contentFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(documentText)))
+	return map[string]any{
+		"source_revision":     strings.TrimSpace(sourceRevision),
+		"source_contract":     strings.TrimSpace(sourceContract),
+		"index_identity":      strings.TrimSpace(indexIdentity),
+		"content_fingerprint": contentFingerprint,
+	}
 }
 
 func enqueueAdmissionVectorDeleteTx(

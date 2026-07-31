@@ -105,7 +105,7 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 		}
 	}()
 	var latest sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE`, sid).Scan(&latest); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE`, sid).Scan(&latest); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return classifyLogicalTurnReplacementStoreError(err, "canonical_tail_read", false)
 	}
 	latestTurn := 0
@@ -126,28 +126,70 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 		); err != nil {
 			return classifyLogicalTurnReplacementStoreError(err, "source_revision_invalidate", false)
 		}
+		// A host-observed replacement may have invalidated the old source before
+		// the new accepted final arrived. Bind every retained non-deleted prior
+		// revision at this logical turn to the accepted successor now.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE memory_source_revisions
+			SET lifecycle_state = 'superseded', superseded_by_revision = ?,
+			    invalidation_reason = 'logical_turn_replaced',
+			    invalidated_at = COALESCE(invalidated_at, ?), updated_at = ?
+			WHERE chat_session_id = ? AND turn_index = ?
+			  AND source_revision <> ? AND lifecycle_state <> 'deleted'
+		`, replacement.SourceRevision.SourceRevision, nonZeroTime(replacement.CreatedAt),
+			nonZeroTime(replacement.CreatedAt), sid, t, replacement.SourceRevision.SourceRevision); err != nil {
+			return classifyLogicalTurnReplacementStoreError(err, "source_revision_successor_link", false)
+		}
 		if err := insertMemorySourceRevisionTx(ctx, tx, replacement.SourceRevision); err != nil {
 			return classifyLogicalTurnReplacementStoreError(err, "source_revision_register", false)
 		}
 	}
-	commands := []struct {
-		query string
-		args  []any
-	}{
+	commands := canonicalTailDeleteCommands(sid, t, replacement.SourceRevision == nil, false)
+	for _, command := range commands {
+		if _, err := tx.ExecContext(ctx, command.query, command.args...); err != nil {
+			return classifyLogicalTurnReplacementStoreError(err, "canonical_replace", false)
+		}
+	}
+	if err := restoreActiveStatusCurrentValuesTx(ctx, tx, sid); err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "status_current_restore", false)
+	}
+	createdAt := nonZeroTime(replacement.CreatedAt)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_logs (chat_session_id, turn_index, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`, sid, t, replacement.UserContent, createdAt); err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "raw_user_insert", false)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_logs (chat_session_id, turn_index, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)`, sid, t, replacement.AssistantContent, createdAt); err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "raw_assistant_insert", false)
+	}
+	if err := tx.Commit(); err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "transaction_commit", true)
+	}
+	committed = true
+	return nil
+}
+
+type canonicalTailDeleteCommand struct {
+	query string
+	args  []any
+}
+
+func canonicalTailDeleteCommands(sid string, t int, legacyPhysicalCleanup, deleteTailChat bool) []canonicalTailDeleteCommand {
+	commands := []canonicalTailDeleteCommand{
 		{`DELETE FROM effective_input_logs WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
 	}
-	if replacement.SourceRevision == nil {
-		commands = append(commands, struct {
-			query string
-			args  []any
-		}{`DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}})
+	if legacyPhysicalCleanup {
+		commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}})
 	}
-	commands = append(commands, []struct {
-		query string
-		args  []any
-	}{
-		{`DELETE FROM memories WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
-		{`DELETE FROM direct_evidence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
+	commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM memories WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}})
+	if legacyPhysicalCleanup {
+		commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM direct_evidence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}})
+	} else {
+		commands = append(commands, canonicalTailDeleteCommand{`
+			UPDATE direct_evidence_records
+			SET tombstoned = TRUE, archive_state = 'tombstoned', repair_needed = FALSE
+			WHERE chat_session_id = ? AND source_turn_end >= ? AND tombstoned = FALSE
+		`, []any{sid, t}})
+	}
+	commands = append(commands, []canonicalTailDeleteCommand{
 		{`DELETE FROM kg_triples WHERE chat_session_id = ? AND (source_turn >= ? OR valid_from >= ?)`, []any{sid, t, t}},
 		{`DELETE FROM critic_feedback WHERE chat_session_id = ? AND target_type = 'turn' AND target_id >= ?`, []any{sid, t}},
 		{`DELETE FROM character_events WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
@@ -177,22 +219,67 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 		{`DELETE FROM theme_offscreen_carries WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
 		{`DELETE FROM capture_verification_records WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
 		{`DELETE FROM status_current_values WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
-		{`DELETE FROM status_change_events WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
 		{`UPDATE status_effects SET effect_state = 'active', cleared_evidence_json = NULL, cleared_turn = NULL, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND cleared_turn >= ?`, []any{sid, t}},
 		{`DELETE FROM status_effects WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
-		{`DELETE FROM chat_logs WHERE chat_session_id = ? AND turn_index = ?`, []any{sid, t}},
 	}...)
-	for _, command := range commands {
+	if legacyPhysicalCleanup {
+		commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM status_change_events WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}})
+	}
+	if deleteTailChat {
+		commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM chat_logs WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}})
+	} else {
+		commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM chat_logs WHERE chat_session_id = ? AND turn_index = ?`, []any{sid, t}})
+	}
+	return commands
+}
+
+// RollbackCanonicalTail performs source invalidation, durable vector-delete
+// enqueueing, raw deletion, and derived cleanup in one MariaDB transaction.
+// Vector provider I/O intentionally happens after this method commits.
+func (m *mariadbStore) RollbackCanonicalTail(ctx context.Context, rollback LogicalTurnRollback) error {
+	if err := m.ensureDB(); err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "preflight", false)
+	}
+	sid := strings.TrimSpace(rollback.ChatSessionID)
+	if sid == "" || rollback.TurnIndex <= 0 {
+		return typedLogicalTurnReplacementError("logical_turn_request_invalid", "preflight", false, "not_committed", fmt.Errorf("invalid logical turn rollback"))
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "transaction_begin", false)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var latest sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE`, sid).Scan(&latest); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return classifyLogicalTurnReplacementStoreError(err, "canonical_tail_read", false)
+	}
+	if latest.Valid && rollback.TurnIndex > int(latest.Int64)+1 {
+		return typedLogicalTurnReplacementError("logical_turn_not_current_tail", "canonical_tail_check", false, "not_committed", fmt.Errorf("logical turn rollback begins after canonical tail: latest=%d requested=%d", latest.Int64, rollback.TurnIndex))
+	}
+	now := nonZeroTime(rollback.CreatedAt)
+	lifecycleAction := strings.ToLower(strings.TrimSpace(rollback.LifecycleAction))
+	switch lifecycleAction {
+	case "":
+		lifecycleAction = LogicalTurnLifecycleInvalidated
+	case LogicalTurnLifecycleInvalidated, LogicalTurnLifecycleSuperseded, LogicalTurnLifecycleDeleted:
+	default:
+		return typedLogicalTurnReplacementError("logical_turn_lifecycle_action_invalid", "preflight", false, "not_committed", fmt.Errorf("unsupported logical turn lifecycle action %q", rollback.LifecycleAction))
+	}
+	if err := invalidateMemorySourcesTx(ctx, tx, sid, rollback.TurnIndex, false, "", lifecycleAction, firstNonEmptyString(rollback.Reason, "turn_rollback"), now); err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "source_revision_invalidate", false)
+	}
+	for _, command := range canonicalTailDeleteCommands(sid, rollback.TurnIndex, false, true) {
 		if _, err := tx.ExecContext(ctx, command.query, command.args...); err != nil {
-			return classifyLogicalTurnReplacementStoreError(err, "canonical_replace", false)
+			return classifyLogicalTurnReplacementStoreError(err, "canonical_rollback", false)
 		}
 	}
-	createdAt := nonZeroTime(replacement.CreatedAt)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_logs (chat_session_id, turn_index, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`, sid, t, replacement.UserContent, createdAt); err != nil {
-		return classifyLogicalTurnReplacementStoreError(err, "raw_user_insert", false)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_logs (chat_session_id, turn_index, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)`, sid, t, replacement.AssistantContent, createdAt); err != nil {
-		return classifyLogicalTurnReplacementStoreError(err, "raw_assistant_insert", false)
+	if err := restoreActiveStatusCurrentValuesTx(ctx, tx, sid); err != nil {
+		return classifyLogicalTurnReplacementStoreError(err, "status_current_restore", false)
 	}
 	if err := tx.Commit(); err != nil {
 		return classifyLogicalTurnReplacementStoreError(err, "transaction_commit", true)

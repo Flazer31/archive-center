@@ -18965,6 +18965,7 @@
         history_trim_guard: false,
         duplicate_blocked: false,
         host_lifecycle_observation: String(observed.hostLifecycleObservation || ""),
+        lifecycle_action_observation: String(observed.lifecycleActionObservation || ""),
         allow_manual_candidate: String(requestSource || "auto") === "manual",
         baseline: serializeSessionRoutingBaselineForBackend(sessionId),
       },
@@ -19331,6 +19332,7 @@
             ? "final_confirmation_pending"
             : "")
         ),
+        lifecycleActionObservation: "deleted",
       });
       if (rolledBack) updateSessionSnapshot(sid, comparable);
       return rolledBack;
@@ -36251,7 +36253,7 @@
       sid,
       turnIndex,
       "postprocessor_final_output_replace",
-      { postprocessorFinalReplace: true },
+      { postprocessorFinalReplace: true, lifecycleActionObservation: "superseded" },
       { requestSource: "postprocessor_final_replace", updateAutoState: false }
     );
     if (!rolledBack) {
@@ -43134,7 +43136,7 @@
         sid,
         turnIndex,
         "explorer_chat_log_delete",
-        { currentMsgCount: 0, currentTailHash: "explorer_manual" },
+        { currentMsgCount: 0, currentTailHash: "explorer_manual", lifecycleActionObservation: "deleted" },
         { requestSource: "manual", updateAutoState: false }
       );
       if (!success) {

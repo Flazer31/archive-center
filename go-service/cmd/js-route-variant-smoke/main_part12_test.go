@@ -971,9 +971,9 @@ func TestRecomposerLifecycleEnvelopeSurvivesLongGenerationWithoutTTL(t *testing.
 			t.Skip("node is required for Recomposer lifecycle fixture")
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(archiveCenterRoot(t), "Risu Recomposer.js"))
+	data, err := os.ReadFile(filepath.Join(archiveCenterRoot(t), "AC Recomposer Agent.js"))
 	if err != nil {
-		t.Fatalf("read Risu Recomposer.js: %v", err)
+		t.Fatalf("read AC Recomposer Agent.js: %v", err)
 	}
 	src := string(data)
 	safeString := extractJSFunctionBlockForTest(t, src, "function safeString(value, fallback)")

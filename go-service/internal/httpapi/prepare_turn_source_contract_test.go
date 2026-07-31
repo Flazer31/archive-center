@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/dto"
@@ -24,6 +27,117 @@ type prepareReadRecordingStore struct {
 type prepareReadRecordingVectorStore struct {
 	turnRecordingVectorStore
 	searchCalls int
+}
+
+type prepareRevisionFilterStore struct {
+	store.Store
+	active map[string]bool
+	checks map[string]int
+}
+
+func (s *prepareRevisionFilterStore) MemoryDerivationLifecycleEnabled() bool {
+	return true
+}
+
+func (s *prepareRevisionFilterStore) RegisterAcceptedSourceRevision(context.Context, *store.MemorySourceRevision) (store.SourceRevisionRegistration, error) {
+	return store.SourceRevisionRegistration{}, errors.New("unexpected source revision registration")
+}
+
+func (s *prepareRevisionFilterStore) GetSourceRevision(context.Context, string, string) (*store.MemorySourceRevision, error) {
+	return nil, store.ErrNotFound
+}
+
+func (s *prepareRevisionFilterStore) IsSourceRevisionActive(_ context.Context, sessionID, sourceRevision string) (bool, error) {
+	if s.checks == nil {
+		s.checks = map[string]int{}
+	}
+	key := sessionID + ":" + sourceRevision
+	s.checks[key]++
+	return s.active[key], nil
+}
+
+func (s *prepareRevisionFilterStore) InvalidateSourceRevisions(context.Context, string, int, string, string, time.Time) error {
+	return errors.New("unexpected source revision invalidation")
+}
+
+type prepareRevisionFilterVector struct {
+	vector.VectorStore
+	documents []vector.VectorDocument
+}
+
+func (s *prepareRevisionFilterVector) Health(context.Context) (vector.HealthSnapshot, error) {
+	return vector.HealthSnapshot{
+		Status: "ok", Collection: "test", TotalCount: len(s.documents), ModelReady: true,
+	}, nil
+}
+
+func (s *prepareRevisionFilterVector) Search(context.Context, string, []float32, int, string) ([]vector.VectorDocument, error) {
+	return append([]vector.VectorDocument(nil), s.documents...), nil
+}
+
+func TestPrepareTurnVectorShadowDropsInactiveRevisionBeforePreview(t *testing.T) {
+	revisionMetadata := func(revision string) map[string]any {
+		return map[string]any{
+			"source_revision":     revision,
+			"source_contract":     store.MemorySourceRevisionContract,
+			"index_identity":      "memory-vector-index-v1",
+			"content_fingerprint": "fingerprint-" + revision,
+		}
+	}
+	vectorStore := &prepareRevisionFilterVector{documents: []vector.VectorDocument{
+		{
+			ID: "memory:session:legacy-unversioned", ChatSessionID: "session",
+			DocumentText: "legacy source without an active revision", Similarity: 1,
+			SimilarityAvailable: true,
+		},
+		{
+			ID: "memory:session:stale-high", ChatSessionID: "session",
+			DocumentText: "stale high similarity secret", Similarity: 0.999,
+			SimilarityAvailable: true, Metadata: revisionMetadata("sar_stale"),
+		},
+		{
+			ID: "memory:session:stale-duplicate", ChatSessionID: "session",
+			DocumentText: "stale duplicate", Similarity: 0.998,
+			SimilarityAvailable: true, Metadata: revisionMetadata("sar_stale"),
+		},
+		{
+			ID: "memory:session:active", ChatSessionID: "session",
+			DocumentText: "active lower similarity memory", Similarity: 0.7,
+			SimilarityAvailable: true, Metadata: revisionMetadata("sar_active"),
+		},
+	}}
+	lifecycleStore := &prepareRevisionFilterStore{
+		Store: store.NewNoopStore(),
+		active: map[string]bool{
+			"session:sar_active": true,
+		},
+	}
+	cfg := config.Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	cfg.Readiness.ChromaConfigured = true
+	server := NewServer(cfg)
+	server.Store = lifecycleStore
+	server.Vector = vectorStore
+
+	shadow := server.prepareTurnVectorShadow(context.Background(), dto.PrepareTurnRequest{
+		ChatSessionID: "session",
+		ClientMeta: map[string]any{
+			"chroma_query_vector": []float32{0.1, 0.2},
+		},
+	}, 5)
+	previews, ok := shadow["search_results"].([]map[string]any)
+	if !ok || len(previews) != 1 || previews[0]["id"] != "memory:session:active" {
+		t.Fatalf("inactive revisions reached search preview: %#v", shadow["search_results"])
+	}
+	if strings.Contains(fmt.Sprint(previews), "stale high similarity secret") {
+		t.Fatalf("stale source text leaked into preview: %#v", previews)
+	}
+	filterTrace, _ := shadow["source_revision_filter"].(map[string]any)
+	if filterTrace["status"] != "applied" || filterTrace["dropped_count"] != 3 ||
+		filterTrace["dropped_missing_revision"] != 1 ||
+		filterTrace["checked_count"] != 2 || lifecycleStore.checks["session:sar_stale"] != 1 {
+		t.Fatalf("revision filter trace=%#v checks=%#v", filterTrace, lifecycleStore.checks)
+	}
 }
 
 func (s *prepareReadRecordingVectorStore) Search(ctx context.Context, sessionID string, query []float32, limit int, filter string) ([]vector.VectorDocument, error) {

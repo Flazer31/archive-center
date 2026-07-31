@@ -45,6 +45,12 @@ type DocumentDeleter interface {
 	DeleteDocuments(ctx context.Context, ids []string) error
 }
 
+// ExactDocumentReader reads only the requested document IDs. Mutation callers
+// use it to verify provider-applied writes without listing a full collection.
+type ExactDocumentReader interface {
+	GetDocuments(ctx context.Context, ids []string) ([]VectorDocument, error)
+}
+
 // DocumentLister is an optional diagnostic extension for full vector integrity
 // audits. It returns stored vector metadata without changing runtime recall.
 type DocumentLister interface {

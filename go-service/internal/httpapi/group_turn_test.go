@@ -69,6 +69,7 @@ type turnRecordingStore struct {
 	deletedStorylineIDs      []int64
 	deletedWorldRuleIDs      []int64
 	logicalTurnReplacements  []store.LogicalTurnReplacement
+	logicalTurnRollbacks     []store.LogicalTurnRollback
 }
 
 func (f *turnRecordingStore) ListActiveInteractionMemoryUnits(_ context.Context, chatSessionID string) ([]store.PreciseMemoryUnit, error) {
@@ -117,6 +118,19 @@ func (f *turnRecordingStore) ReplaceLogicalTurn(ctx context.Context, replacement
 	f.returnCanonicalLayers = nil
 	f.returnEpisodeSums = nil
 	f.returnEntityMemories = nil
+	return nil
+}
+
+func (f *turnRecordingStore) RollbackCanonicalTail(_ context.Context, rollback store.LogicalTurnRollback) error {
+	f.logicalTurnRollbacks = append(f.logicalTurnRollbacks, rollback)
+	fromTurn := rollback.TurnIndex
+	kept := f.returnChatLogs[:0]
+	for _, item := range f.returnChatLogs {
+		if item.TurnIndex < fromTurn {
+			kept = append(kept, item)
+		}
+	}
+	f.returnChatLogs = kept
 	return nil
 }
 
@@ -195,6 +209,20 @@ func (f *turnRecordingVectorStore) ListDocuments(ctx context.Context, sessionID 
 	out := []vector.VectorDocument{}
 	for _, doc := range f.docs {
 		if sessionID == "" || doc.ChatSessionID == sessionID {
+			out = append(out, doc)
+		}
+	}
+	return out, nil
+}
+
+func (f *turnRecordingVectorStore) GetDocuments(_ context.Context, ids []string) ([]vector.VectorDocument, error) {
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	out := []vector.VectorDocument{}
+	for _, doc := range f.docs {
+		if wanted[doc.ID] {
 			out = append(out, doc)
 		}
 	}

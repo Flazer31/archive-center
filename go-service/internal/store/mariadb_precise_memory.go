@@ -337,14 +337,18 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		return false, nil
 	}
 	documentID := "precise_memory:" + item.ChatSessionID + ":" + item.UnitID
+	documentText := strings.TrimSpace(item.EvidenceExcerpt)
 	documentJSON, err := json.Marshal(map[string]any{
-		"id":              documentID,
-		"chat_session_id": item.ChatSessionID,
-		"source_table":    "precise_memory_units",
-		"source_row_id":   item.UnitID,
-		"schema_version":  PreciseMemoryUnitContract,
-		"document_text":   strings.TrimSpace(item.EvidenceExcerpt),
-		"embedding":       []float32{},
+		"ID":            documentID,
+		"ChatSessionID": item.ChatSessionID,
+		"SourceTable":   "precise_memory_units",
+		"SourceRowID":   item.UnitID,
+		"SchemaVersion": PreciseMemoryUnitContract,
+		"DocumentText":  documentText,
+		"Embedding":     []float32{},
+		"Metadata": memoryVectorVerificationMetadata(
+			item.SourceRevision, item.SourceContract, item.IndexVersion, documentText,
+		),
 	})
 	if err != nil {
 		return false, err

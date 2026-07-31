@@ -129,7 +129,13 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	results, err := s.Vector.Search(ctx, req.ChatSessionID, queryVector, candidateLimit, filter)
 	switch {
 	case err == nil:
-		shadow["search_result"] = "ok"
+		results, revisionFilter := s.filterPrepareTurnActiveSourceRevisionVectors(ctx, req.ChatSessionID, results)
+		shadow["source_revision_filter"] = revisionFilter
+		if len(results) == 0 {
+			shadow["search_result"] = "not_found"
+		} else {
+			shadow["search_result"] = "ok"
+		}
 		shadow["search_result_count"] = len(results)
 		shadow["search_results"] = vectorDocumentSearchPreview(results)
 	case errors.Is(err, vector.ErrNotFound):
@@ -147,6 +153,92 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 		shadow["search_error"] = err.Error()
 	}
 	return shadow
+}
+
+func (s *Server) filterPrepareTurnActiveSourceRevisionVectors(
+	ctx context.Context,
+	fallbackSessionID string,
+	documents []vector.VectorDocument,
+) ([]vector.VectorDocument, map[string]any) {
+	trace := map[string]any{
+		"status":         "unavailable",
+		"input_count":    len(documents),
+		"retained_count": len(documents),
+		"dropped_count":  0,
+		"checked_count":  0,
+	}
+	sourceRevisions, ok := s.Store.(store.SourceRevisionStore)
+	if !ok {
+		return documents, trace
+	}
+	if availability, exists := s.Store.(store.MemoryDerivationLifecycleAvailability); exists &&
+		!availability.MemoryDerivationLifecycleEnabled() {
+		trace["status"] = "disabled"
+		return documents, trace
+	}
+
+	type sourceRevisionCheck struct {
+		active bool
+		err    error
+	}
+	checks := map[string]sourceRevisionCheck{}
+	filtered := make([]vector.VectorDocument, 0, len(documents))
+	droppedMissingRevision := 0
+	droppedInactive := 0
+	droppedCheckError := 0
+	for _, document := range documents {
+		metadata := document.Metadata
+		revision := strings.TrimSpace(extractionStringFromAny(metadata["source_revision"]))
+		revisionBacked := revision != "" ||
+			strings.TrimSpace(extractionStringFromAny(metadata["source_contract"])) != "" ||
+			strings.TrimSpace(extractionStringFromAny(metadata["index_identity"])) != "" ||
+			strings.TrimSpace(extractionStringFromAny(metadata["content_fingerprint"])) != ""
+		if !revisionBacked {
+			// Once the canonical lifecycle is enabled, an unversioned vector
+			// cannot be proven to belong to an active source. Keep it out of
+			// previews and ranking until the normal reindex path replaces it
+			// with revision-backed metadata.
+			droppedMissingRevision++
+			continue
+		}
+		if revision == "" {
+			droppedMissingRevision++
+			continue
+		}
+		sessionID := strings.TrimSpace(document.ChatSessionID)
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(fallbackSessionID)
+		}
+		if sessionID == "" {
+			droppedMissingRevision++
+			continue
+		}
+		key := sessionID + "\x00" + revision
+		check, exists := checks[key]
+		if !exists {
+			check.active, check.err = sourceRevisions.IsSourceRevisionActive(ctx, sessionID, revision)
+			checks[key] = check
+		}
+		if check.err != nil {
+			droppedCheckError++
+			continue
+		}
+		if !check.active {
+			droppedInactive++
+			continue
+		}
+		filtered = append(filtered, document)
+	}
+
+	dropped := len(documents) - len(filtered)
+	trace["status"] = "applied"
+	trace["retained_count"] = len(filtered)
+	trace["dropped_count"] = dropped
+	trace["checked_count"] = len(checks)
+	trace["dropped_missing_revision"] = droppedMissingRevision
+	trace["dropped_inactive"] = droppedInactive
+	trace["dropped_check_error"] = droppedCheckError
+	return filtered, trace
 }
 
 func finalizePrepareTurnVectorShadow(shadow map[string]any) {

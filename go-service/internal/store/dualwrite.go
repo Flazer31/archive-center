@@ -83,6 +83,28 @@ func (d *dualWriteStore) ReplaceLogicalTurn(ctx context.Context, replacement Log
 	return nil
 }
 
+func (d *dualWriteStore) RollbackCanonicalTail(ctx context.Context, rollback LogicalTurnRollback) error {
+	primary, primaryOK := d.primary.(LogicalTurnReplacementStore)
+	shadow, shadowOK := d.shadow.(LogicalTurnReplacementStore)
+	if !primaryOK && !shadowOK {
+		return ErrNotEnabled
+	}
+	if primaryOK {
+		if err := primary.RollbackCanonicalTail(ctx, rollback); err != nil {
+			return err
+		}
+	}
+	if shadowOK {
+		if err := shadow.RollbackCanonicalTail(ctx, rollback); err != nil {
+			d.recordShadowErr(err)
+			if !primaryOK {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ListChatLogs reads from primary only.
 func (d *dualWriteStore) ListChatLogs(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ChatLog, error) {
 	return d.primary.ListChatLogs(ctx, chatSessionID, fromTurn, toTurn)

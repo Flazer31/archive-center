@@ -32,8 +32,10 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	hostObservedAtMS, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("host_observed_at_ms")), 10, 64)
 	decisionToken := strings.TrimSpace(r.URL.Query().Get("decision_token"))
 	decisionVerified := false
+	lifecycleAction := store.LogicalTurnLifecycleDeleted
 	if decisionToken != "" {
-		if _, ok := s.rollbackDecisionLedger().consume(decisionToken, sid, turnIndex); !ok {
+		record, ok := s.rollbackDecisionLedger().consume(decisionToken, sid, turnIndex)
+		if !ok {
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"status": "blocked", "code": "rollback_decision_token_invalid",
 				"chat_session_id": sid, "turn_index": turnIndex,
@@ -41,6 +43,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		decisionVerified = true
+		lifecycleAction = record.LifecycleAction
 	}
 	requestedTurnIndex := turnIndex
 	protectedBeforeTurn := intFromAny(r.URL.Query().Get("protected_before_turn"), 0)
@@ -55,7 +58,8 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rollbackStore, hasRollback := s.Store.(store.RollbackStore)
-	if !hasRollback || !s.usesShadowWriteStore() {
+	canonicalTailStore, hasCanonicalTail := s.Store.(store.LogicalTurnReplacementStore)
+	if (!hasRollback && !hasCanonicalTail) || !s.usesShadowWriteStore() {
 		rollbackPlan := buildRollbackPlan(sid, turnIndex, reqSource)
 		rollbackPlan["requested_turn_index"] = requestedTurnIndex
 		rollbackPlan["protected_before_turn"] = protectedBeforeTurn
@@ -81,42 +85,92 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	// from recreating secondary artifacts after rollback cleanup has passed.
 	s.cancelCompleteTurnSourceWorkers(sid, turnIndex)
 	lifecycleOutbox := false
-	if lifecycle, ok := s.Store.(store.SourceRevisionStore); ok {
-		if availability, hasAvailability := s.Store.(store.MemoryDerivationLifecycleAvailability); !hasAvailability || availability.MemoryDerivationLifecycleEnabled() {
-			if err := lifecycle.InvalidateSourceRevisions(ctx, sid, turnIndex, "invalidated", "turn_rollback", time.Now().UTC()); err != nil {
-				deletions["source_revisions"] = map[string]any{"ok": false, "error": err.Error()}
-				requestID := fmt.Sprintf("rollback:%s:%d:%s", sid, turnIndex, reqSource)
-				rollbackHUDView := s.turnWorkflowHUDOperationNotice(
-					requestID,
-					sid, turnIndex, "failed", "error",
-					"turn_hud.notice.delete_sync_failed",
-					"turn_hud.error.delete_sync_partial",
-					"ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL",
-				)
-				for _, fact := range rollbackHUDBlockedDeletionFacts() {
-					setTurnWorkflowHUDFactValue(&rollbackHUDView, fact)
-					if s.TurnWorkflows != nil {
-						s.TurnWorkflows.setFact(requestID, fact)
-					}
-				}
-				syncTurnWorkflowHUDPresentation(&rollbackHUDView)
-				var rollbackHUD any = rollbackHUDView
+	canonicalRollback := false
+	if hasCanonicalTail {
+		err := canonicalTailStore.RollbackCanonicalTail(ctx, store.LogicalTurnRollback{
+			ChatSessionID:   sid,
+			TurnIndex:       turnIndex,
+			LifecycleAction: lifecycleAction,
+			Reason:          "turn_rollback",
+			CreatedAt:       time.Now().UTC(),
+		})
+		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+			deletions["canonical_tail_transaction"] = map[string]any{"ok": false, "error": err.Error()}
+			requestID := fmt.Sprintf("rollback:%s:%d:%s", sid, turnIndex, reqSource)
+			rollbackHUDView := s.turnWorkflowHUDOperationNotice(
+				requestID,
+				sid, turnIndex, "failed", "error",
+				"turn_hud.notice.delete_sync_failed",
+				"turn_hud.error.delete_sync_partial",
+				"ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL",
+			)
+			for _, fact := range rollbackHUDBlockedDeletionFacts() {
+				setTurnWorkflowHUDFactValue(&rollbackHUDView, fact)
 				if s.TurnWorkflows != nil {
-					rollbackHUD = s.turnWorkflowHUDSnapshot(requestID)
+					s.TurnWorkflows.setFact(requestID, fact)
 				}
-				writeJSON(w, http.StatusInternalServerError, map[string]any{
-					"status":            "error",
-					"code":              "source_invalidation_failed",
-					"chat_session_id":   sid,
-					"turn_index":        turnIndex,
-					"deletions":         deletions,
-					"note":              "rollback stopped before canonical deletion",
-					"turn_workflow_hud": rollbackHUD,
-				})
-				return
-			} else {
-				lifecycleOutbox = true
-				deletions["source_revisions"] = map[string]any{"ok": true, "vector_cleanup": "durable_outbox"}
+			}
+			syncTurnWorkflowHUDPresentation(&rollbackHUDView)
+			var rollbackHUD any = rollbackHUDView
+			if s.TurnWorkflows != nil {
+				rollbackHUD = s.turnWorkflowHUDSnapshot(requestID)
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status": "error", "code": "canonical_tail_rollback_failed",
+				"chat_session_id": sid, "turn_index": turnIndex,
+				"deletions":         deletions,
+				"note":              "rollback transaction failed; MariaDB canonical state was not partially deleted",
+				"turn_workflow_hud": rollbackHUD,
+			})
+			return
+		}
+		if err == nil {
+			canonicalRollback = true
+			lifecycleOutbox = true
+			deletions["canonical_tail_transaction"] = map[string]any{
+				"ok": true, "canonical_committed": true, "vector_cleanup": "durable_outbox",
+			}
+			deletions["source_revisions"] = map[string]any{"ok": true, "vector_cleanup": "durable_outbox"}
+		}
+	}
+	if !canonicalRollback {
+		if lifecycle, ok := s.Store.(store.SourceRevisionStore); ok {
+			if availability, hasAvailability := s.Store.(store.MemoryDerivationLifecycleAvailability); !hasAvailability || availability.MemoryDerivationLifecycleEnabled() {
+				if err := lifecycle.InvalidateSourceRevisions(ctx, sid, turnIndex, lifecycleAction, "turn_rollback", time.Now().UTC()); err != nil {
+					deletions["source_revisions"] = map[string]any{"ok": false, "error": err.Error()}
+					requestID := fmt.Sprintf("rollback:%s:%d:%s", sid, turnIndex, reqSource)
+					rollbackHUDView := s.turnWorkflowHUDOperationNotice(
+						requestID,
+						sid, turnIndex, "failed", "error",
+						"turn_hud.notice.delete_sync_failed",
+						"turn_hud.error.delete_sync_partial",
+						"ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL",
+					)
+					for _, fact := range rollbackHUDBlockedDeletionFacts() {
+						setTurnWorkflowHUDFactValue(&rollbackHUDView, fact)
+						if s.TurnWorkflows != nil {
+							s.TurnWorkflows.setFact(requestID, fact)
+						}
+					}
+					syncTurnWorkflowHUDPresentation(&rollbackHUDView)
+					var rollbackHUD any = rollbackHUDView
+					if s.TurnWorkflows != nil {
+						rollbackHUD = s.turnWorkflowHUDSnapshot(requestID)
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]any{
+						"status":            "error",
+						"code":              "source_invalidation_failed",
+						"chat_session_id":   sid,
+						"turn_index":        turnIndex,
+						"deletions":         deletions,
+						"note":              "rollback stopped before canonical deletion",
+						"turn_workflow_hud": rollbackHUD,
+					})
+					return
+				} else {
+					lifecycleOutbox = true
+					deletions["source_revisions"] = map[string]any{"ok": true, "vector_cleanup": "durable_outbox"}
+				}
 			}
 		}
 	}
@@ -169,6 +223,10 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, t := range tables {
+		if canonicalRollback {
+			deletions[t.name] = map[string]any{"ok": true, "mode": "canonical_tail_transaction"}
+			continue
+		}
 		if err := t.fn(); err != nil {
 			deletions[t.name] = map[string]any{"ok": false, "error": err.Error()}
 			delErrs = append(delErrs, fmt.Sprintf("%s: %v", t.name, err))
@@ -188,13 +246,17 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		deletions["narrative_current_state_restore"] = map[string]any{"ok": true, "restored": restored}
 	}
-	if restored, err := restoreStoryClockCurrentAfterRollback(ctx, s.Store, sid); err != nil {
+	if canonicalRollback {
+		deletions["story_clock_current_restore"] = map[string]any{"ok": true, "mode": "canonical_tail_transaction"}
+	} else if restored, err := restoreStoryClockCurrentAfterRollback(ctx, s.Store, sid); err != nil {
 		deletions["story_clock_current_restore"] = map[string]any{"ok": false, "error": err.Error()}
 		delErrs = append(delErrs, fmt.Sprintf("story clock current restore: %v", err))
 	} else {
 		deletions["story_clock_current_restore"] = map[string]any{"ok": true, "restored": restored}
 	}
-	if restored, err := restoreReversibleStateCurrentAfterRollback(ctx, s.Store, sid); err != nil {
+	if canonicalRollback {
+		deletions["reversible_state_current_restore"] = map[string]any{"ok": true, "mode": "canonical_tail_transaction"}
+	} else if restored, err := restoreReversibleStateCurrentAfterRollback(ctx, s.Store, sid); err != nil {
 		deletions["reversible_state_current_restore"] = map[string]any{"ok": false, "error": err.Error()}
 		delErrs = append(delErrs, fmt.Sprintf("reversible state current restore: %v", err))
 	} else {

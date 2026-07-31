@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,11 +70,16 @@ func (f *memoryVectorProcessorStore) SaveAuditLog(_ context.Context, item *store
 
 type memoryVectorProcessorVector struct {
 	vector.VectorStore
-	upsertErr  error
-	upsertErrs []error
-	deleteErr  error
-	upserts    [][]vector.VectorDocument
-	deletes    [][]string
+	upsertErr           error
+	upsertErrs          []error
+	deleteErr           error
+	upserts             [][]vector.VectorDocument
+	deletes             [][]string
+	documents           map[string]vector.VectorDocument
+	readbackOverride    []vector.VectorDocument
+	readbackOverrideSet bool
+	readbackErr         error
+	retainDeletes       bool
 }
 
 type blockingMemoryVectorProcessorVector struct {
@@ -85,19 +91,67 @@ func (f *blockingMemoryVectorProcessorVector) Upsert(ctx context.Context, _ stri
 	return ctx.Err()
 }
 
+func (f *blockingMemoryVectorProcessorVector) GetDocuments(context.Context, []string) ([]vector.VectorDocument, error) {
+	return nil, nil
+}
+
 func (f *memoryVectorProcessorVector) Upsert(_ context.Context, _ string, docs []vector.VectorDocument) error {
 	f.upserts = append(f.upserts, docs)
 	if len(f.upsertErrs) > 0 {
 		err := f.upsertErrs[0]
 		f.upsertErrs = f.upsertErrs[1:]
-		return err
+		if err != nil {
+			return err
+		}
+	} else if f.upsertErr != nil {
+		return f.upsertErr
 	}
-	return f.upsertErr
+	if f.documents == nil {
+		f.documents = map[string]vector.VectorDocument{}
+	}
+	for _, document := range docs {
+		f.documents[document.ID] = document
+	}
+	return nil
 }
 
 func (f *memoryVectorProcessorVector) DeleteDocuments(_ context.Context, ids []string) error {
 	f.deletes = append(f.deletes, append([]string(nil), ids...))
-	return f.deleteErr
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	if !f.retainDeletes {
+		for _, id := range ids {
+			delete(f.documents, id)
+		}
+	}
+	return nil
+}
+
+func (f *memoryVectorProcessorVector) GetDocuments(_ context.Context, ids []string) ([]vector.VectorDocument, error) {
+	if f.readbackErr != nil {
+		return nil, f.readbackErr
+	}
+	if f.readbackOverrideSet {
+		return append([]vector.VectorDocument(nil), f.readbackOverride...), nil
+	}
+	out := make([]vector.VectorDocument, 0, len(ids))
+	for _, id := range ids {
+		if document, ok := f.documents[id]; ok {
+			out = append(out, document)
+		}
+	}
+	return out, nil
+}
+
+func verifiedMemoryVectorProcessorDocument(document vector.VectorDocument, sourceRevision string) vector.VectorDocument {
+	document.Metadata = map[string]any{
+		"source_revision":     sourceRevision,
+		"source_contract":     store.MemorySourceRevisionContract,
+		"index_identity":      "memory-vector-index-v1",
+		"content_fingerprint": fmt.Sprintf("%x", sha256.Sum256([]byte(document.DocumentText))),
+	}
+	return document
 }
 
 func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
@@ -108,6 +162,7 @@ func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
 		SchemaVersion: store.PreciseMemoryUnitContract, DocumentText: "grounded",
 		Embedding: []float32{0.1, 0.2},
 	}
+	document = verifiedMemoryVectorProcessorDocument(document, "sar_active")
 	documentJSON, err := materializedMemoryVectorDocumentJSON(document)
 	if err != nil {
 		t.Fatal(err)
@@ -145,19 +200,21 @@ func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
 func TestMemoryVectorProcessorUnboundedDrainDoesNotLetRetryBlockLaterItem(t *testing.T) {
 	now := time.Date(2026, 7, 30, 4, 10, 0, 0, time.UTC)
 	makeItem := func(id int64) *store.MemoryVectorOutboxItem {
+		sourceRevision := fmt.Sprintf("sar_%d", id)
 		document := vector.VectorDocument{
 			ID:            fmt.Sprintf("precise_memory:session:%d", id),
 			ChatSessionID: "session", SourceTable: "precise_memory_units",
 			SourceRowID: fmt.Sprint(id), SchemaVersion: store.PreciseMemoryUnitContract,
 			DocumentText: "grounded", Embedding: []float32{0.1, 0.2},
 		}
+		document = verifiedMemoryVectorProcessorDocument(document, sourceRevision)
 		documentJSON, err := materializedMemoryVectorDocumentJSON(document)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return &store.MemoryVectorOutboxItem{
 			ID: id, Operation: "upsert", ChatSessionID: "session",
-			SourceRevision: fmt.Sprintf("sar_%d", id), DocumentID: document.ID,
+			SourceRevision: sourceRevision, DocumentID: document.ID,
 			DocumentJSON: documentJSON, EmbeddingReady: true,
 			RequiredSourceState: "active", Status: "pending",
 		}
@@ -196,6 +253,7 @@ func TestMemoryVectorProcessorBoundsBlockingVectorCallByLease(t *testing.T) {
 		SchemaVersion: store.PreciseMemoryUnitContract, DocumentText: "grounded",
 		Embedding: []float32{0.1, 0.2},
 	}
+	document = verifiedMemoryVectorProcessorDocument(document, "sar_active")
 	documentJSON, err := materializedMemoryVectorDocumentJSON(document)
 	if err != nil {
 		t.Fatal(err)
@@ -258,12 +316,89 @@ func TestMemoryVectorProcessorDeleteReplayIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMemoryVectorProcessorDoesNotCompleteMismatchedUpsertReadback(t *testing.T) {
+	now := time.Date(2026, 7, 31, 1, 0, 0, 0, time.UTC)
+	document := verifiedMemoryVectorProcessorDocument(vector.VectorDocument{
+		ID: "memory:session:9", ChatSessionID: "session",
+		SourceTable: "memories", SourceRowID: "9",
+		SchemaVersion: "memory.v1", DocumentText: "current memory",
+		Embedding: []float32{0.1, 0.2},
+	}, "sar_active")
+	documentJSON, err := materializedMemoryVectorDocumentJSON(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &memoryVectorProcessorStore{
+		Store: store.NewNoopStore(),
+		items: []*store.MemoryVectorOutboxItem{{
+			ID: 10, Operation: "upsert", ChatSessionID: "session",
+			SourceRevision: "sar_active", DocumentID: document.ID,
+			DocumentJSON: documentJSON, EmbeddingReady: true,
+			RequiredSourceState: "active", Status: "pending",
+		}},
+	}
+	mismatch := document
+	mismatch.DocumentText = "stale memory"
+	vec := &memoryVectorProcessorVector{
+		VectorStore:         vector.NewFakeVectorStore(),
+		readbackOverrideSet: true,
+		readbackOverride:    []vector.VectorDocument{mismatch},
+	}
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{Synced: true, FailedQueueMaxAttempts: 4},
+	}
+	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalState != "retryable" || result.VectorApplied ||
+		len(st.completed) != 0 || len(st.failed) != 1 ||
+		!strings.Contains(result.Failure, "readback metadata or content mismatch") {
+		t.Fatalf("result=%+v completed=%v failed=%v", result, st.completed, st.failed)
+	}
+}
+
+func TestMemoryVectorProcessorDoesNotCompleteDeleteWhileDocumentStillExists(t *testing.T) {
+	now := time.Date(2026, 7, 31, 1, 30, 0, 0, time.UTC)
+	documentID := "memory:session:9"
+	st := &memoryVectorProcessorStore{
+		Store: store.NewNoopStore(),
+		items: []*store.MemoryVectorOutboxItem{{
+			ID: 11, Operation: "delete", ChatSessionID: "session",
+			SourceRevision: "sar_old", DocumentID: documentID,
+			RequiredSourceState: "inactive", Status: "pending",
+		}},
+	}
+	vec := &memoryVectorProcessorVector{
+		VectorStore:   vector.NewFakeVectorStore(),
+		retainDeletes: true,
+		documents: map[string]vector.VectorDocument{
+			documentID: {ID: documentID, ChatSessionID: "session"},
+		},
+	}
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{Synced: true, FailedQueueMaxAttempts: 4},
+	}
+	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalState != "retryable" || result.VectorApplied ||
+		len(st.completed) != 0 || len(st.failed) != 1 ||
+		!strings.Contains(result.Failure, "still contains document") {
+		t.Fatalf("result=%+v completed=%v failed=%v", result, st.completed, st.failed)
+	}
+}
+
 func TestMemoryVectorProcessorCompensatesStaleUpsertWithoutResurrection(t *testing.T) {
 	now := time.Date(2026, 7, 28, 5, 0, 0, 0, time.UTC)
 	document := vector.VectorDocument{
 		ID: "precise_memory:session:unit", ChatSessionID: "session",
 		Embedding: []float32{0.3}, DocumentText: "stale",
 	}
+	document = verifiedMemoryVectorProcessorDocument(document, "sar_superseded")
 	documentJSON, err := materializedMemoryVectorDocumentJSON(document)
 	if err != nil {
 		t.Fatal(err)
@@ -302,6 +437,7 @@ func TestMemoryVectorProcessorMaterializesDeferredEmbedding(t *testing.T) {
 		SourceTable: "direct_evidence_records", SourceRowID: "7",
 		SchemaVersion: "direct_evidence.v1", DocumentText: "Mina found the key.",
 	}
+	document = verifiedMemoryVectorProcessorDocument(document, "sar_active")
 	documentJSON, err := json.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -357,6 +493,7 @@ func TestMemoryVectorProcessorTerminatesAtConfiguredRetryLimitWithTypedAudit(t *
 		SchemaVersion: store.PreciseMemoryUnitContract, DocumentText: "grounded",
 		Embedding: []float32{0.1, 0.2},
 	}
+	document = verifiedMemoryVectorProcessorDocument(document, "sar_active")
 	documentJSON, err := materializedMemoryVectorDocumentJSON(document)
 	if err != nil {
 		t.Fatal(err)

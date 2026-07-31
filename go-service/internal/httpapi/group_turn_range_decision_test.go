@@ -621,6 +621,35 @@ func TestVerifiedTailDeleteWithoutClientBaselineExecutesOnlyBackendTail(t *testi
 	}
 }
 
+func TestRollbackDecisionCarriesTypedSupersession(t *testing.T) {
+	request := rollbackDecisionRequest{
+		ChatSessionID: "char_1_cid_replace", CandidateFromTurn: 4,
+		BackendLatestTurn: 4, DeletionObserved: true,
+		LifecycleActionObservation: store.LogicalTurnLifecycleSuperseded,
+	}
+	decision := calculateRollbackDecision(request)
+	if !decision.Allowed || decision.LifecycleAction != store.LogicalTurnLifecycleSuperseded {
+		t.Fatalf("supersession decision=%+v", decision)
+	}
+	ledger := newRollbackDecisionLedger()
+	record := ledger.issue(decision.ChatSessionID, decision.FromTurn, "adapter", decision.LifecycleAction)
+	consumed, ok := ledger.consume(record.Token, decision.ChatSessionID, decision.FromTurn)
+	if !ok || consumed.LifecycleAction != store.LogicalTurnLifecycleSuperseded {
+		t.Fatalf("typed supersession was not preserved by decision token: %+v ok=%v", consumed, ok)
+	}
+}
+
+func TestRollbackDecisionRejectsUnknownLifecycleAction(t *testing.T) {
+	decision := calculateRollbackDecision(rollbackDecisionRequest{
+		ChatSessionID: "char_1_cid_replace", CandidateFromTurn: 4,
+		BackendLatestTurn: 4, DeletionObserved: true,
+		LifecycleActionObservation: "guess_from_prompt_text",
+	})
+	if decision.Allowed || decision.Reason != "lifecycle_action_observation_invalid" {
+		t.Fatalf("unknown lifecycle action was not rejected: %+v", decision)
+	}
+}
+
 func TestRollbackDecisionHandlerVerifiesIncompleteUserOnlyBackendTail(t *testing.T) {
 	const sid = "char_1_cid_user_only_tail"
 	server := &Server{Store: &rollbackDecisionChatLogStore{
@@ -915,7 +944,7 @@ func TestCopiedEightPlusOneRollbackDecisionExecutesOnlyTurnNine(t *testing.T) {
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	recordingStore := &rollbackRecordingStore{Store: store.NewNoopStore()}
 	server := &Server{Cfg: cfg, Store: recordingStore}
-	record := server.rollbackDecisionLedger().issue(sid, decision.FromTurn, "auto")
+	record := server.rollbackDecisionLedger().issue(sid, decision.FromTurn, "auto", store.LogicalTurnLifecycleDeleted)
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 	req := httptest.NewRequest(http.MethodDelete, "/rollback/9?chat_session_id="+sid+"&req_source=auto&decision_token="+record.Token, nil)
@@ -936,11 +965,11 @@ func TestCopiedEightPlusOneRollbackDecisionExecutesOnlyTurnNine(t *testing.T) {
 
 func TestRollbackDecisionTokenIsOneUseAndBoundToRange(t *testing.T) {
 	ledger := newRollbackDecisionLedger()
-	record := ledger.issue("s", 4, "auto")
+	record := ledger.issue("s", 4, "auto", store.LogicalTurnLifecycleDeleted)
 	if _, ok := ledger.consume(record.Token, "s", 5); ok {
 		t.Fatal("token accepted wrong turn")
 	}
-	record = ledger.issue("s", 4, "auto")
+	record = ledger.issue("s", 4, "auto", store.LogicalTurnLifecycleDeleted)
 	if _, ok := ledger.consume(record.Token, "s", 4); !ok {
 		t.Fatal("token rejected matching decision")
 	}
@@ -951,10 +980,10 @@ func TestRollbackDecisionTokenIsOneUseAndBoundToRange(t *testing.T) {
 
 func TestRollbackDecisionLedgerEvictsOldestTokenAtCapacity(t *testing.T) {
 	ledger := newRollbackDecisionLedger()
-	first := ledger.issue("s", 4, "auto")
+	first := ledger.issue("s", 4, "auto", store.LogicalTurnLifecycleDeleted)
 	var latest rollbackDecisionRecord
 	for index := 1; index <= rollbackDecisionMax; index++ {
-		latest = ledger.issue("s", 4+index, "auto")
+		latest = ledger.issue("s", 4+index, "auto", store.LogicalTurnLifecycleDeleted)
 	}
 	if _, ok := ledger.consume(first.Token, "s", 4); ok {
 		t.Fatal("oldest rollback token survived capacity eviction")

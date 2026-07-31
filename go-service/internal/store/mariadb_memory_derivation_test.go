@@ -390,16 +390,85 @@ func TestMariaDBVectorOutboxReplayLeaseRecoveryAndSourceFence(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT o.lease_owner, o.lease_until, o.required_source_state, s.lifecycle_state").
+	mock.ExpectQuery("SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state, s.lifecycle_state").
 		WithArgs(int64(9)).
-		WillReturnRows(sqlmock.NewRows([]string{"lease_owner", "lease_until", "required_source_state", "lifecycle_state"}).
-			AddRow("worker", now.Add(time.Minute), "active", "superseded"))
+		WillReturnRows(sqlmock.NewRows([]string{"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state"}).
+			AddRow("leased", "worker", now.Add(time.Minute), "active", "superseded"))
 	mock.ExpectExec("UPDATE memory_vector_outbox").
 		WithArgs(now, int64(9)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	if err := m.CompleteMemoryVectorOperation(context.Background(), 9, "worker", now); !errors.Is(err, ErrSourceRevisionStale) {
 		t.Fatalf("stale completion error=%v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBVectorOutboxFinishReportsInvalidationRaceAsSourceStale(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 7, 28, 3, 0, 0, 0, time.UTC)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state, s.lifecycle_state").
+		WithArgs(int64(44)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state",
+		}).AddRow("stale_rejected", nil, nil, "active", "superseded"))
+	mock.ExpectRollback()
+
+	if err := m.CompleteMemoryVectorOperation(context.Background(), 44, "worker", now); !errors.Is(err, ErrSourceRevisionStale) {
+		t.Fatalf("completion after invalidation error=%v, want ErrSourceRevisionStale", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBVectorOutboxClaimPreservesPerDocumentCausalOrder(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 7, 28, 3, 30, 0, 0, time.UTC)
+	leaseUntil := now.Add(time.Minute)
+	documentID := "precise_memory:session:ordered"
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE memory_vector_outbox o").WillReturnResult(sqlmock.NewResult(0, 0))
+	claimWithCausalGuard := `(?s)FROM memory_vector_outbox o.*AND NOT EXISTS \(\s*SELECT 1\s*FROM memory_vector_outbox prior\s*WHERE prior\.document_id = o\.document_id\s*AND prior\.id < o\.id\s*AND prior\.status IN \('pending', 'leased', 'retryable', 'needs_embedding'\)\s*\).*ORDER BY o\.created_at, o\.id`
+	mock.ExpectQuery(claimWithCausalGuard).
+		WithArgs(now, now, now).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "contract_version", "operation_key", "operation",
+			"chat_session_id", "source_revision", "document_id", "document_json",
+			"embedding_ready", "required_source_state", "status", "attempts",
+			"retry_after", "lease_owner", "lease_until", "last_error",
+			"created_at", "updated_at",
+		}).AddRow(
+			int64(41), MemoryVectorOutboxContract, strings.Repeat("d", 64), "delete",
+			"session", "sar_old", documentID, nil, true, "inactive", "pending", 0,
+			nil, nil, nil, nil, now.Add(-time.Minute), now.Add(-time.Minute),
+		))
+	mock.ExpectExec("UPDATE memory_vector_outbox").
+		WithArgs("worker", leaseUntil, now, int64(41)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	claimed, err := m.ClaimMemoryVectorOperation(context.Background(), "worker", now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != 41 || claimed.DocumentID != documentID || claimed.Operation != "delete" {
+		t.Fatalf("claim did not preserve oldest document operation: %#v", claimed)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -509,13 +578,19 @@ func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t
 			"superseded", "superseded", "superseded", "superseded", "superseded",
 			source.ChatSessionID, "sar_old").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WithArgs(source.SourceRevision, now, now, source.ChatSessionID, source.TurnIndex, source.SourceRevision).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO memory_source_revisions").WillReturnResult(sqlmock.NewResult(12, 1))
 	mock.ExpectExec("DELETE FROM effective_input_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memories").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM direct_evidence_records").WillReturnResult(sqlmock.NewResult(0, 1))
-	for range 33 {
+	mock.ExpectExec("UPDATE direct_evidence_records").WillReturnResult(sqlmock.NewResult(0, 1))
+	for range 32 {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
+	mock.ExpectExec("INSERT INTO status_current_values").
+		WithArgs(source.ChatSessionID).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
 		WithArgs(source.ChatSessionID, source.TurnIndex, source.UserContent, now).
 		WillReturnResult(sqlmock.NewResult(1, 1))
