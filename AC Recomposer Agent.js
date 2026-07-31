@@ -1,22 +1,22 @@
 //@name AC Recomposer Agent
-//@display-name AC Recomposer Agent Beta 0.02
+//@display-name AC Recomposer Agent Beta 0.06
 //@author recomposer
 //@api 3.0
-//@version 0.0.2
+//@version 0.0.6
 
 
 /*
  * Standalone AC Recomposer Agent for RisuAI: turn contract -> scene variants ->
- * Semantic Judge -> Fusion Plan -> Composer -> structural verifier -> Semantic Prover. Protected and inspect-only
- * segments are preserved while mutable prose is rebuilt.
+ * Semantic Judge -> Fusion Plan -> Composer -> host-artifact restoration -> Semantic Prover.
+ * The Composer may rebuild the complete visible scene around exact RisuAI artifact tokens.
  */
 (async () => {
   "use strict";
 
   const PLUGIN_ID = "risu_recomposer";
-  const VERSION = "0.0.2";
-  const RELEASE_LABEL = "Beta 0.02";
-  const BUILD_MARKER = "AC-RECOMPOSER-AGENT-BETA-002-20260731-SCENE-FRAME";
+  const VERSION = "0.0.6";
+  const RELEASE_LABEL = "Beta 0.06";
+  const BUILD_MARKER = "AC-RECOMPOSER-AGENT-BETA-006-20260801-SCENE-FRAME-REWRITE";
   const LOG_PREFIX = "[AC Recomposer Agent]";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings_v1`;
   const TRACE_KEY = `${PLUGIN_ID}_trace_v1`;
@@ -24,6 +24,7 @@
   const OUTPUT_REUSE_TTL_MS = 5 * 60 * 1000;
   const OUTPUT_REUSE_LIMIT = 4;
   const DEFAULT_DEADLINE_MS = 120000;
+  const COMPLETION_WAIT_WATCHDOG_MS = 10 * 60 * 1000;
   const PLANNER_MAX_ITEMS_PER_FIELD = 2;
   const PLANNER_MAX_ITEMS_TOTAL = 12;
   const INPUT_CONTRACT_MARKER = "[Risu Recomposer Turn Contract v1]";
@@ -83,13 +84,14 @@
 
   /* ── Role Registry ─────────────────────────────────────── */
 
-  const ROLE_PROMPT_VERSION = "rp-rewrite-contract.v7";
+  const ROLE_PROMPT_VERSION = "rp-rewrite-contract.v8";
   const PREVIOUS_ROLE_PROMPT_VERSIONS = Object.freeze([
     "rp-rewrite-contract.v2",
     "rp-rewrite-contract.v3",
     "rp-rewrite-contract.v4",
     "rp-rewrite-contract.v5",
     "rp-rewrite-contract.v6",
+    "rp-rewrite-contract.v7",
   ]);
   const LEGACY_BUILTIN_PROMPT_DIGESTS = Object.freeze({
     input_canon_secret_planner: "b4faf92a",
@@ -340,7 +342,7 @@
       "Detect unsupported additions, missing or contradicted ledger units, meta artifacts, language violations, turn-boundary expansion, and residual prose defects.",
       "Inspect mechanics and wording, register and era consistency, repetition and exposition, grounded psychology and relationships, and opening-transition-ending coherence.",
       "A newly asserted motive, emotion, relationship meaning, knowledge state, or personality judgment is unsupported unless the original, Draft Ledger, or runtime evidence establishes it.",
-      "Every preserved fact or beat must include a short exact evidence_quote copied from the final Composer output.",
+      "Use an exact final-text evidence_quote when concrete wording proves a preserved fact or beat. Use an empty quote for negative, background, or implicit continuity preserved by absence or non-contradiction; never invent a quote.",
       "Every realized specialist contribution must cite exact final wording introduced by the rewrite, not a quote already present in draft_zero.",
       "Do not reward length, confidence, or merely different wording. Do not rewrite prose.",
       "Return semantic_proof.v1 JSON only. A pass is valid only when every required ledger unit and contribution is covered, all residual quality checks are clean, and no hard violation or unsupported addition remains.",
@@ -635,7 +637,20 @@
     return safeString(value)
       .replace(/\b(?:sk|pk|rk|key|token)-[A-Za-z0-9._-]{12,}\b/g, "[REDACTED_KEY]")
       .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]{12,}\b/gi, "$1 [REDACTED]")
-      .replace(/\b(authorization|x-api-key|api[_ -]?key)\s*[:=]\s*[^\s,;]+/gi, "$1: [REDACTED]");
+      .replace(/(["']?(?:authorization|x-api-key|api[_ -]?key|access[_ -]?token|token)["']?\s*[:=]\s*["']?)[^"',;\s}\]]+/gi, "$1[REDACTED]");
+  }
+
+  function redactTraceValue(value, depth) {
+    const level = Math.max(0, Number(depth) || 0);
+    if (level > 12) return "[REDACTED_DEPTH]";
+    if (typeof value === "string") return redactSensitiveText(value);
+    if (Array.isArray(value)) return value.map((item) => redactTraceValue(item, level + 1));
+    if (!value || typeof value !== "object") return value;
+    const output = {};
+    Object.keys(value).forEach((key) => {
+      output[key] = redactTraceValue(value[key], level + 1);
+    });
+    return output;
   }
 
   function stableDigest(value) {
@@ -958,8 +973,8 @@
         default_prompt: r.default_prompt,
       })),
       role_profiles: roleProfiles,
-      protected_regex: "",
       context_char_limit: 6000,
+      protected_regex: "",
       trace_enabled: true,
     };
   }
@@ -997,8 +1012,8 @@
     merged.preset = sanitizeEnum(input.preset, PRESETS.map((p) => p.id), "balanced");
     merged.deadline_ms = clampNumber(input.deadline_ms, 10000, 600000, DEFAULT_DEADLINE_MS);
     merged.max_parallel = clampNumber(input.max_parallel, 1, 20, 5);
-    merged.protected_regex = safeString(input.protected_regex);
     merged.context_char_limit = clampNumber(input.context_char_limit, 500, 50000, 6000);
+    merged.protected_regex = safeString(input.protected_regex);
     merged.trace_enabled = input.trace_enabled !== false;
     if (input.role_profiles && typeof input.role_profiles === "object") {
       const sourceProfiles = Object.assign({}, input.role_profiles);
@@ -1125,7 +1140,12 @@
         status: "",
         elapsed_ms: 0,
         semantic_retry: 0,
+        preproof_recovery_attempted: false,
+        preproof_recovery_succeeded: false,
+        preproof_recovery_reason: "",
         proof_repair_attempted: false,
+        direct_fallback: false,
+        fallback_reason: "",
       },
       semantic_judge: {
         status: "not_run",
@@ -1143,6 +1163,7 @@
         verdict: "not_run",
         attempts: 0,
         repair_attempted: false,
+        repair_synthesized: false,
         facts_missing: 0,
         facts_contradicted: 0,
         beats_missing: 0,
@@ -1158,11 +1179,14 @@
         realized_contributions: [],
         structured_recovery_attempted: false,
         structured_recovery_succeeded: false,
+        quality_debt: [],
         validation_diagnostics: [],
         reason: "",
       },
       fusion_plan: {
         status: "not_run",
+        direct_composer_fallback: false,
+        fallback_reason: "",
         accepted_elements: 0,
         rejected_elements: 0,
         consensus_claims: 0,
@@ -1178,6 +1202,7 @@
         failed: 0,
         no_candidate: 0,
         remaining_requirements: 0,
+        tail_reserve_ms: 0,
         last_valid_candidate_id: "",
         last_valid_draft_digest: "",
         rounds: [],
@@ -1201,6 +1226,7 @@
       scheduler: {
         completion_wait: false,
         endpoint_groups: [],
+        stage_budgets: [],
       },
       input_enhance: {
         status: "not_run",
@@ -1288,7 +1314,7 @@
 
   function traceRole(trace, entry) {
     if (!trace.roles) trace.roles = [];
-    trace.roles.push({
+    trace.roles.push(redactTraceValue({
       role_id: entry.role_id,
       stage: entry.stage || "output",
       provider: entry.provider,
@@ -1310,12 +1336,12 @@
       validation_diagnostics: Array.isArray(entry.validation_diagnostics)
         ? entry.validation_diagnostics
         : [],
-    });
+    }));
   }
 
   function traceError(trace, msg) {
     if (!trace.errors) trace.errors = [];
-    trace.errors.push(safeString(msg));
+    trace.errors.push(redactSensitiveText(msg));
   }
 
   function traceTimeline(trace, label) {
@@ -1327,7 +1353,7 @@
     try {
       const raw = await storageGet(TRACE_KEY, "[]");
       const arr = JSON.parse(raw);
-      arr.unshift(trace);
+      arr.unshift(redactTraceValue(trace));
       while (arr.length > TRACE_LIMIT) arr.pop();
       await storageSet(TRACE_KEY, JSON.stringify(arr));
     } catch (_) {}
@@ -1346,7 +1372,6 @@
     { kind: "image_tag", regex: /<img[^>]*>/gi, priority: 100 },
     { kind: "image_md", regex: /!\[[^\]]*\]\([^)]*\)/gi, priority: 99 },
     { kind: "code_fence", regex: /```[\s\S]*?```/gi, priority: 95 },
-    { kind: "inline_code", regex: /`[^`\n]+`/g, priority: 90 },
     { kind: "risu_marker", regex: /<\/?(?:risu|module|status|chatindex|regex|system|plugin|asset|background|emotion|prompt)[^>]*>/gi, priority: 92 },
     { kind: "html_tag", regex: /<\/?(?!(?:thoughts?|analysis|thinking|think)\b)[a-z][^>]*>/gi, priority: 80 },
   ];
@@ -1427,6 +1452,9 @@
 
   function splitMutableWhitespace(text) {
     const raw = safeString(text);
+    if (!raw.trim()) {
+      return { leadingWs: raw, core: "", trailingWs: "" };
+    }
     const leadingMatch = raw.match(/^[\s]*/);
     const trailingMatch = raw.match(/[\s]*$/);
     const leadingWs = leadingMatch ? leadingMatch[0] : "";
@@ -1650,16 +1678,50 @@
   function validateSceneFrameText(segment, text) {
     const required = arrayFromCollection(segment && segment.required_preservation_tokens)
       .map((token) => safeString(token));
-    if (!required.length) return { pass: true, code: "", expected: [], actual: [] };
+    if (!required.length) return { pass: true, exact: true, repair_needed: false, code: "", expected: [], actual: [] };
     const actual = extractSceneFrameTokens(text);
-    const pass = actual.length === required.length
+    const exact = actual.length === required.length
       && actual.every((token, index) => token === required[index]);
     return {
-      pass,
-      code: pass ? "" : "scene_frame_placeholder_mismatch",
+      pass: true,
+      exact,
+      repair_needed: !exact,
+      code: "",
       expected: required,
       actual,
     };
+  }
+
+  function rebuildSceneFrameTokens(frame, text) {
+    const source = safeString(text);
+    const tokens = arrayFromCollection(frame && frame.tokens).map((token) => safeString(token));
+    if (!tokens.length) return source;
+    const logicalSegment = frame && frame.logical_segments && frame.logical_segments[0];
+    const template = mutableFullText(logicalSegment);
+    const cleanSource = source.replace(SCENE_FRAME_TOKEN_RE, "");
+    const cleanTemplate = template.replace(SCENE_FRAME_TOKEN_RE, "");
+    const ratios = [];
+    let cursor = 0;
+    let visibleChars = 0;
+    tokens.forEach((token) => {
+      const index = template.indexOf(token, cursor);
+      if (index < 0) {
+        ratios.push(1);
+        return;
+      }
+      visibleChars += template.slice(cursor, index).replace(SCENE_FRAME_TOKEN_RE, "").length;
+      ratios.push(cleanTemplate.length ? visibleChars / cleanTemplate.length : 1);
+      cursor = index + token.length;
+    });
+    let rebuilt = cleanSource;
+    for (let index = tokens.length - 1; index >= 0; index--) {
+      const position = Math.max(0, Math.min(
+        rebuilt.length,
+        Math.round(cleanSource.length * Math.max(0, Math.min(1, ratios[index])))
+      ));
+      rebuilt = rebuilt.slice(0, position) + tokens[index] + rebuilt.slice(position);
+    }
+    return rebuilt;
   }
 
   function buildSceneRewriteFrame(physicalSegments, originalText) {
@@ -1673,9 +1735,35 @@
     const preservationManifest = [];
     const slotSegmentIds = [null];
     const maskedParts = [];
+    let pendingFixedSegments = [];
+
+    function flushFixedSegments() {
+      if (!pendingFixedSegments.length) return;
+      const token = sceneFrameToken(digest, tokens.length);
+      const fixedText = pendingFixedSegments.map((segment) => mutableFullText(segment)).join("");
+      const segmentIds = pendingFixedSegments.map((segment) => safeString(segment.id));
+      const fixedTypes = uniqueList(pendingFixedSegments.map((segment) => safeString(segment.type)));
+      const fixedKinds = uniqueList(pendingFixedSegments.map((segment) => safeString(segment.kind)).filter(Boolean));
+      tokens.push(token);
+      preservationManifest.push({
+        token,
+        segment_id: segmentIds[0] || "",
+        segment_ids: segmentIds,
+        type: fixedTypes.length === 1 ? fixedTypes[0] : "exact_group",
+        kind: fixedKinds.length === 1 ? fixedKinds[0] : "structural_group",
+        chars: fixedText.length,
+        preview: preview(fixedText, 160),
+      });
+      maskedParts.push(token);
+      slotSegmentIds.push(null);
+      pendingFixedSegments = [];
+    }
 
     arrayFromCollection(physicalSegments).forEach((segment) => {
-      if (segment.type === "mutable") {
+      const fixedWhitespace = segment.type === "mutable"
+        && !mutableCoreText(segment).trim();
+      if (segment.type === "mutable" && !fixedWhitespace) {
+        flushFixedSegments();
         const slotIndex = slotSegmentIds.length - 1;
         if (slotSegmentIds[slotIndex]) {
           throw new Error(`scene_frame_multiple_mutable_slot:${slotIndex}`);
@@ -1684,19 +1772,12 @@
         maskedParts.push(mutableFullText(segment));
         return;
       }
-      const token = sceneFrameToken(digest, tokens.length);
-      tokens.push(token);
-      preservationManifest.push({
-        token,
-        segment_id: safeString(segment.id),
-        type: safeString(segment.type),
-        kind: safeString(segment.kind),
-        chars: safeString(segment.text).length,
-        preview: preview(segment.text, 160),
-      });
-      maskedParts.push(token);
-      slotSegmentIds.push(null);
+      pendingFixedSegments.push(Object.assign({}, segment, {
+        type: fixedWhitespace ? "mutable_exact" : segment.type,
+        kind: fixedWhitespace ? "structural_whitespace" : segment.kind,
+      }));
     });
+    flushFixedSegments();
 
     const maskedText = maskedParts.join("");
     const ws = splitMutableWhitespace(maskedText);
@@ -1711,6 +1792,7 @@
       trailing_ws: ws.trailingWs,
       required_preservation_tokens: tokens.slice(),
       preservation_manifest: preservationManifest,
+      scene_slot_segment_ids: slotSegmentIds.slice(),
     };
     return {
       schema: "scene_rewrite_frame.v1",
@@ -1735,11 +1817,11 @@
   }
 
   function splitSceneFrameText(frame, text) {
-    const source = safeString(text);
+    let source = safeString(text);
     const logicalSegment = frame && frame.logical_segments && frame.logical_segments[0];
     const tokenCheck = validateSceneFrameText(logicalSegment, source);
-    if (!tokenCheck.pass) {
-      return { pass: false, code: tokenCheck.code, chunks: [], token_check: tokenCheck };
+    if (tokenCheck.repair_needed) {
+      source = rebuildSceneFrameTokens(frame, source);
     }
     const chunks = [];
     let cursor = 0;
@@ -1753,13 +1835,65 @@
     if (chunks.length !== arrayFromCollection(frame && frame.slot_segment_ids).length) {
       return { pass: false, code: "scene_frame_slot_count_mismatch", chunks: [], token_check: tokenCheck };
     }
-    const unanchored = chunks.findIndex((chunk, index) =>
-      !frame.slot_segment_ids[index] && safeString(chunk).trim().length > 0
+    const insertedSlots = chunks.reduce((indexes, chunk, index) => {
+      if (!frame.slot_segment_ids[index] && safeString(chunk).trim().length > 0) {
+        indexes.push(index);
+      }
+      return indexes;
+    }, []);
+    return {
+      pass: true,
+      code: "",
+      chunks,
+      token_check: tokenCheck,
+      inserted_slots: insertedSlots,
+      token_repaired: tokenCheck.repair_needed === true,
+    };
+  }
+
+  function foldPhysicalSegmentMapIntoScene(logicalSegment, rawSegments) {
+    const slotSegmentIds = arrayFromCollection(logicalSegment && logicalSegment.scene_slot_segment_ids);
+    const physicalIds = uniqueList(slotSegmentIds.filter(Boolean).map((id) => safeString(id)));
+    const providedIds = physicalIds.filter((id) =>
+      Object.prototype.hasOwnProperty.call(asObject(rawSegments), id)
     );
-    if (unanchored >= 0) {
-      return { pass: false, code: `scene_frame_unanchored_text:${unanchored}`, chunks: [], token_check: tokenCheck };
-    }
-    return { pass: true, code: "", chunks, token_check: tokenCheck };
+    if (!providedIds.length) return null;
+    const frame = {
+      logical_segments: [logicalSegment],
+      tokens: arrayFromCollection(logicalSegment && logicalSegment.required_preservation_tokens),
+      slot_segment_ids: slotSegmentIds,
+    };
+    const split = splitSceneFrameText(frame, mutableFullText(logicalSegment));
+    if (!split.pass) return null;
+    const chunks = split.chunks.slice();
+    const knownTokens = new Set(frame.tokens);
+    let strippedEmbeddedTokenCount = 0;
+    slotSegmentIds.forEach((segmentId, slotIndex) => {
+      if (!segmentId || !Object.prototype.hasOwnProperty.call(rawSegments, segmentId)) return;
+      let value = safeString(rawSegments[segmentId]);
+      const embeddedTokens = value.match(/\[\[ACR_EXACT_[^\]]+\]\]/g) || [];
+      if (embeddedTokens.some((token) => !knownTokens.has(token))) {
+        chunks[slotIndex] = null;
+        return;
+      }
+      embeddedTokens.forEach((token) => {
+        value = value.split(token).join("");
+        strippedEmbeddedTokenCount++;
+      });
+      chunks[slotIndex] = value;
+    });
+    if (chunks.some((chunk) => chunk === null)) return null;
+    let sceneText = chunks[0] || "";
+    arrayFromCollection(frame.tokens).forEach((token, index) => {
+      sceneText += token + (chunks[index + 1] || "");
+    });
+    if (!validateSceneFrameText(logicalSegment, sceneText).pass) return null;
+    return {
+      scene_text: sceneText,
+      provided_segment_ids: providedIds,
+      missing_segment_ids: physicalIds.filter((id) => providedIds.indexOf(id) < 0),
+      stripped_embedded_token_count: strippedEmbeddedTokenCount,
+    };
   }
 
   function restoreSceneRewriteFrame(frame, rewrittenMaskedText) {
@@ -1769,51 +1903,83 @@
     arrayFromCollection(frame.physical_segments).forEach((segment) => {
       physicalById[safeString(segment.id)] = segment;
     });
-    const rewrittenByMutableId = {};
-    arrayFromCollection(frame.slot_segment_ids).forEach((segmentId, slotIndex) => {
-      if (!segmentId) return;
-      const original = physicalById[segmentId];
-      const finalCore = replacementCoreText(split.chunks[slotIndex]);
-      rewrittenByMutableId[segmentId] = safeString(original.leading_ws)
-        + finalCore
-        + safeString(original.trailing_ws);
-    });
-    const finalSegments = arrayFromCollection(frame.physical_segments).map((segment) => {
-      if (segment.type !== "mutable") {
-        return {
-          id: segment.id,
-          type: segment.type,
-          kind: segment.kind,
-          original_text: segment.text,
-          final_text: segment.text,
-          source: "preserved",
-        };
+    const finalSegments = [];
+    const manifest = arrayFromCollection(frame.preservation_manifest);
+    const slotSegmentIds = arrayFromCollection(frame.slot_segment_ids);
+    split.chunks.forEach((chunk, slotIndex) => {
+      const segmentId = safeString(slotSegmentIds[slotIndex]);
+      if (segmentId) {
+        const original = physicalById[segmentId];
+        if (!original) return;
+        const originalFull = mutableFullText(original);
+        const finalFull = safeString(original.leading_ws)
+          + replacementCoreText(chunk)
+          + safeString(original.trailing_ws);
+        const materiality = rewriteMateriality(originalFull, finalFull);
+        finalSegments.push({
+          id: original.id,
+          type: "mutable",
+          original_text: originalFull,
+          final_text: finalFull,
+          source: finalFull === originalFull ? "original" : "composer",
+          operation: finalFull === originalFull ? "none" : "replace",
+          applied_role_id: finalFull === originalFull ? "" : COMPOSER_ROLE_ID,
+          composer_unchanged: finalFull === originalFull,
+          material_change: finalFull !== originalFull,
+          original_meta_only: materiality.original_meta_only,
+          sequence_similarity: materiality.sequence_similarity,
+          changed_span_ratio: materiality.changed_span_ratio,
+        });
+      } else if (safeString(chunk).length > 0) {
+        const materiality = rewriteMateriality("", chunk);
+        finalSegments.push({
+          id: `mutable_scene_insert_${slotIndex + 1}`,
+          type: "mutable",
+          original_text: "",
+          final_text: chunk,
+          source: "composer",
+          operation: "insert",
+          applied_role_id: COMPOSER_ROLE_ID,
+          composer_unchanged: false,
+          material_change: safeString(chunk).length > 0,
+          original_meta_only: materiality.original_meta_only,
+          sequence_similarity: materiality.sequence_similarity,
+          changed_span_ratio: materiality.changed_span_ratio,
+        });
       }
-      const originalFull = mutableFullText(segment);
-      const finalFull = Object.prototype.hasOwnProperty.call(rewrittenByMutableId, segment.id)
-        ? rewrittenByMutableId[segment.id]
-        : originalFull;
-      const materiality = rewriteMateriality(originalFull, finalFull);
-      return {
-        id: segment.id,
-        type: "mutable",
-        original_text: originalFull,
-        final_text: finalFull,
-        source: finalFull === originalFull ? "original" : "composer",
-        operation: finalFull === originalFull ? "none" : "replace",
-        applied_role_id: finalFull === originalFull ? "" : COMPOSER_ROLE_ID,
-        composer_unchanged: finalFull === originalFull,
-        material_change: finalFull !== originalFull && materiality.material,
-        original_meta_only: materiality.original_meta_only,
-        sequence_similarity: materiality.sequence_similarity,
-        changed_span_ratio: materiality.changed_span_ratio,
-      };
+
+      const fixedGroup = manifest[slotIndex];
+      arrayFromCollection(fixedGroup && fixedGroup.segment_ids).forEach((fixedId) => {
+        const fixed = physicalById[safeString(fixedId)];
+        if (!fixed) return;
+        finalSegments.push({
+          id: fixed.id,
+          type: fixed.type,
+          kind: fixed.kind,
+          original_text: mutableFullText(fixed),
+          final_text: mutableFullText(fixed),
+          source: "preserved",
+        });
+      });
     });
+    const representedIds = new Set(finalSegments.map((segment) => safeString(segment.id)));
+    const missingPhysical = arrayFromCollection(frame.physical_segments)
+      .filter((segment) => !representedIds.has(safeString(segment.id)));
+    if (missingPhysical.length) {
+      return {
+        pass: false,
+        code: `scene_frame_physical_segment_missing:${safeString(missingPhysical[0].id)}`,
+        output: "",
+        final_segments: [],
+      };
+    }
     return {
       pass: true,
       code: "",
       output: finalSegments.map((segment) => segment.final_text).join(""),
       final_segments: finalSegments,
+      inserted_slots: arrayFromCollection(split.inserted_slots),
+      token_repaired: split.token_repaired === true,
     };
   }
 
@@ -1861,7 +2027,7 @@
         operation: changed ? "replace" : "none",
         applied_role_id: changed ? COMPOSER_ROLE_ID : "",
         composer_unchanged: !changed,
-        material_change: changed && materiality.material,
+        material_change: changed,
         original_meta_only: materiality.original_meta_only,
         sequence_similarity: materiality.sequence_similarity,
         changed_span_ratio: materiality.changed_span_ratio,
@@ -1870,8 +2036,8 @@
       logicalFinalSegments: logicalAssembly.finalSegments,
       changed,
       composerApplied: changed ? 1 : 0,
-      materialComposerApplied: changed && materiality.material && !materiality.original_meta_only ? 1 : 0,
-      materialChanged: changed && materiality.material ? 1 : 0,
+      materialComposerApplied: changed ? 1 : 0,
+      materialChanged: changed ? 1 : 0,
       metaOnlyChanged: changed && materiality.original_meta_only ? 1 : 0,
       unchangedSegments: changed ? 0 : 1,
       frame_error: "",
@@ -2720,12 +2886,32 @@
     }
   }
 
-  async function readResponseText(response) {
+  async function readResponseText(response, timeoutMs, abortSignal) {
     if (!response) return "";
+    const boundedTimeoutMs = Math.max(0, Number(timeoutMs) || 0);
+    let timer = null;
+    let onAbort = null;
     try {
-      return await response.text();
-    } catch (_) {
-      return "";
+      const bodyPromise = Promise.resolve().then(() => response.text());
+      const races = [bodyPromise];
+      if (boundedTimeoutMs > 0) {
+        races.push(new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("request_timeout")), boundedTimeoutMs);
+        }));
+      }
+      if (abortSignal) {
+        races.push(new Promise((_, reject) => {
+          onAbort = () => reject(new Error("deadline_aborted"));
+          if (abortSignal.aborted) onAbort();
+          else abortSignal.addEventListener("abort", onAbort, { once: true });
+        }));
+      }
+      return await Promise.race(races);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (abortSignal && onAbort) {
+        try { abortSignal.removeEventListener("abort", onAbort); } catch (_) {}
+      }
     }
   }
 
@@ -2879,7 +3065,7 @@
       headers,
       body: JSON.stringify(body),
     }, timeoutMs, abortSignal);
-    const raw = await readResponseText(response);
+    const raw = await readResponseText(response, timeoutMs, abortSignal);
     if (!response || !response.ok) {
       throw new Error(`HTTP ${response ? response.status : ""}: ${raw.slice(0, 300)}`);
     }
@@ -2945,7 +3131,7 @@
         headers,
         body: JSON.stringify(body),
       }, timeoutMs, abortSignal);
-      const raw = await readResponseText(response);
+      const raw = await readResponseText(response, timeoutMs, abortSignal);
       if (!response || !response.ok) {
         throw new Error(`HTTP ${response ? response.status : ""}: ${raw.slice(0, 300)}`);
       }
@@ -2998,7 +3184,7 @@
       headers,
       body: JSON.stringify(body),
     }, timeoutMs, abortSignal);
-    const raw = await readResponseText(response);
+    const raw = await readResponseText(response, timeoutMs, abortSignal);
     if (!response || !response.ok) {
       throw new Error(`HTTP ${response ? response.status : ""}: ${raw.slice(0, 300)}`);
     }
@@ -3043,7 +3229,7 @@
       headers,
       body: JSON.stringify(body),
     }, timeoutMs, abortSignal);
-    const raw = await readResponseText(response);
+    const raw = await readResponseText(response, timeoutMs, abortSignal);
     if (!response || !response.ok) {
       throw new Error(`HTTP ${response ? response.status : ""}: ${raw.slice(0, 300)}`);
     }
@@ -3090,7 +3276,7 @@
       headers,
       body: JSON.stringify(body),
     }, timeoutMs, abortSignal);
-    const raw = await readResponseText(response);
+    const raw = await readResponseText(response, timeoutMs, abortSignal);
     if (!response || !response.ok) {
       throw new Error(`HTTP ${response ? response.status : ""}: ${raw.slice(0, 300)}`);
     }
@@ -3134,7 +3320,7 @@
       headers,
       body: JSON.stringify(body),
     }, timeoutMs, abortSignal);
-    const raw = await readResponseText(response);
+    const raw = await readResponseText(response, timeoutMs, abortSignal);
     if (!response || !response.ok) {
       throw new Error(`HTTP ${response ? response.status : ""}: ${raw.slice(0, 300)}`);
     }
@@ -3175,7 +3361,7 @@
       headers,
       body: JSON.stringify(body),
     }, timeoutMs, abortSignal);
-    const raw = await readResponseText(response);
+    const raw = await readResponseText(response, timeoutMs, abortSignal);
     if (!response || !response.ok) {
       throw new Error(`HTTP ${response ? response.status : ""}: ${raw.slice(0, 300)}`);
     }
@@ -3888,8 +4074,11 @@
         .concat(draftLedgerItems(contract, "prose_targets", "prose_directive"))
         .concat(archiveSupervisorGuidance)
     );
+    const immutableConstraints = uniqueDraftLedgerItems(
+      draftLedgerItems(contract, "immutable_constraints", "immutable_constraint")
+    );
     const establishedFacts = uniqueDraftLedgerItems(
-      draftLedgerItems(contract, "immutable_constraints", "established_fact")
+      immutableConstraints
         .concat(draftLedgerItems(contract, "character_visible_facts", "character_visible_fact"))
         .concat(draftLedgerItems(contract, "scene_state", "scene_state"))
         .concat(archiveObjectiveFacts)
@@ -3919,7 +4108,7 @@
     );
     const userOwnedDecisions = speakerAndPov.concat(responseDirectives);
     const hardConstraints = uniqueDraftLedgerItems(
-      establishedFacts
+      immutableConstraints
         .concat(secretsAndReveal)
         .concat(speakerAndPov)
         .concat(responseDirectives)
@@ -4027,12 +4216,13 @@
       arrayFromCollection(segment && segment.preservation_manifest).map((item) => ({
         token: safeString(item && item.token),
         segment_id: safeString(item && item.segment_id),
+        segment_ids: arrayFromCollection(item && item.segment_ids).map((id) => safeString(id)),
         type: safeString(item && item.type),
         kind: safeString(item && item.kind),
       }))
     );
     const preservationSection = preservationManifest.length
-      ? `\n\n--- Exact Preservation Placeholders ---\n${JSON.stringify(preservationManifest)}\nEvery listed token represents original protected or inspect-only bytes. Copy every token exactly once and in the same order inside the rewritten scene value. Never alter, remove, duplicate, reorder, translate, or invent a placeholder. The host restores the original bytes after composition.\n--- End Exact Preservation Placeholders ---\n`
+      ? `\n\n--- RisuAI Host Artifact Hints ---\n${JSON.stringify(preservationManifest)}\nEach marker indicates the approximate location of host-rendered bytes such as an image, status field, or code container. Freely rebuild all prose before, between, and after them. Keep markers when convenient; missing, duplicated, or displaced markers are repaired mechanically after composition and never invalidate the prose.\n--- End RisuAI Host Artifact Hints ---\n`
       : "";
     let userPrompt;
     if (role.is_input_planner) {
@@ -4075,6 +4265,9 @@
       }));
       userPrompt = `Prove or reject the FINAL Composer output against every binding semantic unit and required Fusion contribution.\n\nOriginal ordered segments:\n${JSON.stringify(originalSegments)}\n\nFinal Composer segments:\n${JSON.stringify(finalSegments)}\n\nSemantic Judgment:\n${JSON.stringify(asObject(directorInfo && directorInfo.semantic_judgment))}\n\nFusion Plan:\n${JSON.stringify(asObject(directorInfo && directorInfo.fusion_plan))}\n${draftLedgerSection}${contextSection}\n\nRules:\n- Cover every established_facts ledger_id exactly once in fact_checks.\n- Cover every scene_beats ledger_id exactly once in beat_checks.\n- Cover every hard_constraints ledger_id exactly once in constraint_checks.\n- response_directives are execution constraints, not story facts or scene beats. Judge whether the final scene obeys them through constraint_checks; the user's command wording does not need to appear in the prose.\n- A preserved fact or beat evidence_quote must be an exact quote from the FINAL Composer prose. Never cite the user command, Draft Ledger wording, runtime context, or the original draft when that wording is absent from the final prose.\n- Cover every fusion_plan.required_contributions contribution_id exactly once in quality_gain_checks.\n- A quality gain is realized only when its exact evidence_quote appears in the required final segment and that exact wording was not already present in the corresponding original segment. Missing, unchanged, or regressed gains cannot pass.\n- Return exactly one residual_quality_checks item for each check_id: mechanics_and_wording, register_and_era, repetition_and_exposition, grounded_psychology_and_relationship, scene_coherence_and_ending.\n- Mark a residual check issue when the final scene retains an awkward or erroneous phrase, typo, register/era mismatch, repeated or flattened exposition, unsupported motive/emotion/relationship/knowledge assertion, weak opening or transition, or generic/explanatory ending. An issue requires an exact final-text quote and segment_id and cannot pass.\n- Mark missing, contradicted, violated, uncertain, regressed, or issue honestly. Uncertain is not a pass.\n- Record every secret, POV, identity, agency, meta, or output-contract failure as a hard_violation.\n- Record every new factual, relationship, location, object-state, backstory, event, motive, emotion, knowledge state, or personality assertion without original, Draft Ledger, or runtime evidence as an unsupported_addition.\n- output_contract fields must be booleans grounded in the final text.\n- Use verdict repair only when one targeted Composer repair can resolve every failure. Provide segment-scoped repair_instructions covering missing/contradicted fact ledger IDs, beat ledger IDs, violated constraint ledger IDs, missing contribution IDs, residual check IDs, hard violations, unsupported additions, and failed output_contract keys.\n- Put the covered ledger/contribution/check/output-contract IDs in repair_instructions.evidence_refs or name them exactly in instruction. Every affected segment must receive an instruction.\n- Use verdict fail when the scene cannot be repaired without replacing its grounded event structure.\n- Do not write prose, advice, markdown, or reasoning.\n\nReturn compact JSON only:\n{"schema":"semantic_proof.v1","declared_verdict":"pass|repair|fail","fact_checks":[{"ledger_id":"fact_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"beat_checks":[{"ledger_id":"beat_1","status":"preserved|missing|contradicted|uncertain","detail":"","evidence_quote":""}],"constraint_checks":[{"ledger_id":"constraint_1","status":"satisfied|violated|uncertain","detail":"","evidence_quote":""}],"quality_gain_checks":[{"contribution_id":"gain_id","status":"realized|missing|regressed","detail":"","evidence_quote":"","segment_ids":["mutable_1"]}],"residual_quality_checks":[{"check_id":"mechanics_and_wording|register_and_era|repetition_and_exposition|grounded_psychology_and_relationship|scene_coherence_and_ending","status":"clean|issue","detail":"","evidence_quote":"","segment_ids":[]}],"hard_violations":[{"type":"secret_leak|pov_violation|identity_continuity|agency_takeover|meta_artifact|output_contract_violation","detail":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"unsupported_additions":[{"claim":"","reason":"","segment_ids":["mutable_1"],"evidence_refs":[]}],"output_contract":{"language_ok":true,"turn_boundary_ok":true,"user_agency_ok":true,"meta_free":true,"format_ok":true},"repair_instructions":[{"segment_id":"mutable_1","instruction":"repair fact_1 and output_contract:language_ok","evidence_refs":["fact_1","output_contract:language_ok"],"prohibited":[]}]}`;
     } else if (role.is_composer) {
+      const plainSceneOutput = !!(directorInfo && directorInfo.composer_plain_scene)
+        && mutableSegs.length === 1
+        && mutableSegs[0].id === SCENE_REWRITE_SEGMENT_ID;
       const mutableList = mutableSegs.map((s) => {
         const candidates = (directorInfo && directorInfo.candidateBundles && directorInfo.candidateBundles[s.id]) || [];
         const candidateSection = candidates.length
@@ -4083,11 +4276,12 @@
         return `Segment ${s.id}:\nOriginal:\n${s.text}\nAccepted candidates:\n${candidateSection}`;
       }).join("\n\n---\n\n");
       const preservedList = allSegments.filter((s) => s.type !== "mutable").map((s) =>
-        `${s.id} [PRESERVED — do not output]: ${preview(s.text, 200)}`
+        `${s.id} [HOST ARTIFACT — represented by token]: ${preview(s.text, 200)}`
       ).join("\n");
       const proofRepair = asObject(directorInfo && directorInfo.semantic_proof_repair);
+      const preProofRecovery = proofRepair.preproof_recovery === true;
       const proofRepairSection = arrayFromCollection(proofRepair.repair_instructions).length
-        ? `\n--- Semantic Proof Repair ---\nThe previous composed scene failed final semantic proof.\nPrevious rejected final segments:\n${JSON.stringify(proofRepair.previous_segments || {})}\nRepair instructions:\n${JSON.stringify(proofRepair.repair_instructions)}\nFailure reasons:\n${JSON.stringify(proofRepair.reason_codes || [])}\nRecompose the complete mutable scene once. Resolve every listed failure while preserving all already-correct facts, beats, constraints, voice, and causality. Do not return a local phrase patch or commentary.\n--- End Semantic Proof Repair ---\n`
+        ? `\n--- ${preProofRecovery ? "Pre-Proof Composition Recovery" : "Semantic Proof Repair"} ---\nThe previous composed scene failed ${preProofRecovery ? "material rewrite or structural verification" : "final semantic proof"}.\nPrevious rejected final segments:\n${JSON.stringify(proofRepair.previous_segments || {})}\nRepair instructions:\n${JSON.stringify(proofRepair.repair_instructions)}\nFailure reasons:\n${JSON.stringify(proofRepair.reason_codes || [])}\nRecompose the complete mutable scene once. Resolve every listed failure while preserving all already-correct facts, beats, constraints, exact placeholders, voice, and causality. Do not return a local phrase patch or commentary.\n--- End ${preProofRecovery ? "Pre-Proof Composition Recovery" : "Semantic Proof Repair"} ---\n`
         : "";
       const lineageSection = directorInfo && (
         arrayFromCollection(directorInfo.revision_lineage).length
@@ -4100,18 +4294,30 @@
         : "";
       const revisionFeedback = asObject(directorInfo && directorInfo.composer_revision_feedback);
       const retrySection = arrayFromCollection(revisionFeedback.weak_segment_ids).length
-        ? `\n--- Recomposition Retry ---\nThe previous composition was rejected as a near-copy.\nWeak segment IDs: ${revisionFeedback.weak_segment_ids.join(", ")}\nPrevious rejected segments:\n${JSON.stringify(revisionFeedback.previous_segments || {})}\nFor every weak segment, discard the previous sentence structure and reconstruct the prose materially. Preserve facts, not wording. Do not answer with spelling, punctuation, synonym, or isolated-line edits.\n--- End Retry ---\n`
+        ? `\n--- Recomposition Retry ---\nThe previous composition needs a stronger scene-level rewrite.\nWeak segment IDs: ${revisionFeedback.weak_segment_ids.join(", ")}\nPrevious segments:\n${JSON.stringify(revisionFeedback.previous_segments || {})}\nFor every weak segment, discard the previous sentence structure and reconstruct the prose materially. Preserve facts, not wording. Do not answer with spelling, punctuation, synonym, or isolated-line edits.\n--- End Retry ---\n`
         : "";
-      userPrompt = `Compose the FINAL mutable prose from the original, accepted scene candidates, Semantic Judgment, Fusion Plan, and Draft Ledger.\n\nMutable segments:\n${mutableList}\n\nPreserved segments (never output or rewrite):\n${preservedList}\n${directorSection}${retrySection}${draftLedgerSection}${preservationSection}${contextSection}\n\nRules:\n- Follow fusion_plan.v1. Preserve every required fact, beat, constraint, user-owned decision, secret/reveal state, POV boundary, and cross-segment consequence.\n- Realize every fusion_plan.required_contributions item in its specified segment_ids. Integrate compatible contributions from every accepted specialist role rather than collapsing to one top candidate.\n- Use only accepted candidate elements and permitted additions. Exclude every rejected element, prohibited addition, unsupported claim, and hard violation.\n- Resolve conflicts exactly as the Fusion Plan states; do not choose by confidence, score, verbosity, or surface elegance.\n- Synthesize compatible strengths into new prose. Never concatenate candidate passages or copy one candidate unchanged.\n- The supplied mutable text is already the visible response; do not recreate removed model reasoning, prompt residue, approval labels, assistant commentary, or output-contract violations.\n- Materially reconstruct every substantive segment through stronger scene architecture, causality, voice, subtext, dramatic pressure, imagery, pacing, transitions, and cadence.\n- After drafting all segment values, read them in assembled order and perform one final whole-scene polish. Correct awkward or erroneous wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, weak boundary transitions, and generic or explanatory ending cadence.\n- Do not introduce a motive, emotion, relationship interpretation, knowledge state, or personality judgment unless grounded in the original, Draft Ledger, accepted evidence, or runtime context.\n- Do not cross the current turn boundary or decide the user's unexpressed thought, speech, consent, emotion, or next action.\n- Include every requested mutable segment ID exactly once. Output no protected or inspect-only segment.\n\nReturn compact JSON only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}`;
+      const composerReturnContract = plainSceneOutput
+        ? `Return only the complete final ${SCENE_REWRITE_SEGMENT_ID} scene body. Do not wrap it in JSON, markdown fences, labels, analysis, or commentary. Treat RisuAI host artifact markers as optional placement hints and freely rewrite or expand all prose around them.`
+        : 'Return compact JSON only:\n{"segments":{"SEG_ID":"final rewritten text", ...}}';
+      userPrompt = `Compose the FINAL mutable prose from the original, accepted scene candidates, Semantic Judgment, Fusion Plan, and Draft Ledger.\n\nMutable segments:\n${mutableList}\n\nRisuAI host artifacts already represented by tokens:\n${preservedList}\n${directorSection}${retrySection}${draftLedgerSection}${preservationSection}${contextSection}\n\nRules:\n- Follow fusion_plan.v1. Preserve every required fact, beat, constraint, user-owned decision, secret/reveal state, POV boundary, and cross-segment consequence.\n- Realize every fusion_plan.required_contributions item in its specified segment_ids. Integrate compatible contributions from every accepted specialist role rather than collapsing to one top candidate.\n- Use only accepted candidate elements and permitted additions. Exclude every rejected element, prohibited addition, unsupported claim, and hard violation.\n- Resolve conflicts exactly as the Fusion Plan states; do not choose by confidence, score, verbosity, or surface elegance.\n- Synthesize compatible strengths into new prose. Never concatenate candidate passages or copy one candidate unchanged.\n- The supplied mutable text is already the visible response; do not recreate removed model reasoning, prompt residue, approval labels, assistant commentary, or output-contract violations.\n- Materially reconstruct every substantive segment through stronger scene architecture, causality, voice, subtext, dramatic pressure, imagery, pacing, transitions, and cadence.\n- After drafting all segment values, read them in assembled order and perform one final whole-scene polish. Correct awkward or erroneous wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, weak boundary transitions, and generic or explanatory ending cadence.\n- Do not introduce a motive, emotion, relationship interpretation, knowledge state, or personality judgment unless grounded in the original, Draft Ledger, accepted evidence, or runtime context.\n- Do not cross the current turn boundary or decide the user's unexpressed thought, speech, consent, emotion, or next action.\n- Include every requested mutable segment ID exactly once. Output token markers rather than raw host artifact bytes.\n\n${composerReturnContract}`;
     } else {
       const segIds = mutableSegs.map((s) => s.id);
       const revisionRound = asObject(directorInfo && directorInfo.revision_round);
       const revisionSection = revisionRound.round
         ? `\n\n--- Adaptive Revision Round ${revisionRound.round} ---\nThe mutable segments above are the most recent Judge-accepted complete draft, not draft_zero.\nParent candidate: ${safeString(revisionRound.parent_candidate_id)}\nUnresolved requirements owned by this lane:\n${JSON.stringify(arrayFromCollection(revisionRound.requirements))}\nCurrent Semantic Judgment:\n${JSON.stringify(asObject(revisionRound.semantic_judgment))}\nCurrent Fusion Plan:\n${JSON.stringify(asObject(revisionRound.fusion_plan))}\nDevelop this complete draft further. Preserve its valid gains and resolve every listed requirement through your lane. Do not restart from weaker draft_zero wording.\n--- End Adaptive Revision Round ---\n`
         : "";
-      userPrompt = `Produce one complete scene-wide rewrite candidate through this lane.\n\nYou are seeing the full ordered visible response for continuity. Model reasoning containers were removed before this call. Protected and inspect-only bytes are represented by exact placeholders and must never be rewritten.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [PRESERVED]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${revisionSection}${draftLedgerSection}${preservationSection}${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return exactly one candidate whose segments object contains every allowed substantive mutable segment ID exactly once, or return an empty candidates array.\n- The candidate must be readable from the first mutable segment through the last as one complete version of this turn. Missing IDs, partial excerpts, patch fragments, and implicit passthrough are rejected as an incomplete scene.\n- Reconstruct the full scene through this lane; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Preserve Draft Ledger facts, beats, secrets, POV, identity state, user-owned decisions, and the current turn boundary. Wording and paragraph architecture are not protected.\n- Do not recreate model reasoning, approval labels, assistant commentary, prompt residue, or other meta artifacts.\n- No substantive scene segment may be empty. An empty value is allowed only to delete a wholly meta-only mutable segment and must include meta_artifact in addressed_issues.\n- evidence_refs must name Draft Ledger ledger_id, source_ref, or runtime context refs actually used.\n- retained_beats must identify the Draft Ledger units preserved in the scene.\n- proposed_additions must disclose every new factual claim, relationship fact, event, location fact, object state, backstory detail, motive, emotion, knowledge state, or personality judgment introduced by the candidate. Use [] when none.\n- confidence is trace-only metadata and never guarantees selection.\n- If this lane cannot materially improve the whole scene, return {"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[]}. That response is traced as no_candidate, not as a successful rewrite.\n- Identify the concrete issues addressed and summarize the actual scene-level revision.\n\nReturn one compact JSON object only:\n{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"complete replacement text for every allowed ID"},"evidence_refs":["ledger_or_context_ref"],"retained_beats":[{"id":"ledger_id","text":"retained beat"}],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.75,"change_summary":"what materially changed across the complete scene"}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
+      userPrompt = `Produce one complete scene-wide rewrite candidate through this lane.\n\nYou are seeing the full ordered visible response for continuity. Model reasoning containers were removed before this call. RisuAI-rendered artifacts are represented by exact host tokens; freely rebuild all surrounding prose.\n\nFull ordered segments:\n${allSegments.map((s) => s.type === "mutable" ? `${s.id} [MUTABLE]:\n${s.text}` : `${s.id} [HOST ARTIFACT]: ${preview(s.text, 200)}`).join("\n\n---\n\n")}\n\nAllowed mutable segment IDs: ${segIds.join(", ")}\n${revisionSection}${draftLedgerSection}${preservationSection}${contextSection}\n\nCandidate instructions:\n- Apply only your system-defined lane. Do not duplicate another specialist's ownership.\n- Return exactly one candidate whose segments object contains every allowed substantive mutable segment ID exactly once, or return an empty candidates array.\n- The candidate must be readable from the first mutable segment through the last as one complete version of this turn. Missing IDs, partial excerpts, patch fragments, and implicit passthrough are rejected as an incomplete scene.\n- Reconstruct the full scene through this lane; do not submit advice, diagnostics, fragments, patches, or cosmetic synonym swaps.\n- Preserve Draft Ledger facts, beats, secrets, POV, identity state, user-owned decisions, and the current turn boundary. Rebuild wording and paragraph architecture without limitation.\n- Do not recreate model reasoning, approval labels, assistant commentary, prompt residue, or other meta artifacts.\n- No substantive scene segment may be empty. An empty value is allowed only to delete a wholly meta-only mutable segment and must include meta_artifact in addressed_issues.\n- evidence_refs must name Draft Ledger ledger_id, source_ref, or runtime context refs actually used.\n- retained_beats must identify the Draft Ledger units preserved in the scene.\n- proposed_additions must disclose every new factual claim, relationship fact, event, location fact, object state, backstory detail, motive, emotion, knowledge state, or personality judgment introduced by the candidate. Use [] when none.\n- confidence is trace-only metadata and never guarantees selection.\n- If this lane cannot materially improve the whole scene, return {"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[]}. That response is traced as no_candidate, not as a successful rewrite.\n- Identify the concrete issues addressed and summarize the actual scene-level revision.\n\nReturn one compact JSON object only:\n{"schema":"scene_rewrite_candidates.v1","role_id":"${role.role_id}","candidates":[{"segments":{"SEG_ID":"complete replacement text for every allowed ID"},"evidence_refs":["ledger_or_context_ref"],"retained_beats":[{"id":"ledger_id","text":"retained beat"}],"proposed_additions":[],"addressed_issues":["issue_code"],"confidence":0.75,"change_summary":"what materially changed across the complete scene"}]}\n\nAllowed issue values for this lane: ${roleAllowedIssues(role.role_id).join(", ")}.`;
     }
-    return { system: systemPrompt, user: userPrompt };
+    let finalSystemPrompt = systemPrompt;
+    if (role.is_composer && directorInfo && directorInfo.composer_plain_scene) {
+      finalSystemPrompt += `\n\nSCENE BODY OUTPUT OVERRIDE: For ${SCENE_REWRITE_SEGMENT_ID}, return only the complete final scene body with exact placeholders. Do not return JSON or a wrapper. This instruction overrides the generic JSON sentence above.`;
+    } else if (role.is_prover) {
+      finalSystemPrompt += "\n\nEVIDENCE QUOTE OVERRIDE: A preserved fact or beat may use an empty evidence_quote when it is negative, background, or implicit continuity verified by absence or non-contradiction. If a quote is supplied, it must be exact final-scene text. This overrides any generic instruction requiring a quote for every preserved item.";
+    } else if (!role.is_input_planner && !role.is_judge && !role.is_prover && !role.is_composer
+        && mutableSegs.length === 1 && mutableSegs[0].id === SCENE_REWRITE_SEGMENT_ID) {
+      finalSystemPrompt += `\n\nSCENE KEY CONTRACT: The one and only writable key is ${SCENE_REWRITE_SEGMENT_ID}. Never return mutable_1, mutable_2, or physical segment keys.`;
+    }
+    return { system: finalSystemPrompt, user: userPrompt };
   }
 
   function normalizeCandidateReferences(values, limit) {
@@ -4220,6 +4426,27 @@
           && allowedIds.length === 1
           && typeof candidate.scene_rewrite === "string") {
         rawSegments = { [allowedIds[0]]: candidate.scene_rewrite };
+      }
+      if (allowedIds.length === 1
+          && allowedIds[0] === SCENE_REWRITE_SEGMENT_ID
+          && !Object.prototype.hasOwnProperty.call(rawSegments, SCENE_REWRITE_SEGMENT_ID)) {
+        const folded = foldPhysicalSegmentMapIntoScene(mutableById[SCENE_REWRITE_SEGMENT_ID], rawSegments);
+        if (folded) {
+          rawSegments = { [SCENE_REWRITE_SEGMENT_ID]: folded.scene_text };
+          diagnostics.push(candidateValidationDiagnostic(
+            "folded_physical_segments_to_scene",
+            candidateIndex,
+            folded.provided_segment_ids,
+            [
+              folded.missing_segment_ids.length
+                ? `filled ${folded.missing_segment_ids.length} missing physical slots from draft_zero`
+                : "all physical mutable slots recovered",
+              folded.stripped_embedded_token_count
+                ? `stripped ${folded.stripped_embedded_token_count} embedded preservation tokens before deterministic reassembly`
+                : "",
+            ].filter(Boolean).join("; ")
+          ));
+        }
       }
       const tags = arrayFromCollection(candidate.tags).map((tag) => safeString(tag)).filter(Boolean);
       const rawIssueValues = arrayFromCollection(candidate.addressed_issues || candidate.issues)
@@ -4837,13 +5064,13 @@
     const unsupportedFactIndex = factChecks.findIndex((item) => {
       if (item.status !== "preserved") return false;
       const quote = safeString(item.evidence_quote).replace(/\s+/g, " ").trim().toLowerCase();
-      return !quote || !finalEvidenceText.includes(quote);
+      return !!quote && !finalEvidenceText.includes(quote);
     });
     const unsupportedBeatIndex = unsupportedFactIndex < 0
       ? beatChecks.findIndex((item) => {
         if (item.status !== "preserved") return false;
         const quote = safeString(item.evidence_quote).replace(/\s+/g, " ").trim().toLowerCase();
-        return !quote || !finalEvidenceText.includes(quote);
+        return !!quote && !finalEvidenceText.includes(quote);
       })
       : -1;
     const unsupportedPreservedClaim = unsupportedFactIndex >= 0
@@ -5083,6 +5310,151 @@
     };
   }
 
+  function synthesizeWholeSceneRepairProof(proof, mutableSegs) {
+    if (!proof || proof.verdict === "pass" || proof.declared_verdict === "fail") return proof;
+    const segmentIds = uniqueList(arrayFromCollection(mutableSegs)
+      .filter((segment) => segment && segment.type === "mutable")
+      .map((segment) => safeString(segment.id))
+      .filter(Boolean));
+    if (!segmentIds.length) return proof;
+
+    const references = [];
+    const repairDetails = [];
+    const addFailure = (reference, detail) => {
+      const ref = truncate(reference, 160).trim();
+      const text = truncate(detail, 420).trim();
+      if (ref) references.push(ref);
+      if (text) repairDetails.push(`${ref || "failure"}: ${text}`);
+    };
+    arrayFromCollection(proof.fact_checks).forEach((item) => {
+      if (item.status !== "preserved") addFailure(item.ledger_id, item.detail || `fact ${item.status}`);
+    });
+    arrayFromCollection(proof.beat_checks).forEach((item) => {
+      if (item.status !== "preserved") addFailure(item.ledger_id, item.detail || `beat ${item.status}`);
+    });
+    arrayFromCollection(proof.constraint_checks).forEach((item) => {
+      if (item.status !== "satisfied") addFailure(item.ledger_id, item.detail || `constraint ${item.status}`);
+    });
+    arrayFromCollection(proof.quality_gain_checks).forEach((item) => {
+      if (item.status !== "realized") addFailure(item.contribution_id, item.detail || `quality gain ${item.status}`);
+    });
+    arrayFromCollection(proof.residual_quality_checks).forEach((item) => {
+      if (item.status === "issue") addFailure(item.check_id, item.detail || "residual quality issue");
+    });
+    arrayFromCollection(proof.hard_violations).forEach((item) => {
+      addFailure(item.type, item.detail || "hard semantic violation");
+    });
+    arrayFromCollection(proof.unsupported_additions).forEach((item, index) => {
+      addFailure(`unsupported_addition:${index + 1}`, item.claim || item.reason || "remove unsupported addition");
+    });
+    PROOF_OUTPUT_CONTRACT_KEYS.forEach((key) => {
+      if (!asObject(proof.output_contract)[key]) addFailure(`output_contract:${key}`, `repair ${key}`);
+    });
+
+    const instruction = [
+      "Recompose the complete scene, not a local patch.",
+      "Resolve every listed semantic, contract, and prose failure while preserving all grounded facts, chronology, identity/reveal state, POV, secrets, and user agency.",
+      "Remove all model reasoning, prompt residue, approval labels, output wrappers, and language/format violations.",
+      "Realize the accepted specialist contributions as natural scene prose and rebuild weak exposition, transitions, rhythm, characterization, and ending where required.",
+      repairDetails.length ? `Failures to resolve: ${repairDetails.join(" | ")}` : "Resolve every Semantic Prover reason code.",
+    ].join(" ");
+    const repairInstructions = segmentIds.map((segmentId) => ({
+      segment_id: segmentId,
+      instruction: truncate(instruction, 4000),
+      evidence_refs: uniqueList(references).slice(0, 64),
+      prohibited: uniqueList(arrayFromCollection(proof.hard_violations)
+        .map((item) => truncate(item && (item.detail || item.type), 300).trim())
+        .concat(arrayFromCollection(proof.unsupported_additions)
+          .map((item) => truncate(item && item.claim, 300).trim()))
+        .filter(Boolean)).slice(0, 32),
+    }));
+
+    return Object.assign({}, proof, {
+      declared_verdict: "repair",
+      verdict: "repair",
+      repair_instructions: repairInstructions,
+      reason_codes: uniqueList(arrayFromCollection(proof.reason_codes)
+        .concat(["deterministic_whole_scene_repair_synthesized"])),
+      repair_synthesized: true,
+    });
+  }
+
+  function assessSemanticProofReturn(proof) {
+    if (!proof) {
+      return { returnable: false, degraded: false, blocking_reasons: ["semantic_proof_missing"], quality_debt: [] };
+    }
+    if (proof.verdict === "pass") {
+      return { returnable: true, degraded: false, blocking_reasons: [], quality_debt: [] };
+    }
+
+    const blocking = [];
+    if (safeString(proof.declared_verdict) === "fail") {
+      blocking.push("semantic_prover_declared_fail");
+    }
+    arrayFromCollection(proof.hard_violations).forEach((item) => {
+      blocking.push(`hard_violation:${safeString(item && item.type) || "unknown"}`);
+    });
+    if (arrayFromCollection(proof.unsupported_additions).length) blocking.push("unsupported_addition");
+    arrayFromCollection(proof.fact_checks).forEach((item) => {
+      if (item.status !== "preserved") blocking.push(`fact_${safeString(item.status)}:${safeString(item.ledger_id)}`);
+    });
+    arrayFromCollection(proof.beat_checks).forEach((item) => {
+      if (item.status !== "preserved") blocking.push(`beat_${safeString(item.status)}:${safeString(item.ledger_id)}`);
+    });
+    arrayFromCollection(proof.constraint_checks).forEach((item) => {
+      if (item.status !== "satisfied") blocking.push(`constraint_${safeString(item.status)}:${safeString(item.ledger_id)}`);
+    });
+    PROOF_OUTPUT_CONTRACT_KEYS.forEach((key) => {
+      if (!asObject(proof.output_contract)[key]) blocking.push(`output_contract:${key}`);
+    });
+
+    const qualityDebt = uniqueList([]
+      .concat(arrayFromCollection(proof.quality_gain_checks)
+        .filter((item) => item.status !== "realized")
+        .map((item) => `quality_gain_${item.status}:${item.contribution_id}`))
+      .concat(arrayFromCollection(proof.residual_quality_checks)
+        .filter((item) => item.status === "issue")
+        .map((item) => `residual_quality_issue:${item.check_id}`)));
+    if (safeString(proof.verdict) === "fail"
+        && safeString(proof.declared_verdict) !== "fail"
+        && blocking.length === 0
+        && qualityDebt.length === 0) {
+      blocking.push("semantic_proof_verdict_fail");
+    }
+    return {
+      returnable: blocking.length === 0,
+      degraded: blocking.length === 0,
+      blocking_reasons: uniqueList(blocking),
+      quality_debt: qualityDebt,
+    };
+  }
+
+  function degradedSemanticProof(proof, reasonCodes) {
+    const source = asObject(proof);
+    const reasons = uniqueList(arrayFromCollection(reasonCodes)
+      .concat(arrayFromCollection(source.reason_codes))
+      .map((item) => safeString(item).trim())
+      .filter(Boolean));
+    return Object.assign({}, source, {
+      schema: safeString(source.schema) || "semantic_proof.v1",
+      declared_verdict: "degraded",
+      original_declared_verdict: safeString(source.declared_verdict),
+      verdict: "degraded",
+      returnable_degraded: true,
+      reason_codes: reasons,
+      quality_debt: uniqueList(arrayFromCollection(source.quality_debt).concat(reasons)),
+      fact_checks: arrayFromCollection(source.fact_checks),
+      beat_checks: arrayFromCollection(source.beat_checks),
+      constraint_checks: arrayFromCollection(source.constraint_checks),
+      quality_gain_checks: arrayFromCollection(source.quality_gain_checks),
+      residual_quality_checks: arrayFromCollection(source.residual_quality_checks),
+      hard_violations: arrayFromCollection(source.hard_violations),
+      unsupported_additions: arrayFromCollection(source.unsupported_additions),
+      output_contract: asObject(source.output_contract),
+      repair_instructions: arrayFromCollection(source.repair_instructions),
+    });
+  }
+
   function buildRequiredContributions(acceptedJudgments, candidateMap) {
     const contributions = [];
     const seen = new Set();
@@ -5265,13 +5637,75 @@
     };
   }
 
+  function buildDirectComposerFallbackDirector(reason, segments, draftLedger, semanticJudgment, rejectedPlan) {
+    const segmentIds = mutableSegments(segments)
+      .filter((segment) => mutableCoreText(segment).trim().length > 0)
+      .map((segment) => segment.id);
+    const fallbackRequirement = {
+      issue_type: "prose_clarity",
+      role_id: "style_reader",
+      claim: "No judged specialist scene is usable. Reconstruct the complete scene directly from draft_zero, Draft Ledger, runtime context, and output constraints with material improvements to scene architecture, causality, characterization, rhythm, transitions, and ending.",
+      segment_ids: segmentIds,
+      evidence_refs: [],
+    };
+    const fallbackJudgment = semanticJudgment || {
+      schema: "semantic_judgment.v1",
+      candidate_judgments: [],
+      cross_candidate: { consensus: [], complementary: [], conflicts: [] },
+      unresolved_requirements: [fallbackRequirement],
+      scene_requirements: { target_arc: "", target_voice: "", target_pacing: "" },
+    };
+    const priorPlan = asObject(rejectedPlan);
+    const plan = {
+      schema: "fusion_plan.v1",
+      required_facts: arrayFromCollection(draftLedger && draftLedger.established_facts),
+      required_beats: arrayFromCollection(draftLedger && draftLedger.scene_beats),
+      must_preserve_constraints: arrayFromCollection(draftLedger && draftLedger.hard_constraints),
+      accepted_candidate_ids: [],
+      rejected_candidates: arrayFromCollection(priorPlan.rejected_candidates),
+      accepted_elements: [],
+      rejected_elements: arrayFromCollection(priorPlan.rejected_elements),
+      required_contributions: [],
+      consensus_claims: [],
+      complementary_claims: [],
+      conflicts: [],
+      unresolved_requirements: [fallbackRequirement],
+      permitted_additions: [],
+      prohibited_additions: arrayFromCollection(priorPlan.prohibited_additions),
+      target_scene_arc: "",
+      target_voice: "",
+      target_pacing: "",
+      expected_segment_coverage: segmentIds,
+      semantic_ready: true,
+      direct_composer_fallback: true,
+      fallback_reason: safeString(reason),
+    };
+    plan.plan_id = `fusion_${stableDigest(plan)}`;
+    const directorResult = buildComposerCandidatePool(
+      [], fallbackJudgment, plan, segments, draftLedger
+    );
+    directorResult.direct_composer_fallback = true;
+    directorResult.fallback_reason = safeString(reason);
+    return { directorResult, semanticJudgment: fallbackJudgment, fusionPlan: plan };
+  }
+
   function validateComposerSchema(parsed, allowedSegmentIds, mutableSegs) {
     if (!parsed || typeof parsed !== "object") return null;
-    const segments = asObject(parsed.segments);
     if (!Array.isArray(allowedSegmentIds) || !allowedSegmentIds.length) return null;
+    let segments = asObject(parsed.segments);
+    if (!Object.keys(segments).length && allowedSegmentIds.length === 1
+        && typeof parsed[allowedSegmentIds[0]] === "string") {
+      segments = { [allowedSegmentIds[0]]: parsed[allowedSegmentIds[0]] };
+    }
     const allowed = new Set(allowedSegmentIds);
     const mutableById = {};
     arrayFromCollection(mutableSegs).forEach((segment) => { mutableById[segment.id] = segment; });
+    if (allowedSegmentIds.length === 1
+        && allowedSegmentIds[0] === SCENE_REWRITE_SEGMENT_ID
+        && !Object.prototype.hasOwnProperty.call(segments, SCENE_REWRITE_SEGMENT_ID)) {
+      const folded = foldPhysicalSegmentMapIntoScene(mutableById[SCENE_REWRITE_SEGMENT_ID], segments);
+      if (folded) segments = { [SCENE_REWRITE_SEGMENT_ID]: folded.scene_text };
+    }
     const result = {};
     let count = 0;
     Object.keys(segments).forEach((segId) => {
@@ -5285,6 +5719,51 @@
     });
     if (!count || count !== allowed.size) return null;
     return { segments: result };
+  }
+
+  function decodePartialJsonString(source, startIndex) {
+    const text = safeString(source);
+    let value = "";
+    let index = startIndex;
+    while (index < text.length) {
+      const ch = text[index++];
+      if (ch === '"') return { value, closed: true };
+      if (ch !== "\\") {
+        value += ch;
+        continue;
+      }
+      if (index >= text.length) return { value, closed: false };
+      const escaped = text[index++];
+      if (escaped === "n") value += "\n";
+      else if (escaped === "r") value += "\r";
+      else if (escaped === "t") value += "\t";
+      else if (escaped === "b") value += "\b";
+      else if (escaped === "f") value += "\f";
+      else if (escaped === "u" && /^[0-9a-fA-F]{4}$/.test(text.slice(index, index + 4))) {
+        value += String.fromCharCode(parseInt(text.slice(index, index + 4), 16));
+        index += 4;
+      } else {
+        value += escaped;
+      }
+    }
+    return { value, closed: false };
+  }
+
+  function recoverComposerSceneFromDamagedEnvelope(text, allowedSegmentIds, mutableSegs) {
+    if (!Array.isArray(allowedSegmentIds) || allowedSegmentIds.length !== 1) return null;
+    const segmentId = safeString(allowedSegmentIds[0]);
+    const source = safeString(text);
+    const keyPattern = new RegExp(`"${segmentId.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}"\\s*:\\s*"`, "g");
+    let match;
+    let recovered = null;
+    while ((match = keyPattern.exec(source))) {
+      const decoded = decodePartialJsonString(source, match.index + match[0].length);
+      if (!decoded.value) continue;
+      const mutable = arrayFromCollection(mutableSegs).find((segment) => segment.id === segmentId);
+      if (!mutable || !validateSceneFrameText(mutable, decoded.value).pass) continue;
+      recovered = { segments: { [segmentId]: decoded.value } };
+    }
+    return recovered;
   }
 
   function validateComposerPlainScene(text, allowedSegmentIds, mutableSegs) {
@@ -5500,7 +5979,7 @@
       fusion_plan: fusionPlan,
     };
     return {
-      system: "You are the final semantic proof structured-response recovery pass. Recheck the supplied final scene and return one valid semantic_proof.v1 JSON object. Do not write prose, markdown, code fences, or reasoning.",
+      system: "You are the final semantic proof structured-response recovery pass. Recheck the supplied final scene and return one valid semantic_proof.v1 JSON object. Do not write prose, markdown, code fences, or reasoning. An empty preserved fact/beat evidence_quote is valid for negative, background, or implicit continuity preserved by absence or non-contradiction; never invent quoted evidence.",
       user: `Repair the prior Semantic Prover response using this payload:\n${JSON.stringify(recoveryPayload)}\n\nRules:\n- Return every required fact, beat, constraint, contribution, and residual check exactly once using the IDs already present in TARGET SHAPE.\n- Preserved fact/beat evidence_quote must be an exact quote from final_segments. Never quote a user command or ledger wording absent from final prose.\n- response_directives are constraints, not facts or scene beats; their literal wording need not appear in final prose.\n- A realized contribution requires an exact quote in its required final segment that was absent from the corresponding original segment.\n- Every issue requires exact final evidence and segment IDs. Use repair only with segment-scoped repair instructions covering every failure.\n- Output one compact JSON object only.\n\nTARGET SHAPE:\n${JSON.stringify(targetShape)}\n\nRole: ${safeString(role && role.role_id)}`,
     };
   }
@@ -5595,16 +6074,19 @@
   function setFinalTraceState(trace, enhanced, state, reason, assessment) {
     const evidence = asObject(assessment);
     const materialRewrite = evidence.material_rewrite === true;
-    const semanticVerified = evidence.semantic_verified === true
-      ? "passed"
-      : (evidence.semantic_verified === false ? "failed" : "not_run");
+    const semanticVerified = evidence.semantic_verified === "degraded"
+      ? "degraded"
+      : (evidence.semantic_verified === true
+        ? "passed"
+        : (evidence.semantic_verified === false ? "failed" : "not_run"));
     const qualityPreferred = evidence.quality_preferred === true
       ? "passed"
       : (evidence.quality_preferred === false ? "failed" : "not_run");
     trace.final.material_rewrite = materialRewrite;
     trace.final.semantic_verified = semanticVerified;
     trace.final.quality_preferred = qualityPreferred;
-    trace.final.enhanced = !!enhanced && materialRewrite && semanticVerified === "passed";
+    trace.final.enhanced = !!enhanced && materialRewrite
+      && (semanticVerified === "passed" || semanticVerified === "degraded");
     trace.final.reason = safeString(reason);
     trace.summary.material_rewrite = materialRewrite;
     trace.summary.semantic_verified = semanticVerified;
@@ -5641,10 +6123,9 @@
       segment.type === "mutable"
       && safeString(segment.final_text) !== safeString(segment.original_text)
     );
-    const deleteOnly = changedSegments.length > 0
-      && changedSegments.every((segment) => segment.operation === "delete");
-    if (assembled && assembled.materialComposerApplied > 0) {
+    if (assembled && changedSegments.length > 0) {
       const proofPassed = semanticProof && semanticProof.verdict === "pass";
+      const proofDegraded = !proofPassed;
       const qualityChecks = arrayFromCollection(semanticProof && semanticProof.quality_gain_checks);
       const residualChecks = arrayFromCollection(semanticProof && semanticProof.residual_quality_checks);
       const qualityPreferred = residualChecks.length
@@ -5652,39 +6133,20 @@
           && residualChecks.every((item) => item.status === "clean")
         : null;
       return {
-        enhanced: proofPassed,
-        state: proofPassed ? "enhanced" : "material_rewrite_unverified",
-        reason: proofPassed ? "composer_rewrite_semantic_proof_passed" : "composer_material_rewrite_semantic_not_passed",
+        enhanced: true,
+        state: proofPassed ? "enhanced" : "enhanced_degraded",
+        reason: proofPassed
+          ? "composer_changed_scene_semantic_proof_passed"
+          : "composer_changed_scene_returned_with_semantic_debt",
         material_rewrite: true,
-        semantic_verified: proofPassed,
-        quality_preferred: qualityPreferred,
-      };
-    }
-    if (deleteOnly || (changedSegments.length > 0
-        && assembled && assembled.metaOnlyChanged === changedSegments.length)) {
-      return {
-        enhanced: false,
-        state: "sanitized",
-        reason: "composer_meta_sanitization_not_material",
-        material_rewrite: false,
-        semantic_verified: null,
-        quality_preferred: null,
-      };
-    }
-    if (assembled && assembled.composerApplied > 0) {
-      return {
-        enhanced: false,
-        state: "precision_patch",
-        reason: "composer_non_material_change",
-        material_rewrite: false,
-        semantic_verified: null,
-        quality_preferred: null,
+        semantic_verified: proofPassed ? true : "degraded",
+        quality_preferred: proofDegraded ? false : qualityPreferred,
       };
     }
     return {
       enhanced: false,
-      state: "composer_output_not_material",
-      reason: "composer_output_not_material",
+      state: "no_changed_scene",
+      reason: "no_changed_scene_generated",
       material_rewrite: false,
       semantic_verified: null,
       quality_preferred: null,
@@ -5692,6 +6154,7 @@
   }
 
   async function callRole(role, profile, mutableSegs, contextBlock, allSegments, abortSignal, trace, directorInfo, queuedAt, runtimeControl) {
+    profile = expandRewriteOutputBudget(role, profile, mutableSegs);
     const allowedSegIds = mutableSegs ? mutableSegs.map((s) => s.id) : (role.is_composer ? allSegments.filter((s) => s.type === "mutable").map((s) => s.id) : []);
     const prompts = runtimeControl && runtimeControl.initialPrompts
       ? runtimeControl.initialPrompts
@@ -5869,8 +6332,18 @@
         const parsed = structuredPayload || pseudoToolPayload || tryParseJson(structuredRaw) || tryParseJson(content);
         let validated;
         if (role.is_composer && !parsed) {
-          validated = validateComposerPlainScene(content || structuredRaw, allowedSegIds, mutableSegs);
-          if (validated) structuredTransport = "composer_plain_scene";
+          const recoveredEnvelope = recoverComposerSceneFromDamagedEnvelope(
+            content || structuredRaw,
+            allowedSegIds,
+            mutableSegs
+          );
+          validated = recoveredEnvelope
+            || validateComposerPlainScene(content || structuredRaw, allowedSegIds, mutableSegs);
+          if (validated) {
+            structuredTransport = recoveredEnvelope
+              ? "composer_damaged_envelope_recovered"
+              : "composer_plain_scene";
+          }
           else throw new Error("json_parse_failed");
         } else if (!parsed) {
           throw new Error("json_parse_failed");
@@ -6550,6 +7023,14 @@
     };
   }
 
+  function composerMaterialityScore(assessment) {
+    const details = arrayFromCollection(assessment && assessment.details);
+    return (Math.max(0, Number(assessment && assessment.material_substantive_count) || 0) * 1000)
+      + details.reduce((sum, item) => sum
+        + Math.max(0, Number(item.changed_span_ratio) || 0) * 100
+        + Math.max(0, 1 - (Number(item.sequence_similarity) || 0)) * 10, 0);
+  }
+
   /* ── Composer ──────────────────────────────────────────── */
 
   function candidateEligibleForApplication(candidate) {
@@ -6559,11 +7040,21 @@
 
   function composerTokenPlan(mutableSegs, profile) {
     const mutableTotalChars = (mutableSegs || []).reduce((sum, segment) => sum + safeString(segment.text).length, 0);
+    const estimatedOutputTokens = Math.min(32000, Math.max(1024, Math.ceil(mutableTotalChars * 1.5) + 1024));
+    const configuredOutputTokens = clampNumber(profile && profile.max_output_tokens, 1024, 32000, 4096);
     return {
       mutable_total_chars: mutableTotalChars,
-      estimated_output_tokens: Math.min(32000, Math.max(1024, Math.ceil(mutableTotalChars * 1.5) + 512)),
-      requested_output_tokens: clampNumber(profile && profile.max_output_tokens, 1024, 32000, 4096),
+      estimated_output_tokens: estimatedOutputTokens,
+      requested_output_tokens: Math.max(configuredOutputTokens, estimatedOutputTokens),
     };
+  }
+
+  function expandRewriteOutputBudget(role, profile, mutableSegs) {
+    if (!role || role.is_input_planner || role.is_judge || role.is_prover) return profile;
+    const plan = composerTokenPlan(mutableSegs, profile);
+    return Object.assign({}, profile, {
+      max_output_tokens: plan.requested_output_tokens,
+    });
   }
 
   async function runComposer(
@@ -6616,8 +7107,12 @@
       semantic_proof_repair: semanticProofRepair || null,
     };
     const tokenPlan = composerTokenPlan(workingMutableSegs, profile);
+    const plainSceneOutput = workingMutableSegs.length === 1
+      && workingMutableSegs[0].id === SCENE_REWRITE_SEGMENT_ID;
+    directorInfo.composer_plain_scene = plainSceneOutput;
     const composerProfile = Object.assign({}, profile, {
       max_output_tokens: tokenPlan.requested_output_tokens,
+      force_json_response: plainSceneOutput ? false : !!profile.force_json_response,
     });
     trace.composer.estimated_output_tokens = tokenPlan.estimated_output_tokens;
     trace.composer.requested_output_tokens = tokenPlan.requested_output_tokens;
@@ -6640,7 +7135,7 @@
     let materiality = result ? assessComposerMateriality(workingMutableSegs, result) : null;
     trace.composer.materiality = materiality;
     if (!semanticProofRepair) trace.composer.semantic_retry = 0;
-    if (!semanticProofRepair && completionWait && result && materiality && !materiality.pass
+    if (!semanticProofRepair && result && materiality && !materiality.pass
         && trace.budget.http_attempt_used < trace.budget.http_attempt_max
         && !(abortSignal && abortSignal.aborted)) {
       trace.composer.semantic_retry = 1;
@@ -6651,7 +7146,7 @@
         },
       });
       const retryProfile = Object.assign({}, composerProfile, {
-        system_prompt: `${safeString(composerProfile.system_prompt || composerRole.default_prompt)}\n\nThe previous composition was rejected for copying the draft too closely. Recompose every flagged prose segment with materially different sentence architecture and scene execution while preserving facts. Then reread the assembled scene and repair awkward wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, transitions, and ending cadence.`,
+        system_prompt: `${safeString(composerProfile.system_prompt || composerRole.default_prompt)}\n\nThe previous composition did not yet achieve the requested recomposition strength. Recompose every flagged prose segment with materially different sentence architecture and scene execution while preserving facts. Then reread the assembled scene and repair awkward wording, typos, register or era mismatch, repeated explanation, unsupported psychological interpretation, transitions, and ending cadence.`,
       });
       const retrySegments = materializeCandidateSegments(
         workingSegments,
@@ -6673,12 +7168,19 @@
         {
           allowRetry: false,
           allowFallback: false,
-          completionWait: true,
+          completionWait: !!completionWait,
         }
       );
       if (retryResult) {
-        result = retryResult;
-        materiality = assessComposerMateriality(retryMutableSegs, result);
+        const retryMateriality = assessComposerMateriality(retryMutableSegs, retryResult);
+        if (!result || composerMaterialityScore(retryMateriality) > composerMaterialityScore(materiality)) {
+          result = retryResult;
+          materiality = retryMateriality;
+          trace.composer.semantic_retry_adopted = true;
+        } else {
+          trace.composer.semantic_retry_adopted = false;
+          trace.composer.semantic_retry_retained_initial = true;
+        }
         trace.composer.materiality = materiality;
       }
     }
@@ -6686,8 +7188,82 @@
     trace.composer.used = !!result;
     trace.composer.status = result ? "fulfilled" : "failed";
     trace.composer.elapsed_ms = Math.max(0, Number(trace.composer.elapsed_ms) || 0) + elapsed;
-    if (semanticProofRepair) trace.composer.proof_repair_attempted = true;
+    if (semanticProofRepair && semanticProofRepair.preproof_recovery === true) {
+      trace.composer.preproof_recovery_attempted = true;
+    } else if (semanticProofRepair) {
+      trace.composer.proof_repair_attempted = true;
+    }
     return result;
+  }
+
+  async function runPreProofComposerRecovery(options) {
+    const reasonCodes = uniqueList(arrayFromCollection(options && options.reason_codes)
+      .map((item) => safeString(item).trim())
+      .filter(Boolean));
+    const deadline = options && options.deadline;
+    const trace = options && options.trace;
+    if (!options || !trace || !deadline || deadline.check()
+        || trace.composer.preproof_recovery_attempted === true) {
+      return null;
+    }
+    const currentSegments = asObject(options.composer_result && options.composer_result.segments);
+    trace.composer.preproof_recovery_attempted = true;
+    trace.composer.preproof_recovery_reason = reasonCodes.join(",") || "composition_rejected";
+    traceTimeline(trace, "preproof_composer_recovery_start");
+    const composerScope = createPipelineStageScope(
+      deadline, "preproof_composer_recovery", trace
+    );
+    let recoveredComposerResult;
+    try {
+      recoveredComposerResult = await runComposer(
+        options.composer_role,
+        options.composer_profile,
+        options.segments,
+        options.director_result,
+        options.context_block,
+        composerScope.signal,
+        trace,
+        options.mutable_segments,
+        !!deadline.completion_wait,
+        {
+          preproof_recovery: true,
+          previous_segments: currentSegments,
+          reason_codes: reasonCodes,
+          repair_instructions: [{
+            segment_id: SCENE_REWRITE_SEGMENT_ID,
+            instruction: "Rebuild the complete scene with materially different scene execution. Remove duplicate prose and malformed model artifacts, preserve grounded facts and beats, and return only the finished scene. Host artifacts are restored mechanically after writing.",
+            evidence_refs: reasonCodes,
+            prohibited: [
+              "near-copy",
+              "duplicate block",
+              "commentary or analysis",
+            ],
+          }],
+        }
+      );
+    } finally {
+      composerScope.cancel();
+    }
+    traceTimeline(trace, "preproof_composer_recovery_done");
+    if (!recoveredComposerResult) {
+      trace.composer.preproof_recovery_succeeded = false;
+      return null;
+    }
+    const assembled = assembleSceneRewriteFrame(options.rewrite_frame, recoveredComposerResult);
+    const verification = assembled.frame_error
+      ? { pass: false, errors: [`scene_frame_restore_failed:${assembled.frame_error}`] }
+      : verifyOutput(
+          options.physical_segments,
+          assembled.physicalFinalSegments,
+          assembled.output,
+          options.original_text,
+          options.settings
+        );
+    trace.composer.preproof_recovery_succeeded = !!(
+      verification.pass && assembled.changed
+    );
+    if (!trace.composer.preproof_recovery_succeeded) return null;
+    return { composerResult: recoveredComposerResult, assembled, verification };
   }
 
   function summarizeSemanticProof(trace, proof, attemptLabel) {
@@ -6778,7 +7354,7 @@
       Date.now(),
       {
         allowRetry: structuredRecoveryAvailable,
-        allowFallback: false,
+        allowFallback: true,
         retryErrorCodes: [
           "json_parse_failed",
           "schema_validation_failed",
@@ -6833,11 +7409,10 @@
         else unchangedSegments++;
         if (segmentChanged && materiality.original_meta_only) {
           metaOnlyChanged++;
-        } else if (segmentChanged && materiality.material) {
+        } else if (segmentChanged) {
           materialChanged++;
         }
-        if (segmentChanged && source === "composer"
-            && materiality.material && !materiality.original_meta_only) {
+        if (segmentChanged && source === "composer") {
           materialComposerApplied++;
         }
         finalSegments.push({
@@ -6849,7 +7424,7 @@
           operation: segmentChanged ? operation : "none",
           applied_role_id: segmentChanged ? appliedRole : "",
           composer_unchanged: composerUnchanged,
-          material_change: segmentChanged && materiality.material,
+          material_change: segmentChanged,
           original_meta_only: materiality.original_meta_only,
           sequence_similarity: materiality.sequence_similarity,
           changed_span_ratio: materiality.changed_span_ratio,
@@ -6937,8 +7512,19 @@
     return normalized.length >= 80 ? normalized : "";
   }
 
-  function verifyOutput(segments, finalSegments, output, originalText) {
+  function protectedStructureInventory(segments) {
+    return arrayFromCollection(segments)
+      .filter((segment) => segment.type === "protected" || segment.type === "inspect_only")
+      .map((segment) => ({
+        type: safeString(segment.type),
+        kind: safeString(segment.kind),
+        text: safeString(segment.text),
+      }));
+  }
+
+  function verifyOutput(segments, finalSegments, output, originalText, settings) {
     const errors = [];
+    const warnings = [];
     segments.forEach((origSeg) => {
       const finalSeg = finalSegments.find((f) => f.id === origSeg.id);
       if (!finalSeg) {
@@ -6956,13 +7542,26 @@
     }
     const openFences = (output.match(/```/g) || []).length;
     if (openFences % 2 !== 0) {
-      errors.push("unbalanced_code_fence");
+      warnings.push("unbalanced_code_fence");
     }
     const allOpenTags = output.match(/<[^/][^>]*>/g) || [];
     const nonVoidOpenTags = allOpenTags.filter((tag) => !isVoidHtmlTag(tag));
     const closeTags = (output.match(/<\/[^>]*>/g) || []).length;
     if (Math.abs(nonVoidOpenTags.length - closeTags) > 2) {
-      errors.push("tag_balance_suspicious");
+      warnings.push("tag_balance_suspicious");
+    }
+    if (settings) {
+      const originalInventory = protectedStructureInventory(segments);
+      const finalInventory = protectedStructureInventory(buildSegmentMap(output, settings));
+      const inventoryChanged = originalInventory.length !== finalInventory.length
+        || originalInventory.some((item, index) => {
+          const finalItem = finalInventory[index];
+          return !finalItem
+            || item.type !== finalItem.type
+            || item.kind !== finalItem.kind
+            || item.text !== finalItem.text;
+        });
+      if (inventoryChanged) warnings.push("host_artifact_inventory_changed_after_restore");
     }
     const originalDuplicateCounts = {};
     segments.filter((seg) => seg.type === "mutable").forEach((seg) => {
@@ -6979,9 +7578,9 @@
     Object.keys(finalOccurrences).forEach((key) => {
       const ids = finalOccurrences[key];
       const allowedCount = Math.max(1, originalDuplicateCounts[key] || 0);
-      ids.slice(allowedCount).forEach((id) => errors.push(`duplicate_segment:${id}`));
+      ids.slice(allowedCount).forEach((id) => warnings.push(`duplicate_segment:${id}`));
     });
-    return { pass: errors.length === 0, errors };
+    return { pass: errors.length === 0, errors, warnings };
   }
 
   /* ── Scheduler ─────────────────────────────────────────── */
@@ -7064,24 +7663,125 @@
     return { check, remaining, signal: controller.signal, aborted: () => aborted, cancel };
   }
 
-  function createCompletionDeadline(startedAt) {
+  function createCompletionDeadline(startedAt, watchdogMs) {
     const controller = new AbortController();
     let aborted = false;
-    function cancel() {
+    const started = Number.isFinite(Number(startedAt)) ? Number(startedAt) : Date.now();
+    const watchdog = Math.max(1, Number(watchdogMs) || COMPLETION_WAIT_WATCHDOG_MS);
+    const deadline = started + watchdog;
+    const timer = setTimeout(() => {
       if (aborted) return;
       aborted = true;
-      try { controller.abort("completion_wait_cancelled"); } catch (_) {
+      try { controller.abort("completion_wait_watchdog"); } catch (_) {
         try { controller.abort(); } catch (_) {}
       }
+    }, Math.max(0, deadline - Date.now()));
+    function cancel() {
+      if (!aborted) {
+        aborted = true;
+        try { controller.abort("completion_wait_cancelled"); } catch (_) {
+          try { controller.abort(); } catch (_) {}
+        }
+      }
+      clearTimeout(timer);
+    }
+    function check() {
+      if (aborted) return true;
+      if (Date.now() >= deadline) {
+        aborted = true;
+        clearTimeout(timer);
+        try { controller.abort("completion_wait_watchdog"); } catch (_) {
+          try { controller.abort(); } catch (_) {}
+        }
+        return true;
+      }
+      return false;
     }
     return {
       completion_wait: true,
-      started_at: Number.isFinite(Number(startedAt)) ? Number(startedAt) : Date.now(),
-      check: () => aborted,
-      remaining: () => Number.POSITIVE_INFINITY,
+      started_at: started,
+      watchdog_ms: watchdog,
+      check,
+      remaining: () => Math.max(0, deadline - Date.now()),
       signal: controller.signal,
       aborted: () => aborted,
       cancel,
+    };
+  }
+
+  function createPipelineStageScope(deadline, stage, trace, explicitMaxBudgetMs) {
+    const stageId = safeString(stage) || "pipeline_stage";
+    const remainingAtStart = deadline ? deadline.remaining() : 0;
+    if (!deadline || remainingAtStart <= 0) {
+      if (trace && trace.scheduler) {
+        trace.scheduler.stage_budgets.push({
+          stage: stageId,
+          budget_ms: remainingAtStart,
+          remaining_at_start_ms: remainingAtStart,
+          completion_wait: !!(deadline && deadline.completion_wait),
+        });
+      }
+      return { signal: deadline && deadline.signal, budget_ms: remainingAtStart, cancel() {} };
+    }
+    const shareByStage = {
+      semantic_judge: 0.28,
+      adaptive_revision: 0.3,
+      adaptive_rejudge: 0.25,
+      whole_scene_composer: 0.62,
+      preproof_composer_recovery: 0.58,
+      semantic_repair_composer: 0.6,
+    };
+    const share = shareByStage[stageId] || 0.6;
+    const minimumStageMs = Math.min(
+      1000,
+      Math.max(1, Math.floor(remainingAtStart * 0.5))
+    );
+    let budgetMs = Math.min(
+      remainingAtStart,
+      Math.max(minimumStageMs, Math.floor(remainingAtStart * share))
+    );
+    const explicitCap = Number(explicitMaxBudgetMs);
+    if (Number.isFinite(explicitCap) && explicitCap > 0) {
+      budgetMs = Math.max(1, Math.min(budgetMs, Math.floor(explicitCap)));
+    }
+    const controller = new AbortController();
+    let cancelled = false;
+    const abortStage = (reason) => {
+      if (controller.signal.aborted) return;
+      try { controller.abort(reason); } catch (_) {
+        try { controller.abort(); } catch (_) {}
+      }
+    };
+    const onParentAbort = () => abortStage(
+      deadline.signal && deadline.signal.reason
+        ? deadline.signal.reason
+        : `pipeline_deadline:${stageId}`
+    );
+    if (deadline.signal && deadline.signal.aborted) onParentAbort();
+    else if (deadline.signal) deadline.signal.addEventListener("abort", onParentAbort, { once: true });
+    const timer = setTimeout(() => abortStage(`stage_budget:${stageId}`), budgetMs);
+    if (trace && trace.scheduler) {
+      trace.scheduler.stage_budgets.push({
+        stage: stageId,
+        budget_ms: budgetMs,
+        remaining_at_start_ms: remainingAtStart,
+        completion_wait: !!deadline.completion_wait,
+        explicit_cap_ms: Number.isFinite(explicitCap) && explicitCap > 0
+          ? Math.floor(explicitCap)
+          : 0,
+      });
+    }
+    return {
+      signal: controller.signal,
+      budget_ms: budgetMs,
+      cancel() {
+        if (cancelled) return;
+        cancelled = true;
+        clearTimeout(timer);
+        try {
+          if (deadline.signal) deadline.signal.removeEventListener("abort", onParentAbort);
+        } catch (_) {}
+      },
     };
   }
 
@@ -7211,11 +7911,13 @@
   }
 
   function downstreamReserveWindowMs(deadline, roleProfiles) {
-    if (deadline && deadline.completion_wait) return 0;
     const configured = arrayFromCollection(roleProfiles).filter((profile) => profile && isProfileConfigured(profile));
     if (!deadline || !configured.length) return 0;
     const remaining = deadline.remaining();
     if (remaining <= 0) return 0;
+    if (deadline.completion_wait) {
+      return Math.max(1000, Math.floor(remaining * 0.5));
+    }
     const requested = configured.reduce((sum, profile) => (
       sum + clampNumber(profile.timeout_ms, 5000, 300000, 60000)
         * (configuredFallbackProfile(profile) ? 2 : 1)
@@ -7251,6 +7953,16 @@
         || right.score - left.score
         || safeString(left.candidate.candidate_id).localeCompare(safeString(right.candidate.candidate_id)))
       .map((entry) => entry.candidate)[0] || null;
+  }
+
+  function chooseFallbackSceneCandidate(sceneCandidates) {
+    return arrayFromCollection(sceneCandidates).filter((candidate) =>
+      candidate && Object.keys(asObject(candidate.segments)).length > 0
+    ).slice().sort((left, right) =>
+      (Number(right.revision_round) || 0) - (Number(left.revision_round) || 0)
+      || (Number(right.confidence) || 0) - (Number(left.confidence) || 0)
+      || safeString(left.candidate_id).localeCompare(safeString(right.candidate_id))
+    )[0] || null;
   }
 
   function candidateLineageSnapshot(candidate) {
@@ -7363,6 +8075,16 @@
     const presetId = safeString(options.presetId) || "balanced";
     const limit = ADAPTIVE_REVISION_LIMIT[presetId] || 0;
     const trace = options.trace;
+    const tailReserveMs = Math.max(
+      0,
+      Number(options.tailReserveMs != null
+        ? options.tailReserveMs
+        : options.downstreamReserveMs) || 0
+    );
+    const tailGuardMs = Math.min(
+      1000,
+      Math.max(20, Math.floor(tailReserveMs * 0.02))
+    );
     trace.revision_convergence.limit = limit;
     let semanticJudgment = options.semanticJudgment;
     let fusionPlan = options.fusionPlan;
@@ -7376,9 +8098,10 @@
 
     for (let round = 1; round <= limit; round++) {
       const requirements = arrayFromCollection(fusionPlan && fusionPlan.unresolved_requirements);
+      const adaptiveStartMarginMs = options.deadline.completion_wait ? 15000 : 5000;
       if (!requirements.length || !lastValidCandidate) break;
       if (options.deadline.check()
-          || options.deadline.remaining() <= options.downstreamReserveMs) break;
+          || options.deadline.remaining() <= tailReserveMs + adaptiveStartMarginMs) break;
       const allocation = chooseAdaptiveRequirementRole(requirements, options.profiles);
       if (!allocation) break;
       const baseRole = DEFAULT_ROLES.find((role) => role.role_id === allocation.role_id);
@@ -7409,34 +8132,55 @@
         Number(trace.budget.judge_attempt_reserved) || 0
       );
       const revisionRole = Object.assign({}, baseRole, { stage: "revision" });
-      const revisionResult = await callRole(
-        revisionRole,
-        profile,
-        workingMutable,
-        options.contextBlock,
-        workingSegments,
-        options.deadline.signal,
-        trace,
-        {
-          draft_ledger: options.draftLedger,
-          revision_round: {
-            round,
-            parent_candidate_id: parentCandidateId,
-            requirements: allocation.requirements,
-            semantic_judgment: semanticJudgment,
-            fusion_plan: fusionPlan,
-          },
-        },
-        Date.now(),
-        {
-          initialAttemptKind: "adaptive_revision",
-          allowRetry: false,
-          allowFallback: true,
-          completionWait: !!options.deadline.completion_wait,
-          canContinue: () => !options.deadline.check()
-            && options.deadline.remaining() > options.downstreamReserveMs,
-        }
+      const revisionSlackMs = Math.max(
+        0,
+        options.deadline.remaining() - tailReserveMs - tailGuardMs
       );
+      if (revisionSlackMs <= 0) {
+        trace.budget.judge_attempt_reserved = 0;
+        roundTrace.status = "skipped";
+        roundTrace.failure_reason = "adaptive_tail_reserve_reached_before_revision";
+        break;
+      }
+      const revisionScope = createPipelineStageScope(
+        options.deadline,
+        "adaptive_revision",
+        trace,
+        Math.max(1, Math.floor(revisionSlackMs * 0.6))
+      );
+      let revisionResult;
+      try {
+        revisionResult = await callRole(
+          revisionRole,
+          profile,
+          workingMutable,
+          options.contextBlock,
+          workingSegments,
+          revisionScope.signal,
+          trace,
+          {
+            draft_ledger: options.draftLedger,
+            revision_round: {
+              round,
+              parent_candidate_id: parentCandidateId,
+              requirements: allocation.requirements,
+              semantic_judgment: semanticJudgment,
+              fusion_plan: fusionPlan,
+            },
+          },
+          Date.now(),
+          {
+            initialAttemptKind: "adaptive_revision",
+            allowRetry: false,
+            allowFallback: true,
+            completionWait: !!options.deadline.completion_wait,
+            canContinue: () => !options.deadline.check()
+              && options.deadline.remaining() > tailReserveMs,
+          }
+        );
+      } finally {
+        revisionScope.cancel();
+      }
       if (!revisionResult || !arrayFromCollection(revisionResult.candidates).length) {
         trace.budget.judge_attempt_reserved = 0;
         roundTrace.status = revisionResult ? "no_candidate" : "failed";
@@ -7467,23 +8211,47 @@
       roundTrace.output_candidate_id = candidate.candidate_id;
       roundTrace.output_draft_digest = stableDigest(candidate.segments);
 
-      const revisedJudgment = await callRole(
-        options.judgeRole,
-        options.judgeProfile,
-        options.mutableSegs,
-        options.contextBlock,
-        options.allSegments,
-        options.deadline.signal,
-        trace,
-        { scene_candidates: sceneCandidates, draft_ledger: options.draftLedger },
-        Date.now(),
-        {
-          initialAttemptKind: "adaptive_rejudge",
-          allowRetry: false,
-          allowFallback: true,
-          completionWait: !!options.deadline.completion_wait,
-        }
+      const rejudgeBudgetMs = Math.max(
+        0,
+        options.deadline.remaining() - tailReserveMs - tailGuardMs
       );
+      if (rejudgeBudgetMs <= 0) {
+        sceneCandidates.splice(sceneCandidates.indexOf(candidate), 1);
+        seenSceneSignatures.delete(candidate.scene_signature);
+        trace.budget.judge_attempt_reserved = 0;
+        trace.revision_convergence.failed++;
+        roundTrace.status = "failed";
+        roundTrace.failure_reason = "adaptive_tail_reserve_reached_before_rejudge";
+        break;
+      }
+      const rejudgeScope = createPipelineStageScope(
+        options.deadline,
+        "adaptive_rejudge",
+        trace,
+        rejudgeBudgetMs
+      );
+      let revisedJudgment;
+      try {
+        revisedJudgment = await callRole(
+          options.judgeRole,
+          options.judgeProfile,
+          options.mutableSegs,
+          options.contextBlock,
+          options.allSegments,
+          rejudgeScope.signal,
+          trace,
+          { scene_candidates: sceneCandidates, draft_ledger: options.draftLedger },
+          Date.now(),
+          {
+            initialAttemptKind: "adaptive_rejudge",
+            allowRetry: false,
+            allowFallback: true,
+            completionWait: !!options.deadline.completion_wait,
+          }
+        );
+      } finally {
+        rejudgeScope.cancel();
+      }
       trace.budget.judge_attempt_reserved = 0;
       const revisedPlan = revisedJudgment
         ? buildFusionPlan(revisedJudgment, sceneCandidates, options.draftLedger, options.mutableSegs)
@@ -7534,6 +8302,79 @@
     };
   }
 
+  async function runDirectComposerFallback(options) {
+    const reason = safeString(options.reason) || "specialist_or_judge_unavailable";
+    if (!options.composerRole || !options.composerProfile
+        || !options.composerProfile.enabled || !isProfileConfigured(options.composerProfile)) {
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment: options.semanticJudgment || null,
+        fusionPlan: options.rejectedPlan || null,
+        proverRole: options.proverRole,
+        proverProfile: options.proverProfile,
+        failureReason: "composer_not_configured",
+      };
+    }
+    if (options.deadline.check() || options.deadline.remaining() <= 0) {
+      return {
+        directorResult: null,
+        composerResult: null,
+        semanticJudgment: options.semanticJudgment || null,
+        fusionPlan: options.rejectedPlan || null,
+        proverRole: options.proverRole,
+        proverProfile: options.proverProfile,
+        failureReason: `${reason}_deadline`,
+      };
+    }
+    const fallback = buildDirectComposerFallbackDirector(
+      reason,
+      options.segments,
+      options.draftLedger,
+      options.semanticJudgment,
+      options.rejectedPlan
+    );
+    options.trace.semantic_judge.status = `direct_composer_fallback:${reason}`;
+    options.trace.fusion_plan.status = "direct_composer_fallback";
+    options.trace.fusion_plan.direct_composer_fallback = true;
+    options.trace.fusion_plan.fallback_reason = reason;
+    options.trace.fusion_plan.unresolved_requirements = 1;
+    options.trace.composer.direct_fallback = true;
+    options.trace.composer.fallback_reason = reason;
+    options.trace.budget.judge_attempt_reserved = 0;
+    const composerScope = createPipelineStageScope(
+      options.deadline, "whole_scene_composer", options.trace
+    );
+    let composerResult;
+    try {
+      composerResult = await runComposer(
+        options.composerRole,
+        options.composerProfile,
+        options.segments,
+        fallback.directorResult,
+        options.contextBlock,
+        composerScope.signal,
+        options.trace,
+        options.mutableSegs,
+        !!options.deadline.completion_wait
+      );
+    } finally {
+      composerScope.cancel();
+    }
+    options.trace.active_calls_final = Math.max(0, Number(options.activeCallCount) || 0);
+    return {
+      directorResult: fallback.directorResult,
+      composerResult,
+      semanticJudgment: fallback.semanticJudgment,
+      fusionPlan: fallback.fusionPlan,
+      proverRole: options.proverRole,
+      proverProfile: options.proverProfile,
+      failureReason: composerResult
+        ? ""
+        : (options.deadline.check() ? "composer_deadline" : "composer_failed"),
+    };
+  }
+
   async function scheduleRoles(roles, profiles, segments, contextBlock, allSegments, deadline, trace, maxParallel, draftLedger) {
     // Output attempts are independent from the beforeRequest planner budget.
     if (trace && trace.budget) {
@@ -7557,46 +8398,18 @@
     const judgeProfile = judgeRole && profiles[judgeRole.role_id];
     const composerProfile = composerRole && profiles[composerRole.role_id];
     const proverProfile = proverRole && profiles[proverRole.role_id];
-    if (!judgeRole || !judgeProfile || !judgeProfile.enabled || !isProfileConfigured(judgeProfile)) {
+    const judgeConfigured = !!(
+      judgeRole && judgeProfile && judgeProfile.enabled && isProfileConfigured(judgeProfile)
+    );
+    if (!judgeConfigured) {
       trace.semantic_judge.status = "not_configured";
-      trace.composer.status = "blocked_semantic_judge";
-      trace.active_calls_final = 0;
-      return {
-        directorResult: null,
-        composerResult: null,
-        semanticJudgment: null,
-        fusionPlan: null,
-        proverRole: null,
-        proverProfile: null,
-        failureReason: "semantic_judge_not_configured",
-      };
     }
     if (!composerRole || !composerProfile || !composerProfile.enabled
         || !isProfileConfigured(composerProfile)) {
       trace.composer.status = "not_configured";
-      trace.active_calls_final = 0;
-      return {
-        directorResult: null,
-        composerResult: null,
-        semanticJudgment: null,
-        fusionPlan: null,
-        proverRole: null,
-        proverProfile: null,
-        failureReason: "composer_not_configured",
-      };
     }
     if (!proverRole || !proverProfile || !proverProfile.enabled || !isProfileConfigured(proverProfile)) {
       trace.semantic_prover.status = "not_configured";
-      trace.active_calls_final = 0;
-      return {
-        directorResult: null,
-        composerResult: null,
-        semanticJudgment: null,
-        fusionPlan: null,
-        proverRole: null,
-        proverProfile: null,
-        failureReason: "semantic_prover_not_configured",
-      };
     }
     const downstreamReserveMs = downstreamReserveWindowMs(deadline, [
       judgeRole && judgeProfile && judgeProfile.enabled ? judgeProfile : null,
@@ -7710,6 +8523,58 @@
 
     let activeCallCount = 0;
     const specialistResultRecords = [];
+    const directFallback = async (reason, semanticJudgment, rejectedPlan) => {
+      const result = await runDirectComposerFallback({
+        reason,
+        semanticJudgment,
+        rejectedPlan,
+        segments,
+        mutableSegs,
+        contextBlock,
+        deadline,
+        trace,
+        draftLedger,
+        composerRole,
+        composerProfile,
+        proverRole,
+        proverProfile,
+        activeCallCount,
+      });
+      if (!result.composerResult) {
+        const fallbackCandidate = chooseFallbackSceneCandidate(sceneCandidates);
+        if (fallbackCandidate) {
+          if (!result.directorResult) {
+            const fallback = buildDirectComposerFallbackDirector(
+              reason,
+              segments,
+              draftLedger,
+              semanticJudgment,
+              rejectedPlan
+            );
+            result.directorResult = fallback.directorResult;
+            result.semanticJudgment = fallback.semanticJudgment;
+            result.fusionPlan = fallback.fusionPlan;
+          }
+          result.composerResult = {
+            schema: "scene_composition.v1",
+            segments: deepClone(asObject(fallbackCandidate.segments)),
+            recovered_from_candidate_id: safeString(fallbackCandidate.candidate_id),
+            recovered_from_role_id: safeString(fallbackCandidate.role_id),
+          };
+          result.failureReason = "";
+          trace.semantic_judge.status = `direct_composer_fallback:${reason}`;
+          trace.fusion_plan.status = "direct_composer_fallback";
+          trace.fusion_plan.direct_composer_fallback = true;
+          trace.fusion_plan.fallback_reason = reason;
+          trace.fusion_plan.unresolved_requirements = 1;
+          trace.composer.direct_fallback = true;
+          trace.composer.fallback_reason = reason;
+          trace.composer.status = "specialist_scene_candidate";
+          trace.composer.specialist_candidate_recovered = true;
+        }
+      }
+      return result;
+    };
 
     const specialistPromises = specialistTasks.map((role) => {
       const profile = profiles[role.role_id];
@@ -7875,63 +8740,52 @@
 
     if (!sceneCandidates.length) {
       trace.semantic_judge.status = "no_candidates";
-      trace.composer.status = "blocked_no_candidates";
-      trace.active_calls_final = activeCallCount;
-      return {
-        directorResult: null,
-        composerResult: null,
-        semanticJudgment: null,
-        fusionPlan: null,
-        failureReason: "no_scene_candidates",
-      };
+      return directFallback("no_scene_candidates", null, null);
+    }
+    if (!judgeConfigured) {
+      return directFallback("semantic_judge_not_configured", null, null);
     }
     let semanticJudgment = null;
     if (!deadline.check() && deadline.remaining() > 0) {
-      semanticJudgment = await callRole(
-        judgeRole,
-        judgeProfile,
-        mutableSegs,
-        contextBlock,
-        allSegments,
-        deadline.signal,
-        trace,
-        { scene_candidates: sceneCandidates, draft_ledger: draftLedger },
-        Date.now(),
-        {
-          allowRetry: false,
-          allowFallback: true,
-          completionWait: !!deadline.completion_wait,
-        }
-      );
+      const judgeScope = createPipelineStageScope(deadline, "semantic_judge", trace);
+      try {
+        semanticJudgment = await callRole(
+          judgeRole,
+          judgeProfile,
+          mutableSegs,
+          contextBlock,
+          allSegments,
+          judgeScope.signal,
+          trace,
+          { scene_candidates: sceneCandidates, draft_ledger: draftLedger },
+          Date.now(),
+          {
+            allowRetry: false,
+            allowFallback: true,
+            completionWait: !!deadline.completion_wait,
+          }
+        );
+      } finally {
+        judgeScope.cancel();
+      }
     }
     if (!semanticJudgment) {
       trace.semantic_judge.status = deadline.check() ? "skipped_deadline" : "failed";
-      trace.composer.status = "blocked_semantic_judge";
-      trace.active_calls_final = activeCallCount;
-      return {
-        directorResult: null,
-        composerResult: null,
-        semanticJudgment: null,
-        fusionPlan: null,
-        failureReason: deadline.check() ? "semantic_judge_deadline" : "semantic_judge_failed",
-      };
+      return directFallback("semantic_judge_failed", null, null);
     }
 
     let fusionPlan = buildFusionPlan(semanticJudgment, sceneCandidates, draftLedger, mutableSegs);
     updateJudgmentTrace(trace, semanticJudgment, fusionPlan);
     if (!fusionPlan || !fusionPlan.semantic_ready) {
       trace.semantic_judge.status = "rejected_all";
-      trace.composer.status = "blocked_semantic_judge";
-      trace.active_calls_final = activeCallCount;
-      return {
-        directorResult: null,
-        composerResult: null,
-        semanticJudgment,
-        fusionPlan,
-        failureReason: "semantic_judge_rejected_all",
-      };
+      return directFallback("semantic_judge_rejected_all", semanticJudgment, fusionPlan);
     }
 
+    const adaptiveTailReserveMs = Math.max(
+      1000,
+      Math.floor(deadline.remaining() * 0.48)
+    );
+    trace.revision_convergence.tail_reserve_ms = adaptiveTailReserveMs;
     const adaptiveResult = await runAdaptiveRevisionRounds({
       sceneCandidates,
       seenSceneSignatures,
@@ -7948,6 +8802,7 @@
       judgeRole,
       judgeProfile,
       downstreamReserveMs,
+      tailReserveMs: adaptiveTailReserveMs,
       presetId,
     });
     semanticJudgment = adaptiveResult.semanticJudgment;
@@ -7964,17 +8819,24 @@
     let composerResult = null;
     if (composerRole && !deadline.check() && deadline.remaining() > 0) {
       if (composerProfile && composerProfile.enabled && isProfileConfigured(composerProfile)) {
-        composerResult = await runComposer(
-          composerRole,
-          composerProfile,
-          segments,
-          directorResult,
-          contextBlock,
-          deadline.signal,
-          trace,
-          mutableSegs,
-          !!deadline.completion_wait
+        const composerScope = createPipelineStageScope(
+          deadline, "whole_scene_composer", trace
         );
+        try {
+          composerResult = await runComposer(
+            composerRole,
+            composerProfile,
+            segments,
+            directorResult,
+            contextBlock,
+            composerScope.signal,
+            trace,
+            mutableSegs,
+            !!deadline.completion_wait
+          );
+        } finally {
+          composerScope.cancel();
+        }
       } else {
         trace.composer.status = "not_configured";
       }
@@ -7983,6 +8845,16 @@
     }
 
     trace.active_calls_final = activeCallCount;
+    if (!composerResult && adaptiveResult.lastValidCandidate) {
+      composerResult = {
+        schema: "scene_composition.v1",
+        segments: deepClone(asObject(adaptiveResult.lastValidCandidate.segments)),
+        recovered_from_candidate_id: safeString(adaptiveResult.lastValidCandidate.candidate_id),
+        recovered_from_role_id: safeString(adaptiveResult.lastValidCandidate.role_id),
+      };
+      trace.composer.status = "last_valid_scene_candidate";
+      trace.composer.last_valid_candidate_recovered = true;
+    }
     if (!composerResult) {
       return {
         directorResult,
@@ -8184,8 +9056,8 @@
       version: VERSION,
       preset: safeString(settings && settings.preset),
       max_parallel: Number(settings && settings.max_parallel) || 0,
-      protected_regex_digest: stableDigest(safeString(settings && settings.protected_regex)),
       context_char_limit: Number(settings && settings.context_char_limit) || 0,
+      protected_regex_digest: stableDigest(safeString(settings && settings.protected_regex)),
       roles: roleConfig,
     });
   }
@@ -8488,7 +9360,7 @@
       inputTrace.scheduler.completion_wait = presetUsesCompletionWait(preset);
       traceTimeline(inputTrace, "input_context_start");
       deadline = inputTrace.scheduler.completion_wait
-        ? createCompletionDeadline(Date.now())
+        ? createCompletionDeadline(Date.now(), COMPLETION_WAIT_WATCHDOG_MS)
         : createDeadline(INPUT_DEADLINE_MS[preset], Date.now());
       const context = await collectContext(messages, settings, inputTrace, deadline);
       traceTimeline(inputTrace, "input_context_done");
@@ -8567,6 +9439,20 @@
     let comparisonTurn = false;
     let comparisonOriginalText = "";
     let comparisonReturnedText = "";
+    let lastReturnableAssembly = null;
+    let lastReturnableComposerResult = null;
+    let lastReturnableVerification = null;
+
+    function rememberReturnableAssembly(assembled, composerResult, verification) {
+      if (!assembled || !verification || !verification.pass
+          || !assembled.changed || !safeString(assembled.output).trim()) return false;
+      lastReturnableAssembly = assembled;
+      lastReturnableComposerResult = composerResult;
+      lastReturnableVerification = verification;
+      comparisonFinalSegments = assembled.finalSegments;
+      comparisonReturnedText = assembled.output;
+      return true;
+    }
 
     try {
       const settings = await loadSettings();
@@ -8643,11 +9529,13 @@
       }
 
       const completionWait = presetUsesCompletionWait(settings.preset);
-      const deadlineMs = completionWait ? 0 : resolvePipelineDeadlineMs(settings);
+      const deadlineMs = completionWait
+        ? COMPLETION_WAIT_WATCHDOG_MS
+        : resolvePipelineDeadlineMs(settings);
       trace.deadline_ms = deadlineMs;
       trace.scheduler.completion_wait = completionWait;
       deadline = completionWait
-        ? createCompletionDeadline(pipelineStartedAt)
+        ? createCompletionDeadline(pipelineStartedAt, deadlineMs)
         : createDeadline(deadlineMs, pipelineStartedAt);
 
       const snapshot = consumePendingSnapshot(type);
@@ -8790,17 +9678,18 @@
         traceTimeline(trace, "assemble_start");
         let assembled = assembleSceneRewriteFrame(rewriteFrame, composerResult);
         traceTimeline(trace, "assemble_done");
-        if (assembled.frame_error) {
-          const reason = `scene_frame_restore_failed:${assembled.frame_error}`;
-          setFinalTraceState(trace, false, "rejected", reason, {
-            material_rewrite: false,
-            semantic_verified: null,
-            quality_preferred: null,
-          });
-          traceError(trace, reason);
-          if (settings_trace_enabled()) await saveTrace(trace);
-          return content;
-        }
+        traceTimeline(trace, "verify_start");
+        let verification = assembled.frame_error
+          ? { pass: false, errors: [`scene_frame_restore_failed:${assembled.frame_error}`], warnings: [] }
+          : verifyOutput(
+              physicalSegments,
+              assembled.physicalFinalSegments,
+              assembled.output,
+              originalText,
+              settings
+            );
+        traceTimeline(trace, "verify_done");
+        rememberReturnableAssembly(assembled, composerResult, verification);
 
         /* ── R4: Director evidence ── */
         if (directorResult && directorResult.ranked) {
@@ -8822,14 +9711,78 @@
         }
 
         /* ── R4: Final summary ── */
-        traceTimeline(trace, "verify_start");
-        let verification = verifyOutput(
-          physicalSegments,
-          assembled.physicalFinalSegments,
-          assembled.output,
-          originalText
-        );
-        traceTimeline(trace, "verify_done");
+        const preProofFailureReasons = [];
+        if (assembled.frame_error) {
+          preProofFailureReasons.push(`scene_frame_restore_failed:${assembled.frame_error}`);
+        } else if (!verification.pass) {
+          preProofFailureReasons.push(...verification.errors.map((item) => `verifier:${item}`));
+        }
+        preProofFailureReasons.push(...arrayFromCollection(verification.warnings)
+          .map((item) => `verifier_warning:${item}`));
+        if (!assembled.changed || assembled.output === originalText) {
+          preProofFailureReasons.push(
+            assembled.changed ? "composer_output_identical" : "composer_returned_original"
+          );
+        }
+        if (preProofFailureReasons.length && !deadline.check()) {
+          const recovered = await runPreProofComposerRecovery({
+            reason_codes: preProofFailureReasons,
+            deadline,
+            trace,
+            composer_role: DEFAULT_ROLES.find((role) => role.role_id === COMPOSER_ROLE_ID),
+            composer_profile: settings.role_profiles[COMPOSER_ROLE_ID],
+            composer_result: composerResult,
+            segments,
+            mutable_segments: mutableSegments(segments).filter(
+              (segment) => mutableCoreText(segment).trim().length > 0
+            ),
+            director_result: directorResult,
+            context_block: rewriteContextBlock,
+            rewrite_frame: rewriteFrame,
+            physical_segments: physicalSegments,
+            original_text: originalText,
+            settings,
+          });
+          if (recovered) {
+            composerResult = recovered.composerResult;
+            assembled = recovered.assembled;
+            verification = recovered.verification;
+          }
+        }
+
+        if ((!verification.pass || !assembled.changed || assembled.output === originalText)
+            && directorResult && directorResult.last_valid_candidate) {
+          const candidateFallbackResult = {
+            schema: "scene_composition.v1",
+            segments: deepClone(asObject(directorResult.last_valid_candidate.segments)),
+            recovered_from_candidate_id: safeString(directorResult.last_valid_candidate.candidate_id),
+            recovered_from_role_id: safeString(directorResult.last_valid_candidate.role_id),
+          };
+          const candidateFallbackAssembly = assembleSceneRewriteFrame(
+            rewriteFrame,
+            candidateFallbackResult
+          );
+          const candidateFallbackVerification = candidateFallbackAssembly.frame_error
+            ? { pass: false, errors: [`scene_frame_restore_failed:${candidateFallbackAssembly.frame_error}`], warnings: [] }
+            : verifyOutput(
+                physicalSegments,
+                candidateFallbackAssembly.physicalFinalSegments,
+                candidateFallbackAssembly.output,
+                originalText,
+                settings
+              );
+          if (candidateFallbackVerification.pass
+              && candidateFallbackAssembly.changed
+              && candidateFallbackAssembly.output !== originalText) {
+            composerResult = candidateFallbackResult;
+            assembled = candidateFallbackAssembly;
+            verification = candidateFallbackVerification;
+            trace.composer.status = "last_valid_scene_candidate";
+            trace.composer.last_valid_candidate_recovered = true;
+          }
+        }
+
+        rememberReturnableAssembly(assembled, composerResult, verification);
 
         if (!verification.pass) {
           const reason = `verifier_failed:${verification.errors.join(",")}`;
@@ -8859,129 +9812,18 @@
           return content;
         }
 
-        if (assembled.materialComposerApplied <= 0) {
-          holdAttemptedEvidence(trace, assembled);
-          setFinalTraceState(trace, false, "rejected", "composer_materiality_failed", {
-            material_rewrite: false,
-            semantic_verified: null,
-            quality_preferred: null,
-          });
-          if (settings_trace_enabled()) await saveTrace(trace);
-          return content;
-        }
-
-        if (!proverRole || !proverProfile || deadline.check()) {
-          holdAttemptedEvidence(trace, assembled);
-          const reason = deadline.check() ? "semantic_prover_deadline" : "semantic_prover_not_configured";
-          setFinalTraceState(trace, false, "rejected", reason, {
-            material_rewrite: true,
-            semantic_verified: false,
-            quality_preferred: null,
-          });
-          if (settings_trace_enabled()) await saveTrace(trace);
-          return content;
-        }
-
-        traceTimeline(trace, "semantic_proof_start");
-        let semanticProof = await runSemanticProver(
-          proverRole,
-          proverProfile,
-          rewriteFrame.semantic_segments,
-          assembled.finalSegments,
-          directorResult,
-          rewriteContextBlock,
-          deadline.signal,
-          trace,
-          !!deadline.completion_wait,
-          "initial"
+        const proverConfigured = !!(
+          proverRole && proverProfile && proverProfile.enabled && isProfileConfigured(proverProfile)
         );
-        traceTimeline(trace, "semantic_proof_done");
-
-        if (!semanticProof) {
-          holdAttemptedEvidence(trace, assembled);
-          setFinalTraceState(trace, false, "rejected", "semantic_prover_failed", {
-            material_rewrite: true,
-            semantic_verified: false,
-            quality_preferred: null,
-          });
-          if (settings_trace_enabled()) await saveTrace(trace);
-          return content;
-        }
-
-        if (semanticProof.verdict === "repair") {
-          trace.semantic_prover.repair_attempted = true;
-          if (deadline.check()) {
-            holdAttemptedEvidence(trace, assembled);
-            setFinalTraceState(trace, false, "rejected", "semantic_repair_deadline", {
-              material_rewrite: true,
-              semantic_verified: false,
-              quality_preferred: null,
-            });
-            if (settings_trace_enabled()) await saveTrace(trace);
-            return content;
-          }
-          trace.budget.prover_attempt_reserved = trace.semantic_prover.structured_recovery_attempted
-            ? 1
-            : 2;
-          const previousSegments = {};
-          assembled.logicalFinalSegments.filter((segment) => segment.type === "mutable").forEach((segment) => {
-            previousSegments[segment.id] = segment.final_text;
-          });
-          traceTimeline(trace, "semantic_repair_start");
-          const repairedComposerResult = await runComposer(
-            DEFAULT_ROLES.find((role) => role.role_id === COMPOSER_ROLE_ID),
-            settings.role_profiles[COMPOSER_ROLE_ID],
-            segments,
-            directorResult,
-            rewriteContextBlock,
-            deadline.signal,
-            trace,
-            mutableSegments(segments).filter((segment) => mutableCoreText(segment).trim().length > 0),
-            !!deadline.completion_wait,
-            {
-              repair_instructions: semanticProof.repair_instructions,
-              previous_segments: previousSegments,
-              reason_codes: semanticProof.reason_codes,
-            }
-          );
-          traceTimeline(trace, "semantic_repair_done");
-          if (!repairedComposerResult) {
-            holdAttemptedEvidence(trace, assembled);
-            setFinalTraceState(trace, false, "rejected", "semantic_repair_composer_failed", {
-              material_rewrite: true,
-              semantic_verified: false,
-              quality_preferred: null,
-            });
-            if (settings_trace_enabled()) await saveTrace(trace);
-            return content;
-          }
-          composerResult = repairedComposerResult;
-          assembled = assembleSceneRewriteFrame(rewriteFrame, composerResult);
-          verification = assembled.frame_error
-            ? { pass: false, errors: [`scene_frame_restore_failed:${assembled.frame_error}`] }
-            : verifyOutput(
-                physicalSegments,
-                assembled.physicalFinalSegments,
-                assembled.output,
-                originalText
-              );
-          if (!verification.pass || !assembled.changed || assembled.materialComposerApplied <= 0) {
-            holdAttemptedEvidence(trace, assembled);
-            const reason = !verification.pass
-              ? `semantic_repair_verifier_failed:${verification.errors.join(",")}`
-              : (!assembled.changed ? "semantic_repair_returned_original" : "semantic_repair_materiality_failed");
-            setFinalTraceState(trace, false, "rejected", reason, {
-              material_rewrite: assembled.materialComposerApplied > 0,
-              semantic_verified: false,
-              quality_preferred: null,
-            });
-            if (settings_trace_enabled()) await saveTrace(trace);
-            return content;
-          }
-          trace.budget.prover_attempt_reserved = trace.semantic_prover.structured_recovery_attempted
-            ? 1
-            : 2;
-          traceTimeline(trace, "semantic_reproof_start");
+        let semanticProof = null;
+        if (!proverConfigured || deadline.check()) {
+          const reason = deadline.check() ? "semantic_prover_deadline" : "semantic_prover_not_configured";
+          semanticProof = degradedSemanticProof(null, [reason]);
+          trace.semantic_prover.status = "degraded";
+          trace.semantic_prover.verdict = "degraded";
+          trace.semantic_prover.reason = reason;
+        } else {
+          traceTimeline(trace, "semantic_proof_start");
           semanticProof = await runSemanticProver(
             proverRole,
             proverProfile,
@@ -8992,23 +9834,139 @@
             deadline.signal,
             trace,
             !!deadline.completion_wait,
-            "after_repair"
+            "initial"
           );
-          traceTimeline(trace, "semantic_reproof_done");
+          traceTimeline(trace, "semantic_proof_done");
+          if (!semanticProof) {
+            semanticProof = degradedSemanticProof(null, ["semantic_prover_failed"]);
+            trace.semantic_prover.status = "degraded";
+            trace.semantic_prover.verdict = "degraded";
+            trace.semantic_prover.reason = "semantic_prover_failed";
+          }
         }
 
-        if (!semanticProof || semanticProof.verdict !== "pass") {
-          holdAttemptedEvidence(trace, assembled);
-          const proofReason = semanticProof && semanticProof.reason_codes.length
-            ? semanticProof.reason_codes.join("|")
-            : "semantic_proof_not_passed";
-          setFinalTraceState(trace, false, "rejected", `semantic_proof_failed:${proofReason}`, {
-            material_rewrite: true,
-            semantic_verified: false,
-            quality_preferred: null,
-          });
-          if (settings_trace_enabled()) await saveTrace(trace);
-          return content;
+        let proofReturnAssessment = assessSemanticProofReturn(semanticProof);
+        if (!semanticProof.returnable_degraded
+            && semanticProof.verdict !== "pass"
+            && !proofReturnAssessment.returnable) {
+          semanticProof = synthesizeWholeSceneRepairProof(
+            semanticProof,
+            rewriteFrame.semantic_segments
+          );
+          if (semanticProof && semanticProof.repair_synthesized) {
+            trace.semantic_prover.verdict = "repair";
+            trace.semantic_prover.repair_synthesized = true;
+            trace.semantic_prover.reason = arrayFromCollection(semanticProof.reason_codes).join(",");
+          }
+        }
+
+        if (semanticProof.verdict === "repair") {
+          trace.semantic_prover.repair_attempted = true;
+          if (deadline.check()) {
+            semanticProof = degradedSemanticProof(semanticProof, ["semantic_repair_deadline"]);
+          } else {
+            trace.budget.prover_attempt_reserved = trace.semantic_prover.structured_recovery_attempted
+              ? 1
+              : 2;
+            const previousSegments = {};
+            assembled.logicalFinalSegments.filter((segment) => segment.type === "mutable").forEach((segment) => {
+              previousSegments[segment.id] = segment.final_text;
+            });
+            traceTimeline(trace, "semantic_repair_start");
+            const repairScope = createPipelineStageScope(
+              deadline, "semantic_repair_composer", trace
+            );
+            let repairedComposerResult;
+            try {
+              repairedComposerResult = await runComposer(
+                DEFAULT_ROLES.find((role) => role.role_id === COMPOSER_ROLE_ID),
+                settings.role_profiles[COMPOSER_ROLE_ID],
+                segments,
+                directorResult,
+                rewriteContextBlock,
+                repairScope.signal,
+                trace,
+                mutableSegments(segments).filter((segment) => mutableCoreText(segment).trim().length > 0),
+                !!deadline.completion_wait,
+                {
+                  repair_instructions: semanticProof.repair_instructions,
+                  previous_segments: previousSegments,
+                  reason_codes: semanticProof.reason_codes,
+                }
+              );
+            } finally {
+              repairScope.cancel();
+            }
+            traceTimeline(trace, "semantic_repair_done");
+            if (!repairedComposerResult) {
+              semanticProof = degradedSemanticProof(semanticProof, ["semantic_repair_composer_failed"]);
+            } else {
+              const repairedAssembly = assembleSceneRewriteFrame(rewriteFrame, repairedComposerResult);
+              const repairedVerification = repairedAssembly.frame_error
+                ? { pass: false, errors: [`scene_frame_restore_failed:${repairedAssembly.frame_error}`], warnings: [] }
+                : verifyOutput(
+                    physicalSegments,
+                    repairedAssembly.physicalFinalSegments,
+                    repairedAssembly.output,
+                    originalText,
+                    settings
+                  );
+              if (rememberReturnableAssembly(repairedAssembly, repairedComposerResult, repairedVerification)) {
+                composerResult = repairedComposerResult;
+                assembled = repairedAssembly;
+                verification = repairedVerification;
+                trace.budget.prover_attempt_reserved = trace.semantic_prover.structured_recovery_attempted
+                  ? 1
+                  : 2;
+                if (proverConfigured && !deadline.check()) {
+                  traceTimeline(trace, "semantic_reproof_start");
+                  const repairedProof = await runSemanticProver(
+                    proverRole,
+                    proverProfile,
+                    rewriteFrame.semantic_segments,
+                    assembled.finalSegments,
+                    directorResult,
+                    rewriteContextBlock,
+                    deadline.signal,
+                    trace,
+                    !!deadline.completion_wait,
+                    "after_repair"
+                  );
+                  traceTimeline(trace, "semantic_reproof_done");
+                  semanticProof = repairedProof
+                    || degradedSemanticProof(semanticProof, ["semantic_reproof_failed"]);
+                } else {
+                  semanticProof = degradedSemanticProof(semanticProof, ["semantic_reproof_unavailable"]);
+                }
+              } else {
+                holdAttemptedEvidence(trace, repairedAssembly);
+                semanticProof = degradedSemanticProof(semanticProof, [
+                  repairedVerification.pass
+                    ? "semantic_repair_returned_original"
+                    : `semantic_repair_verifier_failed:${arrayFromCollection(repairedVerification.errors).join(",")}`,
+                ]);
+              }
+            }
+          }
+        }
+
+        proofReturnAssessment = assessSemanticProofReturn(semanticProof);
+        if (!proofReturnAssessment.returnable) {
+          semanticProof = degradedSemanticProof(semanticProof, proofReturnAssessment.blocking_reasons.length
+            ? proofReturnAssessment.blocking_reasons
+            : ["semantic_proof_not_passed"]);
+          proofReturnAssessment = assessSemanticProofReturn(semanticProof);
+        }
+
+        if (proofReturnAssessment.degraded || semanticProof.returnable_degraded) {
+          semanticProof.returnable_degraded = true;
+          semanticProof.quality_debt = uniqueList(arrayFromCollection(semanticProof.quality_debt)
+            .concat(proofReturnAssessment.quality_debt));
+          trace.semantic_prover.verdict = "degraded";
+          trace.semantic_prover.quality_debt = semanticProof.quality_debt;
+          trace.semantic_prover.reason = semanticProof.quality_debt.length
+            ? semanticProof.quality_debt.join(",")
+            : "semantic_proof_degraded";
         }
 
         updateAppliedEvidence(trace, assembled, verification, semanticProof);
@@ -9033,15 +9991,19 @@
         comparisonFinalSegments = assembled.finalSegments;
         comparisonReturnedText = assembled.output;
 
-        storeCompletedOutputReuse(
-          rawOriginalText,
-          type,
-          settings,
-          snapshot,
-          assembled.output,
-          trace,
-          assembled.finalSegments
-        );
+        try {
+          storeCompletedOutputReuse(
+            rawOriginalText,
+            type,
+            settings,
+            snapshot,
+            assembled.output,
+            trace,
+            assembled.finalSegments
+          );
+        } catch (cacheError) {
+          traceError(trace, `output_reuse_store_failed:${safeString(cacheError && cacheError.message)}`);
+        }
         if (settings_trace_enabled()) await saveTrace(trace);
         return assembled.output;
       } finally {
@@ -9050,6 +10012,33 @@
     } catch (err) {
       warn("afterRequest pipeline error:", err);
       traceError(trace, `pipeline_error: ${safeString(err && err.message)}`);
+      if (lastReturnableAssembly && lastReturnableVerification) {
+        const degradedProof = degradedSemanticProof(null, ["pipeline_error_after_rewrite"]);
+        updateAppliedEvidence(
+          trace,
+          lastReturnableAssembly,
+          lastReturnableVerification,
+          degradedProof
+        );
+        const classification = classifyAppliedOutput(lastReturnableAssembly, degradedProof);
+        setFinalTraceState(
+          trace,
+          classification.enhanced,
+          classification.state,
+          "changed_scene_returned_after_pipeline_error",
+          classification
+        );
+        trace.final.original_preview = preview(comparisonOriginalText, 200);
+        trace.final.final_preview = preview(lastReturnableAssembly.output, 200);
+        trace.lineage.composer_output_digest = stableDigest(
+          lastReturnableComposerResult && lastReturnableComposerResult.segments
+        );
+        trace.lineage.returned_output_digest = stableDigest(lastReturnableAssembly.output);
+        comparisonFinalSegments = lastReturnableAssembly.finalSegments;
+        comparisonReturnedText = lastReturnableAssembly.output;
+        if (settings_trace_enabled()) await saveTrace(trace);
+        return lastReturnableAssembly.output;
+      }
       setFinalTraceState(trace, false, "failed", "pipeline_error");
       if (settings_trace_enabled()) await saveTrace(trace);
       return content;
@@ -9113,8 +10102,8 @@
             <input type="number" class="recomposer-context-limit" value="${settings.context_char_limit}" min="500" max="50000" step="500">
           </div>
           <div class="recomposer-field recomposer-field-wide">
-            <label>추가 보호 정규식 <span>Protected regex</span></label>
-            <input type="text" class="recomposer-protected-regex" value="${escapeHtml(settings.protected_regex)}" placeholder="변경하지 않을 사용자 정의 패턴">
+            <label>이미지·상태·코드 원문 패턴 <span>Exact artifact regex</span></label>
+            <input type="text" class="recomposer-protected-regex" value="${escapeHtml(settings.protected_regex)}" placeholder="원문 그대로 다시 끼워 넣을 사용자 정의 패턴">
           </div>
           <label class="recomposer-toggle-row recomposer-field-wide">
             <span>
@@ -9312,7 +10301,7 @@
           <section class="recomposer-compare-item">
             <div class="recomposer-compare-meta">
               <span>${SCENE_REWRITE_SEGMENT_ID}</span>
-              <span>원문 반환</span>
+              <span>변경 결과 없음</span>
               <span>실제 변경 0개</span>
             </div>
             <div class="recomposer-compare-grid">
@@ -10214,8 +11203,8 @@
         const proverValidation = arrayFromCollection(prover.validation_diagnostics)
           .map((item) => `${item.code}${item.field ? "@" + item.field : ""}${item.detail ? "(" + item.detail + ")" : ""}`)
           .join(",");
-        const proverLine = `status:${prover.status || "not_run"} verdict:${prover.verdict || "not_run"} attempts:${prover.attempts || 0} repair:${prover.repair_attempted === true} structure-recovery:${prover.structured_recovery_attempted === true}/${prover.structured_recovery_succeeded === true} gains:${prover.quality_gains_required || 0}/${prover.quality_gains_missing || 0}/${prover.quality_gains_regressed || 0} residual:${prover.residual_quality_checked || 0}/${prover.residual_quality_issues || 0} facts:${prover.facts_missing || 0}/${prover.facts_contradicted || 0} beats:${prover.beats_missing || 0} constraints:${prover.constraints_violated || 0} unsupported:${prover.unsupported_additions || 0} hard:${prover.hard_violations || 0} contract:${prover.output_contract_failures || 0}${proverValidation ? " validation:[" + proverValidation + "]" : ""}${prover.reason ? " reason:" + prover.reason : ""}`;
-        const planLine = `status:${plan.status || "not_run"} accepted:${plan.accepted_candidates || 0} rejected:${plan.rejected_candidates || 0} required:${plan.required_contributions || 0} unresolved:${plan.unresolved_requirements || 0} consensus:${plan.consensus_claims || 0} complement:${plan.complementary_claims || 0} conflicts:${plan.conflicts || 0} prohibited:${plan.prohibited_additions || 0}`;
+        const proverLine = `status:${prover.status || "not_run"} verdict:${prover.verdict || "not_run"} attempts:${prover.attempts || 0} repair:${prover.repair_attempted === true} synthesized:${prover.repair_synthesized === true} structure-recovery:${prover.structured_recovery_attempted === true}/${prover.structured_recovery_succeeded === true} gains:${prover.quality_gains_required || 0}/${prover.quality_gains_missing || 0}/${prover.quality_gains_regressed || 0} residual:${prover.residual_quality_checked || 0}/${prover.residual_quality_issues || 0} debt:${arrayFromCollection(prover.quality_debt).length} facts:${prover.facts_missing || 0}/${prover.facts_contradicted || 0} beats:${prover.beats_missing || 0} constraints:${prover.constraints_violated || 0} unsupported:${prover.unsupported_additions || 0} hard:${prover.hard_violations || 0} contract:${prover.output_contract_failures || 0}${proverValidation ? " validation:[" + proverValidation + "]" : ""}${prover.reason ? " reason:" + prover.reason : ""}`;
+        const planLine = `status:${plan.status || "not_run"} accepted:${plan.accepted_candidates || 0} rejected:${plan.rejected_candidates || 0} required:${plan.required_contributions || 0} unresolved:${plan.unresolved_requirements || 0} consensus:${plan.consensus_claims || 0} complement:${plan.complementary_claims || 0} conflicts:${plan.conflicts || 0} prohibited:${plan.prohibited_additions || 0}${plan.direct_composer_fallback ? " direct-composer:true" : ""}${plan.fallback_reason ? " fallback:" + plan.fallback_reason : ""}`;
         const revisionLines = arrayFromCollection(revision.rounds).map((round) =>
           `round:${round.round} role:${round.role_id} status:${round.status} parent:${round.parent_candidate_id || "none"} result:${round.output_candidate_id || "none"} needs:[${arrayFromCollection(round.requirement_ids).join(",")}]${round.failure_reason ? " reason:" + round.failure_reason : ""}`
         ).join("\n");
@@ -10238,6 +11227,9 @@
         const schedulerLines = (scheduler.endpoint_groups || []).map((group) =>
           `${group.stage}:${group.endpoint_group} calls:${group.selected_calls} concurrency:${group.effective_concurrency}/${group.base_concurrency} reason:${group.reason}`
         ).join("\n");
+        const stageBudgetLines = arrayFromCollection(scheduler.stage_budgets).map((item) =>
+          `${item.stage}: budget:${item.budget_ms || 0}ms${item.explicit_cap_ms ? " cap:" + item.explicit_cap_ms + "ms" : ""} remaining-at-start:${item.remaining_at_start_ms || 0}ms mode:${item.completion_wait ? "completion_wait" : "deadline"}`
+        ).join("\n");
         const routerLine = (t.router && t.router.signals && t.router.signals.length) ? `signals:[${t.router.signals.join(",")}]` : "";
         return `<div class="recomposer-trace-entry">
           <strong>${escapeHtml(t.stage)} ${new Date(t.timestamp).toLocaleString()}</strong><br>
@@ -10259,7 +11251,7 @@
           Summary: ${escapeHtml(summaryLine)}<br>
           Scheduler: ${scheduler.completion_wait ? "completion_wait" : "deadline"} · provider concurrency<br>
           Candidates: complete-scenes:${t.candidates.total} segment-variants:${t.candidates.segment_variant_total || 0} incomplete-rejected:${t.candidates.incomplete_rejected_count || 0} normalized:${t.candidates.normalized_field_count || 0} recovery:${t.candidates.structured_recovery_succeeded || 0}/${t.candidates.structured_recovery_attempted || 0}/${t.candidates.structured_recovery_queued || 0} deduped:${t.candidates.duplicate_scene_candidates || 0}<br>
-          Composer: ${t.composer.used} (${t.composer.status} ${t.composer.elapsed_ms}ms, reserve:${t.composer.reserve_ms || 0}ms, semantic-retry:${t.composer.semantic_retry || 0}${t.composer.specialist_stop_reason ? ", specialist-stop:" + escapeHtml(t.composer.specialist_stop_reason) : ""})<br>
+          Composer: ${t.composer.used} (${t.composer.status} ${t.composer.elapsed_ms}ms, reserve:${t.composer.reserve_ms || 0}ms, semantic-retry:${t.composer.semantic_retry || 0}, preproof-recovery:${t.composer.preproof_recovery_attempted ? (t.composer.preproof_recovery_succeeded ? "fulfilled" : "failed") : "not_run"}${t.composer.preproof_recovery_reason ? ":" + escapeHtml(t.composer.preproof_recovery_reason) : ""}${t.composer.specialist_stop_reason ? ", specialist-stop:" + escapeHtml(t.composer.specialist_stop_reason) : ""})<br>
           ${t.final.original_preview ? `Orig: ${escapeHtml(t.final.original_preview)}<br>` : ""}
           ${t.final.final_preview ? `Final: ${escapeHtml(t.final.final_preview)}<br>` : ""}
           ${directorLines ? `<pre style="color:#8FA7FF;">Accepted candidate coverage:\n${escapeHtml(directorLines)}</pre>` : ""}
@@ -10267,6 +11259,7 @@
           ${attemptedLines ? `<pre style="color:#E158A6;">Rejected Composer attempt:\n${escapeHtml(attemptedLines)}</pre>` : ""}
           ${revisionLines ? `<pre style="color:#8FA7FF;">Adaptive revision lineage:\n${escapeHtml(revisionLines)}</pre>` : ""}
           ${schedulerLines ? `<pre>Endpoint groups:\n${escapeHtml(schedulerLines)}</pre>` : ""}
+          ${stageBudgetLines ? `<pre>Stage budgets:\n${escapeHtml(stageBudgetLines)}</pre>` : ""}
           <pre>${escapeHtml(roleLines)}</pre>
           ${t.errors && t.errors.length ? `<pre style="color:#e55;">${escapeHtml(t.errors.join("\n"))}</pre>` : ""}
         </div>`;
@@ -10477,6 +11470,38 @@
           confidence: 0.8,
           change_summary: 'material scene rewrite',
         }],
+      });
+    }
+    function semanticProofJsonFromPrompt(prompt) {
+      const ledgerMatch = /--- Draft Ledger \(binding source map\) ---\n(.+?)\n--- End Draft Ledger ---/s.exec(prompt);
+      const finalMatch = /Final Composer segments:\n(.+?)\n\nSemantic Judgment:/s.exec(prompt);
+      if (!ledgerMatch || !finalMatch) throw new Error('semantic proof mock missing ledger or final scene');
+      const proofLedger = JSON.parse(ledgerMatch[1]);
+      const finalSegments = JSON.parse(finalMatch[1]);
+      const finalText = finalSegments.map((item) => safeString(item && item.text)).join('\n').trim();
+      const exactQuote = finalText.slice(0, Math.min(18, finalText.length));
+      return JSON.stringify({
+        schema: 'semantic_proof.v1',
+        declared_verdict: 'pass',
+        fact_checks: arrayFromCollection(proofLedger.established_facts).map((item) => ({
+          ledger_id: item.ledger_id, status: 'preserved', detail: 'Preserved.', evidence_quote: exactQuote,
+        })),
+        beat_checks: arrayFromCollection(proofLedger.scene_beats).map((item) => ({
+          ledger_id: item.ledger_id, status: 'preserved', detail: 'Preserved.', evidence_quote: exactQuote,
+        })),
+        constraint_checks: arrayFromCollection(proofLedger.hard_constraints).map((item) => ({
+          ledger_id: item.ledger_id, status: 'satisfied', detail: 'Satisfied.', evidence_quote: '',
+        })),
+        quality_gain_checks: [],
+        residual_quality_checks: PROOF_RESIDUAL_QUALITY_IDS.map((checkId) => ({
+          check_id: checkId, status: 'clean', detail: 'Clean.', evidence_quote: '', segment_ids: [],
+        })),
+        hard_violations: [],
+        unsupported_additions: [],
+        output_contract: {
+          language_ok: true, turn_boundary_ok: true, user_agency_ok: true, meta_free: true, format_ok: true,
+        },
+        repair_instructions: [],
       });
     }
 
@@ -11501,7 +12526,7 @@
       }
     });
 
-    await test('materiality_rejects_cosmetic_change_and_meta_deletion', () => {
+    await test('materiality_reports_change_strength_without_controlling_return', () => {
       const original = '초여름의 푸른 그늘이 공조(工曹) 청사 앞 느릅나무 가지마다 짙게 늘어서기 시작했다. '
         + '단오를 앞둔 한양의 공기는 메말라 있었고 공조 마당은 수레와 인부들의 소리로 요란했다. '
         + '행정실 북쪽 창가의 자리는 바깥과 격리된 섬처럼 정갈한 정적을 유지하고 있었다.';
@@ -11898,9 +12923,13 @@
           throw new Error(`latest draft or lineage missing:${adaptiveSawLatestDraft}/${composerSawLineage}`);
         }
         const round = trace.revision_convergence.rounds[0];
+        const adaptiveBudgetStages = arrayFromCollection(trace.scheduler.stage_budgets)
+          .map((item) => item.stage);
         if (judgeCalls !== 2
             || trace.revision_convergence.fulfilled !== 1
             || trace.revision_convergence.remaining_requirements !== 0
+            || adaptiveBudgetStages.indexOf('adaptive_revision') < 0
+            || adaptiveBudgetStages.indexOf('adaptive_rejudge') < 0
             || !round
             || round.status !== 'fulfilled'
             || !round.parent_candidate_id
@@ -11910,6 +12939,7 @@
           throw new Error(`adaptive lineage mismatch:${JSON.stringify({
             judgeCalls,
             convergence: trace.revision_convergence,
+            stage_budgets: trace.scheduler.stage_budgets,
             last: result.directorResult.last_valid_candidate,
           })}`);
         }
@@ -12010,7 +13040,7 @@
       }
     });
 
-    await test('judge_reject_all_blocks_composer', async () => {
+    await test('judge_reject_all_discards_candidates_and_runs_direct_composer', async () => {
       const originalFetch = globalThis.fetch;
       let composerCalls = 0;
       const settings = defaultSettings();
@@ -12027,7 +13057,13 @@
         const model = safeString(body.model);
         if (model.indexOf(COMPOSER_ROLE_ID) >= 0) {
           composerCalls++;
-          return response(JSON.stringify({ segments: { mutable_1: 'Must not run.' } }));
+          const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
+          if (prompt.indexOf('Candidate rewrite.') >= 0) {
+            throw new Error('rejected candidate leaked into direct Composer prompt');
+          }
+          return response(JSON.stringify({
+            segments: { mutable_1: 'Rain pressed against the archive windows while Mira rebuilt the scene from grounded facts.' },
+          }));
         }
         if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
           const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
@@ -12047,14 +13083,108 @@
         const segments = [{ id: 'mutable_1', type: 'mutable', text: 'Original scene.', leading_ws: '', trailing_ws: '' }];
         const result = await scheduleRoles(roles, settings.role_profiles, segments, '', segments, deadline, trace, 2, ledger());
         deadline.cancel();
-        if (result.failureReason !== 'semantic_judge_rejected_all' || composerCalls !== 0) throw new Error(`reject gate failed:${result.failureReason}/${composerCalls}`);
-        return result.failureReason;
+        if (result.failureReason || !result.composerResult || composerCalls !== 1
+            || !result.fusionPlan.direct_composer_fallback
+            || result.fusionPlan.fallback_reason !== 'semantic_judge_rejected_all'
+            || trace.composer.direct_fallback !== true) {
+          throw new Error(`reject fallback failed:${JSON.stringify({
+            failureReason: result.failureReason,
+            composerCalls,
+            fusionPlan: result.fusionPlan,
+            composer: trace.composer,
+          })}`);
+        }
+        return result.fusionPlan.fallback_reason;
       } finally {
         globalThis.fetch = originalFetch;
       }
     });
 
-    await test('phase_e_f_full_hook_returns_only_proven_composer_output', async () => {
+    await test('empty_specialists_and_failed_judge_both_reach_direct_composer', async () => {
+      const originalFetch = globalThis.fetch;
+      async function runCase(mode) {
+        const settings = defaultSettings();
+        const roles = ['character_reader', JUDGE_ROLE_ID, COMPOSER_ROLE_ID, PROVER_ROLE_ID]
+          .map((id) => DEFAULT_ROLES.find((role) => role.role_id === id));
+        roles.forEach((role) => {
+          const profile = settings.role_profiles[role.role_id];
+          if (mode === 'composer_unconfigured' && role.role_id === COMPOSER_ROLE_ID) return;
+          profile.endpoint = 'https://test.example.com/v1/chat/completions';
+          profile.model = `${role.role_id}-model`;
+          profile.timeout_ms = 5000;
+        });
+        let composerCalls = 0;
+        let judgeCalls = 0;
+        globalThis.fetch = async (_url, options) => {
+          const body = JSON.parse(options.body);
+          const model = safeString(body.model);
+          if (model.indexOf(COMPOSER_ROLE_ID) >= 0) {
+            composerCalls++;
+            if (mode === 'judge_failed_composer_failed') {
+              return { ok: false, status: 503, text: async () => '{"error":"composer unavailable"}' };
+            }
+            return response(JSON.stringify({
+              segments: { mutable_1: `Direct Composer rebuilt the complete ${mode} scene with action, consequence, and a stronger ending.` },
+            }));
+          }
+          if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
+            judgeCalls++;
+            return response('not a semantic judgment');
+          }
+          if (mode === 'no_candidates') {
+            return response(JSON.stringify({
+              schema: 'scene_rewrite_candidates.v1',
+              role_id: 'character_reader',
+              candidates: [],
+            }));
+          }
+          return response(sceneCandidateJson(
+            'character_reader',
+            'A complete specialist candidate reached the unavailable Judge.'
+          ));
+        };
+        const trace = newTrace('test', 'test');
+        trace.router.preset = 'balanced';
+        const deadline = createDeadline(30000);
+        const segments = [{
+          id: 'mutable_1', type: 'mutable', text: 'Original scene.', leading_ws: '', trailing_ws: '',
+        }];
+        const result = await scheduleRoles(
+          roles, settings.role_profiles, segments, '', segments, deadline, trace, 2, ledger()
+        );
+        deadline.cancel();
+        const expectedReason = mode === 'no_candidates'
+          ? 'no_scene_candidates'
+          : 'semantic_judge_failed';
+        const expectedSpecialistFallback = mode === 'judge_failed_composer_failed'
+          || mode === 'composer_unconfigured';
+        const expectedComposerCalls = mode === 'composer_unconfigured' ? 0 : 1;
+        if (result.failureReason || !result.composerResult || composerCalls !== expectedComposerCalls
+            || judgeCalls !== (mode === 'no_candidates' ? 0 : 1)
+            || result.fusionPlan.fallback_reason !== expectedReason
+            || trace.fusion_plan.status !== 'direct_composer_fallback'
+            || !!trace.composer.specialist_candidate_recovered !== expectedSpecialistFallback) {
+          throw new Error(`direct fallback case failed:${JSON.stringify({
+            mode, failureReason: result.failureReason, composerCalls, judgeCalls,
+            fallback: result.fusionPlan && result.fusionPlan.fallback_reason,
+            tracePlan: trace.fusion_plan,
+          })}`);
+        }
+        return expectedReason;
+      }
+      try {
+        const reasons = [];
+        reasons.push(await runCase('no_candidates'));
+        reasons.push(await runCase('judge_failed'));
+        reasons.push(await runCase('judge_failed_composer_failed'));
+        reasons.push(await runCase('composer_unconfigured'));
+        return reasons.join(',');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    await test('phase_e_f_full_hook_repairs_and_returns_composer_output', async () => {
       const originalFetch = globalThis.fetch;
       const originalRisu = globalThis.Risuai;
       const settings = defaultSettings();
@@ -12146,28 +13276,19 @@
               detail: 'The final scene realizes the required specialist contribution.',
               evidence_quote: 'measured silence',
               segment_ids: item.segment_ids,
-            }));
+          }));
           if (proverCalls === 1) {
             proof.declared_verdict = 'repair';
-            let repairReference = '';
             if (proof.fact_checks.length) {
               proof.fact_checks[0].status = 'missing';
               proof.fact_checks[0].detail = 'The first required fact is not explicit enough.';
-              repairReference = proof.fact_checks[0].ledger_id;
             } else if (proof.beat_checks.length) {
               proof.beat_checks[0].status = 'missing';
               proof.beat_checks[0].detail = 'The first required beat is not explicit enough.';
-              repairReference = proof.beat_checks[0].ledger_id;
             } else {
               proof.output_contract.turn_boundary_ok = false;
-              repairReference = 'output_contract:turn_boundary_ok';
             }
-            proof.repair_instructions = [{
-              segment_id: SCENE_REWRITE_SEGMENT_ID,
-              instruction: `Restore ${repairReference} while preserving the full scene.`,
-              evidence_refs: [repairReference],
-              prohibited: ['Do not add a new event.'],
-            }];
+            proof.repair_instructions = [];
           }
           return response(JSON.stringify(proof));
         }
@@ -12237,6 +13358,7 @@
             || traceRecord.final.semantic_verified !== 'passed'
             || traceRecord.semantic_prover.attempts !== 2
             || traceRecord.semantic_prover.repair_attempted !== true
+            || traceRecord.semantic_prover.repair_synthesized !== true
             || traceRecord.semantic_prover.residual_quality_checked !== PROOF_RESIDUAL_QUALITY_IDS.length
             || traceRecord.semantic_prover.residual_quality_issues !== 0
             || !traceRecord.applied_evidence.some((item) =>
@@ -12279,6 +13401,332 @@
           })}`);
         }
         return `${calls.join('>')} > reuse:0-provider-calls`;
+      } finally {
+        pendingMainSnapshot = null;
+        completedOutputCache = [];
+        globalThis.fetch = originalFetch;
+        globalThis.Risuai = originalRisu;
+      }
+    });
+
+    await test('full_hook_all_specialists_empty_uses_direct_composer_then_prover', async () => {
+      const originalFetch = globalThis.fetch;
+      const originalRisu = globalThis.Risuai;
+      const settings = defaultSettings();
+      settings.preset = 'fast';
+      settings.trace_enabled = true;
+      DEFAULT_ROLES.filter((role) => !role.is_input_planner).forEach((role) => {
+        const profile = settings.role_profiles[role.role_id];
+        profile.endpoint = 'https://test.example.com/v1/chat/completions';
+        profile.model = `${role.role_id}-model`;
+        profile.timeout_ms = 5000;
+      });
+      const stored = {};
+      const calls = [];
+      let judgeCalls = 0;
+      const finalText = 'Rain struck the archive windows as Mira shut the ledger, crossed the room, and answered Rowan without exposing the sealed name.';
+      globalThis.Risuai = {
+        pluginStorage: {
+          getItem: async (key) => key === SETTINGS_KEY
+            ? JSON.stringify(settings)
+            : (Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] : null),
+          setItem: async (key, value) => { stored[key] = value; },
+        },
+      };
+      globalThis.fetch = async (_url, options) => {
+        const body = JSON.parse(options.body);
+        const model = safeString(body.model);
+        const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
+        calls.push(model);
+        if (model.indexOf(PROVER_ROLE_ID) >= 0) {
+          const ledgerMatch = /--- Draft Ledger \(binding source map\) ---\n(.+?)\n--- End Draft Ledger ---/s.exec(prompt);
+          if (!ledgerMatch) throw new Error('fallback Prover prompt missing Draft Ledger');
+          const proofLedger = JSON.parse(ledgerMatch[1]);
+          return response(JSON.stringify({
+            schema: 'semantic_proof.v1',
+            declared_verdict: 'pass',
+            fact_checks: arrayFromCollection(proofLedger.established_facts).map((item) => ({
+              ledger_id: item.ledger_id, status: 'preserved', detail: 'Preserved.', evidence_quote: '',
+            })),
+            beat_checks: arrayFromCollection(proofLedger.scene_beats).map((item) => ({
+              ledger_id: item.ledger_id, status: 'preserved', detail: 'Preserved.', evidence_quote: '',
+            })),
+            constraint_checks: arrayFromCollection(proofLedger.hard_constraints).map((item) => ({
+              ledger_id: item.ledger_id, status: 'satisfied', detail: 'Satisfied.', evidence_quote: '',
+            })),
+            quality_gain_checks: [],
+            residual_quality_checks: PROOF_RESIDUAL_QUALITY_IDS.map((checkId) => ({
+              check_id: checkId, status: 'clean', detail: 'Clean.', evidence_quote: '', segment_ids: [],
+            })),
+            hard_violations: [],
+            unsupported_additions: [],
+            output_contract: {
+              language_ok: true, turn_boundary_ok: true, user_agency_ok: true, meta_free: true, format_ok: true,
+            },
+            repair_instructions: [],
+          }));
+        }
+        if (model.indexOf(COMPOSER_ROLE_ID) >= 0) return response(finalText);
+        if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
+          judgeCalls++;
+          throw new Error('Judge must not run without candidates');
+        }
+        const roleId = model.replace(/-model$/, '');
+        return response(JSON.stringify({
+          schema: 'scene_rewrite_candidates.v1',
+          role_id: roleId,
+          candidates: [],
+        }));
+      };
+      try {
+        pendingMainSnapshot = null;
+        completedOutputCache = [];
+        const messages = [{ role: 'user', content: 'Continue without revealing the sealed identity.' }];
+        await onBeforeRequest(messages, 'model');
+        const original = 'Mira sat beside the open ledger while rain touched the window.';
+        const output = await onAfterRequest(original, 'model');
+        const traceRecord = JSON.parse(stored[TRACE_KEY] || '[]')[0];
+        if (output !== finalText || judgeCalls !== 0 || !traceRecord
+            || traceRecord.final.enhanced !== true
+            || traceRecord.final.semantic_verified !== 'passed'
+            || traceRecord.composer.direct_fallback !== true
+            || traceRecord.fusion_plan.fallback_reason !== 'no_scene_candidates'
+            || calls.filter((model) => model.indexOf(COMPOSER_ROLE_ID) >= 0).length !== 1
+            || calls.filter((model) => model.indexOf(PROVER_ROLE_ID) >= 0).length !== 1) {
+          throw new Error(`full direct fallback failed:${JSON.stringify({
+            output, judgeCalls, calls, final: traceRecord && traceRecord.final,
+            composer: traceRecord && traceRecord.composer,
+            fusionPlan: traceRecord && traceRecord.fusion_plan,
+          })}`);
+        }
+        return 'empty specialists -> direct Composer -> Prover -> enhanced output';
+      } finally {
+        pendingMainSnapshot = null;
+        completedOutputCache = [];
+        globalThis.fetch = originalFetch;
+        globalThis.Risuai = originalRisu;
+      }
+    });
+
+    await test('full_hook_recoverable_failure_matrix_returns_changed_output', async () => {
+      const originalFetch = globalThis.fetch;
+      const originalRisu = globalThis.Risuai;
+      async function runCase(mode, preset, original, expected) {
+        const settings = defaultSettings();
+        settings.preset = preset;
+        settings.trace_enabled = true;
+        DEFAULT_ROLES.filter((role) => !role.is_input_planner).forEach((role) => {
+          const profile = settings.role_profiles[role.role_id];
+          if (mode === 'judge_unconfigured' && role.role_id === JUDGE_ROLE_ID) return;
+          if (mode === 'prover_unconfigured' && role.role_id === PROVER_ROLE_ID) return;
+          profile.endpoint = 'https://test.example.com/v1/chat/completions';
+          profile.model = `${role.role_id}-model`;
+          profile.timeout_ms = 5000;
+        });
+        if (mode === 'prover_fallback') {
+          const prover = settings.role_profiles[PROVER_ROLE_ID];
+          prover.fallback_provider = 'openai_compatible';
+          prover.fallback_endpoint = 'https://fallback.example.com/v1/chat/completions';
+          prover.fallback_model = 'semantic-prover-fallback';
+        }
+        const stored = {};
+        const calls = [];
+        let composerCalls = 0;
+        let judgeCalls = 0;
+        globalThis.Risuai = {
+          pluginStorage: {
+            getItem: async (key) => key === SETTINGS_KEY
+              ? JSON.stringify(settings)
+              : (Object.prototype.hasOwnProperty.call(stored, key) ? stored[key] : null),
+            setItem: async (key, value) => { stored[key] = value; },
+          },
+        };
+        globalThis.fetch = async (_url, options) => {
+          const body = JSON.parse(options.body);
+          const model = safeString(body.model);
+          const prompt = safeString(body.messages && body.messages[1] && body.messages[1].content);
+          calls.push(model);
+          if (model === 'semantic-prover-fallback') {
+            return response(semanticProofJsonFromPrompt(prompt));
+          }
+          if (model.indexOf(PROVER_ROLE_ID) >= 0) {
+            if (mode === 'prover_fallback') {
+              return { ok: false, status: 503, text: async () => '{"error":"temporary unavailable"}' };
+            }
+            if (mode === 'prover_transport_fail') {
+              return { ok: false, status: 503, text: async () => '{"error":"prover unavailable"}' };
+            }
+            if (mode === 'prover_declared_fail') {
+              const proof = JSON.parse(semanticProofJsonFromPrompt(prompt));
+              proof.declared_verdict = 'fail';
+              return response(JSON.stringify(proof));
+            }
+            return response(semanticProofJsonFromPrompt(prompt));
+          }
+          if (model.indexOf(COMPOSER_ROLE_ID) >= 0) {
+            composerCalls++;
+            if (mode === 'weak_balanced') {
+              return response(composerCalls === 1 ? original : expected);
+            }
+            if (mode === 'duplicate_verifier') {
+              const tokenMatch = prompt.match(/\[\[ACR_EXACT_[^\]]+\]\]/);
+              if (!tokenMatch) throw new Error('duplicate recovery mock missing exact token');
+              const token = tokenMatch[0];
+              const duplicated = 'A newly duplicated rewritten paragraph is deliberately long enough to represent a repeated prose block that the structural verifier must reject.';
+              return response(composerCalls === 1
+                ? `${duplicated}\n${token}\n${duplicated}`
+                : expected.replace('__TOKEN__', token));
+            }
+            if (mode === 'terminal_artifact_expansion') {
+              const tokenMatch = prompt.match(/\[\[ACR_EXACT_[^\]]+\]\]/);
+              if (!tokenMatch) throw new Error('terminal artifact mock missing token');
+              return response(expected.replace('__TOKEN__', tokenMatch[0]));
+            }
+            return response(expected);
+          }
+          if (model.indexOf(JUDGE_ROLE_ID) >= 0) {
+            judgeCalls++;
+            throw new Error(`Judge should not run in ${mode}`);
+          }
+          const roleId = model.replace(/-model$/, '');
+          if (mode === 'judge_unconfigured') {
+            return response(sceneCandidateJson(
+              roleId,
+              `The ${roleId} independently rebuilt the entire scene around the grounded exchange.`,
+              SCENE_REWRITE_SEGMENT_ID
+            ));
+          }
+          return response(JSON.stringify({
+            schema: 'scene_rewrite_candidates.v1',
+            role_id: roleId,
+            candidates: [],
+          }));
+        };
+        pendingMainSnapshot = null;
+        completedOutputCache = [];
+        const messages = [{ role: 'user', content: 'Continue the scene and improve it materially.' }];
+        await onBeforeRequest(messages, 'model');
+        const output = await onAfterRequest(original, 'model');
+        const traceRecord = JSON.parse(stored[TRACE_KEY] || '[]')[0];
+        return { output, traceRecord, calls, composerCalls, judgeCalls };
+      }
+      try {
+        const weakOriginal = 'Mira sat beside the open ledger while rain touched the window and the unresolved accusation remained between her and Rowan.';
+        const weakExpected = 'Rain drove silver lines across the archive glass. Mira closed the ledger before Rowan could reach it, then met his accusation with a silence that sharpened the distance between them.';
+        const weak = await runCase('weak_balanced', 'balanced', weakOriginal, weakExpected);
+        if (weak.output !== weakExpected || weak.composerCalls !== 2
+            || !weak.traceRecord || weak.traceRecord.final.enhanced !== true
+            || weak.traceRecord.composer.semantic_retry !== 1) {
+          throw new Error(`balanced weak rewrite recovery failed:${JSON.stringify({
+            output: weak.output, composerCalls: weak.composerCalls,
+            final: weak.traceRecord && weak.traceRecord.final,
+            composer: weak.traceRecord && weak.traceRecord.composer,
+          })}`);
+        }
+
+        const image = '<img src="/api/asset/example.png">';
+        const duplicateOriginal = `The first original paragraph carries a distinct opening action and enough length for duplicate comparison.\n${image}\nThe second original paragraph carries a different response and enough length for duplicate comparison.`;
+        const duplicateExpected = 'Rain rattled against the shutters as Mira seized the ledger before the seal could be read.\n__TOKEN__\nRowan stopped at the threshold, and the question he had prepared died when he saw her hand covering the name.';
+        const duplicate = await runCase(
+          'duplicate_verifier', 'fast', duplicateOriginal,
+          duplicateExpected
+        );
+        if (duplicate.output.indexOf('Mira seized the ledger') < 0
+            || duplicate.output.indexOf('Rowan stopped at the threshold') < 0
+            || duplicate.output.indexOf(image) < 0
+            || duplicate.composerCalls !== 2
+            || !duplicate.traceRecord
+            || duplicate.traceRecord.final.enhanced !== true
+            || duplicate.traceRecord.composer.preproof_recovery_attempted !== true
+            || duplicate.traceRecord.composer.preproof_recovery_succeeded !== true) {
+          throw new Error(`verifier recovery failed:${JSON.stringify({
+            output: duplicate.output, composerCalls: duplicate.composerCalls,
+            final: duplicate.traceRecord && duplicate.traceRecord.final,
+            composer: duplicate.traceRecord && duplicate.traceRecord.composer,
+          })}`);
+        }
+
+        const statusBlock = '<STATUS>[ DATE: 2024.05.01 | PT: 1500 ]</STATUS>';
+        const terminalOriginal = `Mira watched the sealed door without speaking.\n${statusBlock}`;
+        const terminalExpected = 'Mira crossed the room before Rowan could finish the accusation.\n__TOKEN__\nThe latch answered with a hard click, turning their silence into a decision.';
+        const terminal = await runCase(
+          'terminal_artifact_expansion', 'quality', terminalOriginal, terminalExpected
+        );
+        if (!terminal.traceRecord || terminal.traceRecord.final.enhanced !== true
+            || terminal.output.indexOf(statusBlock) < 0
+            || !terminal.output.endsWith('The latch answered with a hard click, turning their silence into a decision.')
+            || terminal.output === terminalOriginal
+            || terminal.composerCalls !== 1) {
+          throw new Error(`terminal artifact expansion failed:${JSON.stringify({
+            output: terminal.output, composerCalls: terminal.composerCalls,
+            final: terminal.traceRecord && terminal.traceRecord.final,
+          })}`);
+        }
+
+        const judgeOriginal = 'Mira watched Rowan from the archive doorway while the sealed ledger remained open behind her.';
+        const judgeExpected = 'Mira stepped out of the archive and pulled the door shut with the ledger still open inside. Rowan read the warning in the gesture and lowered the question he had been about to ask.';
+        const missingJudge = await runCase('judge_unconfigured', 'fast', judgeOriginal, judgeExpected);
+        if (missingJudge.output !== judgeExpected || missingJudge.judgeCalls !== 0
+            || !missingJudge.traceRecord || missingJudge.traceRecord.final.enhanced !== true
+            || missingJudge.traceRecord.composer.direct_fallback !== true
+            || missingJudge.traceRecord.fusion_plan.fallback_reason !== 'semantic_judge_not_configured') {
+          throw new Error(`missing Judge direct Composer failed:${JSON.stringify({
+            output: missingJudge.output, judgeCalls: missingJudge.judgeCalls,
+            final: missingJudge.traceRecord && missingJudge.traceRecord.final,
+            fusionPlan: missingJudge.traceRecord && missingJudge.traceRecord.fusion_plan,
+          })}`);
+        }
+
+        const proverOriginal = 'Mira waited by the archive window with the ledger open and the sealed name hidden under her palm.';
+        const proverExpected = 'Thunder rolled above the archive. Mira snapped the ledger closed beneath her palm, forcing Rowan to choose between pressing the forbidden name and preserving the fragile trust between them.';
+        const proverFallback = await runCase('prover_fallback', 'fast', proverOriginal, proverExpected);
+        const fallbackTrace = arrayFromCollection(proverFallback.traceRecord && proverFallback.traceRecord.roles)
+          .find((entry) => entry.role_id === PROVER_ROLE_ID && entry.fallback === true);
+        if (proverFallback.output !== proverExpected || !proverFallback.traceRecord
+            || proverFallback.traceRecord.final.enhanced !== true || !fallbackTrace) {
+          throw new Error(`Prover fallback failed:${JSON.stringify({
+            output: proverFallback.output,
+            final: proverFallback.traceRecord && proverFallback.traceRecord.final,
+            roles: proverFallback.traceRecord && proverFallback.traceRecord.roles,
+          })}`);
+        }
+
+        const proverUnconfigured = await runCase(
+          'prover_unconfigured', 'fast', proverOriginal, proverExpected
+        );
+        if (proverUnconfigured.output !== proverExpected || !proverUnconfigured.traceRecord
+            || proverUnconfigured.traceRecord.final.enhanced !== true
+            || proverUnconfigured.traceRecord.final.semantic_verified !== 'degraded') {
+          throw new Error(`unconfigured Prover discarded changed scene:${JSON.stringify({
+            output: proverUnconfigured.output,
+            final: proverUnconfigured.traceRecord && proverUnconfigured.traceRecord.final,
+          })}`);
+        }
+
+        const proverTransportFail = await runCase(
+          'prover_transport_fail', 'fast', proverOriginal, proverExpected
+        );
+        if (proverTransportFail.output !== proverExpected || !proverTransportFail.traceRecord
+            || proverTransportFail.traceRecord.final.enhanced !== true
+            || proverTransportFail.traceRecord.final.semantic_verified !== 'degraded') {
+          throw new Error(`failed Prover discarded changed scene:${JSON.stringify({
+            output: proverTransportFail.output,
+            final: proverTransportFail.traceRecord && proverTransportFail.traceRecord.final,
+          })}`);
+        }
+
+        const proverDeclaredFail = await runCase(
+          'prover_declared_fail', 'fast', proverOriginal, proverExpected
+        );
+        if (proverDeclaredFail.output !== proverExpected || !proverDeclaredFail.traceRecord
+            || proverDeclaredFail.traceRecord.final.enhanced !== true
+            || proverDeclaredFail.traceRecord.final.semantic_verified !== 'degraded') {
+          throw new Error(`blocking Prover verdict discarded changed scene:${JSON.stringify({
+            output: proverDeclaredFail.output,
+            final: proverDeclaredFail.traceRecord && proverDeclaredFail.traceRecord.final,
+          })}`);
+        }
+        return 'changed scenes survive weak-copy recovery, artifact repair, missing Judge, and all Prover failure states';
       } finally {
         pendingMainSnapshot = null;
         completedOutputCache = [];
@@ -13257,7 +14705,7 @@
       return "original repetition preserved";
     });
 
-    await check("batch1_new_duplicate_block_is_rejected", async () => {
+    await check("batch1_new_duplicate_block_triggers_rewrite_warning", async () => {
       const first = "The first original paragraph contains enough distinct material to exceed the duplicate verifier minimum block length.";
       const second = "The second original paragraph is also long enough, but it begins as a different passage before rewriting.";
       const duplicated = "A newly duplicated rewritten paragraph is deliberately long enough to represent a real repeated prose block in the final response.";
@@ -13270,10 +14718,10 @@
         { id: "mutable_2", type: "mutable", final_text: duplicated },
       ];
       const verification = verifyOutput(segments, finalSegments, duplicated + duplicated, first + second);
-      if (verification.pass || verification.errors.indexOf("duplicate_segment:mutable_2") < 0) {
-        throw new Error(`new_duplicate_not_rejected:${verification.errors.join(",")}`);
+      if (!verification.pass || verification.warnings.indexOf("duplicate_segment:mutable_2") < 0) {
+        throw new Error(`new_duplicate_warning_missing:${JSON.stringify(verification)}`);
       }
-      return "new long duplicate rejected";
+      return "new long duplicate requests recovery without discarding changed prose";
     });
 
     await check("batch1_shared_prefix_is_not_duplicate", async () => {
@@ -13348,7 +14796,8 @@
       }
       if (frame.logical_segments.length !== 1
           || frame.logical_segments[0].id !== SCENE_REWRITE_SEGMENT_ID
-          || frame.tokens.length !== summary.protected + summary.inspect_only) {
+          || frame.tokens.length <= 0
+          || frame.tokens.length >= summary.protected + summary.mutable) {
         throw new Error(`logical_scene_not_compacted:${JSON.stringify({
           logical: frame.logical_segments.length,
           tokens: frame.tokens.length,
@@ -13358,7 +14807,182 @@
       return `physical=${physical.length} logical=${frame.logical_segments.length} placeholders=${frame.tokens.length}`;
     });
 
-    await check("batch1_scene_frame_rejects_placeholder_damage", async () => {
+    await check("batch1_scene_frame_groups_structural_whitespace", async () => {
+      const source = '<div class="han-image-container">\n<img src="x">\n</div>\nNarrative begins.';
+      const physical = buildSegmentMap(source, defaultSettings());
+      const frame = buildSceneRewriteFrame(physical, source);
+      if (frame.tokens.length !== 1) {
+        throw new Error(`structural_group_not_compacted:${frame.tokens.length}`);
+      }
+      const valid = frame.logical_segments[0].text.replace(
+        "Narrative begins.",
+        "The revised narrative begins with immediate pressure."
+      );
+      const restored = restoreSceneRewriteFrame(frame, valid);
+      if (!restored.pass
+          || restored.output.indexOf('<div class="han-image-container">\n<img src="x">\n</div>\n') !== 0) {
+        throw new Error(`structural_group_restore_failed:${restored.code}:${JSON.stringify(restored.output)}`);
+      }
+      const expanded = restoreSceneRewriteFrame(frame, `A new opening beat.\n${valid}`);
+      if (!expanded.pass
+          || expanded.output.indexOf('A new opening beat.\n<div class="han-image-container">') !== 0
+          || expanded.inserted_slots.indexOf(0) < 0) {
+        throw new Error(`container_slot_rewrite_rejected:${expanded.code}`);
+      }
+      return "host artifact remains exact while whole-scene prose expands around it";
+    });
+
+    await check("batch1_scene_frame_accepts_prose_after_terminal_artifact", async () => {
+      const source = 'Opening scene.\n<sys>Rule text</sys>\nClosing beat.\n<STATUS>[ PT: 1500 ]</STATUS>';
+      const settings = defaultSettings();
+      const physical = buildSegmentMap(source, settings);
+      const frame = buildSceneRewriteFrame(physical, source);
+      const terminalToken = frame.tokens[frame.tokens.length - 1];
+      if (!terminalToken || !frame.logical_segments[0].text.endsWith(terminalToken)) {
+        throw new Error("fixture_does_not_end_with_artifact_token");
+      }
+      const rewritten = frame.logical_segments[0].text
+        .replace("Opening scene.", "The revised scene opens with immediate tension.")
+        + "\nA final consequence lands after the status block.";
+      const assembled = assembleSceneRewriteFrame(frame, {
+        segments: { [SCENE_REWRITE_SEGMENT_ID]: rewritten },
+      });
+      const verification = verifyOutput(
+        physical,
+        assembled.physicalFinalSegments,
+        assembled.output,
+        source,
+        settings
+      );
+      if (assembled.frame_error || !assembled.changed || !verification.pass
+          || assembled.output.indexOf('<STATUS>[ PT: 1500 ]</STATUS>') < 0
+          || !assembled.output.endsWith('A final consequence lands after the status block.')) {
+        throw new Error(`terminal_scene_expansion_failed:${assembled.frame_error}:${verification.errors.join(",")}`);
+      }
+      return "terminal artifact and Composer ending both retained";
+    });
+
+    await check("batch1_legacy_physical_segments_fold_into_scene_1", async () => {
+      const source = 'Opening <b>pressure</b> and a closing choice.';
+      const physical = buildSegmentMap(source, defaultSettings());
+      const frame = buildSceneRewriteFrame(physical, source);
+      const legacySegments = {};
+      physical.filter((segment) => segment.type === "mutable" && mutableCoreText(segment).trim())
+        .forEach((segment, index) => {
+          legacySegments[segment.id] = index === 0
+            ? mutableFullText(segment).replace("Opening", "A sharper opening")
+            : mutableFullText(segment);
+        });
+      const detailed = validateCandidateSchemaDetailed({
+        schema: "scene_rewrite_candidates.v1",
+        role_id: "style_reader",
+        candidates: [{
+          segments: legacySegments,
+          evidence_refs: [],
+          retained_beats: [],
+          proposed_additions: [],
+          addressed_issues: ["rhythm"],
+          confidence: 0.8,
+          change_summary: "legacy physical map folded into one scene",
+        }],
+      }, "style_reader", [SCENE_REWRITE_SEGMENT_ID], frame.logical_segments);
+      if (!detailed.value || detailed.value.candidates.length !== 1
+          || !detailed.diagnostics.some((item) => item.code === "folded_physical_segments_to_scene")) {
+        throw new Error(`legacy_scene_fold_failed:${JSON.stringify(detailed.diagnostics)}`);
+      }
+      return "legacy mutable_n candidate recovered as scene_1";
+    });
+
+    await check("batch1_physical_map_embedded_tokens_recovered_without_llm_retry", async () => {
+      const source = 'Opening <b>pressure</b> and a closing choice.';
+      const physical = buildSegmentMap(source, defaultSettings());
+      const frame = buildSceneRewriteFrame(physical, source);
+      const rawSegments = {};
+      physical.filter((segment) => segment.type === "mutable" && mutableCoreText(segment).trim())
+        .forEach((segment, index) => {
+          const rewritten = index === 0
+            ? mutableFullText(segment).replace("Opening", "A decisive opening")
+            : mutableFullText(segment);
+          rawSegments[segment.id] = `${frame.tokens.join("")}${rewritten}`;
+        });
+      const detailed = validateCandidateSchemaDetailed({
+        schema: "scene_rewrite_candidates.v1",
+        role_id: "style_reader",
+        candidates: [{
+          segments: rawSegments,
+          evidence_refs: [],
+          retained_beats: [],
+          proposed_additions: [],
+          addressed_issues: ["rhythm"],
+          confidence: 0.8,
+          change_summary: "legacy physical response with duplicated placeholders",
+        }],
+      }, "style_reader", [SCENE_REWRITE_SEGMENT_ID], frame.logical_segments);
+      const diagnostic = detailed.diagnostics.find((item) => item.code === "folded_physical_segments_to_scene");
+      if (!detailed.value || detailed.value.candidates.length !== 1
+          || !diagnostic || diagnostic.detail.indexOf("stripped") < 0) {
+        throw new Error(`embedded_token_fold_failed:${JSON.stringify(detailed.diagnostics)}`);
+      }
+      const foreign = foldPhysicalSegmentMapIntoScene(frame.logical_segments[0], {
+        [physical.find((segment) => segment.type === "mutable").id]: "[[ACR_EXACT_foreign_9999]]replacement",
+      });
+      if (foreign) throw new Error("foreign_placeholder_was_stripped_instead_of_rejected");
+      return "physical-key response normalized and duplicated known tokens stripped locally";
+    });
+
+    await check("batch1_verifier_warns_on_new_structural_container", async () => {
+      const settings = defaultSettings();
+      const source = "Original narrative paragraph.";
+      const segments = buildSegmentMap(source, settings);
+      const finalText = '<div class="new-wrapper">Rewritten narrative paragraph.</div>';
+      const finalSegments = [{
+        id: segments[0].id,
+        type: "mutable",
+        final_text: finalText,
+      }];
+      const verification = verifyOutput(segments, finalSegments, finalText, source, settings);
+      if (!verification.pass
+          || verification.warnings.indexOf("host_artifact_inventory_changed_after_restore") < 0) {
+        throw new Error(`new_container_warning_missing:${JSON.stringify(verification)}`);
+      }
+      return "new balanced HTML wrapper remains returnable and is traced as a warning";
+    });
+
+    await check("batch1_damaged_composer_envelope_recovers_complete_scene", async () => {
+      const source = 'Before <img src="x"> after.';
+      const frame = buildSceneRewriteFrame(buildSegmentMap(source, defaultSettings()), source);
+      const scene = frame.logical_segments[0].text
+        .replace("Before", "A stronger opening arrives before")
+        .replace("after.", "the consequence lands after.");
+      const encoded = JSON.stringify(scene);
+      const damaged = `{"segments":{"${SCENE_REWRITE_SEGMENT_ID}":${encoded}`;
+      const recovered = recoverComposerSceneFromDamagedEnvelope(
+        damaged,
+        [SCENE_REWRITE_SEGMENT_ID],
+        frame.logical_segments
+      );
+      if (!recovered || recovered.segments[SCENE_REWRITE_SEGMENT_ID] !== scene) {
+        throw new Error("complete_scene_not_recovered_from_damaged_envelope");
+      }
+      return "complete scene recovered from truncated wrapper after the scene string";
+    });
+
+    await check("batch1_scene_rewriters_expand_output_budget", async () => {
+      const role = DEFAULT_ROLES.find((item) => item.role_id === "style_reader");
+      const profile = defaultRoleProfile(role.role_id);
+      profile.max_output_tokens = 2048;
+      const expanded = expandRewriteOutputBudget(role, profile, [{
+        id: SCENE_REWRITE_SEGMENT_ID,
+        type: "mutable",
+        text: "가".repeat(7200),
+      }]);
+      if (expanded.max_output_tokens <= 4096 || expanded.max_output_tokens > 32000) {
+        throw new Error(`rewrite_budget_not_expanded:${expanded.max_output_tokens}`);
+      }
+      return `long scene output budget expanded to ${expanded.max_output_tokens}`;
+    });
+
+    await check("batch1_scene_frame_repairs_placeholder_damage", async () => {
       const source = "Before <b>bold</b> and <i>italic</i> after.";
       const frame = buildSceneRewriteFrame(buildSegmentMap(source, defaultSettings()), source);
       const segment = frame.logical_segments[0];
@@ -13410,19 +15034,29 @@
       damaged.forEach((text, index) => {
         const candidate = deepClone(validCandidate);
         candidate.candidates[0].segments[SCENE_REWRITE_SEGMENT_ID] = text;
-        if (validateCandidateSchema(
+        if (!validateCandidateSchema(
           candidate,
           "style_reader",
           [SCENE_REWRITE_SEGMENT_ID],
           frame.logical_segments
-        )) throw new Error(`damaged_candidate_accepted:${index}`);
-        if (validateComposerSchema(
+        )) throw new Error(`repairable_candidate_rejected:${index}`);
+        const composer = validateComposerSchema(
           { segments: { [SCENE_REWRITE_SEGMENT_ID]: text } },
           [SCENE_REWRITE_SEGMENT_ID],
           frame.logical_segments
-        )) throw new Error(`damaged_composer_accepted:${index}`);
+        );
+        if (!composer) throw new Error(`repairable_composer_rejected:${index}`);
+        const assembled = assembleSceneRewriteFrame(frame, composer);
+        if (assembled.frame_error
+            || assembled.output.indexOf("<b>") < 0
+            || assembled.output.indexOf("</b>") < 0
+            || assembled.output.indexOf("<i>") < 0
+            || assembled.output.indexOf("</i>") < 0
+            || extractSceneFrameTokens(assembled.output).length > 0) {
+          throw new Error(`placeholder_damage_not_repaired:${index}:${assembled.frame_error}`);
+        }
       });
-      return "missing duplicate foreign and reordered placeholders rejected";
+      return "missing duplicate foreign and reordered hints are mechanically repaired";
     });
 
     await check("batch1_scene_frame_restores_exact_structures_and_whitespace", async () => {
@@ -13506,7 +15140,82 @@
       return "plain whole-scene Composer output accepted without JSON wrapper";
     });
 
-    await check("batch1_comparison_shows_applied_and_original_return", async () => {
+    await check("batch1_scene_composer_requests_plain_body_with_dynamic_budget", async () => {
+      const originalFetch = globalThis.fetch;
+      const originalRisu = globalThis.Risuai;
+      const source = 'Opening <img src="x"> consequence.';
+      const frame = buildSceneRewriteFrame(buildSegmentMap(source, defaultSettings()), source);
+      const scene = frame.logical_segments[0].text
+        .replace("Opening", "The rebuilt opening")
+        .replace("consequence.", "lands on a concrete consequence.");
+      const settings = defaultSettings();
+      const role = DEFAULT_ROLES.find((item) => item.role_id === COMPOSER_ROLE_ID);
+      const profile = settings.role_profiles[COMPOSER_ROLE_ID];
+      profile.endpoint = "https://test.example.com/v1/chat/completions";
+      profile.model = "plain-scene-composer";
+      profile.force_json_response = true;
+      let requestBody = null;
+      globalThis.Risuai = null;
+      globalThis.fetch = async (_url, init) => {
+        requestBody = JSON.parse(init.body);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ choices: [{ message: { content: scene } }] }),
+        };
+      };
+      try {
+        const trace = newTrace("test", "main");
+        const result = await runComposer(
+          role,
+          profile,
+          frame.logical_segments,
+          {
+            ranked: {
+              [SCENE_REWRITE_SEGMENT_ID]: [{
+                candidate_id: "candidate_test",
+                role_id: "style_reader",
+                supporting_roles: ["style_reader"],
+                rewrite: scene,
+                judge_verdict: "accept",
+                evidence_refs: [],
+                retained_beats: [],
+                proposed_additions: [],
+                issues: ["rhythm"],
+              }],
+            },
+            semantic_judgment: {},
+            fusion_plan: {},
+            draft_ledger: {},
+          },
+          "",
+          null,
+          trace,
+          frame.logical_segments,
+          true
+        );
+        const systemMessage = requestBody && requestBody.messages
+          ? safeString(requestBody.messages[0] && requestBody.messages[0].content)
+          : "";
+        if (!result || result.segments[SCENE_REWRITE_SEGMENT_ID] !== scene
+            || !requestBody || requestBody.response_format
+            || systemMessage.indexOf("SCENE BODY OUTPUT OVERRIDE") < 0
+            || trace.composer.requested_output_tokens < trace.composer.estimated_output_tokens) {
+          throw new Error(`plain_composer_request_contract_failed:${JSON.stringify({
+            result,
+            response_format: requestBody && requestBody.response_format,
+            requested: trace.composer.requested_output_tokens,
+            estimated: trace.composer.estimated_output_tokens,
+          })}`);
+        }
+      } finally {
+        globalThis.fetch = originalFetch;
+        globalThis.Risuai = originalRisu;
+      }
+      return "scene Composer uses plain body transport and length-based output budget";
+    });
+
+    await check("batch1_comparison_shows_applied_and_no_candidate_states", async () => {
       const original = "Original full scene.";
       const changed = "Rewritten full scene with stronger dramatic movement.";
       const trace = newTrace("test", "main");
@@ -13540,7 +15249,421 @@
           || failedHtml.indexOf("변경 미적용") < 0) {
         throw new Error("original_return_comparison_missing");
       }
-      return "whole-scene applied and original-return comparison rendered";
+      return "whole-scene applied and no-generated-candidate comparison rendered";
+    });
+
+    await check("batch1_inline_backticks_are_mutable_not_protected", async () => {
+      const source = "`prompt residue`\n<img src=\"x\">\n```status\nHP: 10\n```\nNarrative body.";
+      const physical = buildSegmentMap(source, defaultSettings());
+      if (physical.some((segment) => segment.kind === "inline_code")) {
+        throw new Error("inline_backtick_still_protected");
+      }
+      const frame = buildSceneRewriteFrame(physical, source);
+      const logical = frame.logical_segments[0];
+      if (logical.text.indexOf("`prompt residue`") < 0) {
+        throw new Error("inline_backtick_not_exposed_to_rewriter");
+      }
+      const rewritten = logical.text
+        .replace("`prompt residue`", "The scene opens on a concrete action.")
+        .replace("Narrative body.", "The consequence follows in continuous prose.");
+      const assembled = assembleSceneRewriteFrame(frame, {
+        segments: { [SCENE_REWRITE_SEGMENT_ID]: rewritten },
+      });
+      if (assembled.frame_error
+          || assembled.output.indexOf("prompt residue") >= 0
+          || assembled.output.indexOf('<img src="x">') < 0
+          || assembled.output.indexOf("```status\nHP: 10\n```") < 0) {
+        throw new Error(`inline_rewrite_or_structure_preservation_failed:${assembled.frame_error}`);
+      }
+      return "backtick prompt residue mutable while image and status fence stay exact";
+    });
+
+    await check("batch1_ledger_separates_facts_from_constraints", async () => {
+      const contract = {
+        contract_id: "contract_test",
+        contract_digest: "digest_test",
+        immutable_constraints: [{
+          text: "Do not reveal the hidden identity.",
+          evidence_refs: ["payload_user_input"],
+          evidence_quote: "hidden identity",
+        }],
+        turn_objectives: [{
+          text: "Do not reveal the hidden identity.",
+          evidence_refs: ["payload_user_input"],
+          evidence_quote: "hidden identity",
+        }],
+        character_visible_facts: [{
+          text: "Mira carries the sealed letter.",
+          evidence_refs: ["character"],
+          evidence_quote: "sealed letter",
+        }],
+      };
+      const ledger = buildDraftLedger(
+        "Mira crossed the courtyard.",
+        [{ id: "mutable_1", type: "mutable", text: "Mira crossed the courtyard." }],
+        contract
+      );
+      if (ledger.established_facts.length !== 1
+          || ledger.established_facts[0].kind !== "character_visible_fact"
+          || !ledger.hard_constraints.some((item) => item.kind === "immutable_constraint")
+          || ledger.hard_constraints.some((item) => item.kind === "character_visible_fact")) {
+        throw new Error(`ledger_fact_constraint_overlap:${JSON.stringify({
+          facts: ledger.established_facts,
+          hard: ledger.hard_constraints,
+        })}`);
+      }
+      return "immutable directives no longer masquerade as prose facts";
+    });
+
+    await check("batch1_negative_fact_empty_quote_is_valid", async () => {
+      const ledger = {
+        established_facts: [{ ledger_id: "fact_absence", kind: "scene_state", text: "The hidden observer remains absent." }],
+        scene_beats: [],
+        hard_constraints: [],
+      };
+      const finalText = "The corridor remained quiet as Mira closed the door.";
+      const proof = validateSemanticProof({
+        schema: "semantic_proof.v1",
+        declared_verdict: "pass",
+        fact_checks: [{ ledger_id: "fact_absence", status: "preserved", detail: "No observer appears.", evidence_quote: "" }],
+        beat_checks: [],
+        constraint_checks: [],
+        quality_gain_checks: [],
+        residual_quality_checks: PROOF_RESIDUAL_QUALITY_IDS.map((checkId) => ({
+          check_id: checkId,
+          status: "clean",
+          detail: "",
+          evidence_quote: "",
+          segment_ids: [],
+        })),
+        hard_violations: [],
+        unsupported_additions: [],
+        output_contract: {
+          language_ok: true,
+          turn_boundary_ok: true,
+          user_agency_ok: true,
+          meta_free: true,
+          format_ok: true,
+        },
+        repair_instructions: [],
+      }, ledger, [{ id: "scene_1", type: "mutable", text: finalText }], [{
+        id: "scene_1",
+        type: "mutable",
+        final_text: finalText,
+      }], { required_contributions: [] }, []);
+      if (!proof || proof.verdict !== "pass") throw new Error("negative_fact_empty_quote_rejected");
+      return "negative and implicit preservation no longer requires invented prose quote";
+    });
+
+    await check("batch1_failed_proof_synthesizes_one_scene_repair", async () => {
+      const proof = {
+        verdict: "fail",
+        reason_codes: ["hard_violation:meta_artifact", "quality_gain_missing:gain_1"],
+        fact_checks: [],
+        beat_checks: [],
+        constraint_checks: [],
+        quality_gain_checks: [{ contribution_id: "gain_1", status: "missing", detail: "The stronger transition is absent." }],
+        residual_quality_checks: [{ check_id: "scene_coherence_and_ending", status: "issue", detail: "The ending is explanatory." }],
+        hard_violations: [{ type: "meta_artifact", detail: "Prompt residue remains.", segment_ids: [SCENE_REWRITE_SEGMENT_ID] }],
+        unsupported_additions: [],
+        output_contract: {
+          language_ok: true,
+          turn_boundary_ok: true,
+          user_agency_ok: true,
+          meta_free: false,
+          format_ok: true,
+        },
+      };
+      const repaired = synthesizeWholeSceneRepairProof(proof, [{
+        id: SCENE_REWRITE_SEGMENT_ID,
+        type: "mutable",
+        text: "scene",
+      }]);
+      if (!repaired || repaired.verdict !== "repair" || !repaired.repair_synthesized
+          || repaired.repair_instructions.length !== 1
+          || repaired.repair_instructions[0].evidence_refs.indexOf("output_contract:meta_free") < 0) {
+        throw new Error(`whole_scene_repair_not_synthesized:${JSON.stringify(repaired)}`);
+      }
+      return "Prover fail becomes one complete-scene repair pass";
+    });
+
+    await check("batch1_explicit_prover_fail_cannot_discard_changed_scene", async () => {
+      const finalText = "The characters met in the room while the secret remained unspoken.";
+      const proofLedger = {
+        schema: "draft_ledger.v1",
+        established_facts: [{
+          ledger_id: "fact_1", text: "The characters met.", source_ref: "draft_zero",
+        }],
+        scene_beats: [{
+          ledger_id: "beat_1", text: "The scene remains in the room.", source_ref: "draft_zero",
+        }],
+        hard_constraints: [{
+          ledger_id: "constraint_1", text: "Do not reveal the secret.", source_ref: "turn_contract",
+        }],
+      };
+      const proof = validateSemanticProof(
+        {
+          schema: "semantic_proof.v1",
+          declared_verdict: "fail",
+          fact_checks: [{
+            ledger_id: "fact_1", status: "preserved", detail: "Fact remains.", evidence_quote: "met",
+          }],
+          beat_checks: [{
+            ledger_id: "beat_1", status: "preserved", detail: "Beat remains.", evidence_quote: "room",
+          }],
+          constraint_checks: [{
+            ledger_id: "constraint_1", status: "satisfied", detail: "Secret remains hidden.", evidence_quote: "",
+          }],
+          quality_gain_checks: [],
+          residual_quality_checks: PROOF_RESIDUAL_QUALITY_IDS.map((checkId) => ({
+            check_id: checkId, status: "clean", detail: "Clean.", evidence_quote: "", segment_ids: [],
+          })),
+          hard_violations: [],
+          unsupported_additions: [],
+          output_contract: {
+            language_ok: true, turn_boundary_ok: true, user_agency_ok: true, meta_free: true, format_ok: true,
+          },
+          repair_instructions: [],
+        },
+        proofLedger,
+        [{ id: SCENE_REWRITE_SEGMENT_ID, type: "mutable", text: finalText }],
+        [{ id: SCENE_REWRITE_SEGMENT_ID, type: "mutable", final_text: finalText }],
+        { required_contributions: [] },
+        []
+      );
+      if (!proof || proof.verdict !== "fail" || proof.declared_verdict !== "fail") {
+        throw new Error(`explicit_fail_not_validated:${JSON.stringify(proof)}`);
+      }
+      const result = synthesizeWholeSceneRepairProof(proof, [{
+        id: SCENE_REWRITE_SEGMENT_ID,
+        type: "mutable",
+        text: "scene",
+      }]);
+      const assessment = assessSemanticProofReturn(result);
+      const returnedProof = degradedSemanticProof(result, assessment.blocking_reasons);
+      if (result !== proof || result.verdict !== "fail" || result.repair_synthesized
+          || assessment.blocking_reasons.indexOf("semantic_prover_declared_fail") < 0
+          || returnedProof.returnable_degraded !== true
+          || returnedProof.reason_codes.indexOf("semantic_prover_declared_fail") < 0) {
+        throw new Error(`explicit_fail_return_contract_wrong:${JSON.stringify({ result, assessment, returnedProof })}`);
+      }
+      return "explicit Prover failure is retained as repair evidence but cannot erase changed prose";
+    });
+
+    await check("batch1_post_repair_semantic_debt_is_traced_without_output_veto", async () => {
+      const qualityOnly = {
+        declared_verdict: "repair",
+        verdict: "fail",
+        fact_checks: [], beat_checks: [], constraint_checks: [],
+        quality_gain_checks: [{ contribution_id: "gain_1", status: "missing" }],
+        residual_quality_checks: [{ check_id: "rhythm", status: "issue" }],
+        hard_violations: [], unsupported_additions: [],
+        output_contract: {
+          language_ok: true, turn_boundary_ok: true, user_agency_ok: true, meta_free: true, format_ok: true,
+        },
+      };
+      const qualityAssessment = assessSemanticProofReturn(qualityOnly);
+      const blockingAssessment = assessSemanticProofReturn(Object.assign({}, qualityOnly, {
+        hard_violations: [{ type: "secret_leak" }],
+      }));
+      const missingFactAssessment = assessSemanticProofReturn(Object.assign({}, qualityOnly, {
+        fact_checks: [{ ledger_id: "fact_1", status: "missing" }],
+      }));
+      const degradedBlocking = degradedSemanticProof(
+        Object.assign({}, qualityOnly, { hard_violations: [{ type: "secret_leak" }] }),
+        blockingAssessment.blocking_reasons
+      );
+      const degradedMissingFact = degradedSemanticProof(
+        Object.assign({}, qualityOnly, { fact_checks: [{ ledger_id: "fact_1", status: "missing" }] }),
+        missingFactAssessment.blocking_reasons
+      );
+      if (!qualityAssessment.returnable || !qualityAssessment.degraded
+          || blockingAssessment.returnable
+          || blockingAssessment.blocking_reasons.indexOf("hard_violation:secret_leak") < 0
+          || missingFactAssessment.returnable
+          || missingFactAssessment.blocking_reasons.indexOf("fact_missing:fact_1") < 0
+          || !degradedBlocking.returnable_degraded
+          || !degradedMissingFact.returnable_degraded) {
+        throw new Error(`post_repair_return_policy_wrong:${JSON.stringify({
+          qualityAssessment, blockingAssessment, missingFactAssessment,
+          degradedBlocking, degradedMissingFact,
+        })}`);
+      }
+      return "semantic debt drives repair and Trace but exhausted repair cannot erase changed prose";
+    });
+
+    await check("batch1_quality_debt_rewrite_is_classified_and_traced_as_enhanced", async () => {
+      const assembled = {
+        materialComposerApplied: 1,
+        composerApplied: 1,
+        metaOnlyChanged: 0,
+        finalSegments: [{
+          id: SCENE_REWRITE_SEGMENT_ID,
+          type: "mutable",
+          original_text: "The room was quiet.",
+          final_text: "Rain tightened against the windows as Mira closed the ledger.",
+          operation: "replace",
+        }],
+      };
+      const proof = {
+        verdict: "fail",
+        returnable_degraded: true,
+        quality_gain_checks: [{ contribution_id: "gain_1", status: "missing" }],
+        residual_quality_checks: [{ check_id: "rhythm", status: "issue" }],
+      };
+      const classification = classifyAppliedOutput(assembled, proof);
+      const trace = newTrace("test", "test");
+      setFinalTraceState(
+        trace,
+        classification.enhanced,
+        classification.state,
+        classification.reason,
+        classification
+      );
+      if (!classification.enhanced
+          || classification.state !== "enhanced_degraded"
+          || classification.semantic_verified !== "degraded"
+          || trace.final.enhanced !== true
+          || trace.final.semantic_verified !== "degraded"
+          || trace.summary.final_state !== "enhanced_degraded") {
+        throw new Error(`quality_debt_return_metadata_broken:${JSON.stringify({ classification, final: trace.final, summary: trace.summary })}`);
+      }
+      return "material Composer rewrite remains the returned output when only quality debt remains";
+    });
+
+    await check("batch1_completion_wait_has_hard_watchdog", async () => {
+      const deadline = createCompletionDeadline(Date.now(), 20);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const stopped = deadline.check();
+      const reason = safeString(deadline.signal.reason);
+      deadline.cancel();
+      if (!stopped || !deadline.signal.aborted || deadline.remaining() !== 0
+          || reason !== "completion_wait_watchdog") {
+        throw new Error(`completion_wait_watchdog_failed:${JSON.stringify({
+          stopped, aborted: deadline.signal.aborted, remaining: deadline.remaining(), reason,
+        })}`);
+      }
+      return "completion wait aborts stalled provider work at its hard watchdog";
+    });
+
+    await check("batch1_completion_watchdog_aborts_stalled_response_body", async () => {
+      const originalRisu = globalThis.Risuai;
+      const originalFetch = globalThis.fetch;
+      const deadline = createCompletionDeadline(Date.now(), 30);
+      const profile = defaultRoleProfile("character_reader");
+      profile.endpoint = "https://test.example.com/v1/chat/completions";
+      profile.model = "stalled-body-model";
+      globalThis.Risuai = null;
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        text: () => new Promise(() => {}),
+      });
+      const startedAt = Date.now();
+      let errorCode = "";
+      try {
+        await callProvider(
+          profile,
+          { system: "system", user: "user" },
+          deadline.signal,
+          { completion_wait: true }
+        );
+      } catch (err) {
+        errorCode = safeString(err && err.message);
+      } finally {
+        deadline.cancel();
+        globalThis.fetch = originalFetch;
+        globalThis.Risuai = originalRisu;
+      }
+      const elapsed = Date.now() - startedAt;
+      if (errorCode !== "deadline_aborted" || elapsed > 1000) {
+        throw new Error(`stalled_body_not_aborted:${errorCode}:${elapsed}`);
+      }
+      return "completion watchdog interrupts response.text() after headers arrive";
+    });
+
+    await check("batch1_bounded_stage_budget_preserves_downstream_time", async () => {
+      const deadline = createDeadline(240, Date.now());
+      const trace = newTrace("test", "model");
+      const scope = createPipelineStageScope(deadline, "semantic_judge", trace);
+      await new Promise((resolve) => setTimeout(resolve, scope.budget_ms + 30));
+      const parentExpired = deadline.check();
+      const stageAborted = scope.signal.aborted;
+      const remaining = deadline.remaining();
+      scope.cancel();
+      deadline.cancel();
+      if (!stageAborted || parentExpired || remaining <= 0
+          || !trace.scheduler.stage_budgets.length
+          || trace.scheduler.stage_budgets[0].stage !== "semantic_judge") {
+        throw new Error(`stage_budget_did_not_leave_tail:${JSON.stringify({
+          stageAborted, parentExpired, remaining, budgets: trace.scheduler.stage_budgets,
+        })}`);
+      }
+      const completionDeadline = createCompletionDeadline(Date.now(), 240);
+      const completionTrace = newTrace("test", "model");
+      const completionScope = createPipelineStageScope(
+        completionDeadline, "semantic_judge", completionTrace
+      );
+      await new Promise((resolve) => setTimeout(resolve, completionScope.budget_ms + 30));
+      const completionParentExpired = completionDeadline.check();
+      const completionStageAborted = completionScope.signal.aborted;
+      const completionRemaining = completionDeadline.remaining();
+      completionScope.cancel();
+      completionDeadline.cancel();
+      if (!completionStageAborted || completionParentExpired || completionRemaining <= 0
+          || !completionTrace.scheduler.stage_budgets[0].completion_wait) {
+        throw new Error(`completion_stage_budget_did_not_leave_tail:${JSON.stringify({
+          completionStageAborted,
+          completionParentExpired,
+          completionRemaining,
+          budgets: completionTrace.scheduler.stage_budgets,
+        })}`);
+      }
+      const adaptiveDeadline = createDeadline(500, Date.now());
+      const adaptiveTrace = newTrace("test", "model");
+      const tailReserveMs = 200;
+      const revisionScope = createPipelineStageScope(
+        adaptiveDeadline, "adaptive_revision", adaptiveTrace, 120
+      );
+      await new Promise((resolve) => setTimeout(resolve, revisionScope.budget_ms + 20));
+      revisionScope.cancel();
+      const rejudgeCap = Math.max(1, adaptiveDeadline.remaining() - tailReserveMs - 40);
+      const rejudgeScope = createPipelineStageScope(
+        adaptiveDeadline, "adaptive_rejudge", adaptiveTrace, rejudgeCap
+      );
+      await new Promise((resolve) => setTimeout(resolve, rejudgeScope.budget_ms + 20));
+      rejudgeScope.cancel();
+      const adaptiveRemaining = adaptiveDeadline.remaining();
+      adaptiveDeadline.cancel();
+      const adaptiveBudgets = adaptiveTrace.scheduler.stage_budgets;
+      if (adaptiveRemaining < tailReserveMs
+          || adaptiveBudgets.length !== 2
+          || adaptiveBudgets[0].explicit_cap_ms !== 120
+          || adaptiveBudgets[1].explicit_cap_ms !== Math.floor(rejudgeCap)) {
+        throw new Error(`adaptive_stage_caps_consumed_tail:${JSON.stringify({
+          adaptiveRemaining, tailReserveMs, adaptiveBudgets,
+        })}`);
+      }
+      return "bounded, completion-wait, and adaptive scopes preserve downstream time";
+    });
+
+    await check("batch1_provider_error_trace_redacts_echoed_credentials", async () => {
+      const secret = "provider-echo-secret-123456789";
+      const trace = newTrace("test", "test");
+      traceRole(trace, {
+        role_id: "character_reader",
+        provider: "custom",
+        model: "error-model",
+        status: "failed",
+        error: `HTTP 401: {"x-api-key":"${secret}","authorization":"Bearer ${secret}"}`,
+        attempts: [{ error: `token=${secret}` }],
+      });
+      traceError(trace, `provider_error api_key=${secret}`);
+      const serialized = JSON.stringify(redactTraceValue(trace));
+      if (serialized.indexOf(secret) >= 0 || serialized.indexOf("[REDACTED]") < 0) {
+        throw new Error(`provider_secret_persisted_in_trace:${serialized}`);
+      }
+      return "provider-reflected credentials are removed before Trace persistence";
     });
 
     const passed = results.filter((item) => item.pass).length;
