@@ -336,21 +336,11 @@ var openThoughtTagPattern = regexp.MustCompile(`(?is)<\s*(?:thoughts|thinking|an
 var filterCompleteMarkerPattern = regexp.MustCompile(`(?is)<\s*__filter_complete__\s*>`)
 var thoughtLinePrefixPattern = regexp.MustCompile(`(?im)^\s*(?:chain of thought|hidden chain-of-thought|thought process|thinking|analysis|reasoning|scratchpad)\s*:\s*.*(?:\r?\n|$)`)
 
-var oocPrefixPattern = regexp.MustCompile(`(?i)^\s*(?:/ooc\b|ooc\b\s*[:\-]|out\s+of\s+character\b|#{1,6}\s*(?:ooc|out\s+of\s+character)\b|\[\s*ooc\s*\]|\[\[\s*ooc\s*\]\]|\(\s*ooc\s*\)|\(\(\s*ooc\s*\)\)|오오씨)`)
 var sourceControlHeaderPattern = regexp.MustCompile(`(?i)^\s*(?:#{1,6}\s*)?(?:\[+\s*)?(?:narrative guide|story intent|scene mandate|forbidden moves|pressure level|prompt template|response template|system prompt|developer message|author note|system note|meta note|common behaviou?r|behaviou?r guide|style guide|writing guide|response rules|instructions?|rules?|persona|pov|long-term memory archive|archive label|toggle expansion)(?:\s*\]+)?\s*:?\s*$`)
 var sourceControlInlinePattern = regexp.MustCompile(`(?i)\b(?:narrative guide|story intent|scene mandate|forbidden moves|pressure level|prompt template|response template|system prompt|developer message|author note|system note|meta note|common behaviou?r|behaviou?r guide|style guide|writing guide|response rules|instructions?|rules?|persona|pov|long-term memory archive|archive label|toggle expansion|lorebook|preset)\b`)
 var sourceControlPlaceholderPattern = regexp.MustCompile(`(?i)(?:\{\{\s*(?:user|char)\s*\}\}|<\s*(?:user|char|system|developer|assistant|thoughts)\s*>|</\s*thoughts\s*>)`)
 var sourceControlFieldPattern = regexp.MustCompile(`(?i)(?:preset|template|control|prompt|system|developer|narrative_control|lorebook|decorator|cbs)`)
 var criticRetrySensitivePattern = regexp.MustCompile(`(?i)(?:\b(?:penis|vagina|clitoris|ejaculat\w*|orgasm\w*|semen|cum|penetrat\w*)\b|성기|음경|질|귀두|사정|삽입|오르가즘|정액|클리토리스)`)
-
-func shouldApplyCompleteTurnOOCGuard(userInput, assistantContent string, contextMessages []map[string]any) bool {
-	_ = contextMessages
-	return looksLikeOOCText(userInput) || looksLikeOOCText(assistantContent)
-}
-
-func looksLikeOOCText(text string) bool {
-	return oocPrefixPattern.MatchString(strings.TrimSpace(text))
-}
 
 func looksLikeSourceControlResidue(text string) bool {
 	raw := strings.TrimSpace(text)

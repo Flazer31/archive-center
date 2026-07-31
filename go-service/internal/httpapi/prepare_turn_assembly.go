@@ -22,10 +22,16 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	perspectiveContext := map[string]any(nil)
 	perspectiveCandidateText := ""
 	perspectiveCandidateCount := 0
+	interactionPublicCandidateText := ""
+	interactionGuardedCandidateText := ""
+	interactionCandidateCount := 0
 	if len(perspectiveContextArg) > 0 {
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
 		perspectiveCandidateText = strings.TrimSpace(extractionStringFromAny(perspectiveContextArg[0]["_character_perspective_text"]))
 		perspectiveCandidateCount = intFromAny(perspectiveContextArg[0]["_character_perspective_candidate_count"], 0)
+		interactionPublicCandidateText = strings.TrimSpace(extractionStringFromAny(perspectiveContextArg[0]["_active_interaction_public_text"]))
+		interactionGuardedCandidateText = strings.TrimSpace(extractionStringFromAny(perspectiveContextArg[0]["_active_interaction_guarded_text"]))
+		interactionCandidateCount = intFromAny(perspectiveContextArg[0]["_active_interaction_candidate_count"], 0)
 	}
 	evidenceInputCount := len(evidence)
 	evidence, perspectiveBlockedEvidenceIDs := filterPrepareTurnPerspectiveScopedEvidence(evidence, memories)
@@ -149,6 +155,11 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			protectedMemoryLines = append(protectedMemoryLines, line)
 		}
 		out.Counts["character_perspective_candidate_count"] = perspectiveCandidateCount
+		out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
+	}
+	if interactionGuardedCandidateText != "" {
+		protectedMemoryLines = append(protectedMemoryLines, prepareTurnDeliveryItems(interactionGuardedCandidateText)...)
+		out.Counts["active_interaction_candidate_count"] = interactionCandidateCount
 		out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
 	}
 	out.ProtectedMemoryText = makePrepareTurnSection("[Protected Memory Guidance]", protectedMemoryLines)
@@ -401,6 +412,10 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	}
 	out.CharacterText = makePrepareTurnSection("[Characters]", charLines)
 	out.CharacterObjectiveText = makePrepareTurnSection("[Character Objective States]", charObjectiveLines)
+	if interactionPublicCandidateText != "" {
+		charRelationshipLines = append(charRelationshipLines, prepareTurnDeliveryItems(interactionPublicCandidateText)...)
+		out.Counts["active_interaction_candidate_count"] = interactionCandidateCount
+	}
 	out.CharacterRelationshipText = makePrepareTurnSection("[Character Relationships]", charRelationshipLines)
 
 	pendingLines := make([]string, 0, minInt(len(pendingThreads), recallLimit))

@@ -73,6 +73,14 @@ type CharacterPerspectiveMemoryReader interface {
 	ListCharacterPerspectiveMemoryUnits(context.Context, string, string) ([]PreciseMemoryUnit, error)
 }
 
+// ActiveInteractionMemoryReader exposes only source-active, committed atomic
+// relationship observations and interaction boundaries. The caller projects
+// the latest source-backed observation for the current request; this interface
+// deliberately does not introduce a relationship current/history table.
+type ActiveInteractionMemoryReader interface {
+	ListActiveInteractionMemoryUnits(context.Context, string) ([]PreciseMemoryUnit, error)
+}
+
 // PreciseMemoryWriteAvailability lets composite stores report whether at least
 // one real persistence lane can accept the optional projection.
 type PreciseMemoryWriteAvailability interface {

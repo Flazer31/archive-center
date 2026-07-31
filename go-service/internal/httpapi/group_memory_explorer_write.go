@@ -662,17 +662,6 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	if shouldApplyCompleteTurnOOCGuard(userText, assistantText, nil) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":          "skipped",
-			"code":            "ooc_guard",
-			"detail":          "this turn was excluded from memory regeneration by the OOC guard",
-			"chat_session_id": sid,
-			"turn_index":      req.TurnIndex,
-			"source":          s.storeWriteSource(),
-		})
-		return
-	}
 	if req.DryRun {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":          "ok",

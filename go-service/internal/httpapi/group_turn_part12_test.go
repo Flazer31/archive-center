@@ -661,7 +661,7 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		mux := http.NewServeMux()
 		srv.RegisterRoutes(mux)
 
-		body := `{"chat_session_id":"sess-p83-ooc","turn_index":1,"user_input":"OOC: please change the plugin setting","assistant_content":"Sure, I will help.","context_messages":[]}`
+		body := `{"chat_session_id":"sess-p83-ooc","turn_index":1,"user_input":"please change the plugin setting","assistant_content":"Sure, I will help.","context_messages":[],"client_meta":{"risu_request_observation":{"contract_version":"risu_request_observation.v1","ooc_class_state":"observed","ooc_class":"ooc"}}}`
 		req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()

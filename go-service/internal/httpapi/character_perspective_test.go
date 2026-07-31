@@ -13,14 +13,22 @@ import (
 
 type perspectiveIdentityTestStore struct {
 	*turnRecordingStore
-	resolvedSurface string
-	resolvedID      string
-	resolveErr      error
+	resolvedSurface   string
+	resolvedID        string
+	resolvedNamespace string
+	resolveErr        error
 }
 
 func (s *perspectiveIdentityTestStore) ResolveUniqueActiveEntityIDBySurface(_ context.Context, _ string, surface string) (string, error) {
 	s.resolvedSurface = surface
 	return s.resolvedID, s.resolveErr
+}
+
+func (s *perspectiveIdentityTestStore) ResolveUniqueActiveEntityIdentityBySurface(_ context.Context, _ string, surface string) (store.ResolvedEntityIdentity, error) {
+	s.resolvedSurface = surface
+	return store.ResolvedEntityIdentity{
+		StableEntityID: s.resolvedID, IdentityNamespace: s.resolvedNamespace,
+	}, s.resolveErr
 }
 
 func TestPrepareTurnPerspectiveIdentityUsesExactSourceSurfaceAndFailsClosed(t *testing.T) {

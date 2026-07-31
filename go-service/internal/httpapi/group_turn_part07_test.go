@@ -469,7 +469,7 @@ func TestAdminRescanRegeneratesMissingArtifactsFromRawTurn(t *testing.T) {
 		"turn_summary":      "Mina found and kept the blue key safe.",
 		"importance_score":  8,
 		"evidence_excerpts": []any{"Mina promised to keep the blue key safe."},
-		"kg_triples":        []any{map[string]any{"subject": "Mina", "predicate": "keeps", "object": "blue key"}},
+		"kg_triples":        []any{testEntityScalarKG("state_fact", "Mina", "character", "keep", "safe", "state", "Mina promised to keep the blue key safe.")},
 		"entities":          map[string]any{"characters": []any{map[string]any{"name": "Mina"}}},
 	})
 	chatResp, _ := json.Marshal(map[string]any{

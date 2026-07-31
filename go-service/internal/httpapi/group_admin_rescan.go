@@ -255,28 +255,6 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 		now := time.Now().UTC()
 		for _, turn := range turns {
 			roleMap := turnLogs[turn]
-			if shouldApplyCompleteTurnOOCGuard(
-				sanitizeCriticStorageText(roleMap["user"]),
-				sanitizeCriticStorageText(roleMap["assistant"]),
-				nil,
-			) {
-				skipped++
-				skippedTurns = append(skippedTurns, map[string]any{
-					"turn_index": turn,
-					"reason":     "ooc_guard",
-				})
-				if progress != nil {
-					progressValue := adminRescanProgress(
-						succeeded+failed+skipped+deferred, len(turns), succeeded, failed,
-						skipped, processedTurns, failedTurns, skippedTurns,
-						artifactCounts, turn, "ooc_guard",
-					)
-					progressValue["deferred_count"] = deferred
-					progressValue["deferred_turns"] = append([]map[string]any{}, deferredTurns...)
-					progress(progressValue)
-				}
-				continue
-			}
 			candidates := sourcesByTurn[turn]
 			if len(candidates) == 0 && req.CanonicalRawReplay {
 				if req.DryRun {
@@ -718,14 +696,6 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turn, "reason": "assistant_content_missing"})
 			if progress != nil {
 				progress(adminRescanProgress(len(processedTurns)+failed+skipped, len(turns), succeeded, failed, skipped, processedTurns, failedTurns, skippedTurns, artifactCounts, turn, "assistant_content_missing"))
-			}
-			continue
-		}
-		if shouldApplyCompleteTurnOOCGuard(userText, assistantText, nil) {
-			skipped++
-			skippedTurns = append(skippedTurns, map[string]any{"turn_index": turn, "reason": "ooc_guard"})
-			if progress != nil {
-				progress(adminRescanProgress(len(processedTurns)+failed+skipped, len(turns), succeeded, failed, skipped, processedTurns, failedTurns, skippedTurns, artifactCounts, turn, "ooc_guard"))
 			}
 			continue
 		}

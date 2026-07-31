@@ -101,6 +101,10 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	if !resolved {
 		return result
 	}
+	if len(sliceFromAny(extraction["user_interaction_profile"])) > 0 {
+		extraction["user_interaction_profile"] = []any{}
+		result.addSkipReason("user_interaction_profile", "explicit_host_ooc_observation_required", nil)
+	}
 	cost := &canonicalStateWriteCostMeasurement{}
 	var existingCanonicalLayers []store.CanonicalStateLayer
 	if s.Store != nil {

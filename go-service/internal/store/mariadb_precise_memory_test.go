@@ -130,6 +130,47 @@ func TestMariaDBPerspectiveReaderRequiresExactHolderAndIncludesLatestReviewBlock
 	}
 }
 
+func TestMariaDBActiveInteractionReaderReturnsOnlyCommittedActiveSourceUnits(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Unix(350, 0).UTC()
+	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+unit\.memory_kind IN \('observation', 'boundary'\)[\s\S]+unit\.admission_state = 'committed'[\s\S]+unit\.review_state = 'source_observed'[\s\S]+unit\.lifecycle_state = 'active'`).
+		WithArgs("session").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"unit_id", "chat_session_id", "source_turn_start", "source_turn_end",
+			"source_revision", "memory_kind", "memory_subtype", "payload_json",
+			"actor_entity_id", "subject_entity_id", "affected_entity_id",
+			"object_entity_id", "relationship_key", "truth_scope", "epistemic_mode",
+			"authority_class", "admission_state", "review_state", "visibility",
+			"knowledge_holder_entity_id", "reveal_condition", "lifecycle_state",
+			"created_at", "updated_at",
+		}).AddRow(
+			"relation", "session", 2, 2, "revision-2", "observation", "relationship_trust",
+			`{"contract_version":"relationship_observation.v1"}`,
+			"alice-id", "", "bob-id", "", "alice-id->bob-id/trust",
+			"source_scoped", "direct", "subjective_episodic", "committed",
+			"source_observed", "public", "", "", "active", now, now,
+		).AddRow(
+			"boundary", "session", 3, 3, "revision-3", "boundary", "withdrawn",
+			`{"contract_version":"interaction_boundary.v1"}`,
+			"alice-id", "", "bob-id", "", "alice-id->bob-id/touch",
+			"actor_scoped", "explicit_boundary", "subjective_episodic", "committed",
+			"source_observed", "owner_private", "", "", "active", now, now,
+		))
+	items, err := m.ListActiveInteractionMemoryUnits(context.Background(), "session")
+	if err != nil || len(items) != 2 || items[0].ActorEntityID != "alice-id" ||
+		items[0].AffectedEntityID != "bob-id" || items[1].Kind != "boundary" {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPreciseMemoryPrivatePerspectiveSkipsGeneralVector(t *testing.T) {
 	for _, item := range []*PreciseMemoryUnit{
 		{Kind: "observation", Visibility: "owner_private", EpistemicMode: "known", KnowledgeHolderEntityID: "holder"},
@@ -142,6 +183,20 @@ func TestPreciseMemoryPrivatePerspectiveSkipsGeneralVector(t *testing.T) {
 	}
 	if !preciseMemoryGeneralVectorEligible(&PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct"}) {
 		t.Fatal("public objective event lost general-vector eligibility")
+	}
+}
+
+func TestPreciseMemoryUserProfileSkipsGeneralVector(t *testing.T) {
+	item := &PreciseMemoryUnit{
+		Kind:           "profile",
+		Subtype:        "user_interaction",
+		Visibility:     "user_private",
+		EpistemicMode:  "explicit_ooc_setting",
+		AdmissionState: "committed",
+		LifecycleState: "active",
+	}
+	if preciseMemoryGeneralVectorEligible(item) {
+		t.Fatal("user interaction profile entered the general vector lane")
 	}
 }
 

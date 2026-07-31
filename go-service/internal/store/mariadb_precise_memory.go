@@ -15,6 +15,7 @@ import (
 var _ PreciseMemoryWriter = (*mariadbStore)(nil)
 var _ PreciseMemoryWriteAvailability = (*mariadbStore)(nil)
 var _ CharacterPerspectiveMemoryReader = (*mariadbStore)(nil)
+var _ ActiveInteractionMemoryReader = (*mariadbStore)(nil)
 
 func (m *mariadbStore) PreciseMemoryWritesEnabled() bool {
 	return m != nil && m.db != nil
@@ -95,6 +96,69 @@ func (m *mariadbStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context, 
 			&item.SourceTurnEnd, &item.SourceRevision, &item.Kind,
 			&item.Subtype, &item.PayloadJSON, &item.ActorEntityID,
 			&item.SubjectEntityID, &item.TruthScope, &item.EpistemicMode,
+			&item.AuthorityClass, &item.AdmissionState, &item.ReviewState,
+			&item.Visibility, &item.KnowledgeHolderEntityID,
+			&item.RevealCondition, &item.LifecycleState, &item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (m *mariadbStore) ListActiveInteractionMemoryUnits(ctx context.Context, chatSessionID string) ([]PreciseMemoryUnit, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if chatSessionID == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT
+			unit.unit_id, unit.chat_session_id, unit.source_turn_start,
+			unit.source_turn_end, unit.source_revision, unit.memory_kind,
+			COALESCE(unit.memory_subtype, ''), unit.payload_json,
+			COALESCE(unit.actor_entity_id, ''),
+			COALESCE(unit.subject_entity_id, ''),
+			COALESCE(unit.affected_entity_id, ''),
+			COALESCE(unit.object_entity_id, ''),
+			COALESCE(unit.relationship_key, ''),
+			unit.truth_scope, unit.epistemic_mode, unit.authority_class,
+			unit.admission_state, unit.review_state, unit.visibility,
+			COALESCE(unit.knowledge_holder_entity_id, ''),
+			COALESCE(unit.reveal_condition, ''), unit.lifecycle_state,
+			unit.created_at, unit.updated_at
+		FROM precise_memory_units unit
+		JOIN memory_source_revisions source_revision
+		  ON source_revision.chat_session_id = unit.chat_session_id
+		 AND source_revision.source_revision = unit.source_revision
+		 AND source_revision.lifecycle_state = 'active'
+		WHERE unit.chat_session_id = ?
+		  AND unit.memory_kind IN ('observation', 'boundary')
+		  AND unit.admission_state = 'committed'
+		  AND unit.review_state = 'source_observed'
+		  AND unit.lifecycle_state = 'active'
+		ORDER BY unit.source_turn_start ASC, unit.unit_id ASC
+	`, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PreciseMemoryUnit{}
+	for rows.Next() {
+		var item PreciseMemoryUnit
+		if err := rows.Scan(
+			&item.UnitID, &item.ChatSessionID, &item.SourceTurnStart,
+			&item.SourceTurnEnd, &item.SourceRevision, &item.Kind,
+			&item.Subtype, &item.PayloadJSON, &item.ActorEntityID,
+			&item.SubjectEntityID, &item.AffectedEntityID, &item.ObjectEntityID,
+			&item.RelationshipKey, &item.TruthScope, &item.EpistemicMode,
 			&item.AuthorityClass, &item.AdmissionState, &item.ReviewState,
 			&item.Visibility, &item.KnowledgeHolderEntityID,
 			&item.RevealCondition, &item.LifecycleState, &item.CreatedAt,
@@ -313,7 +377,7 @@ func preciseMemoryGeneralVectorEligible(item *PreciseMemoryUnit) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(item.Visibility)) {
-	case "owner_private", "restricted", "reveal_required", "private", "hidden":
+	case "owner_private", "restricted", "reveal_required", "private", "hidden", "user_private":
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(item.EpistemicMode)) {

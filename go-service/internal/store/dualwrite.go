@@ -470,9 +470,23 @@ func (d *dualWriteStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Contex
 	return "", ErrNotEnabled
 }
 
+func (d *dualWriteStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (ResolvedEntityIdentity, error) {
+	if primary, ok := d.primary.(UniqueActiveEntitySurfaceIdentityResolver); ok {
+		return primary.ResolveUniqueActiveEntityIdentityBySurface(ctx, chatSessionID, normalizedSurface)
+	}
+	return ResolvedEntityIdentity{}, ErrNotEnabled
+}
+
 func (d *dualWriteStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context, chatSessionID, knowledgeHolderEntityID string) ([]PreciseMemoryUnit, error) {
 	if primary, ok := d.primary.(CharacterPerspectiveMemoryReader); ok {
 		return primary.ListCharacterPerspectiveMemoryUnits(ctx, chatSessionID, knowledgeHolderEntityID)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListActiveInteractionMemoryUnits(ctx context.Context, chatSessionID string) ([]PreciseMemoryUnit, error) {
+	if primary, ok := d.primary.(ActiveInteractionMemoryReader); ok {
+		return primary.ListActiveInteractionMemoryUnits(ctx, chatSessionID)
 	}
 	return nil, ErrNotEnabled
 }

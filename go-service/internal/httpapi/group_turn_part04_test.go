@@ -28,7 +28,7 @@ func TestCompleteTurnCriticProviderFailureRetriesWithRedactedInput(t *testing.T)
 		"turn_summary":      "Mina and Rowan crossed an intimate threshold while Rowan stayed reassuring.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"Rowan stayed reassuring."},
-		"kg_triples":        []any{map[string]any{"subject": "Rowan", "predicate": "reassures", "object": "Mina"}},
+		"kg_triples":        []any{testEntityScalarKG("state_fact", "Rowan", "character", "stayed", "reassuring", "state", "Rowan stayed reassuring.")},
 	})
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "critic-model",
@@ -135,7 +135,7 @@ func TestCompleteTurnEmbeddingProviderFailureReportsWarning(t *testing.T) {
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{
 				"model":"critic-model",
-				"choices":[{"message":{"content":"{\"turn_summary\":\"Mina and Rowan commit to the blue key.\",\"importance_score\":7,\"evidence_excerpts\":[\"blue key safe\"],\"kg_triples\":[{\"subject\":\"Rowan\",\"predicate\":\"protects\",\"object\":\"blue key\"}],\"entities\":{\"characters\":[{\"name\":\"Rowan\"}],\"items\":[{\"name\":\"blue key\"}]}}"}}]
+				"choices":[{"message":{"content":"{\"turn_summary\":\"Mina and Rowan commit to the blue key.\",\"importance_score\":7,\"evidence_excerpts\":[\"blue key safe\"],\"kg_triples\":[{\"semantic_class\":\"event_fact\",\"subject\":\"Rowan\",\"predicate\":\"protects\",\"object\":\"blue key\"}],\"entities\":{\"characters\":[{\"name\":\"Rowan\"}],\"items\":[{\"name\":\"blue key\"}]}}"}}]
 			}`)),
 		}, nil
 	})}
@@ -209,7 +209,7 @@ func TestCompleteTurnOOCGuardSkipsWrites(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-ooc","turn_index":1,"user_input":"OOC: please change the plugin setting","assistant_content":"Sure, I will help.","context_messages":[],"client_meta":{"turn_workflow_request_id":"request-ooc"}}`
+	body := `{"chat_session_id":"sess-ooc","turn_index":1,"user_input":"please change the plugin setting","assistant_content":"Sure, I will help.","context_messages":[],"client_meta":{"turn_workflow_request_id":"request-ooc","risu_request_observation":{"contract_version":"risu_request_observation.v1","ooc_class_state":"observed","ooc_class":"ooc"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -239,21 +239,20 @@ func TestCompleteTurnOOCGuardSkipsWrites(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnOOCGuardDoesNotLeakFromPriorContext(t *testing.T) {
-	contextMessages := []map[string]any{
-		{"role": "user", "content": "OOC: keep the next answer concise."},
-		{"role": "assistant", "content": "Understood."},
-	}
-	if shouldApplyCompleteTurnOOCGuard(
-		"Mina opens the brass-bound ledger.",
-		"The first page lists three unpaid debts.",
-		contextMessages,
-	) {
+func TestCompleteTurnOOCGuardDoesNotInferFromTextOrPriorContext(t *testing.T) {
+	if shouldApplyCompleteTurnOOCGuard(map[string]any{
+		"risu_request_observation": map[string]any{
+			"contract_version":   "risu_request_observation.v1",
+			"ooc_class_state":    "not_exposed",
+			"request_type":       "model",
+			"request_type_state": "observed",
+		},
+	}) {
 		t.Fatal("prior OOC context incorrectly cancelled the current accepted source")
 	}
 }
 
-func TestCompleteTurnKoreanOOCGuardSkipsWrites(t *testing.T) {
+func TestCompleteTurnOOCTextWithoutHostObservationDoesNotSkipWrites(t *testing.T) {
 	fake := &turnRecordingStore{}
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -273,8 +272,8 @@ func TestCompleteTurnKoreanOOCGuardSkipsWrites(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
-		t.Fatalf("Korean OOC guard should skip all writes, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	if len(fake.savedChatLogs) == 0 {
+		t.Fatal("content-only OOC marker incorrectly skipped raw persistence")
 	}
 }
 
@@ -532,8 +531,8 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 		t.Fatalf("trace_summary is not an object")
 	}
 
-	if trace["reads_ok"] != float64(14) {
-		t.Errorf("reads_ok = %v, want 14", trace["reads_ok"])
+	if trace["reads_ok"] != float64(15) {
+		t.Errorf("reads_ok = %v, want 15", trace["reads_ok"])
 	}
 	if trace["memory_count"] != float64(2) {
 		t.Errorf("memory_count = %v, want 2", trace["memory_count"])

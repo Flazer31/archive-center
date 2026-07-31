@@ -819,24 +819,6 @@ function tf(key, args) {
   return key;
 }
 function warnLog() {}
-function getRequestTimeoutSettingMs() { return 5000; }
-let bridgeNoticeCalls = 0;
-let bridgeNoticeError = false;
-async function bridgeFetch(path, options) {
-  if (path !== "/turn-workflow/notice") return null;
-  bridgeNoticeCalls++;
-  if (bridgeNoticeError) throw new Error("backend unavailable");
-  const body = options && options.body || {};
-  return {
-    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:body.request_id,revision:1,
-    host_turn:body.host_turn,backend_turn:0,
-    turn_alignment:{host_turn:body.host_turn,backend_turn:0,state:"unobserved",reason_code:"backend_turn_unobserved"},
-    status:"completed",severity:"notice",dismissal_policy:"card_or_x",display_mode:"notice",
-    title_key:"turn_hud.notice.ooc_recognized",message_key:"turn_hud.notice.ooc_recognized_detail",
-    notice_code:"OOC_INPUT_CANCELLED",notice_kind:"ooc",presentation_tone:"attention",
-    stages:[],counts:[],warnings:[],facts:[{key:"host_observation",status:"observed",disposition:"dropped",severity:"notice"}]
-  };
-}
 ` + "\n" + hudRuntime + `
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -975,14 +957,14 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(cancelledAnimationFrames.length >= 1, "HUD dismissal did not cancel the elapsed animation frame");
 
-  assert(consumeTurnWorkflowHUD({
-    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"ooc-running",revision:1,
-    logical_turn:56,status:"awaiting_final_output",severity:"notice",dismissal_policy:"none",
-    current_stage:{ordinal:6,total:12,label_key:"turn_hud.stage.awaiting_final_output",llm_call:false,status:"running"}
-  }), "OOC fixture running HUD view was rejected");
-  await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML.includes("6/12"), "OOC fixture did not begin from the awaiting-response stage");
-  assert(await showTurnWorkflowHUDOOCRecognition("session-ooc", 56), "existing OOC decision was not accepted by the HUD notice path");
+  assert(consumeTurnWorkflowHUDNotice({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"ooc-backend-notice",revision:1,
+    logical_turn:56,host_turn:56,backend_turn:0,
+    status:"completed",severity:"notice",dismissal_policy:"card_or_x",display_mode:"notice",
+    title_key:"turn_hud.notice.ooc_recognized",message_key:"turn_hud.notice.ooc_recognized_detail",
+    notice_code:"OOC_INPUT_CANCELLED",notice_kind:"ooc",presentation_tone:"attention",
+    stages:[],counts:[],warnings:[],facts:[{key:"host_observation",status:"observed",disposition:"dropped",severity:"notice"}]
+  }), "backend OOC notice was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("OOC 인식"), "OOC decision did not replace the awaiting-response title");
   assert(surface.innerHTML.includes("OOC 판정으로 입력 처리를 취소했습니다."), "OOC cancellation detail was not rendered");
@@ -993,18 +975,6 @@ function assert(condition, message) {
   await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "OOC informational notice did not dismiss");
-  settings.turnWorkflowHUDEnabled = false;
-  const bridgeCallsBeforeHiddenOOC = bridgeNoticeCalls;
-  assert(await showTurnWorkflowHUDOOCRecognition("session-ooc", 57), "hidden HUD must still record the OOC observation");
-  await _turnWorkflowHUDRenderChain;
-  assert(bridgeNoticeCalls === bridgeCallsBeforeHiddenOOC + 1, "HUD setting incorrectly suppressed the backend OOC observation");
-  assert(surface.innerHTML === "", "disabled HUD rendered an OOC card");
-  settings.turnWorkflowHUDEnabled = true;
-  bridgeNoticeError = true;
-  assert(!(await showTurnWorkflowHUDOOCRecognition("session-ooc", 58)), "OOC observation transport failure did not fail open");
-  bridgeNoticeError = false;
-  assert(surface.innerHTML === "", "failed OOC observation transport rendered a false backend notice");
-
   assert(consumeTurnWorkflowHUDNotice({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"delete-confirmed",revision:1,
     logical_turn:56,status:"completed",severity:"notice",dismissal_policy:"card_or_x",display_mode:"notice",
@@ -1206,6 +1176,7 @@ func TestPrepareTurnSourceCapabilityContractRuntime(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "adaptiveInjectionAutomaticCap") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "estimateContextGrowthInjectionBudget") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "estimateAdaptiveInjectionBudgetParts") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "buildRisuRequestObservation") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "observeRisuPersona") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "tryPrepareTurn")
 	script := fn + `
@@ -1934,6 +1905,87 @@ function assertEqual(actual, expected, label) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Archive Center rollback source JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRisuRequestObservationDoesNotInferOOCAndSurvivesQueueRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Risu request observation runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	for _, forbidden := range []string{
+		"function isOocUserMessage(",
+		"function isOocDirectiveLine(",
+		"function isOocHeaderOnlyLine(",
+		"function scrubOocDirectivesFromUserInput(",
+		"function isFullyOocUserInput(",
+		"function shouldSkipTurnPersistenceForOoc(",
+		"function showTurnWorkflowHUDOOCRecognition(",
+		"_pendingPersistenceSkipBySession",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains JavaScript OOC inference or skip authority %q", forbidden)
+		}
+	}
+	prepareFn := extractArchiveCenterJSAsyncFunction(t, src, "tryPrepareTurn")
+	completeFn := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody")
+	for name, fn := range map[string]string{"prepare": prepareFn, "complete": completeFn} {
+		if !strings.Contains(fn, "risu_request_observation") {
+			t.Fatalf("%s request does not forward risu_request_observation.v1", name)
+		}
+	}
+
+	observationFn := extractArchiveCenterJSFunction(t, src, "buildRisuRequestObservation")
+	skipFn := extractArchiveCenterJSFunction(t, src, "shouldSkipUserInputPersistence")
+	queueFn := extractArchiveCenterJSFunction(t, src, "buildCompleteTurnQueuePayload")
+	script := observationFn + "\n" + skipFn + "\n" + queueFn + `
+function isBoundaryOnlyUserInput() { return false; }
+function isRisuHistoryTrimCommandText() { return false; }
+function isMetaPromptLikeMessage() { return false; }
+function normalizeLanguageContextTrace(value) { return value; }
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
+}
+const quoted = 'A character quoted the literal marker "[OOC]" without making a host request-class claim.';
+if (shouldSkipUserInputPersistence(quoted)) throw new Error("quoted OOC marker was classified as an OOC request");
+const before = buildRisuRequestObservation("model", "beforeRequest", "user");
+assertEqual(before.contract_version, "risu_request_observation.v1", "contract");
+assertEqual(before.observation_state, "observed", "lifecycle observation state");
+assertEqual(before.request_type, "model", "raw replacer type");
+assertEqual(before.request_type_state, "observed", "request type state");
+assertEqual(before.lifecycle_stage, "beforeRequest", "before lifecycle");
+assertEqual(before.message_role, "user", "observed role");
+assertEqual(before.channel, null, "unexposed channel value");
+assertEqual(before.channel_state, "not_exposed", "channel state");
+assertEqual(before.ooc_class, null, "unexposed OOC value");
+assertEqual(before.ooc_class_state, "not_exposed", "OOC state");
+const after = buildRisuRequestObservation("otherAx", "afterRequest", "assistant");
+const queued = buildCompleteTurnQueuePayload({
+  chat_session_id:"session",
+  turn_index:4,
+  user_input:quoted,
+  assistant_content:"assistant response",
+  context_messages:[{role:"user",content:quoted}],
+  request_type:"model",
+  client_meta:{risu_request_observation:after}
+});
+assertEqual(queued.user_input, quoted, "quoted input preserved");
+assertEqual(queued.context_messages[0].content, quoted, "quoted context preserved");
+assertEqual(queued.client_meta.risu_request_observation.request_type, "otherAx", "queued raw type");
+assertEqual(queued.client_meta.risu_request_observation.lifecycle_stage, "afterRequest", "queued lifecycle");
+assertEqual(queued.client_meta.risu_request_observation.message_role, "assistant", "queued role");
+assertEqual(queued.client_meta.risu_request_observation.ooc_class_state, "not_exposed", "queued OOC state");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Risu request observation runtime fixture failed: %v\n%s", err, out)
 	}
 }
 

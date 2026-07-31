@@ -164,18 +164,25 @@ func (m *mariadbStore) ResolveReviewedCanonicalEntityID(ctx context.Context, cha
 }
 
 func (m *mariadbStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
+	resolved, err := m.ResolveUniqueActiveEntityIdentityBySurface(ctx, chatSessionID, normalizedSurface)
+	return resolved.StableEntityID, err
+}
+
+func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (ResolvedEntityIdentity, error) {
 	if err := m.ensureDB(); err != nil {
-		return "", err
+		return ResolvedEntityIdentity{}, err
 	}
 	chatSessionID = strings.TrimSpace(chatSessionID)
 	normalizedSurface = strings.TrimSpace(normalizedSurface)
 	if chatSessionID == "" || normalizedSurface == "" {
-		return "", ErrNotFound
+		return ResolvedEntityIdentity{}, ErrNotFound
 	}
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT
 			surface.stable_entity_id,
-			COALESCE(identity_link.target_entity_id, '')
+			source_identity.identity_namespace,
+			COALESCE(identity_link.target_entity_id, ''),
+			COALESCE(canonical_target.identity_namespace, '')
 		FROM entity_identity_surfaces surface
 		JOIN entity_identities source_identity
 		  ON source_identity.chat_session_id = surface.chat_session_id
@@ -205,36 +212,39 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context,
 	`, EntityIdentityLinkKindCanonicalEquivalence, EntityIdentityLinkStateReviewed,
 		EntityIdentityReviewStateReviewed, chatSessionID, normalizedSurface)
 	if err != nil {
-		return "", err
+		return ResolvedEntityIdentity{}, err
 	}
 	defer rows.Close()
-	resolved := map[string]struct{}{}
+	resolved := map[string]ResolvedEntityIdentity{}
 	for rows.Next() {
-		var sourceEntityID, targetEntityID string
-		if err := rows.Scan(&sourceEntityID, &targetEntityID); err != nil {
-			return "", err
+		var sourceEntityID, sourceNamespace, targetEntityID, targetNamespace string
+		if err := rows.Scan(&sourceEntityID, &sourceNamespace, &targetEntityID, &targetNamespace); err != nil {
+			return ResolvedEntityIdentity{}, err
 		}
 		entityID := strings.TrimSpace(targetEntityID)
+		namespace := strings.TrimSpace(targetNamespace)
 		if entityID == "" {
 			entityID = strings.TrimSpace(sourceEntityID)
+			namespace = strings.TrimSpace(sourceNamespace)
 		}
-		if entityID != "" {
-			resolved[entityID] = struct{}{}
+		if entityID != "" && namespace != "" {
+			identity := ResolvedEntityIdentity{StableEntityID: entityID, IdentityNamespace: namespace}
+			resolved[entityID+"\x1f"+namespace] = identity
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return "", err
+		return ResolvedEntityIdentity{}, err
 	}
 	if len(resolved) == 0 {
-		return "", ErrNotFound
+		return ResolvedEntityIdentity{}, ErrNotFound
 	}
 	if len(resolved) != 1 {
-		return "", ErrReviewedEntityIdentityAmbiguous
+		return ResolvedEntityIdentity{}, ErrReviewedEntityIdentityAmbiguous
 	}
-	for entityID := range resolved {
-		return entityID, nil
+	for _, identity := range resolved {
+		return identity, nil
 	}
-	return "", ErrNotFound
+	return ResolvedEntityIdentity{}, ErrNotFound
 }
 
 func (m *mariadbStore) withActiveEntitySourceWrite(

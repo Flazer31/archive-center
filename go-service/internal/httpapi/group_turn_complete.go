@@ -394,7 +394,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		writeCompleteTurnSourceAcceptanceRejection(w, req, sourceAcceptance)
 		return
 	}
-	if shouldApplyCompleteTurnOOCGuard(userText, assistantText, req.ContextMessages) {
+	if shouldApplyCompleteTurnOOCGuard(req.ClientMeta) {
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			s.TurnWorkflows.setLogicalTurn(workflowRequestID, turnIndex)
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageFinalAccepted, "succeeded", "")

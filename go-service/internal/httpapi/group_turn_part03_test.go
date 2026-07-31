@@ -230,7 +230,7 @@ func TestSaveCriticExtractionArtifactsPreservesUnconfirmedMultilingualAliases(t 
 				"description": "returning ally",
 			}},
 		},
-		"kg_triples": []any{map[string]any{"subject": "\uBBFC\uC544", "predicate": "promised", "object": "Rowan"}},
+		"kg_triples": []any{map[string]any{"semantic_class": "event_fact", "subject": "\uBBFC\uC544", "predicate": "promised", "object": "Rowan"}},
 	})
 
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-multi", 4, extraction, "Mina promised Rowan she would return.", completeTurnEmbeddingConfig{}, time.Unix(100, 0))
@@ -458,7 +458,7 @@ func TestConfigUpdateRuntimeSettingsFeedCompleteTurnCritic(t *testing.T) {
 		"turn_summary":      "Runtime config critic extracted one durable memory.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"The runtime-configured critic is active."},
-		"kg_triples":        []any{map[string]any{"subject": "Critic", "predicate": "extracts", "object": "Memory"}},
+		"kg_triples":        []any{testEntityScalarKG("state_fact", "critic", "event", "is", "active", "state", "The runtime-configured critic is active.")},
 	})
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "runtime-critic",
@@ -585,7 +585,7 @@ func TestSaveCriticExtractionArtifactsSkipsDuplicateEvidenceAndKGForSameTurn(t *
 		"turn_summary":      "Mina promises Rowan she will return.",
 		"importance_score":  6,
 		"evidence_excerpts": []any{"Mina promises Rowan she will return."},
-		"kg_triples":        []any{map[string]any{"subject": "Mina", "predicate": "promises", "object": "Rowan", "valid_from": 7}},
+		"kg_triples":        []any{map[string]any{"semantic_class": "event_fact", "subject": "Mina", "predicate": "promises", "object": "Rowan", "valid_from": 7}},
 	})
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-dupe-artifacts", 7, extraction, "Mina promises Rowan she will return.", completeTurnEmbeddingConfig{}, time.Unix(700, 0))
 	if result.Evidence != 0 || result.KGTriples != 0 {
@@ -621,7 +621,7 @@ func TestSaveCriticExtractionArtifactsSkipsFuzzyEvidenceAndActiveKGDuplicates(t 
 		"turn_summary":      "Mina repeats her promise to return and protect Rowan.",
 		"importance_score":  6,
 		"evidence_excerpts": []any{"Mina promises Rowan she will return."},
-		"kg_triples":        []any{map[string]any{"subject": "Mina", "predicate": "protects", "object": "Rowan", "valid_from": 7}},
+		"kg_triples":        []any{map[string]any{"semantic_class": "event_fact", "subject": "Mina", "predicate": "protects", "object": "Rowan", "valid_from": 7}},
 	})
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-dupe-artifacts-fuzzy", 7, extraction, "Mina promises Rowan she will return. Mina protects Rowan.", completeTurnEmbeddingConfig{}, time.Unix(701, 0))
 	if result.Evidence != 0 || result.KGTriples != 0 {
@@ -672,7 +672,7 @@ func TestExplorerRegenerateMemoryUsesCompleteTurnArtifactPipeline(t *testing.T) 
 		"turn_summary":      "Rowan accepts Mina's request and confirms the cellar route.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"Rowan accepts and confirms the cellar route is the only safe path."},
-		"kg_triples":        []any{map[string]any{"subject": "Rowan", "predicate": "guards", "object": "cellar route"}},
+		"kg_triples":        []any{testEntityScalarKG("state_fact", "cellar route", "location", "is", "the only safe path", "state", "Rowan accepts and confirms the cellar route is the only safe path.")},
 		"world_rules":       []any{map[string]any{"scope": "location", "scope_name": "cellar", "category": "access", "key": "cellar_route_only_safe_path", "value": "The cellar route is the only safe path."}},
 	})
 	chatResp, _ := json.Marshal(map[string]any{
@@ -860,7 +860,10 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 		"turn_summary":      "Imported HypaMemory says Chloe trusts Hero after the rooftop promise.",
 		"importance_score":  8,
 		"evidence_excerpts": []any{"Chloe trusts Hero after the rooftop promise."},
-		"kg_triples":        []any{map[string]any{"subject": "Chloe", "predicate": "trusts", "object": "Hero"}},
+		"relationship_observations": []any{map[string]any{
+			"source_entity": "Chloe", "source_entity_expression": "Chloe", "target_entity": "Hero", "target_entity_expression": "Hero",
+			"domain": "trust", "domain_expression": "trusts", "observation": "Chloe trusts Hero after the rooftop promise", "support_kind": "explicit_observed_state", "evidence_excerpt": "Chloe trusts Hero after the rooftop promise.",
+		}},
 	})
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "runtime-critic",
@@ -911,14 +914,14 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 	if resp["status"] != "ok" || resp["succeeded"] != float64(1) || resp["failed"] != float64(0) {
 		t.Fatalf("expected successful HypaMemory import, got %+v", resp)
 	}
-	if len(fake.savedMemories) != 1 || len(fake.savedEvidence) != 1 || len(fake.savedKGTriples) != 1 {
+	if len(fake.savedMemories) != 1 || len(fake.savedEvidence) != 1 || len(fake.savedKGTriples) != 0 {
 		t.Fatalf("expected HypaMemory Critic artifacts, memories=%d evidence=%d kg=%d", len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
 	}
-	if fake.savedMemories[0].TurnIndex != -42 || fake.savedEvidence[0].SourceTurnStart != -42 || fake.savedKGTriples[0].SourceTurn != -42 {
-		t.Fatalf("expected HypaMemory import artifacts to use negative import turn index, memory=%d evidence=%d kg=%d", fake.savedMemories[0].TurnIndex, fake.savedEvidence[0].SourceTurnStart, fake.savedKGTriples[0].SourceTurn)
+	if fake.savedMemories[0].TurnIndex != -42 || fake.savedEvidence[0].SourceTurnStart != -42 {
+		t.Fatalf("expected HypaMemory import artifacts to use negative import turn index, memory=%d evidence=%d", fake.savedMemories[0].TurnIndex, fake.savedEvidence[0].SourceTurnStart)
 	}
-	if len(vec.docs) != 2 {
-		t.Fatalf("expected memory and evidence vector upserts for imported memory, got %d", len(vec.docs))
+	if len(vec.docs) != 1 {
+		t.Fatalf("relationship-scoped imported memory must stay out of generic vector; expected evidence only, got %d", len(vec.docs))
 	}
 	if !hasAuditEvent(fake.savedAuditLogs, "hypamemory_import") {
 		t.Fatalf("expected hypamemory_import audit log, got %#v", fake.savedAuditLogs)
@@ -947,7 +950,7 @@ func TestImportHypamemoryScoringPassRaisesLowCriticImportance(t *testing.T) {
 		"turn_summary":      "Imported HypaMemory says Hero was shot before and Chloe took him to hospital.",
 		"importance_score":  2,
 		"evidence_excerpts": []any{"Hero was shot before and Chloe took him to hospital."},
-		"kg_triples":        []any{map[string]any{"subject": "Hero", "predicate": "was_taken_to", "object": "hospital"}},
+		"kg_triples":        []any{map[string]any{"semantic_class": "location_fact", "subject": "Hero", "predicate": "was_taken_to", "object": "hospital"}},
 	})
 	scoringResp, _ := json.Marshal(map[string]any{
 		"model":   "runtime-critic",

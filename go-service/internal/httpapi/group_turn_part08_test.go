@@ -890,11 +890,15 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 	srv.VectorOpenError = nil
 
 	extraction := map[string]any{
-		"turn_summary":           "Alice decided to trust Bob after the rescue.",
-		"importance_score":       8,
-		"relationship_memory":    map[string]any{"bond_and_distance": "Alice trusts Bob more after he helped her.", "trust": 0.8},
-		"entities":               map[string]any{"characters": []any{map[string]any{"name": "Alicee", "role": "protagonist", "status_emotion": "relieved"}}},
-		"kg_triples":             []any{map[string]any{"subject": "Alicee", "predicate": "trusts", "object": "Bob", "valid_from": 2}},
+		"turn_summary":        "Alice decided to trust Bob after the rescue.",
+		"importance_score":    8,
+		"relationship_memory": map[string]any{"bond_and_distance": "Alice trusts Bob more after he helped her.", "trust": 0.8},
+		"entities":            map[string]any{"characters": []any{map[string]any{"name": "Alicee", "aliases": []any{"I"}, "role": "protagonist", "status_emotion": "relieved"}}},
+		"kg_triples":          []any{},
+		"relationship_observations": []any{map[string]any{
+			"source_entity": "Alicee", "source_entity_expression": "I", "target_entity": "Bob", "target_entity_expression": "Bob",
+			"domain": "trust", "domain_expression": "trust", "observation": "I trust Bob", "support_kind": "explicit_statement", "evidence_excerpt": "I trust Bob.",
+		}},
 		"archive_hint":           map[string]any{"wing": "wing_general", "room": "hall_relationships"},
 		"evidence_excerpts":      []any{"I trust Bob."},
 		"emotional_intensity":    0.7,
@@ -965,17 +969,17 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 	if len(fake.savedEvidence) != 1 {
 		t.Fatalf("expected one evidence, got %d", len(fake.savedEvidence))
 	}
-	if len(fake.savedKGTriples) != 1 {
-		t.Fatalf("expected one KG triple, got %d", len(fake.savedKGTriples))
+	if len(fake.savedKGTriples) != 0 {
+		t.Fatalf("directional relationship must not enter generic KG, got %d", len(fake.savedKGTriples))
 	}
 	if len(fake.savedEntities) != 1 {
 		t.Fatalf("expected one entity, got %d", len(fake.savedEntities))
 	}
-	if len(fake.savedTrusts) != 1 {
-		t.Fatalf("expected one trust state, got %d", len(fake.savedTrusts))
+	if len(fake.savedTrusts) != 0 {
+		t.Fatalf("legacy directionless trust state was persisted: %d", len(fake.savedTrusts))
 	}
-	if len(fake.savedCharacterEvents) != 1 {
-		t.Fatalf("expected one character event, got %d", len(fake.savedCharacterEvents))
+	if len(fake.savedCharacterEvents) != 0 {
+		t.Fatalf("legacy relationship shift event was persisted: %d", len(fake.savedCharacterEvents))
 	}
 	if len(fake.savedCharacterStates) != 1 {
 		t.Fatalf("expected one character state, got %d", len(fake.savedCharacterStates))
@@ -992,8 +996,8 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 	if len(fake.savedStorylines) != 1 {
 		t.Fatalf("expected one storyline, got %d", len(fake.savedStorylines))
 	}
-	if len(vec.docs) != 3 {
-		t.Fatalf("expected memory/evidence/world-rule vector upserts, got %d", len(vec.docs))
+	if len(vec.docs) != 2 {
+		t.Fatalf("relationship-scoped memory must stay out of generic vector; expected evidence/world-rule, got %d", len(vec.docs))
 	}
 }
 

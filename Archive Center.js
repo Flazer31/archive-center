@@ -7304,7 +7304,7 @@
           : null;
         const assistantContent = selectedAssistant ? String(selectedAssistant.candidate || "").trim() : "";
         if (!userContent || !assistantContent) return;
-        if (!preserveAllUserInputs && (shouldSkipUserInputPersistence(userContent) || shouldSkipTurnPersistenceForOoc(userContent, assistantContent))) return;
+        if (!preserveAllUserInputs && shouldSkipUserInputPersistence(userContent)) return;
         const risuUserMessageIndex = Number.isInteger(pendingUserMessageIndex) ? pendingUserMessageIndex : null;
         const risuAssistantMessageIndex = selectedAssistant && Number.isInteger(selectedAssistant.risuMessageIndex)
           ? selectedAssistant.risuMessageIndex
@@ -13859,31 +13859,6 @@
     return true;
   }
 
-  async function showTurnWorkflowHUDOOCRecognition(chatSessionId, logicalTurn) {
-    const hudEnabled = turnWorkflowHUDIsEnabled();
-    const sessionId = String(chatSessionId || "").trim();
-    if (!sessionId) return false;
-    const turn = Number(logicalTurn || 0);
-    try {
-      const view = await bridgeFetch("/turn-workflow/notice", {
-        method: "POST",
-        timeoutMs: getRequestTimeoutSettingMs(),
-        body: {
-          contract_version: "turn_workflow_notice_observation.v1",
-          kind: "ooc_input_cancelled",
-          request_id: `ooc-observation:${sessionId}:${Number.isFinite(turn) && turn > 0 ? Math.trunc(turn) : 0}`,
-          chat_session_id: sessionId,
-          host_turn: Number.isFinite(turn) && turn > 0 ? Math.trunc(turn) : 0,
-        },
-      });
-      if (!hudEnabled) return true;
-      return consumeTurnWorkflowHUDNotice(view);
-    } catch (error) {
-      warnLog("turn workflow OOC observation unavailable", error);
-      return false;
-    }
-  }
-
   function stopTurnWorkflowHUDWatch(requestId, removeEmpty) {
     clearTurnWorkflowHUDTimer();
     if (requestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
@@ -14369,6 +14344,27 @@
     };
   }
 
+  // RisuAI exposes the replacer lifecycle and its raw type, but does not
+  // expose an OOC channel/classification contract. Forward only those host
+  // facts; Go owns every semantic request/OOC decision.
+  function buildRisuRequestObservation(requestType, lifecycleStage, observedRole) {
+    const normalizedType = typeof requestType === "string" ? requestType.trim() : "";
+    const normalizedRole = typeof observedRole === "string" ? observedRole.trim() : "";
+    return {
+      contract_version: "risu_request_observation.v1",
+      observation_state: "observed",
+      lifecycle_stage: lifecycleStage === "afterRequest" ? "afterRequest" : "beforeRequest",
+      request_type: normalizedType || null,
+      request_type_state: normalizedType ? "observed" : "not_exposed",
+      message_role: normalizedRole || null,
+      message_role_state: normalizedRole ? "observed" : "not_exposed",
+      channel: null,
+      channel_state: "not_exposed",
+      ooc_class: null,
+      ooc_class_state: "not_exposed",
+    };
+  }
+
   function buildPrepareMessageObservation(sourceKind, observationRef, message, messageIndex, observedAt) {
     try {
       const parsed = message && message.role && message.content != null
@@ -14581,6 +14577,11 @@
         }
       }
       body.client_meta.risu_persona_observation = await observeRisuPersona();
+      body.client_meta.risu_request_observation = buildRisuRequestObservation(
+        type,
+        "beforeRequest",
+        prepareOptions.sourceObservation && prepareOptions.sourceObservation.observed_role
+      );
       body.client_meta.embedding = {
         api_key: String(settings.embeddingApiKey || "").trim(),
         endpoint: String(settings.embeddingEndpoint || "").trim(),
@@ -19405,8 +19406,6 @@
 
   // Sprint 4-A-1: session별 pending orchestration context
   const _pendingOrchBySession = new Map();
-  // OOC 턴은 저장/요약/분석 파이프라인을 건너뛴다.
-  const _pendingPersistenceSkipBySession = new Map();
   const _nonMainRequestSkipBySession = new Map();
   let _orchRequestSeq = 0;
   function makeOrchRequestId(sessionId) {
@@ -22395,78 +22394,6 @@
     }
   }
 
-  function extractPayloadOocCandidate(payload) {
-    try {
-      if (!payload || typeof payload !== "object") return null;
-
-      var keys = [
-        "userInput", "user_input", "inputText", "currentInput", "current_input",
-        "chatInput", "chat_input", "requestInput", "request_input",
-        "text", "value", "prompt", "input",
-      ];
-
-      for (var i = 0; i < keys.length; i++) {
-        var key = keys[i];
-        if (typeof payload[key] !== "string") continue;
-        var text = String(payload[key]).trim();
-        if (!text) continue;
-        if (isFullyOocUserInput(text)) {
-          return { text: text.slice(0, 3000), source: "payload." + key };
-        }
-      }
-
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  function detectCurrentTurnOocInfo(payload, messages, sessionId, userInputInfo) {
-    try {
-      if (userInputInfo && userInputInfo.fullyOoc) {
-        return {
-          isOoc: true,
-          source: userInputInfo.source || "user_input",
-          preview: truncPreview(String(userInputInfo.originalText || userInputInfo.text || ""), 120),
-        };
-      }
-
-      if (userInputInfo && userInputInfo.text && isFullyOocUserInput(userInputInfo.text)) {
-        return {
-          isOoc: true,
-          source: userInputInfo.source || "user_input",
-          preview: truncPreview(String(userInputInfo.text), 120),
-        };
-      }
-
-      var assembledPromptTail = isAssembledPromptMessageList(messages);
-      var lastUserMsg = Array.isArray(messages)
-        ? [...messages].reverse().find(function(msg) { return msg && msg.role === "user" && msg.content; })
-        : null;
-      var lastUserText = lastUserMsg ? auxiliaryMessageContentText(lastUserMsg.content) : "";
-      if (lastUserMsg && !assembledPromptTail && isFullyOocUserInput(lastUserText)) {
-        return {
-          isOoc: true,
-          source: "messages.user_tail",
-          preview: truncPreview(lastUserText, 120),
-        };
-      }
-
-      var payloadOoc = extractPayloadOocCandidate(payload);
-      if (payloadOoc) {
-        return {
-          isOoc: true,
-          source: payloadOoc.source,
-          preview: truncPreview(String(payloadOoc.text), 120),
-        };
-      }
-
-      return { isOoc: false, source: "", preview: "" };
-    } catch (err) {
-      warnLog("detectCurrentTurnOocInfo failed:", err.message);
-      return { isOoc: false, source: "", preview: "" };
-    }
-  }
   // ──────────────────────────────────────────────────────────────
   // [CONTINUITY QUERY — New Process Phase 1-1]
   // user input이 비어도 memory search가 꺼지지 않도록,
@@ -23737,119 +23664,6 @@
     }
   }
 
-  /**
-   * OOC(out-of-character) 입력을 판별한다.
-   * OOC는 장기 기억 저장/재주입 대상에서 제외한다.
-   */
-  function isOocUserMessage(content) {
-    if (!content || typeof content !== "string") return false;
-    const s = content.trim();
-    if (!s) return false;
-    if (/^(?:ooc|out\s*of\s*character)\s*[:\uFF1A]/i.test(s)) return true;
-    if (/^\/?ooc\b(?:\s*[:\uFF1A]|\s|$)/i.test(s)) return true;
-    if (/^#{1,6}\s*(?:ooc|out\s*of\s*character)\b/i.test(s)) return true;
-    if (/^\(\s*ooc\s*(?:[:\uFF1A\)]|$)/i.test(s)) return true;
-    if (/^\[\s*ooc\s*(?:[:\uFF1A\]]|$)/i.test(s)) return true;
-    if (/^\(\(\s*(?:ooc|out\s*of\s*character)\s*\)\)$/i.test(s)) return true;
-    if (/^\[\[\s*(?:ooc|out\s*of\s*character)\s*\]\]$/i.test(s)) return true;
-    if (/^<\s*ooc\s*>/i.test(s)) return true;
-    return false;
-  }
-
-  function isOocDirectiveLine(line) {
-    try {
-      const s = String(line || "").trim();
-      if (!s) return false;
-      if (isOocUserMessage(s)) return true;
-      if (/^<\s*\/\s*ooc\s*>$/i.test(s)) return true;
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  function isOocHeaderOnlyLine(line) {
-    try {
-      const s = String(line || "").trim();
-      if (!s) return false;
-      if (/^(?:\/?ooc|out\s*of\s*character)\s*(?::|\uFF1A|-)?\s*$/i.test(s)) return true;
-      if (/^#{1,6}\s*(?:ooc|out\s*of\s*character)\s*(?::|\uFF1A|-)?\s*$/i.test(s)) return true;
-      if (/^\(\s*(?:ooc|out\s*of\s*character)\s*\)$/i.test(s)) return true;
-      if (/^\[\s*(?:ooc|out\s*of\s*character)\s*\]$/i.test(s)) return true;
-      if (/^<\s*ooc\s*>$/i.test(s)) return true;
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
-  function scrubOocDirectivesFromUserInput(content) {
-    const original = typeof content === "string" ? content : String(content || "");
-    const empty = { text: original, changed: false, fullyOoc: false, removedChars: 0 };
-    try {
-      if (!original.trim()) return empty;
-      let work = original;
-      let changed = false;
-
-      work = work.replace(/^\s*<\s*ooc\s*>[\s\S]*?<\/\s*ooc\s*>\s*/i, function() {
-        changed = true;
-        return "";
-      });
-
-      let lines = work.split(/\r?\n/);
-      let removedAny = false;
-      let guard = 0;
-      while (lines.length > 0 && guard++ < 20) {
-        while (lines.length > 0 && !String(lines[0] || "").trim()) {
-          if (!removedAny) break;
-          lines.shift();
-          changed = true;
-        }
-        if (lines.length === 0) break;
-        const first = String(lines[0] || "");
-        if (!isOocDirectiveLine(first)) break;
-        removedAny = true;
-        changed = true;
-        const headerOnly = isOocHeaderOnlyLine(first);
-        lines.shift();
-        if (headerOnly) {
-          while (lines.length > 0 && String(lines[0] || "").trim()) {
-            lines.shift();
-            changed = true;
-          }
-          if (lines.length > 0 && !String(lines[0] || "").trim()) {
-            lines.shift();
-            changed = true;
-          }
-        }
-      }
-
-      const cleaned = lines.join("\n").replace(/^\s+/, "").replace(/\s+$/, "");
-      const hadOocMarker = changed || isOocUserMessage(original);
-      const fullyOoc = hadOocMarker && !cleaned.trim();
-      if (!changed) return { text: original, changed: false, fullyOoc, removedChars: 0 };
-      return {
-        text: cleaned,
-        changed: cleaned !== original,
-        fullyOoc,
-        removedChars: Math.max(0, original.length - cleaned.length),
-      };
-    } catch {
-      return empty;
-    }
-  }
-
-  function isFullyOocUserInput(content) {
-    try {
-      const text = String(content || "");
-      if (!text.trim()) return false;
-      const scrub = scrubOocDirectivesFromUserInput(text);
-      return !!scrub.fullyOoc;
-    } catch {
-      return false;
-    }
-  }
-
   function isRisuPromptScaffoldMessage(content) {
     try {
       const s = String(content || "").trim();
@@ -23933,7 +23747,6 @@
     if (/^#\s*User\s+Statement\b/i.test(s) && /<\s*statement\b/i.test(s)) return true;
     if (isRisuPromptScaffoldMessage(content)) return true;
     if (looksLikeTaggedMetaPromptEnvelope(content)) return true;
-    if (isFullyOocUserInput(content)) return true;
     return false;
   }
 
@@ -23944,20 +23757,9 @@
       if (isBoundaryOnlyUserInput(text)) return true;
       if (isRisuHistoryTrimCommandText(text)) return true;
       if (isMetaPromptLikeMessage(text)) return true;
-      if (isFullyOocUserInput(text)) return true;
       return false;
     } catch {
       return true;
-    }
-  }
-
-  function shouldSkipTurnPersistenceForOoc(userContent, assistantContent) {
-    try {
-      if (isFullyOocUserInput(String(userContent || ""))) return true;
-      if (isFullyOocUserInput(String(assistantContent || ""))) return true;
-      return false;
-    } catch {
-      return false;
     }
   }
 
@@ -27531,6 +27333,11 @@
         sourceAcceptanceObservation,
         lineageOrchestrationResult
       );
+      const risuRequestObservation = sourceObservationOptions
+        && sourceObservationOptions.risuRequestObservation
+        && typeof sourceObservationOptions.risuRequestObservation === "object"
+        ? Object.assign({}, sourceObservationOptions.risuRequestObservation)
+        : buildRisuRequestObservation(null, "afterRequest", null);
       const idempotencyKey = [
         "complete_turn",
         String(chatSessionId || ""),
@@ -27569,6 +27376,7 @@
           source_acceptance_observation: sourceAcceptanceObservation,
           archive_center_request_correlation_id: sourceAcceptanceObservation.archive_center_request_correlation_id || null,
           risu_persona_observation: risuPersonaObservation,
+          risu_request_observation: risuRequestObservation,
           critic: {
             api_key: effectiveCritic.apiKey || "",
             endpoint: effectiveCritic.endpoint || "",
@@ -27654,6 +27462,9 @@
       }
       if (meta.risu_persona_observation && typeof meta.risu_persona_observation === "object") {
         safeClientMeta.risu_persona_observation = Object.assign({}, meta.risu_persona_observation);
+      }
+      if (meta.risu_request_observation && typeof meta.risu_request_observation === "object") {
+        safeClientMeta.risu_request_observation = Object.assign({}, meta.risu_request_observation);
       }
       if (meta.active_chat_backfill && typeof meta.active_chat_backfill === "object") {
         safeClientMeta.active_chat_backfill = Object.assign({}, meta.active_chat_backfill);
@@ -27752,6 +27563,9 @@
       if (meta.preserve_requested_turn_index === true) rebuilt.client_meta.preserve_requested_turn_index = true;
       if (meta.risu_persona_observation && typeof meta.risu_persona_observation === "object") {
         rebuilt.client_meta.risu_persona_observation = Object.assign({}, meta.risu_persona_observation);
+      }
+      if (meta.risu_request_observation && typeof meta.risu_request_observation === "object") {
+        rebuilt.client_meta.risu_request_observation = Object.assign({}, meta.risu_request_observation);
       }
       if (previousLineage) {
         previousLineage.generation_id = observation.generation_id || null;
@@ -37078,7 +36892,6 @@
       if (isSaveType(type)) {
         _effectiveInputAwaitingNewTurn = true;
         // 이전 턴에서 afterRequest가 누락된 경우를 대비해 stale 상태를 먼저 정리
-        _pendingPersistenceSkipBySession.delete(orchSessionId);
 
       }
 
@@ -37862,7 +37675,6 @@
       );
       const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;
       const persistencePendingCtx = _pendingOrchBySession.get(chatSessionId) || null;
-      const persistenceSkipState = _pendingPersistenceSkipBySession.get(chatSessionId) || null;
       const pendingRequestId = String(persistencePendingCtx && persistencePendingCtx.requestId || "");
       const pendingRawInputObservation = persistencePendingCtx && persistencePendingCtx.rawInputObservation || null;
       const rawInputObservationForRequest = pendingRawInputObservation
@@ -37875,11 +37687,6 @@
       function clearPersistencePendingContext() {
         if (_pendingOrchBySession.get(chatSessionId) === persistencePendingCtx) {
           _pendingOrchBySession.delete(chatSessionId);
-        }
-      }
-      function clearPersistenceSkipState() {
-        if (_pendingPersistenceSkipBySession.get(chatSessionId) === persistenceSkipState) {
-          _pendingPersistenceSkipBySession.delete(chatSessionId);
         }
       }
       function clearEffectiveInputAwaitingForRequest() {
@@ -38023,39 +37830,8 @@
           attachSanitizeTrace(lastOrchResult._trace, displaySanitizeTrace);
         }
 
-      let skipPersist = persistenceSkipState;
-      if (skipPersist && skipPersist.reason === "llm_gate_blocked") {
-        const hasDeliveredContent = typeof displayContent === "string" && !!displayContent.trim();
-        if (!hasDeliveredContent) {
-          clearPersistenceSkipState();
-          clearPersistencePendingContext();
-          lastOrchResult = null;
-          clearEffectiveInputAwaitingForRequest();
-
-          updateRuntimeState("lastSaveStatus", "skipped", {
-            detail: "llm_gate_blocked" + (skipPersist.source ? " (" + skipPersist.source + ")" : ""),
-          });
-          updateRuntimeState("lastCompleteStatus", "skipped", { detail: "llm_gate_blocked" });
-          updateRuntimeState("lastCompleteTurnStatus", "off", {
-            source: "local",
-            detail: "llm_gate_blocked",
-            failReasons: ["llm_gate_blocked"],
-          });
-
-          return responseReturnContent ?? "";
-        }
 
         // 비용이 이미 발생한 경우 응답 본문을 유지하고 정상 저장 경로로 복구한다.
-        clearPersistenceSkipState();
-        skipPersist = null;
-        updateRuntimeState("lastCompleteTurnStatus", "warn", {
-          source: "local",
-          detail: "llm_gate_blocked_but_response_delivered",
-          failReasons: ["llm_gate_blocked"],
-        });
-        debugLog("afterRequest salvage: response already delivered, skip llm_gate discard");
-      }
-
       const hasAfterRequestAssistantCandidate = !!(
         recoveredAssistantContent ||
         (typeof displayContent === "string" && normalizeAssistantPersistenceCandidate(displayContent))
@@ -38083,26 +37859,6 @@
         return responseReturnContent;
       }
 
-      if (skipPersist && skipPersist.reason === "ooc_turn") {
-        clearPersistenceSkipState();
-        clearPersistencePendingContext();
-        lastOrchResult = null;
-        clearEffectiveInputAwaitingForRequest();
-
-        updateRuntimeState("lastSaveStatus", "skipped", {
-          detail: "ooc_turn" + (skipPersist.source ? " (" + skipPersist.source + ")" : ""),
-        });
-        updateRuntimeState("lastCompleteStatus", "skipped", { detail: "ooc_turn" });
-        updateRuntimeState("lastCompleteTurnStatus", "off", {
-          source: "local",
-          detail: "ooc_skipped",
-          failReasons: ["ooc_turn"],
-        });
-        await showTurnWorkflowHUDOOCRecognition(chatSessionId, peekNextTurnIndex(chatSessionId));
-
-        debugLog("afterRequest: OOC turn → skip DB save/critic/episode/maintenance", skipPersist.source || "unknown");
-        return responseReturnContent;
-      }
       // Sprint 4-A-1: pending context consume
       const pendingCtx = persistencePendingCtx;
       const cacheAssessment = assessOrchestrationCacheReuseOr1d(chatSessionId, pendingCtx);
@@ -38210,52 +37966,6 @@
         userInputRecoverySource = actualEmptyRawInput ? "input_hook_empty" : "before_request_empty_input";
       }
       let safeSavedUserInput = isCanonicalHostUserInputText(userInput) ? userInput : "";
-      const saveUserOocScrub = scrubOocDirectivesFromUserInput(userInput);
-      if (saveUserOocScrub.fullyOoc) {
-        const skippedTurnIdx = peekNextTurnIndex(chatSessionId);
-        updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: skippedTurnIdx, detail: "ooc_turn (save_layer)" });
-        updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: skippedTurnIdx, detail: "ooc_turn" });
-        updateRuntimeState("lastCompleteTurnStatus", "off", {
-          source: "local",
-          detail: "ooc_skipped",
-          failReasons: ["ooc_turn"],
-        });
-        await showTurnWorkflowHUDOOCRecognition(chatSessionId, skippedTurnIdx);
-        if (lastOrchResult && lastOrchResult._trace) {
-          lastOrchResult._trace.userInputCapture = {
-            status: "ooc_turn_blocked",
-            source: String((lastOrchResult && lastOrchResult._userInputSource) || userInputRecoverySource || "unknown"),
-            chars: String(userInput || "").length,
-            safeSaveBlocked: true,
-          };
-          lastOrchResult._trace.endedAt = new Date().toISOString();
-          lastTurnTrace = lastOrchResult._trace;
-          pushTurnHistory(lastTurnTrace);
-          syncRuntimeStateFromTurnTrace(lastTurnTrace);
-        }
-        clearPersistencePendingContext();
-        clearEffectiveInputAwaitingForRequest();
-        lastOrchResult = null;
-        if (panelOpen) {
-          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderOocSaveLayer");
-        }
-        debugLog("afterRequest: OOC turn blocked at save layer");
-        return responseReturnContent ?? "";
-      } else if (saveUserOocScrub.changed) {
-        const beforeUserOocScrub = userInput;
-        userInput = saveUserOocScrub.text;
-        safeSavedUserInput = saveUserOocScrub.text;
-        if (lastOrchResult && lastOrchResult._trace) {
-          attachSanitizeTrace(lastOrchResult._trace, buildSanitizeTrace("ooc_scrub_user_input", beforeUserOocScrub, safeSavedUserInput));
-          lastOrchResult._trace.userInputCapture = {
-            status: "ooc_directive_scrubbed",
-            source: String((lastOrchResult && lastOrchResult._userInputSource) || userInputRecoverySource || "unknown"),
-            chars: String(safeSavedUserInput || "").length,
-            removedChars: saveUserOocScrub.removedChars,
-            rawCacheHit: !!rawInputObservationForRequest,
-          };
-        }
-      }
       if (userInputRecoverySource && lastOrchResult && lastOrchResult._trace) {
         lastOrchResult._trace.userInputCapture = {
           status: actualEmptyUserInput ? "actual_empty_input" : "recovered",
@@ -38310,9 +38020,8 @@
         return responseReturnContent ?? "";
       }
       let turnIdx = peekNextTurnIndex(chatSessionId);
-      let turnOocGuardApplied = shouldSkipTurnPersistenceForOoc(userInput, displayContent);
-      let persistedAssistantContent = turnOocGuardApplied ? "" : (recoveredAssistantContent || normalizeAssistantPersistenceCandidate(displayContent));
-      if (!turnOocGuardApplied && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
+      let persistedAssistantContent = recoveredAssistantContent || normalizeAssistantPersistenceCandidate(displayContent);
+      if (typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
         const beforeOutputCanonical = persistedAssistantContent;
         persistedAssistantContent = canonicalizeAssistantOutputForPersistence(
           persistedAssistantContent,
@@ -38335,25 +38044,8 @@
           }
         }
       }
-      if (!turnOocGuardApplied) {
-        const saveAssistantOocScrub = scrubOocDirectivesFromUserInput(persistedAssistantContent);
-        if (saveAssistantOocScrub.fullyOoc) {
-          turnOocGuardApplied = true;
-          persistedAssistantContent = "";
-        } else if (saveAssistantOocScrub.changed) {
-          const beforeAssistantOocScrub = persistedAssistantContent;
-          persistedAssistantContent = saveAssistantOocScrub.text;
-          recoveredAssistantContent = persistedAssistantContent;
-          if (typeof displayContent === "string" && displayContent === beforeAssistantOocScrub) {
-            displayContent = persistedAssistantContent;
-          }
-          if (lastOrchResult && lastOrchResult._trace) {
-            attachSanitizeTrace(lastOrchResult._trace, buildSanitizeTrace("ooc_scrub_assistant_content", beforeAssistantOocScrub, persistedAssistantContent));
-          }
-        }
-      }
       let activeChatPairAlignment = hostFinalityAccepted ? null : (activeChatLatestSavePair || null);
-      if (!hostFinalityAccepted && !turnOocGuardApplied && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
+      if (!hostFinalityAccepted && typeof persistedAssistantContent === "string" && persistedAssistantContent.trim()) {
         const currentUserComparableForAssistantLookup = normalizeTurnPairCompareText(safeSavedUserInput);
         const currentUserIsAutoContinueForAssistantLookup =
           currentUserComparableForAssistantLookup
@@ -38420,27 +38112,9 @@
             };
           }
           activeChatPairAlignment = activePairByAssistant;
-          turnOocGuardApplied = shouldSkipTurnPersistenceForOoc(userInput, displayContent);
-          if (turnOocGuardApplied) {
-            persistedAssistantContent = "";
-          }
         }
       }
-      const postAlignmentUserOocScrub = scrubOocDirectivesFromUserInput(safeSavedUserInput);
-      if (postAlignmentUserOocScrub.fullyOoc) {
-        turnOocGuardApplied = true;
-        safeSavedUserInput = "";
-        userInput = "";
-        persistedAssistantContent = "";
-      } else if (postAlignmentUserOocScrub.changed) {
-        const beforePostAlignmentUserOocScrub = safeSavedUserInput;
-        safeSavedUserInput = postAlignmentUserOocScrub.text;
-        userInput = postAlignmentUserOocScrub.text;
-        if (lastOrchResult && lastOrchResult._trace) {
-          attachSanitizeTrace(lastOrchResult._trace, buildSanitizeTrace("ooc_scrub_user_input_after_alignment", beforePostAlignmentUserOocScrub, safeSavedUserInput));
-        }
-      }
-      if (!hostFinalityAccepted && !turnOocGuardApplied && String(safeSavedUserInput || "").trim()) {
+      if (!hostFinalityAccepted && String(safeSavedUserInput || "").trim()) {
         const allowUserOnlyAssistantRecovery = !normalizeTurnPairCompareText(persistedAssistantContent);
         activeChatPairAlignment = activeChatPairAlignment || (allowUserOnlyAssistantRecovery
           ? await findActiveChatCompletedTurnPairForUserContent(chatSessionId, safeSavedUserInput)
@@ -38476,23 +38150,6 @@
           }
         }
       }
-      if (!turnOocGuardApplied) {
-        const finalAssistantOocScrub = scrubOocDirectivesFromUserInput(persistedAssistantContent);
-        if (finalAssistantOocScrub.fullyOoc) {
-          turnOocGuardApplied = true;
-          persistedAssistantContent = "";
-        } else if (finalAssistantOocScrub.changed) {
-          const beforeFinalAssistantOocScrub = persistedAssistantContent;
-          persistedAssistantContent = finalAssistantOocScrub.text;
-          recoveredAssistantContent = persistedAssistantContent;
-          if (typeof displayContent === "string" && displayContent === beforeFinalAssistantOocScrub) {
-            displayContent = persistedAssistantContent;
-          }
-          if (lastOrchResult && lastOrchResult._trace) {
-            attachSanitizeTrace(lastOrchResult._trace, buildSanitizeTrace("ooc_scrub_assistant_content_final", beforeFinalAssistantOocScrub, persistedAssistantContent));
-          }
-        }
-      }
       if (lastOrchResult && lastOrchResult._trace) {
         attachSanitizeTrace(
           lastOrchResult._trace,
@@ -38511,7 +38168,7 @@
         && !!activePairCurrentUserComparable
         && !!safeSavedCurrentUserComparable
         && activePairCurrentUserComparable === safeSavedCurrentUserComparable;
-      if (!hostFinalityAccepted && !turnOocGuardApplied && hasPersistedAssistantContent && !activePairMatchesCurrentUser) {
+      if (!hostFinalityAccepted && hasPersistedAssistantContent && !activePairMatchesCurrentUser) {
         const previousSnapshot = getSessionSnapshot(chatSessionId);
         const previousAssistant = getLastNonEmptyAssistantComparableContent(
           previousSnapshot && Array.isArray(previousSnapshot.messagesPreview)
@@ -38552,7 +38209,7 @@
             return responseReturnContent ?? "";
         }
       }
-      if (!turnOocGuardApplied && !hasPersistedAssistantContent) {
+      if (!hasPersistedAssistantContent) {
         updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: turnIdx, detail: "assistant_content_missing" });
         updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: turnIdx, detail: "critic skipped: assistant_content_missing" });
         updateRuntimeState("lastCompleteTurnStatus", "warn", {
@@ -38591,7 +38248,7 @@
         debugLog("[M-4c] assistant content missing; skip empty assistant persistence and complete fallback");
         return responseReturnContent ?? "";
       }
-      const recentPersistedDuplicate = !turnOocGuardApplied && hasPersistedAssistantContent
+      const recentPersistedDuplicate = hasPersistedAssistantContent
         ? await findRecentPersistedCompleteTurnPairForContent(chatSessionId, safeSavedUserInput, persistedAssistantContent)
         : null;
       if (recentPersistedDuplicate && Number(recentPersistedDuplicate.turnIndex || 0) > 0) {
@@ -38648,7 +38305,7 @@
         chatSessionId,
         turnIndex: turnIdx,
       });
-      if (!turnOocGuardApplied && persistenceGate && persistenceGate.allowed === false) {
+      if (persistenceGate && persistenceGate.allowed === false) {
         const gateDetail = persistenceGate.reason + (persistenceGate.marker ? ":" + persistenceGate.marker : "");
         updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: turnIdx, detail: gateDetail });
         updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: turnIdx, detail: gateDetail });
@@ -38693,8 +38350,7 @@
       // critic 컨텍스트 / turnContent 조립 (M-4c: tryCompleteTurn에 전달하기 위해 save 전으로 이동)
       const criticCtx = recentCtx.filter(function(m) {
         if (!m) return false;
-        if (m.role === "user" && (isMetaUserMessage(m.content) || isFullyOocUserInput(m.content))) return false;
-        if (m.role === "assistant" && isFullyOocUserInput(m.content)) return false;
+        if (m.role === "user" && isMetaUserMessage(m.content)) return false;
         return true;
       });
       const realUserMsg = [...criticCtx].reverse().find(m => m.role === "user" && m.content);
@@ -38722,9 +38378,7 @@
 
       // M-4c: /complete-turn 통합 호출 (save + critic + episode)
       // 성공 시 local 경로 skip; 실패/skeleton 시 complete-turn 재시도 큐에 보관.
-      const _ctBody = turnOocGuardApplied
-        ? null
-        : await safeCall(
+      const _ctBody = await safeCall(
             () => buildCompleteTurnRequestBody(
               turnIdx,
               safeSavedUserInput,
@@ -38735,12 +38389,13 @@
               {
                 orchestrationResult: lastOrchResult,
                 sourceAcceptanceFinality,
+                risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
               }
             ),
             null, "buildCompleteTurnRequestBody"
           );
       const _ctQueuedPayload = _ctBody ? buildCompleteTurnQueuePayload(_ctBody) : null;
-      const _ctResult = turnOocGuardApplied || !_ctBody
+      const _ctResult = !_ctBody
         ? null
         : await safeCall(
             () => tryCompleteTurn(turnIdx, safeSavedUserInput, persistedAssistantContent, criticCtx, chatSessionId, _improvementTrace, _ctBody),
@@ -38755,7 +38410,7 @@
         && _ctResult.status !== "rejected"
         && (_ctResult.queue_action === "discard" || _ctResult.retryable === false)
       );
-      const effectiveTurnOocGuardApplied = turnOocGuardApplied || isOocTurnGuardResult(_ctResult);
+      const effectiveTurnOocGuardApplied = isOocTurnGuardResult(_ctResult);
       const _ctSource = _ctOk ? "backend" : "local";
       if (_ctResult) {
         debugLog("[M-4c] /complete-turn status:", _ctResult.status, "save_ok:", _ctResult.save_ok,

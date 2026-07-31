@@ -163,25 +163,25 @@ func TestMariaDBResolveReviewedCanonicalEntityIDAmbiguousFailsClosed(t *testing.
 	}
 }
 
-func TestMariaDBResolveUniqueActiveEntityIDBySurfaceRequiresUniqueReviewedActiveIdentity(t *testing.T) {
+func TestMariaDBResolveUniqueActiveEntityIdentityBySurfaceReturnsDatabaseNamespace(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		rows    *sqlmock.Rows
-		want    string
+		want    ResolvedEntityIdentity
 		wantErr error
 	}{
 		{
 			name: "unique",
-			rows: sqlmock.NewRows([]string{"stable_entity_id", "target_entity_id"}).
-				AddRow("occurrence-1", "canonical-1").
-				AddRow("occurrence-2", "canonical-1"),
-			want: "canonical-1",
+			rows: sqlmock.NewRows([]string{"stable_entity_id", "source_namespace", "target_entity_id", "target_namespace"}).
+				AddRow("occurrence-1", "session_unknown", "canonical-1", "session_npc").
+				AddRow("occurrence-2", "session_unknown", "canonical-1", "session_npc"),
+			want: ResolvedEntityIdentity{StableEntityID: "canonical-1", IdentityNamespace: "session_npc"},
 		},
 		{
 			name: "ambiguous",
-			rows: sqlmock.NewRows([]string{"stable_entity_id", "target_entity_id"}).
-				AddRow("occurrence-1", "").
-				AddRow("occurrence-2", ""),
+			rows: sqlmock.NewRows([]string{"stable_entity_id", "source_namespace", "target_entity_id", "target_namespace"}).
+				AddRow("occurrence-1", "session_npc", "", "").
+				AddRow("occurrence-2", "session_player", "", ""),
 			wantErr: ErrReviewedEntityIdentityAmbiguous,
 		},
 	} {
@@ -200,9 +200,9 @@ func TestMariaDBResolveUniqueActiveEntityIDBySurfaceRequiresUniqueReviewedActive
 					"session-1", "alex",
 				).
 				WillReturnRows(tc.rows)
-			got, err := m.ResolveUniqueActiveEntityIDBySurface(context.Background(), "session-1", "alex")
+			got, err := m.ResolveUniqueActiveEntityIdentityBySurface(context.Background(), "session-1", "alex")
 			if !errors.Is(err, tc.wantErr) || got != tc.want {
-				t.Fatalf("resolved=%q err=%v want=%q err=%v", got, err, tc.want, tc.wantErr)
+				t.Fatalf("resolved=%#v err=%v want=%#v err=%v", got, err, tc.want, tc.wantErr)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)
@@ -213,13 +213,20 @@ func TestMariaDBResolveUniqueActiveEntityIDBySurfaceRequiresUniqueReviewedActive
 
 type reviewedResolverTestStore struct {
 	Store
-	target string
-	calls  int
+	target        string
+	calls         int
+	identity      ResolvedEntityIdentity
+	identityCalls int
 }
 
 func (s *reviewedResolverTestStore) ResolveReviewedCanonicalEntityID(context.Context, string, string) (string, error) {
 	s.calls++
 	return s.target, nil
+}
+
+func (s *reviewedResolverTestStore) ResolveUniqueActiveEntityIdentityBySurface(context.Context, string, string) (ResolvedEntityIdentity, error) {
+	s.identityCalls++
+	return s.identity, nil
 }
 
 func TestReviewedCanonicalEntityResolverDelegatesAuthoritativeReads(t *testing.T) {
@@ -242,5 +249,33 @@ func TestReviewedCanonicalEntityResolverDelegatesAuthoritativeReads(t *testing.T
 	target, err = resolver.ResolveReviewedCanonicalEntityID(context.Background(), "session-1", "occurrence-1")
 	if err != nil || target != authoritative.target || authoritative.calls != 2 {
 		t.Fatalf("read-only authoritative read target=%q calls=%d err=%v", target, authoritative.calls, err)
+	}
+}
+
+func TestUniqueActiveEntitySurfaceIdentityResolverDelegatesDatabaseOwnedNamespace(t *testing.T) {
+	authoritative := &reviewedResolverTestStore{
+		Store: NewNoopStore(),
+		identity: ResolvedEntityIdentity{
+			StableEntityID: "entity-alex", IdentityNamespace: "session_npc",
+		},
+	}
+	dual := NewDualWriteStore(authoritative, NewNoopStore())
+	resolver, ok := dual.(UniqueActiveEntitySurfaceIdentityResolver)
+	if !ok {
+		t.Fatal("dual-write store does not expose namespace-aware identity resolver")
+	}
+	identity, err := resolver.ResolveUniqueActiveEntityIdentityBySurface(context.Background(), "session-1", "alex")
+	if err != nil || identity != authoritative.identity || authoritative.identityCalls != 1 {
+		t.Fatalf("dual identity=%#v calls=%d err=%v", identity, authoritative.identityCalls, err)
+	}
+
+	readOnly := NewReadOnlyStore(authoritative)
+	resolver, ok = readOnly.(UniqueActiveEntitySurfaceIdentityResolver)
+	if !ok {
+		t.Fatal("read-only store does not expose namespace-aware identity resolver")
+	}
+	identity, err = resolver.ResolveUniqueActiveEntityIdentityBySurface(context.Background(), "session-1", "alex")
+	if err != nil || identity != authoritative.identity || authoritative.identityCalls != 2 {
+		t.Fatalf("read-only identity=%#v calls=%d err=%v", identity, authoritative.identityCalls, err)
 	}
 }

@@ -286,15 +286,6 @@ func (s *Server) processAcceptedSourceRevision(
 		result.Failure = "CRITIC_RESULT_SUPERSEDED"
 		return result
 	}
-	if shouldApplyCompleteTurnOOCGuard(
-		source.UserContent,
-		source.AssistantContent,
-		nil,
-	) {
-		result.State = "skipped_ooc"
-		result.Failure = "ooc_guard"
-		return result
-	}
 	processingCtx, releaseSourceWorker := s.completeTurnStoredSourceProcessingContext(ctx, source)
 	defer releaseSourceWorker()
 

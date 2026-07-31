@@ -66,6 +66,23 @@ func appendPreciseMemoryEvidenceExcerpts(ctx context.Context, extraction map[str
 		seen[key] = true
 		excerpts = append(excerpts, excerpt)
 	}
+	for _, lane := range []string{
+		"interaction_events",
+		"relationship_observations",
+		"interaction_boundaries",
+		"user_interaction_profile",
+		"rp_character_profile",
+	} {
+		for _, raw := range sliceFromAny(extraction[lane]) {
+			excerpt := interactionAdmissionEvidence(mapFromAny(raw))
+			key := normalizeArtifactDedupeText(excerpt)
+			if excerpt == "" || key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			excerpts = append(excerpts, excerpt)
+		}
+	}
 	extraction["evidence_excerpts"] = excerpts
 	return extraction
 }
@@ -302,6 +319,7 @@ func preciseMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate
 		out = append(out, candidate)
 	}
 	out = append(out, perspectiveMemoryCandidates(extraction)...)
+	out = append(out, interactionAdmissionPreciseMemoryCandidates(extraction)...)
 	for _, raw := range sliceFromAny(extraction["speaker_attributions"]) {
 		item := mapFromAny(raw)
 		excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "source_excerpt")))

@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
+	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
 var (
@@ -314,6 +315,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		return nil, schemaTrace, schemaErr
 	}
 	parsed, quarantineTrace := quarantineCriticProtectedCandidates(parsed, safeUserInput, safeAssistantContent)
+	trustedRPIdentities := s.resolveTrustedRPCharacterIdentities(ctx, sid, parsed)
+	parsed, interactionAdmissionTrace := admitCriticInteractionLanesWithTrustedIdentities(parsed, safeUserInput, safeAssistantContent, trustedRPIdentities)
 	trace := map[string]any{
 		"prompt_source": promptSource,
 		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
@@ -354,6 +357,9 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	if len(quarantineTrace) > 0 {
 		trace["protected_candidate_quarantine"] = quarantineTrace
 	}
+	if len(interactionAdmissionTrace) > 0 {
+		trace["interaction_admission"] = interactionAdmissionTrace
+	}
 	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 		trace["request_overrides"] = requestOverrides
 	}
@@ -392,6 +398,35 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	normalized = enrichNormalizedCriticExtractionForFocusedRecall(normalized, safeUserInput, safeAssistantContent, turnIndex)
 	normalized = applyLanguageMemoryWriteContract(normalized, languageContext)
 	return normalized, trace, nil
+}
+
+func (s *Server) resolveTrustedRPCharacterIdentities(ctx context.Context, sid string, extraction map[string]any) map[string]*interactionStableCharacterIdentity {
+	resolver, ok := s.Store.(store.UniqueActiveEntitySurfaceIdentityResolver)
+	if !ok {
+		return nil
+	}
+	resolved := map[string]*interactionStableCharacterIdentity{}
+	for _, raw := range sliceFromAny(extraction["rp_character_profile"]) {
+		profile := mapFromAny(raw)
+		character := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(profile, "character"), stringFromMap(profile, "entity"), stringFromMap(profile, "name")))
+		proof := mapFromAny(profile["identity_proof"])
+		stableEntityID := strings.TrimSpace(stringFromMap(proof, "stable_entity_id"))
+		namespace := strings.ToLower(strings.TrimSpace(stringFromMap(proof, "identity_namespace")))
+		if character == "" || stableEntityID == "" || stringFromMap(proof, "contract_version") != inWorldIdentityProofContract ||
+			(namespace != "session_npc" && namespace != "session_player") {
+			continue
+		}
+		identity, err := resolver.ResolveUniqueActiveEntityIdentityBySurface(ctx, sid, comparableEntityKey(character))
+		if err != nil || strings.TrimSpace(identity.StableEntityID) != stableEntityID ||
+			strings.TrimSpace(identity.IdentityNamespace) != namespace {
+			continue
+		}
+		resolved[comparableEntityKey(character)] = &interactionStableCharacterIdentity{
+			stableEntityID: identity.StableEntityID,
+			namespace:      identity.IdentityNamespace,
+		}
+	}
+	return resolved
 }
 
 func shouldRunFocusedWorldRuleAudit(extraction map[string]any) bool {
@@ -711,7 +746,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{"version":"story_clock.v1","observation_kind":"absolute","scene_scope":"current","precision":"exact","absolute":{"date":"1423-04-12","time":"13:00"},"evidence_excerpt":"exact latest-turn excerpt","transition":"set"},"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"state_deltas":{},"character_deltas":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{"version":"story_clock.v1","observation_kind":"absolute","scene_scope":"current","precision":"exact","absolute":{"date":"1423-04-12","time":"13:00"},"evidence_excerpt":"exact latest-turn excerpt","transition":"set"},"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"interaction_events":[],"relationship_observations":[],"interaction_boundaries":[],"user_interaction_profile":[],"rp_character_profile":[],"state_deltas":{},"character_deltas":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
@@ -723,8 +758,8 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Keep internal enum/category/predicate keys stable. Do not translate system keys per turn just because the output language changes.",
 		"- For ordinary narrative turns with new information, include 1-3 evidence_excerpts that ground the most important user intent and assistant outcome.",
 		"- kg_triples must use real in-story names only. Never use char_*, cid_*, turn_*, user, assistant, system, prompt, or has_turn edges.",
-		"- Every kg_triples item requires a short exact evidence_excerpt from the latest completed turn. Omit an unsupported triple; do not paraphrase private belief, identity, role, allegiance, or secret knowledge into an objective KG edge.",
-		"- For ordinary narrative turns with named actors, emit kg_triples for durable relations, assignments, locations, ownership, promises, threats, injuries, permissions, commands, faction links, or plan participation.",
+		"- Every kg_triples item requires semantic_class=entity_fact|event_fact|state_fact|world_fact|identity_fact|location_fact|item_fact, exact evidence_excerpt, and subject_binding/object_binding using kg_endpoint_binding.v1. Each binding requires endpoint_kind=entity|scalar and expression copied exactly from evidence and equal to that endpoint value. Generic entity-to-entity KG edges are review-only and must be omitted regardless of identity resolution; use a dedicated typed lane instead. Entity-to-scalar non-relationship facts may be emitted with exact source-bound bindings. Do not paraphrase private belief, identity, role, allegiance, secret knowledge, directional relationship, or interaction boundary into an objective KG edge.",
+		"- For ordinary narrative turns, emit only source-bound entity-to-scalar non-relationship kg_triples. Put entity-to-entity relations and relationship domains only in their dedicated typed lanes, and consent/refusal/withdrawal only in interaction_boundaries.",
 		"- entities.characters/locations/items should contain only concrete in-story people, places, or objects observed in this turn.",
 		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, optional listener_names/listeners when directly observed, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker or listener from style alone; use ambiguous or unknown when multiple characters fit.",
 		"- Separate location/time fact classes. Global current scene location or current scene time belongs in state_deltas.scene_state; a named character's current location belongs in reversible_states. A durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status and/or kg_triples with predicates such as residence, hometown, lives_in, or based_in.",
@@ -735,9 +770,14 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- story_clock.precision must be exact|partial|bounded_range|unknown. Never turn server time, audit time, turn_index, or an unknown/relative phrase without a current story-clock anchor into an exact story date.",
 		"- Use only the primary object matching observation_kind: absolute, partial, relative, or range. sequence may use relation/anchor/index/label; duration may use value or min/max with unit and approximate. Do not emit contradictory primary objects together.",
 		"- flashback, planned, and hypothetical observations describe non-current time and must not be presented as the current scene clock. Use transition=set|advance|correction|reaffirm|supersede|retract; correction, supersession, and retraction require exact latest-turn evidence.",
-		"- relationship_memory may include target_name or pair when trust changes. If no target exists, leave it empty.",
-		"- character_deltas should capture named character appearance, personality, relationship changes, intentions, speech style, or durable role/authority/residence facts. Do not put current location, emotion, injury/body state, or possession there; those belong only in reversible_states.",
-		"- Separate narrative_events (what happened), state_claims (objective current facts), and belief_updates (perspective_memory.v1 proposals for one character's knowledge). Do not promote beliefs to objective truth. Each belief_updates item must name the exact knowledge holder with perspective_owner/knower or source-grounded listener_names/listeners, may name an actual source-grounded speaker, and must use epistemic_state=known|suspected|unknown|misinformed|hidden|revealed plus acquisition_mode when directly supported. Include every named speaker/listener/holder in entities.characters.",
+		"- interaction_events record only atomic source-backed actions. Every item requires actor, actor_expression, counterpart, counterpart_expression, action, action_expression, and an exact latest-turn evidence_excerpt. Each *_expression is an exact substring of that evidence; action must be the exact action_expression, not a paraphrase. Helping, touching, obeying, or speaking does not by itself establish trust, intimacy, romance, loyalty, consent, or a durable relationship change.",
+		"- relationship_observations are the only lane for directional relationship semantics. Every item requires source_entity, source_entity_expression, target_entity, target_entity_expression, domain=trust|attachment|romantic|rivalry|fear|obligation|respect|obedience|intimacy, domain_expression, observation copied exactly from evidence, support_kind=explicit_statement|explicit_narrated_change|explicit_observed_state, and an exact latest-turn evidence_excerpt. Each entity/domain expression is copied exactly from that evidence, and domain_expression also occurs in observation. Preserve magnitude or duration only with magnitude_expression/duration_expression copied exactly from that evidence. Never reverse direction, copy one character's feeling to another, or translate one domain into another.",
+		"- interaction_boundaries use contract interaction_boundary.v1 and require actor, actor_expression, counterpart, counterpart_expression, action_scope, action_scope_expression, decision=allow|refuse|withdrawn|unknown, decision_expression, support_kind=explicit_statement|explicit_narrated_boundary|explicit_observed_boundary, exact evidence_excerpt, effective_scope/time, and visibility. Each *_expression is copied exactly from that evidence; action_scope must equal action_scope_expression. Default effective_scope is event. Preserve a non-event effective_scope or effective_time only with effective_scope_expression/effective_time_expression copied exactly from evidence. Silence, kindness, compliance, prior consent, deception, or model inference is not current consent. A withdrawal overrides an allow for the same actor/counterpart/action/effective scope.",
+		"- user_interaction_profile is only the real user's explicit out-of-story setting namespace and requires profile_key_expression and value_expression copied exactly from evidence. It remains an unobserved review proposal unless typed host metadata explicitly observes an OOC request class. rp_character_profile is only an in-story player/NPC profile namespace and requires character_expression and value_expression copied exactly from evidence; value must equal value_expression. An RP profile can commit only with identity_proof={contract_version:'in_world_identity_proof.v1',stable_entity_id,identity_namespace:'session_npc'|'session_player',character_expression} matching a backend-supplied stable in-world entity; otherwise it remains private review-only material and must not create an entity. Never copy either namespace into the other, and never copy user_interaction_profile into narrative_events, KG, world rules, character_deltas, or relationship observations.",
+		"- relationship_observations and interaction_boundaries default to owner_private visibility. Emit visibility=public only with public_visibility_support={contract_version:'public_visibility_support.v1',support_kind:'explicit_public_statement'|'explicit_public_narration'|'explicit_public_observation',visibility_assertion:evidence_excerpt}, where visibility_assertion is the complete source-bound evidence excerpt and explicitly establishes public visibility. A token or partial phrase is never visibility proof.",
+		"- Leave relationship_memory empty. It is a legacy untyped lane. Put explicitly supported directional changes only in relationship_observations.",
+		"- character_deltas should capture named character appearance, personality, intentions, speech style, or durable role/authority/residence facts. Do not put relationships, current location, emotion, injury/body state, or possession there; relationships belong only in relationship_observations and reversible state belongs only in reversible_states.",
+		"- Separate narrative_events (what happened), state_claims (objective current non-relationship facts), and belief_updates (perspective_memory.v1 proposals for one character's knowledge). Do not place a directional relationship observation in any of these lanes, and do not promote beliefs to objective truth. Each belief_updates item must name the exact knowledge holder with perspective_owner/knower or source-grounded listener_names/listeners, may name an actual source-grounded speaker, and must use epistemic_state=known|suspected|unknown|misinformed|hidden|revealed plus acquisition_mode when directly supported. Include every named speaker/listener/holder in entities.characters.",
 		"- state_claims and belief_updates use stable state_slot keys and transition=set|reaffirm|change|reversal|recovery|correction|reveal|resolve|uncertain|clear|defer|abandon|complete|supersede|reopen|resume. Turn is audit order, not semantic authority.",
 		"- For goal or thread lifecycle state_claims, use the exact goal or thread title as subject, subject_type=entity, and state_slot=goal_status. Do not use goal_status for another entity-state dimension.",
 		"- When that goal or thread is also emitted in pending_threads or state_deltas unresolved_threads.opened, include the same exact title and subject plus state_slot=goal_status in that open record.",
@@ -771,7 +811,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Each world rule must include key and value; prefer scope, scope_name, category, confidence, and verification/evidence when available. Use world_state.rules for the same durable rules when they shape the current world state.",
 		"- subjective_entity_memories is for each named in-story entity's subjective recollection or interpretation of the latest turn. It is not canonical truth.",
 		"- Each subjective_entity_memories item must include owner_entity_key or owner_entity_name, memory_text, and may include owner_entity_role, owner_visibility, source_turn_index, importance_10, emotional_weight, evidence_excerpt, secret_guard, target_reveal_policy, tags, and portability.",
-		"- When a named character clearly feels, fears, trusts, suspects, misunderstands, decides, resents, or privately interprets the event, include a subjective_entity_memories item for that owner. Keep it evidence-bound and support-only.",
+		"- subjective_entity_memories is only for non-relationship private interpretation, suspicion, misunderstanding, decision, or recollection. Put trust, attachment, romance, rivalry, fear, obligation, respect, obedience, and intimacy only in relationship_observations. Keep every proposal evidence-bound and support-only.",
 		"- Use owner_entity_role=protagonist for the player/persona and owner_entity_role=npc with owner_visibility=owner_private for private NPC recollections. Keep NPC-only memories out of persona_capsule_candidates.",
 		"- subjective_entity_memories must remain support-only: never use it to overwrite current-world truth, canonical memory, direct evidence, KG triples, character state, or world rules.",
 		"- NPC/private subjective_entity_memories are interpretations, suspicions, misunderstandings, or private bias unless current direct evidence states otherwise; never promote them to objective fact or narrator-revealed truth.",
@@ -1260,6 +1300,8 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 		"narrative_events", "state_claims", "belief_updates",
 		"subjective_entity_memories", "protected_secrets",
 		"character_identity_accuracy", "persona_capsule_candidates",
+		"interaction_events", "relationship_observations", "interaction_boundaries",
+		"user_interaction_profile", "rp_character_profile",
 	}
 	objectFields := []string{
 		"entities", "relationship_memory", "state_deltas", "world_rule_audit",
@@ -1940,6 +1982,11 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["entities"] = mapFromAny(raw["entities"])
 	out["speaker_attributions"] = normalizeSpeakerAttributionCandidates(raw["speaker_attributions"])
 	out["relationship_memory"] = mapFromAny(raw["relationship_memory"])
+	out["interaction_events"] = sliceFromAny(raw["interaction_events"])
+	out["relationship_observations"] = sliceFromAny(raw["relationship_observations"])
+	out["interaction_boundaries"] = sliceFromAny(raw["interaction_boundaries"])
+	out["user_interaction_profile"] = sliceFromAny(raw["user_interaction_profile"])
+	out["rp_character_profile"] = sliceFromAny(raw["rp_character_profile"])
 	out["state_deltas"] = sanitizeLegacyReversibleStateDeltas(raw["state_deltas"])
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
 	out["reversible_states"] = normalizeReversibleStateProposals(raw["reversible_states"])

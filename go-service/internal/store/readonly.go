@@ -584,12 +584,28 @@ func (r *readOnlyStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context
 	return resolver.ResolveUniqueActiveEntityIDBySurface(ctx, chatSessionID, normalizedSurface)
 }
 
+func (r *readOnlyStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (ResolvedEntityIdentity, error) {
+	resolver, ok := r.delegate.(UniqueActiveEntitySurfaceIdentityResolver)
+	if !ok {
+		return ResolvedEntityIdentity{}, ErrNotEnabled
+	}
+	return resolver.ResolveUniqueActiveEntityIdentityBySurface(ctx, chatSessionID, normalizedSurface)
+}
+
 func (r *readOnlyStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context, chatSessionID, knowledgeHolderEntityID string) ([]PreciseMemoryUnit, error) {
 	reader, ok := r.delegate.(CharacterPerspectiveMemoryReader)
 	if !ok {
 		return nil, ErrNotEnabled
 	}
 	return reader.ListCharacterPerspectiveMemoryUnits(ctx, chatSessionID, knowledgeHolderEntityID)
+}
+
+func (r *readOnlyStore) ListActiveInteractionMemoryUnits(ctx context.Context, chatSessionID string) ([]PreciseMemoryUnit, error) {
+	reader, ok := r.delegate.(ActiveInteractionMemoryReader)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListActiveInteractionMemoryUnits(ctx, chatSessionID)
 }
 
 // Ping delegates to the underlying store if it implements Pinger.

@@ -700,7 +700,7 @@ func TestMemoryReprocessingWorkerRetriesBelowConfiguredLimit(t *testing.T) {
 	}
 }
 
-func TestMemoryReprocessingWorkerSkipsOOCBeforeCritic(t *testing.T) {
+func TestMemoryReprocessingWorkerDoesNotInferOOCFromHistoricalText(t *testing.T) {
 	now := time.Now().UTC()
 	st := newMemoryReprocessingWorkerStore(now)
 	st.source.UserContent = "OOC: change the response style."
@@ -717,8 +717,8 @@ func TestMemoryReprocessingWorkerSkipsOOCBeforeCritic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "skipped_ooc" || result.Failure != "ooc_guard" ||
-		len(st.completedJobs) != 1 || len(st.failedJobs) != 0 ||
+	if result.State != "retryable" || result.Failure != "critic_config_missing" ||
+		len(st.completedJobs) != 0 || len(st.failedJobs) != 1 ||
 		len(st.admissions) != 0 || len(st.auditLogs) != 0 {
 		t.Fatalf(
 			"result=%+v completed=%v failed=%v admissions=%d audits=%d",

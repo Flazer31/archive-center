@@ -19,55 +19,66 @@ import (
 // turnRecordingStore implements store.Store and records all save/read calls.
 type turnRecordingStore struct {
 	memoryFakeStore
-	savedChatLogs           []*store.ChatLog
-	savedEffectiveInputs    []*store.EffectiveInput
-	savedAuditLogs          []*store.AuditLog
-	savedCriticFeedback     []*store.CriticFeedback
-	returnMemories          []store.Memory
-	savedMemories           []*store.Memory
-	updatedImportance       map[int64]float64
-	savedEvidence           []*store.DirectEvidence
-	savedKGTriples          []*store.KGTriple
-	savedStorylines         []*store.Storyline
-	savedWorldRules         []*store.WorldRule
-	savedEntities           []*store.Entity
-	savedTrusts             []*store.Trust
-	savedCharacterEvents    []*store.CharacterEvent
-	savedCharacterStates    []*store.CharacterState
-	returnStatusDefinitions []store.StatusSchemaDefinition
-	savedStatusDefinitions  []store.StatusSchemaDefinition
-	returnStatusCurrent     []store.StatusCurrentValue
-	savedStatusCurrent      []store.StatusCurrentValue
-	savedStatusEvents       []store.StatusChangeEvent
-	savedStatusEffects      []store.StatusEffect
-	savedPendingThreads     []*store.PendingThread
-	savedActiveStates       []*store.ActiveState
-	savedCanonicalLayers    []*store.CanonicalStateLayer
-	returnKGTriples         []store.KGTriple
-	returnEvidence          []store.DirectEvidence
-	returnChatLogs          []store.ChatLog
-	returnResumePack        *store.ResumePack
-	returnStorylines        []store.Storyline
-	returnWorldRules        []store.WorldRule
-	returnCharStates        []store.CharacterState
-	returnPendingThreads    []store.PendingThread
-	returnActiveStates      []store.ActiveState
-	returnCanonicalLayers   []store.CanonicalStateLayer
-	returnEpisodeSums       []store.EpisodeSummary
-	returnPersonaEntries    []store.PersonaMemoryEntry
-	returnEntityMemories    []store.ProtagonistEntityMemory
-	returnEntityOwners      []store.ProtagonistEntityMemoryOwner
-	lastEpisodeLimit        int
-	lastPersonaLimit        int
-	lastEntityMemoryLimit   int
-	entityMemoryReadCount   int
-	entityMemoryFilters     []store.ProtagonistEntityMemoryFilter
-	savedEntityMemories     []*store.ProtagonistEntityMemory
-	createdPersonaCapsules  []*store.PersonaMemoryCapsule
-	createdPersonaEntries   []store.PersonaMemoryEntry
-	deletedStorylineIDs     []int64
-	deletedWorldRuleIDs     []int64
-	logicalTurnReplacements []store.LogicalTurnReplacement
+	savedChatLogs            []*store.ChatLog
+	savedEffectiveInputs     []*store.EffectiveInput
+	savedAuditLogs           []*store.AuditLog
+	savedCriticFeedback      []*store.CriticFeedback
+	returnMemories           []store.Memory
+	savedMemories            []*store.Memory
+	updatedImportance        map[int64]float64
+	savedEvidence            []*store.DirectEvidence
+	savedKGTriples           []*store.KGTriple
+	savedStorylines          []*store.Storyline
+	savedWorldRules          []*store.WorldRule
+	savedEntities            []*store.Entity
+	savedTrusts              []*store.Trust
+	savedCharacterEvents     []*store.CharacterEvent
+	savedCharacterStates     []*store.CharacterState
+	returnStatusDefinitions  []store.StatusSchemaDefinition
+	savedStatusDefinitions   []store.StatusSchemaDefinition
+	returnStatusCurrent      []store.StatusCurrentValue
+	savedStatusCurrent       []store.StatusCurrentValue
+	savedStatusEvents        []store.StatusChangeEvent
+	savedStatusEffects       []store.StatusEffect
+	savedPendingThreads      []*store.PendingThread
+	savedActiveStates        []*store.ActiveState
+	savedCanonicalLayers     []*store.CanonicalStateLayer
+	returnKGTriples          []store.KGTriple
+	returnEvidence           []store.DirectEvidence
+	returnChatLogs           []store.ChatLog
+	returnResumePack         *store.ResumePack
+	returnStorylines         []store.Storyline
+	returnWorldRules         []store.WorldRule
+	returnCharStates         []store.CharacterState
+	returnPendingThreads     []store.PendingThread
+	returnActiveStates       []store.ActiveState
+	returnCanonicalLayers    []store.CanonicalStateLayer
+	returnEpisodeSums        []store.EpisodeSummary
+	returnPersonaEntries     []store.PersonaMemoryEntry
+	returnEntityMemories     []store.ProtagonistEntityMemory
+	returnEntityOwners       []store.ProtagonistEntityMemoryOwner
+	returnActiveInteractions []store.PreciseMemoryUnit
+	lastEpisodeLimit         int
+	lastPersonaLimit         int
+	lastEntityMemoryLimit    int
+	entityMemoryReadCount    int
+	entityMemoryFilters      []store.ProtagonistEntityMemoryFilter
+	savedEntityMemories      []*store.ProtagonistEntityMemory
+	createdPersonaCapsules   []*store.PersonaMemoryCapsule
+	createdPersonaEntries    []store.PersonaMemoryEntry
+	deletedStorylineIDs      []int64
+	deletedWorldRuleIDs      []int64
+	logicalTurnReplacements  []store.LogicalTurnReplacement
+}
+
+func (f *turnRecordingStore) ListActiveInteractionMemoryUnits(_ context.Context, chatSessionID string) ([]store.PreciseMemoryUnit, error) {
+	out := make([]store.PreciseMemoryUnit, 0, len(f.returnActiveInteractions))
+	for _, unit := range f.returnActiveInteractions {
+		if unit.ChatSessionID == "" || unit.ChatSessionID == chatSessionID {
+			out = append(out, unit)
+		}
+	}
+	return out, nil
 }
 
 type auditFailingTurnStore struct {
@@ -1159,7 +1170,7 @@ func TestCompleteTurnExistingRawWithoutDerivedRetriesCriticWithoutDuplicateLogs(
 		"turn_summary":      "Mina found a brass key and gave it to Rowan.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"Mina found a brass key."},
-		"kg_triples":        []any{map[string]any{"subject": "Mina", "predicate": "gave", "object": "brass key", "valid_from": 3}},
+		"kg_triples":        []any{testEntityScalarKG("item_fact", "Mina", "character", "found", "a brass key", "string", "Mina found a brass key.")},
 		"entities":          map[string]any{"characters": []any{map[string]any{"name": "Mina"}}, "items": []any{map[string]any{"name": "brass key"}}},
 	}
 	extractionBytes, _ := json.Marshal(extraction)

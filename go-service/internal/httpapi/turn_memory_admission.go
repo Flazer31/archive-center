@@ -283,6 +283,10 @@ func memoryAdmissionHasPerspectiveScopedContent(extraction map[string]any) bool 
 		"protected_secrets",
 		"character_identity_accuracy",
 		"subjective_entity_memories",
+		"relationship_observations",
+		"interaction_boundaries",
+		"user_interaction_profile",
+		"rp_character_profile",
 	} {
 		if len(sliceFromAny(extraction[key])) > 0 {
 			return true
@@ -297,6 +301,16 @@ func memoryAdmissionHasHolderScopedPerspectiveContent(extraction map[string]any)
 	}
 	if len(sliceFromAny(extraction["belief_updates"])) > 0 {
 		return true
+	}
+	for _, key := range []string{
+		"relationship_observations",
+		"interaction_boundaries",
+		"user_interaction_profile",
+		"rp_character_profile",
+	} {
+		if len(sliceFromAny(extraction[key])) > 0 {
+			return true
+		}
 	}
 	for _, raw := range sliceFromAny(extraction["subjective_entity_memories"]) {
 		item := mapFromAny(raw)
@@ -318,6 +332,10 @@ func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[str
 		"protected_secrets",
 		"character_identity_accuracy",
 		"subjective_entity_memories",
+		"relationship_observations",
+		"interaction_boundaries",
+		"user_interaction_profile",
+		"rp_character_profile",
 	} {
 		for _, raw := range sliceFromAny(extraction[key]) {
 			item := mapFromAny(raw)

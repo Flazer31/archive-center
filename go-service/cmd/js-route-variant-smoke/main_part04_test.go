@@ -265,7 +265,6 @@ func TestArchiveCenterJSSeq13P56MemOrchNullReturnHardeningMarkers(t *testing.T) 
 		`return buildIntentionalOrchestrationSkipResult("empty_input_no_continuity", trace)`,
 		`if (!lastOrchResult) {`,
 		`orchestration returned null`,
-		`detail: "llm_gate_blocked"`,
 		`if (isIntentionalOrchestrationSkipResult(lastOrchResult)) {`,
 		`resolveOrchestrationFallbackRouteOr1b("intentional_skip")`,
 		`status: "skipped"`,

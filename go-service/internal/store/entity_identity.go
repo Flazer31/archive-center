@@ -144,3 +144,18 @@ type ReviewedEntityIdentityResolver interface {
 type UniqueActiveEntitySurfaceResolver interface {
 	ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error)
 }
+
+// ResolvedEntityIdentity is the database-owned result of a unique active
+// surface resolution. Callers that make namespace-sensitive admission
+// decisions must use both fields instead of accepting a model-proposed
+// namespace for a resolved ID.
+type ResolvedEntityIdentity struct {
+	StableEntityID    string `json:"stable_entity_id"`
+	IdentityNamespace string `json:"identity_namespace"`
+}
+
+// UniqueActiveEntitySurfaceIdentityResolver extends the legacy ID-only
+// resolver without changing its existing callers.
+type UniqueActiveEntitySurfaceIdentityResolver interface {
+	ResolveUniqueActiveEntityIdentityBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (ResolvedEntityIdentity, error)
+}

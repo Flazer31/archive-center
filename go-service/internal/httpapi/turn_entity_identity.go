@@ -248,6 +248,21 @@ func (p *entityIdentityProjection) persistPerspectiveRoleIdentities(ctx context.
 			}
 		}
 	}
+	for _, lane := range []struct {
+		key       string
+		sourceKey string
+		targetKey string
+	}{
+		{key: "interaction_events", sourceKey: "actor", targetKey: "counterpart"},
+		{key: "relationship_observations", sourceKey: "source_entity", targetKey: "target_entity"},
+		{key: "interaction_boundaries", sourceKey: "actor", targetKey: "counterpart"},
+	} {
+		for _, raw := range sliceFromAny(extraction[lane.key]) {
+			item := mapFromAny(raw)
+			add(stringFromMap(item, lane.sourceKey))
+			add(stringFromMap(item, lane.targetKey))
+		}
+	}
 	for ordinal, surface := range surfaces {
 		if occurrence, _, ambiguous := p.resolveUnique(surface); occurrence != nil || ambiguous {
 			continue

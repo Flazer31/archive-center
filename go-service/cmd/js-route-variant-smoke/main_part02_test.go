@@ -764,27 +764,21 @@ func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
 		`if (prevTurnWorkflowHUDEnabled && settings.turnWorkflowHUDEnabled === false)`,
 		`function turnWorkflowHUDIsEnabled()`,
 		`if (!turnWorkflowHUDIsEnabled())`,
-		`async function showTurnWorkflowHUDOOCRecognition(chatSessionId, logicalTurn)`,
-		`bridgeFetch("/turn-workflow/notice"`,
-		`contract_version: "turn_workflow_notice_observation.v1"`,
-		`kind: "ooc_input_cancelled"`,
-		`request_id: ` + "`ooc-observation:${sessionId}:${Number.isFinite(turn)",
-		`await showTurnWorkflowHUDOOCRecognition(chatSessionId, skippedTurnIdx)`,
+		`function consumeTurnWorkflowHUDNotice(view)`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing turn workflow HUD setting marker %q", needle)
 		}
 	}
-	if strings.Contains(src, `return consumeTurnWorkflowHUDNotice({`) {
-		t.Fatal("Archive Center.js must not fabricate a backend-shaped OOC HUD ViewModel")
-	}
-	if strings.Contains(src, "`ooc-observation:${sessionId}:${Date.now()}`") {
-		t.Fatal("OOC operation identity must be stable for the same host lifecycle")
-	}
-	oocFunction := extractArchiveCenterJSAsyncFunction(t, src, "showTurnWorkflowHUDOOCRecognition")
-	if strings.Contains(oocFunction, `Math.min(getRequestTimeoutSettingMs(), 5000)`) {
-		t.Fatal("OOC observation transport must use the configured request timeout without a hidden fixed cap")
+	for _, forbidden := range []string{
+		"function showTurnWorkflowHUDOOCRecognition(",
+		`kind: "ooc_input_cancelled"`,
+		"`ooc-observation:${sessionId}:",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js must not fabricate an OOC decision or notice: %q", forbidden)
+		}
 	}
 }
 
