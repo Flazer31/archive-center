@@ -1442,6 +1442,22 @@ func (d *dualWriteStore) SaveStatusChangeEvent(ctx context.Context, event Status
 	return saved, nil
 }
 
+func (d *dualWriteStore) GetStatusChangeEventBySourceRevision(ctx context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (StatusChangeEvent, error) {
+	primary, ok := d.primary.(StatusChangeEventSourceLookupStore)
+	if !ok {
+		return StatusChangeEvent{}, ErrNotEnabled
+	}
+	return primary.GetStatusChangeEventBySourceRevision(ctx, chatSessionID, statusKey, sourceRevision, sourceTurn)
+}
+
+func (d *dualWriteStore) GetLatestCurrentProjectionStatusChangeEvent(ctx context.Context, chatSessionID, statusKey string) (StatusChangeEvent, error) {
+	primary, ok := d.primary.(StatusChangeEventSourceLookupStore)
+	if !ok {
+		return StatusChangeEvent{}, ErrNotEnabled
+	}
+	return primary.GetLatestCurrentProjectionStatusChangeEvent(ctx, chatSessionID, statusKey)
+}
+
 func (d *dualWriteStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]StatusEffect, error) {
 	primary, ok := d.primary.(StatusLifecycleStore)
 	if !ok {

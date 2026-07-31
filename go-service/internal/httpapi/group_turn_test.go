@@ -534,6 +534,50 @@ func (f *turnRecordingStore) SaveStatusChangeEvent(ctx context.Context, event st
 	return event, nil
 }
 
+func (f *turnRecordingStore) GetStatusChangeEventBySourceRevision(_ context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (store.StatusChangeEvent, error) {
+	var latest store.StatusChangeEvent
+	for _, event := range f.savedStatusEvents {
+		if event.ChatSessionID != chatSessionID || event.StatusKey != statusKey || event.SourceTurn != sourceTurn {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		if extractionStringFromAny(evidence["source_revision"]) != sourceRevision {
+			continue
+		}
+		if event.ID > latest.ID {
+			latest = event
+		}
+	}
+	if latest.ID == 0 {
+		return store.StatusChangeEvent{}, store.ErrNotFound
+	}
+	return latest, nil
+}
+
+func (f *turnRecordingStore) GetLatestCurrentProjectionStatusChangeEvent(_ context.Context, chatSessionID, statusKey string) (store.StatusChangeEvent, error) {
+	var latest store.StatusChangeEvent
+	for _, event := range f.savedStatusEvents {
+		if event.ChatSessionID != chatSessionID || event.StatusKey != statusKey {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		currentProjection, _ := evidence["current_projection"].(bool)
+		if !currentProjection {
+			continue
+		}
+		if latest.ID == 0 || event.SourceTurn > latest.SourceTurn ||
+			(event.SourceTurn == latest.SourceTurn && event.ID > latest.ID) {
+			latest = event
+		}
+	}
+	if latest.ID == 0 {
+		return store.StatusChangeEvent{}, store.ErrNotFound
+	}
+	return latest, nil
+}
+
 func (f *turnRecordingStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]store.StatusEffect, error) {
 	out := []store.StatusEffect{}
 	for _, item := range f.savedStatusEffects {

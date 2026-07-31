@@ -54,6 +54,11 @@ func TestPrepareTurnProductionProjectionPreservesPlanAndShrinksResponse(t *testi
 	if !reflect.DeepEqual(compact["payload_application_plan"], legacy["payload_application_plan"]) {
 		t.Fatal("compact projection changed the Go-owned payload application plan")
 	}
+	compactPack := mapFromAny(compact["injection_pack"])
+	if _, ok := compactPack["temporal_packet"]; !ok ||
+		strings.TrimSpace(extractionStringFromAny(compactPack["temporal_packet_text"])) == "" {
+		t.Fatalf("compact projection dropped the Go-owned temporal packet: %#v", compactPack)
+	}
 	trace := mapFromAny(compact["trace_preview"])
 	orchestration := mapFromAny(trace["compact_orchestration"])
 	if orchestration["contract_version"] != "prepare_turn.compact_orchestration.v1" ||

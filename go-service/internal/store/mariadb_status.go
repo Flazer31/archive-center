@@ -458,6 +458,71 @@ func (m *mariadbStore) SaveStatusChangeEvent(ctx context.Context, event StatusCh
 	return event, nil
 }
 
+func (m *mariadbStore) GetStatusChangeEventBySourceRevision(ctx context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (StatusChangeEvent, error) {
+	if err := m.ensureDB(); err != nil {
+		return StatusChangeEvent{}, err
+	}
+	row := m.db.QueryRowContext(ctx, `
+		SELECT id, chat_session_id, registry_id, status_value_id, status_key, owner_scope, owner_id,
+		       event_kind, previous_value_json, new_value_json, evidence_json, source_turn,
+		       story_clock_json, event_state, created_at
+		FROM status_change_events
+		WHERE chat_session_id = ?
+		  AND status_key = ?
+		  AND source_turn = ?
+		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision')) = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`, chatSessionID, statusKey, sourceTurn, sourceRevision)
+	return scanStatusChangeEvent(row)
+}
+
+func (m *mariadbStore) GetLatestCurrentProjectionStatusChangeEvent(ctx context.Context, chatSessionID, statusKey string) (StatusChangeEvent, error) {
+	if err := m.ensureDB(); err != nil {
+		return StatusChangeEvent{}, err
+	}
+	row := m.db.QueryRowContext(ctx, `
+		SELECT id, chat_session_id, registry_id, status_value_id, status_key, owner_scope, owner_id,
+		       event_kind, previous_value_json, new_value_json, evidence_json, source_turn,
+		       story_clock_json, event_state, created_at
+		FROM status_change_events
+		WHERE chat_session_id = ?
+		  AND status_key = ?
+		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.current_projection')) = 'true'
+		ORDER BY source_turn DESC, id DESC
+		LIMIT 1
+	`, chatSessionID, statusKey)
+	return scanStatusChangeEvent(row)
+}
+
+type statusChangeEventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanStatusChangeEvent(row statusChangeEventScanner) (StatusChangeEvent, error) {
+	var item StatusChangeEvent
+	var statusValueID, sourceTurn sql.NullInt64
+	var previousValueJSON, newValueJSON, storyClockJSON sql.NullString
+	if err := row.Scan(
+		&item.ID, &item.ChatSessionID, &item.RegistryID, &statusValueID, &item.StatusKey, &item.OwnerScope, &item.OwnerID,
+		&item.EventKind, &previousValueJSON, &newValueJSON, &item.EvidenceJSON, &sourceTurn,
+		&storyClockJSON, &item.EventState, &item.CreatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return StatusChangeEvent{}, ErrNotFound
+		}
+		return StatusChangeEvent{}, err
+	}
+	item.StatusValueID = int64FromNull(statusValueID)
+	item.PreviousValueJSON = stringFromNull(previousValueJSON)
+	item.NewValueJSON = stringFromNull(newValueJSON)
+	item.StoryClockJSON = stringFromNull(storyClockJSON)
+	if sourceTurn.Valid {
+		item.SourceTurn = int(sourceTurn.Int64)
+	}
+	return item, nil
+}
+
 func (m *mariadbStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]StatusEffect, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err

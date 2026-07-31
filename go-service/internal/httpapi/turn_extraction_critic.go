@@ -710,7 +710,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{"version":"story_clock.v1","observation_kind":"absolute","scene_scope":"current","precision":"exact","absolute":{"date":"1423-04-12","time":"13:00"},"evidence_excerpt":"exact latest-turn excerpt","transition":"set"},"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
@@ -727,6 +727,11 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Separate location/time fact classes. A current scene location or current scene time belongs in state_deltas.scene_state; a durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status and/or kg_triples with predicates such as residence, hometown, lives_in, or based_in.",
 		"- Do not treat 'X lives in London' as 'the current scene is London'. Do not treat a temporary visit as a durable residence unless the latest turn says it directly.",
 		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
+		"- story_clock is optional and proposal-only. Emit it only when the latest completed turn contains an exact supporting excerpt about story time, sequence, or duration; repeat that excerpt in top-level evidence_excerpts.",
+		"- story_clock.observation_kind must be absolute|partial|relative|bounded_range|unknown and scene_scope must be current|flashback|planned|hypothetical. Keep absolute date/time, partial daypart/season, relative offset+unit+anchor, bounded range start/end, sequence, and duration structurally separate.",
+		"- story_clock.precision must be exact|partial|bounded_range|unknown. Never turn server time, audit time, turn_index, or an unknown/relative phrase without a current story-clock anchor into an exact story date.",
+		"- Use only the primary object matching observation_kind: absolute, partial, relative, or range. sequence may use relation/anchor/index/label; duration may use value or min/max with unit and approximate. Do not emit contradictory primary objects together.",
+		"- flashback, planned, and hypothetical observations describe non-current time and must not be presented as the current scene clock. Use transition=set|advance|correction|reaffirm|supersede|retract; correction, supersession, and retraction require exact latest-turn evidence.",
 		"- relationship_memory may include target_name or pair when trust changes. If no target exists, leave it empty.",
 		"- character_deltas should capture named character status, location, emotional posture, relationship changes, injuries, intentions, or role/authority changes seen in the latest turn.",
 		"- Separate narrative_events (what happened), state_claims (objective current facts), and belief_updates (one character's current perception). Do not promote beliefs to objective truth.",
@@ -1254,7 +1259,7 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 	}
 	objectFields := []string{
 		"entities", "relationship_memory", "state_deltas", "world_rule_audit",
-		"world_state", "archive_hint",
+		"world_state", "archive_hint", "story_clock",
 	}
 	for _, field := range stringFields {
 		value, exists := raw[field]
@@ -1302,6 +1307,11 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 			if _, ok := excerpt.(string); !ok {
 				return fmt.Errorf("critic schema field evidence_excerpts[%d] must be a string", index)
 			}
+		}
+	}
+	if value, exists := raw["story_clock"]; exists {
+		if err := validateStoryClockProposal(value); err != nil {
+			return err
 		}
 	}
 	if !recognizedPayload {
@@ -1593,6 +1603,11 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["emotional_intensity"] = clampFloat(extractionFloatFromAny(raw["emotional_intensity"], 0), 0, 1)
 	out["narrative_significance"] = clampFloat(extractionFloatFromAny(raw["narrative_significance"], 0), 0, 1)
 	out["evidence_excerpts"] = stringsFromAny(raw["evidence_excerpts"])
+	if storyClock := normalizeStoryClockProposal(raw["story_clock"]); len(storyClock) > 0 {
+		out["story_clock"] = storyClock
+	} else {
+		delete(out, "story_clock")
+	}
 	out["kg_triples"] = sliceFromAny(raw["kg_triples"])
 	out["character_deltas"] = sliceFromAny(raw["character_deltas"])
 	out["pending_threads"] = sliceFromAny(raw["pending_threads"])

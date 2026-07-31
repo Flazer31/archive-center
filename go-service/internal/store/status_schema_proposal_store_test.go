@@ -422,6 +422,52 @@ func TestMariaDBStoreListStatusChangeEventsScansLedgerRows(t *testing.T) {
 	}
 }
 
+func TestMariaDBStoreStatusChangeEventSourceLookupsAreExactAndUncapped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+
+	m := &mariadbStore{db: db}
+	created := time.Date(2026, 6, 28, 14, 0, 0, 0, time.UTC)
+	columns := []string{
+		"id", "chat_session_id", "registry_id", "status_value_id", "status_key", "owner_scope", "owner_id",
+		"event_kind", "previous_value_json", "new_value_json", "evidence_json", "source_turn",
+		"story_clock_json", "event_state", "created_at",
+	}
+	sourceRows := sqlmock.NewRows(columns).AddRow(
+		int64(301), "sess-schema", int64(100), int64(200), "story_clock", "session", "current",
+		"correction", `{}`, `{"precision":"exact"}`, `{"source_revision":"revision-9","current_projection":true}`, 9,
+		`{"precision":"exact"}`, "recorded", created,
+	)
+	mock.ExpectQuery("JSON_UNQUOTE\\(JSON_EXTRACT\\(evidence_json, '\\$\\.source_revision'\\)\\)").
+		WithArgs("sess-schema", "story_clock", 9, "revision-9").
+		WillReturnRows(sourceRows)
+
+	event, err := m.GetStatusChangeEventBySourceRevision(context.Background(), "sess-schema", "story_clock", "revision-9", 9)
+	if err != nil || event.ID != 301 {
+		t.Fatalf("exact source lookup mismatch: event=%+v err=%v", event, err)
+	}
+
+	currentRows := sqlmock.NewRows(columns).AddRow(
+		int64(301), "sess-schema", int64(100), int64(200), "story_clock", "session", "current",
+		"correction", `{}`, `{"precision":"exact"}`, `{"source_revision":"revision-9","current_projection":true}`, 9,
+		`{"precision":"exact"}`, "recorded", created,
+	)
+	mock.ExpectQuery("JSON_UNQUOTE\\(JSON_EXTRACT\\(evidence_json, '\\$\\.current_projection'\\)\\) = 'true'").
+		WithArgs("sess-schema", "story_clock").
+		WillReturnRows(currentRows)
+
+	event, err = m.GetLatestCurrentProjectionStatusChangeEvent(context.Background(), "sess-schema", "story_clock")
+	if err != nil || event.ID != 301 || event.SourceTurn != 9 {
+		t.Fatalf("latest current projection lookup mismatch: event=%+v err=%v", event, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
 func TestMariaDBStoreSaveStatusEffectPersistsLifecycleRow(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

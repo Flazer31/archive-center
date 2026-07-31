@@ -223,6 +223,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	directEntityOwnerMatchCount := 0
 	directEntityMemoryReadCount := 0
 	var narrativeCurrentValues []store.StatusCurrentValue
+	var storyClockCurrentValues []store.StatusCurrentValue
 
 	readErrs := []error{}
 	readsOK := 0
@@ -424,6 +425,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			} else if !errors.Is(err, store.ErrNotEnabled) {
 				readErrs = append(readErrs, err)
 			}
+			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, storyClockOwnerScope, storyClockOwnerID, storyClockStatusKey, 1); err == nil {
+				storyClockCurrentValues = values
+				if len(values) > 0 {
+					readsOK++
+				}
+			} else if !errors.Is(err, store.ErrNotEnabled) {
+				readErrs = append(readErrs, err)
+			}
 		}
 	}
 	storylines, pendingThreads, activeStates, canonicalLayers, supersededOpenGoalTrace := filterPrepareTurnSupersededOpenGoals(
@@ -571,7 +580,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	injectionAssembly.Counts["input_context_previous_completed_turn_only"] = true
 	injectionAssembly.Counts["input_context_active_state_delivery"] = "excluded_use_dedicated_delivery_classes"
 	responseAssemblyStartedAt := time.Now()
-	currentStoryClock19 := resolveCurrentStoryClock(activeStates, chatLogs, canonicalLayers)
+	currentStoryClock19 := resolveCurrentStoryClock(activeStates, chatLogs, canonicalLayers, storyClockCurrentValues)
 	temporalRelationLedger19 := buildTemporalRelationLedger(activeStates)
 	temporalSupportPacket := buildTemporalSupportPacket(currentStoryClock19, temporalRelationLedger19)
 	requestType := stringPtrValue(req.RequestType, "model")
@@ -982,6 +991,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"memory_delivery_plan":      injectionPack["memory_delivery_plan"],
 			"memory_delivery_lineage":   boundedMemoryDeliveryLineage,
 			"source_to_payload_lineage": sourceToPayloadLineage,
+			"temporal_packet":           injectionPack["temporal_packet"],
+			"temporal_packet_text":      injectionPack["temporal_packet_text"],
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",

@@ -14,6 +14,30 @@ type logicalReplacementFailureStore struct {
 	err error
 }
 
+type logicalReplacementStoryClockStore struct {
+	turnRecordingStore
+}
+
+func (s *logicalReplacementStoryClockStore) ReplaceLogicalTurn(_ context.Context, replacement store.LogicalTurnReplacement) error {
+	events := s.savedStatusEvents[:0]
+	for _, event := range s.savedStatusEvents {
+		if event.ChatSessionID == replacement.ChatSessionID && event.SourceTurn >= replacement.TurnIndex {
+			continue
+		}
+		events = append(events, event)
+	}
+	s.savedStatusEvents = events
+	current := s.returnStatusCurrent[:0]
+	for _, value := range s.returnStatusCurrent {
+		if value.ChatSessionID == replacement.ChatSessionID && value.SourceTurn >= replacement.TurnIndex {
+			continue
+		}
+		current = append(current, value)
+	}
+	s.returnStatusCurrent = current
+	return nil
+}
+
 func (s *logicalReplacementFailureStore) ReplaceLogicalTurn(context.Context, store.LogicalTurnReplacement) error {
 	return s.err
 }
@@ -97,5 +121,49 @@ func TestReplaceCompleteTurnLogicalTailPreservesTerminalStoreClassification(t *t
 	}
 	if err.Code != storeErr.Code || err.Stage != storeErr.Stage || err.Retryable || err.RawCommitted || err.CommitState != "not_committed" {
 		t.Fatalf("store classification was flattened: %+v", err)
+	}
+}
+
+func TestReplaceCompleteTurnLogicalTailRestoresStoryClockProjection(t *testing.T) {
+	prior := mustCompactJSON(map[string]any{
+		"version": storyClockContractVersion, "observation_kind": "absolute",
+		"scene_scope": "current", "precision": "exact",
+		"absolute": map[string]any{"date": "1423-04-12"}, "source_turn": 8,
+	})
+	fake := &logicalReplacementStoryClockStore{}
+	fake.savedStatusEvents = []store.StatusChangeEvent{
+		{
+			ID: 10, ChatSessionID: "session-test", RegistryID: 3, StatusKey: storyClockStatusKey,
+			OwnerScope: storyClockOwnerScope, OwnerID: storyClockOwnerID, EventKind: "set",
+			NewValueJSON: prior,
+			EvidenceJSON: `{"source_revision":"prior","current_projection":true}`,
+			SourceTurn:   8, EventState: "recorded", CreatedAt: time.Unix(8, 0),
+		},
+		{
+			ID: 11, ChatSessionID: "session-test", RegistryID: 3, StatusKey: storyClockStatusKey,
+			OwnerScope: storyClockOwnerScope, OwnerID: storyClockOwnerID, EventKind: "change",
+			NewValueJSON: `{"version":"story_clock.v1","observation_kind":"absolute","scene_scope":"current","precision":"exact","absolute":{"date":"1423-04-13"},"source_turn":9}`,
+			EvidenceJSON: `{"source_revision":"replaced","current_projection":true}`,
+			SourceTurn:   9, EventState: "recorded", CreatedAt: time.Unix(9, 0),
+		},
+	}
+	fake.returnStatusCurrent = []store.StatusCurrentValue{{
+		ID: 11, ChatSessionID: "session-test", RegistryID: 3, StatusKey: storyClockStatusKey,
+		OwnerScope: storyClockOwnerScope, OwnerID: storyClockOwnerID,
+		ValueJSON: fake.savedStatusEvents[1].NewValueJSON, SourceTurn: 9,
+	}}
+	server := &Server{Store: fake}
+	decision := completeTurnSourceAcceptanceDecision{
+		Enabled: true, Accepted: true, Revision: "sar_test", LogicalTurnID: "logical_turn_test",
+		Observation: completeTurnSourceObservation{MessageIndex: -1},
+	}
+	if err := server.replaceCompleteTurnLogicalTail(
+		context.Background(), "session-test", 9, "user", "assistant", decision, time.Now().UTC(),
+	); err != nil {
+		t.Fatalf("logical replacement story-clock restore failed: %+v", err)
+	}
+	if len(fake.savedStatusCurrent) != 1 ||
+		decodeStoryClockValue(t, fake.savedStatusCurrent[0])["source_turn"] != float64(8) {
+		t.Fatalf("logical replacement did not restore prior story clock: %#v", fake.savedStatusCurrent)
 	}
 }

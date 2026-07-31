@@ -1143,6 +1143,15 @@ type StatusLifecycleStore interface {
 	UpdateStatusEffectState(ctx context.Context, id int64, effectState, clearedEvidenceJSON string, clearedTurn int) error
 }
 
+// StatusChangeEventSourceLookupStore provides exact, unbounded-by-window
+// lifecycle lookups for source-fenced projections. Implementations must read
+// source_revision/current_projection from the event evidence envelope rather
+// than approximating the lookup with a recent-row cap.
+type StatusChangeEventSourceLookupStore interface {
+	GetStatusChangeEventBySourceRevision(ctx context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (StatusChangeEvent, error)
+	GetLatestCurrentProjectionStatusChangeEvent(ctx context.Context, chatSessionID, statusKey string) (StatusChangeEvent, error)
+}
+
 type ThemeOffscreenCarryStore interface {
 	ListThemeOffscreenCarries(ctx context.Context, chatSessionID, surfaceType string, limit int) ([]ThemeOffscreenCarryRecord, error)
 	SaveThemeOffscreenCarry(ctx context.Context, record ThemeOffscreenCarryRecord) (ThemeOffscreenCarryRecord, error)

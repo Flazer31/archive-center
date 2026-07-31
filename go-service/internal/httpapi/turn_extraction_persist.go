@@ -262,6 +262,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	}
 	s.saveSubjectiveEntityMemoriesFromExtraction(ctx, sid, turnIndex, extraction, content, now, &result)
 	s.saveNarrativeStateFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
+	s.saveStoryClockFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
 
 	for tripleIndex, item := range sliceFromAny(extraction["kg_triples"]) {
 		triple := mapFromAny(item)

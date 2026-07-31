@@ -508,6 +508,22 @@ func (r *readOnlyStore) SaveStatusChangeEvent(ctx context.Context, event StatusC
 	return event, ErrNotEnabled
 }
 
+func (r *readOnlyStore) GetStatusChangeEventBySourceRevision(ctx context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (StatusChangeEvent, error) {
+	store, ok := r.delegate.(StatusChangeEventSourceLookupStore)
+	if !ok {
+		return StatusChangeEvent{}, ErrNotEnabled
+	}
+	return store.GetStatusChangeEventBySourceRevision(ctx, chatSessionID, statusKey, sourceRevision, sourceTurn)
+}
+
+func (r *readOnlyStore) GetLatestCurrentProjectionStatusChangeEvent(ctx context.Context, chatSessionID, statusKey string) (StatusChangeEvent, error) {
+	store, ok := r.delegate.(StatusChangeEventSourceLookupStore)
+	if !ok {
+		return StatusChangeEvent{}, ErrNotEnabled
+	}
+	return store.GetLatestCurrentProjectionStatusChangeEvent(ctx, chatSessionID, statusKey)
+}
+
 func (r *readOnlyStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]StatusEffect, error) {
 	store, ok := r.delegate.(StatusLifecycleStore)
 	if !ok {

@@ -85,7 +85,23 @@ func resolveCurrentStoryClock(
 	activeStates []store.ActiveState,
 	chatLogs []store.ChatLog,
 	canonicalLayers []store.CanonicalStateLayer,
+	statusCurrentValues ...[]store.StatusCurrentValue,
 ) map[string]any {
+	if len(statusCurrentValues) > 0 {
+		if current := storyClockCurrentProjection(statusCurrentValues[0]); len(current) > 0 {
+			return current
+		}
+		if len(statusCurrentValues[0]) > 0 {
+			return map[string]any{
+				"version":           storyClockContractVersion,
+				"observation_kind":  "unknown",
+				"scene_scope":       "current",
+				"precision":         "unknown",
+				"precision_label":   "unknown",
+				"resolution_source": "status_current_values_malformed",
+			}
+		}
+	}
 	// Try session_state_clock from latest active state
 	for i := len(activeStates) - 1; i >= 0; i-- {
 		as := activeStates[i]
@@ -728,7 +744,9 @@ func buildTemporalSupportPacket(currentClock map[string]any, ledger []map[string
 	packetText := "[Temporal Packet] current_clock=unknown; no progression"
 	precisionLabel, _ := currentClock["precision_label"].(string)
 	if precisionLabel != "" && precisionLabel != "unknown" {
-		packetText = "[Temporal Packet] current_clock=" + precisionLabel + "; ledger_count=" + strconv.Itoa(len(ledger))
+		packetText = "[Temporal Packet] current_story_clock=" +
+			mustCompactJSON(storyClockPromptProjection(currentClock)) +
+			"; ledger_count=" + strconv.Itoa(len(ledger))
 	}
 	return map[string]any{
 		"version":         "s19-p53.v1",
@@ -743,6 +761,20 @@ func buildTemporalSupportPacket(currentClock map[string]any, ledger []map[string
 		"policy_version":       "s19-et.v2",
 		"mode":                 "temporal_support_packet_definition",
 	}
+}
+
+func storyClockPromptProjection(currentClock map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, key := range []string{
+		"version", "observation_kind", "source_observation_kind", "scene_scope",
+		"precision", "absolute", "partial", "relative", "range", "sequence",
+		"duration", "source_turn",
+	} {
+		if value, ok := currentClock[key]; ok {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 // buildTemporalWriteDiscipline exposes the four separated write-discipline cases for SEQ-19-P54.

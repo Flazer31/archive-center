@@ -561,6 +561,7 @@ func proxyCriticTopLevelJSONSchema() map[string]any {
 		"properties": map[string]any{
 			"turn_summary":                map[string]any{"type": "string"},
 			"importance_score":            map[string]any{"type": "number"},
+			"story_clock":                 proxyCriticStoryClockJSONSchema(),
 			"relationship_memory":         map[string]any{},
 			"entities":                    map[string]any{},
 			"kg_triples":                  map[string]any{"type": "array", "items": map[string]any{}},
@@ -586,6 +587,84 @@ func proxyCriticTopLevelJSONSchema() map[string]any {
 			"pending_threads":             map[string]any{"type": "array", "items": map[string]any{}},
 		},
 		"required":             []string{"turn_summary", "importance_score", "evidence_excerpts"},
+		"additionalProperties": false,
+	}
+}
+
+func proxyCriticStoryClockJSONSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"version":          map[string]any{"type": "string", "enum": []string{storyClockContractVersion}},
+			"observation_kind": map[string]any{"type": "string", "enum": []string{"absolute", "partial", "relative", "bounded_range", "unknown"}},
+			"scene_scope":      map[string]any{"type": "string", "enum": []string{"current", "flashback", "planned", "hypothetical"}},
+			"precision":        map[string]any{"type": "string", "enum": []string{"exact", "partial", "bounded_range", "unknown"}},
+			"absolute":         proxyCriticStoryClockAbsoluteJSONSchema(),
+			"partial": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"daypart": map[string]any{"type": "string"},
+					"season":  map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+			"relative": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"offset":     map[string]any{"type": "number"},
+					"offset_min": map[string]any{"type": "number"},
+					"offset_max": map[string]any{"type": "number"},
+					"unit":       map[string]any{"type": "string", "enum": []string{"second", "minute", "hour", "day", "week", "month", "year"}},
+					"anchor":     map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+			"range": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"start": proxyCriticStoryClockAbsoluteJSONSchema(),
+					"end":   proxyCriticStoryClockAbsoluteJSONSchema(),
+				},
+				"required":             []string{"start", "end"},
+				"additionalProperties": false,
+			},
+			"sequence": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"relation": map[string]any{"type": "string"},
+					"anchor":   map[string]any{"type": "string"},
+					"index":    map[string]any{"type": "number"},
+					"label":    map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+			"duration": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"value":       map[string]any{"type": "number"},
+					"min":         map[string]any{"type": "number"},
+					"max":         map[string]any{"type": "number"},
+					"unit":        map[string]any{"type": "string", "enum": []string{"second", "minute", "hour", "day", "week", "month", "year"}},
+					"approximate": map[string]any{"type": "boolean"},
+				},
+				"additionalProperties": false,
+			},
+			"evidence_excerpt": map[string]any{"type": "string"},
+			"transition":       map[string]any{"type": "string", "enum": []string{"set", "advance", "correction", "reaffirm", "supersede", "retract"}},
+		},
+		"required":             []string{"version", "observation_kind", "scene_scope", "precision", "evidence_excerpt"},
+		"additionalProperties": false,
+	}
+}
+
+func proxyCriticStoryClockAbsoluteJSONSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"date":     map[string]any{"type": "string"},
+			"time":     map[string]any{"type": "string"},
+			"datetime": map[string]any{"type": "string"},
+		},
 		"additionalProperties": false,
 	}
 }
