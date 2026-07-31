@@ -137,3 +137,10 @@ type EntityIdentityWriteAvailability interface {
 type ReviewedEntityIdentityResolver interface {
 	ResolveReviewedCanonicalEntityID(ctx context.Context, chatSessionID, sourceEntityID string) (string, error)
 }
+
+// UniqueActiveEntitySurfaceResolver resolves a source-observed surface only
+// when all active occurrences converge on one stable or reviewed canonical
+// identity. Display text is discovery input, never an identity key.
+type UniqueActiveEntitySurfaceResolver interface {
+	ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error)
+}

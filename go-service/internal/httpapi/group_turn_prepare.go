@@ -198,6 +198,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	turnIndex := intPtrValue(req.TurnIndex, 0)
 	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	perspectiveContext := prepareTurnPerspectiveContextFromRequest(req)
+	perspectiveContext = resolvePrepareTurnPerspectiveIdentity(r.Context(), s.Store, sid, perspectiveContext)
 	vectorStartedAt := time.Now()
 	vectorShadow := s.prepareTurnVectorShadow(r.Context(), req, memoryTopK)
 	timing.addElapsed("vector_recall", vectorStartedAt)
@@ -225,6 +226,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var narrativeCurrentValues []store.StatusCurrentValue
 	var storyClockCurrentValues []store.StatusCurrentValue
 	var reversibleCurrentValues []store.StatusCurrentValue
+	var characterPerspectiveUnits []store.PreciseMemoryUnit
 
 	readErrs := []error{}
 	readsOK := 0
@@ -246,6 +248,18 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	storeReadsStartedAt := time.Now()
 	if s.Store != nil {
 		ctx := r.Context()
+		if holderID := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov_entity_id"])); holderID != "" {
+			if perspectiveReader, ok := s.Store.(store.CharacterPerspectiveMemoryReader); ok {
+				units, err := perspectiveReader.ListCharacterPerspectiveMemoryUnits(ctx, sid, holderID)
+				if err == nil {
+					characterPerspectiveUnits = units
+					readsOK++
+					sessionStateReads["character_perspective"] = true
+				} else if !errors.Is(err, store.ErrNotEnabled) && !errors.Is(err, store.ErrNotFound) {
+					readErrs = append(readErrs, err)
+				}
+			}
+		}
 		rangeStore, hasRangeStore := s.Store.(store.PrepareTurnRangeStore)
 		if hasRangeStore {
 			fullSessionRangeRead = true
@@ -530,15 +544,19 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	reversibleScope := buildPrepareTurnRequestEntityScope(
 		rawUserInput, reversibleRecollectionContext.currentEntities, reversibleKnownNames,
 	)
-	reversibleStateBudget := maxInjectionChars
+	characterPerspectiveBudget := maxInjectionChars
 	if !injectionEnabled {
-		reversibleStateBudget = 0
+		characterPerspectiveBudget = 0
 	}
+	characterPerspectivePacket, characterPerspectiveCandidateText := buildCharacterPerspectivePacket(
+		characterPerspectiveUnits, perspectiveContext, characterPerspectiveBudget,
+	)
+	reversibleStateBudget := maxInjectionChars
 	reversibleStatePacket, reversibleStateText := buildReversibleStatePacket(
 		reversibleCurrentValues, currentStoryClock19, reversibleStateBudget, reversibleScope,
 	)
 	reversibleStateUsedChars := intFromAny(reversibleStatePacket["used_chars"], 0)
-	memoryInjectionBudget := maxInjectionChars - reversibleStateUsedChars
+	memoryInjectionBudget := reversibleStateBudget - reversibleStateUsedChars
 	if reversibleStateText != "" && memoryInjectionBudget > 0 {
 		memoryInjectionBudget -= 2
 	}
@@ -549,9 +567,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	documents := []map[string]any{}
 	injectionStartedAt := time.Now()
 	if !degraded {
-		documents = buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, chatLogs)
+		safeRetrievalMemories, _ := prefilterPrepareTurnHolderScopedPerspectiveMemories(memories)
+		safeRetrievalEvidence, _ := filterPrepareTurnPerspectiveScopedEvidence(evidence, memories)
+		if prepareTurnPerspectiveHardFilterActive(perspectiveContext) {
+			safeRetrievalMemories, _ = prefilterPrepareTurnProtectedAggregateMemories(safeRetrievalMemories)
+		}
+		documents = buildUnifiedRetrievalDocuments(sid, safeRetrievalMemories, safeRetrievalEvidence, kgTriples, episodeSums, resumePack, chatLogs)
 		if injectionEnabled && memoryInjectionBudget > 0 {
 			assemblyPerspectiveContext := prepareTurnPerspectiveWithNarrativeState(perspectiveContext, narrativeCurrentValues, activeStates)
+			assemblyPerspectiveContext["_character_perspective_text"] = characterPerspectiveCandidateText
+			assemblyPerspectiveContext["_character_perspective_candidate_count"] = intFromAny(characterPerspectivePacket["candidate_count"], 0)
 			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
 				assemblyPerspectiveContext["_core_objective_memory_max_items_present"] = true
 				assemblyPerspectiveContext["_core_objective_memory_max_items"] = *req.Settings.CoreObjectiveMemoryMaxItems
@@ -560,6 +585,9 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	memoryDeliveryText := extractionStringFromAny(injectionAssembly.MemoryDeliveryPlan["final_text"])
+	characterPerspectivePacket, characterPerspectiveText := finalizeCharacterPerspectivePacket(
+		characterPerspectivePacket, characterPerspectiveCandidateText, memoryDeliveryText,
+	)
 	timing.addElapsed("injection_assembly", injectionStartedAt)
 	referenceRecallStartedAt := time.Now()
 	referenceSceneContext := buildReferenceCoverageSceneContext(chatLogs, activeStates, canonicalLayers, worldRules, supportRecallLimit)
@@ -602,8 +630,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	referenceBudgetPolicy.RemainingChars = referenceBudgetPolicy.TotalCapChars - referenceBudgetPolicy.UsedChars
 	referenceBudgetPolicy.Truncated = primaryCanonBase.Truncated || (referenceInjectionEnabled && referenceInjectedCount < len(referenceRecall.InjectionItems))
 	referenceText := strings.Join(nonEmptyStrings([]string{primaryCanonBase.Text, referenceInjectionText}), "\n\n")
-	memoryAndReversibleStateText := strings.Join(nonEmptyStrings([]string{memoryDeliveryText, reversibleStateText}), "\n\n")
-	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryAndReversibleStateText}), "\n\n")
+	memoryAndStateText := strings.Join(nonEmptyStrings([]string{memoryDeliveryText, reversibleStateText}), "\n\n")
+	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryAndStateText}), "\n\n")
 	injectionTruncated := injectionAssembly.Truncated
 
 	var inputContextText string
@@ -650,6 +678,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	)
 	criticInputPack := buildCriticInputPack(sid, turnIndex, rawUserInput, promptAssembly, evidenceCounts, sectionSummary, degraded)
 	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
+	injectionPack["character_perspective_packet"] = characterPerspectivePacket
+	injectionPack["character_perspective_text"] = nilIfEmpty(characterPerspectiveText)
 	injectionPack["reversible_state_packet"] = reversibleStatePacket
 	injectionPack["reversible_state_text"] = nilIfEmpty(reversibleStateText)
 	injectionPack["reference_text"] = nilIfEmpty(referenceInjectionText)
@@ -880,7 +910,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	payloadApplicationPlan := buildPrepareTurnPayloadApplicationPlan(
 		rawUserInput,
 		referenceText,
-		memoryAndReversibleStateText,
+		memoryAndStateText,
 		inputContextText,
 		injectionEnabled,
 		inputContextEnabled,
@@ -1028,15 +1058,17 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"legacy_surfaces":  "omitted",
 		}
 		compactInjectionPack := map[string]any{
-			"contract_version":          "prepare_turn.compact_injection_pack.v1",
-			"payload_application_plan":  payloadApplicationPlan,
-			"memory_delivery_plan":      injectionPack["memory_delivery_plan"],
-			"memory_delivery_lineage":   boundedMemoryDeliveryLineage,
-			"source_to_payload_lineage": sourceToPayloadLineage,
-			"temporal_packet":           injectionPack["temporal_packet"],
-			"temporal_packet_text":      injectionPack["temporal_packet_text"],
-			"reversible_state_packet":   injectionPack["reversible_state_packet"],
-			"reversible_state_text":     injectionPack["reversible_state_text"],
+			"contract_version":             "prepare_turn.compact_injection_pack.v1",
+			"payload_application_plan":     payloadApplicationPlan,
+			"memory_delivery_plan":         injectionPack["memory_delivery_plan"],
+			"memory_delivery_lineage":      boundedMemoryDeliveryLineage,
+			"source_to_payload_lineage":    sourceToPayloadLineage,
+			"temporal_packet":              injectionPack["temporal_packet"],
+			"temporal_packet_text":         injectionPack["temporal_packet_text"],
+			"character_perspective_packet": injectionPack["character_perspective_packet"],
+			"character_perspective_text":   injectionPack["character_perspective_text"],
+			"reversible_state_packet":      injectionPack["reversible_state_packet"],
+			"reversible_state_text":        injectionPack["reversible_state_text"],
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",

@@ -12,7 +12,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-func TestNormalizeNarrativeStateClaimsSeparatesFactAndBelief(t *testing.T) {
+func TestNormalizeNarrativeStateClaimsLeavesBeliefToPerspectiveMemory(t *testing.T) {
 	extraction := map[string]any{
 		"state_claims": []any{map[string]any{
 			"subject": "A", "subject_type": "character", "state_slot": "life_status", "value": "alive", "evidence_excerpt": "A opened their eyes.",
@@ -22,14 +22,11 @@ func TestNormalizeNarrativeStateClaimsSeparatesFactAndBelief(t *testing.T) {
 		}},
 	}
 	claims := normalizeNarrativeStateClaims(extraction)
-	if len(claims) != 2 {
-		t.Fatalf("claims=%d, want 2", len(claims))
+	if len(claims) != 1 {
+		t.Fatalf("claims=%d, want only objective state claim", len(claims))
 	}
 	if claims[0].ClaimScope != "objective" || claims[0].PerspectiveOwner != "" {
 		t.Fatalf("objective claim normalized incorrectly: %#v", claims[0])
-	}
-	if claims[1].ClaimScope != "belief" || claims[1].PerspectiveOwner != "B" {
-		t.Fatalf("belief claim normalized incorrectly: %#v", claims[1])
 	}
 }
 
@@ -194,7 +191,7 @@ func TestSaveNarrativeStateHighConfidenceTransitionReplacesLowConfidenceCurrent(
 	}
 }
 
-func TestSaveNarrativeStateNonGoalClaimsKeepLegacyReplacementBehavior(t *testing.T) {
+func TestSaveNarrativeStateNonGoalClaimsDoNotOwnBeliefCurrentState(t *testing.T) {
 	st := &turnRecordingStore{}
 	srv := &Server{Store: st}
 	save := func(turn int, objectiveValue, beliefValue string, confidence float64) {
@@ -221,8 +218,8 @@ func TestSaveNarrativeStateNonGoalClaimsKeepLegacyReplacementBehavior(t *testing
 	}
 	save(1, "alive", "missing", 0.9)
 	save(2, "recovering", "alive", 0.2)
-	if len(st.savedStatusCurrent) != 4 || len(st.savedStatusEvents) != 4 {
-		t.Fatalf("goal-only lifecycle fence changed non-goal fact/belief writes: current=%d events=%d", len(st.savedStatusCurrent), len(st.savedStatusEvents))
+	if len(st.savedStatusCurrent) != 2 || len(st.savedStatusEvents) != 2 {
+		t.Fatalf("belief updates must not create generic narrative current/history owners: current=%d events=%d", len(st.savedStatusCurrent), len(st.savedStatusEvents))
 	}
 }
 
@@ -258,7 +255,7 @@ func TestContinuityCorrectionNewLifecycleCarryIsGoalOnly(t *testing.T) {
 	}
 }
 
-func TestNarrativeStateInjectionDropsOffSceneBelief(t *testing.T) {
+func TestNarrativeStateInjectionLeavesAllLegacyBeliefsToPerspectiveMemory(t *testing.T) {
 	values := []store.StatusCurrentValue{
 		narrativeTestCurrentValue("A", "life_status", "alive", "objective", "", 10),
 		narrativeTestCurrentValue("A", "life_status", "dead", "belief", "B", 9),
@@ -266,11 +263,8 @@ func TestNarrativeStateInjectionDropsOffSceneBelief(t *testing.T) {
 	}
 	chatLogs := []store.ChatLog{{TurnIndex: 10, Role: "assistant", Content: "A met B at the gate."}}
 	facts, perceptions, dropped := filterNarrativeCurrentStateViews(values, "B asks whether A survived.", chatLogs, nil)
-	if len(facts) != 1 || len(perceptions) != 1 || dropped != 1 {
+	if len(facts) != 1 || len(perceptions) != 0 || dropped != 2 {
 		t.Fatalf("facts=%d perceptions=%d dropped=%d", len(facts), len(perceptions), dropped)
-	}
-	if perceptions[0].Perspective != "B" {
-		t.Fatalf("perspective=%q, want B", perceptions[0].Perspective)
 	}
 }
 

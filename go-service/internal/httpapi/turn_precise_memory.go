@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -154,6 +155,8 @@ func (s *Server) buildPreciseMemoryUnitsFromExtraction(
 			continue
 		}
 		candidate.applyIdentityPointers(identities, spanStart, spanEnd)
+		candidate.resolveReviewedIdentityPointers(ctx, s.Store, sid)
+		candidate.applyPerspectivePayloadIdentityPointers()
 		payloadJSON := mustCompactJSON(normalizePreciseMemoryValue(candidate.payload))
 		roleSurfaceJSON := mustCompactJSON(normalizePreciseMemoryValue(candidate.surfaces))
 		keyMaterial := strings.Join([]string{
@@ -257,69 +260,48 @@ func preciseMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate
 		candidate.applySemanticAuthority(item)
 		out = append(out, candidate)
 	}
-	for _, source := range []struct {
-		field string
-		kind  string
-	}{
-		{field: "state_claims", kind: "state"},
-		{field: "belief_updates", kind: "observation"},
-	} {
-		for _, raw := range sliceFromAny(extraction[source.field]) {
-			item := mapFromAny(raw)
-			subject := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "subject"), stringFromMap(item, "entity"), stringFromMap(item, "owner"),
-			))
-			stateSlot := normalizeNarrativeStateSlot(extractionFirstNonEmpty(
-				stringFromMap(item, "state_slot"), stringFromMap(item, "slot"), stringFromMap(item, "relation_dimension"),
-			))
-			value := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "value"), stringFromMap(item, "state_value"), stringFromMap(item, "belief"),
-			))
-			excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence")))
-			if subject == "" || stateSlot == "" || value == "" || excerpt == "" {
-				continue
-			}
-			subjectType := normalizeNarrativeSubjectType(stringFromMap(item, "subject_type"))
-			if subjectType == "" {
-				subjectType = "entity"
-			}
-			perspectiveOwner := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "perspective_owner"), stringFromMap(item, "believer"), stringFromMap(item, "knower"),
-			))
-			candidate := preciseMemoryCandidate{
-				kind: source.kind, subtype: stateSlot, excerpt: excerpt,
-				confidence: clampFloat(extractionFloatFromAny(item["confidence"], 0.8), 0, 1),
-				payload: preciseMemorySemanticPayload(item, []string{
-					"subject", "entity", "owner", "subject_type", "state_slot", "slot",
-					"relation_dimension", "value", "state_value", "belief", "claim_scope",
-					"perspective_owner", "believer", "knower", "transition", "epistemic_mode",
-					"modality", "truth_scope", "truth_status", "statement_type",
-					"is_lie", "is_deception", "known_false", "is_uncertain",
-					"is_speculation", "speculative", "is_proposal", "proposed",
-					"hypothetical", "is_ooc", "ooc", "out_of_character",
-					"visibility", "reveal_condition", "source_span_start", "source_span_end",
-				}),
-				truthScope: "objective", epistemicMode: "direct", authorityClass: "objective_world_state",
-				admissionState: "committed", reviewState: "source_observed", visibility: "public",
-				relationshipKey: strings.TrimSpace(stringFromMap(item, "relationship_key")),
-				surfaces:        map[string]string{"subject": subject},
-				requiredRoles:   map[string]bool{"subject": preciseMemorySubjectNeedsIdentity(subjectType)},
-			}
-			if source.kind == "observation" {
-				candidate.truthScope = "owner_scoped"
-				candidate.epistemicMode = preciseMemorySubtype(item, "epistemic_mode", "belief")
-				candidate.authorityClass = "subjective_episodic"
-				candidate.visibility = preciseMemoryVisibility(item, "owner_private")
-				candidate.revealCondition = strings.TrimSpace(stringFromMap(item, "reveal_condition"))
-				candidate.surfaces["knower"] = perspectiveOwner
-				candidate.requiredRoles["knower"] = true
-			} else {
-				candidate.visibility = preciseMemoryVisibility(item, "public")
-				candidate.applySemanticAuthority(item)
-			}
-			out = append(out, candidate)
+	for _, raw := range sliceFromAny(extraction["state_claims"]) {
+		item := mapFromAny(raw)
+		subject := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "subject"), stringFromMap(item, "entity"), stringFromMap(item, "owner"),
+		))
+		stateSlot := normalizeNarrativeStateSlot(extractionFirstNonEmpty(
+			stringFromMap(item, "state_slot"), stringFromMap(item, "slot"), stringFromMap(item, "relation_dimension"),
+		))
+		value := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "value"), stringFromMap(item, "state_value"), stringFromMap(item, "belief"),
+		))
+		excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence")))
+		if subject == "" || stateSlot == "" || value == "" || excerpt == "" {
+			continue
 		}
+		subjectType := normalizeNarrativeSubjectType(stringFromMap(item, "subject_type"))
+		if subjectType == "" {
+			subjectType = "entity"
+		}
+		candidate := preciseMemoryCandidate{
+			kind: "state", subtype: stateSlot, excerpt: excerpt,
+			confidence: clampFloat(extractionFloatFromAny(item["confidence"], 0.8), 0, 1),
+			payload: preciseMemorySemanticPayload(item, []string{
+				"subject", "entity", "owner", "subject_type", "state_slot", "slot",
+				"relation_dimension", "value", "state_value", "belief", "claim_scope",
+				"transition", "epistemic_mode", "modality", "truth_scope",
+				"truth_status", "statement_type", "is_lie", "is_deception",
+				"known_false", "is_uncertain", "is_speculation", "speculative",
+				"is_proposal", "proposed", "hypothetical", "is_ooc", "ooc",
+				"out_of_character", "visibility", "source_span_start", "source_span_end",
+			}),
+			truthScope: "objective", epistemicMode: "direct", authorityClass: "objective_world_state",
+			admissionState: "committed", reviewState: "source_observed",
+			visibility:      preciseMemoryVisibility(item, "public"),
+			relationshipKey: strings.TrimSpace(stringFromMap(item, "relationship_key")),
+			surfaces:        map[string]string{"subject": subject},
+			requiredRoles:   map[string]bool{"subject": preciseMemorySubjectNeedsIdentity(subjectType)},
+		}
+		candidate.applySemanticAuthority(item)
+		out = append(out, candidate)
 	}
+	out = append(out, perspectiveMemoryCandidates(extraction)...)
 	for _, raw := range sliceFromAny(extraction["speaker_attributions"]) {
 		item := mapFromAny(raw)
 		excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "source_excerpt")))
@@ -348,6 +330,333 @@ func preciseMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate
 		out = append(out, candidate)
 	}
 	return out
+}
+
+type perspectiveHolderProposal struct {
+	surface          string
+	epistemicState   string
+	acquisitionMode  string
+	stateWasExplicit bool
+	stateConflict    bool
+}
+
+func perspectiveMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate {
+	out := []preciseMemoryCandidate{}
+	for _, raw := range sliceFromAny(extraction["belief_updates"]) {
+		item := mapFromAny(raw)
+		subject := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "subject"), stringFromMap(item, "entity"), stringFromMap(item, "owner"),
+		))
+		stateSlot := normalizeNarrativeStateSlot(extractionFirstNonEmpty(
+			stringFromMap(item, "state_slot"), stringFromMap(item, "slot"), stringFromMap(item, "relation_dimension"),
+		))
+		value := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "value"), stringFromMap(item, "state_value"), stringFromMap(item, "belief"),
+		))
+		excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence")))
+		if subject == "" || stateSlot == "" || value == "" || excerpt == "" {
+			continue
+		}
+		subjectType := normalizeNarrativeSubjectType(stringFromMap(item, "subject_type"))
+		if subjectType == "" {
+			subjectType = "entity"
+		}
+		defaultState, stateExplicit := normalizePerspectiveMemoryState(extractionFirstNonEmpty(
+			stringFromMap(item, "epistemic_state"), stringFromMap(item, "knowledge_state"),
+			stringFromMap(item, "epistemic_mode"),
+		))
+		if defaultState == "" {
+			defaultState = "unknown"
+		}
+		holders := perspectiveMemoryHolderProposals(item, defaultState, stateExplicit)
+		if len(holders) == 0 {
+			holders = []perspectiveHolderProposal{{epistemicState: defaultState, stateWasExplicit: stateExplicit}}
+		}
+		speaker := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "speaker_name"), stringFromMap(item, "speaker"), stringFromMap(item, "actor"),
+		))
+		for _, holder := range holders {
+			payload := preciseMemorySemanticPayload(item, []string{
+				"subject", "entity", "owner", "subject_type", "state_slot", "slot",
+				"relation_dimension", "value", "state_value", "belief", "claim_scope",
+				"speaker_name", "speaker", "actor",
+				"transition", "epistemic_state", "knowledge_state", "epistemic_mode",
+				"acquisition_mode", "modality", "truth_scope", "truth_status",
+				"statement_type", "visibility", "reveal_condition",
+				"source_span_start", "source_span_end",
+			})
+			payload["contract_version"] = "perspective_memory.v1"
+			payload["epistemic_state"] = holder.epistemicState
+			payload["knowledge_holder"] = holder.surface
+			payload["subject"] = subject
+			payload["state_slot"] = stateSlot
+			payload["claim"] = value
+			if holder.acquisitionMode != "" {
+				payload["acquisition_mode"] = holder.acquisitionMode
+			}
+			candidate := preciseMemoryCandidate{
+				kind: "observation", subtype: stateSlot, excerpt: excerpt, payload: payload,
+				confidence: clampFloat(extractionFloatFromAny(item["confidence"], 0.8), 0, 1),
+				truthScope: "owner_scoped", epistemicMode: holder.epistemicState,
+				authorityClass: "subjective_episodic", admissionState: "committed",
+				reviewState: "source_observed", visibility: perspectiveMemoryVisibility(holder.epistemicState),
+				revealCondition: strings.TrimSpace(stringFromMap(item, "reveal_condition")),
+				surfaces: map[string]string{
+					"subject": subject,
+					"knower":  holder.surface,
+					"actor":   speaker,
+				},
+				requiredRoles: map[string]bool{
+					"subject": preciseMemorySubjectNeedsIdentity(subjectType),
+					"knower":  true,
+					"actor":   speaker != "",
+				},
+			}
+			if holder.stateConflict ||
+				!holder.stateWasExplicit ||
+				!perspectiveMemoryRevealTransitionValid(holder.epistemicState, stringFromMap(item, "transition")) {
+				candidate.markNeedsReview()
+			}
+			out = append(out, candidate)
+		}
+	}
+	out = append(out, protectedSecretPerspectiveMemoryCandidates(extraction)...)
+	out = append(out, subjectivePerspectiveMemoryCandidates(extraction)...)
+	return out
+}
+
+func perspectiveMemoryHolderProposals(item map[string]any, defaultState string, stateExplicit bool) []perspectiveHolderProposal {
+	out := []perspectiveHolderProposal{}
+	stateIndexesByHolder := map[string]map[string]int{}
+	add := func(surface, state, acquisition string, explicit bool) {
+		surface = strings.TrimSpace(surface)
+		if surface == "" {
+			return
+		}
+		normalizedState, valid := normalizePerspectiveMemoryState(state)
+		if !valid {
+			normalizedState = defaultState
+		}
+		key := comparableEntityKey(surface)
+		if key == "" {
+			return
+		}
+		if stateIndexesByHolder[key] == nil {
+			stateIndexesByHolder[key] = map[string]int{}
+		}
+		if _, duplicate := stateIndexesByHolder[key][normalizedState]; duplicate {
+			return
+		}
+		conflict := len(stateIndexesByHolder[key]) > 0
+		if conflict {
+			for _, index := range stateIndexesByHolder[key] {
+				out[index].stateConflict = true
+			}
+		}
+		out = append(out, perspectiveHolderProposal{
+			surface: surface, epistemicState: normalizedState,
+			acquisitionMode:  strings.TrimSpace(acquisition),
+			stateWasExplicit: explicit && valid,
+			stateConflict:    conflict,
+		})
+		stateIndexesByHolder[key][normalizedState] = len(out) - 1
+	}
+	for _, key := range []string{"listener_names", "knowledge_holders", "knowers"} {
+		for _, value := range stringsFromAny(item[key]) {
+			add(value, defaultState, stringFromMap(item, "acquisition_mode"), stateExplicit)
+		}
+	}
+	for _, raw := range sliceFromAny(item["listeners"]) {
+		listener := mapFromAny(raw)
+		if len(listener) == 0 {
+			add(extractionStringFromAny(raw), defaultState, stringFromMap(item, "acquisition_mode"), stateExplicit)
+			continue
+		}
+		state := extractionFirstNonEmpty(
+			stringFromMap(listener, "epistemic_state"),
+			stringFromMap(listener, "knowledge_state"),
+			defaultState,
+		)
+		_, listenerStateExplicit := normalizePerspectiveMemoryState(extractionFirstNonEmpty(
+			stringFromMap(listener, "epistemic_state"), stringFromMap(listener, "knowledge_state"),
+		))
+		add(extractionFirstNonEmpty(
+			stringFromMap(listener, "name"), stringFromMap(listener, "listener_name"),
+			stringFromMap(listener, "knowledge_holder"),
+		), state, extractionFirstNonEmpty(
+			stringFromMap(listener, "acquisition_mode"), stringFromMap(item, "acquisition_mode"),
+		), listenerStateExplicit || stateExplicit)
+	}
+	if len(out) == 0 {
+		add(extractionFirstNonEmpty(
+			stringFromMap(item, "perspective_owner"), stringFromMap(item, "believer"),
+			stringFromMap(item, "knower"),
+		), defaultState, stringFromMap(item, "acquisition_mode"), stateExplicit)
+	}
+	return out
+}
+
+func protectedSecretPerspectiveMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate {
+	out := []preciseMemoryCandidate{}
+	for _, raw := range sliceFromAny(extraction["protected_secrets"]) {
+		item := mapFromAny(raw)
+		excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence")))
+		value := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "summary"), stringFromMap(item, "secret_summary"), stringFromMap(item, "text")))
+		owner := strings.TrimSpace(stringFromMap(item, "owner"))
+		subject := firstStringFromAny(item["subject"])
+		if subject == "" {
+			subject = owner
+		}
+		if excerpt == "" || value == "" || subject == "" {
+			continue
+		}
+		stateSlot := normalizeNarrativeStateSlot(extractionFirstNonEmpty(stringFromMap(item, "secret_kind"), "protected_knowledge"))
+		scope := mapFromAny(item["knowledge_scope"])
+		proposals := []perspectiveHolderProposal{}
+		stateIndexesByHolder := map[string]map[string]int{}
+		addProposal := func(holder, state string) {
+			holder = strings.TrimSpace(holder)
+			key := comparableEntityKey(holder)
+			if key == "" {
+				return
+			}
+			if stateIndexesByHolder[key] == nil {
+				stateIndexesByHolder[key] = map[string]int{}
+			}
+			if _, duplicate := stateIndexesByHolder[key][state]; duplicate {
+				return
+			}
+			conflict := len(stateIndexesByHolder[key]) > 0
+			if conflict {
+				for _, index := range stateIndexesByHolder[key] {
+					proposals[index].stateConflict = true
+				}
+			}
+			proposals = append(proposals, perspectiveHolderProposal{
+				surface: holder, epistemicState: state,
+				stateWasExplicit: true, stateConflict: conflict,
+			})
+			stateIndexesByHolder[key][state] = len(proposals) - 1
+		}
+		for _, stateScope := range []struct {
+			key   string
+			state string
+		}{
+			{key: "known_by", state: "known"},
+			{key: "suspected_by", state: "suspected"},
+			{key: "unknown_to", state: "unknown"},
+			{key: "misinformed_by", state: "misinformed"},
+			{key: "revealed_to", state: "revealed"},
+		} {
+			for _, holder := range stringsFromAny(scope[stateScope.key]) {
+				addProposal(holder, stateScope.state)
+			}
+		}
+		for _, proposal := range proposals {
+			holder := proposal.surface
+			state := proposal.epistemicState
+			payload := preciseMemorySemanticPayload(item, []string{
+				"secret_kind", "owner", "subject", "summary", "sensitivity",
+				"evidence_strength", "disclosure_policy",
+				"transition", "evidence_excerpt", "source_span_start", "source_span_end",
+			})
+			payload["contract_version"] = "perspective_memory.v1"
+			payload["epistemic_state"] = state
+			payload["knowledge_holder"] = holder
+			payload["subject"] = subject
+			payload["state_slot"] = stateSlot
+			payload["claim"] = value
+			candidate := preciseMemoryCandidate{
+				kind: "observation", subtype: stateSlot, excerpt: excerpt, payload: payload,
+				confidence: clampFloat(extractionFloatFromAny(item["confidence"], 0.8), 0, 1),
+				truthScope: "owner_scoped", epistemicMode: state,
+				authorityClass: "subjective_episodic", admissionState: "committed",
+				reviewState: "source_observed", visibility: perspectiveMemoryVisibility(state),
+				revealCondition: strings.TrimSpace(stringFromMap(item, "disclosure_policy")),
+				surfaces:        map[string]string{"subject": subject, "knower": holder},
+				requiredRoles:   map[string]bool{"subject": true, "knower": true},
+			}
+			// A protected-secret summary is the guarded truth, not the false
+			// proposition a misinformed holder believes. Only belief_updates
+			// can commit the holder's source-grounded misinformation claim.
+			if proposal.stateConflict ||
+				state == "misinformed" ||
+				(state == "revealed" && !strings.EqualFold(strings.TrimSpace(stringFromMap(item, "transition")), "reveal")) {
+				candidate.markNeedsReview()
+			}
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func subjectivePerspectiveMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate {
+	out := []preciseMemoryCandidate{}
+	for _, raw := range sliceFromAny(extraction["subjective_entity_memories"]) {
+		item := mapFromAny(raw)
+		if boolFromAny(item["secret_guard"]) || stringSliceContains(stringsFromAny(item["tags"]), "protected_secret") {
+			continue
+		}
+		holder := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "owner_entity_name"), stringFromMap(item, "entity_name"),
+			stringFromMap(item, "name"), stringFromMap(item, "persona_entity_name"),
+		))
+		value := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "memory_text"), stringFromMap(item, "subjective_memory"),
+			stringFromMap(item, "recollection"), stringFromMap(item, "interpretation"),
+			stringFromMap(item, "summary"), stringFromMap(item, "text"),
+		))
+		excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence")))
+		if holder == "" || value == "" || excerpt == "" {
+			continue
+		}
+		payload := preciseMemorySemanticPayload(item, []string{
+			"owner_entity_name", "entity_name", "name", "persona_entity_name",
+			"memory_text", "subjective_memory", "recollection", "interpretation",
+			"summary", "text", "evidence_excerpt", "source_span_start", "source_span_end",
+		})
+		payload["contract_version"] = "perspective_memory.v1"
+		payload["epistemic_state"] = "known"
+		payload["knowledge_holder"] = holder
+		payload["subject"] = holder
+		payload["state_slot"] = "subjective_memory"
+		payload["claim"] = value
+		out = append(out, preciseMemoryCandidate{
+			kind: "observation", subtype: "subjective_memory", excerpt: excerpt, payload: payload,
+			confidence: clampFloat(extractionFloatFromAny(item["confidence"], 0.8), 0, 1),
+			truthScope: "owner_scoped", epistemicMode: "known",
+			authorityClass: "subjective_episodic", admissionState: "committed",
+			reviewState: "source_observed", visibility: "owner_private",
+			surfaces:      map[string]string{"subject": holder, "knower": holder},
+			requiredRoles: map[string]bool{"subject": true, "knower": true},
+		})
+	}
+	return out
+}
+
+func normalizePerspectiveMemoryState(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "known", "suspected", "unknown", "misinformed", "hidden", "revealed":
+		return strings.ToLower(strings.TrimSpace(raw)), true
+	default:
+		return "", false
+	}
+}
+
+func perspectiveMemoryVisibility(state string) string {
+	switch state {
+	case "unknown", "hidden":
+		return "restricted"
+	default:
+		return "owner_private"
+	}
+}
+
+func perspectiveMemoryRevealTransitionValid(state, transition string) bool {
+	if state != "revealed" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(transition), "reveal")
 }
 
 func (candidate *preciseMemoryCandidate) applySemanticAuthority(item map[string]any) {
@@ -425,6 +734,42 @@ func (candidate *preciseMemoryCandidate) applyIdentityPointers(identities *entit
 	if len(participantIDs) == len(candidate.participants) {
 		sort.Strings(participantIDs)
 		candidate.payload["participant_entity_ids"] = participantIDs
+	}
+}
+
+func (candidate *preciseMemoryCandidate) resolveReviewedIdentityPointers(ctx context.Context, candidateStore store.Store, sid string) {
+	resolver, ok := candidateStore.(store.ReviewedEntityIdentityResolver)
+	if !ok || len(candidate.resolvedIDs) == 0 {
+		return
+	}
+	for role, sourceEntityID := range candidate.resolvedIDs {
+		canonicalEntityID, err := resolver.ResolveReviewedCanonicalEntityID(ctx, sid, sourceEntityID)
+		switch {
+		case err == nil && strings.TrimSpace(canonicalEntityID) != "":
+			candidate.resolvedIDs[role] = strings.TrimSpace(canonicalEntityID)
+		case errors.Is(err, store.ErrNotFound):
+			// One active source-observed occurrence is already a stable ID.
+		case err != nil:
+			delete(candidate.resolvedIDs, role)
+			if candidate.requiredRoles[role] {
+				candidate.markNeedsReview()
+			}
+		}
+	}
+}
+
+func (candidate *preciseMemoryCandidate) applyPerspectivePayloadIdentityPointers() {
+	if extractionStringFromAny(candidate.payload["contract_version"]) != "perspective_memory.v1" {
+		return
+	}
+	if id := strings.TrimSpace(candidate.resolvedIDs["knower"]); id != "" {
+		candidate.payload["knowledge_holder_entity_id"] = id
+	}
+	if id := strings.TrimSpace(candidate.resolvedIDs["subject"]); id != "" {
+		candidate.payload["subject_entity_id"] = id
+	}
+	if id := strings.TrimSpace(candidate.resolvedIDs["actor"]); id != "" {
+		candidate.payload["speaker_entity_id"] = id
 	}
 }
 

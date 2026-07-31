@@ -174,7 +174,13 @@ func (s *Server) commitAcceptedMemoryAdmission(
 
 	vectors := []store.MemoryAdmissionVector{}
 	if strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" {
-		if memory != nil && strings.TrimSpace(searchText) != "" {
+		perspectiveScoped := memoryAdmissionHasPerspectiveScopedContent(extraction)
+		if perspectiveScoped {
+			result.addSkipReason("memory_vector", "perspective_scoped_content_requires_typed_delivery", map[string]any{
+				"turn_index": turnIndex,
+			})
+		}
+		if !perspectiveScoped && memory != nil && strings.TrimSpace(searchText) != "" {
 			languageMeta := memoryVectorLanguageMetadata(*memory)
 			vectors = append(vectors, store.MemoryAdmissionVector{
 				ArtifactType:          "memory",
@@ -192,6 +198,12 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		}
 		for _, evidence := range desiredEvidence {
 			if evidence == nil {
+				continue
+			}
+			if evidence.EvidenceKind == "perspective_scoped_turn_excerpt" {
+				result.addSkipReason("evidence_vector", "perspective_scoped_content_requires_typed_delivery", map[string]any{
+					"turn_index": turnIndex,
+				})
 				continue
 			}
 			vectors = append(vectors, store.MemoryAdmissionVector{
@@ -262,6 +274,70 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	return true, evidenceSnapshot
 }
 
+func memoryAdmissionHasPerspectiveScopedContent(extraction map[string]any) bool {
+	if len(extraction) == 0 {
+		return false
+	}
+	for _, key := range []string{
+		"belief_updates",
+		"protected_secrets",
+		"character_identity_accuracy",
+		"subjective_entity_memories",
+	} {
+		if len(sliceFromAny(extraction[key])) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func memoryAdmissionHasHolderScopedPerspectiveContent(extraction map[string]any) bool {
+	if len(extraction) == 0 {
+		return false
+	}
+	if len(sliceFromAny(extraction["belief_updates"])) > 0 {
+		return true
+	}
+	for _, raw := range sliceFromAny(extraction["subjective_entity_memories"]) {
+		item := mapFromAny(raw)
+		if boolFromAny(item["secret_guard"]) ||
+			stringSliceContains(stringsFromAny(item["tags"]), "protected_secret") ||
+			stringSliceContains(stringsFromAny(item["tags"]), "protected_identity") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[string]bool, bool) {
+	protected := map[string]bool{}
+	incomplete := false
+	for _, key := range []string{
+		"belief_updates",
+		"protected_secrets",
+		"character_identity_accuracy",
+		"subjective_entity_memories",
+	} {
+		for _, raw := range sliceFromAny(extraction[key]) {
+			item := mapFromAny(raw)
+			excerpt := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "evidence_excerpt"),
+				stringFromMap(item, "evidence"),
+				stringFromMap(item, "source_excerpt"),
+			))
+			if excerpt == "" {
+				incomplete = true
+				continue
+			}
+			if normalized := normalizeArtifactDedupeText(excerpt); normalized != "" {
+				protected[normalized] = true
+			}
+		}
+	}
+	return protected, incomplete
+}
+
 func buildMemoryAdmissionEvidence(
 	sid string,
 	turnIndex int,
@@ -274,6 +350,8 @@ func buildMemoryAdmissionEvidence(
 ) []*store.DirectEvidence {
 	out := []*store.DirectEvidence{}
 	seen := map[string]bool{}
+	perspectiveScoped := memoryAdmissionHasPerspectiveScopedContent(extraction)
+	perspectiveEvidenceKeys, perspectiveEvidenceIncomplete := memoryAdmissionPerspectiveEvidenceScope(extraction)
 	maxID := int64(0)
 	for _, item := range existing {
 		if item.ID > maxID {
@@ -294,10 +372,15 @@ func buildMemoryAdmissionEvidence(
 			continue
 		}
 		seen[key] = true
+		evidenceKind := "turn_excerpt"
+		if perspectiveScoped &&
+			(perspectiveEvidenceIncomplete || perspectiveEvidenceKeys[normalizeArtifactDedupeText(text)]) {
+			evidenceKind = "perspective_scoped_turn_excerpt"
+		}
 		evidence := &store.DirectEvidence{
 			ID:                   maxID + int64(len(out)) + 1,
 			ChatSessionID:        sid,
-			EvidenceKind:         "turn_excerpt",
+			EvidenceKind:         evidenceKind,
 			EvidenceText:         text,
 			SourceTurnStart:      turnIndex,
 			SourceTurnEnd:        turnIndex,

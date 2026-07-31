@@ -66,6 +66,13 @@ type PreciseMemoryWriter interface {
 	SavePreciseMemoryUnit(context.Context, *PreciseMemoryUnit) (inserted bool, err error)
 }
 
+// CharacterPerspectiveMemoryReader exposes source-active, atomic perspective
+// units to prepare-turn. Callers must still enforce the current stable
+// knowledge-holder identity before rendering any payload.
+type CharacterPerspectiveMemoryReader interface {
+	ListCharacterPerspectiveMemoryUnits(context.Context, string, string) ([]PreciseMemoryUnit, error)
+}
+
 // PreciseMemoryWriteAvailability lets composite stores report whether at least
 // one real persistence lane can accept the optional projection.
 type PreciseMemoryWriteAvailability interface {

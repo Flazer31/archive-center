@@ -576,6 +576,22 @@ func (r *readOnlyStore) ResolveReviewedCanonicalEntityID(ctx context.Context, ch
 	return resolver.ResolveReviewedCanonicalEntityID(ctx, chatSessionID, sourceEntityID)
 }
 
+func (r *readOnlyStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
+	resolver, ok := r.delegate.(UniqueActiveEntitySurfaceResolver)
+	if !ok {
+		return "", ErrNotEnabled
+	}
+	return resolver.ResolveUniqueActiveEntityIDBySurface(ctx, chatSessionID, normalizedSurface)
+}
+
+func (r *readOnlyStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context, chatSessionID, knowledgeHolderEntityID string) ([]PreciseMemoryUnit, error) {
+	reader, ok := r.delegate.(CharacterPerspectiveMemoryReader)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListCharacterPerspectiveMemoryUnits(ctx, chatSessionID, knowledgeHolderEntityID)
+}
+
 // Ping delegates to the underlying store if it implements Pinger.
 func (r *readOnlyStore) Ping(ctx context.Context) error {
 	if p, ok := r.delegate.(Pinger); ok {

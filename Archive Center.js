@@ -27424,6 +27424,9 @@
       const boundPersona = boundPersonaID
         ? personas.find(function(item) { return String((item && item.id) || "").trim() === boundPersonaID; })
         : null;
+      if (boundPersonaID && !boundPersona) {
+        return unobserved("chat_bound_persona_not_resolved");
+      }
       const persona = boundPersona || (Number.isInteger(selectedIndex) && selectedIndex >= 0 ? personas[selectedIndex] : null);
       if (!persona) {
         return unobserved("active_persona_not_resolved");

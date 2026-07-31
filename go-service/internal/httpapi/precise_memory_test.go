@@ -87,6 +87,7 @@ func TestPreciseMemoryAdmissionStoresIndependentAtomicUnits(t *testing.T) {
 		"belief_updates": []any{map[string]any{
 			"subject": "hall", "subject_type": "world", "state_slot": "safety",
 			"value": "unsafe", "perspective_owner": "Rook", "confidence": 0.82,
+			"epistemic_state":  "known",
 			"evidence_excerpt": "Rook believed the hall was unsafe.",
 		}},
 	}

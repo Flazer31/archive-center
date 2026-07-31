@@ -463,6 +463,20 @@ func (d *dualWriteStore) ResolveReviewedCanonicalEntityID(ctx context.Context, c
 	return "", ErrNotEnabled
 }
 
+func (d *dualWriteStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
+	if primary, ok := d.primary.(UniqueActiveEntitySurfaceResolver); ok {
+		return primary.ResolveUniqueActiveEntityIDBySurface(ctx, chatSessionID, normalizedSurface)
+	}
+	return "", ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context, chatSessionID, knowledgeHolderEntityID string) ([]PreciseMemoryUnit, error) {
+	if primary, ok := d.primary.(CharacterPerspectiveMemoryReader); ok {
+		return primary.ListCharacterPerspectiveMemoryUnits(ctx, chatSessionID, knowledgeHolderEntityID)
+	}
+	return nil, ErrNotEnabled
+}
+
 func (d *dualWriteStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseMemoryUnit) (bool, error) {
 	primary, primaryOK := preciseMemoryWriterForStore(d.primary)
 	shadow, shadowOK := preciseMemoryWriterForStore(d.shadow)

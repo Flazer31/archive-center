@@ -505,7 +505,7 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if resp["maintenance_enqueued"] != false || resp["maintenance_audit_recorded"] != true {
 		t.Fatalf("maintenance audit/queue truth mismatch: enqueued=%v audit=%v", resp["maintenance_enqueued"], resp["maintenance_audit_recorded"])
 	}
-	if trace["critic_pipeline_version"] != "critic_pipeline.v2" || trace["critic_pipeline_split_enabled"] != true || trace["critic_pipeline_all_in_single_call"] != false {
+	if trace["critic_pipeline_version"] != "critic_pipeline.v3" || trace["critic_pipeline_split_enabled"] != true || trace["critic_pipeline_all_in_single_call"] != false {
 		t.Fatalf("critic pipeline handoff mismatch: %+v", trace)
 	}
 	if trace["critic_preview_pass_version"] != "ea1k.v1" || trace["direct_evidence_retention_policy_version"] != "ea1l.v1" {
@@ -516,7 +516,7 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 		t.Fatalf("critic_trace missing: %+v", trace)
 	}
 	pipeline, ok := criticTrace["pipeline"].(map[string]any)
-	if !ok || pipeline["policy_version"] != "critic_pipeline.v2" {
+	if !ok || pipeline["policy_version"] != "critic_pipeline.v3" {
 		t.Fatalf("critic pipeline trace missing: %+v", criticTrace)
 	}
 	stages, ok := pipeline["stages"].(map[string]any)

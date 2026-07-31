@@ -194,8 +194,70 @@ func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, 
 			artifactOrdinal++
 		}
 	}
+	projection.persistPerspectiveRoleIdentities(ctx, extraction, result)
 	projection.persistSpeakerAttributions(ctx, extraction, result)
 	return projection
+}
+
+func (p *entityIdentityProjection) persistPerspectiveRoleIdentities(ctx context.Context, extraction map[string]any, result *artifactSaveResult) {
+	surfaces := []string{}
+	add := func(surface string) {
+		surface = strings.TrimSpace(surface)
+		if surface == "" || isPlaceholderKGPart(surface) {
+			return
+		}
+		for _, existing := range surfaces {
+			if comparableEntityKey(existing) == comparableEntityKey(surface) {
+				return
+			}
+		}
+		surfaces = append(surfaces, surface)
+	}
+	for _, raw := range sliceFromAny(extraction["belief_updates"]) {
+		item := mapFromAny(raw)
+		add(extractionFirstNonEmpty(
+			stringFromMap(item, "speaker_name"), stringFromMap(item, "speaker"),
+			stringFromMap(item, "actor"),
+		))
+		add(extractionFirstNonEmpty(
+			stringFromMap(item, "perspective_owner"), stringFromMap(item, "believer"),
+			stringFromMap(item, "knower"),
+		))
+		for _, key := range []string{"listener_names", "knowledge_holders", "knowers"} {
+			for _, value := range stringsFromAny(item[key]) {
+				add(value)
+			}
+		}
+		for _, rawListener := range sliceFromAny(item["listeners"]) {
+			listener := mapFromAny(rawListener)
+			if len(listener) == 0 {
+				add(extractionStringFromAny(rawListener))
+				continue
+			}
+			add(extractionFirstNonEmpty(
+				stringFromMap(listener, "name"), stringFromMap(listener, "listener_name"),
+				stringFromMap(listener, "knowledge_holder"),
+			))
+		}
+	}
+	for _, raw := range sliceFromAny(extraction["protected_secrets"]) {
+		scope := mapFromAny(mapFromAny(raw)["knowledge_scope"])
+		for _, key := range []string{"known_by", "suspected_by", "unknown_to", "misinformed_by", "revealed_to"} {
+			for _, value := range stringsFromAny(scope[key]) {
+				add(value)
+			}
+		}
+	}
+	for ordinal, surface := range surfaces {
+		if occurrence, _, ambiguous := p.resolveUnique(surface); occurrence != nil || ambiguous {
+			continue
+		}
+		p.fullDisplayNames = append(p.fullDisplayNames, surface)
+		occurrence := p.persistOccurrence(ctx, surface, "session_npc", "character", "perspective_role", ordinal, nil, result)
+		if occurrence != nil {
+			p.persistArtifactBinding(ctx, occurrence, "perspective_memory", "participant", ordinal, surface, occurrence.ReviewState, result)
+		}
+	}
 }
 
 func identityNamespaceForOccurrence(entityKind, requested string) string {
@@ -657,6 +719,8 @@ func normalizeSpeakerAttributionCandidates(raw any) []any {
 			"attribution_state": strings.ToLower(strings.TrimSpace(stringFromMap(item, "attribution_state"))),
 			"confidence":        clampFloat(extractionFloatFromAny(item["confidence"], 0), 0, 1),
 			"evidence_excerpt":  excerpt,
+			"listener_names":    stringsFromAny(item["listener_names"]),
+			"listeners":         sliceFromAny(item["listeners"]),
 		})
 	}
 	return out

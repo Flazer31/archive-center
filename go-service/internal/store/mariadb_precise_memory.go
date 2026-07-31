@@ -14,6 +14,7 @@ import (
 
 var _ PreciseMemoryWriter = (*mariadbStore)(nil)
 var _ PreciseMemoryWriteAvailability = (*mariadbStore)(nil)
+var _ CharacterPerspectiveMemoryReader = (*mariadbStore)(nil)
 
 func (m *mariadbStore) PreciseMemoryWritesEnabled() bool {
 	return m != nil && m.db != nil
@@ -45,6 +46,68 @@ func (m *mariadbStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseM
 	}
 	committed = true
 	return inserted, nil
+}
+
+func (m *mariadbStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context, chatSessionID, knowledgeHolderEntityID string) ([]PreciseMemoryUnit, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	knowledgeHolderEntityID = strings.TrimSpace(knowledgeHolderEntityID)
+	if chatSessionID == "" || knowledgeHolderEntityID == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT
+			unit.unit_id, unit.chat_session_id, unit.source_turn_start,
+			unit.source_turn_end, unit.source_revision, unit.memory_kind,
+			COALESCE(unit.memory_subtype, ''), unit.payload_json,
+			COALESCE(unit.actor_entity_id, ''),
+			COALESCE(unit.subject_entity_id, ''),
+			unit.truth_scope, unit.epistemic_mode, unit.authority_class,
+			unit.admission_state, unit.review_state, unit.visibility,
+			COALESCE(unit.knowledge_holder_entity_id, ''),
+			COALESCE(unit.reveal_condition, ''), unit.lifecycle_state,
+			unit.created_at, unit.updated_at
+		FROM precise_memory_units unit
+		JOIN memory_source_revisions source_revision
+		  ON source_revision.chat_session_id = unit.chat_session_id
+		 AND source_revision.source_revision = unit.source_revision
+		 AND source_revision.lifecycle_state = 'active'
+		WHERE unit.chat_session_id = ?
+		  AND unit.memory_kind = 'observation'
+		  AND unit.knowledge_holder_entity_id = ?
+		  AND unit.admission_state IN ('committed', 'review_required')
+		  AND unit.review_state IN ('source_observed', 'needs_review')
+		  AND unit.epistemic_mode IN ('known', 'suspected', 'unknown', 'misinformed', 'hidden', 'revealed')
+		  AND unit.lifecycle_state = 'active'
+		ORDER BY unit.source_turn_start ASC, unit.unit_id ASC
+	`, chatSessionID, knowledgeHolderEntityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PreciseMemoryUnit{}
+	for rows.Next() {
+		var item PreciseMemoryUnit
+		if err := rows.Scan(
+			&item.UnitID, &item.ChatSessionID, &item.SourceTurnStart,
+			&item.SourceTurnEnd, &item.SourceRevision, &item.Kind,
+			&item.Subtype, &item.PayloadJSON, &item.ActorEntityID,
+			&item.SubjectEntityID, &item.TruthScope, &item.EpistemicMode,
+			&item.AuthorityClass, &item.AdmissionState, &item.ReviewState,
+			&item.Visibility, &item.KnowledgeHolderEntityID,
+			&item.RevealCondition, &item.LifecycleState, &item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func savePreciseMemoryUnitTx(ctx context.Context, tx *sql.Tx, item *PreciseMemoryUnit, sourceFenceLocked bool) (bool, error) {
@@ -206,6 +269,9 @@ func savePreciseMemoryDependenciesTx(ctx context.Context, tx *sql.Tx, item *Prec
 }
 
 func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *PreciseMemoryUnit) (bool, error) {
+	if !preciseMemoryGeneralVectorEligible(item) {
+		return false, nil
+	}
 	documentID := "precise_memory:" + item.ChatSessionID + ":" + item.UnitID
 	documentJSON, err := json.Marshal(map[string]any{
 		"id":              documentID,
@@ -237,6 +303,24 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		UpdatedAt:           nonZeroTime(item.UpdatedAt),
 	}
 	return enqueueMemoryVectorOperation(ctx, tx, outbox)
+}
+
+func preciseMemoryGeneralVectorEligible(item *PreciseMemoryUnit) bool {
+	if item == nil {
+		return false
+	}
+	if strings.TrimSpace(item.KnowledgeHolderEntityID) != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.Visibility)) {
+	case "owner_private", "restricted", "reveal_required", "private", "hidden":
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.EpistemicMode)) {
+	case "known", "suspected", "unknown", "misinformed", "hidden", "revealed":
+		return false
+	}
+	return true
 }
 
 func preciseMemoryVectorOperationKey(

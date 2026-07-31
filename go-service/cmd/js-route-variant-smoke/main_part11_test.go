@@ -1297,6 +1297,15 @@ async function bridgeFetch(path, options) {
       throw new Error("Go-owned 3.3-D decisions were not returned to the adapter");
     }
   }
+  R.getChatFromIndex = async () => ({bindedPersona: "persona-missing"});
+  const unresolvedBinding = await observeRisuPersona();
+  if (
+    unresolvedBinding.observation_state !== "unobserved" ||
+    unresolvedBinding.reason !== "chat_bound_persona_not_resolved"
+  ) {
+    throw new Error("unresolved explicit chat persona binding did not fail closed");
+  }
+  R.getChatFromIndex = async () => ({bindedPersona: "persona-a"});
   const hudWatchCountBeforeDecision = hudWatchIds.length;
   const decisionResult = await tryPrepareTurn("session-a", "", [{role: "user", content: "hello"}], null, "model", null, {
     sourceDecisionOnly: true, sourceObservation, capabilityObservation, hostObservations, bootstrapObservation

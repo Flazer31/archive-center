@@ -347,3 +347,303 @@ func TestCriticProtectedQuarantineRejectsUnrelatedGroundedEvidence(t *testing.T)
 		t.Fatalf("unexpected quarantine reasons: %#v", trace)
 	}
 }
+
+func TestPerspectiveClaimsCannotBeCopiedIntoObjectiveLanes(t *testing.T) {
+	extraction := map[string]any{
+		"belief_updates": []any{map[string]any{
+			"perspective_owner": "Rowan",
+			"subject":           "vault",
+			"state_slot":        "access",
+			"value":             "vault is open",
+			"evidence_excerpt":  "Mira privately told Rowan that the vault was open.",
+		}},
+		"narrative_events": []any{
+			map[string]any{
+				"event":            "Rowan knows the vault is open.",
+				"evidence_excerpt": "Mira privately told Rowan that the vault was open.",
+			},
+			map[string]any{
+				"event":            "The public bell rang.",
+				"evidence_excerpt": "The public bell rang.",
+			},
+		},
+		"state_claims": []any{
+			map[string]any{
+				"subject":          "vault",
+				"state_slot":       "access",
+				"value":            "vault is open",
+				"evidence_excerpt": "Mira privately told Rowan that the vault was open.",
+			},
+		},
+		"kg_triples": []any{
+			map[string]any{"subject": "vault", "predicate": "status", "object": "open"},
+			map[string]any{"subject": "bell", "predicate": "rang_at", "object": "noon"},
+		},
+	}
+	quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction)
+	if quarantined != 3 {
+		t.Fatalf("objective duplicate quarantine count=%d, want 3: %#v", quarantined, extraction)
+	}
+	events := sliceFromAny(extraction["narrative_events"])
+	if len(events) != 1 || stringFromMap(mapFromAny(events[0]), "event") != "The public bell rang." {
+		t.Fatalf("public objective event was not preserved: %#v", events)
+	}
+	if len(sliceFromAny(extraction["state_claims"])) != 0 {
+		t.Fatalf("perspective state claim remained objective: %#v", extraction["state_claims"])
+	}
+	triples := sliceFromAny(extraction["kg_triples"])
+	if len(triples) != 1 || stringFromMap(mapFromAny(triples[0]), "subject") != "bell" {
+		t.Fatalf("public KG triple was not preserved: %#v", triples)
+	}
+}
+
+func TestRejectedPrivateCandidateStillQuarantinesObjectiveDuplicate(t *testing.T) {
+	source := "Mina opened the garden door."
+	extraction := map[string]any{
+		"turn_summary": "Mina opened the door.",
+		"protected_secrets": []any{map[string]any{
+			"owner":             "Mina",
+			"summary":           "Mina concealed a murder.",
+			"disclosure_policy": "owner_private_until_revealed",
+			"evidence_excerpt":  "This excerpt is absent from the source.",
+		}},
+		"kg_triples": []any{
+			map[string]any{
+				"subject":   "Mina",
+				"predicate": "concealed",
+				"object":    "a killing",
+			},
+			map[string]any{
+				"subject":   "garden door",
+				"predicate": "state",
+				"object":    "open",
+			},
+		},
+	}
+
+	filtered, trace := quarantineCriticProtectedCandidates(extraction, "", source)
+	if got := len(sliceFromAny(filtered["protected_secrets"])); got != 0 {
+		t.Fatalf("source-unbound private candidate was kept: %#v", filtered["protected_secrets"])
+	}
+	triples := sliceFromAny(filtered["kg_triples"])
+	if len(triples) != 1 || stringFromMap(mapFromAny(triples[0]), "subject") != "garden door" {
+		t.Fatalf("private objective duplicate was not quarantined: %#v", triples)
+	}
+	if intFromAny(trace["objective_lane_quarantined_count"], 0) != 1 {
+		t.Fatalf("objective quarantine was not traced: %#v", trace)
+	}
+}
+
+func TestPerspectiveObjectiveQuarantinePreservesUnrelatedPublicFactForSameOwner(t *testing.T) {
+	extraction := map[string]any{
+		"subjective_entity_memories": []any{map[string]any{
+			"owner_entity_name":    "Mina",
+			"owner_visibility":     "owner_private",
+			"memory_text":          "Mina secretly fears the magistrate.",
+			"target_reveal_policy": "owner_private_until_revealed",
+			"evidence_excerpt":     "Mina hid her fear from everyone.",
+		}},
+		"kg_triples": []any{
+			map[string]any{"subject": "Mina", "predicate": "appointed_as", "object": "captain"},
+			map[string]any{"subject": "Mina", "predicate": "secretly_fears", "object": "magistrate"},
+		},
+	}
+
+	quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction)
+	if quarantined != 1 {
+		t.Fatalf("objective quarantine count=%d, want 1: %#v", quarantined, extraction)
+	}
+	triples := sliceFromAny(extraction["kg_triples"])
+	if len(triples) != 1 || stringFromMap(mapFromAny(triples[0]), "predicate") != "appointed_as" {
+		t.Fatalf("unrelated public fact for the same owner was removed: %#v", triples)
+	}
+}
+
+func TestPerspectiveObjectiveQuarantinePreservesPublicFactSharingOnlyClaimNoun(t *testing.T) {
+	extraction := map[string]any{
+		"subjective_entity_memories": []any{map[string]any{
+			"owner_entity_name":    "Mina",
+			"owner_visibility":     "owner_private",
+			"memory_text":          "Mina fears becoming captain.",
+			"target_reveal_policy": "owner_private_until_revealed",
+			"evidence_excerpt":     "Mina privately feared becoming captain.",
+		}},
+		"kg_triples": []any{
+			map[string]any{"subject": "Mina", "predicate": "appointed_as", "object": "captain"},
+		},
+	}
+
+	if quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction); quarantined != 0 {
+		t.Fatalf("public fact sharing only a noun was quarantined: %#v", extraction)
+	}
+	if got := len(sliceFromAny(extraction["kg_triples"])); got != 1 {
+		t.Fatalf("public appointment fact was removed: %#v", extraction["kg_triples"])
+	}
+}
+
+func TestPerspectiveObjectiveQuarantinePreservesObjectiveTruthOppositeBeliefValue(t *testing.T) {
+	extraction := map[string]any{
+		"belief_updates": []any{map[string]any{
+			"perspective_owner": "Rowan",
+			"subject":           "vault",
+			"state_slot":        "access",
+			"value":             "open",
+			"epistemic_state":   "misinformed",
+			"evidence_excerpt":  "Rowan wrongly believed the vault was open.",
+		}},
+		"state_claims": []any{
+			map[string]any{
+				"subject":          "vault",
+				"state_slot":       "access",
+				"value":            "closed",
+				"evidence_excerpt": "The vault was closed.",
+			},
+			map[string]any{
+				"subject":    "vault",
+				"state_slot": "access",
+				"value":      "open",
+			},
+		},
+	}
+
+	if quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction); quarantined != 1 {
+		t.Fatalf("belief duplicate quarantine count=%d, want 1: %#v", quarantined, extraction)
+	}
+	states := sliceFromAny(extraction["state_claims"])
+	if len(states) != 1 || stringFromMap(mapFromAny(states[0]), "value") != "closed" {
+		t.Fatalf("objective truth opposite the character belief was removed: %#v", states)
+	}
+}
+
+func TestPerspectiveObjectiveQuarantineCatchesIdentityAcrossBothKGEndpoints(t *testing.T) {
+	extraction := map[string]any{
+		"character_identity_accuracy": []any{map[string]any{
+			"surface_identity_name": "Shade",
+			"true_identity_name":    "Alice",
+			"same_entity":           true,
+			"reveal_policy":         "owner_private_until_revealed",
+			"evidence_excerpt":      "Shade admitted privately that she was Alice.",
+		}},
+		"kg_triples": []any{
+			map[string]any{"subject": "Shade", "predicate": "is_really", "object": "Alice"},
+			map[string]any{"subject": "Shade", "predicate": "entered", "object": "the hall"},
+		},
+	}
+
+	quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction)
+	if quarantined != 1 {
+		t.Fatalf("identity objective quarantine count=%d, want 1: %#v", quarantined, extraction)
+	}
+	triples := sliceFromAny(extraction["kg_triples"])
+	if len(triples) != 1 || stringFromMap(mapFromAny(triples[0]), "predicate") != "entered" {
+		t.Fatalf("identity objective duplicate was not isolated precisely: %#v", triples)
+	}
+}
+
+func TestPerspectiveObjectiveQuarantineUsesPrimaryIdentityPairNotEveryAlias(t *testing.T) {
+	extraction := map[string]any{
+		"character_identity_accuracy": []any{map[string]any{
+			"surface_identity_name": "Shade",
+			"alias_name":            "Night",
+			"true_identity_name":    "Alice",
+			"same_entity":           true,
+			"reveal_policy":         "owner_private_until_revealed",
+			"evidence_excerpt":      "Shade admitted privately that she was Alice.",
+		}},
+		"kg_triples": []any{
+			map[string]any{"subject": "Shade", "predicate": "is_really", "object": "Alice"},
+		},
+	}
+
+	if quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction); quarantined != 1 {
+		t.Fatalf("primary identity pair did not quarantine duplicate: %#v", extraction)
+	}
+}
+
+func TestPerspectiveObjectiveQuarantineKeepsPubliclyRevealedIdentityObjective(t *testing.T) {
+	extraction := map[string]any{
+		"character_identity_accuracy": []any{map[string]any{
+			"surface_identity_name": "Shade",
+			"true_identity_name":    "Alice",
+			"same_entity":           true,
+			"transition":            "reveal",
+			"knowledge_scope": map[string]any{
+				"publicly_revealed": true,
+			},
+			"evidence_excerpt": "Shade publicly revealed that she was Alice.",
+		}},
+		"kg_triples": []any{
+			map[string]any{"subject": "Shade", "predicate": "is_really", "object": "Alice"},
+		},
+	}
+
+	if quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction); quarantined != 0 {
+		t.Fatalf("publicly revealed identity was kept private: %#v", extraction)
+	}
+	if got := len(sliceFromAny(extraction["kg_triples"])); got != 1 {
+		t.Fatalf("publicly revealed identity objective fact was removed: %#v", extraction["kg_triples"])
+	}
+}
+
+func TestPerspectiveObjectiveQuarantineFailsClosedForSingleAnchorHiddenRoleWithoutEvidence(t *testing.T) {
+	extraction := map[string]any{
+		"character_identity_accuracy": []any{map[string]any{
+			"surface_identity_name": "Mina",
+			"true_identity_name":    "Mina",
+			"same_entity":           true,
+			"identity_kind":         "hidden_role",
+			"true_role":             "spy",
+			"reveal_policy":         "owner_private_until_revealed",
+			"evidence_excerpt":      "Mina privately admitted that she served as a spy.",
+		}},
+		"kg_triples": []any{
+			map[string]any{"subject": "Mina", "predicate": "member_of", "object": "intelligence"},
+			map[string]any{
+				"subject":          "Mina",
+				"predicate":        "entered",
+				"object":           "the hall",
+				"evidence_excerpt": "Mina entered the hall.",
+			},
+		},
+	}
+
+	if quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction); quarantined != 1 {
+		t.Fatalf("single-anchor hidden role quarantine count=%d, want 1: %#v", quarantined, extraction)
+	}
+	triples := sliceFromAny(extraction["kg_triples"])
+	if len(triples) != 1 || stringFromMap(mapFromAny(triples[0]), "predicate") != "entered" {
+		t.Fatalf("evidence-bound unrelated public fact was not preserved: %#v", triples)
+	}
+}
+
+func TestRejectedFalsePublicIdentityStillQuarantinesObjectiveDuplicate(t *testing.T) {
+	source := "Shade entered the hall."
+	extraction := map[string]any{
+		"turn_summary": "Shade entered the hall.",
+		"character_identity_accuracy": []any{map[string]any{
+			"surface_identity_name": "Shade",
+			"true_identity_name":    "Alice",
+			"same_entity":           true,
+			"reveal_policy":         "public_after_reveal",
+			"transition":            "reveal",
+			"knowledge_scope": map[string]any{
+				"publicly_revealed": true,
+			},
+			"evidence_excerpt": "This public reveal is absent from the source.",
+		}},
+		"kg_triples": []any{
+			map[string]any{"subject": "Shade", "predicate": "is_really", "object": "Alice"},
+		},
+	}
+
+	filtered, trace := quarantineCriticProtectedCandidates(extraction, "", source)
+	if got := len(sliceFromAny(filtered["character_identity_accuracy"])); got != 0 {
+		t.Fatalf("source-unbound public identity candidate was kept: %#v", filtered["character_identity_accuracy"])
+	}
+	if got := len(sliceFromAny(filtered["kg_triples"])); got != 0 {
+		t.Fatalf("rejected false public identity leaked into objective KG: %#v", filtered["kg_triples"])
+	}
+	if intFromAny(trace["objective_lane_quarantined_count"], 0) != 1 {
+		t.Fatalf("rejected public identity objective quarantine was not traced: %#v", trace)
+	}
+}

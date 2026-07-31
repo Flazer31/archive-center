@@ -499,6 +499,27 @@ func reconcileAdmissionPreciseMemoryTx(
 			if err := savePreciseMemoryDependenciesTx(ctx, tx, unit); err != nil {
 				return result, err
 			}
+			documentID := "precise_memory:" + admission.ChatSessionID + ":" + unit.UnitID
+			if !preciseMemoryGeneralVectorEligible(unit) {
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE memory_vector_outbox
+					SET status = 'stale_rejected', lease_owner = NULL, lease_until = NULL,
+					    last_error = 'private_precise_memory', updated_at = ?
+					WHERE document_id = ? AND operation = 'upsert'
+					  AND status IN ('pending', 'leased', 'retryable', 'needs_embedding')
+				`, nonZeroTime(admission.CreatedAt), documentID); err != nil {
+					return result, err
+				}
+				queued, err := enqueueAdmissionVectorDeleteTx(
+					ctx, tx, admission, documentID, "active", "private_precise_memory",
+				)
+				if err != nil {
+					return result, err
+				}
+				if queued {
+					result.vectorOperations++
+				}
+			}
 			vectorQueued, err := enqueuePreciseMemoryVectorTx(ctx, tx, unit)
 			if err != nil {
 				return result, err
@@ -517,7 +538,9 @@ func reconcileAdmissionPreciseMemoryTx(
 		}
 		if inserted {
 			result.inserted++
-			result.vectorOperations++
+			if preciseMemoryGeneralVectorEligible(unit) {
+				result.vectorOperations++
+			}
 		}
 	}
 	for unitID, prior := range existing {

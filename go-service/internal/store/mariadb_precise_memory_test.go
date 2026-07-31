@@ -91,6 +91,81 @@ func TestMariaDBPreciseMemoryAvailabilityRequiresOpenDatabase(t *testing.T) {
 	}
 }
 
+func TestMariaDBPerspectiveReaderRequiresExactHolderAndIncludesLatestReviewBlocker(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Unix(300, 0).UTC()
+	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+unit\.knowledge_holder_entity_id = \?[\s\S]+unit\.admission_state IN \('committed', 'review_required'\)[\s\S]+unit\.review_state IN \('source_observed', 'needs_review'\)[\s\S]+unit\.lifecycle_state = 'active'`).
+		WithArgs("session", "holder-rowan").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"unit_id", "chat_session_id", "source_turn_start", "source_turn_end",
+			"source_revision", "memory_kind", "memory_subtype", "payload_json",
+			"actor_entity_id", "subject_entity_id", "truth_scope", "epistemic_mode",
+			"authority_class", "admission_state", "review_state", "visibility",
+			"knowledge_holder_entity_id", "reveal_condition", "lifecycle_state",
+			"created_at", "updated_at",
+		}).AddRow(
+			"unit-1", "session", 3, 3, "revision", "observation", "access",
+			`{"contract_version":"perspective_memory.v1"}`, "speaker", "subject",
+			"owner_scoped", "known", "subjective_episodic", "committed",
+			"source_observed", "owner_private", "holder-rowan", "", "active", now, now,
+		).AddRow(
+			"unit-2", "session", 4, 4, "revision-2", "observation", "access",
+			`{"contract_version":"perspective_memory.v1"}`, "speaker", "subject",
+			"owner_scoped", "suspected", "subjective_episodic", "review_required",
+			"needs_review", "owner_private", "holder-rowan", "", "active", now, now,
+		))
+	items, err := m.ListCharacterPerspectiveMemoryUnits(context.Background(), "session", "holder-rowan")
+	if err != nil || len(items) != 2 ||
+		items[0].KnowledgeHolderEntityID != "holder-rowan" ||
+		items[1].AdmissionState != "review_required" {
+		t.Fatalf("exact holder read items=%#v err=%v", items, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPreciseMemoryPrivatePerspectiveSkipsGeneralVector(t *testing.T) {
+	for _, item := range []*PreciseMemoryUnit{
+		{Kind: "observation", Visibility: "owner_private", EpistemicMode: "known", KnowledgeHolderEntityID: "holder"},
+		{Kind: "observation", Visibility: "hidden", EpistemicMode: "hidden"},
+		{Kind: "observation", Visibility: "private", EpistemicMode: "misinformed"},
+	} {
+		if preciseMemoryGeneralVectorEligible(item) {
+			t.Fatalf("private perspective became general-vector eligible: %+v", item)
+		}
+	}
+	if !preciseMemoryGeneralVectorEligible(&PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct"}) {
+		t.Fatal("public objective event lost general-vector eligibility")
+	}
+}
+
+func TestMariaDBPreciseMemoryRejectsStaleSourceRevision(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	unit := &PreciseMemoryUnit{ChatSessionID: "session", SourceRevision: "stale"}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state").
+		WithArgs("session", "stale").
+		WillReturnRows(sqlmock.NewRows([]string{"lifecycle_state"}))
+	mock.ExpectRollback()
+	if inserted, err := m.SavePreciseMemoryUnit(context.Background(), unit); inserted || !errors.Is(err, ErrSourceRevisionStale) {
+		t.Fatalf("stale source inserted=%v err=%v", inserted, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBPreciseMemoryDependencyWriteSurfacesNonDuplicateError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

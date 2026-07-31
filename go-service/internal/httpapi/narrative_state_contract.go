@@ -71,9 +71,6 @@ func normalizeNarrativeStateClaims(extraction map[string]any) []narrativeStateCl
 	for i, raw := range sliceFromAny(extraction["state_claims"]) {
 		appendClaim(raw, "objective", i)
 	}
-	for i, raw := range sliceFromAny(extraction["belief_updates"]) {
-		appendClaim(raw, "belief", i)
-	}
 	return out
 }
 
@@ -583,11 +580,12 @@ func filterNarrativeCurrentStateViews(values []store.StatusCurrentValue, rawUser
 		}
 		switch view.Scope {
 		case "belief", "rumor", "secret":
-			if !relevantPerspective {
-				dropped++
-				continue
-			}
-			perceptions = append(perceptions, view)
+			// Legacy generic narrative-state rows do not have the stable
+			// holder/speaker/listener boundary required by perspective_memory.v1.
+			// Keep them persisted for audit/reprocessing, but never let them
+			// bypass the precise per-holder prepare-turn path.
+			dropped++
+			continue
 		default:
 			facts = append(facts, view)
 		}

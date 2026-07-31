@@ -144,7 +144,11 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	embedding := "[]"
 	embeddingModel := "not_configured"
 	var embeddingVector []float32
-	if embCfg.hasConfig() && searchText != "" {
+	perspectiveScopedSearch := memoryAdmissionHasPerspectiveScopedContent(extraction)
+	if perspectiveScopedSearch {
+		embeddingModel = "perspective_scoped_typed_delivery"
+		result.EmbeddingStatus = "skipped_perspective_scoped"
+	} else if embCfg.hasConfig() && searchText != "" {
 		embeddingStartedAt := time.Now()
 		emb, model, err := callEmbedding(ctx, embCfg, searchText)
 		result.addTiming("embedding", embeddingStartedAt)

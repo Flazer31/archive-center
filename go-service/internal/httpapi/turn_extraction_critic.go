@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -722,9 +723,10 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Keep internal enum/category/predicate keys stable. Do not translate system keys per turn just because the output language changes.",
 		"- For ordinary narrative turns with new information, include 1-3 evidence_excerpts that ground the most important user intent and assistant outcome.",
 		"- kg_triples must use real in-story names only. Never use char_*, cid_*, turn_*, user, assistant, system, prompt, or has_turn edges.",
+		"- Every kg_triples item requires a short exact evidence_excerpt from the latest completed turn. Omit an unsupported triple; do not paraphrase private belief, identity, role, allegiance, or secret knowledge into an objective KG edge.",
 		"- For ordinary narrative turns with named actors, emit kg_triples for durable relations, assignments, locations, ownership, promises, threats, injuries, permissions, commands, faction links, or plan participation.",
 		"- entities.characters/locations/items should contain only concrete in-story people, places, or objects observed in this turn.",
-		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker from style alone; use ambiguous or unknown when multiple speakers fit.",
+		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, optional listener_names/listeners when directly observed, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker or listener from style alone; use ambiguous or unknown when multiple characters fit.",
 		"- Separate location/time fact classes. Global current scene location or current scene time belongs in state_deltas.scene_state; a named character's current location belongs in reversible_states. A durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status and/or kg_triples with predicates such as residence, hometown, lives_in, or based_in.",
 		"- Do not treat 'X lives in London' as 'the current scene is London'. Do not treat a temporary visit as a durable residence unless the latest turn says it directly.",
 		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
@@ -735,7 +737,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- flashback, planned, and hypothetical observations describe non-current time and must not be presented as the current scene clock. Use transition=set|advance|correction|reaffirm|supersede|retract; correction, supersession, and retraction require exact latest-turn evidence.",
 		"- relationship_memory may include target_name or pair when trust changes. If no target exists, leave it empty.",
 		"- character_deltas should capture named character appearance, personality, relationship changes, intentions, speech style, or durable role/authority/residence facts. Do not put current location, emotion, injury/body state, or possession there; those belong only in reversible_states.",
-		"- Separate narrative_events (what happened), state_claims (objective current facts), and belief_updates (one character's current perception). Do not promote beliefs to objective truth.",
+		"- Separate narrative_events (what happened), state_claims (objective current facts), and belief_updates (perspective_memory.v1 proposals for one character's knowledge). Do not promote beliefs to objective truth. Each belief_updates item must name the exact knowledge holder with perspective_owner/knower or source-grounded listener_names/listeners, may name an actual source-grounded speaker, and must use epistemic_state=known|suspected|unknown|misinformed|hidden|revealed plus acquisition_mode when directly supported. Include every named speaker/listener/holder in entities.characters.",
 		"- state_claims and belief_updates use stable state_slot keys and transition=set|reaffirm|change|reversal|recovery|correction|reveal|resolve|uncertain|clear|defer|abandon|complete|supersede|reopen|resume. Turn is audit order, not semantic authority.",
 		"- For goal or thread lifecycle state_claims, use the exact goal or thread title as subject, subject_type=entity, and state_slot=goal_status. Do not use goal_status for another entity-state dimension.",
 		"- When that goal or thread is also emitted in pending_threads or state_deltas unresolved_threads.opened, include the same exact title and subject plus state_slot=goal_status in that open record.",
@@ -775,7 +777,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- NPC/private subjective_entity_memories are interpretations, suspicions, misunderstandings, or private bias unless current direct evidence states otherwise; never promote them to objective fact or narrator-revealed truth.",
 		"- Conflict or misunderstanding memories should stay owner-private and may only influence that owner entity's behavior, subtext, hesitation, avoidance, or selective silence until explicit current-session reveal.",
 		"- protected_secrets is for any information that should not become public narration or impossible character knowledge: private affection, guilt, shame, mistakes, lies, fears, debts, hidden plans, hidden identity, hidden role, hidden allegiance, lineage, succession, protected power inheritance, or similar private knowledge.",
-		"- Each protected_secrets item may include secret_kind, owner, subject, summary, sensitivity, evidence_strength, disclosure_policy, knowledge_scope, and evidence_excerpt. Keep the text evidence-bound and do not invent secrets.",
+		"- Each protected_secrets item may include secret_kind, owner, subject, summary, sensitivity, evidence_strength, disclosure_policy, knowledge_scope, transition, and evidence_excerpt. Use transition=reveal only for a directly evidenced targeted reveal in the latest turn. Keep the text evidence-bound and do not invent secrets.",
 		"- If a protected secret exists, set secret_guard=true on the matching subjective_entity_memories item and use target_reveal_policy such as owner_private_until_revealed, explicit_reveal_event_required, or user_directed_reveal_only.",
 		"- Stored secret truth is not permission for spontaneous confession, public narration, or unrelated-character discovery. Preserve it as owner-scoped support until current evidence reveals it.",
 		"- character_identity_accuracy is for evidence-bound identity/role/allegiance mappings such as cover identity, disguise, hidden role, hidden allegiance, secret successor, hidden lineage, or protected power inheritance. Include same_entity, surface_identity_name, true_identity_name, identity_kind, reveal_policy, and knowledge_scope when supported.",
@@ -1337,6 +1339,10 @@ func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistan
 	for key, value := range raw {
 		out[key] = value
 	}
+	// Collect perspective-scoped claims before candidate validation removes any
+	// malformed or source-unbound private item. A rejected private claim must not
+	// survive through a duplicated objective event, state, or KG lane.
+	perspectiveClaims := criticPerspectiveClaims(raw)
 	source := strings.TrimSpace(userInput + "\n" + assistantContent)
 	reasons := map[string]int{}
 	total := 0
@@ -1495,7 +1501,13 @@ func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistan
 		out["character_identity_accuracy"] = safe
 	}
 
-	if total == 0 {
+	perspectiveClaims = excludeValidatedPublicCriticPerspectiveClaims(perspectiveClaims, out)
+	objectiveQuarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanesUsingClaims(out, perspectiveClaims)
+	if objectiveQuarantined > 0 {
+		reasons["perspective_claim_copied_to_objective_lane"] += objectiveQuarantined
+	}
+
+	if total == 0 && objectiveQuarantined == 0 {
 		return out, nil
 	}
 	reasonPayload := map[string]any{}
@@ -1503,13 +1515,318 @@ func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistan
 		reasonPayload[reason] = count
 	}
 	return out, map[string]any{
-		"contract_version":  "critic_protected_candidate_quarantine.v1",
-		"policy":            "exact_current_source_evidence_required",
-		"candidate_count":   total,
-		"kept_count":        kept,
-		"quarantined_count": total - kept,
-		"reasons":           reasonPayload,
+		"contract_version":                 "critic_protected_candidate_quarantine.v1",
+		"policy":                           "exact_current_source_evidence_required",
+		"candidate_count":                  total,
+		"kept_count":                       kept,
+		"quarantined_count":                total - kept,
+		"objective_lane_quarantined_count": objectiveQuarantined,
+		"reasons":                          reasonPayload,
 	}
+}
+
+type criticPerspectiveClaim struct {
+	evidence              string
+	claim                 string
+	owner                 string
+	subject               string
+	kind                  string
+	anchors               []string
+	identityRoleProtected bool
+}
+
+func quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction map[string]any) int {
+	claims := excludeValidatedPublicCriticPerspectiveClaims(criticPerspectiveClaims(extraction), extraction)
+	return quarantineCriticPerspectiveClaimsFromObjectiveLanesUsingClaims(extraction, claims)
+}
+
+func quarantineCriticPerspectiveClaimsFromObjectiveLanesUsingClaims(
+	extraction map[string]any,
+	claims []criticPerspectiveClaim,
+) int {
+	if len(claims) == 0 {
+		return 0
+	}
+	quarantined := 0
+	for _, lane := range []string{"narrative_events", "state_claims", "kg_triples"} {
+		items := sliceFromAny(extraction[lane])
+		safe := make([]any, 0, len(items))
+		for _, raw := range items {
+			item := mapFromAny(raw)
+			if criticObjectiveItemConflictsWithPerspectiveClaim(item, claims) {
+				quarantined++
+				continue
+			}
+			safe = append(safe, raw)
+		}
+		extraction[lane] = safe
+	}
+	return quarantined
+}
+
+func criticPerspectiveClaims(extraction map[string]any) []criticPerspectiveClaim {
+	out := []criticPerspectiveClaim{}
+	add := func(kind string, item map[string]any, ownerKeys, claimKeys []string) {
+		evidence := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "evidence_excerpt"),
+			stringFromMap(item, "evidence"),
+			stringFromMap(item, "source_excerpt"),
+		))
+		claimValues := make([]string, 0, len(claimKeys))
+		for _, key := range claimKeys {
+			if value := strings.TrimSpace(extractionStringFromAny(item[key])); value != "" {
+				claimValues = append(claimValues, value)
+			}
+		}
+		ownerValues := make([]string, 0, len(ownerKeys))
+		for _, key := range ownerKeys {
+			ownerValues = append(ownerValues, stringsFromAny(item[key])...)
+			if value := strings.TrimSpace(extractionStringFromAny(item[key])); value != "" {
+				ownerValues = append(ownerValues, value)
+			}
+		}
+		claim := strings.TrimSpace(strings.Join(claimValues, " "))
+		owner := strings.TrimSpace(strings.Join(ownerValues, " "))
+		subject := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "subject"),
+			stringFromMap(item, "subject_name"),
+			stringFromMap(item, "target"),
+			stringFromMap(item, "entity_name"),
+			stringFromMap(item, "canonical_entity_name"),
+			stringFromMap(item, "true_identity_name"),
+			stringFromMap(item, "surface_identity_name"),
+			extractionFirstNonEmpty(ownerValues...),
+		))
+		if evidence == "" && claim == "" {
+			return
+		}
+		anchors := []string{}
+		if kind == "identity" {
+			for _, value := range []string{
+				extractionFirstNonEmpty(
+					stringFromMap(item, "surface_identity_name"),
+					stringFromMap(item, "public_identity_name"),
+					stringFromMap(item, "alias_name"),
+				),
+				extractionFirstNonEmpty(
+					stringFromMap(item, "true_identity_name"),
+					stringFromMap(item, "canonical_entity_name"),
+					stringFromMap(item, "real_identity_name"),
+				),
+			} {
+				value = strings.TrimSpace(value)
+				if value == "" || slices.Contains(anchors, value) {
+					continue
+				}
+				anchors = append(anchors, value)
+			}
+		} else if subject != "" {
+			anchors = append(anchors, subject)
+		}
+		out = append(out, criticPerspectiveClaim{
+			evidence: evidence,
+			claim:    claim,
+			owner:    owner,
+			subject:  subject,
+			kind:     kind,
+			anchors:  anchors,
+			identityRoleProtected: kind == "identity" && strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "true_role"),
+				stringFromMap(item, "true_allegiance"),
+			)) != "",
+		})
+	}
+	for _, raw := range sliceFromAny(extraction["belief_updates"]) {
+		add("belief", mapFromAny(raw),
+			[]string{"perspective_owner", "knower", "believer", "listener_names", "knowledge_holders"},
+			[]string{"value", "state_value", "belief", "claim"},
+		)
+	}
+	for _, raw := range sliceFromAny(extraction["protected_secrets"]) {
+		item := mapFromAny(raw)
+		add("secret", item, []string{"owner", "subject"}, []string{"summary", "secret_summary", "text"})
+	}
+	for _, raw := range sliceFromAny(extraction["character_identity_accuracy"]) {
+		item := mapFromAny(raw)
+		add("identity", item,
+			[]string{"canonical_entity_name", "true_identity_name", "surface_identity_name"},
+			[]string{"true_identity_name", "surface_identity_name", "identity_kind", "true_role", "true_allegiance"},
+		)
+	}
+	for _, raw := range sliceFromAny(extraction["subjective_entity_memories"]) {
+		item := mapFromAny(raw)
+		visibility := strings.ToLower(strings.TrimSpace(stringFromMap(item, "owner_visibility")))
+		if !boolFromAny(item["secret_guard"]) &&
+			visibility != "owner_private" &&
+			strings.ToLower(strings.TrimSpace(stringFromMap(item, "portability"))) != "npc_private_recollection" {
+			continue
+		}
+		add("subjective", item,
+			[]string{"owner_entity_name", "owner_entity_key", "entity_name"},
+			[]string{"memory_text", "subjective_memory", "recollection", "interpretation", "summary"},
+		)
+	}
+	return out
+}
+
+func excludeValidatedPublicCriticPerspectiveClaims(
+	claims []criticPerspectiveClaim,
+	validatedExtraction map[string]any,
+) []criticPerspectiveClaim {
+	publicExtraction := map[string]any{}
+	for _, lane := range []string{"protected_secrets", "character_identity_accuracy"} {
+		publicItems := []any{}
+		for _, raw := range sliceFromAny(validatedExtraction[lane]) {
+			item := mapFromAny(raw)
+			if boolFromAny(mapFromAny(item["knowledge_scope"])["publicly_revealed"]) {
+				publicItems = append(publicItems, raw)
+			}
+		}
+		if len(publicItems) > 0 {
+			publicExtraction[lane] = publicItems
+		}
+	}
+	publicClaims := criticPerspectiveClaims(publicExtraction)
+	if len(publicClaims) == 0 {
+		return claims
+	}
+	privateClaims := make([]criticPerspectiveClaim, 0, len(claims))
+	for _, claim := range claims {
+		public := false
+		for _, candidate := range publicClaims {
+			if criticPerspectiveClaimsEquivalent(claim, candidate) {
+				public = true
+				break
+			}
+		}
+		if !public {
+			privateClaims = append(privateClaims, claim)
+		}
+	}
+	return privateClaims
+}
+
+func criticPerspectiveClaimsEquivalent(left, right criticPerspectiveClaim) bool {
+	if left.kind != right.kind {
+		return false
+	}
+	if left.kind == "identity" {
+		if len(left.anchors) != len(right.anchors) {
+			return false
+		}
+		for index := range left.anchors {
+			if normalizeArtifactDedupeText(left.anchors[index]) != normalizeArtifactDedupeText(right.anchors[index]) {
+				return false
+			}
+		}
+		return len(left.anchors) > 0
+	}
+	return normalizeArtifactDedupeText(left.subject) == normalizeArtifactDedupeText(right.subject) &&
+		normalizeArtifactDedupeText(left.claim) == normalizeArtifactDedupeText(right.claim)
+}
+
+func criticObjectiveItemConflictsWithPerspectiveClaim(item map[string]any, claims []criticPerspectiveClaim) bool {
+	if len(item) == 0 {
+		return false
+	}
+	evidence := strings.TrimSpace(extractionFirstNonEmpty(
+		stringFromMap(item, "evidence_excerpt"),
+		stringFromMap(item, "evidence"),
+		stringFromMap(item, "source_excerpt"),
+	))
+	encoded, _ := json.Marshal(item)
+	text := strings.TrimSpace(string(encoded))
+	for _, protected := range claims {
+		if evidence != "" && protected.evidence != "" &&
+			normalizeArtifactDedupeText(evidence) == normalizeArtifactDedupeText(protected.evidence) {
+			return true
+		}
+		if protected.claim != "" &&
+			criticProtectedClaimSupported(protected.claim, text, protected.owner) {
+			return true
+		}
+		if evidence == "" && criticObjectiveItemCarriesPerspectiveClaimSignal(item, protected) {
+			return true
+		}
+	}
+	return false
+}
+
+func criticObjectiveItemCarriesPerspectiveClaimSignal(item map[string]any, claim criticPerspectiveClaim) bool {
+	if claim.kind == "identity" {
+		if len(claim.anchors) >= 2 {
+			encoded, _ := json.Marshal(item)
+			text := strings.ToLower(string(encoded))
+			for _, anchor := range claim.anchors {
+				if !strings.Contains(text, strings.ToLower(strings.TrimSpace(anchor))) {
+					return false
+				}
+			}
+			return true
+		}
+		if len(claim.anchors) == 1 && claim.identityRoleProtected {
+			return criticObjectiveItemHasExactPerspectiveAnchor(item, claim.anchors[0])
+		}
+		return false
+	}
+
+	anchor := normalizeArtifactDedupeText(claim.subject)
+	if anchor == "" {
+		return false
+	}
+	anchorMatched := criticObjectiveItemHasExactPerspectiveAnchor(item, anchor)
+	if !anchorMatched {
+		return false
+	}
+
+	itemJSON, _ := json.Marshal(item)
+	itemTokens := criticSubstantiveTokens(string(itemJSON))
+	claimTokens := criticSubstantiveTokens(claim.claim)
+	for token := range criticSubstantiveTokens(claim.owner + " " + claim.subject) {
+		delete(claimTokens, token)
+	}
+	overlap := 0
+	for token := range claimTokens {
+		if _, matched := itemTokens[token]; matched {
+			overlap++
+		}
+	}
+	if overlap >= 2 || (claim.kind == "belief" && overlap >= 1) {
+		return true
+	}
+	if overlap == 0 {
+		return false
+	}
+	predicateTokens := map[string]struct{}{}
+	for _, key := range []string{"predicate", "relation", "relationship_type", "state_slot", "slot", "state_key"} {
+		for token := range criticSubstantiveTokens(extractionStringFromAny(item[key])) {
+			predicateTokens[token] = struct{}{}
+		}
+	}
+	for token := range claimTokens {
+		if _, matched := predicateTokens[token]; matched {
+			return true
+		}
+	}
+	return false
+}
+
+func criticObjectiveItemHasExactPerspectiveAnchor(item map[string]any, anchor string) bool {
+	anchor = normalizeArtifactDedupeText(anchor)
+	if anchor == "" {
+		return false
+	}
+	for _, key := range []string{
+		"subject", "subject_name", "target", "target_name",
+		"entity", "entity_name", "character", "character_name",
+		"actor", "actor_name", "owner", "owner_entity_name",
+		"object", "object_name",
+	} {
+		if normalizeArtifactDedupeText(extractionStringFromAny(item[key])) == anchor {
+			return true
+		}
+	}
+	return false
 }
 
 func criticEvidenceOccursInSource(evidence, source string) bool {

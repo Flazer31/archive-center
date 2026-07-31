@@ -163,6 +163,80 @@ func (m *mariadbStore) ResolveReviewedCanonicalEntityID(ctx context.Context, cha
 	return "", ErrNotFound
 }
 
+func (m *mariadbStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
+	if err := m.ensureDB(); err != nil {
+		return "", err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	normalizedSurface = strings.TrimSpace(normalizedSurface)
+	if chatSessionID == "" || normalizedSurface == "" {
+		return "", ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT
+			surface.stable_entity_id,
+			COALESCE(identity_link.target_entity_id, '')
+		FROM entity_identity_surfaces surface
+		JOIN entity_identities source_identity
+		  ON source_identity.chat_session_id = surface.chat_session_id
+		 AND source_identity.stable_entity_id = surface.stable_entity_id
+		 AND source_identity.lifecycle_state = 'active'
+		 AND source_identity.review_state = 'source_observed'
+		JOIN memory_source_revisions source_revision
+		  ON source_revision.chat_session_id = surface.chat_session_id
+		 AND source_revision.source_revision = surface.source_revision
+		 AND source_revision.lifecycle_state = 'active'
+		LEFT JOIN entity_identity_links identity_link
+		  ON identity_link.chat_session_id = surface.chat_session_id
+		 AND identity_link.source_entity_id = surface.stable_entity_id
+		 AND identity_link.target_entity_id <> identity_link.source_entity_id
+		 AND identity_link.link_kind = ?
+		 AND identity_link.link_state = ?
+		LEFT JOIN entity_identities canonical_target
+		  ON canonical_target.chat_session_id = identity_link.chat_session_id
+		 AND canonical_target.stable_entity_id = identity_link.target_entity_id
+		 AND canonical_target.lifecycle_state = 'active'
+		 AND canonical_target.review_state = ?
+		WHERE surface.chat_session_id = ?
+		  AND surface.normalized_surface = ?
+		  AND surface.review_state = 'source_observed'
+		  AND (identity_link.target_entity_id IS NULL OR canonical_target.stable_entity_id IS NOT NULL)
+		ORDER BY surface.stable_entity_id ASC, identity_link.target_entity_id ASC
+	`, EntityIdentityLinkKindCanonicalEquivalence, EntityIdentityLinkStateReviewed,
+		EntityIdentityReviewStateReviewed, chatSessionID, normalizedSurface)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	resolved := map[string]struct{}{}
+	for rows.Next() {
+		var sourceEntityID, targetEntityID string
+		if err := rows.Scan(&sourceEntityID, &targetEntityID); err != nil {
+			return "", err
+		}
+		entityID := strings.TrimSpace(targetEntityID)
+		if entityID == "" {
+			entityID = strings.TrimSpace(sourceEntityID)
+		}
+		if entityID != "" {
+			resolved[entityID] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(resolved) == 0 {
+		return "", ErrNotFound
+	}
+	if len(resolved) != 1 {
+		return "", ErrReviewedEntityIdentityAmbiguous
+	}
+	for entityID := range resolved {
+		return entityID, nil
+	}
+	return "", ErrNotFound
+}
+
 func (m *mariadbStore) withActiveEntitySourceWrite(
 	ctx context.Context,
 	sourceContract string,

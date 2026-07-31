@@ -20,9 +20,15 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	recallLimit := prepareTurnSupportCandidateLimit(maxChars)
 	languageContext = normalizeCompleteTurnLanguageContext(languageContext)
 	perspectiveContext := map[string]any(nil)
+	perspectiveCandidateText := ""
+	perspectiveCandidateCount := 0
 	if len(perspectiveContextArg) > 0 {
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
+		perspectiveCandidateText = strings.TrimSpace(extractionStringFromAny(perspectiveContextArg[0]["_character_perspective_text"]))
+		perspectiveCandidateCount = intFromAny(perspectiveContextArg[0]["_character_perspective_candidate_count"], 0)
 	}
+	evidenceInputCount := len(evidence)
+	evidence, perspectiveBlockedEvidenceIDs := filterPrepareTurnPerspectiveScopedEvidence(evidence, memories)
 	narrativeCurrentValues, activeStates := prepareTurnNarrativeStateFromPerspective(perspectiveContextArg)
 
 	out := prepareTurnInjectionAssembly{
@@ -32,7 +38,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			"memory_count":                         len(memories),
 			"kg_count":                             len(kgTriples),
 			"fallback_chat_log_count":              len(chatLogs),
+			"evidence_input_count":                 evidenceInputCount,
 			"evidence_count":                       len(evidence),
+			"perspective_evidence_filtered_count":  evidenceInputCount - len(evidence),
 			"storyline_count":                      len(storylines),
 			"world_rule_count":                     len(worldRules),
 			"character_state_count":                len(charStates),
@@ -50,6 +58,18 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	}
 
 	protectedPerspectiveContext := prepareTurnProtectedPerspectiveContext(perspectiveContext, memories, charStates)
+	var holderScopedTrace map[string]any
+	memories, holderScopedTrace = prefilterPrepareTurnHolderScopedPerspectiveMemories(memories)
+	for key, value := range holderScopedTrace {
+		out.Counts[key] = value
+	}
+	if prepareTurnPerspectiveHardFilterActive(perspectiveContext) {
+		var protectedPreRankTrace map[string]any
+		memories, protectedPreRankTrace = prefilterPrepareTurnProtectedAggregateMemories(memories)
+		for key, value := range protectedPreRankTrace {
+			out.Counts[key] = value
+		}
+	}
 	recollectionContext := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogs)
 	knownCharacterNames := make([]string, 0, len(charStates)+len(characterPrivateMemories))
 	for _, state := range charStates {
@@ -114,10 +134,23 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	if len(perspectiveContext) > 0 && len(protectedPerspectiveContext) == 0 {
 		out.Counts["protected_perspective_ignored_reason"] = "current_pov_not_recognized_as_character"
 	}
-	artifactHydration := prepareTurnHydrateVectorArtifactHits(evidence, worldRules, vectorShadow, recallLimit)
+	artifactHydration := prepareTurnHydrateVectorArtifactHits(
+		evidence, worldRules, vectorShadow, recallLimit, perspectiveBlockedEvidenceIDs,
+	)
 	out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 	out.ActualMemoryText = makePrepareTurnSection("[Memory]", actualMemoryLines)
+	if perspectiveCandidateText != "" {
+		for _, line := range strings.Split(perspectiveCandidateText, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || line == "[Character Perspective]" {
+				continue
+			}
+			protectedMemoryLines = append(protectedMemoryLines, line)
+		}
+		out.Counts["character_perspective_candidate_count"] = perspectiveCandidateCount
+		out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
+	}
 	out.ProtectedMemoryText = makePrepareTurnSection("[Protected Memory Guidance]", protectedMemoryLines)
 
 	kgLines := make([]string, 0, minInt(len(kgTriples), recallLimit))

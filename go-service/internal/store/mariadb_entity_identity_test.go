@@ -163,6 +163,54 @@ func TestMariaDBResolveReviewedCanonicalEntityIDAmbiguousFailsClosed(t *testing.
 	}
 }
 
+func TestMariaDBResolveUniqueActiveEntityIDBySurfaceRequiresUniqueReviewedActiveIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rows    *sqlmock.Rows
+		want    string
+		wantErr error
+	}{
+		{
+			name: "unique",
+			rows: sqlmock.NewRows([]string{"stable_entity_id", "target_entity_id"}).
+				AddRow("occurrence-1", "canonical-1").
+				AddRow("occurrence-2", "canonical-1"),
+			want: "canonical-1",
+		},
+		{
+			name: "ambiguous",
+			rows: sqlmock.NewRows([]string{"stable_entity_id", "target_entity_id"}).
+				AddRow("occurrence-1", "").
+				AddRow("occurrence-2", ""),
+			wantErr: ErrReviewedEntityIdentityAmbiguous,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			m := &mariadbStore{db: db}
+			mock.ExpectQuery(`FROM entity_identity_surfaces surface[\s\S]+source_identity\.lifecycle_state = 'active'[\s\S]+source_revision\.lifecycle_state = 'active'[\s\S]+surface\.review_state = 'source_observed'`).
+				WithArgs(
+					EntityIdentityLinkKindCanonicalEquivalence,
+					EntityIdentityLinkStateReviewed,
+					EntityIdentityReviewStateReviewed,
+					"session-1", "alex",
+				).
+				WillReturnRows(tc.rows)
+			got, err := m.ResolveUniqueActiveEntityIDBySurface(context.Background(), "session-1", "alex")
+			if !errors.Is(err, tc.wantErr) || got != tc.want {
+				t.Fatalf("resolved=%q err=%v want=%q err=%v", got, err, tc.want, tc.wantErr)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 type reviewedResolverTestStore struct {
 	Store
 	target string

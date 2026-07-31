@@ -154,6 +154,7 @@ func normalizeProtectedSecrets(raw any) []any {
 			"evidence_strength":        normalizeProtectedSecretToken(stringFromMap(secret, "evidence_strength")),
 			"disclosure_policy":        disclosurePolicy,
 			"knowledge_scope":          knowledgeScope,
+			"transition":               normalizeNarrativeTransition(stringFromMap(secret, "transition")),
 			"evidence_excerpt":         strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(secret, "evidence_excerpt"), stringFromMap(secret, "evidence"))),
 			"raw_evidence_rewritten":   false,
 			"public_narration_allowed": boolFromAny(secret["public_narration_allowed"]),

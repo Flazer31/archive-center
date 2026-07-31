@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	completeTurnCriticPipelineVersion          = "critic_pipeline.v2"
+	completeTurnCriticPipelineVersion          = "critic_pipeline.v3"
 	completeTurnCriticPreviewPassVersion       = "ea1k.v1"
 	completeTurnDirectEvidenceRetentionVersion = "ea1l.v1"
 	completeTurnMaintenancePlanVersion         = "maintenance_audit.v2"

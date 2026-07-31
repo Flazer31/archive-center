@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +129,64 @@ func TestMariaDBMemoryAdmissionCommitsCoreProjectionsAndOutboxAtomically(t *test
 		unit.ID != 31 || unit.RootEvidenceID != 21 {
 		t.Fatalf("unexpected result=%+v memory=%d evidence=%d unit=%d root=%d",
 			got, admission.Memory.ID, evidence.ID, unit.ID, unit.RootEvidenceID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReconcileAdmissionPrivatePerspectiveDoesNotClaimGeneralVectorUpsert(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 7, 31, 1, 0, 0, 0, time.UTC)
+	unit := &PreciseMemoryUnit{
+		UnitID: "private-unit", ContractVersion: PreciseMemoryUnitContract,
+		ChatSessionID: "session", SourceRevision: "revision",
+		SourceTurnStart: 3, SourceTurnEnd: 3,
+		SourceContract:    acceptedSourceObservationContract,
+		SourceContentHash: strings.Repeat("a", 64), SourceRole: "combined_turn_pair",
+		EvidenceExcerpt: "Mira alone knows the map.", EvidenceHash: strings.Repeat("b", 64),
+		DirectEvidenceIDsJSON: "[]", Kind: "observation",
+		PayloadJSON: `{"contract_version":"perspective_memory.v1"}`,
+		TruthScope:  "owner_scoped", EpistemicMode: "known",
+		AuthorityClass: "subjective_episodic", AdmissionState: "committed",
+		ReviewState: "source_observed", Visibility: "owner_private",
+		KnowledgeHolderEntityID: "holder-mira", Confidence: 0.9,
+		IdempotencyKey:    strings.Repeat("c", 64),
+		DerivationVersion: PreciseMemoryUnitContract,
+		ExtractorVersion:  "critic.v1", IndexVersion: "not_materialized",
+		LifecycleState: "active", CreatedAt: now, UpdatedAt: now,
+	}
+	admission := &MemoryAdmission{
+		ChatSessionID: "session", SourceRevision: "revision",
+		PreciseUnits: []*PreciseMemoryUnit{unit}, CreatedAt: now,
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
+	mock.ExpectExec("INSERT INTO precise_memory_units").
+		WillReturnResult(sqlmock.NewResult(31, 1))
+	mock.ExpectExec("INSERT INTO memory_derivation_dependencies").
+		WillReturnResult(sqlmock.NewResult(41, 1))
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reconcileAdmissionPreciseMemoryTx(context.Background(), tx, admission)
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got.inserted != 1 || got.vectorOperations != 0 {
+		t.Fatalf("private insert result=%+v, want inserted without general vector operation", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

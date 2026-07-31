@@ -289,6 +289,17 @@ func prepareTurnPerspectiveContextFromClientMeta(meta map[string]any) map[string
 			return nested
 		}
 	}
+	persona := mapFromAny(meta["risu_persona_observation"])
+	if extractionStringFromAny(persona["contract_version"]) == "risu_persona_observation.v1" &&
+		extractionStringFromAny(persona["observation_state"]) == "observed" {
+		if personaName := strings.TrimSpace(extractionStringFromAny(persona["persona_name"])); personaName != "" {
+			return normalizePrepareTurnPerspectiveContext(map[string]any{
+				"current_pov": personaName,
+				"source":      "risu_persona_observation",
+				"mode":        "active_user_persona_knowledge_holder",
+			})
+		}
+	}
 	return normalizePrepareTurnPerspectiveContext(meta)
 }
 
@@ -420,14 +431,23 @@ func normalizePrepareTurnPerspectiveContext(raw map[string]any) map[string]any {
 		extractionStringFromAny(raw["current_character"]),
 		extractionStringFromAny(raw["active_character"]),
 	))
-	if pov == "" {
+	entityID := strings.TrimSpace(extractionStringFromAny(raw["current_pov_entity_id"]))
+	if pov == "" && entityID == "" {
 		return nil
 	}
 	out := map[string]any{
 		"contract_version": "perspective_context.v1",
-		"current_pov":      truncateRunes(pov, 120),
-		"current_pov_key":  normalizeCharacterKey(pov),
 		"source":           extractionFirstNonEmpty(extractionStringFromAny(raw["source"]), "client_meta"),
+	}
+	if pov != "" {
+		out["current_pov"] = truncateRunes(pov, 120)
+		out["current_pov_key"] = normalizeCharacterKey(pov)
+	}
+	if entityID != "" {
+		out["current_pov_entity_id"] = truncateRunes(entityID, 200)
+	}
+	if identityState := strings.TrimSpace(extractionStringFromAny(raw["identity_state"])); identityState != "" {
+		out["identity_state"] = truncateRunes(identityState, 40)
 	}
 	if mode := strings.TrimSpace(extractionStringFromAny(raw["mode"])); mode != "" {
 		out["mode"] = truncateRunes(mode, 80)
@@ -1610,6 +1630,55 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 	return selection
 }
 
+func prefilterPrepareTurnProtectedAggregateMemories(items []store.Memory) ([]store.Memory, map[string]any) {
+	out := make([]store.Memory, 0, len(items))
+	droppedReasons := map[string]any{}
+	for _, item := range items {
+		parsed := parseJSONMap(item.SummaryJSON)
+		secrets := sliceFromAny(parsed["protected_secrets"])
+		identities := sliceFromAny(parsed["character_identity_accuracy"])
+		if len(secrets) == 0 && len(identities) == 0 {
+			out = append(out, item)
+			continue
+		}
+		public := len(secrets) > 0
+		for _, raw := range secrets {
+			scope := mapFromAny(mapFromAny(raw)["knowledge_scope"])
+			if !boolFromAny(scope["publicly_revealed"]) {
+				public = false
+				break
+			}
+		}
+		if public && len(identities) == 0 {
+			out = append(out, item)
+			continue
+		}
+		droppedReasons["private_aggregate_requires_precise_holder_projection"] =
+			intFromAny(droppedReasons["private_aggregate_requires_precise_holder_projection"], 0) + 1
+	}
+	return out, map[string]any{
+		"protected_memory_pre_rank_input_count":   len(items),
+		"protected_memory_pre_rank_output_count":  len(out),
+		"protected_memory_pre_rank_dropped_count": len(items) - len(out),
+		"protected_memory_pre_rank_drop_reasons":  droppedReasons,
+	}
+}
+
+func prefilterPrepareTurnHolderScopedPerspectiveMemories(items []store.Memory) ([]store.Memory, map[string]any) {
+	out := make([]store.Memory, 0, len(items))
+	for _, item := range items {
+		if memoryAdmissionHasHolderScopedPerspectiveContent(parseJSONMap(item.SummaryJSON)) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, map[string]any{
+		"holder_scoped_memory_pre_rank_input_count":   len(items),
+		"holder_scoped_memory_pre_rank_output_count":  len(out),
+		"holder_scoped_memory_pre_rank_dropped_count": len(items) - len(out),
+	}
+}
+
 func prepareTurnProtectedMemoryRelevant(item store.Memory, ctx prepareTurnRecollectionContext, perspectiveContext map[string]any) (bool, string) {
 	tokens, protected := prepareTurnProtectedMemoryEntityTokens(item)
 	if !protected {
@@ -1833,6 +1902,7 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			"hydrated_count":                  0,
 			"duplicate_count":                 0,
 			"missing_count":                   0,
+			"scope_filtered_count":            0,
 			"non_memory_count":                0,
 			"score_missing_count":             0,
 			"below_similarity_count":          0,
@@ -1909,6 +1979,10 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			out.Trace["duplicate_count"] = intFromAny(out.Trace["duplicate_count"], 0) + 1
 			continue
 		}
+		if memoryAdmissionHasHolderScopedPerspectiveContent(parseJSONMap(item.SummaryJSON)) {
+			out.Trace["scope_filtered_count"] = intFromAny(out.Trace["scope_filtered_count"], 0) + 1
+			continue
+		}
 		score, scoreOK := prepareTurnVectorHitSimilarity(hit)
 		if !scoreOK {
 			out.Trace["score_missing_count"] = intFromAny(out.Trace["score_missing_count"], 0) + 1
@@ -1944,7 +2018,13 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 	return out
 }
 
-func prepareTurnHydrateVectorArtifactHits(evidence []store.DirectEvidence, worldRules []store.WorldRule, vectorShadow map[string]any, limit int) prepareTurnVectorArtifactHydration {
+func prepareTurnHydrateVectorArtifactHits(
+	evidence []store.DirectEvidence,
+	worldRules []store.WorldRule,
+	vectorShadow map[string]any,
+	limit int,
+	blockedEvidenceIDsArg ...map[int64]bool,
+) prepareTurnVectorArtifactHydration {
 	out := prepareTurnVectorArtifactHydration{
 		Evidence:   []store.DirectEvidence{},
 		WorldRules: []store.WorldRule{},
@@ -1991,6 +2071,10 @@ func prepareTurnHydrateVectorArtifactHits(evidence []store.DirectEvidence, world
 	}
 	seenEvidence := map[int64]bool{}
 	seenWorldRule := map[int64]bool{}
+	blockedEvidenceIDs := map[int64]bool{}
+	if len(blockedEvidenceIDsArg) > 0 && blockedEvidenceIDsArg[0] != nil {
+		blockedEvidenceIDs = blockedEvidenceIDsArg[0]
+	}
 	hits := prepareTurnVectorSearchResultMaps(vectorShadow["search_results"])
 	out.Trace["status"] = "ready"
 	out.Trace["input_hit_count"] = len(hits)
@@ -2019,6 +2103,10 @@ func prepareTurnHydrateVectorArtifactHits(evidence []store.DirectEvidence, world
 			}
 			item, ok := evidenceByID[id]
 			if !ok {
+				if blockedEvidenceIDs[id] {
+					out.Trace["scope_filtered_count"] = intFromAny(out.Trace["scope_filtered_count"], 0) + 1
+					continue
+				}
 				out.Trace["missing_count"] = intFromAny(out.Trace["missing_count"], 0) + 1
 				continue
 			}
@@ -2062,6 +2150,77 @@ func prepareTurnHydrateVectorArtifactHits(evidence []store.DirectEvidence, world
 		out.Trace["status"] = "empty"
 	}
 	return out
+}
+
+func filterPrepareTurnPerspectiveScopedEvidence(
+	evidence []store.DirectEvidence,
+	memories []store.Memory,
+) ([]store.DirectEvidence, map[int64]bool) {
+	protectedTurns := map[int]bool{}
+	protectedEvidenceKeysByTurn := map[int]map[string]bool{}
+	for _, memory := range memories {
+		if memory.TurnIndex <= 0 {
+			continue
+		}
+		extraction := parseJSONMap(memory.SummaryJSON)
+		if !memoryAdmissionHasPerspectiveScopedContent(extraction) {
+			continue
+		}
+		keys, incomplete := memoryAdmissionPerspectiveEvidenceScope(extraction)
+		if incomplete {
+			protectedTurns[memory.TurnIndex] = true
+		}
+		if len(keys) > 0 {
+			protectedEvidenceKeysByTurn[memory.TurnIndex] = keys
+		}
+	}
+	safe := make([]store.DirectEvidence, 0, len(evidence))
+	blockedIDs := map[int64]bool{}
+	for _, item := range evidence {
+		if strings.EqualFold(strings.TrimSpace(item.EvidenceKind), "perspective_scoped_turn_excerpt") {
+			if item.ID > 0 {
+				blockedIDs[item.ID] = true
+			}
+			continue
+		}
+		start := item.SourceTurnStart
+		end := item.SourceTurnEnd
+		if start <= 0 {
+			start = item.TurnAnchor
+		}
+		if end <= 0 {
+			end = item.TurnAnchor
+		}
+		if end < start {
+			start, end = end, start
+		}
+		blocked := false
+		if start > 0 && end > 0 {
+			for turn := range protectedTurns {
+				if turn >= start && turn <= end {
+					blocked = true
+					break
+				}
+			}
+			if !blocked {
+				evidenceKey := normalizeArtifactDedupeText(item.EvidenceText)
+				for turn, protectedKeys := range protectedEvidenceKeysByTurn {
+					if turn >= start && turn <= end && protectedKeys[evidenceKey] {
+						blocked = true
+						break
+					}
+				}
+			}
+		}
+		if blocked {
+			if item.ID > 0 {
+				blockedIDs[item.ID] = true
+			}
+			continue
+		}
+		safe = append(safe, item)
+	}
+	return safe, blockedIDs
 }
 
 func prepareTurnVectorSourceRowID(hit map[string]any) int64 {
