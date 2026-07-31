@@ -12,20 +12,48 @@ import (
 
 type identityRecordingStore struct {
 	*turnRecordingStore
-	identities   []*store.EntityIdentity
-	surfaces     []*store.EntityIdentitySurface
-	bindings     []*store.EntityIdentityArtifactBinding
-	attributions []*store.SpeakerAttribution
+	identities                []*store.EntityIdentity
+	surfaces                  []*store.EntityIdentitySurface
+	bindings                  []*store.EntityIdentityArtifactBinding
+	attributions              []*store.SpeakerAttribution
+	reviewedCanonicalLabels   map[string]bool
+	reviewedCanonicalRoots    map[string]string
+	reviewedOccurrenceToRoots map[string]string
 }
 
 func newIdentityRecordingStore() *identityRecordingStore {
-	return &identityRecordingStore{turnRecordingStore: &turnRecordingStore{}}
+	return &identityRecordingStore{
+		turnRecordingStore:        &turnRecordingStore{},
+		reviewedCanonicalLabels:   map[string]bool{},
+		reviewedCanonicalRoots:    map[string]string{},
+		reviewedOccurrenceToRoots: map[string]string{},
+	}
+}
+
+func (f *identityRecordingStore) reviewCanonicalLabel(label string) {
+	f.reviewedCanonicalLabels[comparableEntityKey(label)] = true
 }
 
 func (f *identityRecordingStore) SaveEntityIdentity(ctx context.Context, item *store.EntityIdentity) error {
 	cp := *item
 	f.identities = append(f.identities, &cp)
+	key := comparableEntityKey(item.CanonicalLabel)
+	if f.reviewedCanonicalLabels[key] {
+		root := f.reviewedCanonicalRoots[key]
+		if root == "" {
+			root = item.StableEntityID
+			f.reviewedCanonicalRoots[key] = root
+		}
+		f.reviewedOccurrenceToRoots[item.StableEntityID] = root
+	}
 	return nil
+}
+
+func (f *identityRecordingStore) ResolveReviewedCanonicalEntityID(_ context.Context, _ string, sourceEntityID string) (string, error) {
+	if root := f.reviewedOccurrenceToRoots[sourceEntityID]; root != "" {
+		return root, nil
+	}
+	return "", store.ErrNotFound
 }
 
 func (f *identityRecordingStore) SaveEntityIdentitySurface(ctx context.Context, item *store.EntityIdentitySurface) error {

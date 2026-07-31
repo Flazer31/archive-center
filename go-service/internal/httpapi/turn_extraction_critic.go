@@ -710,13 +710,14 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{"version":"story_clock.v1","observation_kind":"absolute","scene_scope":"current","precision":"exact","absolute":{"date":"1423-04-12","time":"13:00"},"evidence_excerpt":"exact latest-turn excerpt","transition":"set"},"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{"version":"story_clock.v1","observation_kind":"absolute","scene_scope":"current","precision":"exact","absolute":{"date":"1423-04-12","time":"13:00"},"evidence_excerpt":"exact latest-turn excerpt","transition":"set"},"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"state_deltas":{},"character_deltas":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
 		"- evidence_excerpts must be short exact excerpts from the latest user/assistant turn, not the whole turn.",
 		"- Language contract: use Language_Context_JSON as the memory-write contract. If summary_language/session_output_language is ko, en, or ja, generated natural-language memory fields must use that language. Do not default to English just because these instructions are English. Raw evidence excerpts must stay exact source text and must not be translated or rewritten.",
-		"- Apply the same language contract to all generated support fields, including turn_summary, pending_threads titles/details, world_rules key/value/display text, world_state rule values, subjective_entity_memories, protected_secrets summaries, physical/entity condition labels, and storyline/continuity-hook style text. Proper nouns and exact evidence quotes may remain in their original language.",
+		"- Apply the same language contract to all generated support fields, including turn_summary, pending_threads titles/details, world_rules key/value/display text, world_state rule values, subjective_entity_memories, protected_secrets summaries, and storyline/continuity-hook style text. Proper nouns and exact evidence quotes may remain in their original language.",
+		"- reversible_states.value.text and body subtype/affected_area are source-bound fields, not generated display prose. Copy them exactly from evidence_excerpt even when the source language differs from session_output_language.",
 		"- If the latest user input language differs from session_output_language, do not follow the user input language for generated summaries or support records. Follow session_output_language and preserve user text only inside exact raw evidence excerpts.",
 		"- Keep internal enum/category/predicate keys stable. Do not translate system keys per turn just because the output language changes.",
 		"- For ordinary narrative turns with new information, include 1-3 evidence_excerpts that ground the most important user intent and assistant outcome.",
@@ -724,7 +725,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- For ordinary narrative turns with named actors, emit kg_triples for durable relations, assignments, locations, ownership, promises, threats, injuries, permissions, commands, faction links, or plan participation.",
 		"- entities.characters/locations/items should contain only concrete in-story people, places, or objects observed in this turn.",
 		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker from style alone; use ambiguous or unknown when multiple speakers fit.",
-		"- Separate location/time fact classes. A current scene location or current scene time belongs in state_deltas.scene_state; a durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status and/or kg_triples with predicates such as residence, hometown, lives_in, or based_in.",
+		"- Separate location/time fact classes. Global current scene location or current scene time belongs in state_deltas.scene_state; a named character's current location belongs in reversible_states. A durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status and/or kg_triples with predicates such as residence, hometown, lives_in, or based_in.",
 		"- Do not treat 'X lives in London' as 'the current scene is London'. Do not treat a temporary visit as a durable residence unless the latest turn says it directly.",
 		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
 		"- story_clock is optional and proposal-only. Emit it only when the latest completed turn contains an exact supporting excerpt about story time, sequence, or duration; repeat that excerpt in top-level evidence_excerpts.",
@@ -733,7 +734,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Use only the primary object matching observation_kind: absolute, partial, relative, or range. sequence may use relation/anchor/index/label; duration may use value or min/max with unit and approximate. Do not emit contradictory primary objects together.",
 		"- flashback, planned, and hypothetical observations describe non-current time and must not be presented as the current scene clock. Use transition=set|advance|correction|reaffirm|supersede|retract; correction, supersession, and retraction require exact latest-turn evidence.",
 		"- relationship_memory may include target_name or pair when trust changes. If no target exists, leave it empty.",
-		"- character_deltas should capture named character status, location, emotional posture, relationship changes, injuries, intentions, or role/authority changes seen in the latest turn.",
+		"- character_deltas should capture named character appearance, personality, relationship changes, intentions, speech style, or durable role/authority/residence facts. Do not put current location, emotion, injury/body state, or possession there; those belong only in reversible_states.",
 		"- Separate narrative_events (what happened), state_claims (objective current facts), and belief_updates (one character's current perception). Do not promote beliefs to objective truth.",
 		"- state_claims and belief_updates use stable state_slot keys and transition=set|reaffirm|change|reversal|recovery|correction|reveal|resolve|uncertain|clear|defer|abandon|complete|supersede|reopen|resume. Turn is audit order, not semantic authority.",
 		"- For goal or thread lifecycle state_claims, use the exact goal or thread title as subject, subject_type=entity, and state_slot=goal_status. Do not use goal_status for another entity-state dimension.",
@@ -741,14 +742,15 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Use reopen or resume only when the latest completed turn explicitly reactivates a state previously deferred, abandoned, completed, superseded, resolved, or cleared. Use reversal only for a directly evidenced state inversion. A suggestion, condition, possibility, or proposal is uncertain and must not replace an existing current value.",
 		"- Every narrative_events/state_claims/belief_updates item requires a short exact evidence_excerpt from the latest completed turn. Omit unsupported items.",
 		"- Also repeat each accepted event/state/belief evidence_excerpt in top-level evidence_excerpts so current values and change events can link to direct evidence.",
-		"- physical_conditions is for evidence-bound body/health continuity that can affect roleplay: illness, fever, cold, pregnancy, menstruation, poisoning, fracture, accident/fall injury, body damage, impairment, missing body part, recovery, worsening, or cleared condition.",
-		"- Each physical_conditions item should include owner_entity_name or owner_entity_key, condition_label, effect_kind when obvious (temporary_effect or injury), evidence_excerpt, source_turn_index, and may include severity_text, body_area, onset_story_clock_json, duration_json, expires_at_clock_json, prognosis_text, age_or_vulnerability_note, uncertainty_note, and authority_hint.",
-		"- Do not invent medical calendars, fixed cycles, healing times, or numeric severity values. If duration is not explicit in the latest turn or safe context, use duration_policy=unknown_until_updated and keep prognosis_text/age_or_vulnerability_note descriptive.",
-		"- Do not hardcode rules such as menstruation lasting a fixed number of days or a cold always resolving quickly. Let later evidence update, clear, worsen, or extend the condition.",
-		"- If LUA, a character sheet, or another chat runtime owns exact health/stat values, set authority_hint=external_runtime and record only the narrative evidence; do not override that runtime's numeric state.",
-		"- entity_conditions is for evidence-bound continuity of important non-character entities, especially named items, equipment, locations, or artifacts whose changed state should persist: broken, repaired, sealed, unlocked, activated, depleted, contaminated, lost, inaccessible, transformed, or cleared.",
-		"- Each entity_conditions item should include owner_entity_name or owner_entity_key, owner_entity_type when known, condition_label, evidence_excerpt, source_turn_index, and may include effect_kind, onset_story_clock_json, duration_json, expires_at_clock_json, uncertainty_note, and authority_hint.",
-		"- Do not emit entity_conditions for ordinary props or unchanged descriptions. Use it only when the changed entity state would create a continuity error if forgotten later.",
+		"- reversible_states is the only proposal lane for reversible body, per-character location, possession, emotion, and important entity-condition continuity. Every item uses version=reversible_state.v1, domain, transition=set|change|recover|clear, exact subject_name, normalized atomic state_slot, exact evidence_excerpt, scene_scope, authority, assertion_kind, polarity=affirmative|negative|uncertain, visibility, and sensitivity.",
+		"- state_slot is a machine key, not prose: use lowercase words separated by underscores and keep the same slot for later change/recover/clear. Do not create change/recover/clear for a different or uncertain prior slot.",
+		"- set/change requires value.text copied exactly from the evidence excerpt. recover/clear has no value. Repeat every reversible state evidence excerpt in top-level evidence_excerpts.",
+		"- Body value also requires body metadata with subtype, affected_area when stated, and category=ordinary|medical|reproductive. The backend marks accepted body payloads character_body_state.v1. Medical must remain sensitivity=sensitive and reproductive must remain sensitivity=reproductive.",
+		"- Never infer pregnancy, menstruation, illness, diagnosis, treatment, numeric severity, onset, expiry, fixed cycle, healing duration, or recovery. Only literal canonical_in_fiction assertions may mutate current; estimates and needs_review remain history-only.",
+		"- polarity describes the exact claim in evidence_excerpt. Negation, doubt, fear, concern, question, possibility, or denial is negative or uncertain and must never be labelled affirmative merely because a condition word appears in the excerpt.",
+		"- scene_scope=flashback|planned|hypothetical, authority=derived_estimate|needs_review, and assertion_kind=figurative|decorative are history observations and must not be described as current.",
+		"- validity may contain exact valid_from/valid_to strings only when those exact strings occur in evidence. Do not use server time, audit time, or turn_index as story time and do not invent onset or expiry.",
+		"- Mark private emotion or other non-public state visibility=private. Keep sensitive and reproductive states out of public delivery until a later perspective contract decides eligibility.",
 		"- world_rules must describe durable world facts, not prompt instructions or style rules. You are responsible for judging them; backend code will not infer rules from keyword lists.",
 		"- Emit world_rules and world_state.rules when the latest turn establishes a durable constraint that should affect future turns: natural/physical laws, magic/technology mechanics, apocalypse survival norms, unspoken social law, institutional policy, school/academy custom, workplace procedure, family/household rule, contract, rank/authority, faction/group norm, location access, schedule/calendar, economy/resource constraint, logistics doctrine, or other world-law equivalent.",
 		"- The category list is non-exhaustive. If the story establishes a stable law of the setting, social order, organization, environment, or genre logic, capture it even when it does not literally use words like rule, law, policy, or protocol.",
@@ -1252,8 +1254,8 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 	numberFields := []string{"importance_score", "emotional_intensity", "narrative_significance"}
 	arrayFields := []string{
 		"evidence_excerpts", "kg_triples", "character_deltas", "pending_threads",
-		"speaker_attributions", "world_rules", "physical_conditions",
-		"entity_conditions", "narrative_events", "state_claims", "belief_updates",
+		"speaker_attributions", "world_rules", "reversible_states",
+		"narrative_events", "state_claims", "belief_updates",
 		"subjective_entity_memories", "protected_secrets",
 		"character_identity_accuracy", "persona_capsule_candidates",
 	}
@@ -1312,6 +1314,13 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 	if value, exists := raw["story_clock"]; exists {
 		if err := validateStoryClockProposal(value); err != nil {
 			return err
+		}
+	}
+	if values, ok := raw["reversible_states"].([]any); ok {
+		for index, value := range values {
+			if err := validateReversibleStateProposal(value); err != nil {
+				return fmt.Errorf("critic schema reversible_states[%d]: %w", index, err)
+			}
 		}
 	}
 	if !recognizedPayload {
@@ -1609,15 +1618,16 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 		delete(out, "story_clock")
 	}
 	out["kg_triples"] = sliceFromAny(raw["kg_triples"])
-	out["character_deltas"] = sliceFromAny(raw["character_deltas"])
+	out["character_deltas"] = sanitizeLegacyReversibleCharacterDeltas(raw["character_deltas"])
 	out["pending_threads"] = sliceFromAny(raw["pending_threads"])
 	out["entities"] = mapFromAny(raw["entities"])
 	out["speaker_attributions"] = normalizeSpeakerAttributionCandidates(raw["speaker_attributions"])
 	out["relationship_memory"] = mapFromAny(raw["relationship_memory"])
-	out["state_deltas"] = mapFromAny(raw["state_deltas"])
+	out["state_deltas"] = sanitizeLegacyReversibleStateDeltas(raw["state_deltas"])
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
-	out["physical_conditions"] = sliceFromAny(raw["physical_conditions"])
-	out["entity_conditions"] = sliceFromAny(raw["entity_conditions"])
+	out["reversible_states"] = normalizeReversibleStateProposals(raw["reversible_states"])
+	delete(out, "physical_conditions")
+	delete(out, "entity_conditions")
 	out["narrative_events"] = sliceFromAny(raw["narrative_events"])
 	out["state_claims"] = sliceFromAny(raw["state_claims"])
 	out["belief_updates"] = sliceFromAny(raw["belief_updates"])
@@ -1690,11 +1700,10 @@ func looksLikeStructuredCriticPayloadText(text string) bool {
 	for _, marker := range []string{
 		"archive_hint",
 		"character_deltas",
-		"entity_conditions",
+		"reversible_states",
 		"evidence_excerpts",
 		"kg_triples",
 		"pending_threads",
-		"physical_conditions",
 		"relationship_memory",
 		"narrative_events",
 		"state_claims",

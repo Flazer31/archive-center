@@ -108,6 +108,61 @@ func (m *mariadbStore) SaveSpeakerAttribution(ctx context.Context, item *Speaker
 	})
 }
 
+func (m *mariadbStore) ResolveReviewedCanonicalEntityID(ctx context.Context, chatSessionID, sourceEntityID string) (string, error) {
+	if err := m.ensureDB(); err != nil {
+		return "", err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	sourceEntityID = strings.TrimSpace(sourceEntityID)
+	if chatSessionID == "" || sourceEntityID == "" {
+		return "", ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT DISTINCT identity_link.target_entity_id
+		FROM entity_identity_links identity_link
+		JOIN entity_identities canonical_target
+		  ON canonical_target.stable_entity_id = identity_link.target_entity_id
+		 AND canonical_target.chat_session_id = identity_link.chat_session_id
+		WHERE identity_link.chat_session_id = ?
+		  AND identity_link.source_entity_id = ?
+		  AND identity_link.target_entity_id <> identity_link.source_entity_id
+		  AND identity_link.link_kind = ?
+		  AND identity_link.link_state = ?
+		  AND canonical_target.lifecycle_state = 'active'
+		  AND canonical_target.review_state = ?
+		ORDER BY identity_link.target_entity_id ASC
+	`, chatSessionID, sourceEntityID, EntityIdentityLinkKindCanonicalEquivalence,
+		EntityIdentityLinkStateReviewed, EntityIdentityReviewStateReviewed)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	targets := map[string]struct{}{}
+	for rows.Next() {
+		var targetEntityID string
+		if err := rows.Scan(&targetEntityID); err != nil {
+			return "", err
+		}
+		targetEntityID = strings.TrimSpace(targetEntityID)
+		if targetEntityID != "" {
+			targets[targetEntityID] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(targets) == 0 {
+		return "", ErrNotFound
+	}
+	if len(targets) != 1 {
+		return "", ErrReviewedEntityIdentityAmbiguous
+	}
+	for targetEntityID := range targets {
+		return targetEntityID, nil
+	}
+	return "", ErrNotFound
+}
+
 func (m *mariadbStore) withActiveEntitySourceWrite(
 	ctx context.Context,
 	sourceContract string,

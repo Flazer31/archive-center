@@ -453,6 +453,16 @@ func (d *dualWriteStore) EntityIdentityWritesEnabled() bool {
 	return primaryOK || shadowOK
 }
 
+func (d *dualWriteStore) ResolveReviewedCanonicalEntityID(ctx context.Context, chatSessionID, sourceEntityID string) (string, error) {
+	if primary, ok := d.primary.(ReviewedEntityIdentityResolver); ok {
+		return primary.ResolveReviewedCanonicalEntityID(ctx, chatSessionID, sourceEntityID)
+	}
+	if shadow, ok := d.shadow.(ReviewedEntityIdentityResolver); ok {
+		return shadow.ResolveReviewedCanonicalEntityID(ctx, chatSessionID, sourceEntityID)
+	}
+	return "", ErrNotEnabled
+}
+
 func (d *dualWriteStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseMemoryUnit) (bool, error) {
 	primary, primaryOK := preciseMemoryWriterForStore(d.primary)
 	shadow, shadowOK := preciseMemoryWriterForStore(d.shadow)
@@ -1456,6 +1466,57 @@ func (d *dualWriteStore) GetLatestCurrentProjectionStatusChangeEvent(ctx context
 		return StatusChangeEvent{}, ErrNotEnabled
 	}
 	return primary.GetLatestCurrentProjectionStatusChangeEvent(ctx, chatSessionID, statusKey)
+}
+
+func (d *dualWriteStore) ApplyReversibleStatusTransition(ctx context.Context, transition ReversibleStatusTransition) (ReversibleStatusTransitionResult, error) {
+	primary, primaryOK := d.primary.(ReversibleStatusTransitionStore)
+	shadow, shadowOK := d.shadow.(ReversibleStatusTransitionStore)
+	if !primaryOK && !shadowOK {
+		return ReversibleStatusTransitionResult{}, ErrNotEnabled
+	}
+	if !primaryOK {
+		return shadow.ApplyReversibleStatusTransition(ctx, transition)
+	}
+	result, err := primary.ApplyReversibleStatusTransition(ctx, transition)
+	if err != nil {
+		return result, err
+	}
+	if shadowOK {
+		if _, shadowErr := shadow.ApplyReversibleStatusTransition(ctx, transition); shadowErr != nil {
+			d.recordShadowErr(shadowErr)
+		}
+	}
+	return result, nil
+}
+
+func (d *dualWriteStore) GetReversibleStatusEventBySourceUnit(ctx context.Context, chatSessionID, sourceRevision, sourceUnitID string) (StatusChangeEvent, error) {
+	if primary, ok := d.primary.(ReversibleStatusTransitionStore); ok {
+		return primary.GetReversibleStatusEventBySourceUnit(ctx, chatSessionID, sourceRevision, sourceUnitID)
+	}
+	if shadow, ok := d.shadow.(ReversibleStatusTransitionStore); ok {
+		return shadow.GetReversibleStatusEventBySourceUnit(ctx, chatSessionID, sourceRevision, sourceUnitID)
+	}
+	return StatusChangeEvent{}, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListReversibleStatusCurrentValues(ctx context.Context, chatSessionID, ownerScope string, statusKeys []string) ([]StatusCurrentValue, error) {
+	if primary, ok := d.primary.(ReversibleStatusTransitionStore); ok {
+		return primary.ListReversibleStatusCurrentValues(ctx, chatSessionID, ownerScope, statusKeys)
+	}
+	if shadow, ok := d.shadow.(ReversibleStatusTransitionStore); ok {
+		return shadow.ListReversibleStatusCurrentValues(ctx, chatSessionID, ownerScope, statusKeys)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListLatestReversibleCurrentProjectionEvents(ctx context.Context, chatSessionID string, statusKeys []string) ([]StatusChangeEvent, error) {
+	if primary, ok := d.primary.(ReversibleStatusTransitionStore); ok {
+		return primary.ListLatestReversibleCurrentProjectionEvents(ctx, chatSessionID, statusKeys)
+	}
+	if shadow, ok := d.shadow.(ReversibleStatusTransitionStore); ok {
+		return shadow.ListLatestReversibleCurrentProjectionEvents(ctx, chatSessionID, statusKeys)
+	}
+	return nil, ErrNotEnabled
 }
 
 func (d *dualWriteStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]StatusEffect, error) {

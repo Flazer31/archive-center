@@ -12,6 +12,7 @@ import (
 var (
 	ErrNotFound                                  = errors.New("record not found")
 	ErrNotEnabled                                = errors.New("mariadb store is not enabled in R0/R1")
+	ErrStatusProjectionStale                     = errors.New("status projection is newer than the incoming transition")
 	ErrSessionMigrationCleanupManifestUnverified = errors.New(SessionMigrationCleanupManifestUnverifiedReason)
 )
 
@@ -1150,6 +1151,33 @@ type StatusLifecycleStore interface {
 type StatusChangeEventSourceLookupStore interface {
 	GetStatusChangeEventBySourceRevision(ctx context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (StatusChangeEvent, error)
 	GetLatestCurrentProjectionStatusChangeEvent(ctx context.Context, chatSessionID, statusKey string) (StatusChangeEvent, error)
+}
+
+// ReversibleStatusTransition keeps one source-backed reversible current
+// projection and its immutable history event in the same canonical
+// transaction. SourceUnitID distinguishes independent subject/domain/slot
+// mutations emitted by the same accepted source revision.
+type ReversibleStatusTransition struct {
+	SourceContract string
+	SourceRevision string
+	SourceUnitID   string
+	CurrentValue   *StatusCurrentValue
+	Event          StatusChangeEvent
+}
+
+type ReversibleStatusTransitionResult struct {
+	CurrentValue StatusCurrentValue
+	Event        StatusChangeEvent
+	Replayed     bool
+}
+
+// ReversibleStatusTransitionStore is the atomic owner for reversible state
+// projection/history writes and their exact, uncapped rebuild reads.
+type ReversibleStatusTransitionStore interface {
+	ApplyReversibleStatusTransition(ctx context.Context, transition ReversibleStatusTransition) (ReversibleStatusTransitionResult, error)
+	GetReversibleStatusEventBySourceUnit(ctx context.Context, chatSessionID, sourceRevision, sourceUnitID string) (StatusChangeEvent, error)
+	ListReversibleStatusCurrentValues(ctx context.Context, chatSessionID, ownerScope string, statusKeys []string) ([]StatusCurrentValue, error)
+	ListLatestReversibleCurrentProjectionEvents(ctx context.Context, chatSessionID string, statusKeys []string) ([]StatusChangeEvent, error)
 }
 
 type ThemeOffscreenCarryStore interface {

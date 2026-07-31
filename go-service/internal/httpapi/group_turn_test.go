@@ -534,6 +534,87 @@ func (f *turnRecordingStore) SaveStatusChangeEvent(ctx context.Context, event st
 	return event, nil
 }
 
+func (f *turnRecordingStore) ApplyReversibleStatusTransition(_ context.Context, transition store.ReversibleStatusTransition) (store.ReversibleStatusTransitionResult, error) {
+	if existing, err := f.GetReversibleStatusEventBySourceUnit(context.Background(), transition.Event.ChatSessionID, transition.SourceRevision, transition.SourceUnitID); err == nil {
+		return store.ReversibleStatusTransitionResult{Event: existing, Replayed: true}, nil
+	}
+	result := store.ReversibleStatusTransitionResult{}
+	if transition.CurrentValue != nil {
+		current, err := f.SaveStatusCurrentValue(context.Background(), *transition.CurrentValue)
+		if err != nil {
+			return result, err
+		}
+		result.CurrentValue = current
+		transition.Event.StatusValueID = current.ID
+	}
+	event, err := f.SaveStatusChangeEvent(context.Background(), transition.Event)
+	if err != nil {
+		return store.ReversibleStatusTransitionResult{}, err
+	}
+	result.Event = event
+	return result, nil
+}
+
+func (f *turnRecordingStore) GetReversibleStatusEventBySourceUnit(_ context.Context, chatSessionID, sourceRevision, sourceUnitID string) (store.StatusChangeEvent, error) {
+	for index := len(f.savedStatusEvents) - 1; index >= 0; index-- {
+		event := f.savedStatusEvents[index]
+		if event.ChatSessionID != chatSessionID {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		if extractionStringFromAny(evidence["source_revision"]) == sourceRevision &&
+			extractionStringFromAny(evidence["source_unit_id"]) == sourceUnitID {
+			return event, nil
+		}
+	}
+	return store.StatusChangeEvent{}, store.ErrNotFound
+}
+
+func (f *turnRecordingStore) ListReversibleStatusCurrentValues(_ context.Context, chatSessionID, ownerScope string, statusKeys []string) ([]store.StatusCurrentValue, error) {
+	allowed := map[string]bool{}
+	for _, key := range statusKeys {
+		allowed[key] = true
+	}
+	out := []store.StatusCurrentValue{}
+	for _, value := range f.returnStatusCurrent {
+		if value.ChatSessionID == chatSessionID && value.OwnerScope == ownerScope &&
+			allowed[value.StatusKey] && value.WriteState == "current" {
+			out = append(out, value)
+		}
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) ListLatestReversibleCurrentProjectionEvents(_ context.Context, chatSessionID string, statusKeys []string) ([]store.StatusChangeEvent, error) {
+	allowed := map[string]bool{}
+	for _, key := range statusKeys {
+		allowed[key] = true
+	}
+	latest := map[string]store.StatusChangeEvent{}
+	for _, event := range f.savedStatusEvents {
+		if event.ChatSessionID != chatSessionID || !allowed[event.StatusKey] {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		currentProjection, _ := evidence["current_projection"].(bool)
+		if !currentProjection {
+			continue
+		}
+		key := event.StatusKey + "\x00" + event.OwnerScope + "\x00" + event.OwnerID
+		if previous, ok := latest[key]; !ok || event.SourceTurn > previous.SourceTurn ||
+			(event.SourceTurn == previous.SourceTurn && event.ID > previous.ID) {
+			latest[key] = event
+		}
+	}
+	out := make([]store.StatusChangeEvent, 0, len(latest))
+	for _, event := range latest {
+		out = append(out, event)
+	}
+	return out, nil
+}
+
 func (f *turnRecordingStore) GetStatusChangeEventBySourceRevision(_ context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (store.StatusChangeEvent, error) {
 	var latest store.StatusChangeEvent
 	for _, event := range f.savedStatusEvents {

@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -456,6 +458,357 @@ func (m *mariadbStore) SaveStatusChangeEvent(ctx context.Context, event StatusCh
 	event.CreatedAt = now
 	event.EventState = state
 	return event, nil
+}
+
+func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, transition ReversibleStatusTransition) (ReversibleStatusTransitionResult, error) {
+	var result ReversibleStatusTransitionResult
+	if err := m.ensureDB(); err != nil {
+		return result, err
+	}
+	sourceRevision := strings.TrimSpace(transition.SourceRevision)
+	sourceUnitID := strings.TrimSpace(transition.SourceUnitID)
+	event := transition.Event
+	if strings.TrimSpace(transition.SourceContract) != acceptedSourceObservationContract ||
+		sourceRevision == "" || sourceUnitID == "" ||
+		strings.TrimSpace(event.ChatSessionID) == "" ||
+		strings.TrimSpace(event.StatusKey) == "" ||
+		strings.TrimSpace(event.OwnerScope) == "" ||
+		strings.TrimSpace(event.OwnerID) == "" ||
+		event.SourceTurn <= 0 {
+		return result, ErrSourceRevisionStale
+	}
+	eventEvidence := map[string]any{}
+	if json.Unmarshal([]byte(event.EvidenceJSON), &eventEvidence) != nil ||
+		strings.TrimSpace(fmt.Sprint(eventEvidence["source_revision"])) != sourceRevision ||
+		strings.TrimSpace(fmt.Sprint(eventEvidence["source_unit_id"])) != sourceUnitID {
+		return result, ErrSourceRevisionStale
+	}
+	if transition.CurrentValue != nil {
+		current := transition.CurrentValue
+		currentEvidence := map[string]any{}
+		if current.ChatSessionID != event.ChatSessionID ||
+			current.StatusKey != event.StatusKey ||
+			current.OwnerScope != event.OwnerScope ||
+			current.OwnerID != event.OwnerID ||
+			current.SourceTurn != event.SourceTurn ||
+			json.Unmarshal([]byte(current.EvidenceJSON), &currentEvidence) != nil ||
+			strings.TrimSpace(fmt.Sprint(currentEvidence["source_revision"])) != sourceRevision ||
+			strings.TrimSpace(fmt.Sprint(currentEvidence["source_unit_id"])) != sourceUnitID {
+			return result, ErrSourceRevisionStale
+		}
+	}
+
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var lifecycle string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT lifecycle_state
+		FROM memory_source_revisions
+		WHERE chat_session_id = ? AND source_revision = ?
+		FOR UPDATE
+	`, event.ChatSessionID, sourceRevision).Scan(&lifecycle); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return result, ErrSourceRevisionStale
+		}
+		return result, err
+	}
+	if strings.TrimSpace(lifecycle) != "active" {
+		return result, ErrSourceRevisionStale
+	}
+
+	existing, err := scanStatusChangeEvent(tx.QueryRowContext(ctx, `
+		SELECT id, chat_session_id, registry_id, status_value_id, status_key, owner_scope, owner_id,
+		       event_kind, previous_value_json, new_value_json, evidence_json, source_turn,
+		       story_clock_json, event_state, created_at
+		FROM status_change_events
+		WHERE chat_session_id = ?
+		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision')) = ?
+		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_unit_id')) = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`, event.ChatSessionID, sourceRevision, sourceUnitID))
+	if err == nil {
+		result.Event = existing
+		result.Replayed = true
+		if transition.CurrentValue != nil {
+			currentRows, readErr := m.listStatusCurrentValuesWithExecutor(ctx, tx, event.ChatSessionID, event.OwnerScope, event.OwnerID, event.StatusKey)
+			if readErr != nil {
+				return ReversibleStatusTransitionResult{}, readErr
+			}
+			if len(currentRows) > 0 {
+				result.CurrentValue = currentRows[0]
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return ReversibleStatusTransitionResult{}, err
+		}
+		committed = true
+		return result, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return result, err
+	}
+
+	if transition.CurrentValue != nil {
+		current := *transition.CurrentValue
+		var existingTurn sql.NullInt64
+		err := tx.QueryRowContext(ctx, `
+			SELECT source_turn
+			FROM status_current_values
+			WHERE chat_session_id = ? AND owner_scope = ? AND owner_id = ? AND status_key = ?
+			FOR UPDATE
+		`, current.ChatSessionID, current.OwnerScope, current.OwnerID, current.StatusKey).Scan(&existingTurn)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return result, err
+		}
+		if existingTurn.Valid && int(existingTurn.Int64) > current.SourceTurn {
+			return result, ErrStatusProjectionStale
+		}
+		now := nonZeroTime(current.CreatedAt)
+		state := firstNonEmptyString(current.WriteState, "current")
+		res, err := tx.ExecContext(ctx, `
+			INSERT INTO status_current_values (
+				chat_session_id, registry_id, status_key, owner_scope, owner_id, owner_label,
+				value_kind, value_json, evidence_json, source_turn, write_state, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?, ?)
+			ON DUPLICATE KEY UPDATE
+				id = LAST_INSERT_ID(id),
+				registry_id = VALUES(registry_id),
+				owner_label = VALUES(owner_label),
+				value_kind = VALUES(value_kind),
+				value_json = VALUES(value_json),
+				evidence_json = VALUES(evidence_json),
+				source_turn = VALUES(source_turn),
+				write_state = VALUES(write_state),
+				updated_at = CURRENT_TIMESTAMP(3)
+		`, current.ChatSessionID, current.RegistryID, current.StatusKey, current.OwnerScope, current.OwnerID,
+			nullableString(current.OwnerLabel), current.ValueKind, current.ValueJSON, current.EvidenceJSON,
+			current.SourceTurn, state, now)
+		if err != nil {
+			return result, err
+		}
+		if id, idErr := res.LastInsertId(); idErr == nil && id > 0 {
+			current.ID = id
+		}
+		current.CreatedAt = now
+		current.UpdatedAt = now
+		current.WriteState = state
+		result.CurrentValue = current
+		event.StatusValueID = current.ID
+	}
+
+	eventNow := nonZeroTime(event.CreatedAt)
+	eventState := firstNonEmptyString(event.EventState, "recorded")
+	res, err := tx.ExecContext(ctx, `
+		INSERT INTO status_change_events (
+			chat_session_id, registry_id, status_value_id, status_key, owner_scope, owner_id,
+			event_kind, previous_value_json, new_value_json, evidence_json, source_turn,
+			story_clock_json, event_state, created_at
+		) VALUES (?, ?, NULLIF(?, 0), ?, ?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?, ?, ?)
+	`, event.ChatSessionID, event.RegistryID, event.StatusValueID, event.StatusKey, event.OwnerScope, event.OwnerID,
+		event.EventKind, nullableString(event.PreviousValueJSON), nullableString(event.NewValueJSON),
+		event.EvidenceJSON, event.SourceTurn, nullableString(event.StoryClockJSON), eventState, eventNow)
+	if err != nil {
+		return result, err
+	}
+	if id, idErr := res.LastInsertId(); idErr == nil && id > 0 {
+		event.ID = id
+	}
+	event.CreatedAt = eventNow
+	event.EventState = eventState
+	result.Event = event
+	if err := tx.Commit(); err != nil {
+		return ReversibleStatusTransitionResult{}, err
+	}
+	committed = true
+	return result, nil
+}
+
+type statusCurrentValueQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (m *mariadbStore) listStatusCurrentValuesWithExecutor(ctx context.Context, exec statusCurrentValueQueryer, chatSessionID, ownerScope, ownerID, statusKey string) ([]StatusCurrentValue, error) {
+	rows, err := exec.QueryContext(ctx, `
+		SELECT id, chat_session_id, registry_id, status_key, owner_scope, owner_id,
+		       owner_label, value_kind, value_json, evidence_json, source_turn,
+		       write_state, created_at, updated_at
+		FROM status_current_values
+		WHERE chat_session_id = ? AND owner_scope = ? AND owner_id = ? AND status_key = ?
+		  AND write_state = 'current'
+		ORDER BY updated_at DESC, id DESC
+	`, chatSessionID, ownerScope, ownerID, statusKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StatusCurrentValue{}
+	for rows.Next() {
+		var item StatusCurrentValue
+		var ownerLabel sql.NullString
+		var sourceTurn sql.NullInt64
+		if err := rows.Scan(
+			&item.ID, &item.ChatSessionID, &item.RegistryID, &item.StatusKey, &item.OwnerScope, &item.OwnerID,
+			&ownerLabel, &item.ValueKind, &item.ValueJSON, &item.EvidenceJSON, &sourceTurn,
+			&item.WriteState, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.OwnerLabel = stringFromNull(ownerLabel)
+		if sourceTurn.Valid {
+			item.SourceTurn = int(sourceTurn.Int64)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) GetReversibleStatusEventBySourceUnit(ctx context.Context, chatSessionID, sourceRevision, sourceUnitID string) (StatusChangeEvent, error) {
+	if err := m.ensureDB(); err != nil {
+		return StatusChangeEvent{}, err
+	}
+	return scanStatusChangeEvent(m.db.QueryRowContext(ctx, `
+		SELECT id, chat_session_id, registry_id, status_value_id, status_key, owner_scope, owner_id,
+		       event_kind, previous_value_json, new_value_json, evidence_json, source_turn,
+		       story_clock_json, event_state, created_at
+		FROM status_change_events
+		WHERE chat_session_id = ?
+		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision')) = ?
+		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_unit_id')) = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`, chatSessionID, sourceRevision, sourceUnitID))
+}
+
+func (m *mariadbStore) ListReversibleStatusCurrentValues(ctx context.Context, chatSessionID, ownerScope string, statusKeys []string) ([]StatusCurrentValue, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	keys := normalizedNonEmptyStrings(statusKeys)
+	if len(keys) == 0 {
+		return []StatusCurrentValue{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	query := `
+		SELECT id, chat_session_id, registry_id, status_key, owner_scope, owner_id,
+		       owner_label, value_kind, value_json, evidence_json, source_turn,
+		       write_state, created_at, updated_at
+		FROM status_current_values
+		WHERE chat_session_id = ?
+		  AND write_state = 'current'
+		  AND owner_scope = ?
+		  AND status_key IN (` + placeholders + `)
+		ORDER BY status_key ASC, owner_scope ASC, owner_id ASC
+	`
+	args := make([]any, 0, len(keys)+2)
+	args = append(args, chatSessionID, strings.TrimSpace(ownerScope))
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	rows, err := m.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StatusCurrentValue{}
+	for rows.Next() {
+		var item StatusCurrentValue
+		var ownerLabel sql.NullString
+		var sourceTurn sql.NullInt64
+		if err := rows.Scan(
+			&item.ID, &item.ChatSessionID, &item.RegistryID, &item.StatusKey, &item.OwnerScope, &item.OwnerID,
+			&ownerLabel, &item.ValueKind, &item.ValueJSON, &item.EvidenceJSON, &sourceTurn,
+			&item.WriteState, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.OwnerLabel = stringFromNull(ownerLabel)
+		if sourceTurn.Valid {
+			item.SourceTurn = int(sourceTurn.Int64)
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) ListLatestReversibleCurrentProjectionEvents(ctx context.Context, chatSessionID string, statusKeys []string) ([]StatusChangeEvent, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	keys := normalizedNonEmptyStrings(statusKeys)
+	if len(keys) == 0 {
+		return []StatusChangeEvent{}, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	query := `
+		SELECT e.id, e.chat_session_id, e.registry_id, e.status_value_id, e.status_key, e.owner_scope, e.owner_id,
+		       e.event_kind, e.previous_value_json, e.new_value_json, e.evidence_json, e.source_turn,
+		       e.story_clock_json, e.event_state, e.created_at
+		FROM status_change_events e
+		JOIN memory_source_revisions source_revision
+		  ON source_revision.chat_session_id = e.chat_session_id
+		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(e.evidence_json, '$.source_revision'))
+		 AND source_revision.lifecycle_state = 'active'
+		WHERE e.chat_session_id = ?
+		  AND e.status_key IN (` + placeholders + `)
+		  AND JSON_UNQUOTE(JSON_EXTRACT(e.evidence_json, '$.current_projection')) = 'true'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM status_change_events newer
+			JOIN memory_source_revisions newer_source
+			  ON newer_source.chat_session_id = newer.chat_session_id
+			 AND newer_source.source_revision = JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.source_revision'))
+			 AND newer_source.lifecycle_state = 'active'
+			WHERE newer.chat_session_id = e.chat_session_id
+			  AND newer.status_key = e.status_key
+			  AND newer.owner_scope = e.owner_scope
+			  AND newer.owner_id = e.owner_id
+			  AND JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.current_projection')) = 'true'
+			  AND (newer.source_turn > e.source_turn OR (newer.source_turn = e.source_turn AND newer.id > e.id))
+		  )
+		ORDER BY e.status_key ASC, e.owner_scope ASC, e.owner_id ASC
+	`
+	args := make([]any, 0, len(keys)+1)
+	args = append(args, chatSessionID)
+	for _, key := range keys {
+		args = append(args, key)
+	}
+	rows, err := m.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StatusChangeEvent{}
+	for rows.Next() {
+		event, scanErr := scanStatusChangeEvent(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
+func normalizedNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func (m *mariadbStore) GetStatusChangeEventBySourceRevision(ctx context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (StatusChangeEvent, error) {

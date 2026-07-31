@@ -224,6 +224,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	directEntityMemoryReadCount := 0
 	var narrativeCurrentValues []store.StatusCurrentValue
 	var storyClockCurrentValues []store.StatusCurrentValue
+	var reversibleCurrentValues []store.StatusCurrentValue
 
 	readErrs := []error{}
 	readsOK := 0
@@ -434,6 +435,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				readErrs = append(readErrs, err)
 			}
 		}
+		if reversibleStore, ok := s.Store.(store.ReversibleStatusTransitionStore); ok {
+			if values, err := reversibleStore.ListReversibleStatusCurrentValues(ctx, sid, reversibleStateOwnerScope, reversibleStatusKeys()); err == nil {
+				reversibleCurrentValues = values
+				if len(values) > 0 {
+					readsOK++
+				}
+			} else if !errors.Is(err, store.ErrNotEnabled) {
+				readErrs = append(readErrs, err)
+			}
+		}
 	}
 	storylines, pendingThreads, activeStates, canonicalLayers, supersededOpenGoalTrace := filterPrepareTurnSupersededOpenGoals(
 		narrativeCurrentValues,
@@ -505,18 +516,47 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if guideDisabled {
 		guideMode = "off"
 	}
+	currentStoryClock19 := resolveCurrentStoryClock(activeStates, chatLogs, canonicalLayers, storyClockCurrentValues)
+	reversibleKnownNames := make([]string, 0, len(reversibleCurrentValues))
+	for _, current := range reversibleCurrentValues {
+		if label := strings.TrimSpace(current.OwnerLabel); label != "" &&
+			!prepareTurnRelationshipNameInList(label, reversibleKnownNames) {
+			reversibleKnownNames = append(reversibleKnownNames, label)
+		}
+	}
+	reversibleRecollectionContext := buildPrepareTurnRecollectionContext(
+		rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogs,
+	)
+	reversibleScope := buildPrepareTurnRequestEntityScope(
+		rawUserInput, reversibleRecollectionContext.currentEntities, reversibleKnownNames,
+	)
+	reversibleStateBudget := maxInjectionChars
+	if !injectionEnabled {
+		reversibleStateBudget = 0
+	}
+	reversibleStatePacket, reversibleStateText := buildReversibleStatePacket(
+		reversibleCurrentValues, currentStoryClock19, reversibleStateBudget, reversibleScope,
+	)
+	reversibleStateUsedChars := intFromAny(reversibleStatePacket["used_chars"], 0)
+	memoryInjectionBudget := maxInjectionChars - reversibleStateUsedChars
+	if reversibleStateText != "" && memoryInjectionBudget > 0 {
+		memoryInjectionBudget -= 2
+	}
+	if memoryInjectionBudget < 0 {
+		memoryInjectionBudget = 0
+	}
 	injectionAssembly := prepareTurnInjectionAssembly{}
 	documents := []map[string]any{}
 	injectionStartedAt := time.Now()
 	if !degraded {
 		documents = buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, chatLogs)
-		if injectionEnabled {
+		if injectionEnabled && memoryInjectionBudget > 0 {
 			assemblyPerspectiveContext := prepareTurnPerspectiveWithNarrativeState(perspectiveContext, narrativeCurrentValues, activeStates)
 			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
 				assemblyPerspectiveContext["_core_objective_memory_max_items_present"] = true
 				assemblyPerspectiveContext["_core_objective_memory_max_items"] = *req.Settings.CoreObjectiveMemoryMaxItems
 			}
-			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, maxInjectionChars, rawUserInput, profile, documents, vectorShadow, languageContext, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext)
+			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, memoryInjectionBudget, rawUserInput, profile, documents, vectorShadow, languageContext, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext)
 		}
 	}
 	memoryDeliveryText := extractionStringFromAny(injectionAssembly.MemoryDeliveryPlan["final_text"])
@@ -562,7 +602,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	referenceBudgetPolicy.RemainingChars = referenceBudgetPolicy.TotalCapChars - referenceBudgetPolicy.UsedChars
 	referenceBudgetPolicy.Truncated = primaryCanonBase.Truncated || (referenceInjectionEnabled && referenceInjectedCount < len(referenceRecall.InjectionItems))
 	referenceText := strings.Join(nonEmptyStrings([]string{primaryCanonBase.Text, referenceInjectionText}), "\n\n")
-	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryDeliveryText}), "\n\n")
+	memoryAndReversibleStateText := strings.Join(nonEmptyStrings([]string{memoryDeliveryText, reversibleStateText}), "\n\n")
+	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryAndReversibleStateText}), "\n\n")
 	injectionTruncated := injectionAssembly.Truncated
 
 	var inputContextText string
@@ -580,7 +621,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	injectionAssembly.Counts["input_context_previous_completed_turn_only"] = true
 	injectionAssembly.Counts["input_context_active_state_delivery"] = "excluded_use_dedicated_delivery_classes"
 	responseAssemblyStartedAt := time.Now()
-	currentStoryClock19 := resolveCurrentStoryClock(activeStates, chatLogs, canonicalLayers, storyClockCurrentValues)
 	temporalRelationLedger19 := buildTemporalRelationLedger(activeStates)
 	temporalSupportPacket := buildTemporalSupportPacket(currentStoryClock19, temporalRelationLedger19)
 	requestType := stringPtrValue(req.RequestType, "model")
@@ -610,6 +650,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	)
 	criticInputPack := buildCriticInputPack(sid, turnIndex, rawUserInput, promptAssembly, evidenceCounts, sectionSummary, degraded)
 	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
+	injectionPack["reversible_state_packet"] = reversibleStatePacket
+	injectionPack["reversible_state_text"] = nilIfEmpty(reversibleStateText)
 	injectionPack["reference_text"] = nilIfEmpty(referenceInjectionText)
 	injectionPack["reference_applied"] = referenceInjectionText != ""
 	injectionPack["reference_selected_count"] = referenceInjectedCount
@@ -838,7 +880,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	payloadApplicationPlan := buildPrepareTurnPayloadApplicationPlan(
 		rawUserInput,
 		referenceText,
-		memoryDeliveryText,
+		memoryAndReversibleStateText,
 		inputContextText,
 		injectionEnabled,
 		inputContextEnabled,
@@ -993,6 +1035,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"source_to_payload_lineage": sourceToPayloadLineage,
 			"temporal_packet":           injectionPack["temporal_packet"],
 			"temporal_packet_text":      injectionPack["temporal_packet_text"],
+			"reversible_state_packet":   injectionPack["reversible_state_packet"],
+			"reversible_state_text":     injectionPack["reversible_state_text"],
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",

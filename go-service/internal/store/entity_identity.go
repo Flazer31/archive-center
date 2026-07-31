@@ -2,8 +2,17 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+const (
+	EntityIdentityLinkKindCanonicalEquivalence = "canonical_equivalence"
+	EntityIdentityLinkStateReviewed            = "reviewed"
+	EntityIdentityReviewStateReviewed          = "reviewed"
+)
+
+var ErrReviewedEntityIdentityAmbiguous = errors.New("reviewed entity identity has multiple canonical targets")
 
 // EntityIdentity is an immutable, namespace-scoped identity occurrence.
 // Display labels and aliases are stored separately and never act as identity
@@ -120,4 +129,11 @@ type EntityIdentityWriter interface {
 // least one owned persistence lane can actually accept the optional extension.
 type EntityIdentityWriteAvailability interface {
 	EntityIdentityWritesEnabled() bool
+}
+
+// ReviewedEntityIdentityResolver resolves only an explicit, reviewed,
+// directional source occurrence -> canonical target link. Implementations must
+// never discover or merge identities by display label or surface text.
+type ReviewedEntityIdentityResolver interface {
+	ResolveReviewedCanonicalEntityID(ctx context.Context, chatSessionID, sourceEntityID string) (string, error)
 }

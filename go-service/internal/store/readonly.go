@@ -524,6 +524,34 @@ func (r *readOnlyStore) GetLatestCurrentProjectionStatusChangeEvent(ctx context.
 	return store.GetLatestCurrentProjectionStatusChangeEvent(ctx, chatSessionID, statusKey)
 }
 
+func (r *readOnlyStore) ApplyReversibleStatusTransition(ctx context.Context, transition ReversibleStatusTransition) (ReversibleStatusTransitionResult, error) {
+	return ReversibleStatusTransitionResult{}, ErrNotEnabled
+}
+
+func (r *readOnlyStore) GetReversibleStatusEventBySourceUnit(ctx context.Context, chatSessionID, sourceRevision, sourceUnitID string) (StatusChangeEvent, error) {
+	store, ok := r.delegate.(ReversibleStatusTransitionStore)
+	if !ok {
+		return StatusChangeEvent{}, ErrNotEnabled
+	}
+	return store.GetReversibleStatusEventBySourceUnit(ctx, chatSessionID, sourceRevision, sourceUnitID)
+}
+
+func (r *readOnlyStore) ListReversibleStatusCurrentValues(ctx context.Context, chatSessionID, ownerScope string, statusKeys []string) ([]StatusCurrentValue, error) {
+	store, ok := r.delegate.(ReversibleStatusTransitionStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return store.ListReversibleStatusCurrentValues(ctx, chatSessionID, ownerScope, statusKeys)
+}
+
+func (r *readOnlyStore) ListLatestReversibleCurrentProjectionEvents(ctx context.Context, chatSessionID string, statusKeys []string) ([]StatusChangeEvent, error) {
+	store, ok := r.delegate.(ReversibleStatusTransitionStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return store.ListLatestReversibleCurrentProjectionEvents(ctx, chatSessionID, statusKeys)
+}
+
 func (r *readOnlyStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]StatusEffect, error) {
 	store, ok := r.delegate.(StatusLifecycleStore)
 	if !ok {
@@ -538,6 +566,14 @@ func (r *readOnlyStore) SaveStatusEffect(ctx context.Context, effect StatusEffec
 
 func (r *readOnlyStore) UpdateStatusEffectState(ctx context.Context, id int64, effectState, clearedEvidenceJSON string, clearedTurn int) error {
 	return ErrNotEnabled
+}
+
+func (r *readOnlyStore) ResolveReviewedCanonicalEntityID(ctx context.Context, chatSessionID, sourceEntityID string) (string, error) {
+	resolver, ok := r.delegate.(ReviewedEntityIdentityResolver)
+	if !ok {
+		return "", ErrNotEnabled
+	}
+	return resolver.ResolveReviewedCanonicalEntityID(ctx, chatSessionID, sourceEntityID)
 }
 
 // Ping delegates to the underlying store if it implements Pinger.

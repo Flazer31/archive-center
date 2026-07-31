@@ -16,8 +16,6 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		identityProjection = identityProjectionArg[0]
 	}
 	entities := mapFromAny(extraction["entities"])
-	physicalConditions := normalizePhysicalConditionItems(extraction["physical_conditions"])
-	entityConditions := normalizePhysicalConditionItems(extraction["entity_conditions"])
 	seenExactEntities := map[string]bool{}
 	saveEntityItems := func(items []any, entityType string) {
 		for idx, item := range items {
@@ -38,13 +36,7 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			seenExactEntities[exactKey] = true
 			if saver, ok := s.Store.(entitySaver); ok {
 				localType := extractionFirstNonEmpty(stringFromMap(entity, "entity_type"), stringFromMap(entity, "role"), entityType)
-				description := entityDescriptionWithConditions(
-					extractionFirstNonEmpty(stringFromMap(entity, "status_emotion"), stringFromMap(entity, "description"), stringFromMap(entity, "summary")),
-					name,
-					localType,
-					physicalConditions,
-					entityConditions,
-				)
+				description := extractionFirstNonEmpty(stringFromMap(entity, "description"), stringFromMap(entity, "summary"))
 				result.trySave("SaveEntity", func() error {
 					return saver.SaveEntity(ctx, &store.Entity{
 						ChatSessionID: sid,
@@ -109,7 +101,10 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		if saver, ok := s.Store.(characterStateSaver); ok {
 			appearanceJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "appearance"), charDelta["appearance"])
 			personalityJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "personality"), charDelta["personality"])
-			statusJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "status"), charDelta["status"])
+			statusJSON := mergeCharacterStateJSONField(
+				mustCompactJSON(sanitizeLegacyReversibleMap(parseSurfacePayload(currentCharacterJSON(currentState, "status")))),
+				sanitizeLegacyReversibleMap(charDelta["status"]),
+			)
 			relationshipsJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "relationships"), charDelta["relationships"])
 			speechStyleJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "speech_style"), charDelta["speech_style"])
 			result.trySave("SaveCharacterState", func() error {
@@ -145,9 +140,6 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			}, result, func() { result.CharacterEvents++ })
 		}
 	}
-
-	s.savePhysicalConditionsFromExtraction(ctx, sid, turnIndex, extraction, now, result)
-	s.saveEntityConditionsFromExtraction(ctx, sid, turnIndex, extraction, now, result)
 
 	if saver, ok := s.Store.(activeStateSaver); ok {
 		for _, key := range []string{"relationship_memory", "state_deltas", "entities"} {

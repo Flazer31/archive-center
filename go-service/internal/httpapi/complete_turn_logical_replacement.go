@@ -99,5 +99,10 @@ func (s *Server) replaceCompleteTurnLogicalTail(ctx context.Context, sid string,
 			"logical_turn_story_clock_restore_failed", "story_clock_restore", true, true, err,
 		)
 	}
+	if _, err := restoreReversibleStateCurrentAfterRollback(ctx, s.Store, sid); err != nil {
+		return newLogicalTurnReplacementError(
+			"logical_turn_reversible_state_restore_failed", "reversible_state_restore", true, true, err,
+		)
+	}
 	return nil
 }

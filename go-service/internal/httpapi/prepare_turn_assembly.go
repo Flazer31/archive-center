@@ -285,7 +285,11 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		state := ""
 		speechStyle := ""
 		if sceneActive {
-			state = prepareTurnSurfaceText(parseSurfacePayload(cs.StatusJSON))
+			// Existing character-state rows remain a read-only compatibility
+			// surface until source-backed rebuild has materialized their
+			// reversible fields. New writes no longer put reversible current
+			// values in this legacy projection.
+			state = prepareTurnSurfaceText(sanitizeLegacyReversibleMap(parseSurfacePayload(cs.StatusJSON)))
 			speechStyle = prepareTurnSurfaceText(parseSurfacePayload(cs.SpeechStyleJSON))
 		}
 		relationships, relationshipDropped := prepareTurnRelevantRelationshipSurface(cs.RelationshipsJSON, name, rawUserInput, currentSceneEntityNames, currentEntityNames)

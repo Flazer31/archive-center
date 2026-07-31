@@ -582,11 +582,65 @@ func proxyCriticTopLevelJSONSchema() map[string]any {
 			"narrative_significance":      map[string]any{"type": "number"},
 			"state_deltas":                map[string]any{},
 			"character_deltas":            map[string]any{"type": "array", "items": map[string]any{}},
-			"physical_conditions":         map[string]any{"type": "array", "items": map[string]any{}},
-			"entity_conditions":           map[string]any{"type": "array", "items": map[string]any{}},
+			"reversible_states":           map[string]any{"type": "array", "items": proxyCriticReversibleStateJSONSchema()},
 			"pending_threads":             map[string]any{"type": "array", "items": map[string]any{}},
 		},
 		"required":             []string{"turn_summary", "importance_score", "evidence_excerpts"},
+		"additionalProperties": false,
+	}
+}
+
+func proxyCriticReversibleStateJSONSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"version":          map[string]any{"type": "string", "enum": []string{reversibleStateContractVersion}},
+			"domain":           map[string]any{"type": "string", "enum": []string{"body", "location", "possession", "emotion", "entity_condition"}},
+			"transition":       map[string]any{"type": "string", "enum": []string{"set", "change", "recover", "clear"}},
+			"subject_name":     map[string]any{"type": "string"},
+			"state_slot":       map[string]any{"type": "string"},
+			"value":            proxyCriticReversibleStateValueJSONSchema(),
+			"evidence_excerpt": map[string]any{"type": "string"},
+			"scene_scope":      map[string]any{"type": "string", "enum": []string{"current", "flashback", "planned", "hypothetical"}},
+			"authority":        map[string]any{"type": "string", "enum": []string{"canonical_in_fiction", "derived_estimate", "needs_review"}},
+			"assertion_kind":   map[string]any{"type": "string", "enum": []string{"literal", "figurative", "decorative"}},
+			"polarity":         map[string]any{"type": "string", "enum": []string{"affirmative", "negative", "uncertain"}},
+			"validity": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"valid_from": map[string]any{"type": "string"},
+					"valid_to":   map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+			"visibility":  map[string]any{"type": "string", "enum": []string{"public", "private", "unknown"}},
+			"sensitivity": map[string]any{"type": "string", "enum": []string{"ordinary", "sensitive", "reproductive"}},
+		},
+		"required": []string{
+			"version", "domain", "transition", "subject_name", "state_slot",
+			"evidence_excerpt", "scene_scope", "authority", "assertion_kind",
+			"polarity", "visibility", "sensitivity",
+		},
+		"additionalProperties": false,
+	}
+}
+
+func proxyCriticReversibleStateValueJSONSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"text": map[string]any{"type": "string"},
+			"body": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"subtype":       map[string]any{"type": "string"},
+					"affected_area": map[string]any{"type": "string"},
+					"category":      map[string]any{"type": "string", "enum": []string{"ordinary", "medical", "reproductive"}},
+				},
+				"required":             []string{"subtype", "category"},
+				"additionalProperties": false,
+			},
+		},
 		"additionalProperties": false,
 	}
 }

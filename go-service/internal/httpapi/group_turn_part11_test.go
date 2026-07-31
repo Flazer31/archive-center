@@ -1009,7 +1009,7 @@ func TestCompleteTurnWorldStateLowConfidenceBlocked(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnPhysicalConditionSavedWithoutHardcodedDuration(t *testing.T) {
+func TestCompleteTurnLegacyPhysicalConditionDoesNotWriteLooseStatusEffect(t *testing.T) {
 	fake := &turnRecordingStore{}
 	srv := NewServer(config.Default())
 	srv.Store = fake
@@ -1037,44 +1037,15 @@ func TestCompleteTurnPhysicalConditionSavedWithoutHardcodedDuration(t *testing.T
 	})
 
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-physical-condition", 23, extraction, "Mina fell from the stairs and fractured her left arm.", completeTurnEmbeddingConfig{}, time.Unix(2300, 0))
-	if result.PhysicalConditions != 1 || result.StatusEffects != 1 {
-		t.Fatalf("physical condition counters mismatch: PhysicalConditions=%d StatusEffects=%d errors=%v", result.PhysicalConditions, result.StatusEffects, result.ErrorDetails)
+	if result.PhysicalConditions != 0 || result.StatusEffects != 0 {
+		t.Fatalf("legacy physical condition must not write loose effects: PhysicalConditions=%d StatusEffects=%d errors=%v", result.PhysicalConditions, result.StatusEffects, result.ErrorDetails)
 	}
-	if result.StatusSchemaDefinitions != 1 || len(fake.savedStatusDefinitions) != 1 {
-		t.Fatalf("expected one generic physical_condition schema, result=%d saved=%d", result.StatusSchemaDefinitions, len(fake.savedStatusDefinitions))
-	}
-	definition := fake.savedStatusDefinitions[0]
-	if definition.StatusKey != physicalConditionStatusKey || definition.OwnerScope != "character" || definition.ValueKind != "note" {
-		t.Fatalf("unexpected physical condition definition: %+v", definition)
-	}
-	if !strings.Contains(definition.OptionsJSON, "evidence_bound_no_default_duration") {
-		t.Fatalf("schema options must require evidence-bound duration, got %s", definition.OptionsJSON)
-	}
-	if len(fake.savedStatusEffects) != 1 {
-		t.Fatalf("expected one saved status effect, got %d", len(fake.savedStatusEffects))
-	}
-	effect := fake.savedStatusEffects[0]
-	if effect.OwnerID != "Mina" || effect.StatusKey != physicalConditionStatusKey || effect.EffectKind != "injury" || effect.EffectLabel != "fractured left arm" {
-		t.Fatalf("unexpected saved physical condition effect: %+v", effect)
-	}
-	if !strings.Contains(effect.EvidenceJSON, "Mina fell from the stairs and fractured her left arm.") {
-		t.Fatalf("evidence excerpt missing from status effect: %s", effect.EvidenceJSON)
-	}
-	if !strings.Contains(effect.DurationJSON, "unknown_until_updated") || !strings.Contains(effect.DurationJSON, `"hardcoded_duration":false`) {
-		t.Fatalf("duration should stay unknown until later evidence updates it, got %s", effect.DurationJSON)
-	}
-	lowerDuration := strings.ToLower(effect.DurationJSON)
-	for _, forbidden := range []string{"day", "days", "month", "months", "3", "30"} {
-		if strings.Contains(lowerDuration, forbidden) {
-			t.Fatalf("duration contains hardcoded calendar value %q: %s", forbidden, effect.DurationJSON)
-		}
-	}
-	if !strings.Contains(effect.EffectPayloadJSON, `"numeric_severity_required":false`) {
-		t.Fatalf("payload should not require numeric severity, got %s", effect.EffectPayloadJSON)
+	if result.StatusSchemaDefinitions != 0 || len(fake.savedStatusDefinitions) != 0 || len(fake.savedStatusEffects) != 0 {
+		t.Fatalf("legacy physical condition left canonical status artifacts: definitions=%d effects=%d", len(fake.savedStatusDefinitions), len(fake.savedStatusEffects))
 	}
 }
 
-func TestCompleteTurnEntityConditionSavedAndAttachedToEntity(t *testing.T) {
+func TestCompleteTurnLegacyEntityConditionDoesNotDurablyMergeOrWriteEffect(t *testing.T) {
 	fake := &turnRecordingStore{}
 	srv := NewServer(config.Default())
 	srv.Store = fake
@@ -1100,33 +1071,16 @@ func TestCompleteTurnEntityConditionSavedAndAttachedToEntity(t *testing.T) {
 	})
 
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-entity-condition", 24, extraction, "The sacred sword broke during the duel.", completeTurnEmbeddingConfig{}, time.Unix(2400, 0))
-	if result.EntityConditions != 1 || result.StatusEffects != 1 {
-		t.Fatalf("entity condition counters mismatch: EntityConditions=%d StatusEffects=%d errors=%v", result.EntityConditions, result.StatusEffects, result.ErrorDetails)
+	if result.EntityConditions != 0 || result.StatusEffects != 0 {
+		t.Fatalf("legacy entity condition must not write loose effects: EntityConditions=%d StatusEffects=%d errors=%v", result.EntityConditions, result.StatusEffects, result.ErrorDetails)
 	}
-	if result.StatusSchemaDefinitions != 1 || len(fake.savedStatusDefinitions) != 1 {
-		t.Fatalf("expected one generic entity_condition schema, result=%d saved=%d", result.StatusSchemaDefinitions, len(fake.savedStatusDefinitions))
-	}
-	definition := fake.savedStatusDefinitions[0]
-	if definition.StatusKey != entityConditionStatusKey || definition.OwnerScope != "entity" || definition.ValueKind != "note" {
-		t.Fatalf("unexpected entity condition definition: %+v", definition)
+	if result.StatusSchemaDefinitions != 0 || len(fake.savedStatusDefinitions) != 0 || len(fake.savedStatusEffects) != 0 {
+		t.Fatalf("legacy entity condition left canonical status artifacts: definitions=%d effects=%d", len(fake.savedStatusDefinitions), len(fake.savedStatusEffects))
 	}
 	if len(fake.savedEntities) != 1 {
 		t.Fatalf("expected one saved item entity, got %d", len(fake.savedEntities))
 	}
-	if !strings.Contains(fake.savedEntities[0].Description, "blade broken") {
-		t.Fatalf("entity description should surface item condition, got %q", fake.savedEntities[0].Description)
-	}
-	if len(fake.savedStatusEffects) != 1 {
-		t.Fatalf("expected one saved status effect, got %d", len(fake.savedStatusEffects))
-	}
-	effect := fake.savedStatusEffects[0]
-	if effect.OwnerScope != "entity" || effect.OwnerID != "Sacred Sword" || effect.StatusKey != entityConditionStatusKey || effect.EffectKind != "debuff" || effect.EffectLabel != "blade broken" {
-		t.Fatalf("unexpected saved entity condition effect: %+v", effect)
-	}
-	if !strings.Contains(effect.EffectPayloadJSON, `"entity_type":"item"`) {
-		t.Fatalf("payload should preserve entity type, got %s", effect.EffectPayloadJSON)
-	}
-	if !strings.Contains(effect.DurationJSON, "unknown_until_updated") || !strings.Contains(effect.DurationJSON, `"hardcoded_duration":false`) {
-		t.Fatalf("duration should stay unknown until later evidence updates it, got %s", effect.DurationJSON)
+	if fake.savedEntities[0].Description != "a legendary blade" {
+		t.Fatalf("legacy condition must not become durable entity description text, got %q", fake.savedEntities[0].Description)
 	}
 }

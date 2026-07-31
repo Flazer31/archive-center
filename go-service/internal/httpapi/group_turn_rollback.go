@@ -194,6 +194,12 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		deletions["story_clock_current_restore"] = map[string]any{"ok": true, "restored": restored}
 	}
+	if restored, err := restoreReversibleStateCurrentAfterRollback(ctx, s.Store, sid); err != nil {
+		deletions["reversible_state_current_restore"] = map[string]any{"ok": false, "error": err.Error()}
+		delErrs = append(delErrs, fmt.Sprintf("reversible state current restore: %v", err))
+	} else {
+		deletions["reversible_state_current_restore"] = map[string]any{"ok": true, "restored": restored}
+	}
 	if lifecycleOutbox {
 		runtimeConfig := s.runtimeConfigSnapshot()
 		results := []memoryVectorProcessResult{}

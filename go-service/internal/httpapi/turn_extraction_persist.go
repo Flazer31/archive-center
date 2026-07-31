@@ -313,6 +313,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	}
 
 	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, embCfg, now, &result, existingCanonicalLayers, cost, identityProjection)
+	s.saveReversibleStatesFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, identityProjection, now, &result)
 	finalizeCanonicalStateWriteCost(cost)
 	if cost.StateWriteCount > 0 {
 		result.CanonicalStateWriteCost = cost
