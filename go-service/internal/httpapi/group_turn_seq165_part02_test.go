@@ -388,7 +388,7 @@ func TestSeq165P119ExplicitUserRedirectionStaleArcAnchorDemotion(t *testing.T) {
 	}
 	gov := seq165Map(t, resp, "input_anchor_governor")
 	redirection := seq165Map(t, gov, "explicit_user_redirection")
-	if redirection["detected"] != true || redirection["stale_arc_demotes"] != true || redirection["current_user_input_wins"] != true {
+	if redirection["detected"] != false || redirection["observation_state"] != "not_exposed_by_host_contract" || redirection["stale_arc_demotes"] != true || redirection["current_user_input_wins"] != true {
 		t.Fatalf("explicit_user_redirection mismatch: %v", redirection)
 	}
 	oldArcTrace, _ := gov["old_arc_keep_drop_trace"].([]any)

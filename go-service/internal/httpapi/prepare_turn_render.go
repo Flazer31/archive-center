@@ -279,36 +279,23 @@ func prepareTurnTextHash(text string) string {
 
 func supervisorSceneProposalGuidanceItems(result map[string]any) []prepareTurnGuidanceItem {
 	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
-	if len(proposal) == 0 {
+	plan := mapFromAny(proposal["publisher_plan"])
+	if extractionStringFromAny(plan["contract_version"]) != "publisher_plan.v1" || extractionStringFromAny(plan["status"]) != "ready" {
 		return nil
 	}
 	items := []prepareTurnGuidanceItem{}
-	for _, raw := range outputFidelityLineageSlice(proposal["fidelity_warnings"]) {
+	for _, raw := range outputFidelityLineageSlice(plan["guidance_items"]) {
 		item := mapFromAny(raw)
-		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
+		text := strings.TrimSpace(extractionFirstNonEmpty(extractionStringFromAny(item["render_text"]), extractionStringFromAny(item["text"])))
 		itemRefs := stringSliceFromAny(item["source_refs"])
-		if text == "" || len(itemRefs) == 0 {
+		slot := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["slot"])))
+		if slot == "" || text == "" || len(itemRefs) == 0 {
 			continue
 		}
 		items = append(items, prepareTurnGuidanceItem{
-			Key:        "supervisor_fidelity_warning",
-			Title:      "Optional Supervisor Fidelity",
-			Text:       "[Optional Supervisor Fidelity]\n" + text,
-			SourceRefs: itemRefs,
-		})
-	}
-	for _, raw := range outputFidelityLineageSlice(proposal["expression_hints"]) {
-		item := mapFromAny(raw)
-		kind := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["kind"])))
-		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-		itemRefs := stringSliceFromAny(item["source_refs"])
-		if kind == "" || text == "" || len(itemRefs) == 0 {
-			continue
-		}
-		items = append(items, prepareTurnGuidanceItem{
-			Key:        "supervisor_expression_" + kind,
-			Title:      "Optional Supervisor Expression",
-			Text:       "[Optional Supervisor " + strings.ReplaceAll(kind, "_", " ") + "]\n" + text,
+			Key:        "publisher_" + slot,
+			Title:      "Optional Publisher " + strings.ReplaceAll(slot, "_", " "),
+			Text:       "[Optional Publisher " + strings.ReplaceAll(slot, "_", " ") + "]\n" + text,
 			SourceRefs: itemRefs,
 		})
 	}
@@ -329,10 +316,12 @@ type prepareTurnInjectionAssembly struct {
 	SagaText                  string
 	ChapterText               string
 	MemoryText                string
+	MemoryRecallQuery         string
 	ActualMemoryText          string
 	ProtectedMemoryText       string
 	MemoryDeliveryLineage     map[string]any
 	MemoryDeliveryPlan        map[string]any
+	CharacterMemorySupport    map[string]any
 	KGText                    string
 	DirectEvidenceText        string
 	FallbackText              string
@@ -427,6 +416,7 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 		"protected_memory_text":                 nilIfEmpty(assembly.ProtectedMemoryText),
 		"memory_delivery_lineage":               nilIfEmptyMap(assembly.MemoryDeliveryLineage),
 		"memory_delivery_plan":                  nilIfEmptyMap(assembly.MemoryDeliveryPlan),
+		"character_memory_support":              nilIfEmptyMap(assembly.CharacterMemorySupport),
 		"language_context":                      nilIfEmptyMap(assembly.LanguageContext),
 		"language_injection_trace":              nilIfEmptyMap(assembly.LanguageInjectionTrace),
 		"perspective_context":                   nilIfEmptyMap(assembly.PerspectiveContext),
@@ -436,6 +426,8 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 		"storyline_text":                        nilIfEmpty(assembly.StorylineText),
 		"world_rules_text":                      nilIfEmpty(assembly.WorldRulesText),
 		"character_text":                        nilIfEmpty(assembly.CharacterText),
+		"character_objective_text":              nilIfEmpty(assembly.CharacterObjectiveText),
+		"character_relationship_text":           nilIfEmpty(assembly.CharacterRelationshipText),
 		"pending_thread_text":                   nilIfEmpty(assembly.PendingThreadText),
 		"episode_text":                          nilIfEmpty(assembly.EpisodeText),
 		"persona_recollection_text":             nilIfEmpty(assembly.PersonaText),

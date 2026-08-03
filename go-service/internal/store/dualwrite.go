@@ -469,6 +469,25 @@ func (d *dualWriteStore) SaveSpeakerAttribution(ctx context.Context, item *Speak
 	})
 }
 
+func (d *dualWriteStore) SaveEntityIdentityLink(ctx context.Context, item *EntityIdentityLink) error {
+	primary, primaryOK := d.primary.(EntityIdentityLinkWriter)
+	shadow, shadowOK := d.shadow.(EntityIdentityLinkWriter)
+	if !primaryOK && !shadowOK {
+		return ErrNotEnabled
+	}
+	if primaryOK {
+		if err := primary.SaveEntityIdentityLink(ctx, item); err != nil {
+			return err
+		}
+	}
+	if shadowOK {
+		if err := shadow.SaveEntityIdentityLink(ctx, item); err != nil {
+			d.recordShadowErr(err)
+		}
+	}
+	return nil
+}
+
 func (d *dualWriteStore) EntityIdentityWritesEnabled() bool {
 	_, primaryOK := d.primary.(EntityIdentityWriter)
 	_, shadowOK := d.shadow.(EntityIdentityWriter)
@@ -489,12 +508,18 @@ func (d *dualWriteStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Contex
 	if primary, ok := d.primary.(UniqueActiveEntitySurfaceResolver); ok {
 		return primary.ResolveUniqueActiveEntityIDBySurface(ctx, chatSessionID, normalizedSurface)
 	}
+	if shadow, ok := d.shadow.(UniqueActiveEntitySurfaceResolver); ok {
+		return shadow.ResolveUniqueActiveEntityIDBySurface(ctx, chatSessionID, normalizedSurface)
+	}
 	return "", ErrNotEnabled
 }
 
 func (d *dualWriteStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (ResolvedEntityIdentity, error) {
 	if primary, ok := d.primary.(UniqueActiveEntitySurfaceIdentityResolver); ok {
 		return primary.ResolveUniqueActiveEntityIdentityBySurface(ctx, chatSessionID, normalizedSurface)
+	}
+	if shadow, ok := d.shadow.(UniqueActiveEntitySurfaceIdentityResolver); ok {
+		return shadow.ResolveUniqueActiveEntityIdentityBySurface(ctx, chatSessionID, normalizedSurface)
 	}
 	return ResolvedEntityIdentity{}, ErrNotEnabled
 }

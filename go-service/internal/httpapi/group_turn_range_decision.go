@@ -148,6 +148,15 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
+	backendLatestAuthoritative := false
+	if rangeStore, ok := s.Store.(interface {
+		LatestSessionTurnIndex(context.Context, string) (int, error)
+	}); ok {
+		if latestTurn, err := rangeStore.LatestSessionTurnIndex(r.Context(), strings.TrimSpace(req.ChatSessionID)); err == nil {
+			req.BackendLatestTurn = latestTurn
+			backendLatestAuthoritative = true
+		}
+	}
 	if req.IncompleteTailCandidate &&
 		req.DeletionObserved &&
 		req.RemovedAssistantCount == 0 &&
@@ -156,9 +165,16 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 		req.BackendLatestTurn > 0 &&
 		req.CandidateFromTurn == req.BackendLatestTurn &&
 		s.Store != nil {
-		logs, err := s.Store.ListChatLogs(r.Context(), strings.TrimSpace(req.ChatSessionID), 0, 0)
+		fromTurn, toTurn := 0, 0
+		if backendLatestAuthoritative {
+			fromTurn, toTurn = req.BackendLatestTurn, req.BackendLatestTurn
+		}
+		logs, err := s.Store.ListChatLogs(r.Context(), strings.TrimSpace(req.ChatSessionID), fromTurn, toTurn)
 		if err == nil && len(logs) > 0 {
-			actualLatestTurn := 0
+			actualLatestTurn := req.BackendLatestTurn
+			if !backendLatestAuthoritative {
+				actualLatestTurn = 0
+			}
 			for _, item := range logs {
 				if item.TurnIndex > actualLatestTurn {
 					actualLatestTurn = item.TurnIndex

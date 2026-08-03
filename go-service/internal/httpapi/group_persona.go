@@ -255,7 +255,11 @@ func (s *Server) handleListProtagonistEntityMemories(w http.ResponseWriter, r *h
 		writeError(w, http.StatusNotImplemented, "protagonist_entity_memory_store_not_enabled", "protagonist entity memory store is not enabled")
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	requestedLimit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	queryLimit := requestedLimit
+	if requestedLimit > 0 && requestedLimit < int(^uint(0)>>1) {
+		queryLimit++
+	}
 	ownerEntityKey := strings.TrimSpace(r.URL.Query().Get("owner_entity_key"))
 	personaEntityKey := strings.TrimSpace(r.URL.Query().Get("persona_entity_key"))
 	if ownerEntityKey == "" {
@@ -268,7 +272,7 @@ func (s *Server) handleListProtagonistEntityMemories(w http.ResponseWriter, r *h
 		OwnerEntityRole:     normalizeSubjectiveEntityRoleFilter(r.URL.Query().Get("owner_entity_role")),
 		OwnerVisibility:     normalizeSubjectiveEntityVisibilityFilter(r.URL.Query().Get("owner_visibility")),
 		SourceChatSessionID: strings.TrimSpace(r.URL.Query().Get("source_chat_session_id")),
-		Limit:               limit,
+		Limit:               queryLimit,
 	})
 	if err != nil {
 		writeInternalError(w, err.Error())
@@ -285,11 +289,18 @@ func (s *Server) handleListProtagonistEntityMemories(w http.ResponseWriter, r *h
 		}
 		items = filtered
 	}
+	hasMore := requestedLimit > 0 && len(items) > requestedLimit
+	if hasMore {
+		items = items[:requestedLimit]
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "ok",
-		"items":  items,
-		"count":  len(items),
-		"policy": protagonistEntityMemoryPolicy(),
+		"status":          "ok",
+		"items":           items,
+		"count":           len(items),
+		"has_more":        hasMore,
+		"complete_result": requestedLimit <= 0 || !hasMore,
+		"selection_mode":  map[bool]string{true: "explicit_limit", false: "all_matching_rows"}[requestedLimit > 0],
+		"policy":          protagonistEntityMemoryPolicy(),
 	})
 }
 
@@ -441,7 +452,6 @@ func (s *Server) handleListSubjectiveEntityMemoryEntities(w http.ResponseWriter,
 	}
 	memories, err := st.ListProtagonistEntityMemories(r.Context(), store.ProtagonistEntityMemoryFilter{
 		SourceChatSessionID: sourceSID,
-		Limit:               200,
 	})
 	if err != nil {
 		writeInternalError(w, err.Error())
@@ -504,7 +514,6 @@ func (s *Server) handleCreateSubjectiveEntityMemoryCapsule(w http.ResponseWriter
 		OwnerEntityRole:     req.OwnerEntityRole,
 		OwnerVisibility:     req.OwnerVisibility,
 		SourceChatSessionID: req.SourceChatSessionID,
-		Limit:               200,
 	})
 	if err != nil {
 		writeInternalError(w, err.Error())
@@ -521,7 +530,7 @@ func (s *Server) handleCreateSubjectiveEntityMemoryCapsule(w http.ResponseWriter
 		}
 		memories = filtered
 	}
-	entries := make([]store.PersonaMemoryEntry, 0, len(req.MemoryIDs))
+	entries := make([]store.PersonaMemoryEntry, 0, len(memories))
 	sourceMemoryIDs := []int64{}
 	for _, memory := range memories {
 		if !autoSelect && !idSet[memory.ID] {
@@ -558,9 +567,6 @@ func (s *Server) handleCreateSubjectiveEntityMemoryCapsule(w http.ResponseWriter
 			InjectionPolicy:  subjectiveEntityCapsuleInjectionPolicy(memory, req),
 		})
 		sourceMemoryIDs = append(sourceMemoryIDs, memory.ID)
-		if autoSelect && len(entries) >= 24 {
-			break
-		}
 	}
 	if len(entries) == 0 {
 		writeError(w, http.StatusBadRequest, CodeMissingParam, "no matching subjective entity memories found for this owner/source scope")
@@ -594,11 +600,13 @@ func (s *Server) handleCreateSubjectiveEntityMemoryCapsule(w http.ResponseWriter
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"status":            "ok",
-		"capsule":           capsule,
-		"entries_count":     len(entries),
-		"source_memory_ids": sourceMemoryIDs,
-		"policy":            subjectiveEntityCapsulePolicy(req),
+		"status":               "ok",
+		"capsule":              capsule,
+		"entries_count":        len(entries),
+		"source_memory_ids":    sourceMemoryIDs,
+		"selection_mode":       map[bool]string{true: "all_owner_source_memories", false: "explicit_memory_ids"}[autoSelect],
+		"complete_owner_scope": autoSelect,
+		"policy":               subjectiveEntityCapsulePolicy(req),
 	})
 }
 
@@ -624,16 +632,9 @@ func (s *Server) handleRepairSubjectiveEntityMemoryAliases(w http.ResponseWriter
 	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("apply"))); v == "true" || v == "1" || v == "yes" {
 		req.Apply = true
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 1000
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
 	memories, err := st.ListProtagonistEntityMemories(r.Context(), store.ProtagonistEntityMemoryFilter{
 		SourceChatSessionID: req.SourceChatSessionID,
-		Limit:               limit,
+		Limit:               req.Limit,
 	})
 	if err != nil {
 		writeInternalError(w, err.Error())
@@ -720,16 +721,9 @@ func (s *Server) handleForceMergeSubjectiveEntityMemories(w http.ResponseWriter,
 	if req.TargetVisibility == "" {
 		req.TargetVisibility = "player_known"
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 1000
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
 	memories, err := st.ListProtagonistEntityMemories(r.Context(), store.ProtagonistEntityMemoryFilter{
 		SourceChatSessionID: req.SourceChatSessionID,
-		Limit:               limit,
+		Limit:               req.Limit,
 	})
 	if err != nil {
 		writeInternalError(w, err.Error())

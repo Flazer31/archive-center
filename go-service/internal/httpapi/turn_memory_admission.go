@@ -99,13 +99,13 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	identityProjection *entityIdentityProjection,
 	now time.Time,
 	result *artifactSaveResult,
-) (bool, []store.DirectEvidence) {
+) (bool, []store.DirectEvidence, []*store.PreciseMemoryUnit) {
 	if s == nil || s.Store == nil || result == nil {
-		return false, existingEvidence
+		return false, existingEvidence, nil
 	}
 	lifecycle, lifecycleOK := s.Store.(store.MemoryDerivationLifecycleAvailability)
 	if !lifecycleOK || !lifecycle.MemoryDerivationLifecycleEnabled() {
-		return false, existingEvidence
+		return false, existingEvidence, nil
 	}
 	source, accepted := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext)
 	if !accepted ||
@@ -113,19 +113,19 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		strings.TrimSpace(source.Revision) == "" {
 		result.Errors++
 		result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: accepted current source is required")
-		return true, existingEvidence
+		return true, existingEvidence, nil
 	}
 	writer, writerOK := s.Store.(store.MemoryAdmissionWriter)
 	if !writerOK {
 		result.Errors++
 		result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: common writer is unavailable")
-		return true, existingEvidence
+		return true, existingEvidence, nil
 	}
 	if availability, ok := s.Store.(store.MemoryAdmissionWriteAvailability); ok &&
 		!availability.MemoryAdmissionWritesEnabled() {
 		result.Errors++
 		result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: common writer is disabled")
-		return true, existingEvidence
+		return true, existingEvidence, nil
 	}
 
 	var memory *store.Memory
@@ -246,7 +246,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	if err != nil {
 		result.Errors++
 		result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: "+err.Error())
-		return true, existingEvidence
+		return true, existingEvidence, nil
 	}
 	if committed.Idempotent {
 		if committed.ExistingResultHash != "" && committed.ExistingResultHash != resultHash {
@@ -257,7 +257,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 				"result_hash":     committed.CommittedResultHash,
 			})
 		}
-		return true, evidenceSnapshot
+		return true, evidenceSnapshot, preciseUnits
 	}
 	if committed.MemoryInserted || committed.MemoryUpdated {
 		result.Memories++
@@ -271,7 +271,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	if len(preciseUnits) > 0 {
 		result.Attempted += len(preciseUnits)
 	}
-	return true, evidenceSnapshot
+	return true, evidenceSnapshot, preciseUnits
 }
 
 func memoryAdmissionHasPerspectiveScopedContent(extraction map[string]any) bool {
@@ -285,6 +285,9 @@ func memoryAdmissionHasPerspectiveScopedContent(extraction map[string]any) bool 
 		"subjective_entity_memories",
 		"relationship_observations",
 		"interaction_boundaries",
+		"habit_observations",
+		"character_profile_observations",
+		"voice_observations",
 		"user_interaction_profile",
 		"rp_character_profile",
 	} {
@@ -305,6 +308,9 @@ func memoryAdmissionHasHolderScopedPerspectiveContent(extraction map[string]any)
 	for _, key := range []string{
 		"relationship_observations",
 		"interaction_boundaries",
+		"habit_observations",
+		"character_profile_observations",
+		"voice_observations",
 		"user_interaction_profile",
 		"rp_character_profile",
 	} {
@@ -334,6 +340,9 @@ func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[str
 		"subjective_entity_memories",
 		"relationship_observations",
 		"interaction_boundaries",
+		"habit_observations",
+		"character_profile_observations",
+		"voice_observations",
 		"user_interaction_profile",
 		"rp_character_profile",
 	} {

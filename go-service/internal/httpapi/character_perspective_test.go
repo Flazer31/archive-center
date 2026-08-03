@@ -372,7 +372,7 @@ func TestMemoryAdmissionOmitsGeneralVectorsForPerspectiveScopedTurn(t *testing.T
 			LogicalTurnID:   "logical-turn-perspective-vector",
 		})
 		result := artifactSaveResult{}
-		handled, _ := srv.commitAcceptedMemoryAdmission(
+		handled, _, _ := srv.commitAcceptedMemoryAdmission(
 			ctx,
 			"session-perspective-vector",
 			7,

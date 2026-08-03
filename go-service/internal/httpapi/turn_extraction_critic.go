@@ -23,13 +23,6 @@ var (
 	criticBearerSecretPattern        = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
 	criticJSONSecretPattern          = regexp.MustCompile(`(?i)("(?:x-api-key|api[_-]?key|password|client_secret|access_token|refresh_token)"\s*:\s*)"[^"]*"`)
 	criticKVSecretPattern            = regexp.MustCompile(`(?i)((?:x-api-key|api[_-]?key|password|client_secret|access_token|refresh_token)\s*[:=]\s*)[^\s,;}\]]+`)
-	criticClaimStopTokens            = map[string]struct{}{
-		"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "but": {},
-		"for": {}, "from": {}, "he": {}, "her": {}, "his": {}, "in": {}, "is": {},
-		"it": {}, "of": {}, "on": {}, "or": {}, "she": {}, "that": {}, "the": {},
-		"their": {}, "they": {}, "this": {}, "to": {}, "was": {}, "were": {}, "with": {},
-		"그": {}, "그가": {}, "그녀": {}, "그는": {}, "그것": {}, "그의": {}, "이것": {}, "저것": {},
-	}
 )
 
 type criticPipelineError struct {
@@ -188,19 +181,26 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		sanitizedUserInput = sanitizeTextForCriticInput(userInput)
 		sanitizedAssistantContent = sanitizeTextForCriticInput(assistantContent)
 	}
-	safeUserInput := boundCompleteTurnCriticInput(sanitizedUserInput, 0)
-	safeAssistantContent := boundCompleteTurnCriticInput(sanitizedAssistantContent, 0)
-	if strings.TrimSpace(safeUserInput+"\n"+safeAssistantContent) == "" {
+	criticUserInput := boundCompleteTurnCriticInput(sanitizedUserInput, 0)
+	criticAssistantContent := boundCompleteTurnCriticInput(sanitizedAssistantContent, 0)
+	if strings.TrimSpace(criticUserInput+"\n"+criticAssistantContent) == "" {
 		err := newCriticPipelineError("CRITIC_INPUT_EMPTY", "input", false, 0, errors.New("critic_input_empty_after_sanitize"))
 		trace := criticFailureTrace(promptSource, cfg, 0, err, "")
 		trace["source_aware_ingest_guard"] = !canonicalChatLogs
 		trace["canonical_chat_logs"] = canonicalChatLogs
 		return nil, trace, err
 	}
-	safeContextMessages := sanitizeContextMessagesForCriticInput(contextMessages)
-	previewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, safeUserInput, safeAssistantContent)
-	criticArchiveLedgerPromptInput, criticArchiveLedgerTrace := s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, safeAssistantContent, outputLanguageOverride)
-	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, safeUserInput, safeAssistantContent, safeContextMessages, outputLanguageOverride, previewPass, languageContext, criticArchiveLedgerPromptInput)
+	criticContextMessages := sanitizeContextMessagesForCriticInput(contextMessages)
+	previewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, criticContextMessages, criticUserInput, criticAssistantContent)
+	criticArchiveLedgerPromptInput, criticArchiveLedgerTrace := s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, criticAssistantContent, outputLanguageOverride)
+	activeWorldRules, activeWorldRuleTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
+	if len(activeWorldRules) > 0 {
+		if criticArchiveLedgerPromptInput == nil {
+			criticArchiveLedgerPromptInput = map[string]any{}
+		}
+		criticArchiveLedgerPromptInput["active_world_rules"] = activeWorldRules
+	}
+	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, outputLanguageOverride, previewPass, languageContext, criticArchiveLedgerPromptInput)
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 1600
@@ -245,16 +245,16 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			firstFailureTrace["request_overrides"] = requestOverrides
 		}
-		retryUserInput, userRedacted := redactSensitiveCriticRetryText(safeUserInput)
-		retryAssistantContent, assistantRedacted := redactSensitiveCriticRetryText(safeAssistantContent)
+		retryUserInput, userRedacted := redactSensitiveCriticRetryText(criticUserInput)
+		retryAssistantContent, assistantRedacted := redactSensitiveCriticRetryText(criticAssistantContent)
 		if !userRedacted && !assistantRedacted {
 			return nil, firstFailureTrace, providerErr
 		}
 		if !cfg.RetryBudget.take() {
 			return nil, firstFailureTrace, providerErr
 		}
-		retryPreviewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, safeContextMessages, retryUserInput, retryAssistantContent)
-		retryPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, retryUserInput, retryAssistantContent, safeContextMessages, outputLanguageOverride, retryPreviewPass, languageContext, criticArchiveLedgerPromptInput)
+		retryPreviewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, criticContextMessages, retryUserInput, retryAssistantContent)
+		retryPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, retryUserInput, retryAssistantContent, criticContextMessages, outputLanguageOverride, retryPreviewPass, languageContext, criticArchiveLedgerPromptInput)
 		retryReq := req
 		retryReq.Messages = []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": retryPrompt}}
 		retryUpstream, retryStatus, retryErr := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, retryReq, cfg.RetryBudget, jsonPolicy)
@@ -278,8 +278,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		upstream = retryUpstream
 		upstreamStatus = retryStatus
 		previewPass = retryPreviewPass
-		safeUserInput = retryUserInput
-		safeAssistantContent = retryAssistantContent
+		criticUserInput = retryUserInput
+		criticAssistantContent = retryAssistantContent
 	}
 	content := chatCompletionText(upstream)
 	if strings.TrimSpace(content) == "" {
@@ -314,9 +314,9 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		}
 		return nil, schemaTrace, schemaErr
 	}
-	parsed, quarantineTrace := quarantineCriticProtectedCandidates(parsed, safeUserInput, safeAssistantContent)
+	parsed, quarantineTrace := quarantineCriticProtectedCandidates(parsed, criticUserInput, criticAssistantContent)
 	trustedRPIdentities := s.resolveTrustedRPCharacterIdentities(ctx, sid, parsed)
-	parsed, interactionAdmissionTrace := admitCriticInteractionLanesWithTrustedIdentities(parsed, safeUserInput, safeAssistantContent, trustedRPIdentities)
+	parsed, interactionAdmissionTrace := admitCriticInteractionLanesWithTrustedIdentities(parsed, criticUserInput, criticAssistantContent, trustedRPIdentities)
 	trace := map[string]any{
 		"prompt_source": promptSource,
 		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
@@ -324,10 +324,10 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		"http_status":   upstreamStatus,
 		"usage":         upstream["usage"],
 		"input_budget": map[string]any{
-			"user_input_chars":        len([]rune(safeUserInput)),
-			"assistant_content_chars": len([]rune(safeAssistantContent)),
-			"user_input_bounded":      len([]rune(sanitizedUserInput)) > len([]rune(safeUserInput)),
-			"assistant_bounded":       len([]rune(sanitizedAssistantContent)) > len([]rune(safeAssistantContent)),
+			"user_input_chars":        len([]rune(criticUserInput)),
+			"assistant_content_chars": len([]rune(criticAssistantContent)),
+			"user_input_bounded":      len([]rune(sanitizedUserInput)) > len([]rune(criticUserInput)),
+			"assistant_bounded":       len([]rune(sanitizedAssistantContent)) > len([]rune(criticAssistantContent)),
 		},
 		"pipeline": map[string]any{
 			"policy_version": completeTurnCriticPipelineVersion,
@@ -364,6 +364,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["request_overrides"] = requestOverrides
 	}
 	trace["critic_archive_ledger"] = criticArchiveLedgerTrace
+	trace["active_world_rule_contract"] = activeWorldRuleTrace
 	if len(languageContext) > 0 {
 		trace["language_context"] = languageContext
 		trace["memory_write_contract"] = completeTurnMemoryWriteContract(languageContext)
@@ -373,7 +374,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	}
 	normalized := normalizeCriticExtraction(parsed)
 	if len(worldRuleItemsForSave(normalized)) == 0 && (cfg.ForceWorldRuleAudit || shouldRunFocusedWorldRuleAudit(normalized)) {
-		auditedRules, auditTrace := s.runCompleteTurnWorldRuleAudit(ctx, sid, turnIndex, safeUserInput, safeAssistantContent, safeContextMessages, previewPass, normalized, cfg)
+		auditedRules, auditTrace := s.runCompleteTurnWorldRuleAudit(ctx, sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, previewPass, normalized, cfg)
 		trace["world_rule_audit"] = auditTrace
 		if len(worldRuleItemsForSave(auditedRules)) > 0 {
 			var mergedCount int
@@ -395,7 +396,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			"reason": reason,
 		}
 	}
-	normalized = enrichNormalizedCriticExtractionForFocusedRecall(normalized, safeUserInput, safeAssistantContent, turnIndex)
+	normalized = enrichNormalizedCriticExtractionForFocusedRecall(normalized, criticUserInput, criticAssistantContent, turnIndex)
 	normalized = applyLanguageMemoryWriteContract(normalized, languageContext)
 	return normalized, trace, nil
 }
@@ -464,7 +465,9 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 		trace["reason"] = "empty_turn"
 		return nil, trace
 	}
-	prompt := buildCompleteTurnWorldRuleAuditPrompt(sid, turnIndex, userInput, assistantContent, contextMessages, previewPass, initialExtraction)
+	activeWorldRules, activeWorldRuleTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
+	trace["active_world_rule_contract"] = activeWorldRuleTrace
+	prompt := buildCompleteTurnWorldRuleAuditPrompt(sid, turnIndex, userInput, assistantContent, contextMessages, previewPass, initialExtraction, activeWorldRules)
 	maxTokens := cfg.MaxTokens
 	maxCompletionTokens := cfg.MaxCompletionTokens
 	if maxCompletionTokens <= 0 {
@@ -529,10 +532,15 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	return normalized, trace
 }
 
-func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, previewPass map[string]any, initialExtraction map[string]any) string {
+func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, previewPass map[string]any, initialExtraction map[string]any, activeWorldRuleInput ...[]map[string]any) string {
 	ctx, _ := json.Marshal(contextMessages)
 	preview, _ := json.Marshal(previewPass)
 	initial, _ := json.Marshal(initialExtraction)
+	var activeRules any
+	if len(activeWorldRuleInput) > 0 {
+		activeRules = activeWorldRuleInput[0]
+	}
+	active, _ := json.Marshal(activeRules)
 	return strings.Join([]string{
 		"Audit whether the completed turn establishes durable world rules that the main extraction missed.",
 		"Return ONLY JSON. Do not use markdown fences.",
@@ -541,14 +549,11 @@ func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput 
 		"Decision contract:",
 		"- This is an AI judgement step. Do not rely on keyword lists, genre names, or instruction examples as facts.",
 		"- Extract the abstract invariant established by the session's own evidence.",
-		"- A world rule is a durable constraint that should remain true after this exchange: physical/natural law, supernatural or technology mechanic, progression or reward economy, acquisition method, access gate, location constraint, social law, institution/custom, faction norm, rank/authority rule, contract, resource/logistics limit, schedule/calendar rule, taboo, or equivalent stable setting law.",
-		"- Creation myths, cosmology, divine non-intervention rules, origin rules for monsters/threats, granted powers, chosen-agent roles, sacred/institutional authority, and stable religious doctrine are world rules when the turn presents them as setting truth rather than rumor or metaphor.",
-		"- It can appear in any genre: academy, workplace, household, romance, survival, fantasy, dungeon/progression, sci-fi, political, slice-of-life, or apocalypse.",
+		"- A world rule is any source-grounded constraint or invariant that should remain true beyond this exchange. Judge durability from the story evidence rather than a fixed category or genre list.",
 		"- If the latest turn only has a temporary action, mood, one-off dialogue, rejected plan, speculation, or private thought with no durable setting constraint, return empty arrays.",
-		"- If the latest turn confirms a durable rule, world_rules must not be empty. Emit compact evidence-bound rules with scope, category, key, value, and optional scope_name/genre/confidence/verification.",
-		"- Use the canonical scope vocabulary exactly: root, region, location, faction, system, session.",
-		"- Scope guidance: root=universal cosmology or setting-wide law; region=named country/city/territory/large area; location=concrete place/base/building/dungeon/site; faction=organization/church/guild/government/gang/party/team; system=magic/technology/progression/economy/combat/reward mechanics; session=temporary session-only plan or rule without a more specific stable scope.",
-		"- Do not put named regions, named locations, named factions, or progression mechanics under root just because they are important. Use their specific scope and scope_name.",
+		"- If the latest turn confirms a durable rule, world_rules must not be empty. Preserve the rule with whatever descriptive fields the evidence supports; key and value are sufficient for collection.",
+		"- Active_World_Rules_JSON contains the current unsuppressed stored rules. For a changed or explicitly reaffirmed existing rule, reuse its exact scope, scope_name, category, and key even when the output language differs. Never translate an existing key into a new key. If the latest turn supplies no new evidence or change for an existing rule, omit that unchanged repeat.",
+		"- When scope or category is useful, describe the story's own structure. Do not discard a rule because its scope or category is unfamiliar.",
 		"- Mirror the same durable rules in world_state.rules when they shape the current setting state.",
 		"- Do not invent mechanics. If uncertain, use audit.reason and return empty arrays.",
 		"",
@@ -574,6 +579,10 @@ func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput 
 		"<Initial_Critic_Extraction_JSON>",
 		string(initial),
 		"</Initial_Critic_Extraction_JSON>",
+		"",
+		"<Active_World_Rules_JSON>",
+		string(active),
+		"</Active_World_Rules_JSON>",
 	}, "\n")
 }
 
@@ -630,13 +639,49 @@ func (s *Server) buildCompleteTurnCriticArchiveLedgerInput(ctx context.Context, 
 	trace["item_count"] = len(resp.Items)
 	trace["vector_status"] = resp.VectorStatus
 	trace["language"] = resp.Language
-	trace["safety"] = resp.Safety
 	trace["degraded"] = resp.Degraded
 	trace["warnings"] = resp.Warnings
 	trace["write_attempted"] = resp.WriteAttempted
 	trace["vector_write_attempted"] = resp.VectorWriteAttempted
 	trace["llm_call_attempted"] = resp.LLMCallAttempted
 	return promptInput, trace
+}
+
+func (s *Server) buildCompleteTurnActiveWorldRuleInput(ctx context.Context, sid string) ([]map[string]any, map[string]any) {
+	trace := map[string]any{"status": "unavailable", "included_count": 0}
+	if s == nil || s.Store == nil {
+		return nil, trace
+	}
+	rows, err := s.Store.ListWorldRules(ctx, sid)
+	if err != nil {
+		trace["status"] = "read_failed"
+		trace["error"] = err.Error()
+		return nil, trace
+	}
+	out := []map[string]any{}
+	for _, row := range rows {
+		if row.Suppressed || strings.TrimSpace(row.Key) == "" {
+			continue
+		}
+		var value any = strings.TrimSpace(row.ValueJSON)
+		if strings.TrimSpace(row.ValueJSON) != "" {
+			var decoded any
+			if json.Unmarshal([]byte(row.ValueJSON), &decoded) == nil {
+				value = decoded
+			}
+		}
+		out = append(out, map[string]any{
+			"scope":       row.Scope,
+			"scope_name":  row.ScopeName,
+			"category":    row.Category,
+			"key":         row.Key,
+			"value":       value,
+			"source_turn": row.SourceTurn,
+		})
+	}
+	trace["status"] = "ok"
+	trace["included_count"] = len(out)
+	return out, trace
 }
 
 func completeTurnAssistantFinalLanguage(outputLanguageOverride *map[string]any) string {
@@ -676,7 +721,6 @@ func criticArchiveLedgerPromptInput(resp criticArchiveLedgerPreviewResponse) map
 		"language":                 resp.Language,
 		"limits":                   resp.Limits,
 		"counts":                   resp.Counts,
-		"safety":                   resp.Safety,
 		"degraded":                 resp.Degraded,
 		"warnings":                 resp.Warnings,
 		"items":                    items,
@@ -746,72 +790,59 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{"version":"story_clock.v1","observation_kind":"absolute","scene_scope":"current","precision":"exact","absolute":{"date":"1423-04-12","time":"13:00"},"evidence_excerpt":"exact latest-turn excerpt","transition":"set"},"kg_triples":[],"entities":{"characters":[],"locations":[],"items":[]},"speaker_attributions":[],"relationship_memory":{},"interaction_events":[],"relationship_observations":[],"interaction_boundaries":[],"user_interaction_profile":[],"rp_character_profile":[],"state_deltas":{},"character_deltas":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]},"subjective_entity_memories":[],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{},"kg_triples":[{"subject":"","predicate":"","object":""}],"entities":{"characters":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"locations":[{"name":""}],"items":[{"name":""}]},"speaker_attributions":[{"speaker_name":"","evidence_excerpt":""}],"relationship_memory":{},"interaction_events":[{"actor":"","counterpart":"","action":"","evidence_excerpt":""}],"relationship_observations":[{"source_entity":"","target_entity":"","domain":"","observation":"","evidence_excerpt":""}],"interaction_boundaries":[{"actor":"","counterpart":"","action_scope":"","decision":"","evidence_excerpt":""}],"habit_observations":[{"subject_entity":"","behavior_key":"","evidence_excerpt":""}],"character_profile_observations":[{"subject_entity":"","trait_key":"","supported_expression":"","evidence_excerpt":""}],"voice_observations":[{"subject_entity":"","principle_key":"","utterance_expression":"","evidence_excerpt":""}],"user_interaction_profile":[],"rp_character_profile":[],"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{},"world_rules":[{"key":"","value":""}],"world_state":{},"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":""}],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
-		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and safe context.",
-		"- evidence_excerpts must be short exact excerpts from the latest user/assistant turn, not the whole turn.",
+		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and retained context.",
+		"- evidence_excerpts are durable citations, not transcript samples. Include only short exact excerpts from the latest user/assistant turn that independently support a fact, state, relationship, event, promise, constraint, or continuity claim worth verifying later.",
 		"- Language contract: use Language_Context_JSON as the memory-write contract. If summary_language/session_output_language is ko, en, or ja, generated natural-language memory fields must use that language. Do not default to English just because these instructions are English. Raw evidence excerpts must stay exact source text and must not be translated or rewritten.",
 		"- Apply the same language contract to all generated support fields, including turn_summary, pending_threads titles/details, world_rules key/value/display text, world_state rule values, subjective_entity_memories, protected_secrets summaries, and storyline/continuity-hook style text. Proper nouns and exact evidence quotes may remain in their original language.",
 		"- reversible_states.value.text and body subtype/affected_area are source-bound fields, not generated display prose. Copy them exactly from evidence_excerpt even when the source language differs from session_output_language.",
 		"- If the latest user input language differs from session_output_language, do not follow the user input language for generated summaries or support records. Follow session_output_language and preserve user text only inside exact raw evidence excerpts.",
 		"- Keep internal enum/category/predicate keys stable. Do not translate system keys per turn just because the output language changes.",
-		"- For ordinary narrative turns with new information, include 1-3 evidence_excerpts that ground the most important user intent and assistant outcome.",
-		"- kg_triples must use real in-story names only. Never use char_*, cid_*, turn_*, user, assistant, system, prompt, or has_turn edges.",
-		"- Every kg_triples item requires semantic_class=entity_fact|event_fact|state_fact|world_fact|identity_fact|location_fact|item_fact, exact evidence_excerpt, and subject_binding/object_binding using kg_endpoint_binding.v1. Each binding requires endpoint_kind=entity|scalar and expression copied exactly from evidence and equal to that endpoint value. Generic entity-to-entity KG edges are review-only and must be omitted regardless of identity resolution; use a dedicated typed lane instead. Entity-to-scalar non-relationship facts may be emitted with exact source-bound bindings. Do not paraphrase private belief, identity, role, allegiance, secret knowledge, directional relationship, or interaction boundary into an objective KG edge.",
-		"- For ordinary narrative turns, emit only source-bound entity-to-scalar non-relationship kg_triples. Put entity-to-entity relations and relationship domains only in their dedicated typed lanes, and consent/refusal/withdrawal only in interaction_boundaries.",
+		"- Do not copy isolated names, greetings, reactions, or context-dependent fragments into evidence_excerpts merely because they occurred. Speech-style examples belong in voice_observations and are not duplicated as general direct evidence unless the same excerpt also proves a separate durable claim. Do not cap valid direct evidence by a fixed count.",
+		"- Extract useful source-grounded in-story facts and relationships broadly as kg_triples objects with subject, predicate, and object. Their values are open story content, not fixed vocabularies. Do not omit a fact merely because another typed lane also records it. Use [] only when the turn contains no new in-story fact.",
+		"- All list surfaces except evidence_excerpts contain JSON objects, not positional arrays or bare strings. Field names describe storage structure only; generated values remain open story content.",
 		"- entities.characters/locations/items should contain only concrete in-story people, places, or objects observed in this turn.",
+		"- For an ordinary name variant, nickname, title, or alias, keep one character entity with the story's canonical/full name and aliases. When the canonical identity was uniquely established in retained story context and the latest turn uses an alias for that same entity, identity_evidence_excerpt may be the short exact latest-turn excerpt that observes the alias. Otherwise add identity_evidence_excerpt only when one short exact latest-turn excerpt establishes the identity link. Omit it when equivalence is uncertain; spelling, suffix, similarity, or a character-card name alone is not identity evidence.",
+		"- For entities and character_deltas, preserve the name or description supplied by the story and all useful observed attributes. Do not require auxiliary expression fields merely to keep the candidate.",
 		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, optional listener_names/listeners when directly observed, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker or listener from style alone; use ambiguous or unknown when multiple characters fit.",
-		"- Separate location/time fact classes. Global current scene location or current scene time belongs in state_deltas.scene_state; a named character's current location belongs in reversible_states. A durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status and/or kg_triples with predicates such as residence, hometown, lives_in, or based_in.",
+		"- Location and time typed lanes do not suppress compatible kg_triples; keep all emitted facts consistent with exact turn evidence.",
 		"- Do not treat 'X lives in London' as 'the current scene is London'. Do not treat a temporary visit as a durable residence unless the latest turn says it directly.",
 		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
-		"- story_clock is optional and proposal-only. Emit it only when the latest completed turn contains an exact supporting excerpt about story time, sequence, or duration; repeat that excerpt in top-level evidence_excerpts.",
-		"- story_clock.observation_kind must be absolute|partial|relative|bounded_range|unknown and scene_scope must be current|flashback|planned|hypothetical. Keep absolute date/time, partial daypart/season, relative offset+unit+anchor, bounded range start/end, sequence, and duration structurally separate.",
-		"- story_clock.precision must be exact|partial|bounded_range|unknown. Never turn server time, audit time, turn_index, or an unknown/relative phrase without a current story-clock anchor into an exact story date.",
-		"- Use only the primary object matching observation_kind: absolute, partial, relative, or range. sequence may use relation/anchor/index/label; duration may use value or min/max with unit and approximate. Do not emit contradictory primary objects together.",
-		"- flashback, planned, and hypothetical observations describe non-current time and must not be presented as the current scene clock. Use transition=set|advance|correction|reaffirm|supersede|retract; correction, supersession, and retraction require exact latest-turn evidence.",
-		"- interaction_events record only atomic source-backed actions. Every item requires actor, actor_expression, counterpart, counterpart_expression, action, action_expression, and an exact latest-turn evidence_excerpt. Each *_expression is an exact substring of that evidence; action must be the exact action_expression, not a paraphrase. Helping, touching, obeying, or speaking does not by itself establish trust, intimacy, romance, loyalty, consent, or a durable relationship change.",
-		"- relationship_observations are the only lane for directional relationship semantics. Every item requires source_entity, source_entity_expression, target_entity, target_entity_expression, domain=trust|attachment|romantic|rivalry|fear|obligation|respect|obedience|intimacy, domain_expression, observation copied exactly from evidence, support_kind=explicit_statement|explicit_narrated_change|explicit_observed_state, and an exact latest-turn evidence_excerpt. Each entity/domain expression is copied exactly from that evidence, and domain_expression also occurs in observation. Preserve magnitude or duration only with magnitude_expression/duration_expression copied exactly from that evidence. Never reverse direction, copy one character's feeling to another, or translate one domain into another.",
-		"- interaction_boundaries use contract interaction_boundary.v1 and require actor, actor_expression, counterpart, counterpart_expression, action_scope, action_scope_expression, decision=allow|refuse|withdrawn|unknown, decision_expression, support_kind=explicit_statement|explicit_narrated_boundary|explicit_observed_boundary, exact evidence_excerpt, effective_scope/time, and visibility. Each *_expression is copied exactly from that evidence; action_scope must equal action_scope_expression. Default effective_scope is event. Preserve a non-event effective_scope or effective_time only with effective_scope_expression/effective_time_expression copied exactly from evidence. Silence, kindness, compliance, prior consent, deception, or model inference is not current consent. A withdrawal overrides an allow for the same actor/counterpart/action/effective scope.",
-		"- user_interaction_profile is only the real user's explicit out-of-story setting namespace and requires profile_key_expression and value_expression copied exactly from evidence. It remains an unobserved review proposal unless typed host metadata explicitly observes an OOC request class. rp_character_profile is only an in-story player/NPC profile namespace and requires character_expression and value_expression copied exactly from evidence; value must equal value_expression. An RP profile can commit only with identity_proof={contract_version:'in_world_identity_proof.v1',stable_entity_id,identity_namespace:'session_npc'|'session_player',character_expression} matching a backend-supplied stable in-world entity; otherwise it remains private review-only material and must not create an entity. Never copy either namespace into the other, and never copy user_interaction_profile into narrative_events, KG, world rules, character_deltas, or relationship observations.",
-		"- relationship_observations and interaction_boundaries default to owner_private visibility. Emit visibility=public only with public_visibility_support={contract_version:'public_visibility_support.v1',support_kind:'explicit_public_statement'|'explicit_public_narration'|'explicit_public_observation',visibility_assertion:evidence_excerpt}, where visibility_assertion is the complete source-bound evidence excerpt and explicitly establishes public visibility. A token or partial phrase is never visibility proof.",
-		"- Leave relationship_memory empty. It is a legacy untyped lane. Put explicitly supported directional changes only in relationship_observations.",
-		"- character_deltas should capture named character appearance, personality, intentions, speech style, or durable role/authority/residence facts. Do not put relationships, current location, emotion, injury/body state, or possession there; relationships belong only in relationship_observations and reversible state belongs only in reversible_states.",
-		"- Separate narrative_events (what happened), state_claims (objective current non-relationship facts), and belief_updates (perspective_memory.v1 proposals for one character's knowledge). Do not place a directional relationship observation in any of these lanes, and do not promote beliefs to objective truth. Each belief_updates item must name the exact knowledge holder with perspective_owner/knower or source-grounded listener_names/listeners, may name an actual source-grounded speaker, and must use epistemic_state=known|suspected|unknown|misinformed|hidden|revealed plus acquisition_mode when directly supported. Include every named speaker/listener/holder in entities.characters.",
-		"- state_claims and belief_updates use stable state_slot keys and transition=set|reaffirm|change|reversal|recovery|correction|reveal|resolve|uncertain|clear|defer|abandon|complete|supersede|reopen|resume. Turn is audit order, not semantic authority.",
-		"- For goal or thread lifecycle state_claims, use the exact goal or thread title as subject, subject_type=entity, and state_slot=goal_status. Do not use goal_status for another entity-state dimension.",
-		"- When that goal or thread is also emitted in pending_threads or state_deltas unresolved_threads.opened, include the same exact title and subject plus state_slot=goal_status in that open record.",
-		"- Use reopen or resume only when the latest completed turn explicitly reactivates a state previously deferred, abandoned, completed, superseded, resolved, or cleared. Use reversal only for a directly evidenced state inversion. A suggestion, condition, possibility, or proposal is uncertain and must not replace an existing current value.",
-		"- Every narrative_events/state_claims/belief_updates item requires a short exact evidence_excerpt from the latest completed turn. Omit unsupported items.",
-		"- Also repeat each accepted event/state/belief evidence_excerpt in top-level evidence_excerpts so current values and change events can link to direct evidence.",
-		"- reversible_states is the only proposal lane for reversible body, per-character location, possession, emotion, and important entity-condition continuity. Every item uses version=reversible_state.v1, domain, transition=set|change|recover|clear, exact subject_name, normalized atomic state_slot, exact evidence_excerpt, scene_scope, authority, assertion_kind, polarity=affirmative|negative|uncertain, visibility, and sensitivity.",
-		"- state_slot is a machine key, not prose: use lowercase words separated by underscores and keep the same slot for later change/recover/clear. Do not create change/recover/clear for a different or uncertain prior slot.",
-		"- set/change requires value.text copied exactly from the evidence excerpt. recover/clear has no value. Repeat every reversible state evidence excerpt in top-level evidence_excerpts.",
-		"- Body value also requires body metadata with subtype, affected_area when stated, and category=ordinary|medical|reproductive. The backend marks accepted body payloads character_body_state.v1. Medical must remain sensitivity=sensitive and reproductive must remain sensitivity=reproductive.",
-		"- Never infer pregnancy, menstruation, illness, diagnosis, treatment, numeric severity, onset, expiry, fixed cycle, healing duration, or recovery. Only literal canonical_in_fiction assertions may mutate current; estimates and needs_review remain history-only.",
-		"- polarity describes the exact claim in evidence_excerpt. Negation, doubt, fear, concern, question, possibility, or denial is negative or uncertain and must never be labelled affirmative merely because a condition word appears in the excerpt.",
-		"- scene_scope=flashback|planned|hypothetical, authority=derived_estimate|needs_review, and assertion_kind=figurative|decorative are history observations and must not be described as current.",
-		"- validity may contain exact valid_from/valid_to strings only when those exact strings occur in evidence. Do not use server time, audit time, or turn_index as story time and do not invent onset or expiry.",
-		"- Mark private emotion or other non-public state visibility=private. Keep sensitive and reproductive states out of public delivery until a later perspective contract decides eligibility.",
+		"- story_clock may record any source-grounded story-time, ordering, duration, correction, plan, or flashback observation. Preserve uncertainty instead of forcing an exact date or a fixed vocabulary.",
+		"- interaction_events collect useful actor/counterpart/action observations broadly. relationship_observations collect directional relationship knowledge without a fixed domain list. Preserve direction and uncertainty.",
+		"- interaction_boundaries collect stated or narrated boundaries broadly. Saving a candidate does not grant consent or make it current; current-turn application remains a later precision decision.",
+		"- habit_observations collect behavior occurrences, patterns, counterexamples, and exceptions with their situation and counterpart when useful. Do not use a fixed count to decide that a habit exists.",
+		"- character_profile_observations collect personality, values, desires, fears, contradictions, current traits, contextual tendencies, and relationship-specific characterization broadly. Preserve context and uncertainty.",
+		"- voice_observations collect conditional speech and nonverbal style principles broadly. When an attributable spoken line or delivery demonstrates a describable speaking behavior, emit that occurrence; a first observation is valid contextual evidence and does not need a fixed repetition count. Store traits or principles rather than forcing future dialogue to repeat an example sentence.",
+		"- user_interaction_profile is only the real user's explicit out-of-story setting namespace and uses exact evidence expressions before it can affect behavior. rp_character_profile collects in-story player/NPC characterization broadly; character plus profile content is enough to retain a candidate. Matching source evidence and backend identity can mark it source-observed for current profile projection, while other candidates remain review material instead of being deleted. Never copy either namespace into the other, and never copy user_interaction_profile into narrative_events, KG, world rules, character_deltas, or relationship observations.",
+		"- Preserve relationship_memory when it contains useful relationship knowledge; relationship_observations may additionally represent directional detail.",
+		"- character_deltas may preserve appearance, personality, speech style, relationships, status, intentions, roles, locations, health, possessions, and events. Typed lanes may additionally project the same information for precise use.",
+		"- Separate narrative_events (what happened), state_claims (current objective claims), and belief_updates (what a character believes, suspects, misunderstands, or knows). Preserve useful candidates even when generated wording paraphrases the source; do not promote belief to objective truth.",
+		"- pending_threads collect unresolved promises, goals, questions, risks, obligations, or any other continuing thread without a fixed type vocabulary.",
+		"- reversible_states, physical_conditions, entity_conditions, state_deltas, and character_deltas may all preserve source-grounded continuity observations. Saving broad observations is separate from deciding which value is current or injectable.",
+		"- Preserve uncertainty, negation, flashback, plans, private visibility, and sensitive context in the record instead of dropping the record or forcing it into a fixed category.",
 		"- world_rules must describe durable world facts, not prompt instructions or style rules. You are responsible for judging them; backend code will not infer rules from keyword lists.",
 		"- Emit world_rules and world_state.rules when the latest turn establishes a durable constraint that should affect future turns: natural/physical laws, magic/technology mechanics, apocalypse survival norms, unspoken social law, institutional policy, school/academy custom, workplace procedure, family/household rule, contract, rank/authority, faction/group norm, location access, schedule/calendar, economy/resource constraint, logistics doctrine, or other world-law equivalent.",
 		"- The category list is non-exhaustive. If the story establishes a stable law of the setting, social order, organization, environment, or genre logic, capture it even when it does not literally use words like rule, law, policy, or protocol.",
-		"- Use the canonical world-rule scope vocabulary exactly: root, region, location, faction, system, session.",
-		"- Scope guidance: root=universal cosmology or setting-wide law; region=named country/city/territory/large area; location=concrete place/base/building/dungeon/site; faction=organization/church/guild/government/gang/party/team; system=magic/technology/progression/economy/combat/reward mechanics; session=temporary session-only plan or rule without a more specific stable scope.",
-		"- Do not put named regions, named locations, named factions, or progression mechanics under root just because they are important. Use their specific scope and scope_name.",
+		"- Choose a scope and category that describe the story's own structure. Do not omit a durable rule because it does not fit a predefined vocabulary.",
 		"- In system/progression stories, judge durable mechanics as world_rules when confirmed: randomized or conditional acquisition, base/home/environment constraints, challenge entry/clear/reward loops, exchange/cost economy, upgrade or unlock rules, item acquisition/crafting rules, stat growth, group/party limits, cooldowns, ranks, quests, or other recurring progression mechanics.",
 		"- Mandatory world-rule audit: before returning JSON, check whether the latest turn established or confirmed any stable setting constraint, repeated system mechanic, progression mechanic, acquisition method, challenge/reward loop, exchange/cost rule, growth/unlock rule, access condition, social order, faction norm, institution rule, resource/logistics rule, environment constraint, magic/technology law, rank/authority rule, schedule/calendar rule, contract, taboo, or unspoken norm.",
-		"- Always fill world_rule_audit. If that audit is positive, set world_rule_audit.durable_rule_found=true and world_rules must not be empty. Emit at least one compact evidence-bound rule with scope, category, key, and value; mirror it in world_state.rules when it shapes current setting state.",
+		"- Always fill world_rule_audit. If that audit is positive, set world_rule_audit.durable_rule_found=true and world_rules must not be empty. Emit at least one compact evidence-bound rule; key and value are sufficient, while scope and category are optional descriptions. Mirror it in world_state.rules when it shapes current setting state.",
 		"- If you detect a durable rule but cannot fit the final rule list, still set world_rule_audit.durable_rule_found=true and explain the missing rule in world_rule_audit.reason. A focused follow-up audit may repair the omission.",
-		"- Early-session setup counts. Do not wait for many turns: a 1-7 turn session can already establish foundational world rules such as randomized acquisition, progression currency exchange, challenge reward loops, environment/base constraints, access gates, or upgrade/item progression.",
+		"- Early-session setup can already establish foundational world rules; do not wait for a fixed turn count.",
 		"- Extract the abstract invariant behind the session's surface nouns. Do not copy these instruction examples as setting facts; use the session's own evidence and names.",
 		"- Do not leave world_rules empty for confirmed public facts, institutional rules, class/company policies, social obligations, access permissions, hierarchy/authority rules, special-world mechanics, supernatural/technology rules, recurring resource constraints, or implicit norms that remain true beyond this single exchange.",
 		"- A proposal, temporary strategy, one-off plan, implementation method, named operation, or unresolved objective is not a world_rule merely because characters accept or intend it. Keep it in pending_threads or goal_status.",
 		"- Emit a world_rule only when the latest completed turn establishes an enacted, continuing institutional or setting constraint beyond the current objective. A procedure or tactical doctrine qualifies only when evidence shows that it is a recurring durable rule rather than a one-off objective.",
 		"- Each world rule must include key and value; prefer scope, scope_name, category, confidence, and verification/evidence when available. Use world_state.rules for the same durable rules when they shape the current world state.",
+		"- Critic_Archive_Ledger_JSON.active_world_rules contains current unsuppressed stored rules when available. For a changed or explicitly reaffirmed existing rule, reuse its exact scope, scope_name, category, and key even when the output language differs. Never translate an existing key into a new key. If the latest turn supplies no new evidence or change for an existing rule, omit that unchanged repeat.",
 		"- subjective_entity_memories is for each named in-story entity's subjective recollection or interpretation of the latest turn. It is not canonical truth.",
-		"- Each subjective_entity_memories item must include owner_entity_key or owner_entity_name, memory_text, and may include owner_entity_role, owner_visibility, source_turn_index, importance_10, emotional_weight, evidence_excerpt, secret_guard, target_reveal_policy, tags, and portability.",
-		"- subjective_entity_memories is only for non-relationship private interpretation, suspicion, misunderstanding, decision, or recollection. Put trust, attachment, romance, rivalry, fear, obligation, respect, obedience, and intimacy only in relationship_observations. Keep every proposal evidence-bound and support-only.",
+		"- Before leaving subjective_entity_memories empty, inspect every named in-story entity who spoke, reacted, interpreted, decided, noticed, misunderstood, expected, feared, preferred, or changed attitude. Emit every useful owner-specific perspective supported by the turn. Do not invent entries and do not impose a fixed count.",
+		"- An empty subjective_entity_memories array is valid when the latest accepted turn contains no distinct source-grounded perspective content. Third-party-only or objective-only scenes may validly yield zero persona-owned items. NPC coverage is evidence-eligible, not mandatory, and must never be invented to fill a character list.",
+		"- Each subjective memory needs an owner and memory text. Supporting evidence, visibility, importance, emotional weight, protection, tags, and portability are useful metadata but must not become pre-save rejection gates.",
+		"- Relationship-related subjective memories may remain in this lane while directional relationship observations record the same turn from another useful angle.",
 		"- Use owner_entity_role=protagonist for the player/persona and owner_entity_role=npc with owner_visibility=owner_private for private NPC recollections. Keep NPC-only memories out of persona_capsule_candidates.",
 		"- subjective_entity_memories must remain support-only: never use it to overwrite current-world truth, canonical memory, direct evidence, KG triples, character state, or world rules.",
 		"- NPC/private subjective_entity_memories are interpretations, suspicions, misunderstandings, or private bias unless current direct evidence states otherwise; never promote them to objective fact or narrator-revealed truth.",
@@ -821,14 +852,14 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- If a protected secret exists, set secret_guard=true on the matching subjective_entity_memories item and use target_reveal_policy such as owner_private_until_revealed, explicit_reveal_event_required, or user_directed_reveal_only.",
 		"- Stored secret truth is not permission for spontaneous confession, public narration, or unrelated-character discovery. Preserve it as owner-scoped support until current evidence reveals it.",
 		"- character_identity_accuracy is for evidence-bound identity/role/allegiance mappings such as cover identity, disguise, hidden role, hidden allegiance, secret successor, hidden lineage, or protected power inheritance. Include same_entity, surface_identity_name, true_identity_name, identity_kind, reveal_policy, and knowledge_scope when supported.",
-		"- Do not use character-specific hardcoded aliases. Identity/protected-secret candidates must come from the latest turn or safe context evidence only.",
+		"- Do not use character-specific hardcoded aliases. Identity/protected-secret candidates must come from the latest turn or retained context evidence only.",
 		"- persona_capsule_candidates is optional and proposal-only. Use it only for protagonist/player subjective recollections that may be carried to another session, loop, regression, reincarnation, isekai, or same-character continuation.",
 		"- persona_capsule_candidates must never be used to write current-world truth, canonical memory, direct evidence, KG triples, character state, or world rules. It is support_only_persona_recollection and requires later user/operator approval.",
 		"- Each persona_capsule_candidates item may include memory_text, source_turn_index, importance_10, emotional_weight, portability, mode, secret_guard, tags, evidence_excerpt, and injection_policy.",
 		"- Mark secret_guard true when the recollection reveals regression, loop, reincarnation, possession/rebirth, isekai transfer, or identity-carryover that should remain protagonist-private until explicitly revealed by current user input.",
 		"- Critic_Archive_Ledger_JSON is a bounded read-only support ledger. Use it to avoid duplicate memories, stale residue, and contradiction drift.",
 		"- Never copy Critic_Archive_Ledger_JSON item summaries as new evidence unless the latest user/assistant turn also supports the fact.",
-		"- If Critic_Archive_Ledger_JSON is null, empty, or degraded, continue extracting only from the latest turn and safe context.",
+		"- If Critic_Archive_Ledger_JSON is null, empty, or degraded, continue extracting only from the latest turn and retained context.",
 		"",
 		fmt.Sprintf("chat_session_id: %s", sid),
 		fmt.Sprintf("turn_index: %d", turnIndex),
@@ -1300,7 +1331,8 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 		"narrative_events", "state_claims", "belief_updates",
 		"subjective_entity_memories", "protected_secrets",
 		"character_identity_accuracy", "persona_capsule_candidates",
-		"interaction_events", "relationship_observations", "interaction_boundaries",
+		"interaction_events", "relationship_observations", "interaction_boundaries", "habit_observations",
+		"character_profile_observations", "voice_observations",
 		"user_interaction_profile", "rp_character_profile",
 	}
 	objectFields := []string{
@@ -1344,6 +1376,9 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 			continue
 		}
 		recognizedPayload = true
+		if value == nil {
+			continue
+		}
 		if _, ok := value.(map[string]any); !ok {
 			return fmt.Errorf("critic schema field %s must be an object", field)
 		}
@@ -1352,18 +1387,6 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 		for index, excerpt := range excerpts {
 			if _, ok := excerpt.(string); !ok {
 				return fmt.Errorf("critic schema field evidence_excerpts[%d] must be a string", index)
-			}
-		}
-	}
-	if value, exists := raw["story_clock"]; exists {
-		if err := validateStoryClockProposal(value); err != nil {
-			return err
-		}
-	}
-	if values, ok := raw["reversible_states"].([]any); ok {
-		for index, value := range values {
-			if err := validateReversibleStateProposal(value); err != nil {
-				return fmt.Errorf("critic schema reversible_states[%d]: %w", index, err)
 			}
 		}
 	}
@@ -1381,20 +1404,21 @@ func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistan
 	for key, value := range raw {
 		out[key] = value
 	}
-	// Collect perspective-scoped claims before candidate validation removes any
-	// malformed or source-unbound private item. A rejected private claim must not
-	// survive through a duplicated objective event, state, or KG lane.
+	// Collect perspective-scoped claims before structural validation. A private
+	// claim must not be projected as an objective event, state, or KG fact.
 	perspectiveClaims := criticPerspectiveClaims(raw)
-	source := strings.TrimSpace(userInput + "\n" + assistantContent)
 	reasons := map[string]int{}
 	total := 0
 	kept := 0
+	subjectiveLaneObserved := false
+	subjectiveCandidateCount := 0
+	subjectiveKeptCount := 0
 	quarantine := func(reason string) {
 		reasons[reason]++
 	}
 
 	if values, ok := raw["protected_secrets"].([]any); ok {
-		safe := make([]any, 0, len(values))
+		keptItems := make([]any, 0, len(values))
 		for _, value := range values {
 			total++
 			item, itemOK := value.(map[string]any)
@@ -1413,56 +1437,28 @@ func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistan
 				stringFromMap(item, "secret_summary"),
 				stringFromMap(item, "text"),
 			))
-			policy := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "disclosure_policy"),
-				stringFromMap(item, "target_reveal_policy"),
-				stringFromMap(item, "reveal_policy"),
-			))
-			evidence := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "evidence_excerpt"),
-				stringFromMap(item, "evidence"),
-			))
-			switch {
-			case owner == "" || summary == "":
+			if owner == "" || summary == "" {
 				quarantine("protected_secret_identity_or_summary_missing")
-			case policy == "":
-				quarantine("protected_secret_policy_missing")
-			case !criticEvidenceOccursInSource(evidence, source):
-				quarantine("protected_secret_evidence_unbound")
-			case !criticOwnerOccursInSource(owner, source) ||
-				!criticProtectedClaimSupported(summary, evidence, owner):
-				quarantine("protected_secret_claim_unbound")
-			default:
-				safe = append(safe, item)
-				kept++
+				continue
 			}
+			keptItems = append(keptItems, item)
+			kept++
 		}
-		out["protected_secrets"] = safe
+		out["protected_secrets"] = keptItems
 	}
 
 	if values, ok := raw["subjective_entity_memories"].([]any); ok {
-		safe := make([]any, 0, len(values))
+		subjectiveLaneObserved = true
+		subjectiveCandidateCount = len(values)
+		keptItems := make([]any, 0, len(values))
 		for _, value := range values {
+			total++
 			item, itemOK := value.(map[string]any)
 			if !itemOK || item == nil {
-				total++
 				quarantine("subjective_memory_not_object")
 				continue
 			}
-			role := strings.ToLower(strings.TrimSpace(stringFromMap(item, "owner_entity_role")))
-			visibility := strings.ToLower(strings.TrimSpace(stringFromMap(item, "owner_visibility")))
-			portability := strings.ToLower(strings.TrimSpace(stringFromMap(item, "portability")))
-			defaultsToProtected := (role == "" && visibility == "") ||
-				(role == "npc" && visibility == "")
-			protected := boolFromAny(item["secret_guard"]) ||
-				visibility == "owner_private" ||
-				portability == "npc_private_recollection" ||
-				defaultsToProtected
-			if !protected {
-				safe = append(safe, item)
-				continue
-			}
-			total++
+			normalizeSubjectiveEntityMemoryProtection(item)
 			owner := strings.TrimSpace(extractionFirstNonEmpty(
 				stringFromMap(item, "owner_entity_name"),
 				stringFromMap(item, "owner_entity_key"),
@@ -1476,31 +1472,19 @@ func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistan
 				stringFromMap(item, "interpretation"),
 				stringFromMap(item, "summary"),
 			))
-			policy := strings.TrimSpace(stringFromMap(item, "target_reveal_policy"))
-			evidence := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "evidence_excerpt"),
-				stringFromMap(item, "evidence"),
-			))
-			switch {
-			case owner == "" || text == "":
+			if owner == "" || text == "" {
 				quarantine("protected_subjective_identity_or_text_missing")
-			case policy == "":
-				quarantine("protected_subjective_policy_missing")
-			case !criticEvidenceOccursInSource(evidence, source):
-				quarantine("protected_subjective_evidence_unbound")
-			case !criticOwnerOccursInSource(owner, source) ||
-				!criticProtectedClaimSupported(text, evidence, owner):
-				quarantine("protected_subjective_claim_unbound")
-			default:
-				safe = append(safe, item)
-				kept++
+				continue
 			}
+			keptItems = append(keptItems, item)
+			kept++
+			subjectiveKeptCount++
 		}
-		out["subjective_entity_memories"] = safe
+		out["subjective_entity_memories"] = keptItems
 	}
 
 	if values, ok := raw["character_identity_accuracy"].([]any); ok {
-		safe := make([]any, 0, len(values))
+		keptItems := make([]any, 0, len(values))
 		for _, value := range values {
 			total++
 			item, itemOK := value.(map[string]any)
@@ -1518,53 +1502,59 @@ func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistan
 				stringFromMap(item, "canonical_entity_name"),
 				stringFromMap(item, "real_identity_name"),
 			))
-			policy := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "reveal_policy"),
-				stringFromMap(item, "target_reveal_policy"),
-				stringFromMap(item, "disclosure_policy"),
-			))
-			evidence := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "evidence_excerpt"),
-				stringFromMap(item, "evidence"),
-			))
-			switch {
-			case surface == "" || trueName == "" || !boolFromAny(item["same_entity"]):
+			if surface == "" || trueName == "" {
 				quarantine("protected_identity_mapping_incomplete")
-			case policy == "":
-				quarantine("protected_identity_policy_missing")
-			case !criticEvidenceOccursInSource(evidence, source) ||
-				!criticProtectedIdentitySupported(surface, trueName, evidence, source):
-				quarantine("protected_identity_evidence_unbound")
-			default:
-				safe = append(safe, item)
-				kept++
+				continue
 			}
+			keptItems = append(keptItems, item)
+			kept++
 		}
-		out["character_identity_accuracy"] = safe
+		out["character_identity_accuracy"] = keptItems
 	}
 
-	perspectiveClaims = excludeValidatedPublicCriticPerspectiveClaims(perspectiveClaims, out)
+	perspectiveClaims = excludeValidatedPublicCriticPerspectiveClaims(
+		perspectiveClaims,
+		out,
+		strings.TrimSpace(userInput+"\n"+assistantContent),
+	)
 	objectiveQuarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanesUsingClaims(out, perspectiveClaims)
 	if objectiveQuarantined > 0 {
 		reasons["perspective_claim_copied_to_objective_lane"] += objectiveQuarantined
 	}
 
-	if total == 0 && objectiveQuarantined == 0 {
+	if total == 0 && objectiveQuarantined == 0 && !subjectiveLaneObserved {
 		return out, nil
 	}
 	reasonPayload := map[string]any{}
 	for reason, count := range reasons {
 		reasonPayload[reason] = count
 	}
-	return out, map[string]any{
+	trace := map[string]any{
 		"contract_version":                 "critic_protected_candidate_quarantine.v1",
-		"policy":                           "exact_current_source_evidence_required",
+		"policy":                           "structural_collection_then_prepare_turn_selection",
 		"candidate_count":                  total,
 		"kept_count":                       kept,
 		"quarantined_count":                total - kept,
 		"objective_lane_quarantined_count": objectiveQuarantined,
 		"reasons":                          reasonPayload,
 	}
+	if subjectiveLaneObserved {
+		coverageStatus := "candidate_kept"
+		switch {
+		case subjectiveCandidateCount == 0:
+			coverageStatus = "zero_unclassified_no_candidate"
+		case subjectiveKeptCount == 0:
+			coverageStatus = "all_candidates_rejected"
+		}
+		trace["subjective_memory_coverage"] = map[string]any{
+			"candidate_count": subjectiveCandidateCount,
+			"kept_count":      subjectiveKeptCount,
+			"status":          coverageStatus,
+			"zero_policy":     "valid_only_when_no_distinct_source_grounded_perspective_evidence",
+			"npc_policy":      "evidence_eligible_not_required",
+		}
+	}
+	return out, trace
 }
 
 type criticPerspectiveClaim struct {
@@ -1592,16 +1582,16 @@ func quarantineCriticPerspectiveClaimsFromObjectiveLanesUsingClaims(
 	quarantined := 0
 	for _, lane := range []string{"narrative_events", "state_claims", "kg_triples"} {
 		items := sliceFromAny(extraction[lane])
-		safe := make([]any, 0, len(items))
+		keptItems := make([]any, 0, len(items))
 		for _, raw := range items {
 			item := mapFromAny(raw)
 			if criticObjectiveItemConflictsWithPerspectiveClaim(item, claims) {
 				quarantined++
 				continue
 			}
-			safe = append(safe, raw)
+			keptItems = append(keptItems, raw)
 		}
-		extraction[lane] = safe
+		extraction[lane] = keptItems
 	}
 	return quarantined
 }
@@ -1714,13 +1704,24 @@ func criticPerspectiveClaims(extraction map[string]any) []criticPerspectiveClaim
 func excludeValidatedPublicCriticPerspectiveClaims(
 	claims []criticPerspectiveClaim,
 	validatedExtraction map[string]any,
+	acceptedSource ...string,
 ) []criticPerspectiveClaim {
+	source := strings.TrimSpace(strings.Join(acceptedSource, "\n"))
 	publicExtraction := map[string]any{}
 	for _, lane := range []string{"protected_secrets", "character_identity_accuracy"} {
 		publicItems := []any{}
 		for _, raw := range sliceFromAny(validatedExtraction[lane]) {
 			item := mapFromAny(raw)
-			if boolFromAny(mapFromAny(item["knowledge_scope"])["publicly_revealed"]) {
+			publiclyRevealed := boolFromAny(mapFromAny(item["knowledge_scope"])["publicly_revealed"])
+			if publiclyRevealed && source != "" {
+				evidence := strings.TrimSpace(extractionFirstNonEmpty(
+					stringFromMap(item, "evidence_excerpt"),
+					stringFromMap(item, "evidence"),
+					stringFromMap(item, "source_excerpt"),
+				))
+				publiclyRevealed = evidence != "" && criticEvidenceOccursInSource(evidence, source)
+			}
+			if publiclyRevealed {
 				publicItems = append(publicItems, raw)
 			}
 		}
@@ -1942,11 +1943,8 @@ func criticSubstantiveTokens(value string) map[string]struct{} {
 	tokens := map[string]struct{}{}
 	var current []rune
 	flush := func() {
-		if len(current) >= 2 {
-			token := string(current)
-			if _, ignored := criticClaimStopTokens[token]; !ignored {
-				tokens[token] = struct{}{}
-			}
+		if len(current) > 0 {
+			tokens[string(current)] = struct{}{}
 		}
 		current = current[:0]
 	}
@@ -1977,27 +1975,31 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 		delete(out, "story_clock")
 	}
 	out["kg_triples"] = sliceFromAny(raw["kg_triples"])
-	out["character_deltas"] = sanitizeLegacyReversibleCharacterDeltas(raw["character_deltas"])
-	out["pending_threads"] = sliceFromAny(raw["pending_threads"])
+	out["character_deltas"] = sliceFromAny(raw["character_deltas"])
+	out["pending_threads"] = normalizeCriticPendingThreads(raw["pending_threads"])
 	out["entities"] = mapFromAny(raw["entities"])
 	out["speaker_attributions"] = normalizeSpeakerAttributionCandidates(raw["speaker_attributions"])
 	out["relationship_memory"] = mapFromAny(raw["relationship_memory"])
 	out["interaction_events"] = sliceFromAny(raw["interaction_events"])
 	out["relationship_observations"] = sliceFromAny(raw["relationship_observations"])
 	out["interaction_boundaries"] = sliceFromAny(raw["interaction_boundaries"])
+	out["habit_observations"] = sliceFromAny(raw["habit_observations"])
+	out["character_profile_observations"] = sliceFromAny(raw["character_profile_observations"])
+	out["voice_observations"] = sliceFromAny(raw["voice_observations"])
 	out["user_interaction_profile"] = sliceFromAny(raw["user_interaction_profile"])
 	out["rp_character_profile"] = sliceFromAny(raw["rp_character_profile"])
-	out["state_deltas"] = sanitizeLegacyReversibleStateDeltas(raw["state_deltas"])
+	out["state_deltas"] = mapFromAny(raw["state_deltas"])
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
-	out["reversible_states"] = normalizeReversibleStateProposals(raw["reversible_states"])
-	delete(out, "physical_conditions")
-	delete(out, "entity_conditions")
+	out["reversible_states"] = sliceFromAny(raw["reversible_states"])
+	out["physical_conditions"] = sliceFromAny(raw["physical_conditions"])
+	out["entity_conditions"] = sliceFromAny(raw["entity_conditions"])
 	out["narrative_events"] = sliceFromAny(raw["narrative_events"])
 	out["state_claims"] = sliceFromAny(raw["state_claims"])
-	out["belief_updates"] = sliceFromAny(raw["belief_updates"])
+	out["belief_updates"] = normalizeCriticBeliefUpdates(raw["belief_updates"])
 	protectedSecrets := normalizeProtectedSecrets(raw["protected_secrets"])
 	characterIdentityAccuracy := normalizeCharacterIdentityAccuracy(raw["character_identity_accuracy"])
 	subjectiveMemories := normalizeSubjectiveEntityMemories(raw["subjective_entity_memories"])
+	subjectiveMemories = appendBeliefUpdateSubjectiveMemories(subjectiveMemories, out["belief_updates"])
 	subjectiveMemories = appendProtectedSecretSubjectiveMemories(subjectiveMemories, protectedSecrets)
 	subjectiveMemories = appendIdentityAccuracySubjectiveMemories(subjectiveMemories, characterIdentityAccuracy)
 	out["protected_secrets"] = protectedSecrets
@@ -2017,6 +2019,7 @@ func enrichNormalizedCriticExtractionForFocusedRecall(extraction map[string]any,
 			extraction["turn_summary"] = summary
 		}
 	}
+	extraction["evidence_excerpts"] = criticDirectEvidenceExcerpts(extraction, userInput, assistantContent)
 	if len(stringsFromAny(extraction["evidence_excerpts"])) == 0 {
 		if excerpts := focusedRecallFallbackEvidenceExcerpts(userInput, assistantContent); len(excerpts) > 0 {
 			extraction["evidence_excerpts"] = excerpts
@@ -2029,6 +2032,117 @@ func enrichNormalizedCriticExtractionForFocusedRecall(extraction map[string]any,
 		}
 	}
 	return extraction
+}
+
+func normalizeCriticPendingThreads(raw any) []any {
+	out := []any{}
+	for _, candidate := range sliceFromAny(raw) {
+		thread := mapFromAny(candidate)
+		if len(thread) == 0 {
+			continue
+		}
+		if threadType := normalizeCriticPendingThreadType(stringFromMap(thread, "thread_type")); threadType != "" {
+			thread["thread_type"] = threadType
+		}
+		out = append(out, thread)
+	}
+	return out
+}
+
+func normalizeCriticPendingThreadType(raw string) string {
+	var token []rune
+	separator := false
+	for _, r := range strings.ToLower(strings.TrimSpace(raw)) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsNumber(r):
+			if separator && len(token) > 0 {
+				token = append(token, '_')
+			}
+			token = append(token, r)
+			separator = false
+		default:
+			separator = true
+		}
+	}
+	switch strings.Trim(string(token), "_") {
+	case "promise", "promises", "commitment", "commitments":
+		return "promise"
+	case "unresolved_goal", "unresolved_goals", "open_goal", "open_goals", "goal", "goals":
+		return "unresolved_goal"
+	case "open_question", "open_questions", "unresolved_question", "unresolved_questions", "question", "questions":
+		return "open_question"
+	case "risk", "risks", "threat", "threats":
+		return "risk"
+	case "emotional_debt", "emotional_debts", "emotional_obligation", "emotional_obligations":
+		return "emotional_debt"
+	default:
+		return ""
+	}
+}
+
+func normalizeCriticBeliefUpdates(raw any) []any {
+	out := []any{}
+	for _, candidate := range sliceFromAny(raw) {
+		item := mapFromAny(candidate)
+		if len(item) == 0 {
+			continue
+		}
+		if strings.TrimSpace(stringFromMap(item, "subject")) == "" {
+			item["subject"] = extractionFirstNonEmpty(stringFromMap(item, "topic"), stringFromMap(item, "fact_subject"))
+		}
+		if strings.TrimSpace(stringFromMap(item, "state_slot")) == "" {
+			item["state_slot"] = extractionFirstNonEmpty(stringFromMap(item, "slot"), stringFromMap(item, "relation_dimension"))
+		}
+		if strings.TrimSpace(stringFromMap(item, "value")) == "" {
+			item["value"] = extractionFirstNonEmpty(stringFromMap(item, "claim"), stringFromMap(item, "fact"), stringFromMap(item, "belief"))
+		}
+		if strings.TrimSpace(stringFromMap(item, "speaker_name")) == "" {
+			item["speaker_name"] = extractionFirstNonEmpty(stringFromMap(item, "speaker"), stringFromMap(item, "actor"))
+		}
+		if strings.TrimSpace(stringFromMap(item, "evidence_excerpt")) == "" {
+			item["evidence_excerpt"] = extractionFirstNonEmpty(stringFromMap(item, "evidence"), stringFromMap(item, "source_excerpt"))
+		}
+		listeners := append([]string{}, stringsFromAny(item["listener_names"])...)
+		for _, listener := range []string{
+			stringFromMap(item, "listener_name"),
+			stringFromMap(item, "knowledge_holder"),
+		} {
+			listener = strings.TrimSpace(listener)
+			if listener != "" && !slices.Contains(listeners, listener) {
+				listeners = append(listeners, listener)
+			}
+		}
+		if len(listeners) > 0 {
+			item["listener_names"] = listeners
+		}
+		if strings.TrimSpace(stringFromMap(item, "perspective_owner")) == "" && len(listeners) == 1 {
+			item["perspective_owner"] = listeners[0]
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func criticDirectEvidenceExcerpts(extraction map[string]any, userInput, assistantContent string) []string {
+	source := strings.TrimSpace(strings.Join([]string{userInput, assistantContent}, "\n"))
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(candidate string) {
+		excerpt := sanitizeEvidenceExcerptForTurn(candidate, source)
+		key := normalizeArtifactDedupeText(excerpt)
+		if excerpt == "" || key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, excerpt)
+	}
+	for _, excerpt := range stringsFromAny(extraction["evidence_excerpts"]) {
+		add(excerpt)
+	}
+	if clock := mapFromAny(extraction["story_clock"]); len(clock) > 0 {
+		add(stringFromMap(clock, "evidence_excerpt"))
+	}
+	return out
 }
 
 func normalizeCriticTurnSummary(value any) string {
@@ -2069,6 +2183,9 @@ func looksLikeStructuredCriticPayloadText(text string) bool {
 		"kg_triples",
 		"pending_threads",
 		"relationship_memory",
+		"habit_observations",
+		"character_profile_observations",
+		"voice_observations",
 		"narrative_events",
 		"state_claims",
 		"belief_updates",
@@ -2085,8 +2202,8 @@ func looksLikeStructuredCriticPayloadText(text string) bool {
 }
 
 func focusedRecallFallbackSummary(userInput, assistantContent string) string {
-	user := focusedRecallFirstExcerpt(userInput, 220)
-	assistant := focusedRecallFirstExcerpt(assistantContent, 360)
+	user := strings.TrimSpace(sanitizeCriticStorageText(userInput))
+	assistant := strings.TrimSpace(sanitizeCriticStorageText(assistantContent))
 	parts := []string{}
 	if user != "" {
 		parts = append(parts, "user: "+user)
@@ -2094,7 +2211,7 @@ func focusedRecallFallbackSummary(userInput, assistantContent string) string {
 	if assistant != "" {
 		parts = append(parts, "assistant: "+assistant)
 	}
-	return truncateRunes(strings.Join(parts, " / "), 700)
+	return strings.Join(parts, " / ")
 }
 
 func focusedRecallFallbackEvidenceExcerpts(userInput, assistantContent string) []string {
@@ -2105,23 +2222,11 @@ func focusedRecallFallbackEvidenceExcerpts(userInput, assistantContent string) [
 				continue
 			}
 			out = append(out, excerpt)
-			if len(out) >= 3 {
-				return
-			}
 		}
 	}
 	add(userInput)
-	if len(out) < 3 {
-		add(assistantContent)
-	}
+	add(assistantContent)
 	return out
-}
-
-func focusedRecallFirstExcerpt(text string, limit int) string {
-	for _, item := range focusedRecallExcerptCandidates(text) {
-		return truncateRunes(item, limit)
-	}
-	return ""
 }
 
 func focusedRecallExcerptCandidates(text string) []string {
@@ -2140,14 +2245,11 @@ func focusedRecallExcerptCandidates(text string) []string {
 			if !looksLikeFocusedRecallExcerpt(piece) {
 				continue
 			}
-			candidates = append(candidates, truncateRunes(piece, 240))
-			if len(candidates) >= 4 {
-				return candidates
-			}
+			candidates = append(candidates, piece)
 		}
 	}
 	if len(candidates) == 0 && looksLikeFocusedRecallExcerpt(text) {
-		candidates = append(candidates, truncateRunes(text, 240))
+		candidates = append(candidates, text)
 	}
 	return candidates
 }

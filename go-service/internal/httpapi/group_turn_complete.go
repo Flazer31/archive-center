@@ -16,6 +16,104 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
+type completeTurnPersistenceDiagnostic struct {
+	Operation string `json:"operation"`
+	Cause     string `json:"cause"`
+}
+
+func (s *Server) completeTurnPersistenceDiagnostics(details []string) []completeTurnPersistenceDiagnostic {
+	out := make([]completeTurnPersistenceDiagnostic, 0, len(details))
+	seen := map[string]bool{}
+	runtime := s.runtimeConfigSnapshot()
+	secrets := []string{
+		runtime.MainAPIKey,
+		runtime.CriticAPIKey,
+		runtime.SupervisorAPIKey,
+		runtime.EmbeddingAPIKey,
+		runtime.SourceSearchPlannerAPIKey,
+		s.Cfg.MariaDBDSN,
+	}
+	for _, raw := range details {
+		text := strings.TrimSpace(scrubCriticFailureText(raw, ""))
+		for _, secret := range secrets {
+			if secret = strings.TrimSpace(secret); secret != "" {
+				text = strings.ReplaceAll(text, secret, "[redacted]")
+			}
+		}
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		parts := strings.SplitN(text, ":", 2)
+		operation := strings.TrimSpace(parts[0])
+		cause := text
+		if len(parts) == 2 {
+			cause = strings.TrimSpace(parts[1])
+		}
+		if operation == "" {
+			operation = "persistence"
+		}
+		out = append(out, completeTurnPersistenceDiagnostic{
+			Operation: truncateRunes(operation, 120),
+			Cause:     truncateRunes(cause, 600),
+		})
+	}
+	return out
+}
+
+func completeTurnPersistenceRollbackState(diagnostics []completeTurnPersistenceDiagnostic, committed, errors int) string {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Operation == "CommitMemoryAdmission" {
+			return "atomic_rollback"
+		}
+	}
+	if errors <= 0 {
+		return "not_applicable"
+	}
+	if committed > 0 {
+		return "partial_commit"
+	}
+	return "no_commit"
+}
+
+func completeTurnPersistenceFailureSummary(diagnostics []completeTurnPersistenceDiagnostic) string {
+	if len(diagnostics) == 0 {
+		return "derived_persist_failed"
+	}
+	return "derived_persist_failed: operation=" + diagnostics[0].Operation + "; cause=" + diagnostics[0].Cause
+}
+
+func completeTurnPersistenceDiagnosticMessages(diagnostics []completeTurnPersistenceDiagnostic) []string {
+	out := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		out = append(out, diagnostic.Operation+": "+diagnostic.Cause)
+	}
+	return out
+}
+
+func completeTurnPersistenceHUDDetails(
+	diagnostics []completeTurnPersistenceDiagnostic,
+	attempted, committed int,
+	rollbackState string,
+	reprocessingDurable bool,
+) []turnWorkflowHUDDetail {
+	details := []turnWorkflowHUDDetail{
+		{Key: "derived_attempted", Value: strconv.Itoa(maxInt(0, attempted))},
+		{Key: "derived_committed", Value: strconv.Itoa(maxInt(0, committed))},
+		{Key: "transaction", Value: strings.TrimSpace(rollbackState)},
+	}
+	if reprocessingDurable {
+		details = append(details, turnWorkflowHUDDetail{Key: "reprocessing", Value: "queued"})
+	}
+	for _, diagnostic := range diagnostics {
+		details = append(details,
+			turnWorkflowHUDDetail{Key: "operation", Value: diagnostic.Operation},
+			turnWorkflowHUDDetail{Key: "cause", Value: diagnostic.Cause},
+		)
+	}
+	return details
+}
+
 func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 	var req dto.M4CompleteTurnRequest
 	if err := dto.DecodeWithDefaults(r.Body, &req); err != nil {
@@ -120,6 +218,18 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		userText = completeTurnAutoContinueUserInputMarker
 	}
 	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))
+	effectiveInputObservation := mapFromAny(req.ClientMeta["effective_input_observation"])
+	verifiedEffectiveInput := ""
+	if extractionStringFromAny(effectiveInputObservation["contract_version"]) == "effective_input_observation.v1" &&
+		extractionStringFromAny(effectiveInputObservation["status"]) == "verified" &&
+		extractionStringFromAny(effectiveInputObservation["capture_stage"]) == "before_request_return" &&
+		extractionStringFromAny(effectiveInputObservation["hash_algorithm"]) == "or1c_utf16_djb2.v1" &&
+		completeTurnBoolFromAny(effectiveInputObservation["payload_content_match"]) {
+		candidate := strings.TrimSpace(extractionStringFromAny(effectiveInputObservation["effective_input"]))
+		if candidate != "" && prepareOR1CHash(candidate) == extractionStringFromAny(effectiveInputObservation["effective_input_hash"]) {
+			verifiedEffectiveInput = candidate
+		}
+	}
 	extractionCfg := s.completeTurnExtractionConfig(req.ClientMeta)
 	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	llmConfigTrace := completeTurnLLMConfigTrace(extractionCfg)
@@ -404,7 +514,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageCheckpoints, "skipped", "ooc_turn_guard")
 			s.TurnWorkflows.addNotice(workflowRequestID, "OOC_TURN_SKIPPED", "turn_hud.notice.ooc_turn_skipped", turnWorkflowStageFinalAccepted)
 			s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
-				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			))
 			s.TurnWorkflows.setPersistenceFacts(workflowRequestID, "skipped", 0, "skipped", 0, "not_requested", 0)
 			s.TurnWorkflows.completeWithNotice(
@@ -449,7 +559,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			s.TurnWorkflows.fail(workflowRequestID, "USER_INPUT_MISSING", "turn_hud.error.user_input_missing", turnWorkflowStageFinalAccepted, false)
 			s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
-				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+				false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 			))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -601,15 +711,6 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 					}
 					reprocessingReason = criticCode
 					failReasons = append(failReasons, criticFailureReason)
-					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.fail(
-							workflowRequestID,
-							criticCode,
-							"turn_hud.error.critic_llm_failed",
-							turnWorkflowStageCriticLLM,
-							boolFromAny(criticFailure["retryable"]),
-						)
-					}
 					if trace != nil {
 						criticTrace = trace
 						criticFailureTrace = trace
@@ -695,12 +796,19 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	statusEffectsSaved := 0
 	narrativeCurrentStatesSaved := 0
 	narrativeStateEventsSaved := 0
+	relationshipCurrentStatesSaved := 0
+	relationshipStateEventsSaved := 0
+	habitEvidenceCurrentSaved := 0
+	habitEvidenceEventsSaved := 0
+	characterProfilesSaved := 0
+	voiceBehaviorProjectionsSaved := 0
 	pendingThreadsSaved := 0
 	activeStatesSaved := 0
 	canonicalStateLayersSaved := 0
 	entitiesSaved := 0
 	entityIdentitiesSaved := 0
 	identitySurfacesSaved := 0
+	identityLinksSaved := 0
 	identityBindingsSaved := 0
 	speakerAttributionsSaved := 0
 	trustStatesSaved := 0
@@ -708,6 +816,13 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	vectorsMemoryUpserted := 0
 	vectorsEvidenceUpserted := 0
 	vectorsWorldRuleUpserted := 0
+	derivedWriteAttempted := 0
+	derivedWriteErrors := 0
+	derivedWriteErrorDetails := []string{}
+	derivedArtifactsSaved := 0
+	derivedCommitted := 0
+	derivedDiagnostics := []completeTurnPersistenceDiagnostic{}
+	derivedRollbackState := "not_applicable"
 	storeWriteAttempted := rawSave.Attempted
 	storeWriteErrors := rawSave.Errors
 	storeWriteErrorDetails := append([]string(nil), rawSave.ErrorDetails...)
@@ -721,29 +836,18 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	auditStoreStartedAt := time.Now()
 	writeSource := s.storeWriteSource()
 	if s.usesShadowWriteStore() {
-		if content != "" {
-			skipEffectiveInputSave := false
-			if rawTurnAlreadyPersisted {
-				if _, err := s.Store.GetEffectiveInput(ctx, sid, turnIndex); err == nil {
-					skipEffectiveInputSave = true
-					artifactWarnings = append(artifactWarnings, "effective_input_already_persisted: duplicate effective input skipped")
-				}
-			}
-			if !skipEffectiveInputSave {
-				storeWriteAttempted++
-				if err := s.Store.SaveEffectiveInput(ctx, &store.EffectiveInput{
-					ChatSessionID:  sid,
-					TurnIndex:      turnIndex,
-					EffectiveInput: content,
-					CreatedAt:      now,
-				}); err != nil {
-					storeWriteErrors++
-					storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveEffectiveInput: "+err.Error())
-				} else {
-					effectiveInputSaved++
-				}
+		if verifiedEffectiveInput != "" {
+			storeWriteAttempted++
+			if err := s.Store.SaveEffectiveInput(ctx, &store.EffectiveInput{
+				ChatSessionID:  sid,
+				TurnIndex:      turnIndex,
+				EffectiveInput: verifiedEffectiveInput,
+				CreatedAt:      now,
+			}); err != nil {
+				storeWriteErrors++
+				storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveEffectiveInput: "+err.Error())
 			} else {
-				effectiveInputSaved = 0
+				effectiveInputSaved++
 			}
 		}
 
@@ -765,21 +869,23 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			}
 		}
 
-		storeWriteAttempted++
-		if err := s.Store.SaveAuditLog(ctx, &store.AuditLog{
-			ChatSessionID: sid,
-			EventType:     "effective_input_saved",
-			TargetType:    "turn",
-			TargetID:      int64(turnIndex),
-			Summary:       fmt.Sprintf("effective input saved turn %d", turnIndex),
-			DetailsJSON:   fmt.Sprintf(`{"turn_index":%d,"length":%d}`, turnIndex, len(content)),
-			Source:        writeSource,
-			CreatedAt:     now,
-		}); err != nil {
-			storeWriteErrors++
-			storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveAuditLog: "+err.Error())
-		} else {
-			auditSaved++
+		if effectiveInputSaved > 0 {
+			storeWriteAttempted++
+			if err := s.Store.SaveAuditLog(ctx, &store.AuditLog{
+				ChatSessionID: sid,
+				EventType:     "effective_input_saved",
+				TargetType:    "turn",
+				TargetID:      int64(turnIndex),
+				Summary:       fmt.Sprintf("effective input saved turn %d", turnIndex),
+				DetailsJSON:   fmt.Sprintf(`{"turn_index":%d,"length":%d}`, turnIndex, len(verifiedEffectiveInput)),
+				Source:        writeSource,
+				CreatedAt:     now,
+			}); err != nil {
+				storeWriteErrors++
+				storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveAuditLog: "+err.Error())
+			} else {
+				auditSaved++
+			}
 		}
 
 		if criticFailureReason != "" {
@@ -841,12 +947,19 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			statusEffectsSaved += artifactResult.StatusEffects
 			narrativeCurrentStatesSaved += artifactResult.NarrativeCurrentStates
 			narrativeStateEventsSaved += artifactResult.NarrativeStateEvents
+			relationshipCurrentStatesSaved += artifactResult.RelationCurrentStates
+			relationshipStateEventsSaved += artifactResult.RelationStateEvents
+			habitEvidenceCurrentSaved += artifactResult.HabitEvidenceCurrent
+			habitEvidenceEventsSaved += artifactResult.HabitEvidenceEvents
+			characterProfilesSaved += artifactResult.CharacterProfiles
+			voiceBehaviorProjectionsSaved += artifactResult.VoiceBehaviorProjections
 			pendingThreadsSaved += artifactResult.PendingThreads
 			activeStatesSaved += artifactResult.ActiveStates
 			canonicalStateLayersSaved += artifactResult.CanonicalStateLayers
 			entitiesSaved += artifactResult.Entities
 			entityIdentitiesSaved += artifactResult.EntityIdentities
 			identitySurfacesSaved += artifactResult.IdentitySurfaces
+			identityLinksSaved += artifactResult.EntityIdentityLinks
 			identityBindingsSaved += artifactResult.IdentityBindings
 			speakerAttributionsSaved += artifactResult.SpeakerAttributions
 			trustStatesSaved += artifactResult.TrustStates
@@ -854,6 +967,9 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			vectorsMemoryUpserted += artifactResult.VectorsMemoryUpserted
 			vectorsEvidenceUpserted += artifactResult.VectorsEvidenceUpserted
 			vectorsWorldRuleUpserted += artifactResult.VectorsWorldRuleUpserted
+			derivedWriteAttempted += artifactResult.Attempted
+			derivedWriteErrors += artifactResult.Errors
+			derivedWriteErrorDetails = append(derivedWriteErrorDetails, artifactResult.ErrorDetails...)
 			storeWriteAttempted += artifactResult.Attempted
 			storeWriteErrors += artifactResult.Errors
 			storeWriteErrorDetails = append(storeWriteErrorDetails, artifactResult.ErrorDetails...)
@@ -866,7 +982,14 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			embeddingStatus = artifactResult.EmbeddingStatus
 			vectorStatus = artifactResult.VectorStatus
 		}
-		if reprocessingReason == "" && storeWriteErrors > rawSave.Errors {
+		derivedArtifactsSaved = memoriesSaved + preciseMemoryUnitsSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + relationshipCurrentStatesSaved + relationshipStateEventsSaved + habitEvidenceCurrentSaved + habitEvidenceEventsSaved + characterProfilesSaved + voiceBehaviorProjectionsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityLinksSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
+		derivedDiagnostics = s.completeTurnPersistenceDiagnostics(derivedWriteErrorDetails)
+		derivedCommitted = derivedArtifactsSaved
+		derivedRollbackState = completeTurnPersistenceRollbackState(derivedDiagnostics, derivedCommitted, derivedWriteErrors)
+		if derivedRollbackState == "atomic_rollback" {
+			derivedCommitted = 0
+		}
+		if reprocessingReason == "" && derivedWriteErrors > 0 {
 			reprocessingReason = "derived_persist_failed"
 		}
 		if reprocessingReason != "" && rawTurnDurable &&
@@ -879,8 +1002,12 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			}
 			if supported {
 				storeWriteAttempted++
+				reprocessingJobReason := reprocessingReason
+				if reprocessingReason == "derived_persist_failed" {
+					reprocessingJobReason = completeTurnPersistenceFailureSummary(derivedDiagnostics)
+				}
 				if _, err := s.enqueueCompleteTurnReprocessingJob(
-					ctx, sourceAcceptance, sid, reprocessingReason, now,
+					ctx, sourceAcceptance, sid, reprocessingJobReason, now,
 				); err != nil {
 					storeWriteErrors++
 					storeWriteErrorDetails = append(
@@ -896,8 +1023,53 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			switch {
 			case criticResult == nil:
 				s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageDerivedPersist, "skipped", "critic_result_unavailable")
-			case storeWriteErrors > 0:
-				s.TurnWorkflows.fail(workflowRequestID, "DERIVED_PERSIST_FAILED", "turn_hud.error.derived_persist_failed", turnWorkflowStageDerivedPersist, true)
+				criticCode := strings.TrimSpace(stringFromMap(criticFailure, "code"))
+				if criticCode != "" {
+					details := []turnWorkflowHUDDetail{}
+					for _, item := range []struct {
+						key   string
+						value string
+					}{
+						{key: "pipeline_stage", value: stringFromMap(criticFailure, "stage")},
+						{key: "provider", value: stringFromMap(criticFailureTrace, "provider")},
+						{key: "model", value: stringFromMap(criticFailureTrace, "model")},
+						{key: "http_status", value: extractionStringFromAny(criticFailure["http_status"])},
+						{key: "cause", value: scrubCriticFailureText(criticFailureReason, extractionCfg.Critic.APIKey)},
+						{key: "raw_preview", value: stringFromMap(criticFailureTrace, "raw_preview")},
+					} {
+						if value := strings.TrimSpace(item.value); value != "" {
+							details = append(details, turnWorkflowHUDDetail{Key: item.key, Value: truncateRunes(value, 1000)})
+						}
+					}
+					if reprocessingDurable {
+						details = append(details, turnWorkflowHUDDetail{Key: "reprocessing", Value: "queued"})
+					} else {
+						details = append(details, turnWorkflowHUDDetail{Key: "reprocessing", Value: "unavailable"})
+					}
+					s.TurnWorkflows.failWithDetails(
+						workflowRequestID,
+						criticCode,
+						"turn_hud.error.critic_llm_failed",
+						turnWorkflowStageCriticLLM,
+						boolFromAny(criticFailure["retryable"]),
+						details,
+					)
+				}
+			case derivedWriteErrors > 0:
+				s.TurnWorkflows.failWithDetails(
+					workflowRequestID,
+					"DERIVED_PERSIST_FAILED",
+					"turn_hud.error.derived_persist_failed",
+					turnWorkflowStageDerivedPersist,
+					true,
+					completeTurnPersistenceHUDDetails(
+						derivedDiagnostics,
+						derivedWriteAttempted,
+						derivedCommitted,
+						derivedRollbackState,
+						reprocessingDurable,
+					),
+				)
 			case strings.HasPrefix(embeddingStatus, "error:"):
 				s.TurnWorkflows.fail(workflowRequestID, "EMBEDDING_FAILED", "turn_hud.error.embedding_failed", turnWorkflowStageDerivedPersist, true)
 			case strings.HasPrefix(vectorStatus, "error:"):
@@ -945,7 +1117,6 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		failReasons = []string{}
 	}
 
-	persistenceWriteErrors := storeWriteErrors
 	maintenanceStartedAt := time.Now()
 	maintenanceHandoff := s.buildCompleteTurnMaintenanceHandoff(ctx, sid, turnIndex, saveOK, now, writeSource, req)
 	timing.addElapsed("maintenance_handoff", maintenanceStartedAt)
@@ -978,20 +1149,19 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	episodeSummariesSaved := intFromAny(episodeResult["generated"], 0)
-	derivedArtifactsSaved := memoriesSaved + preciseMemoryUnitsSaved + evidenceSaved + kgTriplesSaved + subjectiveEntityMemoriesSaved + characterEventsSaved + storylinesSaved + worldRulesSaved + characterStatesSaved + physicalConditionsSaved + entityConditionsSaved + statusSchemaDefinitionsSaved + statusEffectsSaved + narrativeCurrentStatesSaved + narrativeStateEventsSaved + pendingThreadsSaved + activeStatesSaved + canonicalStateLayersSaved + entitiesSaved + entityIdentitiesSaved + identitySurfacesSaved + identityBindingsSaved + speakerAttributionsSaved + trustStatesSaved
 	rawStatus := "skipped"
 	if rawTurnDurable {
 		rawStatus = "ok"
 	} else if s.usesShadowWriteStore() {
 		rawStatus = "error"
 	}
-	derivedPersistenceFailed := rawTurnDurable && persistenceWriteErrors > rawSave.Errors
+	derivedPersistenceFailed := rawTurnDurable && derivedWriteErrors > 0
 	derivedStatus := "skipped"
 	if derivedPersistenceFailed {
 		derivedStatus = "error"
-	} else if derivedArtifactsSaved > 0 {
+	} else if derivedCommitted > 0 {
 		derivedStatus = "ok"
-	} else if criticTriggered && derivedArtifactsSaved == 0 {
+	} else if criticTriggered && derivedCommitted == 0 {
 		derivedStatus = "empty"
 	} else if rawStatus == "ok" && !criticTriggered {
 		derivedStatus = "delayed"
@@ -1008,10 +1178,25 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			rawStatus,
 			rawSave.ChatLogsSaved,
 			derivedStatus,
-			derivedArtifactsSaved,
+			derivedCommitted,
 			vectorPipelineStatus,
 			vectorsUpserted,
 		)
+		if derivedPersistenceFailed {
+			s.TurnWorkflows.setPersistenceFailureDetail(
+				workflowRequestID,
+				"derived_memory",
+				"DERIVED_PERSIST_FAILED",
+				fmt.Sprintf(
+					"attempted=%d / committed=%d / transaction=%s / %s",
+					derivedWriteAttempted,
+					derivedCommitted,
+					derivedRollbackState,
+					completeTurnPersistenceFailureSummary(derivedDiagnostics),
+				),
+				derivedCommitted,
+			)
+		}
 		s.TurnWorkflows.setCounts(workflowRequestID, turnWorkflowHUDCountsFromComplete(
 			rawSave.UserDurable,
 			rawSave.AssistantDurable,
@@ -1031,6 +1216,8 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			storylinesSaved,
 			narrativeCurrentStatesSaved,
 			narrativeStateEventsSaved,
+			relationshipCurrentStatesSaved,
+			relationshipStateEventsSaved,
 			pendingThreadsSaved,
 			activeStatesSaved,
 			canonicalStateLayersSaved,
@@ -1074,7 +1261,12 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		},
 		"derived": map[string]any{
 			"status":                           derivedStatus,
-			"artifacts_saved":                  derivedArtifactsSaved,
+			"attempted":                        derivedWriteAttempted,
+			"committed":                        derivedCommitted,
+			"rollback_state":                   derivedRollbackState,
+			"error_count":                      derivedWriteErrors,
+			"error_diagnostics":                derivedDiagnostics,
+			"artifacts_saved":                  derivedCommitted,
 			"memories_saved":                   memoriesSaved,
 			"precise_memory_units_saved":       preciseMemoryUnitsSaved,
 			"direct_evidence_saved":            evidenceSaved,
@@ -1091,8 +1283,16 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"canonical_state_layers_saved":     canonicalStateLayersSaved,
 			"entity_identities_saved":          entityIdentitiesSaved,
 			"identity_surfaces_saved":          identitySurfacesSaved,
+			"identity_links_saved":             identityLinksSaved,
 			"identity_bindings_saved":          identityBindingsSaved,
 			"speaker_attributions_saved":       speakerAttributionsSaved,
+
+			"relationship_current_states_saved": relationshipCurrentStatesSaved,
+			"relationship_state_events_saved":   relationshipStateEventsSaved,
+			"habit_evidence_current_saved":      habitEvidenceCurrentSaved,
+			"habit_evidence_events_saved":       habitEvidenceEventsSaved,
+			"character_profiles_saved":          characterProfilesSaved,
+			"voice_behavior_projections_saved":  voiceBehaviorProjectionsSaved,
 		},
 		"vector": map[string]any{
 			"status":                   vectorPipelineStatus,
@@ -1163,12 +1363,19 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"status_effects_saved":                 statusEffectsSaved,
 		"narrative_current_states_saved":       narrativeCurrentStatesSaved,
 		"narrative_state_events_saved":         narrativeStateEventsSaved,
+		"relationship_current_states_saved":    relationshipCurrentStatesSaved,
+		"relationship_state_events_saved":      relationshipStateEventsSaved,
+		"habit_evidence_current_saved":         habitEvidenceCurrentSaved,
+		"habit_evidence_events_saved":          habitEvidenceEventsSaved,
+		"character_profiles_saved":             characterProfilesSaved,
+		"voice_behavior_projections_saved":     voiceBehaviorProjectionsSaved,
 		"pending_threads_saved":                pendingThreadsSaved,
 		"active_states_saved":                  activeStatesSaved,
 		"canonical_state_layers_saved":         canonicalStateLayersSaved,
 		"entities_saved":                       entitiesSaved,
 		"entity_identities_saved":              entityIdentitiesSaved,
 		"identity_surfaces_saved":              identitySurfacesSaved,
+		"identity_links_saved":                 identityLinksSaved,
 		"identity_bindings_saved":              identityBindingsSaved,
 		"speaker_attributions_saved":           speakerAttributionsSaved,
 		"trust_states_saved":                   trustStatesSaved,
@@ -1182,13 +1389,18 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		"critic_feedback_saved":                criticFeedbackSaved,
 		"store_write_attempted":                storeWriteAttempted,
 		"store_write_errors":                   storeWriteErrors,
-		"store_write_error_details":            storeWriteErrorDetails,
+		"store_write_error_details":            completeTurnPersistenceDiagnosticMessages(s.completeTurnPersistenceDiagnostics(storeWriteErrorDetails)),
+		"derived_write_attempted":              derivedWriteAttempted,
+		"derived_write_committed":              derivedCommitted,
+		"derived_write_errors":                 derivedWriteErrors,
+		"derived_write_error_diagnostics":      derivedDiagnostics,
+		"derived_write_rollback_state":         derivedRollbackState,
 		"critic_triggered":                     criticTriggered,
 		"critic_result":                        criticResult,
 		"critic_failure":                       criticFailure,
 		"language_context":                     languageContext,
 		"llm_config_trace":                     llmConfigTrace,
-		"derived_artifacts_saved":              derivedArtifactsSaved,
+		"derived_artifacts_saved":              derivedCommitted,
 		"derived_retry_required":               derivedRetryRequired,
 		"source_acceptance":                    completeTurnSourceAcceptancePayload(sourceAcceptance),
 		"source_to_final_lineage":              buildSourceToFinalLineage(req, sourceAcceptance),
@@ -1214,7 +1426,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"critic_attempted":                         extractionCfg.Critic.hasConfig(),
 			"critic_triggered":                         criticTriggered,
 			"llm_config_trace":                         llmConfigTrace,
-			"derived_artifacts_saved":                  derivedArtifactsSaved,
+			"derived_artifacts_saved":                  derivedCommitted,
 			"derived_retry_required":                   derivedRetryRequired,
 			"critic_trace":                             criticTrace,
 			"critic_pipeline_version":                  completeTurnCriticPipelineVersion,
@@ -1240,6 +1452,12 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"entity_conditions_saved":                  entityConditionsSaved,
 			"status_schema_definitions_saved":          statusSchemaDefinitionsSaved,
 			"status_effects_saved":                     statusEffectsSaved,
+			"relationship_current_states_saved":        relationshipCurrentStatesSaved,
+			"relationship_state_events_saved":          relationshipStateEventsSaved,
+			"habit_evidence_current_saved":             habitEvidenceCurrentSaved,
+			"habit_evidence_events_saved":              habitEvidenceEventsSaved,
+			"character_profiles_saved":                 characterProfilesSaved,
+			"voice_behavior_projections_saved":         voiceBehaviorProjectionsSaved,
 			"physical_condition_policy":                "evidence_bound_status_effect_no_default_duration",
 			"entity_condition_policy":                  "evidence_bound_entity_status_effect_no_default_duration",
 			"canonical_state_upsert": map[string]any{
@@ -1767,16 +1985,16 @@ func (s *Server) buildCompleteTurnMaintenanceHandoff(ctx context.Context, sid st
 		"mode":    "complete_turn_maintenance_audit",
 		"layers": map[string]any{
 			"chapter": map[string]any{
-				"enabled":        refreshEnabled && chapterAutoEnabled,
-				"interval_turns": intFromAny(meta["chapter_interval_turns"], 60),
+				"enabled":           refreshEnabled && chapterAutoEnabled,
+				"interval_episodes": intFromAny(meta["chapter_interval_episodes"], 0),
 			},
 			"arc": map[string]any{
-				"enabled":        refreshEnabled && arcAutoEnabled,
-				"interval_turns": intFromAny(meta["arc_interval_turns"], 240),
+				"enabled":           refreshEnabled && arcAutoEnabled,
+				"interval_chapters": intFromAny(meta["arc_interval_chapters"], 0),
 			},
 			"saga": map[string]any{
-				"enabled":        refreshEnabled && sagaAutoEnabled,
-				"interval_turns": intFromAny(meta["saga_interval_turns"], 960),
+				"enabled":       refreshEnabled && sagaAutoEnabled,
+				"interval_arcs": intFromAny(meta["saga_interval_arcs"], 0),
 			},
 		},
 		"worker_enabled": false,

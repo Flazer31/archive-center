@@ -5,11 +5,52 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
+
+func TestPersistenceDashboardDistinguishesAttemptedCommittedAndRollback(t *testing.T) {
+	vm := buildDashboardViewModel(dashboardViewModelRequest{
+		PluginEnabled: true,
+		RuntimeState: map[string]any{
+			"lastCompleteTurnStatus": map[string]any{
+				"status":                "fail",
+				"turnIndex":             2,
+				"chatLogsSaved":         2,
+				"derivedArtifactsSaved": 0,
+				"rawStatus":             "ok",
+				"derivedStatus":         "error",
+				"vectorStatus":          "not_requested",
+				"persistencePipeline": map[string]any{
+					"raw": map[string]any{"status": "ok"},
+					"derived": map[string]any{
+						"status":         "error",
+						"attempted":      19,
+						"committed":      0,
+						"rollback_state": "atomic_rollback",
+						"error_diagnostics": []any{map[string]any{
+							"operation": "CommitMemoryAdmission",
+							"cause":     "data too long for column relationship_kind",
+						}},
+					},
+					"vector": map[string]any{"status": "not_requested"},
+				},
+			},
+		},
+	})
+	persistence := requireDashboardCard(t, vm, "persistence_lanes")
+	derived := requireDashboardRow(t, persistence, "derived")
+	if derived.Status != "fail" ||
+		!strings.Contains(derived.Detail, "attempted:19") ||
+		!strings.Contains(derived.Detail, "committed:0") ||
+		!strings.Contains(derived.Detail, "transaction:atomic_rollback") ||
+		!strings.Contains(derived.Detail, "CommitMemoryAdmission") {
+		t.Fatalf("derived persistence row=%+v", derived)
+	}
+}
 
 func TestBuildDashboardViewModelOwnsStatusAndLaneCalculation(t *testing.T) {
 	req := dashboardViewModelRequest{

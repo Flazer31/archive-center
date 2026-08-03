@@ -43,9 +43,20 @@ func (s *Server) handleCharactersGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	events = nonNilSlice(events)
+	projection := s.canonicalCharacterReadProjection(r.Context(), sid, items, events)
+	items = projection.States
+	events = projection.Events
 	referenceTurn := s.characterReferenceTurn(r.Context(), sid, items)
 	recentMentionText, recentMentionKeywords := s.characterRecentMentionSignal(r.Context(), sid, referenceTurn)
 	characters := characterResponseItems(items, events, referenceTurn, recentMentionText, recentMentionKeywords)
+	for _, character := range characters {
+		name := strings.TrimSpace(stringFromMap(character, "character_name"))
+		key := comparableEntityKey(name)
+		character["aliases"] = nonNilSlice(projection.Aliases[key])
+		if stableID := strings.TrimSpace(projection.StableIDs[key]); stableID != "" {
+			character["stable_entity_id"] = stableID
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":          "ok",
 		"chat_session_id": sid,
@@ -53,6 +64,135 @@ func (s *Server) handleCharactersGet(w http.ResponseWriter, r *http.Request) {
 		"count":           len(characters),
 		"omitted_count":   characterOmittedCount(items, events, referenceTurn, recentMentionText, recentMentionKeywords),
 	})
+}
+
+type characterReadProjection struct {
+	States    []store.CharacterState
+	Events    []store.CharacterEvent
+	Aliases   map[string][]string
+	StableIDs map[string]string
+}
+
+// canonicalCharacterReadProjection composes existing alias rows for display
+// through the reviewed entity-identity owner. It does not rewrite stored rows
+// or infer identity from display-name similarity.
+func (s *Server) canonicalCharacterReadProjection(ctx context.Context, sid string, states []store.CharacterState, events []store.CharacterEvent) characterReadProjection {
+	out := characterReadProjection{
+		States: append([]store.CharacterState(nil), states...), Events: append([]store.CharacterEvent(nil), events...),
+		Aliases: map[string][]string{}, StableIDs: map[string]string{},
+	}
+	resolver, ok := s.Store.(store.UniqueActiveEntitySurfaceIdentityResolver)
+	if !ok || strings.TrimSpace(sid) == "" {
+		return out
+	}
+	type resolvedSurface struct {
+		groupKey string
+		label    string
+		stableID string
+	}
+	resolvedByName := map[string]resolvedSurface{}
+	resolve := func(name string) resolvedSurface {
+		name = strings.TrimSpace(name)
+		if cached, exists := resolvedByName[name]; exists {
+			return cached
+		}
+		fallback := resolvedSurface{groupKey: "surface:" + name, label: name}
+		resolved, err := resolver.ResolveUniqueActiveEntityIdentityBySurface(ctx, sid, comparableEntityKey(name))
+		if err == nil && strings.TrimSpace(resolved.StableEntityID) != "" {
+			fallback.groupKey = "entity:" + strings.TrimSpace(resolved.StableEntityID)
+			fallback.stableID = strings.TrimSpace(resolved.StableEntityID)
+			if label := strings.TrimSpace(resolved.CanonicalLabel); label != "" {
+				fallback.label = label
+			}
+		}
+		resolvedByName[name] = fallback
+		return fallback
+	}
+
+	sorted := append([]store.CharacterState(nil), states...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].TurnIndex != sorted[j].TurnIndex {
+			return sorted[i].TurnIndex > sorted[j].TurnIndex
+		}
+		return sorted[i].ID > sorted[j].ID
+	})
+	groupOrder := []string{}
+	groups := map[string]*store.CharacterState{}
+	aliasesByGroup := map[string][]string{}
+	stableIDByGroup := map[string]string{}
+	for _, state := range sorted {
+		rawName := strings.TrimSpace(state.CharacterName)
+		if rawName == "" {
+			continue
+		}
+		resolved := resolve(rawName)
+		current := groups[resolved.groupKey]
+		if current == nil {
+			copyState := state
+			copyState.CharacterName = resolved.label
+			groups[resolved.groupKey] = &copyState
+			groupOrder = append(groupOrder, resolved.groupKey)
+			current = &copyState
+			stableIDByGroup[resolved.groupKey] = resolved.stableID
+		}
+		if rawName != resolved.label {
+			aliasesByGroup[resolved.groupKey] = appendUniqueString(aliasesByGroup[resolved.groupKey], rawName)
+		}
+		// The list is newest-first. Fill only surfaces absent from the newest
+		// row so a profile or voice stored under an older alias is not lost.
+		if strings.TrimSpace(current.AppearanceJSON) == "" && strings.TrimSpace(state.AppearanceJSON) != "" {
+			current.AppearanceJSON = state.AppearanceJSON
+		}
+		if strings.TrimSpace(current.PersonalityJSON) == "" && strings.TrimSpace(state.PersonalityJSON) != "" {
+			current.PersonalityJSON = state.PersonalityJSON
+		}
+		if strings.TrimSpace(current.StatusJSON) == "" && strings.TrimSpace(state.StatusJSON) != "" {
+			current.StatusJSON = state.StatusJSON
+		}
+		if strings.TrimSpace(current.RelationshipsJSON) == "" && strings.TrimSpace(state.RelationshipsJSON) != "" {
+			current.RelationshipsJSON = state.RelationshipsJSON
+		}
+		if strings.TrimSpace(current.SpeechStyleJSON) == "" && strings.TrimSpace(state.SpeechStyleJSON) != "" {
+			current.SpeechStyleJSON = state.SpeechStyleJSON
+		}
+		if current.CreatedAt.IsZero() || (!state.CreatedAt.IsZero() && state.CreatedAt.Before(current.CreatedAt)) {
+			current.CreatedAt = state.CreatedAt
+		}
+		if state.UpdatedAt.After(current.UpdatedAt) {
+			current.UpdatedAt = state.UpdatedAt
+		}
+	}
+	out.States = make([]store.CharacterState, 0, len(groupOrder))
+	for _, groupKey := range groupOrder {
+		state := *groups[groupKey]
+		stableID := stableIDByGroup[groupKey]
+		state.PersonalityJSON = canonicalCharacterTypedProjectionForRead(state.PersonalityJSON, characterProfileContractVersion, stableID, state.CharacterName)
+		state.SpeechStyleJSON = canonicalCharacterTypedProjectionForRead(state.SpeechStyleJSON, voiceBehaviorProjectionContractVersion, stableID, state.CharacterName)
+		out.States = append(out.States, state)
+		nameKey := comparableEntityKey(state.CharacterName)
+		out.Aliases[nameKey] = append([]string(nil), aliasesByGroup[groupKey]...)
+		out.StableIDs[nameKey] = stableID
+	}
+	for index := range out.Events {
+		resolved := resolve(out.Events[index].CharacterName)
+		if resolved.stableID != "" && resolved.label != "" {
+			out.Events[index].CharacterName = resolved.label
+		}
+	}
+	return out
+}
+
+func canonicalCharacterTypedProjectionForRead(raw, contractVersion, stableID, canonicalLabel string) string {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(stableID) == "" || strings.TrimSpace(canonicalLabel) == "" {
+		return raw
+	}
+	payload := map[string]any{}
+	if json.Unmarshal([]byte(raw), &payload) != nil || extractionStringFromAny(payload["contract_version"]) != contractVersion {
+		return raw
+	}
+	payload["subject_entity_id"] = strings.TrimSpace(stableID)
+	payload["subject_label"] = strings.TrimSpace(canonicalLabel)
+	return mustCompactJSON(payload)
 }
 
 func (s *Server) characterReferenceTurn(ctx context.Context, sid string, characters []store.CharacterState) int {
@@ -1386,6 +1526,9 @@ func (s *Server) handleCharacterStatePatch(w http.ResponseWriter, r *http.Reques
 	}
 	now := time.Now().UTC()
 	next := *current
+	if speechOnly {
+		updates = preserveTypedVoiceProjectionManualOverrides(current.SpeechStyleJSON, updates)
+	}
 	next.ChatSessionID = sid
 	next.CharacterName = cname
 	next.UpdatedAt = now
@@ -1443,6 +1586,38 @@ func (s *Server) handleCharacterStatePatch(w http.ResponseWriter, r *http.Reques
 		"updated_fields":  changed,
 		"character":       characterResponseItem(next, characterStaleSnapshot(next, nil, next.TurnIndex, "", nil), nil, nil),
 	})
+}
+
+func preserveTypedVoiceProjectionManualOverrides(currentRaw string, updates map[string]any) map[string]any {
+	current := map[string]any{}
+	if json.Unmarshal([]byte(strings.TrimSpace(currentRaw)), &current) != nil ||
+		extractionStringFromAny(current["contract_version"]) != voiceBehaviorProjectionContractVersion {
+		return updates
+	}
+	nextRaw, exists := updates["speech_style_json"]
+	if !exists {
+		return updates
+	}
+	manual := map[string]any{}
+	switch typed := nextRaw.(type) {
+	case string:
+		_ = json.Unmarshal([]byte(strings.TrimSpace(typed)), &manual)
+	case map[string]any:
+		manual = typed
+	}
+	allowed := map[string]any{}
+	for _, key := range []string{"default_tone", "honorific_style", "speech_notes"} {
+		if value := strings.TrimSpace(extractionStringFromAny(manual[key])); value != "" {
+			allowed[key] = value
+		}
+	}
+	current["manual_overrides"] = allowed
+	copyUpdates := map[string]any{}
+	for key, value := range updates {
+		copyUpdates[key] = value
+	}
+	copyUpdates["speech_style_json"] = mustCompactJSON(current)
+	return copyUpdates
 }
 
 func normalizeCharacterPatchPayload(payload map[string]any, speechOnly bool) (map[string]any, error) {

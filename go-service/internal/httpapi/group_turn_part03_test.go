@@ -107,6 +107,7 @@ func TestCompleteTurnSubjectiveEntityMemoryDuplicateSkipped(t *testing.T) {
 				"owner_visibility":  "player_known",
 				"memory_text":       memoryText,
 				"source_turn_index": 3,
+				"evidence_excerpt":  "same hallway becomes dangerous",
 			},
 		},
 	}
@@ -126,7 +127,7 @@ func TestCompleteTurnSubjectiveEntityMemoryDuplicateSkipped(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnProtectedSubjectiveMemoryRequiresEvidenceAndRevealPolicy(t *testing.T) {
+func TestCompleteTurnProtectedSubjectiveMemoryCollectsBroadlyAndDefaultsRevealPolicy(t *testing.T) {
 	fake := &turnRecordingStore{}
 	srv := NewServer(config.Default())
 	srv.Store = fake
@@ -159,17 +160,19 @@ func TestCompleteTurnProtectedSubjectiveMemoryRequiresEvidenceAndRevealPolicy(t 
 		"Mina hid the key. Rowan suspects Mina.",
 		completeTurnEmbeddingConfig{}, time.Unix(1500, 0),
 	)
-	if result.SubjectiveEntityMemories != 0 || len(fake.savedEntityMemories) != 0 {
-		t.Fatalf("malformed protected memories must be quarantined: result=%#v saved=%#v", result, fake.savedEntityMemories)
+	if result.SubjectiveEntityMemories != 2 || len(fake.savedEntityMemories) != 2 {
+		t.Fatalf("private generated memories should be collected without an evidence-text gate: result=%#v saved=%#v", result, fake.savedEntityMemories)
 	}
-	reasons := map[string]bool{}
+	if fake.savedEntityMemories[0].OwnerEntityKey != "mina" ||
+		fake.savedEntityMemories[0].TargetRevealPolicy != "owner_private_until_revealed" ||
+		fake.savedEntityMemories[1].OwnerEntityKey != "rowan" ||
+		fake.savedEntityMemories[1].TargetRevealPolicy != "owner_private_until_revealed" {
+		t.Fatalf("private memory policy mismatch: %#v", fake.savedEntityMemories)
+	}
 	for _, skip := range result.SkipReasons {
-		if skip["surface"] == "subjective_entity_memories" {
-			reasons[fmt.Sprint(skip["reason"])] = true
+		if skip["surface"] == "subjective_entity_memories" && fmt.Sprint(skip["reason"]) == "protected_memory_evidence_required" {
+			t.Fatalf("storage-time protected-memory evidence filter returned: %#v", result.SkipReasons)
 		}
-	}
-	if !reasons["protected_memory_evidence_required"] || !reasons["protected_memory_reveal_policy_required"] {
-		t.Fatalf("missing protected memory quarantine reasons: %#v", result.SkipReasons)
 	}
 }
 
@@ -190,10 +193,11 @@ func TestCompleteTurnSubjectiveEntityMemoryDoesNotGuessRomanizedOwnerAlias(t *te
 				"owner_visibility":  "player_known",
 				"memory_text":       "Siwoo privately remembers that Exit 2 felt unsafe.",
 				"source_turn_index": 4,
+				"evidence_excerpt":  "Exit 2 felt unsafe",
 			},
 		},
 	})
-	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-subjective", 4, extraction, "Exit 2 felt unsafe.", completeTurnEmbeddingConfig{}, time.Unix(1400, 0))
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-subjective", 4, extraction, "Later, Exit 2 felt unsafe.", completeTurnEmbeddingConfig{}, time.Unix(1400, 0))
 	if result.SubjectiveEntityMemories != 1 || len(fake.savedEntityMemories) != 1 {
 		t.Fatalf("expected one canonical subjective memory, result=%#v saved=%#v", result, fake.savedEntityMemories)
 	}
@@ -225,25 +229,29 @@ func TestSaveCriticExtractionArtifactsPreservesUnconfirmedMultilingualAliases(t 
 		"evidence_excerpts": []any{"Mina promised Rowan she would return."},
 		"entities": map[string]any{
 			"characters": []any{map[string]any{
-				"name":        "\uBBFC\uC544",
-				"aliases":     []any{"Mina", "\uBBFC\uC544"},
-				"description": "returning ally",
+				"name":               "Mina",
+				"aliases":            []any{"Mina", "\uBBFC\uC544"},
+				"description":        "returning ally",
+				"reference_contract": "critic_entity_reference.v1",
+				"reference_scope":    "session_stable",
+				"name_expression":    "Mina",
+				"evidence_excerpt":   "Mina promised Rowan",
 			}},
 		},
-		"kg_triples": []any{map[string]any{"semantic_class": "event_fact", "subject": "\uBBFC\uC544", "predicate": "promised", "object": "Rowan"}},
+		"kg_triples": []any{map[string]any{"semantic_class": "event_fact", "subject": "Mina", "predicate": "promised", "object": "Rowan"}},
 	})
 
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-multi", 4, extraction, "Mina promised Rowan she would return.", completeTurnEmbeddingConfig{}, time.Unix(100, 0))
 	if result.Entities != 1 || result.KGTriples != 1 {
 		t.Fatalf("expected entity and KG saves, result=%#v entities=%#v kg=%#v", result, fake.savedEntities, fake.savedKGTriples)
 	}
-	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "\uBBFC\uC544" {
+	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "Mina" {
 		t.Fatalf("unconfirmed multilingual alias was rewritten: %#v", fake.savedEntities)
 	}
 	if !strings.Contains(fake.savedEntities[0].AliasesJSON, "Mina") || !strings.Contains(fake.savedEntities[0].AliasesJSON, "\uBBFC\uC544") {
 		t.Fatalf("expected aliases to preserve display variants, got %#v", fake.savedEntities[0])
 	}
-	if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "\uBBFC\uC544" || fake.savedKGTriples[0].Object != "Rowan" {
+	if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "Mina" || fake.savedKGTriples[0].Object != "Rowan" {
 		t.Fatalf("unconfirmed KG subject was rewritten: %#v", fake.savedKGTriples)
 	}
 }
@@ -265,18 +273,28 @@ func TestSaveCriticExtractionArtifactsGuardsTransientDescriptorsAndParticipants(
 			},
 		},
 		"character_deltas": []any{
-			map[string]any{"name": "red-haired girl", "status": map[string]any{"emotion": "curious"}, "events": []any{map[string]any{"type": "sighting", "detail": "She watched from the door."}}},
-			map[string]any{"name": "Mina", "events": []any{map[string]any{"type": "relationship_shift", "detail": "Mina trusted Rowan more."}}},
+			map[string]any{
+				"name": "red-haired girl", "reference_contract": "critic_entity_reference.v1", "reference_scope": "turn_local_descriptor", "name_expression": "red-haired girl", "evidence_excerpt": "a red-haired girl watched",
+				"status": map[string]any{"emotion": "curious"}, "events": []any{map[string]any{"type": "sighting", "detail": "She watched from the door."}},
+			},
+			map[string]any{
+				"name": "Mina", "reference_contract": "critic_entity_reference.v1", "reference_scope": "session_stable", "name_expression": "Mina", "evidence_excerpt": "Mina and Rowan made a plan",
+				"events": []any{map[string]any{"type": "relationship_shift", "detail": "Mina trusted Rowan more."}},
+			},
 		},
 		"pending_threads": []any{map[string]any{"thread_type": "promise", "title": "Mina asks Rowan about the plan", "owner": "{{user}}", "target": "Mina"}},
 	})
 
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-scrub", 5, extraction, "Mina and Rowan made a plan while a red-haired girl watched.", completeTurnEmbeddingConfig{}, time.Unix(200, 0))
-	if result.CharacterStates != 1 || len(fake.savedCharacterStates) != 1 || fake.savedCharacterStates[0].CharacterName != "Mina" {
-		t.Fatalf("expected only anchored Mina character state, result=%#v states=%#v", result, fake.savedCharacterStates)
+	stateNames := map[string]bool{}
+	for _, state := range fake.savedCharacterStates {
+		stateNames[state.CharacterName] = true
 	}
-	if result.CharacterEvents != 1 || len(fake.savedCharacterEvents) != 1 || fake.savedCharacterEvents[0].CharacterName != "Mina" {
-		t.Fatalf("expected only anchored Mina character event, result=%#v events=%#v", result, fake.savedCharacterEvents)
+	if result.CharacterStates != 2 || len(fake.savedCharacterStates) != 2 || !stateNames["Mina"] || !stateNames["red-haired girl"] {
+		t.Fatalf("source-observed descriptor or named character state was lost, result=%#v states=%#v", result, fake.savedCharacterStates)
+	}
+	if result.CharacterEvents != 1 || len(fake.savedCharacterEvents) != 1 || fake.savedCharacterEvents[0].CharacterName != "red-haired girl" {
+		t.Fatalf("source-observed character event was not preserved, result=%#v events=%#v", result, fake.savedCharacterEvents)
 	}
 	var stateDeltas string
 	for _, item := range fake.savedActiveStates {
@@ -286,10 +304,10 @@ func TestSaveCriticExtractionArtifactsGuardsTransientDescriptorsAndParticipants(
 		}
 	}
 	if !strings.Contains(stateDeltas, "Mina") || !strings.Contains(stateDeltas, "Rowan") || strings.Contains(stateDeltas, "{{user}}") {
-		t.Fatalf("expected safe pair-only relationship delta and no participant placeholder, state_deltas=%s", stateDeltas)
+		t.Fatalf("expected pair-only relationship delta and no participant placeholder, state_deltas=%s", stateDeltas)
 	}
 	if len(fake.savedPendingThreads) != 1 || fake.savedPendingThreads[0].Owner != "" || fake.savedPendingThreads[0].Target != "Mina" {
-		t.Fatalf("expected pending thread participant owner scrubbed and safe target kept, got %#v", fake.savedPendingThreads)
+		t.Fatalf("expected pending thread participant owner scrubbed and target kept, got %#v", fake.savedPendingThreads)
 	}
 }
 
@@ -342,7 +360,7 @@ func TestSaveCriticExtractionArtifactsAppliesSoftPrune(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnMemorySemanticDedupSkipsInsertAndReinforcesExisting(t *testing.T) {
+func TestCompleteTurnRepeatedSummaryAcrossTurnsRemainsASeparateTurnMemory(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnMemories: []store.Memory{
 			{ID: 42, ChatSessionID: "sess-dedup", TurnIndex: 2, SummaryJSON: `{"turn_summary":"Mina promised Rowan she would return with the brass key."}`, Importance: 0.4},
@@ -361,24 +379,19 @@ func TestCompleteTurnMemorySemanticDedupSkipsInsertAndReinforcesExisting(t *test
 	if result.Errors != 0 {
 		t.Fatalf("semantic dedup should not error, result=%#v", result)
 	}
-	if len(fake.savedMemories) != 0 || result.Memories != 0 {
-		t.Fatalf("expected duplicate memory insert to be skipped, result=%#v saved=%#v", result, fake.savedMemories)
+	if len(fake.savedMemories) != 1 || result.Memories != 1 {
+		t.Fatalf("repeated wording from a later turn was dropped as the same incident, result=%#v saved=%#v", result, fake.savedMemories)
 	}
-	if got := fake.updatedImportance[42]; got < 0.79 || got > 0.81 {
-		t.Fatalf("expected existing memory importance reinforced to 0.8, got %.2f updates=%#v", got, fake.updatedImportance)
+	if len(fake.updatedImportance) != 0 {
+		t.Fatalf("a prior-turn memory was rewritten by text similarity: %#v", fake.updatedImportance)
 	}
-	if !containsString(result.Warnings, "memory_semantic_dedup_merged") {
-		t.Fatalf("expected memory_semantic_dedup_merged warning, got %#v", result.Warnings)
+	if containsString(result.Warnings, "memory_semantic_dedup_merged") {
+		t.Fatalf("text similarity merge returned: %#v", result.Warnings)
 	}
-	foundAudit := false
 	for _, item := range fake.savedAuditLogs {
-		if item.EventType == "memory_semantic_dedup" && item.Source == "critic" && strings.Contains(item.DetailsJSON, `"merged_memory_id":42`) {
-			foundAudit = true
-			break
+		if item.EventType == "memory_semantic_dedup" {
+			t.Fatalf("text similarity audit returned: %#v", item)
 		}
-	}
-	if !foundAudit {
-		t.Fatalf("expected memory_semantic_dedup audit log, got %#v", fake.savedAuditLogs)
 	}
 }
 
@@ -596,7 +609,35 @@ func TestSaveCriticExtractionArtifactsSkipsDuplicateEvidenceAndKGForSameTurn(t *
 	}
 }
 
-func TestSaveCriticExtractionArtifactsSkipsFuzzyEvidenceAndActiveKGDuplicates(t *testing.T) {
+func TestSaveCriticExtractionArtifactsAcceptsTupleKGAndScalarEntities(t *testing.T) {
+	fake := &turnRecordingStore{}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	extraction := map[string]any{
+		"kg_triples": []any{[]any{"김민지", "is_member_of", "마케팅팀"}},
+		"entities": map[string]any{
+			"characters": []any{"김민지"},
+			"locations":  []any{"마케팅팀"},
+		},
+	}
+	result := srv.saveCriticExtractionArtifacts(
+		context.Background(), "sess-tuple-kg", 2, extraction,
+		"김민지는 마케팅팀 소속이다.", completeTurnEmbeddingConfig{}, time.Unix(1700, 0),
+	)
+	if result.KGTriples != 1 || len(fake.savedKGTriples) != 1 {
+		t.Fatalf("tuple KG was not stored: result=%#v saved=%#v", result, fake.savedKGTriples)
+	}
+	if got := fake.savedKGTriples[0]; got.Subject != "김민지" || got.Predicate != "is_member_of" || got.Object != "마케팅팀" {
+		t.Fatalf("tuple KG changed during storage: %#v", got)
+	}
+	if result.Entities != 2 || len(fake.savedEntities) != 2 {
+		t.Fatalf("scalar entities were not stored: result=%#v saved=%#v", result, fake.savedEntities)
+	}
+}
+
+func TestSaveCriticExtractionArtifactsKeepsDistinctEvidenceAndSkipsExactActiveKGDuplicate(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnEvidence: []store.DirectEvidence{{
 			ChatSessionID:   "sess-dupe-artifacts-fuzzy",
@@ -624,11 +665,11 @@ func TestSaveCriticExtractionArtifactsSkipsFuzzyEvidenceAndActiveKGDuplicates(t 
 		"kg_triples":        []any{map[string]any{"semantic_class": "event_fact", "subject": "Mina", "predicate": "protects", "object": "Rowan", "valid_from": 7}},
 	})
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-dupe-artifacts-fuzzy", 7, extraction, "Mina promises Rowan she will return. Mina protects Rowan.", completeTurnEmbeddingConfig{}, time.Unix(701, 0))
-	if result.Evidence != 0 || result.KGTriples != 0 {
-		t.Fatalf("fuzzy/active duplicate artifacts were saved, evidence=%d kg=%d skip=%#v", result.Evidence, result.KGTriples, result.SkipReasons)
+	if result.Evidence != 1 || result.KGTriples != 0 {
+		t.Fatalf("distinct evidence or exact KG duplicate was handled incorrectly, evidence=%d kg=%d skip=%#v", result.Evidence, result.KGTriples, result.SkipReasons)
 	}
-	if len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
-		t.Fatalf("duplicate save calls occurred, evidence=%d kg=%d", len(fake.savedEvidence), len(fake.savedKGTriples))
+	if len(fake.savedEvidence) != 1 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("distinct evidence or exact KG duplicate write count is wrong, evidence=%d kg=%d", len(fake.savedEvidence), len(fake.savedKGTriples))
 	}
 }
 

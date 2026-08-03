@@ -1332,15 +1332,7 @@ type sourceSearchProviderResult struct {
 
 func (s *Server) sourceSearchLLMConfigured() bool {
 	cfg := s.sourceSearchPlannerLLMConfig()
-	if strings.TrimSpace(cfg.APIKey) == "" {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
-	case "openai", "gemini", "claude", "ollama":
-		return strings.TrimSpace(cfg.Model) != ""
-	default:
-		return false
-	}
+	return len(sourceSearchConfigMissingFields(cfg.Provider, cfg.APIKey, cfg.Model)) == 0
 }
 
 func (s *Server) discoverSourcesWithSearchLLM(ctx context.Context, input store.SourceDiscoveryInput) ([]store.SourceDiscoverySource, map[string]any, error) {

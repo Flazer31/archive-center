@@ -559,172 +559,43 @@ func proxyCriticTopLevelJSONSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"turn_summary":                map[string]any{"type": "string"},
-			"importance_score":            map[string]any{"type": "number"},
-			"story_clock":                 proxyCriticStoryClockJSONSchema(),
-			"relationship_memory":         map[string]any{},
-			"entities":                    map[string]any{},
-			"kg_triples":                  map[string]any{"type": "array", "items": map[string]any{}},
-			"archive_hint":                map[string]any{},
-			"world_rule_audit":            map[string]any{},
-			"world_rules":                 map[string]any{"type": "array", "items": map[string]any{}},
-			"world_state":                 map[string]any{},
-			"subjective_entity_memories":  map[string]any{"type": "array", "items": map[string]any{}},
-			"protected_secrets":           map[string]any{"type": "array", "items": map[string]any{}},
-			"character_identity_accuracy": map[string]any{"type": "array", "items": map[string]any{}},
-			"persona_capsule_candidates":  map[string]any{"type": "array", "items": map[string]any{}},
-			"narrative_events":            map[string]any{"type": "array", "items": map[string]any{}},
-			"state_claims":                map[string]any{"type": "array", "items": map[string]any{}},
-			"belief_updates":              map[string]any{"type": "array", "items": map[string]any{}},
-			"interaction_events":          map[string]any{"type": "array", "items": map[string]any{}},
-			"relationship_observations":   map[string]any{"type": "array", "items": map[string]any{}},
-			"interaction_boundaries":      map[string]any{"type": "array", "items": map[string]any{}},
-			"user_interaction_profile":    map[string]any{"type": "array", "items": map[string]any{}},
-			"rp_character_profile":        map[string]any{"type": "array", "items": map[string]any{}},
-			"prune_targets":               map[string]any{"type": "array", "items": map[string]any{}},
-			"evidence_excerpts":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"emotional_intensity":         map[string]any{"type": "number"},
-			"narrative_significance":      map[string]any{"type": "number"},
-			"state_deltas":                map[string]any{},
-			"character_deltas":            map[string]any{"type": "array", "items": map[string]any{}},
-			"reversible_states":           map[string]any{"type": "array", "items": proxyCriticReversibleStateJSONSchema()},
-			"pending_threads":             map[string]any{"type": "array", "items": map[string]any{}},
+			"turn_summary":                   map[string]any{"type": "string"},
+			"importance_score":               map[string]any{"type": "number"},
+			"story_clock":                    map[string]any{},
+			"relationship_memory":            map[string]any{},
+			"entities":                       map[string]any{},
+			"kg_triples":                     map[string]any{"type": "array", "items": map[string]any{}},
+			"archive_hint":                   map[string]any{},
+			"world_rule_audit":               map[string]any{},
+			"world_rules":                    map[string]any{"type": "array", "items": map[string]any{}},
+			"world_state":                    map[string]any{},
+			"subjective_entity_memories":     map[string]any{"type": "array", "items": map[string]any{}},
+			"protected_secrets":              map[string]any{"type": "array", "items": map[string]any{}},
+			"character_identity_accuracy":    map[string]any{"type": "array", "items": map[string]any{}},
+			"persona_capsule_candidates":     map[string]any{"type": "array", "items": map[string]any{}},
+			"narrative_events":               map[string]any{"type": "array", "items": map[string]any{}},
+			"state_claims":                   map[string]any{"type": "array", "items": map[string]any{}},
+			"belief_updates":                 map[string]any{"type": "array", "items": map[string]any{}},
+			"interaction_events":             map[string]any{"type": "array", "items": map[string]any{}},
+			"relationship_observations":      map[string]any{"type": "array", "items": map[string]any{}},
+			"interaction_boundaries":         map[string]any{"type": "array", "items": map[string]any{}},
+			"habit_observations":             map[string]any{"type": "array", "items": map[string]any{}},
+			"character_profile_observations": map[string]any{"type": "array", "items": map[string]any{}},
+			"voice_observations":             map[string]any{"type": "array", "items": map[string]any{}},
+			"user_interaction_profile":       map[string]any{"type": "array", "items": map[string]any{}},
+			"rp_character_profile":           map[string]any{"type": "array", "items": map[string]any{}},
+			"prune_targets":                  map[string]any{"type": "array", "items": map[string]any{}},
+			"evidence_excerpts":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"emotional_intensity":            map[string]any{"type": "number"},
+			"narrative_significance":         map[string]any{"type": "number"},
+			"state_deltas":                   map[string]any{},
+			"character_deltas":               map[string]any{"type": "array", "items": map[string]any{}},
+			"physical_conditions":            map[string]any{"type": "array", "items": map[string]any{}},
+			"entity_conditions":              map[string]any{"type": "array", "items": map[string]any{}},
+			"reversible_states":              map[string]any{"type": "array", "items": map[string]any{}},
+			"pending_threads":                map[string]any{"type": "array", "items": map[string]any{}},
 		},
-		"required":             []string{"turn_summary", "importance_score", "evidence_excerpts"},
-		"additionalProperties": false,
-	}
-}
-
-func proxyCriticReversibleStateJSONSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"version":          map[string]any{"type": "string", "enum": []string{reversibleStateContractVersion}},
-			"domain":           map[string]any{"type": "string", "enum": []string{"body", "location", "possession", "emotion", "entity_condition"}},
-			"transition":       map[string]any{"type": "string", "enum": []string{"set", "change", "recover", "clear"}},
-			"subject_name":     map[string]any{"type": "string"},
-			"state_slot":       map[string]any{"type": "string"},
-			"value":            proxyCriticReversibleStateValueJSONSchema(),
-			"evidence_excerpt": map[string]any{"type": "string"},
-			"scene_scope":      map[string]any{"type": "string", "enum": []string{"current", "flashback", "planned", "hypothetical"}},
-			"authority":        map[string]any{"type": "string", "enum": []string{"canonical_in_fiction", "derived_estimate", "needs_review"}},
-			"assertion_kind":   map[string]any{"type": "string", "enum": []string{"literal", "figurative", "decorative"}},
-			"polarity":         map[string]any{"type": "string", "enum": []string{"affirmative", "negative", "uncertain"}},
-			"validity": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"valid_from": map[string]any{"type": "string"},
-					"valid_to":   map[string]any{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-			"visibility":  map[string]any{"type": "string", "enum": []string{"public", "private", "unknown"}},
-			"sensitivity": map[string]any{"type": "string", "enum": []string{"ordinary", "sensitive", "reproductive"}},
-		},
-		"required": []string{
-			"version", "domain", "transition", "subject_name", "state_slot",
-			"evidence_excerpt", "scene_scope", "authority", "assertion_kind",
-			"polarity", "visibility", "sensitivity",
-		},
-		"additionalProperties": false,
-	}
-}
-
-func proxyCriticReversibleStateValueJSONSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"text": map[string]any{"type": "string"},
-			"body": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"subtype":       map[string]any{"type": "string"},
-					"affected_area": map[string]any{"type": "string"},
-					"category":      map[string]any{"type": "string", "enum": []string{"ordinary", "medical", "reproductive"}},
-				},
-				"required":             []string{"subtype", "category"},
-				"additionalProperties": false,
-			},
-		},
-		"additionalProperties": false,
-	}
-}
-
-func proxyCriticStoryClockJSONSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"version":          map[string]any{"type": "string", "enum": []string{storyClockContractVersion}},
-			"observation_kind": map[string]any{"type": "string", "enum": []string{"absolute", "partial", "relative", "bounded_range", "unknown"}},
-			"scene_scope":      map[string]any{"type": "string", "enum": []string{"current", "flashback", "planned", "hypothetical"}},
-			"precision":        map[string]any{"type": "string", "enum": []string{"exact", "partial", "bounded_range", "unknown"}},
-			"absolute":         proxyCriticStoryClockAbsoluteJSONSchema(),
-			"partial": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"daypart": map[string]any{"type": "string"},
-					"season":  map[string]any{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-			"relative": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"offset":     map[string]any{"type": "number"},
-					"offset_min": map[string]any{"type": "number"},
-					"offset_max": map[string]any{"type": "number"},
-					"unit":       map[string]any{"type": "string", "enum": []string{"second", "minute", "hour", "day", "week", "month", "year"}},
-					"anchor":     map[string]any{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-			"range": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"start": proxyCriticStoryClockAbsoluteJSONSchema(),
-					"end":   proxyCriticStoryClockAbsoluteJSONSchema(),
-				},
-				"required":             []string{"start", "end"},
-				"additionalProperties": false,
-			},
-			"sequence": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"relation": map[string]any{"type": "string"},
-					"anchor":   map[string]any{"type": "string"},
-					"index":    map[string]any{"type": "number"},
-					"label":    map[string]any{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-			"duration": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"value":       map[string]any{"type": "number"},
-					"min":         map[string]any{"type": "number"},
-					"max":         map[string]any{"type": "number"},
-					"unit":        map[string]any{"type": "string", "enum": []string{"second", "minute", "hour", "day", "week", "month", "year"}},
-					"approximate": map[string]any{"type": "boolean"},
-				},
-				"additionalProperties": false,
-			},
-			"evidence_excerpt": map[string]any{"type": "string"},
-			"transition":       map[string]any{"type": "string", "enum": []string{"set", "advance", "correction", "reaffirm", "supersede", "retract"}},
-		},
-		"required":             []string{"version", "observation_kind", "scene_scope", "precision", "evidence_excerpt"},
-		"additionalProperties": false,
-	}
-}
-
-func proxyCriticStoryClockAbsoluteJSONSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"date":     map[string]any{"type": "string"},
-			"time":     map[string]any{"type": "string"},
-			"datetime": map[string]any{"type": "string"},
-		},
-		"additionalProperties": false,
+		"additionalProperties": true,
 	}
 }
 

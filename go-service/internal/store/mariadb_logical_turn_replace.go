@@ -180,15 +180,7 @@ func canonicalTailDeleteCommands(sid string, t int, legacyPhysicalCleanup, delet
 		commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}})
 	}
 	commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM memories WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}})
-	if legacyPhysicalCleanup {
-		commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM direct_evidence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}})
-	} else {
-		commands = append(commands, canonicalTailDeleteCommand{`
-			UPDATE direct_evidence_records
-			SET tombstoned = TRUE, archive_state = 'tombstoned', repair_needed = FALSE
-			WHERE chat_session_id = ? AND source_turn_end >= ? AND tombstoned = FALSE
-		`, []any{sid, t}})
-	}
+	commands = append(commands, canonicalTailDeleteCommand{`DELETE FROM direct_evidence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}})
 	commands = append(commands, []canonicalTailDeleteCommand{
 		{`DELETE FROM kg_triples WHERE chat_session_id = ? AND (source_turn >= ? OR valid_from >= ?)`, []any{sid, t, t}},
 		{`DELETE FROM critic_feedback WHERE chat_session_id = ? AND target_type = 'turn' AND target_id >= ?`, []any{sid, t}},

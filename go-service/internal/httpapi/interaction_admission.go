@@ -7,22 +7,18 @@ import (
 )
 
 const (
-	risuRequestObservationContract  = "risu_request_observation.v1"
-	interactionEventContract        = "interaction_event.v1"
-	relationshipObservationContract = "relationship_observation.v1"
-	interactionBoundaryContract     = "interaction_boundary.v1"
-	userInteractionProfileContract  = "user_interaction_profile.v1"
-	rpCharacterProfileContract      = "rp_character_profile.v1"
-	publicVisibilitySupportContract = "public_visibility_support.v1"
-	inWorldIdentityProofContract    = "in_world_identity_proof.v1"
-	kgEndpointBindingContract       = "kg_endpoint_binding.v1"
+	risuRequestObservationContract      = "risu_request_observation.v1"
+	interactionEventContract            = "interaction_event.v1"
+	relationshipObservationContract     = "relationship_observation.v1"
+	interactionBoundaryContract         = "interaction_boundary.v1"
+	habitObservationContract            = "habit_observation.v1"
+	characterProfileObservationContract = "character_profile_observation.v1"
+	voiceObservationContract            = "voice_observation.v1"
+	userInteractionProfileContract      = "user_interaction_profile.v1"
+	rpCharacterProfileContract          = "rp_character_profile.v1"
+	publicVisibilitySupportContract     = "public_visibility_support.v1"
+	inWorldIdentityProofContract        = "in_world_identity_proof.v1"
 )
-
-var relationshipObservationDomains = map[string]bool{
-	"trust": true, "attachment": true, "romantic": true, "rivalry": true,
-	"fear": true, "obligation": true, "respect": true, "obedience": true,
-	"intimacy": true,
-}
 
 // shouldApplyCompleteTurnOOCGuard trusts only the versioned host observation.
 // Content, punctuation, language, and previous chat messages are deliberately
@@ -74,18 +70,14 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 			reject("interaction_direction_or_action_missing")
 			continue
 		}
-		if !criticEvidenceOccursInSource(evidence, source) {
-			reject("interaction_exact_current_evidence_required")
-			continue
-		}
-		if !interactionEntityExpressionBound(actor, actorExpression, evidence, entitySurfaces) ||
-			!interactionEntityExpressionBound(counterpart, counterpartExpression, evidence, entitySurfaces) {
-			reject("interaction_entity_expression_unbound")
-			continue
-		}
-		if !interactionExactValueExpression(action, actionExpression, evidence) {
-			reject("interaction_action_expression_unbound")
-			continue
+		admissionState := "review_required"
+		reviewState := "needs_review"
+		if criticEvidenceOccursInSource(evidence, source) &&
+			interactionEntityExpressionBound(actor, actorExpression, evidence, entitySurfaces) &&
+			interactionEntityExpressionBound(counterpart, counterpartExpression, evidence, entitySurfaces) &&
+			interactionExactValueExpression(action, actionExpression, evidence) {
+			admissionState = "committed"
+			reviewState = "source_observed"
 		}
 		interactions = append(interactions, map[string]any{
 			"contract_version":       interactionEventContract,
@@ -96,6 +88,8 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 			"action":                 action,
 			"action_expression":      actionExpression,
 			"interaction_kind":       strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "interaction_kind"), stringFromMap(item, "event_type"), "interaction")),
+			"admission_state":        admissionState,
+			"review_state":           reviewState,
 			"visibility":             normalizeInteractionVisibilityWithDefault(stringFromMap(item, "visibility"), "public"),
 			"evidence_excerpt":       evidence,
 			"source_hash":            sourceHash,
@@ -107,7 +101,7 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 	relationships := []any{}
 	for _, rawItem := range sliceFromAny(raw["relationship_observations"]) {
 		seen++
-		normalized, reason := normalizeRelationshipObservation(mapFromAny(rawItem), source, sourceHash, entitySurfaces)
+		normalized, reason := normalizeRelationshipObservation(mapFromAny(rawItem), raw, source, sourceHash, entitySurfaces)
 		if reason != "" {
 			reject(reason)
 			continue
@@ -115,12 +109,12 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 		relationships = append(relationships, normalized)
 		kept++
 	}
-	// A legacy relationship_memory object is accepted only as a typed,
-	// directional observation. It is then removed from the legacy current-state
-	// lane so it cannot update Trust/ActiveState in parallel.
+	// Preserve the broad relationship memory record. When it also has enough
+	// directional structure, expose the same candidate to the typed lane; later
+	// projection and prepare-turn selection remain the precision boundary.
 	if legacy := mapFromAny(raw["relationship_memory"]); len(legacy) > 0 {
 		seen++
-		normalized, reason := normalizeRelationshipObservation(legacy, source, sourceHash, entitySurfaces)
+		normalized, reason := normalizeRelationshipObservation(legacy, raw, source, sourceHash, entitySurfaces)
 		if reason != "" {
 			reject("legacy_relationship_" + reason)
 		} else {
@@ -129,10 +123,48 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 		}
 	}
 	out["relationship_observations"] = relationships
-	out["relationship_memory"] = map[string]any{}
+	out["relationship_memory"] = mapFromAny(raw["relationship_memory"])
 
-	boundariesByKey := map[string]map[string]any{}
-	boundaryOrder := []string{}
+	habitObservations := []any{}
+	for _, rawItem := range sliceFromAny(raw["habit_observations"]) {
+		seen++
+		normalized, reason := normalizeHabitObservation(mapFromAny(rawItem), source, sourceHash, entitySurfaces)
+		if reason != "" {
+			reject(reason)
+			continue
+		}
+		habitObservations = append(habitObservations, normalized)
+		kept++
+	}
+	out["habit_observations"] = habitObservations
+
+	profileObservations := []any{}
+	for _, rawItem := range sliceFromAny(raw["character_profile_observations"]) {
+		seen++
+		normalized, reason := normalizeCharacterProfileObservation(mapFromAny(rawItem), source, sourceHash, entitySurfaces)
+		if reason != "" {
+			reject(reason)
+			continue
+		}
+		profileObservations = append(profileObservations, normalized)
+		kept++
+	}
+	out["character_profile_observations"] = profileObservations
+
+	voiceObservations := []any{}
+	for _, rawItem := range sliceFromAny(raw["voice_observations"]) {
+		seen++
+		normalized, reason := normalizeVoiceObservation(mapFromAny(rawItem), raw, source, sourceHash, entitySurfaces)
+		if reason != "" {
+			reject(reason)
+			continue
+		}
+		voiceObservations = append(voiceObservations, normalized)
+		kept++
+	}
+	out["voice_observations"] = voiceObservations
+
+	boundaries := []any{}
 	for _, rawItem := range sliceFromAny(raw["interaction_boundaries"]) {
 		seen++
 		item := mapFromAny(rawItem)
@@ -153,47 +185,25 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 			reject("boundary_direction_or_scope_missing")
 			continue
 		}
-		if !validInteractionBoundaryDecision(decision) {
-			reject("boundary_decision_invalid")
-			continue
-		}
-		if !validInteractionBoundarySupportKind(supportKind) {
-			reject("boundary_explicit_support_kind_required")
-			continue
-		}
-		if !criticEvidenceOccursInSource(evidence, source) {
-			reject("boundary_exact_current_evidence_required")
-			continue
-		}
-		if !interactionExplicitExpressionOccursInEvidence(explicitExpression, evidence) {
-			reject("boundary_explicit_expression_required")
-			continue
-		}
-		if !interactionEntityExpressionBound(actor, actorExpression, evidence, entitySurfaces) ||
-			!interactionEntityExpressionBound(counterpart, counterpartExpression, evidence, entitySurfaces) {
-			reject("boundary_entity_expression_unbound")
-			continue
-		}
-		if !interactionExactValueExpression(actionScope, actionScopeExpression, evidence) {
-			reject("boundary_action_scope_expression_unbound")
-			continue
+		admissionState := "review_required"
+		reviewState := "needs_review"
+		if validInteractionBoundaryDecision(decision) &&
+			validInteractionBoundarySupportKind(supportKind) &&
+			criticEvidenceOccursInSource(evidence, source) &&
+			interactionExplicitExpressionOccursInEvidence(explicitExpression, evidence) &&
+			interactionEntityExpressionBound(actor, actorExpression, evidence, entitySurfaces) &&
+			interactionEntityExpressionBound(counterpart, counterpartExpression, evidence, entitySurfaces) &&
+			interactionExactValueExpression(actionScope, actionScopeExpression, evidence) {
+			admissionState = "committed"
+			reviewState = "source_observed"
 		}
 		effectiveScope := strings.ToLower(strings.TrimSpace(stringFromMap(item, "effective_scope")))
 		if effectiveScope == "" {
 			effectiveScope = "event"
 		}
 		scopeExpression := strings.TrimSpace(stringFromMap(item, "effective_scope_expression"))
-		if effectiveScope != "event" && !interactionExplicitExpressionOccursInEvidence(scopeExpression, evidence) {
-			effectiveScope = "event"
-			scopeExpression = ""
-		}
-		effectiveTime := any(nil)
+		effectiveTime := normalizePreciseMemoryValue(item["effective_time"])
 		timeExpression := strings.TrimSpace(stringFromMap(item, "effective_time_expression"))
-		if interactionExplicitExpressionOccursInEvidence(timeExpression, evidence) {
-			effectiveTime = normalizePreciseMemoryValue(item["effective_time"])
-		} else {
-			timeExpression = ""
-		}
 		visibility, visibilitySupport, visibilityDisposition := interactionSourceBoundVisibility(item, evidence, "owner_private")
 		normalized := map[string]any{
 			"contract_version":           interactionBoundaryContract,
@@ -206,8 +216,8 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 			"decision":                   decision,
 			"decision_expression":        explicitExpression,
 			"support_kind":               supportKind,
-			"admission_state":            "committed",
-			"review_state":               "source_observed",
+			"admission_state":            admissionState,
+			"review_state":               reviewState,
 			"effective_scope":            effectiveScope,
 			"effective_scope_expression": scopeExpression,
 			"effective_time":             effectiveTime,
@@ -220,22 +230,8 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 		if len(visibilitySupport) > 0 {
 			normalized["public_visibility_support"] = visibilitySupport
 		}
-		key := interactionBoundaryKey(normalized)
-		current, exists := boundariesByKey[key]
-		if !exists {
-			boundaryOrder = append(boundaryOrder, key)
-			boundariesByKey[key] = normalized
-			kept++
-			continue
-		}
-		if interactionBoundaryDecisionPriority(decision) > interactionBoundaryDecisionPriority(stringFromMap(current, "decision")) {
-			boundariesByKey[key] = normalized
-		}
-		reject("boundary_lower_priority_same_scope_superseded")
-	}
-	boundaries := make([]any, 0, len(boundaryOrder))
-	for _, key := range boundaryOrder {
-		boundaries = append(boundaries, boundariesByKey[key])
+		boundaries = append(boundaries, normalized)
+		kept++
 	}
 	out["interaction_boundaries"] = boundaries
 
@@ -246,7 +242,7 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 	for lane, count := range profileQuarantine {
 		reasons["user_profile_shared_evidence_quarantined:"+lane] += count
 		switch lane {
-		case "interaction_events", "relationship_observations", "interaction_boundaries", "rp_character_profile":
+		case "interaction_events", "relationship_observations", "interaction_boundaries", "habit_observations", "character_profile_observations", "voice_observations", "rp_character_profile":
 			kept -= count
 		}
 	}
@@ -254,51 +250,13 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 		kept = 0
 	}
 	rpProfileReviewProposals := []any{}
-	rpProfileCommitted := []any{}
 	for _, rawProfile := range sliceFromAny(out["rp_character_profile"]) {
 		profile := mapFromAny(rawProfile)
-		if stringFromMap(profile, "admission_state") == "committed" {
-			rpProfileCommitted = append(rpProfileCommitted, profile)
-			continue
+		if stringFromMap(profile, "admission_state") != "committed" {
+			rpProfileReviewProposals = append(rpProfileReviewProposals, profile)
 		}
-		rpProfileReviewProposals = append(rpProfileReviewProposals, profile)
 	}
-	out["rp_character_profile"] = rpProfileCommitted
-	rpProfileQuarantine := quarantineReviewRPProfileIdentitySurfaces(out, rpProfileReviewProposals)
-	for lane, count := range rpProfileQuarantine {
-		reasons["rp_profile_unverified_identity_quarantined:"+lane] += count
-	}
-	for _, lane := range []string{"narrative_events", "state_claims", "belief_updates", "subjective_entity_memories"} {
-		out[lane] = removeLegacyRelationshipItems(out[lane], reject, lane)
-	}
-	var kgReviewProposals []any
-	out["kg_triples"], kgReviewProposals = admitSourceBoundKGTriples(out["kg_triples"], source, reject)
-
-	// CharacterState.relationships is a legacy current-state write without the
-	// typed source->target/domain provenance required here. Preserve every
-	// other character delta field and strip only this unsafe relation field.
-	characterDeltas := []any{}
-	for _, rawItem := range sliceFromAny(out["character_deltas"]) {
-		item := mapFromAny(rawItem)
-		if _, present := item["relationships"]; present {
-			delete(item, "relationships")
-			reject("legacy_character_relationship_current_write_blocked")
-		}
-		events := []any{}
-		for _, rawEvent := range sliceFromAny(item["events"]) {
-			event := mapFromAny(rawEvent)
-			if structurallyTypedRelationshipCandidate(event) {
-				reject("legacy_character_relationship_event_blocked")
-				continue
-			}
-			events = append(events, rawEvent)
-		}
-		if _, present := item["events"]; present {
-			item["events"] = events
-		}
-		characterDeltas = append(characterDeltas, item)
-	}
-	out["character_deltas"] = characterDeltas
+	out["kg_triples"] = sliceFromAny(out["kg_triples"])
 
 	reasonPayload := map[string]any{}
 	for reason, count := range reasons {
@@ -311,174 +269,8 @@ func admitCriticInteractionLanesWithTrustedIdentities(raw map[string]any, userIn
 		"user_profile_review_proposals": userProfiles,
 		"user_profile_quarantine":       profileQuarantine,
 		"rp_profile_review_proposals":   rpProfileReviewProposals,
-		"rp_profile_quarantine":         rpProfileQuarantine,
-		"kg_review_proposals":           kgReviewProposals,
 		"reasons":                       reasonPayload,
 	}
-}
-
-func removeLegacyRelationshipItems(raw any, reject func(string), lane string) []any {
-	out := []any{}
-	for _, rawItem := range sliceFromAny(raw) {
-		item := mapFromAny(rawItem)
-		if structurallyTypedRelationshipCandidate(item) {
-			reject("legacy_relationship_candidate_blocked:" + lane)
-			continue
-		}
-		out = append(out, rawItem)
-	}
-	return out
-}
-
-func validNonRelationshipKGSemanticClass(item map[string]any) bool {
-	semanticClass := strings.ToLower(strings.TrimSpace(extractionFirstNonEmpty(
-		stringFromMap(item, "semantic_class"),
-		stringFromMap(item, "candidate_class"),
-	)))
-	switch semanticClass {
-	case "entity_fact", "event_fact", "state_fact", "world_fact", "identity_fact", "location_fact", "item_fact":
-		return true
-	default:
-		return false
-	}
-}
-
-func admitSourceBoundKGTriples(raw any, source string, reject func(string)) ([]any, []any) {
-	committed := []any{}
-	review := []any{}
-	for _, rawItem := range sliceFromAny(raw) {
-		item := mapFromAny(rawItem)
-		block := func(reason string) {
-			reject(reason)
-			review = append(review, rawItem)
-		}
-		if structurallyTypedRelationshipCandidate(item) {
-			block("legacy_relationship_candidate_blocked:kg_triples")
-			continue
-		}
-		if !validNonRelationshipKGSemanticClass(item) {
-			block("untyped_or_unknown_kg_semantic_class_blocked")
-			continue
-		}
-		evidence := interactionAdmissionEvidence(item)
-		if !criticEvidenceOccursInSource(evidence, source) {
-			block("kg_exact_current_evidence_required")
-			continue
-		}
-		subject := strings.TrimSpace(stringFromMap(item, "subject"))
-		predicate := strings.TrimSpace(stringFromMap(item, "predicate"))
-		object := strings.TrimSpace(stringFromMap(item, "object"))
-		predicateExpression := strings.TrimSpace(stringFromMap(item, "predicate_expression"))
-		if subject == "" || predicate == "" || object == "" ||
-			!interactionExactValueExpression(predicate, predicateExpression, evidence) {
-			block("kg_predicate_expression_unbound")
-			continue
-		}
-		subjectBinding, subjectOK := normalizeKGEndpointBinding(item["subject_binding"], subject, evidence)
-		objectBinding, objectOK := normalizeKGEndpointBinding(item["object_binding"], object, evidence)
-		if !subjectOK || !objectOK {
-			block("kg_endpoint_binding_unresolved")
-			continue
-		}
-		// Generic KG is not an authority for entity-to-entity semantics. Even
-		// reviewed IDs only prove endpoint identity, not the meaning of an edge.
-		if stringFromMap(subjectBinding, "endpoint_kind") != "entity" ||
-			stringFromMap(objectBinding, "endpoint_kind") != "scalar" {
-			block("generic_entity_edge_requires_dedicated_typed_lane")
-			continue
-		}
-		committed = append(committed, map[string]any{
-			"semantic_class":       strings.ToLower(strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "semantic_class"), stringFromMap(item, "candidate_class")))),
-			"subject":              subject,
-			"subject_binding":      subjectBinding,
-			"predicate":            predicate,
-			"predicate_expression": predicateExpression,
-			"object":               object,
-			"object_binding":       objectBinding,
-			"evidence_excerpt":     evidence,
-			"valid_from":           item["valid_from"],
-			"valid_to":             item["valid_to"],
-		})
-	}
-	return committed, review
-}
-
-func normalizeKGEndpointBinding(raw any, endpointValue, evidence string) (map[string]any, bool) {
-	binding := mapFromAny(raw)
-	if stringFromMap(binding, "contract_version") != kgEndpointBindingContract {
-		return nil, false
-	}
-	kind := strings.ToLower(strings.TrimSpace(stringFromMap(binding, "endpoint_kind")))
-	expression := strings.TrimSpace(stringFromMap(binding, "expression"))
-	if !interactionExactValueExpression(endpointValue, expression, evidence) {
-		return nil, false
-	}
-	result := map[string]any{
-		"contract_version": kgEndpointBindingContract,
-		"endpoint_kind":    kind,
-		"expression":       expression,
-	}
-	switch kind {
-	case "entity":
-		entityKind := strings.ToLower(strings.TrimSpace(stringFromMap(binding, "entity_kind")))
-		switch entityKind {
-		case "character", "location", "item", "group", "event", "world":
-			result["entity_kind"] = entityKind
-		default:
-			return nil, false
-		}
-	case "scalar":
-		scalarType := strings.ToLower(strings.TrimSpace(stringFromMap(binding, "scalar_type")))
-		switch scalarType {
-		case "string", "number", "boolean", "state", "status", "quantity", "time":
-			result["scalar_type"] = scalarType
-		default:
-			return nil, false
-		}
-	default:
-		return nil, false
-	}
-	return result, true
-}
-
-func structurallyTypedRelationshipCandidate(item map[string]any) bool {
-	contract := strings.ToLower(strings.TrimSpace(stringFromMap(item, "contract_version")))
-	if contract == relationshipObservationContract {
-		return true
-	}
-	semanticClass := strings.ToLower(strings.TrimSpace(extractionFirstNonEmpty(
-		stringFromMap(item, "semantic_class"),
-		stringFromMap(item, "candidate_class"),
-		stringFromMap(item, "observation_class"),
-		stringFromMap(item, "memory_class"),
-	)))
-	switch semanticClass {
-	case "relationship", "relationship_observation", "directional_relationship":
-		return true
-	}
-	if legacyRelationshipShiftToken(extractionFirstNonEmpty(
-		stringFromMap(item, "event_type"),
-		stringFromMap(item, "type"),
-	)) {
-		return true
-	}
-	domain := strings.ToLower(strings.TrimSpace(extractionFirstNonEmpty(
-		stringFromMap(item, "relation_domain"),
-		stringFromMap(item, "relationship_domain"),
-		stringFromMap(item, "relationship_type"),
-	)))
-	if !relationshipObservationDomains[domain] {
-		return false
-	}
-	hasSource := strings.TrimSpace(extractionFirstNonEmpty(
-		stringFromMap(item, "source_entity"), stringFromMap(item, "actor"),
-		stringFromMap(item, "owner"), stringFromMap(item, "subject"),
-	)) != ""
-	hasTarget := strings.TrimSpace(extractionFirstNonEmpty(
-		stringFromMap(item, "target_entity"), stringFromMap(item, "counterpart"),
-		stringFromMap(item, "target"), stringFromMap(item, "object"),
-	)) != ""
-	return hasSource && hasTarget
 }
 
 func legacyRelationshipShiftToken(raw string) bool {
@@ -490,7 +282,7 @@ func legacyRelationshipShiftToken(raw string) bool {
 	}
 }
 
-func normalizeRelationshipObservation(item map[string]any, source, sourceHash string, entitySurfaces map[string]map[string]bool) (map[string]any, string) {
+func normalizeRelationshipObservation(item, extraction map[string]any, source, sourceHash string, entitySurfaces map[string]map[string]bool) (map[string]any, string) {
 	sourceEntity := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "source_entity"), stringFromMap(item, "actor"), stringFromMap(item, "owner")))
 	targetEntity := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "target_entity"), stringFromMap(item, "counterpart"), stringFromMap(item, "target"), stringFromMap(item, "target_name")))
 	domain := strings.ToLower(strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "domain"), stringFromMap(item, "relation_domain"))))
@@ -503,30 +295,22 @@ func normalizeRelationshipObservation(item map[string]any, source, sourceHash st
 	if sourceEntity == "" || targetEntity == "" || comparableEntityKey(sourceEntity) == comparableEntityKey(targetEntity) {
 		return nil, "direction_missing_or_self_relation"
 	}
-	if !relationshipObservationDomains[domain] {
-		return nil, "domain_invalid"
-	}
 	if observation == "" {
 		return nil, "observation_missing"
 	}
-	switch supportKind {
-	case "explicit_statement", "explicit_narrated_change", "explicit_observed_state":
-	default:
-		return nil, "explicit_support_kind_required"
-	}
-	if !criticEvidenceOccursInSource(evidence, source) {
-		return nil, "exact_current_evidence_required"
-	}
-	if !interactionExplicitExpressionOccursInEvidence(observation, evidence) {
-		return nil, "relationship_observation_not_explicit_in_evidence"
-	}
-	if !interactionEntityExpressionBound(sourceEntity, sourceExpression, evidence, entitySurfaces) ||
-		!interactionEntityExpressionBound(targetEntity, targetExpression, evidence, entitySurfaces) {
-		return nil, "relationship_entity_expression_unbound"
-	}
-	if !interactionExplicitExpressionOccursInEvidence(domainExpression, evidence) ||
-		!interactionExplicitExpressionOccursInEvidence(domainExpression, observation) {
-		return nil, "relationship_domain_expression_unbound"
+	admissionState := "review_required"
+	reviewState := "needs_review"
+	statementDirectionGrounded := supportKind != "explicit_statement" ||
+		interactionExplicitExpressionOccursInEvidence(observation, evidence) ||
+		voiceObservationHasLinkedSpeakerAttribution(extraction, sourceEntity, evidence)
+	if criticEvidenceOccursInSource(evidence, source) && statementDirectionGrounded &&
+		interactionRelationshipEndpointBound(extraction, sourceEntity, sourceExpression, evidence, entitySurfaces, true) &&
+		interactionRelationshipEndpointBound(extraction, targetEntity, targetExpression, evidence, entitySurfaces, false) &&
+		interactionOptionalExpressionOccursInEvidence(domainExpression, evidence) &&
+		interactionOptionalExpressionOccursInEvidence(stringFromMap(item, "magnitude_expression"), evidence) &&
+		interactionOptionalExpressionOccursInEvidence(stringFromMap(item, "duration_expression"), evidence) {
+		admissionState = "committed"
+		reviewState = "source_observed"
 	}
 	visibility, visibilitySupport, visibilityDisposition := interactionSourceBoundVisibility(item, evidence, "owner_private")
 	normalized := map[string]any{
@@ -539,8 +323,8 @@ func normalizeRelationshipObservation(item map[string]any, source, sourceHash st
 		"domain_expression":        domainExpression,
 		"observation":              observation,
 		"support_kind":             supportKind,
-		"admission_state":          "committed",
-		"review_state":             "source_observed",
+		"admission_state":          admissionState,
+		"review_state":             reviewState,
 		"visibility":               visibility,
 		"visibility_disposition":   visibilityDisposition,
 		"evidence_excerpt":         evidence,
@@ -549,15 +333,203 @@ func normalizeRelationshipObservation(item map[string]any, source, sourceHash st
 	if len(visibilitySupport) > 0 {
 		normalized["public_visibility_support"] = visibilitySupport
 	}
-	if expression := strings.TrimSpace(stringFromMap(item, "magnitude_expression")); interactionExplicitExpressionOccursInEvidence(expression, evidence) {
+	if expression := strings.TrimSpace(stringFromMap(item, "magnitude_expression")); expression != "" || item["magnitude"] != nil {
 		normalized["magnitude"] = normalizePreciseMemoryValue(item["magnitude"])
 		normalized["magnitude_expression"] = expression
 	}
-	if expression := strings.TrimSpace(stringFromMap(item, "duration_expression")); interactionExplicitExpressionOccursInEvidence(expression, evidence) {
+	if expression := strings.TrimSpace(stringFromMap(item, "duration_expression")); expression != "" || item["duration"] != nil {
 		normalized["duration"] = normalizePreciseMemoryValue(item["duration"])
 		normalized["duration_expression"] = expression
 	}
 	return normalized, ""
+}
+
+func normalizeHabitObservation(item map[string]any, source, sourceHash string, entitySurfaces map[string]map[string]bool) (map[string]any, string) {
+	subject := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "subject_entity"), stringFromMap(item, "subject"), stringFromMap(item, "character")))
+	subjectExpression := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "subject_entity_expression"), stringFromMap(item, "subject_expression"), stringFromMap(item, "character_expression")))
+	behaviorExpression := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "behavior_expression"), stringFromMap(item, "observation_expression")))
+	behaviorKey := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "behavior_key"), stringFromMap(item, "habit_key"), behaviorExpression))
+	observationKind := strings.ToLower(strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "observation_kind"), stringFromMap(item, "evidence_kind"))))
+	evidence := interactionAdmissionEvidence(item)
+	if subject == "" || (behaviorKey == "" && behaviorExpression == "") {
+		return nil, "habit_subject_or_behavior_missing"
+	}
+
+	contextKey := strings.TrimSpace(stringFromMap(item, "context_key"))
+	contextExpression := strings.TrimSpace(stringFromMap(item, "context_expression"))
+
+	counterpart := strings.TrimSpace(stringFromMap(item, "counterpart"))
+	counterpartExpression := strings.TrimSpace(stringFromMap(item, "counterpart_expression"))
+	admissionState := "review_required"
+	reviewState := "needs_review"
+	if criticEvidenceOccursInSource(evidence, source) &&
+		interactionEntityExpressionBound(subject, subjectExpression, evidence, entitySurfaces) &&
+		interactionOptionalExpressionOccursInEvidence(behaviorExpression, evidence) &&
+		interactionOptionalExpressionOccursInEvidence(contextExpression, evidence) &&
+		interactionOptionalEntityBound(counterpart, counterpartExpression, evidence, entitySurfaces) {
+		admissionState = "committed"
+		reviewState = "source_observed"
+	}
+
+	visibility, visibilitySupport, visibilityDisposition := interactionSourceBoundVisibility(item, evidence, "owner_private")
+	normalized := map[string]any{
+		"contract_version":          habitObservationContract,
+		"subject_entity":            subject,
+		"subject_entity_expression": subjectExpression,
+		"behavior_key":              behaviorKey,
+		"behavior_expression":       behaviorExpression,
+		"observation_kind":          observationKind,
+		"context_key":               contextKey,
+		"context_expression":        contextExpression,
+		"counterpart":               counterpart,
+		"counterpart_expression":    counterpartExpression,
+		"admission_state":           admissionState,
+		"review_state":              reviewState,
+		"visibility":                visibility,
+		"visibility_disposition":    visibilityDisposition,
+		"evidence_excerpt":          evidence,
+		"source_hash":               sourceHash,
+	}
+	if len(visibilitySupport) > 0 {
+		normalized["public_visibility_support"] = visibilitySupport
+	}
+	return normalized, ""
+}
+
+func normalizeCharacterProfileObservation(item map[string]any, source, sourceHash string, entitySurfaces map[string]map[string]bool) (map[string]any, string) {
+	subject := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "subject_entity"), stringFromMap(item, "subject"), stringFromMap(item, "character")))
+	subjectExpression := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "subject_entity_expression"), stringFromMap(item, "subject_expression"), stringFromMap(item, "character_expression")))
+	section := strings.ToLower(strings.TrimSpace(stringFromMap(item, "profile_section")))
+	traitDomain := strings.ToLower(strings.TrimSpace(stringFromMap(item, "trait_domain")))
+	supportedExpression := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "supported_expression"), stringFromMap(item, "trait_expression")))
+	traitKey := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "trait_key"), supportedExpression))
+	observationKind := strings.ToLower(strings.TrimSpace(stringFromMap(item, "observation_kind")))
+	evidence := interactionAdmissionEvidence(item)
+	if subject == "" || (traitKey == "" && supportedExpression == "") {
+		return nil, "character_profile_required_field_missing"
+	}
+	contextKey := strings.TrimSpace(stringFromMap(item, "context_key"))
+	contextExpression := strings.TrimSpace(stringFromMap(item, "context_expression"))
+	counterpart := strings.TrimSpace(stringFromMap(item, "counterpart"))
+	counterpartExpression := strings.TrimSpace(stringFromMap(item, "counterpart_expression"))
+	admissionState := "review_required"
+	reviewState := "needs_review"
+	if criticEvidenceOccursInSource(evidence, source) &&
+		interactionEntityExpressionBound(subject, subjectExpression, evidence, entitySurfaces) &&
+		interactionOptionalExpressionOccursInEvidence(supportedExpression, evidence) &&
+		interactionOptionalExpressionOccursInEvidence(contextExpression, evidence) &&
+		interactionOptionalEntityBound(counterpart, counterpartExpression, evidence, entitySurfaces) {
+		admissionState = "committed"
+		reviewState = "source_observed"
+	}
+	visibility, visibilitySupport, visibilityDisposition := interactionSourceBoundVisibility(item, evidence, "owner_private")
+	normalized := map[string]any{
+		"contract_version":          characterProfileObservationContract,
+		"subject_entity":            subject,
+		"subject_entity_expression": subjectExpression,
+		"profile_section":           section,
+		"trait_domain":              traitDomain,
+		"trait_key":                 traitKey,
+		"supported_expression":      supportedExpression,
+		"observation_kind":          observationKind,
+		"context_key":               contextKey,
+		"context_expression":        contextExpression,
+		"counterpart":               counterpart,
+		"counterpart_expression":    counterpartExpression,
+		"admission_state":           admissionState,
+		"review_state":              reviewState,
+		"visibility":                visibility,
+		"visibility_disposition":    visibilityDisposition,
+		"evidence_excerpt":          evidence,
+		"source_hash":               sourceHash,
+	}
+	if len(visibilitySupport) > 0 {
+		normalized["public_visibility_support"] = visibilitySupport
+	}
+	return normalized, ""
+}
+
+func normalizeVoiceObservation(item, extraction map[string]any, source, sourceHash string, entitySurfaces map[string]map[string]bool) (map[string]any, string) {
+	subject := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "subject_entity"), stringFromMap(item, "speaker"), stringFromMap(item, "character")))
+	subjectExpression := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "subject_entity_expression"), stringFromMap(item, "speaker_expression"), stringFromMap(item, "character_expression")))
+	traitDomain := strings.ToLower(strings.TrimSpace(stringFromMap(item, "trait_domain")))
+	principleKey := strings.TrimSpace(extractionFirstNonEmpty(
+		stringFromMap(item, "principle_key"),
+		stringFromMap(item, "style_key"),
+		stringFromMap(item, "principle"),
+		stringFromMap(item, "speech_style"),
+	))
+	observationKind := strings.ToLower(strings.TrimSpace(stringFromMap(item, "observation_kind")))
+	utteranceExpression := strings.TrimSpace(stringFromMap(item, "utterance_expression"))
+	evidence := interactionAdmissionEvidence(item)
+	if subject == "" || (principleKey == "" && utteranceExpression == "") {
+		return nil, "voice_observation_required_field_or_domain_invalid"
+	}
+	contextKey := strings.TrimSpace(stringFromMap(item, "context_key"))
+	contextExpression := strings.TrimSpace(stringFromMap(item, "context_expression"))
+	counterpart := strings.TrimSpace(stringFromMap(item, "counterpart"))
+	counterpartExpression := strings.TrimSpace(stringFromMap(item, "counterpart_expression"))
+	stateKey := strings.TrimSpace(stringFromMap(item, "state_modulation_key"))
+	stateExpression := strings.TrimSpace(stringFromMap(item, "state_modulation_expression"))
+	utteranceText := strings.Trim(utteranceExpression, " \t\r\n\"'")
+	principleReplaysUtterance := normalizeArtifactComparableText(principleKey) != "" &&
+		normalizeArtifactComparableText(principleKey) == normalizeArtifactComparableText(utteranceText)
+	admissionState := "review_required"
+	reviewState := "needs_review"
+	if criticEvidenceOccursInSource(evidence, source) &&
+		(interactionEntityExpressionBound(subject, subjectExpression, evidence, entitySurfaces) ||
+			voiceObservationHasLinkedSpeakerAttribution(extraction, subject, evidence)) &&
+		!principleReplaysUtterance &&
+		interactionOptionalExpressionOccursInEvidence(utteranceExpression, evidence) &&
+		interactionOptionalExpressionOccursInEvidence(contextExpression, evidence) &&
+		interactionOptionalEntityBound(counterpart, counterpartExpression, evidence, entitySurfaces) &&
+		interactionOptionalExpressionOccursInEvidence(stateExpression, evidence) {
+		admissionState = "committed"
+		reviewState = "source_observed"
+	}
+	visibility, visibilitySupport, visibilityDisposition := interactionSourceBoundVisibility(item, evidence, "owner_private")
+	normalized := map[string]any{
+		"contract_version":            voiceObservationContract,
+		"subject_entity":              subject,
+		"subject_entity_expression":   subjectExpression,
+		"trait_domain":                traitDomain,
+		"principle_key":               principleKey,
+		"observation_kind":            observationKind,
+		"utterance_expression":        utteranceExpression,
+		"context_key":                 contextKey,
+		"context_expression":          contextExpression,
+		"counterpart":                 counterpart,
+		"counterpart_expression":      counterpartExpression,
+		"state_modulation_key":        stateKey,
+		"state_modulation_expression": stateExpression,
+		"admission_state":             admissionState,
+		"review_state":                reviewState,
+		"visibility":                  visibility,
+		"visibility_disposition":      visibilityDisposition,
+		"evidence_excerpt":            evidence,
+		"source_hash":                 sourceHash,
+	}
+	if len(visibilitySupport) > 0 {
+		normalized["public_visibility_support"] = visibilitySupport
+	}
+	return normalized, ""
+}
+
+func voiceObservationHasLinkedSpeakerAttribution(extraction map[string]any, subject, evidence string) bool {
+	for _, raw := range sliceFromAny(extraction["speaker_attributions"]) {
+		item := mapFromAny(raw)
+		if comparableEntityKey(extractionFirstNonEmpty(stringFromMap(item, "speaker_name"), stringFromMap(item, "speaker"))) != comparableEntityKey(subject) {
+			continue
+		}
+		kind := strings.ToLower(strings.TrimSpace(stringFromMap(item, "attribution_kind")))
+		state := strings.ToLower(strings.TrimSpace(stringFromMap(item, "attribution_state")))
+		attributionEvidence := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "source_excerpt")))
+		if (kind == "dialogue" || kind == "quoted_speech") && state == "linked" &&
+			interactionEvidenceSpansOverlap(attributionEvidence, evidence) {
+			return true
+		}
+	}
+	return false
 }
 
 func interactionExplicitExpressionOccursInEvidence(expression, evidence string) bool {
@@ -566,10 +538,71 @@ func interactionExplicitExpressionOccursInEvidence(expression, evidence string) 
 	return expression != "" && evidence != "" && strings.Contains(evidence, expression)
 }
 
+func interactionOptionalExpressionOccursInEvidence(expression, evidence string) bool {
+	return strings.TrimSpace(expression) == "" || interactionExplicitExpressionOccursInEvidence(expression, evidence)
+}
+
+func interactionOptionalEntityBound(entity, expression, evidence string, surfaces map[string]map[string]bool) bool {
+	return strings.TrimSpace(entity) == "" || interactionEntityExpressionBound(entity, expression, evidence, surfaces)
+}
+
 func interactionExactValueExpression(value, expression, evidence string) bool {
 	value = normalizeArtifactComparableText(value)
 	expression = normalizeArtifactComparableText(expression)
 	return value != "" && value == expression && interactionExplicitExpressionOccursInEvidence(expression, evidence)
+}
+
+func interactionEvidenceSpansOverlap(left, right string) bool {
+	left = normalizeArtifactComparableText(left)
+	right = normalizeArtifactComparableText(right)
+	return left != "" && right != "" &&
+		(left == right || strings.Contains(left, right) || strings.Contains(right, left))
+}
+
+func interactionRelationshipEndpointBound(
+	extraction map[string]any,
+	entity, expression, evidence string,
+	surfaces map[string]map[string]bool,
+	sourceEndpoint bool,
+) bool {
+	if interactionEntityExpressionBound(entity, expression, evidence, surfaces) {
+		return true
+	}
+	entityKey := comparableEntityKey(entity)
+	if entityKey == "" {
+		return false
+	}
+	for _, raw := range sliceFromAny(extraction["speaker_attributions"]) {
+		item := mapFromAny(raw)
+		if !interactionEvidenceSpansOverlap(
+			extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "source_excerpt")),
+			evidence,
+		) {
+			continue
+		}
+		if sourceEndpoint && comparableEntityKey(extractionFirstNonEmpty(stringFromMap(item, "speaker_name"), stringFromMap(item, "speaker"))) == entityKey {
+			return true
+		}
+		if !sourceEndpoint {
+			for _, listener := range stringsFromAny(item["listener_names"]) {
+				if comparableEntityKey(listener) == entityKey {
+					return true
+				}
+			}
+			for _, rawListener := range sliceFromAny(item["listeners"]) {
+				listener := mapFromAny(rawListener)
+				name := extractionFirstNonEmpty(
+					stringFromMap(listener, "name"),
+					stringFromMap(listener, "listener_name"),
+					extractionStringFromAny(rawListener),
+				)
+				if comparableEntityKey(name) == entityKey {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func interactionAdmissionEntitySurfaces(extraction map[string]any) map[string]map[string]bool {
@@ -629,19 +662,27 @@ func interactionSameSurfaceSet(left, right map[string]bool) bool {
 }
 
 func interactionEntityExpressionBound(entity, expression, evidence string, surfaces map[string]map[string]bool) bool {
-	if !interactionExplicitExpressionOccursInEvidence(expression, evidence) {
-		return false
-	}
 	entityKey := comparableEntityKey(entity)
-	expressionKey := comparableEntityKey(expression)
-	if entityKey == "" || expressionKey == "" {
+	if entityKey == "" {
 		return false
 	}
-	if entityKey == expressionKey {
-		return true
+	if expressionKey := comparableEntityKey(expression); expressionKey != "" && entityKey == expressionKey {
+		return interactionExplicitExpressionOccursInEvidence(expression, evidence)
 	}
 	known, exists := surfaces[entityKey]
-	return exists && known != nil && known[expressionKey]
+	if !exists || known == nil {
+		return false
+	}
+	if expressionKey := comparableEntityKey(expression); expressionKey != "" {
+		return interactionExplicitExpressionOccursInEvidence(expression, evidence) &&
+			(entityKey == expressionKey || known[expressionKey])
+	}
+	for surfaceKey := range known {
+		if interactionExplicitExpressionOccursInEvidence(surfaceKey, evidence) {
+			return true
+		}
+	}
+	return false
 }
 
 func quarantineUserProfileEvidenceFromInWorldLanes(extraction map[string]any, profiles []any) map[string]int {
@@ -656,25 +697,25 @@ func quarantineUserProfileEvidenceFromInWorldLanes(extraction map[string]any, pr
 	}
 	counts := map[string]int{}
 	for _, lane := range []string{
-		"interaction_events", "relationship_observations", "interaction_boundaries", "rp_character_profile",
+		"interaction_events", "relationship_observations", "interaction_boundaries", "habit_observations", "character_profile_observations", "voice_observations", "rp_character_profile",
 		"narrative_events", "state_claims", "belief_updates", "kg_triples", "reversible_states",
 		"world_rules", "subjective_entity_memories", "protected_secrets",
 		"character_identity_accuracy", "persona_capsule_candidates",
 	} {
 		items := sliceFromAny(extraction[lane])
-		safe := make([]any, 0, len(items))
+		keptItems := make([]any, 0, len(items))
 		for _, raw := range items {
 			if interactionCandidateSharesEvidence(raw, evidenceSpans) {
 				counts[lane]++
 				continue
 			}
-			safe = append(safe, raw)
+			keptItems = append(keptItems, raw)
 		}
-		extraction[lane] = safe
+		extraction[lane] = keptItems
 	}
 
 	characterDeltas := sliceFromAny(extraction["character_deltas"])
-	safeCharacters := make([]any, 0, len(characterDeltas))
+	keptCharacters := make([]any, 0, len(characterDeltas))
 	for _, raw := range characterDeltas {
 		item := mapFromAny(raw)
 		if interactionCandidateSharesEvidence(item, evidenceSpans) {
@@ -683,19 +724,19 @@ func quarantineUserProfileEvidenceFromInWorldLanes(extraction map[string]any, pr
 		}
 		events := sliceFromAny(item["events"])
 		if len(events) > 0 {
-			safeEvents := make([]any, 0, len(events))
+			keptEvents := make([]any, 0, len(events))
 			for _, event := range events {
 				if interactionCandidateSharesEvidence(event, evidenceSpans) {
 					counts["character_deltas.events"]++
 					continue
 				}
-				safeEvents = append(safeEvents, event)
+				keptEvents = append(keptEvents, event)
 			}
-			item["events"] = safeEvents
+			item["events"] = keptEvents
 		}
-		safeCharacters = append(safeCharacters, item)
+		keptCharacters = append(keptCharacters, item)
 	}
-	extraction["character_deltas"] = safeCharacters
+	extraction["character_deltas"] = keptCharacters
 
 	worldState := mapFromAny(extraction["world_state"])
 	if len(worldState) > 0 {
@@ -704,29 +745,29 @@ func quarantineUserProfileEvidenceFromInWorldLanes(extraction map[string]any, pr
 			extraction["world_state"] = map[string]any{}
 		} else {
 			rules := sliceFromAny(worldState["rules"])
-			safeRules := make([]any, 0, len(rules))
+			keptRules := make([]any, 0, len(rules))
 			for _, rule := range rules {
 				if interactionCandidateSharesEvidence(rule, evidenceSpans) {
 					counts["world_state.rules"]++
 					continue
 				}
-				safeRules = append(safeRules, rule)
+				keptRules = append(keptRules, rule)
 			}
-			worldState["rules"] = safeRules
+			worldState["rules"] = keptRules
 			extraction["world_state"] = worldState
 		}
 	}
 
 	excerpts := stringsFromAny(extraction["evidence_excerpts"])
-	safeExcerpts := make([]string, 0, len(excerpts))
+	keptExcerpts := make([]string, 0, len(excerpts))
 	for _, excerpt := range excerpts {
 		if interactionEvidenceOverlapsAny(excerpt, evidenceSpans) {
 			counts["evidence_excerpts"]++
 			continue
 		}
-		safeExcerpts = append(safeExcerpts, excerpt)
+		keptExcerpts = append(keptExcerpts, excerpt)
 	}
-	extraction["evidence_excerpts"] = safeExcerpts
+	extraction["evidence_excerpts"] = keptExcerpts
 	return counts
 }
 
@@ -804,26 +845,17 @@ func normalizeRPCharacterProfiles(raw any, source, sourceHash string, entitySurf
 		characterExpression := strings.TrimSpace(stringFromMap(item, "character_expression"))
 		valueExpression := strings.TrimSpace(stringFromMap(item, "value_expression"))
 		evidence := interactionAdmissionEvidence(item)
-		if character == "" || profileKey == "" || value == "" {
-			reject("rp_profile_character_key_or_value_missing")
-			continue
-		}
-		if !criticEvidenceOccursInSource(evidence, source) {
-			reject("rp_profile_exact_current_evidence_required")
-			continue
-		}
-		if !interactionEntityExpressionBound(character, characterExpression, evidence, entitySurfaces) {
-			reject("rp_profile_character_expression_unbound")
-			continue
-		}
-		if !interactionExactValueExpression(value, valueExpression, evidence) {
-			reject("rp_profile_value_expression_unbound")
+		if character == "" || (profileKey == "" && value == "") {
+			reject("rp_profile_character_or_content_missing")
 			continue
 		}
 		identityProof, proofValid := normalizeRPCharacterIdentityProof(item, character, characterExpression, evidence, stableIdentities)
 		admissionState := "review_required"
 		reviewState := "stable_in_world_identity_unverified"
-		if proofValid {
+		if proofValid &&
+			criticEvidenceOccursInSource(evidence, source) &&
+			interactionEntityExpressionBound(character, characterExpression, evidence, entitySurfaces) &&
+			(value == "" || interactionExactValueExpression(value, valueExpression, evidence)) {
 			admissionState = "committed"
 			reviewState = "source_observed"
 		}
@@ -870,63 +902,6 @@ func normalizeRPCharacterIdentityProof(item map[string]any, character, character
 		"identity_namespace":   namespace,
 		"character_expression": proofExpression,
 	}, true
-}
-
-func quarantineReviewRPProfileIdentitySurfaces(extraction map[string]any, profiles []any) map[string]int {
-	surfaces := map[string]bool{}
-	for _, raw := range profiles {
-		profile := mapFromAny(raw)
-		for _, surface := range []string{stringFromMap(profile, "character"), stringFromMap(profile, "character_expression")} {
-			if key := comparableEntityKey(surface); key != "" {
-				surfaces[key] = true
-			}
-		}
-	}
-	if len(surfaces) == 0 {
-		return nil
-	}
-	counts := map[string]int{}
-	entities := mapFromAny(extraction["entities"])
-	characters := []any{}
-	for _, raw := range sliceFromAny(entities["characters"]) {
-		item := mapFromAny(raw)
-		name := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "name"), stringFromMap(item, "label"), stringFromMap(item, "title")))
-		matched := surfaces[comparableEntityKey(name)]
-		for _, alias := range stringsFromAny(item["aliases"]) {
-			matched = matched || surfaces[comparableEntityKey(alias)]
-		}
-		if matched {
-			counts["entities.characters"]++
-			continue
-		}
-		characters = append(characters, raw)
-	}
-	entities["characters"] = characters
-	extraction["entities"] = entities
-
-	for _, lane := range []struct {
-		key      string
-		nameKeys []string
-	}{
-		{key: "character_deltas", nameKeys: []string{"name", "character", "entity"}},
-		{key: "speaker_attributions", nameKeys: []string{"speaker_name", "speaker"}},
-	} {
-		safe := []any{}
-		for _, raw := range sliceFromAny(extraction[lane.key]) {
-			item := mapFromAny(raw)
-			matched := false
-			for _, key := range lane.nameKeys {
-				matched = matched || surfaces[comparableEntityKey(stringFromMap(item, key))]
-			}
-			if matched {
-				counts[lane.key]++
-				continue
-			}
-			safe = append(safe, raw)
-		}
-		extraction[lane.key] = safe
-	}
-	return counts
 }
 
 func interactionAdmissionEvidence(item map[string]any) string {
@@ -1032,11 +1007,11 @@ func interactionAdmissionPreciseMemoryCandidates(extraction map[string]any) []pr
 			kind: "event", subtype: "atomic_interaction", excerpt: evidence,
 			payload: preciseMemorySemanticPayload(item, []string{
 				"contract_version", "actor", "actor_expression", "counterpart", "counterpart_expression", "action", "action_expression",
-				"interaction_kind", "visibility", "source_hash",
+				"interaction_kind", "admission_state", "review_state", "visibility", "source_hash",
 			}),
 			confidence: 1, truthScope: "source_occurrence", epistemicMode: "direct",
-			authorityClass: "objective_world_state", admissionState: "committed",
-			reviewState: "source_observed", visibility: normalizeInteractionVisibility(stringFromMap(item, "visibility")),
+			authorityClass: "objective_world_state", admissionState: extractionFirstNonEmpty(stringFromMap(item, "admission_state"), "review_required"),
+			reviewState: extractionFirstNonEmpty(stringFromMap(item, "review_state"), "needs_review"), visibility: normalizeInteractionVisibility(stringFromMap(item, "visibility")),
 			surfaces:      map[string]string{"actor": actor, "affected": counterpart},
 			requiredRoles: map[string]bool{"actor": true, "affected": true},
 		})
@@ -1046,25 +1021,123 @@ func interactionAdmissionPreciseMemoryCandidates(extraction map[string]any) []pr
 		sourceEntity := stringFromMap(item, "source_entity")
 		targetEntity := stringFromMap(item, "target_entity")
 		domain := stringFromMap(item, "domain")
+		observation := stringFromMap(item, "observation")
 		evidence := interactionAdmissionEvidence(item)
-		if sourceEntity == "" || targetEntity == "" || !relationshipObservationDomains[domain] || evidence == "" {
+		if sourceEntity == "" || targetEntity == "" || observation == "" || evidence == "" {
 			continue
 		}
+		subtype := "relationship_observation"
+		if domain != "" {
+			subtype = "relationship_" + domain
+		}
+		payloadKeys := []string{
+			"contract_version", "source_entity", "source_entity_expression", "target_entity", "target_entity_expression", "domain", "domain_expression",
+			"observation", "support_kind", "admission_state", "review_state",
+			"visibility", "public_visibility_support", "visibility_disposition", "source_hash",
+		}
+		if expression := stringFromMap(item, "magnitude_expression"); expression != "" && interactionExactValueExpression(extractionStringFromAny(item["magnitude"]), expression, evidence) {
+			payloadKeys = append(payloadKeys, "magnitude", "magnitude_expression")
+		}
+		if expression := stringFromMap(item, "duration_expression"); expression != "" && interactionExactValueExpression(extractionStringFromAny(item["duration"]), expression, evidence) {
+			payloadKeys = append(payloadKeys, "duration", "duration_expression")
+		}
 		out = append(out, preciseMemoryCandidate{
-			kind: "observation", subtype: "relationship_" + domain, excerpt: evidence,
-			payload: preciseMemorySemanticPayload(item, []string{
-				"contract_version", "source_entity", "source_entity_expression", "target_entity", "target_entity_expression", "domain", "domain_expression",
-				"observation", "support_kind", "magnitude", "magnitude_expression",
-				"duration", "duration_expression",
-				"admission_state", "review_state",
-				"visibility", "public_visibility_support", "visibility_disposition", "source_hash",
-			}),
+			kind: "observation", subtype: subtype, excerpt: evidence,
+			payload:    preciseMemorySemanticPayload(item, payloadKeys),
 			confidence: 1, truthScope: "source_scoped", epistemicMode: "direct",
 			authorityClass: "subjective_episodic", admissionState: extractionFirstNonEmpty(stringFromMap(item, "admission_state"), "committed"),
 			reviewState: extractionFirstNonEmpty(stringFromMap(item, "review_state"), "source_observed"), visibility: normalizeInteractionVisibility(stringFromMap(item, "visibility")),
 			relationshipKey: comparableEntityKey(sourceEntity) + "->" + comparableEntityKey(targetEntity) + "/" + domain,
 			surfaces:        map[string]string{"actor": sourceEntity, "affected": targetEntity},
 			requiredRoles:   map[string]bool{"actor": true, "affected": true},
+		})
+	}
+	for _, rawItem := range sliceFromAny(extraction["habit_observations"]) {
+		item := mapFromAny(rawItem)
+		subject := stringFromMap(item, "subject_entity")
+		counterpart := stringFromMap(item, "counterpart")
+		behaviorKey := strings.TrimSpace(stringFromMap(item, "behavior_key"))
+		evidence := interactionAdmissionEvidence(item)
+		if subject == "" || behaviorKey == "" || evidence == "" {
+			continue
+		}
+		requiredRoles := map[string]bool{"subject": true}
+		surfaces := map[string]string{"subject": subject}
+		if counterpart != "" {
+			requiredRoles["affected"] = true
+			surfaces["affected"] = counterpart
+		}
+		out = append(out, preciseMemoryCandidate{
+			kind: "observation", subtype: "habit_observation", excerpt: evidence,
+			payload: preciseMemorySemanticPayload(item, []string{
+				"contract_version", "subject_entity", "subject_entity_expression",
+				"behavior_key", "behavior_expression", "observation_kind",
+				"context_key", "context_expression", "counterpart", "counterpart_expression",
+				"admission_state", "review_state", "visibility", "public_visibility_support",
+				"visibility_disposition", "source_hash",
+			}),
+			confidence: 1, truthScope: "support_only", epistemicMode: "direct",
+			authorityClass: "support_hypothesis", admissionState: extractionFirstNonEmpty(stringFromMap(item, "admission_state"), "committed"),
+			reviewState: extractionFirstNonEmpty(stringFromMap(item, "review_state"), "source_observed"), visibility: normalizeInteractionVisibility(stringFromMap(item, "visibility")),
+			surfaces: surfaces, requiredRoles: requiredRoles,
+		})
+	}
+	for _, rawItem := range sliceFromAny(extraction["character_profile_observations"]) {
+		item := mapFromAny(rawItem)
+		subject := stringFromMap(item, "subject_entity")
+		counterpart := stringFromMap(item, "counterpart")
+		evidence := interactionAdmissionEvidence(item)
+		if subject == "" || strings.TrimSpace(stringFromMap(item, "trait_key")) == "" || evidence == "" {
+			continue
+		}
+		requiredRoles := map[string]bool{"subject": true}
+		surfaces := map[string]string{"subject": subject}
+		if counterpart != "" {
+			requiredRoles["affected"] = true
+			surfaces["affected"] = counterpart
+		}
+		out = append(out, preciseMemoryCandidate{
+			kind: "observation", subtype: "character_profile", excerpt: evidence,
+			payload: preciseMemorySemanticPayload(item, []string{
+				"contract_version", "subject_entity", "subject_entity_expression", "profile_section",
+				"trait_domain", "trait_key", "supported_expression", "observation_kind",
+				"context_key", "context_expression", "counterpart", "counterpart_expression",
+				"admission_state", "review_state", "visibility", "public_visibility_support",
+				"visibility_disposition", "source_hash",
+			}),
+			confidence: 1, truthScope: "support_only", epistemicMode: "direct",
+			authorityClass: "support_hypothesis", admissionState: extractionFirstNonEmpty(stringFromMap(item, "admission_state"), "committed"),
+			reviewState: extractionFirstNonEmpty(stringFromMap(item, "review_state"), "source_observed"), visibility: normalizeInteractionVisibility(stringFromMap(item, "visibility")),
+			surfaces: surfaces, requiredRoles: requiredRoles,
+		})
+	}
+	for _, rawItem := range sliceFromAny(extraction["voice_observations"]) {
+		item := mapFromAny(rawItem)
+		subject := stringFromMap(item, "subject_entity")
+		counterpart := stringFromMap(item, "counterpart")
+		evidence := interactionAdmissionEvidence(item)
+		if subject == "" || strings.TrimSpace(stringFromMap(item, "principle_key")) == "" || evidence == "" {
+			continue
+		}
+		requiredRoles := map[string]bool{"subject": true}
+		surfaces := map[string]string{"subject": subject}
+		if counterpart != "" {
+			requiredRoles["affected"] = true
+			surfaces["affected"] = counterpart
+		}
+		out = append(out, preciseMemoryCandidate{
+			kind: "observation", subtype: "voice_behavior", excerpt: evidence,
+			payload: preciseMemorySemanticPayload(item, []string{
+				"contract_version", "subject_entity", "subject_entity_expression", "trait_domain",
+				"principle_key", "observation_kind", "utterance_expression",
+				"context_key", "context_expression", "counterpart", "counterpart_expression",
+				"state_modulation_key", "state_modulation_expression", "admission_state", "review_state",
+				"visibility", "public_visibility_support", "visibility_disposition", "source_hash",
+			}),
+			confidence: 1, truthScope: "support_only", epistemicMode: "direct",
+			authorityClass: "support_hypothesis", admissionState: extractionFirstNonEmpty(stringFromMap(item, "admission_state"), "committed"),
+			reviewState: extractionFirstNonEmpty(stringFromMap(item, "review_state"), "source_observed"), visibility: normalizeInteractionVisibility(stringFromMap(item, "visibility")),
+			surfaces: surfaces, requiredRoles: requiredRoles,
 		})
 	}
 	for _, rawItem := range sliceFromAny(extraction["interaction_boundaries"]) {

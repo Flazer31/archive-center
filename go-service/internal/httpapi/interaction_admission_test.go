@@ -9,31 +9,16 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/config"
 )
 
-func testKGEntityBinding(expression, entityKind string) map[string]any {
-	return map[string]any{
-		"contract_version": kgEndpointBindingContract,
-		"endpoint_kind":    "entity", "entity_kind": entityKind, "expression": expression,
-	}
-}
-
-func testKGScalarBinding(expression, scalarType string) map[string]any {
-	return map[string]any{
-		"contract_version": kgEndpointBindingContract,
-		"endpoint_kind":    "scalar", "scalar_type": scalarType, "expression": expression,
-	}
-}
-
 func testEntityScalarKG(semanticClass, subject, entityKind, predicate, object, scalarType, evidence string) map[string]any {
 	return map[string]any{
-		"semantic_class": semanticClass,
-		"subject":        subject, "subject_binding": testKGEntityBinding(subject, entityKind),
-		"predicate": predicate, "predicate_expression": predicate,
-		"object": object, "object_binding": testKGScalarBinding(object, scalarType),
+		"subject":          subject,
+		"predicate":        predicate,
+		"object":           object,
 		"evidence_excerpt": evidence,
 	}
 }
 
-func TestInteractionAdmissionPreservesDirectionAndRejectsReciprocalRomance(t *testing.T) {
+func TestInteractionAdmissionPreservesDirectionAndKeepsUnsupportedReciprocalForReview(t *testing.T) {
 	source := `A said, "I love B."`
 	raw := map[string]any{
 		"relationship_observations": []any{
@@ -53,18 +38,25 @@ func TestInteractionAdmissionPreservesDirectionAndRejectsReciprocalRomance(t *te
 	}
 	admitted, _ := admitCriticInteractionLanes(raw, source, "")
 	items := sliceFromAny(admitted["relationship_observations"])
-	if len(items) != 1 {
-		t.Fatalf("unilateral relationship count=%d, want 1: %#v", len(items), items)
+	if len(items) != 2 {
+		t.Fatalf("broad relationship collection count=%d, want 2: %#v", len(items), items)
 	}
-	got := mapFromAny(items[0])
-	if stringFromMap(got, "source_entity") != "A" ||
-		stringFromMap(got, "target_entity") != "B" ||
-		stringFromMap(got, "domain") != "romantic" {
-		t.Fatalf("relationship direction/domain changed: %#v", got)
+	committed := mapFromAny(items[0])
+	review := mapFromAny(items[1])
+	if stringFromMap(committed, "source_entity") != "A" ||
+		stringFromMap(committed, "target_entity") != "B" ||
+		stringFromMap(committed, "domain") != "romantic" ||
+		stringFromMap(committed, "admission_state") != "committed" {
+		t.Fatalf("source-bound relationship direction/domain changed: %#v", committed)
+	}
+	if stringFromMap(review, "source_entity") != "B" ||
+		stringFromMap(review, "target_entity") != "A" ||
+		stringFromMap(review, "admission_state") != "review_required" {
+		t.Fatalf("unsupported reciprocal relationship reached current-state projection: %#v", review)
 	}
 }
 
-func TestInteractionAdmissionKeepsHelpAtomicAndBlocksRelationshipInflation(t *testing.T) {
+func TestInteractionAdmissionKeepsHelpAtomicAndRetainsRelationshipCandidatesForReview(t *testing.T) {
 	source := "A helped B lift the fallen beam. The beam is lifted."
 	raw := map[string]any{
 		"interaction_events": []any{map[string]any{
@@ -101,21 +93,23 @@ func TestInteractionAdmissionKeepsHelpAtomicAndBlocksRelationshipInflation(t *te
 			testEntityScalarKG("state_fact", "beam", "item", "is", "lifted", "state", "The beam is lifted."),
 		},
 	}
-	admitted, trace := admitCriticInteractionLanes(raw, source, "")
+	admitted, _ := admitCriticInteractionLanes(raw, source, "")
 	if len(sliceFromAny(admitted["interaction_events"])) != 1 ||
-		len(sliceFromAny(admitted["relationship_observations"])) != 0 {
-		t.Fatalf("help was not kept atomic: %#v", admitted)
+		len(sliceFromAny(admitted["relationship_observations"])) != 2 {
+		t.Fatalf("broad interaction collection lost candidates: %#v", admitted)
+	}
+	for _, rawRelationship := range sliceFromAny(admitted["relationship_observations"]) {
+		if stringFromMap(mapFromAny(rawRelationship), "admission_state") != "review_required" {
+			t.Fatalf("unsupported relationship candidate reached current-state projection: %#v", rawRelationship)
+		}
 	}
 	delta := mapFromAny(sliceFromAny(admitted["character_deltas"])[0])
-	if _, exists := delta["relationships"]; exists || len(sliceFromAny(delta["events"])) != 1 {
-		t.Fatalf("legacy character relationship write survived: %#v", delta)
+	if _, exists := delta["relationships"]; !exists || len(sliceFromAny(delta["events"])) != 2 {
+		t.Fatalf("raw character observations were removed during collection: %#v", delta)
 	}
-	if len(sliceFromAny(admitted["narrative_events"])) != 1 ||
-		len(sliceFromAny(admitted["kg_triples"])) != 1 {
-		t.Fatalf("legacy relation event/KG bypass survived: %#v", admitted)
-	}
-	if intFromAny(mapFromAny(trace["reasons"])["legacy_character_relationship_current_write_blocked"], 0) != 1 {
-		t.Fatalf("legacy relation block was not traced: %#v", trace)
+	if len(sliceFromAny(admitted["narrative_events"])) != 2 ||
+		len(sliceFromAny(admitted["kg_triples"])) != 2 {
+		t.Fatalf("raw extraction content was removed during interaction collection: %#v", admitted)
 	}
 }
 
@@ -139,9 +133,13 @@ func TestInteractionAdmissionDoesNotTurnCommandComplianceIntoLoyaltyOrConsent(t 
 	}
 	admitted, _ := admitCriticInteractionLanes(raw, source, "")
 	if len(sliceFromAny(admitted["interaction_events"])) != 1 ||
-		len(sliceFromAny(admitted["relationship_observations"])) != 0 ||
-		len(sliceFromAny(admitted["interaction_boundaries"])) != 0 {
-		t.Fatalf("command was inflated into relationship state: %#v", admitted)
+		len(sliceFromAny(admitted["relationship_observations"])) != 1 ||
+		len(sliceFromAny(admitted["interaction_boundaries"])) != 1 {
+		t.Fatalf("broad interaction collection lost candidates: %#v", admitted)
+	}
+	if stringFromMap(mapFromAny(sliceFromAny(admitted["relationship_observations"])[0]), "admission_state") != "review_required" ||
+		stringFromMap(mapFromAny(sliceFromAny(admitted["interaction_boundaries"])[0]), "admission_state") != "review_required" {
+		t.Fatalf("unsupported command inference reached current-state projection: %#v", admitted)
 	}
 }
 
@@ -165,14 +163,16 @@ func TestInteractionBoundaryDefaultsToEventAndWithdrawalWinsSameScope(t *testing
 	}
 	admitted, _ := admitCriticInteractionLanes(raw, source, "")
 	items := sliceFromAny(admitted["interaction_boundaries"])
-	if len(items) != 1 {
-		t.Fatalf("same-scope boundary projection count=%d: %#v", len(items), items)
+	if len(items) != 2 {
+		t.Fatalf("same-turn boundary observations were not both collected: %#v", items)
 	}
-	boundary := mapFromAny(items[0])
-	if stringFromMap(boundary, "decision") != "withdrawn" ||
-		stringFromMap(boundary, "effective_scope") != "event" ||
-		stringFromMap(boundary, "visibility") != "owner_private" {
-		t.Fatalf("withdrawal did not supersede allow: %#v", boundary)
+	for _, rawBoundary := range items {
+		boundary := mapFromAny(rawBoundary)
+		if stringFromMap(boundary, "admission_state") != "committed" ||
+			stringFromMap(boundary, "effective_scope") != "event" ||
+			stringFromMap(boundary, "visibility") != "owner_private" {
+			t.Fatalf("source-bound boundary observation was not preserved: %#v", boundary)
+		}
 	}
 	if !memoryAdmissionHasPerspectiveScopedContent(admitted) ||
 		!memoryAdmissionHasHolderScopedPerspectiveContent(admitted) {
@@ -275,8 +275,10 @@ func TestUserAndRPProfileNamespacesStaySeparatedAndOutOfWorldLanes(t *testing.T)
 	admitted, trace := admitCriticInteractionLanes(raw, source, "")
 	users := sliceFromAny(admitted["user_interaction_profile"])
 	rp := sliceFromAny(admitted["rp_character_profile"])
-	if len(users) != 1 || len(rp) != 0 ||
-		stringFromMap(mapFromAny(users[0]), "namespace") != "user_interaction_profile" {
+	if len(users) != 1 || len(rp) != 1 ||
+		stringFromMap(mapFromAny(users[0]), "namespace") != "user_interaction_profile" ||
+		stringFromMap(mapFromAny(rp[0]), "namespace") != "rp_character_profile" ||
+		stringFromMap(mapFromAny(rp[0]), "admission_state") != "review_required" {
 		t.Fatalf("profile namespace mismatch: %#v", admitted)
 	}
 	if len(sliceFromAny(admitted["narrative_events"])) != 0 ||
@@ -321,14 +323,15 @@ func TestInteractionAdmissionRejectsMissingOrFabricatedActionExpressions(t *test
 			},
 		},
 	}
-	admitted, trace := admitCriticInteractionLanes(raw, source, "")
-	if len(sliceFromAny(admitted["interaction_events"])) != 0 {
-		t.Fatalf("unbound action candidate was admitted: %#v", admitted)
+	admitted, _ := admitCriticInteractionLanes(raw, source, "")
+	items := sliceFromAny(admitted["interaction_events"])
+	if len(items) != 2 {
+		t.Fatalf("structurally complete interaction candidates were not collected: %#v", admitted)
 	}
-	reasons := mapFromAny(trace["reasons"])
-	if intFromAny(reasons["interaction_entity_expression_unbound"], 0) != 1 ||
-		intFromAny(reasons["interaction_action_expression_unbound"], 0) != 1 {
-		t.Fatalf("action expression rejection was not auditable: %#v", trace)
+	for _, rawItem := range items {
+		if stringFromMap(mapFromAny(rawItem), "admission_state") != "review_required" {
+			t.Fatalf("unbound action candidate reached current-state projection: %#v", rawItem)
+		}
 	}
 }
 
@@ -359,19 +362,22 @@ func TestRelationshipDirectionAndDomainExpressionsMustBindBeforeCommit(t *testin
 			},
 		},
 	}
-	admitted, trace := admitCriticInteractionLanes(raw, source, "")
+	admitted, _ := admitCriticInteractionLanes(raw, source, "")
 	items := sliceFromAny(admitted["relationship_observations"])
-	if len(items) != 1 {
-		t.Fatalf("only fully source-bound relationship should be admitted: %#v", admitted)
+	if len(items) != 3 {
+		t.Fatalf("relationship collection lost structurally complete candidates: %#v", admitted)
 	}
-	item := mapFromAny(items[0])
-	if stringFromMap(item, "admission_state") != "committed" || stringFromMap(item, "review_state") != "source_observed" {
-		t.Fatalf("fully source-bound explicit relationship was not committed: %#v", item)
+	committed, review := 0, 0
+	for _, rawItem := range items {
+		switch stringFromMap(mapFromAny(rawItem), "admission_state") {
+		case "committed":
+			committed++
+		case "review_required":
+			review++
+		}
 	}
-	reasons := mapFromAny(trace["reasons"])
-	if intFromAny(reasons["relationship_entity_expression_unbound"], 0) != 1 ||
-		intFromAny(reasons["relationship_domain_expression_unbound"], 0) != 1 {
-		t.Fatalf("direction/domain expression failures were not traced: %#v", trace)
+	if committed != 1 || review != 2 {
+		t.Fatalf("relationship projection states mismatch: committed=%d review=%d items=%#v", committed, review, items)
 	}
 }
 
@@ -396,19 +402,26 @@ func TestBoundaryDecisionAndScopeExpressionsMustBindBeforeCommit(t *testing.T) {
 			},
 		},
 	}
-	admitted, trace := admitCriticInteractionLanes(raw, source, "")
+	admitted, _ := admitCriticInteractionLanes(raw, source, "")
 	items := sliceFromAny(admitted["interaction_boundaries"])
-	if len(items) != 1 || stringFromMap(mapFromAny(items[0]), "admission_state") != "committed" {
-		t.Fatalf("only fully source-bound boundary should commit: %#v", admitted)
+	if len(items) != 3 {
+		t.Fatalf("boundary collection lost structurally complete candidates: %#v", admitted)
 	}
-	reasons := mapFromAny(trace["reasons"])
-	if intFromAny(reasons["boundary_explicit_expression_required"], 0) != 1 ||
-		intFromAny(reasons["boundary_action_scope_expression_unbound"], 0) != 1 {
-		t.Fatalf("invented decision/scope were not rejected: %#v", trace)
+	committed, review := 0, 0
+	for _, rawItem := range items {
+		switch stringFromMap(mapFromAny(rawItem), "admission_state") {
+		case "committed":
+			committed++
+		case "review_required":
+			review++
+		}
+	}
+	if committed != 1 || review != 2 {
+		t.Fatalf("boundary projection states mismatch: committed=%d review=%d items=%#v", committed, review, items)
 	}
 }
 
-func TestRPProfileFabricatedValueIsRejected(t *testing.T) {
+func TestRPProfileUnboundValueIsRetainedForReview(t *testing.T) {
 	source := "Mira dislikes rain."
 	raw := map[string]any{
 		"rp_character_profile": []any{map[string]any{
@@ -417,8 +430,9 @@ func TestRPProfileFabricatedValueIsRejected(t *testing.T) {
 		}},
 	}
 	admitted, _ := admitCriticInteractionLanes(raw, source, "")
-	if len(sliceFromAny(admitted["rp_character_profile"])) != 0 {
-		t.Fatalf("fabricated RP profile value was admitted: %#v", admitted)
+	profiles := sliceFromAny(admitted["rp_character_profile"])
+	if len(profiles) != 1 || stringFromMap(mapFromAny(profiles[0]), "admission_state") != "review_required" {
+		t.Fatalf("unbound RP profile candidate was removed or committed: %#v", admitted)
 	}
 }
 
@@ -479,7 +493,7 @@ func TestUserProfileEvidenceQuarantineCatchesContainingAndContainedSpans(t *test
 	}
 }
 
-func TestUnverifiedRPProfileCannotCreateCharacterIdentityOrPreciseMemory(t *testing.T) {
+func TestUnverifiedRPProfileIsArchivedForReviewWithoutCurrentProjection(t *testing.T) {
 	evidence := "The user says Mira dislikes rain."
 	raw := map[string]any{
 		"entities": map[string]any{"characters": []any{map[string]any{"name": "Mira"}}},
@@ -489,23 +503,19 @@ func TestUnverifiedRPProfileCannotCreateCharacterIdentityOrPreciseMemory(t *test
 		}},
 	}
 	admitted, trace := admitCriticInteractionLanes(raw, evidence, "")
-	if len(sliceFromAny(admitted["rp_character_profile"])) != 0 || len(interactionAdmissionPreciseMemoryCandidates(admitted)) != 0 {
-		t.Fatalf("unverified RP profile reached committed memory: %#v", admitted)
+	profiles := sliceFromAny(admitted["rp_character_profile"])
+	candidates := interactionAdmissionPreciseMemoryCandidates(admitted)
+	if len(profiles) != 1 || stringFromMap(mapFromAny(profiles[0]), "admission_state") != "review_required" ||
+		len(candidates) != 1 || candidates[0].admissionState != "review_required" {
+		t.Fatalf("unverified RP profile was removed or committed: admitted=%#v candidates=%#v", admitted, candidates)
 	}
-	if len(sliceFromAny(mapFromAny(admitted["entities"])["characters"])) != 0 {
-		t.Fatalf("unverified RP surface remained an entity creation source: %#v", admitted["entities"])
+	if len(sliceFromAny(mapFromAny(admitted["entities"])["characters"])) != 1 {
+		t.Fatalf("broad entity collection removed the RP character: %#v", admitted["entities"])
 	}
 	if len(sliceFromAny(trace["rp_profile_review_proposals"])) != 1 {
 		t.Fatalf("unverified RP proposal was not retained for review: %#v", trace)
 	}
 
-	fake := newIdentityRecordingStore()
-	srv := NewServer(config.Default())
-	srv.Store = fake
-	_ = srv.saveCriticExtractionArtifacts(context.Background(), "rp-review", 1, admitted, evidence, completeTurnEmbeddingConfig{}, time.Unix(200, 0))
-	if len(fake.identities) != 0 {
-		t.Fatalf("review-only RP profile created a session identity: %#v", fake.identities)
-	}
 }
 
 func TestRPProfileCommitsOnlyWithMatchingStableInWorldIdentityProof(t *testing.T) {
@@ -542,7 +552,7 @@ func TestRPProfileCommitsOnlyWithMatchingStableInWorldIdentityProof(t *testing.T
 	}
 }
 
-func TestRPProfileRejectsCriticNamespaceThatDisagreesWithDatabase(t *testing.T) {
+func TestRPProfileWithMismatchedNamespaceRemainsReviewOnly(t *testing.T) {
 	evidence := "Mira dislikes rain."
 	raw := map[string]any{
 		"entities": map[string]any{"characters": []any{map[string]any{"name": "Mira"}}},
@@ -565,13 +575,14 @@ func TestRPProfileRejectsCriticNamespaceThatDisagreesWithDatabase(t *testing.T) 
 	srv.Store = identityStore
 	trusted := srv.resolveTrustedRPCharacterIdentities(context.Background(), "rp-namespace", raw)
 	admitted, trace := admitCriticInteractionLanesWithTrustedIdentities(raw, evidence, "", trusted)
-	if len(sliceFromAny(admitted["rp_character_profile"])) != 0 ||
+	profiles := sliceFromAny(admitted["rp_character_profile"])
+	if len(profiles) != 1 || stringFromMap(mapFromAny(profiles[0]), "admission_state") != "review_required" ||
 		len(sliceFromAny(trace["rp_profile_review_proposals"])) != 1 {
 		t.Fatalf("critic namespace overrode database namespace: admitted=%#v trace=%#v", admitted, trace)
 	}
 }
 
-func TestLegacyTypedRelationshipCandidatesAreStrippedAcrossLanes(t *testing.T) {
+func TestLegacyTypedRelationshipCandidatesRemainInBroadCollection(t *testing.T) {
 	typed := func() map[string]any {
 		return map[string]any{
 			"semantic_class": "relationship_observation", "source_entity": "A", "target_entity": "B",
@@ -586,14 +597,17 @@ func TestLegacyTypedRelationshipCandidatesAreStrippedAcrossLanes(t *testing.T) {
 		"kg_triples":                 []any{typed()},
 	}
 	admitted, _ := admitCriticInteractionLanes(raw, "A trusts B.", "")
-	for _, lane := range []string{"narrative_events", "state_claims", "belief_updates", "subjective_entity_memories", "kg_triples"} {
-		if len(sliceFromAny(admitted[lane])) != 0 {
-			t.Fatalf("typed legacy relationship survived lane %s: %#v", lane, admitted[lane])
+	for _, lane := range []string{"narrative_events", "state_claims", "belief_updates", "subjective_entity_memories"} {
+		if len(sliceFromAny(admitted[lane])) != 1 {
+			t.Fatalf("typed relationship candidate was removed from lane %s: %#v", lane, admitted[lane])
 		}
+	}
+	if len(sliceFromAny(admitted["kg_triples"])) != 1 {
+		t.Fatalf("KG relationship was filtered by a parallel content rule: %#v", admitted["kg_triples"])
 	}
 }
 
-func TestUntypedGenericKGCannotBypassRelationshipAdmission(t *testing.T) {
+func TestSourceBoundGenericKGIsAdmitted(t *testing.T) {
 	raw := map[string]any{
 		"kg_triples": []any{
 			map[string]any{"subject": "A", "predicate": "loves", "object": "B", "evidence_excerpt": "A loves B."},
@@ -603,52 +617,28 @@ func TestUntypedGenericKGCannotBypassRelationshipAdmission(t *testing.T) {
 	}
 	admitted, trace := admitCriticInteractionLanes(raw, "A loves B. A is loyal to B. The beam is lifted.", "")
 	items := sliceFromAny(admitted["kg_triples"])
-	if len(items) != 1 || stringFromMap(mapFromAny(items[0]), "subject") != "beam" {
-		t.Fatalf("untyped KG bypass survived or typed objective KG was lost: %#v", admitted)
-	}
-	if intFromAny(mapFromAny(trace["reasons"])["untyped_or_unknown_kg_semantic_class_blocked"], 0) != 2 {
-		t.Fatalf("untyped KG rejection was not traced: %#v", trace)
+	if len(items) != 3 {
+		t.Fatalf("source-bound KG was suppressed: admitted=%#v trace=%#v", admitted, trace)
 	}
 }
 
-func TestAllowedSemanticClassCannotBypassCharacterRelationshipAdmission(t *testing.T) {
+func TestKGAdmissionDoesNotApplyContentRules(t *testing.T) {
+	evidence := "Ayoung described the concept as bedroom lingerie."
 	raw := map[string]any{
 		"kg_triples": []any{
-			map[string]any{"semantic_class": "state_fact", "subject": "A", "predicate": "loves", "object": "B", "evidence_excerpt": "A loves B."},
-			testEntityScalarKG("state_fact", "beam", "item", "is", "lifted", "state", "The beam is lifted."),
+			map[string]any{"subject": "Ayoung", "predicate": "described_as", "object": "bedroom lingerie", "evidence_excerpt": evidence},
+			map[string]any{"subject": "Ayoung", "predicate": "described_as", "object": "uniform", "evidence_excerpt": "not in this turn"},
+			map[string]any{"subject": "Ayoung", "predicate": "described_as", "evidence_excerpt": evidence},
 		},
 	}
-	admitted, trace := admitCriticInteractionLanes(raw, "A loves B. The beam is lifted.", "")
-	items := sliceFromAny(admitted["kg_triples"])
-	if len(items) != 1 || stringFromMap(mapFromAny(items[0]), "subject") != "beam" {
-		t.Fatalf("character relationship bypass survived or objective item KG was lost: %#v", admitted)
-	}
-	if intFromAny(mapFromAny(trace["reasons"])["kg_predicate_expression_unbound"], 0) != 1 {
-		t.Fatalf("character KG bypass was not traced: %#v", trace)
-	}
-}
 
-func TestResolvedEntityEndpointsStillCannotAuthorizeGenericEntityEdge(t *testing.T) {
-	evidence := "A loves B."
-	raw := map[string]any{
-		"kg_triples": []any{map[string]any{
-			"semantic_class": "state_fact",
-			"subject":        "A", "subject_binding": testKGEntityBinding("A", "character"),
-			"predicate": "loves", "predicate_expression": "loves",
-			"object": "B", "object_binding": testKGEntityBinding("B", "character"),
-			"evidence_excerpt": evidence,
-		}},
+	admitted, trace := admitCriticInteractionLanes(raw, evidence, "")
+	items := sliceFromAny(admitted["kg_triples"])
+	if len(items) != 3 {
+		t.Fatalf("KG admission applied a content rule: admitted=%#v trace=%#v", admitted, trace)
 	}
-	trusted := map[string]*interactionStableCharacterIdentity{
-		"a": {stableEntityID: "entity-a", namespace: "session_npc"},
-		"b": {stableEntityID: "entity-b", namespace: "session_npc"},
-	}
-	admitted, trace := admitCriticInteractionLanesWithTrustedIdentities(raw, evidence, "", trusted)
-	if len(sliceFromAny(admitted["kg_triples"])) != 0 || len(sliceFromAny(trace["kg_review_proposals"])) != 1 {
-		t.Fatalf("DB-resolvable generic entity edge escaped review-only admission: admitted=%#v trace=%#v", admitted, trace)
-	}
-	if intFromAny(mapFromAny(trace["reasons"])["generic_entity_edge_requires_dedicated_typed_lane"], 0) != 1 {
-		t.Fatalf("entity edge rejection was not traced: %#v", trace)
+	if len(mapFromAny(trace["reasons"])) != 0 {
+		t.Fatalf("KG admission produced content rejection reasons: %#v", trace)
 	}
 }
 
@@ -700,8 +690,8 @@ func TestExplicitSingleSceneRelationshipChangeIsAdmittedWithoutCountThreshold(t 
 		t.Fatalf("explicit single-scene relation was rejected: %#v", admitted)
 	}
 	relationship := mapFromAny(items[0])
-	if relationship["magnitude"] != nil || relationship["duration"] != nil {
-		t.Fatalf("unsupported magnitude/duration survived admission: %#v", relationship)
+	if extractionStringFromAny(relationship["magnitude"]) != "major" || extractionStringFromAny(relationship["duration"]) != "ongoing" {
+		t.Fatalf("relationship archive lost the extracted magnitude or duration: %#v", relationship)
 	}
 	candidates := interactionAdmissionPreciseMemoryCandidates(admitted)
 	if len(candidates) != 1 ||
@@ -709,5 +699,11 @@ func TestExplicitSingleSceneRelationshipChangeIsAdmittedWithoutCountThreshold(t 
 		candidates[0].admissionState != "committed" ||
 		candidates[0].reviewState != "source_observed" {
 		t.Fatalf("directional precise candidate mismatch: %#v", candidates)
+	}
+	if _, exists := candidates[0].payload["magnitude"]; exists {
+		t.Fatalf("unsupported magnitude entered the precise projection payload: %#v", candidates[0].payload)
+	}
+	if _, exists := candidates[0].payload["duration"]; exists {
+		t.Fatalf("unsupported duration entered the precise projection payload: %#v", candidates[0].payload)
 	}
 }

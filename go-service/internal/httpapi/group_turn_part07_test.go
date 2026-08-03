@@ -521,9 +521,6 @@ func TestAdminRescanRegeneratesMissingArtifactsFromRawTurn(t *testing.T) {
 
 func TestAdminRescanIncludesTurnZeroAndTrustsCanonicalPlanBlocks(t *testing.T) {
 	starter := "The rain had not stopped when Mina reached the old gate.\n\n# Narrative Guide\nScene Mandate: preserve the language barrier.\nForbidden Moves:\n- instant mutual understanding"
-	if !looksLikeSourceControlResidue(starter) {
-		t.Fatal("test fixture must exercise the legacy source-aware content heuristic")
-	}
 	fake := &turnRecordingStore{
 		returnChatLogs: []store.ChatLog{
 			{ChatSessionID: "sess-starter-rescan", TurnIndex: 0, Role: "assistant", Content: starter, CreatedAt: time.Now()},
@@ -1070,9 +1067,12 @@ func TestRollbackNegativeTurnIndex(t *testing.T) {
 // rollbackRecordingStore wraps a Store and records RollbackStore calls.
 type rollbackRecordingStore struct {
 	store.Store
-	deletes   []string
-	deleteErr error
-	audits    []*store.AuditLog
+	deletes          []string
+	deleteErr        error
+	audits           []*store.AuditLog
+	chapterSummaries []store.ChapterSummary
+	arcSummaries     []store.ArcSummary
+	sagaDigests      []store.SagaDigest
 }
 
 func (r *rollbackRecordingStore) DeleteChatLogs(ctx context.Context, sid string, fromTurn int) error {

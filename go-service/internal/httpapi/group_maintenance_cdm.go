@@ -98,7 +98,7 @@ func (s *Server) buildMaintenanceContradictionDuplicatePreview(r *http.Request, 
 	}
 	sourceCounts["pending_threads"] = len(threads)
 
-	resolutionAudits, err := s.Store.ListAuditLogs(ctx, sid, "supersession_resolution", 200)
+	resolutionAudits, err := s.Store.ListAuditLogs(ctx, sid, "supersession_resolution", 0)
 	if err != nil {
 		warnings = append(warnings, "supersession_resolution_audits_unavailable: "+err.Error())
 	}

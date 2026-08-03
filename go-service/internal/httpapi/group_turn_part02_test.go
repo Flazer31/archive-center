@@ -28,6 +28,18 @@ func TestCompleteTurnMariaDBAuthorityStartsAtTurnOneAndAdvances(t *testing.T) {
 	srv.RegisterRoutes(mux)
 
 	postCompleteTurn := func(body map[string]any) map[string]any {
+		effectiveInput := "assembled final payload for " + body["user_input"].(string)
+		body["client_meta"] = map[string]any{
+			"effective_input_observation": map[string]any{
+				"contract_version":      "effective_input_observation.v1",
+				"status":                "verified",
+				"capture_stage":         "before_request_return",
+				"effective_input":       effectiveInput,
+				"effective_input_hash":  prepareOR1CHash(effectiveInput),
+				"hash_algorithm":        "or1c_utf16_djb2.v1",
+				"payload_content_match": true,
+			},
+		}
 		raw, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(raw))
 		req.Header.Set("Content-Type", "application/json")
@@ -329,11 +341,8 @@ func TestCompleteTurnSanitizesThoughtTagsBeforeSave(t *testing.T) {
 			}
 		}
 	}
-	if len(fake.savedEffectiveInputs) != 1 {
-		t.Fatalf("savedEffectiveInputs count = %d, want 1", len(fake.savedEffectiveInputs))
-	}
-	if strings.Contains(strings.ToLower(fake.savedEffectiveInputs[0].EffectiveInput), "hidden") {
-		t.Fatalf("effective input leaked hidden text: %#v", fake.savedEffectiveInputs[0])
+	if len(fake.savedEffectiveInputs) != 0 {
+		t.Fatalf("complete-turn fabricated effective input without a verified payload observation: %#v", fake.savedEffectiveInputs)
 	}
 }
 
@@ -361,10 +370,13 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 		"turn_summary":        "Alice decided to trust Bob after the rescue.",
 		"importance_score":    8,
 		"relationship_memory": map[string]any{"bond_and_distance": "Alice trusts Bob more after he helped her.", "trust": 0.8},
-		"entities":            map[string]any{"characters": []any{map[string]any{"name": "Alicee", "aliases": []any{"I"}, "role": "protagonist", "status_emotion": "relieved"}}},
-		"kg_triples":          []any{},
+		"entities": map[string]any{"characters": []any{map[string]any{
+			"name": "Alice", "aliases": []any{"I"}, "role": "protagonist", "status_emotion": "relieved",
+			"reference_contract": "critic_entity_reference.v1", "reference_scope": "session_stable", "name_expression": "Alice", "evidence_excerpt": "Alice relaxed after Bob helped her.",
+		}}},
+		"kg_triples": []any{},
 		"relationship_observations": []any{map[string]any{
-			"source_entity": "Alicee", "source_entity_expression": "I", "target_entity": "Bob", "target_entity_expression": "Bob",
+			"source_entity": "Alice", "source_entity_expression": "I", "target_entity": "Bob", "target_entity_expression": "Bob",
 			"domain": "trust", "domain_expression": "trust", "observation": "I trust Bob", "support_kind": "explicit_statement", "evidence_excerpt": "I trust Bob.",
 		}},
 		"archive_hint":           map[string]any{"wing": "wing_general", "room": "hall_relationships"},
@@ -373,10 +385,14 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 		"narrative_significance": 0.9,
 		"state_deltas":           map[string]any{"scene_state": map[string]any{"mood": "warm"}},
 		"character_deltas": []any{map[string]any{
-			"name":          "Alicee",
-			"status":        map[string]any{"emotion": "relieved"},
-			"relationships": map[string]any{"Bob": map[string]any{"affection": 70, "tension": 15}},
-			"events":        []any{map[string]any{"type": "relationship_shift", "detail": "Alice's trust in Bob increased."}},
+			"name":               "Alice",
+			"reference_contract": "critic_entity_reference.v1",
+			"reference_scope":    "session_stable",
+			"name_expression":    "Alice",
+			"evidence_excerpt":   "Alice relaxed after Bob helped her.",
+			"status":             map[string]any{"emotion": "relieved"},
+			"relationships":      map[string]any{"Bob": map[string]any{"affection": 70, "tension": 15}},
+			"events":             []any{map[string]any{"type": "relationship_shift", "detail": "Alice's trust in Bob increased."}},
 		}},
 		"pending_threads": []any{
 			map[string]any{"thread_type": "promise", "title": "Alice thanks Bob later", "confidence": 0.85},
@@ -443,11 +459,11 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 		"entities_saved":         1,
 		"trust_states_saved":     0,
 		"world_rules_saved":      1,
-		"storylines_saved":       1,
+		"storylines_saved":       3,
 		"character_states_saved": 1,
 		"character_events_saved": 0,
-		"pending_threads_saved":  1,
-		"active_states_saved":    4,
+		"pending_threads_saved":  3,
+		"active_states_saved":    7,
 	}
 	for key, want := range wantCounts {
 		if resp[key] != want {
@@ -469,26 +485,33 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if len(fake.savedKGTriples) != 0 {
 		t.Fatalf("directional relationship must not enter generic KG, got %#v", fake.savedKGTriples)
 	}
-	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "Alicee" {
+	if len(fake.savedEntities) != 1 || fake.savedEntities[0].Name != "Alice" {
 		t.Fatalf("expected extracted entity, got %#v", fake.savedEntities)
 	}
 	if len(fake.savedTrusts) != 0 {
 		t.Fatalf("legacy directionless trust state was persisted: %#v", fake.savedTrusts)
 	}
-	if len(fake.savedCharacterEvents) != 0 || len(fake.savedCharacterStates) != 1 || len(fake.savedPendingThreads) != 1 || len(fake.savedActiveStates) != 4 {
+	if len(fake.savedCharacterEvents) != 0 || len(fake.savedCharacterStates) != 1 || len(fake.savedPendingThreads) != 3 || len(fake.savedActiveStates) != 7 {
 		t.Fatalf("expected character/state/thread artifacts, events=%d states=%d threads=%d active=%d", len(fake.savedCharacterEvents), len(fake.savedCharacterStates), len(fake.savedPendingThreads), len(fake.savedActiveStates))
 	}
-	if rel := fake.savedCharacterStates[0].RelationshipsJSON; strings.Contains(rel, "Bob") || strings.Contains(rel, "Carol") {
-		t.Fatalf("legacy Critic relation or near-name state leaked into relationships, got %s", rel)
+	if rel := fake.savedCharacterStates[0].RelationshipsJSON; strings.Contains(rel, "Bob") || !strings.Contains(rel, "Carol") {
+		t.Fatalf("legacy Critic relation was added or existing canonical relationship was lost, got %s", rel)
 	}
-	if len(fake.savedWorldRules) != 1 || len(fake.savedStorylines) != 1 {
+	if len(fake.savedWorldRules) != 1 || len(fake.savedStorylines) != 3 {
 		t.Fatalf("expected world/story artifacts, world=%d story=%d", len(fake.savedWorldRules), len(fake.savedStorylines))
 	}
 	if wr := fake.savedWorldRules[0]; wr.Scope != "session" || wr.Category != "relationship" || wr.Key != "trust_changes_need_evidence" || !strings.Contains(wr.ValueJSON, "Trust shifts") {
 		t.Fatalf("expected normalized world rule fields, got %#v", wr)
 	}
-	if sl := fake.savedStorylines[0]; sl.Name != "Alice thanks Bob later" || sl.Status != "active" || !strings.Contains(sl.KeyPointsJSON, "Alice thanks Bob later") || !strings.Contains(sl.OngoingTensionsJSON, "promise") {
-		t.Fatalf("expected normalized storyline fields, got %#v", sl)
+	foundPromise := false
+	for _, sl := range fake.savedStorylines {
+		if sl.Name == "Alice thanks Bob later" && sl.Status == "active" && strings.Contains(sl.KeyPointsJSON, "Alice thanks Bob later") && strings.Contains(sl.OngoingTensionsJSON, "promise") {
+			foundPromise = true
+			break
+		}
+	}
+	if !foundPromise {
+		t.Fatalf("expected normalized promise storyline among broad candidates, got %#v", fake.savedStorylines)
 	}
 	if len(vec.docs) != 2 {
 		t.Fatalf("relationship-scoped memory must stay out of generic vector; expected evidence/world-rule, got %#v", vec.docs)
@@ -851,8 +874,8 @@ func TestCompleteTurnCriticGuardsEvidenceKGAndEntityTypes(t *testing.T) {
 	if fake.savedEvidence[0].ArchiveState != "verified_direct" || fake.savedEvidence[0].CaptureVerification != "verified" || fake.savedEvidence[0].CommittedGate != "auto_grounded_excerpt" {
 		t.Fatalf("grounded direct evidence was not auto-verified: %#v", fake.savedEvidence[0])
 	}
-	if len(fake.savedKGTriples) != 1 || fake.savedKGTriples[0].Subject != "Mina" || fake.savedKGTriples[0].Predicate == "has_turn" || fake.savedKGTriples[0].Object == "turn_1" {
-		t.Fatalf("expected placeholder KG to be dropped, got %#v", fake.savedKGTriples)
+	if len(fake.savedKGTriples) != 2 {
+		t.Fatalf("KG content was filtered before storage: %#v", fake.savedKGTriples)
 	}
 	if len(fake.savedEntities) != 3 {
 		t.Fatalf("expected character/location/item entities, got %#v", fake.savedEntities)
@@ -883,10 +906,9 @@ func TestCompleteTurnLocationTimeGroundingSeparatesSceneResidenceAndSeason(t *te
 			nil, nil, nil,
 		)
 		for _, needle := range []string{
-			"current scene location or current scene time belongs in state_deltas.scene_state",
-			"durable residence, hometown, birthplace, workplace, or affiliation belongs in character_deltas.status",
+			"Location and time typed lanes do not suppress compatible kg_triples",
 			"Do not treat 'X lives in London' as 'the current scene is London'",
-			"summer vacation has started",
+			"Story calendar facts such as 'summer vacation has started'",
 			"Do not infer an immediate return to school",
 		} {
 			if !strings.Contains(prompt, needle) {
@@ -1025,11 +1047,11 @@ func TestCompleteTurnCriticIngestTraceRecordsSkipReasons(t *testing.T) {
 	if result.Errors != 0 {
 		t.Fatalf("critic ingest trace should not error, result=%#v", result)
 	}
-	if result.Evidence != 0 || result.KGTriples != 0 || result.PendingThreads != 0 {
-		t.Fatalf("expected unsafe derived rows to be skipped, evidence=%d kg=%d threads=%d", result.Evidence, result.KGTriples, result.PendingThreads)
+	if result.Evidence != 0 || result.KGTriples != 1 || result.PendingThreads != 2 {
+		t.Fatalf("KG content was filtered or unrelated guards regressed, evidence=%d kg=%d threads=%d", result.Evidence, result.KGTriples, result.PendingThreads)
 	}
-	if len(result.SkipReasons) < 3 {
-		t.Fatalf("expected direct evidence/KG/pending skip reasons, got %#v", result.SkipReasons)
+	if len(result.SkipReasons) < 1 {
+		t.Fatalf("expected direct evidence/pending skip reasons, got %#v", result.SkipReasons)
 	}
 	var trace string
 	for _, item := range fake.savedAuditLogs {
@@ -1041,7 +1063,7 @@ func TestCompleteTurnCriticIngestTraceRecordsSkipReasons(t *testing.T) {
 	if trace == "" {
 		t.Fatalf("expected critic_ingest_trace audit, got %#v", fake.savedAuditLogs)
 	}
-	for _, needle := range []string{"critic_ingest_trace.v1", "not_grounded_in_current_turn", "placeholder_or_control_edge", "low_confidence", "invalid_thread_type"} {
+	for _, needle := range []string{"critic_ingest_trace.v1", "not_grounded_in_current_turn"} {
 		if !strings.Contains(trace, needle) {
 			t.Fatalf("critic_ingest_trace missing %q: %s", needle, trace)
 		}

@@ -818,7 +818,7 @@ func TestArchiveCenterJSAfterRequestReusesCapturedCIDWithoutRoutingBlock(t *test
 	required := []string{
 		"function onAfterRequest(content, type)",
 		"const capturedWriteSessionId = normalizeSessionId(",
-		"persistenceOrchResult && persistenceOrchResult._chatSessionId",
+		"latestOrchResult && latestOrchResult._chatSessionId",
 		"const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;",
 	}
 	for _, needle := range required {
@@ -1043,7 +1043,6 @@ func TestArchiveCenterJSActiveChatRescanDryRunMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"ACTIVE_CHAT_RECENT_REBUILD_DEFAULT_TURNS",
-		"ACTIVE_CHAT_RECENT_REBUILD_MAX_TURNS",
 		"ACTIVE_CHAT_REBUILD_DEFAULT_ORDER",
 		"function resolveCurrentActiveChatObject",
 		"function runActiveChatRescanDryRun",

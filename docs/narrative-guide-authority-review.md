@@ -4,7 +4,7 @@
 
 최초 작성: 2026-07-29
 
-현재 기준: Archive Center 3.8-A source 구현·자동 회귀 완료 — 3.7 핵심
+현재 기준: Archive Center 3.8-A~E source 구현·자동 회귀 완료 — 3.7 핵심
 RisuAI lifecycle·HUD 고정 빌드 확인, 3.7-G 전체 환경 행렬과 3.8 loaded-artifact 검증 후속
 
 구조 정리: 2026-07-31

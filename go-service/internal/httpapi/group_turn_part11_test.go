@@ -784,9 +784,8 @@ func TestCompleteTurnConflictResolutionAndRetentionInTrace(t *testing.T) {
 	if contract["retention_policy_version"] != "ea1l.v1" {
 		t.Fatalf("retention policy version = %v, want ea1l.v1", contract["retention_policy_version"])
 	}
-	windows, ok := contract["retention_windows_turns"].(map[string]any)
-	if !ok || windows["direct_evidence"] == nil || windows["previous_archive"] == nil || windows["tombstone"] == nil {
-		t.Fatalf("retention windows missing: %#v", contract)
+	if contract["retention_windows_turns"] != nil || contract["retention_basis"] != "lifecycle_lineage_no_turn_expiry" {
+		t.Fatalf("turn-count retention window still active: %#v", contract)
 	}
 }
 
@@ -1056,7 +1055,10 @@ func TestCompleteTurnLegacyEntityConditionDoesNotDurablyMergeOrWriteEffect(t *te
 		"importance_score":  8,
 		"evidence_excerpts": []any{"The sacred sword broke during the duel."},
 		"entities": map[string]any{
-			"items": []any{map[string]any{"name": "Sacred Sword", "entity_type": "item", "description": "a legendary blade"}},
+			"items": []any{map[string]any{
+				"name": "sacred sword", "entity_type": "item", "description": "a legendary blade",
+				"reference_contract": "critic_entity_reference.v1", "reference_scope": "session_stable", "name_expression": "sacred sword", "evidence_excerpt": "sacred sword broke",
+			}},
 		},
 		"entity_conditions": []any{
 			map[string]any{

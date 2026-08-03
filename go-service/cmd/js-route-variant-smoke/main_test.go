@@ -78,7 +78,7 @@ func TestArchiveCenterJSCanonPackAndDiscoveryUIMarkers(t *testing.T) {
 		`["community_wiki"]`,
 		`body.work_id = state.selectedWorkId;`,
 		`body.continuity_id = state.selectedContinuityId;`,
-		`timeoutMs: getSourceDiscoveryRequestTimeoutMs()`,
+		`const data = await bridgeFetch("/source-discovery/jobs/v1", {`,
 		`/admit/v1`,
 		`confirm_evidence_validated_batch: true`,
 		`max_completion_tokens: getSubLlmMaxCompletionTokensSetting(settings.subLlmMaxCompletionTokens)`,
@@ -585,7 +585,7 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "3.7 provider JSON, Flex, cache observability, and terminal HUD stream continuity"`,
+		`const BUILD_NOTES = "Archive Center 3.9.0"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {
@@ -613,7 +613,7 @@ func TestArchiveCenterJSAuxiliaryInjectionPlacementI18nAndNoStaleBudgetPreview(t
 		`${t('settings.option.auxiliaryInjectionPlacement.auto')}`,
 		`${t('settings.hint.auxiliaryInjectionAnchorMarker')}`,
 		`const prepareInjectionBudget = estimateAdaptiveInjectionBudgetParts(settings, prepareOptions.runtimeTokenInfo || null);`,
-		`max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.budgetLimit,`,
+		`max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars,`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -743,6 +743,7 @@ func TestSeq01SettingsSaveResetAndBridgeConfigMarkers(t *testing.T) {
 		`function attachSettingsEvents()`,
 		`$("mo-save-btn").addEventListener("click", async () => {`,
 		`$("mo-reset-btn").addEventListener("click", async () => {`,
+		`!confirm(t("settings.confirm.resetDefaults"))`,
 		`settings = { ...DEFAULT_SETTINGS };`,
 		`await saveSettings();`,
 		`<input type="text" id="mo-bridgeUrl"`,
@@ -780,16 +781,14 @@ func TestSeq01RuntimeStateNarrativeTypeAndSearchCallMarkers(t *testing.T) {
 func TestSeq01BridgeTimeoutAppliesToNativeAndFallbackFetch(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`Promise.race([R.nativeFetch(url, fetchInit), timeoutPromise])`,
-		`Promise.race([fetch(url, fetchInit), timeoutPromise])`,
+		`fetchPromise = R.nativeFetch(url, fetchInit);`,
+		`fetchPromise = fetch(url, fetchInit);`,
+		`response = timeoutPromise ? await Promise.race([fetchPromise, timeoutPromise]) : await fetchPromise;`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing UI-configured bridge timeout path %q", needle)
+			t.Fatalf("Archive Center.js missing optional bridge timeout path %q", needle)
 		}
-	}
-	if strings.Contains(src, `response = await fetch(url, fetchInit);`) {
-		t.Fatal("Archive Center.js fallback fetch bypasses the UI-configured timeout")
 	}
 }
 
@@ -810,6 +809,24 @@ func TestSeq02SessionAwareExplorerSyncMarkers(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-02 session-aware explorer sync marker %q", needle)
+		}
+	}
+}
+
+func TestExplorerChatLogsRenderLogicalTurnsWithTwoRawPanes(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		`const userRow = item.user && typeof item.user === "object" ? item.user : null;`,
+		`const assistantRow = item.assistant && typeof item.assistant === "object" ? item.assistant : null;`,
+		`t('explorer.chatLogs.userInput')`,
+		`t('explorer.chatLogs.assistantOutput')`,
+		`mo-chat-turn-panes`,
+		`if (assistantRow && item.turn_index != null && sessionMatch)`,
+		`if (row && (row.user || row.assistant))`,
+	}
+	for _, needle := range required {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing logical chat turn marker %q", needle)
 		}
 	}
 }
@@ -848,6 +865,10 @@ func TestArchiveCenterJSPluginMainRuntimeWiringMarkers(t *testing.T) {
 		"supervisorEndpoint: typeof s.pluginMainEndpoint === \"string\" ? s.pluginMainEndpoint : \"\"",
 		"supervisorModel: typeof s.pluginMainModel === \"string\" ? s.pluginMainModel : \"\"",
 		"mainTimeout: Math.ceil(getPluginMainTimeoutSettingMs(s.pluginMainTimeoutMs) / 1000)",
+		"const runtimeSynced = !!(trace && trace.synced === true);",
+		"async function ensureBackendRuntimeConfigBinding(backendInstanceId)",
+		"settings_runtime_bound_to_backend_instance",
+		`client_meta: buildAdminRuntimeClientMeta({ source: "hypamemory_import" })`,
 		"function pluginMainHasConfig()",
 		"settings.pluginMainApiKey.trim()",
 		"settings.pluginMainEndpoint.trim()",
@@ -865,6 +886,50 @@ func TestArchiveCenterJSPluginMainRuntimeWiringMarkers(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing Plugin Main runtime wiring marker %q", needle)
+		}
+	}
+}
+
+func TestRuntimeConfigBindsOncePerBackendInstanceBeforeFullPrepare(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	beforeRequest := extractJSFunctionBlockForTest(t, src, "async function onBeforeRequest(payload, type)")
+	sourceDecision := strings.Index(beforeRequest, "const sourceDecisionResult = await tryPrepareTurn(")
+	runtimeBinding := strings.Index(beforeRequest, "const runtimeConfigBinding = await ensureBackendRuntimeConfigBinding(")
+	fullPrepare := strings.Index(beforeRequest, "const preparedTurnResult = await tryPrepareTurn(")
+	if sourceDecision < 0 || runtimeBinding < 0 || fullPrepare < 0 {
+		t.Fatalf("runtime config binding markers missing: source=%d binding=%d full=%d", sourceDecision, runtimeBinding, fullPrepare)
+	}
+	if !(sourceDecision < runtimeBinding && runtimeBinding < fullPrepare) {
+		t.Fatalf("runtime config must bind after backend reachability and before full prepare: source=%d binding=%d full=%d", sourceDecision, runtimeBinding, fullPrepare)
+	}
+	if strings.Contains(beforeRequest, "await syncConfigToBackend(settings)") {
+		t.Fatal("normal turn path still performs an unconditional runtime config update")
+	}
+}
+
+func TestResetDefaultsRequiresConfirmationBeforeMutation(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	start := strings.Index(src, `$("mo-reset-btn").addEventListener("click", async () => {`)
+	if start < 0 {
+		t.Fatal("reset handler missing")
+	}
+	handler := src[start:]
+	confirmIndex := strings.Index(handler, `!confirm(t("settings.confirm.resetDefaults"))`)
+	mutationIndex := strings.Index(handler, `settings = { ...DEFAULT_SETTINGS };`)
+	if confirmIndex < 0 || mutationIndex < 0 || confirmIndex > mutationIndex {
+		t.Fatalf("reset confirmation must precede settings mutation: confirm=%d mutation=%d", confirmIndex, mutationIndex)
+	}
+}
+
+func TestNormalTurnPayloadDoesNotRepeatRuntimeCredentials(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	prepare := extractJSFunctionBlockForTest(t, src, "async function tryPrepareTurn(")
+	complete := extractJSFunctionBlockForTest(t, src, "async function buildCompleteTurnRequestBody(")
+	for name, block := range map[string]string{"prepare-turn": prepare, "complete-turn": complete} {
+		for _, forbidden := range []string{"client_meta.embedding", "client_meta.critic", "api_key: effectiveCritic", "api_key: embeddingApiKey"} {
+			if strings.Contains(block, forbidden) {
+				t.Fatalf("%s repeats runtime credentials through %q", name, forbidden)
+			}
 		}
 	}
 }

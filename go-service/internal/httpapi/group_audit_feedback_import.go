@@ -295,7 +295,10 @@ func (s *Server) feedbackTargetBelongsToSession(ctx context.Context, sid string,
 }
 
 func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) {
-	var req dto.HypaImportRequest
+	var req struct {
+		dto.HypaImportRequest
+		ClientMeta map[string]any `json:"client_meta,omitempty"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "code": "invalid_json", "detail": err.Error()})
 		return
@@ -331,7 +334,7 @@ func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	extractionCfg := s.completeTurnExtractionConfig(nil)
+	extractionCfg := s.completeTurnExtractionConfig(req.ClientMeta)
 	llmTrace := completeTurnLLMConfigTrace(extractionCfg)
 	if !extractionCfg.Critic.hasConfig() {
 		writeJSON(w, http.StatusOK, map[string]any{

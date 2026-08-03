@@ -208,7 +208,7 @@ func TestOutputFidelity36FCurrentInputOnlyCallsExpressionSupervisor(t *testing.T
 	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		supervisorCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"Keep the current request perceptible.\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
+		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"response_focus\",\"text\":\"Keep the current request perceptible.\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
 	}))
 	defer supervisor.Close()
 
@@ -269,7 +269,7 @@ func TestOutputFidelity36FFreshTurnZeroMemoryBudgetStillCallsExpressionSuperviso
 	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		supervisorCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"Keep the fresh-turn request perceptible.\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
+		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"response_focus\",\"text\":\"Keep the fresh-turn request perceptible.\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
 	}))
 	defer supervisor.Close()
 
@@ -362,9 +362,9 @@ func TestOutputFidelity35CEligibleGuideMatrixUsesSameSourceSnapshot(t *testing.T
 		coverage := mapFromAny(eligibility["coverage"])
 		roles := stringSliceFromAny(coverage["allowed_roles"])
 		wantRoles := map[string][]string{
-			"weak":   {"fidelity_warning", "portrayal"},
-			"medium": {"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback"},
-			"strong": {"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback", "reversible_option"},
+			"weak":   {"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not"},
+			"medium": {"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not", "pacing", "scene_emphasis", "may_advance", "hold_allowed"},
+			"strong": {"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not", "pacing", "scene_emphasis", "may_advance", "hold_allowed", "arc_anchor", "preferred_frontier", "reversible_option", "ending_edge"},
 		}[profile.strength]
 		if !reflect.DeepEqual(roles, wantRoles) {
 			t.Errorf("%s roles = %#v, want %#v", name, roles, wantRoles)
@@ -436,7 +436,7 @@ func TestOutputFidelity35CWeakGuideCallsConfiguredSupervisorOnce(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the supported recollection\",\"source_refs\":[\"memory:output-fidelity-35c-prepare:51\"]}],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"keep the current request perceptible\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
+		_, _ = w.Write([]byte(`{"model":"test-supervisor","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[{\"text\":\"preserve the supported recollection\",\"source_refs\":[\"memory:output-fidelity-35c-prepare:51\"]}],\"expression_hints\":[{\"kind\":\"response_focus\",\"text\":\"keep the current request perceptible\",\"source_refs\":[\"active:1\"]}]}}"}}]}`))
 	}))
 	defer supervisor.Close()
 
@@ -484,15 +484,16 @@ func TestResponseExecutionContractDoesNotControlStoryComposition(t *testing.T) {
 
 func TestOutputFidelity36FVisibleGuideOmitsRefsWhileTraceRetainsThem(t *testing.T) {
 	const memoryRef = "memory:output-fidelity-35c:77"
-	result := map[string]any{
-		"directive": map[string]any{
-			"supervisor_scene_proposal": map[string]any{
-				"fidelity_warnings": []map[string]any{
-					{"text": "Preserve the delivered recollection.", "source_refs": []string{memoryRef}},
-				},
-			},
+	pack := supervisorBoundaryTestPack("weak")
+	contractRefs := mapFromAny(mapFromAny(pack["response_execution_contract"])["source_refs"])
+	contractRefs["memory"] = []string{memoryRef}
+	contractRefs["all"] = []string{"input:latest", memoryRef}
+	mapFromAny(pack["support_packet"])["delivered_memory"] = []map[string]any{{"source_ref": memoryRef, "final_text": "delivered safe memory"}}
+	result, _ := buildBoundedSupervisorResult(map[string]any{
+		"supervisor_scene_proposal": map[string]any{
+			"fidelity_warnings": []any{map[string]any{"text": "Preserve the delivered recollection.", "source_refs": []any{memoryRef}}},
 		},
-	}
+	}, pack)
 	plan := buildPrepareTurnPayloadApplicationPlan("", "", "", "", true, false, 0, 0, 3000, supervisorSceneProposalGuidanceItems(result), "applied")
 	lane := outputFidelity36FFindLane(plan, "output_guidance")
 	visible := extractionStringFromAny(lane["text"])
@@ -545,7 +546,7 @@ func TestOutputFidelity36FManyHostRefsDoNotConsumeVisibleNarrativeBudget(t *test
 	result, _ := buildBoundedSupervisorResult(map[string]any{
 		"supervisor_scene_proposal": map[string]any{
 			"expression_hints": []any{
-				map[string]any{"kind": "portrayal", "text": "Keep the current request perceptible.", "source_refs": []any{"input:latest"}},
+				map[string]any{"kind": "response_focus", "text": "Keep the current request perceptible.", "source_refs": []any{"input:latest"}},
 			},
 		},
 	}, pack)

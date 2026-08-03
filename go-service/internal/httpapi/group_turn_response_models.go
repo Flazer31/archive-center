@@ -27,16 +27,20 @@ func buildRecallResult(
 	pendingThreads []store.PendingThread,
 	profile string,
 	topK int,
+	memoryRecallQuery string,
 ) map[string]any {
 	status := "ready"
 	if degraded {
 		status = "degraded"
 	}
 	topK = prepareTurnRecallLimit(topK)
-	recallLimit := prepareTurnSupportCandidateLimit(0)
+	recallLimit := len(memories) + len(evidence) + len(kgTriples) + len(episodeSums) + len(chatLogs) + len(storylines) + len(worldRules) + len(pendingThreads)
 
 	var items []map[string]any
-	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, queryPreview, topK, vectorShadow)
+	if strings.TrimSpace(memoryRecallQuery) == "" {
+		memoryRecallQuery = queryPreview
+	}
+	memorySelection := selectPrepareTurnMemoryLanesWithVector(memories, memoryRecallQuery, topK, vectorShadow)
 	appendMemoryItems := func(lane string, laneItems []store.Memory) {
 		for _, m := range laneItems {
 			summary := prepareTurnMemorySummary(m)

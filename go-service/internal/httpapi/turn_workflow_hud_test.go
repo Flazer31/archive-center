@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
@@ -40,6 +42,271 @@ func TestTurnWorkflowHUDBeginOrderAndSameSessionInvalidation(t *testing.T) {
 	}
 	if invalidated.CurrentStage == nil || invalidated.CurrentStage.Status != "invalidated" {
 		t.Fatalf("invalidated current stage = %#v", invalidated.CurrentStage)
+	}
+}
+
+func TestTurnWorkflowHUDDerivedPersistenceFailureKeepsCauseAndCommittedCount(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-derived", "session-a", 2)
+	ledger.setPersistenceFacts("request-derived", "ok", 2, "error", 19, "not_requested", 0)
+	ledger.failWithDetails(
+		"request-derived",
+		"DERIVED_PERSIST_FAILED",
+		"turn_hud.error.derived_persist_failed",
+		turnWorkflowStageDerivedPersist,
+		true,
+		[]turnWorkflowHUDDetail{
+			{Key: "derived_attempted", Value: "19"},
+			{Key: "derived_committed", Value: "0"},
+			{Key: "transaction", Value: "atomic_rollback"},
+			{Key: "reprocessing", Value: "queued"},
+			{Key: "operation", Value: "CommitMemoryAdmission"},
+			{Key: "cause", Value: "data too long for column relationship_kind"},
+		},
+	)
+	ledger.setPersistenceFailureDetail(
+		"request-derived",
+		"derived_memory",
+		"DERIVED_PERSIST_FAILED",
+		"attempted=19 / committed=0 / transaction=atomic_rollback / CommitMemoryAdmission: data too long for column relationship_kind",
+		0,
+	)
+
+	view, ok := ledger.snapshot("request-derived")
+	if !ok || view.Error == nil || len(view.Error.Details) != 6 {
+		t.Fatalf("failure view=%+v found=%t", view, ok)
+	}
+	if len(view.Error.RecoveryActions) != 1 ||
+		view.Error.RecoveryActions[0].ID != turnWorkflowHUDRecoveryRetryDerivedTurn ||
+		view.Error.RecoveryActions[0].Status != "available" {
+		t.Fatalf("recovery actions=%+v", view.Error.RecoveryActions)
+	}
+	var derived turnWorkflowHUDFact
+	for _, fact := range view.Facts {
+		if fact.Key == "derived_memory" {
+			derived = fact
+			break
+		}
+	}
+	if derived.Count == nil || *derived.Count != 0 ||
+		derived.ReasonCode != "DERIVED_PERSIST_FAILED" ||
+		!strings.Contains(derived.Detail, "committed=0") {
+		t.Fatalf("derived fact=%+v", derived)
+	}
+
+	vm := buildDashboardViewModel(dashboardViewModelRequest{
+		PluginEnabled:    true,
+		WorkflowSnapshot: &view,
+	})
+	workflow := requireDashboardCard(t, vm, "current_workflow")
+	row := requireDashboardRow(t, workflow, "workflowFact.derived_memory")
+	itemCount, itemCountOK := row.ItemCount.(*int)
+	if !itemCountOK || itemCount == nil || *itemCount != 0 ||
+		row.DetailCode != "DERIVED_PERSIST_FAILED" ||
+		!strings.Contains(row.Detail, "attempted=19") ||
+		!strings.Contains(row.Detail, "CommitMemoryAdmission") {
+		t.Fatalf("dashboard derived row=%+v", row)
+	}
+	for _, label := range []string{"workflowFact.backend_processing", "workflowFact.finality"} {
+		failureRow := requireDashboardRow(t, workflow, label)
+		if failureRow.DetailCode != "DERIVED_PERSIST_FAILED" ||
+			!strings.Contains(failureRow.Detail, "operation=CommitMemoryAdmission") ||
+			!strings.Contains(failureRow.Detail, "cause=data too long") {
+			t.Fatalf("dashboard failure row %s=%+v", label, failureRow)
+		}
+	}
+}
+
+func TestTurnWorkflowHUDCriticRecoveryRequiresDurableReprocessingQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		details     []turnWorkflowHUDDetail
+		retryable   bool
+		wantActions int
+	}{
+		{
+			name:        "durable queue",
+			details:     []turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
+			retryable:   false,
+			wantActions: 1,
+		},
+		{
+			name:        "no durable queue",
+			details:     nil,
+			retryable:   true,
+			wantActions: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ledger := newTurnWorkflowHUDLedger()
+			ledger.begin("request-critic", "session-a", 1)
+			ledger.failWithDetails(
+				"request-critic",
+				"CRITIC_JSON_PARSE_FAILED",
+				"turn_hud.error.critic_llm_failed",
+				turnWorkflowStageCriticLLM,
+				tc.retryable,
+				tc.details,
+			)
+
+			view, ok := ledger.snapshot("request-critic")
+			if !ok || view.Error == nil {
+				t.Fatalf("critic failure view=%+v found=%t", view, ok)
+			}
+			if got := len(view.Error.RecoveryActions); got != tc.wantActions {
+				t.Fatalf("recovery actions=%+v, want count=%d", view.Error.RecoveryActions, tc.wantActions)
+			}
+		})
+	}
+}
+
+type turnWorkflowHUDRecoveryStore struct {
+	*adminDuplicateReprocessingStore
+	reopenErr   error
+	reopenCalls int
+}
+
+func (f *turnWorkflowHUDRecoveryStore) ReopenMemoryReprocessingJob(
+	_ context.Context,
+	_ string,
+	chatSessionID string,
+	sourceRevision string,
+	_ time.Time,
+) (bool, error) {
+	f.reopenCalls++
+	if chatSessionID != f.source.ChatSessionID || sourceRevision != f.source.SourceRevision {
+		return false, errors.New("unexpected recovery source")
+	}
+	if f.reopenErr != nil {
+		return false, f.reopenErr
+	}
+	return true, nil
+}
+
+func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
+	base := newAdminDuplicateReprocessingStore()
+	base.source.DerivedAdmissionState = "pending"
+	base.source.DerivedAdmissionVersion = ""
+	base.source.DerivedExtractorVersion = ""
+	base.source.DerivedIndexVersion = ""
+	base.source.DerivedResultHash = ""
+	base.source.DerivedResultJSON = ""
+	st := &turnWorkflowHUDRecoveryStore{adminDuplicateReprocessingStore: base}
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-recovery", base.source.ChatSessionID, base.source.TurnIndex)
+	ledger.failWithDetails(
+		"request-recovery",
+		"DERIVED_PERSIST_FAILED",
+		"turn_hud.error.derived_persist_failed",
+		turnWorkflowStageDerivedPersist,
+		true,
+		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
+	)
+	srv := &Server{
+		Cfg:   config.Config{StoreMode: config.StoreModeMariaDBAuthority},
+		Store: st,
+		RuntimeConfig: RuntimeConfig{
+			Synced:           true,
+			CriticProvider:   "openai",
+			CriticAPIKey:     "critic-key",
+			CriticEndpoint:   "https://example.invalid/v1/chat/completions",
+			CriticModel:      "critic-model",
+			CriticTimeoutSec: 30,
+		},
+		TurnWorkflows:    ledger,
+		memoryWorkerWake: make(chan struct{}, 1),
+	}
+	body, _ := json.Marshal(turnWorkflowHUDRecoveryRequest{
+		ContractVersion: turnWorkflowHUDRecoveryRequestContractVersion,
+		RequestID:       "request-recovery",
+		ActionID:        turnWorkflowHUDRecoveryRetryDerivedTurn,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/turn-workflow/recovery", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handleTurnWorkflowHUDRecovery(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if st.reopenCalls != 1 {
+		t.Fatalf("reopen calls=%d", st.reopenCalls)
+	}
+	select {
+	case <-srv.memoryWorkerWake:
+	default:
+		t.Fatal("recovery did not wake the memory worker")
+	}
+	view, ok := ledger.snapshot("request-recovery")
+	if !ok || view.Error == nil || len(view.Error.RecoveryActions) != 1 ||
+		view.Error.RecoveryActions[0].Status != "requested" {
+		t.Fatalf("recovery view=%+v found=%t", view, ok)
+	}
+	if len(st.auditLogs) != 1 || st.auditLogs[0].TargetID != int64(base.source.TurnIndex) {
+		t.Fatalf("recovery audit=%+v", st.auditLogs)
+	}
+}
+
+func TestTurnWorkflowHUDRecoveryDoesNotInterruptAnActiveCriticRun(t *testing.T) {
+	base := newAdminDuplicateReprocessingStore()
+	base.source.DerivedAdmissionState = "pending"
+	st := &turnWorkflowHUDRecoveryStore{
+		adminDuplicateReprocessingStore: base,
+		reopenErr:                       store.ErrMemoryReprocessingLeased,
+	}
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-running-recovery", base.source.ChatSessionID, base.source.TurnIndex)
+	ledger.failWithDetails(
+		"request-running-recovery",
+		"DERIVED_PERSIST_FAILED",
+		"turn_hud.error.derived_persist_failed",
+		turnWorkflowStageDerivedPersist,
+		true,
+		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
+	)
+	srv := &Server{
+		Cfg:   config.Config{StoreMode: config.StoreModeMariaDBAuthority},
+		Store: st,
+		RuntimeConfig: RuntimeConfig{
+			Synced:           true,
+			CriticProvider:   "openai",
+			CriticAPIKey:     "critic-key",
+			CriticEndpoint:   "https://example.invalid/v1/chat/completions",
+			CriticModel:      "critic-model",
+			CriticTimeoutSec: 30,
+		},
+		TurnWorkflows: ledger,
+	}
+	body, _ := json.Marshal(turnWorkflowHUDRecoveryRequest{
+		ContractVersion: turnWorkflowHUDRecoveryRequestContractVersion,
+		RequestID:       "request-running-recovery",
+		ActionID:        turnWorkflowHUDRecoveryRetryDerivedTurn,
+	})
+	rec := httptest.NewRecorder()
+	srv.handleTurnWorkflowHUDRecovery(
+		rec,
+		httptest.NewRequest(http.MethodPost, "/turn-workflow/recovery", bytes.NewReader(body)),
+	)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	view, _ := ledger.snapshot("request-running-recovery")
+	if view.Error == nil || len(view.Error.RecoveryActions) != 1 ||
+		view.Error.RecoveryActions[0].Status != "running" {
+		t.Fatalf("active recovery view=%+v", view)
+	}
+}
+
+func TestCompleteTurnPersistenceDiagnosticsRedactSecretsAndClassifyRollback(t *testing.T) {
+	srv := &Server{RuntimeConfig: RuntimeConfig{CriticAPIKey: "critic-secret"}}
+	diagnostics := srv.completeTurnPersistenceDiagnostics([]string{
+		"CommitMemoryAdmission: Error 1406: data too long for column 'relationship_kind'; api_key=critic-secret",
+	})
+	if len(diagnostics) != 1 || diagnostics[0].Operation != "CommitMemoryAdmission" ||
+		strings.Contains(diagnostics[0].Cause, "critic-secret") ||
+		!strings.Contains(diagnostics[0].Cause, "[redacted]") {
+		t.Fatalf("diagnostics=%+v", diagnostics)
+	}
+	if got := completeTurnPersistenceRollbackState(diagnostics, 19, 1); got != "atomic_rollback" {
+		t.Fatalf("rollback state=%q", got)
 	}
 }
 
@@ -198,10 +465,39 @@ func TestTurnWorkflowHUDCountsIncludeAllZerosAndTerminalSeverity(t *testing.T) {
 	}
 }
 
+func TestTurnWorkflowHUDSeparatesKnowledgeGraphFromDirectionalRelationshipState(t *testing.T) {
+	counts := turnWorkflowHUDCountsFromComplete(
+		true, true,
+		1,             // effective input
+		1,             // memory
+		0,             // precise memory
+		2,             // direct evidence
+		3,             // KG triples
+		0,             // subjective memory
+		0,             // world rules
+		0, 0, 0, 0, 0, // character/state surfaces
+		0, 0, // character events, storylines
+		0, 0, // narrative current/events
+		4, 5, // relationship current/events
+		0, 0, 0, 0, 0, // pending, active, canonical, entities, trust
+		0, 0, 0, 0, // identity surfaces and speaker attribution
+		0, 0, // episode, vectors
+	)
+	if counts["knowledge_graph"] != 3 {
+		t.Fatalf("knowledge_graph=%d, want KG triple count 3", counts["knowledge_graph"])
+	}
+	if counts["relationship_state"] != 9 {
+		t.Fatalf("relationship_state=%d, want directional current+event count 9", counts["relationship_state"])
+	}
+	if _, legacy := counts["relationship_knowledge"]; legacy {
+		t.Fatalf("ambiguous relationship_knowledge count must not remain: %#v", counts)
+	}
+}
+
 func TestTurnWorkflowHUDTypedFactsTurnAlignmentAndPersistence(t *testing.T) {
 	ledger := newTurnWorkflowHUDLedger()
 	started := ledger.begin("request-facts", "session-facts", 7)
-	if started == nil || started.ContractVersion != "turn_workflow_hud.v2" || started.Severity != turnWorkflowHUDSeverityNormal {
+	if started == nil || started.ContractVersion != "turn_workflow_hud.v3" || started.Severity != turnWorkflowHUDSeverityNormal {
 		t.Fatalf("started HUD=%#v", started)
 	}
 	ledger.setHostTurn("request-facts", 8, true)
@@ -560,6 +856,55 @@ func TestTurnWorkflowHUDEventsPreserveRevisionOrderAndCloseOnTerminal(t *testing
 	}
 	if final.Status != "completed" {
 		t.Fatalf("final status = %q, want completed", final.Status)
+	}
+}
+
+func TestTurnWorkflowHUDEventsWaitForPrepareTurnRegistration(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	result := make(chan []turnWorkflowHUDViewModel, 1)
+	errs := make(chan error, 1)
+	go func() {
+		var views []turnWorkflowHUDViewModel
+		_, err := ledger.streamSnapshots(ctx, "events-before-prepare", 0, func(view turnWorkflowHUDViewModel) error {
+			views = append(views, view)
+			return nil
+		})
+		if err != nil {
+			errs <- err
+			return
+		}
+		result <- views
+	}()
+
+	select {
+	case views := <-result:
+		t.Fatalf("stream ended before workflow registration: %#v", views)
+	case err := <-errs:
+		t.Fatalf("stream failed before workflow registration: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	ledger.begin("events-before-prepare", "session-events", 5)
+	ledger.complete("events-before-prepare")
+
+	select {
+	case views := <-result:
+		if len(views) != 2 {
+			t.Fatalf("views = %#v, want initial and terminal revisions", views)
+		}
+		if views[0].Revision != 1 || views[0].Status != "running" {
+			t.Fatalf("initial view = %#v", views[0])
+		}
+		if views[1].Revision != 2 || views[1].Status != "completed" {
+			t.Fatalf("terminal view = %#v", views[1])
+		}
+	case err := <-errs:
+		t.Fatalf("stream failed after workflow registration: %v", err)
+	case <-ctx.Done():
+		t.Fatal("stream did not observe workflow registration")
 	}
 }
 

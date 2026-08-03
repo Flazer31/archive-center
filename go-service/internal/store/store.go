@@ -229,12 +229,14 @@ type ProtagonistEntityMemoryFilter struct {
 	OwnerEntityRole     string
 	OwnerVisibility     string
 	SourceChatSessionID string
-	Limit               int
+	// Limit is an explicit caller-requested result limit. Zero or a negative
+	// value means all rows matching the semantic scope.
+	Limit int
 }
 
 // ProtagonistEntityMemoryOwner is a lightweight session-local owner identity.
-// It lets prepare-turn resolve an explicitly mentioned owner before applying a
-// row limit to that owner's memories.
+// It lets prepare-turn resolve a relevant owner before reading that owner's
+// semantically scoped memories.
 type ProtagonistEntityMemoryOwner struct {
 	OwnerEntityKey  string
 	OwnerEntityName string

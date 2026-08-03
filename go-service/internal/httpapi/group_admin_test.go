@@ -443,7 +443,7 @@ func TestAdminRescanPromotesClosedHierarchyBackfill(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-hierarchy","client_meta":{"episode_interval_turns":5,"episode_backfill_only":true,"chapter_interval_turns":10,"arc_interval_turns":20,"saga_interval_turns":20}}`
+	body := `{"chat_session_id":"sess-hierarchy","client_meta":{"episode_interval_turns":5,"episode_backfill_only":true,"chapter_interval_episodes":2,"arc_interval_chapters":2,"saga_interval_arcs":1}}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/rescan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -831,7 +831,7 @@ func TestAdminRescanFullSessionBackfillDoesNotClampHierarchyToProcessedTurns(t *
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"sess-full-backfill","max_items":1,"turn_indices":[18],"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai","timeout_ms":45000},"episode_interval_turns":5,"chapter_interval_turns":10,"derived_backfill_only":true,"force_derived_rebuild":true,"force_episode_backfill":true,"force_hierarchy_backfill":true,"full_session_backfill":true}}`
+	body := `{"chat_session_id":"sess-full-backfill","max_items":1,"turn_indices":[18],"client_meta":{"critic":{"api_key":"sk-rescan","endpoint":"https://api.example.com/v1","model":"rescan-critic","provider":"openai","timeout_ms":45000},"episode_interval_turns":5,"chapter_interval_episodes":2,"derived_backfill_only":true,"force_derived_rebuild":true,"force_episode_backfill":true,"force_hierarchy_backfill":true,"full_session_backfill":true}}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/rescan", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

@@ -20,47 +20,35 @@ func (s *Server) listProtagonistEntityMemoriesByCanonicalOwner(ctx context.Conte
 		return s.canonicalizeSubjectiveEntityMemoriesForRead(ctx, filter.SourceChatSessionID, items), nil
 	}
 	canonicalOwner := s.canonicalSubjectiveEntityOwner(ctx, filter.SourceChatSessionID, requestedOwner, requestedOwner)
-	filter.OwnerEntityKey = canonicalOwner.Key
-	filter.PersonaEntityKey = ""
-	items, err := st.ListProtagonistEntityMemories(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
 	if filter.SourceChatSessionID == "" {
+		filter.OwnerEntityKey = canonicalOwner.Key
+		filter.PersonaEntityKey = ""
+		items, err := st.ListProtagonistEntityMemories(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
 		return s.canonicalizeSubjectiveEntityMemoriesForRead(ctx, filter.SourceChatSessionID, items), nil
 	}
 	broadFilter := filter
 	broadFilter.OwnerEntityKey = ""
 	broadFilter.PersonaEntityKey = ""
-	if broadFilter.Limit <= 0 || broadFilter.Limit < 200 {
-		broadFilter.Limit = 200
-	}
+	broadFilter.Limit = 0
 	broad, err := st.ListProtagonistEntityMemories(ctx, broadFilter)
 	if err != nil {
-		return s.canonicalizeSubjectiveEntityMemoriesForRead(ctx, filter.SourceChatSessionID, items), nil
+		return nil, err
 	}
-	seen := map[int64]bool{}
-	out := make([]store.ProtagonistEntityMemory, 0, len(items)+len(broad))
-	add := func(memory store.ProtagonistEntityMemory) {
-		if memory.ID > 0 {
-			if seen[memory.ID] {
-				return
-			}
-			seen[memory.ID] = true
-		}
-		out = append(out, memory)
-	}
-	for _, memory := range items {
-		add(memory)
-	}
+	out := make([]store.ProtagonistEntityMemory, 0, len(broad))
 	for _, memory := range broad {
 		canonicalMemory := s.canonicalizeSubjectiveEntityMemoryForRead(ctx, filter.SourceChatSessionID, memory)
 		if canonicalMemory.OwnerEntityKey != canonicalOwner.Key {
 			continue
 		}
-		add(memory)
+		out = append(out, canonicalMemory)
 	}
-	return s.canonicalizeSubjectiveEntityMemoriesForRead(ctx, filter.SourceChatSessionID, out), nil
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
 }
 
 func (s *Server) subjectiveEntityMemoryGroups(ctx context.Context, sourceSID string, memories []store.ProtagonistEntityMemory) []map[string]any {
@@ -183,7 +171,7 @@ func subjectiveEntityBundlePolicy() map[string]any {
 		"unit":                            "source_session_entity_memory_bank",
 		"user_selects":                    "entity_bundle",
 		"memory_id_selection_required":    false,
-		"auto_capsule_entry_limit":        24,
+		"auto_capsule_selection":          "all_eligible_owner_source_memories",
 		"truth_authority":                 false,
 		"canonical_write":                 false,
 		"requires_explicit_attachment":    true,

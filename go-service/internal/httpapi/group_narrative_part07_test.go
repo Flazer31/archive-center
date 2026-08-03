@@ -327,7 +327,7 @@ func TestChapterGenerateDuplicateCheckAndRollbackInvalidation(t *testing.T) {
 	srv.Store = fake
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-dup","turn_index":60,"interval":60}`))
+	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-dup","turn_index":60,"interval":4}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -348,7 +348,7 @@ func TestChapterGenerateDuplicateCheckAndRollbackInvalidation(t *testing.T) {
 		t.Fatalf("expected no new chapter saved, got %d", len(fake.savedChapterSummaries))
 	}
 
-	req2 := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-dup","turn_index":60,"interval":60,"force":true}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-dup","turn_index":60,"interval":4,"force":true}`))
 	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	mux.ServeHTTP(rec2, req2)
@@ -439,7 +439,7 @@ func TestChapterDryRunReturnsIntervalCheckAndInputStats(t *testing.T) {
 	srv.Store = fake
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/chapters/dry-run", strings.NewReader(`{"chat_session_id":"sess-dry","turn_index":60,"interval":60}`))
+	req := httptest.NewRequest(http.MethodPost, "/chapters/dry-run", strings.NewReader(`{"chat_session_id":"sess-dry","turn_index":60,"interval":4}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

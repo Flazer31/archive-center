@@ -128,6 +128,9 @@ func (f *personaRouteFakeStore) ListAttachedPersonaMemoryEntries(ctx context.Con
 		}
 		out = append(out, f.entries[att.CapsuleID]...)
 	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 
@@ -166,9 +169,6 @@ func (f *personaRouteFakeStore) CreateProtagonistEntityMemory(ctx context.Contex
 func (f *personaRouteFakeStore) ListProtagonistEntityMemories(ctx context.Context, filter store.ProtagonistEntityMemoryFilter) ([]store.ProtagonistEntityMemory, error) {
 	out := []store.ProtagonistEntityMemory{}
 	limit := filter.Limit
-	if limit <= 0 {
-		limit = 80
-	}
 	for _, item := range f.entityMemories {
 		ownerKey := item.OwnerEntityKey
 		if ownerKey == "" {
@@ -190,7 +190,7 @@ func (f *personaRouteFakeStore) ListProtagonistEntityMemories(ctx context.Contex
 			continue
 		}
 		out = append(out, item)
-		if len(out) >= limit {
+		if limit > 0 && len(out) >= limit {
 			break
 		}
 	}
@@ -703,6 +703,57 @@ func TestSubjectiveEntityMemoryEntityBundlesAndAutoCapsule(t *testing.T) {
 		if entry.InjectionPolicy != "support_only_npc_private_recollection" {
 			t.Fatalf("auto capsule entry policy = %q", entry.InjectionPolicy)
 		}
+	}
+}
+
+func TestSubjectiveEntityMemoryAutoCapsulePreservesCompleteOwnerScope(t *testing.T) {
+	fake := newPersonaRouteFakeStore()
+	const longSessionMemoryCount = 1205
+	for i := 1; i <= longSessionMemoryCount; i++ {
+		fake.entityMemories = append(fake.entityMemories, store.ProtagonistEntityMemory{
+			ID:                  int64(i),
+			PersonaEntityKey:    "ari",
+			PersonaEntityName:   "Ari",
+			OwnerEntityKey:      "ari",
+			OwnerEntityName:     "Ari",
+			OwnerEntityRole:     "protagonist",
+			OwnerVisibility:     "player_known",
+			SourceChatSessionID: "source-complete",
+			SourceTurn:          i,
+			MemoryText:          fmt.Sprintf("Ari recollection %d", i),
+			TargetRevealPolicy:  "requires_explicit_attachment",
+			Portability:         "portable_subjective_entity_recollection",
+		})
+	}
+	srv := &Server{Store: fake, Cfg: config.Config{}}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/subjective-entity-memories/capsule", strings.NewReader(`{
+		"owner_entity_key":"ari",
+		"owner_entity_name":"Ari",
+		"owner_entity_role":"protagonist",
+		"source_chat_session_id":"source-complete"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("complete auto capsule status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(fake.capsules) != 1 {
+		t.Fatalf("capsules = %d, want 1", len(fake.capsules))
+	}
+	entries := fake.entries[fake.capsules[0].ID]
+	if len(entries) != longSessionMemoryCount {
+		t.Fatalf("complete auto capsule entries = %d, want all %d", len(entries), longSessionMemoryCount)
+	}
+	var response map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode complete auto capsule response: %v", err)
+	}
+	if response["selection_mode"] != "all_owner_source_memories" || response["complete_owner_scope"] != true {
+		t.Fatalf("complete auto capsule response = %#v", response)
 	}
 }
 
@@ -1236,8 +1287,8 @@ func TestPersonaCapsuleLiveSmokeCreateAttachPrepareTurnSupportOnly(t *testing.T)
 	if !strings.Contains(injectionText, "[Subjective Memories and Relationships]") || !strings.Contains(injectionText, "Protected hint") || !strings.Contains(injectionText, "protected private knowledge is present") {
 		t.Fatalf("prepare-turn did not inject persona recollection: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "silver locket") {
-		t.Fatalf("prepare-turn leaked protected persona recollection content: %q", injectionText)
+	if !strings.Contains(injectionText, "Siwoo remembers Chloe leaving the silver locket inside the locked desk during the previous loop.") {
+		t.Fatalf("prepare-turn omitted protected persona recollection content: %q", injectionText)
 	}
 	if !strings.Contains(injectionText, "Secret Guard") || !strings.Contains(injectionText, "protagonist-only private intuition") || !strings.Contains(injectionText, "Never reveal its origin") {
 		t.Fatalf("prepare-turn did not inject persona secret guard: %q", injectionText)
@@ -1344,10 +1395,8 @@ func TestPersonaCapsuleKoreanLoopSecretGuardPrepareTurn(t *testing.T) {
 			t.Fatalf("prepare-turn persona injection missing %q: %q", needle, injectionText)
 		}
 	}
-	for _, leaked := range []string{"이전 루프", "회귀자", "회귀", "루프"} {
-		if strings.Contains(injectionText, leaked) {
-			t.Fatalf("prepare-turn persona injection leaked explicit secret term %q: %q", leaked, injectionText)
-		}
+	if !strings.Contains(injectionText, "시우는 이전 루프에서 클로에가 은색 로켓을 잠긴 책상 안에 숨겼다는 것을 기억한다.") {
+		t.Fatalf("prepare-turn persona injection omitted the exact protected memory: %q", injectionText)
 	}
 
 	surface, ok := prepareResp["persona_recollection"].(map[string]any)

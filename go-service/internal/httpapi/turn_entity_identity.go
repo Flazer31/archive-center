@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -100,13 +101,25 @@ type entityIdentityProjection struct {
 	source           entityIdentitySourceContext
 	now              time.Time
 	writer           store.EntityIdentityWriter
+	linkWriter       store.EntityIdentityLinkWriter
+	resolver         store.UniqueActiveEntitySurfaceIdentityResolver
 	bySurface        map[string][]entityIdentitySurfaceCandidate
+	aliasLinkPlans   map[int]entityIdentityAliasLinkPlan
 	fullDisplayNames []string
 	conflictedKeys   map[string]bool
 	displaySeen      map[string]int
 	aliasSeen        map[string]int
 	speakerSeen      map[string]int
 	sourceIndex      int
+}
+
+type entityIdentityAliasLinkPlan struct {
+	name            string
+	aliases         []string
+	evidenceExcerpt string
+	prior           map[string]store.ResolvedEntityIdentity
+	namespace       string
+	admissionBasis  string
 }
 
 func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, turnIndex int, extraction map[string]any, content string, now time.Time, result *artifactSaveResult) *entityIdentityProjection {
@@ -125,11 +138,14 @@ func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, 
 		now:            now,
 		writer:         writer,
 		bySurface:      map[string][]entityIdentitySurfaceCandidate{},
+		aliasLinkPlans: map[int]entityIdentityAliasLinkPlan{},
 		conflictedKeys: map[string]bool{},
 		displaySeen:    map[string]int{},
 		aliasSeen:      map[string]int{},
 		speakerSeen:    map[string]int{},
 	}
+	projection.linkWriter, _ = s.Store.(store.EntityIdentityLinkWriter)
+	projection.resolver, _ = s.Store.(store.UniqueActiveEntitySurfaceIdentityResolver)
 	entities := mapFromAny(extraction["entities"])
 	buckets := []struct {
 		key        string
@@ -173,6 +189,7 @@ func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, 
 			projection.conflictedKeys[key] = true
 		}
 	}
+	projection.prepareExplicitAliasLinkPlans(ctx, entities)
 	artifactOrdinal := 0
 	for _, bucket := range buckets {
 		for itemIndex, raw := range sliceFromAny(entities[bucket.key]) {
@@ -190,6 +207,9 @@ func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, 
 			occurrence := projection.persistOccurrence(ctx, name, namespace, kind, bucket.key, itemIndex, stringsFromAny(item["aliases"]), result)
 			if occurrence != nil {
 				projection.persistArtifactBinding(ctx, occurrence, "entity", bucket.key, artifactOrdinal, name, occurrence.ReviewState, result)
+				if bucket.key == "characters" {
+					projection.persistExplicitAliasLinks(ctx, itemIndex, occurrence, result)
+				}
 			}
 			artifactOrdinal++
 		}
@@ -197,6 +217,154 @@ func (s *Server) buildEntityIdentityProjection(ctx context.Context, sid string, 
 	projection.persistPerspectiveRoleIdentities(ctx, extraction, result)
 	projection.persistSpeakerAttributions(ctx, extraction, result)
 	return projection
+}
+
+func (p *entityIdentityProjection) prepareExplicitAliasLinkPlans(ctx context.Context, entities map[string]any) {
+	if p == nil || p.linkWriter == nil || p.resolver == nil {
+		return
+	}
+	for itemIndex, raw := range sliceFromAny(entities["characters"]) {
+		item := mapFromAny(raw)
+		name := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "name"), stringFromMap(item, "label"), stringFromMap(item, "title"),
+		))
+		aliases := nonEmptyStrings(stringsFromAny(item["aliases"]))
+		evidenceExcerpt := strings.TrimSpace(stringFromMap(item, "identity_evidence_excerpt"))
+		if name == "" || len(aliases) == 0 || p.conflictedKeys[comparableEntityKey(name)] ||
+			evidenceExcerpt == "" || !strings.Contains(p.content, evidenceExcerpt) {
+			continue
+		}
+		plan := entityIdentityAliasLinkPlan{
+			name: name, evidenceExcerpt: evidenceExcerpt, prior: map[string]store.ResolvedEntityIdentity{}, namespace: "session_npc",
+			admissionBasis: "same_entity_record_with_exact_identity_evidence",
+		}
+		resolvePrior := func(surface string) (store.ResolvedEntityIdentity, bool, bool) {
+			key := comparableEntityKey(surface)
+			if key == "" || p.conflictedKeys[key] {
+				return store.ResolvedEntityIdentity{}, false, false
+			}
+			resolved, err := p.resolver.ResolveUniqueActiveEntityIdentityBySurface(ctx, p.sid, key)
+			switch {
+			case err == nil && strings.TrimSpace(resolved.StableEntityID) != "":
+				plan.prior[key] = resolved
+				return resolved, true, true
+			case errors.Is(err, store.ErrNotFound):
+				return store.ResolvedEntityIdentity{}, false, true
+			case err != nil:
+				return store.ResolvedEntityIdentity{}, false, false
+			}
+			return store.ResolvedEntityIdentity{}, false, true
+		}
+		_, nameHasPrior, nameResolvable := resolvePrior(name)
+		nameObserved := strings.Contains(evidenceExcerpt, name) && p.sourceContainsIndependentSurface(name)
+		// A canonical/full surface may have been established in an earlier
+		// accepted turn while only its newly observed alias appears in the
+		// latest turn. Preserve the exact current excerpt requirement, but do
+		// not require both surfaces to be repeated in the same sentence.
+		if !nameResolvable || (!nameObserved && !nameHasPrior) {
+			continue
+		}
+		observedSurface := nameObserved
+		valid := true
+		for _, alias := range aliases {
+			_, aliasHasPrior, aliasResolvable := resolvePrior(alias)
+			if !aliasResolvable {
+				valid = false
+				break
+			}
+			aliasObserved := strings.Contains(evidenceExcerpt, alias) && p.sourceContainsIndependentSurface(alias)
+			if !aliasObserved && !aliasHasPrior {
+				continue
+			}
+			observedSurface = observedSurface || aliasObserved
+			plan.aliases = append(plan.aliases, alias)
+		}
+		if valid && observedSurface && len(plan.aliases) > 0 {
+			if !nameObserved {
+				plan.admissionBasis = "same_entity_record_with_observed_alias_and_unique_prior_canonical"
+			}
+			p.aliasLinkPlans[itemIndex] = plan
+		}
+	}
+}
+
+func (p *entityIdentityProjection) persistExplicitAliasLinks(ctx context.Context, itemIndex int, occurrence *entityIdentityOccurrence, result *artifactSaveResult) {
+	plan, ok := p.aliasLinkPlans[itemIndex]
+	if !ok || occurrence == nil || occurrence.ReviewState != "source_observed" || occurrence.Namespace != plan.namespace {
+		return
+	}
+	targetID := occurrence.StableEntityID
+	targetLabel := occurrence.Name
+	if prior, exists := plan.prior[comparableEntityKey(plan.name)]; exists {
+		if strings.TrimSpace(prior.IdentityNamespace) != occurrence.Namespace {
+			return
+		}
+		targetID = strings.TrimSpace(prior.StableEntityID)
+		targetLabel = strings.TrimSpace(extractionFirstNonEmpty(prior.CanonicalLabel, plan.name))
+	}
+	sourceIDs := map[string]bool{occurrence.StableEntityID: true}
+	for _, prior := range plan.prior {
+		if strings.TrimSpace(prior.IdentityNamespace) != occurrence.Namespace {
+			return
+		}
+		if id := strings.TrimSpace(prior.StableEntityID); id != "" {
+			sourceIDs[id] = true
+		}
+	}
+	for sourceID := range sourceIDs {
+		if sourceID == "" || sourceID == targetID {
+			continue
+		}
+		key := entityIdentityIdempotencyKey("canonical_equivalence", p.sid, sourceID, targetID)
+		evidence := map[string]any{
+			"contract_version": "entity_identity_alias_evidence.v1",
+			"source_contract":  p.source.ContractVersion,
+			"source_revision":  p.source.Revision,
+			"source_turn":      p.turnIndex,
+			"canonical_label":  targetLabel,
+			"observed_name":    plan.name,
+			"observed_aliases": plan.aliases,
+			"evidence_excerpt": plan.evidenceExcerpt,
+			"admission_basis":  plan.admissionBasis,
+		}
+		result.trySave("SaveEntityIdentityLink", func() error {
+			return p.linkWriter.SaveEntityIdentityLink(ctx, &store.EntityIdentityLink{
+				LinkID:          entityIdentityStableID("identity-link", p.sid, key),
+				ChatSessionID:   p.sid,
+				SourceEntityID:  sourceID,
+				TargetEntityID:  targetID,
+				LinkKind:        store.EntityIdentityLinkKindCanonicalEquivalence,
+				LinkState:       store.EntityIdentityLinkStateReviewed,
+				EvidenceJSON:    mustCompactJSON(evidence),
+				MappingRevision: 1,
+				SourceContract:  p.source.ContractVersion,
+				SourceRevision:  p.source.Revision,
+				CreatedAt:       p.now,
+				UpdatedAt:       p.now,
+			})
+		}, result, func() { result.EntityIdentityLinks++ })
+	}
+}
+
+func (p *entityIdentityProjection) sourceContainsIndependentSurface(surface string) bool {
+	surface = strings.TrimSpace(surface)
+	if p == nil || surface == "" {
+		return false
+	}
+	offset := 0
+	for offset <= len(p.content) {
+		found := strings.Index(p.content[offset:], surface)
+		if found < 0 {
+			return false
+		}
+		start := offset + found
+		end := start + len(surface)
+		if !p.surfaceSpanNestedInLongerDisplayName(surface, start, end) {
+			return true
+		}
+		offset = end
+	}
+	return false
 }
 
 func (p *entityIdentityProjection) persistPerspectiveRoleIdentities(ctx context.Context, extraction map[string]any, result *artifactSaveResult) {
@@ -315,10 +483,15 @@ func (p *entityIdentityProjection) persistOccurrence(ctx context.Context, name, 
 	reviewState := "source_observed"
 	presenceAuthority := "observed"
 	occurrenceAuthority := "source_span"
-	if spanStart < 0 || namespace == "host_setting" || namespace == "reference_entity" || namespace == "global" {
+	aliasPlan, aliasPlanExists := p.aliasLinkPlans[itemIndex]
+	_, canonicalPreviouslyObserved := aliasPlan.prior[comparableEntityKey(name)]
+	aliasAnchoredKnownCanonical := spanStart < 0 && aliasPlanExists && canonicalPreviouslyObserved && len(aliasPlan.aliases) > 0
+	if (spanStart < 0 && !aliasAnchoredKnownCanonical) || namespace == "host_setting" || namespace == "reference_entity" || namespace == "global" {
 		reviewState = "needs_review"
 		presenceAuthority = "unverified"
 		occurrenceAuthority = "none"
+	} else if aliasAnchoredKnownCanonical {
+		occurrenceAuthority = "observed_alias_for_unique_prior_canonical"
 	} else if p.conflictedKeys[comparableEntityKey(name)] {
 		reviewState = "needs_review"
 	}
@@ -358,8 +531,12 @@ func (p *entityIdentityProjection) persistOccurrence(ctx context.Context, name, 
 			UpdatedAt:           p.now,
 		})
 	}, result, func() { result.EntityIdentities++ })
-	p.persistSurface(ctx, occurrence, "display_name", name, spanStart, spanEnd, reviewState, result)
-	p.indexSurface(name, occurrence, reviewState)
+	displayReviewState := reviewState
+	if spanStart < 0 {
+		displayReviewState = "needs_review"
+	}
+	p.persistSurface(ctx, occurrence, "display_name", name, spanStart, spanEnd, displayReviewState, result)
+	p.indexSurface(name, occurrence, displayReviewState)
 	for aliasIndex, alias := range aliases {
 		alias = strings.TrimSpace(alias)
 		if alias == "" || strings.EqualFold(alias, name) {
@@ -370,10 +547,27 @@ func (p *entityIdentityProjection) persistOccurrence(ctx context.Context, name, 
 			aliasStart, aliasEnd = p.nextIndependentAliasSpan(alias)
 		}
 		aliasReview := "needs_review"
+		if aliasStart >= 0 && occurrence.ReviewState == "source_observed" && p.aliasPlanContainsAlias(itemIndex, alias) {
+			aliasReview = "source_observed"
+		}
 		p.persistSurface(ctx, occurrence, fmt.Sprintf("alias_%d", aliasIndex), alias, aliasStart, aliasEnd, aliasReview, result)
 		p.indexSurface(alias, occurrence, aliasReview)
 	}
 	return occurrence
+}
+
+func (p *entityIdentityProjection) aliasPlanContainsAlias(itemIndex int, alias string) bool {
+	plan, ok := p.aliasLinkPlans[itemIndex]
+	if !ok {
+		return false
+	}
+	key := comparableEntityKey(alias)
+	for _, planned := range plan.aliases {
+		if comparableEntityKey(planned) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *entityIdentityProjection) indexSurface(surface string, occurrence *entityIdentityOccurrence, reviewState string) {
@@ -547,16 +741,19 @@ func (p *entityIdentityProjection) resolveUnique(surface string) (*entityIdentit
 	return selected, reviewState, false
 }
 
-func (p *entityIdentityProjection) preciseMemoryEntityPointer(surface string, spanStart, spanEnd int) (string, bool) {
+func (p *entityIdentityProjection) preciseMemoryEntityPointer(surface string, _, _ int) (string, bool) {
 	if p == nil || strings.TrimSpace(surface) == "" {
 		return "", false
 	}
 	occurrence, reviewState, ambiguous := p.resolveUnique(surface)
 	if occurrence == nil || ambiguous || reviewState != "source_observed" ||
-		occurrence.ReviewState != "source_observed" ||
-		!p.surfaceAppearsIndependentlyWithinSourceSpan(surface, spanStart, spanEnd) {
+		occurrence.ReviewState != "source_observed" {
 		return "", false
 	}
+	// The exact excerpt proves the observation while this occurrence proves the
+	// entity elsewhere in the same accepted turn. Requiring every semantic
+	// endpoint to be repeated inside the same short quote rejects valid typed
+	// relationship, profile, and voice records without improving identity.
 	return occurrence.StableEntityID, true
 }
 

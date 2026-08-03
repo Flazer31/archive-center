@@ -408,7 +408,9 @@ func (s *Server) processAcceptedSourceRevision(
 			return result
 		}
 		result.State = "retryable"
-		result.Failure = "derived_persist_failed"
+		result.Failure = completeTurnPersistenceFailureSummary(
+			s.completeTurnPersistenceDiagnostics(saveResult.ErrorDetails),
+		)
 		return result
 	}
 	result.State = "completed"

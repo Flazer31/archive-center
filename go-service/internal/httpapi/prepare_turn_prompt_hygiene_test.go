@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -206,6 +207,7 @@ func TestPrepareTurnRecollectionDoesNotLetTechnicalSceneReactivateUnrelatedHisto
 		},
 	}
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, activeStates)
+	perspective[prepareTurnEntityIdentityAliasesContextKey] = map[string]any{"소월": "이소월", "슬아": "윤슬아", "서현": "민서현"}
 	assembly := buildPrepareTurnInjectionAssembly(
 		memories,
 		nil,
@@ -513,5 +515,68 @@ func TestPrepareTurnRelevantOpenGoalIsDeliveredOnceOutsideWorldState(t *testing.
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	if strings.Count(finalText, goal) != 1 {
 		t.Fatalf("goal should be delivered once, got %d copies: %q", strings.Count(finalText, goal), finalText)
+	}
+}
+
+func TestPrepareTurnRecollectionContextDoesNotPreCutRelevantContextByCountOrFieldLength(t *testing.T) {
+	memories := []store.Memory{}
+	for index := 0; index < 4; index++ {
+		memories = append(memories, store.Memory{
+			TurnIndex:   20,
+			SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": fmt.Sprintf("archive clue %d", index)}),
+		})
+	}
+	longMemory := strings.Repeat("memory-padding ", 30) + "deep anchor memory-tail-marker"
+	memories = append(memories, store.Memory{
+		TurnIndex:   20,
+		SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": longMemory}),
+	})
+
+	pending := []store.PendingThread{}
+	for index := 0; index < 10; index++ {
+		description := fmt.Sprintf("archive goal %d", index)
+		if index == 9 {
+			description += " " + strings.Repeat("goal-padding ", 30) + "goal-tail-marker"
+		}
+		pending = append(pending, store.PendingThread{Status: "open", Description: description})
+	}
+	longScene := strings.Repeat("scene-padding ", 40) + "state-tail-marker"
+	active := []store.ActiveState{{
+		StateType: "scene",
+		TurnIndex: 20,
+		Content: mustCompactJSON(map[string]any{
+			"present_entities": []string{"Mira"},
+			"description":      longScene,
+		}),
+	}}
+	longAssistant := strings.Repeat("assistant-padding ", 35) + "assistant-tail-marker"
+	ctx := buildPrepareTurnRecollectionContext(
+		"archive clue deep anchor goal memory-tail-marker goal-tail-marker state-tail-marker",
+		memories,
+		active,
+		nil,
+		pending,
+		[]store.ChatLog{{Role: "assistant", TurnIndex: 20, Content: longAssistant}},
+	)
+
+	if got := len(nonEmptyStrings(strings.Split(ctx.previousEventSummary, "\n"))); got != 5 {
+		t.Fatalf("previous event context count = %d, want all 5 relevant summaries: %q", got, ctx.previousEventSummary)
+	}
+	for label, text := range map[string]string{
+		"memory":    ctx.previousEventSummary,
+		"goal":      ctx.unresolvedGoals,
+		"scene":     ctx.currentSceneStates,
+		"assistant": ctx.currentAssistantContext,
+	} {
+		marker := map[string]string{
+			"memory": "memory-tail-marker", "goal": "goal-tail-marker",
+			"scene": "state-tail-marker", "assistant": "assistant-tail-marker",
+		}[label]
+		if !strings.Contains(text, marker) || strings.Contains(text, "...") {
+			t.Fatalf("%s relevance context was pre-truncated: %q", label, text)
+		}
+	}
+	if got := strings.Count(ctx.unresolvedGoals, "archive goal "); got != 10 {
+		t.Fatalf("unresolved goal context count = %d, want all 10 relevant goals: %q", got, ctx.unresolvedGoals)
 	}
 }

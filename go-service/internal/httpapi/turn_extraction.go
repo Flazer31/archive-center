@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -64,11 +65,18 @@ type artifactSaveResult struct {
 	StatusEffects            int
 	NarrativeCurrentStates   int
 	NarrativeStateEvents     int
+	RelationCurrentStates    int
+	RelationStateEvents      int
+	HabitEvidenceCurrent     int
+	HabitEvidenceEvents      int
+	CharacterProfiles        int
+	VoiceBehaviorProjections int
 	PendingThreads           int
 	ActiveStates             int
 	Entities                 int
 	EntityIdentities         int
 	IdentitySurfaces         int
+	EntityIdentityLinks      int
 	IdentityBindings         int
 	SpeakerAttributions      int
 	PreciseMemoryUnits       int
@@ -259,35 +267,21 @@ func resolveCanonicalConflict(incoming store.DirectEvidence, existing []store.Di
 func applyRetentionPolicy(evidence *store.DirectEvidence, importance float64, existing []store.DirectEvidence) map[string]any {
 	decision := map[string]any{
 		"action":        "preserve",
-		"archive_state": "canonical",
+		"archive_state": "canonical_direct",
 		"importance":    importance,
-		"reason":        "direct_evidence_lineage",
+		"reason":        "direct_evidence_lifecycle_and_lineage",
 		"ttl_turns":     0,
 		"version":       "ea1l.v1",
 	}
-	if importance >= 0.8 {
-		decision["archive_state"] = "canonical_direct"
-		return decision
-	}
-	if importance >= 0.5 {
-		decision["ttl_turns"] = 120
-		decision["archive_state"] = "previous_archive"
-		return decision
-	}
 	if evidence.Tombstoned {
-		decision["ttl_turns"] = 240
 		decision["archive_state"] = "tombstone_audit"
-		decision["reason"] = "tombstone_preserve_for_audit"
+		decision["reason"] = "tombstone_preserve_for_audit_without_turn_expiry"
 		return decision
 	}
-	decision["ttl_turns"] = 30
-	decision["archive_state"] = "transient"
-	decision["reason"] = "low_importance_noise"
 	for _, ex := range existing {
 		if ex.SupersededByID == evidence.ID || ex.ID == evidence.SupersededByID {
 			decision["archive_state"] = "superseded_archive"
-			decision["ttl_turns"] = 60
-			decision["reason"] = "superseded_lineage_preserve"
+			decision["reason"] = "superseded_lineage_preserve_without_turn_expiry"
 			break
 		}
 	}
@@ -330,91 +324,21 @@ type memoryImportanceUpdater interface {
 	UpdateMemoryImportance(ctx context.Context, chatSessionID string, memoryID int64, importance float64) error
 }
 
-var placeholderKGPartPattern = regexp.MustCompile(`(?i)^\s*(?:char_\d+(?:_cid_[a-f0-9-]{8,})?|cid_[a-f0-9-]{8,}|turn_\d+|\{\{\s*(?:user|char)\s*\}\}|<\s*(?:user|char)\s*>|user|유저|사용자|ユーザー|player|플레이어|プレイヤー|participant|참가자|assistant|어시스턴트|system|시스템|developer|개발자|prompt|instruction|bot|agent)\s*$`)
+var placeholderKGPartPattern = regexp.MustCompile(`(?i)^\s*(?:char_\d+(?:_cid_[a-f0-9-]{8,})?|cid_[a-f0-9-]{8,}|turn_\d+|\{\{\s*(?:user|char)\s*\}\}|<\s*(?:user|char)\s*>)\s*$`)
 var closedThoughtTagPattern = regexp.MustCompile(`(?is)<\s*(?:thoughts|thinking|analysis|reasoning|scratchpad|filter)\b[^>]*>.*?<\s*/\s*(?:thoughts|thinking|analysis|reasoning|scratchpad|filter)\s*>`)
 var openThoughtTagPattern = regexp.MustCompile(`(?is)<\s*(?:thoughts|thinking|analysis|reasoning|scratchpad|filter)\b[^>]*>.*$`)
 var filterCompleteMarkerPattern = regexp.MustCompile(`(?is)<\s*__filter_complete__\s*>`)
 var thoughtLinePrefixPattern = regexp.MustCompile(`(?im)^\s*(?:chain of thought|hidden chain-of-thought|thought process|thinking|analysis|reasoning|scratchpad)\s*:\s*.*(?:\r?\n|$)`)
 
-var sourceControlHeaderPattern = regexp.MustCompile(`(?i)^\s*(?:#{1,6}\s*)?(?:\[+\s*)?(?:narrative guide|story intent|scene mandate|forbidden moves|pressure level|prompt template|response template|system prompt|developer message|author note|system note|meta note|common behaviou?r|behaviou?r guide|style guide|writing guide|response rules|instructions?|rules?|persona|pov|long-term memory archive|archive label|toggle expansion)(?:\s*\]+)?\s*:?\s*$`)
-var sourceControlInlinePattern = regexp.MustCompile(`(?i)\b(?:narrative guide|story intent|scene mandate|forbidden moves|pressure level|prompt template|response template|system prompt|developer message|author note|system note|meta note|common behaviou?r|behaviou?r guide|style guide|writing guide|response rules|instructions?|rules?|persona|pov|long-term memory archive|archive label|toggle expansion|lorebook|preset)\b`)
-var sourceControlPlaceholderPattern = regexp.MustCompile(`(?i)(?:\{\{\s*(?:user|char)\s*\}\}|<\s*(?:user|char|system|developer|assistant|thoughts)\s*>|</\s*thoughts\s*>)`)
-var sourceControlFieldPattern = regexp.MustCompile(`(?i)(?:preset|template|control|prompt|system|developer|narrative_control|lorebook|decorator|cbs)`)
+// This is a provider-failure recovery lexicon, not a story classifier. It is
+// used only after the original critic call failed, so successful extraction
+// always sees the exact completed turn.
 var criticRetrySensitivePattern = regexp.MustCompile(`(?i)(?:\b(?:penis|vagina|clitoris|ejaculat\w*|orgasm\w*|semen|cum|penetrat\w*)\b|성기|음경|질|귀두|사정|삽입|오르가즘|정액|클리토리스)`)
 
-func looksLikeSourceControlResidue(text string) bool {
-	raw := strings.TrimSpace(text)
-	if len(raw) < 12 {
-		return false
-	}
-	cues := 0
-	if sourceControlInlinePattern.MatchString(raw) {
-		cues++
-	}
-	if sourceControlPlaceholderPattern.MatchString(raw) {
-		cues++
-	}
-	if strings.Count(raw, "```") >= 2 {
-		cues++
-	}
-	headerCount := 0
-	bulletOrRuleCount := 0
-	for _, line := range strings.Split(raw, "\n") {
-		stripped := strings.TrimSpace(line)
-		if stripped == "" {
-			continue
-		}
-		if sourceControlHeaderPattern.MatchString(stripped) {
-			headerCount++
-			continue
-		}
-		if strings.HasPrefix(stripped, "- ") || strings.HasPrefix(stripped, "* ") || strings.Contains(stripped, ": ") {
-			if sourceControlInlinePattern.MatchString(stripped) || sourceControlPlaceholderPattern.MatchString(stripped) {
-				bulletOrRuleCount++
-			}
-		}
-	}
-	if headerCount >= 1 {
-		cues++
-	}
-	if headerCount >= 2 || bulletOrRuleCount >= 2 {
-		cues++
-	}
-	return cues >= 2
-}
+const risuChatMessageObservationContract = "risu_chat_message_observation.v1"
 
 func sanitizeTextForCriticInput(text string) string {
-	cleaned := sanitizeCriticStorageText(text)
-	if cleaned == "" {
-		return ""
-	}
-	if looksLikeSourceControlResidue(cleaned) {
-		return ""
-	}
-	lines := []string{}
-	skipControlSection := false
-	for _, line := range strings.Split(cleaned, "\n") {
-		stripped := strings.TrimSpace(line)
-		if skipControlSection {
-			if stripped == "" {
-				skipControlSection = false
-			}
-			continue
-		}
-		if sourceControlHeaderPattern.MatchString(stripped) {
-			skipControlSection = true
-			continue
-		}
-		if sourceControlInlinePattern.MatchString(stripped) && (strings.HasPrefix(stripped, "#") || strings.HasPrefix(stripped, "- ") || strings.HasPrefix(stripped, "* ") || strings.HasSuffix(stripped, ":")) {
-			continue
-		}
-		lines = append(lines, line)
-	}
-	out := strings.TrimSpace(strings.Join(lines, "\n"))
-	if looksLikeSourceControlResidue(out) {
-		return ""
-	}
-	return out
+	return sanitizeCriticStorageText(text)
 }
 
 func boundCompleteTurnCriticInput(text string, maxRunes int) string {
@@ -454,13 +378,17 @@ func redactSensitiveCriticRetryText(text string) (string, bool) {
 func sanitizeContextMessagesForCriticInput(messages []map[string]any) []map[string]any {
 	out := []map[string]any{}
 	for _, item := range messages {
-		if contextMessageMarkedSourceControl(item) {
+		role := strings.ToLower(strings.TrimSpace(stringFromMap(item, "role")))
+		if role != "user" && role != "assistant" {
 			continue
 		}
-		copied := map[string]any{}
-		for k, v := range item {
-			copied[k] = v
+		contractVersion := strings.TrimSpace(stringFromMap(item, "contract_version"))
+		if contractVersion != "" && (contractVersion != risuChatMessageObservationContract ||
+			!strings.EqualFold(strings.TrimSpace(stringFromMap(item, "observation_state")), "observed") ||
+			!strings.EqualFold(strings.TrimSpace(stringFromMap(item, "source_kind")), "active_chat_message")) {
+			continue
 		}
+		copied := map[string]any{"role": role}
 		if content, ok := item["content"].(string); ok {
 			cleaned := sanitizeTextForCriticInput(content)
 			if cleaned == "" && strings.TrimSpace(content) != "" {
@@ -468,31 +396,31 @@ func sanitizeContextMessagesForCriticInput(messages []map[string]any) []map[stri
 			}
 			copied["content"] = cleaned
 		}
+		if contractVersion == risuChatMessageObservationContract {
+			copied["contract_version"] = risuChatMessageObservationContract
+			copied["observation_state"] = "observed"
+			copied["source_kind"] = "active_chat_message"
+		}
 		out = append(out, copied)
 	}
 	return out
-}
-
-func contextMessageMarkedSourceControl(item map[string]any) bool {
-	for _, key := range []string{"source", "source_layer", "origin", "kind", "type", "name", "label"} {
-		if sourceControlFieldPattern.MatchString(strings.TrimSpace(stringFromMap(item, key))) {
-			return true
-		}
-	}
-	if meta := mapFromAny(item["metadata"]); len(meta) > 0 {
-		for _, key := range []string{"source", "source_layer", "origin", "kind", "type", "name", "label"} {
-			if sourceControlFieldPattern.MatchString(strings.TrimSpace(stringFromMap(meta, key))) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (s *Server) canonicalCharacterName(ctx context.Context, sid, proposed string) string {
 	proposed = strings.TrimSpace(proposed)
 	if proposed == "" || s.Store == nil {
 		return proposed
+	}
+	if resolver, ok := s.Store.(store.UniqueActiveEntitySurfaceIdentityResolver); ok {
+		resolved, err := resolver.ResolveUniqueActiveEntityIdentityBySurface(ctx, sid, comparableEntityKey(proposed))
+		if err == nil {
+			if label := strings.TrimSpace(resolved.CanonicalLabel); label != "" {
+				return label
+			}
+		}
+		if errors.Is(err, store.ErrReviewedEntityIdentityAmbiguous) {
+			return proposed
+		}
 	}
 	states, err := s.Store.ListCharacterStates(ctx, sid)
 	if err != nil || len(states) == 0 {
@@ -641,69 +569,9 @@ func romanizeKatakanaRune(r rune) string {
 	return ""
 }
 
-var genericDescriptorHumanTokens = map[string]bool{
-	"person": true, "people": true, "human": true, "stranger": true, "figure": true, "someone": true,
-	"man": true, "woman": true, "boy": true, "girl": true, "guy": true, "lady": true, "male": true, "female": true,
-	"guard": true, "maid": true, "teacher": true, "student": true, "clerk": true, "soldier": true,
-	"사람": true, "남자": true, "여자": true, "소년": true, "소녀": true, "경비": true, "하녀": true, "학생": true,
-}
-
-var descriptorSplitPattern = regexp.MustCompile(`[\s_\-.,/|()[\]{}"'` + "`" + `]+`)
-
-func looksLikeTransientDescriptorCharacterName(name string) bool {
-	tokens := characterDescriptorKeywords(name)
-	if len(tokens) == 0 {
-		return false
-	}
-	hasGeneric := false
-	nonGeneric := 0
-	for _, token := range tokens {
-		if genericDescriptorHumanTokens[token] {
-			hasGeneric = true
-		} else {
-			nonGeneric++
-		}
-	}
-	return hasGeneric && (nonGeneric > 0 || len(tokens) == 1)
-}
-
-func characterDescriptorKeywords(name string) []string {
-	out := []string{}
-	seen := map[string]bool{}
-	for _, raw := range descriptorSplitPattern.Split(strings.ToLower(strings.TrimSpace(name)), -1) {
-		token := strings.TrimSpace(strings.TrimSuffix(raw, "'s"))
-		if token == "" || token == "a" || token == "an" || token == "the" {
-			continue
-		}
-		if len([]rune(token)) < 3 && !containsKorean(token) {
-			continue
-		}
-		if !seen[token] {
-			seen[token] = true
-			out = append(out, token)
-		}
-	}
-	return out
-}
-
 func containsKorean(text string) bool {
 	for _, r := range text {
 		if (r >= 0xAC00 && r <= 0xD7A3) || (r >= 0x1100 && r <= 0x11FF) {
-			return true
-		}
-	}
-	return false
-}
-
-func characterDeltaHasContinuityAnchor(delta map[string]any) bool {
-	for _, key := range []string{"appearance", "personality", "relationships", "speech_style"} {
-		if hasMeaningfulPayload(delta[key]) {
-			return true
-		}
-	}
-	for _, item := range sliceFromAny(delta["events"]) {
-		eventType := strings.TrimSpace(stringFromMap(mapFromAny(item), "type"))
-		if eventType == "relationship_shift" || eventType == "personality_change" {
 			return true
 		}
 	}

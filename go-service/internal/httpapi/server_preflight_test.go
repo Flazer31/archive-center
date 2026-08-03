@@ -193,7 +193,7 @@ func TestReferenceVectorFailureDoesNotBreakPrepareOrCompleteTurnStorage(t *testi
 	if complete.Code != http.StatusOK {
 		t.Fatalf("complete-turn status=%d body=%s", complete.Code, complete.Body.String())
 	}
-	if len(recordingStore.savedChatLogs) != 2 || len(recordingStore.savedEffectiveInputs) != 1 {
+	if len(recordingStore.savedChatLogs) != 2 || len(recordingStore.savedEffectiveInputs) != 0 {
 		t.Fatalf("main turn storage was not preserved: logs=%d effective_inputs=%d", len(recordingStore.savedChatLogs), len(recordingStore.savedEffectiveInputs))
 	}
 }

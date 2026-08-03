@@ -490,6 +490,9 @@ func reversibleStateValueCoversSourceAssertion(excerpt, subjectName, valueText s
 	return strings.HasSuffix(withoutSubject, value) && len([]rune(prefix)) <= 1
 }
 
+// This fixed safety lexicon is defense-in-depth for critic misclassification,
+// not a content-generation policy. A typed affirmative label alone must never
+// promote visibly negated, questioned, or uncertain prose into current state.
 func reversibleStateExcerptHasEpistemicOperator(excerpt, subjectName string) bool {
 	assertion := strings.ToLower(strings.TrimSpace(excerpt))
 	if subject := strings.ToLower(strings.TrimSpace(subjectName)); subject != "" {
@@ -1130,6 +1133,11 @@ func sanitizeLegacyReversibleCharacterDeltas(value any) []any {
 		// durable residence/workplace fact and is therefore preserved.
 		delete(item, "location")
 		delete(item, "emotional_posture")
+		// Character traits and speaking principles are projected only through
+		// their 3.9 typed observation lanes. Keep them in the raw extraction,
+		// but do not let the legacy character_delta copy bypass those lanes.
+		delete(item, "personality")
+		delete(item, "speech_style")
 		if status, exists := item["status"]; exists {
 			cleaned := sanitizeLegacyReversibleMap(status)
 			if len(cleaned) == 0 {

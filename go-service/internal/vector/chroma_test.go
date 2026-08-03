@@ -253,8 +253,8 @@ func TestChromaStoreUpsertSearchCountDelete(t *testing.T) {
 		}
 	}
 	state.mu.Unlock()
-	if queryCandidateLimit != 12 {
-		t.Fatalf("query n_results = %d, want overfetch 12 for reranking", queryCandidateLimit)
+	if queryCandidateLimit != 3 {
+		t.Fatalf("query n_results = %d, want caller-requested limit 3", queryCandidateLimit)
 	}
 
 	total, err := store.Count(ctx, "")

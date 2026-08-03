@@ -138,24 +138,32 @@ func TestInputContextContainsOnlyThePreviousCompletedTurn(t *testing.T) {
 	}
 }
 
-func TestMEMDDoesNotBorrowUnusedBudgetForUnprovenEventLeftovers(t *testing.T) {
+func TestMEMDAutomaticDeliversRequiredBeforeEarlierAuxiliaryClass(t *testing.T) {
 	out := prepareTurnInjectionAssembly{
-		EpisodeText: "[Episode Summaries]\n- " + strings.Repeat("old unrelated episode ", 90),
+		ActualMemoryText:   "[Memory]\n- Mina must remember the current doorway promise.",
+		DirectEvidenceText: "[Direct Evidence]\n- " + strings.Repeat("older supporting excerpt ", 30),
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
-	if plan["borrowing_policy"] != "current_entity_relevance_selected_classes_only" {
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 500, map[string]any{})
+	if plan["borrowing_policy"] != "required_then_auxiliary_global_envelope" {
 		t.Fatalf("borrowing policy=%v", plan["borrowing_policy"])
+	}
+	finalText := extractionStringFromAny(plan["final_text"])
+	if !strings.Contains(finalText, "current doorway promise") {
+		t.Fatalf("required current memory was crowded out by auxiliary evidence: %q", finalText)
+	}
+	if strings.Contains(finalText, "older supporting excerpt") {
+		t.Fatalf("oversized auxiliary evidence displaced required memory: %q", finalText)
 	}
 	classes, _ := plan["classes"].([]map[string]any)
 	for _, class := range classes {
-		if class["key"] != "event_recent" {
+		if class["key"] != "direct_evidence" {
 			continue
 		}
 		if intFromAny(class["selected_count"], 0) != 0 || intFromAny(class["deferred_count"], 0) != 1 {
-			t.Fatalf("oversized unrelated leftover should remain deferred: %#v", class)
+			t.Fatalf("oversized auxiliary evidence should remain deferred: %#v", class)
 		}
-		if intFromAny(class["borrowed_chars"], -1) != 0 {
-			t.Fatalf("borrowed chars=%v, want 0", class["borrowed_chars"])
+		if intFromAny(class["auxiliary_eligible_count"], 0) != 1 || intFromAny(class["auxiliary_selected_count"], 0) != 0 {
+			t.Fatalf("auxiliary tier trace=%#v", class)
 		}
 	}
 }
@@ -184,7 +192,7 @@ func TestPrepareTurnSurfaceTextDropsEmptyNestedStructureWithoutDroppingFalseOrZe
 	}
 }
 
-func TestMEMDCustomZeroUsesAutomaticReservationAndWholeItems(t *testing.T) {
+func TestMEMDCustomZeroUsesGlobalSemanticSelectionAndWholeItems(t *testing.T) {
 	out := prepareTurnInjectionAssembly{
 		ActualMemoryText:    "[Memory]\n- first complete event\n- second complete event",
 		ProtectedMemoryText: "[Protected Memory Guidance]\n- keep this secret protected",
@@ -202,40 +210,33 @@ func TestMEMDCustomZeroUsesAutomaticReservationAndWholeItems(t *testing.T) {
 	}
 	classes, _ := plan["classes"].([]map[string]any)
 	for _, class := range classes {
-		if class["key"] == "protected_secret" && intFromAny(class["reserved_chars"], 0) <= 0 {
-			t.Fatalf("zero custom secret reservation must fall back to automatic: %#v", class)
+		if class["key"] == "protected_secret" && intFromAny(class["configured_reserved_chars"], -1) != 0 {
+			t.Fatalf("zero custom reservation must remain an explicit automatic-within-global request: %#v", class)
 		}
 	}
 	finalText := extractionStringFromAny(plan["final_text"])
+	if !strings.Contains(finalText, "keep this secret protected") {
+		t.Fatalf("zero custom reservation did not use available global space: %q", finalText)
+	}
 	if strings.Contains(finalText, "first complete even") && !strings.Contains(finalText, "first complete event") {
 		t.Fatalf("item was truncated: %q", finalText)
 	}
 }
 
-func TestMEMDStandardAutomaticBudgetProfile(t *testing.T) {
-	got := prepareTurnAutomaticMemoryBudgets(18000)
-	want := map[string]int{
-		"event_recent": 3500, "character_objective": 2500, "subjective_relationship": 3000,
-		"world_state": 2500, "protected_secret": 1200, "unresolved_goal": 1800, "direct_evidence": 3500,
+func TestMEMDAutomaticHasNoFixedPerClassReservations(t *testing.T) {
+	out := prepareTurnInjectionAssembly{
+		ActualMemoryText:          "[Memory]\n- current event",
+		CharacterRelationshipText: "[Character Relationships]\n- Mina distrusts Lia",
 	}
-	for key, value := range want {
-		if got[key] != value {
-			t.Fatalf("budget[%s]=%d, want %d", key, got[key], value)
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 18000, map[string]any{})
+	if boolFromAny(plan["automatic_class_quotas"]) {
+		t.Fatalf("automatic per-class quotas survived: %#v", plan)
+	}
+	classes, _ := plan["classes"].([]map[string]any)
+	for _, class := range classes {
+		if class["reserved_chars"] != nil || class["configured_reserved_chars"] != nil {
+			t.Fatalf("automatic class retained a numeric reservation: %#v", class)
 		}
-	}
-}
-
-func TestMEMDAutomaticBudgetDistributesRaisedGlobalCapAcrossClasses(t *testing.T) {
-	raised := prepareTurnAutomaticMemoryBudgets(11500)
-	total := 0
-	for _, key := range prepareTurnMemoryDeliveryOrder {
-		if raised[key] <= 0 {
-			t.Fatalf("raised budget[%s]=%d, want positive allocation", key, raised[key])
-		}
-		total += raised[key]
-	}
-	if total > 11500 || total < 11490 {
-		t.Fatalf("distributed total=%d, want integer-rounded allocation near global cap 11500", total)
 	}
 }
 
@@ -285,10 +286,24 @@ func TestPrepareTurnAdaptiveMemoryBudgetIsResolvedByGo(t *testing.T) {
 			"token_source":        "risu_observed",
 		},
 	})
-	if effective != 20500 {
-		t.Fatalf("effective=%d, want 20500", effective)
+	if effective != 11500 {
+		t.Fatalf("effective=%d, want configured UI budget 11500 when context capacity is unobserved", effective)
 	}
 	if trace["owner"] != "go" || boolFromAny(trace["calculation_in_javascript"]) {
 		t.Fatalf("budget owner trace=%#v", trace)
+	}
+
+	effective, trace = resolvePrepareTurnMemoryBudget(9000, map[string]any{
+		"memory_budget_observation": map[string]any{
+			"extra_chars":           2500,
+			"current_chat_tokens":   5000,
+			"context_window_tokens": 20000,
+			"current_chat_chars":    20000,
+			"token_source":          "risu_observed",
+			"context_window_source": "model_observed",
+		},
+	})
+	if effective != 20000 || trace["calculation"] != "observed_capacity_request_demand" {
+		t.Fatalf("observed larger context did not expand the delivery budget dynamically: effective=%d trace=%#v", effective, trace)
 	}
 }

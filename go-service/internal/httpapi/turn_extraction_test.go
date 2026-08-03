@@ -299,11 +299,11 @@ func TestApplyRetentionPolicyHighImportanceDirectEvidence(t *testing.T) {
 func TestApplyRetentionPolicyMediumImportancePreviousArchive(t *testing.T) {
 	ev := store.DirectEvidence{EvidenceText: "Secondary fact."}
 	decision := applyRetentionPolicy(&ev, 0.6, nil)
-	if decision["archive_state"] != "previous_archive" {
-		t.Fatalf("archive_state = %q, want previous_archive", decision["archive_state"])
+	if decision["archive_state"] != "canonical_direct" {
+		t.Fatalf("archive_state = %q, want canonical_direct", decision["archive_state"])
 	}
-	if decision["ttl_turns"] != 120 {
-		t.Fatalf("ttl_turns = %v, want 120", decision["ttl_turns"])
+	if decision["ttl_turns"] != 0 {
+		t.Fatalf("ttl_turns = %v, want no turn expiry", decision["ttl_turns"])
 	}
 }
 
@@ -313,8 +313,8 @@ func TestApplyRetentionPolicyTombstonePreserveForAudit(t *testing.T) {
 	if decision["archive_state"] != "tombstone_audit" {
 		t.Fatalf("archive_state = %q, want tombstone_audit", decision["archive_state"])
 	}
-	if decision["ttl_turns"] != 240 {
-		t.Fatalf("ttl_turns = %v, want 240", decision["ttl_turns"])
+	if decision["ttl_turns"] != 0 {
+		t.Fatalf("ttl_turns = %v, want no turn expiry", decision["ttl_turns"])
 	}
 }
 
@@ -327,7 +327,7 @@ func TestApplyRetentionPolicySupersededLineagePreserve(t *testing.T) {
 	if decision["archive_state"] != "superseded_archive" {
 		t.Fatalf("archive_state = %q, want superseded_archive", decision["archive_state"])
 	}
-	if decision["ttl_turns"] != 60 {
-		t.Fatalf("ttl_turns = %v, want 60", decision["ttl_turns"])
+	if decision["ttl_turns"] != 0 {
+		t.Fatalf("ttl_turns = %v, want no turn expiry", decision["ttl_turns"])
 	}
 }

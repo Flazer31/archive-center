@@ -121,22 +121,23 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 	skipped := 0
 	deferred := 0
 	artifactCounts := map[string]int{
-		"memories":          0,
-		"evidence":          0,
-		"kg_triples":        0,
-		"character_events":  0,
-		"storylines":        0,
-		"world_rules":       0,
-		"character_states":  0,
-		"pending_threads":   0,
-		"active_states":     0,
-		"entities":          0,
-		"trust_states":      0,
-		"episode_summaries": 0,
-		"chapter_summaries": 0,
-		"arc_summaries":     0,
-		"saga_digests":      0,
-		"vectors_upserted":  0,
+		"memories":                   0,
+		"evidence":                   0,
+		"kg_triples":                 0,
+		"subjective_entity_memories": 0,
+		"character_events":           0,
+		"storylines":                 0,
+		"world_rules":                0,
+		"character_states":           0,
+		"pending_threads":            0,
+		"active_states":              0,
+		"entities":                   0,
+		"trust_states":               0,
+		"episode_summaries":          0,
+		"chapter_summaries":          0,
+		"arc_summaries":              0,
+		"saga_digests":               0,
+		"vectors_upserted":           0,
 	}
 	warnings := []string{}
 	episodeInterval := normalizedEpisodeInterval(intFromAny(req.ClientMeta["episode_interval_turns"], 0))
@@ -927,6 +928,7 @@ func addAdminRescanArtifactCounts(counts map[string]int, result artifactSaveResu
 	counts["memories"] += result.Memories
 	counts["evidence"] += result.Evidence
 	counts["kg_triples"] += result.KGTriples
+	counts["subjective_entity_memories"] += result.SubjectiveEntityMemories
 	counts["character_events"] += result.CharacterEvents
 	counts["storylines"] += result.Storylines
 	counts["world_rules"] += result.WorldRules
@@ -1030,9 +1032,9 @@ func (s *Server) backfillHierarchySummaries(ctx context.Context, sid string, log
 		result["reason"] = "no_chat_logs"
 		return result
 	}
-	chapterInterval := normalizedChapterInterval(intFromAny(meta["chapter_interval_turns"], 0))
-	arcInterval := normalizedHierarchyInterval(intFromAny(meta["arc_interval_turns"], 0), 240, chapterInterval, 1200)
-	sagaInterval := normalizedHierarchyInterval(intFromAny(meta["saga_interval_turns"], 0), 960, arcInterval, 4800)
+	chapterInterval := normalizedHierarchyChildCount(intFromAny(meta["chapter_interval_episodes"], 0))
+	arcInterval := normalizedHierarchyChildCount(intFromAny(meta["arc_interval_chapters"], 0))
+	sagaInterval := normalizedHierarchyChildCount(intFromAny(meta["saga_interval_arcs"], 0))
 	force := boolFromAny(meta["force_hierarchy_backfill"]) || boolFromAny(meta["force_chapter_backfill"]) || boolFromAny(meta["force_arc_backfill"]) || boolFromAny(meta["force_saga_backfill"])
 
 	var chapterResult map[string]any
@@ -1045,7 +1047,7 @@ func (s *Server) backfillHierarchySummaries(ctx context.Context, sid string, log
 		}
 	} else {
 		chapterResult = hierarchyLayerBackfillResult(dryRun, "chapter_auto_disabled")
-		chapterResult["interval"] = chapterInterval
+		chapterResult["interval_episodes"] = chapterInterval
 	}
 	result["chapter"] = chapterResult
 
@@ -1059,7 +1061,7 @@ func (s *Server) backfillHierarchySummaries(ctx context.Context, sid string, log
 		}
 	} else {
 		arcResult = hierarchyLayerBackfillResult(dryRun, "arc_auto_disabled")
-		arcResult["interval"] = arcInterval
+		arcResult["interval_chapters"] = arcInterval
 	}
 	result["arc"] = arcResult
 
@@ -1073,12 +1075,12 @@ func (s *Server) backfillHierarchySummaries(ctx context.Context, sid string, log
 		}
 	} else {
 		sagaResult = hierarchyLayerBackfillResult(dryRun, "saga_auto_disabled")
-		sagaResult["interval"] = sagaInterval
+		sagaResult["interval_arcs"] = sagaInterval
 	}
 	result["saga"] = sagaResult
-	result["chapter_interval_turns"] = chapterInterval
-	result["arc_interval_turns"] = arcInterval
-	result["saga_interval_turns"] = sagaInterval
+	result["chapter_interval_episodes"] = chapterInterval
+	result["arc_interval_chapters"] = arcInterval
+	result["saga_interval_arcs"] = sagaInterval
 	result["range"] = map[string]any{"from_turn": minTurn, "to_turn": maxTurn}
 	result["policy"] = "step23_closed_range_hierarchy_backfill"
 	return result
@@ -1096,29 +1098,51 @@ func hierarchyBackfillLayerEnabled(meta map[string]any, key string, fallback boo
 
 func (s *Server) backfillChapterSummaries(ctx context.Context, sid string, minTurn, maxTurn, interval int, targetTurns map[int]bool, dryRun, force bool) (map[string]any, error) {
 	layer := hierarchyLayerBackfillResult(dryRun, "")
-	layer["interval"] = interval
+	layer["interval_episodes"] = interval
+	if interval <= 0 {
+		layer["status"] = "skipped"
+		layer["reason"] = "chapter_interval_episodes_not_configured"
+		return layer, nil
+	}
 	chapterStore, ok := s.Store.(store.ChapterSummaryStore)
 	if !ok {
 		layer["status"] = "skipped"
 		layer["reason"] = "chapter_store_not_available"
 		return layer, nil
 	}
-	for fromTurn := alignHierarchyStart(minTurn, interval); fromTurn <= maxTurn; fromTurn += interval {
-		toTurn := fromTurn + interval - 1
-		if toTurn > maxTurn {
-			addHierarchyBlocked(layer, fromTurn, toTurn, "open_tail_range")
+	episodes, err := s.Store.ListEpisodeSummaries(ctx, sid, 0, 0, 0)
+	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
+		return layer, err
+	}
+	sort.SliceStable(episodes, func(i, j int) bool {
+		if episodes[i].FromTurn == episodes[j].FromTurn {
+			return episodes[i].ToTurn < episodes[j].ToTurn
+		}
+		return episodes[i].FromTurn < episodes[j].FromTurn
+	})
+	closed := make([]store.EpisodeSummary, 0, len(episodes))
+	seen := map[string]bool{}
+	for _, episode := range episodes {
+		if episode.FromTurn < minTurn || episode.ToTurn > maxTurn || episode.FromTurn <= 0 || episode.ToTurn < episode.FromTurn {
 			continue
 		}
+		key := fmt.Sprintf("%d:%d", episode.FromTurn, episode.ToTurn)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		closed = append(closed, episode)
+	}
+	groupStart := 0
+	for ; groupStart+interval <= len(closed); groupStart += interval {
+		group := closed[groupStart : groupStart+interval]
+		fromTurn := group[0].FromTurn
+		toTurn := group[len(group)-1].ToTurn
 		if len(targetTurns) > 0 && !turnRangeContainsTargetTurn(fromTurn, toTurn, targetTurns) {
 			layer["skipped"] = intFromAny(layer["skipped"], 0) + 1
 			continue
 		}
-		episodes, err := s.Store.ListEpisodeSummaries(ctx, sid, 0, fromTurn, toTurn)
-		if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
-			return layer, err
-		}
-		episodes = filterEpisodes(episodes, "", fromTurn, toTurn, 0)
-		if !episodeCoverageComplete(episodes, fromTurn, toTurn) {
+		if !episodeCoverageComplete(group, fromTurn, toTurn) {
 			addHierarchyBlocked(layer, fromTurn, toTurn, "blocked_missing_episode")
 			continue
 		}
@@ -1134,11 +1158,14 @@ func (s *Server) backfillChapterSummaries(ctx context.Context, sid string, minTu
 		if dryRun {
 			continue
 		}
-		chapter, _ := s.buildChapterSummaryForRange(ctx, sid, fromTurn, toTurn, chapterIndexForRange(toTurn, interval), episodes)
+		chapter, _ := s.buildChapterSummaryForRange(ctx, sid, fromTurn, toTurn, groupStart/interval+1, group)
 		if err := chapterStore.SaveChapterSummary(ctx, &chapter); err != nil {
 			return layer, err
 		}
 		layer["generated"] = intFromAny(layer["generated"], 0) + 1
+	}
+	if groupStart < len(closed) {
+		addHierarchyBlocked(layer, closed[groupStart].FromTurn, closed[len(closed)-1].ToTurn, "open_tail_episode_count")
 	}
 	layer["status"] = "ok"
 	layer["reason"] = nil
@@ -1147,7 +1174,12 @@ func (s *Server) backfillChapterSummaries(ctx context.Context, sid string, minTu
 
 func (s *Server) backfillArcSummaries(ctx context.Context, sid string, minTurn, maxTurn, interval int, targetTurns map[int]bool, dryRun, force bool) (map[string]any, error) {
 	layer := hierarchyLayerBackfillResult(dryRun, "")
-	layer["interval"] = interval
+	layer["interval_chapters"] = interval
+	if interval <= 0 {
+		layer["status"] = "skipped"
+		layer["reason"] = "arc_interval_chapters_not_configured"
+		return layer, nil
+	}
 	arcStore, ok := s.Store.(store.ArcSummaryStore)
 	if !ok {
 		layer["status"] = "skipped"
@@ -1160,21 +1192,39 @@ func (s *Server) backfillArcSummaries(ctx context.Context, sid string, minTurn, 
 		layer["reason"] = "chapter_store_not_available"
 		return layer, nil
 	}
-	for fromTurn := alignHierarchyStart(minTurn, interval); fromTurn <= maxTurn; fromTurn += interval {
-		toTurn := fromTurn + interval - 1
-		if toTurn > maxTurn {
-			addHierarchyBlocked(layer, fromTurn, toTurn, "open_tail_range")
+	chapters, err := chapterStore.SearchChapterSummaries(ctx, sid, "", 0, 0, 0)
+	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
+		return layer, err
+	}
+	sort.SliceStable(chapters, func(i, j int) bool {
+		if chapters[i].FromTurn == chapters[j].FromTurn {
+			return chapters[i].ToTurn < chapters[j].ToTurn
+		}
+		return chapters[i].FromTurn < chapters[j].FromTurn
+	})
+	closed := make([]store.ChapterSummary, 0, len(chapters))
+	seen := map[string]bool{}
+	for _, chapter := range chapters {
+		if chapter.FromTurn < minTurn || chapter.ToTurn > maxTurn || chapter.FromTurn <= 0 || chapter.ToTurn < chapter.FromTurn {
 			continue
 		}
+		key := fmt.Sprintf("%d:%d", chapter.FromTurn, chapter.ToTurn)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		closed = append(closed, chapter)
+	}
+	groupStart := 0
+	for ; groupStart+interval <= len(closed); groupStart += interval {
+		group := closed[groupStart : groupStart+interval]
+		fromTurn := group[0].FromTurn
+		toTurn := group[len(group)-1].ToTurn
 		if len(targetTurns) > 0 && !turnRangeContainsTargetTurn(fromTurn, toTurn, targetTurns) {
 			layer["skipped"] = intFromAny(layer["skipped"], 0) + 1
 			continue
 		}
-		chapters, err := chapterStore.SearchChapterSummaries(ctx, sid, "", fromTurn, toTurn, 0)
-		if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
-			return layer, err
-		}
-		if !chapterCoverageComplete(chapters, fromTurn, toTurn) {
+		if !chapterCoverageComplete(group, fromTurn, toTurn) {
 			addHierarchyBlocked(layer, fromTurn, toTurn, "blocked_missing_chapter")
 			continue
 		}
@@ -1190,11 +1240,14 @@ func (s *Server) backfillArcSummaries(ctx context.Context, sid string, minTurn, 
 		if dryRun {
 			continue
 		}
-		arc, _ := s.buildArcSummaryForRange(ctx, sid, fromTurn, toTurn, hierarchyIndexForRange(toTurn, interval), chapters)
+		arc, _ := s.buildArcSummaryForRange(ctx, sid, fromTurn, toTurn, groupStart/interval+1, group)
 		if err := arcStore.SaveArcSummary(ctx, sid, &arc); err != nil {
 			return layer, err
 		}
 		layer["generated"] = intFromAny(layer["generated"], 0) + 1
+	}
+	if groupStart < len(closed) {
+		addHierarchyBlocked(layer, closed[groupStart].FromTurn, closed[len(closed)-1].ToTurn, "open_tail_chapter_count")
 	}
 	layer["status"] = "ok"
 	layer["reason"] = nil
@@ -1203,7 +1256,12 @@ func (s *Server) backfillArcSummaries(ctx context.Context, sid string, minTurn, 
 
 func (s *Server) backfillSagaDigests(ctx context.Context, sid string, minTurn, maxTurn, interval int, targetTurns map[int]bool, dryRun, force bool) (map[string]any, error) {
 	layer := hierarchyLayerBackfillResult(dryRun, "")
-	layer["interval"] = interval
+	layer["interval_arcs"] = interval
+	if interval <= 0 {
+		layer["status"] = "skipped"
+		layer["reason"] = "saga_interval_arcs_not_configured"
+		return layer, nil
+	}
 	sagaStore, ok := s.Store.(store.SagaDigestStore)
 	if !ok {
 		layer["status"] = "skipped"
@@ -1216,21 +1274,39 @@ func (s *Server) backfillSagaDigests(ctx context.Context, sid string, minTurn, m
 		layer["reason"] = "arc_store_not_available"
 		return layer, nil
 	}
-	for fromTurn := alignHierarchyStart(minTurn, interval); fromTurn <= maxTurn; fromTurn += interval {
-		toTurn := fromTurn + interval - 1
-		if toTurn > maxTurn {
-			addHierarchyBlocked(layer, fromTurn, toTurn, "open_tail_range")
+	arcs, err := arcStore.SearchArcSummaries(ctx, sid, "", 0, 0, 0)
+	if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
+		return layer, err
+	}
+	sort.SliceStable(arcs, func(i, j int) bool {
+		if arcs[i].FromTurn == arcs[j].FromTurn {
+			return arcs[i].ToTurn < arcs[j].ToTurn
+		}
+		return arcs[i].FromTurn < arcs[j].FromTurn
+	})
+	closed := make([]store.ArcSummary, 0, len(arcs))
+	seen := map[string]bool{}
+	for _, arc := range arcs {
+		if arc.FromTurn < minTurn || arc.ToTurn > maxTurn || arc.FromTurn <= 0 || arc.ToTurn < arc.FromTurn {
 			continue
 		}
+		key := fmt.Sprintf("%d:%d", arc.FromTurn, arc.ToTurn)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		closed = append(closed, arc)
+	}
+	groupStart := 0
+	for ; groupStart+interval <= len(closed); groupStart += interval {
+		group := closed[groupStart : groupStart+interval]
+		fromTurn := group[0].FromTurn
+		toTurn := group[len(group)-1].ToTurn
 		if len(targetTurns) > 0 && !turnRangeContainsTargetTurn(fromTurn, toTurn, targetTurns) {
 			layer["skipped"] = intFromAny(layer["skipped"], 0) + 1
 			continue
 		}
-		arcs, err := arcStore.SearchArcSummaries(ctx, sid, "", fromTurn, toTurn, 0)
-		if err != nil && !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
-			return layer, err
-		}
-		if !arcCoverageComplete(arcs, fromTurn, toTurn) {
+		if !arcCoverageComplete(group, fromTurn, toTurn) {
 			addHierarchyBlocked(layer, fromTurn, toTurn, "blocked_missing_arc")
 			continue
 		}
@@ -1246,35 +1322,25 @@ func (s *Server) backfillSagaDigests(ctx context.Context, sid string, minTurn, m
 		if dryRun {
 			continue
 		}
-		saga, _ := s.buildSagaDigestForRange(ctx, sid, fromTurn, toTurn, arcs)
+		saga, _ := s.buildSagaDigestForRange(ctx, sid, fromTurn, toTurn, group)
 		if err := sagaStore.SaveSagaDigest(ctx, sid, &saga); err != nil {
 			return layer, err
 		}
 		layer["generated"] = intFromAny(layer["generated"], 0) + 1
+	}
+	if groupStart < len(closed) {
+		addHierarchyBlocked(layer, closed[groupStart].FromTurn, closed[len(closed)-1].ToTurn, "open_tail_arc_count")
 	}
 	layer["status"] = "ok"
 	layer["reason"] = nil
 	return layer, nil
 }
 
-func normalizedHierarchyInterval(value, fallback, minValue, maxValue int) int {
+func normalizedHierarchyChildCount(value int) int {
 	if value <= 0 {
-		value = fallback
-	}
-	if minValue > 0 && value < minValue {
-		value = minValue
-	}
-	if maxValue > 0 && value > maxValue {
-		value = maxValue
+		return 0
 	}
 	return value
-}
-
-func alignHierarchyStart(minTurn, interval int) int {
-	if minTurn <= 1 {
-		return 1
-	}
-	return ((minTurn-1)/interval)*interval + 1
 }
 
 func chatLogTurnBounds(sid string, logs []store.ChatLog) (int, int) {

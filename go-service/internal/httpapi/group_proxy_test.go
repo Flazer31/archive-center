@@ -1686,10 +1686,13 @@ func TestProxyClaudeJSONPolicyAddsOutputConfigAndTrace(t *testing.T) {
 		}
 		schema := mapFromAny(format["schema"])
 		properties := mapFromAny(schema["properties"])
-		if schema["type"] != "object" || schema["additionalProperties"] != false ||
+		if schema["type"] != "object" || schema["additionalProperties"] != true ||
 			mapFromAny(properties["turn_summary"])["type"] != "string" ||
 			mapFromAny(properties["evidence_excerpts"])["type"] != "array" {
 			t.Fatalf("Claude critic schema is incomplete: %+v", schema)
+		}
+		if _, fixedRequired := schema["required"]; fixedRequired {
+			t.Fatalf("Claude critic schema restored a fixed required-field list: %+v", schema)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -2394,8 +2397,9 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			!strings.Contains(userPrompt, "guide_focus") {
 			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
 		}
-		if !strings.Contains(systemPrompt, "source-backed narrative support reviewer") ||
-			!strings.Contains(systemPrompt, "current user input is the only command source") {
+		if !strings.Contains(systemPrompt, "Archive Center's Basic Publisher") ||
+			!strings.Contains(systemPrompt, "The current user input is the only command") ||
+			!strings.Contains(systemPrompt, "Accepted recent context has continuity authority only") {
 			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)
 		}
 		for _, forbidden := range []string{"Story Initiative", "max_new_beats", "narrative_stance", "auto_advance_trigger"} {

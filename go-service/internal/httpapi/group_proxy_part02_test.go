@@ -477,12 +477,18 @@ func TestConfigUpdateProjectGUISettingsTraceMasksSecrets(t *testing.T) {
 	if err := json.Unmarshal(updateRec.Body.Bytes(), &updateResp); err != nil {
 		t.Fatalf("decode config/update response: %v", err)
 	}
+	if updateResp["backend_instance_id"] != srv.BackendInstanceID {
+		t.Fatalf("backend_instance_id = %v, want %q", updateResp["backend_instance_id"], srv.BackendInstanceID)
+	}
 	trace, ok := updateResp["runtime_config_trace"].(map[string]any)
 	if !ok {
 		t.Fatalf("runtime_config_trace missing from config/update response: %+v", updateResp)
 	}
 	if trace["top_k"] != float64(7) {
 		t.Fatalf("runtime_config_trace.top_k = %v, want 7", trace["top_k"])
+	}
+	if trace["synced"] != true {
+		t.Fatalf("runtime_config_trace.synced = %v, want true", trace["synced"])
 	}
 	mainTrace, ok := trace["main"].(map[string]any)
 	if !ok {
@@ -540,6 +546,23 @@ func TestConfigUpdateProjectGUISettingsTraceMasksSecrets(t *testing.T) {
 	}
 	if cfg.ReasoningPreset != "glm" || cfg.ReasoningEffort != "enable" || cfg.ReasoningBudgetTokens != 4096 {
 		t.Fatalf("supervisor reasoning config = preset %q effort %q budget %d, want glm/enable/4096", cfg.ReasoningPreset, cfg.ReasoningEffort, cfg.ReasoningBudgetTokens)
+	}
+}
+
+func TestRuntimeConfigTraceMatchesRoleCompletenessContracts(t *testing.T) {
+	standard := configuredTrace("openai", "key", "https://example.test/v1", "model", 0)
+	missing, _ := standard["missing_fields"].([]string)
+	if standard["configured"] != false || !strings.Contains(strings.Join(missing, ","), "timeout_ms") {
+		t.Fatalf("standard trace accepted zero timeout: %+v", standard)
+	}
+	standard = configuredTrace("openai", "key", "https://example.test/v1", "model", 60)
+	if standard["configured"] != true {
+		t.Fatalf("standard trace rejected complete config: %+v", standard)
+	}
+
+	sourceSearch := sourceSearchConfiguredTrace("gemini", "key", "", "gemini-search", 60)
+	if sourceSearch["configured"] != true {
+		t.Fatalf("source-search trace must allow provider default endpoint: %+v", sourceSearch)
 	}
 }
 

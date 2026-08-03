@@ -458,22 +458,11 @@ func TestStoryClockSchemaRejectsFabricatedOrInvalidPrecision(t *testing.T) {
 	}
 }
 
-func TestProxyCriticSchemaIncludesStructuredStoryClock(t *testing.T) {
+func TestProxyCriticSchemaLeavesStoryClockVocabularyOpen(t *testing.T) {
 	schema := proxyCriticTopLevelJSONSchema()
 	properties := mapFromAny(schema["properties"])
 	storySchema := mapFromAny(properties["story_clock"])
-	if storySchema["type"] != "object" || storySchema["additionalProperties"] != false {
-		t.Fatalf("proxy critic story_clock schema is not closed: %#v", storySchema)
-	}
-	nested := mapFromAny(storySchema["properties"])
-	for _, key := range []string{"observation_kind", "scene_scope", "precision", "evidence_excerpt", "transition"} {
-		if nested[key] == nil {
-			t.Fatalf("proxy critic story_clock schema missing %s: %#v", key, storySchema)
-		}
-	}
-	for _, key := range []string{"absolute", "partial", "relative", "range", "sequence", "duration"} {
-		if mapFromAny(nested[key])["additionalProperties"] != false {
-			t.Fatalf("proxy critic nested story_clock schema %s is open: %#v", key, nested[key])
-		}
+	if len(storySchema) != 0 {
+		t.Fatalf("proxy critic story_clock restored a fixed provider vocabulary: %#v", storySchema)
 	}
 }

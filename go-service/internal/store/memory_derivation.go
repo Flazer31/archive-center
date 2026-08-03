@@ -14,9 +14,10 @@ const (
 )
 
 var (
-	ErrSourceRevisionConflict = errors.New("source revision conflicts with the active logical turn")
-	ErrSourceRevisionStale    = errors.New("source revision is no longer active")
-	ErrLeaseExpired           = errors.New("work lease is expired or no longer owned")
+	ErrSourceRevisionConflict   = errors.New("source revision conflicts with the active logical turn")
+	ErrSourceRevisionStale      = errors.New("source revision is no longer active")
+	ErrLeaseExpired             = errors.New("work lease is expired or no longer owned")
+	ErrMemoryReprocessingLeased = errors.New("memory reprocessing job has an active lease")
 )
 
 // MemorySourceRevision is the durable Host-observed raw turn pair. BranchID is

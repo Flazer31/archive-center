@@ -146,7 +146,7 @@ func TestNarrativeReadBehaviorMatchesPythonReferenceShape(t *testing.T) {
 	})
 
 	t.Run("chapter dry run exposes interval preview fields", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/chapters/dry-run", strings.NewReader(`{"chat_session_id":"sess-1","turn_index":60,"interval":60,"top_k":8}`))
+		req := httptest.NewRequest(http.MethodPost, "/chapters/dry-run", strings.NewReader(`{"chat_session_id":"sess-1","turn_index":60,"interval":2,"top_k":8}`))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)

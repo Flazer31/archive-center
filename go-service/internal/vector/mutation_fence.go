@@ -108,6 +108,16 @@ func (s *mutationFencedStore) ListDocuments(ctx context.Context, sessionID strin
 	return lister.ListDocuments(ctx, sessionID)
 }
 
+func (s *mutationFencedStore) GetDocuments(ctx context.Context, ids []string) ([]VectorDocument, error) {
+	reader, ok := s.delegate.(ExactDocumentReader)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return reader.GetDocuments(ctx, ids)
+}
+
 func (s *mutationFencedStore) QueryExact(ctx context.Context, query ExactQuery) ([]ExactQueryResult, error) {
 	querier, ok := s.delegate.(ExactMetadataQuerier)
 	if !ok {

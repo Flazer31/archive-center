@@ -685,8 +685,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.7.0-dev",
-		`const VERSION = "3.7.0-dev";`,
+		"//@version 3.9.0",
+		`const VERSION = "3.9.0";`,
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 설정`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} Settings`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 設定`",
@@ -765,6 +765,18 @@ func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
 		`function turnWorkflowHUDIsEnabled()`,
 		`if (!turnWorkflowHUDIsEnabled())`,
 		`function consumeTurnWorkflowHUDNotice(view)`,
+		`"turn_hud.stage.publisher_llm": "감독관 호출"`,
+		`"turn_hud.stage.raw_persist": "입력 저장"`,
+		`"turn_hud.stage.critic_llm": "평론가 호출"`,
+		`"turn_hud.count.knowledge_graph": "관계 지식"`,
+		`"turn_hud.count.relationship_state": "관계 상태"`,
+		`"explorer.tabs.kg_triples.label": "관계 지식"`,
+		`"turn_hud.stage.publisher_llm": "Supervisor call"`,
+		`"turn_hud.stage.raw_persist": "Saving input"`,
+		`"turn_hud.stage.critic_llm": "Critic call"`,
+		`"turn_hud.stage.publisher_llm": "監督を呼び出し"`,
+		`"turn_hud.stage.raw_persist": "入力を保存"`,
+		`"turn_hud.stage.critic_llm": "批評家を呼び出し"`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -774,7 +786,14 @@ func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
 	for _, forbidden := range []string{
 		"function showTurnWorkflowHUDOOCRecognition(",
 		`kind: "ooc_input_cancelled"`,
+		`"turn_hud.count.relationship_knowledge"`,
 		"`ooc-observation:${sessionId}:",
+		`"turn_hud.stage.publisher_llm": "감독관 LLM 호출"`,
+		`"turn_hud.stage.raw_persist": "사용자·Assistant 원문 저장"`,
+		`"turn_hud.stage.critic_llm": "평론가 LLM 호출"`,
+		`"turn_hud.stage.publisher_llm": "Supervisor LLM call"`,
+		`"turn_hud.stage.raw_persist": "Saving user and Assistant source"`,
+		`"turn_hud.stage.critic_llm": "Critic LLM call"`,
 	} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("Archive Center.js must not fabricate an OOC decision or notice: %q", forbidden)
@@ -971,14 +990,74 @@ func TestArchiveCenterJSPersistenceRequestsDoNotBlindRetry(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
 		`bridgeFetchWithRetry("/turns", { method: "POST", body }, 1)`,
-		`bridgeFetchWithRetry("/effective-inputs", { method: "POST", body }, 1)`,
 		`bridgeFetchWithRetry("/turns/complete", { method: "POST", body }, 1)`,
-		`bridgeFetchWithRetry("/complete-turn", { method: "POST", body, timeoutMs: getCompleteTurnTimeoutMs() }, 1)`,
+		`bridgeFetchWithRetry("/complete-turn", { method: "POST", body, timeoutMs: 0 }, 1)`,
 		`/complete-turn/request-status?idempotency_key=`,
 		`idempotency_key: idempotencyKey`,
+		`contract_version: "effective_input_observation.v1"`,
+		`Number(_ctResult.effective_input_saved || 0) > 0`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing persistence idempotency marker %q", marker)
+		}
+	}
+	if strings.Contains(src, `bridgeFetchWithRetry("/effective-inputs"`) {
+		t.Fatal("Archive Center.js retains the duplicate effective-input persistence request")
+	}
+}
+
+func TestBackendOwnedLongOperationsDoNotUsePluginRequestTimeout(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	cases := []struct {
+		functionName string
+		pathFragment string
+	}{
+		{`notifyBackendSessionDeletedFromRisu`, `req_source=risu_plugin_chat_delete`},
+		{`applyReadySessionMigration`, `/admin/session-migrate`},
+		{`referenceLibraryDeleteWork`, `bridgeFetch(path`},
+		{`referenceLibraryImportFile`, `/documents`},
+		{`referenceLibrarySearchVectors`, `/vector/search`},
+		{`referenceCanonPreviewFile`, `/canon-packs/preview/v1`},
+		{`referenceCanonInstallFile`, `/canon-packs/install/v1`},
+		{`referenceCanonLifecycle`, `/lifecycle/v1`},
+		{`referenceDiscoveryRunFromUI`, `/source-discovery/jobs/v1`},
+		{`referenceDiscoveryAdmitFromUI`, `/admit/v1`},
+		{`downloadArchiveCenterUpdate`, `/update/download`},
+		{`tryPrepareTurn`, `/prepare-turn`},
+		{`drainOneFailedQueueItem`, `bridgeFetchWithRetry("/complete-turn"`},
+		{`queuePendingCompleteTurnPayload`, `result = await bridgeFetchWithRetry(`},
+		{`executeAutoRollback`, `/rollback/`},
+		{`tryCompleteTurn`, `/complete-turn`},
+		{`resetArchiveDatabaseFromDebugUI`, `/admin/database-reset`},
+		{`exportSession`, `/export`},
+		{`runEpisodeBackfillOnlyForSession`, `/admin/rescan`},
+		{`runDerivedArtifactBackfillOnlyForSession`, `/admin/rescan`},
+		{`explorerRepairChatLogs`, `/turns/repair-replay`},
+		{`importHypaMemory`, `/import/hypamemory`},
+		{`explorerRegenerateMemory`, `/explorer/memories/regenerate`},
+		{`explorerRegenerateEpisode`, `/episodes/regenerate`},
+		{`explorerMergeEpisodes`, `/episodes/merge`},
+		{`deleteTimelineSessionFromBackend`, `req_source=timeline_manual_delete`},
+		{`runTimelineSessionCopy`, `/sessions/migrate-preview`},
+		{`runTimelineSessionMigration`, `/sessions/migrate-preview`},
+		{`runTimelineSessionMigrationRollback`, `/sessions/migrate-rollback`},
+		{`runTimelineSessionMigrationCleanup`, `/sessions/migrate-cleanup-source`},
+		{`loadSubjectiveEntityBundlesForPersonaCapsule`, `/subjective-entity-memories/entities`},
+		{`createPersonaCapsuleFromSelectedEntityBundle`, `/subjective-entity-memories/capsule`},
+		{`createPersonaCapsuleFromSelectedEntityMemories`, `/subjective-entity-memories/capsule`},
+	}
+	for _, tc := range cases {
+		block := extractArchiveCenterJSAsyncFunction(t, src, tc.functionName)
+		pathIndex := strings.Index(block, tc.pathFragment)
+		if pathIndex < 0 {
+			t.Fatalf("%s missing long-operation path %s", tc.functionName, tc.pathFragment)
+		}
+		end := pathIndex + 2000
+		if end > len(block) {
+			end = len(block)
+		}
+		if !strings.Contains(block[pathIndex:end], `timeoutMs: 0`) {
+			t.Fatalf("%s still applies Plugin Timeout to %s", tc.functionName, tc.pathFragment)
 		}
 	}
 }
@@ -1126,7 +1205,7 @@ func TestArchiveCenterJSAfterRequestUsesBeforeRequestSessionCoordinates(t *testi
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"const capturedWriteSessionId = normalizeSessionId(",
-		"persistenceOrchResult && persistenceOrchResult._chatSessionId",
+		"latestOrchResult && latestOrchResult._chatSessionId",
 		"const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;",
 	}
 	for _, marker := range required {

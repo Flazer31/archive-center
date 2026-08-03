@@ -1016,17 +1016,14 @@ func TestPrepareTurnPersonaRecollectionSupportLane(t *testing.T) {
 	if !strings.Contains(injectionText, "[Subjective Memories and Relationships]") {
 		t.Fatalf("injection_text missing persona recollection: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "brass key") {
-		t.Fatalf("injection_text leaked protected persona recollection content: %q", injectionText)
+	if !strings.Contains(injectionText, "Siwoo remembers that Chloe hid the brass key behind the cracked mirror in the previous loop.") {
+		t.Fatalf("injection_text omitted protected persona recollection content: %q", injectionText)
 	}
 	if !strings.Contains(injectionText, "Secret Guard") || !strings.Contains(injectionText, "protagonist-only private intuition") || !strings.Contains(injectionText, "Never reveal its origin") {
 		t.Fatalf("injection_text missing persona secret guard: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "previous loop") || strings.Contains(injectionText, "regressor") || strings.Contains(injectionText, "regression") || strings.Contains(injectionText, "loop") {
-		t.Fatalf("injection_text leaked explicit loop secret instead of masked protagonist-private hint: %q", injectionText)
-	}
 	if !strings.Contains(injectionText, "Protected hint") {
-		t.Fatalf("injection_text missing masked persona secret hint: %q", injectionText)
+		t.Fatalf("injection_text missing protected persona secret hint: %q", injectionText)
 	}
 	inputContextText, _ := resp["input_context_text"].(string)
 	if strings.Contains(inputContextText, "[Subjective Memories and Relationships]") || strings.Contains(inputContextText, "support-only private recollection") {

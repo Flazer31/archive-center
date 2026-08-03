@@ -108,6 +108,34 @@ func (m *mariadbStore) SaveSpeakerAttribution(ctx context.Context, item *Speaker
 	})
 }
 
+func (m *mariadbStore) SaveEntityIdentityLink(ctx context.Context, item *EntityIdentityLink) error {
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	if item == nil || strings.TrimSpace(item.ChatSessionID) == "" ||
+		strings.TrimSpace(item.SourceEntityID) == "" || strings.TrimSpace(item.TargetEntityID) == "" ||
+		item.SourceEntityID == item.TargetEntityID {
+		return ErrNotFound
+	}
+	return m.withActiveEntitySourceWrite(ctx, item.SourceContract, item.ChatSessionID, item.SourceRevision, func(exec memoryDerivationSQLExecutor) error {
+		_, err := exec.ExecContext(ctx, `
+		INSERT INTO entity_identity_links (
+			link_id, chat_session_id, source_entity_id, target_entity_id,
+			link_kind, link_state, evidence_json, mapping_revision,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			link_state = VALUES(link_state),
+			evidence_json = VALUES(evidence_json),
+			mapping_revision = GREATEST(mapping_revision, VALUES(mapping_revision)),
+			updated_at = VALUES(updated_at)
+	`, item.LinkID, item.ChatSessionID, item.SourceEntityID, item.TargetEntityID,
+			item.LinkKind, item.LinkState, item.EvidenceJSON, item.MappingRevision,
+			nonZeroTime(item.CreatedAt), nonZeroTime(item.UpdatedAt))
+		return err
+	})
+}
+
 func (m *mariadbStore) ResolveReviewedCanonicalEntityID(ctx context.Context, chatSessionID, sourceEntityID string) (string, error) {
 	if err := m.ensureDB(); err != nil {
 		return "", err
@@ -123,16 +151,20 @@ func (m *mariadbStore) ResolveReviewedCanonicalEntityID(ctx context.Context, cha
 		JOIN entity_identities canonical_target
 		  ON canonical_target.stable_entity_id = identity_link.target_entity_id
 		 AND canonical_target.chat_session_id = identity_link.chat_session_id
+		JOIN memory_source_revisions canonical_revision
+		  ON canonical_revision.chat_session_id = canonical_target.chat_session_id
+		 AND canonical_revision.source_revision = canonical_target.source_revision
+		 AND canonical_revision.lifecycle_state = 'active'
 		WHERE identity_link.chat_session_id = ?
 		  AND identity_link.source_entity_id = ?
 		  AND identity_link.target_entity_id <> identity_link.source_entity_id
 		  AND identity_link.link_kind = ?
 		  AND identity_link.link_state = ?
 		  AND canonical_target.lifecycle_state = 'active'
-		  AND canonical_target.review_state = ?
+		  AND canonical_target.review_state IN (?, ?)
 		ORDER BY identity_link.target_entity_id ASC
 	`, chatSessionID, sourceEntityID, EntityIdentityLinkKindCanonicalEquivalence,
-		EntityIdentityLinkStateReviewed, EntityIdentityReviewStateReviewed)
+		EntityIdentityLinkStateReviewed, EntityIdentityReviewStateSourceObserved, EntityIdentityReviewStateReviewed)
 	if err != nil {
 		return "", err
 	}
@@ -181,14 +213,16 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 		SELECT
 			surface.stable_entity_id,
 			source_identity.identity_namespace,
+			source_identity.canonical_label,
 			COALESCE(identity_link.target_entity_id, ''),
-			COALESCE(canonical_target.identity_namespace, '')
+			COALESCE(canonical_target.identity_namespace, ''),
+			COALESCE(canonical_target.canonical_label, '')
 		FROM entity_identity_surfaces surface
 		JOIN entity_identities source_identity
 		  ON source_identity.chat_session_id = surface.chat_session_id
 		 AND source_identity.stable_entity_id = surface.stable_entity_id
 		 AND source_identity.lifecycle_state = 'active'
-		 AND source_identity.review_state = 'source_observed'
+		 AND source_identity.review_state IN ('source_observed', 'reviewed')
 		JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = surface.chat_session_id
 		 AND source_revision.source_revision = surface.source_revision
@@ -203,32 +237,38 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 		  ON canonical_target.chat_session_id = identity_link.chat_session_id
 		 AND canonical_target.stable_entity_id = identity_link.target_entity_id
 		 AND canonical_target.lifecycle_state = 'active'
-		 AND canonical_target.review_state = ?
+		 AND canonical_target.review_state IN (?, ?)
+		LEFT JOIN memory_source_revisions canonical_revision
+		  ON canonical_revision.chat_session_id = canonical_target.chat_session_id
+		 AND canonical_revision.source_revision = canonical_target.source_revision
+		 AND canonical_revision.lifecycle_state = 'active'
 		WHERE surface.chat_session_id = ?
 		  AND surface.normalized_surface = ?
 		  AND surface.review_state = 'source_observed'
-		  AND (identity_link.target_entity_id IS NULL OR canonical_target.stable_entity_id IS NOT NULL)
+		  AND (identity_link.target_entity_id IS NULL OR canonical_revision.source_revision IS NOT NULL)
 		ORDER BY surface.stable_entity_id ASC, identity_link.target_entity_id ASC
 	`, EntityIdentityLinkKindCanonicalEquivalence, EntityIdentityLinkStateReviewed,
-		EntityIdentityReviewStateReviewed, chatSessionID, normalizedSurface)
+		EntityIdentityReviewStateSourceObserved, EntityIdentityReviewStateReviewed, chatSessionID, normalizedSurface)
 	if err != nil {
 		return ResolvedEntityIdentity{}, err
 	}
 	defer rows.Close()
 	resolved := map[string]ResolvedEntityIdentity{}
 	for rows.Next() {
-		var sourceEntityID, sourceNamespace, targetEntityID, targetNamespace string
-		if err := rows.Scan(&sourceEntityID, &sourceNamespace, &targetEntityID, &targetNamespace); err != nil {
+		var sourceEntityID, sourceNamespace, sourceLabel, targetEntityID, targetNamespace, targetLabel string
+		if err := rows.Scan(&sourceEntityID, &sourceNamespace, &sourceLabel, &targetEntityID, &targetNamespace, &targetLabel); err != nil {
 			return ResolvedEntityIdentity{}, err
 		}
 		entityID := strings.TrimSpace(targetEntityID)
 		namespace := strings.TrimSpace(targetNamespace)
+		label := strings.TrimSpace(targetLabel)
 		if entityID == "" {
 			entityID = strings.TrimSpace(sourceEntityID)
 			namespace = strings.TrimSpace(sourceNamespace)
+			label = strings.TrimSpace(sourceLabel)
 		}
 		if entityID != "" && namespace != "" {
-			identity := ResolvedEntityIdentity{StableEntityID: entityID, IdentityNamespace: namespace}
+			identity := ResolvedEntityIdentity{StableEntityID: entityID, IdentityNamespace: namespace, CanonicalLabel: label}
 			resolved[entityID+"\x1f"+namespace] = identity
 		}
 	}

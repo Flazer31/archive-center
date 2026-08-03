@@ -515,14 +515,14 @@ func TestPrepareTurnTopKPrioritizesRelevantMemoryOverRecentTail(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	if fake.lastEpisodeLimit != 64 {
-		t.Fatalf("episode summary candidate read limit = %d, want independent safety bound 64", fake.lastEpisodeLimit)
+	if fake.lastEpisodeLimit != 0 {
+		t.Fatalf("episode summary candidate read limit = %d, want no pre-relevance count cap", fake.lastEpisodeLimit)
 	}
-	if fake.lastPersonaLimit != 256 {
-		t.Fatalf("persona recollection candidate read limit = %d, want independent safety bound 256", fake.lastPersonaLimit)
+	if fake.lastPersonaLimit != 0 {
+		t.Fatalf("persona recollection candidate read limit = %d, want no pre-relevance count cap", fake.lastPersonaLimit)
 	}
-	if fake.lastEntityMemoryLimit != 256 {
-		t.Fatalf("character-private recollection candidate read limit = %d, want independent safety bound 256", fake.lastEntityMemoryLimit)
+	if fake.lastEntityMemoryLimit != 0 {
+		t.Fatalf("character-private recollection candidate read limit = %d, want no pre-relevance count cap", fake.lastEntityMemoryLimit)
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {

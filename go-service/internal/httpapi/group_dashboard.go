@@ -321,11 +321,15 @@ func buildCurrentWorkflowDashboardCard(view turnWorkflowHUDViewModel) dashboardC
 		Scope:      "current_request",
 	})
 	for _, fact := range view.Facts {
+		detail := strings.TrimSpace(fact.Detail)
+		if detail == "" {
+			detail = strings.Join(nonEmptyDashboardParts(fact.Disposition, fact.Status, fact.ReasonCode), " / ")
+		}
 		rows = append(rows, dashboardRow{
 			LabelKey:   "workflowFact." + strings.TrimSpace(fact.Key),
 			Status:     dashboardStatusFromWorkflowFact(fact),
 			DetailCode: strings.TrimSpace(fact.ReasonCode),
-			Detail:     strings.Join(nonEmptyDashboardParts(fact.Disposition, fact.Status, fact.ReasonCode), " / "),
+			Detail:     detail,
 			TurnIndex:  view.BackendTurn,
 			ItemCount:  fact.Count,
 			Scope:      strings.TrimSpace(fact.Scope),
@@ -651,12 +655,35 @@ func buildPersistenceDashboardRows(complete map[string]any) []dashboardRow {
 		laneState := dashboardMap(pipeline[lane.key])
 		statusValue := dashboardFirstNonEmpty(dashboardString(laneState["status"]), dashboardString(complete[lane.statusKey]))
 		parts := []string{dashboardFirstNonEmpty(statusValue, "unknown")}
+		if lane.key == "derived" {
+			if value, ok := laneState["attempted"]; ok {
+				parts = append(parts, "attempted:"+dashboardNumberString(value))
+			}
+			if value, ok := laneState["committed"]; ok {
+				parts = append(parts, "committed:"+dashboardNumberString(value))
+			}
+			if rollback := dashboardString(laneState["rollback_state"]); rollback != "" && rollback != "not_applicable" {
+				parts = append(parts, "transaction:"+rollback)
+			}
+			for _, raw := range sliceFromAny(laneState["error_diagnostics"]) {
+				diagnostic := mapFromAny(raw)
+				operation := strings.TrimSpace(stringFromMap(diagnostic, "operation"))
+				cause := strings.TrimSpace(stringFromMap(diagnostic, "cause"))
+				if operation != "" || cause != "" {
+					parts = append(parts, strings.TrimSpace(operation+": "+cause))
+				}
+			}
+		}
 		for _, count := range lane.counts {
 			if value, ok := complete[count.key]; ok && value != nil {
 				parts = append(parts, count.label+":"+dashboardNumberString(value))
 			}
 		}
-		rows = append(rows, dashboardRow{LabelKey: lane.label, Status: dashboardLaneStatus(statusValue, complete[lane.countKey]), Detail: strings.Join(parts, " / "), TurnIndex: complete["turnIndex"]})
+		countValue := complete[lane.countKey]
+		if lane.key == "derived" && laneState["committed"] != nil {
+			countValue = laneState["committed"]
+		}
+		rows = append(rows, dashboardRow{LabelKey: lane.label, Status: dashboardLaneStatus(statusValue, countValue), Detail: strings.Join(parts, " / "), TurnIndex: complete["turnIndex"]})
 	}
 	return rows
 }

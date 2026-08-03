@@ -78,13 +78,10 @@ func (s *chromaStore) Search(ctx context.Context, sessionID string, vector []flo
 	if limit <= 0 {
 		limit = 5
 	}
-	candidateLimit := limit * 4
-	if candidateLimit < 12 {
-		candidateLimit = 12
-	}
-	if candidateLimit > 40 {
-		candidateLimit = 40
-	}
+	// The caller owns the requested recall count. An unrelated fixed
+	// overfetch window can both hide requested results at larger TopK values
+	// and make observed behavior depend on an arbitrary wrapper constant.
+	candidateLimit := limit
 	body := map[string]any{
 		"query_embeddings": [][]float32{vector},
 		"n_results":        candidateLimit,

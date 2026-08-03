@@ -213,7 +213,7 @@ func (s *Server) handleRetrievalIndexSnapshot(w http.ResponseWriter, r *http.Req
 		}
 
 		effectiveInputs := 0
-		if len(chatLogs) > 0 && len(chatLogs) <= 200 {
+		if len(chatLogs) > 0 {
 			for _, l := range chatLogs {
 				ei, err := s.Store.GetEffectiveInput(r.Context(), sid, l.TurnIndex)
 				if err != nil {

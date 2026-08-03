@@ -172,7 +172,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	recordPersonaCapsuleCandidateTrace(extraction, turnIndex, &result)
 
 	admissionErrorsBefore := result.Errors
-	admissionHandled, admittedEvidence := s.commitAcceptedMemoryAdmission(
+	admissionHandled, admittedEvidence, admittedPreciseUnits := s.commitAcceptedMemoryAdmission(
 		ctx, sid, turnIndex, extraction, content, summary, searchText,
 		memorySearchText, embedding, embeddingModel, embeddingVector,
 		languageContext, existingEvidence, identityProjection, now, &result,
@@ -182,6 +182,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 			return result
 		}
 		existingEvidence = admittedEvidence
+		s.savePostAdmissionPreciseMemoryProjections(ctx, sid, admittedPreciseUnits, now, &result)
 	}
 	if !admissionHandled {
 		if summary != "" {
@@ -214,8 +215,6 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 					"new_summary":      summary,
 				})
 				result.Warnings = append(result.Warnings, "memory_duplicate_source_turn_skipped")
-			} else if s.mergeSimilarMemoryInsteadOfInsert(ctx, sid, summary, mem.Importance, now, &result) {
-				result.Warnings = append(result.Warnings, "memory_semantic_dedup_merged")
 			} else {
 				result.trySave("SaveMemory", func() error {
 					return s.Store.SaveMemory(ctx, mem)
@@ -274,14 +273,24 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 
 	for tripleIndex, item := range sliceFromAny(extraction["kg_triples"]) {
 		triple := mapFromAny(item)
+		if len(triple) == 0 {
+			parts := sliceFromAny(item)
+			if len(parts) >= 3 {
+				triple = map[string]any{
+					"subject":   extractionStringFromAny(parts[0]),
+					"predicate": extractionStringFromAny(parts[1]),
+					"object":    extractionStringFromAny(parts[2]),
+				}
+			}
+		}
 		if identityProjection != nil {
 			identityProjection.bindKGTriple(ctx, triple, tripleIndex, &result)
 		}
 		subject := s.canonicalCharacterName(ctx, sid, sanitizeKGPart(stringFromMap(triple, "subject")))
 		predicate := sanitizeKGPredicate(stringFromMap(triple, "predicate"))
 		object := s.canonicalCharacterName(ctx, sid, sanitizeKGPart(stringFromMap(triple, "object")))
-		if shouldSkipKGTriple(subject, predicate, object, sid) {
-			result.addSkipReason("kg_triples", "placeholder_or_control_edge", map[string]any{"subject": subject, "predicate": predicate, "object": object})
+		if subject == "" || predicate == "" || object == "" {
+			result.addSkipReason("kg_triples", "incomplete_triple", map[string]any{"subject": subject, "predicate": predicate, "object": object})
 			continue
 		}
 		validFrom := intFromAny(triple["valid_from"], turnIndex)
@@ -320,7 +329,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		})
 	}
 
-	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, embCfg, now, &result, existingCanonicalLayers, cost, identityProjection)
+	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, content, embCfg, now, &result, existingCanonicalLayers, cost, identityProjection)
 	s.saveReversibleStatesFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, identityProjection, now, &result)
 	finalizeCanonicalStateWriteCost(cost)
 	if cost.StateWriteCount > 0 {
@@ -352,62 +361,6 @@ func (s *Server) memoryForTurnAlreadyExists(ctx context.Context, sid string, tur
 		return mem.ID, summary
 	}
 	return 0, ""
-}
-
-func (s *Server) mergeSimilarMemoryInsteadOfInsert(ctx context.Context, sid, summary string, newImportance float64, now time.Time, result *artifactSaveResult) bool {
-	if s.Store == nil || strings.TrimSpace(summary) == "" {
-		return false
-	}
-	memories, err := s.Store.ListMemories(ctx, sid, 0, 0)
-	if err != nil {
-		result.Warnings = append(result.Warnings, "memory_semantic_dedup_list_failed")
-		return false
-	}
-	var best *store.Memory
-	bestScore := 0.0
-	for i := range memories {
-		mem := &memories[i]
-		if mem.ID <= 0 {
-			continue
-		}
-		existingSummary := memorySummaryText(*mem)
-		if existingSummary == "" {
-			continue
-		}
-		score := simpleTokenSimilarity(summary, existingSummary)
-		if score > bestScore {
-			bestScore = score
-			best = mem
-		}
-	}
-	if best == nil || bestScore < 0.78 {
-		return false
-	}
-	if updater, ok := s.Store.(memoryImportanceUpdater); ok && newImportance > best.Importance {
-		targetImportance := newImportance
-		result.trySave("UpdateMemoryImportance(memory_dedup)", func() error {
-			return updater.UpdateMemoryImportance(ctx, sid, best.ID, targetImportance)
-		}, result, func() {})
-	}
-	details := map[string]any{
-		"policy_version":      "p1250.memory_semantic_dedup.v1",
-		"merged_memory_id":    best.ID,
-		"similarity":          bestScore,
-		"new_turn_summary":    summary,
-		"existing_summary":    memorySummaryText(*best),
-		"new_importance":      newImportance,
-		"existing_importance": best.Importance,
-	}
-	result.trySave("SaveAuditLog(memory_semantic_dedup)", func() error {
-		return s.Store.SaveAuditLog(ctx, &store.AuditLog{
-			ChatSessionID: sid,
-			EventType:     "memory_semantic_dedup",
-			Source:        "critic",
-			DetailsJSON:   mustCompactJSON(details),
-			CreatedAt:     now,
-		})
-	}, result, func() {})
-	return true
 }
 
 func memorySummaryText(mem store.Memory) string {
@@ -450,10 +403,7 @@ func directEvidenceAlreadyExistsForTurn(existing []store.DirectEvidence, sid str
 		if existingText == "" {
 			continue
 		}
-		if existingText == needle ||
-			strings.Contains(existingText, needle) ||
-			strings.Contains(needle, existingText) ||
-			simpleTokenSimilarity(existingText, needle) >= 0.86 {
+		if existingText == needle {
 			return true
 		}
 	}

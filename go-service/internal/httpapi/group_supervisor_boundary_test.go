@@ -91,7 +91,7 @@ func TestBuildBoundedSupervisorResultStrengthChangesCoverageNotAuthority(t *test
 		expressions     int
 		coverageProfile string
 	}{
-		{strength: "weak", expressions: 1, coverageProfile: "fidelity_expression_low_impact"},
+		{strength: "weak", expressions: 2, coverageProfile: "fidelity_expression_low_impact"},
 		{strength: "medium", expressions: 4, coverageProfile: "fidelity_expression_contextual"},
 		{strength: "strong", expressions: 5, coverageProfile: "fidelity_expression_reversible"},
 	}
@@ -425,7 +425,7 @@ func TestBuildSupervisorSupportPacketUsesOnlyDeliveredRenderedText(t *testing.T)
 			},
 		},
 	}
-	packet := buildSupervisorSupportPacket("sess", "exact current input", contract, lineage)
+	packet := buildSupervisorSupportPacket("sess", "exact current input", contract, lineage, "", nil)
 	encoded, err := json.Marshal(packet)
 	if err != nil {
 		t.Fatal(err)
@@ -455,10 +455,13 @@ func supervisorBoundaryTestPack(strength string) map[string]any {
 			"status":           "ready",
 			"active":           true,
 			"source_refs": map[string]any{
-				"all":           []string{"input:latest", "system:active", "memory:delivered"},
-				"current_input": []string{"input:latest"},
-				"native_system": []string{"system:active"},
-				"memory":        []string{"memory:delivered"},
+				"all":                []string{"input:latest", "system:active", "memory:delivered"},
+				"current_input":      []string{"input:latest"},
+				"native_system":      []string{"system:active"},
+				"memory":             []string{"memory:delivered"},
+				"may_advance":        []string{"memory:delivered"},
+				"arc_anchor":         []string{"memory:delivered"},
+				"preferred_frontier": []string{"memory:delivered"},
 			},
 		},
 		"support_packet": map[string]any{

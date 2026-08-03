@@ -45,36 +45,122 @@ func (s *Server) handleExplorerChatLogs(w http.ResponseWriter, r *http.Request) 
 		return logs[i].TurnIndex > logs[j].TurnIndex
 	})
 
-	items := []any{}
-	for i, l := range logs {
-		if i < offset {
-			continue
+	type chatTurnKey struct {
+		chatSessionID string
+		turnIndex     int
+	}
+	type chatTurn struct {
+		id            int64
+		chatSessionID string
+		turnIndex     int
+		createdAt     any
+		user          map[string]any
+		assistant     map[string]any
+		otherRows     []any
+		rawRowCount   int
+		duplicateRows int
+	}
+
+	turns := make([]*chatTurn, 0, len(logs))
+	turnByKey := make(map[chatTurnKey]*chatTurn, len(logs))
+	for _, l := range logs {
+		key := chatTurnKey{chatSessionID: l.ChatSessionID, turnIndex: l.TurnIndex}
+		turn := turnByKey[key]
+		if turn == nil {
+			turn = &chatTurn{
+				id:            l.ID,
+				chatSessionID: l.ChatSessionID,
+				turnIndex:     l.TurnIndex,
+				createdAt:     formatKSTTime(l.CreatedAt),
+				otherRows:     []any{},
+			}
+			turnByKey[key] = turn
+			turns = append(turns, turn)
 		}
-		if len(items) >= limit {
-			break
+		turn.rawRowCount++
+		if l.ID > turn.id {
+			turn.id = l.ID
+			turn.createdAt = formatKSTTime(l.CreatedAt)
 		}
-		preview := pythonTextPreview(l.Content, 120)
-		items = append(items, map[string]any{
-			"id":              l.ID,
-			"chat_session_id": l.ChatSessionID,
-			"turn_index":      l.TurnIndex,
-			"role":            l.Role,
-			"content":         l.Content,
-			"preview":         preview,
-			"created_at":      formatKSTTime(l.CreatedAt),
+
+		row := map[string]any{
+			"id":         l.ID,
+			"role":       l.Role,
+			"content":    l.Content,
+			"preview":    pythonTextPreview(l.Content, 120),
+			"created_at": formatKSTTime(l.CreatedAt),
+		}
+		switch strings.ToLower(strings.TrimSpace(l.Role)) {
+		case "user":
+			if turn.user == nil {
+				turn.user = row
+			} else {
+				turn.duplicateRows++
+				turn.otherRows = append(turn.otherRows, row)
+			}
+		case "assistant":
+			if turn.assistant == nil {
+				turn.assistant = row
+			} else {
+				turn.duplicateRows++
+				turn.otherRows = append(turn.otherRows, row)
+			}
+		default:
+			turn.otherRows = append(turn.otherRows, row)
+		}
+	}
+
+	completeTurnTotal := 0
+	allItems := make([]any, 0, len(turns))
+	for _, turn := range turns {
+		completeness := "complete"
+		switch {
+		case turn.user == nil && turn.assistant == nil:
+			completeness = "missing_user_and_assistant"
+		case turn.user == nil:
+			completeness = "missing_user"
+		case turn.assistant == nil:
+			completeness = "missing_assistant"
+		default:
+			completeTurnTotal++
+		}
+		allItems = append(allItems, map[string]any{
+			"id":                  turn.id,
+			"chat_session_id":     turn.chatSessionID,
+			"turn_index":          turn.turnIndex,
+			"created_at":          turn.createdAt,
+			"user":                turn.user,
+			"assistant":           turn.assistant,
+			"other_rows":          turn.otherRows,
+			"raw_row_count":       turn.rawRowCount,
+			"duplicate_row_count": turn.duplicateRows,
+			"completeness":        completeness,
 		})
 	}
 
-	total := len(logs)
+	start := offset
+	if start > len(allItems) {
+		start = len(allItems)
+	}
+	end := start + limit
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+	items := allItems[start:end]
+
+	total := len(allItems)
 	hasMore := offset+len(items) < total
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"items":    items,
-		"total":    total,
-		"has_more": hasMore,
-		"limit":    limit,
-		"offset":   offset,
+		"status":                "ok",
+		"items":                 items,
+		"total":                 total,
+		"raw_row_total":         len(logs),
+		"complete_turn_total":   completeTurnTotal,
+		"incomplete_turn_total": total - completeTurnTotal,
+		"has_more":              hasMore,
+		"limit":                 limit,
+		"offset":                offset,
 	})
 }
 
@@ -223,7 +309,7 @@ func (s *Server) handleExplorerDirectEvidence(w http.ResponseWriter, r *http.Req
 		}
 
 		if sid != "" {
-			audits, auditErr := s.Store.ListAuditLogs(r.Context(), sid, "", 1000)
+			audits, auditErr := s.Store.ListAuditLogs(r.Context(), sid, "", 0)
 			if auditErr != nil && !errors.Is(auditErr, store.ErrNotEnabled) {
 				writeInternalError(w, auditErr.Error())
 				return
@@ -269,16 +355,12 @@ func directEvidenceStateContract() map[string]any {
 			"high_impact_manual_review_below":   0.9,
 			"user_confirmation_candidate_below": 0.9,
 		},
-		"conflict_high_impact_field_classes":            []string{"identity", "relationship", "trust", "world_rule", "canonical_fact"},
-		"cost_measurement_policy_version":               "lc1a.v1",
-		"deleted_turn_tombstone_retention_window_turns": 240,
-		"retention_importance_tiers":                    []string{"critical", "high", "medium", "low"},
-		"retention_policy_version":                      "ea1l.v1",
-		"retention_windows_turns": map[string]any{
-			"direct_evidence":  map[string]any{"critical": 720, "high": 480, "medium": 320, "low": 180},
-			"previous_archive": map[string]any{"critical": 540, "high": 360, "medium": 240, "low": 160},
-			"tombstone":        map[string]any{"critical": 480, "high": 320, "medium": 240, "low": 240},
-		},
+		"conflict_high_impact_field_classes": []string{"identity", "relationship", "trust", "world_rule", "canonical_fact"},
+		"cost_measurement_policy_version":    "lc1a.v1",
+		"retention_importance_tiers":         []string{"critical", "high", "medium", "low"},
+		"retention_policy_version":           "ea1l.v1",
+		"retention_basis":                    "lifecycle_lineage_no_turn_expiry",
+		"retention_windows_turns":            nil,
 	}
 }
 
@@ -300,7 +382,7 @@ func directEvidenceStateCounts(counts map[string]int) map[string]any {
 func directEvidenceCostMeasurement(stateCounts map[string]int, auditRows []store.AuditLog) map[string]any {
 	measurement := map[string]any{
 		"policy_version":    "lc1a.v1",
-		"audit_window_size": 200,
+		"audit_window_size": len(auditRows),
 		"direct_evidence_write": map[string]any{
 			"sample_count":    0,
 			"avg_latency_ms":  0.0,
@@ -327,10 +409,6 @@ func directEvidenceCostMeasurement(stateCounts map[string]int, auditRows []store
 	sort.SliceStable(auditRows, func(i, j int) bool {
 		return auditRows[i].ID > auditRows[j].ID
 	})
-	if len(auditRows) > 200 {
-		auditRows = auditRows[:200]
-	}
-
 	writeLatencies := []float64{}
 	writeInserted := []float64{}
 	writeSkipped := []float64{}
@@ -604,31 +682,9 @@ func directEvidenceRetentionTier(archiveState, captureVerification string, repai
 }
 
 func directEvidenceRetentionTTL(archiveState, tier string, tombstoned bool) int {
-	if tombstoned {
-		return 240
-	}
-	switch tier {
-	case "critical":
-		if archiveState == "previous_archive" {
-			return 540
-		}
-		return 720
-	case "high":
-		if archiveState == "previous_archive" {
-			return 360
-		}
-		return 480
-	case "low":
-		if archiveState == "previous_archive" {
-			return 160
-		}
-		return 180
-	default:
-		if archiveState == "previous_archive" {
-			return 240
-		}
-		return 320
-	}
+	// Direct evidence is retained by lifecycle and lineage. Turn age is not a
+	// deletion or consumption criterion in an ultra-long session.
+	return 0
 }
 
 func directEvidenceConflictResolution(e store.DirectEvidence, lineage map[string]any, archiveState, captureVerification string, committedGate any, retentionTier string) map[string]any {
@@ -766,13 +822,7 @@ func directEvidenceRetentionExpired(sourceTurnEnd, latestTurnIndex, ttl int) boo
 }
 
 func directEvidenceTombstoneRetained(tombstoned bool, sourceTurnEnd, latestTurnIndex int) bool {
-	if !tombstoned {
-		return false
-	}
-	if sourceTurnEnd <= 0 || latestTurnIndex <= 0 {
-		return true
-	}
-	return latestTurnIndex-sourceTurnEnd <= 240
+	return tombstoned
 }
 
 func sortKGTriplesForPython(triples []store.KGTriple) {

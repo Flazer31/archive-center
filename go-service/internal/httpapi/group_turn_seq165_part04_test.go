@@ -702,8 +702,8 @@ func TestSeq168P162DecisionOutcomeCeilingNotTurnGap(t *testing.T) {
 	}
 	govD := seq165Map(t, respD, "input_anchor_governor")
 	redirectionD := seq165Map(t, govD, "explicit_user_redirection")
-	if redirectionD["detected"] != true {
-		t.Fatalf("case D: explicit_user_redirection.detected=%v, want true", redirectionD["detected"])
+	if redirectionD["detected"] != false || redirectionD["observation_state"] != "not_exposed_by_host_contract" {
+		t.Fatalf("case D: explicit_user_redirection must not infer English prompt prose: %v", redirectionD)
 	}
 	if redirectionD["stale_arc_demotes"] != true || redirectionD["current_user_input_wins"] != true || redirectionD["support_lane_may_redirect"] != false {
 		t.Fatalf("case D: explicit_user_redirection guard mismatch: %v", redirectionD)

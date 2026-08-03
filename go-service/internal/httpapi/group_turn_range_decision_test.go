@@ -19,7 +19,10 @@ type durableRoutingBaselineStore struct {
 
 type rollbackDecisionChatLogStore struct {
 	store.Store
-	logs []store.ChatLog
+	logs             []store.ChatLog
+	latestTurnCalls  int
+	listChatLogsFrom int
+	listChatLogsTo   int
 }
 
 type sessionIdentityRoutingStore struct {
@@ -87,8 +90,31 @@ func (s *sessionIdentityRoutingStore) GetSessionRoutingBaseline(context.Context,
 	return s.baseline, nil
 }
 
-func (s *rollbackDecisionChatLogStore) ListChatLogs(_ context.Context, _ string, _, _ int) ([]store.ChatLog, error) {
-	return s.logs, nil
+func (s *rollbackDecisionChatLogStore) LatestSessionTurnIndex(context.Context, string) (int, error) {
+	s.latestTurnCalls++
+	latest := 0
+	for _, item := range s.logs {
+		if item.TurnIndex > latest {
+			latest = item.TurnIndex
+		}
+	}
+	return latest, nil
+}
+
+func (s *rollbackDecisionChatLogStore) ListChatLogs(_ context.Context, _ string, fromTurn, toTurn int) ([]store.ChatLog, error) {
+	s.listChatLogsFrom = fromTurn
+	s.listChatLogsTo = toTurn
+	result := make([]store.ChatLog, 0, len(s.logs))
+	for _, item := range s.logs {
+		if fromTurn > 0 && item.TurnIndex < fromTurn {
+			continue
+		}
+		if toTurn > 0 && item.TurnIndex > toTurn {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, nil
 }
 
 func (s *durableRoutingBaselineStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
@@ -652,10 +678,11 @@ func TestRollbackDecisionRejectsUnknownLifecycleAction(t *testing.T) {
 
 func TestRollbackDecisionHandlerVerifiesIncompleteUserOnlyBackendTail(t *testing.T) {
 	const sid = "char_1_cid_user_only_tail"
-	server := &Server{Store: &rollbackDecisionChatLogStore{
+	decisionStore := &rollbackDecisionChatLogStore{
 		Store: store.NewNoopStore(),
 		logs:  []store.ChatLog{{ChatSessionID: sid, TurnIndex: 9, Role: "user", Content: "saved input only"}},
-	}}
+	}
+	server := &Server{Store: decisionStore}
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
@@ -682,6 +709,45 @@ func TestRollbackDecisionHandlerVerifiesIncompleteUserOnlyBackendTail(t *testing
 	}
 	if !response.Allowed || response.FromTurn != 9 || response.DecisionToken == "" {
 		t.Fatalf("user-only tail decision=%+v", response)
+	}
+	if decisionStore.latestTurnCalls != 1 || decisionStore.listChatLogsFrom != 9 || decisionStore.listChatLogsTo != 9 {
+		t.Fatalf("latest calls=%d chat log range=%d..%d, want one latest lookup and turn 9 only", decisionStore.latestTurnCalls, decisionStore.listChatLogsFrom, decisionStore.listChatLogsTo)
+	}
+}
+
+func TestRollbackDecisionHandlerResolvesMissingBackendLatestTurn(t *testing.T) {
+	const sid = "char_1_cid_manual_delete"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 6, Role: "user", Content: "u"},
+			{ChatSessionID: sid, TurnIndex: 6, Role: "assistant", Content: "a"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"manual",
+		"candidate_from_turn":5,
+		"deletion_observed":true,
+		"allow_manual_candidate":true,
+		"lifecycle_action_observation":"deleted"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Allowed || response.FromTurn != 5 || response.DecisionToken == "" {
+		t.Fatalf("manual delete decision=%+v", response)
+	}
+	if decisionStore.latestTurnCalls != 1 {
+		t.Fatalf("latest turn calls=%d, want 1", decisionStore.latestTurnCalls)
 	}
 }
 

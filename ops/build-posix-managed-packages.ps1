@@ -1,7 +1,7 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string]$PackageVersion = "3.6.0-dev",
+    [string]$PackageVersion = "3.9.0",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -46,7 +46,7 @@ function Write-TextFile([string]$Path, [string]$Value) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.6.0-dev" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.0" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -119,13 +119,14 @@ function Write-ManagedPackageManifest([string]$Root) {
     )
 }
 
-function Set-RuntimeDefaultsInEnvExample([string]$Path, [string]$RuntimeProfile, [string]$VectorMode) {
+function Set-RuntimeDefaultsInEnvExample([string]$Path, [string]$RuntimeProfile, [string]$VectorMode, [string]$PackageVersion) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Missing env example file: $Path"
     }
     $text = Get-Content -LiteralPath $Path -Raw
     $text = [regex]::Replace($text, '(?m)^AC_RUNTIME_PROFILE=.*$', "AC_RUNTIME_PROFILE=$RuntimeProfile")
     $text = [regex]::Replace($text, '(?m)^AC_VECTOR_MODE=.*$', "AC_VECTOR_MODE=$VectorMode")
+    $text = [regex]::Replace($text, '(?m)^AC_BUILD_VERSION=.*$', "AC_BUILD_VERSION=$PackageVersion")
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $text, $utf8NoBom)
 }
@@ -277,7 +278,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.6.0-dev" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.0" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }
@@ -333,7 +334,7 @@ foreach ($target in $targets) {
     Copy-File (Join-Path $repoRoot $readmeSource) (Join-Path $targetRoot "README.md")
     Copy-File (Join-Path $repoRoot ".env.example") (Join-Path $targetRoot ".env.source.example")
     Copy-File (Join-Path $repoRoot "ops\full-package\.env.full.example") (Join-Path $targetRoot ".env.full.example")
-    Set-RuntimeDefaultsInEnvExample (Join-Path $targetRoot ".env.full.example") $target.RuntimeProfileDefault $target.VectorModeDefault
+    Set-RuntimeDefaultsInEnvExample (Join-Path $targetRoot ".env.full.example") $target.RuntimeProfileDefault $target.VectorModeDefault $packageVersionLabel
     Copy-DirectoryContents (Join-Path $repoRoot "migrations") (Join-Path $targetRoot "migrations")
     Copy-File (Join-Path $repoRoot "prompts\critic_system.txt") (Join-Path $targetRoot "prompts\critic_system.txt")
     Copy-File (Join-Path $repoRoot "prompts\supervisor_system.txt") (Join-Path $targetRoot "prompts\supervisor_system.txt")

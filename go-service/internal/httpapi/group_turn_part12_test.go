@@ -213,7 +213,7 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			"[Assistant]",
 			"<Latest_Turn>",
 			"Omit unknown facts instead of inventing placeholders",
-			"evidence_excerpts must be short exact excerpts",
+			"evidence_excerpts are durable citations, not transcript samples",
 			"persona_capsule_candidates",
 			"support_only_persona_recollection",
 			"requires later user/operator approval",
@@ -225,9 +225,7 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			"Mandatory world-rule audit",
 			"world_rule_audit",
 			"world_rules must not be empty",
-			"1-7 turn session",
-			"progression currency exchange",
-			"challenge reward loops",
+			"Early-session setup can already establish foundational world rules",
 			"abstract invariant",
 			"temporary strategy",
 			"not a world_rule",
@@ -627,8 +625,8 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		if !strings.Contains(text, "protected private knowledge is present") || !strings.Contains(text, "kind=romantic_feeling") {
 			t.Fatalf("private recollection guard text missing: %q", text)
 		}
-		if strings.Contains(text, "privately likes Rowan") {
-			t.Fatalf("private recollection leaked secret text: %q", text)
+		if !strings.Contains(text, "Mina privately likes Rowan but has not revealed it.") {
+			t.Fatalf("private recollection omitted exact protected text: %q", text)
 		}
 	})
 

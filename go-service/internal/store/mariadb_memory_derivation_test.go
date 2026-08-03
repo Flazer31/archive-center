@@ -324,6 +324,36 @@ func TestMariaDBReopenMemoryReprocessingJobResetsExactAdmissionSnapshotAndPreser
 	}
 }
 
+func TestMariaDBReopenMemoryReprocessingJobReportsActiveLease(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 8, 3, 3, 4, 5, 0, time.UTC)
+	idempotencyKey := strings.Repeat("d", 64)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT j.id, j.chat_session_id, j.source_revision").
+		WithArgs(idempotencyKey).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "chat_session_id", "source_revision", "status",
+			"lease_until", "lifecycle_state",
+		}).AddRow(18, "session", "revision", "leased", now.Add(time.Minute), "active"))
+	mock.ExpectRollback()
+
+	reopened, err := m.ReopenMemoryReprocessingJob(
+		context.Background(), idempotencyKey, "session", "revision", now,
+	)
+	if reopened || !errors.Is(err, ErrMemoryReprocessingLeased) {
+		t.Fatalf("reopened=%v err=%v", reopened, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBVectorOutboxReplayLeaseRecoveryAndSourceFence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -584,7 +614,7 @@ func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t
 	mock.ExpectExec("INSERT INTO memory_source_revisions").WillReturnResult(sqlmock.NewResult(12, 1))
 	mock.ExpectExec("DELETE FROM effective_input_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memories").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE direct_evidence_records").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM direct_evidence_records").WillReturnResult(sqlmock.NewResult(0, 1))
 	for range 32 {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}

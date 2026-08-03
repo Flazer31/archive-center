@@ -70,6 +70,9 @@ func appendPreciseMemoryEvidenceExcerpts(ctx context.Context, extraction map[str
 		"interaction_events",
 		"relationship_observations",
 		"interaction_boundaries",
+		"habit_observations",
+		"character_profile_observations",
+		"voice_observations",
 		"user_interaction_profile",
 		"rp_character_profile",
 	} {
@@ -111,6 +114,7 @@ func (s *Server) savePreciseMemoryUnitsFromExtraction(
 	units := s.buildPreciseMemoryUnitsFromExtraction(
 		ctx, sid, turnIndex, extraction, content, evidence, identities, now, result,
 	)
+	savedUnits := make([]*store.PreciseMemoryUnit, 0, len(units))
 	for _, unit := range units {
 		result.Attempted++
 		inserted, err := writer.SavePreciseMemoryUnit(ctx, unit)
@@ -119,6 +123,7 @@ func (s *Server) savePreciseMemoryUnitsFromExtraction(
 			result.ErrorDetails = append(result.ErrorDetails, "SavePreciseMemoryUnit: "+err.Error())
 			continue
 		}
+		savedUnits = append(savedUnits, unit)
 		if inserted {
 			result.PreciseMemoryUnits++
 		} else {
@@ -127,6 +132,7 @@ func (s *Server) savePreciseMemoryUnitsFromExtraction(
 			})
 		}
 	}
+	s.savePostAdmissionPreciseMemoryProjections(ctx, sid, savedUnits, now, result)
 }
 
 func (s *Server) buildPreciseMemoryUnitsFromExtraction(

@@ -85,6 +85,15 @@ function normalizeLanguageContextTrace(value) { return value; }
   if (realAssistant.session_output_language !== "en" || realAssistant.output_language_source !== "recent_assistant") {
     throw new Error("real assistant continuity language was not preserved: "+JSON.stringify(realAssistant));
   }
+  const taggedKorean = await buildLanguageContextTrace({
+    userInput:"한얼이 아영에게 자신의 이름과 직책을 알려준다.",
+    assistantContent:"<Narration><Suit.Natural><Emotion.Calm>아영은 한얼의 설명을 듣고 고개를 끄덕였다. 이제 그의 이름과 맡은 업무를 분명히 알게 되었다.</Emotion.Calm></Suit.Natural></Narration>",
+    messages:[],
+    stage:"completeTurn"
+  });
+  if (taggedKorean.session_output_language !== "ko" || taggedKorean.output_language_source !== "current_assistant" || taggedKorean.assistant_output_language !== "ko") {
+    throw new Error("Risu rendering tags contaminated Korean output language: "+JSON.stringify(taggedKorean));
+  }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-")
@@ -156,7 +165,7 @@ func TestSourceDiscoveryUsesSelectedWorkWithoutDuplicateTitleInput(t *testing.T)
 	remember := extractArchiveCenterJSFunction(t, src, "referenceDiscoveryRememberDraft")
 	panel := extractArchiveCenterJSFunction(t, src, "renderReferenceCanonPackPanel")
 	library := extractArchiveCenterJSFunction(t, src, "renderReferenceLibrarySection")
-	timeout := extractArchiveCenterJSFunction(t, src, "getSourceDiscoveryRequestTimeoutMs")
+	run := extractArchiveCenterJSAsyncFunction(t, src, "referenceDiscoveryRunFromUI")
 	if !strings.Contains(remember, `state.works.find`) || strings.Contains(remember, `mo-discovery-work-query`) {
 		t.Fatalf("discovery draft must derive the title from the selected work: %s", remember)
 	}
@@ -166,9 +175,9 @@ func TestSourceDiscoveryUsesSelectedWorkWithoutDuplicateTitleInput(t *testing.T)
 	if !strings.Contains(library, `tabs + selector + renderReferenceCanonPackPanel()`) {
 		t.Fatalf("work selector is missing from the discovery panel")
 	}
-	if !strings.Contains(timeout, `getSourceSearchPlannerTimeoutSettingMs()`) ||
-		strings.Contains(timeout, `600000`) {
-		t.Fatalf("source discovery transport must use the explicit UI timeout without a hidden fallback: %s", timeout)
+	if !strings.Contains(run, `const data = await bridgeFetch("/source-discovery/jobs/v1", {`) ||
+		!strings.Contains(run, `timeoutMs: 0`) {
+		t.Fatalf("source discovery transport must not impose the shared Plugin Timeout: %s", run)
 	}
 }
 
@@ -466,8 +475,9 @@ func TestTurnWorkflowHUDEventStreamUsesOneConnectionAndNoPolling(t *testing.T) {
 	openStream := extractArchiveCenterJSAsyncFunction(t, src, "openTurnWorkflowHUDStream")
 	consumeLine := extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStreamLine")
 	consumeStream := extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStream")
+	primeHUD := extractArchiveCenterJSFunction(t, src, "primeTurnWorkflowHUD")
 	startWatch := extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDWatch")
-	streamSource := strings.Join([]string{cancelStream, openStream, consumeStream, startWatch}, "\n")
+	streamSource := strings.Join([]string{cancelStream, openStream, consumeStream, primeHUD, startWatch}, "\n")
 	for _, forbidden := range []string{"/turn-workflow/status", "wait_ms", "setInterval(", "setTimeout(", "llmRetryCount"} {
 		if strings.Contains(streamSource, forbidden) {
 			t.Fatalf("turn workflow HUD stream retained forbidden automatic transport %q", forbidden)
@@ -480,6 +490,7 @@ func TestTurnWorkflowHUDEventStreamUsesOneConnectionAndNoPolling(t *testing.T) {
 	}
 	script := `
 const settings = {turnWorkflowHUDEnabled:true,requestTimeoutMs:17000};
+const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v3";
 const encoder = new TextEncoder();
 let _turnWorkflowHUDWatchToken = 0;
 let _turnWorkflowHUDWatchRunning = false;
@@ -489,6 +500,7 @@ let _turnWorkflowHUDTerminalRequestId = "";
 let _turnWorkflowHUDStreamAbortController = null;
 let _turnWorkflowHUDStreamReader = null;
 let _turnWorkflowHUDRenderChain = Promise.resolve();
+const _turnWorkflowHUDHostWarningsByRequestId = new Map();
 let streamResponses = [];
 let streamPaths = [];
 let consumedStatuses = [];
@@ -511,6 +523,10 @@ function dismissTurnWorkflowHUD(requestId) {
   _turnWorkflowHUDTerminalRequestId = "";
 }
 function clearTurnWorkflowHUDTimer() {}
+function turnWorkflowHUDHasHostWarning(requestId) {
+  const warnings = _turnWorkflowHUDHostWarningsByRequestId.get(String(requestId || "").trim());
+  return Array.isArray(warnings) && warnings.length > 0;
+}
 async function removeTurnWorkflowHUDDismissListeners() {}
 function queueTurnWorkflowHUDOperation(_label, operation) {
   _turnWorkflowHUDRenderChain = _turnWorkflowHUDRenderChain.then(operation);
@@ -558,19 +574,19 @@ function responseFromLines(lines) {
     },
   };
 }
-` + "\n" + cancelStream + "\n" + streamFailure + "\n" + openStream + "\n" + consumeLine + "\n" + consumeStream + "\n" + startWatch + `
+` + "\n" + cancelStream + "\n" + streamFailure + "\n" + openStream + "\n" + consumeLine + "\n" + consumeStream + "\n" + primeHUD + "\n" + startWatch + `
 (async function() {
   streamResponses = [responseFromLines([
-    JSON.stringify({contract_version:"turn_workflow_hud.v2",request_id:"registered-request",status:"running",revision:1}),
-    JSON.stringify({contract_version:"turn_workflow_hud.v2",request_id:"registered-request",status:"running",revision:2}),
-    JSON.stringify({contract_version:"turn_workflow_hud.v2",request_id:"registered-request",status:"completed",revision:3}),
+    JSON.stringify({contract_version:"turn_workflow_hud.v3",request_id:"registered-request",status:"running",revision:1}),
+    JSON.stringify({contract_version:"turn_workflow_hud.v3",request_id:"registered-request",status:"running",revision:2}),
+    JSON.stringify({contract_version:"turn_workflow_hud.v3",request_id:"registered-request",status:"completed",revision:3}),
   ])];
   startTurnWorkflowHUDWatch("registered-request");
   await settleWatch("registered stream");
   assert(streamPaths.length === 1, "workflow used more than one HTTP connection");
   assert(streamPaths[0].includes("/turn-workflow/events?"), "workflow did not use the event stream endpoint");
   assert(streamPaths[0].includes("after_revision=0"), "new request did not begin after revision zero");
-  assert(consumedStatuses.join(",") === "running,running,completed", "stream revisions were not rendered sequentially");
+  assert(consumedStatuses.join(",") === "running,running,running,completed", "host pending state or stream revisions were not rendered sequentially");
   assert(transportErrors.length === 0, "valid stream produced a transport error");
 
   streamPaths = [];
@@ -608,6 +624,190 @@ function responseFromLines(lines) {
 	}
 }
 
+func TestTurnWorkflowHUDTransportFailureClassificationAndPersistenceRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for turn workflow HUD transport runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	bridge := extractArchiveCenterJSAsyncFunction(t, src, "bridgeFetch")
+	classify := extractArchiveCenterJSFunction(t, src, "classifyTurnWorkflowHUDTransportFailure")
+	remember := extractArchiveCenterJSFunction(t, src, "rememberTurnWorkflowHUDHostWarning")
+	hasWarning := extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDHasHostWarning")
+	warningHTML := extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDWarningListHTML")
+	renderTransport := extractArchiveCenterJSFunction(t, src, "renderTurnWorkflowHUDTransportError")
+	presentation := extractArchiveCenterJSFunction(t, src, "buildTurnWorkflowHUDPresentation")
+	watch := extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDWatch")
+
+	if strings.Contains(renderTransport, `_turnWorkflowHUDTerminalRequestId = requestId`) {
+		t.Fatal("host transport warning still terminates the workflow HUD before later save stages")
+	}
+	if !strings.Contains(watch, `turnWorkflowHUDHasHostWarning(normalizedRequestId)`) {
+		t.Fatal("HUD stream cleanup can still erase a recorded host transport warning")
+	}
+	if count := strings.Count(presentation, `+ turnWorkflowHUDWarningListHTML(view)`); count != 4 {
+		t.Fatalf("HUD warning list must be rendered in all four presentation modes; count=%d", count)
+	}
+	for _, marker := range []string{
+		`kind: String(kind || "unknown")`,
+		`target_url: targetUrl`,
+		`timeout_ms: timeout`,
+		`elapsed_ms: Math.max(0, recordedAt - requestStartedAt)`,
+		`error_code: String(diagnostics.error_code || "")`,
+		`response_body: String(diagnostics.response_body || "").slice(0, 4000)`,
+	} {
+		if !strings.Contains(bridge, marker) {
+			t.Fatalf("bridge transport diagnostic value is discarded: %s", marker)
+		}
+	}
+
+	script := `
+const _lastBridgeFailureByPath = new Map();
+const _turnWorkflowHUDHostWarningsByRequestId = new Map();
+const TURN_WORKFLOW_HUD_WARNING_ITEM_STYLE = "warning-item";
+const TURN_WORKFLOW_HUD_WARNING_LIST_STYLE = "warning-list";
+const TURN_WORKFLOW_HUD_WARNING_DETAIL_STYLE = "warning-detail";
+const _turnWorkflowHUDUnloaded = false;
+let _turnWorkflowHUDActiveRequestId = "request-timeout";
+function t(key) { return key; }
+function escapeTurnWorkflowHUDHTML(value) { return String(value == null ? "" : value); }
+function turnWorkflowHUDIsEnabled() { return true; }
+function dismissTurnWorkflowHUD() { throw new Error("timeout warning dismissed the active workflow"); }
+function debugLog() {}
+function assert(condition, message) { if (!condition) throw new Error(message); }
+` + "\n" + classify + "\n" + remember + "\n" + hasWarning + "\n" + warningHTML + "\n" + renderTransport + `
+_lastBridgeFailureByPath.set("/prepare-turn", {kind:"timeout",status:0,detail:"timeout"});
+const timeoutRenderResult = renderTurnWorkflowHUDTransportError(
+  "request-timeout",
+  "/prepare-turn",
+  "prepare_turn_transport_unavailable"
+);
+assert(timeoutRenderResult === undefined, "prepare timeout continued into terminal HUD rendering");
+assert(!turnWorkflowHUDHasHostWarning("request-timeout"), "prepare timeout was persisted as a workflow warning");
+
+const cases = [
+  [{kind:"bridge_url_invalid",status:0,detail:"no valid bridgeUrl"}, "prepare_turn_bridge_url_invalid"],
+  [{kind:"timeout",status:0,detail:"timeout"}, "prepare_turn_timeout"],
+  [{kind:"response_decode_failed",status:200,detail:"json parse failed: Unexpected token"}, "prepare_turn_response_decode_failed"],
+  [{kind:"http_error",status:503,detail:"service unavailable"}, "prepare_turn_http_error"],
+  [{kind:"connection_failed",status:0,detail:"Failed to fetch"}, "prepare_turn_connection_failed"],
+];
+for (const entry of cases) {
+  _lastBridgeFailureByPath.set("/prepare-turn", entry[0]);
+  const warning = classifyTurnWorkflowHUDTransportFailure("/prepare-turn", "prepare_turn_transport_unavailable");
+  assert(warning.code === entry[1], "wrong classification for " + JSON.stringify(entry[0]) + ": " + warning.code);
+}
+_lastBridgeFailureByPath.set("/prepare-turn", {
+  kind:"http_error",path:"/prepare-turn",method:"POST",
+  configured_url:"http://100.64.0.10:28080",target_url:"http://100.64.0.10:28080/prepare-turn",
+  route_mode:"configured",page_host:"risu.example",loopback_on_hosted_page:false,mixed_content_risk:true,
+  status:503,timeout_ms:45000,elapsed_ms:45123,error_name:"TypeError",error_code:"ECONNRESET",
+  error_message:"request failed",error_cause:"socket closed",response_read_error:"body already read",
+  response_body:'{"code":"UPSTREAM_UNAVAILABLE"}',detail:"service unavailable",at:1722513600000
+});
+const warning = classifyTurnWorkflowHUDTransportFailure("/prepare-turn", "prepare_turn_transport_unavailable");
+rememberTurnWorkflowHUDHostWarning("request-a", warning);
+assert(turnWorkflowHUDHasHostWarning("request-a"), "host warning was not retained for the workflow request");
+const html = turnWorkflowHUDWarningListHTML({
+  request_id:"request-a",
+  warnings:[{code:"backend_warning",message:"backend warning"}],
+});
+assert(html.includes("backend warning · backend_warning"), "backend warning was lost");
+assert(html.includes("prepare_turn_http_error"), "typed transport code was not shown");
+for (const expected of [
+  "failure_kind=http_error", "request_path=/prepare-turn", "method=POST",
+  "configured_url=http://100.64.0.10:28080", "target_url=http://100.64.0.10:28080/prepare-turn",
+  "route_mode=configured", "page_host=risu.example", "loopback_on_hosted_page=false",
+  "mixed_content_risk=true", "timeout_ms=45000", "elapsed_ms=45123", "http_status=503",
+  "error_name=TypeError", "error_code=ECONNRESET", "error_message=request failed",
+  "error_cause=socket closed", "response_read_error=body already read",
+  'backend_response={"code":"UPSTREAM_UNAVAILABLE"}', "detail=service unavailable",
+  "recorded_at=2024-08-01T12:00:00.000Z",
+]) assert(html.includes(expected), "missing transport diagnostic: " + expected);
+process.stdout.write("ok");
+`
+	scriptPath := t.TempDir() + "/turn-workflow-hud-transport-runtime.js"
+	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
+		t.Fatalf("write turn workflow HUD transport runtime fixture: %v", err)
+	}
+	command := exec.Command(nodePath, scriptPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("turn workflow HUD transport runtime fixture failed: %v\n%s", err, output)
+	}
+	if strings.TrimSpace(string(output)) != "ok" {
+		t.Fatalf("turn workflow HUD transport runtime fixture output=%q, want ok", output)
+	}
+}
+
+func TestBridgeFetchRecordsEffectiveTimeoutDiagnosticsRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for bridge timeout diagnostics runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	resolver := extractArchiveCenterJSFunction(t, src, "resolveRequestTimeoutMs")
+	bridge := extractArchiveCenterJSAsyncFunction(t, src, "bridgeFetch")
+	script := `
+const settings = {bridgeUrl:"http://100.64.0.10:28080",requestTimeoutMs:25};
+const _lastBridgeFailureByPath = new Map();
+let requestMode = "delayed";
+const R = {nativeFetch: async function(){
+  if(requestMode === "delayed") {
+    return await new Promise(function(resolve){
+      setTimeout(function(){ resolve({ok:true,status:200,json:async function(){ return {status:"ok"}; }}); },40);
+    });
+  }
+  return await new Promise(function(){});
+}};
+function getRequestTimeoutSettingMs(){ return 25; }
+function resolveBridgeRuntimeRoute(rawUrl){
+  return {url:rawUrl,configuredUrl:rawUrl,mode:"configured",remoteAuto:false,pageHost:"risu.example",loopbackOnHostedPage:false,mixedContentRisk:true};
+}
+function warnLog(){}
+function debugLog(){}
+function extractBridgeErrorDetail(_payload,fallback){ return fallback; }
+function assert(condition,message){ if(!condition) throw new Error(message); }
+` + "\n" + resolver + "\n" + bridge + `
+(async function(){
+  const longResult = await bridgeFetch("/import/hypamemory", {method:"POST",body:{memories:[]},timeoutMs:0});
+  assert(longResult && longResult.status === "ok", "backend-owned wait was cut off by Plugin Timeout");
+  assert(!_lastBridgeFailureByPath.has("/import/hypamemory"), "backend-owned wait recorded a timeout failure");
+  requestMode = "hang";
+  const result = await bridgeFetch("/short-operation", {method:"POST",body:{input:"test"},timeoutMs:25});
+  assert(result === null, "timed-out request returned a result");
+  const failure = _lastBridgeFailureByPath.get("/short-operation");
+  assert(failure && failure.kind === "timeout", "timeout kind was not recorded");
+  assert(failure.timeout_ms === 25, "effective UI timeout was replaced: " + JSON.stringify(failure));
+  assert(failure.elapsed_ms >= 15 && failure.elapsed_ms < 5000, "elapsed timeout value is implausible: " + failure.elapsed_ms);
+  assert(failure.method === "POST", "request method was not recorded");
+  assert(failure.target_url === "http://100.64.0.10:28080/short-operation", "target URL was not recorded");
+  assert(failure.mixed_content_risk === true, "route diagnostics were not recorded");
+  process.stdout.write("ok");
+})().catch(function(err){ console.error(err && err.stack || err); process.exit(1); });
+`
+	scriptPath := t.TempDir() + "/bridge-effective-timeout-runtime.js"
+	if err := os.WriteFile(scriptPath, []byte(script), 0600); err != nil {
+		t.Fatalf("write bridge timeout diagnostics runtime fixture: %v", err)
+	}
+	command := exec.Command(nodePath, scriptPath)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bridge timeout diagnostics runtime fixture failed: %v\n%s", err, output)
+	}
+	if strings.TrimSpace(string(output)) != "ok" {
+		t.Fatalf("bridge timeout diagnostics runtime fixture output=%q, want ok", output)
+	}
+}
+
 func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -618,7 +818,7 @@ func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	start := strings.Index(src, `  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v2";`)
+	start := strings.Index(src, `  const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v3";`)
 	if start < 0 {
 		t.Fatal("turn workflow HUD contract marker not found")
 	}
@@ -630,11 +830,12 @@ func TestTurnWorkflowHUDUsesRisuMainRootDocumentRuntime(t *testing.T) {
 	hudRuntime := strings.TrimSpace(src[start : start+endOffset])
 	script := `
 const nodesByClass = new Map();
-let animationFrameSequence = 0;
-const animationFrames = new Map();
-const cancelledAnimationFrames = [];
+let elapsedTimerSequence = 0;
+const elapsedTimers = new Map();
+const clearedElapsedTimers = [];
 let risuEventListenerSequence = 0;
 const risuEventListeners = new Map();
+let mainDomPermissionRequests = 0;
 async function dispatchRisuEvent(type, event) {
   for (const listener of Array.from(risuEventListeners.values())) {
     if (listener.type === type) {
@@ -642,14 +843,14 @@ async function dispatchRisuEvent(type, event) {
     }
   }
 }
-function requestAnimationFrame(fn) {
-  const id = ++animationFrameSequence;
-  animationFrames.set(id, fn);
+function setTimeout(fn, delay) {
+  const id = ++elapsedTimerSequence;
+  elapsedTimers.set(id, {fn, delay});
   return id;
 }
-function cancelAnimationFrame(id) {
-  cancelledAnimationFrames.push(id);
-  animationFrames.delete(id);
+function clearTimeout(id) {
+  clearedElapsedTimers.push(id);
+  elapsedTimers.delete(id);
 }
 class FakeRemoteNode {
   constructor(tag) {
@@ -664,6 +865,7 @@ class FakeRemoteNode {
     this.card = null;
     this.elapsed = null;
     this.button = null;
+    this.recoveryButton = null;
     this.surface = null;
   }
   async setAttribute(name, value) {
@@ -703,6 +905,9 @@ class FakeRemoteNode {
       this.elapsed.attributes.style = sourceHTML.match(/<time[^>]*style="([^"]*)"/)?.[1] || "";
     }
     this.button = sourceHTML.includes("<button") ? new FakeRemoteNode("button") : null;
+    this.recoveryButton = sourceHTML.includes("data-turn-workflow-recovery-action")
+      ? new FakeRemoteNode("recovery-button")
+      : null;
     if (this.card) {
       this.card.button = this.button;
     }
@@ -727,6 +932,7 @@ class FakeRemoteNode {
     if (selector === "div") return this.card;
     if (selector === "time") return this.elapsed;
     if (selector === "button") return this.button;
+    if (selector === "[data-turn-workflow-recovery-action]") return this.recoveryButton;
     return null;
   }
   async addEventListener(name, handler) {
@@ -767,6 +973,11 @@ const rootDocument = {
   }
 };
 const R = {
+  requestPluginPermission: async function(permission) {
+    if (permission !== "mainDom") throw new Error("unexpected permission " + permission);
+    mainDomPermissionRequests++;
+    return true;
+  },
   getRootDocument: async () => rootDocument,
   async removeRisuEventListener(listenerId) {
     const listener = risuEventListeners.get(listenerId);
@@ -778,7 +989,24 @@ const R = {
   }
 };
 const settings = {turnWorkflowHUDEnabled:true};
+const BUILD_ID = "20260802-4";
+let recoveryConfirmCalls = 0;
+const recoveryBridgeCalls = [];
+let recoveryResponseView = null;
+async function showConfirmModal() {
+  recoveryConfirmCalls++;
+  return true;
+}
+async function bridgeFetch(path, options) {
+  recoveryBridgeCalls.push({path, options});
+  return {turn_workflow_hud: recoveryResponseView};
+}
 const translations = {
+  "turn_hud.recovery.retry_derived_turn": "이 턴 복구 재시도",
+  "turn_hud.recovery.confirm_title": "턴 기억 복구",
+  "turn_hud.recovery.confirm_retry_derived_turn": "{turn}턴 복구",
+  "turn_hud.recovery.requested": "복구 요청을 보냈습니다.",
+  "turn_hud.recovery.request_failed": "복구 요청에 실패했습니다.",
   "turn_hud.completed": "완료",
   "turn_hud.completed_with_warning": "경고와 함께 완료",
   "turn_hud.invalidated": "작업 중단",
@@ -824,6 +1052,15 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 (async function() {
+  assert(primeTurnWorkflowHUD("pending-a") === "pending-a", "host pending HUD was not accepted");
+  await _turnWorkflowHUDRenderChain;
+  const primedRoot = nodesByClass.get("mo-turn-workflow-hud-root");
+  const primedSurface = primedRoot && primedRoot.surface;
+  assert(primedSurface && primedSurface.innerHTML.includes("ARCHIVE CENTER"), "host pending HUD did not render immediately");
+  assert(primedSurface.innerHTML.includes(translations["turn_hud.stage.prepare_source"]), "host pending HUD omitted the visible waiting stage");
+  assert(mainDomPermissionRequests === 1, "host pending HUD did not request mainDom permission exactly once");
+  await dismissTurnWorkflowHUD("pending-a");
+  await _turnWorkflowHUDRenderChain;
   const counts = [
     {key:"raw",label_key:"count.raw",value:1},
     {key:"summary",label_key:"count.summary",value:2},
@@ -945,17 +1182,18 @@ function assert(condition, message) {
   }), "running HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
   assert(surface.elapsed && /초$/.test(surface.elapsed.textContent), "LLM elapsed seconds were not rendered");
-  assert(animationFrames.size === 1, "LLM elapsed display did not schedule an animation frame");
-  const firstAnimationFrame = Array.from(animationFrames.entries())[0];
-  animationFrames.delete(firstAnimationFrame[0]);
-  firstAnimationFrame[1]();
+  assert(elapsedTimers.size === 1, "LLM elapsed display did not schedule its fallback-safe timer");
+  const firstElapsedTimer = Array.from(elapsedTimers.entries())[0];
+  elapsedTimers.delete(firstElapsedTimer[0]);
+  assert(firstElapsedTimer[1].delay === 250, "LLM elapsed display used an unexpected refresh cadence");
+  firstElapsedTimer[1].fn();
   await Promise.resolve();
   await Promise.resolve();
-  assert(animationFrames.size === 1, "LLM elapsed display did not continue through animation frames");
+  assert(elapsedTimers.size === 1, "LLM elapsed display did not continue without requestAnimationFrame");
   assert(surface.innerHTML.includes("height:3px") && surface.innerHTML.includes("width:42.9%"), "running HUD progress bar does not reflect the backend stage ordinal");
   await dismissTurnWorkflowHUD("running-b");
   await _turnWorkflowHUDRenderChain;
-  assert(cancelledAnimationFrames.length >= 1, "HUD dismissal did not cancel the elapsed animation frame");
+  assert(clearedElapsedTimers.length >= 1, "HUD dismissal did not cancel the elapsed timer");
 
   assert(consumeTurnWorkflowHUDNotice({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"ooc-backend-notice",revision:1,
@@ -1040,6 +1278,52 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "failed HUD close button did not dismiss HUD");
 
+  const recoverableError = {
+    code:"DERIVED_PERSIST_FAILED",
+    message_key:"turn_hud.transport_unavailable",
+    retryable:true,
+    preserved_counts:counts,
+    recovery_actions:[{
+      id:"retry_derived_turn",
+      label_key:"turn_hud.recovery.retry_derived_turn",
+      confirm_title_key:"turn_hud.recovery.confirm_title",
+      confirm_message_key:"turn_hud.recovery.confirm_retry_derived_turn",
+      status:"available"
+    }]
+  };
+  const recoverableView = {
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"recoverable-turn",revision:1,
+    logical_turn:57,status:"failed",severity:"error",dismissal_policy:"x_only",
+    stages,counts,error:recoverableError
+  };
+  recoveryResponseView = {
+    ...recoverableView,
+    revision:2,
+    error:{
+      ...recoverableError,
+      recovery_actions:[{
+        ...recoverableError.recovery_actions[0],
+        status:"requested",
+        status_message_key:"turn_hud.recovery.requested"
+      }]
+    }
+  };
+  assert(consumeTurnWorkflowHUD(recoverableView), "recoverable failed HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML.includes("이 턴 복구 재시도"), "recoverable HUD omitted its backend-supplied action");
+  assert(surface.recoveryButton && typeof surface.recoveryButton.listeners.click === "function", "recoverable HUD action listener missing");
+  await surface.recoveryButton.listeners.click({});
+  await _turnWorkflowHUDRenderChain;
+  assert(recoveryConfirmCalls === 1, "recovery action did not confirm exactly once");
+  assert(recoveryBridgeCalls.length === 1, "recovery action did not call the backend exactly once");
+  assert(recoveryBridgeCalls[0].path === "/turn-workflow/recovery", "recovery action called the wrong backend route");
+  assert(recoveryBridgeCalls[0].options.body.request_id === "recoverable-turn", "recovery action lost its request identity");
+  assert(surface.innerHTML.includes("복구 요청을 보냈습니다."), "recoverable HUD did not render the accepted recovery state");
+  assert(!surface.recoveryButton, "accepted recovery action stayed clickable");
+  await dispatchRisuEvent("click", {clientX:120, clientY:20});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "recovery status HUD close button did not dismiss HUD");
+
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"invalidated-d",revision:1,
     logical_turn:58,status:"invalidated",severity:"warning",dismissal_policy:"x_only",counts,
@@ -1079,10 +1363,10 @@ function assert(condition, message) {
   });
   await _turnWorkflowHUDRenderChain;
   assert(risuEventListeners.size === 1, "unload fixture did not register its global listener");
-  const unloadAnimationFrame = requestAnimationFrame(function() {});
-  _turnWorkflowHUDAnimationFrame = unloadAnimationFrame;
+  const unloadElapsedTimer = setTimeout(function() {}, 250);
+  _turnWorkflowHUDElapsedTimer = unloadElapsedTimer;
   await unloadTurnWorkflowHUD();
-  assert(cancelledAnimationFrames.includes(unloadAnimationFrame), "HUD unload did not cancel its animation frame");
+  assert(clearedElapsedTimers.includes(unloadElapsedTimer), "HUD unload did not cancel its elapsed timer");
   assert(risuEventListeners.size === 0, "HUD unload retained a global listener");
   assert(!body.children.includes(root), "HUD unload left its owned root attached");
   assert(!nodesByClass.has("mo-turn-workflow-hud-root"), "HUD unload left its owned root queryable");
@@ -1137,7 +1421,7 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
   nextResult = {
     status:"ok",turn_index:7,
     source_acceptance:{accepted:true,replace_existing:true,lifecycle:"active_final"},
-    turn_workflow_hud:{contract_version:"turn_workflow_hud.v2",request_id:"request-reroll",status:"completed"}
+    turn_workflow_hud:{contract_version:"turn_workflow_hud.v3",request_id:"request-reroll",status:"completed"}
   };
   await tryCompleteTurn(8, "user", "new answer", [], "session-1", null, null);
   assert(runtimeUpdates.length === 1, "confirmed reroll was not recorded exactly once");
@@ -1219,6 +1503,7 @@ let expectedLane = {
 };
 async function bridgeFetch(path, options) {
   if (path !== "/prepare-turn") throw new Error("unexpected path " + path);
+  if (options.timeoutMs !== 0) throw new Error("prepare-turn retained the Plugin Timeout: " + options.timeoutMs);
   capturedBody = options.body;
   capturedBodies.push(options.body);
   return {
@@ -1326,8 +1611,9 @@ async function bridgeFetch(path, options) {
     sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
   });
   const adaptiveBudgetBody = capturedBodies[capturedBodies.length - 1];
-  if (adaptiveBudgetBody.settings.max_injection_chars !== 11500) {
-    throw new Error("adaptive plus extra budget was not forwarded to Go: " + adaptiveBudgetBody.settings.max_injection_chars);
+  if (adaptiveBudgetBody.settings.max_injection_chars !== 1000 ||
+      adaptiveBudgetBody.client_meta.memory_budget_observation.extra_chars !== 2500) {
+    throw new Error("configured budget and dynamic observation were not forwarded separately: " + JSON.stringify(adaptiveBudgetBody));
   }
   settings.narrativeGuideMode = "auto";
   settings.narrativeGuideStrength = "weak";
@@ -1439,6 +1725,7 @@ const _pendingOrchBySession = new Map();
 let activePairs = 0;
 let latestBackendTurn = 0;
 let prepareCalls = [];
+let runtimeConfigBindingCalls = 0;
 let preFullSideEffects = 0;
 let boundedHostLifecycleCalls = 0;
 const hostObservationsFixture = {request_id: "request-runtime", payload: [{role: "user", raw_content: "actual input", message_index: 1}]};
@@ -1461,10 +1748,16 @@ function bindRawInputObservationToRequest(_sessionId, requestId) {
   return {text: "actual input", actualEmptyInput: false, observationId: 1, boundRequestId: requestId};
 }
 function makeOrchRequestId() { return "request-runtime"; }
+function primeTurnWorkflowHUD() {}
 function buildPrepareTurnHostObservations() { return hostObservationsFixture; }
 async function observePrepareTurnBootstrap() { return bootstrapObservationFixture; }
 function buildPrepareTurnSourceObservations() { return {sourceObservation: {request_id: "request-runtime"}, capabilityObservation: {capabilities: {}}}; }
 function updateRuntimeState() {}
+async function ensureBackendRuntimeConfigBinding(instanceId) {
+  runtimeConfigBindingCalls++;
+  if (instanceId !== "backend-runtime") throw new Error("backend instance id was not forwarded");
+  return {ok:true,bound:true,skipped:true,code:"config_sync_ok",backendInstanceId:instanceId,missingRoles:[]};
+}
 function ensureActiveChatCompletedTurnsBackfilled() { preFullSideEffects++; return Promise.resolve(); }
 async function observePendingFinalConfirmationAtHostSignal() { boundedHostLifecycleCalls++; return {accepted:true}; }
 async function captureAssistantPrefillSeedForSession() { boundedHostLifecycleCalls++; }
@@ -1481,7 +1774,7 @@ async function fetchBackendLatestTurnIndexForSession() { return latestBackendTur
 async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext, options) {
   prepareCalls.push({sessionId, userInput, messages, continuityInfo, type, languageContext, options});
   if (options && options.sourceDecisionOnly === true) {
-    return {source: "backend-source-decision", currentInputDecision: {
+    return {source: "backend-source-decision", backendInstanceId: "backend-runtime", currentInputDecision: {
       status: "eligible", reason_code: "current_user_input_observed", effective_user_input: "actual input",
       selected_observation_ref: "input-hook:request-runtime", context_injection_eligible: true, memory_reads_allowed: true
     }, sessionBootstrap: {status: "preserved"}};
@@ -1492,12 +1785,14 @@ async function runFixture(expectedFresh, expectedContinuity) {
   prepareCalls = [];
   preFullSideEffects = 0;
   boundedHostLifecycleCalls = 0;
+  runtimeConfigBindingCalls = 0;
   const payload = {messages: [{role: "system", content: "preset"}, {role: "user", content: "actual input"}, {role: "user", content: "later host prompt"}]};
   const result = await onBeforeRequest(payload, "model");
   if (result !== payload) throw new Error("fixture stop did not preserve original payload");
   if (prepareCalls.length !== 2) throw new Error("model prepare calls=" + prepareCalls.length + ", want 2");
-  if (preFullSideEffects !== 0) throw new Error("full source failure allowed pre-validation side effects=" + preFullSideEffects);
+  if (preFullSideEffects !== 1) throw new Error("rollback comparison did not run before full prepare failure=" + preFullSideEffects);
   if (boundedHostLifecycleCalls !== 3) throw new Error("official host lifecycle was not observed/captured before fail-open="+boundedHostLifecycleCalls);
+  if (runtimeConfigBindingCalls !== 1) throw new Error("runtime config binding checks="+runtimeConfigBindingCalls+", want 1");
   const decision = prepareCalls[0];
   const full = prepareCalls[1];
   if (!decision.options.sourceDecisionOnly || decision.userInput !== "" || decision.continuityInfo !== null || decision.languageContext !== null) {
@@ -1948,6 +2243,7 @@ function isBoundaryOnlyUserInput() { return false; }
 function isRisuHistoryTrimCommandText() { return false; }
 function isMetaPromptLikeMessage() { return false; }
 function normalizeLanguageContextTrace(value) { return value; }
+function buildRisuActiveChatContextMessageObservation(msg) { return msg; }
 function assertEqual(actual, expected, label) {
   if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
 }
@@ -2864,6 +3160,7 @@ func TestPersistedCompleteTurnQueueKeepsSourceFenceWithoutCredentials(t *testing
 		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload")
 	script := functions + `
 function normalizeLanguageContextTrace(value) { return value; }
+function buildRisuActiveChatContextMessageObservation(msg) { return msg; }
 const sourceObservation = {contract_version:"source_acceptance_observation.v1",observed_at_ms:123,message_index:4,active_message_count:5};
 const sourceLineage = {contract_version:"source_to_final_lineage_observation.v1",status:"ready",
   archive_center_request_correlation_id:"correlation-1",prepare_lineage_id:"stl_1",payload_plan_id:"stp_1",
@@ -4274,8 +4571,8 @@ async function buildCompleteTurnRequestBody(turn, user, assistant, context, sess
   return {chat_session_id:session,turn_index:turn,user_input:user,assistant_content:assistant,context_messages:context,request_type:"model",client_meta:{
     source_acceptance_required:true,
     source_acceptance_observation:{observed_content_hash:"hash-final",host_chat_id:"chat-1",generation_id:"generation-final",message_chat_id:"message-final",message_time_state:"observed",message_time_ms:300},
-    critic:{api_key:"current-live-key"},
-    embedding:{api_key:"current-embedding-key"},
+    critic:{api_key:"must-not-be-copied"},
+    embedding:{api_key:"must-not-be-copied"},
     idempotency_key:"rebuilt-key",
     request_id:"rebuilt-key"
   }};
@@ -4285,8 +4582,7 @@ function debugLog() {}
   const restored = {chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],client_meta:{}};
   if (!await refreshQueuedCompleteTurnSourceObservation(restored)) throw new Error("restored queue was not refreshed");
   if (restored.client_meta.source_acceptance_required !== true || restored.client_meta.idempotency_key !== "rebuilt-key") throw new Error("source fence or request key was not rebuilt");
-  if (!restored.client_meta.critic || restored.client_meta.critic.api_key !== "current-live-key") throw new Error("current live critic config was not restored in memory");
-  if (!restored.client_meta.embedding || restored.client_meta.embedding.api_key !== "current-embedding-key") throw new Error("current live embedding config was not restored in memory");
+  if (restored.client_meta.critic || restored.client_meta.embedding) throw new Error("queued turn copied credential-bearing runtime config");
 
   const stale = {chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:[],client_meta:{source_acceptance_observation:{observed_content_hash:"old",host_chat_id:"chat-1",generation_id:"generation-old"}}};
   if (await refreshQueuedCompleteTurnSourceObservation(stale)) throw new Error("stale generation was refreshed as current");
@@ -4380,7 +4676,6 @@ func TestRollbackDecisionTransportIncludesNestedLedgerCounts(t *testing.T) {
 	script := functionBody + `
 let sentBody = null;
 function getRequestTimeoutSettingMs() { return 1000; }
-async function fetchBackendLatestTurnIndexForSession() { return 9; }
 async function bridgeFetch(path, options) {
   if (path !== "/rollback/decision") throw new Error("unexpected path " + path);
   sentBody = options.body;
@@ -4389,7 +4684,6 @@ async function bridgeFetch(path, options) {
 function serializeSessionRoutingBaselineForBackend() { return null; }
 (async function() {
   await requestBackendRollbackDecision("s", 9, "delete", {
-    backendLatestTurnIndex:9,
     tailReconcileVerification:{
       status:"incomplete_user_only_tail_candidate",
       removedAssistantCount:0,
@@ -4397,7 +4691,7 @@ function serializeSessionRoutingBaselineForBackend() { return null; }
       removedMessageCount:1
     }
   }, "auto");
-  if (!sentBody || sentBody.removed_user_count !== 1 || sentBody.removed_message_count !== 1 || sentBody.removed_assistant_count !== 0 || sentBody.incomplete_tail_candidate !== true || sentBody.ledger_verified !== false) {
+  if (!sentBody || sentBody.backend_latest_turn !== 0 || sentBody.removed_user_count !== 1 || sentBody.removed_message_count !== 1 || sentBody.removed_assistant_count !== 0 || sentBody.incomplete_tail_candidate !== true || sentBody.ledger_verified !== false) {
     throw new Error("nested rollback verification was not transported: " + JSON.stringify(sentBody));
   }
 })().catch(function(err) {
@@ -4410,6 +4704,55 @@ function serializeSessionRoutingBaselineForBackend() { return null; }
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("rollback decision transport JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestExplorerManualDeleteRefreshesSessionAndChatLogsConcurrently(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Explorer delete refresh fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "explorerDeleteChatLogTurn")
+	script := functionBody + `
+let sessionRefreshCompleted = false;
+let chatRefreshObservedConcurrentStart = false;
+let uiRefreshCount = 0;
+function explorerSessionId() { return "session-1"; }
+async function captureChatLogRestoreSnapshot() { return 2; }
+async function executeAutoRollback() { return true; }
+async function explorerFetchSessions() {
+  await new Promise(function(resolve) { setTimeout(resolve, 25); });
+  sessionRefreshCompleted = true;
+}
+async function explorerFetchChatLogs(reset) {
+  if (reset !== true) throw new Error("chat logs were not reset");
+  chatRefreshObservedConcurrentStart = !sessionRefreshCompleted;
+}
+async function refreshExplorerUI() { uiRefreshCount += 1; }
+function debugLog() {}
+function warnLog() {}
+function t(key) { return key; }
+function alert(message) { throw new Error("unexpected alert: " + message); }
+(async function() {
+  const ok = await explorerDeleteChatLogTurn(2);
+  if (!ok || !chatRefreshObservedConcurrentStart || uiRefreshCount !== 1) {
+    throw new Error("Explorer delete refresh was not concurrent: " + JSON.stringify({ok, chatRefreshObservedConcurrentStart, uiRefreshCount}));
+  }
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Explorer delete refresh fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -4718,6 +5061,7 @@ let syncAck = {ok:false,code:"backend_down"};
 let runtimeStates = [];
 async function persistentSet(key, value) { persisted.push({key,value}); }
 async function syncConfigToBackend() { return syncAck; }
+function markBackendRuntimeConfigDirty() {}
 function updateRuntimeState(key, status, state) { runtimeStates.push({key,status,state}); }
 function debugLog() {}
 function warnLog() {}
@@ -5098,8 +5442,8 @@ async function settle(predicate, label) {
 
 func TestAdapterTimerAndConfigAcknowledgementSourceContract(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	if got := strings.Count(src, "setTimeout("); got != 1 {
-		t.Fatalf("production adapter setTimeout count=%d, want only the UI-configured fetch abort timer", got)
+	if got := strings.Count(src, "setTimeout("); got != 2 {
+		t.Fatalf("production adapter setTimeout count=%d, want the UI-configured fetch abort and HUD elapsed timers", got)
 	}
 	if strings.Contains(src, "setInterval(") || strings.Contains(src, "clearInterval(") {
 		t.Fatal("production adapter still contains a fixed interval")
@@ -5115,12 +5459,13 @@ func TestAdapterTimerAndConfigAcknowledgementSourceContract(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		`const ok = !!(result && result.status === "ok");`,
-		`code: ok ? "config_sync_ok"`,
+		`const transportAccepted = !!(result && result.status === "ok");`,
+		`const runtimeSynced = !!(trace && trace.synced === true);`,
+		`? "config_sync_ok"`,
 		`settings_saved_locally_backend_unsynced`,
 		`String(pendingRawInputObservation.boundRequestId || "") === pendingRequestId`,
-		`requestAnimationFrame(function turnWorkflowHUDElapsedFrame()`,
-		`cancelAnimationFrame(_turnWorkflowHUDAnimationFrame)`,
+		`setTimeout(function turnWorkflowHUDElapsedFrame()`,
+		`clearTimeout(_turnWorkflowHUDElapsedTimer)`,
 	} {
 		if !strings.Contains(src, required) {
 			t.Fatalf("production adapter missing lifecycle/config contract marker %q", required)
@@ -5151,6 +5496,7 @@ function getPluginMainTimeoutSettingMs() { return 450000; }
 function assert(condition, message) { if (!condition) throw new Error(message); }
 ` + "\n" + functions + `
 assert(resolveRequestTimeoutMs(700000) === 700000, "request override was silently clamped");
+assert(resolveRequestTimeoutMs(0) === 0, "backend-owned wait was replaced by the UI request timeout");
 assert(resolveRequestTimeoutMs(-1) === 800000, "invalid request override did not use the UI setting");
 assert(getCompleteTurnTimeoutMs() === 1100000, "derived complete-turn timeout was silently clamped");
 assert(resolvePluginMainTimeoutMs(500000) === 500000, "plugin-main override was silently clamped");

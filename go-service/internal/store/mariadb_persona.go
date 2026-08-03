@@ -103,7 +103,7 @@ func (m *mariadbStore) ListPersonaMemoryCapsules(ctx context.Context, filter Per
 		query += " AND source_chat_session_id = ?"
 		args = append(args, strings.TrimSpace(filter.SourceChatSessionID))
 	}
-	query += " ORDER BY updated_at DESC, id DESC LIMIT 200"
+	query += " ORDER BY updated_at DESC, id DESC"
 	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -215,13 +215,7 @@ func (m *mariadbStore) ListAttachedPersonaMemoryEntries(ctx context.Context, tar
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 80 {
-		limit = 80
-	}
-	rows, err := m.db.QueryContext(ctx, `
+	query := `
 		SELECT e.id, e.capsule_id, e.source_memory_type, e.source_memory_id,
 		       COALESCE(p.source_turn_index, e.source_turn_index),
 		       COALESCE(NULLIF(p.memory_text, ''), e.memory_text),
@@ -239,8 +233,13 @@ func (m *mariadbStore) ListAttachedPersonaMemoryEntries(ctx context.Context, tar
 			AND e.source_memory_id = p.id
 		WHERE a.target_chat_session_id = ? AND a.enabled = TRUE
 		ORDER BY COALESCE(p.importance_10, e.importance_10) DESC, e.id ASC
-		LIMIT ?
-	`, targetChatSessionID, limit)
+	`
+	args := []any{targetChatSessionID}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -419,15 +418,12 @@ func (m *mariadbStore) ListProtagonistEntityMemories(ctx context.Context, filter
 		query += " AND source_chat_session_id = ?"
 		args = append(args, strings.TrimSpace(filter.SourceChatSessionID))
 	}
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 80
+	if filter.Limit > 0 {
+		query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+		args = append(args, filter.Limit)
+	} else {
+		query += " ORDER BY updated_at DESC, id DESC"
 	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
-	args = append(args, limit)
 
 	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {

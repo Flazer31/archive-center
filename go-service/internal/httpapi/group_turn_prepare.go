@@ -40,6 +40,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	responseProjection := strings.TrimSpace(request.ResponseProjection)
 	if request.SourceDecisionOnly {
 		writeJSON(w, http.StatusOK, map[string]any{
+			"backend_instance_id":             s.backendInstanceID(),
 			"source_contract":                 prepareSourceContract,
 			"current_input_decision":          currentInputDecision,
 			"message_source_envelope":         currentInputDecision.Envelope,
@@ -53,6 +54,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		timing.addElapsed("source_decision", decodeStartedAt)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",
+			"backend_instance_id":             s.backendInstanceID(),
 			"source":                          "shadow",
 			"chat_session_id":                 sid,
 			"generated_at":                    time.Now().UTC().Format(time.RFC3339),
@@ -100,6 +102,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		timing.addElapsed("migration_guard", migrationStartedAt)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",
+			"backend_instance_id":             s.backendInstanceID(),
 			"source":                          "shadow",
 			"chat_session_id":                 sid,
 			"generated_at":                    time.Now().UTC().Format(time.RFC3339),
@@ -181,8 +184,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			referenceRecallLimit = 0
 		}
 	}
-	supportRecallLimit := prepareTurnSupportCandidateLimit(maxInjectionChars)
-	entityRecollectionReadLimit := prepareTurnEntityRecollectionCandidateLimit(supportRecallLimit)
+	supportRecallLimit := 0
 
 	if req.Settings.InjectionEnabled != nil {
 		injectionEnabled = *req.Settings.InjectionEnabled
@@ -220,14 +222,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var episodeSums []store.EpisodeSummary
 	var personaEntries []store.PersonaMemoryEntry
 	var characterPrivateMemories []store.ProtagonistEntityMemory
-	directEntityOwnerIndexCount := 0
-	directEntityOwnerMatchCount := 0
-	directEntityMemoryReadCount := 0
+	entityOwnerIndexCount := 0
+	entityOwnerScopeMatchCount := 0
+	entityMemoryReadCount := 0
+	entityMemoryReadPolicy := "semantic_scope_then_all_matching_rows"
 	var narrativeCurrentValues []store.StatusCurrentValue
 	var storyClockCurrentValues []store.StatusCurrentValue
 	var reversibleCurrentValues []store.StatusCurrentValue
 	var characterPerspectiveUnits []store.PreciseMemoryUnit
 	var activeInteractionUnits []store.PreciseMemoryUnit
+	characterMemoryReadContext := buildPrepareTurnCharacterMemoryReadContext(r.Context(), s.Store, sid)
 
 	readErrs := []error{}
 	readsOK := 0
@@ -392,7 +396,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			readErrs = append(readErrs, err)
 		}
 		if personaStore, ok := s.Store.(store.PersonaCapsuleStore); ok {
-			if entries, err := personaStore.ListAttachedPersonaMemoryEntries(ctx, sid, entityRecollectionReadLimit); err == nil {
+			if entries, err := personaStore.ListAttachedPersonaMemoryEntries(ctx, sid, 0); err == nil {
 				for _, entry := range entries {
 					if personaMemoryEntryIsCharacterPrivate(entry) {
 						characterPrivateMemories = append(characterPrivateMemories, personaMemoryEntryAsCharacterPrivateMemory(entry, sid))
@@ -410,8 +414,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				OwnerEntityRole:     "npc",
 				OwnerVisibility:     "owner_private",
 				SourceChatSessionID: sid,
-				Limit:               entityRecollectionReadLimit,
 			}
+			readScopedMemories := true
 			if ownerStore, ownerOK := s.Store.(store.ProtagonistEntityMemoryOwnerIndexStore); ownerOK {
 				owners, ownerErr := ownerStore.ListProtagonistEntityMemoryOwners(ctx, store.ProtagonistEntityMemoryFilter{
 					OwnerEntityRole:     "npc",
@@ -419,39 +423,66 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 					SourceChatSessionID: sid,
 				})
 				if ownerErr == nil {
-					directEntityOwnerIndexCount = len(owners)
-					directOwners := prepareTurnDirectEntityMemoryOwners(rawUserInput, owners)
-					directEntityOwnerMatchCount = len(directOwners)
-					for _, owner := range directOwners {
+					entityOwnerIndexCount = len(owners)
+					ownerIdentityMemories := make([]store.ProtagonistEntityMemory, 0, len(owners))
+					for _, owner := range owners {
+						ownerIdentityMemories = append(ownerIdentityMemories, store.ProtagonistEntityMemory{
+							OwnerEntityKey: owner.OwnerEntityKey, OwnerEntityName: owner.OwnerEntityName,
+						})
+					}
+					ownerIdentityAliases := buildPrepareTurnEntityIdentityAliases(ctx, s.Store, sid, charStates, ownerIdentityMemories)
+					recollectionContext := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogs)
+					ownerScopeQuery := prepareTurnEntityScopeQuery(
+						rawUserInput,
+						nonEmptyStrings(strings.Split(recollectionContext.currentEntities, "\n")),
+						nonEmptyStrings([]string{
+							recollectionContext.currentAssistantContext,
+							extractionStringFromAny(perspectiveContext["current_pov"]),
+						}),
+					)
+					scopedOwners := prepareTurnDirectEntityMemoryOwnersWithAliases(ownerScopeQuery, owners, ownerIdentityAliases)
+					entityOwnerScopeMatchCount = len(scopedOwners)
+					for _, owner := range scopedOwners {
 						if key := strings.TrimSpace(owner.OwnerEntityKey); key != "" {
 							memoryFilter.OwnerEntityKeys = append(memoryFilter.OwnerEntityKeys, key)
 						}
 					}
+					if len(owners) == 0 {
+						entityMemoryReadPolicy = "owner_index_empty_all_rows_then_semantic_filter"
+						readScopedMemories = true
+					} else {
+						readScopedMemories = len(memoryFilter.OwnerEntityKeys) > 0
+					}
 				} else if !errors.Is(ownerErr, store.ErrNotEnabled) {
 					readErrs = append(readErrs, ownerErr)
+					entityMemoryReadPolicy = "owner_index_failed_all_rows_then_semantic_filter"
+				} else {
+					entityMemoryReadPolicy = "owner_index_unavailable_all_rows_then_semantic_filter"
 				}
+			} else {
+				entityMemoryReadPolicy = "owner_index_unavailable_all_rows_then_semantic_filter"
 			}
-			memories, err := entityStore.ListProtagonistEntityMemories(ctx, memoryFilter)
-			if err == nil {
-				characterPrivateMemories = append(characterPrivateMemories, memories...)
-				if len(memoryFilter.OwnerEntityKeys) > 0 {
-					directEntityMemoryReadCount = len(memories)
+			if readScopedMemories {
+				memories, err := entityStore.ListProtagonistEntityMemories(ctx, memoryFilter)
+				if err == nil {
+					characterPrivateMemories = append(characterPrivateMemories, memories...)
+					entityMemoryReadCount = len(memories)
+					if len(memories) > 0 {
+						readsOK++
+					}
+				} else if !errors.Is(err, store.ErrNotEnabled) {
+					readErrs = append(readErrs, err)
 				}
-				if len(memories) > 0 {
-					readsOK++
-				}
-			} else if !errors.Is(err, store.ErrNotEnabled) {
-				readErrs = append(readErrs, err)
 			}
 		}
 		if valueStore, ok := s.Store.(store.StatusCurrentValueStore); ok {
-			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, "", "", narrativeStateStatusKey, 1000); err == nil {
+			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, "", "", narrativeStateStatusKey, 0); err == nil {
 				narrativeCurrentValues = values
 				readsOK++
 			} else if !errors.Is(err, store.ErrNotEnabled) {
 				readErrs = append(readErrs, err)
 			}
-			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, storyClockOwnerScope, storyClockOwnerID, storyClockStatusKey, 1); err == nil {
+			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, storyClockOwnerScope, storyClockOwnerID, storyClockStatusKey, 0); err == nil {
 				storyClockCurrentValues = values
 				if len(values) > 0 {
 					readsOK++
@@ -490,6 +521,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	materializationTrace["active_interaction_rows"] = len(activeInteractionUnits)
 	materializationTrace["total_history_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs)
 	materializationTrace["total_materialized_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(charStates) + len(activeStates) + len(canonicalLayers) + len(charEvents)
+	supportRecallLimit = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(storylines) + len(worldRules) + len(charStates) + len(pendingThreads) + len(canonicalLayers) + len(episodeSums) + len(personaEntries) + len(characterPrivateMemories)
 	timing.addElapsed("store_reads", storeReadsStartedAt)
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		hostTurn, hostTurnObserved := prepareTurnWorkflowHostOrdinal(request, currentInputDecision)
@@ -502,17 +534,23 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	recollectionStartedAt := time.Now()
 	var personaRoleTrace map[string]any
 	characterPrivateMemories, personaRoleTrace = excludeRisuPersonaFromStoredNPCMemories(characterPrivateMemories, req.ClientMeta)
+	entityIdentityAliases := buildPrepareTurnEntityIdentityAliases(r.Context(), s.Store, sid, charStates, characterPrivateMemories)
+	characterPrivateMemories = s.canonicalizeSubjectiveEntityMemoriesForRead(r.Context(), sid, characterPrivateMemories)
+	characterProjection := s.canonicalCharacterReadProjection(r.Context(), sid, charStates, charEvents)
+	charStates = characterProjection.States
+	charEvents = characterProjection.Events
 	var personaRelevanceTrace map[string]any
 	personaEntries, personaRelevanceTrace = filterPrepareTurnPersonaRecollections(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, personaEntries, chatLogs)
-	recollectionRelevance := filterPrepareTurnEntityRecollections(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, personaEntries, &characterPrivateMemories, chatLogs)
+	recollectionRelevance := filterPrepareTurnEntityRecollectionsWithAliases(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, personaEntries, &characterPrivateMemories, entityIdentityAliases, chatLogs)
 	recollectionRelevance["risu_persona_role_resolution"] = personaRoleTrace
 	recollectionRelevance["persona_recollection_relevance"] = personaRelevanceTrace
-	recollectionRelevance["candidate_read_limit"] = entityRecollectionReadLimit
+	recollectionRelevance["candidate_read_policy"] = entityMemoryReadPolicy
+	recollectionRelevance["candidate_count_limit"] = nil
 	recollectionRelevance["relevance_before_delivery_cap"] = true
-	recollectionRelevance["owner_index_count"] = directEntityOwnerIndexCount
-	recollectionRelevance["direct_owner_match_count"] = directEntityOwnerMatchCount
-	recollectionRelevance["direct_owner_memory_read_count"] = directEntityMemoryReadCount
-	recollectionRelevance["direct_owner_batch_query"] = directEntityOwnerMatchCount > 0
+	recollectionRelevance["owner_index_count"] = entityOwnerIndexCount
+	recollectionRelevance["relevant_owner_scope_match_count"] = entityOwnerScopeMatchCount
+	recollectionRelevance["scoped_owner_memory_read_count"] = entityMemoryReadCount
+	recollectionRelevance["scoped_owner_batch_query"] = entityOwnerScopeMatchCount > 0
 	timing.addElapsed("recollection_filter", recollectionStartedAt)
 
 	degraded := readsOK == 0
@@ -561,8 +599,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		turnIndex,
 		injectionEnabled,
 	)
-	reversibleScope := buildPrepareTurnRequestEntityScope(
-		rawUserInput, reversibleRecollectionContext.currentEntities, reversibleKnownNames,
+	reversibleScope := buildPrepareTurnRequestEntityScopeWithAliases(
+		rawUserInput,
+		reversibleRecollectionContext.currentEntities,
+		reversibleKnownNames,
+		entityIdentityAliases,
+		reversibleRecollectionContext.currentAssistantContext,
+		extractionStringFromAny(perspectiveContext["current_pov"]),
 	)
 	characterPerspectiveBudget := maxInjectionChars
 	if !injectionEnabled {
@@ -600,6 +643,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			assemblyPerspectiveContext["_active_interaction_public_text"] = activeInteractionPublicCandidateText
 			assemblyPerspectiveContext["_active_interaction_guarded_text"] = activeInteractionGuardedCandidateText
 			assemblyPerspectiveContext["_active_interaction_candidate_count"] = intFromAny(activeInteractionPacket["candidate_count"], 0)
+			assemblyPerspectiveContext[prepareTurnCharacterMemoryContextKey] = characterMemoryReadContext
+			assemblyPerspectiveContext[prepareTurnEntityIdentityAliasesContextKey] = entityIdentityAliases
 			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
 				assemblyPerspectiveContext["_core_objective_memory_max_items_present"] = true
 				assemblyPerspectiveContext["_core_objective_memory_max_items"] = *req.Settings.CoreObjectiveMemoryMaxItems
@@ -741,6 +786,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			pendingThreads,
 			profile,
 			memoryTopK,
+			injectionAssembly.MemoryRecallQuery,
 		)
 	}
 
@@ -768,8 +814,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		sessionState = buildSessionState(sid, degraded, activeStates, storylines, charStates, charEvents, chatLogs, worldRules, pendingThreads, sessionStateReads)
 		narrativeControl = buildNarrativeControl(degraded, storylines, worldRules, pendingThreads, charStates)
 		continuityPack = buildContinuityPack(sid, queryPreview, degraded, resumePack, episodeSums, chatLogs, activeStates, canonicalLayers, supportRecallLimit)
-		personaRecollection = buildPersonaRecollectionSurface(sid, personaEntries, injectionAssembly.PersonaText, supportRecallLimit)
-		characterPrivateRecollection = buildCharacterPrivateRecollectionSurface(sid, characterPrivateMemories, injectionAssembly.CharacterPrivateText, supportRecallLimit)
+		personaRecollection = buildPersonaRecollectionSurface(sid, personaEntries, injectionAssembly.PersonaText)
+		characterPrivateRecollection = buildCharacterPrivateRecollectionSurface(sid, characterPrivateMemories, injectionAssembly.CharacterPrivateText)
 	}
 
 	// Historical migration/debug surfaces are excluded from the production
@@ -817,13 +863,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	inputAnchorGovernor := buildInputAnchorGovernor(rawUserInput, inputContextText, inputContextTruncated, maxInputContextChars, chatLogs, resumePack, activeStates, canonicalLayers, episodeSums, pendingThreads, storylines)
 	boundedMemoryDeliveryLineage := boundedPrepareTurnMemoryDeliveryLineage(sid, injectionAssembly.MemoryDeliveryLineage, chatLogs)
-	responseExecutionContract := buildResponseExecutionContractWithMemoryLineage(sid, inputAnchorGovernor, selectedStorylines, pendingThreads, activeStates, canonicalLayers, worldRules, injectionAssembly, languageContext, currentInputDecision, hostContextReferenceEvidence)
+	responseExecutionContract := buildResponseExecutionContractWithMemoryLineage(sid, inputAnchorGovernor, selectedStorylines, pendingThreads, activeStates, canonicalLayers, worldRules, injectionAssembly, languageContext, currentInputDecision, hostContextReferenceEvidence, inputContextText)
 	guideEligibility := buildPrepareTurnGuideEligibility(guideMode, guideStrength, injectionEnabled, narrativeSupportMaxChars, responseExecutionContract)
 	responseExecutionContract["guide_eligibility"] = guideEligibility
 	supervisorInputPack["guide_eligibility"] = guideEligibility
 	guideEligible := extractionStringFromAny(guideEligibility["status"]) == "eligible"
 	supervisorInputPack["response_execution_contract"] = responseExecutionContract
-	supervisorInputPack["support_packet"] = buildSupervisorSupportPacket(sid, rawUserInput, responseExecutionContract, injectionAssembly.MemoryDeliveryLineage)
+	supervisorInputPack["support_packet"] = buildSupervisorSupportPacket(sid, rawUserInput, responseExecutionContract, injectionAssembly.MemoryDeliveryLineage, inputContextText, injectionAssembly.CharacterMemorySupport)
 	guidanceItems := []prepareTurnGuidanceItem{}
 	supervisorCallStatus := "disabled"
 	supervisorCallReason := ""
@@ -909,12 +955,31 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 					supervisorCallStatus = "unsupported_rejected"
 					supervisorCallReason = "supervisor_unsupported_proposal_rejected"
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "skipped", "supervisor_unsupported_proposal_rejected")
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", "supervisor_unsupported_proposal_rejected")
+					}
+				case "ready":
+					publisherPlan := mapFromAny(proposal["publisher_plan"])
+					if extractionStringFromAny(publisherPlan["contract_version"]) == "publisher_plan.v1" &&
+						extractionStringFromAny(publisherPlan["status"]) == "ready" {
+						supervisorCallStatus = "applied"
+						if s.TurnWorkflows != nil && workflowRequestID != "" {
+							s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "")
+						}
+					} else {
+						supervisorCallStatus = "proposal_0"
+						supervisorCallReason = extractionFirstNonEmpty(
+							extractionStringFromAny(publisherPlan["reason_code"]),
+							"publisher_plan_zero",
+						)
+						if s.TurnWorkflows != nil && workflowRequestID != "" {
+							s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", supervisorCallReason)
+						}
 					}
 				default:
-					supervisorCallStatus = "applied"
+					supervisorCallStatus = "proposal_0"
+					supervisorCallReason = "publisher_proposal_not_ready"
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "")
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", supervisorCallReason)
 					}
 				}
 				guidanceItems = append(guidanceItems, supervisorSceneProposalGuidanceItems(result)...)
@@ -1107,6 +1172,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",
+			"backend_instance_id":             s.backendInstanceID(),
 			"source":                          "shadow",
 			"response_projection":             prepareTurnProductionProjectionV1,
 			"chat_session_id":                 sid,
@@ -1143,6 +1209,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                          "ok",
+		"backend_instance_id":             s.backendInstanceID(),
 		"source":                          "shadow",
 		"chat_session_id":                 sid,
 		"generated_at":                    time.Now().UTC().Format(time.RFC3339),

@@ -100,7 +100,7 @@ func (s *Server) collectNarrativeEvidence(ctx context.Context, chatSessionID str
 	} else {
 		ev.ResumePack = v
 	}
-	if v, err := s.Store.ListAuditLogs(ctx, chatSessionID, "", 1000); err != nil {
+	if v, err := s.Store.ListAuditLogs(ctx, chatSessionID, "", 0); err != nil {
 		mark(err)
 	} else {
 		ev.AuditLogs = v

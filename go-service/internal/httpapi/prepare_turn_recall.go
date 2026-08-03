@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,10 +112,7 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 		shadow["note"] = "R2 bounded recall read drill: ChromaDB vector search remains support-only until endpoint readiness is configured"
 	}
 	limit = prepareTurnRecallLimit(limit)
-	candidateLimit := limit * 3
-	if candidateLimit < limit {
-		candidateLimit = limit
-	}
+	candidateLimit := limit
 	filter := strings.TrimSpace(clientMetaString(req.ClientMeta, "chroma_filter"))
 	if filter == "" {
 		filter = fmt.Sprintf("chat_session_id == %q", req.ChatSessionID)
@@ -124,7 +122,7 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	shadow["query_vector_dim"] = len(queryVector)
 	shadow["limit"] = limit
 	shadow["candidate_limit"] = candidateLimit
-	shadow["candidate_policy"] = "bounded_oversampling_for_post_vector_diversity"
+	shadow["candidate_policy"] = "ui_configured_vector_recall_limit"
 	shadow["filter"] = filter
 	results, err := s.Vector.Search(ctx, req.ChatSessionID, queryVector, candidateLimit, filter)
 	switch {
@@ -402,112 +400,6 @@ func prepareTurnPerspectiveContextFromRequest(req dto.PrepareTurnRequest) map[st
 	return nil
 }
 
-func inferPrepareTurnPerspectiveName(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if pov := inferPrepareTurnPerspectiveNameFromLine(line); pov != "" {
-			return pov
-		}
-	}
-	return ""
-}
-
-func inferPrepareTurnPerspectiveNameFromLine(line string) string {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return ""
-	}
-	lower := strings.ToLower(line)
-	for _, marker := range []string{"pov", "point of view", "viewpoint"} {
-		if idx := strings.Index(lower, marker); idx >= 0 {
-			after := strings.TrimSpace(line[idx+len(marker):])
-			if after != "" {
-				if candidate := cleanPrepareTurnPerspectiveCandidate(after); candidate != "" {
-					return candidate
-				}
-			}
-			before := strings.TrimSpace(line[:idx])
-			if candidate := cleanPrepareTurnPerspectiveCandidate(before); candidate != "" {
-				return candidate
-			}
-		}
-	}
-	for _, marker := range []string{"시점", "관점", "입장", "視点", "の視点"} {
-		if idx := strings.Index(line, marker); idx >= 0 {
-			before := strings.TrimSpace(line[:idx])
-			if candidate := cleanPrepareTurnPerspectiveCandidate(before); candidate != "" {
-				return candidate
-			}
-		}
-	}
-	return ""
-}
-
-func cleanPrepareTurnPerspectiveCandidate(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.Trim(value, " \t\r\n:：-–—[](){}<>「」『』\"'`")
-	replacers := []string{
-		"hidden spoiler", "", "spoiler", "", "pov", "", "point of view", "", "viewpoint", "",
-		"current", "", "현재", "", "히든 스포일러", "", "스포일러", "", "의", "", "の", "",
-	}
-	lower := strings.ToLower(value)
-	for i := 0; i+1 < len(replacers); i += 2 {
-		prefix := replacers[i]
-		replacement := replacers[i+1]
-		if strings.HasPrefix(lower, prefix) {
-			value = strings.TrimSpace(replacement + strings.TrimSpace(value[len(prefix):]))
-			lower = strings.ToLower(value)
-		}
-	}
-	cutset := []string{"\n", "\r", ".", "。", ",", "，", ";", "；", "|", "/", "\\", " - ", " -- ", " — ", " – "}
-	for _, sep := range cutset {
-		if idx := strings.Index(value, sep); idx >= 0 {
-			value = strings.TrimSpace(value[:idx])
-		}
-	}
-	value = strings.Trim(value, " \t\r\n:：-–—[](){}<>「」『』\"'`")
-	for _, suffix := range []string{"의", "の"} {
-		if strings.HasSuffix(value, suffix) {
-			value = strings.TrimSpace(strings.TrimSuffix(value, suffix))
-		}
-	}
-	if !validPrepareTurnPerspectiveCandidate(value) {
-		return ""
-	}
-	return value
-}
-
-func validPrepareTurnPerspectiveCandidate(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	runeCount := len([]rune(value))
-	if runeCount < 2 || runeCount > 60 {
-		return false
-	}
-	lower := strings.ToLower(value)
-	for _, blocked := range []string{
-		"freely", "take a moment", "instruction", "instructions", "system", "developer", "assistant", "user",
-		"prompt", "rules", "response", "format", "review", "reasoning", "draft",
-	} {
-		if strings.Contains(lower, blocked) {
-			return false
-		}
-	}
-	if len(strings.Fields(value)) > 5 {
-		return false
-	}
-	return normalizeCharacterKey(value) != ""
-}
-
 func normalizePrepareTurnPerspectiveContext(raw map[string]any) map[string]any {
 	if len(raw) == 0 {
 		return nil
@@ -532,17 +424,17 @@ func normalizePrepareTurnPerspectiveContext(raw map[string]any) map[string]any {
 		"source":           extractionFirstNonEmpty(extractionStringFromAny(raw["source"]), "client_meta"),
 	}
 	if pov != "" {
-		out["current_pov"] = truncateRunes(pov, 120)
+		out["current_pov"] = pov
 		out["current_pov_key"] = normalizeCharacterKey(pov)
 	}
 	if entityID != "" {
-		out["current_pov_entity_id"] = truncateRunes(entityID, 200)
+		out["current_pov_entity_id"] = entityID
 	}
 	if identityState := strings.TrimSpace(extractionStringFromAny(raw["identity_state"])); identityState != "" {
-		out["identity_state"] = truncateRunes(identityState, 40)
+		out["identity_state"] = identityState
 	}
 	if mode := strings.TrimSpace(extractionStringFromAny(raw["mode"])); mode != "" {
-		out["mode"] = truncateRunes(mode, 80)
+		out["mode"] = mode
 	}
 	return out
 }
@@ -567,13 +459,6 @@ func prepareTurnRecallLimit(topK int) int {
 		return topK
 	}
 	return 1
-}
-
-func prepareTurnSupportCandidateLimit(maxChars int) int {
-	if maxChars <= 0 {
-		return 128
-	}
-	return minInt(512, maxInt(64, maxChars/64))
 }
 
 func prepareTurnTextBudget(maxChars int) int {
@@ -622,7 +507,7 @@ func prepareTurnMemoryRecallEvidence(query string, item store.Memory) prepareTur
 			evidence.StructuredAnchors = append(evidence.StructuredAnchors, anchor)
 		}
 	}
-	queryTerms := prepareTurnRecallTerms(query)
+	queryTerms := prepareTurnDistinctiveRecallTerms(query, evidence.StructuredAnchors...)
 	memoryTerms := map[string]bool{}
 	for _, term := range prepareTurnRecallTerms(prepareTurnMemoryRelevanceText(item)) {
 		memoryTerms[term] = true
@@ -632,25 +517,12 @@ func prepareTurnMemoryRecallEvidence(query string, item store.Memory) prepareTur
 			evidence.OverlapTerms = append(evidence.OverlapTerms, term)
 		}
 	}
-	// A character name by itself is not enough to spend the event-memory lane:
-	// long sessions commonly attach the protagonist to almost every row. Keep
-	// structured anchors for ranking and diagnostics, but require at least one
-	// additional scene term before a non-vector event refill can enter. Protected
-	// continuity is the exception: a current protected owner/subject must retain
-	// its guard even when the secret text itself cannot overlap the public scene.
 	parsed := parseJSONMap(item.SummaryJSON)
 	protected := len(sliceFromAny(parsed["protected_secrets"])) > 0 ||
 		len(sliceFromAny(parsed["character_identity_accuracy"])) > 0
-	evidence.Eligible = len(evidence.OverlapTerms) >= prepareTurnRecallRequiredOverlap(query) ||
+	evidence.Eligible = len(evidence.OverlapTerms) >= prepareTurnRecallRequiredOverlap(queryTerms, prepareTurnMemoryRelevanceText(item)) ||
 		(protected && len(evidence.StructuredAnchors) > 0)
 	return evidence
-}
-
-func prepareTurnRecallRequiredOverlap(query string) int {
-	if len(prepareTurnRecallTerms(query)) > 24 {
-		return 3
-	}
-	return 2
 }
 
 func prepareTurnSupportRecallEligible(query, text string, anchors ...string) bool {
@@ -659,26 +531,147 @@ func prepareTurnSupportRecallEligible(query, text string, anchors ...string) boo
 	if query == "" || text == "" {
 		return query == "" && text != ""
 	}
-	for _, anchor := range anchors {
-		if prepareTurnRecallContainsAnchor(query, anchor) {
+	if prepareTurnSharedRecallPhrase(query, text) {
+		return true
+	}
+	queryTerms := prepareTurnDistinctiveRecallTerms(query, anchors...)
+	overlap := prepareTurnDistinctiveRecallOverlapCount(queryTerms, text)
+	return overlap >= prepareTurnRecallRequiredOverlap(queryTerms, text)
+}
+
+// An exact adjacent term pair is request-local evidence without requiring a
+// language-specific stop-word list. It preserves concise phrases such as a
+// location or task name that can be lost by single-token frequency filtering.
+func prepareTurnSharedRecallPhrase(query, text string) bool {
+	sequenceTerms := func(value string) []string {
+		out := []string{}
+		for _, term := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+			return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
+		}) {
+			if term = strings.TrimSpace(term); term != "" {
+				out = append(out, term)
+			}
+		}
+		return out
+	}
+	queryTerms := sequenceTerms(query)
+	textTerms := sequenceTerms(text)
+	if len(queryTerms) < 2 || len(textTerms) < 2 {
+		return false
+	}
+	queryDistinctive := map[string]bool{}
+	for _, term := range prepareTurnDistinctiveRecallTerms(query) {
+		queryDistinctive[term] = true
+	}
+	textDistinctive := map[string]bool{}
+	for _, term := range prepareTurnDistinctiveRecallTerms(text) {
+		textDistinctive[term] = true
+	}
+	pairs := make(map[string]bool, len(queryTerms)-1)
+	for i := 0; i+1 < len(queryTerms); i++ {
+		if queryTerms[i] != queryTerms[i+1] &&
+			(queryDistinctive[queryTerms[i]] || queryDistinctive[queryTerms[i+1]]) {
+			pairs[queryTerms[i]+"\x00"+queryTerms[i+1]] = true
+		}
+	}
+	for i := 0; i+1 < len(textTerms); i++ {
+		if pairs[textTerms[i]+"\x00"+textTerms[i+1]] &&
+			(textDistinctive[textTerms[i]] || textDistinctive[textTerms[i+1]]) {
 			return true
 		}
 	}
+	return false
+}
+
+func prepareTurnDistinctiveRecallOverlapCount(queryTerms []string, text string) int {
 	textTerms := map[string]bool{}
 	for _, term := range prepareTurnRecallTerms(text) {
 		textTerms[term] = true
 	}
 	overlap := 0
-	requiredOverlap := prepareTurnRecallRequiredOverlap(query)
-	for _, term := range prepareTurnRecallTerms(query) {
+	for _, term := range queryTerms {
 		if textTerms[term] {
 			overlap++
-			if overlap >= requiredOverlap {
-				return true
-			}
 		}
 	}
-	return false
+	return overlap
+}
+
+// prepareTurnDistinctiveRecallTerms derives request-local lexical evidence
+// without a language stop-word table. Terms repeated inside the request are
+// treated as low-information glue, and typed entity/scope anchors are removed
+// from the lexical proof so a character name alone cannot reactivate every old
+// memory attached to that character.
+func prepareTurnDistinctiveRecallTerms(text string, anchors ...string) []string {
+	all := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
+	})
+	counts := map[string]int{}
+	lengths := []int{}
+	for _, term := range all {
+		term = strings.TrimSpace(term)
+		if term != "" {
+			counts[term]++
+			lengths = append(lengths, len([]rune(term)))
+		}
+	}
+	sort.Ints(lengths)
+	medianLength := 0
+	minimumLength := 0
+	if len(lengths) > 0 {
+		medianLength = lengths[len(lengths)/2]
+		minimumLength = lengths[0]
+	}
+	excluded := map[string]bool{}
+	for _, anchor := range anchors {
+		for _, term := range prepareTurnRecallTerms(anchor) {
+			excluded[term] = true
+		}
+	}
+	out := []string{}
+	seen := map[string]bool{}
+	for _, term := range all {
+		term = strings.TrimSpace(term)
+		termLength := len([]rune(term))
+		lowInformationRepeat := counts[term] > 1 && termLength < medianLength
+		shortestTier := len(lengths) > 1 && termLength == minimumLength
+		if term == "" || seen[term] || excluded[term] || lowInformationRepeat || shortestTier {
+			continue
+		}
+		seen[term] = true
+		out = append(out, term)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, term := range prepareTurnRecallTerms(text) {
+		if !excluded[term] {
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
+// The lexical proof grows with request complexity instead of using short/long
+// context bands. It is a relevance criterion, not an item-count or turn cap.
+func prepareTurnDynamicOverlapRequirement(distinctiveTermCount int) int {
+	if distinctiveTermCount <= 0 {
+		return 1
+	}
+	return 1 + int(math.Ceil(math.Log10(float64(distinctiveTermCount))))
+}
+
+func prepareTurnRecallRequiredOverlap(queryTerms []string, candidateText string) int {
+	queryRequirement := prepareTurnDynamicOverlapRequirement(len(queryTerms))
+	candidateTerms := prepareTurnDistinctiveRecallTerms(candidateText)
+	if len(candidateTerms) == 0 {
+		return queryRequirement
+	}
+	candidateMajority := (len(candidateTerms) + 1) / 2
+	if candidateMajority < queryRequirement {
+		return candidateMajority
+	}
+	return queryRequirement
 }
 
 func prepareTurnRequestFirstRelevant(rawQuery, fallbackQuery, text string, anchors ...string) bool {
@@ -706,81 +699,6 @@ func prepareTurnRecallOverlapCount(query, text string) int {
 	return overlap
 }
 
-// prepareTurnObservedShortEntityAliases recognizes only a request-local,
-// unambiguous suffix already grounded by stored character names. This covers
-// surname-elided forms such as a two-rune given name without creating a
-// persistent alias or merging entity rows. ASCII names and ambiguous suffixes
-// are deliberately excluded.
-func prepareTurnObservedShortEntityAliases(states []store.CharacterState) map[string][]string {
-	names := make([]string, 0, len(states))
-	for _, state := range states {
-		names = append(names, state.CharacterName)
-	}
-	return prepareTurnObservedShortNameAliases(names)
-}
-
-func prepareTurnObservedShortNameAliases(names []string) map[string][]string {
-	type ownerSet map[string]bool
-	suffixOwners := map[string]ownerSet{}
-	addAlias := func(canonical, alias string) {
-		canonical = normalizePrepareTurnEntityNeedle(canonical)
-		alias = normalizePrepareTurnEntityNeedle(alias)
-		if canonical == "" || alias == "" || alias == canonical {
-			return
-		}
-		if suffixOwners[alias] == nil {
-			suffixOwners[alias] = ownerSet{}
-		}
-		suffixOwners[alias][canonical] = true
-	}
-	isNonASCIIName := func(value string) bool {
-		runes := []rune(value)
-		if len(runes) == 0 {
-			return false
-		}
-		for _, r := range runes {
-			if r <= 127 || !unicode.IsLetter(r) {
-				return false
-			}
-		}
-		return true
-	}
-	for _, rawName := range names {
-		name := strings.TrimSpace(rawName)
-		runes := []rune(name)
-		if len(runes) < 3 {
-			continue
-		}
-		if isNonASCIIName(name) {
-			addAlias(name, string(runes[len(runes)-2:]))
-		}
-
-		// Critic-era rows can contain a qualified display name such as
-		// "minister's daughter Min Seohyeon". Accept the final Korean name
-		// component only when it is a unique 3-4 letter component across the
-		// observed owner set. This does not create or persist an alias.
-		parts := strings.FieldsFunc(name, func(r rune) bool {
-			return !unicode.IsLetter(r)
-		})
-		if len(parts) > 1 {
-			tailRunes := []rune(parts[len(parts)-1])
-			if len(tailRunes) >= 3 && len(tailRunes) <= 4 && isNonASCIIName(parts[len(parts)-1]) {
-				addAlias(name, parts[len(parts)-1])
-			}
-		}
-	}
-	out := map[string][]string{}
-	for alias, owners := range suffixOwners {
-		if len(owners) != 1 {
-			continue
-		}
-		for canonical := range owners {
-			out[canonical] = append(out[canonical], alias)
-		}
-	}
-	return out
-}
-
 func prepareTurnDirectEntityMentionRank(rawUserInput, characterName string, aliases map[string][]string) int {
 	if prepareTurnRecallContainsAnchor(rawUserInput, characterName) {
 		return 3
@@ -804,15 +722,21 @@ func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, str
 	if subjectMatched && objectMatched {
 		return true, "both_endpoints_current"
 	}
-	line := strings.TrimSpace(triple.Subject + " " + triple.Predicate + " " + triple.Object)
-	if prepareTurnSupportRecallEligible(query, line) {
-		if subjectMatched || objectMatched {
+	if subjectMatched || objectMatched {
+		complementaryEvidence := strings.TrimSpace(triple.Predicate)
+		if subjectMatched {
+			complementaryEvidence = strings.TrimSpace(complementaryEvidence + " " + triple.Object)
+		} else {
+			complementaryEvidence = strings.TrimSpace(triple.Subject + " " + complementaryEvidence)
+		}
+		if prepareTurnSupportRecallEligible(query, complementaryEvidence) {
 			return true, "endpoint_plus_relation_evidence"
 		}
-		return true, "relation_event_evidence"
-	}
-	if subjectMatched || objectMatched {
 		return false, "single_endpoint_only"
+	}
+	line := strings.TrimSpace(triple.Subject + " " + triple.Predicate + " " + triple.Object)
+	if prepareTurnSupportRecallEligible(query, line) {
+		return true, "relation_event_evidence"
 	}
 	return false, "unrelated"
 }
@@ -824,7 +748,7 @@ func prepareTurnRecallTerms(text string) []string {
 		return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
 	}) {
 		term = strings.TrimSpace(term)
-		if len([]rune(term)) < 2 || seen[term] || hybridKeywordStopwords[term] || prepareTurnRecallStopword(term) {
+		if term == "" || seen[term] {
 			continue
 		}
 		seen[term] = true
@@ -833,18 +757,9 @@ func prepareTurnRecallTerms(text string) []string {
 	return out
 }
 
-func prepareTurnRecallStopword(term string) bool {
-	switch term {
-	case "그리고", "그러나", "하지만", "또한", "그저", "다시", "바로", "이미", "아직", "매우", "정말", "생각", "모습", "상태", "내용", "이후", "이전", "현재", "했다", "하였다", "있다", "있었다", "없다", "없었다", "되는", "되어", "위한", "대한":
-		return true
-	default:
-		return false
-	}
-}
-
 func prepareTurnRecallContainsAnchor(text, anchor string) bool {
 	anchor = strings.TrimSpace(anchor)
-	if len([]rune(anchor)) < 2 {
+	if anchor == "" {
 		return false
 	}
 	return strings.Contains(normalizePrepareTurnEntityNeedle(text), normalizePrepareTurnEntityNeedle(anchor))
@@ -855,7 +770,7 @@ func prepareTurnMemoryStructuredAnchors(item store.Memory) []string {
 	out := []string{}
 	add := func(value string) {
 		value = strings.TrimSpace(value)
-		if value == "" || len([]rune(value)) < 2 || stringSliceContains(out, value) {
+		if value == "" || stringSliceContains(out, value) {
 			return
 		}
 		out = append(out, value)
@@ -868,6 +783,14 @@ func prepareTurnMemoryStructuredAnchors(item store.Memory) []string {
 	for _, entry := range memorySearchMapItems(parsed["entities"]) {
 		for _, key := range []string{"name", "canonical_name", "display_name", "location"} {
 			add(stringFromMap(entry, key))
+		}
+	}
+	entityBuckets := mapFromAny(parsed["entities"])
+	for _, bucket := range []string{"characters", "people", "locations", "places", "items", "objects", "groups", "factions"} {
+		for _, entry := range memorySearchMapItems(entityBuckets[bucket]) {
+			for _, key := range []string{"name", "canonical_name", "display_name", "label", "title", "location"} {
+				add(stringFromMap(entry, key))
+			}
 		}
 	}
 	for _, entry := range memorySearchMapItems(parsed["character_states"]) {
@@ -972,10 +895,10 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		}
 		clean = append(clean, item)
 	}
-	candidateLimit := minInt(
-		len(clean),
-		minInt(512, maxInt(128, vectorLimit+len(directlyReferencedEntities)*2)),
-	)
+	// Read every already-materialized MariaDB candidate. Relevance and the final
+	// Go-owned character budget decide delivery; an arbitrary row ceiling must
+	// not make a long session forget older eligible memories.
+	candidateLimit := len(clean)
 	query = strings.TrimSpace(query)
 	queryPresent := query != ""
 	maxTurn := 0
@@ -1090,11 +1013,8 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		}
 		return true, true
 	}
-	vectorCandidateLimit := vectorLimit * 3
-	if vectorCandidateLimit > len(clean) {
-		vectorCandidateLimit = len(clean)
-	}
-	if vectorCandidateLimit < vectorLimit {
+	vectorCandidateLimit := len(prepareTurnVectorSearchResultMaps(vectorShadow["search_results"]))
+	if vectorCandidateLimit <= 0 {
 		vectorCandidateLimit = vectorLimit
 	}
 	vectorHydration := prepareTurnHydrateVectorMemoryHits(clean, vectorShadow, vectorCandidateLimit)
@@ -1155,7 +1075,7 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		out.Trace["protected_candidates_consume_actual_memory_target"] = false
 		out.Trace["actual_memory_refill_policy"] = "vector_actual_then_evidence_linked_mariadb; no_target_fill; unused_budget_remains_empty"
 		out.Trace["vector_candidate_limit"] = vectorCandidateLimit
-		out.Trace["vector_candidate_policy"] = "bounded_oversampling_then_mariadb_canonical_refill"
+		out.Trace["vector_candidate_policy"] = "materialize_returned_vector_hits_then_mariadb_canonical_refill"
 		out.Trace["actual_memory_refill_gap_stage"] = "selector_candidate_coverage_before_render_and_final_budget"
 		out.Trace["candidate_safety_limit_reached"] = candidateLimitRejected > 0
 		out.Trace["candidate_safety_truncated"] = candidateLimitRejected > 0

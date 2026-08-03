@@ -1,6 +1,7 @@
-# Archive Center 3.5 Windows Auto Install Package
+# Archive Center Windows Auto Install Package
 
-This is the lightweight Windows auto-install package for Archive Center 3.5.
+This is the lightweight Windows auto-install package for the version recorded in
+`PACKAGE_FILE_MANIFEST.json`.
 
 It includes:
 
@@ -22,7 +23,7 @@ The standard runtime profile is `full_local` with vector mode `bundled`, so the
 normal first start prepares and starts both MariaDB and local ChromaDB. The
 first start requires an internet connection and can take several minutes.
 No timeout value must be added to `.env.full.local`; the Windows launcher uses
-the same blocking install and readiness flow as the 3.5 managed launcher.
+the validated blocking install and readiness flow recorded by this package.
 The local full package requires ChromaDB. It installs and starts the pinned
 managed ChromaDB runtime by default, or it can verify a configured external
 ChromaDB endpoint. Startup stops if the endpoint and its upsert/readback/delete

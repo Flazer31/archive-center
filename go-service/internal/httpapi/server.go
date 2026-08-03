@@ -5,6 +5,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 type Server struct {
 	Cfg                      config.Config
 	Started                  time.Time
+	BackendInstanceID        string
 	Store                    store.Store
 	StoreOpenError           error
 	Vector                   vector.VectorStore
@@ -67,6 +70,7 @@ func (s *Server) ValidateRuntimeDependencies(ctx context.Context) error {
 
 // NewServer creates a Server with the given configuration.
 func NewServer(cfg config.Config) *Server {
+	started := time.Now().UTC()
 	st, storeErr := newStoreForConfig(cfg)
 	var vs vector.VectorStore
 	var vectorErr error
@@ -90,7 +94,8 @@ func NewServer(cfg config.Config) *Server {
 	referenceVS = vector.NewMutationFencedStore(referenceVS)
 	return &Server{
 		Cfg:                      cfg,
-		Started:                  time.Now().UTC(),
+		Started:                  started,
+		BackendInstanceID:        newBackendInstanceID(started),
 		Store:                    st,
 		StoreOpenError:           storeErr,
 		Vector:                   vs,
@@ -104,6 +109,21 @@ func NewServer(cfg config.Config) *Server {
 		SourceAcceptances:        newCompleteTurnSourceAcceptanceLedger(),
 		RollbackDecisions:        newRollbackDecisionLedger(),
 	}
+}
+
+func newBackendInstanceID(started time.Time) string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	return fmt.Sprintf("started-%d", started.UnixNano())
+}
+
+func (s *Server) backendInstanceID() string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.BackendInstanceID)
 }
 
 // newStoreForConfig picks the store implementation based on the config store mode.

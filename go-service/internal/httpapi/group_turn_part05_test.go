@@ -67,8 +67,8 @@ func TestPrepareTurnCharacterPrivateRecollectionLane(t *testing.T) {
 	if strings.Contains(injectionText, "support-only private recollection") {
 		t.Fatalf("NPC private recollection leaked into persona lane: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "previous loop") {
-		t.Fatalf("NPC private recollection leaked explicit loop wording: %q", injectionText)
+	if !strings.Contains(injectionText, "Chloe remembers from a previous loop that Siwoo avoided the broken bridge.") {
+		t.Fatalf("NPC private recollection omitted exact protected memory: %q", injectionText)
 	}
 	if !strings.Contains(injectionText, "Protected NPC-private hint") {
 		t.Fatalf("NPC private recollection missing protected hint wording: %q", injectionText)
@@ -724,8 +724,8 @@ func TestPrepareTurnAttachedNPCPrivateCapsuleUsesCharacterPrivateLane(t *testing
 	if strings.Contains(injectionText, "support-only private recollection") {
 		t.Fatalf("attached NPC capsule leaked into persona lane: %q", injectionText)
 	}
-	if strings.Contains(injectionText, "previous loop") {
-		t.Fatalf("attached NPC capsule leaked explicit loop wording: %q", injectionText)
+	if !strings.Contains(injectionText, "Chloe remembers from a previous loop that Siwoo should avoid the broken bridge.") {
+		t.Fatalf("attached NPC capsule omitted exact protected memory: %q", injectionText)
 	}
 	surface, ok := resp["character_private_recollection"].(map[string]any)
 	if !ok {
@@ -1574,11 +1574,11 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 	if got := intFromAny(lineage["top_k_memory_target"], 0); got != 5 {
 		t.Fatalf("top_k target = %d, want 5", got)
 	}
-	if got := intFromAny(lineage["final_delivered_count"], 0); got != 3 {
-		t.Fatalf("final delivered = %d, want 3 within the configured character budgets; lineage=%#v", got, lineage)
+	if got := intFromAny(lineage["final_delivered_count"], 0); got != 5 {
+		t.Fatalf("final delivered = %d, want all five distinct current-relevant records within the global envelope; lineage=%#v", got, lineage)
 	}
-	if got := intFromAny(lineage["final_protected_guard_count"], 0); got != 2 {
-		t.Fatalf("protected guard count = %d, want 2 within the protected lane character budget; lineage=%#v", got, lineage)
+	if got := intFromAny(lineage["final_protected_guard_count"], 0); got != 4 {
+		t.Fatalf("protected guard count = %d, want all four distinct current-relevant guards without an automatic class quota; lineage=%#v", got, lineage)
 	}
 	if got := intFromAny(lineage["final_actual_memory_count"], 0); got != 1 {
 		t.Fatalf("actual memory count = %d, want 1; lineage=%#v", got, lineage)
@@ -1612,14 +1612,9 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 			}
 		}
 	}
-	for _, id := range []int{11, 2, 31} {
+	for _, id := range []int{11, 2, 17, 12, 31} {
 		if !deliveredRows[id] {
 			t.Fatalf("source row %d missing from final delivery lineage: %#v", id, lineage["items"])
-		}
-	}
-	for _, id := range []int{17, 12} {
-		if deliveredRows[id] {
-			t.Fatalf("source row %d bypassed the protected-lane character budget: %#v", id, lineage["items"])
 		}
 	}
 	if deliveredRows[9] {

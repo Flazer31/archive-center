@@ -136,13 +136,7 @@ func decodeNarrativeSearchRequest(w http.ResponseWriter, r *http.Request) (narra
 
 func normalizedEpisodeInterval(interval int) int {
 	if interval <= 0 {
-		interval = 5
-	}
-	if interval < 5 {
 		return 5
-	}
-	if interval > 60 {
-		return 60
 	}
 	return interval
 }
@@ -401,39 +395,103 @@ func isEpisodeMetaEntityToken(token string) bool {
 }
 
 func normalizedChapterInterval(interval int) int {
-	if interval <= 0 {
-		interval = 60
-	}
-	if interval < 10 {
-		return 10
-	}
-	if interval > 200 {
-		return 200
+	if interval < 0 {
+		return 0
 	}
 	return interval
 }
 
-func chapterIntervalCheck(turnIndex, interval int) map[string]any {
+type hierarchyChildRange struct {
+	FromTurn int
+	ToTurn   int
+}
+
+func hierarchyChildIntervalCheck(children []hierarchyChildRange, turnIndex, interval int, childKind string) map[string]any {
 	info := map[string]any{
-		"checked":   true,
-		"triggered": false,
-		"range":     nil,
-		"reason":    "",
+		"checked":         true,
+		"triggered":       false,
+		"range":           nil,
+		"reason":          "",
+		"child_kind":      childKind,
+		"child_count":     0,
+		"interval_count":  interval,
+		"open_tail_count": 0,
 	}
-	if turnIndex < interval || turnIndex%interval != 0 {
-		info["reason"] = "not_interval_boundary"
+	if interval <= 0 {
+		info["reason"] = childKind + "_interval_not_configured"
 		return info
 	}
-	fromTurn := turnIndex - interval + 1
+	closed := make([]hierarchyChildRange, 0, len(children))
+	seen := map[string]bool{}
+	for _, child := range children {
+		if child.FromTurn <= 0 || child.ToTurn < child.FromTurn || (turnIndex > 0 && child.ToTurn > turnIndex) {
+			continue
+		}
+		key := fmt.Sprintf("%d:%d", child.FromTurn, child.ToTurn)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		closed = append(closed, child)
+	}
+	sort.SliceStable(closed, func(i, j int) bool {
+		if closed[i].FromTurn == closed[j].FromTurn {
+			return closed[i].ToTurn < closed[j].ToTurn
+		}
+		return closed[i].FromTurn < closed[j].FromTurn
+	})
+	info["child_count"] = len(closed)
+	if len(closed) < interval {
+		info["open_tail_count"] = len(closed)
+		info["reason"] = "open_tail_" + childKind + "_count"
+		return info
+	}
+	openTail := len(closed) % interval
+	info["open_tail_count"] = openTail
+	if openTail != 0 {
+		info["reason"] = "open_tail_" + childKind + "_count"
+		return info
+	}
+	group := closed[len(closed)-interval:]
 	info["triggered"] = true
-	info["range"] = []int{fromTurn, turnIndex}
-	info["reason"] = "interval_boundary"
+	info["range"] = []int{group[0].FromTurn, group[len(group)-1].ToTurn}
+	info["reason"] = "closed_" + childKind + "_interval_boundary"
 	return info
 }
 
-func turnSpanRecommended(turnSpan any) bool {
-	span, ok := turnSpan.(int)
-	return ok && span >= 40 && span <= 80
+func hierarchyChildCountThrough(children []hierarchyChildRange, toTurn int) int {
+	seen := map[string]bool{}
+	count := 0
+	for _, child := range children {
+		if child.FromTurn <= 0 || child.ToTurn < child.FromTurn || (toTurn > 0 && child.ToTurn > toTurn) {
+			continue
+		}
+		key := fmt.Sprintf("%d:%d", child.FromTurn, child.ToTurn)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		count++
+	}
+	return count
+}
+
+func hierarchyIndexFromChildren(children []hierarchyChildRange, toTurn, interval, selectedCount int) int {
+	if interval <= 0 {
+		interval = selectedCount
+	}
+	if interval <= 0 {
+		return 1
+	}
+	count := hierarchyChildCountThrough(children, toTurn)
+	idx := count / interval
+	if count%interval != 0 {
+		idx++
+	}
+	if idx < 1 {
+		return 1
+	}
+	return idx
 }
 
 const (
@@ -581,9 +639,6 @@ func truncateString(value string, maxLen int) string {
 }
 
 func filterEpisodes(episodes []store.EpisodeSummary, query string, fromTurn, toTurn, limit int) []store.EpisodeSummary {
-	if limit <= 0 {
-		limit = 20
-	}
 	query = strings.ToLower(strings.TrimSpace(query))
 	results := make([]store.EpisodeSummary, 0, len(episodes))
 	for _, ep := range episodes {
@@ -597,10 +652,16 @@ func filterEpisodes(episodes []store.EpisodeSummary, query string, fromTurn, toT
 			continue
 		}
 		results = append(results, ep)
-		if len(results) >= limit {
+		if limit > 0 && len(results) >= limit {
 			break
 		}
 	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].FromTurn == results[j].FromTurn {
+			return results[i].ToTurn < results[j].ToTurn
+		}
+		return results[i].FromTurn < results[j].FromTurn
+	})
 	return results
 }
 
@@ -850,25 +911,4 @@ func denseTextHasAny(text string, needles []string) bool {
 		}
 	}
 	return false
-}
-
-func chapterIndexForRange(toTurn, interval int) int {
-	if interval <= 0 {
-		interval = 60
-	}
-	if toTurn <= 0 {
-		return 1
-	}
-	idx := toTurn / interval
-	if toTurn%interval != 0 {
-		idx++
-	}
-	if idx <= 0 {
-		return 1
-	}
-	return idx
-}
-
-func hierarchyIndexForRange(toTurn, interval int) int {
-	return chapterIndexForRange(toTurn, interval)
 }

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -33,7 +34,7 @@ func TestPrepareTurnCurrentCharacterRanksBeforeCharacterCap(t *testing.T) {
 	if got := intFromAny(assembly.Counts["character_state_candidate_capped"], 0); got != 0 {
 		t.Fatalf("character_state_candidate_capped=%d, want 0 under independent candidate safety bound: %#v", got, assembly.Counts)
 	}
-	if assembly.Counts["character_state_relevance_before_cap"] != true || assembly.Counts["character_state_unique_short_alias_priority"] != true {
+	if assembly.Counts["character_state_relevance_before_cap"] != true || assembly.Counts["character_state_reviewed_identity_alias_priority"] != true {
 		t.Fatalf("missing relevance-order trace: %#v", assembly.Counts)
 	}
 }
@@ -58,55 +59,76 @@ func TestPrepareTurnUnobservedSceneDoesNotPromoteDirectRecollectionsToObjectiveS
 	}
 }
 
-func TestPrepareTurnShortCharacterAliasMustBeUnique(t *testing.T) {
-	states := []store.CharacterState{
-		{CharacterName: "김슬아"},
-		{CharacterName: "윤슬아"},
-	}
-	aliases := prepareTurnObservedShortEntityAliases(states)
-	if len(aliases) != 0 {
-		t.Fatalf("ambiguous short alias was accepted: %#v", aliases)
-	}
-	for _, state := range states {
-		if rank := prepareTurnDirectEntityMentionRank("슬아가 찾아왔다.", state.CharacterName, aliases); rank != 0 {
-			t.Fatalf("ambiguous alias ranked %q as current: rank=%d", state.CharacterName, rank)
+func TestPrepareTurnUnreviewedShortSuffixIsNotAnAlias(t *testing.T) {
+	for _, name := range []string{"김슬아", "윤슬아"} {
+		if rank := prepareTurnDirectEntityMentionRank("슬아가 찾아왔다.", name, nil); rank != 0 {
+			t.Fatalf("unreviewed suffix ranked %q as current: rank=%d", name, rank)
 		}
 	}
 }
 
-func TestPrepareTurnPrivateRecollectionAcceptsUniqueObservedShortName(t *testing.T) {
+func TestPrepareTurnPrivateRecollectionAcceptsReviewedIdentityAlias(t *testing.T) {
 	memories := []store.ProtagonistEntityMemory{
 		{ID: 1, OwnerEntityKey: "min_seohyeon", OwnerEntityName: "민서현", OwnerEntityRole: "npc", MemoryText: "민서현의 개인 기억"},
 		{ID: 2, OwnerEntityKey: "yun_seula", OwnerEntityName: "윤슬아", OwnerEntityRole: "npc", MemoryText: "윤슬아는 한얼을 걱정하면서도 가까워지고 싶어 한다."},
 	}
-	trace := filterPrepareTurnEntityRecollections(
+	trace := filterPrepareTurnEntityRecollectionsWithAliases(
 		"윤기는 딸 슬아에게 한얼을 지탱해 달라고 말했다.",
 		nil, nil, nil, nil, nil, &memories,
+		map[string]any{"슬아": "윤슬아"},
 	)
 	if len(memories) != 1 || memories[0].OwnerEntityName != "윤슬아" {
-		t.Fatalf("unique short-name owner was not selected: %#v trace=%#v", memories, trace)
+		t.Fatalf("reviewed alias owner was not selected: %#v trace=%#v", memories, trace)
 	}
-	if got := intFromAny(trace["character_private_unique_short_aliases"], 0); got < 1 {
-		t.Fatalf("short alias trace missing: %#v", trace)
-	}
-}
-
-func TestPrepareTurnEntityRecollectionReadsCandidatesBeforeDeliveryCap(t *testing.T) {
-	if got := prepareTurnEntityRecollectionCandidateLimit(5); got != 80 {
-		t.Fatalf("candidate limit=%d, want 80", got)
-	}
-	if got := prepareTurnEntityRecollectionCandidateLimit(30); got != 120 {
-		t.Fatalf("bounded candidate limit=%d, want 120", got)
+	if got := intFromAny(trace["character_private_reviewed_identity_aliases"], 0); got < 1 {
+		t.Fatalf("reviewed identity alias trace missing: %#v", trace)
 	}
 }
 
-func TestPrepareTurnDirectEntityMemoryOwnersUsesUniqueShortName(t *testing.T) {
+func TestPrepareTurnPrivateRecollectionUsesLatestAcceptedAssistantOnlyForEntityScope(t *testing.T) {
+	private := []store.ProtagonistEntityMemory{
+		{ID: 1, OwnerEntityKey: "mira", OwnerEntityName: "Mira", OwnerEntityRole: "npc", MemoryText: "Mira remembers smiling at the silver cup."},
+		{ID: 2, OwnerEntityKey: "rook", OwnerEntityName: "Rook", OwnerEntityRole: "npc", MemoryText: "Rook privately fears the distant storm."},
+	}
+	chatLogs := []store.ChatLog{
+		{TurnIndex: 8, Role: "user", Content: "Continue."},
+		{TurnIndex: 8, Role: "assistant", Content: "Mira smiled at the silver cup and lifted it."},
+	}
+	trace := filterPrepareTurnEntityRecollections(
+		"She accepts it carefully.",
+		nil, nil, nil, nil, nil, &private, chatLogs,
+	)
+	if len(private) != 1 || private[0].OwnerEntityName != "Mira" {
+		t.Fatalf("latest accepted scene participant was not scoped precisely: memories=%#v trace=%#v", private, trace)
+	}
+	if intFromAny(trace["accepted_context_owner_count"], 0) != 1 {
+		t.Fatalf("accepted assistant entity scope was not traced: %#v", trace)
+	}
+}
+
+func TestPrepareTurnEntityRecollectionHasNoPreDeliveryCountCap(t *testing.T) {
+	entries := make([]store.ProtagonistEntityMemory, 0, 81)
+	for i := 0; i < 81; i++ {
+		entries = append(entries, store.ProtagonistEntityMemory{
+			ID:              int64(i + 1),
+			OwnerEntityKey:  "ari",
+			OwnerEntityName: "Ari",
+			MemoryText:      fmt.Sprintf("recollection-%d", i),
+		})
+	}
+	text := buildCharacterPrivateRecollectionText(entries, 100000)
+	if !strings.Contains(text, "recollection-80") {
+		t.Fatalf("eligible recollection after the former read window was lost: %s", text)
+	}
+}
+
+func TestPrepareTurnDirectEntityMemoryOwnersUsesReviewedIdentityAlias(t *testing.T) {
 	owners := []store.ProtagonistEntityMemoryOwner{
 		{OwnerEntityKey: "first", OwnerEntityName: "첫인물"},
 		{OwnerEntityKey: "yunseula", OwnerEntityName: "윤슬아"},
 		{OwnerEntityKey: "third", OwnerEntityName: "셋인물"},
 	}
-	selected := prepareTurnDirectEntityMemoryOwners("아버지는 딸 슬아에게 말을 건넸다.", owners)
+	selected := prepareTurnDirectEntityMemoryOwnersWithAliases("아버지는 딸 슬아에게 말을 건넸다.", owners, map[string]any{"슬아": "윤슬아"})
 	if len(selected) != 1 || selected[0].OwnerEntityKey != "yunseula" {
 		t.Fatalf("selected = %#v, want only yunseula", selected)
 	}
@@ -127,7 +149,8 @@ func TestPrepareTurnQualifiedOwnerTailMatchesOnlyWhenUnique(t *testing.T) {
 		{OwnerEntityKey: "min_seohyeon", OwnerEntityName: "예조판서 민정호의 딸 민서현"},
 		{OwnerEntityKey: "yun_seula", OwnerEntityName: "윤슬아"},
 	}
-	selected := prepareTurnDirectEntityMemoryOwners("윤슬아 앞에 민서현이 나타났다.", owners)
+	identityAliases := map[string]any{"민서현": "예조판서 민정호의 딸 민서현"}
+	selected := prepareTurnDirectEntityMemoryOwnersWithAliases("윤슬아 앞에 민서현이 나타났다.", owners, identityAliases)
 	if len(selected) != 2 {
 		t.Fatalf("qualified owner tail was not matched: %#v", selected)
 	}
@@ -144,7 +167,7 @@ func TestPrepareTurnQualifiedOwnerTailMatchesOnlyWhenUnique(t *testing.T) {
 		{ID: 1, OwnerEntityKey: "min_seohyeon", OwnerEntityName: "예조판서 민정호의 딸 민서현", OwnerEntityRole: "npc", MemoryText: "민서현은 강한얼을 마음에 둔 사내로 여긴다."},
 		{ID: 2, OwnerEntityKey: "yun_seula", OwnerEntityName: "윤슬아", OwnerEntityRole: "npc", MemoryText: "윤슬아는 강한얼에게 호감을 품고 있다."},
 	}
-	filterPrepareTurnEntityRecollections("윤슬아 앞에 민서현이 나타나 강한얼에게 품은 호감과 마음에 둔 감정을 떠올렸다.", nil, nil, nil, nil, nil, &private)
+	filterPrepareTurnEntityRecollectionsWithAliases("윤슬아 앞에 민서현이 나타나 강한얼에게 품은 호감과 마음에 둔 감정을 떠올렸다.", nil, nil, nil, nil, nil, &private, identityAliases)
 	if len(private) != 2 {
 		t.Fatalf("qualified owner memory was dropped after indexed read: %#v", private)
 	}
@@ -371,7 +394,8 @@ func TestPrepareTurnExplicitRecollectionsDoNotBecomeOffSceneObjectiveState(t *te
 		{ID: 3, OwnerEntityKey: "min_seohyeon", OwnerEntityName: "민서현", OwnerEntityRole: "npc", MemoryText: "민서현은 한얼의 신념과 솔직함에 호감을 느꼈다.", Importance10: 8},
 		{ID: 4, OwnerEntityKey: "unrelated", OwnerEntityName: "배상문", OwnerEntityRole: "npc", MemoryText: "배상문은 연삭기 제작을 기억한다.", Importance10: 9},
 	}
-	trace := filterPrepareTurnEntityRecollections(rawInput, nil, activeStates, nil, nil, nil, &privateMemories)
+	identityAliases := map[string]any{"소월": "이소월", "슬아": "윤슬아", "서현": "민서현"}
+	trace := filterPrepareTurnEntityRecollectionsWithAliases(rawInput, nil, activeStates, nil, nil, nil, &privateMemories, identityAliases)
 	if len(privateMemories) != 3 {
 		t.Fatalf("explicit recollection coverage = %d, want 3: memories=%#v trace=%#v", len(privateMemories), privateMemories, trace)
 	}

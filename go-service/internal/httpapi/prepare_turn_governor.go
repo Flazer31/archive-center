@@ -16,38 +16,47 @@ func resolvePrepareTurnMemoryBudget(manualMax int, clientMeta map[string]any) (i
 	if extra < 0 {
 		extra = 0
 	}
-	if extra > 15000 {
-		extra = 15000
-	}
-	tokens := intFromAny(observation["current_chat_tokens"], 0)
+	configured := manualMax + extra
+	currentTokens := intFromAny(observation["current_chat_tokens"], 0)
+	contextWindowTokens := intFromAny(observation["context_window_tokens"], 0)
+	currentChatChars := intFromAny(observation["current_chat_chars"], 0)
 	tokenSource := strings.TrimSpace(extractionStringFromAny(observation["token_source"]))
+	contextWindowSource := strings.TrimSpace(extractionStringFromAny(observation["context_window_source"]))
 
-	automatic := manualMax
-	profile := "manual"
-	if tokens > 0 {
-		switch {
-		case tokens >= 1700000:
-			automatic, profile = maxInt(manualMax, 36000), "extreme_long_2m_plus"
-		case tokens >= 900000:
-			automatic, profile = maxInt(manualMax, 27000), "ultra_long_1m_plus"
-		case tokens >= 300000:
-			automatic, profile = maxInt(manualMax, 18000), "wide_context_500k"
-		default:
-			automatic, profile = maxInt(manualMax, 9000), "mid_context_300k"
+	effective := configured
+	availableContextChars := 0
+	calculation := "configured_ui_budget"
+	if currentTokens > 0 && contextWindowTokens > 0 && currentChatChars > 0 {
+		remainingTokens := contextWindowTokens - currentTokens
+		if remainingTokens <= 0 {
+			effective = 0
+			calculation = "observed_context_exhausted"
+		} else {
+			availableContextChars = int(float64(remainingTokens) * (float64(currentChatChars) / float64(currentTokens)))
+			demandBound := maxInt(configured, currentChatChars)
+			effective = minInt(availableContextChars, demandBound)
+			calculation = "observed_capacity_request_demand"
 		}
 	}
-	automatic = minInt(36000, maxInt(0, automatic))
-	effective := minInt(51000, automatic+extra)
+	if effective < 0 {
+		effective = 0
+	}
 	return effective, map[string]any{
 		"contract_version":          "memory_budget_resolution.v1",
 		"owner":                     "go",
 		"manual_max_chars":          manualMax,
-		"automatic_budget_chars":    automatic,
 		"extra_chars":               extra,
+		"configured_budget_chars":   configured,
 		"effective_budget_chars":    effective,
-		"current_chat_tokens":       tokens,
+		"current_chat_tokens":       currentTokens,
+		"context_window_tokens":     contextWindowTokens,
+		"current_chat_chars":        currentChatChars,
+		"available_context_chars":   availableContextChars,
 		"token_source":              nilIfEmpty(tokenSource),
-		"context_profile":           profile,
+		"context_window_source":     nilIfEmpty(contextWindowSource),
+		"calculation":               calculation,
+		"fixed_thresholds_applied":  false,
+		"fixed_ratio_applied":       false,
 		"calculation_in_javascript": false,
 	}
 }
@@ -171,9 +180,6 @@ func buildInputAnchorGovernor(rawUserInput, inputContextText string, inputContex
 	if strings.TrimSpace(inputContextText) != "" {
 		status = "ready"
 	}
-	lowerInput := strings.ToLower(strings.TrimSpace(rawUserInput))
-	explicitRedirection := strings.Contains(lowerInput, "move on") || strings.Contains(lowerInput, "go left") || strings.Contains(lowerInput, "go right") || strings.Contains(lowerInput, "instead")
-
 	return map[string]any{
 		"version":                 "seq16_5_input_anchor_governor.v1",
 		"status":                  status,
@@ -207,7 +213,8 @@ func buildInputAnchorGovernor(rawUserInput, inputContextText string, inputContex
 			},
 		},
 		"explicit_user_redirection": map[string]any{
-			"detected":                  explicitRedirection,
+			"detected":                  false,
+			"observation_state":         "not_exposed_by_host_contract",
 			"stale_arc_demotes":         true,
 			"current_user_input_wins":   true,
 			"support_lane_may_suggest":  true,

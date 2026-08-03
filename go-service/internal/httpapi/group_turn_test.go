@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -905,14 +906,17 @@ func TestCompleteTurnDualShadowWritesAll(t *testing.T) {
 	if resp["chat_logs_saved"] != float64(2) {
 		t.Errorf("chat_logs_saved = %v, want 2", resp["chat_logs_saved"])
 	}
-	if resp["effective_input_saved"] != float64(1) {
-		t.Errorf("effective_input_saved = %v, want 1", resp["effective_input_saved"])
+	if resp["effective_input_saved"] != float64(0) {
+		t.Errorf("effective_input_saved = %v, want 0 without a verified final-payload observation", resp["effective_input_saved"])
 	}
-	if resp["audit_saved"] != float64(2) {
-		t.Errorf("audit_saved = %v, want 2", resp["audit_saved"])
+	if len(fake.savedEffectiveInputs) != 0 {
+		t.Fatalf("complete-turn fabricated effective input from raw user/assistant text: %+v", fake.savedEffectiveInputs)
 	}
-	if resp["store_write_attempted"] != float64(6) {
-		t.Errorf("store_write_attempted = %v, want 6", resp["store_write_attempted"])
+	if resp["audit_saved"] != float64(1) {
+		t.Errorf("audit_saved = %v, want 1", resp["audit_saved"])
+	}
+	if resp["store_write_attempted"] != float64(4) {
+		t.Errorf("store_write_attempted = %v, want 4", resp["store_write_attempted"])
 	}
 	if resp["memories_saved"] != float64(0) {
 		t.Errorf("memories_saved = %v, want 0 without critic config", resp["memories_saved"])
@@ -981,14 +985,14 @@ func TestCompleteTurnRawSaveSurvivesDerivedAuditFailure(t *testing.T) {
 			t.Fatalf("attempt %d decode: %v", attempt+1, err)
 		}
 		for field, want := range map[string]any{
-			"status":                  "partial",
+			"status":                  "ok",
 			"save_ok":                 true,
 			"raw_committed":           true,
 			"commit_state":            "committed",
 			"derived_retry_required":  false,
-			"reconciliation_required": true,
-			"queue_action":            "retry",
-			"retryable":               true,
+			"reconciliation_required": false,
+			"queue_action":            "",
+			"retryable":               false,
 		} {
 			if got := resp[field]; got != want {
 				t.Fatalf("attempt %d %s=%v, want %v; body=%s", attempt+1, field, got, want, rec.Body.String())
@@ -1060,7 +1064,12 @@ func TestCompleteTurnMariaDBAuthorityWritesAll(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"chat_session_id":"sess-auth","turn_index":5,"user_input":"authority input","assistant_content":"authority reply","improvement_trace":{"score":9}}`
+	verifiedEffectiveInput := "verified assembled input"
+	body := fmt.Sprintf(
+		`{"chat_session_id":"sess-auth","turn_index":5,"user_input":"authority input","assistant_content":"authority reply","improvement_trace":{"score":9},"client_meta":{"effective_input_observation":{"contract_version":"effective_input_observation.v1","status":"verified","capture_stage":"before_request_return","effective_input":%q,"effective_input_hash":%q,"hash_algorithm":"or1c_utf16_djb2.v1","payload_content_match":true}}}`,
+		verifiedEffectiveInput,
+		prepareOR1CHash(verifiedEffectiveInput),
+	)
 	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -1086,6 +1095,9 @@ func TestCompleteTurnMariaDBAuthorityWritesAll(t *testing.T) {
 	}
 	if resp["effective_input_saved"] != float64(1) {
 		t.Errorf("effective_input_saved = %v, want 1", resp["effective_input_saved"])
+	}
+	if len(fake.savedEffectiveInputs) != 1 || fake.savedEffectiveInputs[0].EffectiveInput != verifiedEffectiveInput {
+		t.Fatalf("verified effective input was not persisted exactly: %+v", fake.savedEffectiveInputs)
 	}
 	if resp["memories_saved"] != float64(0) {
 		t.Errorf("memories_saved = %v, want 0 without critic config", resp["memories_saved"])

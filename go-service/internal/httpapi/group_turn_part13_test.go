@@ -855,7 +855,7 @@ func TestSeq123P84MemorySummaryNormalizationMinimumFields(t *testing.T) {
 }
 
 func TestSeq123P85DedupMergeCorrectionPathMarkers(t *testing.T) {
-	t.Run("same_incident_dedup_skips_insert_reinforces_importance", func(t *testing.T) {
+	t.Run("same_wording_on_a_later_turn_remains_a_separate_memory", func(t *testing.T) {
 		fake := &turnRecordingStore{
 			returnMemories: []store.Memory{
 				{ID: 42, ChatSessionID: "sess-p85", TurnIndex: 2, SummaryJSON: `{"turn_summary":"Mina promised Rowan she would return with the brass key."}`, Importance: 0.4},
@@ -868,28 +868,19 @@ func TestSeq123P85DedupMergeCorrectionPathMarkers(t *testing.T) {
 			"importance_score": 8,
 		}
 		result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-p85", 6, extraction, "Mina promised Rowan she would return with the brass key.", completeTurnEmbeddingConfig{}, time.Unix(500, 0))
-		if len(fake.savedMemories) != 0 || result.Memories != 0 {
-			t.Fatalf("expected 0 SaveMemory calls for duplicate incident, saved=%d result.Memories=%d", len(fake.savedMemories), result.Memories)
+		if len(fake.savedMemories) != 1 || result.Memories != 1 {
+			t.Fatalf("later-turn memory was dropped by text similarity, saved=%d result.Memories=%d", len(fake.savedMemories), result.Memories)
 		}
-		if got := fake.updatedImportance[42]; got < 0.79 || got > 0.81 {
-			t.Fatalf("expected existing memory importance reinforced to ~0.8, got %.2f", got)
+		if len(fake.updatedImportance) != 0 {
+			t.Fatalf("prior-turn importance was rewritten: %#v", fake.updatedImportance)
 		}
-		if !containsString(result.Warnings, "memory_semantic_dedup_merged") {
-			t.Fatalf("expected memory_semantic_dedup_merged warning, got %#v", result.Warnings)
+		if containsString(result.Warnings, "memory_semantic_dedup_merged") {
+			t.Fatalf("text similarity merge returned: %#v", result.Warnings)
 		}
-		foundAudit := false
 		for _, item := range fake.savedAuditLogs {
-			if item.EventType == "memory_semantic_dedup" && item.Source == "critic" {
-				var details map[string]any
-				if err := json.Unmarshal([]byte(item.DetailsJSON), &details); err == nil {
-					if details["merged_memory_id"] == float64(42) {
-						foundAudit = true
-					}
-				}
+			if item.EventType == "memory_semantic_dedup" {
+				t.Fatalf("text similarity audit returned: %#v", item)
 			}
-		}
-		if !foundAudit {
-			t.Fatalf("expected memory_semantic_dedup audit log with merged_memory_id=42, got %#v", fake.savedAuditLogs)
 		}
 	})
 
@@ -919,7 +910,7 @@ func TestSeq123P85DedupMergeCorrectionPathMarkers(t *testing.T) {
 		}
 	})
 
-	t.Run("superseding_summary_similar_to_existing_uses_merge_path", func(t *testing.T) {
+	t.Run("similar_later_summary_is_archived_without_similarity_merge", func(t *testing.T) {
 		fake := &turnRecordingStore{
 			returnMemories: []store.Memory{
 				{ID: 43, ChatSessionID: "sess-p85-corr", TurnIndex: 2, SummaryJSON: `{"turn_summary":"Mina promised Rowan she would return with the brass key."}`, Importance: 0.4},
@@ -932,25 +923,16 @@ func TestSeq123P85DedupMergeCorrectionPathMarkers(t *testing.T) {
 			"importance_score": 9,
 		}
 		result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-p85-corr", 6, extraction, "Mina promised Rowan that she would return with the brass key.", completeTurnEmbeddingConfig{}, time.Unix(500, 0))
-		if len(fake.savedMemories) != 0 || result.Memories != 0 {
-			t.Fatalf("expected merge path (0 inserts) for superseding similar summary, saved=%d result.Memories=%d", len(fake.savedMemories), result.Memories)
+		if len(fake.savedMemories) != 1 || result.Memories != 1 {
+			t.Fatalf("similar later summary was dropped, saved=%d result.Memories=%d", len(fake.savedMemories), result.Memories)
 		}
-		if !containsString(result.Warnings, "memory_semantic_dedup_merged") {
-			t.Fatalf("expected memory_semantic_dedup_merged warning for superseding similar summary, got %#v", result.Warnings)
+		if containsString(result.Warnings, "memory_semantic_dedup_merged") {
+			t.Fatalf("text similarity merge returned for later summary: %#v", result.Warnings)
 		}
-		foundAudit := false
 		for _, item := range fake.savedAuditLogs {
-			if item.EventType == "memory_semantic_dedup" && item.Source == "critic" {
-				var details map[string]any
-				if err := json.Unmarshal([]byte(item.DetailsJSON), &details); err == nil {
-					if details["merged_memory_id"] == float64(43) {
-						foundAudit = true
-					}
-				}
+			if item.EventType == "memory_semantic_dedup" {
+				t.Fatalf("text similarity audit returned: %#v", item)
 			}
-		}
-		if !foundAudit {
-			t.Fatalf("expected memory_semantic_dedup audit log for superseding similar summary, got %#v", fake.savedAuditLogs)
 		}
 	})
 }
@@ -1069,22 +1051,22 @@ func TestSeq123P86TemporalEntityAnchorHardeningMarkers(t *testing.T) {
 				map[string]any{"subject": "Mina", "predicate": "found", "object": "brass key"},
 			},
 		}
-		result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-p86-ph", 5, extraction, "Someone found something.", completeTurnEmbeddingConfig{}, time.Unix(800, 0))
+		result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-p86-ph", 5, extraction, "Mina found a brass key.", completeTurnEmbeddingConfig{}, time.Unix(800, 0))
 
-		// only Mina should be stored as entity
+		// Role-like story names are open content; only structural generated IDs are skipped.
 		var names []string
 		for _, e := range fake.savedEntities {
 			names = append(names, e.Name)
 		}
-		if len(names) != 1 || names[0] != "Mina" {
-			t.Fatalf("expected only concrete entity [Mina], got %v", names)
+		if len(names) != 2 || names[0] != "assistant" || names[1] != "Mina" {
+			t.Fatalf("role-like story entity was removed by a fixed placeholder vocabulary: %v", names)
 		}
 
-		if len(fake.savedKGTriples) != 1 {
-			t.Fatalf("expected 1 saved KG triple after placeholder skip, got %d", len(fake.savedKGTriples))
+		if len(fake.savedKGTriples) != 2 {
+			t.Fatalf("KG triple was removed by a fixed endpoint vocabulary, got %d", len(fake.savedKGTriples))
 		}
-		if fake.savedKGTriples[0].Subject != "Mina" || fake.savedKGTriples[0].Object != "brass key" {
-			t.Fatalf("expected KG triple subject=Mina object=brass key, got subject=%q object=%q", fake.savedKGTriples[0].Subject, fake.savedKGTriples[0].Object)
+		if fake.savedKGTriples[1].Subject != "Mina" || fake.savedKGTriples[1].Object != "brass key" {
+			t.Fatalf("expected KG triple subject=Mina object=brass key, got subject=%q object=%q", fake.savedKGTriples[1].Subject, fake.savedKGTriples[1].Object)
 		}
 
 		if result.VectorStatus == "ok" || result.VectorsUpserted > 0 {

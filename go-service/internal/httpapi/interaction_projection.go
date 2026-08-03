@@ -242,7 +242,7 @@ func normalizePrepareTurnInteractionCandidate(unit store.PreciseMemoryUnit) (pre
 		target = strings.TrimSpace(extractionStringFromAny(payload["target_entity"]))
 		domain := strings.ToLower(strings.TrimSpace(extractionStringFromAny(payload["domain"])))
 		observation := strings.TrimSpace(extractionStringFromAny(payload["observation"]))
-		if actor == "" || target == "" || observation == "" || !relationshipObservationDomains[domain] {
+		if actor == "" || target == "" || observation == "" || domain == "" {
 			return candidate, "invalid_relationship_observation"
 		}
 		candidate.kind = "relationship"

@@ -562,19 +562,13 @@ func TestReversibleStateHistoryOnlyValidityAndRollbackRestore(t *testing.T) {
 	}
 }
 
-func TestReversibleStateSchemaIsClosedAndRejectsInventedBodyState(t *testing.T) {
+func TestReversibleStateProviderSchemaStaysOpenWhileRuntimeValidatesProjection(t *testing.T) {
 	schema := proxyCriticTopLevelJSONSchema()
 	properties := mapFromAny(schema["properties"])
 	arraySchema := mapFromAny(properties["reversible_states"])
 	itemSchema := mapFromAny(arraySchema["items"])
-	if itemSchema["additionalProperties"] != false {
-		t.Fatalf("provider reversible state schema is not closed: %#v", itemSchema)
-	}
-	itemProperties := mapFromAny(itemSchema["properties"])
-	for _, key := range []string{"version", "domain", "transition", "subject_name", "state_slot", "evidence_excerpt", "authority", "polarity", "visibility", "sensitivity"} {
-		if itemProperties[key] == nil {
-			t.Fatalf("provider reversible state schema omitted %s: %#v", key, itemProperties)
-		}
+	if arraySchema["type"] != "array" || len(itemSchema) != 0 {
+		t.Fatalf("provider reversible state collection restored a fixed field schema: %#v", arraySchema)
 	}
 
 	invalid := reversibleStateProposal("body", "set", "Mina", "pregnancy", "Mina smiled.", "pregnant")
@@ -740,10 +734,18 @@ func TestReversibleStateOwnsPerEntityCurrentWhileSceneProjectionRemainsDistinct(
 	}
 	character := mapFromAny(deltas[0])
 	status := mapFromAny(character["status"])
-	if character["location"] != nil || character["emotional_posture"] != nil ||
-		status["injury"] != nil || extractionStringFromAny(status["role"]) != "captain" ||
+	if extractionStringFromAny(character["location"]) != "north gate" ||
+		extractionStringFromAny(character["emotional_posture"]) != "afraid" ||
+		extractionStringFromAny(status["injury"]) != "broken arm" || extractionStringFromAny(status["role"]) != "captain" ||
 		character["relationships"] == nil {
-		t.Fatalf("legacy reversible fields were not isolated from durable character facts: %#v", character)
+		t.Fatalf("raw character observations were deleted during collection: %#v", character)
+	}
+	current := mapFromAny(sanitizeLegacyReversibleCharacterDeltas([]any{character})[0])
+	currentStatus := mapFromAny(current["status"])
+	if current["location"] != nil || current["emotional_posture"] != nil ||
+		currentStatus["injury"] != nil || extractionStringFromAny(currentStatus["role"]) != "captain" ||
+		current["relationships"] == nil {
+		t.Fatalf("reversible observations entered the durable current-state projection: %#v", current)
 	}
 	scene := mapFromAny(mapFromAny(normalized["state_deltas"])["scene_state"])
 	if extractionStringFromAny(scene["location"]) != "north gate" ||

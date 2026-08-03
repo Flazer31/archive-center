@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -244,9 +245,18 @@ func (s *Server) handleChapterGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	interval := normalizedChapterInterval(req.Interval)
+	ev := s.collectNarrativeEvidence(r.Context(), req.ChatSessionID)
+	episodeChildren := make([]hierarchyChildRange, 0, len(ev.EpisodeSummaries))
+	for _, episode := range ev.EpisodeSummaries {
+		episodeChildren = append(episodeChildren, hierarchyChildRange{FromTurn: episode.FromTurn, ToTurn: episode.ToTurn})
+	}
 	fromTurn, toTurn := req.normalizedTurnRange()
-	intervalCheck := chapterIntervalCheck(req.TurnIndex, interval)
+	intervalCheck := map[string]any{
+		"checked": true, "triggered": true, "reason": "explicit_turn_range", "range": []int{fromTurn, toTurn},
+		"child_kind": "episode", "child_count": 0, "interval_count": interval, "open_tail_count": 0,
+	}
 	if fromTurn == 0 || toTurn == 0 {
+		intervalCheck = hierarchyChildIntervalCheck(episodeChildren, req.TurnIndex, interval, "episode")
 		if rawRange, ok := intervalCheck["range"].([]int); ok && len(rawRange) == 2 {
 			fromTurn = rawRange[0]
 			toTurn = rawRange[1]
@@ -266,8 +276,7 @@ func (s *Server) handleChapterGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ev := s.collectNarrativeEvidence(r.Context(), req.ChatSessionID)
-	episodes := filterEpisodes(ev.EpisodeSummaries, "", fromTurn, toTurn, req.normalizedLimit(8))
+	episodes := filterEpisodes(ev.EpisodeSummaries, "", fromTurn, toTurn, 0)
 	if len(episodes) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "skipped",
@@ -281,8 +290,16 @@ func (s *Server) handleChapterGenerate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if interval > 0 && len(episodes) != interval {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "skipped", "chat_session_id": req.ChatSessionID, "from_turn": fromTurn, "to_turn": toTurn,
+			"interval": interval, "interval_check": intervalCheck,
+			"blocking_reasons": []string{"chapter_episode_interval_incomplete"}, "episode_count": len(episodes), "saved": false,
+		})
+		return
+	}
 
-	chapterIndex := chapterIndexForRange(toTurn, interval)
+	chapterIndex := hierarchyIndexFromChildren(episodeChildren, toTurn, interval, len(episodes))
 	if !req.Force {
 		existing, err := chapterStore.SearchChapterSummaries(r.Context(), req.ChatSessionID, "", fromTurn, toTurn, 1)
 		if err == nil && len(existing) > 0 {
@@ -356,12 +373,32 @@ func (s *Server) handleArcGenerate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "error", "code": "chapter_store_not_available", "detail": "chapter summary store is required for arc generation"})
 		return
 	}
-	fromTurn, toTurn := req.normalizedTurnRange()
-	if fromTurn <= 0 || toTurn <= 0 || fromTurn > toTurn {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "blocking_reasons": []string{"arc_range_not_ready"}, "saved": false})
+	interval := normalizedChapterInterval(req.Interval)
+	allChapters, err := chapterStore.SearchChapterSummaries(r.Context(), req.ChatSessionID, "", 0, 0, 0)
+	if err != nil && !errors.Is(err, store.ErrNotEnabled) && !errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "detail": err.Error()})
 		return
 	}
-	existing, err := arcStore.SearchArcSummaries(r.Context(), req.ChatSessionID, "", fromTurn, toTurn, 20)
+	chapterChildren := make([]hierarchyChildRange, 0, len(allChapters))
+	for _, chapter := range allChapters {
+		chapterChildren = append(chapterChildren, hierarchyChildRange{FromTurn: chapter.FromTurn, ToTurn: chapter.ToTurn})
+	}
+	fromTurn, toTurn := req.normalizedTurnRange()
+	intervalCheck := map[string]any{
+		"checked": true, "triggered": true, "reason": "explicit_turn_range", "range": []int{fromTurn, toTurn},
+		"child_kind": "chapter", "child_count": 0, "interval_count": interval, "open_tail_count": 0,
+	}
+	if fromTurn <= 0 || toTurn <= 0 {
+		intervalCheck = hierarchyChildIntervalCheck(chapterChildren, req.TurnIndex, interval, "chapter")
+		if rawRange, ok := intervalCheck["range"].([]int); ok && len(rawRange) == 2 {
+			fromTurn, toTurn = rawRange[0], rawRange[1]
+		}
+	}
+	if fromTurn <= 0 || toTurn <= 0 || fromTurn > toTurn {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "interval": interval, "interval_check": intervalCheck, "blocking_reasons": []string{"arc_range_not_ready"}, "saved": false})
+		return
+	}
+	existing, err := arcStore.SearchArcSummaries(r.Context(), req.ChatSessionID, "", fromTurn, toTurn, 0)
 	if err != nil && !errors.Is(err, store.ErrNotEnabled) && !errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "detail": err.Error()})
 		return
@@ -372,16 +409,27 @@ func (s *Server) handleArcGenerate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	chapters, err := chapterStore.SearchChapterSummaries(r.Context(), req.ChatSessionID, "", fromTurn, toTurn, req.normalizedLimit(6))
-	if err != nil && !errors.Is(err, store.ErrNotEnabled) && !errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "detail": err.Error()})
-		return
+	chapters := make([]store.ChapterSummary, 0, len(allChapters))
+	for _, chapter := range allChapters {
+		if chapter.FromTurn >= fromTurn && chapter.ToTurn <= toTurn {
+			chapters = append(chapters, chapter)
+		}
 	}
+	sort.SliceStable(chapters, func(i, j int) bool {
+		if chapters[i].FromTurn == chapters[j].FromTurn {
+			return chapters[i].ToTurn < chapters[j].ToTurn
+		}
+		return chapters[i].FromTurn < chapters[j].FromTurn
+	})
 	if len(chapters) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "from_turn": fromTurn, "to_turn": toTurn, "blocking_reasons": []string{"no_chapter_summaries"}, "saved": false})
 		return
 	}
-	arcIndex := hierarchyIndexForRange(toTurn, 240)
+	if interval > 0 && len(chapters) != interval {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "from_turn": fromTurn, "to_turn": toTurn, "interval": interval, "interval_check": intervalCheck, "blocking_reasons": []string{"arc_chapter_interval_incomplete"}, "chapter_count": len(chapters), "saved": false})
+		return
+	}
+	arcIndex := hierarchyIndexFromChildren(chapterChildren, toTurn, interval, len(chapters))
 	arc, generationTrace := s.buildArcSummaryForRange(r.Context(), req.ChatSessionID, fromTurn, toTurn, arcIndex, chapters)
 	if err := arcStore.SaveArcSummary(r.Context(), req.ChatSessionID, &arc); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "code": "arc_save_failed", "detail": err.Error(), "saved": false})
@@ -427,12 +475,32 @@ func (s *Server) handleSagaGenerate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "error", "code": "arc_store_not_available", "detail": "arc summary store is required for saga generation"})
 		return
 	}
-	fromTurn, toTurn := req.normalizedTurnRange()
-	if fromTurn <= 0 || toTurn <= 0 || fromTurn > toTurn {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "blocking_reasons": []string{"saga_range_not_ready"}, "saved": false})
+	interval := normalizedChapterInterval(req.Interval)
+	allArcs, err := arcStore.SearchArcSummaries(r.Context(), req.ChatSessionID, "", 0, 0, 0)
+	if err != nil && !errors.Is(err, store.ErrNotEnabled) && !errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "detail": err.Error()})
 		return
 	}
-	existing, err := sagaStore.SearchSagaDigests(r.Context(), req.ChatSessionID, "", fromTurn, toTurn, 20)
+	arcChildren := make([]hierarchyChildRange, 0, len(allArcs))
+	for _, arc := range allArcs {
+		arcChildren = append(arcChildren, hierarchyChildRange{FromTurn: arc.FromTurn, ToTurn: arc.ToTurn})
+	}
+	fromTurn, toTurn := req.normalizedTurnRange()
+	intervalCheck := map[string]any{
+		"checked": true, "triggered": true, "reason": "explicit_turn_range", "range": []int{fromTurn, toTurn},
+		"child_kind": "arc", "child_count": 0, "interval_count": interval, "open_tail_count": 0,
+	}
+	if fromTurn <= 0 || toTurn <= 0 {
+		intervalCheck = hierarchyChildIntervalCheck(arcChildren, req.TurnIndex, interval, "arc")
+		if rawRange, ok := intervalCheck["range"].([]int); ok && len(rawRange) == 2 {
+			fromTurn, toTurn = rawRange[0], rawRange[1]
+		}
+	}
+	if fromTurn <= 0 || toTurn <= 0 || fromTurn > toTurn {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "interval": interval, "interval_check": intervalCheck, "blocking_reasons": []string{"saga_range_not_ready"}, "saved": false})
+		return
+	}
+	existing, err := sagaStore.SearchSagaDigests(r.Context(), req.ChatSessionID, "", fromTurn, toTurn, 0)
 	if err != nil && !errors.Is(err, store.ErrNotEnabled) && !errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "detail": err.Error()})
 		return
@@ -443,13 +511,24 @@ func (s *Server) handleSagaGenerate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	arcs, err := arcStore.SearchArcSummaries(r.Context(), req.ChatSessionID, "", fromTurn, toTurn, req.normalizedLimit(6))
-	if err != nil && !errors.Is(err, store.ErrNotEnabled) && !errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "detail": err.Error()})
-		return
+	arcs := make([]store.ArcSummary, 0, len(allArcs))
+	for _, arc := range allArcs {
+		if arc.FromTurn >= fromTurn && arc.ToTurn <= toTurn {
+			arcs = append(arcs, arc)
+		}
 	}
+	sort.SliceStable(arcs, func(i, j int) bool {
+		if arcs[i].FromTurn == arcs[j].FromTurn {
+			return arcs[i].ToTurn < arcs[j].ToTurn
+		}
+		return arcs[i].FromTurn < arcs[j].FromTurn
+	})
 	if len(arcs) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "from_turn": fromTurn, "to_turn": toTurn, "blocking_reasons": []string{"no_arc_summaries"}, "saved": false})
+		return
+	}
+	if interval > 0 && len(arcs) != interval {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "skipped", "chat_session_id": req.ChatSessionID, "from_turn": fromTurn, "to_turn": toTurn, "interval": interval, "interval_check": intervalCheck, "blocking_reasons": []string{"saga_arc_interval_incomplete"}, "arc_count": len(arcs), "saved": false})
 		return
 	}
 	saga, generationTrace := s.buildSagaDigestForRange(r.Context(), req.ChatSessionID, fromTurn, toTurn, arcs)
@@ -488,7 +567,11 @@ func (s *Server) handleChapterDryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	ev := s.collectNarrativeEvidence(r.Context(), req.ChatSessionID)
 	interval := normalizedChapterInterval(req.Interval)
-	intervalCheck := chapterIntervalCheck(req.TurnIndex, interval)
+	episodeChildren := make([]hierarchyChildRange, 0, len(ev.EpisodeSummaries))
+	for _, episode := range ev.EpisodeSummaries {
+		episodeChildren = append(episodeChildren, hierarchyChildRange{FromTurn: episode.FromTurn, ToTurn: episode.ToTurn})
+	}
+	intervalCheck := hierarchyChildIntervalCheck(episodeChildren, req.TurnIndex, interval, "episode")
 	fromTurn, toTurn := 0, 0
 	candidateRange := any(nil)
 	blockingReasons := []string{}
@@ -509,17 +592,19 @@ func (s *Server) handleChapterDryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	episodes := []store.EpisodeSummary{}
 	if fromTurn > 0 || toTurn > 0 {
-		episodes = filterEpisodes(ev.EpisodeSummaries, "", fromTurn, toTurn, req.normalizedLimit(8))
+		episodes = filterEpisodes(ev.EpisodeSummaries, "", fromTurn, toTurn, 0)
 		if len(episodes) == 0 {
 			blockingReasons = append(blockingReasons, "no_episode_summaries")
-		} else if len(episodes) < 4 || len(episodes) > 8 {
-			warnings = append(warnings, "episode_count_outside_recommended_window")
+		} else if interval > 0 && len(episodes) != interval {
+			blockingReasons = append(blockingReasons, "chapter_episode_interval_incomplete")
 		}
-		if span, ok := turnSpan.(int); ok && (span < 40 || span > 80) {
-			warnings = append(warnings, "turn_span_outside_recommended_window")
+		if len(episodes) > 0 && !episodeCoverageComplete(episodes, fromTurn, toTurn) {
+			blockingReasons = append(blockingReasons, "blocked_missing_episode")
 		}
 	}
-	episodeInputs := episodeInputPreviews(episodes, req.normalizedLimit(8))
+	episodeInputs := episodeInputPreviews(episodes, 0)
+	intervalSatisfied := interval > 0 && len(episodes) == interval
+	coverageComplete := len(episodes) > 0 && episodeCoverageComplete(episodes, fromTurn, toTurn)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":           "ok",
@@ -536,10 +621,12 @@ func (s *Server) handleChapterDryRun(w http.ResponseWriter, r *http.Request) {
 		"blocking_reasons": blockingReasons,
 		"warnings":         warnings,
 		"input_stats": map[string]any{
-			"episode_count":             len(episodes),
-			"episode_count_recommended": len(episodes) >= 4 && len(episodes) <= 8,
-			"turn_span":                 turnSpan,
-			"turn_span_recommended":     turnSpanRecommended(turnSpan),
+			"episode_count":                  len(episodes),
+			"episode_count_recommended":      intervalSatisfied,
+			"episode_count_matches_interval": intervalSatisfied,
+			"turn_span":                      turnSpan,
+			"turn_span_recommended":          coverageComplete,
+			"episode_range_contiguous":       coverageComplete,
 		},
 		"episode_inputs": episodeInputs,
 	})

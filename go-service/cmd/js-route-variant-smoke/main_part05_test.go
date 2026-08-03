@@ -13,7 +13,7 @@ func TestArchiveCenterJSSeq165P142InputContextSlotGovernorMarkers(t *testing.T) 
 		"function buildInputContext(userInput, orchResult, bundledContinuityText, governorContext) {",
 		"slotGovernorPolicyVersion: \"s16.5-ig.v1\"",
 		"slotGovernorMode: \"turn_need_risk_slot_governor\"",
-		"const budget = Math.max(200, Math.min(1500, settings.maxInputContextChars || 800));",
+		"const budget = Math.max(1, Math.floor(Number(settings.maxInputContextChars) || DEFAULT_SETTINGS.maxInputContextChars));",
 		"function buildTemporalCandidate() {",
 		"function buildSceneCandidate() {",
 		"function buildEntityCandidate() {",
@@ -116,14 +116,11 @@ func TestArchiveCenterJSSeq165P145StaleArcGuardCarryInHooksMarkers(t *testing.T)
 func TestArchiveCenterJSSeq165P169DecisionAdaptiveFloorCeilingMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"const manualBudgetLimit = Math.max(500, settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars);",
-		"mid_context_300k: 9000",
-		"wide_context_500k: 18000",
-		"ultra_long_1m_plus: 27000",
-		"extreme_long_2m_plus: 36000",
-		"max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.budgetLimit",
-		"runtimeTokenInfo,",
-		"Math.min(51000, automaticBudgetLimit + userExtraBudgetChars)",
+		"max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars",
+		"current_chat_tokens: prepareInjectionBudget.currentChatTokens",
+		"context_window_tokens: prepareInjectionBudget.contextWindowTokens",
+		"current_chat_chars: prepareInjectionBudget.currentChatChars",
+		"extra_chars: prepareInjectionBudget.userExtraBudgetChars",
 		"parts.push(b.text);",
 		"const step13TokenTruthFloorCoreLabels = [\"latest_direct_evidence\", \"recent_raw_turn\", \"active_state\", \"canonical_state_layer\"];",
 		"const step13TokenTruthFloorContinuityLabels = [\"storylines\", \"episode\", \"chapter\", \"arc\", \"saga\"];",
@@ -290,8 +287,8 @@ func TestArchiveCenterJSSeq165P179Step17DirectHandoffGateMarkers(t *testing.T) {
 func TestArchiveCenterJSSeq165P183Step17EvaluationHarnessBaselineMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"const manualBudgetLimit = Math.max(500, settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars);",
-		"const budget = Math.max(200, Math.min(1500, settings.maxInputContextChars || 800));",
+		"max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars",
+		"const budget = Math.max(1, Math.floor(Number(settings.maxInputContextChars) || DEFAULT_SETTINGS.maxInputContextChars));",
 		"policyVersion: \"s16.8-ft.v1\"",
 		"mode: \"recall_gain_vs_monopoly_cost_split\"",
 		"slotGovernorPolicyVersion: \"s16.5-ig.v1\"",

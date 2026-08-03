@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	completeTurnCriticPipelineVersion          = "critic_pipeline.v4"
+	completeTurnCriticPipelineVersion          = "critic_pipeline.v6"
 	completeTurnCriticPreviewPassVersion       = "ea1k.v1"
 	completeTurnDirectEvidenceRetentionVersion = "ea1l.v1"
 	completeTurnMaintenancePlanVersion         = "maintenance_audit.v2"
@@ -46,6 +46,7 @@ func (s *Server) registerTurnRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /turn-workflow/status", s.handleTurnWorkflowHUDStatus)
 	mux.HandleFunc("GET /turn-workflow/events", s.handleTurnWorkflowHUDEvents)
 	mux.HandleFunc("POST /turn-workflow/notice", s.handleTurnWorkflowHUDNotice)
+	mux.HandleFunc("POST /turn-workflow/recovery", s.handleTurnWorkflowHUDRecovery)
 	mux.HandleFunc("POST /effective-inputs", s.handleEffectiveInputs)
 	mux.HandleFunc("DELETE /rollback/{turn_index}", s.handleRollback)
 	mux.HandleFunc("POST /rollback/decision", s.handleRollbackDecision)

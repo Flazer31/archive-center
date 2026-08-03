@@ -396,13 +396,45 @@ func configMissingFieldsWithProvider(provider, apiKey, endpoint, model string) [
 }
 
 func configuredTrace(provider, apiKey, endpoint, model string, timeoutSec int64) map[string]any {
+	missing := configMissingFieldsWithProvider(provider, apiKey, endpoint, model)
+	if timeoutSec <= 0 {
+		missing = append(missing, "timeout_ms")
+	}
 	return map[string]any{
-		"configured":     len(configMissingFieldsWithProvider(provider, apiKey, endpoint, model)) == 0,
+		"configured":     len(missing) == 0,
 		"provider":       strings.TrimSpace(provider),
 		"endpoint_host":  endpointHost(endpoint),
 		"model":          strings.TrimSpace(model),
 		"timeout_sec":    timeoutSec,
-		"missing_fields": configMissingFieldsWithProvider(provider, apiKey, endpoint, model),
+		"missing_fields": missing,
+	}
+}
+
+func sourceSearchConfigMissingFields(provider, apiKey, model string) []string {
+	missing := []string{}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "gemini", "claude", "ollama":
+	default:
+		missing = append(missing, "provider")
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		missing = append(missing, "api_key")
+	}
+	if strings.TrimSpace(model) == "" {
+		missing = append(missing, "model")
+	}
+	return missing
+}
+
+func sourceSearchConfiguredTrace(provider, apiKey, endpoint, model string, timeoutSec int64) map[string]any {
+	missing := sourceSearchConfigMissingFields(provider, apiKey, model)
+	return map[string]any{
+		"configured":     len(missing) == 0,
+		"provider":       strings.TrimSpace(provider),
+		"endpoint_host":  endpointHost(endpoint),
+		"model":          strings.TrimSpace(model),
+		"timeout_sec":    timeoutSec,
+		"missing_fields": missing,
 	}
 }
 
@@ -549,7 +581,7 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 		rt.EmbeddingTimeoutSec,
 	)
 	addRuntimeSourceTrace(embeddingTrace, embeddingProviderID, embeddingAPIKeyID, embeddingEndpointID, embeddingModelID)
-	sourceSearchPlannerTrace := configuredTrace(
+	sourceSearchPlannerTrace := sourceSearchConfiguredTrace(
 		sourceSearchPlannerProviderID.Value,
 		sourceSearchPlannerAPIKeyID.Value,
 		sourceSearchPlannerEndpointID.Value,
@@ -560,6 +592,7 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	addOptionalRuntimeTraceFields(sourceSearchPlannerTrace, rt.SourceSearchPlannerTemperature, rt.SourceSearchPlannerMaxTokens)
 	addOptionalReasoningTraceFields(sourceSearchPlannerTrace, rt.SourceSearchPlannerReasoningPreset, rt.SourceSearchPlannerReasoningEffort, rt.SourceSearchPlannerReasoningBudget)
 	return map[string]any{
+		"synced":            rt.Synced,
 		"main":              mainTrace,
 		"supervisor":        supervisorTrace,
 		"critic":            criticTrace,

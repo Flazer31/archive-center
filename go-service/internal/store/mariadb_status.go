@@ -20,12 +20,6 @@ func (m *mariadbStore) ListStatusSchemaProposals(ctx context.Context, chatSessio
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
 	query := `
 		SELECT id, chat_session_id, input_channel, proposal_state, schema_name, ruleset_label,
 		       schema_json, provenance_json, review_note, reviewer, reviewed_at, created_at, updated_at
@@ -317,8 +311,11 @@ func (m *mariadbStore) ListStatusCurrentValues(ctx context.Context, chatSessionI
 		query += ` AND current_value.status_key = ?`
 		args = append(args, strings.TrimSpace(statusKey))
 	}
-	query += ` ORDER BY current_value.owner_scope ASC, current_value.owner_id ASC, current_value.status_key ASC, current_value.updated_at DESC LIMIT ?`
-	args = append(args, limit)
+	query += ` ORDER BY current_value.owner_scope ASC, current_value.owner_id ASC, current_value.status_key ASC, current_value.updated_at DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

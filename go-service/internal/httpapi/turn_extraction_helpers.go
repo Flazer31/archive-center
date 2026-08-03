@@ -197,18 +197,11 @@ func extractionFirstNonEmpty(values ...string) string {
 var kgPredicateRe = regexp.MustCompile(`[^a-z0-9_]+`)
 
 func sanitizeKGPredicate(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	v = strings.ReplaceAll(v, " ", "_")
-	v = kgPredicateRe.ReplaceAllString(v, "_")
-	return strings.Trim(v, "_")
+	return strings.TrimSpace(v)
 }
 
 func sanitizeKGPart(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" || strings.EqualFold(v, "null") || strings.EqualFold(v, "none") {
-		return ""
-	}
-	return v
+	return strings.TrimSpace(v)
 }
 
 func sanitizeEvidenceExcerptForTurn(excerpt string, turnContent string) string {
@@ -250,26 +243,13 @@ func isPlaceholderKGPart(v string) bool {
 	return placeholderKGPartPattern.MatchString(v)
 }
 
-func shouldSkipKGTriple(subject, predicate, object, sid string) bool {
-	if subject == "" || predicate == "" || object == "" || subject == sid {
-		return true
-	}
-	if isPlaceholderKGPart(subject) || isPlaceholderKGPart(object) {
-		return true
-	}
-	switch predicate {
-	case "has_turn", "turn", "mentions_turn", "source_turn":
-		return true
-	}
-	return false
-}
-
 func extractedEntityNames(ctx context.Context, s *Server, sid string, entities map[string]any) []string {
 	out := []string{}
 	add := func(items []any) {
 		for _, item := range items {
 			entity := mapFromAny(item)
-			name := s.canonicalCharacterName(ctx, sid, strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(entity, "name"), stringFromMap(entity, "label"), stringFromMap(entity, "title"))))
+			rawName := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(entity, "name"), stringFromMap(entity, "label"), stringFromMap(entity, "title")))
+			name := s.canonicalCharacterName(ctx, sid, rawName)
 			if name == "" || isPlaceholderKGPart(name) {
 				continue
 			}
@@ -456,19 +436,29 @@ func worldRuleItemsForSave(extraction map[string]any) []any {
 				return
 			}
 			rule = map[string]any{
-				"key":      stableKey("world_rule", text),
-				"value":    text,
-				"scope":    "session",
-				"category": "world_state",
+				"key":   stableKey("world_rule", text),
+				"value": text,
 			}
 		}
 		key := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(rule, "key"), stringFromMap(rule, "name")))
 		if key == "" {
-			return
+			value := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(rule, "value"),
+				stringFromMap(rule, "value_json"),
+				stringFromMap(rule, "description"),
+				stringFromMap(rule, "summary"),
+			))
+			if value == "" {
+				return
+			}
+			key = stableKey("world_rule", value)
+			rule["key"] = key
 		}
-		scope := store.NormalizeWorldRuleScope(extractionFirstNonEmpty(stringFromMap(rule, "scope"), "session"))
+		scope := store.NormalizeWorldRuleScope(stringFromMap(rule, "scope"))
 		scopeName := strings.TrimSpace(stringFromMap(rule, "scope_name"))
-		rule["scope"] = scope
+		if scope != "" {
+			rule["scope"] = scope
+		}
 		sig := strings.ToLower(scope) + "\x00" + strings.ToLower(scopeName) + "\x00" + strings.ToLower(key)
 		if seen[sig] {
 			return
@@ -479,13 +469,8 @@ func worldRuleItemsForSave(extraction map[string]any) []any {
 			for k, v := range rule {
 				cp[k] = v
 			}
-			if strings.TrimSpace(stringFromMap(cp, "scope")) == "" {
-				cp["scope"] = "session"
-			} else {
+			if strings.TrimSpace(stringFromMap(cp, "scope")) != "" {
 				cp["scope"] = store.NormalizeWorldRuleScope(stringFromMap(cp, "scope"))
-			}
-			if strings.TrimSpace(stringFromMap(cp, "category")) == "" {
-				cp["category"] = "world_state"
 			}
 			out = append(out, cp)
 			return

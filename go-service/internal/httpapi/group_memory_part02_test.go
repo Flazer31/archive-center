@@ -65,8 +65,8 @@ func TestExplorerDirectEvidenceReturnsStoreData(t *testing.T) {
 	if it["archive_bucket"] != "pending_capture" {
 		t.Errorf("archive_bucket = %v, want pending_capture", it["archive_bucket"])
 	}
-	if it["retention_ttl_turns"] != float64(180) {
-		t.Errorf("retention_ttl_turns = %v, want 180", it["retention_ttl_turns"])
+	if it["retention_ttl_turns"] != float64(0) || it["retention_expired"] != false {
+		t.Errorf("direct evidence must not expire by turn age: %#v", it)
 	}
 	if it["source_message_ids"] == nil {
 		t.Error("source_message_ids is nil")
@@ -186,7 +186,7 @@ func TestExplorerDirectEvidenceConflictStateMachineAndRetention(t *testing.T) {
 	if tombstone["retention_importance_tier"] != "critical" {
 		t.Fatalf("tombstone retention tier = %v, want critical", tombstone["retention_importance_tier"])
 	}
-	if byID[105]["retention_ttl_turns"] != float64(240) || byID[105]["excluded_from_current_truth"] != true {
+	if byID[105]["retention_ttl_turns"] != float64(0) || byID[105]["tombstone_retained_in_window"] != true || byID[105]["excluded_from_current_truth"] != true {
 		t.Fatalf("tombstone retention/current truth fields mismatch: %#v", byID[105])
 	}
 }
@@ -785,7 +785,8 @@ func TestExplorerChatLogsReturnsStoreData(t *testing.T) {
 	fake := &memoryFakeStore{
 		chatLogs: []store.ChatLog{
 			{ID: 1, ChatSessionID: "sess-cl", TurnIndex: 1, Role: "user", Content: "Hello there", CreatedAt: ts},
-			{ID: 2, ChatSessionID: "sess-cl", TurnIndex: 2, Role: "assistant", Content: "Hi! How can I help you today?", CreatedAt: ts},
+			{ID: 2, ChatSessionID: "sess-cl", TurnIndex: 1, Role: "assistant", Content: "Hi! How can I help you today?", CreatedAt: ts},
+			{ID: 3, ChatSessionID: "sess-cl", TurnIndex: 2, Role: "user", Content: "Only one side was saved", CreatedAt: ts},
 		},
 	}
 	cfg := config.Default()
@@ -816,15 +817,27 @@ func TestExplorerChatLogsReturnsStoreData(t *testing.T) {
 	if resp["total"].(float64) != 2 {
 		t.Errorf("total = %v, want 2", resp["total"])
 	}
+	if resp["raw_row_total"].(float64) != 3 {
+		t.Errorf("raw_row_total = %v, want 3", resp["raw_row_total"])
+	}
+	if resp["complete_turn_total"].(float64) != 1 || resp["incomplete_turn_total"].(float64) != 1 {
+		t.Errorf("turn completeness totals = %v/%v, want 1/1", resp["complete_turn_total"], resp["incomplete_turn_total"])
+	}
 	first, ok := items[0].(map[string]any)
 	if !ok {
 		t.Fatalf("first item not object: %T", items[0])
 	}
-	if first["role"] != "assistant" {
-		t.Errorf("first item role = %v, want assistant", first["role"])
+	if first["turn_index"].(float64) != 2 || first["completeness"] != "missing_assistant" {
+		t.Errorf("first item = %+v, want turn 2 missing_assistant", first)
 	}
-	if first["preview"] != "Hi! How can I help you today?" {
-		t.Errorf("first item preview = %v, want Hi! How can I help you today?", first["preview"])
+	second, ok := items[1].(map[string]any)
+	if !ok {
+		t.Fatalf("second item not object: %T", items[1])
+	}
+	user, _ := second["user"].(map[string]any)
+	assistant, _ := second["assistant"].(map[string]any)
+	if user["content"] != "Hello there" || assistant["content"] != "Hi! How can I help you today?" {
+		t.Errorf("grouped turn sides = user:%+v assistant:%+v", user, assistant)
 	}
 }
 
@@ -859,9 +872,13 @@ func TestExplorerChatLogsWithoutSessionReturnsEmpty(t *testing.T) {
 // Test 15: GET /explorer/chat_logs respects limit/offset pagination
 func TestExplorerChatLogsLimitOffset(t *testing.T) {
 	ts, _ := time.Parse(time.RFC3339, "2026-01-15T12:00:00Z")
-	logs := make([]store.ChatLog, 5)
+	logs := make([]store.ChatLog, 0, 10)
 	for i := 0; i < 5; i++ {
-		logs[i] = store.ChatLog{ID: int64(i + 1), ChatSessionID: "sess-page", TurnIndex: i + 1, Role: "user", Content: "msg", CreatedAt: ts}
+		turn := i + 1
+		logs = append(logs,
+			store.ChatLog{ID: int64(turn*2 - 1), ChatSessionID: "sess-page", TurnIndex: turn, Role: "user", Content: "question", CreatedAt: ts},
+			store.ChatLog{ID: int64(turn * 2), ChatSessionID: "sess-page", TurnIndex: turn, Role: "assistant", Content: "answer", CreatedAt: ts},
+		)
 	}
 	fake := &memoryFakeStore{chatLogs: logs}
 	cfg := config.Default()
@@ -888,6 +905,9 @@ func TestExplorerChatLogsLimitOffset(t *testing.T) {
 	}
 	if resp["total"].(float64) != 5 {
 		t.Errorf("total = %v, want 5", resp["total"])
+	}
+	if resp["raw_row_total"].(float64) != 10 {
+		t.Errorf("raw_row_total = %v, want 10", resp["raw_row_total"])
 	}
 	if resp["has_more"] != true {
 		t.Errorf("has_more = %v, want true", resp["has_more"])

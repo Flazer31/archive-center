@@ -704,7 +704,7 @@ func (m *mariadbStore) ReopenMemoryReprocessingJob(
 	}
 	now = nonZeroTime(now)
 	if status == "leased" && leaseUntil.Valid && leaseUntil.Time.After(now) {
-		return false, fmt.Errorf("memory reprocessing job has an active lease")
+		return false, ErrMemoryReprocessingLeased
 	}
 
 	sourceResult, err := tx.ExecContext(ctx, `

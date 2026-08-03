@@ -39,6 +39,20 @@ func TestHandleHealth(t *testing.T) {
 	if resp.Status != "ok" {
 		t.Errorf("Status = %q, want %q", resp.Status, "ok")
 	}
+	if resp.BackendInstanceID == "" || resp.BackendInstanceID != srv.BackendInstanceID {
+		t.Fatalf("backend instance id = %q, want current server id %q", resp.BackendInstanceID, srv.BackendInstanceID)
+	}
+}
+
+func TestBackendInstanceIDChangesWithServerProcessInstance(t *testing.T) {
+	first := setupTestServer()
+	second := setupTestServer()
+	if first.BackendInstanceID == "" || second.BackendInstanceID == "" {
+		t.Fatal("backend instance id must not be empty")
+	}
+	if first.BackendInstanceID == second.BackendInstanceID {
+		t.Fatalf("separate server instances shared id %q", first.BackendInstanceID)
+	}
 }
 
 func TestReverseProxyBasePathRoutesArchiveEndpoints(t *testing.T) {

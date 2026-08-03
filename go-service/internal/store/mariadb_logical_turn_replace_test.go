@@ -268,16 +268,14 @@ func TestMariaDBRollbackCanonicalTailRollsBackOnDerivedDeleteFailure(t *testing.
 	}
 }
 
-func TestCanonicalTailLifecycleCleanupPreservesInvalidatedHistory(t *testing.T) {
+func TestCanonicalTailLifecycleCleanupDeletesDirectEvidenceButPreservesLifecycleHistory(t *testing.T) {
 	queries := []string{}
 	for _, command := range canonicalTailDeleteCommands("session-1", 4, false, true) {
 		queries = append(queries, strings.Join(strings.Fields(command.query), " "))
 	}
 	joined := strings.Join(queries, "\n")
 	for _, required := range []string{
-		"UPDATE direct_evidence_records",
-		"tombstoned = TRUE",
-		"archive_state = 'tombstoned'",
+		"DELETE FROM direct_evidence_records",
 		"DELETE FROM status_current_values",
 	} {
 		if !strings.Contains(joined, required) {
@@ -286,8 +284,8 @@ func TestCanonicalTailLifecycleCleanupPreservesInvalidatedHistory(t *testing.T) 
 	}
 	for _, forbidden := range []string{
 		"DELETE FROM precise_memory_units",
-		"DELETE FROM direct_evidence_records",
 		"DELETE FROM status_change_events",
+		"UPDATE direct_evidence_records",
 	} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("lifecycle cleanup destroys invalidated history via %q:\n%s", forbidden, joined)
@@ -306,6 +304,31 @@ func TestCanonicalTailLifecycleCleanupPreservesInvalidatedHistory(t *testing.T) 
 	} {
 		if !strings.Contains(legacy, required) {
 			t.Fatalf("legacy cleanup missing compatibility delete %q", required)
+		}
+	}
+}
+
+func TestCanonicalTailCleanupDeletesEveryOverlappingHierarchySummary(t *testing.T) {
+	queries := map[string]canonicalTailDeleteCommand{}
+	for _, command := range canonicalTailDeleteCommands("session-1", 4, false, true) {
+		normalized := strings.Join(strings.Fields(command.query), " ")
+		for _, table := range []string{"episode_summaries", "chapter_summaries", "arc_summaries", "saga_digests"} {
+			if strings.Contains(normalized, "DELETE FROM "+table) {
+				queries[table] = command
+			}
+		}
+	}
+	for _, table := range []string{"episode_summaries", "chapter_summaries", "arc_summaries", "saga_digests"} {
+		command, ok := queries[table]
+		if !ok {
+			t.Fatalf("hierarchy cleanup missing %s", table)
+		}
+		normalized := strings.Join(strings.Fields(command.query), " ")
+		if !strings.Contains(normalized, "(to_turn >= ? OR from_turn >= ?)") {
+			t.Fatalf("%s cleanup does not delete ranges overlapping the rollback turn: %s", table, normalized)
+		}
+		if len(command.args) != 3 || command.args[0] != "session-1" || command.args[1] != 4 || command.args[2] != 4 {
+			t.Fatalf("%s cleanup args = %#v, want session and rollback turn twice", table, command.args)
 		}
 	}
 }

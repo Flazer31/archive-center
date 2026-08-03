@@ -494,7 +494,7 @@ func TestRemainingReadPlaceholdersStoreBackedEvidence(t *testing.T) {
 		body      string
 		wantCount float64
 	}{
-		{path: "/chapters/dry-run", body: `{"chat_session_id":"sess-1","turn_index":60,"interval":60,"limit":5}`, wantCount: -1},
+		{path: "/chapters/dry-run", body: `{"chat_session_id":"sess-1","turn_index":60,"interval":2,"limit":5}`, wantCount: -1},
 		{path: "/chapters/search", body: `{"chat_session_id":"sess-1","query":"archive","limit":5}`, wantCount: 2},
 		{path: "/episodes/search", body: `{"chat_session_id":"sess-1","query":"Alice","limit":5}`, wantCount: 1},
 	}
@@ -612,7 +612,7 @@ func TestChapterGenerateWritesDeterministicChapterSummary(t *testing.T) {
 	srv.Store = fake
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-chg","turn_index":60,"interval":60}`))
+	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-chg","turn_index":60,"interval":4}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -692,7 +692,7 @@ func TestChapterGenerateUsesConfiguredLLMWhenAvailable(t *testing.T) {
 	srv.Store = fake
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-chg-llm","turn_index":60,"interval":60}`))
+	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-chg-llm","turn_index":60,"interval":4}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -1043,7 +1043,7 @@ func TestChapterGeneratePrioritizesEpisodeDenseAnchorsOverSummaryText(t *testing
 	srv.Store = fake
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-ds1b-chapter","turn_index":60,"interval":60}`))
+	req := httptest.NewRequest(http.MethodPost, "/chapters/generate", strings.NewReader(`{"chat_session_id":"sess-ds1b-chapter","turn_index":60,"interval":2}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)

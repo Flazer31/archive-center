@@ -10,6 +10,7 @@ const (
 	EntityIdentityLinkKindCanonicalEquivalence = "canonical_equivalence"
 	EntityIdentityLinkStateReviewed            = "reviewed"
 	EntityIdentityReviewStateReviewed          = "reviewed"
+	EntityIdentityReviewStateSourceObserved    = "source_observed"
 )
 
 var ErrReviewedEntityIdentityAmbiguous = errors.New("reviewed entity identity has multiple canonical targets")
@@ -88,6 +89,25 @@ type EntityIdentityArtifactBinding struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// EntityIdentityLink records an evidence-backed, reversible mapping between
+// two immutable identity occurrences. LinkState controls whether read paths
+// may canonicalize through the link; surface similarity alone never creates a
+// reviewed link.
+type EntityIdentityLink struct {
+	LinkID          string    `json:"link_id"`
+	ChatSessionID   string    `json:"chat_session_id"`
+	SourceEntityID  string    `json:"source_entity_id"`
+	TargetEntityID  string    `json:"target_entity_id"`
+	LinkKind        string    `json:"link_kind"`
+	LinkState       string    `json:"link_state"`
+	EvidenceJSON    string    `json:"evidence_json"`
+	MappingRevision int       `json:"mapping_revision"`
+	SourceContract  string    `json:"source_contract"`
+	SourceRevision  string    `json:"source_revision"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 // SpeakerAttribution separates the host message role from an in-world
 // speaker. Ambiguous attribution retains the grounded raw span and points to a
 // source-bound unknown identity instead of guessing a character.
@@ -131,6 +151,12 @@ type EntityIdentityWriteAvailability interface {
 	EntityIdentityWritesEnabled() bool
 }
 
+// EntityIdentityLinkWriter is optional so stores that only support occurrence
+// projection do not gain a new required method.
+type EntityIdentityLinkWriter interface {
+	SaveEntityIdentityLink(context.Context, *EntityIdentityLink) error
+}
+
 // ReviewedEntityIdentityResolver resolves only an explicit, reviewed,
 // directional source occurrence -> canonical target link. Implementations must
 // never discover or merge identities by display label or surface text.
@@ -152,6 +178,7 @@ type UniqueActiveEntitySurfaceResolver interface {
 type ResolvedEntityIdentity struct {
 	StableEntityID    string `json:"stable_entity_id"`
 	IdentityNamespace string `json:"identity_namespace"`
+	CanonicalLabel    string `json:"canonical_label"`
 }
 
 // UniqueActiveEntitySurfaceIdentityResolver extends the legacy ID-only

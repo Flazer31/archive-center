@@ -150,9 +150,9 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
-			StatusCode: http.StatusBadGateway,
+			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"provider unavailable"}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"turn_summary\":\"broken\",]"}}],"model":"critic"}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -161,6 +161,8 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 		"session-reprocess", 1, "user source", "assistant source",
 		1000, "generation-1", "not_streaming", 0, 1, 2,
 	)
+	reqBody.ClientMeta["turn_workflow_request_id"] = "critic-hud-recovery"
+	srv.TurnWorkflows.begin("critic-hud-recovery", "session-reprocess", 1)
 	reqBody.ClientMeta["critic"] = map[string]any{
 		"api_key": "test-key", "endpoint": "https://api.example.com/v1",
 		"model": "critic", "provider": "openai", "timeout_ms": 45000,
@@ -178,8 +180,35 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	if len(recording.sources) != 1 || len(recording.jobs) != 1 {
 		t.Fatalf("sources=%d jobs=%d, want one durable source and one retry job", len(recording.sources), len(recording.jobs))
 	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode complete-turn response: %v", err)
+	}
+	criticFailure := mapFromAny(response["critic_failure"])
+	if stringFromMap(criticFailure, "code") != "CRITIC_JSON_PARSE_FAILED" {
+		t.Fatalf("critic failure=%#v", criticFailure)
+	}
+	hud := mapFromAny(response["turn_workflow_hud"])
+	hudError := mapFromAny(hud["error"])
+	recoveryActions := sliceFromAny(hudError["recovery_actions"])
+	if len(recoveryActions) != 1 || stringFromMap(mapFromAny(recoveryActions[0]), "id") != turnWorkflowHUDRecoveryRetryDerivedTurn {
+		t.Fatalf("critic recovery actions=%#v hud=%#v", recoveryActions, hud)
+	}
+	detailValues := map[string]string{}
+	for _, item := range sliceFromAny(hudError["details"]) {
+		detail := mapFromAny(item)
+		detailValues[stringFromMap(detail, "key")] = stringFromMap(detail, "value")
+	}
+	if detailValues["pipeline_stage"] != "json_parse" ||
+		detailValues["provider"] != "openai" ||
+		detailValues["model"] != "critic" ||
+		detailValues["reprocessing"] != "queued" ||
+		!strings.Contains(detailValues["cause"], "critic_json_mismatched_brackets") ||
+		detailValues["raw_preview"] == "" {
+		t.Fatalf("critic failure details=%#v", detailValues)
+	}
 	for _, job := range recording.jobs {
-		if job.SourceRevision == "" || job.LastError == "" ||
+		if job.SourceRevision == "" || !strings.Contains(job.LastError, "CRITIC_JSON_PARSE_FAILED") ||
 			job.SourceContract != completeTurnSourceAcceptanceContract ||
 			job.Status != "pending" {
 			t.Fatalf("job=%+v", job)
@@ -226,6 +255,22 @@ func TestCompleteTurnSuccessfulCriticDerivedWriteFailureEnqueuesDurableRevisionJ
 	queue, _ := response["memory_reprocessing_queue"].(map[string]any)
 	if queue["durable_or_existing"] != true || queue["reason_code"] != "derived_persist_failed" {
 		t.Fatalf("memory_reprocessing_queue=%#v", queue)
+	}
+	pipeline := mapFromAny(response["persistence_pipeline"])
+	derived := mapFromAny(pipeline["derived"])
+	if _, ok := derived["attempted"]; !ok {
+		t.Fatalf("derived attempted count missing: %#v", derived)
+	}
+	if intFromAny(derived["committed"], -1) != 0 ||
+		stringFromMap(derived, "rollback_state") != "atomic_rollback" ||
+		len(sliceFromAny(derived["error_diagnostics"])) == 0 {
+		t.Fatalf("derived diagnostics=%#v", derived)
+	}
+	for _, job := range recording.jobs {
+		if !strings.Contains(job.LastError, "operation=CommitMemoryAdmission") ||
+			!strings.Contains(job.LastError, "cause=common writer is unavailable") {
+			t.Fatalf("job detail=%q", job.LastError)
+		}
 	}
 }
 

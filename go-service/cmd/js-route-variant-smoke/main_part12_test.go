@@ -28,6 +28,44 @@ func TestSessionRouteAdapterUsesOfficialStableHostIdentityAndReadback(t *testing
 	}
 }
 
+func TestPluginStartupDoesNotRequireOpeningArchiveCenterAndHUDIsPrimed(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	initSource := extractJSFunctionBlockForTest(t, src, "async function init()")
+	syncIndex := strings.Index(initSource, `const syncAck = await syncConfigToBackend(settings)`)
+	queueRestoreIndex := strings.Index(initSource, `await loadFailedQueueFromStorage()`)
+	if syncIndex < 0 || queueRestoreIndex < 0 || syncIndex > queueRestoreIndex {
+		t.Fatal("persisted backend config is not synchronized before optional startup restoration")
+	}
+	if !strings.Contains(initSource, `ensureActiveChatCompletedTurnsBackfilled(startupSessionId, { reason: "plugin_init" })`) {
+		t.Fatal("plugin startup still relies on opening Timeline to recover completed active-chat pairs")
+	}
+
+	beforeRequestSource := extractJSFunctionBlockForTest(t, src, "async function onBeforeRequest(payload, type)")
+	if !strings.Contains(beforeRequestSource, `primeTurnWorkflowHUD(orchRequestId)`) {
+		t.Fatal("beforeRequest does not render a host-observed HUD state immediately")
+	}
+	afterRequestSource := extractJSFunctionBlockForTest(t, src, "function onAfterRequest(content, type)")
+	if !strings.Contains(afterRequestSource, `ensureActiveChatCompletedTurnsBackfilled(chatSessionId, { reason: "after_request_user_input_missing" })`) {
+		t.Fatal("missing startup input capture is not handed to the existing active-chat recovery owner")
+	}
+	primeSource := extractJSFunctionBlockForTest(t, src, "function primeTurnWorkflowHUD(requestId)")
+	if !strings.Contains(primeSource, `label_key: "turn_hud.stage.prepare_source"`) ||
+		!strings.Contains(primeSource, `consumeTurnWorkflowHUD({`) {
+		t.Fatal("HUD priming can still leave an empty surface before the first backend revision")
+	}
+}
+
+func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	bodySource := extractJSFunctionBlockForTest(t, src, "async function buildCompleteTurnRequestBody(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, sourceObservationOptions)")
+	if !strings.Contains(bodySource, `turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || ""`) {
+		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
+	}
+	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.0"`) {
+		t.Fatal("3.9.0 plugin build identity is not visible in the HUD")
+	}
+}
+
 func TestPocketRisuSwipeIdentityIsObservedWithoutInventingAnEditSignal(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -457,6 +495,113 @@ function trackTurnIndex(){}
 	}
 }
 
+func TestBeforeRequestSessionRouteFailureKeepsRisuPayloadRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for beforeRequest session-route fail-open fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	beforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	script := beforeRequest + `
+const SESSION_FALLBACK = "default";
+const settings = {enabled:true};
+const _pendingOrchBySession = new Map([[SESSION_FALLBACK, {pending:true}]]);
+let _effectiveInputAwaitingNewTurn = true;
+let _lastPrepareTurnSource = "backend-off";
+let _lastPrepareTurnBundle = null;
+let lastTurnTrace = null;
+let sessionCalls = 0;
+function recordRisuHookLifecycle() {}
+function debugLog() {}
+function warnLog() {}
+function clearArchiveCenterRecomposerBridge() {}
+function isSaveType(type) { return type === "model"; }
+function extractMessages(payload) { return {messages:payload.messages, hasMessageSlot:true}; }
+function normalizeMessagesForOrchestration(messages) { return messages; }
+function extractRuntimeCurrentChatTokenInfo() { return {}; }
+async function getCurrentChatSessionId() {
+  sessionCalls++;
+  throw new Error("session_route_binding_readback_unverified");
+}
+async function resolveCanonicalWriteSessionId() { throw new Error("must not run without a session"); }
+function updateRuntimeState() {}
+function buildLlmGateBlock() { return {code:"before_request_exception", reason:"route unavailable"}; }
+function newTurnTrace() { return {}; }
+function applyOrchestrationModuleTransportTraceOr1e() {}
+function buildOrchestrationModuleTransportStateOr1e() { return {}; }
+function pushTurnHistory() {}
+(async()=>{
+  const payload = {messages:[{role:"user",content:"keep Risu request"}]};
+  const result = await onBeforeRequest(payload,"model");
+  if (result !== payload) throw new Error("Risu payload identity changed");
+  if (sessionCalls !== 1) throw new Error("failed session route was called again: "+sessionCalls);
+  if (_pendingOrchBySession.has(SESSION_FALLBACK)) throw new Error("fallback pending state was not cleared");
+  if (!lastTurnTrace || !lastTurnTrace.deliveryGate || lastTurnTrace.deliveryGate.failOpenMainPayload !== true) {
+    throw new Error("Risu fail-open trace was not retained");
+  }
+})().catch(err=>{ console.error(err && err.stack || err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("beforeRequest session-route fail-open fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestOfficialAfterRequestFinalDoesNotRequireOptionalOrchestrationPendingState(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for afterRequest pending-state independence fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	acceptFinal := extractJSFunctionBlockForTest(t, src, "function acceptRisuAfterRequestFinal(sessionId, type, pendingContext, requestContext, assistantContent)")
+	script := `
+let lastOrchResult = null;
+function normalizeAssistantPersistenceCandidate(value){ return String(value || "").trim(); }
+function computeOrchestrationDirtyHashOr1c(value){ return "hash:" + String(value || ""); }
+` + acceptFinal + `
+const context = {
+  state:"captured",
+  requestId:"request-11",
+  sessionId:"session-1",
+  requestType:"model",
+  hostChatId:"host-chat-1",
+  requestMessageCount:21,
+  userMessageIndex:20,
+  userObservedContent:"current user input",
+  userObservedContentHash:"hash:current user input",
+};
+const accepted = acceptRisuAfterRequestFinal("session-1", "model", null, context, "visible final response");
+if (!accepted.accepted || accepted.reason !== "after_request_final_accepted" || context.state !== "accepted") {
+  throw new Error("official afterRequest final still depends on optional pending state: " + JSON.stringify(accepted));
+}
+const mismatchContext = Object.assign({}, context, {state:"captured", acceptedObservation:null, acceptedObservationKey:""});
+const rejected = acceptRisuAfterRequestFinal(
+  "session-1",
+  "model",
+  {requestId:"different-request", orchResult:null},
+  mismatchContext,
+  "another response"
+);
+if (rejected.reason !== "after_request_correlation_mismatch" || mismatchContext.state !== "terminal") {
+  throw new Error("present mismatched pending state was not rejected: " + JSON.stringify(rejected));
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("afterRequest pending-state independence fixture failed: %v\n%s", err, out)
+	}
+}
+
 func TestRisuLifecycleRegistrationAndRemovalAreIndependent(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -741,9 +886,11 @@ func TestTurnWorkflowHUDStopsAfterNonterminalEOF(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	line := extractJSFunctionBlockForTest(t, src, "async function consumeTurnWorkflowHUDStreamLine(line, token, requestId)")
 	consume := extractJSFunctionBlockForTest(t, src, "async function consumeTurnWorkflowHUDStream(reader, token, requestId)")
+	prime := extractJSFunctionBlockForTest(t, src, "function primeTurnWorkflowHUD(requestId)")
 	start := extractJSFunctionBlockForTest(t, src, "function startTurnWorkflowHUDWatch(requestId)")
 	script := `
 const settings = {bridgeUrl:"http://bridge"};
+const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v3";
 let _turnWorkflowHUDWatchToken = 0;
 let _turnWorkflowHUDActiveRequestId = "";
 let _turnWorkflowHUDWatchRunning = false;
@@ -752,6 +899,7 @@ let _turnWorkflowHUDTerminalRequestId = "";
 let _turnWorkflowHUDStreamAbortController = null;
 let _turnWorkflowHUDStreamReader = null;
 let _turnWorkflowHUDRenderChain = Promise.resolve();
+const _turnWorkflowHUDHostWarningsByRequestId = new Map();
 const opened = [];
 let transportError = "";
 let dismissedRequest = "";
@@ -763,6 +911,10 @@ function cancelTurnWorkflowHUDStream(){
   _turnWorkflowHUDStreamReader = null;
 }
 function clearTurnWorkflowHUDTimer(){}
+function turnWorkflowHUDHasHostWarning(requestId){
+  const warnings=_turnWorkflowHUDHostWarningsByRequestId.get(String(requestId||"").trim());
+  return Array.isArray(warnings) && warnings.length>0;
+}
 function queueTurnWorkflowHUDOperation(name,fn){ Promise.resolve().then(fn); }
 async function removeTurnWorkflowHUDDismissListeners(){}
 async function ensureTurnWorkflowHUDRoot(){ return {async setInnerHTML(){}}; }
@@ -786,7 +938,7 @@ async function openTurnWorkflowHUDStream(url){
   opened.push(url);
   return readerFor({request_id:"req-1",revision:1,status:"running"});
 }
-` + line + "\n" + consume + "\n" + start + `
+` + line + "\n" + consume + "\n" + prime + "\n" + start + `
 (async()=>{
   startTurnWorkflowHUDWatch("req-1");
   for(let i=0;i<50 && _turnWorkflowHUDWatchRunning;i++) await new Promise(resolve=>setTimeout(resolve,1));
@@ -916,11 +1068,16 @@ func TestExistingLLMRetryZeroReachesRuntimeConfigAndAdminCritic(t *testing.T) {
 	}
 	src := readArchiveCenterJS(t)
 	syncConfig := extractJSFunctionBlockForTest(t, src, "async function syncConfigToBackend(s)")
+	ensureBinding := extractJSFunctionBlockForTest(t, src, "async function ensureBackendRuntimeConfigBinding(backendInstanceId)")
+	markDirty := extractJSFunctionBlockForTest(t, src, "function markBackendRuntimeConfigDirty(reason)")
 	adminMeta := extractArchiveCenterJSSyncFunction(t, src, "buildAdminRuntimeClientMeta")
 	script := `
 const DEFAULT_SETTINGS={llmRetryCount:3,embeddingProvider:"openai",episodeIntervalTurns:8};
 const settings={llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai"};
+const _backendRuntimeConfigBinding={instanceId:"",dirty:true,configReady:false,code:"runtime_config_not_bound",missingRoles:[]};
 let syncedBody=null;
+let bridgeCalls=0;
+let bridgeResponse={status:"ok",backend_instance_id:"backend-a",runtime_config_trace:{synced:true}};
 function sanitizeNumber(value,fallback,min,max){ const n=Number(value); return Number.isFinite(n)?Math.max(min,Math.min(max,n)):fallback; }
 function resolveEffectiveCriticConfig(){ return {apiKey:"",endpoint:"",model:""}; }
 function getPluginMainProviderSetting(v){ return v||"openai"; }
@@ -946,12 +1103,30 @@ function failedQueueMaxAttempts(){ return 3; }
 function getRequestTimeoutSettingMs(){ return 1000; }
 function getCriticTimeoutMs(){ return 1000; }
 function getEmbeddingTimeoutMs(){ return 1000; }
-async function bridgeFetch(path,options){ syncedBody=options.body; return {status:"ok"}; }
+async function bridgeFetch(path,options){ bridgeCalls++; syncedBody=options.body; return bridgeResponse; }
 async function safeCall(fn){ return await fn(); }
-` + syncConfig + "\n" + adminMeta + `
+` + syncConfig + "\n" + ensureBinding + "\n" + markDirty + "\n" + adminMeta + `
 (async()=>{
   const result=await syncConfigToBackend({llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai"});
   if(!result.ok || !syncedBody || syncedBody.llmRetryCount !== 0) throw new Error("runtime config lost retry=0");
+  bridgeResponse={status:"ok",backend_instance_id:"backend-a",runtime_config_trace:{synced:true,main:{configured:true,missing_fields:[]},supervisor:{configured:false,missing_fields:["timeout_ms"]}}};
+  const incomplete=await syncConfigToBackend({llmRetryCount:0,pluginMainProvider:"openai",pluginMainApiKey:"key",pluginMainEndpoint:"https://example.test/v1",pluginMainModel:"model",subLlmProvider:"openai"});
+  if(incomplete.ok || !incomplete.code.includes("supervisor[timeout_ms]")) throw new Error("runtime role incompleteness was accepted: "+incomplete.code);
+  const callsAfterIncomplete=bridgeCalls;
+  const unchangedIncomplete=await ensureBackendRuntimeConfigBinding("backend-a");
+  if(!unchangedIncomplete.skipped || unchangedIncomplete.ok || bridgeCalls!==callsAfterIncomplete) throw new Error("unchanged incomplete config was retransmitted");
+  bridgeResponse={status:"ok",backend_instance_id:"backend-a",runtime_config_trace:{synced:true,main:{configured:true,missing_fields:[]},supervisor:{configured:true,missing_fields:[]}}};
+  const complete=await syncConfigToBackend({llmRetryCount:0,pluginMainProvider:"openai",pluginMainApiKey:"key",pluginMainEndpoint:"https://example.test/v1",pluginMainModel:"model",subLlmProvider:"openai"});
+  if(!complete.ok) throw new Error("complete runtime role trace was rejected: "+complete.code);
+  const callsAfterComplete=bridgeCalls;
+  const unchanged=await ensureBackendRuntimeConfigBinding("backend-a");
+  if(!unchanged.ok || !unchanged.skipped || bridgeCalls!==callsAfterComplete) throw new Error("same backend instance retransmitted runtime config");
+  bridgeResponse={status:"ok",backend_instance_id:"backend-b",runtime_config_trace:{synced:true}};
+  const restarted=await ensureBackendRuntimeConfigBinding("backend-b");
+  if(!restarted.ok || restarted.skipped || bridgeCalls!==callsAfterComplete+1) throw new Error("backend restart did not trigger one config bind");
+  markBackendRuntimeConfigDirty("settings_changed");
+  const saved=await ensureBackendRuntimeConfigBinding("backend-b");
+  if(!saved.ok || saved.skipped || bridgeCalls!==callsAfterComplete+2) throw new Error("settings save did not trigger one config bind");
   const meta=buildAdminRuntimeClientMeta();
   if(meta.critic.retry_count !== 0) throw new Error("admin critic meta lost retry=0");
 })().catch(err=>{ console.error(err); process.exitCode=1; });

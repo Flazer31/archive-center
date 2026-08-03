@@ -74,6 +74,170 @@ func (f *identityRecordingStore) SaveSpeakerAttribution(ctx context.Context, ite
 	return nil
 }
 
+type identityAliasLinkRecordingStore struct {
+	*identityRecordingStore
+	links []*store.EntityIdentityLink
+}
+
+func newIdentityAliasLinkRecordingStore() *identityAliasLinkRecordingStore {
+	return &identityAliasLinkRecordingStore{identityRecordingStore: newIdentityRecordingStore()}
+}
+
+func (f *identityAliasLinkRecordingStore) SaveEntityIdentityLink(_ context.Context, item *store.EntityIdentityLink) error {
+	cp := *item
+	f.links = append(f.links, &cp)
+	return nil
+}
+
+func (f *identityAliasLinkRecordingStore) ResolveUniqueActiveEntityIdentityBySurface(_ context.Context, sid, normalizedSurface string) (store.ResolvedEntityIdentity, error) {
+	canonicalIDs := map[string]bool{}
+	for _, surface := range f.surfaces {
+		if surface.ChatSessionID != sid || surface.ReviewState != "source_observed" || surface.NormalizedSurface != normalizedSurface {
+			continue
+		}
+		canonicalID := surface.StableEntityID
+		for changed := true; changed; {
+			changed = false
+			for _, link := range f.links {
+				if link.ChatSessionID == sid && link.LinkKind == store.EntityIdentityLinkKindCanonicalEquivalence &&
+					link.LinkState == store.EntityIdentityLinkStateReviewed && link.SourceEntityID == canonicalID &&
+					link.TargetEntityID != canonicalID {
+					canonicalID = link.TargetEntityID
+					changed = true
+				}
+			}
+		}
+		canonicalIDs[canonicalID] = true
+	}
+	if len(canonicalIDs) == 0 {
+		return store.ResolvedEntityIdentity{}, store.ErrNotFound
+	}
+	if len(canonicalIDs) != 1 {
+		return store.ResolvedEntityIdentity{}, store.ErrReviewedEntityIdentityAmbiguous
+	}
+	for canonicalID := range canonicalIDs {
+		for index := len(f.identities) - 1; index >= 0; index-- {
+			identity := f.identities[index]
+			if identity.StableEntityID == canonicalID {
+				return store.ResolvedEntityIdentity{
+					StableEntityID: canonicalID, IdentityNamespace: identity.IdentityNamespace, CanonicalLabel: identity.CanonicalLabel,
+				}, nil
+			}
+		}
+	}
+	return store.ResolvedEntityIdentity{}, store.ErrNotFound
+}
+
+func Test39ExplicitSourceGroundedAliasLinksShortAndFullCharacterNames(t *testing.T) {
+	fake := newIdentityAliasLinkRecordingStore()
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	first := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{"name": "Jiyu"}}}}
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-39-alias-link", 1, first, "Jiyu smiled.", completeTurnEmbeddingConfig{}, time.Unix(100, 0))
+	if result.Errors != 0 {
+		t.Fatalf("first identity projection errors: %#v", result.ErrorDetails)
+	}
+
+	evidence := `Hyun Jiyu said, "Call me Jiyu."`
+	second := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{
+		"name": "Hyun Jiyu", "aliases": []any{"Jiyu"}, "identity_evidence_excerpt": evidence,
+	}}}}
+	result = srv.saveCriticExtractionArtifacts(context.Background(), "sess-39-alias-link", 2, second, evidence, completeTurnEmbeddingConfig{}, time.Unix(200, 0))
+	if result.Errors != 0 {
+		t.Fatalf("second identity projection errors: %#v", result.ErrorDetails)
+	}
+	if result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
+		t.Fatalf("identity links saved=%d links=%#v", result.EntityIdentityLinks, fake.links)
+	}
+	link := fake.links[0]
+	if link.LinkKind != store.EntityIdentityLinkKindCanonicalEquivalence || link.LinkState != store.EntityIdentityLinkStateReviewed {
+		t.Fatalf("unexpected reviewed identity link: %#v", link)
+	}
+	if got := srv.canonicalCharacterName(context.Background(), "sess-39-alias-link", "Jiyu"); got != "Hyun Jiyu" {
+		t.Fatalf("canonical character name=%q want %q", got, "Hyun Jiyu")
+	}
+}
+
+func Test39AcceptedAliasCanLinkToUniquePriorCanonicalWithoutRepeatingFullName(t *testing.T) {
+	fake := newIdentityAliasLinkRecordingStore()
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	first := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{"name": "Hyun Jiyu"}}}}
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-39-prior-canonical", 1, first, "Hyun Jiyu entered the cafe.", completeTurnEmbeddingConfig{}, time.Unix(100, 0))
+	if result.Errors != 0 {
+		t.Fatalf("first identity projection errors: %#v", result.ErrorDetails)
+	}
+
+	evidence := "Jiyu smiled and watched his reaction."
+	second := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{
+		"name": "Hyun Jiyu", "aliases": []any{"Jiyu"}, "identity_evidence_excerpt": evidence,
+	}}}}
+	result = srv.saveCriticExtractionArtifacts(context.Background(), "sess-39-prior-canonical", 2, second, evidence, completeTurnEmbeddingConfig{}, time.Unix(200, 0))
+	if result.Errors != 0 {
+		t.Fatalf("second identity projection errors: %#v", result.ErrorDetails)
+	}
+	if result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
+		t.Fatalf("prior canonical alias link missing: saved=%d links=%#v", result.EntityIdentityLinks, fake.links)
+	}
+	if got := srv.canonicalCharacterName(context.Background(), "sess-39-prior-canonical", "Jiyu"); got != "Hyun Jiyu" {
+		t.Fatalf("canonical character name=%q want %q", got, "Hyun Jiyu")
+	}
+	identityAliases := buildPrepareTurnEntityIdentityAliases(context.Background(), fake, "sess-39-prior-canonical", []store.CharacterState{
+		{ChatSessionID: "sess-39-prior-canonical", CharacterName: "Hyun Jiyu"},
+		{ChatSessionID: "sess-39-prior-canonical", CharacterName: "Jiyu"},
+	}, nil)
+	scope := buildPrepareTurnRequestEntityScopeWithAliases("Jiyu smiled.", "", []string{"Hyun Jiyu", "Jiyu"}, identityAliases)
+	if len(scope.Direct) != 1 || scope.Direct[0] != "Hyun Jiyu" {
+		t.Fatalf("reviewed identity alias did not canonicalize prepare-turn scope: aliases=%#v scope=%#v", identityAliases, scope)
+	}
+
+	projection := srv.canonicalCharacterReadProjection(context.Background(), "sess-39-prior-canonical", []store.CharacterState{
+		{ID: 1, ChatSessionID: "sess-39-prior-canonical", CharacterName: "Hyun Jiyu", PersonalityJSON: `{"contract_version":"character_profile.v1"}`, TurnIndex: 1},
+		{ID: 2, ChatSessionID: "sess-39-prior-canonical", CharacterName: "Jiyu", SpeechStyleJSON: `{"contract_version":"voice_behavior_projection.v1"}`, TurnIndex: 2},
+	}, nil)
+	if len(projection.States) != 1 {
+		t.Fatalf("canonical character rows remained split: %#v", projection.States)
+	}
+	state := projection.States[0]
+	if state.CharacterName != "Hyun Jiyu" || state.PersonalityJSON == "" || state.SpeechStyleJSON == "" {
+		t.Fatalf("canonical character projection lost alias surfaces: %#v", state)
+	}
+	if aliases := projection.Aliases[comparableEntityKey("Hyun Jiyu")]; len(aliases) != 1 || aliases[0] != "Jiyu" {
+		t.Fatalf("canonical character aliases=%#v want Jiyu", aliases)
+	}
+
+	groups := srv.subjectiveEntityMemoryGroups(context.Background(), "sess-39-prior-canonical", []store.ProtagonistEntityMemory{
+		{ID: 1, SourceChatSessionID: "sess-39-prior-canonical", OwnerEntityKey: "hyunjiyu", OwnerEntityName: "Hyun Jiyu", MemoryText: "full-name memory", SourceTurn: 1},
+		{ID: 2, SourceChatSessionID: "sess-39-prior-canonical", OwnerEntityKey: "jiyu", OwnerEntityName: "Jiyu", MemoryText: "short-name memory", SourceTurn: 2},
+	})
+	if len(groups) != 1 || intFromAny(groups[0]["memory_count"], 0) != 2 || stringFromMap(groups[0], "owner_entity_name") != "Hyun Jiyu" {
+		t.Fatalf("canonical subjective memory groups remained split: %#v", groups)
+	}
+}
+
+func Test39AliasWithoutExactIdentityEvidenceRemainsUnlinked(t *testing.T) {
+	fake := newIdentityAliasLinkRecordingStore()
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	extraction := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{
+		"name": "Hoshino Ai", "aliases": []any{"Ai"},
+	}}}}
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-39-alias-review", 1, extraction, "Hoshino Ai entered. An ai system chimed.", completeTurnEmbeddingConfig{}, time.Unix(100, 0))
+	if result.Errors != 0 {
+		t.Fatalf("identity projection errors: %#v", result.ErrorDetails)
+	}
+	if result.EntityIdentityLinks != 0 || len(fake.links) != 0 {
+		t.Fatalf("unsupported alias was linked: %#v", fake.links)
+	}
+	for _, surface := range fake.surfaces {
+		if surface.SurfaceKind == "alias_0" && surface.ReviewState != "needs_review" {
+			t.Fatalf("unsupported alias was promoted: %#v", surface)
+		}
+	}
+}
+
 func Test36BHomonymsRemainSeparateStableIdentities(t *testing.T) {
 	fake := newIdentityRecordingStore()
 	srv := NewServer(config.Default())
@@ -352,21 +516,28 @@ func Test36BUngroundedCharacterStateBindingNeedsReview(t *testing.T) {
 	fake := newIdentityRecordingStore()
 	srv := NewServer(config.Default())
 	srv.Store = fake
-	_ = srv.saveCriticExtractionArtifacts(context.Background(), "sess-36b-state-review", 11, map[string]any{
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-36b-state-review", 11, map[string]any{
 		"character_deltas": []any{
-			map[string]any{"name": "Mina", "status": map[string]any{"mood": "calm"}},
+			map[string]any{
+				"name":               "Mina",
+				"reference_contract": "critic_entity_reference.v1",
+				"reference_scope":    "session_stable",
+				"name_expression":    "Mina",
+				"evidence_excerpt":   "Mina stayed calm.",
+				"status":             map[string]any{"mood": "calm"},
+			},
 		},
 	}, "Someone stayed calm.", completeTurnEmbeddingConfig{}, time.Unix(1100, 0))
-
-	for _, binding := range fake.bindings {
-		if binding.ArtifactKind == "character_state" {
-			if binding.ReviewState != "needs_review" {
-				t.Fatalf("ungrounded character state binding was promoted: %#v", binding)
-			}
+	if len(fake.savedCharacterStates) != 0 || len(fake.bindings) != 0 {
+		t.Fatalf("ungrounded character state must not persist or bind: states=%#v bindings=%#v", fake.savedCharacterStates, fake.bindings)
+	}
+	for _, reason := range result.SkipReasons {
+		if stringFromMap(reason, "surface") == "character_deltas" &&
+			stringFromMap(reason, "reason") == "current_projection_source_binding_missing" {
 			return
 		}
 	}
-	t.Fatalf("missing character state identity binding: %#v", fake.bindings)
+	t.Fatalf("missing exact-evidence skip reason: %#v", result.SkipReasons)
 }
 
 func Test36BRepeatedSpeakerExcerptUsesDistinctSourceOccurrences(t *testing.T) {
@@ -773,7 +944,7 @@ func Test36BAliasOnlyCommonNounMentionDoesNotResolveIdentity(t *testing.T) {
 	}
 }
 
-func Test36BSkippedPlaceholderEntityCannotCreateAliasConflict(t *testing.T) {
+func Test36BRoleLabelEntityDoesNotTriggerHardcodedPlaceholderFilter(t *testing.T) {
 	fake := newIdentityRecordingStore()
 	srv := NewServer(config.Default())
 	srv.Store = fake
@@ -797,9 +968,11 @@ func Test36BSkippedPlaceholderEntityCannotCreateAliasConflict(t *testing.T) {
 	if result.Errors != 0 {
 		t.Fatalf("identity projection errors: %#v", result.ErrorDetails)
 	}
-	if len(fake.identities) != 1 ||
-		fake.identities[0].CanonicalLabel != "Mina" ||
-		fake.identities[0].ReviewState != "source_observed" {
-		t.Fatalf("skipped placeholder created a ghost alias conflict: %#v", fake.identities)
+	labels := map[string]bool{}
+	for _, identity := range fake.identities {
+		labels[identity.CanonicalLabel] = true
+	}
+	if len(fake.identities) != 2 || !labels["Mina"] || !labels["user"] {
+		t.Fatalf("role-like story entity was removed by a fixed placeholder vocabulary: %#v", fake.identities)
 	}
 }

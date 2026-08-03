@@ -12,14 +12,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
 const (
-	turnWorkflowHUDContractVersion                  = "turn_workflow_hud.v2"
+	turnWorkflowHUDContractVersion                  = "turn_workflow_hud.v3"
 	turnWorkflowHUDNoticeObservationContractVersion = "turn_workflow_notice_observation.v1"
+	turnWorkflowHUDRecoveryRequestContractVersion   = "turn_workflow_recovery_request.v1"
 	turnWorkflowHUDMaxEntries                       = 512
+)
+
+const (
+	turnWorkflowHUDRecoveryRetryDerivedTurn = "retry_derived_turn"
 )
 
 const (
@@ -83,7 +89,8 @@ var turnWorkflowHUDCountTemplates = []turnWorkflowHUDCount{
 	{Key: "turn_summary", LabelKey: "turn_hud.count.turn_summary"},
 	{Key: "precise_memory", LabelKey: "turn_hud.count.precise_memory"},
 	{Key: "direct_evidence", LabelKey: "turn_hud.count.direct_evidence"},
-	{Key: "relationship_knowledge", LabelKey: "turn_hud.count.relationship_knowledge"},
+	{Key: "knowledge_graph", LabelKey: "turn_hud.count.knowledge_graph"},
+	{Key: "relationship_state", LabelKey: "turn_hud.count.relationship_state"},
 	{Key: "entity_identity", LabelKey: "turn_hud.count.entity_identity"},
 	{Key: "identity_surface", LabelKey: "turn_hud.count.identity_surface"},
 	{Key: "identity_binding", LabelKey: "turn_hud.count.identity_binding"},
@@ -134,6 +141,7 @@ type turnWorkflowHUDFact struct {
 	Status      string `json:"status"`
 	Disposition string `json:"disposition,omitempty"`
 	ReasonCode  string `json:"reason_code,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 	Severity    string `json:"severity"`
 	Count       *int   `json:"count,omitempty"`
 }
@@ -178,11 +186,33 @@ type turnWorkflowHUDMemorySelection struct {
 }
 
 type turnWorkflowHUDError struct {
-	Code            string                 `json:"code"`
-	MessageKey      string                 `json:"message_key"`
-	StageKey        string                 `json:"stage_key"`
-	Retryable       bool                   `json:"retryable"`
-	PreservedCounts []turnWorkflowHUDCount `json:"preserved_counts"`
+	Code            string                          `json:"code"`
+	MessageKey      string                          `json:"message_key"`
+	StageKey        string                          `json:"stage_key"`
+	Retryable       bool                            `json:"retryable"`
+	PreservedCounts []turnWorkflowHUDCount          `json:"preserved_counts"`
+	Details         []turnWorkflowHUDDetail         `json:"details,omitempty"`
+	RecoveryActions []turnWorkflowHUDRecoveryAction `json:"recovery_actions,omitempty"`
+}
+
+type turnWorkflowHUDRecoveryAction struct {
+	ID                string `json:"id"`
+	LabelKey          string `json:"label_key"`
+	ConfirmTitleKey   string `json:"confirm_title_key"`
+	ConfirmMessageKey string `json:"confirm_message_key"`
+	Status            string `json:"status"`
+	StatusMessageKey  string `json:"status_message_key,omitempty"`
+}
+
+type turnWorkflowHUDDetail struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type turnWorkflowHUDRecoveryRequest struct {
+	ContractVersion string `json:"contract_version"`
+	RequestID       string `json:"request_id"`
+	ActionID        string `json:"action_id"`
 }
 
 type turnWorkflowHUDViewModel struct {
@@ -235,6 +265,7 @@ type turnWorkflowHUDNoticeObservation struct {
 type turnWorkflowHUDLedger struct {
 	mu              sync.Mutex
 	entries         map[string]*turnWorkflowHUDEntry
+	entryAdded      chan struct{}
 	activeBySession map[string]string
 	latestByTurn    map[string]string
 	attemptByTurn   map[string]int
@@ -245,6 +276,7 @@ type turnWorkflowHUDLedger struct {
 func newTurnWorkflowHUDLedger() *turnWorkflowHUDLedger {
 	return &turnWorkflowHUDLedger{
 		entries:         map[string]*turnWorkflowHUDEntry{},
+		entryAdded:      make(chan struct{}),
 		activeBySession: map[string]string{},
 		latestByTurn:    map[string]string{},
 		attemptByTurn:   map[string]int{},
@@ -340,6 +372,8 @@ func (l *turnWorkflowHUDLedger) begin(requestID, sessionID string, logicalTurn i
 	})
 	entry.history = append(entry.history, cloneTurnWorkflowHUDView(entry.view))
 	l.entries[requestID] = entry
+	close(l.entryAdded)
+	l.entryAdded = make(chan struct{})
 	l.advanceSequenceLocked(entry)
 	l.resolveAttemptLocked(entry, now)
 	l.activeBySession[sessionID] = requestID
@@ -414,6 +448,7 @@ func turnWorkflowHUDFactsEqual(left, right turnWorkflowHUDFact) bool {
 		left.Status != right.Status ||
 		left.Disposition != right.Disposition ||
 		left.ReasonCode != right.ReasonCode ||
+		left.Detail != right.Detail ||
 		left.Severity != right.Severity {
 		return false
 	}
@@ -442,6 +477,36 @@ func (l *turnWorkflowHUDLedger) setPersistenceFacts(
 	} {
 		l.setFact(requestID, fact)
 	}
+}
+
+func (l *turnWorkflowHUDLedger) setPersistenceFailureDetail(
+	requestID, key, reasonCode, detail string,
+	committedCount int,
+) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[strings.TrimSpace(requestID)]
+	if entry == nil {
+		return
+	}
+	for index := range entry.view.Facts {
+		fact := &entry.view.Facts[index]
+		if fact.Key != strings.TrimSpace(key) {
+			continue
+		}
+		fact.Status = "failed"
+		fact.Disposition = "dropped"
+		fact.ReasonCode = strings.TrimSpace(reasonCode)
+		fact.Detail = strings.TrimSpace(detail)
+		fact.Severity = turnWorkflowHUDSeverityError
+		fact.Count = intValuePtr(maxInt(0, committedCount))
+		break
+	}
+	syncTurnWorkflowHUDPresentation(&entry.view)
+	l.touchLocked(entry, time.Now().UTC())
 }
 
 func (l *turnWorkflowHUDLedger) addNotice(requestID, code, messageKey, stageKey string) {
@@ -584,6 +649,14 @@ func (l *turnWorkflowHUDLedger) awaitFinal(requestID string) {
 }
 
 func (l *turnWorkflowHUDLedger) fail(requestID, code, messageKey, stageKey string, retryable bool) {
+	l.failWithDetails(requestID, code, messageKey, stageKey, retryable, nil)
+}
+
+func (l *turnWorkflowHUDLedger) failWithDetails(
+	requestID, code, messageKey, stageKey string,
+	retryable bool,
+	details []turnWorkflowHUDDetail,
+) {
 	if l == nil {
 		return
 	}
@@ -608,23 +681,89 @@ func (l *turnWorkflowHUDLedger) fail(requestID, code, messageKey, stageKey strin
 	}
 	entry.view.Status = "failed"
 	entry.view.Severity = turnWorkflowHUDSeverityError
+	failureDetail := turnWorkflowHUDDetailsText(details)
 	setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
 		Key: "backend_processing", Owner: "go_backend", Scope: "current_request",
-		Status: "failed", Disposition: "dropped", ReasonCode: strings.TrimSpace(code), Severity: turnWorkflowHUDSeverityError,
+		Status: "failed", Disposition: "dropped", ReasonCode: strings.TrimSpace(code), Detail: failureDetail, Severity: turnWorkflowHUDSeverityError,
 	})
 	setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
 		Key: "finality", Owner: "go_backend", Scope: "current_request",
-		Status: "failed", Disposition: "dropped", ReasonCode: strings.TrimSpace(code), Severity: turnWorkflowHUDSeverityError,
+		Status: "failed", Disposition: "dropped", ReasonCode: strings.TrimSpace(code), Detail: failureDetail, Severity: turnWorkflowHUDSeverityError,
 	})
 	entry.view.EndedAt = timePtr(now)
 	entry.view.Error = &turnWorkflowHUDError{
 		Code: strings.TrimSpace(code), MessageKey: strings.TrimSpace(messageKey), StageKey: strings.TrimSpace(stageKey),
 		Retryable: retryable, PreservedCounts: cloneTurnWorkflowHUDCounts(entry.view.Counts),
+		Details: cloneTurnWorkflowHUDDetails(details),
+		RecoveryActions: turnWorkflowHUDRecoveryActions(
+			code,
+			entry.view.ChatSessionID,
+			entry.view.LogicalTurn,
+			details,
+		),
 	}
 	if l.activeBySession[entry.view.ChatSessionID] == entry.view.RequestID {
 		delete(l.activeBySession, entry.view.ChatSessionID)
 	}
 	l.touchLocked(entry, now)
+}
+
+func turnWorkflowHUDRecoveryActions(
+	code string,
+	chatSessionID string,
+	logicalTurn int,
+	details []turnWorkflowHUDDetail,
+) []turnWorkflowHUDRecoveryAction {
+	if strings.TrimSpace(code) == "" ||
+		strings.TrimSpace(chatSessionID) == "" || logicalTurn <= 0 ||
+		!turnWorkflowHUDDetailMatches(details, "reprocessing", "queued") {
+		return nil
+	}
+	return []turnWorkflowHUDRecoveryAction{
+		{
+			ID:                turnWorkflowHUDRecoveryRetryDerivedTurn,
+			LabelKey:          "turn_hud.recovery.retry_derived_turn",
+			ConfirmTitleKey:   "turn_hud.recovery.confirm_title",
+			ConfirmMessageKey: "turn_hud.recovery.confirm_retry_derived_turn",
+			Status:            "available",
+		},
+	}
+}
+
+func turnWorkflowHUDDetailMatches(details []turnWorkflowHUDDetail, key, value string) bool {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	for _, detail := range details {
+		if strings.TrimSpace(detail.Key) == key && strings.TrimSpace(detail.Value) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *turnWorkflowHUDLedger) setRecoveryActionStatus(
+	requestID, actionID, status, statusMessageKey string,
+) (turnWorkflowHUDViewModel, bool) {
+	if l == nil {
+		return turnWorkflowHUDViewModel{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[strings.TrimSpace(requestID)]
+	if entry == nil || entry.view.Error == nil {
+		return turnWorkflowHUDViewModel{}, false
+	}
+	for index := range entry.view.Error.RecoveryActions {
+		action := &entry.view.Error.RecoveryActions[index]
+		if action.ID != strings.TrimSpace(actionID) {
+			continue
+		}
+		action.Status = strings.TrimSpace(status)
+		action.StatusMessageKey = strings.TrimSpace(statusMessageKey)
+		l.touchLocked(entry, time.Now().UTC())
+		return cloneTurnWorkflowHUDView(entry.view), true
+	}
+	return turnWorkflowHUDViewModel{}, false
 }
 
 func (l *turnWorkflowHUDLedger) invalidate(requestID, reasonCode string) {
@@ -842,11 +981,21 @@ func (l *turnWorkflowHUDLedger) streamSnapshots(
 	if l == nil || emit == nil {
 		return false, nil
 	}
-	l.mu.Lock()
-	entry := l.entries[strings.TrimSpace(requestID)]
-	l.mu.Unlock()
-	if entry == nil {
-		return false, nil
+	requestID = strings.TrimSpace(requestID)
+	var entry *turnWorkflowHUDEntry
+	for entry == nil {
+		l.mu.Lock()
+		entry = l.entries[requestID]
+		entryAdded := l.entryAdded
+		l.mu.Unlock()
+		if entry != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-entryAdded:
+		}
 	}
 	for {
 		l.mu.Lock()
@@ -1243,6 +1392,8 @@ func (l *turnWorkflowHUDLedger) recordOperation(view turnWorkflowHUDViewModel) t
 		changed: make(chan struct{}),
 	}
 	l.entries[view.RequestID] = entry
+	close(l.entryAdded)
+	l.entryAdded = make(chan struct{})
 	l.advanceSequenceLocked(entry)
 	l.ensureCapacityLocked(now)
 	return cloneTurnWorkflowHUDView(view)
@@ -1273,6 +1424,11 @@ func cloneTurnWorkflowHUDView(source turnWorkflowHUDViewModel) turnWorkflowHUDVi
 	if source.Error != nil {
 		errorCopy := *source.Error
 		errorCopy.PreservedCounts = cloneTurnWorkflowHUDCounts(source.Error.PreservedCounts)
+		errorCopy.Details = cloneTurnWorkflowHUDDetails(source.Error.Details)
+		errorCopy.RecoveryActions = append(
+			[]turnWorkflowHUDRecoveryAction(nil),
+			source.Error.RecoveryActions...,
+		)
 		out.Error = &errorCopy
 	}
 	return out
@@ -1425,6 +1581,26 @@ func cloneTurnWorkflowHUDCounts(source []turnWorkflowHUDCount) []turnWorkflowHUD
 	return append([]turnWorkflowHUDCount(nil), source...)
 }
 
+func cloneTurnWorkflowHUDDetails(source []turnWorkflowHUDDetail) []turnWorkflowHUDDetail {
+	return append([]turnWorkflowHUDDetail(nil), source...)
+}
+
+func turnWorkflowHUDDetailsText(details []turnWorkflowHUDDetail) string {
+	parts := make([]string, 0, len(details))
+	for _, detail := range details {
+		key := strings.TrimSpace(detail.Key)
+		value := strings.TrimSpace(detail.Value)
+		if value == "" {
+			continue
+		}
+		if key == "" {
+			key = "detail"
+		}
+		parts = append(parts, key+"="+value)
+	}
+	return strings.Join(parts, " / ")
+}
+
 func cloneTurnWorkflowHUDStage(source *turnWorkflowHUDStage) *turnWorkflowHUDStage {
 	if source == nil {
 		return nil
@@ -1443,6 +1619,226 @@ func turnWorkflowHUDDurationMS(startedAt, endedAt *time.Time) int64 {
 		return 0
 	}
 	return endedAt.Sub(*startedAt).Milliseconds()
+}
+
+func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Request) {
+	var req turnWorkflowHUDRecoveryRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid turn workflow recovery request")
+		return
+	}
+	req.ContractVersion = strings.TrimSpace(req.ContractVersion)
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	req.ActionID = strings.TrimSpace(req.ActionID)
+	if req.ContractVersion != turnWorkflowHUDRecoveryRequestContractVersion {
+		writeError(w, http.StatusBadRequest, "unsupported_contract", "unsupported turn workflow recovery contract")
+		return
+	}
+	if req.RequestID == "" || req.ActionID == "" {
+		writeError(w, http.StatusBadRequest, "missing_param", "request_id and action_id are required")
+		return
+	}
+	if s == nil || s.TurnWorkflows == nil {
+		writeError(w, http.StatusNotFound, "unknown_workflow", "turn workflow not found")
+		return
+	}
+	view, ok := s.TurnWorkflows.snapshot(req.RequestID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "unknown_workflow", "turn workflow not found")
+		return
+	}
+	action, actionOK := turnWorkflowHUDRecoveryActionByID(view.Error, req.ActionID)
+	if !actionOK || req.ActionID != turnWorkflowHUDRecoveryRetryDerivedTurn {
+		writeError(w, http.StatusConflict, "recovery_action_unavailable", "turn workflow recovery action is unavailable")
+		return
+	}
+	if action.Status != "available" {
+		if action.Status == "requested" || action.Status == "running" {
+			s.wakeMemoryWorkers()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":            "ok",
+			"recovery_state":    action.Status,
+			"request_id":        req.RequestID,
+			"chat_session_id":   view.ChatSessionID,
+			"turn_index":        view.LogicalTurn,
+			"turn_workflow_hud": view,
+		})
+		return
+	}
+	if s.Cfg.StoreMode != config.StoreModeMariaDBAuthority || s.Store == nil {
+		writeError(w, http.StatusConflict, "recovery_store_unavailable", "derived-memory recovery requires the MariaDB authority store")
+		return
+	}
+	if availability, ok := s.Store.(store.MemoryDerivationLifecycleAvailability); !ok ||
+		!availability.MemoryDerivationLifecycleEnabled() {
+		writeError(w, http.StatusConflict, "recovery_lifecycle_unavailable", "derived-memory recovery lifecycle is unavailable")
+		return
+	}
+	if !s.runtimeConfigSnapshot().Synced {
+		writeError(w, http.StatusConflict, "runtime_config_not_synced", "runtime model configuration is not synchronized")
+		return
+	}
+	if !s.completeTurnExtractionConfig(nil).Critic.hasConfig() {
+		writeError(w, http.StatusConflict, "critic_config_missing", "critic configuration is unavailable")
+		return
+	}
+	lister, listOK := s.Store.(store.ActiveSourceRevisionLister)
+	sources, sourceOK := s.Store.(store.SourceRevisionStore)
+	jobs, jobsOK := s.Store.(store.MemoryReprocessingJobStore)
+	reopener, reopenOK := s.Store.(store.MemoryReprocessingJobReopener)
+	if !listOK || !sourceOK || !jobsOK || !reopenOK {
+		writeError(w, http.StatusConflict, "recovery_capability_unavailable", "scoped derived-memory recovery is unavailable")
+		return
+	}
+	candidates, err := lister.ListActiveSourceRevisions(
+		r.Context(),
+		view.ChatSessionID,
+		view.LogicalTurn,
+		view.LogicalTurn,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "recovery_source_lookup_failed", err.Error())
+		return
+	}
+	exact := make([]store.MemorySourceRevision, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.ChatSessionID == view.ChatSessionID && candidate.TurnIndex == view.LogicalTurn {
+			exact = append(exact, candidate)
+		}
+	}
+	if len(exact) != 1 {
+		writeError(w, http.StatusConflict, "recovery_source_not_unique", "exactly one active source revision is required for this turn")
+		return
+	}
+	source, err := sources.GetSourceRevision(r.Context(), view.ChatSessionID, exact[0].SourceRevision)
+	if err != nil || source == nil {
+		if err == nil {
+			err = store.ErrNotFound
+		}
+		writeError(w, http.StatusConflict, "recovery_source_unavailable", err.Error())
+		return
+	}
+	projectionComplete, err := s.adminRescanSourceProjectionComplete(r.Context(), source)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "recovery_projection_check_failed", err.Error())
+		return
+	}
+	if projectionComplete {
+		updated, _ := s.TurnWorkflows.setRecoveryActionStatus(
+			req.RequestID,
+			req.ActionID,
+			"completed",
+			"turn_hud.recovery.completed",
+		)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":            "ok",
+			"recovery_state":    "completed",
+			"request_id":        req.RequestID,
+			"chat_session_id":   view.ChatSessionID,
+			"turn_index":        view.LogicalTurn,
+			"turn_workflow_hud": updated,
+		})
+		return
+	}
+	idempotencyKey := completeTurnReprocessingIdempotencyKey(
+		source.ChatSessionID,
+		source.SourceRevision,
+		store.MemoryAdmissionContract,
+		completeTurnCriticPipelineVersion,
+		memoryAdmissionIndexVersion,
+	)
+	recoveryState := "requested"
+	reopened, reopenErr := reopener.ReopenMemoryReprocessingJob(
+		r.Context(),
+		idempotencyKey,
+		source.ChatSessionID,
+		source.SourceRevision,
+		time.Now().UTC(),
+	)
+	switch {
+	case reopenErr == nil && reopened:
+		s.wakeMemoryWorkers()
+	case errors.Is(reopenErr, store.ErrMemoryReprocessingLeased):
+		recoveryState = "running"
+	case errors.Is(reopenErr, store.ErrNotFound):
+		inserted, enqueueErr := s.enqueueSourceRevisionReprocessingJob(
+			r.Context(),
+			jobs,
+			source,
+			"turn_workflow_hud_recovery_requested",
+			time.Now().UTC(),
+		)
+		if enqueueErr != nil {
+			writeError(w, http.StatusInternalServerError, "recovery_enqueue_failed", enqueueErr.Error())
+			return
+		}
+		if !inserted {
+			recoveryState = "running"
+			s.wakeMemoryWorkers()
+		}
+	case reopenErr != nil:
+		writeError(w, http.StatusInternalServerError, "recovery_reopen_failed", reopenErr.Error())
+		return
+	default:
+		recoveryState = "running"
+		s.wakeMemoryWorkers()
+	}
+	statusMessageKey := "turn_hud.recovery.requested"
+	if recoveryState == "running" {
+		statusMessageKey = "turn_hud.recovery.running"
+	}
+	updated, updatedOK := s.TurnWorkflows.setRecoveryActionStatus(
+		req.RequestID,
+		req.ActionID,
+		recoveryState,
+		statusMessageKey,
+	)
+	if !updatedOK {
+		writeError(w, http.StatusConflict, "recovery_action_stale", "turn workflow recovery action is no longer available")
+		return
+	}
+	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
+		ChatSessionID: view.ChatSessionID,
+		EventType:     "turn_workflow_recovery_requested",
+		TargetType:    "turn",
+		TargetID:      int64(view.LogicalTurn),
+		Summary:       "Requested scoped Critic-derived memory recovery",
+		DetailsJSON: mustCompactJSON(map[string]any{
+			"request_id":      req.RequestID,
+			"action_id":       req.ActionID,
+			"source_revision": source.SourceRevision,
+			"recovery_state":  recoveryState,
+			"raw_preserved":   true,
+		}),
+		Source:    s.storeWriteSource(),
+		CreatedAt: time.Now().UTC(),
+	})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":            "accepted",
+		"recovery_state":    recoveryState,
+		"request_id":        req.RequestID,
+		"chat_session_id":   view.ChatSessionID,
+		"turn_index":        view.LogicalTurn,
+		"turn_workflow_hud": updated,
+	})
+}
+
+func turnWorkflowHUDRecoveryActionByID(
+	hudError *turnWorkflowHUDError,
+	actionID string,
+) (turnWorkflowHUDRecoveryAction, bool) {
+	if hudError == nil {
+		return turnWorkflowHUDRecoveryAction{}, false
+	}
+	actionID = strings.TrimSpace(actionID)
+	for _, action := range hudError.RecoveryActions {
+		if action.ID == actionID {
+			return action, true
+		}
+	}
+	return turnWorkflowHUDRecoveryAction{}, false
 }
 
 func (s *Server) handleTurnWorkflowHUDStatus(w http.ResponseWriter, r *http.Request) {
@@ -1483,10 +1879,6 @@ func (s *Server) handleTurnWorkflowHUDEvents(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if s.TurnWorkflows == nil {
-		writeError(w, http.StatusNotFound, "unknown_workflow", "turn workflow not found")
-		return
-	}
-	if _, ok := s.TurnWorkflows.snapshot(requestID); !ok {
 		writeError(w, http.StatusNotFound, "unknown_workflow", "turn workflow not found")
 		return
 	}
@@ -1696,6 +2088,8 @@ func turnWorkflowHUDCountsFromComplete(
 	storylinesSaved int,
 	narrativeCurrentStatesSaved int,
 	narrativeStateEventsSaved int,
+	relationshipCurrentStatesSaved int,
+	relationshipStateEventsSaved int,
 	pendingThreadsSaved int,
 	activeStatesSaved int,
 	canonicalStateLayersSaved int,
@@ -1715,19 +2109,20 @@ func turnWorkflowHUDCountsFromComplete(
 		return 0
 	}
 	return map[string]int{
-		"raw_user":               boolCount(rawUserDurable),
-		"raw_assistant":          boolCount(rawAssistantDurable),
-		"effective_input":        maxInt(0, effectiveInputSaved),
-		"turn_summary":           maxInt(0, memoriesSaved),
-		"precise_memory":         maxInt(0, preciseMemoryUnitsSaved),
-		"direct_evidence":        maxInt(0, evidenceSaved),
-		"relationship_knowledge": maxInt(0, kgTriplesSaved),
-		"entity_identity":        maxInt(0, entityIdentitiesSaved),
-		"identity_surface":       maxInt(0, identitySurfacesSaved),
-		"identity_binding":       maxInt(0, identityBindingsSaved),
-		"speaker_attribution":    maxInt(0, speakerAttributionsSaved),
-		"subjective_memory":      maxInt(0, subjectiveEntityMemoriesSaved),
-		"world_rule":             maxInt(0, worldRulesSaved),
+		"raw_user":            boolCount(rawUserDurable),
+		"raw_assistant":       boolCount(rawAssistantDurable),
+		"effective_input":     maxInt(0, effectiveInputSaved),
+		"turn_summary":        maxInt(0, memoriesSaved),
+		"precise_memory":      maxInt(0, preciseMemoryUnitsSaved),
+		"direct_evidence":     maxInt(0, evidenceSaved),
+		"knowledge_graph":     maxInt(0, kgTriplesSaved),
+		"relationship_state":  maxInt(0, relationshipCurrentStatesSaved+relationshipStateEventsSaved),
+		"entity_identity":     maxInt(0, entityIdentitiesSaved),
+		"identity_surface":    maxInt(0, identitySurfacesSaved),
+		"identity_binding":    maxInt(0, identityBindingsSaved),
+		"speaker_attribution": maxInt(0, speakerAttributionsSaved),
+		"subjective_memory":   maxInt(0, subjectiveEntityMemoriesSaved),
+		"world_rule":          maxInt(0, worldRulesSaved),
 		"character_state": maxInt(0,
 			characterStatesSaved+physicalConditionsSaved+entityConditionsSaved+statusSchemaDefinitionsSaved+statusEffectsSaved),
 		"narrative_state": maxInt(0,
@@ -1761,7 +2156,7 @@ func (s *Server) completeTurnWorkflowHUDDuplicate(
 	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageDerivedPersist, "skipped", reasonCode)
 	s.TurnWorkflows.finishStage(requestID, turnWorkflowStageCheckpoints, "skipped", reasonCode)
 	s.TurnWorkflows.setCounts(requestID, turnWorkflowHUDCountsFromComplete(
-		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		false, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	))
 	s.TurnWorkflows.setPersistenceFacts(requestID, "existing", 0, "existing", 0, "not_requested", 0)
 	if strings.Contains(strings.ToUpper(strings.TrimSpace(warningCode)), "CONFLICT") {

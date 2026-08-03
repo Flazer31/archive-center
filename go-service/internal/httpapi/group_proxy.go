@@ -82,7 +82,7 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 	if len(req.ResponseExecutionContract) > 0 {
 		supervisorPack["response_execution_contract"] = req.ResponseExecutionContract
 	}
-	supervisorPack["support_packet"] = buildSupervisorSupportPacket(sid, currentInput, mapFromAny(supervisorPack["response_execution_contract"]), nil)
+	supervisorPack["support_packet"] = buildSupervisorSupportPacket(sid, currentInput, mapFromAny(supervisorPack["response_execution_contract"]), nil, "", nil)
 	trace := buildPromptAssemblyTrace(s.Cfg.PromptDir)
 	trace["guide_mode"] = guideMode
 	trace["guide_strength"] = guideStrength
@@ -215,8 +215,8 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		"supervisor_support_packet":    supervisorPack["support_packet"],
 		"response_execution_contract":  supervisorPack["response_execution_contract"],
 		"supervisor_proposal_coverage": supervisorProposalCoverage(extractionStringFromAny(supervisorPack["guide_strength"])),
-		"required_output": "Return only JSON with supervisor_scene_proposal. Use fidelity_warnings for delivered-memory fidelity and expression_hints with an allowed kind for optional expression support. " +
-			"Copy exact refs from supervisor_support_packet, follow supervisor_proposal_coverage, and keep every item proposal-only without deciding facts, user actions, relationships, scene jumps, or event closure.",
+		"required_output": "Return only JSON with supervisor_scene_proposal. Translate the current input, accepted recent context, and delivered support into the bounded response focus, continuity, expression, pacing, and scene-direction kinds allowed by supervisor_proposal_coverage. " +
+			"Copy exact refs from supervisor_support_packet and keep every item response-scoped and proposal-only without inventing facts, user actions, relationship changes, scene jumps, or event closure.",
 	}
 	userPromptBytes, _ := json.MarshalIndent(payload, "", "  ")
 	maxTokens := cfg.MaxTokens
@@ -298,10 +298,11 @@ func supervisorProposalCoverage(strength string) map[string]any {
 			"guidance_options": []string{
 				"arc_anchor", "preferred_frontier", "hold_allowed",
 			},
-			"allowed_roles": []string{"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback", "reversible_option"},
+			"allowed_roles": []string{"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not", "pacing", "scene_emphasis", "may_advance", "hold_allowed", "arc_anchor", "preferred_frontier", "reversible_option", "ending_edge"},
 			"allowed_expression_kinds": []string{
 				"portrayal", "response_focus", "must_account", "pacing", "scene_emphasis", "callback",
 				"may_advance", "hold_allowed", "arc_anchor", "preferred_frontier", "reversible_option",
+				"character_expression", "relationship_expression", "world_guard", "must_not", "ending_edge",
 			},
 		})
 	case "medium":
@@ -312,10 +313,10 @@ func supervisorProposalCoverage(strength string) map[string]any {
 			"guidance_options": []string{
 				"may_advance", "hold_allowed",
 			},
-			"allowed_roles": []string{"fidelity_warning", "portrayal", "pacing", "scene_emphasis", "callback"},
+			"allowed_roles": []string{"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not", "pacing", "scene_emphasis", "may_advance", "hold_allowed"},
 			"allowed_expression_kinds": []string{
-				"portrayal", "response_focus", "must_account", "pacing", "scene_emphasis", "callback",
-				"may_advance", "hold_allowed",
+				"portrayal", "response_focus", "must_account", "callback", "character_expression", "relationship_expression", "world_guard", "must_not",
+				"pacing", "scene_emphasis", "may_advance", "hold_allowed",
 			},
 		})
 	default:
@@ -324,8 +325,8 @@ func supervisorProposalCoverage(strength string) map[string]any {
 			"supervisor_call":          "source_backed_optional",
 			"guidance_scope":           "response_focus_and_must_account",
 			"guidance_options":         []string{"response_focus", "must_account"},
-			"allowed_roles":            []string{"fidelity_warning", "portrayal"},
-			"allowed_expression_kinds": []string{"portrayal", "response_focus", "must_account"},
+			"allowed_roles":            []string{"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not"},
+			"allowed_expression_kinds": []string{"portrayal", "response_focus", "must_account", "callback", "character_expression", "relationship_expression", "world_guard", "must_not"},
 		})
 	}
 }
@@ -393,6 +394,7 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 		},
 		"fidelity_warnings": []map[string]any{},
 		"expression_hints":  []map[string]any{},
+		"publisher_plan":    zeroPublisherPlan(strength, "zero", "no_accepted_proposal"),
 	}
 	trace := map[string]any{
 		"contract_ready": contractReady,
@@ -405,18 +407,21 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	if strength == "none" || (rawGuideMode != "" && normalizeNarrativeGuideMode(rawGuideMode) == "off") {
 		proposal["status"] = "disabled"
 		proposal["reason_code"] = "narrative_guide_disabled"
+		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", "narrative_guide_disabled")
 		trace["reason_code"] = "narrative_guide_disabled"
 		return boundedSupervisorEnvelope(proposal), trace
 	}
 	if !contractReady {
 		proposal["status"] = "degraded_missing_execution_contract"
 		proposal["reason_code"] = contractReasonCode
+		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", contractReasonCode)
 		trace["reason_code"] = contractReasonCode
 		return boundedSupervisorEnvelope(proposal), trace
 	}
 	if parsed == nil {
 		proposal["status"] = "malformed_failed_open"
 		proposal["reason_code"] = "supervisor_malformed_json"
+		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", "supervisor_malformed_json")
 		trace["reason_code"] = "supervisor_malformed_json"
 		trace["fail_open"] = true
 		trace["accepted_items"] = 0
@@ -468,6 +473,7 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	if schemaInvalid {
 		proposal["status"] = "malformed_failed_open"
 		proposal["reason_code"] = "supervisor_schema_invalid"
+		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", "supervisor_schema_invalid")
 		trace["reason_code"] = "supervisor_schema_invalid"
 		trace["fail_open"] = true
 		trace["accepted_items"] = 0
@@ -485,7 +491,18 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 	proposal["fidelity_warnings"] = fidelityItems
 	acceptedTotal += len(fidelityItems)
 	rejectedTotal += fidelityRejected
-	expressionItems, expressionRejected := normalizeSupervisorExpressionItems(rawProposal["expression_hints"], allowedKinds, allowedRefs, expressionSupportRefs, memoryRefs)
+	typedRequiredRefs := map[string]map[string]struct{}{}
+	executionRefs := mapFromAny(mapFromAny(supervisorPack["response_execution_contract"])["source_refs"])
+	for _, kind := range []string{"may_advance", "arc_anchor", "preferred_frontier"} {
+		refs := map[string]struct{}{}
+		for _, ref := range stringSliceFromAny(executionRefs[kind]) {
+			if ref = strings.TrimSpace(ref); ref != "" {
+				refs[ref] = struct{}{}
+			}
+		}
+		typedRequiredRefs[kind] = refs
+	}
+	expressionItems, expressionRejected := normalizeSupervisorExpressionItems(rawProposal["expression_hints"], allowedKinds, allowedRefs, expressionSupportRefs, memoryRefs, typedRequiredRefs)
 	proposal["expression_hints"] = expressionItems
 	acceptedTotal += len(expressionItems)
 	rejectedTotal += expressionRejected
@@ -510,6 +527,8 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 			proposal["reason_code"] = "supervisor_valid_empty"
 			trace["reason_code"] = "supervisor_valid_empty"
 		}
+	} else {
+		proposal["publisher_plan"] = buildPublisherPlan(proposal, supervisorPack)
 	}
 	trace["accepted_items"] = acceptedTotal
 	trace["rejected_items"] = rejectedTotal
@@ -566,6 +585,7 @@ func boundedSupervisorEnvelope(proposal map[string]any) map[string]any {
 		"authority":        "proposal_only",
 		"truth_authority":  false,
 		"would_write":      false,
+		"publisher_plan":   proposal["publisher_plan"],
 		"directive": map[string]any{
 			"supervisor_scene_proposal": proposal,
 		},
@@ -608,7 +628,7 @@ func normalizeSupervisorProposalItems(raw any, allowedRefs, memoryRefs map[strin
 	return accepted, rejected
 }
 
-func normalizeSupervisorExpressionItems(raw any, allowedKinds, allowedRefs, expressionSupportRefs, memoryRefs map[string]struct{}) ([]map[string]any, int) {
+func normalizeSupervisorExpressionItems(raw any, allowedKinds, allowedRefs, expressionSupportRefs, memoryRefs map[string]struct{}, typedRequiredRefs map[string]map[string]struct{}) ([]map[string]any, int) {
 	values, ok := raw.([]any)
 	if !ok {
 		return []map[string]any{}, anySliceLength(raw)
@@ -630,6 +650,10 @@ func normalizeSupervisorExpressionItems(raw any, allowedKinds, allowedRefs, expr
 		if kind == "callback" {
 			requiredRefs = memoryRefs
 			verificationState = "delivered_memory_linked_callback"
+		}
+		if refs, typed := typedRequiredRefs[kind]; typed {
+			requiredRefs = refs
+			verificationState = "go_preapproved_typed_ref_proposal"
 		}
 		validRefs, valid := normalizeSupervisorItemRefs(refs, allowedRefs, requiredRefs)
 		if !valid {
@@ -682,6 +706,11 @@ func supervisorSupportReferenceLists(supervisorPack map[string]any) ([]string, [
 			allowedMemory[ref] = struct{}{}
 		}
 	}
+	for _, ref := range stringSliceFromAny(executionRefs["continuity"]) {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			allowedMemory[ref] = struct{}{}
+		}
+	}
 
 	supportPacket := mapFromAny(supervisorPack["support_packet"])
 	currentRefs := []string{}
@@ -693,6 +722,16 @@ func supervisorSupportReferenceLists(supervisorPack map[string]any) ([]string, [
 		}
 	}
 	memoryRefs := []string{}
+	for _, raw := range outputFidelityLineageSlice(supportPacket["accepted_recent_context"]) {
+		item := mapFromAny(raw)
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
+			continue
+		}
+		if _, allowed := allowedMemory[ref]; allowed {
+			memoryRefs = appendUniqueStringValues(memoryRefs, ref)
+		}
+	}
 	for _, raw := range outputFidelityLineageSlice(supportPacket["delivered_memory"]) {
 		item := mapFromAny(raw)
 		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
@@ -703,7 +742,331 @@ func supervisorSupportReferenceLists(supervisorPack map[string]any) ([]string, [
 			memoryRefs = appendUniqueStringValues(memoryRefs, ref)
 		}
 	}
+	for _, raw := range outputFidelityLineageSlice(supportPacket["delivered_character_memory"]) {
+		item := mapFromAny(raw)
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
+			continue
+		}
+		if _, allowed := allowedMemory[ref]; allowed {
+			memoryRefs = appendUniqueStringValues(memoryRefs, ref)
+		}
+	}
 	return currentRefs, memoryRefs
+}
+
+func zeroPublisherPlan(strength, status, reason string) map[string]any {
+	return map[string]any{
+		"contract_version":             "publisher_plan.v1",
+		"status":                       status,
+		"reason_code":                  nilIfEmpty(reason),
+		"guide_strength":               normalizeNarrativeGuideStrength(strength),
+		"authority":                    "expression_assistance_only",
+		"truth_authority":              false,
+		"would_write":                  false,
+		"response_focus_refs":          []string{},
+		"must_account_refs":            []string{},
+		"continuity_anchor_ref":        nil,
+		"character_expression_refs":    []string{},
+		"relationship_expression_refs": []string{},
+		"world_guard_refs":             []string{},
+		"must_not_refs":                []string{},
+		"advance_mode":                 nil,
+		"preferred_frontier_ref":       nil,
+		"ending_edge":                  nil,
+		"guidance_items":               []map[string]any{},
+		"candidate_count_cap":          nil,
+		"selection_policy":             "accepted_source_bound_items_only_then_existing_output_guidance_char_budget",
+		"blocked_generation": []string{
+			"new_fact", "dialogue", "relationship_reciprocity", "user_action", "event_closure",
+		},
+	}
+}
+
+func buildPublisherPlan(proposal, supervisorPack map[string]any) map[string]any {
+	strength := normalizeNarrativeGuideStrength(extractionStringFromAny(proposal["guide_strength"]))
+	plan := zeroPublisherPlan(strength, "zero", "no_publisher_eligible_items")
+	if extractionStringFromAny(proposal["status"]) != "ready" || strength == "none" {
+		return plan
+	}
+	support := publisherDeliveredSupportByRef(supervisorPack)
+	responseFocusRefs := []string{}
+	mustAccountRefs := []string{}
+	characterRefs := []string{}
+	relationshipRefs := []string{}
+	worldRefs := []string{}
+	mustNotRefs := []string{}
+	guidance := []map[string]any{}
+	continuityRefs := []string{}
+	preferredFrontierRefs := []string{}
+	endingEdges := []map[string]any{}
+
+	appendGuidance := func(slot string, item map[string]any) {
+		compiled, ok := compilePublisherGuidanceItem(slot, item, support)
+		if !ok {
+			return
+		}
+		guidance = append(guidance, compiled)
+		refs := stringSliceFromAny(compiled["source_refs"])
+		switch slot {
+		case "response_focus":
+			responseFocusRefs = appendUniqueStringValues(responseFocusRefs, refs...)
+		case "must_account":
+			mustAccountRefs = appendUniqueStringValues(mustAccountRefs, refs...)
+		case "continuity_anchor":
+			continuityRefs = appendUniqueStringValues(continuityRefs, refs...)
+		case "world_guard":
+			worldRefs = appendUniqueStringValues(worldRefs, refs...)
+		case "must_not":
+			mustNotRefs = appendUniqueStringValues(mustNotRefs, refs...)
+		case "preferred_frontier":
+			preferredFrontierRefs = appendUniqueStringValues(preferredFrontierRefs, refs...)
+		case "ending_edge":
+			endingEdges = append(endingEdges, compiled)
+		}
+		for _, ref := range refs {
+			meta := support[ref]
+			class := extractionStringFromAny(meta["class"])
+			kind := extractionStringFromAny(meta["kind"])
+			switch {
+			case class == "subjective_relationship" || kind == "relationship_state":
+				relationshipRefs = appendUniqueStringValues(relationshipRefs, ref)
+			case class == "character_objective" && (kind == "character_profile" || kind == "character_profile_counterevidence" || kind == "voice_behavior"):
+				characterRefs = appendUniqueStringValues(characterRefs, ref)
+			}
+		}
+	}
+
+	for _, raw := range outputFidelityLineageSlice(proposal["fidelity_warnings"]) {
+		appendGuidance("must_account", mapFromAny(raw))
+	}
+	expressions := []map[string]any{}
+	for _, raw := range outputFidelityLineageSlice(proposal["expression_hints"]) {
+		expressions = append(expressions, mapFromAny(raw))
+	}
+	for _, item := range expressions {
+		switch extractionStringFromAny(item["kind"]) {
+		case "response_focus":
+			appendGuidance("response_focus", item)
+		case "must_account":
+			appendGuidance("must_account", item)
+		case "portrayal":
+			if publisherItemHasDeliveredCharacterRef(item, support) {
+				appendGuidance("character_or_relationship_expression", item)
+			} else {
+				appendGuidance("response_focus", item)
+			}
+		case "callback", "arc_anchor":
+			if publisherItemHasDeliveredMemoryRef(item, support) {
+				appendGuidance("continuity_anchor", item)
+			}
+		case "character_expression", "relationship_expression":
+			if publisherItemHasDeliveredCharacterRef(item, support) {
+				appendGuidance("character_or_relationship_expression", item)
+			}
+		case "world_guard", "must_not", "pacing", "scene_emphasis", "reversible_option":
+			appendGuidance(extractionStringFromAny(item["kind"]), item)
+		case "preferred_frontier":
+			if publisherItemHasDeliveredMemoryRef(item, support) {
+				appendGuidance("preferred_frontier", item)
+			}
+		case "ending_edge":
+			if publisherItemHasDeliveredMemoryRef(item, support) {
+				appendGuidance("ending_edge", item)
+			}
+		}
+	}
+
+	if strength == "medium" || strength == "strong" {
+		advanceKind := ""
+		for _, item := range expressions {
+			if extractionStringFromAny(item["kind"]) == "hold_allowed" {
+				advanceKind = "hold_allowed"
+				break
+			}
+		}
+		if advanceKind == "" {
+			for _, item := range expressions {
+				if extractionStringFromAny(item["kind"]) == "may_advance" && publisherItemHasDeliveredMemoryRef(item, support) {
+					advanceKind = "may_advance"
+					break
+				}
+			}
+		}
+		if advanceKind != "" {
+			if merged, ok := mergePublisherAdvanceItems(advanceKind, expressions, support); ok {
+				plan["advance_mode"] = advanceKind
+				appendGuidance(advanceKind, merged)
+			}
+		}
+	}
+
+	plan["response_focus_refs"] = responseFocusRefs
+	plan["must_account_refs"] = mustAccountRefs
+	plan["character_expression_refs"] = characterRefs
+	plan["relationship_expression_refs"] = relationshipRefs
+	plan["world_guard_refs"] = worldRefs
+	plan["must_not_refs"] = mustNotRefs
+	if len(continuityRefs) == 1 {
+		plan["continuity_anchor_ref"] = continuityRefs[0]
+	}
+	if len(preferredFrontierRefs) == 1 {
+		plan["preferred_frontier_ref"] = preferredFrontierRefs[0]
+	}
+	if len(endingEdges) == 1 {
+		plan["ending_edge"] = map[string]any{
+			"text":        endingEdges[0]["text"],
+			"source_refs": endingEdges[0]["source_refs"],
+		}
+	}
+	plan["guidance_items"] = guidance
+	if len(guidance) > 0 {
+		plan["status"] = "ready"
+		plan["reason_code"] = nil
+	}
+	return plan
+}
+
+func mergePublisherAdvanceItems(kind string, expressions []map[string]any, support map[string]map[string]any) (map[string]any, bool) {
+	texts := []string{}
+	refs := []string{}
+	for _, item := range expressions {
+		if extractionStringFromAny(item["kind"]) != kind {
+			continue
+		}
+		if kind == "may_advance" && !publisherItemHasDeliveredMemoryRef(item, support) {
+			continue
+		}
+		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
+		itemRefs := stringSliceFromAny(item["source_refs"])
+		if text == "" || len(itemRefs) == 0 {
+			continue
+		}
+		texts = append(texts, text)
+		refs = appendUniqueStringValues(refs, itemRefs...)
+	}
+	if len(texts) == 0 || len(refs) == 0 || (kind == "may_advance" && len(texts) != 1) {
+		return nil, false
+	}
+	return map[string]any{
+		"kind": kind, "text": strings.Join(texts, "\n"), "source_refs": refs,
+		"verification_state": "all_accepted_items_of_selected_advance_mode_merged_without_count_cut",
+	}, true
+}
+
+func publisherDeliveredSupportByRef(supervisorPack map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	packet := mapFromAny(supervisorPack["support_packet"])
+	if current := mapFromAny(packet["current_input"]); strings.TrimSpace(extractionStringFromAny(current["raw_text"])) != "" {
+		if ref := strings.TrimSpace(extractionStringFromAny(current["source_ref"])); ref != "" {
+			out[ref] = map[string]any{"kind": "current_input", "class": "current_input", "delivered": true}
+		}
+	}
+	for _, raw := range outputFidelityLineageSlice(packet["accepted_recent_context"]) {
+		item := mapFromAny(raw)
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if ref == "" || strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
+			continue
+		}
+		out[ref] = map[string]any{
+			"kind": "accepted_recent_context", "class": "continuity", "delivered": true,
+			"visibility_boundary": item["visibility_boundary"],
+		}
+	}
+	for _, raw := range outputFidelityLineageSlice(packet["delivered_memory"]) {
+		item := mapFromAny(raw)
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if ref == "" || strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
+			continue
+		}
+		out[ref] = map[string]any{
+			"kind": "long_term_memory", "class": "memory", "delivered": true,
+			"protected_guard": item["protected_guard"], "visibility_boundary": item["visibility_boundary"],
+		}
+	}
+	for _, raw := range outputFidelityLineageSlice(packet["delivered_character_memory"]) {
+		item := mapFromAny(raw)
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if ref == "" || strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
+			continue
+		}
+		out[ref] = map[string]any{
+			"kind": extractionStringFromAny(item["kind"]), "class": extractionStringFromAny(item["class"]), "delivered": true,
+			"privacy_guard": item["privacy_guard"], "visibility_boundary": item["visibility_boundary"],
+		}
+	}
+	return out
+}
+
+func compilePublisherGuidanceItem(slot string, item map[string]any, support map[string]map[string]any) (map[string]any, bool) {
+	text := strings.TrimSpace(extractionStringFromAny(item["text"]))
+	refs := []string{}
+	privacyGuard := ""
+	directionalRelationship := false
+	for _, ref := range stringSliceFromAny(item["source_refs"]) {
+		meta, ok := support[ref]
+		if !ok || !boolFromAny(meta["delivered"]) {
+			return nil, false
+		}
+		refs = appendUniqueStringValues(refs, ref)
+		if guard := extractionStringFromAny(meta["privacy_guard"]); guard != "" {
+			privacyGuard = guard
+		}
+		if extractionStringFromAny(meta["kind"]) == "relationship_state" {
+			directionalRelationship = true
+		}
+	}
+	if text == "" || len(refs) == 0 {
+		return nil, false
+	}
+	renderText := text
+	switch slot {
+	case "ending_edge":
+		renderText += " Treat this only as the boundary of the current response; never close a thread, arc, session, or work."
+	case "may_advance":
+		renderText += " Keep any advance reversible; do not create a new fact, relationship change, user action, or closure."
+	case "preferred_frontier":
+		renderText += " Treat this only as a current-response preference and never as a persistent plot lock."
+	}
+	if privacyGuard != "" {
+		renderText += " Apply only as guarded subtext; do not reveal the private fact."
+	}
+	if directionalRelationship {
+		renderText += " Preserve the stated direction and do not infer reciprocity."
+	}
+	return map[string]any{
+		"slot": slot, "kind": extractionStringFromAny(item["kind"]), "text": text, "render_text": renderText,
+		"source_refs": refs, "privacy_guard": nilIfEmpty(privacyGuard),
+		"relationship_directional_only": directionalRelationship,
+		"no_reciprocity":                directionalRelationship,
+		"authority":                     "expression_assistance_only",
+	}, true
+}
+
+func publisherItemHasDeliveredMemoryRef(item map[string]any, support map[string]map[string]any) bool {
+	for _, ref := range stringSliceFromAny(item["source_refs"]) {
+		meta := support[ref]
+		if boolFromAny(meta["delivered"]) && extractionStringFromAny(meta["kind"]) != "current_input" {
+			return true
+		}
+	}
+	return false
+}
+
+func publisherItemHasDeliveredCharacterRef(item map[string]any, support map[string]map[string]any) bool {
+	for _, ref := range stringSliceFromAny(item["source_refs"]) {
+		meta := support[ref]
+		if !boolFromAny(meta["delivered"]) {
+			continue
+		}
+		class := extractionStringFromAny(meta["class"])
+		kind := extractionStringFromAny(meta["kind"])
+		if class == "character_objective" || class == "subjective_relationship" ||
+			kind == "character_profile" || kind == "character_profile_counterevidence" || kind == "voice_behavior" || kind == "relationship_state" {
+			return true
+		}
+	}
+	return false
 }
 
 func appendUniqueStringValues(base []string, values ...string) []string {

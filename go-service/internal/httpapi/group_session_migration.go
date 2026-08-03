@@ -21,7 +21,6 @@ const (
 	sessionMigrationCleanupVersion  = "sc-mig-cleanup.v2"
 	sessionMigrationModeCopyLock    = store.SessionMigrationModeCopyThenLockSource
 	sessionMigrationModeCopyKeep    = store.SessionMigrationModeCopyKeepSource
-	sessionMigrationSubjectiveCap   = 1000
 )
 
 type sessionMigrationPreviewRequest struct {
@@ -1418,15 +1417,11 @@ func (s *Server) sessionMigrationPreviewCounts(ctx context.Context, sessionID st
 	if subjectStore, ok := s.Store.(store.ProtagonistEntityMemoryStore); ok {
 		subjective, err := subjectStore.ListProtagonistEntityMemories(ctx, store.ProtagonistEntityMemoryFilter{
 			SourceChatSessionID: sessionID,
-			Limit:               sessionMigrationSubjectiveCap,
 		})
 		if err != nil {
 			return counts, warnings, sessionMigrationReadError("subjective_entity_memories", err)
 		}
 		counts.SubjectiveEntityMemories = len(subjective)
-		if len(subjective) >= sessionMigrationSubjectiveCap {
-			warnings = append(warnings, "subjective_entity_memories_count_capped_at_1000")
-		}
 	}
 	if referenceStore, ok := s.Store.(store.ReferenceLibraryStore); ok {
 		bindings, err := referenceStore.ListSessionReferenceBindings(ctx, sessionID, false)

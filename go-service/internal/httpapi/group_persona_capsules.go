@@ -42,7 +42,7 @@ func (s *Server) handleCreatePersonaCapsule(w http.ResponseWriter, r *http.Reque
 		if text == "" {
 			continue
 		}
-		tagsJSON, err := json.Marshal(raw.Tags)
+		tagsJSON, err := json.Marshal(personaCapsuleEntryContractTags(req.Mode, raw.Portability, raw.Tags))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid tags")
 			return
@@ -82,6 +82,37 @@ func (s *Server) handleCreatePersonaCapsule(w http.ResponseWriter, r *http.Reque
 		"entries_count": len(entries),
 		"policy":        personaCapsuleSupportPolicy(),
 	})
+}
+
+func personaCapsuleEntryContractTags(mode, portability string, existing []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(existing)+2)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	for _, tag := range existing {
+		add(tag)
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	portability = strings.ToLower(strings.TrimSpace(portability))
+	protectedKind := ""
+	switch mode {
+	case "full_loop_memory", "regression_recollection", "reincarnation_carryover", "isekai_carryover":
+		protectedKind = mode
+	}
+	if protectedKind == "" && portability == "cross_world" {
+		protectedKind = portability
+	}
+	if protectedKind != "" {
+		add("secret_guard")
+		add("protected_secret_kind:" + protectedKind)
+	}
+	return out
 }
 
 func (s *Server) handleListPersonaCapsules(w http.ResponseWriter, r *http.Request) {
@@ -258,16 +289,27 @@ func (s *Server) handleListAttachedPersonaEntries(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, CodeMissingParam, "target_chat_session_id is required")
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := st.ListAttachedPersonaMemoryEntries(r.Context(), targetSID, limit)
+	requestedLimit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	queryLimit := requestedLimit
+	if requestedLimit > 0 && requestedLimit < int(^uint(0)>>1) {
+		queryLimit++
+	}
+	items, err := st.ListAttachedPersonaMemoryEntries(r.Context(), targetSID, queryLimit)
 	if err != nil {
 		writeInternalError(w, err.Error())
 		return
 	}
+	hasMore := requestedLimit > 0 && len(items) > requestedLimit
+	if hasMore {
+		items = items[:requestedLimit]
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "ok",
-		"items":  items,
-		"count":  len(items),
-		"policy": personaCapsuleSupportPolicy(),
+		"status":          "ok",
+		"items":           items,
+		"count":           len(items),
+		"has_more":        hasMore,
+		"complete_result": requestedLimit <= 0 || !hasMore,
+		"selection_mode":  map[bool]string{true: "explicit_limit", false: "all_matching_rows"}[requestedLimit > 0],
+		"policy":          personaCapsuleSupportPolicy(),
 	})
 }

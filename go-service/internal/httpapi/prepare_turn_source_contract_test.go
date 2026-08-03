@@ -385,8 +385,12 @@ func TestPrepareTurnSourceDecisionOnlyIsReadFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantKeys := map[string]bool{
-		"source_contract": true, "current_input_decision": true, "message_source_envelope": true, "session_bootstrap": true,
+		"backend_instance_id": true,
+		"source_contract":     true, "current_input_decision": true, "message_source_envelope": true, "session_bootstrap": true,
 		"risu_host_context_snapshot": true, "host_context_reference_evidence": true,
+	}
+	if response["backend_instance_id"] != srv.BackendInstanceID {
+		t.Fatalf("backend_instance_id=%v want=%q", response["backend_instance_id"], srv.BackendInstanceID)
 	}
 	if len(response) != len(wantKeys) {
 		t.Fatalf("decision-only response contains non-contract fields: %v", reflect.ValueOf(response).MapKeys())

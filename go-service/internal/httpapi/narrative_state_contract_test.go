@@ -508,6 +508,7 @@ func TestPendingThreadProducerMirrorsGoalIdentityIntoPrepareFilter(t *testing.T)
 			"title": "Production Goal", "subject": "Production Goal", "state_slot": "goal_status",
 			"thread_type": "open_question", "confidence": 0.9,
 		}}},
+		"",
 		completeTurnEmbeddingConfig{}, time.Now().UTC(), &result, nil, &cost,
 	)
 	if len(st.savedPendingThreads) != 1 || len(st.savedActiveStates) != 1 ||
@@ -560,6 +561,7 @@ func TestPendingThreadProducerIdentityMismatchFailsOpen(t *testing.T) {
 			"title": "Production Goal", "subject": "Different Goal", "state_slot": "goal_status",
 			"thread_type": "open_question", "confidence": 0.9,
 		}}},
+		"",
 		completeTurnEmbeddingConfig{}, time.Now().UTC(), &result, nil, &cost,
 	)
 	if len(st.savedPendingThreads) != 1 || len(st.savedActiveStates) != 1 ||

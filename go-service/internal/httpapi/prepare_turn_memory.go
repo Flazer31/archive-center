@@ -861,23 +861,44 @@ func buildPrepareTurnHierarchyEscalation(resumePack *store.ResumePack, chatLogs 
 	candidates := []hierarchyCandidate{}
 	if resumePack.Chapter != nil {
 		text := prepareTurnChapterRecallText(*resumePack.Chapter)
+		score := 0
+		if prepareTurnSupportRecallEligible(query, text) {
+			score = prepareTurnRecallOverlapCount(query, text)
+			if score == 0 {
+				score = 1
+			}
+		}
 		candidates = append(candidates, hierarchyCandidate{
 			kind: "chapter", text: text, fromTurn: resumePack.Chapter.FromTurn, toTurn: resumePack.Chapter.ToTurn,
-			score: prepareTurnRecallOverlapCount(query, text),
+			score: score,
 		})
 	}
 	if resumePack.Arc != nil {
 		text := prepareTurnArcRecallText(*resumePack.Arc)
+		score := 0
+		if prepareTurnSupportRecallEligible(query, text) {
+			score = prepareTurnRecallOverlapCount(query, text)
+			if score == 0 {
+				score = 1
+			}
+		}
 		candidates = append(candidates, hierarchyCandidate{
 			kind: "arc", text: text, fromTurn: resumePack.Arc.FromTurn, toTurn: resumePack.Arc.ToTurn,
-			score: prepareTurnRecallOverlapCount(query, text),
+			score: score,
 		})
 	}
 	if resumePack.Saga != nil {
 		text := prepareTurnSagaRecallText(*resumePack.Saga)
+		score := 0
+		if prepareTurnSupportRecallEligible(query, text) {
+			score = prepareTurnRecallOverlapCount(query, text)
+			if score == 0 {
+				score = 1
+			}
+		}
 		candidates = append(candidates, hierarchyCandidate{
 			kind: "saga", text: text, fromTurn: resumePack.Saga.FromTurn, toTurn: resumePack.Saga.ToTurn,
-			score: prepareTurnRecallOverlapCount(query, text),
+			score: score,
 		})
 	}
 	selectedKind := ""

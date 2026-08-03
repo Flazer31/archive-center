@@ -18,6 +18,46 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
+func (r *rollbackRecordingStore) SaveChapterSummary(context.Context, *store.ChapterSummary) error {
+	return nil
+}
+
+func (r *rollbackRecordingStore) SearchChapterSummaries(context.Context, string, string, int, int, int) ([]store.ChapterSummary, error) {
+	return r.chapterSummaries, nil
+}
+
+func (r *rollbackRecordingStore) SaveArcSummary(context.Context, string, *store.ArcSummary) error {
+	return nil
+}
+
+func (r *rollbackRecordingStore) GetLatestArcSummary(context.Context, string) (*store.ArcSummary, error) {
+	return nil, store.ErrNotFound
+}
+
+func (r *rollbackRecordingStore) ListArcSummaries(context.Context, string, string, int) ([]store.ArcSummary, error) {
+	return r.arcSummaries, nil
+}
+
+func (r *rollbackRecordingStore) SearchArcSummaries(context.Context, string, string, int, int, int) ([]store.ArcSummary, error) {
+	return r.arcSummaries, nil
+}
+
+func (r *rollbackRecordingStore) SaveSagaDigest(context.Context, string, *store.SagaDigest) error {
+	return nil
+}
+
+func (r *rollbackRecordingStore) GetLatestSagaDigest(context.Context, string) (*store.SagaDigest, error) {
+	return nil, store.ErrNotFound
+}
+
+func (r *rollbackRecordingStore) ListSagaDigests(context.Context, string, int) ([]store.SagaDigest, error) {
+	return r.sagaDigests, nil
+}
+
+func (r *rollbackRecordingStore) SearchSagaDigests(context.Context, string, string, int, int, int) ([]store.SagaDigest, error) {
+	return r.sagaDigests, nil
+}
+
 func (r *rollbackRecordingStore) DeleteTrustStates(ctx context.Context, sid string, fromTurn int) error {
 	if r.deleteErr != nil {
 		return r.deleteErr
@@ -314,10 +354,30 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
 
 	vec := &turnRecordingVectorStore{}
-	rec := &rollbackRecordingStore{Store: &turnRecordingStore{returnMemories: []store.Memory{
-		{ID: 41, ChatSessionID: "sess-live", TurnIndex: 5},
-		{ID: 42, ChatSessionID: "sess-live", TurnIndex: 6},
-	}}}
+	rec := &rollbackRecordingStore{
+		Store: &turnRecordingStore{
+			returnMemories: []store.Memory{
+				{ID: 41, ChatSessionID: "sess-live", TurnIndex: 5},
+				{ID: 42, ChatSessionID: "sess-live", TurnIndex: 6},
+			},
+			returnEpisodeSums: []store.EpisodeSummary{
+				{ID: 51, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 4},
+				{ID: 52, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 5},
+			},
+		},
+		chapterSummaries: []store.ChapterSummary{
+			{ID: 61, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 4},
+			{ID: 62, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 5},
+		},
+		arcSummaries: []store.ArcSummary{
+			{ID: 71, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 4},
+			{ID: 72, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 5},
+		},
+		sagaDigests: []store.SagaDigest{
+			{ID: 81, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 4},
+			{ID: 82, ChatSessionID: "sess-live", FromTurn: 1, ToTurn: 5},
+		},
+	}
 	srv := &Server{
 		Cfg:            cfg,
 		Store:          rec,
@@ -391,7 +451,7 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	if hudFacts["raw_persistence"]["status"] != "deleted" ||
 		hudFacts["derived_memory"]["status"] != "deleted" ||
 		hudFacts["vector_index"]["status"] != "deleted" ||
-		hudFacts["vector_index"]["count"] != float64(4) {
+		hudFacts["vector_index"]["count"] != float64(12) {
 		t.Fatalf("delete HUD facts = %+v", hudFacts)
 	}
 
@@ -437,7 +497,13 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 			t.Errorf("delete[%d] = %s, want %s", i, rec.deletes[i], want)
 		}
 	}
-	wantVectorIDs := []string{"memory:sess-live:41", "memory:41", "memory:sess-live:42", "memory:42"}
+	wantVectorIDs := []string{
+		"memory:sess-live:41", "memory:41", "memory:sess-live:42", "memory:42",
+		"episode:sess-live:52", "episode:52",
+		"chapter:sess-live:62", "chapter:62",
+		"arc:sess-live:72", "arc:72",
+		"saga:sess-live:82", "saga:82",
+	}
 	if len(vec.deletedDocumentIDs) != len(wantVectorIDs) {
 		t.Fatalf("deleted vector ids = %#v, want %#v", vec.deletedDocumentIDs, wantVectorIDs)
 	}
@@ -904,10 +970,13 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 		"turn_summary":        "Alice decided to trust Bob after the rescue.",
 		"importance_score":    8,
 		"relationship_memory": map[string]any{"bond_and_distance": "Alice trusts Bob more after he helped her.", "trust": 0.8},
-		"entities":            map[string]any{"characters": []any{map[string]any{"name": "Alicee", "aliases": []any{"I"}, "role": "protagonist", "status_emotion": "relieved"}}},
-		"kg_triples":          []any{},
+		"entities": map[string]any{"characters": []any{map[string]any{
+			"name": "Alice", "aliases": []any{"I"}, "role": "protagonist", "status_emotion": "relieved",
+			"reference_contract": "critic_entity_reference.v1", "reference_scope": "session_stable", "name_expression": "Alice", "evidence_excerpt": "Alice relaxed after Bob helped her.",
+		}}},
+		"kg_triples": []any{},
 		"relationship_observations": []any{map[string]any{
-			"source_entity": "Alicee", "source_entity_expression": "I", "target_entity": "Bob", "target_entity_expression": "Bob",
+			"source_entity": "Alice", "source_entity_expression": "I", "target_entity": "Bob", "target_entity_expression": "Bob",
 			"domain": "trust", "domain_expression": "trust", "observation": "I trust Bob", "support_kind": "explicit_statement", "evidence_excerpt": "I trust Bob.",
 		}},
 		"archive_hint":           map[string]any{"wing": "wing_general", "room": "hall_relationships"},
@@ -916,9 +985,13 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 		"narrative_significance": 0.9,
 		"state_deltas":           map[string]any{"scene_state": map[string]any{"mood": "warm"}},
 		"character_deltas": []any{map[string]any{
-			"name":   "Alicee",
-			"status": map[string]any{"emotion": "relieved"},
-			"events": []any{map[string]any{"type": "relationship_shift", "detail": "Alice's trust in Bob increased."}},
+			"name":               "Alice",
+			"reference_contract": "critic_entity_reference.v1",
+			"reference_scope":    "session_stable",
+			"name_expression":    "Alice",
+			"evidence_excerpt":   "Alice relaxed after Bob helped her.",
+			"status":             map[string]any{"emotion": "relieved"},
+			"events":             []any{map[string]any{"type": "relationship_shift", "detail": "Alice's trust in Bob increased."}},
 		}},
 		"pending_threads": []any{map[string]any{"thread_type": "promise", "title": "Alice thanks Bob later", "confidence": 0.85}},
 		"world_rules":     []any{map[string]any{"scope": "session", "category": "relationship", "key": "trust_changes_need_evidence", "value": "Trust shifts should be grounded in visible actions."}},

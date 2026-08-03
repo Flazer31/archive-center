@@ -10,7 +10,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, embCfg completeTurnEmbeddingConfig, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement, identityProjectionArg ...*entityIdentityProjection) {
+func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, completedTurnText string, embCfg completeTurnEmbeddingConfig, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement, identityProjectionArg ...*entityIdentityProjection) {
 	var identityProjection *entityIdentityProjection
 	if len(identityProjectionArg) > 0 {
 		identityProjection = identityProjectionArg[0]
@@ -20,7 +20,16 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 	saveEntityItems := func(items []any, entityType string) {
 		for idx, item := range items {
 			entity := mapFromAny(item)
-			name := s.canonicalCharacterName(ctx, sid, strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(entity, "name"), stringFromMap(entity, "label"), stringFromMap(entity, "title"))))
+			rawName := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(entity, "name"), stringFromMap(entity, "label"), stringFromMap(entity, "title")))
+			if rawName == "" {
+				rawName, _ = item.(string)
+				rawName = strings.TrimSpace(rawName)
+			}
+			if rawName == "" {
+				result.addSkipReason("entities", "missing_name", map[string]any{"index": idx, "entity_type": entityType})
+				continue
+			}
+			name := s.canonicalCharacterName(ctx, sid, rawName)
 			if name == "" || isPlaceholderKGPart(name) {
 				continue
 			}
@@ -59,31 +68,24 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 	saveEntityItems(sliceFromAny(entities["places"]), "location")
 	saveEntityItems(sliceFromAny(entities["items"]), "item")
 	saveEntityItems(sliceFromAny(entities["objects"]), "item")
-	characterNames := extractedEntityNames(ctx, s, sid, entities)
-
-	relationshipMemory := mapFromAny(extraction["relationship_memory"])
-	if trustText := strings.TrimSpace(stringFromMap(relationshipMemory, "bond_and_distance")); trustText != "" {
-		if saver, ok := s.Store.(trustSaver); ok {
-			for _, target := range relationshipMemoryTargets(relationshipMemory, characterNames) {
-				result.trySave("SaveTrust", func() error {
-					return saver.SaveTrust(ctx, &store.Trust{
-						ChatSessionID: sid,
-						TargetName:    target,
-						TargetType:    "relationship",
-						Score:         clampFloat(extractionFloatFromAny(relationshipMemory["trust"], 0.5), 0, 1),
-						ReasonJSON:    mustCompactJSON(relationshipMemory),
-						SourceTurn:    turnIndex,
-						CreatedAt:     now,
-						UpdatedAt:     now,
-					})
-				}, result, func() { result.TrustStates++ })
-			}
-		}
-	}
-
 	for characterDeltaIndex, item := range sliceFromAny(extraction["character_deltas"]) {
 		charDelta := mapFromAny(item)
 		rawName := strings.TrimSpace(stringFromMap(charDelta, "name"))
+		if rawName == "" {
+			result.addSkipReason("character_deltas", "missing_name", map[string]any{"index": characterDeltaIndex})
+			continue
+		}
+		evidence := interactionAdmissionEvidence(charDelta)
+		if evidence != "" && (!criticEvidenceOccursInSource(evidence, completedTurnText) ||
+			!interactionExplicitExpressionOccursInEvidence(extractionFirstNonEmpty(stringFromMap(charDelta, "name_expression"), rawName), evidence)) {
+			result.addSkipReason("character_deltas", "current_projection_source_binding_missing", map[string]any{"index": characterDeltaIndex, "name": rawName})
+			continue
+		}
+		currentItems := sanitizeLegacyReversibleCharacterDeltas([]any{charDelta})
+		if len(currentItems) == 0 {
+			continue
+		}
+		currentDelta := mapFromAny(currentItems[0])
 		if identityProjection != nil && rawName != "" {
 			identityProjection.bindCharacterState(ctx, rawName, characterDeltaIndex, result)
 		}
@@ -91,22 +93,16 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		if name == "" {
 			continue
 		}
-		if looksLikeTransientDescriptorCharacterName(name) && !characterDeltaHasContinuityAnchor(charDelta) {
-			continue
-		}
 		var currentState *store.CharacterState
 		if current, err := s.Store.GetCharacterState(ctx, sid, name); err == nil {
 			currentState = current
 		}
 		if saver, ok := s.Store.(characterStateSaver); ok {
-			appearanceJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "appearance"), charDelta["appearance"])
-			personalityJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "personality"), charDelta["personality"])
-			statusJSON := mergeCharacterStateJSONField(
-				mustCompactJSON(sanitizeLegacyReversibleMap(parseSurfacePayload(currentCharacterJSON(currentState, "status")))),
-				sanitizeLegacyReversibleMap(charDelta["status"]),
-			)
-			relationshipsJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "relationships"), charDelta["relationships"])
-			speechStyleJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "speech_style"), charDelta["speech_style"])
+			appearanceJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "appearance"), currentDelta["appearance"])
+			personalityJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "personality"), currentDelta["personality"])
+			statusJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "status"), currentDelta["status"])
+			relationshipsJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "relationships"), nil)
+			speechStyleJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "speech_style"), currentDelta["speech_style"])
 			result.trySave("SaveCharacterState", func() error {
 				return saver.SaveCharacterState(ctx, &store.CharacterState{
 					ChatSessionID:     sid,
@@ -122,8 +118,14 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 				})
 			}, result, func() { result.CharacterStates++ })
 		}
-		for _, ev := range sliceFromAny(charDelta["events"]) {
+		for _, ev := range sliceFromAny(currentDelta["events"]) {
 			evMap := mapFromAny(ev)
+			if legacyRelationshipShiftToken(extractionFirstNonEmpty(
+				stringFromMap(evMap, "type"),
+				stringFromMap(evMap, "event_type"),
+			)) {
+				continue
+			}
 			detail := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(evMap, "detail"), stringFromMap(evMap, "summary"), mustCompactJSON(evMap)))
 			if detail == "" {
 				continue
@@ -232,18 +234,7 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			continue
 		}
 		threadType := strings.TrimSpace(stringFromMap(thread, "thread_type"))
-		if threadType == "" {
-			threadType = "open_question"
-		}
-		if !validPendingThreadType(threadType) {
-			result.addSkipReason("pending_threads", "invalid_thread_type", thread)
-			continue
-		}
 		confidence := clampFloat(extractionFloatFromAny(thread["confidence"], 0), 0, 1)
-		if _, hasConfidence := thread["confidence"]; hasConfidence && confidence < 0.3 {
-			result.addSkipReason("pending_threads", "low_confidence", thread)
-			continue
-		}
 		if saver, ok := s.Store.(pendingThreadSaver); ok {
 			result.trySave("SavePendingThread", func() error {
 				return saver.SavePendingThread(ctx, &store.PendingThread{
@@ -334,19 +325,46 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 	}
 
 	if saver, ok := s.Store.(worldRuleSaver); ok {
-		for _, item := range worldRuleItemsForSave(extraction) {
+		worldRuleItems := worldRuleItemsForSave(extraction)
+		existingWorldRules, existingWorldRulesErr := s.Store.ListWorldRules(ctx, sid)
+		if existingWorldRulesErr != nil && len(worldRuleItems) > 0 {
+			result.addSkipReason("world_rules", "existing_world_rules_read_failed", map[string]any{
+				"count": len(worldRuleItems), "error": existingWorldRulesErr.Error(),
+			})
+			result.Warnings = append(result.Warnings, "world_rule_existing_read_failed")
+			existingWorldRules = nil
+		}
+		for _, item := range worldRuleItems {
 			rule := mapFromAny(item)
 			key := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(rule, "key"), stringFromMap(rule, "name")))
 			if key == "" {
 				continue
 			}
+			scope := store.NormalizeWorldRuleScope(extractionFirstNonEmpty(stringFromMap(rule, "scope"), "root"))
+			scopeName := stringFromMap(rule, "scope_name")
+			category := extractionFirstNonEmpty(stringFromMap(rule, "category"), "custom")
+			valueJSON := mustCompactJSON(extractionFirstNonEmpty(stringFromMap(rule, "value"), stringFromMap(rule, "value_json"), mustCompactJSON(rule)))
+			unchanged := false
+			for _, existing := range existingWorldRules {
+				if !existing.Suppressed && existing.Scope == scope && existing.ScopeName == scopeName &&
+					existing.Category == category && existing.Key == key && strings.TrimSpace(existing.ValueJSON) == strings.TrimSpace(valueJSON) {
+					unchanged = true
+					break
+				}
+			}
+			if unchanged {
+				result.addSkipReason("world_rules", "unchanged_existing_rule", map[string]any{
+					"scope": scope, "scope_name": scopeName, "category": category, "key": key,
+				})
+				continue
+			}
 			wr := &store.WorldRule{
 				ChatSessionID: sid,
-				Scope:         extractionFirstNonEmpty(stringFromMap(rule, "scope"), "session"),
-				ScopeName:     stringFromMap(rule, "scope_name"),
-				Category:      extractionFirstNonEmpty(stringFromMap(rule, "category"), "critic"),
+				Scope:         scope,
+				ScopeName:     scopeName,
+				Category:      category,
 				Key:           key,
-				ValueJSON:     mustCompactJSON(extractionFirstNonEmpty(stringFromMap(rule, "value"), stringFromMap(rule, "value_json"), mustCompactJSON(rule))),
+				ValueJSON:     valueJSON,
 				Genre:         stringFromMap(rule, "genre"),
 				SourceTurn:    turnIndex,
 				CreatedAt:     now,
@@ -394,6 +412,12 @@ func (s *Server) saveCriticIngestTrace(ctx context.Context, sid string, turnInde
 		"status_effects":              result.StatusEffects,
 		"narrative_current_states":    result.NarrativeCurrentStates,
 		"narrative_state_events":      result.NarrativeStateEvents,
+		"relationship_current_states": result.RelationCurrentStates,
+		"relationship_state_events":   result.RelationStateEvents,
+		"habit_evidence_current":      result.HabitEvidenceCurrent,
+		"habit_evidence_events":       result.HabitEvidenceEvents,
+		"character_profiles":          result.CharacterProfiles,
+		"voice_behavior_projections":  result.VoiceBehaviorProjections,
 		"pending_threads":             result.PendingThreads,
 		"active_states":               result.ActiveStates,
 		"canonical_layers":            result.CanonicalStateLayers,
