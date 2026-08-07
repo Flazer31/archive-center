@@ -24,7 +24,6 @@ Options:
   --preflight       Print a JSON preflight report and exit.
   --install-only    Install/bootstrap dependencies, then exit.
   --no-install      Do not use package managers; only use existing/bundled tools.
-  --keep-services   Do not stop MariaDB/ChromaDB when the Go backend exits.
   --readiness-timeout-seconds N
                     Overall readiness bound. Must be supplied with poll interval.
   --readiness-poll-interval-seconds N
@@ -261,6 +260,19 @@ json_string_field() {
 	printf '%s' "$2" | sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
 }
 
+json_bool_field() {
+	field=$1
+	printf '%s' "$2" | sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -n 1
+}
+
+set_package_build_version() {
+	case "$PACKAGE_BUILD_VERSION" in
+		__ARCHIVE_CENTER_*) ;;
+		*) AC_BUILD_VERSION=$PACKAGE_BUILD_VERSION ;;
+	esac
+	export AC_BUILD_VERSION
+}
+
 updater_safe_baseline_status() {
 	case "$1" in
 		no_pending|no_state|committed|rolled_back|nothing_to_rollback) return 0 ;;
@@ -301,7 +313,9 @@ prepare_updater_runner() {
 		return
 	fi
 	mkdir -p "$EXEC_BIN_DIR"
-	UPDATER_RUNNER="$EXEC_BIN_DIR/archive-center-updater-runner-$$"
+	updater_runner_dir="$PACKAGE_ROOT/.updates/runner"
+	mkdir -p "$updater_runner_dir"
+	UPDATER_RUNNER="$updater_runner_dir/archive-center-updater-runner-$$"
 	cp "$updater_source" "$UPDATER_RUNNER"
 	chmod 700 "$UPDATER_RUNNER" 2>/dev/null || true
 	[ -x "$UPDATER_RUNNER" ] || die "archive-center-updater runner is not executable: $UPDATER_RUNNER"
@@ -313,16 +327,14 @@ apply_pending_update() {
 	PENDING_CURRENT_VERSION=
 	PENDING_TARGET_VERSION=
 	if [ -z "${UPDATER_RUNNER:-}" ]; then
-		AC_BUILD_VERSION=${AC_BUILD_VERSION:-$PACKAGE_BUILD_VERSION}
-		export AC_BUILD_VERSION
+		set_package_build_version
 		return
 	fi
 	if ! run_archive_updater apply-pending; then
 		apply_error=$UPDATER_OUTPUT
 		if run_archive_updater status && updater_safe_baseline_status "$UPDATER_STATUS"; then
 			log "Updater rejected the pending package before mutation; continuing the verified current package."
-			AC_BUILD_VERSION=${AC_BUILD_VERSION:-$PACKAGE_BUILD_VERSION}
-			export AC_BUILD_VERSION
+			set_package_build_version
 			return
 		fi
 		die "updater apply-pending failed and a safe baseline could not be proven: $apply_error"
@@ -338,8 +350,7 @@ apply_pending_update() {
 			log "Applied a verified pending package. Main readiness will be checked before commit."
 			;;
 		no_pending|no_state|committed|rolled_back|nothing_to_rollback)
-			AC_BUILD_VERSION=${AC_BUILD_VERSION:-$PACKAGE_BUILD_VERSION}
-			export AC_BUILD_VERSION
+			set_package_build_version
 			;;
 		*)
 			die "updater returned unsupported apply status: $UPDATER_STATUS"
@@ -372,9 +383,9 @@ wait_candidate_backend_ready() {
 		[ -n "${REQUEST_TIMEOUT_SECONDS:-}" ] || die "pending update health verification requires --request-timeout-seconds or AC_REQUEST_TIMEOUT_SECONDS"
 		ready_body=$(curl --connect-timeout "$REQUEST_TIMEOUT_SECONDS" --max-time "$REQUEST_TIMEOUT_SECONDS" -fsS "http://127.0.0.1:$port/ready" 2>/dev/null || true)
 		version_body=$(curl --connect-timeout "$REQUEST_TIMEOUT_SECONDS" --max-time "$REQUEST_TIMEOUT_SECONDS" -fsS "http://127.0.0.1:$port/version" 2>/dev/null || true)
-		ready_status=$(json_string_field status "$ready_body")
+		ready_status=$(json_bool_field ready "$ready_body")
 		observed_version=$(json_string_field version "$version_body")
-		if [ "$ready_status" = "ready" ] && [ "$observed_version" = "$target" ]; then
+		if [ "$ready_status" = "true" ] && [ "$observed_version" = "$target" ]; then
 			return 0
 		fi
 		if ! readiness_polling_enabled; then
@@ -397,6 +408,7 @@ finalize_pending_update() {
 	if wait_candidate_backend_ready "$candidate_pid" "$PENDING_TARGET_VERSION"; then
 		if run_archive_updater commit && [ "$UPDATER_STATUS" = "committed" ]; then
 			stop_candidate_backend "$candidate_pid"
+			PACKAGE_BUILD_VERSION=$PENDING_TARGET_VERSION
 			log "Pending Archive Center package committed after main readiness passed."
 			return
 		fi
@@ -416,11 +428,32 @@ finalize_pending_update() {
 		fi
 	fi
 	if [ -n "$PENDING_CURRENT_VERSION" ]; then
+		PACKAGE_BUILD_VERSION=$PENDING_CURRENT_VERSION
 		AC_BUILD_VERSION=$PENDING_CURRENT_VERSION
 		export AC_BUILD_VERSION
+		ROLLBACK_HEALTH_VERSION=$PENDING_CURRENT_VERSION
+		export ROLLBACK_HEALTH_VERSION
 	fi
 	prepare_package_binaries
 	log "Update was rolled back. Starting the verified previous backend."
+}
+
+rollback_pending_preparation_failure() {
+	reason=$1
+	if [ "${PENDING_UPDATE_APPLIED:-false}" != "true" ]; then
+		return 1
+	fi
+	if ! run_archive_updater rollback || ! updater_safe_baseline_status "$UPDATER_STATUS"; then
+		die "$reason; managed package rollback was not proven safe"
+	fi
+	if [ -n "$PENDING_CURRENT_VERSION" ]; then
+		PACKAGE_BUILD_VERSION=$PENDING_CURRENT_VERSION
+		AC_BUILD_VERSION=$PENDING_CURRENT_VERSION
+		ROLLBACK_HEALTH_VERSION=$PENDING_CURRENT_VERSION
+		export AC_BUILD_VERSION ROLLBACK_HEALTH_VERSION
+	fi
+	log "$reason Managed package files were rolled back; database files were preserved."
+	return 0
 }
 
 cleanup_updater_runner() {
@@ -702,23 +735,20 @@ init_mariadb_data() {
 start_mariadb() {
 	init_mariadb_data
 	if port_is_open "$MARIADB_PORT"; then
-		MARIADB_STARTED_BY_SCRIPT=false
-		export MARIADB_STARTED_BY_SCRIPT
 		return
 	fi
 	log "Starting MariaDB on 127.0.0.1:$MARIADB_PORT"
 	mkdir -p "$LOG_DIR"
-	"$MARIADBD" \
+	start_managed_process "$MARIADBD" \
 		--datadir="$MARIADB_DATA" \
 		--port="$MARIADB_PORT" \
 		--socket="$RUNTIME_DIR/mysql.sock" \
 		--pid-file="$RUNTIME_DIR/mariadb.pid" \
 		--skip-networking=0 \
 		--bind-address=127.0.0.1 \
-		--log-error="$LOG_DIR/mariadb.log" &
-	MARIADB_PID=$!
-	MARIADB_STARTED_BY_SCRIPT=true
-	export MARIADB_PID MARIADB_STARTED_BY_SCRIPT
+		--log-error="$LOG_DIR/mariadb.log"
+	MARIADB_PID=$MANAGED_PROCESS_PID
+	export MARIADB_PID
 	wait_port "$MARIADB_PORT" "MariaDB" "$MARIADB_PID"
 }
 
@@ -732,7 +762,7 @@ bootstrap_mariadb_schema() {
 	[ -f "$SCHEMA_FILE" ] || die "schema file was not found: $SCHEMA_FILE"
 	run_external "$MARIADB_SCHEMA_RUN" \
 		-dsn "$AC_MARIADB_DSN" \
-		-schema "$SCHEMA_FILE" \
+		-schema "$PACKAGE_ROOT/migrations" \
 		-execute=true \
 		-managed-bootstrap=true \
 		-managed-host 127.0.0.1 \
@@ -743,14 +773,10 @@ bootstrap_mariadb_schema() {
 start_chromadb() {
 	if ! vector_requires_chromadb; then
 		log "Skipping ChromaDB; runtime profile is $AC_RUNTIME_PROFILE with vector mode $AC_VECTOR_MODE"
-		CHROMA_STARTED_BY_SCRIPT=false
-		export CHROMA_STARTED_BY_SCRIPT
 		return
 	fi
 	if use_external_chromadb; then
 		log "Skipping local ChromaDB startup; using external endpoint: $AC_CHROMA_ENDPOINT"
-		CHROMA_STARTED_BY_SCRIPT=false
-		export CHROMA_STARTED_BY_SCRIPT
 		return
 	fi
 	ensure_chromadb
@@ -759,33 +785,72 @@ start_chromadb() {
 		chroma_port=8000
 	fi
 	if port_is_open "$chroma_port"; then
-		CHROMA_STARTED_BY_SCRIPT=false
-		export CHROMA_STARTED_BY_SCRIPT
 		return
 	fi
 	log "Starting ChromaDB on $AC_CHROMA_ENDPOINT"
 	mkdir -p "$CHROMA_DATA" "$LOG_DIR"
 	if [ "$PLATFORM" = "termux" ]; then
-		proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "mkdir -p '$PROOT_CHROMA_DATA' && '$PROOT_CHROMA_VENV/bin/chroma' run --host 127.0.0.1 --port '$chroma_port' --path '$PROOT_CHROMA_DATA'" >"$LOG_DIR/chromadb.out.log" 2>"$LOG_DIR/chromadb.err.log" &
-		CHROMA_PID=$!
-		CHROMA_STARTED_BY_SCRIPT=true
-		export CHROMA_PID CHROMA_STARTED_BY_SCRIPT
+		start_managed_process proot-distro login "$PROOT_CHROMA_DISTRO" -- bash -lc "mkdir -p '$PROOT_CHROMA_DATA' && '$PROOT_CHROMA_VENV/bin/chroma' run --host 127.0.0.1 --port '$chroma_port' --path '$PROOT_CHROMA_DATA'" >"$LOG_DIR/chromadb.out.log" 2>"$LOG_DIR/chromadb.err.log"
+		CHROMA_PID=$MANAGED_PROCESS_PID
+		export CHROMA_PID
 		wait_port "$chroma_port" "ChromaDB" "$CHROMA_PID"
 		return
 	fi
 	chroma_bin=$(find_executable "$RUNTIME_DIR/chromadb-venv/bin/chroma" || true)
 	if [ -n "$chroma_bin" ]; then
-		"$chroma_bin" run --host 127.0.0.1 --port "$chroma_port" --path "$CHROMA_DATA" >"$LOG_DIR/chromadb.out.log" 2>"$LOG_DIR/chromadb.err.log" &
+		start_managed_process "$chroma_bin" run --host 127.0.0.1 --port "$chroma_port" --path "$CHROMA_DATA" >"$LOG_DIR/chromadb.out.log" 2>"$LOG_DIR/chromadb.err.log"
 	else
-		"$CHROMA_PYTHON" -m chromadb.cli.cli run --host 127.0.0.1 --port "$chroma_port" --path "$CHROMA_DATA" >"$LOG_DIR/chromadb.out.log" 2>"$LOG_DIR/chromadb.err.log" &
+		start_managed_process "$CHROMA_PYTHON" -m chromadb.cli.cli run --host 127.0.0.1 --port "$chroma_port" --path "$CHROMA_DATA" >"$LOG_DIR/chromadb.out.log" 2>"$LOG_DIR/chromadb.err.log"
 	fi
-	CHROMA_PID=$!
-	CHROMA_STARTED_BY_SCRIPT=true
-	export CHROMA_PID CHROMA_STARTED_BY_SCRIPT
+	CHROMA_PID=$MANAGED_PROCESS_PID
+	export CHROMA_PID
 	wait_port "$chroma_port" "ChromaDB" "$CHROMA_PID"
 }
 
+start_lifetime_watchdog() {
+	mkdir -p "$RUNTIME_DIR"
+	LIFETIME_PID_FILE="$RUNTIME_DIR/launcher-managed-process-groups"
+	LIFETIME_STOP_FILE="$RUNTIME_DIR/launcher-stop-request"
+	LIFETIME_DONE_FILE="$RUNTIME_DIR/launcher-stop-complete"
+	rm -f -- "$LIFETIME_PID_FILE" "$LIFETIME_STOP_FILE" "$LIFETIME_DONE_FILE"
+	: >"$LIFETIME_PID_FILE"
+	"$PYTHON_BIN" "$LIFETIME_HELPER" watch "$$" "$LIFETIME_PID_FILE" "$LIFETIME_STOP_FILE" "$LIFETIME_DONE_FILE" &
+	LIFETIME_WATCHDOG_PID=$!
+	export LIFETIME_PID_FILE LIFETIME_STOP_FILE LIFETIME_DONE_FILE LIFETIME_WATCHDOG_PID
+}
+
+start_managed_process() {
+	"$PYTHON_BIN" "$LIFETIME_HELPER" run "$LIFETIME_PID_FILE" "$$" "$@" &
+	MANAGED_PROCESS_PID=$!
+}
+
+stop_lifetime_watchdog() {
+	if [ -z "${LIFETIME_PID_FILE:-}" ]; then
+		return
+	fi
+	if [ -n "${LIFETIME_WATCHDOG_PID:-}" ] && kill -0 "$LIFETIME_WATCHDOG_PID" >/dev/null 2>&1; then
+		: >"$LIFETIME_STOP_FILE"
+		wait_count=0
+		while kill -0 "$LIFETIME_WATCHDOG_PID" >/dev/null 2>&1 && [ "$wait_count" -lt 12 ]; do
+			sleep 1
+			wait_count=$((wait_count + 1))
+		done
+		wait "$LIFETIME_WATCHDOG_PID" >/dev/null 2>&1 || true
+	else
+		"$PYTHON_BIN" "$LIFETIME_HELPER" stop "$LIFETIME_PID_FILE" >/dev/null 2>&1 || true
+	fi
+	rm -f -- "$LIFETIME_PID_FILE" "$LIFETIME_STOP_FILE" "$LIFETIME_DONE_FILE"
+	LIFETIME_PID_FILE=
+	LIFETIME_STOP_FILE=
+	LIFETIME_DONE_FILE=
+	LIFETIME_WATCHDOG_PID=
+}
+
 cleanup() {
+	if [ "${LIFETIME_CLEANUP_ACTIVE:-false}" = "true" ]; then
+		return
+	fi
+	LIFETIME_CLEANUP_ACTIVE=true
 	cleanup_updater_runner
 	if [ -n "${EXTERNAL_OPERATION_PID:-}" ]; then
 		kill "$EXTERNAL_OPERATION_PID" >/dev/null 2>&1 || true
@@ -796,15 +861,18 @@ cleanup() {
 	if [ -n "${EXTERNAL_TIMEOUT_MARKER:-}" ]; then
 		rm -f -- "$EXTERNAL_TIMEOUT_MARKER" >/dev/null 2>&1 || true
 	fi
-	if [ "$KEEP_SERVICES" = "true" ]; then
-		return
-	fi
-	if [ "${CHROMA_STARTED_BY_SCRIPT:-false}" = "true" ] && [ -n "${CHROMA_PID:-}" ]; then
-		kill "$CHROMA_PID" >/dev/null 2>&1 || true
-	fi
-	if [ "${MARIADB_STARTED_BY_SCRIPT:-false}" = "true" ] && [ -n "${MARIADB_PID:-}" ]; then
-		kill "$MARIADB_PID" >/dev/null 2>&1 || true
-	fi
+	stop_lifetime_watchdog
+	BACKEND_PID=
+	CHROMA_PID=
+	MARIADB_PID=
+	LIFETIME_CLEANUP_ACTIVE=false
+}
+
+shutdown_from_signal() {
+	exit_code=$1
+	trap - EXIT HUP INT TERM
+	cleanup
+	exit "$exit_code"
 }
 
 print_preflight() {
@@ -845,7 +913,6 @@ REQUESTED_VECTOR_MODE=${AC_VECTOR_MODE:-}
 PREFLIGHT=false
 INSTALL_ONLY=false
 NO_INSTALL=false
-KEEP_SERVICES=false
 READINESS_TIMEOUT_SECONDS=${AC_READINESS_TIMEOUT_SECONDS:-}
 READINESS_POLL_INTERVAL_SECONDS=${AC_READINESS_POLL_INTERVAL_SECONDS:-}
 REQUEST_TIMEOUT_SECONDS=${AC_REQUEST_TIMEOUT_SECONDS:-}
@@ -878,10 +945,6 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--no-install)
 			NO_INSTALL=true
-			shift
-			;;
-		--keep-services)
-			KEEP_SERVICES=true
 			shift
 			;;
 		--readiness-timeout-seconds)
@@ -1013,6 +1076,8 @@ MARIADB_DATA="$RUNTIME_DIR/mariadb-data"
 CHROMA_DATA="$RUNTIME_DIR/chromadb-data"
 LOG_DIR="$RUNTIME_DIR/logs"
 EXEC_BIN_DIR="$RUNTIME_DIR/bin"
+LIFETIME_HELPER="$SCRIPT_DIR/process-lifetime.py"
+[ -f "$LIFETIME_HELPER" ] || die "process lifetime helper was not found: $LIFETIME_HELPER"
 MARIADB_PORT=${AC_MARIADB_PORT:-3307}
 AC_BIND_ADDR=${AC_BIND_ADDR:-0.0.0.0:28080}
 if [ "$AC_VECTOR_MODE" = "external" ]; then
@@ -1030,6 +1095,9 @@ if [ "$PLATFORM" = "termux" ]; then
 fi
 export PACKAGE_ROOT RUNTIME_DIR MARIADB_DATA CHROMA_DATA LOG_DIR EXEC_BIN_DIR MARIADB_PORT
 export AC_RUNTIME_PROFILE AC_VECTOR_MODE AC_BIND_ADDR AC_CHROMA_ENDPOINT AC_CHROMA_COLLECTION AC_CHROMA_API_PATH
+AC_UPDATE_STAGING_DIR="$PACKAGE_ROOT/.updates"
+AC_UPDATE_APPLY_MODE=managed_launcher_exit_75
+export AC_UPDATE_STAGING_DIR AC_UPDATE_APPLY_MODE
 
 if [ "$PREFLIGHT" = "true" ]; then
 	print_preflight
@@ -1069,35 +1137,76 @@ if [ "$INSTALL_ONLY" = "true" ]; then
 	exit 0
 fi
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'shutdown_from_signal 129' HUP
+trap 'shutdown_from_signal 130' INT
+trap 'shutdown_from_signal 143' TERM
 
-prepare_updater_runner
-apply_pending_update
-prepare_package_binaries
+ROLLBACK_HEALTH_VERSION=
+while :; do
+	start_lifetime_watchdog
+	prepare_updater_runner
+	apply_pending_update
+	prepare_package_binaries
 
-start_mariadb
-bootstrap_mariadb_schema
-start_chromadb
+	start_mariadb
+	if ! bootstrap_mariadb_schema; then
+		if rollback_pending_preparation_failure "Updated package schema/bootstrap failed."; then
+			cleanup
+			MARIADB_PID=
+			CHROMA_PID=
+			UPDATER_RUNNER=
+			continue
+		fi
+		die "MariaDB schema/bootstrap failed for the verified current package"
+	fi
+	start_chromadb
 
-export AC_MODE=live
-export AC_STORE_MODE=mariadb_authority
-export AC_PROMPT_DIR="$PACKAGE_ROOT/prompts"
-export AC_PRUNE_POLICY=${AC_PRUNE_POLICY:-soft}
+	export AC_MODE=live
+	export AC_STORE_MODE=mariadb_authority
+	export AC_PROMPT_DIR="$PACKAGE_ROOT/prompts"
+	export AC_PRUNE_POLICY=${AC_PRUNE_POLICY:-soft}
 
-finalize_pending_update
+	finalize_pending_update
 
-log "Starting Archive Center 2.1"
-log "  Backend:  http://$AC_BIND_ADDR"
-log "  MariaDB:  127.0.0.1:$MARIADB_PORT"
-if vector_requires_chromadb; then
-	log "  ChromaDB: $AC_CHROMA_ENDPOINT"
-else
-	log "  ChromaDB: disabled ($AC_VECTOR_MODE)"
-fi
-log "  Profile:  $AC_RUNTIME_PROFILE"
-log "  Vector:   $AC_VECTOR_MODE"
-log "  Package:  $PACKAGE_PROFILE"
-log "Stop with Ctrl+C."
+	log "Starting Archive Center 2.1"
+	log "  Backend:  http://$AC_BIND_ADDR"
+	log "  MariaDB:  127.0.0.1:$MARIADB_PORT"
+	if vector_requires_chromadb; then
+		log "  ChromaDB: $AC_CHROMA_ENDPOINT"
+	else
+		log "  ChromaDB: disabled ($AC_VECTOR_MODE)"
+	fi
+	log "  Profile:  $AC_RUNTIME_PROFILE"
+	log "  Vector:   $AC_VECTOR_MODE"
+	log "  Package:  $PACKAGE_PROFILE"
+	log "Stop with Ctrl+C."
 
-cleanup_updater_runner
-exec "$ARCHIVE_CENTER_GO_RUN"
+	cleanup_updater_runner
+	UPDATER_RUNNER=
+	start_managed_process "$ARCHIVE_CENTER_GO_RUN"
+	BACKEND_PID=$MANAGED_PROCESS_PID
+	export BACKEND_PID
+	if [ -n "$ROLLBACK_HEALTH_VERSION" ]; then
+		if ! wait_candidate_backend_ready "$BACKEND_PID" "$ROLLBACK_HEALTH_VERSION"; then
+			die "rolled-back backend failed /ready or exact /version verification"
+		fi
+		log "Rolled-back backend passed /ready and exact /version verification."
+		ROLLBACK_HEALTH_VERSION=
+	fi
+	if wait "$BACKEND_PID"; then
+		backend_exit=0
+	else
+		backend_exit=$?
+	fi
+	BACKEND_PID=
+	export BACKEND_PID
+	if [ "$backend_exit" -ne 75 ]; then
+		exit "$backend_exit"
+	fi
+	log "Backend requested immediate pending-update apply (exit 75)."
+	cleanup
+	MARIADB_PID=
+	CHROMA_PID=
+	UPDATER_RUNNER=
+done

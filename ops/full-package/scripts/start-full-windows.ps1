@@ -3,13 +3,194 @@ param(
     [string]$BindAddr = "",
     [string]$RuntimeProfile = "",
     [string]$VectorMode = "",
-    [int]$MariaDBPort = 3307,
-    [switch]$KeepServices
+    [int]$MariaDBPort = 3307
 )
 
 $ErrorActionPreference = "Stop"
 $packagedBuildVersion = "__ARCHIVE_CENTER_PACKAGE_VERSION__"
 $managedChromaDBVersion = "1.5.9"
+
+if (-not ("ArchiveCenter.ManagedProcessJob" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace ArchiveCenter {
+    public sealed class ManagedProcessJob : IDisposable {
+        private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+        private const uint SYNCHRONIZE = 0x00100000;
+        private const uint WAIT_OBJECT_0 = 0x00000000;
+        private const uint INFINITE = 0xFFFFFFFF;
+
+        private enum JobObjectInfoType {
+            ExtendedLimitInformation = 9
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IO_COUNTERS {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+            public IO_COUNTERS IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PROCESS_BASIC_INFORMATION {
+            public IntPtr Reserved1;
+            public IntPtr PebBaseAddress;
+            public IntPtr Reserved2_0;
+            public IntPtr Reserved2_1;
+            public IntPtr UniqueProcessId;
+            public IntPtr InheritedFromUniqueProcessId;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetInformationJobObject(
+            IntPtr job,
+            JobObjectInfoType infoType,
+            IntPtr info,
+            uint infoLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, int processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+        [DllImport("ntdll.dll")]
+        private static extern int NtQueryInformationProcess(
+            IntPtr processHandle,
+            int processInformationClass,
+            ref PROCESS_BASIC_INFORMATION processInformation,
+            uint processInformationLength,
+            out uint returnLength);
+
+        private IntPtr handle;
+
+        public ManagedProcessJob() {
+            handle = CreateJobObject(IntPtr.Zero, null);
+            if (handle == IntPtr.Zero) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            int size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+            IntPtr pointer = Marshal.AllocHGlobal(size);
+            try {
+                Marshal.StructureToPtr(info, pointer, false);
+                if (!SetInformationJobObject(handle, JobObjectInfoType.ExtendedLimitInformation, pointer, (uint)size)) {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+            } catch {
+                CloseHandle(handle);
+                handle = IntPtr.Zero;
+                throw;
+            } finally {
+                Marshal.FreeHGlobal(pointer);
+            }
+        }
+
+        public void AddProcess(IntPtr processHandle) {
+            if (handle == IntPtr.Zero) {
+                throw new ObjectDisposedException("ManagedProcessJob");
+            }
+            if (!AssignProcessToJobObject(handle, processHandle)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+
+        public static int GetCurrentParentProcessId() {
+            PROCESS_BASIC_INFORMATION information = new PROCESS_BASIC_INFORMATION();
+            uint returnLength;
+            int status = NtQueryInformationProcess(
+                GetCurrentProcess(),
+                0,
+                ref information,
+                (uint)Marshal.SizeOf(typeof(PROCESS_BASIC_INFORMATION)),
+                out returnLength);
+            if (status != 0) {
+                throw new InvalidOperationException("NtQueryInformationProcess failed with status " + status + ".");
+            }
+            return information.InheritedFromUniqueProcessId.ToInt32();
+        }
+
+        public void ExitWhenProcessEnds(int processId) {
+            IntPtr processHandle = OpenProcess(SYNCHRONIZE, false, processId);
+            if (processHandle == IntPtr.Zero) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            Thread watcher = new Thread(delegate() {
+                uint result = WaitForSingleObject(processHandle, INFINITE);
+                CloseHandle(processHandle);
+                if (result == WAIT_OBJECT_0) {
+                    Dispose();
+                    Environment.Exit(0);
+                }
+            });
+            watcher.IsBackground = true;
+            watcher.Start();
+        }
+
+        public void Dispose() {
+            if (handle != IntPtr.Zero) {
+                CloseHandle(handle);
+                handle = IntPtr.Zero;
+            }
+            GC.SuppressFinalize(this);
+        }
+
+        ~ManagedProcessJob() {
+            Dispose();
+        }
+    }
+}
+"@
+}
+
+$launcherParameters = @{}
+foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+    $launcherParameters[$entry.Key] = $entry.Value
+}
 
 function ConvertFrom-ProtectedEnvText([string]$ProtectedPath) {
     $cipherText = (Get-Content -LiteralPath $ProtectedPath -Raw).Trim()
@@ -138,6 +319,18 @@ function Start-ArchiveChildProcess {
         $proc = [System.Diagnostics.Process]::Start($psi)
         if ($null -eq $proc) {
             throw "Process.Start returned null."
+        }
+        try {
+            $script:archiveProcessJob.AddProcess($proc.Handle)
+        } catch {
+            try {
+                if (-not $proc.HasExited) {
+                    $proc.Kill()
+                    $proc.WaitForExit()
+                }
+            } catch {
+            }
+            throw "Failed to bind the managed server process to the launcher lifetime.`nFile: $FilePath`nOriginal error: $($_.Exception.Message)"
         }
         return $proc
     } catch {
@@ -550,11 +743,59 @@ function Wait-BackendMainReady {
     return [pscustomobject]@{ Ready = $false; Detail = "ready timeout: $lastError" }
 }
 
-function Stop-ArchiveChildProcess([System.Diagnostics.Process]$Process) {
-    if ($null -ne $Process -and -not $Process.HasExited) {
-        $Process.Kill()
-        $Process.WaitForExit()
+function Stop-ArchiveChildProcess([System.Diagnostics.Process[]]$Process) {
+    $targets = @(
+        $Process |
+            Where-Object { $null -ne $_ } |
+            Group-Object -Property Id |
+            ForEach-Object { $_.Group[0] }
+    )
+    foreach ($target in $targets) {
+        if ($target.HasExited) {
+            continue
+        }
+        try {
+            [void]$target.CloseMainWindow()
+        } catch {
+            # The managed child may not own a window. The bounded wait below
+            # still preserves the existing graceful-exit opportunity.
+        }
     }
+    $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    foreach ($target in $targets) {
+        if ($target.HasExited) {
+            continue
+        }
+        $remainingMilliseconds = [Math]::Max(0, [int][Math]::Ceiling(($shutdownDeadline - [DateTime]::UtcNow).TotalMilliseconds))
+        if ($remainingMilliseconds -gt 0) {
+            [void]$target.WaitForExit($remainingMilliseconds)
+        }
+    }
+    foreach ($target in $targets) {
+        if (-not $target.HasExited) {
+            $target.Kill()
+            $target.WaitForExit()
+        }
+    }
+}
+
+function Wait-ArchiveBackendLifetime {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [int]$Port = 28080,
+        [string]$ExpectedVersion = ""
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+        $health = Wait-BackendMainReady -Process $Process -Port $Port -ExpectedVersion $ExpectedVersion -TimeoutSeconds 60
+        if (-not $health.Ready) {
+            Stop-ArchiveChildProcess $Process
+            throw "Restored backend failed /ready or exact /version verification: $($health.Detail)"
+        }
+        Write-Host "Restored backend passed /ready and exact /version verification."
+    }
+    Wait-Process -InputObject $Process
+    $Process.Refresh()
+    return [int]$Process.ExitCode
 }
 
 function Get-RelativeDataFileMap([string]$Root) {
@@ -691,7 +932,7 @@ function Import-LegacyRuntimeDataOnce([string]$PackageRoot, [string]$DataRoot, [
     }
     $imports = @()
     if (@($mariaCandidates).Count -eq 1) {
-        $imports += [pscustomobject]@{ Name = "mariadb"; Source = [string]$mariaCandidates[0]; Destination = (Join-Path $dataRootFull "mariadb") }
+        $imports += [pscustomobject]@{ Name = "mariadb"; Source = [string](@($mariaCandidates)[0]); Destination = (Join-Path $dataRootFull "mariadb") }
     }
     $legacyChroma = Join-Path $legacyRoot "chromadb"
     if (Test-Path -LiteralPath $legacyChroma -PathType Container) {
@@ -876,6 +1117,8 @@ if ($profileBeforeApply -eq "client_only") {
 }
 
 Import-DotEnv $EnvFile
+$env:AC_UPDATE_STAGING_DIR = Join-Path $packRoot ".updates"
+$env:AC_UPDATE_APPLY_MODE = "managed_launcher_exit_75"
 if ($pendingApplyStatus -eq "applied_pending_health" -and -not [string]::IsNullOrWhiteSpace($pendingTargetVersion)) {
     $env:AC_BUILD_VERSION = $pendingTargetVersion
 } elseif ($packagedBuildVersion -notmatch '^__ARCHIVE_CENTER_' -and -not [string]::IsNullOrWhiteSpace($packagedBuildVersion)) {
@@ -1035,6 +1278,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $dataDir "mysql") -PathType Containe
 
 $startedMariaDB = $null
 $startedChroma = $null
+$backendProcess = $null
+$candidateBackend = $null
+$restoredBackend = $null
+$archiveProcessJob = New-Object ArchiveCenter.ManagedProcessJob
+$archiveProcessJob.ExitWhenProcessEnds([ArchiveCenter.ManagedProcessJob]::GetCurrentParentProcessId())
+$backendExitCode = 0
+$restartLauncherForUpdate = $false
 try {
     if (-not (Test-PortOpen $MariaDBPort)) {
         $mariaArgs = @(
@@ -1095,8 +1345,12 @@ try {
         $env:AC_CHROMA_API_PATH = "/api/v2"
     }
     $env:AC_PROMPT_DIR = Join-Path $packRoot "prompts"
+    $backendPort = 28080
+    if ($env:AC_BIND_ADDR -match ':(\d+)$') {
+        $backendPort = [int]$Matches[1]
+    }
 
-    $schemaPath = Join-Path $packRoot "migrations\001_schema.sql"
+    $schemaPath = Join-Path $packRoot "migrations"
     & (Join-Path $packRoot "bin\mariadb-schema.exe") `
         -dsn $env:AC_MARIADB_DSN `
         -schema $schemaPath `
@@ -1123,10 +1377,6 @@ Write-Host "Starting Archive Center 2.1 full package"
     Write-Host ""
     Write-Host "Stop with Ctrl+C."
     if ($pendingApplyStatus -eq "applied_pending_health") {
-        $backendPort = 28080
-        if ($env:AC_BIND_ADDR -match ':(\d+)$') {
-            $backendPort = [int]$Matches[1]
-        }
         $candidateBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
         $health = Wait-BackendMainReady -Process $candidateBackend -Port $backendPort -ExpectedVersion $pendingTargetVersion -TimeoutSeconds 60
         if ($health.Ready) {
@@ -1142,9 +1392,7 @@ Write-Host "Starting Archive Center 2.1 full package"
             if ([string]::IsNullOrWhiteSpace($commitFailure)) {
                 $updaterRunnerCleanupAllowed = $true
                 Write-Host "Pending Archive Center package committed after main readiness passed."
-                # This is the foreground server lifetime, not a readiness or
-                # finality timer. The caller ends it with Ctrl+C or process exit.
-                $candidateBackend.WaitForExit()
+                $backendExitCode = Wait-ArchiveBackendLifetime -Process $candidateBackend -Port $backendPort
             } else {
                 Stop-ArchiveChildProcess $candidateBackend
                 $restartManagedMariaDB = $null -ne $startedMariaDB
@@ -1159,6 +1407,7 @@ Write-Host "Starting Archive Center 2.1 full package"
                 if ($rollback.Status -eq "rolled_back" -and -not [string]::IsNullOrWhiteSpace($pendingCurrentVersion)) {
                     $env:AC_BUILD_VERSION = $pendingCurrentVersion
                 }
+                $pendingApplyStatus = "rolled_back"
                 if ($restartManagedMariaDB) {
                     $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
                     Wait-Port $MariaDBPort 60
@@ -1168,7 +1417,8 @@ Write-Host "Starting Archive Center 2.1 full package"
                     Wait-Port $chromaPort 60
                 }
                 Write-Host "Update commit did not return a clean acknowledgement ($commitFailure). Recovery is safe; starting the verified current backend."
-                & $backendExe
+                $restoredBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+                $backendExitCode = Wait-ArchiveBackendLifetime -Process $restoredBackend -Port $backendPort -ExpectedVersion $pendingCurrentVersion
             }
         } else {
             Stop-ArchiveChildProcess $candidateBackend
@@ -1184,6 +1434,7 @@ Write-Host "Starting Archive Center 2.1 full package"
             if ($rollback.Status -eq "rolled_back" -and -not [string]::IsNullOrWhiteSpace($pendingCurrentVersion)) {
                 $env:AC_BUILD_VERSION = $pendingCurrentVersion
             }
+            $pendingApplyStatus = "rolled_back"
             if ($restartManagedMariaDB) {
                 $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
                 Wait-Port $MariaDBPort 60
@@ -1193,28 +1444,64 @@ Write-Host "Starting Archive Center 2.1 full package"
                 Wait-Port $chromaPort 60
             }
             Write-Host "Updated backend failed main readiness ($($health.Detail)). The verified baseline was restored; starting the old backend."
-            & $backendExe
+            $restoredBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+            $backendExitCode = Wait-ArchiveBackendLifetime -Process $restoredBackend -Port $backendPort -ExpectedVersion $pendingCurrentVersion
         }
     } else {
-        & $backendExe
+        $backendProcess = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+        $backendExitCode = Wait-ArchiveBackendLifetime -Process $backendProcess
+    }
+    if ($backendExitCode -eq 75) {
+        $restartLauncherForUpdate = $true
+        Write-Host "Backend requested immediate pending-update apply (exit 75)."
     }
 } catch {
     $startupError = $_
     if ($pendingApplyStatus -eq "applied_pending_health" -and -not [string]::IsNullOrWhiteSpace($updaterRunner)) {
+        $restartManagedMariaDB = $null -ne $startedMariaDB
+        $restartManagedChroma = $null -ne $startedChroma
         Stop-ArchiveChildProcess $startedChroma
         Stop-ArchiveChildProcess $startedMariaDB
         try {
             $startupRollback = Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback" -PackageRoot $packRoot
-            if ($startupRollback.ExitCode -ne 0 -or $startupRollback.Status -notin @("rolled_back", "nothing_to_rollback")) {
+            if ($startupRollback.ExitCode -ne 0 -or $startupRollback.Status -ne "rolled_back") {
                 throw "rollback status '$($startupRollback.Status)' (exit $($startupRollback.ExitCode))"
             }
             $updaterRunnerCleanupAllowed = $true
-            Write-Host "Updated package preparation failed before main readiness. Managed package files were rolled back."
+            $pendingApplyStatus = "rolled_back"
+            $env:AC_BUILD_VERSION = $pendingCurrentVersion
+            if ($restartManagedMariaDB) {
+                $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
+                Wait-Port $MariaDBPort 60
+            }
+            if ($restartManagedChroma) {
+                $startedChroma = Start-ManagedChromaDB -PackageRoot $packRoot -RuntimeRoot $chromaRuntimeRoot -Endpoint $chromaUri
+                Wait-Port $chromaPort 60
+            }
+            & (Join-Path $packRoot "bin\mariadb-schema.exe") `
+                -dsn $env:AC_MARIADB_DSN `
+                -schema (Join-Path $packRoot "migrations") `
+                -execute `
+                -managed-bootstrap `
+                -managed-host 127.0.0.1 `
+                -managed-port $MariaDBPort `
+                -expected-datadir $dataDir
+            if ($LASTEXITCODE -ne 0) {
+                throw "restored MariaDB schema apply failed"
+            }
+            Write-Host "Updated package preparation failed before main readiness. Managed package files were rolled back; database files were preserved."
+            $restoredBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+            $backendExitCode = Wait-ArchiveBackendLifetime -Process $restoredBackend -Port $backendPort -ExpectedVersion $pendingCurrentVersion
+            if ($backendExitCode -eq 75) {
+                $restartLauncherForUpdate = $true
+                Write-Host "Restored backend requested immediate pending-update apply (exit 75)."
+            }
         } catch {
             throw "Updated package preparation failed, and rollback could not be proven safe. Startup stopped to avoid a mixed package.`nOriginal: $($startupError.Exception.Message)`nRollback: $($_.Exception.Message)"
         }
+    } else {
+        throw $startupError
     }
-    throw $startupError
 } finally {
     if ($updaterRunnerCleanupAllowed -and $updaterRunner -and (Test-Path -LiteralPath $updaterRunner -PathType Leaf)) {
         Remove-Item -LiteralPath $updaterRunner -Force -ErrorAction SilentlyContinue
@@ -1222,12 +1509,23 @@ Write-Host "Starting Archive Center 2.1 full package"
     if ($updaterRunnerCleanupAllowed) {
         Remove-Item -LiteralPath (Join-Path $packRoot ".updates\runner-identity.json") -Force -ErrorAction SilentlyContinue
     }
-    if (-not $KeepServices) {
-        if ($startedChroma -and -not $startedChroma.HasExited) {
-            $startedChroma.Kill()
-        }
-        if ($startedMariaDB -and -not $startedMariaDB.HasExited) {
-            $startedMariaDB.Kill()
+    try {
+        Stop-ArchiveChildProcess -Process @(
+            $backendProcess,
+            $candidateBackend,
+            $restoredBackend,
+            $startedChroma,
+            $startedMariaDB
+        )
+    } finally {
+        if ($null -ne $archiveProcessJob) {
+            $archiveProcessJob.Dispose()
         }
     }
 }
+
+if ($restartLauncherForUpdate) {
+    & $PSCommandPath @launcherParameters
+    exit $LASTEXITCODE
+}
+exit $backendExitCode

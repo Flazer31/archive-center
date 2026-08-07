@@ -5,11 +5,48 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+type contextualizedEmbeddingItem struct {
+	Key  string
+	Text string
+}
+
+func callContextualizedEmbeddingItems(ctx context.Context, cfg completeTurnEmbeddingConfig, items []contextualizedEmbeddingItem) (map[string]string, string, error) {
+	if !usesVoyageContextualizedEmbedding(cfg) || len(items) == 0 {
+		return nil, "", nil
+	}
+	inputs := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		if strings.TrimSpace(item.Key) == "" || seen[item.Key] {
+			return nil, "", fmt.Errorf("contextualized embedding item key is empty or duplicated")
+		}
+		seen[item.Key] = true
+		inputs = append(inputs, item.Text)
+	}
+	grouped, model, err := callDocumentEmbeddings(ctx, cfg, inputs)
+	if err != nil {
+		return nil, "", err
+	}
+	out := make(map[string]string, len(items))
+	for i, item := range items {
+		out[item.Key] = grouped[i]
+	}
+	return out, model, nil
+}
+
+func memoryNeedsEmbeddingForModel(mem store.Memory, cfg completeTurnEmbeddingConfig, force bool) bool {
+	embedding := strings.TrimSpace(mem.Embedding)
+	return force || embedding == "" || embedding == "[]" ||
+		(usesVoyageContextualizedEmbedding(cfg) &&
+			!strings.EqualFold(strings.TrimSpace(mem.EmbeddingModel), strings.TrimSpace(cfg.Model)))
+}
 
 func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 	if !s.usesShadowWriteStore() {
@@ -93,6 +130,21 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 	errorsOut := []string{}
 	failedIDs := []int64{}
 	skippedIDs := []int64{}
+	contextMemoryEmbeddings := map[string]string(nil)
+	contextMemoryModel := ""
+	contextMemoryErr := error(nil)
+	if !dryRun && cfg.Embedder.hasConfig() && usesVoyageContextualizedEmbedding(cfg.Embedder) {
+		items := make([]contextualizedEmbeddingItem, 0, len(memories))
+		for _, mem := range memories {
+			if !memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) {
+				continue
+			}
+			if text := reindexMemoryDocumentText(mem); text != "" {
+				items = append(items, contextualizedEmbeddingItem{Key: strconv.FormatInt(mem.ID, 10), Text: text})
+			}
+		}
+		contextMemoryEmbeddings, contextMemoryModel, contextMemoryErr = callContextualizedEmbeddingItems(r.Context(), cfg.Embedder, items)
+	}
 	if !dryRun {
 		for i := range memories {
 			mem := memories[i]
@@ -105,8 +157,14 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 			}
 			embeddingText := strings.TrimSpace(mem.Embedding)
 			embeddingModel := strings.TrimSpace(mem.EmbeddingModel)
-			if (force || embeddingText == "" || embeddingText == "[]") && cfg.Embedder.hasConfig() {
-				emb, model, err := callEmbedding(r.Context(), cfg.Embedder, summary)
+			if memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) && cfg.Embedder.hasConfig() {
+				emb, model, err := "", "", contextMemoryErr
+				if usesVoyageContextualizedEmbedding(cfg.Embedder) && err == nil {
+					emb = contextMemoryEmbeddings[strconv.FormatInt(mem.ID, 10)]
+					model = contextMemoryModel
+				} else if !usesVoyageContextualizedEmbedding(cfg.Embedder) {
+					emb, model, err = callEmbedding(r.Context(), cfg.Embedder, summary)
+				}
 				if err != nil {
 					errorsOut = append(errorsOut, fmt.Sprintf("memory:%d embedding: %s", mem.ID, err.Error()))
 					failedIDs = append(failedIDs, mem.ID)
@@ -359,6 +417,21 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 	errorsOut := []string{}
 	failedIDs := []int64{}
 	skippedIDs := []int64{}
+	contextMemoryEmbeddings := map[string]string(nil)
+	contextMemoryModel := ""
+	contextMemoryErr := error(nil)
+	if !dryRun && cfg.Embedder.hasConfig() && usesVoyageContextualizedEmbedding(cfg.Embedder) {
+		items := make([]contextualizedEmbeddingItem, 0, len(memories))
+		for _, mem := range memories {
+			if !memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) {
+				continue
+			}
+			if text := reindexMemoryDocumentText(mem); text != "" {
+				items = append(items, contextualizedEmbeddingItem{Key: strconv.FormatInt(mem.ID, 10), Text: text})
+			}
+		}
+		contextMemoryEmbeddings, contextMemoryModel, contextMemoryErr = callContextualizedEmbeddingItems(ctx, cfg.Embedder, items)
+	}
 	if !dryRun {
 		for i := range memories {
 			select {
@@ -375,8 +448,14 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 			} else {
 				embeddingText := strings.TrimSpace(mem.Embedding)
 				embeddingModel := strings.TrimSpace(mem.EmbeddingModel)
-				if (force || embeddingText == "" || embeddingText == "[]") && cfg.Embedder.hasConfig() {
-					emb, model, err := callEmbedding(ctx, cfg.Embedder, summary)
+				if memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) && cfg.Embedder.hasConfig() {
+					emb, model, err := "", "", contextMemoryErr
+					if usesVoyageContextualizedEmbedding(cfg.Embedder) && err == nil {
+						emb = contextMemoryEmbeddings[strconv.FormatInt(mem.ID, 10)]
+						model = contextMemoryModel
+					} else if !usesVoyageContextualizedEmbedding(cfg.Embedder) {
+						emb, model, err = callEmbedding(ctx, cfg.Embedder, summary)
+					}
 					if err != nil {
 						errorsOut = append(errorsOut, fmt.Sprintf("memory:%d embedding: %s", mem.ID, err.Error()))
 						failedIDs = append(failedIDs, mem.ID)

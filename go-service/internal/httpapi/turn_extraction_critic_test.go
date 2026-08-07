@@ -15,6 +15,15 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
+func combinedCriticPromptForTest(t *testing.T, userPrompt string) string {
+	t.Helper()
+	systemPrompt, source := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	if source == "fallback_builtin" {
+		t.Fatal("source critic_system.txt was not loaded")
+	}
+	return systemPrompt + "\n" + userPrompt
+}
+
 func TestCriticPipelineErrorClassificationPreservesStageAndHTTPStatus(t *testing.T) {
 	timeoutErr := classifyCriticProviderError(context.DeadlineExceeded, http.StatusBadGateway)
 	timeoutDetails := criticPipelineErrorDetails(timeoutErr)
@@ -455,14 +464,13 @@ func TestCriticSubjectiveCollectionPreservesStorySpecificRevealPolicy(t *testing
 }
 
 func TestCriticPromptRequiresEvidenceEligibleSubjectiveCoverageAndAllowsValidZero(t *testing.T) {
-	prompt := buildCompleteTurnCriticPrompt("session", 3, "Mina opens the door.", "Rowan watches.", nil, nil, nil)
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session", 3, "Mina opens the door.", "Rowan watches.", nil, nil, nil))
 	for _, required := range []string{
-		"Before leaving subjective_entity_memories empty, inspect every named in-story entity",
-		"valid when the latest accepted turn contains no distinct source-grounded perspective content",
-		"NPC coverage is evidence-eligible, not mandatory",
+		"Before returning this array empty, inspect every named in-story entity",
+		"An empty `subjective_entity_memories` array remains valid",
 		"Each subjective memory needs an owner and memory text",
-		"Extract useful source-grounded in-story facts and relationships broadly as kg_triples",
-		"Do not omit a fact merely because another typed lane also records it",
+		"extract useful source-grounded in-story facts and relationships broadly",
+		"A fact is not omitted merely because another typed lane also records it",
 		"evidence_excerpts are durable citations, not transcript samples",
 		"Speech-style examples belong in voice_observations",
 	} {
@@ -476,6 +484,49 @@ func TestCriticPromptRequiresEvidenceEligibleSubjectiveCoverageAndAllowsValidZer
 		strings.Contains(prompt, "subject_binding/object_binding") ||
 		strings.Contains(prompt, "Represent each record with subject, predicate, object") {
 		t.Fatalf("critic prompt still contains the KG suppression policy")
+	}
+}
+
+func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T) {
+	systemPrompt, source := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	if source == "fallback_builtin" {
+		t.Fatal("source critic_system.txt was not loaded")
+	}
+	systemJSONSection := strings.Index(systemPrompt, "[Available JSON Surfaces]")
+	if systemJSONSection < 0 {
+		t.Fatal("system critic prompt is missing the JSON surface section")
+	}
+	userPrompt := buildCompleteTurnCriticPrompt(
+		"session-json-contract", 7,
+		"Mina found the brass key.",
+		"Rowan nodded and followed.",
+		nil, nil, nil,
+	)
+
+	for name, prompt := range map[string]string{
+		"system": systemPrompt[systemJSONSection:],
+		"user":   userPrompt,
+	} {
+		example, err := parseJSONFromLLMContent(prompt)
+		if err != nil {
+			t.Fatalf("%s critic prompt JSON example is not parseable: %v", name, err)
+		}
+		if err := validateCriticExtractionSchema(example); err != nil {
+			t.Fatalf("%s critic prompt JSON example violates the critic schema: %v", name, err)
+		}
+		for _, key := range []string{
+			"turn_summary", "evidence_excerpts", "kg_triples", "entities",
+			"world_rule_audit", "world_rules", "subjective_entity_memories",
+			"protected_secrets", "character_identity_accuracy",
+			"persona_capsule_candidates", "narrative_events", "state_claims",
+			"belief_updates", "state_deltas", "character_deltas",
+			"physical_conditions", "entity_conditions", "reversible_states",
+			"pending_threads",
+		} {
+			if _, ok := example[key]; !ok {
+				t.Fatalf("%s critic prompt JSON example lost required surface %q", name, key)
+			}
+		}
 	}
 }
 

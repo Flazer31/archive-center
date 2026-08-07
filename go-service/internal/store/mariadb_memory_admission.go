@@ -625,9 +625,10 @@ func enqueueAdmissionVectorsTx(
 			"SummaryLanguage":       item.SummaryLanguage,
 			"SessionOutputLanguage": item.SessionOutputLanguage,
 			"AliasCount":            item.AliasCount,
-			"Metadata": memoryVectorVerificationMetadata(
+			"Metadata": memoryVectorDocumentMetadata(
 				admission.SourceRevision, MemorySourceRevisionContract,
-				admission.IndexVersion, documentText,
+				admission.IndexVersion, documentText, item.EmbeddingModel,
+				item.ContextChunks, item.ContextChunkIndex,
 			),
 		})
 		if err != nil {
@@ -671,6 +672,18 @@ func memoryVectorVerificationMetadata(sourceRevision, sourceContract, indexIdent
 		"index_identity":      strings.TrimSpace(indexIdentity),
 		"content_fingerprint": contentFingerprint,
 	}
+}
+
+func memoryVectorDocumentMetadata(sourceRevision, sourceContract, indexIdentity, documentText, embeddingModel string, contextChunks []string, contextChunkIndex int) map[string]any {
+	metadata := memoryVectorVerificationMetadata(sourceRevision, sourceContract, indexIdentity, documentText)
+	if model := strings.TrimSpace(embeddingModel); model != "" {
+		metadata["embedding_model"] = model
+	}
+	if len(contextChunks) > 0 {
+		metadata["contextualized_embedding_inputs"] = append([]string(nil), contextChunks...)
+		metadata["contextualized_embedding_index"] = contextChunkIndex
+	}
+	return metadata
 }
 
 func enqueueAdmissionVectorDeleteTx(

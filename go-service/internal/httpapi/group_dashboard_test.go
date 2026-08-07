@@ -567,6 +567,33 @@ func TestDashboardPendingRecoveryPreservesTerminalReasonAndTime(t *testing.T) {
 	}
 }
 
+func TestDashboardHistoricalQueueGroupsMatchingIncidentsAcrossTimestamps(t *testing.T) {
+	vm := buildDashboardViewModel(dashboardViewModelRequest{
+		PluginEnabled:    true,
+		CurrentSessionID: "session-current",
+		RuntimeState:     map[string]any{},
+		QueueObservations: []dashboardQueueObservation{
+			{QueueKind: "transport_retry", SessionID: "session-current", RequestID: "old-1", State: "terminal", ReasonCode: "pending_confirmation_persistence_failed", TerminalAt: "2026-07-30T04:05:00Z", Count: 20},
+			{QueueKind: "transport_retry", SessionID: "session-current", RequestID: "old-2", State: "terminal", ReasonCode: "pending_confirmation_persistence_failed", TerminalAt: "2026-07-30T04:10:00Z", Count: 30},
+		},
+	})
+	card := requireDashboardCard(t, vm, "historical_queue")
+	matchingRows := 0
+	for index := range card.Rows {
+		row := &card.Rows[index]
+		if row.DetailCode != "pending_confirmation_persistence_failed" {
+			continue
+		}
+		matchingRows++
+		if row.Status != "fail" || row.Detail != "50 terminal" || dashboardInt(row.ItemCount) != 50 || row.Time != "2026-07-30T04:10:00Z" {
+			t.Fatalf("grouped historical queue row=%+v", row)
+		}
+	}
+	if matchingRows != 1 {
+		t.Fatalf("matching historical rows=%d, want 1", matchingRows)
+	}
+}
+
 func TestDashboardMaintenanceWithoutRequestProvenanceNeverBecomesCurrent(t *testing.T) {
 	workflow := turnWorkflowHUDViewModel{
 		RequestID: "request-current", ChatSessionID: "session-current", BackendTurn: 8,

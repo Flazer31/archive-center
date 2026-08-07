@@ -153,7 +153,7 @@ func (s *Server) buildPrimaryCanonBase(ctx context.Context, sid, sceneQuery stri
 			searchFailures++
 			result.MissingFields = appendPrimaryCanonBaseMissing(result.MissingFields, "foundation_query")
 		default:
-			embeddingJSON, model, embeddingErr := callEmbedding(ctx, embedder, foundationQuery)
+			embeddingJSON, model, embeddingErr := callQueryEmbedding(ctx, embedder, foundationQuery)
 			if embeddingErr != nil {
 				searchFailures++
 				result.MissingFields = appendPrimaryCanonBaseMissing(result.MissingFields, "foundation_embedding")

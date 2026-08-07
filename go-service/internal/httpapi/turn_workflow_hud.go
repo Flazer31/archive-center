@@ -2213,6 +2213,12 @@ func newTurnWorkflowHUDOperationNotice(
 	operationDisposition := "delivered"
 	operationStatus := "completed"
 	operationSeverity := view.Severity
+	deleteDetected := strings.EqualFold(strings.TrimSpace(noticeCode), "ASSISTANT_OUTPUT_DELETE_DETECTED")
+	if deleteDetected {
+		operationDisposition = "deferred"
+		operationStatus = "running"
+		view.EndedAt = nil
+	}
 	if view.Status == "failed" || view.Severity == turnWorkflowHUDSeverityError {
 		operationDisposition = "dropped"
 		operationStatus = "failed"
@@ -2244,10 +2250,17 @@ func newTurnWorkflowHUDOperationNotice(
 			Key: "host_observation", Owner: "risu_host", Scope: "current_request",
 			Status: "observed", Disposition: "eligible", ReasonCode: strings.ToLower(strings.TrimSpace(noticeCode)), Severity: operationSeverity,
 		})
-		setTurnWorkflowHUDFactValue(&view, turnWorkflowHUDFact{
-			Key: "finality", Owner: "go_backend", Scope: "current_request",
-			Status: "deleted", Disposition: "dropped", ReasonCode: strings.ToLower(strings.TrimSpace(noticeCode)), Severity: operationSeverity,
-		})
+		if deleteDetected {
+			setTurnWorkflowHUDFactValue(&view, turnWorkflowHUDFact{
+				Key: "finality", Owner: "go_backend", Scope: "current_request",
+				Status: "pending", Disposition: "deferred", ReasonCode: strings.ToLower(strings.TrimSpace(noticeCode)), Severity: operationSeverity,
+			})
+		} else {
+			setTurnWorkflowHUDFactValue(&view, turnWorkflowHUDFact{
+				Key: "finality", Owner: "go_backend", Scope: "current_request",
+				Status: "deleted", Disposition: "dropped", ReasonCode: strings.ToLower(strings.TrimSpace(noticeCode)), Severity: operationSeverity,
+			})
+		}
 	}
 	syncTurnWorkflowHUDAlignment(&view)
 	syncTurnWorkflowHUDPresentation(&view)
@@ -2296,7 +2309,7 @@ func turnWorkflowHUDNoticeKind(code string) string {
 	switch strings.ToUpper(strings.TrimSpace(code)) {
 	case "OOC_INPUT_CANCELLED", "OOC_TURN_SKIPPED":
 		return "ooc"
-	case "ASSISTANT_OUTPUT_DELETE_CONFIRMED", "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL":
+	case "ASSISTANT_OUTPUT_DELETE_DETECTED", "ASSISTANT_OUTPUT_DELETE_CONFIRMED", "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL":
 		return "delete"
 	case "LOGICAL_TURN_REPLACED":
 		return "reroll"

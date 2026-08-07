@@ -5,15 +5,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/packageupdate"
 )
 
 type updateRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -26,6 +30,8 @@ func TestUpdateCheckSelectsPlatformAssetAndSHA256(t *testing.T) {
 	zipBytes := []byte("archive-center-2.3-windows-package")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
+	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
+	assetName := updateTestAssetName("2.3", platform)
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
@@ -35,12 +41,12 @@ func TestUpdateCheckSelectsPlatformAssetAndSHA256(t *testing.T) {
 				"name":"Archive Center 2.3",
 				"html_url":"https://github.com/Flazer31/archive-center/releases/tag/v2.3.0",
 				"assets":[
-					{"name":"Archive Center 2.3 Windows Package.zip","browser_download_url":"https://example.test/windows.zip","size":33},
+					{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip","size":33},
 					{"name":"SHA256SUMS-2.3.txt","browser_download_url":"https://example.test/sums.txt","size":90}
 				]
 			}`)
 		case "https://example.test/sums.txt":
-			return textResponse(http.StatusOK, sha+"  Archive Center 2.3 Windows Package.zip\n")
+			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
 		default:
 			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
 			return nil, nil
@@ -54,7 +60,7 @@ func TestUpdateCheckSelectsPlatformAssetAndSHA256(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/update/check?platform=windows-x64", nil)
+	req := httptest.NewRequest(http.MethodGet, "/update/check?platform="+platform, nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -71,8 +77,11 @@ func TestUpdateCheckSelectsPlatformAssetAndSHA256(t *testing.T) {
 	if !ok {
 		t.Fatalf("selected_asset missing: %+v", resp)
 	}
-	if asset["name"] != "Archive Center 2.3 Windows Package.zip" || asset["sha256"] != sha {
-		t.Fatalf("selected_asset = %+v, want windows asset with sha", asset)
+	if asset["name"] != assetName || asset["sha256"] != sha {
+		t.Fatalf("selected_asset = %+v, want runtime asset with sha", asset)
+	}
+	if resp["runtime_os"] != runtime.GOOS || resp["runtime_arch"] != runtime.GOARCH || resp["platform"] != platform {
+		t.Fatalf("runtime identity missing from check response: %+v", resp)
 	}
 	if resp["apply_supported"] != false || resp["download_supported"] != true {
 		t.Fatalf("support flags unexpected: %+v", resp)
@@ -83,6 +92,8 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	zipBytes := []byte("archive-center-2.3-windows-package")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
+	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
+	assetName := updateTestAssetName("2.3", platform)
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
@@ -91,13 +102,13 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 				"tag_name":"v2.3.0",
 				"name":"Archive Center 2.3",
 				"assets":[
-					{"name":"Archive Center 2.3 Windows Package.zip","browser_download_url":"https://example.test/windows.zip","size":33},
+					{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip","size":33},
 					{"name":"SHA256SUMS-2.3.txt","browser_download_url":"https://example.test/sums.txt","size":90}
 				]
 			}`)
 		case "https://example.test/sums.txt":
-			return textResponse(http.StatusOK, sha+"  Archive Center 2.3 Windows Package.zip\n")
-		case "https://example.test/windows.zip":
+			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
+		case "https://example.test/package.zip":
 			return bytesResponse(http.StatusOK, zipBytes)
 		default:
 			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
@@ -109,18 +120,13 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	cfg := config.Default()
 	cfg.BuildVersion = "2.2.0"
 	packageRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(packageRoot, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packageRoot, "bin", "archive-center-updater.exe"), []byte("test helper"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	installVerifiedUpdateHelper(t, packageRoot)
 	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
 	srv := NewServer(cfg)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"platform":"windows-x64","current_version":"2.2.0"}`
+	body := `{"platform":"` + platform + `","current_version":"2.2.0"}`
 	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -156,7 +162,7 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if pending.ContractVersion != "archive-center.pending-update.v1" || pending.CurrentVersion != "2.2.0" || pending.TargetVersion != "2.3.0" || pending.AssetPath != stagedPath || pending.SHA256 != sha {
 		t.Fatalf("pending update mismatch: %+v", pending)
 	}
-	wantRequired := []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js"}
+	wantRequired := requiredUpdatePackageFiles(runtime.GOOS)
 	if strings.Join(pending.RequiredFiles, "\n") != strings.Join(wantRequired, "\n") {
 		t.Fatalf("pending required_files = %v, want %v", pending.RequiredFiles, wantRequired)
 	}
@@ -197,10 +203,10 @@ func TestRequiredUpdatePackageFilesArePlatformSpecific(t *testing.T) {
 		goos string
 		want []string
 	}{
-		{goos: "windows", want: []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js"}},
-		{goos: "linux", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}},
-		{goos: "darwin", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}},
-		{goos: "android", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}},
+		{goos: "windows", want: []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", "scripts/start-full-windows.ps1", "01_start_archive_center_windows.bat", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "linux", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", "scripts/start-full-posix.sh", "scripts/start-full-linux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "darwin", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", "scripts/start-full-posix.sh", "scripts/start-full-macos.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "android", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", "scripts/start-full-posix.sh", "scripts/install-and-start-termux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.goos, func(t *testing.T) {
@@ -216,13 +222,14 @@ func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
 	zipBytes := []byte("verified release asset")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
+	assetName := updateTestAssetName("3.1", detectUpdatePlatform(runtime.GOOS, runtime.GOARCH))
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
 		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
-			return textResponse(http.StatusOK, `{"tag_name":"v3.1.0","assets":[{"name":"Archive Center 3.1 Windows Package.zip","browser_download_url":"https://example.test/windows.zip"},{"name":"SHA256SUMS-3.1.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
+			return textResponse(http.StatusOK, `{"tag_name":"v3.1.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-3.1.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
 		case "https://example.test/sums.txt":
-			return textResponse(http.StatusOK, sha+"  Archive Center 3.1 Windows Package.zip\n")
+			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
 		default:
 			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
 			return nil, nil
@@ -235,7 +242,7 @@ func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
 	srv := NewServer(cfg)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.0.0","platform":"windows-x64","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.0.0","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "must match") {
@@ -261,7 +268,7 @@ func TestUpdateDownloadRejectsReleaseThatIsNotNewer(t *testing.T) {
 	srv := NewServer(cfg)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.0.0","platform":"windows-x64"}`))
+	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.0.0"}`))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "update_not_newer") {
@@ -287,24 +294,23 @@ func TestUpdateRejectsClientCurrentVersionOverride(t *testing.T) {
 	}
 }
 
-func TestUpdateCheckMatchesDottedGitHubAssetNameAndSpacedSHAName(t *testing.T) {
-	zipBytes := []byte("archive-center-2.3-linux-arm64-package")
+func TestUpdateApplyResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *testing.T) {
+	zipBytes := []byte("archive-center-immediate-update")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
+	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
+	assetName := updateTestAssetName("3.1", platform)
+	requests := make([]string, 0, 3)
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.URL.String())
 		switch r.URL.String() {
 		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
-			return textResponse(http.StatusOK, `{
-				"tag_name":"v2.3.0-rc2",
-				"name":"Archive Center 2.3 RC2",
-				"assets":[
-					{"name":"Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip","browser_download_url":"https://example.test/linux-arm64.zip","size":33},
-					{"name":"SHA256SUMS-2.3.txt","browser_download_url":"https://example.test/sums.txt","size":90}
-				]
-			}`)
+			return textResponse(http.StatusOK, `{"tag_name":"v3.1.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-3.1.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
 		case "https://example.test/sums.txt":
-			return textResponse(http.StatusOK, sha+"  Archive Center 2.3 Linux arm64 Auto Install Package.zip\n")
+			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
+		case "https://example.test/package.zip":
+			return bytesResponse(http.StatusOK, zipBytes)
 		default:
 			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
 			return nil, nil
@@ -312,31 +318,148 @@ func TestUpdateCheckMatchesDottedGitHubAssetNameAndSpacedSHAName(t *testing.T) {
 	})}
 	defer func() { updateHTTPClient = restore }()
 
+	packageRoot := t.TempDir()
+	installVerifiedUpdateHelper(t, packageRoot)
 	cfg := config.Default()
-	cfg.BuildVersion = "2.2.0"
+	cfg.BuildVersion = "3.0.0"
+	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
+	srv := NewServer(cfg)
+	rec := httptest.NewRecorder()
+	callbackCalls := 0
+	srv.RequestShutdown = func(exitCode int) {
+		callbackCalls++
+		if exitCode != UpdateApplyExitCode {
+			t.Fatalf("shutdown exit code = %d, want %d", exitCode, UpdateApplyExitCode)
+		}
+		var ack map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &ack); err != nil {
+			t.Fatalf("shutdown callback ran before a complete JSON acknowledgement: %v body=%q", err, rec.Body.String())
+		}
+		if ack["status"] != "accepted" || ack["shutdown_requested"] != true || ack["exit_code"] != float64(UpdateApplyExitCode) {
+			t.Fatalf("shutdown callback observed incomplete acknowledgement: %+v", ack)
+		}
+	}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/update/apply", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusOK || !rec.Flushed || callbackCalls != 1 {
+		t.Fatalf("apply status=%d flushed=%t callback_calls=%d body=%s", rec.Code, rec.Flushed, callbackCalls, rec.Body.String())
+	}
+	if strings.Join(requests, "\n") != strings.Join([]string{
+		"https://api.github.com/repos/Flazer31/archive-center/releases/latest",
+		"https://example.test/sums.txt",
+		"https://example.test/package.zip",
+	}, "\n") {
+		t.Fatalf("one-call apply request sequence = %v", requests)
+	}
+	if _, err := os.Stat(filepath.Join(packageRoot, ".updates", "pending-update.json")); err != nil {
+		t.Fatalf("one-call apply did not stage pending update: %v", err)
+	}
+}
+
+func TestUpdateApplyRejectsUnmanagedOrUnverifiedHelperBeforeNetwork(t *testing.T) {
+	restore := updateHTTPClient
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("rejected apply must not use network: %s", r.URL.String())
+		return nil, nil
+	})}
+	defer func() { updateHTTPClient = restore }()
+
+	for _, tc := range []struct {
+		name         string
+		withCallback bool
+		wantCode     string
+	}{
+		{name: "unmanaged launcher", wantCode: "update_apply_unmanaged"},
+		{name: "unverified helper", withCallback: true, wantCode: "update_apply_helper_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			packageRoot := t.TempDir()
+			if tc.withCallback {
+				rel := updateTestHelperRelativePath()
+				path := filepath.Join(packageRoot, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("plain unverified helper"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := config.Default()
+			cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
+			srv := NewServer(cfg)
+			if tc.withCallback {
+				srv.RequestShutdown = func(int) { t.Fatal("rejected apply requested shutdown") }
+			}
+			mux := http.NewServeMux()
+			srv.RegisterRoutes(mux)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/update/apply", strings.NewReader(`{}`)))
+			if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), tc.wantCode) {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestUpdateRoutesRejectClientPlatformMismatch(t *testing.T) {
+	runtimePlatform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
+	mismatch := otherSupportedUpdatePlatform(runtimePlatform)
+	restore := updateHTTPClient
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("platform mismatch must be rejected before network: %s", r.URL.String())
+		return nil, nil
+	})}
+	defer func() { updateHTTPClient = restore }()
+
+	cfg := config.Default()
 	srv := NewServer(cfg)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/update/check?platform="+mismatch, nil),
+		httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"platform":"`+mismatch+`"}`)),
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "update_platform_mismatch") {
+			t.Fatalf("%s mismatch status=%d body=%s", req.URL.Path, rec.Code, rec.Body.String())
+		}
+	}
+	if _, err := authoritativeUpdatePlatform("", "plan9", "amd64"); !errors.Is(err, errUpdatePlatformUnsupported) {
+		t.Fatalf("unsupported runtime error = %v", err)
+	}
+}
 
-	req := httptest.NewRequest(http.MethodGet, "/update/check?platform=linux-arm64", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+func TestWindowsX64AssetMatcherExcludesArm64Package(t *testing.T) {
+	if assetMatchesPlatform("Archive Center 3.1 Windows arm64 Update Package.zip", "windows-x64") {
+		t.Fatal("windows-x64 matcher accepted the arm64 package")
 	}
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
+	if !assetMatchesPlatform("Archive Center 3.1 Windows Update Package.zip", "windows-x64") {
+		t.Fatal("windows-x64 matcher rejected the x64 package")
 	}
-	asset, ok := resp["selected_asset"].(map[string]any)
-	if !ok {
-		t.Fatalf("selected_asset missing: %+v", resp)
+}
+
+func TestParseOSReleaseDistributionObservesUbuntuID(t *testing.T) {
+	if got := parseOSReleaseDistribution("NAME=Ubuntu\nID=ubuntu\nVERSION_ID=24.04\n"); got != "ubuntu" {
+		t.Fatalf("distribution = %q, want ubuntu", got)
 	}
-	if asset["name"] != "Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip" || asset["sha256"] != sha {
-		t.Fatalf("selected_asset = %+v, want dotted linux arm64 asset with spaced SHA lookup", asset)
+	if got := parseOSReleaseDistribution("ID=\"Ubuntu\"\n"); got != "ubuntu" {
+		t.Fatalf("quoted distribution = %q, want ubuntu", got)
 	}
-	if resp["download_supported"] != true {
-		t.Fatalf("download_supported unexpected: %+v", resp)
+}
+
+func TestSelectUpdateAssetMatchesDottedGitHubAssetNameAndSpacedSHAName(t *testing.T) {
+	zipBytes := []byte("archive-center-2.3-linux-arm64-package")
+	sum := sha256.Sum256(zipBytes)
+	sha := hex.EncodeToString(sum[:])
+	asset := selectUpdateAsset("linux-arm64", []githubAssetRecord{{
+		Name:               "Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip",
+		BrowserDownloadURL: "https://example.test/linux-arm64.zip",
+		Size:               33,
+	}}, map[string]string{"Archive Center 2.3 Linux arm64 Auto Install Package.zip": sha})
+	if asset == nil || asset.Name != "Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip" || asset.SHA256 != sha {
+		t.Fatalf("selected asset = %+v, want dotted linux arm64 asset with spaced SHA lookup", asset)
 	}
 }
 
@@ -393,4 +516,74 @@ func bytesResponse(status int, body []byte) (*http.Response, error) {
 		Header:     make(http.Header),
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}, nil
+}
+
+func updateTestAssetName(version, platform string) string {
+	switch platform {
+	case "windows-x64":
+		return "Archive Center " + version + " Windows Update Package.zip"
+	case "windows-arm64":
+		return "Archive Center " + version + " Windows arm64 Update Package.zip"
+	case "linux-x64":
+		return "Archive Center " + version + " Linux x64 Update Package.zip"
+	case "linux-arm64":
+		return "Archive Center " + version + " Linux arm64 Update Package.zip"
+	case "macos-intel":
+		return "Archive Center " + version + " macOS Intel Update Package.zip"
+	case "macos-apple-silicon":
+		return "Archive Center " + version + " macOS Apple Silicon Update Package.zip"
+	case "termux-arm64":
+		return "Archive Center " + version + " Termux arm64 Update Package.zip"
+	default:
+		return "Archive Center " + version + " Unsupported Update Package.zip"
+	}
+}
+
+func otherSupportedUpdatePlatform(platform string) string {
+	if platform == "windows-x64" {
+		return "linux-x64"
+	}
+	return "windows-x64"
+}
+
+func updateTestHelperRelativePath() string {
+	if runtime.GOOS == "windows" {
+		return "bin/archive-center-updater.exe"
+	}
+	return "bin/archive-center-updater"
+}
+
+func installVerifiedUpdateHelper(t *testing.T, root string) {
+	t.Helper()
+	rel := updateTestHelperRelativePath()
+	body := []byte("verified update helper")
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := sha256.Sum256(body)
+	manifest := map[string]any{
+		"schema_version":  "archive-center.package-file-manifest.v1",
+		"package_version": "3.0.0",
+		"files": []map[string]any{{
+			"path":       rel,
+			"size_bytes": len(body),
+			"sha256":     hex.EncodeToString(sum[:]),
+		}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, packageupdate.ManifestName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

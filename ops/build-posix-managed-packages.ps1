@@ -78,7 +78,7 @@ function Get-RelativePackagePath([string]$Path, [string]$Root) {
     return $pathFull.Substring($rootFull.Length).TrimStart([char[]]@('\', '/')).Replace('\', '/')
 }
 
-function Write-ManagedPackageManifest([string]$Root) {
+function Write-ManagedPackageManifest([string]$Root, [string]$PackageVersion) {
     $selfFiles = @("PACKAGE_FILE_MANIFEST.json", "SHA256SUMS.txt")
     $excludedRoots = @(".runtime", ".runtime-cache", ".updates", "runtime")
     $excludedLocalFiles = @(".env.full.local", ".env.full.local.protected")
@@ -101,6 +101,7 @@ function Write-ManagedPackageManifest([string]$Root) {
     }
     $manifest = [ordered]@{
         schema_version = "archive-center.package-file-manifest.v1"
+        package_version = $PackageVersion.Trim()
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
         scope = "managed_package_payloads"
         excluded_runtime_roots = $excludedRoots
@@ -115,6 +116,41 @@ function Write-ManagedPackageManifest([string]$Root) {
     [System.IO.File]::WriteAllLines(
         (Join-Path $Root "SHA256SUMS.txt"),
         $sumLines,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+}
+
+function Write-PackageMigrationUpdateManifest([string]$Root, [string]$TargetVersion) {
+    if ([string]::IsNullOrWhiteSpace($TargetVersion)) {
+        throw "PackageVersion is required for the migration update contract."
+    }
+    $target = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $Root "migrations") -File -Filter "*.sql" | Sort-Object Name)) {
+        $target += [ordered]@{
+            path = "migrations/$($file.Name)"
+            size_bytes = [int64]$file.Length
+            sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    if ($target.Count -eq 0) {
+        throw "The package migration inventory is empty."
+    }
+    $schemaTool = Get-Item -LiteralPath (Join-Path $Root "bin\mariadb-schema")
+    $target += [ordered]@{
+        path = "bin/mariadb-schema"
+        size_bytes = [int64]$schemaTool.Length
+        sha256 = (Get-FileHash -LiteralPath $schemaTool.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $contract = [ordered]@{
+        contract_version = "archive-center.package-migration-update.v2"
+        target_version = $TargetVersion.Trim()
+        target = @($target)
+        managed_files = "complete_manifest"
+        database_policy = "expand_first_old_backend_compatible"
+    }
+    [System.IO.File]::WriteAllText(
+        (Join-Path $Root "PACKAGE_MIGRATION_UPDATE.json"),
+        ($contract | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
         (New-Object System.Text.UTF8Encoding($false))
     )
 }
@@ -355,7 +391,18 @@ foreach ($target in $targets) {
     }
 
     $launcherPath = Join-Path $targetRoot $target.Launcher
-    $launcherBody = "#!/usr/bin/env sh`nset -eu`nSCRIPT_DIR=`$(CDPATH= cd -- `"`$(dirname -- `"`$0`")`" && pwd -P)`nARCHIVE_CENTER_PACKAGE_ROOT=`"$SCRIPT_DIR`"`nexport ARCHIVE_CENTER_PACKAGE_ROOT`nexec sh `"`$SCRIPT_DIR/scripts/$($target.Script)`" --profile `"$($target.RuntimeProfileDefault)`" --vector-mode `"$($target.VectorModeDefault)`" `"`$@`"`n"
+    $launcherBody = (@(
+        '#!/usr/bin/env sh'
+        'set -eu'
+        'export AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS="${AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS:-1800}"'
+        'export AC_REQUEST_TIMEOUT_SECONDS="${AC_REQUEST_TIMEOUT_SECONDS:-30}"'
+        'export AC_READINESS_TIMEOUT_SECONDS="${AC_READINESS_TIMEOUT_SECONDS:-180}"'
+        'export AC_READINESS_POLL_INTERVAL_SECONDS="${AC_READINESS_POLL_INTERVAL_SECONDS:-1}"'
+        'SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)'
+        'ARCHIVE_CENTER_PACKAGE_ROOT="$SCRIPT_DIR"'
+        'export ARCHIVE_CENTER_PACKAGE_ROOT'
+        ('exec sh "$SCRIPT_DIR/scripts/{0}" --profile "{1}" --vector-mode "{2}" "$@"' -f $target.Script, $target.RuntimeProfileDefault, $target.VectorModeDefault)
+    ) -join "`n") + "`n"
     Write-TextFile $launcherPath $launcherBody
     Set-CopiedPackageVersionText $targetRoot $packageVersionLabel
 
@@ -383,10 +430,11 @@ foreach ($target in $targets) {
         normal_user_manual_chromadb_required = $false
         real_device_proof_required = $true
         automatic_update_apply = $true
-        automatic_update_timing = "next_start"
+        automatic_update_timing = "backend_exit_75_immediate"
         one_click_entry = $target.Launcher
         managed_scripts = @(
             "scripts/start-full-posix.sh",
+            "scripts/process-lifetime.py",
             "scripts/start-full-linux.sh",
             "scripts/start-full-macos.sh",
             "scripts/install-and-start-termux.sh"
@@ -395,6 +443,7 @@ foreach ($target in $targets) {
             "bin/archive-center-go",
             "bin/archive-center-updater",
             "bin/mariadb-schema",
+            "PACKAGE_MIGRATION_UPDATE.json",
             "Archive Center.js",
             "LICENSE",
             "NOTICE",
@@ -421,7 +470,45 @@ foreach ($target in $targets) {
         )
     }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $targetRoot "PLATFORM_PACKAGE_MANIFEST.json") -Encoding UTF8
-    Write-ManagedPackageManifest $targetRoot
+    Write-PackageMigrationUpdateManifest $targetRoot $packageVersionLabel
+    $requiredManagedEntries = @(
+        "bin/archive-center-go",
+        "bin/archive-center-updater",
+        "bin/mariadb-schema",
+        "PACKAGE_MIGRATION_UPDATE.json",
+        "Archive Center.js",
+        "scripts/start-full-posix.sh",
+        "scripts/process-lifetime.py",
+        "scripts/$($target.Script)",
+        $target.Launcher
+    )
+    foreach ($requiredEntry in $requiredManagedEntries) {
+        $requiredPath = Join-Path $targetRoot ($requiredEntry.Replace('/', '\'))
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf) -or (Get-Item -LiteralPath $requiredPath).Length -le 0) {
+            throw "POSIX managed package is missing required $($target.Target) entry: $requiredEntry"
+        }
+    }
+    $managedLauncherText = Get-Content -LiteralPath (Join-Path $targetRoot "scripts\start-full-posix.sh") -Raw
+    foreach ($requiredMarker in @(
+        'AC_UPDATE_STAGING_DIR="$PACKAGE_ROOT/.updates"',
+        'AC_UPDATE_APPLY_MODE=managed_launcher_exit_75',
+        'if [ "$backend_exit" -ne 75 ]',
+        'Backend requested immediate pending-update apply (exit 75).',
+        '-schema "$PACKAGE_ROOT/migrations"',
+        'rollback_pending_preparation_failure',
+        'rolled-back backend failed /ready or exact /version verification',
+        'trap ''shutdown_from_signal 129'' HUP',
+        'start_managed_process "$ARCHIVE_CENTER_GO_RUN"',
+        'LIFETIME_HELPER="$SCRIPT_DIR/process-lifetime.py"'
+    )) {
+        if (-not $managedLauncherText.Contains($requiredMarker)) {
+            throw "POSIX managed launcher is missing immediate-update marker: $requiredMarker"
+        }
+    }
+    if ($managedLauncherText.Contains('--keep-services')) {
+        throw "POSIX managed launcher must stop every managed server when its launcher exits"
+    }
+    Write-ManagedPackageManifest $targetRoot $packageVersionLabel
 
     if ($Zip) {
         $zipPath = Join-Path $outputRootFull ($target.PackageName + ".zip")

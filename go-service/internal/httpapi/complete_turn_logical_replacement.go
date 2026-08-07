@@ -89,7 +89,7 @@ func (s *Server) replaceCompleteTurnLogicalTail(ctx context.Context, sid string,
 			"logical_turn_reference_cleanup_failed", "reference_cleanup", true, true, err,
 		)
 	}
-	if _, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid); err != nil {
+	if _, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid, turnIndex-1); err != nil {
 		return newLogicalTurnReplacementError(
 			"logical_turn_narrative_restore_failed", "narrative_restore", true, true, err,
 		)

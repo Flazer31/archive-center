@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ func TestApplyPendingValidPackage(t *testing.T) {
 	}
 }
 
-func TestApplyPendingUpdatesManagedEnvironmentTemplatesAndPreservesLocalEnvironment(t *testing.T) {
+func TestApplyPendingUpdatesManagedTemplatesAndPreservesDatabaseRuntimeAndSecrets(t *testing.T) {
 	root := newFixture(t,
 		map[string]string{
 			".env.full.example":   "FULL=old",
@@ -58,6 +59,10 @@ func TestApplyPendingUpdatesManagedEnvironmentTemplatesAndPreservesLocalEnvironm
 			"bin/app.exe":         "new",
 		}, nil)
 	mustWrite(t, filepath.Join(root, ".env.full.local"), "SECRET=keep")
+	mustWrite(t, filepath.Join(root, "data/mariadb-data/sentinel.txt"), "mariadb=keep")
+	mustWrite(t, filepath.Join(root, "data/chromadb-data/sentinel.txt"), "chromadb=keep")
+	mustWrite(t, filepath.Join(root, ".runtime/sentinel.txt"), "runtime=keep")
+	mustWrite(t, filepath.Join(root, "secrets/provider.txt"), "provider=keep")
 
 	result, err := ApplyPending(root)
 	if err != nil || result.Status != "applied_pending_health" {
@@ -66,10 +71,28 @@ func TestApplyPendingUpdatesManagedEnvironmentTemplatesAndPreservesLocalEnvironm
 	assertFile(t, filepath.Join(root, ".env.full.example"), "FULL=new")
 	assertFile(t, filepath.Join(root, ".env.source.example"), "SOURCE=new")
 	assertFile(t, filepath.Join(root, ".env.full.local"), "SECRET=keep")
+	assertFile(t, filepath.Join(root, "data/mariadb-data/sentinel.txt"), "mariadb=keep")
+	assertFile(t, filepath.Join(root, "data/chromadb-data/sentinel.txt"), "chromadb=keep")
+	assertFile(t, filepath.Join(root, ".runtime/sentinel.txt"), "runtime=keep")
+	assertFile(t, filepath.Join(root, "secrets/provider.txt"), "provider=keep")
+
+	if _, err := Rollback(root); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(root, "data/mariadb-data/sentinel.txt"), "mariadb=keep")
+	assertFile(t, filepath.Join(root, "data/chromadb-data/sentinel.txt"), "chromadb=keep")
+	assertFile(t, filepath.Join(root, ".runtime/sentinel.txt"), "runtime=keep")
+	assertFile(t, filepath.Join(root, "secrets/provider.txt"), "provider=keep")
 }
 
-func TestApplyPendingRejectsProtectedEnvironmentFiles(t *testing.T) {
+func TestApplyPendingRejectsProtectedDataSecretAndEnvironmentFiles(t *testing.T) {
 	for _, rel := range []string{
+		"data/mariadb-data/value",
+		".runtime/chromadb-data/value",
+		"mariadb/value",
+		"chromadb/value",
+		"secrets/provider.txt",
+		"database/archive.db",
 		".env",
 		".env.local",
 		".env.full.local",
@@ -114,6 +137,26 @@ func TestApplyPendingAcceptsUTF8BOMCurrentManifest(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
+}
+
+func TestApplyPendingBindsCandidateAndInstalledPackageVersions(t *testing.T) {
+	t.Run("candidate", func(t *testing.T) {
+		root := newFixture(t, map[string]string{"bin/app.exe": "old"}, map[string]string{"bin/app.exe": "new"}, nil)
+		pending := mustPending(t, root)
+		pending.TargetVersion = "3"
+		writeJSON(t, filepath.Join(root, ".updates", "pending-update.json"), pending)
+		_, err := ApplyPending(root)
+		assertUpdateCode(t, err, "package_manifest_invalid")
+		assertFile(t, filepath.Join(root, "bin/app.exe"), "old")
+	})
+
+	t.Run("installed", func(t *testing.T) {
+		root := newFixture(t, map[string]string{"bin/app.exe": "old"}, map[string]string{"bin/app.exe": "new"}, nil)
+		writeManifest(t, filepath.Join(root, ManifestName), "9", map[string]string{"bin/app.exe": "old"})
+		_, err := ApplyPending(root)
+		assertUpdateCode(t, err, "managed_target_modified")
+		assertFile(t, filepath.Join(root, "bin/app.exe"), "old")
+	})
 }
 
 func TestApplyPendingRejectsCorruptedManifestPrefix(t *testing.T) {
@@ -473,9 +516,11 @@ func TestApplyPendingRejectsDatabaseMigrationChanges(t *testing.T) {
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
 }
 
-func TestPOSIXDatabaseMigrationToolCanUpgradeWithoutChangingSchema(t *testing.T) {
-	current := map[string]string{"bin/archive-center-go": "one", "bin/mariadb-schema": "schema-tool"}
-	next := map[string]string{"bin/archive-center-go": "two", "bin/mariadb-schema": "changed-schema-tool"}
+func TestDatabaseMigrationToolUpgradeRequiresCompleteManifestContract(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{"bin/archive-center-go": "one", schemaTool: "schema-tool"}
+	next := map[string]string{"bin/archive-center-go": "two", schemaTool: "changed-schema-tool"}
+	addCompleteMigrationUpdateContract(t, next, "2")
 	root := newFixture(t, current, next, nil)
 	result, err := ApplyPending(root)
 	if err != nil || result.Status != "applied_pending_health" {
@@ -556,6 +601,65 @@ func TestApplyPendingRejectsMigrationContractWithWrongTargetFingerprint(t *testi
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
 }
 
+func TestApplyPendingV2UsesCompleteManifestWithoutHistoricalSourceInventory(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"bin/app.exe":               "old",
+		"migrations/001_schema.sql": "old schema",
+		"scripts/legacy.ps1":        "remove me",
+	}
+	current[schemaTool] = "old-schema-tool"
+	next := map[string]string{
+		"bin/app.exe":                    "new",
+		"migrations/001_schema.sql":      "old schema",
+		"migrations/002_expand_only.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS added_value INT;",
+	}
+	next[schemaTool] = "new-schema-tool"
+	addCompleteMigrationUpdateContract(t, next, "2")
+	root := newFixture(t, current, next, nil)
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "scripts", "legacy.ps1")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("complete-manifest removal was not applied: %v", err)
+	}
+	assertFile(t, filepath.Join(root, filepath.FromSlash(schemaTool)), "new-schema-tool")
+}
+
+func TestApplyPendingV2RequiresExplicitExpandFirstCompatibility(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"migrations/001_schema.sql": "old schema",
+	}
+	current[schemaTool] = "old-schema-tool"
+	next := map[string]string{
+		"migrations/001_schema.sql": "new schema",
+	}
+	next[schemaTool] = "new-schema-tool"
+	addCompleteMigrationUpdateContract(t, next, "2")
+	var contract migrationUpdateManifest
+	if err := json.Unmarshal([]byte(next[MigrationUpdateManifestName]), &contract); err != nil {
+		t.Fatal(err)
+	}
+	contract.DatabasePolicy = "unspecified"
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next[MigrationUpdateManifestName] = string(data)
+	root := newFixture(t, current, next, nil)
+	_, err = ApplyPending(root)
+	assertUpdateCode(t, err, "database_migration_update_unsupported")
+}
+
+func platformSchemaToolPath() string {
+	if runtime.GOOS == "windows" {
+		return "bin/mariadb-schema.exe"
+	}
+	return "bin/mariadb-schema"
+}
+
 // These fingerprints come from the published Windows Update Package ZIPs, not
 // Git blobs. The historical updater cannot consume this contract itself; the
 // external compatibility bridge launches the authenticated candidate updater.
@@ -621,6 +725,53 @@ func TestManagedInstallModePreservesPOSIXExecutables(t *testing.T) {
 	}
 }
 
+func TestValidateInstalledApplyHelperUsesManifestFingerprint(t *testing.T) {
+	rel := "bin/archive-center-updater"
+	if runtime.GOOS == "windows" {
+		rel += ".exe"
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	mustWrite(t, path, "verified updater")
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "1", map[string]string{rel: "verified updater"})
+	if err := ValidateInstalledApplyHelper(root); err != nil {
+		t.Fatalf("valid apply helper rejected: %v", err)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "", map[string]string{rel: "verified updater"})
+	if err := ValidateInstalledApplyHelper(root); err == nil || !strings.Contains(err.Error(), "no package_version") {
+		t.Fatalf("missing package_version error = %v", err)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "1", map[string]string{rel: "verified updater"})
+	if err := os.WriteFile(path, []byte("tampered updater"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateInstalledApplyHelper(root); err == nil || !strings.Contains(err.Error(), "verification failed") {
+		t.Fatalf("tampered apply helper error = %v", err)
+	}
+}
+
+func TestValidateInstalledApplyHelperRequiresPOSIXExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not use POSIX executable mode bits")
+	}
+	root := t.TempDir()
+	rel := "bin/archive-center-updater"
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	mustWrite(t, path, "updater")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "1", map[string]string{rel: "updater"})
+	if err := ValidateInstalledApplyHelper(root); err == nil || !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("non-executable helper error = %v", err)
+	}
+}
+
 func addMigrationUpdateContract(t *testing.T, current, next map[string]string, currentVersion, targetVersion string) {
 	addMigrationUpdateContractWithRemovals(t, current, next, currentVersion, targetVersion, nil)
 }
@@ -644,11 +795,27 @@ func addMigrationUpdateContractWithRemovals(t *testing.T, current, next map[stri
 	next[MigrationUpdateManifestName] = string(data)
 }
 
+func addCompleteMigrationUpdateContract(t *testing.T, next map[string]string, targetVersion string) {
+	t.Helper()
+	contract := migrationUpdateManifest{
+		ContractVersion: MigrationUpdateContractV2,
+		TargetVersion:   targetVersion,
+		Target:          migrationFilesFromBodies(next),
+		ManagedFiles:    CompleteManagedPackage,
+		DatabasePolicy:  ExpandFirstCompatibility,
+	}
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next[MigrationUpdateManifestName] = string(data)
+}
+
 func migrationFilesFromBodies(files map[string]string) []migrationManifestFile {
 	out := []migrationManifestFile{}
 	for rel, body := range files {
 		rel = strings.ToLower(filepath.ToSlash(rel))
-		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
+		if !isMigrationInventoryPath(rel) {
 			continue
 		}
 		sum := sha256.Sum256([]byte(body))
@@ -715,7 +882,7 @@ func newFixtureWithManifestPrefixes(t *testing.T, current, next map[string]strin
 	for rel, body := range current {
 		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
 	}
-	writeManifest(t, filepath.Join(root, ManifestName), current)
+	writeManifest(t, filepath.Join(root, ManifestName), "1", current)
 	if len(currentPrefix) > 0 {
 		prependFile(t, filepath.Join(root, ManifestName), currentPrefix)
 	}
@@ -741,7 +908,7 @@ func stagePendingWithManifestPrefix(t *testing.T, root, currentVersion, targetVe
 	updates := filepath.Join(root, ".updates")
 	assetName := "staged-" + targetVersion + ".zip"
 	asset := filepath.Join(updates, assetName)
-	writePackageZipWithManifestPrefix(t, asset, files, manifestPrefix, extras)
+	writePackageZipWithManifestPrefix(t, asset, targetVersion, files, manifestPrefix, extras)
 	h := fileSHA(t, asset)
 	required := make([]string, 0, len(files))
 	for rel := range files {
@@ -752,10 +919,10 @@ func stagePendingWithManifestPrefix(t *testing.T, root, currentVersion, targetVe
 }
 
 func writePackageZip(t *testing.T, path string, files map[string]string, extras []zipEntry) {
-	writePackageZipWithManifestPrefix(t, path, files, nil, extras)
+	writePackageZipWithManifestPrefix(t, path, "2", files, nil, extras)
 }
 
-func writePackageZipWithManifestPrefix(t *testing.T, path string, files map[string]string, manifestPrefix []byte, extras []zipEntry) {
+func writePackageZipWithManifestPrefix(t *testing.T, path, packageVersion string, files map[string]string, manifestPrefix []byte, extras []zipEntry) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -765,7 +932,7 @@ func writePackageZipWithManifestPrefix(t *testing.T, path string, files map[stri
 		t.Fatal(err)
 	}
 	zw := zip.NewWriter(f)
-	manifest := manifestFor(files)
+	manifest := manifestFor(packageVersion, files)
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -801,9 +968,9 @@ func writePackageZipWithManifestPrefix(t *testing.T, path string, files map[stri
 	}
 }
 
-func writeManifest(t *testing.T, path string, files map[string]string) {
+func writeManifest(t *testing.T, path, packageVersion string, files map[string]string) {
 	t.Helper()
-	writeJSON(t, path, manifestFor(files))
+	writeJSON(t, path, manifestFor(packageVersion, files))
 }
 func prependFile(t *testing.T, path string, prefix []byte) {
 	t.Helper()
@@ -815,8 +982,8 @@ func prependFile(t *testing.T, path string, prefix []byte) {
 		t.Fatal(err)
 	}
 }
-func manifestFor(files map[string]string) packageManifest {
-	m := packageManifest{SchemaVersion: "archive-center.package-file-manifest.v1"}
+func manifestFor(packageVersion string, files map[string]string) packageManifest {
+	m := packageManifest{SchemaVersion: "archive-center.package-file-manifest.v1", PackageVersion: packageVersion}
 	keys := make([]string, 0, len(files))
 	for k := range files {
 		keys = append(keys, k)

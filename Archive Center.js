@@ -392,9 +392,9 @@
       "settings.btn.testPublisherCall": "📝 출판사 LLM 테스트",
       "settings.btn.testCriticCall": "✍ 평론가 LLM 테스트",
       "settings.btn.updateCheck": "업데이트 확인",
-      "settings.btn.updateDownload": "다운로드 후 다음 시작에 적용",
+      "settings.btn.updateDownload": "지금 업데이트",
       "settings.update.confirmTitle": "Archive Center 업데이트",
-      "settings.update.confirmBody": "검증된 패키지를 지금 다운로드하고, 다음 실행에서 Archive Center 서비스가 시작되기 전에 적용합니다. 런타임 데이터, 데이터베이스, 로컬 환경 파일은 업데이트 대상이 아닙니다. 계속할까요?",
+      "settings.update.confirmBody": "검증된 최신 패키지를 지금 준비한 뒤 Archive Center를 재시작하여 즉시 적용합니다. 런타임 데이터, 데이터베이스, 로컬 환경 파일은 업데이트 대상이 아닙니다.",
       "settings.update.statusLabel": "업데이트 상태",
       "settings.update.status.idle": "대기 중",
       "settings.update.status.pending_next_start": "다음 시작에 적용 대기",
@@ -570,7 +570,7 @@
       "dash.section.failedQueueDebug": "실패 큐 상세 (디버그)",
       "dash.section.failedQueueDebug.desc": "현재 영속 큐에 보관된 항목의 요약입니다. debug 모드에서만 표시됩니다.",
       "dash.queue.storageRecovered": "(storage 복구)",
-      "dash.queue.clearBtn": "큐 비우기",
+      "dash.queue.clearBtn": "과거 오류 기록만 지우기",
       "dash.queue.empty": "큐 비어 있음",
       "dash.queue.moreItems": "... 외 {n}건",
       "dash.queue.corruptTestBtn": "🧪 파손 테스트 (storage에 깨진 데이터 기록)",
@@ -933,7 +933,7 @@
       "hypaImport.noHypaData": "이 챗에 HypaMemory 데이터가 없습니다.",
       "hypaImport.readFailed": "HypaMemory 읽기 실패",
       "hypaImport.requestFailed": "가져오기 요청 실패",
-      "queue.clearConfirm": "실패 큐를 모두 비우시겠습니까?\n보관 중인 미전송 항목이 전부 삭제됩니다.",
+      "queue.clearConfirm": "과거 오류 기록만 지우시겠습니까?\n재시도 가능한 항목과 현재 확인 대기 항목은 유지됩니다.",
       "queue.corruptTestConfirm": "pluginStorage의 큐 데이터를 의도적으로 파손합니다.\n다음 재시작 시 복구 안전성을 테스트합니다.",
       "queue.corruptTestDone": "✅ 파손 완료 — 플러그인 reload 후 확인",
 
@@ -962,7 +962,7 @@
       "explorer.edit.confirmSave": "이 항목을 수정하시겠습니까?",
       "explorer.episodes.regenConfirm": "턴 {from}-{to} 구간을 재생성하시겠습니까?\n기존 에피소드는 유지되며, 새로 생성됩니다.",
       "explorer.episodes.mergeConfirm": "{n}개 에피소드를 병합하시겠습니까?\n기존 에피소드는 유지되며, 새 병합 에피소드가 생성됩니다.",
-      "settings.queue.clearConfirm": "실패 큐를 모두 비우시겠습니까?\n보관 중인 미전송 항목이 전부 삭제됩니다.",
+      "settings.queue.clearConfirm": "과거 오류 기록만 지우시겠습니까?\n재시도 가능한 항목과 현재 확인 대기 항목은 유지됩니다.",
       "settings.queue.corruptConfirm": "pluginStorage의 큐 데이터를 의도적으로 파손합니다.\n다음 재시작 시 복구 안전성을 테스트합니다.",
       "settings.queue.corruptDone": "✅ 파손 완료 — 플러그인 reload 후 확인",
       "explorer.edit.noSession": "세션이 선택되지 않았습니다.",
@@ -1277,6 +1277,8 @@
       "turn_hud.warning.duplicate_pair_replay": "다른 턴에 동일한 입력·응답이 있어 중복 저장을 차단함",
       "turn_hud.notice.delete_confirmed": "삭제 확인",
       "turn_hud.notice.delete_confirmed_detail": "작성자가 지운 출력과 연결된 저장값을 정리했습니다.",
+      "turn_hud.notice.delete_detected": "삭제 감지",
+      "turn_hud.notice.delete_detected_detail": "작성자가 지운 출력을 확인했습니다. 연결된 저장값을 정리하고 있습니다.",
       "turn_hud.notice.reroll_confirmed": "리롤 확인",
       "turn_hud.notice.reroll_confirmed_detail": "새 최종 출력으로 기존 턴의 저장값을 교체했습니다.",
       "turn_hud.notice.delete_sync_failed": "삭제 동기화 오류",
@@ -1631,9 +1633,9 @@
       "settings.btn.testPublisherCall": "📝 Publisher LLM Test",
       "settings.btn.testCriticCall": "✍ Critic LLM Test",
       "settings.btn.updateCheck": "Check Update",
-      "settings.btn.updateDownload": "Download and Apply on Next Start",
+      "settings.btn.updateDownload": "Update Now",
       "settings.update.confirmTitle": "Archive Center Update",
-      "settings.update.confirmBody": "The verified package will be downloaded now and applied before Archive Center services start the next time you launch the package. Runtime data, databases, and local environment files are not update targets. Continue?",
+      "settings.update.confirmBody": "The latest verified package will be prepared now and applied immediately by restarting Archive Center. Runtime data, databases, and local environment files are not update targets.",
       "settings.update.statusLabel": "Update status",
       "settings.update.status.idle": "Idle",
       "settings.update.status.pending_next_start": "Pending next start",
@@ -1806,7 +1808,7 @@
       "dash.section.failedQueueDebug": "失敗キュー詳細（デバッグ）",
       "dash.section.failedQueueDebug.desc": "Summary of items currently held in the persistent queue. Shown in debug mode only.",
       "dash.queue.storageRecovered": "(storage recovered)",
-      "dash.queue.clearBtn": "Clear Queue",
+      "dash.queue.clearBtn": "Clear Past Error History Only",
       "dash.queue.empty": "Queue is empty",
       "dash.queue.moreItems": "... and {n} more",
       "dash.queue.corruptTestBtn": "🧪 Corruption Test (write broken data to storage)",
@@ -2169,7 +2171,7 @@
       "hypaImport.noHypaData": "No HypaMemory data in this chat.",
       "hypaImport.readFailed": "HypaMemory read failed",
       "hypaImport.requestFailed": "Import request failed",
-      "queue.clearConfirm": "Clear all items from the failed queue?\nAll pending unsent items will be permanently deleted.",
+      "queue.clearConfirm": "Clear past error history only?\nRetryable items and current pending confirmations will be preserved.",
       "queue.corruptTestConfirm": "This will intentionally corrupt queue data in pluginStorage.\nUse to test recovery safety on next restart.",
       "queue.corruptTestDone": "✅ Corruption complete — check after plugin reload",
 
@@ -2198,7 +2200,7 @@
       "explorer.edit.confirmSave": "Save changes to this item?",
       "explorer.episodes.regenConfirm": "Regenerate turns {from}-{to}?\nExisting episodes are kept; a new one will be created.",
       "explorer.episodes.mergeConfirm": "Merge {n} episodes?\nExisting episodes are kept; a new merged episode will be created.",
-      "settings.queue.clearConfirm": "Clear all failed queue items?\nAll unsent items will be permanently deleted.",
+      "settings.queue.clearConfirm": "Clear past error history only?\nRetryable items and current pending confirmations will be preserved.",
       "settings.queue.corruptConfirm": "Intentionally corrupt pluginStorage queue data.\nTests recovery safety on next restart.",
       "settings.queue.corruptDone": "✅ Corruption done — reload plugin to verify",
       "explorer.edit.noSession": "No session selected.",
@@ -2365,6 +2367,8 @@
       "turn_hud.warning.duplicate_pair_replay": "The same input and response exist on another turn; duplicate storage was blocked",
       "turn_hud.notice.delete_confirmed": "Deletion confirmed",
       "turn_hud.notice.delete_confirmed_detail": "Stored values linked to the author's deleted output were cleaned up.",
+      "turn_hud.notice.delete_detected": "Deletion detected",
+      "turn_hud.notice.delete_detected_detail": "The author's deleted output was detected. Linked stored values are being cleaned up.",
       "turn_hud.notice.reroll_confirmed": "Reroll confirmed",
       "turn_hud.notice.reroll_confirmed_detail": "The existing turn was replaced with the new final output.",
       "turn_hud.notice.delete_sync_failed": "Deletion sync error",
@@ -2684,7 +2688,7 @@
       "settings.btn.testPublisherCall": "📝 出版社 LLM テスト",
       "settings.btn.testCriticCall": "✍ クリティック LLM テスト",
       "settings.btn.updateCheck": "アップデート確認",
-      "settings.btn.updateDownload": "アップデート取得",
+      "settings.btn.updateDownload": "今すぐアップデート",
       "settings.update.statusLabel": "アップデート状態",
       "settings.update.status.idle": "待機中",
       "settings.update.status.pending_next_start": "次回起動時の適用待ち",
@@ -2860,7 +2864,7 @@
       "dash.section.failedQueueDebug": "失敗キュー詳細（デバッグ）",
       "dash.section.failedQueueDebug.desc": "永続キューに保管されている項目の要約です。debugモードでのみ表示されます。",
       "dash.queue.storageRecovered": "(storage復旧)",
-      "dash.queue.clearBtn": "キューをクリア",
+      "dash.queue.clearBtn": "過去のエラー履歴のみ消去",
       "dash.queue.empty": "キューは空です",
       "dash.queue.moreItems": "... 他 {n}件",
       "dash.queue.corruptTestBtn": "🧪 破損テスト（storageに壊れたデータを書き込み）",
@@ -3223,7 +3227,7 @@
       "hypaImport.noHypaData": "このチャットにHypaMemoryデータがありません。",
       "hypaImport.readFailed": "HypaMemory読み取り失敗",
       "hypaImport.requestFailed": "インポートリクエスト失敗",
-      "queue.clearConfirm": "失敗キューを全てクリアしますか？\n保管中の未送信項目が全て削除されます。",
+      "queue.clearConfirm": "過去のエラー履歴のみ消去しますか？\n再試行可能な項目と現在の確認待ち項目は保持されます。",
       "queue.corruptTestConfirm": "pluginStorageのキューデータを意図的に破損します。\n次回再起動時の復旧安全性をテストします。",
       "queue.corruptTestDone": "✅ 破損完了 — プラグインリロード後に確認",
 
@@ -3252,7 +3256,7 @@
       "explorer.edit.confirmSave": "この項目を修正しますか？",
       "explorer.episodes.regenConfirm": "ターン{from}-{to}を再生成しますか？\n既存エピソードは保持され、新しく生成されます。",
       "explorer.episodes.mergeConfirm": "{n}件のエピソードをマージしますか？\n既存エピソードは保持され、新しいマージエピソードが生成されます。",
-      "settings.queue.clearConfirm": "失敗キューをすべてクリアしますか？\n保管中の未送信項目がすべて削除されます。",
+      "settings.queue.clearConfirm": "過去のエラー履歴のみ消去しますか？\n再試行可能な項目と現在の確認待ち項目は保持されます。",
       "settings.queue.corruptConfirm": "pluginStorageのキューデータを意図的に破損します。\n次回再起動時の復旧安全性をテストします。",
       "settings.queue.corruptDone": "✅ 破損完了 — プラグインをreloadして確認",
       "explorer.edit.noSession": "セッションが選択されていません。",
@@ -3451,6 +3455,8 @@
       "turn_hud.warning.duplicate_pair_replay": "別ターンに同じ入力・応答があるため、重複保存を防止しました",
       "turn_hud.notice.delete_confirmed": "削除確認",
       "turn_hud.notice.delete_confirmed_detail": "作成者が削除した出力に関連する保存値を整理しました。",
+      "turn_hud.notice.delete_detected": "削除を検出",
+      "turn_hud.notice.delete_detected_detail": "作成者が削除した出力を検出しました。関連する保存値を整理しています。",
       "turn_hud.notice.reroll_confirmed": "再生成を確認",
       "turn_hud.notice.reroll_confirmed_detail": "新しい最終出力で既存ターンの保存内容を置き換えました。",
       "turn_hud.notice.delete_sync_failed": "削除同期エラー",
@@ -4058,6 +4064,9 @@
   let _lastAutoRollbackSkipSignature = null;
   let _rollbackHostSignalReconcileInFlight = false;
   const _rollbackHostSignalLastSignatureBySession = new Map();
+  let _rollbackHostMutationObserver = null;
+  let _rollbackHostMutationCheckInFlight = false;
+  let _rollbackHostMutationCheckPending = false;
   let _rollbackTailReconcileInFlight = false;
   const _rollbackHistoryTrimGuardBySession = new Map();
   const ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS = 1;
@@ -4491,6 +4500,41 @@
     return rawInput;
   }
 
+  // Official RisuAI 4ac6e4e (inspected 2026-08-07) exposes no deletion listener
+  // or removed nodes. SafeMutationObserver supplies the host child-list signal;
+  // the existing backend reconciliation path decides whether deletion occurred.
+  async function onRisuChatMessageListMutation(mutations) {
+    if (!R || typeof R.unwarpSafeArray !== "function") return false;
+    let records = [];
+    try {
+      records = await R.unwarpSafeArray(mutations);
+    } catch (err) {
+      debugLog("Risu chat mutation unwrap failed:", err && err.message);
+      return false;
+    }
+    let childListChanged = false;
+    for (const record of Array.isArray(records) ? records : []) {
+      if (!record || typeof record.getType !== "function" || await record.getType() !== "childList") continue;
+      childListChanged = true;
+      break;
+    }
+    if (!childListChanged) return false;
+    if (_rollbackHostMutationCheckInFlight) {
+      _rollbackHostMutationCheckPending = true;
+      return false;
+    }
+    _rollbackHostMutationCheckInFlight = true;
+    try {
+      do {
+        _rollbackHostMutationCheckPending = false;
+        await reconcileRollbackFromHostSignal();
+      } while (_rollbackHostMutationCheckPending);
+      return true;
+    } finally {
+      _rollbackHostMutationCheckInFlight = false;
+    }
+  }
+
   async function removeRegisteredRisuHooksOnUnload() {
     cancelTurnWorkflowHUDStream();
     cancelAllAdminBackgroundJobStreams();
@@ -4518,6 +4562,15 @@
       }
     }
     _finalConfirmationRequestBySession.clear();
+    _rollbackHostMutationCheckPending = false;
+    if (_rollbackHostMutationObserver && typeof _rollbackHostMutationObserver.disconnect === "function") {
+      try {
+        await _rollbackHostMutationObserver.disconnect();
+      } catch (err) {
+        debugLog("Risu chat deletion observer cleanup failed:", err && err.message);
+      }
+    }
+    _rollbackHostMutationObserver = null;
     try {
       await unloadTurnWorkflowHUD();
     } catch (err) {
@@ -4578,6 +4631,28 @@
     } catch (regErr) {
       recordRisuHookLifecycle("afterRequest", "registration_failed");
       warnLog("addRisuReplacer afterRequest failed:", regErr && regErr.message);
+    }
+    try {
+      if (
+        !_rollbackHostMutationObserver
+        && typeof R.createMutationObserver === "function"
+        && typeof R.getRootDocument === "function"
+        && typeof R.unwarpSafeArray === "function"
+      ) {
+        const rootDocument = await R.getRootDocument();
+        const observer = await R.createMutationObserver(function(mutations) {
+          return onRisuChatMessageListMutation(mutations).catch(function(err) {
+            debugLog("Risu chat deletion observation failed:", err && err.message);
+          });
+        });
+        if (rootDocument && observer && typeof observer.observe === "function") {
+          await observer.observe(rootDocument, { childList: true, subtree: true });
+          _rollbackHostMutationObserver = observer;
+          console.log(LOG_PREFIX, "Risu chat deletion observer registered");
+        }
+      }
+    } catch (regErr) {
+      warnLog("Risu chat deletion observer registration failed:", regErr && regErr.message);
     }
     try {
       if (typeof R.onUnload === "function") {
@@ -14578,28 +14653,28 @@
 
   const archiveUpdateState = {
     lastCheck: null,
-    lastDownload: null,
+    lastApply: null,
     lastStatus: null,
   };
 
   function formatArchiveUpdateResult(data, mode) {
     if (!data) {
       return '<div class="mo-status mo-status-fail">Update failed: '
-        + escapeAttr(formatBridgeFailureForDisplay(mode === "download" ? "/update/download" : "/update/check", "no response"))
+        + escapeAttr(formatBridgeFailureForDisplay(mode === "apply" ? "/update/apply" : "/update/check", "no response"))
         + '</div>';
     }
-    if (mode === "download") {
-      const ok = String(data.status || "") === "ok";
+    if (mode === "apply") {
+      const ok = String(data.status || "") === "accepted";
       const lines = [
-        "status: " + (ok ? "downloaded and verified" : String(data.status || "unknown")),
+        "status: " + (ok ? "verified update staged; restarting Archive Center" : String(data.status || "unknown")),
         "version: " + String(data.latest_version || ""),
+        "platform: " + String(data.platform || "backend-detected"),
         "asset: " + String(data.asset_name || ""),
         "bytes: " + String(data.bytes || 0),
         "sha256: " + String(data.sha256 || ""),
         "staged: " + String(data.staged_path || ""),
-        "apply: " + (data.apply_supported ? "scheduled for next start" : "manual package apply required"),
+        "apply: " + (data.shutdown_requested ? "backend shutdown acknowledged; managed launcher will apply" : "shutdown handoff unavailable"),
         data.pending_path ? "pending: " + String(data.pending_path) : "",
-        data.next_step ? "next: " + String(data.next_step) : "",
       ];
       return '<div class="mo-status ' + (ok ? "mo-status-ok" : "mo-status-fail") + '">'
         + lines.filter(Boolean).map((line) => escapeAttr(line)).join('<br>')
@@ -14684,22 +14759,13 @@
     }
   }
 
-  async function downloadArchiveCenterUpdate() {
-    let check = archiveUpdateState.lastCheck;
-    if (!check || !check.selected_asset || !check.download_supported) {
-      check = await checkArchiveCenterUpdate();
-    }
-    const body = {};
-    if (check && check.selected_asset) {
-      body.asset_name = String(check.selected_asset.name || "");
-      body.expected_sha256 = String(check.selected_asset.sha256 || "");
-    }
-    const data = await bridgeFetch("/update/download", {
+  async function applyArchiveCenterUpdate() {
+    const data = await bridgeFetch("/update/apply", {
       method: "POST",
-      body,
+      body: {},
       timeoutMs: 0,
     });
-    archiveUpdateState.lastDownload = data || null;
+    archiveUpdateState.lastApply = data || null;
     return data;
   }
 
@@ -15587,13 +15653,34 @@
     const key = pendingFinalConfirmationRecoveryKey(safePayload);
     if (!safePayload || !key) return false;
     const oldKey = String(previousKey || "").trim();
+    const discardedHistory = [];
     if (
       !_pendingFinalConfirmationRecoveryEntries.has(key)
       && (!oldKey || !_pendingFinalConfirmationRecoveryEntries.has(oldKey))
-      && _pendingFinalConfirmationRecoveryEntries.size >= Number(settings.failedQueueMaxSize || 50)
     ) {
-      warnLog("persistPendingFinalConfirmationRecovery refused: visible queue capacity reached");
-      return false;
+      const configuredMax = Number(settings.failedQueueMaxSize);
+      const maxSize = Number.isFinite(configuredMax) && configuredMax > 0 ? Math.trunc(configuredMax) : 50;
+      while (_pendingFinalConfirmationRecoveryEntries.size >= maxSize) {
+        let oldestKey = "";
+        let oldestTime = Infinity;
+        for (const [candidateKey, candidate] of _pendingFinalConfirmationRecoveryEntries.entries()) {
+          const state = String(candidate && candidate.state || "pending");
+          if (state !== "terminal" && state !== "superseded") continue;
+          const parsedTime = new Date(candidate && (candidate.terminalAt || candidate.addedAt)).getTime();
+          const candidateTime = Number.isFinite(parsedTime) ? parsedTime : 0;
+          if (!oldestKey || candidateTime < oldestTime) {
+            oldestKey = candidateKey;
+            oldestTime = candidateTime;
+          }
+        }
+        if (!oldestKey) break;
+        discardedHistory.push([oldestKey, _pendingFinalConfirmationRecoveryEntries.get(oldestKey)]);
+        _pendingFinalConfirmationRecoveryEntries.delete(oldestKey);
+      }
+      if (_pendingFinalConfirmationRecoveryEntries.size >= maxSize) {
+        warnLog("persistPendingFinalConfirmationRecovery refused: visible queue capacity reached");
+        return false;
+      }
     }
     const previousOldEntry = oldKey ? _pendingFinalConfirmationRecoveryEntries.get(oldKey) : null;
     const previousNewEntry = _pendingFinalConfirmationRecoveryEntries.get(key);
@@ -15619,6 +15706,9 @@
       else _pendingFinalConfirmationRecoveryEntries.delete(key);
       if (oldKey && oldKey !== key && previousOldEntry) {
         _pendingFinalConfirmationRecoveryEntries.set(oldKey, previousOldEntry);
+      }
+      for (const [discardedKey, discardedEntry] of discardedHistory) {
+        _pendingFinalConfirmationRecoveryEntries.set(discardedKey, discardedEntry);
       }
       warnLog("persistPendingFinalConfirmationRecovery failed:", err && err.message);
       return false;
@@ -15759,6 +15849,9 @@
     }
     let restored = 0;
     let failedQueueChanged = false;
+    let pendingRecoveryChanged = false;
+    const now = Date.now();
+    const maxAge = (settings.failedQueueMaxAgeDays || 7) * 24 * 60 * 60 * 1000;
     for (const stored of data.items) {
       const safePayload = serializeCompleteTurnRecoveryPayload(stored && stored.payload);
       const key = pendingFinalConfirmationRecoveryKey(safePayload);
@@ -15775,7 +15868,21 @@
         || stored.terminalCode
         || (recoveryState === "terminal" ? "terminal_pending_final_incident" : "")
       );
+      if (recoveryState === "terminal" || recoveryState === "superseded") {
+        const terminalTime = transitionIntent && transitionIntent.transitionAt
+          || stored.terminalAt
+          || stored.addedAt;
+        const ageMs = now - new Date(terminalTime).getTime();
+        if (isNaN(ageMs) || ageMs >= maxAge) {
+          pendingRecoveryChanged = true;
+          if (recoveryState === "superseded" && removeFailedCompleteTurnByIdempotencyKey(key.slice("complete|".length))) {
+            failedQueueChanged = true;
+          }
+          continue;
+        }
+      }
       if (recoveryState === "superseded") {
+        pendingRecoveryChanged = true;
         if (removeFailedCompleteTurnByIdempotencyKey(key.slice("complete|".length))) {
           failedQueueChanged = true;
         }
@@ -15812,6 +15919,7 @@
       if (queued) restored++;
     }
     if (failedQueueChanged) await flushQueueSave();
+    if (pendingRecoveryChanged) await savePendingFinalConfirmationRecoveryToStorage();
     return restored;
   }
 
@@ -15876,8 +15984,11 @@
       const now = Date.now();
       const maxAge = (settings.failedQueueMaxAgeDays || 7) * 24 * 60 * 60 * 1000;
       const fresh = restored.filter(item => {
-        if (String(item && item.state || "") === "terminal") return true;
-        const ageMs = now - new Date(item.addedAt).getTime();
+        const state = String(item && item.state || "");
+        const ageFrom = state === "terminal" || state === "superseded"
+          ? item.terminalAt || item.addedAt
+          : item.addedAt;
+        const ageMs = now - new Date(ageFrom).getTime();
         return !isNaN(ageMs) && ageMs < maxAge;
       });
 
@@ -15905,6 +16016,7 @@
       runtimeState.queuePersistence.loadedCount = addedCount;
       runtimeState.queuePersistence.fromStorage = addedCount > 0;
       debugLog(`loadFailedQueueFromStorage: ${addedCount} items restored (${dupes} dupes, ${expired} expired)`);
+      if (expired > 0) scheduleQueueSave();
     } catch (err) {
       warnLog("loadFailedQueueFromStorage failed:", err.message);
       runtimeState.queuePersistence.lastLoad = { status: "error", time: new Date().toISOString(), detail: err.message };
@@ -15921,8 +16033,11 @@
       const before = _failedQueue.length;
       let i = _failedQueue.length;
       while (i--) {
-        if (String(_failedQueue[i] && _failedQueue[i].state || "") === "terminal") continue;
-        const ageMs = now - new Date(_failedQueue[i].addedAt).getTime();
+        const state = String(_failedQueue[i] && _failedQueue[i].state || "");
+        const ageFrom = state === "terminal" || state === "superseded"
+          ? _failedQueue[i].terminalAt || _failedQueue[i].addedAt
+          : _failedQueue[i].addedAt;
+        const ageMs = now - new Date(ageFrom).getTime();
         if (isNaN(ageMs) || ageMs >= maxAge) {
           _failedQueue.splice(i, 1);
         }
@@ -15937,13 +16052,23 @@
     }
   }
 
-  /** 큐 전체 비우기 — 수동 정리용 */
+  /** 종료된 과거 오류 기록만 비우기 — 수동 정리용 */
   async function clearFailedQueue() {
     try {
-      _failedQueue.length = 0;
+      for (let index = _failedQueue.length - 1; index >= 0; index--) {
+        const state = String(_failedQueue[index] && _failedQueue[index].state || "");
+        if (state === "terminal" || state === "superseded") _failedQueue.splice(index, 1);
+      }
+      for (const [key, entry] of _pendingFinalConfirmationRecoveryEntries.entries()) {
+        const state = String(entry && entry.state || "pending");
+        if (state === "terminal" || state === "superseded") {
+          _pendingFinalConfirmationRecoveryEntries.delete(key);
+        }
+      }
       await saveFailedQueueToStorage();
-      runtimeState.queuePersistence.fromStorage = false;
-      debugLog("clearFailedQueue: queue cleared");
+      await savePendingFinalConfirmationRecoveryToStorage();
+      if (_failedQueue.length === 0) runtimeState.queuePersistence.fromStorage = false;
+      debugLog("clearFailedQueue: terminal history cleared");
     } catch (err) {
       warnLog("clearFailedQueue failed:", err.message);
     }
@@ -16028,6 +16153,23 @@
       }
       const configuredMax = Number(settings.failedQueueMaxSize);
       const maxSize = Number.isFinite(configuredMax) && configuredMax > 0 ? Math.trunc(configuredMax) : 50;
+      while (_failedQueue.length >= maxSize) {
+        let oldestIndex = -1;
+        let oldestTime = Infinity;
+        for (let index = 0; index < _failedQueue.length; index++) {
+          const queuedItem = _failedQueue[index];
+          const state = String(queuedItem && queuedItem.state || "retryable");
+          if (state !== "terminal" && state !== "superseded") continue;
+          const parsedTime = new Date(queuedItem.terminalAt || queuedItem.addedAt).getTime();
+          const candidateTime = Number.isFinite(parsedTime) ? parsedTime : 0;
+          if (oldestIndex < 0 || candidateTime < oldestTime) {
+            oldestIndex = index;
+            oldestTime = candidateTime;
+          }
+        }
+        if (oldestIndex < 0) break;
+        _failedQueue.splice(oldestIndex, 1);
+      }
       if (_failedQueue.length >= maxSize) {
         warnLog(`enqueue: admission rejected at capacity (${_failedQueue.length}/${maxSize})`);
         return {
@@ -19499,6 +19641,9 @@
         return false;
       }
       const decidedTurnIndex = Number(decision.from_turn);
+      if (decision.turn_workflow_hud) {
+        consumeTurnWorkflowHUDNotice(decision.turn_workflow_hud);
+      }
 
       const rollbackParams = new URLSearchParams();
       rollbackParams.set("chat_session_id", String(sessionId || ""));
@@ -37219,6 +37364,27 @@
       await captureAssistantPrefillSeedForSession(orchSessionId, messages);
       await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
+      const postOutputReplacement = buildPostOutputSecondaryRequestContext(mainRequestActiveMessages);
+      if (postOutputReplacement && !rawInputObservation) {
+        const payloadUserText = getLastPayloadUserText(messages);
+        const payloadUser = normalizeMainTurnCompareText(payloadUserText);
+        const previousUser = normalizeMainTurnCompareText(postOutputReplacement.userContent);
+        const payloadIsPreviousUser = payloadUser && previousUser && (
+          mainTurnTextMatchesOriginal(payloadUser, previousUser)
+          || mainTurnTextMatchesOriginal(previousUser, payloadUser)
+        );
+        if (payloadUser && !payloadIsPreviousUser) {
+          const postOutputDecision = {
+            allowed: false,
+            reason: "post_output_secondary_request",
+            requestType: String(type || "model"),
+            postOutputReplacement,
+          };
+          rememberNonMainRequestSkip(orchSessionId, postOutputDecision, "beforeRequest");
+          markNonMainRequestHookSkipped("beforeRequest", orchSessionId, postOutputDecision);
+          return payload;
+        }
+      }
       const observedChatId = _sessionCache && _sessionCache.sessionId === orchSessionId
         ? String(_sessionCache.observedChatUniqueId || "").trim()
         : "";
@@ -38225,36 +38391,6 @@
           requestContext,
           finalContent
         );
-        if (finalObservation.accepted === true && finalObservation.observation && finalObservation.duplicate !== true) {
-          updateRuntimeState("lastStreamingAfterRequest", "ok", {
-            detail: "official afterRequest final accepted; persistence scheduled",
-            reason_code: "after_request_final_accepted",
-            sessionId: chatSessionId,
-            requestType: String(type || "model"),
-            promptMemoryAvailability: "same_turn",
-          });
-          Promise.resolve().then(function persistOfficialAfterRequestFinalWithoutBlockingResponse() {
-            return continueAcceptedFinalPersistence(
-              persistenceOrchResult,
-              finalObservation.observation
-            );
-          }).catch(function(err) {
-            if (
-              requestContext
-              && requestContext.state === "accepted"
-              && requestContext.acceptedObservationKey === finalObservation.observationKey
-            ) {
-              requestContext.state = "candidate_observed";
-              requestContext.acceptedObservationKey = "";
-              requestContext.acceptedObservation = null;
-            }
-            warnLog("[final-confirmation] afterRequest final persistence failed:", err && err.message);
-            updateRuntimeState("lastError", "error", {
-              detail: "afterRequest persistence: " + String(err && err.message || "unknown"),
-            });
-          });
-          return responseReturnContent;
-        }
         if (finalObservation.accepted === true && finalObservation.duplicate === true) {
           updateRuntimeState("lastStreamingAfterRequest", "ok", {
             detail: "duplicate official afterRequest ignored",
@@ -38265,20 +38401,23 @@
           });
           return responseReturnContent;
         }
-        updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          detail: String(finalObservation.reason || "after_request_final_not_accepted"),
-          reason_code: "after_request_final_not_accepted",
+        const sourceAcceptanceFinality = finalObservation.accepted === true
+          ? finalObservation.observation
+          : null;
+        updateRuntimeState("lastStreamingAfterRequest", "ok", {
+          detail: "afterRequest content accepted; persistence scheduled",
+          reason_code: "after_request_content_accepted",
           sessionId: chatSessionId,
           requestType: String(type || "model"),
-          promptMemoryAvailability: "recovery_on_next_host_signal",
+          promptMemoryAvailability: "same_turn",
         });
-        updateRuntimeState("lastSaveStatus", "skipped", {
-          detail: "after_request_final_not_accepted",
-        });
-        updateRuntimeState("lastCompleteTurnStatus", "skipped", {
-          source: "local",
-          detail: String(finalObservation.reason || "after_request_final_not_accepted"),
-          failReasons: [],
+        Promise.resolve().then(function persistAfterRequestContent() {
+          return continueAcceptedFinalPersistence(persistenceOrchResult, sourceAcceptanceFinality);
+        }).catch(function(err) {
+          warnLog("afterRequest persistence failed:", err && err.message);
+          updateRuntimeState("lastError", "error", {
+            detail: "afterRequest persistence: " + String(err && err.message || "unknown"),
+          });
         });
         return responseReturnContent;
       }
@@ -38831,7 +38970,7 @@
           lastOrchResult._trace,
           typeof criticUserInput === "string" && typeof safeUser === "string"
             ? buildSanitizeTrace("critic_user_input", criticUserInput, safeUser)
-            : null
+          : null
         );
       }
       const safeContent = String(persistedAssistantContent || "");
@@ -38859,7 +38998,7 @@
               {
                 orchestrationResult: lastOrchResult,
                 sourceAcceptanceFinality,
-                risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
+              risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
               }
             ),
             null, "buildCompleteTurnRequestBody"
@@ -51438,11 +51577,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         return '<span class="mo-dash-chip mo-dash-chip-' + tone + '">' + escapeAttr(dashboardViewModelText(chip && chip.label)) + '</span>';
       }).join("") : "";
       const rows = Array.isArray(card && card.rows) ? card.rows.map(renderRow).join("") : "";
+      const actions = String(card && card.id || "") === "historical_queue"
+        ? '<div class="mo-dash-row"><button class="mo-btn" id="mo-queue-clear-btn">' + escapeAttr(t('dash.queue.clearBtn')) + '</button></div>'
+        : "";
       return '<div class="' + cls + '"><div class="mo-dash-card-head">'
         + '<span class="mo-dash-card-icon">' + escapeAttr(card && card.icon || "") + '</span>'
         + '<span class="mo-dash-card-title">' + escapeAttr(card && card.title || "Dashboard") + '</span>'
         + '<div class="mo-dash-card-summary">' + (chips || summaryHtml(card && card.summary)) + '</div>'
-        + '</div>' + rows + '</div>';
+        + '</div>' + rows + actions + '</div>';
     }).join("");
   }
 
@@ -53217,9 +53359,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <label id="mo-pluginMainReasoningEffortLabel">${t('settings.label.publisherReasoningEffort')}</label>
         <select id="mo-pluginMainReasoningEffort">
           <option value="none"${(s.pluginMainReasoningEffort || "none") === "none" ? " selected" : ""}>none</option>
+          <option value="minimal"${s.pluginMainReasoningEffort === "minimal" ? " selected" : ""}>minimal</option>
           <option value="low"${s.pluginMainReasoningEffort === "low" ? " selected" : ""}>low</option>
           <option value="medium"${s.pluginMainReasoningEffort === "medium" ? " selected" : ""}>medium</option>
           <option value="high"${s.pluginMainReasoningEffort === "high" ? " selected" : ""}>high</option>
+          <option value="xhigh"${s.pluginMainReasoningEffort === "xhigh" ? " selected" : ""}>xhigh</option>
+          <option value="max"${s.pluginMainReasoningEffort === "max" ? " selected" : ""}>max</option>
           <option value="enable"${s.pluginMainReasoningEffort === "enable" ? " selected" : ""}>enable</option>
           <option value="disable"${s.pluginMainReasoningEffort === "disable" ? " selected" : ""}>disable</option>
         </select>
@@ -53336,9 +53481,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <label id="mo-subLlmReasoningEffortLabel">${t('settings.label.criticReasoningEffort')}</label>
         <select id="mo-subLlmReasoningEffort">
           <option value="none"${(s.subLlmReasoningEffort || "none") === "none" ? " selected" : ""}>none</option>
+          <option value="minimal"${s.subLlmReasoningEffort === "minimal" ? " selected" : ""}>minimal</option>
           <option value="low"${s.subLlmReasoningEffort === "low" ? " selected" : ""}>low</option>
           <option value="medium"${s.subLlmReasoningEffort === "medium" ? " selected" : ""}>medium</option>
           <option value="high"${s.subLlmReasoningEffort === "high" ? " selected" : ""}>high</option>
+          <option value="xhigh"${s.subLlmReasoningEffort === "xhigh" ? " selected" : ""}>xhigh</option>
+          <option value="max"${s.subLlmReasoningEffort === "max" ? " selected" : ""}>max</option>
           <option value="enable"${s.subLlmReasoningEffort === "enable" ? " selected" : ""}>enable</option>
           <option value="disable"${s.subLlmReasoningEffort === "disable" ? " selected" : ""}>disable</option>
         </select>
@@ -54771,8 +54919,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraBodyJson") || {}).value || ""));
           const testBody = {
             model: testModel,
-            messages: [{ role: "user", content: "ping" }],
-            max_tokens: 5,
+            messages: [{ role: "user", content: "Reply with exactly: ARCHIVE_CENTER_PUBLISHER_OK" }],
+            temperature: 0,
+            max_tokens: 1024,
             endpoint: testEndpoint,
             api_key: testApiKey,
             provider: testProvider,
@@ -54801,8 +54950,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           } else if (data.error) {
             resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 프록시 오류: ' + escapeAttr(data.error) + '</div>';
           } else {
-            const reply = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "(응답 없음)";
-            resultEl.innerHTML = '<div class="mo-status mo-status-ok">✅ 출판사 호출 성공 — 모델: ' + escapeAttr(testModel) + ' / 응답: ' + escapeAttr(truncPreview(reply, 60)) + '</div>';
+            const reply = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim();
+            if (!reply) {
+              resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 출판사 호출 실패 — 모델이 확인 응답을 반환하지 않았습니다.</div>';
+            } else {
+              resultEl.innerHTML = '<div class="mo-status mo-status-ok">✅ 출판사 호출 성공 — 모델: ' + escapeAttr(testModel) + ' / 응답: ' + escapeAttr(truncPreview(reply, 60)) + '</div>';
+            }
           }
         } catch (err) {
           const reason = (err && err.message) ? err.message : "unknown";
@@ -54949,21 +55102,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         updateDownloadBtn.addEventListener("click", async () => {
           const resultEl = $("mo-test-result");
           if (!resultEl) return;
-          const confirmed = await showConfirmModal(
-            t("settings.update.confirmTitle"),
-            t("settings.update.confirmBody")
-          );
-          if (!confirmed) return;
           updateDownloadBtn.disabled = true;
-          resultEl.innerHTML = '<div class="mo-status mo-status-wait">Downloading update package through backend...</div>';
+          resultEl.innerHTML = '<div class="mo-status mo-status-wait">Preparing verified update and restarting Archive Center...</div>';
           try {
-            const data = await withUiBridgeSettings(() => downloadArchiveCenterUpdate());
-            resultEl.innerHTML = formatArchiveUpdateResult(data, "download");
+            const data = await withUiBridgeSettings(() => applyArchiveCenterUpdate());
+            resultEl.innerHTML = formatArchiveUpdateResult(data, "apply");
           } catch (err) {
-            resultEl.innerHTML = '<div class="mo-status mo-status-fail">Update download failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
-          } finally {
+            resultEl.innerHTML = '<div class="mo-status mo-status-fail">Immediate update failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
             updateDownloadBtn.disabled = false;
-            void refreshArchiveCenterUpdateStatus();
           }
         });
       }

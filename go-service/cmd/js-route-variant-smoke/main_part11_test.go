@@ -1749,6 +1749,7 @@ function bindRawInputObservationToRequest(_sessionId, requestId) {
 }
 function makeOrchRequestId() { return "request-runtime"; }
 function primeTurnWorkflowHUD() {}
+function buildPostOutputSecondaryRequestContext() { return null; }
 function buildPrepareTurnHostObservations() { return hostObservationsFixture; }
 async function observePrepareTurnBootstrap() { return bootstrapObservationFixture; }
 function buildPrepareTurnSourceObservations() { return {sourceObservation: {request_id: "request-runtime"}, capabilityObservation: {capabilities: {}}}; }
@@ -2282,6 +2283,245 @@ assertEqual(queued.client_meta.risu_request_observation.ooc_class_state, "not_ex
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Risu request observation runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFailedQueueTerminalHistoryExpiresAndDoesNotBlockAdmission(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for failed queue history fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "stableFailedQueuePayloadFingerprint"),
+		extractArchiveCenterJSFunction(t, src, "makeFailedQueueDedupeKey"),
+		extractArchiveCenterJSFunction(t, src, "deserializeFailedQueue"),
+		extractArchiveCenterJSAsyncFunction(t, src, "loadFailedQueueFromStorage"),
+		extractArchiveCenterJSFunction(t, src, "enqueue"),
+	}, "\n")
+	script := functions + `
+const FAILED_QUEUE_STORAGE_KEY="failed";
+const _failedQueue=[];
+const settings={failedQueueMaxAgeDays:7,failedQueueMaxSize:2};
+const runtimeState={queuePersistence:{}};
+let scheduled=0;
+function computeOrchestrationDirtyHashOr1c(value) { return "h:"+String(value || ""); }
+function debugLog() {}
+function warnLog() {}
+function scheduleQueueSave() { scheduled++; }
+function payload(key,turn) {
+  return {chat_session_id:"session-1",turn_index:turn,user_input:"user",assistant_content:key,
+    context_messages:[],client_meta:{idempotency_key:key}};
+}
+const oldAt=new Date(Date.now()-8*24*60*60*1000).toISOString();
+const recentAt=new Date().toISOString();
+const raw=JSON.stringify({v:1,items:[
+  {id:"complete_turn|idempotency|expired",type:"complete_turn",payload:payload("expired",1),attempts:4,
+    state:"terminal",terminalCode:"retry_limit_reached",terminalAt:oldAt,addedAt:oldAt},
+  {id:"complete_turn|idempotency|active",type:"complete_turn",payload:payload("active",2),attempts:1,
+    state:"retryable",addedAt:recentAt}
+]});
+async function persistentGet(key) {
+  if(key!==FAILED_QUEUE_STORAGE_KEY) throw new Error("wrong storage key");
+  return raw;
+}
+(async function() {
+  await loadFailedQueueFromStorage();
+  if(_failedQueue.length!==1 || _failedQueue[0].payload.client_meta.idempotency_key!=="active") {
+    throw new Error("expired terminal incident was restored or active retry was lost");
+  }
+  if(scheduled!==1) throw new Error("expired durable history was not scheduled for storage cleanup");
+  _failedQueue.push({type:"complete_turn",payload:payload("recent-terminal",3),attempts:4,state:"terminal",
+    terminalCode:"retry_limit_reached",terminalAt:recentAt,addedAt:recentAt,
+    _dedupeKey:"complete_turn|idempotency|recent-terminal"});
+  const admitted=enqueue("complete_turn",payload("new-active",4));
+  if(!admitted || admitted.status!=="accepted" || !admitted.queued || _failedQueue.length!==2) {
+    throw new Error("terminal history still blocked a new retryable admission");
+  }
+  const keys=_failedQueue.map(item=>item.payload.client_meta.idempotency_key).sort().join(",");
+  if(keys!=="active,new-active" || _failedQueue.some(item=>item.state==="terminal")) {
+    throw new Error("capacity reclamation removed active work or retained terminal history");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed queue history fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestPendingRecoveryHistoryCleanupPreservesActiveWorkAndIsReachable(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending recovery history fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "stableFailedQueuePayloadFingerprint"),
+		extractArchiveCenterJSFunction(t, src, "makeFailedQueueDedupeKey"),
+		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "serializeChatLogRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "serializeFailedQueueItem"),
+		extractArchiveCenterJSFunction(t, src, "serializeFailedQueue"),
+		extractArchiveCenterJSAsyncFunction(t, src, "saveFailedQueueToStorage"),
+		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey"),
+		extractArchiveCenterJSFunction(t, src, "serializePendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "savePendingFinalConfirmationRecoveryToStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "persistPendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "clearFailedQueue"),
+		extractArchiveCenterJSFunction(t, src, "renderDashboardViewModel"),
+	}, "\n")
+	script := functions + `
+const FAILED_QUEUE_STORAGE_KEY="failed";
+const PENDING_FINAL_CONFIRMATION_STORAGE_KEY="pending";
+const STARTUP_MESSAGE_TURN_INDEX=0;
+const _failedQueue=[];
+const _pendingFinalConfirmationRecoveryEntries=new Map();
+const settings={failedQueueMaxSize:2,failedQueueMaxAgeDays:7};
+const runtimeState={queuePersistence:{}};
+const stored={};
+function buildCompleteTurnQueuePayload(value) { return JSON.parse(JSON.stringify(value)); }
+function serializeAcceptedFinalRecoveryPayload(value) { return value; }
+function computeOrchestrationDirtyHashOr1c(value) { return "h:"+String(value || ""); }
+function debugLog() {}
+function warnLog() {}
+function escapeAttr(value) { return String(value || ""); }
+function t(key) { return key==="dash.queue.clearBtn" ? "Clear Past Errors" : key; }
+function dashboardSimpleText(value) { return String(value || ""); }
+function formatAuxiliaryPlacementTrace(value) { return String(value || ""); }
+function formatDashboardTimestampLocal() { return ""; }
+function statusDotClass() { return "mo-dot-notice"; }
+function dashboardViewModelLabel(value) { return String(value || ""); }
+function runtimeStatusLabel(value) { return String(value || ""); }
+async function persistentSet(key,value) { stored[key]=value; }
+function payload(key,turn) {
+  return {chat_session_id:"session-1",turn_index:turn,user_input:"user",assistant_content:key,
+    context_messages:[],client_meta:{idempotency_key:key}};
+}
+const now=new Date().toISOString();
+_failedQueue.push(
+  {type:"complete_turn",payload:payload("failed-terminal",1),attempts:4,state:"terminal",terminalAt:now,addedAt:now,
+    _dedupeKey:"complete_turn|idempotency|failed-terminal"},
+  {type:"complete_turn",payload:payload("failed-active",2),attempts:1,state:"retryable",addedAt:now,
+    _dedupeKey:"complete_turn|idempotency|failed-active"}
+);
+_pendingFinalConfirmationRecoveryEntries.set("complete|pending-terminal",{
+  key:"complete|pending-terminal",payload:payload("pending-terminal",3),state:"terminal",terminalAt:now,addedAt:now
+});
+_pendingFinalConfirmationRecoveryEntries.set("complete|pending-active",{
+  key:"complete|pending-active",payload:payload("pending-active",4),state:"pending",addedAt:now
+});
+(async function() {
+  if(!await persistPendingFinalConfirmationRecovery(payload("pending-new",5),"pending_confirmation","","")) {
+    throw new Error("terminal pending history still blocked a new active recovery");
+  }
+  if(_pendingFinalConfirmationRecoveryEntries.has("complete|pending-terminal") ||
+     !_pendingFinalConfirmationRecoveryEntries.has("complete|pending-active") ||
+     !_pendingFinalConfirmationRecoveryEntries.has("complete|pending-new")) {
+    throw new Error("pending recovery capacity reclamation removed active work");
+  }
+  _pendingFinalConfirmationRecoveryEntries.set("complete|pending-clear",{
+    key:"complete|pending-clear",payload:payload("pending-clear",6),state:"terminal",terminalAt:now,addedAt:now
+  });
+  await clearFailedQueue();
+  if(_failedQueue.length!==1 || _failedQueue[0].payload.client_meta.idempotency_key!=="failed-active") {
+    throw new Error("manual history cleanup removed retryable failed-queue work");
+  }
+  if(_pendingFinalConfirmationRecoveryEntries.size!==2 ||
+     !_pendingFinalConfirmationRecoveryEntries.has("complete|pending-active") ||
+     !_pendingFinalConfirmationRecoveryEntries.has("complete|pending-new")) {
+    throw new Error("manual history cleanup removed active pending recoveries");
+  }
+  const failedStored=JSON.parse(stored[FAILED_QUEUE_STORAGE_KEY]);
+  const pendingStored=JSON.parse(stored[PENDING_FINAL_CONFIRMATION_STORAGE_KEY]);
+  if(failedStored.items.length!==1 || pendingStored.items.length!==2) {
+    throw new Error("cleaned history was not persisted to both pluginStorage records");
+  }
+  const html=renderDashboardViewModel({status:"ok",cards:[{id:"historical_queue",title:"Historical Queue",rows:[]}]},{});
+  if(!html.includes('id="mo-queue-clear-btn"') || !html.includes("Clear Past Errors")) {
+    throw new Error("historical queue cleanup control is not rendered on the normal dashboard card");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending recovery history fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestExpiredPendingRecoveryTerminalHistoryIsRemovedDurably(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending recovery expiry fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "serializeCompleteTurnRecoveryPayload"),
+		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey"),
+		extractArchiveCenterJSFunction(t, src, "serializePendingFinalConfirmationRecovery"),
+		extractArchiveCenterJSAsyncFunction(t, src, "savePendingFinalConfirmationRecoveryToStorage"),
+		extractArchiveCenterJSFunction(t, src, "removeFailedCompleteTurnByIdempotencyKey"),
+		extractArchiveCenterJSAsyncFunction(t, src, "loadPendingFinalConfirmationRecoveryFromStorage"),
+	}, "\n")
+	script := functions + `
+const PENDING_FINAL_CONFIRMATION_STORAGE_KEY="pending";
+const _pendingFinalConfirmationRecoveryEntries=new Map();
+const _failedQueue=[];
+const settings={failedQueueMaxAgeDays:7,failedQueueMaxSize:50};
+let stored="";
+let queued=0;
+function buildCompleteTurnQueuePayload(value) { return JSON.parse(JSON.stringify(value)); }
+function warnLog() {}
+function updateRuntimeState() {}
+async function flushQueueSave() {}
+async function queuePendingCompleteTurnPayload() { queued++; return true; }
+async function persistentGet(key) {
+  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+  return stored;
+}
+async function persistentSet(key,value) {
+  if(key!==PENDING_FINAL_CONFIRMATION_STORAGE_KEY) throw new Error("wrong storage key");
+  stored=value;
+}
+const oldAt=new Date(Date.now()-8*24*60*60*1000).toISOString();
+const payload={chat_session_id:"session-1",turn_index:1,user_input:"user",assistant_content:"assistant",
+  context_messages:[],client_meta:{idempotency_key:"expired-pending"}};
+stored=JSON.stringify({v:1,transition_intents:[],items:[{
+  key:"complete|expired-pending",payload,state:"terminal",terminalCode:"retry_limit_reached",
+  terminalAt:oldAt,addedAt:oldAt
+}]});
+(async function() {
+  const restored=await loadPendingFinalConfirmationRecoveryFromStorage();
+  if(restored!==0 || queued!==0 || _pendingFinalConfirmationRecoveryEntries.size!==0) {
+    throw new Error("expired terminal pending recovery was restored or retried");
+  }
+  const durable=JSON.parse(stored);
+  if(!Array.isArray(durable.items) || durable.items.length!==0) {
+    throw new Error("expired terminal pending recovery remained in pluginStorage");
+  }
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending recovery expiry fixture failed: %v\n%s", err, out)
 	}
 }
 

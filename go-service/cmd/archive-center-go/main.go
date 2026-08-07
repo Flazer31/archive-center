@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/httpapi"
@@ -41,6 +44,14 @@ func main() {
 
 	mux := http.NewServeMux()
 	server := httpapi.NewServer(cfg)
+	var requestedExitCode atomic.Int32
+	if strings.TrimSpace(os.Getenv("AC_UPDATE_APPLY_MODE")) == httpapi.UpdateApplyManagedLauncherMode {
+		server.RequestShutdown = func(exitCode int) {
+			if exitCode == httpapi.UpdateApplyExitCode && requestedExitCode.CompareAndSwap(0, int32(exitCode)) {
+				cancelApp()
+			}
+		}
+	}
 	if err := server.ValidateRuntimeDependencies(appCtx); err != nil {
 		logger.Error("runtime dependency preflight failed", "error", err)
 		os.Exit(1)
@@ -54,10 +65,18 @@ func main() {
 	httpServer := &http.Server{Addr: cfg.BindAddr, Handler: mux}
 	go func() {
 		<-appCtx.Done()
-		_ = httpServer.Close()
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelShutdown()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful server shutdown failed", "error", err)
+			_ = httpServer.Close()
+		}
 	}()
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)
+	}
+	if exitCode := requestedExitCode.Load(); exitCode != 0 {
+		os.Exit(int(exitCode))
 	}
 }

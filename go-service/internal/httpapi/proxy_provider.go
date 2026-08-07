@@ -209,6 +209,9 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	if data == nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("OpenAI-like provider returned invalid JSON")
 	}
+	if strings.TrimSpace(chatCompletionText(data)) == "" {
+		return nil, http.StatusBadGateway, &proxyEmptyContentError{Provider: provider}
+	}
 	proxyAttachLLMGatewayServiceTierTrace(data, overrideTrace)
 	proxyAttachRequestOverrideTrace(data, overrideTrace)
 	return data, http.StatusOK, nil

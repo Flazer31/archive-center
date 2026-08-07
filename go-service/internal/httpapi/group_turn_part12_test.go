@@ -201,12 +201,12 @@ func TestPrepareTurnTM1aCanonicalConsistencyRecallDocumentsSurface(t *testing.T)
 
 func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 	t.Run("critic_prompt_has_durable_extraction_markers", func(t *testing.T) {
-		prompt := buildCompleteTurnCriticPrompt(
+		prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt(
 			"sess-p83", 3,
 			"Mina found the brass key.",
 			"Rowan nodded and followed.",
 			nil, nil, nil,
-		)
+		))
 		required := []string{
 			"Extract durable Archive Center memory data",
 			"[User]",
@@ -222,10 +222,10 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			"challenge entry/clear/reward loops",
 			"exchange/cost economy",
 			"upgrade or unlock rules",
-			"Mandatory world-rule audit",
+			"World Rule Mandatory Audit",
 			"world_rule_audit",
-			"world_rules must not be empty",
-			"Early-session setup can already establish foundational world rules",
+			"`world_rules` must not be empty",
+			"Early-session setup can already establish foundational constraints",
 			"abstract invariant",
 			"temporary strategy",
 			"not a world_rule",
@@ -249,17 +249,17 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			"locked_for_turn":         true,
 			"raw_evidence_rewritten":  true,
 		}
-		prompt := buildCompleteTurnCriticPromptWithLanguageContext(
+		prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPromptWithLanguageContext(
 			"sess-p83-lang", 4,
 			"RAW-KO: Mina found the brass key.",
 			"Mina found the brass key.",
 			nil, nil, nil, languageContext,
-		)
+		))
 		for _, needle := range []string{
 			"Language_Context_JSON",
-			"generated natural-language memory fields must use that language",
-			"Do not default to English just because these instructions are English",
-			"Raw evidence excerpts must stay exact source text",
+			"Follow runtime language guidance from `summary_language` or `session_output_language`",
+			"Do not default to English just because this prompt is written in English",
+			"Raw evidence excerpts must remain exact source text",
 			"\"session_output_language\":\"en\"",
 			"\"raw_evidence_rewritten\":false",
 		} {

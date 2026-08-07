@@ -615,7 +615,7 @@ func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t
 	mock.ExpectExec("DELETE FROM effective_input_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memories").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WillReturnResult(sqlmock.NewResult(0, 1))
-	for range 32 {
+	for range 33 {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec("INSERT INTO status_current_values").

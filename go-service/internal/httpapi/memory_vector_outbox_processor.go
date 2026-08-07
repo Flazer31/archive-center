@@ -131,7 +131,24 @@ func (s *Server) processMemoryVectorOutboxOnce(
 				result.Failure = "materialized vector document has no searchable text"
 				return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, result.Failure)
 			}
-			embeddingJSON, _, embedErr := callEmbedding(vectorCtx, embeddingCfg, document.DocumentText)
+			embeddingJSON := ""
+			var embedErr error
+			if usesVoyageContextualizedEmbedding(embeddingCfg) {
+				contextChunks := stringsFromAny(document.Metadata["contextualized_embedding_inputs"])
+				contextIndex := intFromAny(document.Metadata["contextualized_embedding_index"], -1)
+				if len(contextChunks) == 0 || contextIndex < 0 || contextIndex >= len(contextChunks) {
+					result.CanonicalState = "permanent"
+					result.Failure = "contextualized embedding group metadata is invalid"
+					return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, result.Failure)
+				}
+				var grouped []string
+				grouped, _, embedErr = callDocumentEmbeddings(vectorCtx, embeddingCfg, contextChunks)
+				if embedErr == nil {
+					embeddingJSON = grouped[contextIndex]
+				}
+			} else {
+				embeddingJSON, _, embedErr = callEmbedding(vectorCtx, embeddingCfg, document.DocumentText)
+			}
 			if embedErr != nil {
 				result.CanonicalState = "retryable"
 				result.Failure = "embedding materialization failed"
@@ -144,6 +161,8 @@ func (s *Server) processMemoryVectorOutboxOnce(
 				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
 			}
 		}
+		delete(document.Metadata, "contextualized_embedding_inputs")
+		delete(document.Metadata, "contextualized_embedding_index")
 		if err := s.Vector.Upsert(vectorCtx, item.ChatSessionID, []vector.VectorDocument{document}); err != nil {
 			result.CanonicalState = "retryable"
 			result.Failure = err.Error()

@@ -112,7 +112,7 @@ func (s *Server) handleReferenceVectorSearch(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "embedding_config_missing", "embedding provider, api key, endpoint, and model are required")
 		return
 	}
-	embeddingJSON, model, err := callEmbedding(r.Context(), embedder, queryText)
+	embeddingJSON, model, err := callQueryEmbedding(r.Context(), embedder, queryText)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "reference_query_embedding_failed", err.Error())
 		return
@@ -373,14 +373,33 @@ func (s *Server) runReferenceVectorReindex(ctx context.Context, ref store.Refere
 		return nil, err
 	}
 	docs := make([]vector.VectorDocument, 0, len(materials))
+	contextualizedEmbeddings := []string(nil)
+	contextualizedModel := ""
+	if usesVoyageContextualizedEmbedding(embedder) && len(materials) > 0 {
+		inputs := make([]string, 0, len(materials))
+		for _, material := range materials {
+			inputs = append(inputs, material.Text)
+		}
+		contextualizedEmbeddings, contextualizedModel, err = callDocumentEmbeddings(ctx, embedder, inputs)
+		if err != nil {
+			return nil, fmt.Errorf("reference contextualized embedding failed: %w", err)
+		}
+	}
 	for i, material := range materials {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		progress(map[string]any{"stage": "embed_approved_material", "processed": i, "candidate_count": len(materials), "progress_percent": adminJobProgressPercent(i, len(materials)), "reference_kind": material.Kind, "source_id": material.ID})
-		embeddingJSON, model, embedErr := callEmbedding(ctx, embedder, material.Text)
-		if embedErr != nil {
-			return nil, fmt.Errorf("reference embedding failed for %s %s: %w", material.Kind, material.ID, embedErr)
+		embeddingJSON := ""
+		model := contextualizedModel
+		if len(contextualizedEmbeddings) > 0 {
+			embeddingJSON = contextualizedEmbeddings[i]
+		} else {
+			var embedErr error
+			embeddingJSON, model, embedErr = callEmbedding(ctx, embedder, material.Text)
+			if embedErr != nil {
+				return nil, fmt.Errorf("reference embedding failed for %s %s: %w", material.Kind, material.ID, embedErr)
+			}
 		}
 		embedding := parseFloat32JSONList(embeddingJSON)
 		if len(embedding) == 0 {

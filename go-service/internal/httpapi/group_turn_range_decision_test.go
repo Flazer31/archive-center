@@ -573,6 +573,12 @@ func TestRollbackDecisionHandlerUsesDurableCopiedBaselineWhenClientBaselineIsMis
 	if !response.Allowed || !response.BaselineApplied || response.FromTurn != 9 || response.ProtectedBeforeTurn != 8 || response.MinFromTurn != 9 {
 		t.Fatalf("durable copied rollback baseline was not applied: %+v", response)
 	}
+	hud, ok := response.TurnWorkflowHUD.(map[string]any)
+	if !ok || hud["display_mode"] != "notice" || hud["status"] != "running" ||
+		hud["notice_code"] != "ASSISTANT_OUTPUT_DELETE_DETECTED" ||
+		hud["title_key"] != "turn_hud.notice.delete_detected" {
+		t.Fatalf("verified deletion did not return a detection HUD: %#v", response.TurnWorkflowHUD)
+	}
 }
 
 func TestVerifiedTailDeleteUsesBackendTailWhenCopiedBaselineIsMissing(t *testing.T) {

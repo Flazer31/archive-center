@@ -211,6 +211,7 @@ func canonicalTailDeleteCommands(sid string, t int, legacyPhysicalCleanup, delet
 		{`DELETE FROM theme_offscreen_carries WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
 		{`DELETE FROM capture_verification_records WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
 		{`DELETE FROM status_current_values WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
+		{`DELETE FROM status_change_events WHERE chat_session_id = ? AND source_turn >= ? AND NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision'))), '') IS NULL`, []any{sid, t}},
 		{`UPDATE status_effects SET effect_state = 'active', cleared_evidence_json = NULL, cleared_turn = NULL, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND cleared_turn >= ?`, []any{sid, t}},
 		{`DELETE FROM status_effects WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
 	}...)

@@ -240,7 +240,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		deletions["reference_runtime"] = map[string]any{"ok": true, "cleared_candidates": cleared, "bindings_preserved": true}
 	}
-	if restored, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid); err != nil {
+	if restored, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid, turnIndex-1); err != nil {
 		deletions["narrative_current_state_restore"] = map[string]any{"ok": false, "error": err.Error()}
 		delErrs = append(delErrs, fmt.Sprintf("narrative current state restore: %v", err))
 	} else {

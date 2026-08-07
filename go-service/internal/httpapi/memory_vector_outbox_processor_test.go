@@ -197,6 +197,54 @@ func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
 	}
 }
 
+func TestMemoryVectorOutboxRetryReusesFullVoyageContextGroupAndStableIndex(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 || len(sliceFromAny(groups[0])) != 2 {
+			t.Fatalf("retry request did not preserve sibling group: %#v", groups)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[{"index":0,"data":[{"index":0,"embedding":[1,0]},{"index":1,"embedding":[2,0]}]}],"model":"voyage-context-4"}`))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	document := verifiedMemoryVectorProcessorDocument(vector.VectorDocument{
+		ID: "precise_memory:session:unit", ChatSessionID: "session",
+		SourceTable: "precise_memory_units", SourceRowID: "unit",
+		SchemaVersion: store.PreciseMemoryUnitContract, DocumentText: "second sibling",
+	}, "revision-context-retry")
+	document.Metadata["contextualized_embedding_inputs"] = []string{"first sibling", "second sibling"}
+	document.Metadata["contextualized_embedding_index"] = 1
+	documentJSONBytes, _ := json.Marshal(document)
+	st := &memoryVectorProcessorStore{Store: store.NewNoopStore(), items: []*store.MemoryVectorOutboxItem{{
+		ID: 90, Operation: "upsert", ChatSessionID: "session", SourceRevision: "revision-context-retry",
+		DocumentID: document.ID, DocumentJSON: string(documentJSONBytes), RequiredSourceState: "active", Status: "needs_embedding",
+	}}}
+	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
+	server := &Server{Store: st, Vector: vec, RuntimeConfig: RuntimeConfig{
+		Synced: true, FailedQueueMaxAttempts: 4, EmbeddingProvider: "voyageai",
+		EmbeddingAPIKey: "key", EmbeddingEndpoint: "https://api.voyageai.com/v1/embeddings",
+		EmbeddingModel: "voyage-context-4", EmbeddingTimeoutSec: 30,
+	}}
+	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
+	if err != nil || result.CanonicalState != "completed" || calls != 1 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+	if len(vec.upserts) != 1 || len(vec.upserts[0]) != 1 || len(vec.upserts[0][0].Embedding) != 2 || vec.upserts[0][0].Embedding[0] != 2 {
+		t.Fatalf("stable chunk index was not mapped to the target document: %#v", vec.upserts)
+	}
+	if _, leaked := vec.upserts[0][0].Metadata["contextualized_embedding_inputs"]; leaked {
+		t.Fatalf("retry-only sibling payload leaked into Chroma metadata")
+	}
+}
+
 func TestMemoryVectorProcessorUnboundedDrainDoesNotLetRetryBlockLaterItem(t *testing.T) {
 	now := time.Date(2026, 7, 30, 4, 10, 0, 0, time.UTC)
 	makeItem := func(id int64) *store.MemoryVectorOutboxItem {

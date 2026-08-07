@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ type schemaReport struct {
 	GeneratedAt                string                             `json:"generated_at"`
 	StatementsTotal            int                                `json:"statements_total"`
 	StatementsRun              int                                `json:"statements_run"`
+	MigrationFiles             []string                           `json:"migration_files,omitempty"`
 	CompatibilityStatementsRun int                                `json:"compatibility_statements_run,omitempty"`
 	ManagedBootstrap           bool                               `json:"managed_bootstrap,omitempty"`
 	VerifiedDataDir            string                             `json:"verified_datadir,omitempty"`
@@ -93,7 +95,7 @@ const (
 
 func main() {
 	dsn := flag.String("dsn", os.Getenv("AC_MARIADB_DSN"), "MariaDB DSN. Defaults to AC_MARIADB_DSN.")
-	schemaPath := flag.String("schema", defaultSchemaPath(), "Path to schema SQL file.")
+	schemaPath := flag.String("schema", defaultSchemaPath(), "Path to the migrations directory or a schema SQL file.")
 	outPath := flag.String("out", "", "Path to write schema JSON report. Defaults to stdout.")
 	execute := flag.Bool("execute", false, "Required to apply schema statements.")
 	timeout := flag.Duration("timeout", 0, "Schema apply timeout (0 = no local deadline).")
@@ -186,12 +188,13 @@ func runWithOptions(schemaPath, dsn string, execute bool, timeout time.Duration,
 	report := newReport(schemaPath, execute)
 	report.ManagedBootstrap = managed.Enabled
 	report.AppAccountProbeRequested = appAccountProbe
-	statements, err := loadStatements(schemaPath)
+	statements, migrationFiles, err := loadMigrationStatements(schemaPath)
 	if err != nil {
 		report.Status = "failed"
 		report.Errors = append(report.Errors, err.Error())
 		return report, 1
 	}
+	report.MigrationFiles = migrationFiles
 	report.StatementsTotal = len(statements)
 
 	if !execute {
@@ -437,6 +440,51 @@ func loadStatements(path string) ([]string, error) {
 		return nil, fmt.Errorf("read schema: %w", err)
 	}
 	return splitSQLStatements(strings.TrimPrefix(string(data), "\ufeff")), nil
+}
+
+func loadMigrationStatements(path string) ([]string, []string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read migrations: %w", err)
+	}
+	if !info.IsDir() && !strings.EqualFold(filepath.Base(path), "001_schema.sql") {
+		statements, err := loadStatements(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		return statements, []string{path}, nil
+	}
+
+	dir := path
+	if !info.IsDir() {
+		dir = filepath.Dir(path)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read migrations directory: %w", err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".sql") {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, entry.Name()))
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		return filepath.ToSlash(paths[i]) < filepath.ToSlash(paths[j])
+	})
+	if len(paths) == 0 {
+		return nil, nil, fmt.Errorf("migrations directory contains no .sql files: %s", dir)
+	}
+	statements := make([]string, 0)
+	for _, migrationPath := range paths {
+		loaded, err := loadStatements(migrationPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		statements = append(statements, loaded...)
+	}
+	return statements, paths, nil
 }
 
 func splitSQLStatements(sqlText string) []string {

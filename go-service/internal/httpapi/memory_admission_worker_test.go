@@ -276,6 +276,139 @@ func (f *memoryAdmissionWorkerStore) CommitMemoryAdmission(_ context.Context, it
 	}, nil
 }
 
+func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	capturedChunks := []any(nil)
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if !strings.HasSuffix(r.URL.Path, "/v1/contextualizedembeddings") {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("groups=%d, want one source-revision group", len(groups))
+		}
+		capturedChunks = sliceFromAny(groups[0])
+		rows := make([]map[string]any, len(capturedChunks))
+		for i := range capturedChunks {
+			rows[i] = map[string]any{"index": i, "embedding": []float64{float64(i + 1), 0.5}}
+		}
+		body, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "data": rows}}, "model": "voyage-context-4"})
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	fake := &memoryAdmissionWorkerStore{}
+	srv := &Server{Store: fake}
+	srv.Cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "revision-context-group",
+		LogicalTurnID:   "logical-context-group",
+	})
+	extraction := map[string]any{
+		"turn_summary":     "A bell rang and the gate opened.",
+		"importance_score": 6,
+		"evidence_excerpts": []any{
+			"A bell rang.",
+			"The gate opened.",
+		},
+		"narrative_events": []any{map[string]any{
+			"summary":          "The bell rang.",
+			"evidence_excerpt": "A bell rang.",
+			"confidence":       0.9,
+		}},
+	}
+	content := "A bell rang. The gate opened."
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-group", 8, extraction, content,
+		"A bell rang and the gate opened.", "A bell rang and the gate opened.",
+		memorySearchTextBuild{Text: "A bell rang and the gate opened."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: "https://api.voyageai.com/v1/embeddings", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(800, 0), &result,
+	)
+	if !handled || result.Errors != 0 || len(fake.admissions) != 1 {
+		t.Fatalf("handled=%t result=%+v admissions=%d", handled, result, len(fake.admissions))
+	}
+	if calls != 1 {
+		t.Fatalf("embedding calls=%d, want one", calls)
+	}
+	admission := fake.admissions[0]
+	if len(capturedChunks) < 4 || len(admission.Vectors) != 3 || len(admission.PreciseUnits) != 1 {
+		t.Fatalf("chunks=%d vectors=%d precise=%d", len(capturedChunks), len(admission.Vectors), len(admission.PreciseUnits))
+	}
+	for i, item := range admission.Vectors {
+		if len(item.Embedding) == 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != len(capturedChunks) {
+			t.Fatalf("vector[%d] not materialized with stable group: %+v", i, item)
+		}
+	}
+	precise := admission.PreciseUnits[0]
+	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != len(capturedChunks) {
+		t.Fatalf("precise vector not materialized in source group: %+v", precise)
+	}
+	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
+		t.Fatalf("memory provenance/embedding missing: %+v", admission.Memory)
+	}
+}
+
+func TestCurrentTurnVoyageContextStillStoresMemoryEmbeddingWithoutChroma(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	chunkCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("groups=%d, want one source-revision group", len(groups))
+		}
+		chunkCount = len(sliceFromAny(groups[0]))
+		rows := make([]map[string]any, chunkCount)
+		for i := range rows {
+			rows[i] = map[string]any{"index": i, "embedding": []float64{float64(i + 1), 0.25}}
+		}
+		body, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "data": rows}}, "model": "voyage-context-4"})
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	fake := &memoryAdmissionWorkerStore{}
+	srv := &Server{Store: fake}
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "revision-context-no-chroma",
+		LogicalTurnID:   "logical-context-no-chroma",
+	})
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-no-chroma", 9,
+		map[string]any{"turn_summary": "The bell rang.", "importance_score": 5, "evidence_excerpts": []any{"The gate opened."}},
+		"The bell rang. The gate opened.", "The bell rang.", "The bell rang.",
+		memorySearchTextBuild{Text: "The bell rang."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: "https://api.voyageai.com/v1", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(900, 0), &result,
+	)
+	if !handled || result.Errors != 0 || calls != 1 || chunkCount < 2 || len(fake.admissions) != 1 {
+		t.Fatalf("handled=%t result=%+v calls=%d chunks=%d admissions=%d", handled, result, calls, chunkCount, len(fake.admissions))
+	}
+	admission := fake.admissions[0]
+	if len(admission.Vectors) != 0 {
+		t.Fatalf("vectors=%d, want no Chroma outbox vectors", len(admission.Vectors))
+	}
+	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
+		t.Fatalf("memory embedding was not stored without Chroma: %+v", admission.Memory)
+	}
+}
+
 func (f *memoryAdmissionWorkerStore) SaveMemory(context.Context, *store.Memory) error {
 	f.legacyMemories++
 	return nil
