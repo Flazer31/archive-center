@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -15,6 +16,9 @@ import (
 // the dual-write wrapper with noop primary, so it is not an authority switch.
 type mariadbStore struct {
 	db *sql.DB
+	// Serializes the short MariaDB transactions that mutate source revisions,
+	// derived projections, retry jobs, and vector outbox rows with ResetAll.
+	memoryDerivationWriteMu sync.Mutex
 }
 
 // OpenMariaDB returns a Store backed by MariaDB.
@@ -129,6 +133,8 @@ func (m *mariadbStore) ResetAll(ctx context.Context) (AdminResetResult, error) {
 	if err := m.ensureDB(); err != nil {
 		return result, err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	conn, err := m.db.Conn(ctx)
 	if err != nil {
 		return result, err

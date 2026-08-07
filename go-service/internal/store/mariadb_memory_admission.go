@@ -5,13 +5,19 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 var _ MemoryAdmissionWriter = (*mariadbStore)(nil)
 var _ MemoryAdmissionWriteAvailability = (*mariadbStore)(nil)
+
+const memoryAdmissionTransactionMaxAttempts = 3
 
 func (m *mariadbStore) MemoryAdmissionWritesEnabled() bool {
 	return m != nil && m.db != nil
@@ -25,7 +31,26 @@ func (m *mariadbStore) CommitMemoryAdmission(ctx context.Context, admission *Mem
 	if err := validateMemoryAdmission(admission); err != nil {
 		return result, err
 	}
-	tx, err := m.db.BeginTx(ctx, nil)
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
+	for attempt := 1; attempt <= memoryAdmissionTransactionMaxAttempts; attempt++ {
+		result, err := m.commitMemoryAdmissionOnce(ctx, admission)
+		if err == nil {
+			return result, nil
+		}
+		if !isRetryableMemoryAdmissionTransactionError(err) || attempt == memoryAdmissionTransactionMaxAttempts {
+			return result, err
+		}
+		if err := waitMemoryAdmissionTransactionRetry(ctx, attempt); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission *MemoryAdmission) (MemoryAdmissionResult, error) {
+	var result MemoryAdmissionResult
+	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return result, err
 	}
@@ -141,6 +166,26 @@ func (m *mariadbStore) CommitMemoryAdmission(ctx context.Context, admission *Mem
 	result.CommittedResultHash = admission.ResultHash
 	result.CommittedAt = admittedAt
 	return result, nil
+}
+
+func isRetryableMemoryAdmissionTransactionError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	return mysqlErr.Number == 1213
+}
+
+func waitMemoryAdmissionTransactionRetry(ctx context.Context, failedAttempt int) error {
+	delay := time.Duration(failedAttempt) * 25 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func validateMemoryAdmission(admission *MemoryAdmission) error {

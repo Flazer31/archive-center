@@ -92,7 +92,9 @@ func (f *identityAliasLinkRecordingStore) SaveEntityIdentityLink(_ context.Conte
 func (f *identityAliasLinkRecordingStore) ResolveUniqueActiveEntityIdentityBySurface(_ context.Context, sid, normalizedSurface string) (store.ResolvedEntityIdentity, error) {
 	canonicalIDs := map[string]bool{}
 	for _, surface := range f.surfaces {
-		if surface.ChatSessionID != sid || surface.ReviewState != "source_observed" || surface.NormalizedSurface != normalizedSurface {
+		if surface.ChatSessionID != sid || surface.ReviewState != "source_observed" ||
+			(surface.Scope != store.EntityIdentitySurfaceScope39 && surface.Scope != store.EntityIdentitySurfaceScopeCurrent) ||
+			surface.NormalizedSurface != normalizedSurface {
 			continue
 		}
 		canonicalID := surface.StableEntityID
@@ -126,6 +128,91 @@ func (f *identityAliasLinkRecordingStore) ResolveUniqueActiveEntityIdentityBySur
 		}
 	}
 	return store.ResolvedEntityIdentity{}, store.ErrNotFound
+}
+
+func TestFutureSameCanonicalEntityLinksOnlyWithCurrentSourceEvidence(t *testing.T) {
+	fake := newIdentityAliasLinkRecordingStore()
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	first := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{"name": "Mina"}}}}
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-future-continuity", 1, first, "Mina entered the workshop.", completeTurnEmbeddingConfig{}, time.Unix(100, 0))
+	if result.Errors != 0 {
+		t.Fatalf("first identity projection errors: %#v", result.ErrorDetails)
+	}
+
+	evidence := "Mina returned to the workshop."
+	second := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{
+		"name": "Mina", "identity_evidence_excerpt": evidence,
+	}}}}
+	result = srv.saveCriticExtractionArtifacts(context.Background(), "sess-future-continuity", 2, second, evidence, completeTurnEmbeddingConfig{}, time.Unix(200, 0))
+	if result.Errors != 0 {
+		t.Fatalf("second identity projection errors: %#v", result.ErrorDetails)
+	}
+	if len(fake.identities) != 2 || fake.identities[0].StableEntityID == fake.identities[1].StableEntityID {
+		t.Fatalf("source occurrences must remain distinct: %#v", fake.identities)
+	}
+	if result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
+		t.Fatalf("evidence-backed future continuity link missing: result=%#v links=%#v", result, fake.links)
+	}
+	if fake.links[0].SourceEntityID != fake.identities[1].StableEntityID ||
+		fake.links[0].TargetEntityID != fake.identities[0].StableEntityID {
+		t.Fatalf("future continuity link direction is wrong: identities=%#v link=%#v", fake.identities, fake.links[0])
+	}
+}
+
+func TestExisting39EntityIDRemainsTheCanonicalContinuityTarget(t *testing.T) {
+	fake := newIdentityAliasLinkRecordingStore()
+	fake.identities = append(fake.identities, &store.EntityIdentity{
+		StableEntityID: "existing-39-id", ChatSessionID: "sess-39-continuity", IdentityNamespace: "session_npc", CanonicalLabel: "Mina",
+	})
+	fake.surfaces = append(fake.surfaces, &store.EntityIdentitySurface{
+		StableEntityID: "existing-39-id", ChatSessionID: "sess-39-continuity", IdentityNamespace: "session_npc",
+		NormalizedSurface: comparableEntityKey("Mina"), ReviewState: "source_observed", Scope: store.EntityIdentitySurfaceScope39,
+	})
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	evidence := "Mina returned."
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-39-continuity", 10, map[string]any{
+		"entities": map[string]any{"characters": []any{map[string]any{
+			"name": "Mina", "identity_evidence_excerpt": evidence,
+		}}},
+	}, evidence, completeTurnEmbeddingConfig{}, time.Unix(1000, 0))
+	if result.Errors != 0 {
+		t.Fatalf("identity projection errors: %#v", result.ErrorDetails)
+	}
+	if result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
+		t.Fatalf("existing 3.9.0 identity continuity link missing: result=%#v links=%#v", result, fake.links)
+	}
+	if fake.links[0].TargetEntityID != "existing-39-id" || fake.links[0].MappingRevision != 1 {
+		t.Fatalf("existing 3.9.0 ID was not preserved as canonical target: %#v", fake.links[0])
+	}
+	resolved, err := fake.ResolveUniqueActiveEntityIdentityBySurface(context.Background(), "sess-39-continuity", comparableEntityKey("Mina"))
+	if err != nil || resolved.StableEntityID != "existing-39-id" {
+		t.Fatalf("updated read did not resolve back to the existing 3.9.0 ID: resolved=%#v err=%v", resolved, err)
+	}
+}
+
+func TestFutureNonCharacterEntityUsesTheSameEvidenceBackedContinuityPath(t *testing.T) {
+	fake := newIdentityAliasLinkRecordingStore()
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	first := map[string]any{"entities": map[string]any{"items": []any{map[string]any{"name": "Atlas Key"}}}}
+	_ = srv.saveCriticExtractionArtifacts(context.Background(), "sess-future-item", 1, first, "Atlas Key rested on the desk.", completeTurnEmbeddingConfig{}, time.Unix(100, 0))
+	evidence := "Atlas Key opened the sealed door."
+	second := map[string]any{"entities": map[string]any{"items": []any{map[string]any{
+		"name": "Atlas Key", "identity_evidence_excerpt": evidence,
+	}}}}
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-future-item", 2, second, evidence, completeTurnEmbeddingConfig{}, time.Unix(200, 0))
+
+	if result.Errors != 0 || result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
+		t.Fatalf("item continuity did not use the shared identity path: result=%#v links=%#v", result, fake.links)
+	}
+	if len(fake.identities) != 2 || fake.identities[0].IdentityNamespace != "session_item" ||
+		fake.links[0].TargetEntityID != fake.identities[0].StableEntityID {
+		t.Fatalf("item continuity linked the wrong namespace or target: identities=%#v links=%#v", fake.identities, fake.links)
+	}
 }
 
 func Test39ExplicitSourceGroundedAliasLinksShortAndFullCharacterNames(t *testing.T) {

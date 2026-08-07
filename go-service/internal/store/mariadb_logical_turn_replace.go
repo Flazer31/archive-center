@@ -94,6 +94,8 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 			)
 		}
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return classifyLogicalTurnReplacementStoreError(err, "transaction_begin", false)
@@ -237,6 +239,8 @@ func (m *mariadbStore) RollbackCanonicalTail(ctx context.Context, rollback Logic
 	if sid == "" || rollback.TurnIndex <= 0 {
 		return typedLogicalTurnReplacementError("logical_turn_request_invalid", "preflight", false, "not_committed", fmt.Errorf("invalid logical turn rollback"))
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return classifyLogicalTurnReplacementStoreError(err, "transaction_begin", false)

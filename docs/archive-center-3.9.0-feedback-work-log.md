@@ -1,10 +1,12 @@
 # Archive Center 3.9.0 피드백 작업 내역
 
-상태: `source_implemented / automated_regression_verified / package_not_built / live_not_verified`
+상태: `source_implemented / automated_regression_verified / test_package_requires_refresh / live_partial`
 
-기준일: 2026-08-06  
+기준일: 2026-08-07
 기준 source: `C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`  
-기준 HEAD: `6a2d27a4b7a545c5e290ce510fcf3fa7c0464ba5` (`release: prepare Archive Center 3.9.0`)
+기준 checkpoint: `b8a912d` (`feat: checkpoint Archive Center 3.9.0 feedback work`)
+현재 미커밋 후속 작업: 평론가 문맥 제한, 삭제 HUD 즉시 감지 등록 수정, 신규 개체 ID 연속성 보강,
+MariaDB 파생 기억 저장 데드락 완화
 
 이 문서는 3.9.4 작업을 폐기하고 공식 3.9.0 source로 돌아온 뒤 반영한 사용자 피드백만 기록한다.
 기능이 source에 연결됐다는 사실과 실제 설치본·RisuAI·MariaDB·Chroma·Voyage에서 확인됐다는 사실을 구분한다.
@@ -29,9 +31,9 @@
 |---|---|---|
 | `source_implemented` | 현재 production source에 구현 연결 | 완료 |
 | `automated_regression_verified` | 단위·통합·smoke 회귀 검사 통과 | 완료 |
-| `package_built` | 현재 변경으로 설치 패키지 또는 테스트 빌드 생성 | 미실행 |
+| `package_built` | 현재 변경으로 설치 패키지 또는 테스트 빌드 생성 | 기존 `3.9.5-1st-test`는 19절 시점까지 포함; 20~21절은 재빌드 필요 |
 | `loaded_artifact_verified` | 생성한 파일을 RisuAI에 실제 로드하여 확인 | 미실행 |
-| `live_provider_verified` | 실제 Voyage API로 요청·응답 확인 | 미실행 |
+| `live_provider_verified` | 실제 provider로 요청·응답 확인 | 평론가 입력량 1턴 사용자 측정 완료, 기능·품질 반복 검증 필요 |
 | `real_db_vector_verified` | 실제 MariaDB·Chroma에 저장·검색 확인 | 미실행 |
 | `release_verified` | 배포 artifact·hash·설치·업데이트 확인 | 미실행 |
 
@@ -48,6 +50,11 @@
 | 6 | macOS 공개 런처가 필수 제한시간 값을 전달하지 않아 시작이 실패하는 문제 | source·자동 회귀 완료, 실제 macOS 확인 필요 |
 | 7 | LLM endpoint를 비워 두면 설정은 저장되지만 UI에는 `저장 실패`가 표시되는 문제 | 원인·수정 방향 확인, 미수정 |
 | 8 | 구 POSIX 설치본을 신규 설치로 교체할 때 기존 MariaDB·Chroma 데이터만 유지하는 방법과 Termux 준비 대기 실패 | 현재 간편 설치의 제한시간 전달 확인, legacy DB 수동 이전 절차 기록, Linux systemd 사용자 지정 경로 전달은 미처리 |
+| 9 | 지금까지의 3.9.0 피드백 작업 로컬 checkpoint | `b8a912d`로 기록, 테스트 빌드·실기동 검증은 별도 |
+| 10 | 평론가에 `allbefore` 전체가 들어가 입력 토큰과 지연이 커지는 문제 | 현재 턴 유지 + 직전 canonical 턴 + 관련 DB 기억·근거 턴으로 source 구현·Go 회귀 완료 |
+| 11 | 턴 삭제 HUD가 탐색 탭을 열어야 뒤늦게 표시되는 문제 | 자동 감지 관찰자의 공식 main DOM 등록 순서 수정·JS smoke 완료, 실제 RisuAI 확인 필요 |
+| 12 | 새로 저장되는 동일 개체가 다음 턴에서 다른 ID로 분리되는 문제 | 3.9.0 DB의 기존 ID를 canonical ID로 그대로 유지하고 업데이트판의 새 occurrence를 근거 기반으로 연결; source·Go 회귀 완료 |
+| 13 | 콜드 스타트 재처리에서 `CommitMemoryAdmission`이 MariaDB 1213 데드락으로 반복 실패하는 문제 | transaction 충돌 범위 직렬화와 1213 전체 transaction 재시도 구현·Go 회귀 완료, 실제 MariaDB 동시 실행 확인 필요 |
 
 ## 3. 피드백 1-A — 기존 DB 수동 적용
 
@@ -757,3 +764,338 @@ release helper를 `sudo env`로 실행하면서 사용자 지정 `ARCHIVE_CENTER
 - 실제 Termux·Linux·Ubuntu 장치에서 기존 MariaDB·ChromaDB를 이전하는 검증은 수행하지 않았다.
 - 기존 Termux 데이터 위치를 신규 설치기가 자동 탐색·복사하는 기능은 구현하지 않았다.
 - 이번 항목에서는 production source와 테스트를 변경하지 않았다.
+
+## 15. 2026-08-07 로컬 checkpoint와 이전 작업 기록
+
+### 15.1 checkpoint
+
+지금까지 source에 반영한 3.9.0 피드백 작업은 다음 로컬 commit으로 묶었다.
+
+```text
+b8a912d feat: checkpoint Archive Center 3.9.0 feedback work
+```
+
+이 commit은 66개 파일의 변경을 기록한다. `_test-builds/`, `.env`, `.runtime`은 commit에 넣지 않았다.
+따라서 사용자 데이터·비밀값·생성된 테스트 패키지는 source checkpoint와 별개다.
+
+### 15.2 checkpoint에 포함된 작업 묶음
+
+- Windows legacy `.runtime` MariaDB 후보 선택 오류 수정과 기존 데이터 보존 경로
+- `voyage-context-4`의 다중 청크 contextualized embedding, 저장·재시도·검색·유지보수 연결
+- reasoning effort의 `minimal`·`xhigh`·`max` UI 재표시와 저장값 보존
+- Windows·POSIX 한 줄 신규 설치 진입점과 설치 회귀 검사
+- 다음 패키지부터 사용하는 managed updater, OS·CPU 판별, 패키지 교체, schema migration, DB 보존 계약
+- macOS·Linux·Ubuntu·Termux 공개 실행기의 필수 제한시간 전달
+- Windows와 POSIX 실행기 종료 시 Go backend·MariaDB·ChromaDB 자식 process 정리
+- source acceptance·logical turn 연결, 현재·과거 queue 표시, 파생 기억·vector outbox·서사 상태 정리 관련 source와 회귀 검사
+- 삭제·리롤 HUD 문구와 backend workflow notice 계약
+- 위 항목들의 작업 문서와 자동 회귀 fixture
+
+이 목록은 commit에 들어간 source 범위다. 실제 Windows 외 OS, 실제 RisuAI/PocketRisu, 실제 provider,
+사용자 MariaDB·ChromaDB와 공개 release artifact에서 동작했다는 증거로 사용하지 않는다.
+
+### 15.3 checkpoint 당시 검증
+
+- `git diff --check`: 통과
+- `Archive Center.js` Node syntax 검사: 통과
+- Go 전체 package 검사: 통과
+- Node 경로를 명시한 JavaScript route smoke: 통과
+
+`_test-builds/3.9.5-1st-test`는 source 외 생성물이다. 2026-08-07 재빌드 결과와 포함 여부 검사는
+19절에 별도로 기록한다.
+
+## 16. 피드백 1-B 현재 source 정정
+
+4.2절은 `addRisuChatListener("output", ...)`을 이용했던 이전 구현 시도 기록이다. 현재 source에는
+`addRisuChatListener`·`removeRisuChatListener`·`onRisuChatOutput`이 없다. 따라서 4.6절의
+"현재 source가 output listener를 등록한다"는 문장은 현재 동작 설명으로 사용하지 않는다.
+
+현재 source의 실제 경로는 다음과 같다.
+
+```text
+beforeRequest에서 요청 관측
+  -> RisuAI afterRequest가 돌려준 완료 응답을 승인
+  -> 기존 complete-turn 저장 경로 예약
+  -> raw 저장
+  -> 평론가·파생 기억·vector 처리
+```
+
+- 스트리밍 중간 chunk를 읽지 않는다.
+- `afterRequest`가 받은 완료 응답은 처리하지만, 다른 플러그인의 모든 후처리가 끝난 최종 chat commit이라고
+  RisuAI 계약상 보장하지 않는다.
+- 현재 source는 후처리 완료를 기다리는 별도 DOM watcher·polling·고정 대기·fallback 저장 경로를 두지 않는다.
+- 이 정정은 문서의 현재 동작 설명을 source와 맞춘 것이며, 새 기능 구현이 아니다.
+
+## 17. 평론가 입력 과다 1차 축소
+
+### 17.1 변경 전 문제
+
+canonical complete-turn의 평론가 입력에도 host의 `context_messages`가 그대로 들어갔다. RisuAI의
+`allbefore`가 사실상 전체 이전 대화를 포함하면 턴이 늘어날수록 평론가 입력도 계속 커졌다. 사용자가 실제
+gateway에서 관측한 단일 평론가 호출 입력은 GPT-5.6-Luna 기준 약 29.8K token이었다.
+
+### 17.2 현재 선택 계약
+
+현재 턴의 사용자 입력과 assistant 출력은 기존 `Latest_Turn` 필드에 **전체 원문으로 유지**한다. 그 밖의
+보조 문맥만 다음처럼 제한한다.
+
+1. 바로 직전 canonical DB 턴의 user·assistant 원문 전체
+2. 현재 입력·출력과 관련도가 높은 과거 DB 기억 최대 3개
+3. 선택된 기억의 source turn user·assistant 원문은 메시지당 최대 1,200자
+4. 선택된 기억 요약은 항목당 최대 600자
+
+canonical 경로에서는 host가 넘긴 전체 `context_messages`를 평론가 문맥으로 사용하지 않는다. DB에서 읽은
+직전 턴과 관련 기억의 source turn만 사용하며, 현재·미래 턴, 관련 없는 기억, 공개되지 않은 보호 기억은
+선택에서 제외한다. 이 보조 문맥은 새 사건이나 새 직접 근거가 아니라 support-only로 표시한다.
+
+### 17.3 변경하지 않은 범위
+
+- 현재 턴 원문과 평론가 JSON 출력 구조
+- canonical raw 저장, 파생 기억 admission, vector 처리
+- `critic_system.txt`
+- 활성 세계 규칙 입력량
+- 최초 호출 입력 snapshot의 재처리 보존
+- `retry_after` 시각에 worker를 깨우는 타이머
+
+따라서 이번 단계는 `allbefore` 전체 전달 제거와 제한된 DB 문맥 선택까지다. 평론가 시스템 프롬프트 중복,
+재처리 재현성, 자동 재시도 타이머를 해결했다고 기록하지 않는다.
+
+### 17.4 변경·검증
+
+- production: `go-service/internal/httpapi/turn_extraction_critic.go` `+109 / -0`
+- tests: `turn_extraction_critic_test.go` `+42 / -0`, `group_turn_part02_test.go` `+4 / -0`
+- focused canonical context 회귀: 통과
+- `go test ./internal/httpapi -count=1`: 통과
+- 실제 provider token·latency 재측정: 미실행
+
+### 17.5 테스트 빌드 1턴 실사용 측정
+
+2026-08-07 사용자가 갱신된 `3.9.5-1st-test`로 한 턴을 진행한 뒤 LLM gateway에서 확인한
+GPT-5.6-Luna 평론가 입력량은 `16.5K token`이었다. 변경 전 같은 평론가 모델의 단일 호출 측정값
+`29.8K token`과 비교하면 `13.3K token`, 약 `44.6%` 감소다.
+
+이는 `allbefore` 전체 전달 제거와 제한된 DB 문맥 선택이 실제 provider 입력량을 줄였다는 1회 실사용
+증거다. 아직 여러 턴 누적, 오래된 관련 기억 회수, 평론가 출력 품질, 호출 시간과 재처리 호출은 반복
+검증하지 않았으므로 평론가 최적화 전체 완료로 판정하지 않는다.
+
+## 18. 턴 삭제 HUD 즉시 감지 등록 수정
+
+### 18.1 재현된 증상과 원인
+
+사용자가 RisuAI에서 턴을 삭제한 직후에는 HUD가 뜨지 않고, Archive Center UI의 탐색 탭을 열어야 삭제 HUD가
+표시됐다. 탐색 탭의 `loadTimelineData()`는 `reconcileRollbackFromHostSignal()`을 직접 실행한다. 반면 자동
+감지는 플러그인 시작 시 `SafeMutationObserver`를 등록해야 한다.
+
+기존 등록은 다음 두 가지가 공식 main DOM 사용 순서와 맞지 않았다.
+
+- `mainDom` 권한을 요청하기 전에 `getRootDocument()`를 호출했다.
+- 공식 예제의 `body`가 아니라 `SafeDocument` 자체를 관찰 대상으로 넘겼다.
+
+그 결과 시작 시 관찰자 등록이 실패하거나 실제 chat DOM 변경을 받는 대상에 붙지 않았고, 탐색 탭의 직접
+사전 확인만 삭제를 발견했다. 삭제 판정·DB rollback·HUD ViewModel 자체가 탐색 탭에 종속된 것은 아니었다.
+
+### 18.2 수정 범위
+
+새 polling, timer, fallback, 삭제 판정 또는 별도 저장 경로를 추가하지 않았다. 기존 observer 등록만 다음
+공식 순서로 바꿨다.
+
+```text
+requestPluginPermission("mainDom")
+  -> getRootDocument()
+  -> rootDocument.querySelector("body")
+  -> createMutationObserver(...).observe(body, { childList:true, subtree:true })
+```
+
+child-list 변화는 기존 `reconcileRollbackFromHostSignal()`만 깨운다. 실제로 무엇이 삭제됐는지, `/del`·`/cut`
+보존 정책에 해당하는지, 어느 DB 턴을 rollback할지는 기존 Go/backend 경로가 계속 결정한다.
+
+### 18.3 변경·검증
+
+- production `Archive Center.js`: `+11 / -2`
+- JS smoke fixture: `+11 / -2`
+- Node syntax 검사: 통과
+- `TestRisuLifecycleRegistrationAndRemovalAreIndependent`: 통과
+- smoke는 권한이 없으면 `getRootDocument()`가 실패하는 fixture에서 권한 요청 후 정확히 `body`를 관찰하고,
+  child-list 신호가 기존 reconciliation을 한 번 호출하며 unload 시 observer를 해제하는지 확인한다.
+- 실제 RisuAI에서 UI를 열지 않은 채 턴을 삭제하는 loaded-artifact 검증: 미실행
+
+## 19. `3.9.5-1st-test` 테스트 빌드 갱신
+
+### 19.1 결과 경로
+
+```text
+C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source\_test-builds\3.9.5-1st-test
+```
+
+현재 source로 다음 6개 폴더와 ZIP을 다시 만들었다.
+
+- Windows x64
+- Linux x64
+- Linux arm64
+- macOS Intel
+- macOS Apple Silicon
+- Termux arm64
+
+Windows package 생성 시각은 `2026-08-07T08:39:01Z`이며, POSIX package들은
+`2026-08-07T08:33:35Z`부터 `08:34:45Z` 사이에 생성됐다.
+
+### 19.2 실행 중 process와 사용자 데이터 처리
+
+처음 확인했을 때 28080·3307 포트는 닫혀 있었지만 기존 Windows 테스트 package에서 시작한
+`archive-center-go.exe`, MariaDB, ChromaDB Python과 실행기 cmd/PowerShell process가 남아 있었다.
+이 process들이 package 실행 파일과 폴더 handle을 잡고 있어 첫 Windows 교체 시도가 거부됐다.
+
+해당 테스트 package에서 시작한 backend·MariaDB·ChromaDB를 종료하고 10초 이내 종료되지 않은 process를
+강제 종료한 뒤, 남은 테스트 실행기 cmd/PowerShell만 종료했다. Codex process와 Windows Terminal 자체는
+종료하지 않았다. 빌드 후 서버는 다시 시작하지 않았다.
+
+Windows package의 다음 local 항목은 교체 전에 별도 staging으로 이동하고 빌드 완료 또는 실패 시 항상
+원래 package 폴더로 되돌렸다.
+
+- `.runtime`
+- `.env.full.local`
+- 존재할 경우 `.runtime-cache`, `.updates`, `.env.full.local.protected`
+
+최종 확인에서 `.runtime`과 `.env.full.local`이 모두 존재하고 임시 보존 폴더가 남지 않았음을 확인했다.
+
+### 19.3 빌드 중 확인된 중단과 재실행
+
+- POSIX 첫 시도는 Windows 기본 Go build cache 접근 거부로 중단됐다. source 내부 전용 `GOCACHE`와
+  `GOTMPDIR`를 지정한 뒤 5개 POSIX package를 처음부터 다시 생성했다.
+- Windows 첫 두 시도는 남아 있던 backend executable handle과 실행기 current-directory handle 때문에
+  기존 package 삭제 단계에서 중단됐다. 각 실패 때 local data를 즉시 복원했고, 관련 process를 종료한 뒤
+  전체 Windows package와 ZIP을 다시 생성했다.
+
+### 19.4 artifact 포함 여부와 무결성 검사
+
+각 6개 package에서 다음을 직접 확인했다.
+
+- `PACKAGE_FILE_MANIFEST.json`의 모든 관리 파일이 존재하며 SHA-256이 일치
+- package version이 모두 `3.9.5`
+- package `Archive Center.js`에 `requestPluginPermission("mainDom")` 포함
+- package `Archive Center.js`가 `body`에 기존 삭제 observer를 등록
+- 각 OS backend binary에 `canonical_previous_plus_relevant_memory_sources` 평론가 문맥 선택 계약 포함
+- 6개 ZIP 재생성 시각과 크기 확인
+- Windows ZIP과 외부 `SHA256SUMS-3.9.5.txt` 생성
+
+이는 source 변경이 생성된 artifact에 들어갔다는 검증이다. 실제 RisuAI에 새 `Archive Center.js`를 로드하고
+UI를 열지 않은 삭제 HUD, 평론가 provider token, 실제 MariaDB·Chroma 결과를 실행한 검증은 아직 수행하지 않았다.
+
+## 20. 신규 개체 ID 연속성 보강
+
+### 20.1 적용 기준
+
+- 기존 DB의 개체 ID를 일괄 재작성하거나 새 번호로 바꾸지 않는다.
+- `mapping_revision=2` 같은 별도 매핑 세대를 추가하지 않는다. 기존 연결 계약의 `mapping_revision=1`만 유지한다.
+- 3.9.0 DB에 저장된 기존 표면 범위 `source_turn`과 업데이트판이 새로 기록하는 `source_turn_current`를 모두
+  동일 개체 후보 조회에 사용한다.
+- 업데이트 후 새 턴에 개체가 다시 등장하면, 현재 턴의 정확한 동일성 근거와 같은 세션의 유일한 활성 후보를
+  확인한 뒤 새 source occurrence의 canonical target을 기존 3.9.0 ID A로 기록한다.
+- 새 source occurrence에는 원문 출처를 보존하기 위한 별도 occurrence ID가 남지만 기존 ID A를 대체하지 않는다.
+  canonical 조회와 후속 연결은 계속 A를 반환한다.
+- 과거 DB 전체를 스캔하거나 재처리하지 않는다. 개체가 새 턴에 다시 등장한 시점에만 기존 A를 조회한다.
+- 이름이 같다는 이유만으로 합치지 않는다. 현재 턴의 정확한 `identity_evidence_excerpt`가 있고, 현재 범위에서
+  같은 표면이 하나의 활성 ID로만 확인될 때 새 발생 ID를 최초 새 ID에 연결한다.
+- 같은 규칙을 인물, 장소, 물건, 집단에 공통 적용한다. 동명이인·동명 개체 또는 근거 없는 후보는 계속
+  독립된 source occurrence ID로 남긴다.
+
+### 20.2 변경 범위
+
+- Go의 기존 entity identity projection과 MariaDB surface resolver만 수정했다.
+- MariaDB resolver는 `source_turn`과 `source_turn_current` 두 기존 범위만 명시적으로 읽는다. 다른 임의 범위는
+  연결 후보로 넓히지 않는다.
+- 평론가 JSON 예시에 장소·물건·집단의 `aliases`, `identity_evidence_excerpt`를 명시하고, 반복 개체에도
+  동일한 근거 규칙을 사용하도록 기존 한 문장을 보강했다.
+- 새 테이블, 새 API, JavaScript 경로, fallback, watcher, background worker는 추가하지 않았다.
+- `Archive Center.js` 변경량: `+0 / -0`.
+
+### 20.3 자동 검증
+
+- 3.9.0의 기존 ID A가 업데이트 후 canonical target과 조회 결과로 그대로 유지됨: 통과
+- 수정 이후 동일 인물의 근거 기반 연결: 통과
+- 수정 이후 동일 물건의 공통 연결 경로: 통과
+- 동명이인, 근거 없는 이름 동일성, reversible state 분리: 통과
+- 기존 전체 이름·별칭 연결 회귀: 통과
+- `go test ./internal/httpapi ./internal/store`: 통과
+- 번들 Node를 지정한 `go test ./...`: 통과
+
+자동 테스트는 source 동작 검증이다. 실제 MariaDB가 연결된 테스트 빌드에서 새 개체가 여러 턴에 걸쳐 하나의
+canonical ID로 조회되는지는 별도의 loaded-artifact/live DB 검증이 남아 있다.
+
+## 21. MariaDB 파생 기억 저장 데드락 완화
+
+### 21.1 확인된 사실과 확정할 수 없는 부분
+
+사용자 피드백의 다음 오류는 MariaDB가 실제 transaction lock cycle을 감지해 한 transaction을 중단했다는
+의미다.
+
+```text
+derived_persist_failed: operation=CommitMemoryAdmission;
+cause=Error 1213 (40001): Deadlock found when trying to get lock; try restarting transaction
+```
+
+기존 source에서는 foreground 파생 기억 admission, 백그라운드 재처리, source revision·logical turn 교체,
+vector outbox·재처리 job 상태 변경, 전체 초기화가 서로 다른 transaction으로 같은 파생 기억 테이블 묶음을
+동시에 변경할 수 있었다. 특히 `CommitMemoryAdmission`은 source revision을 잠근 뒤 기억·근거·정밀 기억·의존성·
+vector outbox를 한 transaction에서 변경했고, `ResetAll`은 다른 순서로 같은 테이블을 삭제했다. 이 구조에는
+서로 반대 순서의 lock을 기다릴 가능성이 있었다.
+
+다만 제보가 발생한 순간의 `SHOW ENGINE INNODB STATUS` 또는 MariaDB deadlock log가 없으므로, 실제 상대
+transaction이 reset, 재처리 worker, vector outbox claim 중 정확히 어느 것이었는지는 확정할 수 없다.
+기존 설명처럼 vector outbox 하나가 원인이라고 단정하지 않는다.
+
+“삭제하고 다시 하니 정상화됐다”는 추가 피드백은 삭제·초기화 과정에서 기존 source revision, 재처리 job 또는
+outbox 상태가 정리된 뒤 충돌이 사라졌다는 해석과 맞는다. 그러나 이것도 당시 lock log가 없는 상태에서는
+원인 transaction을 특정하는 직접 증거로 사용하지 않는다.
+
+### 21.2 변경한 동작
+
+- 한 Go backend process 안에서 source revision, 파생 기억 admission, 재처리 job, vector outbox, 정밀 기억,
+  logical turn 교체·rollback, `ResetAll`의 짧은 MariaDB 쓰기 transaction이 서로 겹치지 않도록 기존
+  `mariadbStore`에 하나의 공통 쓰기 lane을 사용한다.
+- `CommitMemoryAdmission`은 transaction isolation을 해당 경로에만 `READ COMMITTED`로 지정한다.
+- MariaDB 오류 번호 `1213`일 때만 transaction 전체를 새 transaction으로 다시 실행한다.
+- 최대 시도 횟수는 최초 시도를 포함해 3회이며 대기는 25ms, 50ms다. context가 취소되면 즉시 중단한다.
+- lock wait timeout `1205`, provider 오류, validation 오류 또는 다른 DB 오류는 이 재시도 대상으로 넓히지 않는다.
+- 세 번 모두 1213이면 기존 오류를 호출자에게 반환한다. 실패를 성공으로 숨기거나 새 fallback 저장 경로를
+  사용하지 않는다.
+- JavaScript, HUD, API, DB schema, table, background worker는 추가하거나 변경하지 않았다.
+
+### 21.3 변경 파일과 실제 diff
+
+- `go-service/internal/store/mariadb.go`: 공통 쓰기 lane과 `ResetAll` 연결, `+6 / -0`
+- `go-service/internal/store/mariadb_memory_admission.go`: `READ COMMITTED`와 1213 transaction 재시도,
+  `+46 / -1`
+- `go-service/internal/store/mariadb_memory_derivation.go`: 기존 9개 mutation 진입점에 lane 연결,
+  `+18 / -0`
+- `go-service/internal/store/mariadb_precise_memory.go`: 정밀 기억 저장 연결, `+2 / -0`
+- `go-service/internal/store/mariadb_logical_turn_replace.go`: logical turn 교체·rollback 연결, `+4 / -0`
+- `go-service/internal/store/mariadb_memory_admission_test.go`: 1213 성공 재시도, 재시도 한도, rollback 뒤 새 ID
+  재구성 검사
+- `go-service/internal/store/mariadb_rollback_test.go`: reset이 진행 중인 파생 기억 쓰기와 겹치지 않는지 검사
+- 이번 데드락 작업의 `Archive Center.js` 변경량: `+0 / -0`
+
+`mariadb_memory_derivation.go`가 `+1216 / -1198`로 보였던 표시는 현재 실제 Git diff가 아니다. 현재 index와
+worktree를 다시 비교한 결과는 `+18 / -0`이고, 기존 1,198줄은 보존된 채 `Lock`/`Unlock` 9쌍만 추가됐다.
+
+### 21.4 자동 검증과 남은 실환경 검증
+
+다음 자동 검증은 현재 source에서 통과했다.
+
+- admission 1213 뒤 새 transaction 전체 재실행 및 commit
+- 연속 1213 세 번 뒤 오류 반환
+- 첫 transaction rollback에서 받은 memory·evidence·precise ID가 재시도 결과에 섞이지 않음
+- `ResetAll`과 파생 기억 쓰기 lane의 상호 배제
+- `go test ./internal/store -count=1`
+- `go test ./internal/httpapi -count=1`
+- 번들 Node를 지정한 `go test ./... -count=1`
+- `go vet ./internal/store`
+- `node --check "Archive Center.js"`
+- `git diff --check`
+
+SQL mock 회귀 검사는 transaction 재시도 계약과 호출 순서를 확인하지만 InnoDB의 실제 lock scheduler를
+재현하지는 않는다. 실제 MariaDB에서 foreground 저장, 콜드 스타트 재처리, reset·삭제가 겹치는 실행을
+반복해 1213과 HUD의 반복 저장 표시가 사라지는지 확인하는 loaded-artifact/live DB 검증은 남아 있다.
+
+기존 `3.9.5-1st-test`는 19절 시점에 만든 artifact이므로 이번 20절 개체 ID 및 21절 데드락 변경은 아직
+포함하지 않는다. 두 변경을 시험하려면 같은 테스트 빌드를 현재 source로 다시 생성해야 한다.

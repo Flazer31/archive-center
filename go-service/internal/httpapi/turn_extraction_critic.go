@@ -191,8 +191,19 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		return nil, trace, err
 	}
 	criticContextMessages := sanitizeContextMessagesForCriticInput(contextMessages)
+	contextSelectionTrace := map[string]any{"mode": "host_context", "host_messages_used": len(criticContextMessages)}
+	relevantMemoryContext := []map[string]any{}
+	if canonicalChatLogs {
+		criticContextMessages, relevantMemoryContext, contextSelectionTrace = s.buildCompleteTurnCriticCanonicalContext(ctx, sid, turnIndex, criticUserInput+"\n"+criticAssistantContent, len(criticContextMessages))
+	}
 	previewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, criticContextMessages, criticUserInput, criticAssistantContent)
 	criticArchiveLedgerPromptInput, criticArchiveLedgerTrace := s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, criticAssistantContent, outputLanguageOverride)
+	if len(relevantMemoryContext) > 0 {
+		if criticArchiveLedgerPromptInput == nil {
+			criticArchiveLedgerPromptInput = map[string]any{}
+		}
+		criticArchiveLedgerPromptInput["relevant_turn_memories"] = relevantMemoryContext
+	}
 	activeWorldRules, activeWorldRuleTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
 	if len(activeWorldRules) > 0 {
 		if criticArchiveLedgerPromptInput == nil {
@@ -364,6 +375,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["request_overrides"] = requestOverrides
 	}
 	trace["critic_archive_ledger"] = criticArchiveLedgerTrace
+	trace["context_selection"] = contextSelectionTrace
 	trace["active_world_rule_contract"] = activeWorldRuleTrace
 	if len(languageContext) > 0 {
 		trace["language_context"] = languageContext
@@ -647,6 +659,102 @@ func (s *Server) buildCompleteTurnCriticArchiveLedgerInput(ctx context.Context, 
 	return promptInput, trace
 }
 
+func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, sid string, turnIndex int, query string, hostMessageCount int) ([]map[string]any, []map[string]any, map[string]any) {
+	contextMessages := []map[string]any{}
+	relevantMemories := []map[string]any{}
+	warnings := []string{}
+	selectedTurns := map[int]bool{}
+	readPair := func(sourceTurn int, kind string, maxChars int) ([]map[string]any, bool) {
+		rows, err := s.Store.ListChatLogs(ctx, sid, sourceTurn, sourceTurn)
+		if err != nil {
+			warnings = append(warnings, err.Error())
+			return nil, false
+		}
+		userText := ""
+		assistantText := ""
+		for _, row := range rows {
+			if row.TurnIndex != sourceTurn || (row.ChatSessionID != "" && row.ChatSessionID != sid) {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(row.Role)) {
+			case "user":
+				if userText == "" {
+					userText = sanitizeCriticStorageText(row.Content)
+				}
+			case "assistant":
+				if assistantText == "" {
+					assistantText = sanitizeCriticStorageText(row.Content)
+				}
+			}
+		}
+		if userText == "" || assistantText == "" {
+			return nil, false
+		}
+		if maxChars > 0 {
+			userText = truncateLedgerText(userText, maxChars)
+			assistantText = truncateLedgerText(assistantText, maxChars)
+		}
+		return []map[string]any{
+			{"role": "user", "content": userText, "turn_index": sourceTurn, "source": kind, "support_only": true},
+			{"role": "assistant", "content": assistantText, "turn_index": sourceTurn, "source": kind, "support_only": true},
+		}, true
+	}
+
+	previousTurn := turnIndex - 1
+	if previousTurn > 0 {
+		if pair, ok := readPair(previousTurn, "previous_canonical_turn", 0); ok {
+			contextMessages = append(contextMessages, pair...)
+			selectedTurns[previousTurn] = true
+		}
+	}
+	rows, err := s.Store.ListMemories(ctx, sid, 0, maxInt(turnIndex-1, 0))
+	selectionTrace := map[string]any{}
+	if err != nil {
+		warnings = append(warnings, err.Error())
+	} else {
+		eligible := make([]store.Memory, 0, len(rows))
+		for _, row := range rows {
+			if row.TurnIndex > 0 && row.TurnIndex < turnIndex {
+				eligible = append(eligible, row)
+			}
+		}
+		eligible, protectedTrace := prefilterPrepareTurnProtectedAggregateMemories(eligible)
+		eligible, holderTrace := prefilterPrepareTurnHolderScopedPerspectiveMemories(eligible)
+		selection := collapsePrepareTurnMemoryLaneSelection(selectPrepareTurnMemoryLanes(eligible, query, 3))
+		selectionTrace = selection.Trace
+		selectionTrace["protected_prefilter"] = protectedTrace
+		selectionTrace["holder_prefilter"] = holderTrace
+		for _, memory := range selection.Relevant {
+			if len(relevantMemories) >= 3 {
+				break
+			}
+			if !selectedTurns[memory.TurnIndex] {
+				pair, ok := readPair(memory.TurnIndex, "relevant_memory_source_turn", 1200)
+				if !ok {
+					continue
+				}
+				contextMessages = append(contextMessages, pair...)
+				selectedTurns[memory.TurnIndex] = true
+			}
+			relevantMemories = append(relevantMemories, map[string]any{
+				"source": "mariadb_memory", "id": memory.ID, "turn_index": memory.TurnIndex,
+				"summary": truncateLedgerText(prepareTurnMemorySummary(memory), 600), "support_only": true,
+			})
+		}
+	}
+	trace := map[string]any{
+		"mode":                   "canonical_previous_plus_relevant_memory_sources",
+		"host_messages_received": hostMessageCount,
+		"host_messages_used":     0,
+		"previous_turn":          previousTurn,
+		"context_message_count":  len(contextMessages),
+		"relevant_memory_count":  len(relevantMemories),
+		"memory_selection":       selectionTrace,
+		"warnings":               warnings,
+	}
+	return contextMessages, relevantMemories, trace
+}
+
 func (s *Server) buildCompleteTurnActiveWorldRuleInput(ctx context.Context, sid string) ([]map[string]any, map[string]any) {
 	trace := map[string]any{"status": "unavailable", "included_count": 0}
 	if s == nil || s.Store == nil {
@@ -790,7 +898,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"Extract durable Archive Center memory data from the completed turn.",
 		"Return ONLY JSON. Do not use markdown fences.",
 		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{},"kg_triples":[{"subject":"","predicate":"","object":""}],"entities":{"characters":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"locations":[{"name":""}],"items":[{"name":""}]},"speaker_attributions":[{"speaker_name":"","evidence_excerpt":""}],"relationship_memory":{},"interaction_events":[{"actor":"","counterpart":"","action":"","evidence_excerpt":""}],"relationship_observations":[{"source_entity":"","target_entity":"","domain":"","observation":"","evidence_excerpt":""}],"interaction_boundaries":[{"actor":"","counterpart":"","action_scope":"","decision":"","evidence_excerpt":""}],"habit_observations":[{"subject_entity":"","behavior_key":"","evidence_excerpt":""}],"character_profile_observations":[{"subject_entity":"","trait_key":"","supported_expression":"","evidence_excerpt":""}],"voice_observations":[{"subject_entity":"","principle_key":"","utterance_expression":"","evidence_excerpt":""}],"user_interaction_profile":[],"rp_character_profile":[],"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{},"world_rules":[{"key":"","value":""}],"world_state":{},"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":""}],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
+		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{},"kg_triples":[{"subject":"","predicate":"","object":""}],"entities":{"characters":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"locations":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"items":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"groups":[{"name":"","aliases":[],"identity_evidence_excerpt":""}]},"speaker_attributions":[{"speaker_name":"","evidence_excerpt":""}],"relationship_memory":{},"interaction_events":[{"actor":"","counterpart":"","action":"","evidence_excerpt":""}],"relationship_observations":[{"source_entity":"","target_entity":"","domain":"","observation":"","evidence_excerpt":""}],"interaction_boundaries":[{"actor":"","counterpart":"","action_scope":"","decision":"","evidence_excerpt":""}],"habit_observations":[{"subject_entity":"","behavior_key":"","evidence_excerpt":""}],"character_profile_observations":[{"subject_entity":"","trait_key":"","supported_expression":"","evidence_excerpt":""}],"voice_observations":[{"subject_entity":"","principle_key":"","utterance_expression":"","evidence_excerpt":""}],"user_interaction_profile":[],"rp_character_profile":[],"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{},"world_rules":[{"key":"","value":""}],"world_state":{},"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":""}],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
 		"Rules:",
 		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
 		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and retained context.",
@@ -798,7 +906,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- reversible_states.value.text and body subtype/affected_area are source-bound fields, not generated display prose. Copy them exactly from evidence_excerpt even when the source language differs from session_output_language.",
 		"- If the latest user input language differs from session_output_language, do not follow the user input language for generated summaries or support records. Follow session_output_language and preserve user text only inside exact raw evidence excerpts.",
 		"- Do not copy isolated names, greetings, reactions, or context-dependent fragments into evidence_excerpts merely because they occurred. Speech-style examples belong in voice_observations and are not duplicated as general direct evidence unless the same excerpt also proves a separate durable claim. Do not cap valid direct evidence by a fixed count.",
-		"- For an ordinary name variant, nickname, title, or alias, keep one character entity with the story's canonical/full name and aliases. When the canonical identity was uniquely established in retained story context and the latest turn uses an alias for that same entity, identity_evidence_excerpt may be the short exact latest-turn excerpt that observes the alias. Otherwise add identity_evidence_excerpt only when one short exact latest-turn excerpt establishes the identity link. Omit it when equivalence is uncertain; spelling, suffix, similarity, or a character-card name alone is not identity evidence.",
+		"- For an ordinary name variant, nickname, title, or alias, keep one character entity with the story's canonical/full name and aliases. When the canonical identity was uniquely established in retained story context and the latest turn uses an alias for that same entity, identity_evidence_excerpt may be the short exact latest-turn excerpt that observes the alias. Apply the same evidence rule when the latest turn repeats the canonical name of a uniquely established recurring character, location, item, or group. Otherwise add identity_evidence_excerpt only when one short exact latest-turn excerpt establishes the identity link. Omit it for homonyms or uncertain equivalence; spelling, suffix, similarity, or a character-card name alone is not identity evidence.",
 		"- For entities and character_deltas, preserve the name or description supplied by the story and all useful observed attributes. Do not require auxiliary expression fields merely to keep the candidate.",
 		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, optional listener_names/listeners when directly observed, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker or listener from style alone; use ambiguous or unknown when multiple characters fit.",
 		"- Location and time typed lanes do not suppress compatible kg_triples; keep all emitted facts consistent with exact turn evidence.",
@@ -828,6 +936,7 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"- Mark secret_guard true when the recollection reveals regression, loop, reincarnation, possession/rebirth, isekai transfer, or identity-carryover that should remain protagonist-private until explicitly revealed by current user input.",
 		"- Critic_Archive_Ledger_JSON is a bounded read-only support ledger. Use it to avoid duplicate memories, stale residue, and contradiction drift.",
 		"- Never copy Critic_Archive_Ledger_JSON item summaries as new evidence unless the latest user/assistant turn also supports the fact.",
+		"- Recent_Context_JSON is support-only. Never treat the previous turn or a selected memory source turn as a new event, reveal, or evidence excerpt unless Latest_Turn directly supports it.",
 		"- If Critic_Archive_Ledger_JSON is null, empty, or degraded, continue extracting only from the latest turn and retained context.",
 		"",
 		fmt.Sprintf("chat_session_id: %s", sid),

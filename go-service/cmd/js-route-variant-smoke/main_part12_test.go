@@ -620,18 +620,24 @@ const calls = [];
 let mutationCallback = null;
 let mutationObserved = false;
 let mutationDisconnected = false;
+let mainDOMGranted = false;
+const rootBody = {kind:"body"};
 let deletionReconcileCalls = 0;
 let deletionReconcileOptions = null;
 const R = {
   async addRisuScriptHandler(name){ calls.push("add:"+name); },
   async addRisuReplacer(name){ calls.push("add:"+name); if(name === "beforeRequest") throw new Error("before unavailable"); },
-  async getRootDocument(){ return {kind:"root"}; },
+  async requestPluginPermission(name){ calls.push("permission:"+name); mainDOMGranted = name === "mainDom"; return mainDOMGranted; },
+  async getRootDocument(){
+    if (!mainDOMGranted) throw new Error("mainDom permission required");
+    return {async querySelector(selector){ return selector === "body" ? rootBody : null; }};
+  },
   async unwarpSafeArray(value){ return value; },
   async createMutationObserver(callback){
     mutationCallback = callback;
     return {
       async observe(root, options){
-        if (!root || options.childList !== true || options.subtree !== true) throw new Error("mutation observer scope mismatch");
+        if (root !== rootBody || options.childList !== true || options.subtree !== true) throw new Error("mutation observer scope mismatch");
         mutationObserved = true;
       },
       async disconnect(){ mutationDisconnected = true; },
@@ -668,6 +674,9 @@ async function unloadTurnWorkflowHUD(){}
   }
   if (lifecycleStates.beforeRequest !== "registration_failed") {
     throw new Error("registration failure was not exposed: "+JSON.stringify(lifecycleStates));
+  }
+  if (!calls.includes("permission:mainDom")) {
+    throw new Error("deletion observer did not request official mainDom permission");
   }
   if (!mutationObserved || typeof mutationCallback !== "function") {
     throw new Error("official RisuAI deletion observer was not registered");

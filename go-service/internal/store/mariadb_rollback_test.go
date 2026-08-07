@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -287,6 +288,56 @@ func TestMariaDBAdminResetClearsPreciseMemoryUnits(t *testing.T) {
 	}
 	if result.TablesCleared != len(mariaAdminResetTables) || result.RowsDeleted != int64(len(mariaAdminResetTables)) {
 		t.Fatalf("reset result=%+v tables=%d", result, len(mariaAdminResetTables))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestMariaDBAdminResetWaitsForDerivationWriteLane(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	originalTables := mariaAdminResetTables
+	mariaAdminResetTables = []string{"memory_source_revisions"}
+	defer func() { mariaAdminResetTables = originalTables }()
+
+	mock.ExpectExec(regexp.QuoteMeta("SET FOREIGN_KEY_CHECKS=0")).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM `memory_source_revisions`")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectExec(regexp.QuoteMeta("SET FOREIGN_KEY_CHECKS=1")).WillReturnResult(sqlmock.NewResult(0, 0))
+
+	m.memoryDerivationWriteMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			m.memoryDerivationWriteMu.Unlock()
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, resetErr := m.ResetAll(context.Background())
+		done <- resetErr
+	}()
+	select {
+	case resetErr := <-done:
+		t.Fatalf("ResetAll bypassed derivation write lane: %v", resetErr)
+	case <-time.After(25 * time.Millisecond):
+	}
+	m.memoryDerivationWriteMu.Unlock()
+	locked = false
+	select {
+	case resetErr := <-done:
+		if resetErr != nil {
+			t.Fatal(resetErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ResetAll did not resume after derivation write lane was released")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)

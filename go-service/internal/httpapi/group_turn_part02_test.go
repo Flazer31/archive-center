@@ -354,6 +354,10 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 			RelationshipsJSON: `{"Carol":{"affection":20}}`,
 		}},
 		returnEvidence: []store.DirectEvidence{{EvidenceKind: "turn_excerpt", EvidenceText: "Alice previously accepted Bob's help.", SourceTurnStart: 1, SourceTurnEnd: 1, TurnAnchor: 1}},
+		returnChatLogs: []store.ChatLog{
+			{ChatSessionID: "sess-live", TurnIndex: 1, Role: "user", Content: "Alice hesitated before trusting Bob."},
+			{ChatSessionID: "sess-live", TurnIndex: 1, Role: "assistant", Content: "Bob helped Alice escape."},
+		},
 	}
 	vec := &turnRecordingVectorStore{}
 	cfg := config.Default()

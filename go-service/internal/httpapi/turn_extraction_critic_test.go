@@ -24,6 +24,48 @@ func combinedCriticPromptForTest(t *testing.T, userPrompt string) string {
 	return systemPrompt + "\n" + userPrompt
 }
 
+func TestCriticCanonicalContextUsesPreviousTurnAndRelevantMemorySources(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ChatSessionID: "critic-context", TurnIndex: 1, Role: "user", Content: "Mina hid the brass key."},
+			{ChatSessionID: "critic-context", TurnIndex: 1, Role: "assistant", Content: "Rowan watched the lighthouse vault."},
+			{ChatSessionID: "critic-context", TurnIndex: 99, Role: "user", Content: "previous user full text"},
+			{ChatSessionID: "critic-context", TurnIndex: 99, Role: "assistant", Content: "previous assistant full text"},
+			{ChatSessionID: "critic-context", TurnIndex: 100, Role: "user", Content: "current row must not repeat"},
+		},
+		returnMemories: []store.Memory{
+			{ID: 1, TurnIndex: 1, SummaryJSON: `{"turn_summary":"Mina hid the brass key in the lighthouse vault for Rowan."}`, Importance: 0.8},
+			{ID: 2, TurnIndex: 98, SummaryJSON: `{"turn_summary":"Carol cooked mushroom soup in the village kitchen."}`, Importance: 0.9},
+			{ID: 3, TurnIndex: 101, SummaryJSON: `{"turn_summary":"Future Mina retrieved the brass key."}`, Importance: 1},
+			{ID: 4, TurnIndex: 2, SummaryJSON: `{"turn_summary":"Private brass key identity","protected_secrets":[{"knowledge_scope":{"publicly_revealed":false}}]}`, Importance: 1},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	contextMessages, memories, trace := srv.buildCompleteTurnCriticCanonicalContext(
+		context.Background(), "critic-context", 100,
+		"Mina asks Rowan to retrieve the brass key from the lighthouse vault.", 238,
+	)
+	if intFromAny(trace["host_messages_received"], 0) != 238 || intFromAny(trace["host_messages_used"], -1) != 0 {
+		t.Fatalf("host context was not excluded: %#v", trace)
+	}
+	if len(memories) != 1 || intFromAny(memories[0]["turn_index"], 0) != 1 {
+		t.Fatalf("relevant memory selection = %#v, want only old turn 1", memories)
+	}
+	encoded, _ := json.Marshal(contextMessages)
+	text := string(encoded)
+	for _, expected := range []string{"previous user full text", "previous assistant full text", "Mina hid the brass key", "Rowan watched the lighthouse vault"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("canonical context missing %q: %s", expected, text)
+		}
+	}
+	for _, blocked := range []string{"current row must not repeat", "mushroom soup", "Future Mina", "Private brass key identity"} {
+		if strings.Contains(text, blocked) {
+			t.Fatalf("invalid context %q leaked: %s", blocked, text)
+		}
+	}
+}
+
 func TestCriticPipelineErrorClassificationPreservesStageAndHTTPStatus(t *testing.T) {
 	timeoutErr := classifyCriticProviderError(context.DeadlineExceeded, http.StatusBadGateway)
 	timeoutDetails := criticPipelineErrorDetails(timeoutErr)

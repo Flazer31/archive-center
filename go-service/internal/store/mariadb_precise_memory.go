@@ -28,6 +28,8 @@ func (m *mariadbStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseM
 	if item == nil || strings.TrimSpace(item.SourceRevision) == "" {
 		return false, fmt.Errorf("precise memory source revision is required")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err

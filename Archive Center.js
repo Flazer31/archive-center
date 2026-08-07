@@ -4639,14 +4639,23 @@
         && typeof R.getRootDocument === "function"
         && typeof R.unwarpSafeArray === "function"
       ) {
+        if (
+          typeof R.requestPluginPermission === "function"
+          && await R.requestPluginPermission("mainDom") !== true
+        ) {
+          throw new Error("RisuAI main DOM permission was not granted");
+        }
         const rootDocument = await R.getRootDocument();
+        const observationRoot = rootDocument && typeof rootDocument.querySelector === "function"
+          ? await rootDocument.querySelector("body")
+          : null;
         const observer = await R.createMutationObserver(function(mutations) {
           return onRisuChatMessageListMutation(mutations).catch(function(err) {
             debugLog("Risu chat deletion observation failed:", err && err.message);
           });
         });
-        if (rootDocument && observer && typeof observer.observe === "function") {
-          await observer.observe(rootDocument, { childList: true, subtree: true });
+        if (observationRoot && observer && typeof observer.observe === "function") {
+          await observer.observe(observationRoot, { childList: true, subtree: true });
           _rollbackHostMutationObserver = observer;
           console.log(LOG_PREFIX, "Risu chat deletion observer registered");
         }

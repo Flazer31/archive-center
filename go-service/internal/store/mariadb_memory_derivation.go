@@ -29,6 +29,8 @@ func (m *mariadbStore) RegisterAcceptedSourceRevision(ctx context.Context, sourc
 	if err := validateMemorySourceRevision(source); err != nil {
 		return result, err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
@@ -361,6 +363,8 @@ func (m *mariadbStore) InvalidateSourceRevisions(ctx context.Context, chatSessio
 	default:
 		return fmt.Errorf("invalid source lifecycle %q", lifecycleState)
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -598,6 +602,8 @@ func (m *mariadbStore) EnqueueMemoryReprocessingJob(ctx context.Context, job *Me
 	if job == nil || strings.TrimSpace(job.IdempotencyKey) == "" || strings.TrimSpace(job.ChatSessionID) == "" || strings.TrimSpace(job.SourceRevision) == "" {
 		return false, fmt.Errorf("invalid memory reprocessing job")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	if strings.TrimSpace(job.ContractVersion) == "" {
 		job.ContractVersion = MemoryReprocessingJobContract
 	}
@@ -659,6 +665,8 @@ func (m *mariadbStore) ReopenMemoryReprocessingJob(
 	if idempotencyKey == "" || chatSessionID == "" || sourceRevision == "" {
 		return false, fmt.Errorf("invalid memory reprocessing reopen request")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -763,6 +771,8 @@ func (m *mariadbStore) ClaimMemoryReprocessingJob(ctx context.Context, leaseOwne
 	if strings.TrimSpace(leaseOwner) == "" || leaseDuration <= 0 {
 		return nil, fmt.Errorf("invalid memory reprocessing lease")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -858,6 +868,8 @@ func (m *mariadbStore) finishMemoryReprocessingJob(ctx context.Context, jobID in
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -927,6 +939,8 @@ func (m *mariadbStore) EnqueueMemoryVectorOperation(ctx context.Context, item *M
 	if err := m.ensureDB(); err != nil {
 		return false, err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	return enqueueMemoryVectorOperation(ctx, m.db, item)
 }
 
@@ -1008,6 +1022,8 @@ func (m *mariadbStore) ClaimMemoryVectorOperation(ctx context.Context, leaseOwne
 	if strings.TrimSpace(leaseOwner) == "" || leaseDuration <= 0 {
 		return nil, fmt.Errorf("invalid vector outbox lease")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1126,6 +1142,8 @@ func (m *mariadbStore) finishMemoryVectorOperation(ctx context.Context, outboxID
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

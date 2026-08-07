@@ -220,13 +220,13 @@ func TestMariaDBResolveUniqueActiveEntityIdentityBySurfaceReturnsDatabaseNamespa
 			}
 			defer db.Close()
 			m := &mariadbStore{db: db}
-			mock.ExpectQuery(`FROM entity_identity_surfaces surface[\s\S]+source_identity\.lifecycle_state = 'active'[\s\S]+source_revision\.lifecycle_state = 'active'[\s\S]+canonical_revision\.lifecycle_state = 'active'[\s\S]+surface\.review_state = 'source_observed'`).
+			mock.ExpectQuery(`FROM entity_identity_surfaces surface[\s\S]+source_identity\.lifecycle_state = 'active'[\s\S]+source_revision\.lifecycle_state = 'active'[\s\S]+canonical_revision\.lifecycle_state = 'active'[\s\S]+surface\.surface_scope IN \(\?, \?\)[\s\S]+surface\.review_state = 'source_observed'`).
 				WithArgs(
 					EntityIdentityLinkKindCanonicalEquivalence,
 					EntityIdentityLinkStateReviewed,
 					EntityIdentityReviewStateSourceObserved,
 					EntityIdentityReviewStateReviewed,
-					"session-1", "alex",
+					"session-1", "alex", EntityIdentitySurfaceScope39, EntityIdentitySurfaceScopeCurrent,
 				).
 				WillReturnRows(tc.rows)
 			got, err := m.ResolveUniqueActiveEntityIdentityBySurface(context.Background(), "session-1", "alex")

@@ -9,7 +9,100 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-sql-driver/mysql"
 )
+
+func TestMariaDBMemoryAdmissionRetriesDeadlockTransaction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	admission := &MemoryAdmission{
+		ContractVersion:   MemoryAdmissionContract,
+		ChatSessionID:     "session",
+		SourceRevision:    "revision",
+		TurnIndex:         2,
+		DerivationVersion: MemoryAdmissionContract,
+		ExtractorVersion:  "critic.v1",
+		IndexVersion:      MemoryVectorOutboxContract,
+		ResultJSON:        `{}`,
+		CreatedAt:         time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC),
+	}
+	admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+		WithArgs("session", "revision", 2).
+		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "deadlock"})
+	mock.ExpectRollback()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+		WithArgs("session", "revision", 2).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"lifecycle_state", "derived_admission_state",
+			"derived_admission_version", "derived_extractor_version",
+			"derived_index_version", "derived_result_hash", "derived_result_json",
+		}).AddRow("active", "pending", "", "", "", nil, nil))
+	mock.ExpectQuery("SELECT id, evidence_text, tombstoned").
+		WithArgs("session", 2, 2).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
+	mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	got, err := st.CommitMemoryAdmission(context.Background(), admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CommittedResultHash != admission.ResultHash {
+		t.Fatalf("committed hash=%q, want %q", got.CommittedResultHash, admission.ResultHash)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBMemoryAdmissionStopsAfterDeadlockRetryLimit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	admission := &MemoryAdmission{
+		ContractVersion:   MemoryAdmissionContract,
+		ChatSessionID:     "session",
+		SourceRevision:    "revision",
+		TurnIndex:         2,
+		DerivationVersion: MemoryAdmissionContract,
+		ExtractorVersion:  "critic.v1",
+		IndexVersion:      MemoryVectorOutboxContract,
+		ResultJSON:        `{}`,
+	}
+	admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
+	for attempt := 0; attempt < memoryAdmissionTransactionMaxAttempts; attempt++ {
+		mock.ExpectBegin()
+		mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+			WithArgs("session", "revision", 2).
+			WillReturnError(&mysql.MySQLError{Number: 1213, Message: "deadlock"})
+		mock.ExpectRollback()
+	}
+
+	_, err = st.CommitMemoryAdmission(context.Background(), admission)
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1213 {
+		t.Fatalf("err=%v, want MySQL 1213 after bounded retries", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestMariaDBMemoryAdmissionCommitsCoreProjectionsAndOutboxAtomically(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -79,11 +172,17 @@ func TestMariaDBMemoryAdmissionCommitsCoreProjectionsAndOutboxAtomically(t *test
 		WillReturnResult(sqlmock.NewResult(11, 1))
 	mock.ExpectQuery("SELECT id, evidence_text, tombstoned").
 		WithArgs("session", 4, 4).
-		WillReturnError(sqlmock.ErrCancelled)
+		WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO direct_evidence_records")).
+		WillReturnResult(sqlmock.NewResult(21, 1))
+	mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO precise_memory_units")).
+		WillReturnResult(sqlmock.NewResult(31, 1))
+	mock.ExpectExec("INSERT INTO memory_derivation_dependencies").
+		WillReturnError(&mysql.MySQLError{Number: 1213, Message: "deadlock after projection writes"})
 	mock.ExpectRollback()
-	if _, err := st.CommitMemoryAdmission(context.Background(), admission); !errors.Is(err, sqlmock.ErrCancelled) {
-		t.Fatalf("injected mid-transaction failure err=%v", err)
-	}
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
@@ -97,17 +196,17 @@ func TestMariaDBMemoryAdmissionCommitsCoreProjectionsAndOutboxAtomically(t *test
 		WithArgs("session", 4).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO memories")).
-		WillReturnResult(sqlmock.NewResult(11, 1))
+		WillReturnResult(sqlmock.NewResult(12, 1))
 	mock.ExpectQuery("SELECT id, evidence_text, tombstoned").
 		WithArgs("session", 4, 4).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO direct_evidence_records")).
-		WillReturnResult(sqlmock.NewResult(21, 1))
+		WillReturnResult(sqlmock.NewResult(22, 1))
 	mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").
 		WithArgs("session", "revision").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO precise_memory_units")).
-		WillReturnResult(sqlmock.NewResult(31, 1))
+		WillReturnResult(sqlmock.NewResult(32, 1))
 	mock.ExpectExec("INSERT INTO memory_derivation_dependencies").
 		WillReturnResult(sqlmock.NewResult(41, 1))
 	mock.ExpectExec("INSERT INTO memory_derivation_dependencies").
@@ -125,8 +224,9 @@ func TestMariaDBMemoryAdmissionCommitsCoreProjectionsAndOutboxAtomically(t *test
 	}
 	if !got.MemoryInserted || got.EvidenceInserted != 1 ||
 		got.PreciseInserted != 1 || got.VectorOperations != 2 ||
-		admission.Memory.ID != 11 || evidence.ID != 21 ||
-		unit.ID != 31 || unit.RootEvidenceID != 21 {
+		admission.Memory.ID != 12 || evidence.ID != 22 ||
+		unit.ID != 32 || unit.RootEvidenceID != 22 ||
+		unit.DirectEvidenceIDsJSON != "[22]" {
 		t.Fatalf("unexpected result=%+v memory=%d evidence=%d unit=%d root=%d",
 			got, admission.Memory.ID, evidence.ID, unit.ID, unit.RootEvidenceID)
 	}

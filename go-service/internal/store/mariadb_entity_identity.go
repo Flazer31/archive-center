@@ -244,11 +244,13 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 		 AND canonical_revision.lifecycle_state = 'active'
 		WHERE surface.chat_session_id = ?
 		  AND surface.normalized_surface = ?
+		  AND surface.surface_scope IN (?, ?)
 		  AND surface.review_state = 'source_observed'
 		  AND (identity_link.target_entity_id IS NULL OR canonical_revision.source_revision IS NOT NULL)
 		ORDER BY surface.stable_entity_id ASC, identity_link.target_entity_id ASC
 	`, EntityIdentityLinkKindCanonicalEquivalence, EntityIdentityLinkStateReviewed,
-		EntityIdentityReviewStateSourceObserved, EntityIdentityReviewStateReviewed, chatSessionID, normalizedSurface)
+		EntityIdentityReviewStateSourceObserved, EntityIdentityReviewStateReviewed,
+		chatSessionID, normalizedSurface, EntityIdentitySurfaceScope39, EntityIdentitySurfaceScopeCurrent)
 	if err != nil {
 		return ResolvedEntityIdentity{}, err
 	}

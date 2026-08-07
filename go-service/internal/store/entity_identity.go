@@ -11,6 +11,8 @@ const (
 	EntityIdentityLinkStateReviewed            = "reviewed"
 	EntityIdentityReviewStateReviewed          = "reviewed"
 	EntityIdentityReviewStateSourceObserved    = "source_observed"
+	EntityIdentitySurfaceScope39               = "source_turn"
+	EntityIdentitySurfaceScopeCurrent          = "source_turn_current"
 )
 
 var ErrReviewedEntityIdentityAmbiguous = errors.New("reviewed entity identity has multiple canonical targets")
