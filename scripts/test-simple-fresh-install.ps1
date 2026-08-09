@@ -147,6 +147,7 @@ try {
     Assert-True $failed "failed Windows helper was reported as success"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $failedLocal "ArchiveCenter"))) "failed Windows helper left the reserved install root behind"
     Remove-Item Env:AC_TEST_HELPER_FAIL -ErrorAction SilentlyContinue
+    $global:LASTEXITCODE = 0
 
     $readme = Get-Content -LiteralPath (Join-Path $repoRoot "README.md") -Raw -Encoding UTF8
     Assert-True $readme.Contains("irm https://raw.githubusercontent.com/Flazer31/archive-center/main/install-windows.ps1 | iex") "README Windows command drifted"
