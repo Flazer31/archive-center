@@ -924,10 +924,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			supervisorInputPack["llm_trace"] = llmTrace
 			if err != nil {
 				supervisorCallStatus = "failed_open"
-				supervisorCallReason = "publisher_llm_failed_open"
+				supervisorCallReason = extractionFirstNonEmpty(
+					extractionStringFromAny(llmTrace["failure_code"]),
+					"publisher_llm_failed_open",
+				)
 				supervisorInputPack["llm_error"] = scrubProxySecret(err.Error(), llmCfg.APIKey)
 				if s.TurnWorkflows != nil && workflowRequestID != "" {
-					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", "publisher_llm_failed_open")
+					s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", supervisorCallReason)
 					s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_LLM_FAILED_OPEN", "turn_hud.warning.publisher_llm_failed_open", turnWorkflowStagePublisherLLM)
 				}
 			} else {
@@ -995,7 +998,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if supervisorCallStatus == "failed_open" {
 		guidanceItems = append(guidanceItems, prepareTurnGuidanceItem{
 			Key:        "supervisor_scene_proposal",
-			Title:      "Supervisor Proposal",
+			Title:      "Publisher LLM Proposal",
 			Status:     "failed",
 			ReasonCode: "supervisor_llm_failed_open",
 		})

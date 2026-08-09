@@ -28,6 +28,8 @@ func (m *mariadbStore) SavePreciseMemoryUnit(ctx context.Context, item *PreciseM
 	if item == nil || strings.TrimSpace(item.SourceRevision) == "" {
 		return false, fmt.Errorf("precise memory source revision is required")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -345,9 +347,10 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		"SourceRowID":   item.UnitID,
 		"SchemaVersion": PreciseMemoryUnitContract,
 		"DocumentText":  documentText,
-		"Embedding":     []float32{},
-		"Metadata": memoryVectorVerificationMetadata(
+		"Embedding":     item.VectorEmbedding,
+		"Metadata": memoryVectorDocumentMetadata(
 			item.SourceRevision, item.SourceContract, item.IndexVersion, documentText,
+			item.VectorEmbeddingModel, item.VectorContextChunks, item.VectorContextChunkIndex,
 		),
 	})
 	if err != nil {
@@ -364,16 +367,23 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		SourceRevision:      item.SourceRevision,
 		DocumentID:          documentID,
 		DocumentJSON:        string(documentJSON),
-		EmbeddingReady:      false,
+		EmbeddingReady:      len(item.VectorEmbedding) > 0,
 		RequiredSourceState: "active",
-		Status:              "needs_embedding",
+		Status:              preciseMemoryVectorOutboxStatus(item),
 		CreatedAt:           nonZeroTime(item.CreatedAt),
 		UpdatedAt:           nonZeroTime(item.UpdatedAt),
 	}
 	return enqueueMemoryVectorOperation(ctx, tx, outbox)
 }
 
-func preciseMemoryGeneralVectorEligible(item *PreciseMemoryUnit) bool {
+func preciseMemoryVectorOutboxStatus(item *PreciseMemoryUnit) string {
+	if item != nil && len(item.VectorEmbedding) > 0 {
+		return "pending"
+	}
+	return "needs_embedding"
+}
+
+func PreciseMemoryGeneralVectorEligible(item *PreciseMemoryUnit) bool {
 	if item == nil {
 		return false
 	}
@@ -389,6 +399,10 @@ func preciseMemoryGeneralVectorEligible(item *PreciseMemoryUnit) bool {
 		return false
 	}
 	return true
+}
+
+func preciseMemoryGeneralVectorEligible(item *PreciseMemoryUnit) bool {
+	return PreciseMemoryGeneralVectorEligible(item)
 }
 
 func preciseMemoryVectorOperationKey(

@@ -58,6 +58,12 @@ type PreciseMemoryUnit struct {
 	LifecycleState          string    `json:"lifecycle_state"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
+	// Vector fields are transient commit material. They are serialized only
+	// into the durable vector outbox and are not persisted as MariaDB columns.
+	VectorEmbedding         []float32 `json:"-"`
+	VectorEmbeddingModel    string    `json:"-"`
+	VectorContextChunks     []string  `json:"-"`
+	VectorContextChunkIndex int       `json:"-"`
 }
 
 // PreciseMemoryWriter is optional so legacy, fixture, noop, and read-only
@@ -121,6 +127,9 @@ type MemoryAdmissionVector struct {
 	SummaryLanguage       string
 	SessionOutputLanguage string
 	AliasCount            int
+	EmbeddingModel        string
+	ContextChunks         []string
+	ContextChunkIndex     int
 }
 
 type MemoryAdmissionResult struct {

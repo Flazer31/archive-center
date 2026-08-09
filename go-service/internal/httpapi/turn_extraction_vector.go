@@ -118,6 +118,16 @@ func (s *Server) upsertDerivedArtifactVector(ctx context.Context, sid string, tu
 		result.Warnings = append(result.Warnings, "vector_"+tier+"_embedding_empty")
 		return
 	}
+	s.upsertDerivedArtifactVectorEmbedding(ctx, sid, turnIndex, tier, sourceTable, sourceRowID, schemaVersion, documentText, embedding, result)
+}
+
+func (s *Server) upsertDerivedArtifactVectorEmbedding(ctx context.Context, sid string, turnIndex int, tier, sourceTable string, sourceRowID int64, schemaVersion, documentText string, embedding []float32, result *artifactSaveResult) {
+	if result == nil || len(embedding) == 0 {
+		return
+	}
+	tier = strings.TrimSpace(tier)
+	sourceTable = strings.TrimSpace(sourceTable)
+	documentText = strings.TrimSpace(documentText)
 	rowID := strconv.FormatInt(sourceRowID, 10)
 	doc := vector.VectorDocument{
 		ID:               fmt.Sprintf("%s:%s:%s", tier, sid, rowID),
@@ -131,7 +141,7 @@ func (s *Server) upsertDerivedArtifactVector(ctx context.Context, sid string, tu
 		SearchTextPolicy: "derived_artifact_search_text.v1",
 	}
 	vectorStartedAt := time.Now()
-	err = s.Vector.Upsert(ctx, sid, []vector.VectorDocument{doc})
+	err := s.Vector.Upsert(ctx, sid, []vector.VectorDocument{doc})
 	result.addTiming("vector_upsert", vectorStartedAt)
 	if err != nil {
 		result.VectorStatus = "error: " + err.Error()
@@ -179,18 +189,75 @@ func worldRuleVectorDocumentText(wr store.WorldRule) string {
 }
 
 func callEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string) (string, string, error) {
+	embeddings, model, err := callEmbeddingInputs(ctx, cfg, []string{input}, "document")
+	if err != nil {
+		return "", "", err
+	}
+	if len(embeddings) != 1 {
+		return "", "", errors.New("embedding_data_count_mismatch")
+	}
+	return embeddings[0], model, nil
+}
+
+func callQueryEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string) (string, string, error) {
+	embeddings, model, err := callEmbeddingInputs(ctx, cfg, []string{input}, "query")
+	if err != nil {
+		return "", "", err
+	}
+	if len(embeddings) != 1 {
+		return "", "", errors.New("embedding_data_count_mismatch")
+	}
+	return embeddings[0], model, nil
+}
+
+// callDocumentEmbeddings preserves input order. voyage-context models receive
+// every sibling chunk in one inner inputs group, so the returned vector for a
+// chunk is conditioned on the other chunks in the same logical document.
+func callDocumentEmbeddings(ctx context.Context, cfg completeTurnEmbeddingConfig, inputs []string) ([]string, string, error) {
+	return callEmbeddingInputs(ctx, cfg, inputs, "document")
+}
+
+func callEmbeddingInputs(ctx context.Context, cfg completeTurnEmbeddingConfig, inputs []string, inputType string) ([]string, string, error) {
 	if cfg.TimeoutMs < 0 {
-		return "", "", errors.New("embedding timeout_ms must not be negative")
+		return nil, "", errors.New("embedding timeout_ms must not be negative")
 	}
 	if cfg.TimeoutMs > 0 {
 		timeout := time.Duration(cfg.TimeoutMs) * time.Millisecond
 		if timeout <= 0 || int64(timeout/time.Millisecond) != cfg.TimeoutMs {
-			return "", "", errors.New("embedding timeout_ms is outside the supported duration range")
+			return nil, "", errors.New("embedding timeout_ms is outside the supported duration range")
 		}
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	if len(inputs) == 0 {
+		return nil, "", errors.New("embedding input is required")
+	}
+	for _, input := range inputs {
+		if strings.TrimSpace(input) == "" {
+			return nil, "", errors.New("embedding input must not be empty")
+		}
+	}
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "voyageai" && isVoyageContextualizedModel(cfg.Model) {
+		return callVoyageContextualizedEmbeddings(ctx, cfg, inputs, inputType)
+	}
+	results := make([]string, 0, len(inputs))
+	model := strings.TrimSpace(cfg.Model)
+	for _, input := range inputs {
+		embedding, resolvedModel, err := callSingleEmbedding(ctx, cfg, input)
+		if err != nil {
+			return nil, "", err
+		}
+		results = append(results, embedding)
+		if strings.TrimSpace(resolvedModel) != "" {
+			model = resolvedModel
+		}
+	}
+	return results, model, nil
+}
+
+func callSingleEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string) (string, string, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	switch provider {
 	case "":
@@ -202,9 +269,11 @@ func callEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input s
 	case "vertex":
 		return callGeminiEmbedding(ctx, cfg, input, true)
 	case "voyageai":
-		return callOpenAICompatibleEmbedding(ctx, cfg, input, normalizeVoyageEmbeddingEndpoint(cfg.Endpoint), true)
+		// Context models are routed before this function. Keep the existing
+		// request contract unchanged for ordinary Voyage embedding models.
+		return callOpenAICompatibleEmbedding(ctx, cfg, input, normalizeVoyageEmbeddingEndpoint(cfg.Endpoint), true, "")
 	case "openai", "custom":
-		return callOpenAICompatibleEmbedding(ctx, cfg, input, normalizeEmbeddingEndpoint(cfg.Endpoint), false)
+		return callOpenAICompatibleEmbedding(ctx, cfg, input, normalizeEmbeddingEndpoint(cfg.Endpoint), false, "")
 	default:
 		return "", "", fmt.Errorf("unsupported embedding provider %q", provider)
 	}
@@ -264,10 +333,13 @@ func callOllamaEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, i
 	return string(b), cfg.Model, nil
 }
 
-func callOpenAICompatibleEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string, endpoint string, arrayInput bool) (string, string, error) {
+func callOpenAICompatibleEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string, endpoint string, arrayInput bool, inputType string) (string, string, error) {
 	body := map[string]any{"model": cfg.Model, "input": input}
 	if arrayInput {
 		body["input"] = []string{input}
+	}
+	if strings.TrimSpace(inputType) != "" {
+		body["input_type"] = strings.TrimSpace(inputType)
 	}
 	payload, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
@@ -303,6 +375,97 @@ func callOpenAICompatibleEmbedding(ctx context.Context, cfg completeTurnEmbeddin
 		return "", "", err
 	}
 	return string(b), extractionFirstNonEmpty(extractionStringFromAny(data["model"]), cfg.Model), nil
+}
+
+func isVoyageContextualizedModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "voyage-context-")
+}
+
+func usesVoyageContextualizedEmbedding(cfg completeTurnEmbeddingConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.Provider), "voyageai") && isVoyageContextualizedModel(cfg.Model)
+}
+
+func callVoyageContextualizedEmbeddings(ctx context.Context, cfg completeTurnEmbeddingConfig, inputs []string, inputType string) ([]string, string, error) {
+	inputType = strings.ToLower(strings.TrimSpace(inputType))
+	if inputType != "query" && inputType != "document" {
+		return nil, "", fmt.Errorf("unsupported contextualized embedding input_type %q", inputType)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"model":      cfg.Model,
+		"inputs":     [][]string{append([]string(nil), inputs...)},
+		"input_type": inputType,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, normalizeVoyageContextualizedEmbeddingEndpoint(cfg.Endpoint), bytes.NewReader(payload))
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	resp, err := proxyHTTPClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("embedding upstream returned %s", resp.Status)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, "", err
+	}
+	documents := sliceFromAny(data["data"])
+	if len(documents) != 1 {
+		return nil, "", fmt.Errorf("contextualized_embedding_document_count_mismatch: got %d want 1", len(documents))
+	}
+	document := mapFromAny(documents[0])
+	rawDocumentIndex, hasDocumentIndex := document["index"]
+	if !hasDocumentIndex || intFromAny(rawDocumentIndex, -1) != 0 {
+		return nil, "", errors.New("contextualized_embedding_document_index_invalid")
+	}
+	rows := sliceFromAny(document["data"])
+	if len(rows) != len(inputs) {
+		return nil, "", fmt.Errorf("contextualized_embedding_chunk_count_mismatch: got %d want %d", len(rows), len(inputs))
+	}
+	ordered := make([]string, len(inputs))
+	seen := make([]bool, len(inputs))
+	for _, rawRow := range rows {
+		row := mapFromAny(rawRow)
+		rawIndex, hasIndex := row["index"]
+		if !hasIndex {
+			return nil, "", errors.New("contextualized_embedding_chunk_index_missing")
+		}
+		index := intFromAny(rawIndex, -1)
+		if index < 0 || index >= len(inputs) || seen[index] {
+			return nil, "", errors.New("contextualized_embedding_chunk_index_invalid")
+		}
+		embedding := row["embedding"]
+		if embedding == nil {
+			return nil, "", errors.New("embedding_data_empty")
+		}
+		encoded, err := json.Marshal(embedding)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(parseFloat32JSONList(string(encoded))) == 0 {
+			return nil, "", errors.New("embedding_data_empty")
+		}
+		ordered[index] = string(encoded)
+		seen[index] = true
+	}
+	for _, ok := range seen {
+		if !ok {
+			return nil, "", errors.New("contextualized_embedding_chunk_index_missing")
+		}
+	}
+	return ordered, extractionFirstNonEmpty(extractionStringFromAny(data["model"]), cfg.Model), nil
 }
 
 func callGeminiEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, input string, vertex bool) (string, string, error) {
@@ -372,6 +535,23 @@ func normalizeVoyageEmbeddingEndpoint(endpoint string) string {
 		return endpoint + "/embeddings"
 	}
 	return endpoint + "/embeddings"
+}
+
+func normalizeVoyageContextualizedEmbeddingEndpoint(endpoint string) string {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if endpoint == "" {
+		return ""
+	}
+	if strings.HasSuffix(endpoint, "/contextualizedembeddings") {
+		return endpoint
+	}
+	if strings.HasSuffix(endpoint, "/embeddings") {
+		return strings.TrimSuffix(endpoint, "/embeddings") + "/contextualizedembeddings"
+	}
+	if strings.HasSuffix(endpoint, "/v1") {
+		return endpoint + "/contextualizedembeddings"
+	}
+	return endpoint + "/contextualizedembeddings"
 }
 
 func proxyNormalizeVertexEmbeddingEndpoint(endpoint, model string) string {

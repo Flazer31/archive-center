@@ -645,16 +645,7 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 			}
 		}
 	}
-	// A lower observed turn cannot belong to this canonical tail. Do not turn
-	// an active-chat turn 35 into backend turn 52: that would preserve the
-	// routing mistake and contaminate the wrong session. The host must resolve
-	// the active RisuAI chat identity again before retrying.
-	if latestCanonicalTurn > 0 && turnIndex < latestCanonicalTurn {
-		conflict := rejectedCompleteTurnSourceAcceptance("source_acceptance_session_tail_conflict", true, observation)
-		conflict.LogicalTurnID = decision.LogicalTurnID
-		conflict.BoundTurn = turnIndex
-		return conflict
-	}
+	logicalTurnResolved := false
 	for _, candidate := range ledger.current {
 		if decision.LogicalTurnID == "" {
 			break
@@ -664,21 +655,30 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 		}
 		if candidate.ObservedAtMS > 0 && (turnIndex <= 0 || candidate.ObservedAtMS >= ledger.current[sourceAcceptanceStateKey(sid, turnIndex)].ObservedAtMS) {
 			turnIndex = candidate.TurnIndex
+			logicalTurnResolved = true
 		}
+	}
+	legacyTurnResolved := false
+	legacyLogicalTurnMatch := false
+	if !logicalTurnResolved && decision.LogicalTurnID != "" && s.Store != nil {
+		if logs, err := s.Store.ListChatLogs(ctx, sid, turnIndex, turnIndex); err == nil {
+			userMatches, assistantMatches := completeTurnRawRoleContentMatches(logs, sid, turnIndex, *req.UserInput, *req.AssistantContent)
+			_, hasAssistant := completeTurnRawRolePresence(logs, sid, turnIndex)
+			legacyTurnResolved = userMatches && hasAssistant
+			legacyLogicalTurnMatch = legacyTurnResolved && !assistantMatches
+		}
+	}
+	// RisuAI message indexes identify the observed Host message; they are not
+	// canonical Archive Center turn numbers. Reuse an existing logical turn
+	// above for rerolls/edits, otherwise append after the committed DB tail.
+	if !logicalTurnResolved && !legacyTurnResolved && latestCanonicalTurn > 0 && turnIndex <= latestCanonicalTurn {
+		turnIndex = latestCanonicalTurn + 1
 	}
 	decision.Revision = completeTurnSourceRevision(sid, turnIndex, observation)
 	decision.BoundTurn = turnIndex
 	key := sourceAcceptanceStateKey(sid, turnIndex)
 	previous := ledger.current[key]
 	decision.Previous = previous.Revision
-	legacyLogicalTurnMatch := false
-	if decision.LogicalTurnID != "" && previous.LogicalTurnID == "" && s.Store != nil {
-		if logs, err := s.Store.ListChatLogs(ctx, sid, turnIndex, turnIndex); err == nil {
-			userMatches, assistantMatches := completeTurnRawRoleContentMatches(logs, sid, turnIndex, *req.UserInput, *req.AssistantContent)
-			_, hasAssistant := completeTurnRawRolePresence(logs, sid, turnIndex)
-			legacyLogicalTurnMatch = userMatches && hasAssistant && !assistantMatches
-		}
-	}
 	if invalidation := ledger.invalidations[sid]; invalidation.FromTurn > 0 && turnIndex >= invalidation.FromTurn && observation.ObservedAtMS <= invalidation.ObservedAtMS {
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_deleted_or_rolled_back", false, observation)
 	}

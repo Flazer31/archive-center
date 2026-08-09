@@ -91,6 +91,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	summary string,
 	searchText string,
 	memorySearchText memorySearchTextBuild,
+	embCfg completeTurnEmbeddingConfig,
 	embedding string,
 	embeddingModel string,
 	embeddingVector []float32,
@@ -172,9 +173,9 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		unit.IndexVersion = memoryAdmissionIndexVersion
 	}
 
+	perspectiveScoped := memoryAdmissionHasPerspectiveScopedContent(extraction)
 	vectors := []store.MemoryAdmissionVector{}
 	if strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" {
-		perspectiveScoped := memoryAdmissionHasPerspectiveScopedContent(extraction)
 		if perspectiveScoped {
 			result.addSkipReason("memory_vector", "perspective_scoped_content_requires_typed_delivery", map[string]any{
 				"turn_index": turnIndex,
@@ -215,6 +216,101 @@ func (s *Server) commitAcceptedMemoryAdmission(
 				DocumentText:     directEvidenceVectorDocumentText(*evidence),
 				SearchTextPolicy: "derived_artifact_search_text.v1",
 			})
+		}
+	}
+	if usesVoyageContextualizedEmbedding(embCfg) {
+		contextChunks := make([]string, 0, len(vectors)+len(preciseUnits))
+		vectorContextPositions := make([]int, len(vectors))
+		for i := range vectorContextPositions {
+			vectorContextPositions[i] = -1
+		}
+		preciseContextPositions := make([]int, len(preciseUnits))
+		for i := range preciseContextPositions {
+			preciseContextPositions[i] = -1
+		}
+		memoryContextPosition := -1
+		for i := range vectors {
+			text := strings.TrimSpace(vectors[i].DocumentText)
+			if text == "" {
+				continue
+			}
+			vectorContextPositions[i] = len(contextChunks)
+			if vectors[i].ArtifactType == "memory" {
+				memoryContextPosition = len(contextChunks)
+			}
+			contextChunks = append(contextChunks, text)
+		}
+		if memoryContextPosition < 0 && !perspectiveScoped && memory != nil {
+			if text := strings.TrimSpace(searchText); text != "" {
+				memoryContextPosition = len(contextChunks)
+				contextChunks = append(contextChunks, text)
+			}
+		}
+		if len(vectors) == 0 {
+			for _, evidence := range desiredEvidence {
+				if evidence == nil || evidence.EvidenceKind == "perspective_scoped_turn_excerpt" {
+					continue
+				}
+				if text := strings.TrimSpace(directEvidenceVectorDocumentText(*evidence)); text != "" {
+					contextChunks = append(contextChunks, text)
+				}
+			}
+		}
+		for i, unit := range preciseUnits {
+			if !store.PreciseMemoryGeneralVectorEligible(unit) {
+				continue
+			}
+			text := strings.TrimSpace(unit.EvidenceExcerpt)
+			if text == "" {
+				continue
+			}
+			preciseContextPositions[i] = len(contextChunks)
+			contextChunks = append(contextChunks, text)
+		}
+		for vectorIndex, position := range vectorContextPositions {
+			if position < 0 {
+				continue
+			}
+			vectors[vectorIndex].ContextChunks = append([]string(nil), contextChunks...)
+			vectors[vectorIndex].ContextChunkIndex = position
+			vectors[vectorIndex].EmbeddingModel = embCfg.Model
+		}
+		for preciseIndex, position := range preciseContextPositions {
+			if position < 0 {
+				continue
+			}
+			preciseUnits[preciseIndex].VectorContextChunks = append([]string(nil), contextChunks...)
+			preciseUnits[preciseIndex].VectorContextChunkIndex = position
+			preciseUnits[preciseIndex].VectorEmbeddingModel = embCfg.Model
+		}
+		if embCfg.hasConfig() && len(contextChunks) > 0 {
+			embeddingStartedAt := time.Now()
+			grouped, model, err := callDocumentEmbeddings(ctx, embCfg, contextChunks)
+			result.addTiming("embedding", embeddingStartedAt)
+			if err != nil {
+				result.EmbeddingStatus = "error: " + err.Error()
+				result.Warnings = append(result.Warnings, "contextualized_embedding_call_failed")
+			} else {
+				for vectorIndex, position := range vectorContextPositions {
+					if position < 0 {
+						continue
+					}
+					vectors[vectorIndex].Embedding = parseFloat32JSONList(grouped[position])
+					vectors[vectorIndex].EmbeddingModel = model
+				}
+				for preciseIndex, position := range preciseContextPositions {
+					if position < 0 {
+						continue
+					}
+					preciseUnits[preciseIndex].VectorEmbedding = parseFloat32JSONList(grouped[position])
+					preciseUnits[preciseIndex].VectorEmbeddingModel = model
+				}
+				if memory != nil && memoryContextPosition >= 0 {
+					memory.Embedding = grouped[memoryContextPosition]
+					memory.EmbeddingModel = model
+				}
+				result.EmbeddingStatus = "ok"
+			}
 		}
 	}
 

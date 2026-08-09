@@ -354,6 +354,10 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 			RelationshipsJSON: `{"Carol":{"affection":20}}`,
 		}},
 		returnEvidence: []store.DirectEvidence{{EvidenceKind: "turn_excerpt", EvidenceText: "Alice previously accepted Bob's help.", SourceTurnStart: 1, SourceTurnEnd: 1, TurnAnchor: 1}},
+		returnChatLogs: []store.ChatLog{
+			{ChatSessionID: "sess-live", TurnIndex: 1, Role: "user", Content: "Alice hesitated before trusting Bob."},
+			{ChatSessionID: "sess-live", TurnIndex: 1, Role: "assistant", Content: "Bob helped Alice escape."},
+		},
 	}
 	vec := &turnRecordingVectorStore{}
 	cfg := config.Default()
@@ -899,12 +903,12 @@ func TestCompleteTurnCriticGuardsEvidenceKGAndEntityTypes(t *testing.T) {
 
 func TestCompleteTurnLocationTimeGroundingSeparatesSceneResidenceAndSeason(t *testing.T) {
 	t.Run("critic_prompt_names_location_time_lanes", func(t *testing.T) {
-		prompt := buildCompleteTurnCriticPrompt(
+		prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt(
 			"sess-loc-time", 8,
 			"Rowan lives in London.",
 			"The current scene stays on the school rooftop as summer vacation begins.",
 			nil, nil, nil,
-		)
+		))
 		for _, needle := range []string{
 			"Location and time typed lanes do not suppress compatible kg_triples",
 			"Do not treat 'X lives in London' as 'the current scene is London'",

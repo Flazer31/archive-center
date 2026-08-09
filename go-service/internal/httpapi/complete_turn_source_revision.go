@@ -154,6 +154,10 @@ func (s *Server) enqueueSourceRevisionReprocessingJob(
 		strings.TrimSpace(reason) == "" {
 		return false, nil
 	}
+	initialStatus := "pending"
+	if strings.HasPrefix(strings.TrimSpace(reason), "CRITIC_SCHEMA_INVALID") {
+		initialStatus = "permanent"
+	}
 	job := &store.MemoryReprocessingJob{
 		ContractVersion:   store.MemoryReprocessingJobContract,
 		ChatSessionID:     strings.TrimSpace(source.ChatSessionID),
@@ -162,7 +166,7 @@ func (s *Server) enqueueSourceRevisionReprocessingJob(
 		DerivationVersion: store.MemoryAdmissionContract,
 		ExtractorVersion:  completeTurnCriticPipelineVersion,
 		IndexVersion:      memoryAdmissionIndexVersion,
-		Status:            "pending",
+		Status:            initialStatus,
 		LastError:         strings.TrimSpace(reason),
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -175,7 +179,7 @@ func (s *Server) enqueueSourceRevisionReprocessingJob(
 		job.IndexVersion,
 	)
 	inserted, err := writer.EnqueueMemoryReprocessingJob(ctx, job)
-	if err == nil {
+	if err == nil && (job.Status == "pending" || job.Status == "retryable") {
 		s.wakeMemoryWorkers()
 	}
 	return inserted, err

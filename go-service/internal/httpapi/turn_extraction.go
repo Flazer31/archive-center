@@ -330,11 +330,6 @@ var openThoughtTagPattern = regexp.MustCompile(`(?is)<\s*(?:thoughts|thinking|an
 var filterCompleteMarkerPattern = regexp.MustCompile(`(?is)<\s*__filter_complete__\s*>`)
 var thoughtLinePrefixPattern = regexp.MustCompile(`(?im)^\s*(?:chain of thought|hidden chain-of-thought|thought process|thinking|analysis|reasoning|scratchpad)\s*:\s*.*(?:\r?\n|$)`)
 
-// This is a provider-failure recovery lexicon, not a story classifier. It is
-// used only after the original critic call failed, so successful extraction
-// always sees the exact completed turn.
-var criticRetrySensitivePattern = regexp.MustCompile(`(?i)(?:\b(?:penis|vagina|clitoris|ejaculat\w*|orgasm\w*|semen|cum|penetrat\w*)\b|성기|음경|질|귀두|사정|삽입|오르가즘|정액|클리토리스)`)
-
 const risuChatMessageObservationContract = "risu_chat_message_observation.v1"
 
 func sanitizeTextForCriticInput(text string) string {
@@ -364,15 +359,6 @@ func boundCompleteTurnCriticInput(text string, maxRunes int) string {
 	return strings.TrimSpace(string(runes[:head])) +
 		fmt.Sprintf("\n\n[... %d chars omitted for critic input budget; raw turn is stored verbatim ...]\n\n", omitted) +
 		strings.TrimSpace(string(runes[len(runes)-tail:]))
-}
-
-func redactSensitiveCriticRetryText(text string) (string, bool) {
-	cleaned := strings.TrimSpace(text)
-	if cleaned == "" {
-		return "", false
-	}
-	redacted := criticRetrySensitivePattern.ReplaceAllString(cleaned, "[intimate scene detail redacted for critic retry]")
-	return redacted, redacted != cleaned
 }
 
 func sanitizeContextMessagesForCriticInput(messages []map[string]any) []map[string]any {

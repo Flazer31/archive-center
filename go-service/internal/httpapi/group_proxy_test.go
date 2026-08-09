@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -409,6 +410,39 @@ func TestHandleProxyPluginMainValidEndpointCallsUpstream(t *testing.T) {
 	}
 	if resp["upstream_call_enabled"] != true {
 		t.Errorf("upstream_call_enabled = %v, want true", resp["upstream_call_enabled"])
+	}
+}
+
+func TestHandleProxyPluginMainRejectsEmptyOpenAIText(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.RegisterRoutes(mux)
+
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"deepseek-test","choices":[{"message":{"content":"","reasoning_content":"tokens were consumed before a final answer"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	body := `{"provider":"openai","endpoint":"https://api.example.com/v1","model":"deepseek-test","api_key":"sk-test","messages":[{"role":"user","content":"reply with a test token"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/plugin-main", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["status"] != "error" || !strings.Contains(stringFromAny(resp["error"]), "returned no text content") {
+		t.Fatalf("empty response was not rejected: %#v", resp)
 	}
 }
 
@@ -2198,6 +2232,144 @@ func TestCallEmbeddingOllamaNative(t *testing.T) {
 	}
 }
 
+func TestVoyageContextDocumentEmbeddingUsesOneNestedSiblingGroupAndMapsIndexes(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if got := r.URL.String(); got != "https://api.voyageai.com/v1/contextualizedembeddings" {
+			t.Fatalf("upstream URL = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if got := extractionStringFromAny(body["input_type"]); got != "document" {
+			t.Fatalf("input_type = %q", got)
+		}
+		groups := sliceFromAny(body["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("input groups = %d, want one logical document", len(groups))
+		}
+		chunks := sliceFromAny(groups[0])
+		if len(chunks) != 2 || extractionStringFromAny(chunks[0]) != "chunk one" || extractionStringFromAny(chunks[1]) != "chunk two" {
+			t.Fatalf("chunks = %#v, want two ordered siblings", chunks)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"data":[{"index":0,"data":[
+					{"index":1,"embedding":[2.0,2.1],"text":"chunk two"},
+					{"index":0,"embedding":[1.0,1.1],"text":"chunk one"}
+				]}],
+				"model":"voyage-context-4"
+			}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	embeddings, model, err := callDocumentEmbeddings(context.Background(), completeTurnEmbeddingConfig{
+		Provider: "voyageai", APIKey: "voyage-key",
+		Endpoint: "https://api.voyageai.com/v1/embeddings", Model: "voyage-context-4",
+	}, []string{"chunk one", "chunk two"})
+	if err != nil {
+		t.Fatalf("callDocumentEmbeddings error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want one contextualized request", calls)
+	}
+	if model != "voyage-context-4" || !reflect.DeepEqual(embeddings, []string{"[1,1.1]", "[2,2.1]"}) {
+		t.Fatalf("model=%q embeddings=%#v", model, embeddings)
+	}
+}
+
+func TestVoyageContextDocumentEmbeddingKeepsDuplicateChunkPositionsDistinct(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		chunks := sliceFromAny(sliceFromAny(body["inputs"])[0])
+		if len(chunks) != 2 || extractionStringFromAny(chunks[0]) != "same text" || extractionStringFromAny(chunks[1]) != "same text" {
+			t.Fatalf("duplicate chunks were changed: %#v", chunks)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"index":0,"data":[{"index":1,"embedding":[2]},{"index":0,"embedding":[1]}]}],"model":"voyage-context-4"}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	embeddings, _, err := callDocumentEmbeddings(context.Background(), completeTurnEmbeddingConfig{
+		Provider: "voyageai", APIKey: "voyage-key", Endpoint: "https://api.voyageai.com/v1", Model: "voyage-context-4",
+	}, []string{"same text", "same text"})
+	if err != nil {
+		t.Fatalf("callDocumentEmbeddings error: %v", err)
+	}
+	if !reflect.DeepEqual(embeddings, []string{"[1]", "[2]"}) {
+		t.Fatalf("duplicate chunk embeddings = %#v", embeddings)
+	}
+}
+
+func TestVoyageContextQueryUsesSingleQueryGroup(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if got := extractionStringFromAny(body["input_type"]); got != "query" {
+			t.Fatalf("input_type = %q", got)
+		}
+		groups := sliceFromAny(body["inputs"])
+		if len(groups) != 1 || len(sliceFromAny(groups[0])) != 1 {
+			t.Fatalf("query groups = %#v, want [[query]]", groups)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[{"index":0,"data":[{"index":0,"embedding":[0.4,0.5]}]}],"model":"voyage-context-4"}`))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	embedding, _, err := callQueryEmbedding(context.Background(), completeTurnEmbeddingConfig{
+		Provider: "voyageai", APIKey: "voyage-key", Endpoint: "https://api.voyageai.com/v1", Model: "voyage-context-4",
+	}, "where is the key?")
+	if err != nil || embedding != `[0.4,0.5]` {
+		t.Fatalf("embedding=%q err=%v", embedding, err)
+	}
+}
+
+func TestStandardVoyageModelKeepsEmbeddingsEndpoint(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "https://api.voyageai.com/v1/embeddings" {
+			t.Fatalf("upstream URL = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if _, exists := body["inputs"]; exists {
+			t.Fatalf("standard Voyage request used contextualized inputs: %#v", body)
+		}
+		if _, exists := body["input_type"]; exists {
+			t.Fatalf("standard Voyage request changed its existing input_type contract: %#v", body)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":[{"index":0,"embedding":[0.7,0.8]}],"model":"voyage-4-large"}`))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	embedding, model, err := callEmbedding(context.Background(), completeTurnEmbeddingConfig{
+		Provider: "voyageai", APIKey: "voyage-key", Endpoint: "https://api.voyageai.com/v1", Model: "voyage-4-large",
+	}, "ordinary document")
+	if err != nil || model != "voyage-4-large" || embedding != `[0.7,0.8]` {
+		t.Fatalf("model=%q embedding=%q err=%v", model, embedding, err)
+	}
+}
+
 func TestProviderAndEmbeddingCallsWithoutRuntimeTimeoutInheritCallerCancellation(t *testing.T) {
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -2397,7 +2569,7 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			!strings.Contains(userPrompt, "guide_focus") {
 			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
 		}
-		if !strings.Contains(systemPrompt, "Archive Center's Basic Publisher") ||
+		if !strings.Contains(systemPrompt, "Archive Center's Publisher LLM") ||
 			!strings.Contains(systemPrompt, "The current user input is the only command") ||
 			!strings.Contains(systemPrompt, "Accepted recent context has continuity authority only") {
 			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)

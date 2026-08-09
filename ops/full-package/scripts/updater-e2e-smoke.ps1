@@ -52,7 +52,7 @@ function Get-LowerSHA256([string]$Path) {
     (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function New-ManagedManifest([string]$Root, [string[]]$RelativePaths) {
+function New-ManagedManifest([string]$Root, [string[]]$RelativePaths, [string]$PackageVersion) {
     $items = @()
     foreach ($relative in @($RelativePaths | Sort-Object)) {
         $path = Join-Path $Root ($relative.Replace('/', '\'))
@@ -66,13 +66,14 @@ function New-ManagedManifest([string]$Root, [string[]]$RelativePaths) {
     }
     [ordered]@{
         schema_version = "archive-center.package-file-manifest.v1"
+        package_version = $PackageVersion
         scope = "managed_package_payloads"
         files = @($items)
     }
 }
 
-function Write-Manifest([string]$Root, [string[]]$RelativePaths) {
-    $manifest = New-ManagedManifest $Root $RelativePaths
+function Write-Manifest([string]$Root, [string[]]$RelativePaths, [string]$PackageVersion) {
+    $manifest = New-ManagedManifest $Root $RelativePaths $PackageVersion
     $json = $manifest | ConvertTo-Json -Depth 8
     $path = Join-Path $Root "PACKAGE_FILE_MANIFEST.json"
     Write-Utf8NoBom $path ($json + "`n")
@@ -93,7 +94,7 @@ function New-CandidateArchive([string]$ScenarioDir, [string]$PackageRoot, [strin
         "bin/archive-center-updater.exe",
         "scripts/new-tool.ps1"
     )
-    $manifestPath = Write-Manifest $wrapper $managed
+    $manifestPath = Write-Manifest $wrapper $managed "e2e-candidate-$ScenarioName"
     $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
     $asset = Join-Path $PackageRoot ".updates\candidate.zip"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $asset) | Out-Null
@@ -118,7 +119,7 @@ function New-Scenario([string]$RunRoot, [string]$UpdaterExe, [string]$Name) {
     Write-Utf8NoBom (Join-Path $root "bin\archive-center-go.exe") "baseline-backend-$Name`n"
     Copy-Bytes $UpdaterExe (Join-Path $root "bin\archive-center-updater.exe")
     $baselineManaged = @("Archive Center.js", "bin/archive-center-go.exe", "bin/archive-center-updater.exe")
-    $baselineManifestPath = Write-Manifest $root $baselineManaged
+    $baselineManifestPath = Write-Manifest $root $baselineManaged "e2e-baseline-$Name"
     $baseline = [ordered]@{}
     foreach ($relative in $baselineManaged) {
         $path = Join-Path $root ($relative.Replace('/', '\'))
@@ -126,6 +127,8 @@ function New-Scenario([string]$RunRoot, [string]$UpdaterExe, [string]$Name) {
     }
     $baselineManifestBytes = [System.IO.File]::ReadAllBytes($baselineManifestPath)
     Write-Utf8NoBom (Join-Path $root ".runtime\sentinel.txt") "runtime-sentinel-$Name`n"
+    Write-Utf8NoBom (Join-Path $root "data\mariadb-data\sentinel.txt") "mariadb-sentinel-$Name`n"
+    Write-Utf8NoBom (Join-Path $root "data\chromadb-data\sentinel.txt") "chromadb-sentinel-$Name`n"
     Write-Utf8NoBom (Join-Path $root ".env.full.local") "secret-sentinel-$Name`n"
     $candidate = New-CandidateArchive $scenarioDir $root $UpdaterExe $Name
     $runner = Join-Path $root ".updates\runner\archive-center-updater-e2e.exe"
@@ -147,6 +150,8 @@ function New-Scenario([string]$RunRoot, [string]$UpdaterExe, [string]$Name) {
         BaselineHashes = $baseline
         BaselineManifestBytes = $baselineManifestBytes
         RuntimeSentinel = "runtime-sentinel-$Name`n"
+        MariaDBSentinel = "mariadb-sentinel-$Name`n"
+        ChromaDBSentinel = "chromadb-sentinel-$Name`n"
         EnvSentinel = "secret-sentinel-$Name`n"
     }
 }
@@ -201,6 +206,8 @@ function Invoke-Updater([string]$Runner, [string]$Command, [string]$Root, [int]$
 
 function Assert-Sentinels([object]$Scenario) {
     Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $Scenario.Root ".runtime\sentinel.txt"))) $Scenario.RuntimeSentinel "$($Scenario.Name) runtime sentinel changed"
+    Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $Scenario.Root "data\mariadb-data\sentinel.txt"))) $Scenario.MariaDBSentinel "$($Scenario.Name) MariaDB sentinel changed"
+    Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $Scenario.Root "data\chromadb-data\sentinel.txt"))) $Scenario.ChromaDBSentinel "$($Scenario.Name) ChromaDB sentinel changed"
     Assert-Equal ([System.IO.File]::ReadAllText((Join-Path $Scenario.Root ".env.full.local"))) $Scenario.EnvSentinel "$($Scenario.Name) environment sentinel changed"
 }
 
@@ -451,6 +458,7 @@ try {
             interrupted_apply_restart_recovery_cli = "passed"
             simulated_backend_readiness_failure_rollback_cli = "passed"
             tampered_asset_rejected_before_mutation = "passed"
+            database_runtime_secret_sentinels = "passed_apply_commit_rollback_and_rejection"
             external_bridge_published_v300_v301_v350_to_candidate = $historicalBridgeStatus
         }
         launcher_integration = [ordered]@{

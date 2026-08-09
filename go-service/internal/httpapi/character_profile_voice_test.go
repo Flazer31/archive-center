@@ -327,8 +327,8 @@ func Test39CharacterMemoryCommonAdmissionDoesNotRequireRedundantExpressionFields
 }
 
 func Test39CDCriticAndProviderContractsExposeTypedLanes(t *testing.T) {
-	prompt := buildCompleteTurnCriticPrompt("session-prompt", 1, `Mira says, "Enough."`, "Rook waits.", nil, nil, nil)
-	for _, needle := range []string{`"character_profile_observations":[{"subject_entity":"","trait_key":"","supported_expression":"","evidence_excerpt":""}]`, `"voice_observations":[{"subject_entity":"","principle_key":"","utterance_expression":"","evidence_excerpt":""}]`, "speaker_attributions is optional and source-bound", "retained story context and the latest turn uses an alias", "Do not use a fixed count to decide that a habit exists", "a first observation is valid contextual evidence", "rather than forcing future dialogue to repeat an example sentence"} {
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session-prompt", 1, `Mira says, "Enough."`, "Rook waits.", nil, nil, nil))
+	for _, needle := range []string{`"character_profile_observations"`, `"voice_observations"`, "speaker_attributions is optional and source-bound", "retained story context and the latest turn uses an alias", "Do not use a fixed count to decide that a habit exists", "a first observation is valid contextual evidence", "rather than forcing future dialogue to repeat an example sentence"} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("critic prompt missing 3.9-C/D guard %q", needle)
 		}

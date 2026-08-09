@@ -1,0 +1,171 @@
+<h1>📚 Archive Center 3.9.9</h1>
+
+<p><b>RisuAI · PocketRisu용 장기 기억, 평론가, 출판사 LLM 통합 플러그인</b></p>
+
+<p>3.9.9는 3.9.0 사용 과정에서 받은 피드백을 모아 저장 안정성, 평론가 입력량, 개체 연결, 설치와 업데이트 구조를 정리한 버전입니다. 대화 원문과 최종 출력을 보존하고, 평론가가 만든 요약·직접 근거·인물 상태·관계·세계 상태를 MariaDB와 ChromaDB에 축적해 다음 턴의 입력에 다시 사용합니다.</p>
+
+<hr>
+
+<h2>✨ 주요 변경</h2>
+
+<h3>평론가 입력량 정리</h3>
+<p>현재 턴은 줄이지 않고 전부 전달합니다. 여기에 직전 1턴과 현재 내용에 관련된 DB 기억만 골라 넣도록 바꾸어, 오래된 채팅 원문 전체가 매번 평론가로 전달되던 구조를 제거했습니다. 선택된 기억, 제외된 기억, 보조 자료와 최종 입력 크기도 실행 기록에서 확인할 수 있습니다.</p>
+
+<h3>평론가 재처리 안정화</h3>
+<p>평론가 호출에 일시적인 문제가 생기면 최초 호출에 사용한 입력 묶음을 저장해 같은 내용으로 다시 처리합니다. 이미 결과 형식이 잘못된 것이 확정된 요청을 동일하게 반복 호출하지 않으며, 정상적인 일반 턴의 평론가 호출 경로는 그대로 유지합니다.</p>
+
+<h3>같은 개체의 ID 유지</h3>
+<p>같은 세션에서 정식 이름과 개체 종류가 같은 인물·장소·물건은 기존 ID를 이어 사용합니다. 과거 기록 전체를 새 기준으로 억지로 합치지 않고, 업데이트 이후 새로 들어오는 동일 개체의 연속성을 유지합니다.</p>
+
+<h3>Voyage Context 4 정식 지원</h3>
+<p><code>voyage-context-4</code>의 문맥화 임베딩 전용 호출을 지원합니다. 관련 자료를 한 묶음의 청크로 보내 서로의 문맥을 반영한 임베딩을 받고, 응답 순서가 달라도 원래 자료와 정확하게 연결합니다. 일반 Voyage 임베딩은 기존 방식으로 계속 사용할 수 있습니다.</p>
+
+<h3>저장과 콜드 스타트 보강</h3>
+<p>파생 기억을 저장할 때 MariaDB 교착 상태가 발생하면 같은 저장 작업을 안전하게 다시 시도합니다. 콜드 스타트와 재처리가 동시에 같은 자료를 만질 때의 충돌을 줄였으며, 리롤 시에는 새 출력 기준으로 기억과 세계 상태를 교체합니다.</p>
+
+<h3>출판사 LLM 상태 표시 개선</h3>
+<p>화면의 명칭을 출판사 LLM으로 통일했습니다. 호출 제한시간, 빈 응답, 제공자 오류와 연결 실패를 구분해 HUD에 표시하므로, 본문 생성은 이어졌지만 출판사 지침만 빠진 경우도 원인을 확인할 수 있습니다.</p>
+
+<h3>설정 화면과 실행기 수정</h3>
+<p>추론 강도 <code>minimal</code>·<code>xhigh</code>·<code>max</code>가 저장 후 다시 <code>none</code>으로 보이던 문제를 수정했습니다. Windows와 POSIX 실행기는 종료 신호를 받으면 Go 백엔드, MariaDB와 ChromaDB를 함께 종료하며, 설치되지 않은 예전 업데이터에 대한 불필요한 경고도 표시하지 않습니다.</p>
+
+<h3>관리형 업데이트 기준선</h3>
+<p>3.9.9 이후부터는 설정 화면의 <b>업데이트 확인 → 지금 업데이트</b>로 다음 버전을 설치합니다. 운영체제와 CPU에 맞는 패키지 선택, SHA-256 확인, 관리 파일 전체 교체, 누적 DB 구조 적용, 새 백엔드 준비 확인을 자동으로 수행합니다. 사용자 DB와 로컬 설정은 관리 파일 교체 대상이 아닙니다.</p>
+
+<hr>
+
+<h2>🧪 실사용 확인</h2>
+
+<p>여러 세션에서 총 20턴을 진행했고, 한 세션은 12턴까지 연속으로 원문 저장·평론가 처리·기억 생성이 완료되었습니다. 리롤 1회, 최신 턴 삭제, 삭제 후 새 턴 진행도 확인했습니다. 총 평론가 사용량은 233.7K 토큰이었으며 세션이 길어질수록 과거 채팅 원문 전체가 계속 붙는 증상은 나타나지 않았습니다.</p>
+
+<p>평론가 처리가 끝나기 전에 다음 턴을 진행해도 각 턴은 별도로 처리됩니다. 다만 방금 생성된 기억을 바로 다음 응답에도 사용하려면 HUD의 <b>저장 완료</b>를 확인한 뒤 다음 턴을 진행하는 편이 좋습니다.</p>
+
+<hr>
+
+<h2>📥 처음 설치</h2>
+
+<p>아래 명령은 <b>처음 설치하는 사용자용</b>입니다. 설치기가 운영체제와 CPU를 확인하고 맞는 GitHub Release 패키지를 내려받아 검증한 뒤 MariaDB·ChromaDB·DB 구조와 실행기를 준비합니다.</p>
+
+<h3>Windows x64</h3>
+
+<p>PowerShell을 열고 다음 한 줄을 실행합니다. 관리자 권한은 필요하지 않습니다.</p>
+
+<pre><code>irm https://raw.githubusercontent.com/Flazer31/archive-center/main/install-windows.ps1 | iex</code></pre>
+
+<ul>
+<li>설치 위치: <code>%LOCALAPPDATA%\ArchiveCenter</code></li>
+<li>MariaDB와 Python·ChromaDB 실행 환경이 없으면 처음 실행할 때 자동으로 준비합니다.</li>
+<li>이미 준비된 실행 환경은 다시 설치하지 않고 사용합니다.</li>
+<li>설치가 끝나면 Archive Center 백엔드 실행 창이 열립니다.</li>
+</ul>
+
+<p>설치된 플러그인 폴더를 열려면 PowerShell에서 다음 명령을 실행합니다.</p>
+
+<pre><code>$package = (Get-Content "$env:LOCALAPPDATA\ArchiveCenter\current-package.txt" -Raw).Trim()
+explorer.exe $package</code></pre>
+
+<h3>Linux · Ubuntu · macOS · Termux</h3>
+
+<p>터미널에서 다음 한 줄을 실행합니다.</p>
+
+<pre><code>curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/install.sh | sh</code></pre>
+
+<ul>
+<li>systemd Linux·Ubuntu: <code>/opt/archive-center</code>에 설치하고 <code>archive-center.service</code>를 등록·시작합니다.</li>
+<li>그 밖의 Linux와 macOS: <code>$HOME/.archive-center</code>에 설치하고 실행기를 시작합니다.</li>
+<li>Termux: <code>$HOME/.archive-center</code>에 설치합니다. Android arm64 환경을 지원합니다.</li>
+<li>Linux x64·arm64와 macOS Intel·Apple Silicon은 자동으로 구분합니다.</li>
+</ul>
+
+<p>플러그인 파일은 systemd Linux에서는 <code>/opt/archive-center/current/Archive Center.js</code>, 그 밖의 환경에서는 <code>$HOME/.archive-center/current/Archive Center.js</code>에 있습니다.</p>
+
+<h3>RisuAI · PocketRisu 연결</h3>
+
+<ol>
+<li>설치된 <code>Archive Center.js</code>를 RisuAI 또는 PocketRisu의 스크립트·플러그인 항목에 불러오고 활성화합니다.</li>
+<li>같은 기기에서 사용하면 백엔드 주소에 <code>http://127.0.0.1:28080</code>을 입력합니다.</li>
+<li>다른 기기에서 사용하면 Archive Center가 실행되는 기기의 내부망·Tailscale·HTTPS 주소를 입력합니다.</li>
+<li>메인 모델, 출판사 LLM, 평론가와 임베딩 설정을 저장합니다.</li>
+<li>연결, 준비 상태, DB 통계와 모델 시험을 확인한 뒤 새 채팅에서 한 턴을 진행합니다.</li>
+<li>HUD에서 원문 저장, 평론가 처리, 기억 생성과 벡터 색인이 완료되는지 확인합니다.</li>
+</ol>
+
+<hr>
+
+<h2>🔄 3.9.0 사용자의 DB 보존 이전</h2>
+
+<p>3.9.0에서 3.9.9로 넘어갈 때는 기존 프로그램 파일을 새 설치에 섞지 않습니다. <b>MariaDB·ChromaDB와 로컬 설정만 백업한 뒤 3.9.9를 새로 설치</b>합니다. 이전이 확인될 때까지 기존 폴더와 백업본을 삭제하지 마십시오.</p>
+
+<h3>먼저 공통 백업</h3>
+
+<ol>
+<li>Archive Center 실행기, Go 백엔드, MariaDB와 ChromaDB를 모두 종료합니다.</li>
+<li>기존 설치 폴더의 <code>.runtime</code>과 <code>.env.full.local</code>을 다른 폴더에 복사합니다.</li>
+<li>복사한 폴더 안에 <code>mariadb-data/mysql</code>이 존재하는지 확인합니다.</li>
+<li>ChromaDB를 사용했다면 <code>chromadb-data</code>도 복사되었는지 확인합니다.</li>
+</ol>
+
+<p>MariaDB가 실행 중인 상태에서 데이터 폴더를 복사하지 마십시오.</p>
+
+<h3>Windows에서 이전</h3>
+
+<ol>
+<li>GitHub Release의 3.9.9 Windows 전체 패키지 ZIP을 기존 3.9.0과 다른 빈 폴더에 풉니다.</li>
+<li>백업한 <code>.runtime</code>과 <code>.env.full.local</code>을 새 패키지의 최상위 폴더에 넣습니다.</li>
+<li><code>01_start_archive_center_windows.bat</code>를 실행합니다.</li>
+<li>실행기가 기존 데이터를 <code>%LOCALAPPDATA%\ArchiveCenter\data</code>로 검증 복사하고 필요한 DB 구조를 적용합니다. 원본 백업은 그대로 남습니다.</li>
+<li>기존 세션과 기억이 보이는지 확인한 뒤 RisuAI 또는 PocketRisu의 <code>Archive Center.js</code>를 3.9.9 파일로 교체합니다.</li>
+</ol>
+
+<p>MariaDB 데이터 후보가 둘 이상이면 실행기가 임의로 선택하지 않고 중단합니다. 사용할 <code>.runtime</code>만 새 패키지에 두고 다시 실행하십시오.</p>
+
+<h3>macOS · Termux · systemd를 사용하지 않는 Linux</h3>
+
+<p>아래 첫 줄의 경로를 실제 기존 데이터 폴더로 바꿔 실행합니다. 구 Termux 기본 설치라면 <code>OLD_DATA="$HOME/.archive-center-2.0"</code>을 사용합니다.</p>
+
+<pre><code>OLD_DATA="/기존/패키지/.runtime"
+BACKUP_DATA="$HOME/archive-center-preserved-data"
+mkdir -p "$BACKUP_DATA"
+cp -a "$OLD_DATA/mariadb-data" "$BACKUP_DATA/"
+if [ -d "$OLD_DATA/chromadb-data" ]; then cp -a "$OLD_DATA/chromadb-data" "$BACKUP_DATA/"; fi
+test -d "$BACKUP_DATA/mariadb-data/mysql" || { echo "MariaDB 백업 실패"; exit 1; }
+if [ -e "$HOME/.archive-center" ]; then mv "$HOME/.archive-center" "$HOME/.archive-center-before-3.9.9"; fi
+curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/install.sh | ARCHIVE_CENTER_DATA_DIR="$BACKUP_DATA" sh</code></pre>
+
+<h3>systemd Linux · Ubuntu</h3>
+
+<p>기존 데이터를 <code>$HOME/archive-center-preserved-data</code>에 복사해 확인한 뒤, 새 설치가 만든 빈 데이터 폴더를 기존 데이터 복사본으로 교체합니다.</p>
+
+<pre><code>BACKUP_DATA="$HOME/archive-center-preserved-data"
+test -d "$BACKUP_DATA/mariadb-data/mysql" || { echo "MariaDB 백업 실패"; exit 1; }
+sudo systemctl stop archive-center.service 2&gt;/dev/null || true
+test ! -e /opt/archive-center-before-3.9.9 || { echo "기존 보관 폴더가 이미 있습니다"; exit 1; }
+if [ -e /opt/archive-center ]; then sudo mv /opt/archive-center /opt/archive-center-before-3.9.9; fi
+curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/install.sh | sh
+sudo systemctl stop archive-center.service
+sudo mv /opt/archive-center/data /opt/archive-center/data-new-empty
+sudo mkdir -p /opt/archive-center/data
+sudo cp -a "$BACKUP_DATA/." /opt/archive-center/data/
+sudo chown -R "$(id -un):$(id -gn)" /opt/archive-center/data
+sudo systemctl start archive-center.service</code></pre>
+
+<h3>이전 완료 확인</h3>
+
+<ol>
+<li>백엔드 <code>/ready</code>가 정상이고 <code>/version</code>이 3.9.9인지 확인합니다.</li>
+<li>기존 세션과 기존 턴의 요약·직접 근거·인물·관계가 조회되는지 확인합니다.</li>
+<li>새 턴을 한 번 진행해 원문·최종 출력·평론가 결과·기억·벡터가 저장되는지 확인합니다.</li>
+<li>모든 확인이 끝난 뒤에만 구 프로그램 폴더를 정리합니다. DB 백업은 며칠간 더 보관하는 것을 권장합니다.</li>
+</ol>
+
+<p>명령과 경로를 더 크게 보고 싶다면 저장소의 <a href="https://github.com/Flazer31/archive-center/blob/main/docs/simple-fresh-install.md" target="_blank" rel="noopener noreferrer">3.9.9 상세 설치 안내</a>를 확인하십시오.</p>
+
+<hr>
+
+<h2>⬆️ 3.9.9 이후 업데이트</h2>
+
+<p>3.9.9 설치를 마친 다음 버전부터는 신규 설치 명령을 다시 실행하지 않습니다. Archive Center 설정에서 <b>업데이트 확인</b>을 누르고 새 버전이 표시되면 <b>지금 업데이트</b>를 누릅니다. 중간 버전을 건너뛰더라도 새 패키지에 포함된 누적 DB 구조를 순서대로 적용합니다.</p>
+
+<p><a href="https://github.com/Flazer31/archive-center/releases/tag/v3.9.9" target="_blank" rel="noopener noreferrer"><b>Archive Center 3.9.9 내려받기</b></a></p>
+
+<p>Archive Center 3.9.9 · 2026-08-10</p>

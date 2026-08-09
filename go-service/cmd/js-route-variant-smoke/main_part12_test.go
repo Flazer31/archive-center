@@ -61,8 +61,17 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 	if !strings.Contains(bodySource, `turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || ""`) {
 		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
 	}
-	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.0"`) {
-		t.Fatal("3.9.0 plugin build identity is not visible in the HUD")
+	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.9"`) {
+		t.Fatal("3.9.9 plugin build identity is not visible in the HUD")
+	}
+	for _, expected := range []string{
+		`critic_input_budget_observation: {`,
+		`contract_version: "critic_input_budget_observation.v1"`,
+		`max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars)))`,
+	} {
+		if !strings.Contains(bodySource, expected) {
+			t.Fatalf("complete-turn does not forward the Critic input budget observation %q", expected)
+		}
 	}
 }
 
@@ -871,6 +880,42 @@ if (!result || result.contextMessages.length!==messages.length ||
 	cmd := exec.Command(nodePath, "-e", script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("post-output persistence context fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestFeedbackOneNormalAndPostOutputRoutesStayConnected(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	onBefore := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	onAfter := extractArchiveCenterJSFunction(t, src, "onAfterRequest")
+
+	for _, required := range []string{
+		"buildPostOutputSecondaryRequestContext(mainRequestActiveMessages)",
+		"rememberNonMainRequestSkip(orchSessionId, postOutputDecision, \"beforeRequest\")",
+		"post_output_secondary_request",
+	} {
+		if !strings.Contains(onBefore, required) {
+			t.Fatalf("beforeRequest post-output route is disconnected: missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"const sourceAcceptanceFinality = finalObservation.accepted === true",
+		"persistAfterRequestContent",
+		"continueAcceptedFinalPersistence(persistenceOrchResult, sourceAcceptanceFinality)",
+	} {
+		if !strings.Contains(onAfter, required) {
+			t.Fatalf("normal afterRequest persistence route is disconnected: missing %q", required)
+		}
+	}
+	if strings.Contains(onAfter, "after_request_final_not_accepted") {
+		t.Fatal("afterRequest correlation rejection still blocks normal persistence")
+	}
+	for _, forbidden := range []string{
+		"addRisuChatListener",
+		"onPostprocessedRisuOutput",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("feedback-one route retained forbidden output hook %q", forbidden)
+		}
 	}
 }
 

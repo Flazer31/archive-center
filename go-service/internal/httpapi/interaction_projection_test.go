@@ -107,8 +107,12 @@ func TestActiveInteractionProjectionDeliversRelevantPublicDirectionalRelation(t 
 		[]store.PreciseMemoryUnit{relation}, nil, "Alice asks Bob for help.", nil, 3, true,
 	)
 	if guardedText != "" || !strings.Contains(publicText, "Alice -> Bob") ||
-		!strings.Contains(publicText, "domain=trust") || strings.Contains(publicText, "Bob -> Alice") {
+		!strings.Contains(publicText, "domain=trust") || strings.Contains(publicText, "Bob -> Alice") ||
+		strings.Contains(publicText, "source_ref=") || strings.Contains(publicText, "precise_memory:") {
 		t.Fatalf("packet=%#v public=%q guarded=%q", packet, publicText, guardedText)
+	}
+	if !strings.Contains(publicText, "source_turn=2") {
+		t.Fatalf("semantic source turn was removed with opaque source identity: %q", publicText)
 	}
 	if intFromAny(packet["candidate_count"], 0) != 1 {
 		t.Fatalf("packet=%#v", packet)

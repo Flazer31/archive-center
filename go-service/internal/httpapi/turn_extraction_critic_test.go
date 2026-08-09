@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,388 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func combinedCriticPromptForTest(t *testing.T, userPrompt string) string {
+	t.Helper()
+	systemPrompt, source := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	if source == "fallback_builtin" {
+		t.Fatal("source critic_system.txt was not loaded")
+	}
+	return systemPrompt + "\n" + userPrompt
+}
+
+func TestCriticCanonicalContextUsesPreviousTurnAndRelevantMemorySources(t *testing.T) {
+	longSource := "Mina hid the brass key in the lighthouse vault. " + strings.Repeat("source-detail-", 140)
+	longSummary := "Mina and Rowan hid the brass key in the lighthouse vault. " + strings.Repeat("memory-detail-", 80)
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ChatSessionID: "critic-context", TurnIndex: 1, Role: "user", Content: longSource},
+			{ChatSessionID: "critic-context", TurnIndex: 1, Role: "assistant", Content: "Rowan watched the lighthouse vault."},
+			{ChatSessionID: "critic-context", TurnIndex: 2, Role: "user", Content: "Mina mapped the brass key route."},
+			{ChatSessionID: "critic-context", TurnIndex: 2, Role: "assistant", Content: "Rowan checked the lighthouse vault."},
+			{ChatSessionID: "critic-context", TurnIndex: 3, Role: "user", Content: "Rowan returned the brass key."},
+			{ChatSessionID: "critic-context", TurnIndex: 3, Role: "assistant", Content: "Mina guarded the lighthouse vault."},
+			{ChatSessionID: "critic-context", TurnIndex: 4, Role: "user", Content: "Mina carried the brass key."},
+			{ChatSessionID: "critic-context", TurnIndex: 4, Role: "assistant", Content: "Rowan entered the lighthouse vault."},
+			{ChatSessionID: "critic-context", TurnIndex: 99, Role: "user", Content: "previous user full text"},
+			{ChatSessionID: "critic-context", TurnIndex: 99, Role: "assistant", Content: "previous assistant full text"},
+			{ChatSessionID: "critic-context", TurnIndex: 100, Role: "user", Content: "current row must not repeat"},
+		},
+		returnMemories: []store.Memory{
+			{ID: 1, TurnIndex: 1, SummaryJSON: `{"turn_summary":` + strconv.Quote(longSummary) + `}`, Importance: 0.8},
+			{ID: 2, TurnIndex: 98, SummaryJSON: `{"turn_summary":"Carol cooked mushroom soup in the village kitchen."}`, Importance: 0.9},
+			{ID: 3, TurnIndex: 101, SummaryJSON: `{"turn_summary":"Future Mina retrieved the brass key."}`, Importance: 1},
+			{ID: 4, TurnIndex: 2, SummaryJSON: `{"turn_summary":"Private brass key identity","protected_secrets":[{"knowledge_scope":{"publicly_revealed":false}}]}`, Importance: 1},
+			{ID: 5, TurnIndex: 2, SummaryJSON: `{"turn_summary":"Mina and Rowan mapped the brass key route inside the lighthouse vault."}`, Importance: 0.7},
+			{ID: 6, TurnIndex: 3, SummaryJSON: `{"turn_summary":"Rowan told Mina the brass key opens the lighthouse vault."}`, Importance: 0.7},
+			{ID: 7, TurnIndex: 4, SummaryJSON: `{"turn_summary":"Mina carried the brass key toward Rowan at the lighthouse vault."}`, Importance: 0.7},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	contextMessages, memories, trace := srv.buildCompleteTurnCriticCanonicalContext(
+		context.Background(), "critic-context", 100,
+		"Mina asks Rowan to retrieve the brass key from the lighthouse vault.", 238,
+	)
+	if intFromAny(trace["host_messages_received"], 0) != 238 || intFromAny(trace["host_messages_used"], -1) != 0 {
+		t.Fatalf("host context was not excluded: %#v", trace)
+	}
+	if len(memories) != 4 {
+		t.Fatalf("relevant memory selection = %#v, want four relevant memories without a fixed item cap", memories)
+	}
+	longMemoryFound := false
+	for _, memory := range memories {
+		if intFromAny(memory["id"], 0) == 1 && stringFromMap(memory, "summary") == longSummary {
+			longMemoryFound = true
+		}
+	}
+	if !longMemoryFound {
+		t.Fatalf("long relevant memory was changed or omitted: %#v", memories)
+	}
+	encoded, _ := json.Marshal(contextMessages)
+	text := string(encoded)
+	for _, expected := range []string{"previous user full text", "previous assistant full text", longSource, "Rowan watched the lighthouse vault"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("canonical context missing %q: %s", expected, text)
+		}
+	}
+	for _, blocked := range []string{"current row must not repeat", "mushroom soup", "Future Mina", "Private brass key identity"} {
+		if strings.Contains(text, blocked) {
+			t.Fatalf("invalid context %q leaked: %s", blocked, text)
+		}
+	}
+}
+
+func TestCriticAuxiliaryBudgetKeepsPreviousTurnWholeAndSelectsOnlyRelevantDBSupport(t *testing.T) {
+	previousUser := "previous-user-start " + strings.Repeat("previous-user-detail-", 120) + " previous-user-end"
+	previousAssistant := "previous-assistant-start " + strings.Repeat("previous-assistant-detail-", 120) + " previous-assistant-end"
+	contextMessages := []map[string]any{
+		{"role": "user", "content": previousUser, "turn_index": 9, "source": "previous_canonical_turn"},
+		{"role": "assistant", "content": previousAssistant, "turn_index": 9, "source": "previous_canonical_turn"},
+		{"role": "user", "content": "Mina placed the brass key by the lighthouse vault.", "turn_index": 2, "source": "relevant_memory_source_turn"},
+		{"role": "assistant", "content": "Rowan promised to guard the brass key.", "turn_index": 2, "source": "relevant_memory_source_turn"},
+	}
+	relevantMemories := []map[string]any{
+		{"id": 21, "turn_index": 2, "summary": "Mina and Rowan hid the brass key in the lighthouse vault."},
+	}
+	ledger := map[string]any{
+		"contract_version": "critic_archive_ledger.v1",
+		"items": []any{
+			map[string]any{"id": "ledger-related", "lane": "memory", "summary": "Mina and Rowan must recover the brass key from the lighthouse vault."},
+			map[string]any{"id": "ledger-unrelated", "lane": "memory", "summary": "Carol cooked mushroom soup in the village kitchen."},
+		},
+	}
+	rules := []map[string]any{
+		{"scope": "scene", "scope_name": "lighthouse vault", "key": "vault-key-rule", "value": "The brass key opens the lighthouse vault."},
+		{"scope": "scene", "scope_name": "village kitchen", "key": "soup-rule", "value": "Mushroom soup must simmer for one hour."},
+		{"scope": "global", "key": "oversized-root-rule", "value": strings.Repeat("global archive law ", 200)},
+	}
+	policy := completeTurnCriticInputPolicy{AuxiliaryMaxChars: 800, ConfiguredChars: 800, Source: "test"}
+	selectedContext, selectedLedger, trace := applyCompleteTurnCriticAuxiliaryBudget(
+		contextMessages, relevantMemories, ledger, rules,
+		"Mina asks Rowan to use the brass key at the lighthouse vault.", policy,
+	)
+
+	if len(selectedContext) < 2 || stringFromMap(selectedContext[0], "content") != previousUser || stringFromMap(selectedContext[1], "content") != previousAssistant {
+		t.Fatalf("mandatory previous turn was changed or omitted: %#v", selectedContext)
+	}
+	if intFromAny(trace["auxiliary_selected_chars"], -1) > policy.AuxiliaryMaxChars {
+		t.Fatalf("auxiliary selection exceeded the shared budget: %#v", trace)
+	}
+	if boolFromAny(trace["current_turn_bounded"]) || boolFromAny(trace["previous_turn_bounded"]) || intFromAny(trace["truncated_count"], -1) != 0 {
+		t.Fatalf("current/previous turn or a partial DB item was truncated: %#v", trace)
+	}
+	encoded, _ := json.Marshal(selectedLedger)
+	if strings.Contains(string(encoded), "mushroom soup") || strings.Contains(string(encoded), "soup-rule") {
+		t.Fatalf("unrelated DB support reached the critic input: %s", encoded)
+	}
+	seenWorldRuleDecision := false
+	seenUnrelatedDecision := false
+	for _, key := range []string{"selected", "excluded"} {
+		entries, _ := trace[key].([]map[string]any)
+		for _, item := range entries {
+			if stringFromMap(item, "kind") == "active_world_rule" {
+				seenWorldRuleDecision = true
+			}
+			if stringFromMap(item, "id") == "ledger-unrelated" && stringFromMap(item, "reason") == "not_related_to_current_or_previous_turn" {
+				seenUnrelatedDecision = true
+			}
+		}
+	}
+	if !seenWorldRuleDecision || !seenUnrelatedDecision {
+		t.Fatalf("selected/excluded DB support decisions are incomplete: %#v", trace)
+	}
+}
+
+func TestCriticInputPolicyUsesObservedUserBudgetWithoutAnItemCountCap(t *testing.T) {
+	cfg := config.Default()
+	cfg.CriticLedgerEnabled = true
+	srv := NewServer(cfg)
+	policy := srv.completeTurnCriticInputPolicy(map[string]any{
+		"critic_input_budget_observation": map[string]any{
+			"contract_version":        completeTurnCriticInputBudgetObservationContract,
+			"max_input_context_chars": 975,
+		},
+	})
+	if policy.ConfiguredChars != 975 || policy.Source != "risu_host_setting_observation" {
+		t.Fatalf("observed Critic input budget was not used: %+v", policy)
+	}
+	if policy.AuxiliaryMaxChars != policy.ConfiguredChars+policy.LedgerChars {
+		t.Fatalf("auxiliary budget does not combine the existing context and ledger budgets: %+v", policy)
+	}
+}
+
+func TestCriticProviderPromptKeepsCurrentAndPreviousTurnsWholeAndExcludesHostHistory(t *testing.T) {
+	currentUser := "current-user-start " + strings.Repeat("current-user-detail-", 180) + " current-user-end"
+	currentAssistant := "current-assistant-start " + strings.Repeat("current-assistant-detail-", 180) + " current-assistant-end"
+	previousUser := "previous-user-start " + strings.Repeat("previous-user-detail-", 100) + " previous-user-end"
+	previousAssistant := "previous-assistant-start " + strings.Repeat("previous-assistant-detail-", 100) + " previous-assistant-end"
+	fake := &turnRecordingStore{returnChatLogs: []store.ChatLog{
+		{ChatSessionID: "critic-provider-context", TurnIndex: 7, Role: "user", Content: previousUser},
+		{ChatSessionID: "critic-provider-context", TurnIndex: 7, Role: "assistant", Content: previousAssistant},
+	}}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	oldClient := proxyHTTPClient
+	providerSystemPrompt := ""
+	providerUserPrompt := ""
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		messages := sliceFromAny(request["messages"])
+		if len(messages) >= 2 {
+			providerSystemPrompt = stringFromMap(mapFromAny(messages[0]), "content")
+			providerUserPrompt = stringFromMap(mapFromAny(messages[1]), "content")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"Mina and Rowan continue.\",\"importance_score\":5,\"evidence_excerpts\":[]}"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	_, trace, err := srv.runCompleteTurnCriticWithInputPolicy(
+		context.Background(), "critic-provider-context", 8,
+		currentUser, currentAssistant,
+		[]map[string]any{{"role": "user", "content": "HOST_FULL_HISTORY_MUST_NOT_REACH_PROVIDER"}},
+		nil,
+		completeTurnLLMConfig{Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key", Model: "critic-test", TimeoutMs: 30_000, RetryBudget: newLLMRetryBudget(0)},
+		true,
+		completeTurnCriticInputPolicy{AuxiliaryMaxChars: 2_000, ConfiguredChars: 2_000, Source: "test"},
+		completeTurnCriticInputReplay{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{currentUser, currentAssistant, previousUser, previousAssistant} {
+		if !strings.Contains(providerUserPrompt, expected) {
+			t.Fatalf("provider prompt omitted or changed full turn text %q", expected[:20])
+		}
+	}
+	if strings.Contains(providerUserPrompt, "HOST_FULL_HISTORY_MUST_NOT_REACH_PROVIDER") {
+		t.Fatal("whole host chat history reached the critic provider")
+	}
+	budgetTrace := mapFromAny(trace["input_budget"])
+	if boolFromAny(budgetTrace["current_turn_bounded"]) || boolFromAny(budgetTrace["current_turn_content_changed"]) {
+		t.Fatalf("current turn was reported as changed: %#v", budgetTrace)
+	}
+	if intFromAny(budgetTrace["current_turn_chars"], 0) != len([]rune(currentUser))+len([]rune(currentAssistant)) {
+		t.Fatalf("current turn size trace mismatch: %#v", budgetTrace)
+	}
+	if intFromAny(budgetTrace["system_prompt_chars"], 0) != len([]rune(providerSystemPrompt)) ||
+		intFromAny(budgetTrace["user_prompt_chars"], 0) != len([]rune(providerUserPrompt)) ||
+		intFromAny(budgetTrace["final_prompt_chars"], 0) != len([]rune(providerSystemPrompt))+len([]rune(providerUserPrompt)) {
+		t.Fatalf("final prompt size trace mismatch: %#v", budgetTrace)
+	}
+	selectionTrace := mapFromAny(trace["context_selection"])
+	if intFromAny(selectionTrace["host_messages_received"], 0) != 1 || intFromAny(selectionTrace["host_messages_used"], -1) != 0 {
+		t.Fatalf("host history exclusion trace mismatch: %#v", selectionTrace)
+	}
+}
+
+func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
+	fake := &turnRecordingStore{returnChatLogs: []store.ChatLog{
+		{ChatSessionID: "critic-replay", TurnIndex: 11, Role: "user", Content: "original previous user"},
+		{ChatSessionID: "critic-replay", TurnIndex: 11, Role: "assistant", Content: "original previous assistant"},
+	}}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	oldClient := proxyHTTPClient
+	providerPrompts := []string{}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		messages := sliceFromAny(request["messages"])
+		providerPrompts = append(providerPrompts, stringFromMap(mapFromAny(messages[1]), "content"))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"Mina opened the vault.\",\"importance_score\":7,\"evidence_excerpts\":[]}"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	cfg := completeTurnLLMConfig{
+		Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key",
+		Model: "critic-test", TimeoutMs: 30_000, RetryBudget: newLLMRetryBudget(0),
+	}
+	outputLanguage := map[string]any{"language": "ko", "source": "session"}
+	languageContext := map[string]any{
+		"session_output_language": "ko",
+		"summary_language":        "ko",
+		"locked_for_turn":         true,
+	}
+	policy := completeTurnCriticInputPolicy{AuxiliaryMaxChars: 4_000, ConfiguredChars: 4_000, Source: "test"}
+	_, firstTrace, err := srv.runCompleteTurnCriticWithInputPolicy(
+		context.Background(), "critic-replay", 12,
+		"current user full text", "current assistant full text",
+		[]map[string]any{{"role": "user", "content": "HOST_HISTORY_IGNORED"}},
+		&outputLanguage, cfg, true, policy,
+		completeTurnCriticInputReplay{SourceRevision: "source-replay"},
+		languageContext,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, ok := fake.savedCriticInputSnapshots["source-replay"]
+	if !ok || saved.JSON == "" || saved.Hash == "" {
+		t.Fatalf("critic input snapshot was not persisted: %#v", fake.savedCriticInputSnapshots)
+	}
+	var snapshot completeTurnCriticInputSnapshot
+	if err := json.Unmarshal([]byte(saved.JSON), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.UserInput != "current user full text" ||
+		snapshot.AssistantContent != "current assistant full text" ||
+		stringFromMap(snapshot.OutputLanguage, "language") != "ko" ||
+		stringFromMap(snapshot.LanguageContext, "summary_language") != "ko" {
+		t.Fatalf("snapshot lost current turn or language input: %#v", snapshot)
+	}
+	firstSnapshotTrace := mapFromAny(firstTrace["input_snapshot"])
+	if stringFromMap(firstSnapshotTrace, "status") != "persisted" {
+		t.Fatalf("first snapshot trace=%#v", firstSnapshotTrace)
+	}
+
+	fake.returnChatLogs = []store.ChatLog{
+		{ChatSessionID: "critic-replay", TurnIndex: 11, Role: "user", Content: "mutated previous user"},
+		{ChatSessionID: "critic-replay", TurnIndex: 11, Role: "assistant", Content: "mutated previous assistant"},
+	}
+	mutatedLanguage := map[string]any{"session_output_language": "en", "summary_language": "en"}
+	_, replayTrace, err := srv.runCompleteTurnCriticWithInputPolicy(
+		context.Background(), "critic-replay", 12,
+		"current user full text", "current assistant full text",
+		[]map[string]any{{"role": "user", "content": "MUTATED_HOST_HISTORY"}},
+		nil, cfg, true,
+		completeTurnCriticInputPolicy{AuxiliaryMaxChars: 1, ConfiguredChars: 1, Source: "mutated"},
+		completeTurnCriticInputReplay{
+			SourceRevision: "source-replay", SnapshotJSON: saved.JSON, SnapshotHash: saved.Hash, Required: true,
+		},
+		mutatedLanguage,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providerPrompts) != 2 || providerPrompts[0] != providerPrompts[1] {
+		t.Fatalf("reprocessing prompt changed\nfirst=%q\nreplay=%q", providerPrompts[0], providerPrompts[1])
+	}
+	if strings.Contains(providerPrompts[1], "mutated previous") ||
+		strings.Contains(providerPrompts[1], "MUTATED_HOST_HISTORY") ||
+		strings.Contains(providerPrompts[1], `"summary_language":"en"`) {
+		t.Fatalf("mutable session state leaked into replay prompt: %q", providerPrompts[1])
+	}
+	replayedSnapshotTrace := mapFromAny(replayTrace["input_snapshot"])
+	if stringFromMap(replayedSnapshotTrace, "status") != "replayed" ||
+		stringFromMap(replayedSnapshotTrace, "snapshot_hash") != saved.Hash {
+		t.Fatalf("replay snapshot trace=%#v", replayedSnapshotTrace)
+	}
+
+	snapshot.SystemPromptSHA256 = strings.Repeat("0", 64)
+	promptChangedJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, changedPromptTrace, err := srv.runCompleteTurnCriticWithInputPolicy(
+		context.Background(), "critic-replay", 12,
+		"current user full text", "current assistant full text",
+		nil, nil, cfg, true, policy,
+		completeTurnCriticInputReplay{
+			SourceRevision: "source-replay",
+			SnapshotJSON:   string(promptChangedJSON),
+			SnapshotHash:   criticSystemPromptHash(string(promptChangedJSON)),
+			Required:       true,
+		},
+	)
+	if err == nil || stringFromMap(criticPipelineErrorDetails(err), "code") != "CRITIC_INPUT_SNAPSHOT_INVALID" ||
+		len(providerPrompts) != 2 || stringFromMap(mapFromAny(changedPromptTrace["input_snapshot"]), "status") != "invalid" {
+		t.Fatalf("changed prompt contract was not rejected before provider call: err=%v trace=%#v calls=%d", err, changedPromptTrace, len(providerPrompts))
+	}
+}
+
+func TestCriticSnapshotPersistenceFailureDoesNotBlockForegroundCritic(t *testing.T) {
+	fake := &turnRecordingStore{criticInputSnapshotErr: errors.New("snapshot store unavailable")}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	oldClient := proxyHTTPClient
+	providerCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"Mina opened the vault.\",\"importance_score\":7,\"evidence_excerpts\":[]}"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	_, trace, err := srv.runCompleteTurnCriticWithInputPolicy(
+		context.Background(), "critic-snapshot-write-failure", 3,
+		"Mina reaches the vault.", "Mina opens the vault.",
+		nil, nil,
+		completeTurnLLMConfig{
+			Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key",
+			Model: "critic-test", TimeoutMs: 30_000, RetryBudget: newLLMRetryBudget(0),
+		},
+		true,
+		completeTurnCriticInputPolicy{AuxiliaryMaxChars: 2_000, ConfiguredChars: 2_000, Source: "test"},
+		completeTurnCriticInputReplay{SourceRevision: "source-write-failure"},
+	)
+	if err != nil || providerCalls != 1 {
+		t.Fatalf("foreground critic was blocked by snapshot persistence: err=%v calls=%d", err, providerCalls)
+	}
+	snapshotTrace := mapFromAny(trace["input_snapshot"])
+	if stringFromMap(snapshotTrace, "status") != "persist_failed" ||
+		stringFromMap(snapshotTrace, "reason") != "critic_input_snapshot_persist_failed" {
+		t.Fatalf("snapshot failure trace=%#v", snapshotTrace)
+	}
+}
 
 func TestCriticPipelineErrorClassificationPreservesStageAndHTTPStatus(t *testing.T) {
 	timeoutErr := classifyCriticProviderError(context.DeadlineExceeded, http.StatusBadGateway)
@@ -94,15 +477,10 @@ func TestSanitizeContextMessagesUsesHostProvenanceInsteadOfProseKeywords(t *test
 	}
 }
 
-func TestSensitiveCriticRedactionRemainsFailureRecoveryOnly(t *testing.T) {
-	plain := "Mira opened the archive door."
-	if got, changed := redactSensitiveCriticRetryText(plain); changed || got != plain {
-		t.Fatalf("ordinary critic input changed: got=%q changed=%v", got, changed)
-	}
-	sensitive := "The source contains explicit penetration detail and then Mira leaves."
-	got, changed := redactSensitiveCriticRetryText(sensitive)
-	if !changed || strings.Contains(strings.ToLower(got), "penetration") || !strings.Contains(got, "Mira leaves") {
-		t.Fatalf("sensitive provider-retry recovery mismatch: got=%q changed=%v", got, changed)
+func TestCriticCurrentTurnInputIsNeverBounded(t *testing.T) {
+	input := "current-turn-start " + strings.Repeat("complete-current-turn-", 1000) + " current-turn-end"
+	if got := boundCompleteTurnCriticInput(input, 0); got != input {
+		t.Fatalf("current turn changed: got=%d chars want=%d", len([]rune(got)), len([]rune(input)))
 	}
 }
 
@@ -163,11 +541,20 @@ func TestCriticFailureTraceRedactsCredentialValuesNotEqualToConfiguredKey(t *tes
 	}
 }
 
-func TestCriticRedactedRetryFailureTraceIsSerializableAndKeepsFinalPreview(t *testing.T) {
+func TestCriticProviderRetryKeepsCurrentTurnUnchangedAndTraceSerializable(t *testing.T) {
 	oldClient := proxyHTTPClient
 	callCount := 0
-	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	prompts := []string{}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		callCount++
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		messages := sliceFromAny(request["messages"])
+		if len(messages) >= 2 {
+			prompts = append(prompts, stringFromMap(mapFromAny(messages[1]), "content"))
+		}
 		marker := "first failure marker"
 		if callCount == 2 {
 			marker = "second failure marker"
@@ -203,19 +590,18 @@ func TestCriticRedactedRetryFailureTraceIsSerializableAndKeepsFinalPreview(t *te
 	if err == nil || callCount != 2 {
 		t.Fatalf("error=%v calls=%d trace=%+v", err, callCount, trace)
 	}
+	if len(prompts) != 2 || prompts[0] != prompts[1] || !strings.Contains(prompts[1], "penetration") || strings.Contains(prompts[1], "redacted for critic retry") {
+		t.Fatalf("provider retry changed the current turn: prompt_count=%d", len(prompts))
+	}
 	if !strings.Contains(stringFromMap(trace, "raw_preview"), "second failure marker") {
 		t.Fatalf("final retry preview was lost: %+v", trace)
-	}
-	retry := mapFromAny(trace["provider_retry"])
-	if stringFromMap(retry, "retry_failure_recorded") != "top_level" {
-		t.Fatalf("retry lineage missing: %+v", trace)
 	}
 	if _, err := json.Marshal(trace); err != nil {
 		t.Fatalf("retry failure trace is cyclic or unserializable: %v; trace=%+v", err, trace)
 	}
 }
 
-func TestCriticSensitiveRedactionRespectsZeroRetryBudget(t *testing.T) {
+func TestCriticProviderFailureRespectsZeroRetryBudget(t *testing.T) {
 	oldClient := proxyHTTPClient
 	callCount := 0
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -241,9 +627,6 @@ func TestCriticSensitiveRedactionRespectsZeroRetryBudget(t *testing.T) {
 	)
 	if err == nil || callCount != 1 {
 		t.Fatalf("error=%v calls=%d trace=%+v", err, callCount, trace)
-	}
-	if len(mapFromAny(trace["provider_retry"])) != 0 {
-		t.Fatalf("zero retry budget unexpectedly recorded a retry: %+v", trace)
 	}
 }
 
@@ -455,14 +838,13 @@ func TestCriticSubjectiveCollectionPreservesStorySpecificRevealPolicy(t *testing
 }
 
 func TestCriticPromptRequiresEvidenceEligibleSubjectiveCoverageAndAllowsValidZero(t *testing.T) {
-	prompt := buildCompleteTurnCriticPrompt("session", 3, "Mina opens the door.", "Rowan watches.", nil, nil, nil)
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session", 3, "Mina opens the door.", "Rowan watches.", nil, nil, nil))
 	for _, required := range []string{
-		"Before leaving subjective_entity_memories empty, inspect every named in-story entity",
-		"valid when the latest accepted turn contains no distinct source-grounded perspective content",
-		"NPC coverage is evidence-eligible, not mandatory",
+		"Before returning this array empty, inspect every named in-story entity",
+		"An empty `subjective_entity_memories` array remains valid",
 		"Each subjective memory needs an owner and memory text",
-		"Extract useful source-grounded in-story facts and relationships broadly as kg_triples",
-		"Do not omit a fact merely because another typed lane also records it",
+		"extract useful source-grounded in-story facts and relationships broadly",
+		"A fact is not omitted merely because another typed lane also records it",
 		"evidence_excerpts are durable citations, not transcript samples",
 		"Speech-style examples belong in voice_observations",
 	} {
@@ -476,6 +858,106 @@ func TestCriticPromptRequiresEvidenceEligibleSubjectiveCoverageAndAllowsValidZer
 		strings.Contains(prompt, "subject_binding/object_binding") ||
 		strings.Contains(prompt, "Represent each record with subject, predicate, object") {
 		t.Fatalf("critic prompt still contains the KG suppression policy")
+	}
+}
+
+func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T) {
+	systemPrompt, source := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	if source == "fallback_builtin" {
+		t.Fatal("source critic_system.txt was not loaded")
+	}
+	systemJSONSection := strings.Index(systemPrompt, "[Available JSON Surfaces]")
+	if systemJSONSection < 0 {
+		t.Fatal("system critic prompt is missing the JSON surface section")
+	}
+	userPrompt := buildCompleteTurnCriticPrompt(
+		"session-json-contract", 7,
+		"Mina found the brass key.",
+		"Rowan nodded and followed.",
+		nil, nil, nil,
+	)
+	example, err := parseJSONFromLLMContent(systemPrompt[systemJSONSection:])
+	if err != nil {
+		t.Fatalf("system critic prompt JSON example is not parseable: %v", err)
+	}
+	if err := validateCriticExtractionSchema(example); err != nil {
+		t.Fatalf("system critic prompt JSON example violates the critic schema: %v", err)
+	}
+	evidenceExcerpts := sliceFromAny(example["evidence_excerpts"])
+	if len(evidenceExcerpts) != 1 || stringFromAny(evidenceExcerpts[0]) != "exact source excerpt" {
+		t.Fatalf("system critic prompt does not demonstrate string-only evidence excerpts: %#v", evidenceExcerpts)
+	}
+	for _, key := range []string{
+		"turn_summary", "evidence_excerpts", "kg_triples", "entities",
+		"world_rule_audit", "world_rules", "subjective_entity_memories",
+		"protected_secrets", "character_identity_accuracy",
+		"persona_capsule_candidates", "narrative_events", "state_claims",
+		"belief_updates", "state_deltas", "character_deltas",
+		"physical_conditions", "entity_conditions", "reversible_states",
+		"pending_threads",
+	} {
+		if _, ok := example[key]; !ok {
+			t.Fatalf("system critic prompt JSON example lost required surface %q", key)
+		}
+	}
+	for _, duplicate := range []string{"[Available JSON Surfaces]", "Use this JSON shape", "Sensitivity policy:", `"turn_summary":""`} {
+		if strings.Contains(userPrompt, duplicate) {
+			t.Fatalf("dynamic critic user prompt still duplicates static contract %q", duplicate)
+		}
+	}
+	for _, dynamic := range []string{"<Latest_Turn>", "Mina found the brass key.", "<Recent_Context_JSON>", "<Critic_Archive_Ledger_JSON>", "<Output_Language_Override_JSON>", "<Language_Context_JSON>"} {
+		if !strings.Contains(userPrompt, dynamic) {
+			t.Fatalf("dynamic critic user prompt lost %q", dynamic)
+		}
+	}
+	if chars := len([]rune(userPrompt)); chars >= 2000 {
+		t.Fatalf("dynamic critic user prompt regained a static contract: chars=%d", chars)
+	}
+}
+
+func TestCriticCharacterDeltaNameContractPersistsState(t *testing.T) {
+	systemPrompt, _ := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	systemJSONSection := strings.Index(systemPrompt, "[Available JSON Surfaces]")
+	if systemJSONSection < 0 {
+		t.Fatal("system critic prompt is missing the JSON surface section")
+	}
+	example, err := parseJSONFromLLMContent(systemPrompt[systemJSONSection:])
+	if err != nil {
+		t.Fatalf("system critic prompt JSON example is not parseable: %v", err)
+	}
+	characterDeltas := sliceFromAny(example["character_deltas"])
+	if len(characterDeltas) != 1 {
+		t.Fatalf("character_deltas example count = %d, want 1", len(characterDeltas))
+	}
+	delta := mapFromAny(characterDeltas[0])
+	if _, ok := delta["name"]; !ok {
+		t.Fatal("character_deltas example is missing the required name field")
+	}
+	delta["name"] = "Mina"
+	delta["status"] = map[string]any{"emotion": "relieved"}
+
+	fake := &turnRecordingStore{}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	result := srv.saveCriticExtractionArtifacts(
+		context.Background(),
+		"critic-character-name-contract",
+		1,
+		normalizeCriticExtraction(map[string]any{"character_deltas": []any{delta}}),
+		"Mina looked relieved.",
+		completeTurnEmbeddingConfig{},
+		time.Unix(100, 0),
+	)
+	if result.CharacterStates != 1 || len(fake.savedCharacterStates) != 1 {
+		t.Fatalf("named character delta was not persisted: result=%#v states=%#v", result, fake.savedCharacterStates)
+	}
+	if fake.savedCharacterStates[0].CharacterName != "Mina" {
+		t.Fatalf("saved character name = %q, want Mina", fake.savedCharacterStates[0].CharacterName)
+	}
+	for _, reason := range result.SkipReasons {
+		if stringFromMap(reason, "surface") == "character_deltas" && stringFromMap(reason, "reason") == "missing_name" {
+			t.Fatalf("named character delta was discarded as missing_name: %#v", result.SkipReasons)
+		}
 	}
 }
 
@@ -671,7 +1153,7 @@ func TestCriticPromptReceivesActiveWorldRuleKeysWithoutSuppressedRows(t *testing
 	if trace["status"] != "ok" || len(active) != 1 || stringFromMap(active[0], "key") != "gate_requires_seal" {
 		t.Fatalf("active world-rule input = %#v trace=%#v", active, trace)
 	}
-	prompt := buildCompleteTurnCriticPrompt("world-prompt", 3, "Approach the gate.", "The guard checks the seal.", nil, nil, nil, map[string]any{"active_world_rules": active})
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("world-prompt", 3, "Approach the gate.", "The guard checks the seal.", nil, nil, nil, map[string]any{"active_world_rules": active}))
 	for _, expected := range []string{"gate_requires_seal", "reuse its exact scope, scope_name, category, and key", "omit that unchanged repeat"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("critic prompt missing active world-rule contract %q", expected)
@@ -683,7 +1165,7 @@ func TestCriticPromptReceivesActiveWorldRuleKeysWithoutSuppressedRows(t *testing
 }
 
 func TestCriticPromptKeepsReversibleStateCollectionVocabularyOpen(t *testing.T) {
-	prompt := buildCompleteTurnCriticPrompt("session", 3, "Mina opens the door.", "Rowan watches.", nil, nil, nil)
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session", 3, "Mina opens the door.", "Rowan watches.", nil, nil, nil))
 	for _, required := range []string{
 		"reversible_states, physical_conditions, entity_conditions, state_deltas, and character_deltas may all preserve source-grounded continuity observations",
 		"Saving broad observations is separate from deciding which value is current or injectable",

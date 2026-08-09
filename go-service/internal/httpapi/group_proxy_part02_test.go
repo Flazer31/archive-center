@@ -806,6 +806,16 @@ func TestHandleSupervisorFailOpenOnRuntimeLLMError(t *testing.T) {
 	if trace["llm_call"] != "failed" || trace["fail_open"] != true {
 		t.Fatalf("trace did not expose failed fail-open call: %+v", trace)
 	}
+	if resp["reason_code"] != "publisher_llm_upstream_rejected" {
+		t.Fatalf("reason_code = %v, want publisher_llm_upstream_rejected", resp["reason_code"])
+	}
+	llmTrace := mapFromAny(trace["llm_trace"])
+	if llmTrace["failure_code"] != "publisher_llm_upstream_rejected" || intFromAny(llmTrace["upstream_status"], 0) != http.StatusUnauthorized {
+		t.Fatalf("LLM failure trace did not preserve the rejected status: %+v", llmTrace)
+	}
+	if strings.Contains(extractionStringFromAny(llmTrace["failure_detail"]), apiKey) {
+		t.Fatalf("LLM failure trace leaked API key: %+v", llmTrace)
+	}
 }
 
 func TestHandleSupervisorSkipsRuntimeLLMWithoutExecutionContract(t *testing.T) {

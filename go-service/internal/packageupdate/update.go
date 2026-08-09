@@ -15,17 +15,25 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	PendingContract             = "archive-center.pending-update.v1"
-	StateContract               = "archive-center.update-state.v1"
-	ResultContract              = "archive-center.updater-result.v1"
-	ManifestName                = "PACKAGE_FILE_MANIFEST.json"
-	MigrationUpdateManifestName = "PACKAGE_MIGRATION_UPDATE.json"
-	MigrationUpdateContract     = "archive-center.package-migration-update.v1"
+	PendingContract              = "archive-center.pending-update.v1"
+	StateContract                = "archive-center.update-state.v1"
+	ResultContract               = "archive-center.updater-result.v1"
+	ManifestName                 = "PACKAGE_FILE_MANIFEST.json"
+	MigrationUpdateManifestName  = "PACKAGE_MIGRATION_UPDATE.json"
+	PackageReleaseStatusName     = "PACKAGE_RELEASE_STATUS.json"
+	MigrationUpdateContract      = "archive-center.package-migration-update.v1"
+	MigrationUpdateContractV2    = "archive-center.package-migration-update.v2"
+	CompleteManagedPackage       = "complete_manifest"
+	ExpandFirstCompatibility     = "expand_first_old_backend_compatible"
+	DirectUpdateBaselineVersion  = "3.9.9"
+	CumulativeMigrationInventory = "cumulative_complete"
+	PackageReleaseStatusContract = "archive-center.package-release-status.v1"
 )
 
 type extractionLimits struct {
@@ -81,8 +89,9 @@ func (e *UpdateError) Error() string { return e.Code + ": " + e.Err.Error() }
 func (e *UpdateError) Unwrap() error { return e.Err }
 
 type packageManifest struct {
-	SchemaVersion string         `json:"schema_version"`
-	Files         []manifestFile `json:"files"`
+	SchemaVersion  string         `json:"schema_version"`
+	PackageVersion string         `json:"package_version"`
+	Files          []manifestFile `json:"files"`
 }
 
 type manifestFile struct {
@@ -92,10 +101,15 @@ type manifestFile struct {
 }
 
 type migrationUpdateManifest struct {
-	ContractVersion string                    `json:"contract_version"`
-	TargetVersion   string                    `json:"target_version"`
-	Target          []migrationManifestFile   `json:"target"`
-	Sources         []migrationManifestSource `json:"sources"`
+	ContractVersion       string                    `json:"contract_version"`
+	TargetVersion         string                    `json:"target_version"`
+	Target                []migrationManifestFile   `json:"target"`
+	Sources               []migrationManifestSource `json:"sources,omitempty"`
+	ManagedFiles          string                    `json:"managed_files,omitempty"`
+	DatabasePolicy        string                    `json:"database_policy,omitempty"`
+	MinimumSourceVersion  string                    `json:"minimum_source_version,omitempty"`
+	DirectUpdateSupported bool                      `json:"direct_update_supported,omitempty"`
+	MigrationInventory    string                    `json:"migration_inventory,omitempty"`
 }
 
 type migrationManifestSource struct {
@@ -110,6 +124,13 @@ type migrationManifestFile struct {
 	SHA256    string `json:"sha256"`
 }
 
+type packageReleaseManifest struct {
+	ContractVersion      string `json:"contract_version"`
+	TargetVersion        string `json:"target_version"`
+	ReleaseReady         bool   `json:"release_ready"`
+	AutomaticUpdateApply *bool  `json:"automatic_update_apply,omitempty"`
+}
+
 type installFile struct {
 	Rel    string
 	Src    string
@@ -119,7 +140,121 @@ type installFile struct {
 
 type applyHook func(relativePath string, index int) error
 
+type Candidate struct {
+	CurrentVersion string
+	TargetVersion  string
+	AssetPath      string
+	SHA256         string
+	RequiredFiles  []string
+}
+
+type candidateValidation struct {
+	Files          []installFile
+	RemovedManaged []string
+}
+
 func ApplyPending(root string) (Result, error) { return applyPending(root, "", nil) }
+
+// PreflightCandidate runs the same archive, manifest, installed-package, direct
+// update, and migration validation used by ApplyPending without writing update
+// state or changing managed package files. The archive may live outside
+// .updates because /update/check downloads it into an isolated temporary file.
+func PreflightCandidate(root string, candidate Candidate) error {
+	root, _, err := resolveRoot(root)
+	if err != nil {
+		return updateErr("invalid_root", err)
+	}
+	if strings.TrimSpace(candidate.CurrentVersion) == "" || strings.TrimSpace(candidate.TargetVersion) == "" {
+		return updateErr("candidate_invalid", fmt.Errorf("current_version and target_version are required"))
+	}
+	asset, err := filepath.Abs(strings.TrimSpace(candidate.AssetPath))
+	if err != nil {
+		return updateErr("asset_path_invalid", err)
+	}
+	info, err := os.Lstat(asset)
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("asset is not a regular file")
+		}
+		return updateErr("asset_path_invalid", err)
+	}
+	if err := verifyFile(asset, -1, candidate.SHA256); err != nil {
+		return updateErr("asset_verification_failed", err)
+	}
+	tempRoot, err := os.MkdirTemp("", "archive-center-update-preflight-")
+	if err != nil {
+		return updateErr("preflight_temp_failed", err)
+	}
+	defer os.RemoveAll(tempRoot)
+	extracted, err := extractVerifiedArchive(asset, tempRoot)
+	if err != nil {
+		return updateErr("archive_rejected", err)
+	}
+	packageRoot, err := findPackageRoot(extracted)
+	if err != nil {
+		return updateErr("package_root_invalid", err)
+	}
+	_, err = validateExtractedCandidate(root, packageRoot, candidate.CurrentVersion, candidate.TargetVersion, candidate.RequiredFiles, true)
+	return err
+}
+
+// ValidateInstalledApplyHelper verifies the updater binary that the managed
+// launcher and backend handoff will execute. The current package manifest is
+// authoritative; existence alone is not enough because an incomplete or
+// locally modified helper cannot safely own the update journal.
+func ValidateInstalledApplyHelper(root string) error {
+	root, _, err := resolveRoot(root)
+	if err != nil {
+		return err
+	}
+	manifest, err := readPackageManifest(filepath.Join(root, ManifestName))
+	if err != nil {
+		return fmt.Errorf("current package manifest: %w", err)
+	}
+	if strings.TrimSpace(manifest.PackageVersion) == "" {
+		return fmt.Errorf("current package manifest has no package_version")
+	}
+	rel := "bin/archive-center-updater"
+	if runtime.GOOS == "windows" {
+		rel += ".exe"
+	}
+	var entry *manifestFile
+	for i := range manifest.Files {
+		candidate := canonicalRelativePath(manifest.Files[i].Path)
+		if err := validateManagedPath(candidate); err != nil {
+			return fmt.Errorf("manifest path %q: %w", manifest.Files[i].Path, err)
+		}
+		if strings.EqualFold(candidate, rel) {
+			if entry != nil {
+				return fmt.Errorf("duplicate apply helper manifest entry %q", rel)
+			}
+			entry = &manifest.Files[i]
+		}
+	}
+	if entry == nil {
+		return fmt.Errorf("apply helper %q is not manifest-managed", rel)
+	}
+	if err := validateInstallTarget(root, rel); err != nil {
+		return fmt.Errorf("apply helper target is unsafe: %w", err)
+	}
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if !inside(path, root) {
+		return fmt.Errorf("apply helper escaped package root")
+	}
+	if err := verifyFile(path, entry.SizeBytes, entry.SHA256); err != nil {
+		return fmt.Errorf("apply helper verification failed: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("stat apply helper: %w", err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			return fmt.Errorf("apply helper is not executable")
+		}
+	}
+	return nil
+}
 
 // ApplyPendingFromRunner binds the executable that owns recovery to the
 // durable update state. Launchers must invoke a preserved copy under
@@ -212,35 +347,19 @@ func applyPending(root, runnerPath string, hook applyHook) (Result, error) {
 	if err != nil {
 		return Result{}, updateErr("package_root_invalid", err)
 	}
-	newManifest, err := readPackageManifest(filepath.Join(packageRoot, ManifestName))
+	validation, err := validateExtractedCandidate(
+		root,
+		packageRoot,
+		pending.CurrentVersion,
+		pending.TargetVersion,
+		pending.RequiredFiles,
+		comparePackageVersions(pending.CurrentVersion, DirectUpdateBaselineVersion) >= 0,
+	)
 	if err != nil {
-		return Result{}, updateErr("package_manifest_invalid", err)
+		return Result{}, err
 	}
-	files, err := verifyNewPackage(packageRoot, newManifest, pending.RequiredFiles)
-	if err != nil {
-		return Result{}, updateErr("package_verification_failed", err)
-	}
-	currentManaged, err := verifyCurrentPackage(root)
-	if err != nil {
-		return Result{}, updateErr("managed_target_modified", err)
-	}
-	newManaged := make(map[string]manifestFile, len(newManifest.Files))
-	for _, file := range newManifest.Files {
-		newManaged[strings.ToLower(canonicalRelativePath(file.Path))] = file
-	}
-	removedManaged, err := validateDatabaseMigrationUpdate(packageRoot, pending.CurrentVersion, pending.TargetVersion, currentManaged, newManaged)
-	if err != nil {
-		code := "database_migration_update_unsupported"
-		if hasManagedFileRemoval(currentManaged, newManaged) {
-			code = "managed_file_removal_unsupported"
-		}
-		return Result{}, updateErr(code, err)
-	}
-	for _, file := range files {
-		if err := validateInstallTarget(root, file.Rel); err != nil {
-			return Result{}, updateErr("managed_target_unsafe", fmt.Errorf("%s: %w", file.Rel, err))
-		}
-	}
+	files := validation.Files
+	removedManaged := validation.RemovedManaged
 	files = append(files, installFile{Rel: ManifestName, Src: filepath.Join(packageRoot, ManifestName), Mode: 0o644})
 	for _, rel := range removedManaged {
 		if err := validateInstallTarget(root, rel); err != nil {
@@ -780,30 +899,31 @@ func verifyNewPackage(root string, m packageManifest, required []string) ([]inst
 	return files, nil
 }
 
-func verifyCurrentPackage(root string) (map[string]manifestFile, error) {
+func verifyCurrentPackage(root string) (map[string]manifestFile, string, error) {
 	m, err := readPackageManifest(filepath.Join(root, ManifestName))
 	if err != nil {
-		return nil, fmt.Errorf("current package manifest: %w", err)
+		return nil, "", fmt.Errorf("current package manifest: %w", err)
 	}
 	seen := make(map[string]manifestFile, len(m.Files))
 	for _, mf := range m.Files {
 		rel := canonicalRelativePath(mf.Path)
 		if err := validateManagedPath(rel); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		key := strings.ToLower(rel)
 		if _, exists := seen[key]; exists {
-			return nil, fmt.Errorf("duplicate current manifest path %q", rel)
+			return nil, "", fmt.Errorf("duplicate current manifest path %q", rel)
 		}
+		mf.Path = rel
 		seen[key] = mf
 		if err := validateInstallTarget(root, rel); err != nil {
-			return nil, fmt.Errorf("%s: %w", rel, err)
+			return nil, "", fmt.Errorf("%s: %w", rel, err)
 		}
 		if err := verifyFile(filepath.Join(root, filepath.FromSlash(rel)), mf.SizeBytes, mf.SHA256); err != nil {
-			return nil, fmt.Errorf("%s: %w", rel, err)
+			return nil, "", fmt.Errorf("%s: %w", rel, err)
 		}
 	}
-	return seen, nil
+	return seen, m.PackageVersion, nil
 }
 
 func validateInstallTarget(root, rel string) error {
@@ -825,6 +945,67 @@ func validateInstallTarget(root, rel string) error {
 	return nil
 }
 
+func validateExtractedCandidate(
+	root string,
+	packageRoot string,
+	currentVersion string,
+	targetVersion string,
+	requiredFiles []string,
+	requireDirect bool,
+) (candidateValidation, error) {
+	newManifest, err := readPackageManifest(filepath.Join(packageRoot, ManifestName))
+	if err != nil {
+		return candidateValidation{}, updateErr("package_manifest_invalid", err)
+	}
+	if !sameVersion(newManifest.PackageVersion, targetVersion) {
+		return candidateValidation{}, updateErr("package_manifest_invalid", fmt.Errorf("candidate package_version %q does not match target %q", newManifest.PackageVersion, targetVersion))
+	}
+	files, err := verifyNewPackage(packageRoot, newManifest, requiredFiles)
+	if err != nil {
+		return candidateValidation{}, updateErr("package_verification_failed", err)
+	}
+	currentManaged, currentPackageVersion, err := verifyCurrentPackage(root)
+	if err != nil {
+		return candidateValidation{}, updateErr("managed_target_modified", err)
+	}
+	if !sameVersion(currentPackageVersion, currentVersion) {
+		return candidateValidation{}, updateErr("managed_target_modified", fmt.Errorf("installed package_version %q does not match current %q", currentPackageVersion, currentVersion))
+	}
+	if requireDirect {
+		if comparePackageVersions(currentVersion, DirectUpdateBaselineVersion) < 0 {
+			return candidateValidation{}, updateErr("source_version_unsupported", fmt.Errorf("direct updates require source version %s or newer", DirectUpdateBaselineVersion))
+		}
+		if comparePackageVersions(targetVersion, currentVersion) <= 0 {
+			return candidateValidation{}, updateErr("target_version_not_newer", fmt.Errorf("target version %q is not newer than current %q", targetVersion, currentVersion))
+		}
+	}
+	newManaged := make(map[string]manifestFile, len(newManifest.Files))
+	for _, file := range newManifest.Files {
+		rel := canonicalRelativePath(file.Path)
+		file.Path = rel
+		newManaged[strings.ToLower(rel)] = file
+	}
+	if requireDirect {
+		if err := validatePackageReleaseReadiness(packageRoot, targetVersion, newManaged); err != nil {
+			return candidateValidation{}, updateErr("package_release_unverified", err)
+		}
+	}
+	removedManaged, err := validateDatabaseMigrationUpdate(packageRoot, currentVersion, targetVersion, currentManaged, newManaged, requireDirect)
+	if err != nil {
+		code := "database_migration_update_unsupported"
+		if hasManagedFileRemoval(currentManaged, newManaged) {
+			code = "managed_file_removal_unsupported"
+		}
+		return candidateValidation{}, updateErr(code, err)
+	}
+	for _, file := range files {
+		if err := validateInstallTarget(root, file.Rel); err != nil {
+			return candidateValidation{}, updateErr("managed_target_unsafe", fmt.Errorf("%s: %w", file.Rel, err))
+		}
+	}
+	return candidateValidation{Files: files, RemovedManaged: removedManaged}, nil
+}
+
 // validateDatabaseMigrationUpdate never attempts to decide whether arbitrary
 // SQL is safe. A package that changes the migration inventory must carry an
 // authenticated, versioned inventory contract that names the exact current
@@ -837,11 +1018,12 @@ func validateDatabaseMigrationUpdate(
 	targetVersion string,
 	current map[string]manifestFile,
 	next map[string]manifestFile,
+	requireDirect bool,
 ) ([]string, error) {
 	currentInventory := migrationInventory(current)
 	nextInventory := migrationInventory(next)
 	removedManaged := managedFileRemovals(current, next)
-	if migrationInventoriesEqual(currentInventory, nextInventory) && len(removedManaged) == 0 {
+	if !requireDirect && migrationInventoriesEqual(currentInventory, nextInventory) && len(removedManaged) == 0 {
 		return nil, nil
 	}
 	contractFile, present := next[strings.ToLower(MigrationUpdateManifestName)]
@@ -860,8 +1042,11 @@ func validateDatabaseMigrationUpdate(
 	if !ok {
 		return nil, fmt.Errorf("migration update contract is missing")
 	}
-	if contract.ContractVersion != MigrationUpdateContract {
+	if contract.ContractVersion != MigrationUpdateContract && contract.ContractVersion != MigrationUpdateContractV2 {
 		return nil, fmt.Errorf("unsupported migration update contract %q", contract.ContractVersion)
+	}
+	if requireDirect && contract.ContractVersion != MigrationUpdateContractV2 {
+		return nil, fmt.Errorf("direct updates require migration contract %q", MigrationUpdateContractV2)
 	}
 	if !sameVersion(contract.TargetVersion, targetVersion) {
 		return nil, fmt.Errorf("migration target version %q does not match pending target %q", contract.TargetVersion, targetVersion)
@@ -872,6 +1057,50 @@ func validateDatabaseMigrationUpdate(
 	}
 	if !migrationInventoriesEqual(contractTarget, nextInventory) {
 		return nil, fmt.Errorf("target migration inventory does not match candidate package")
+	}
+	if contract.ContractVersion == MigrationUpdateContractV2 {
+		if contract.ManagedFiles != CompleteManagedPackage {
+			return nil, fmt.Errorf("managed_files must declare %q", CompleteManagedPackage)
+		}
+		if contract.DatabasePolicy != ExpandFirstCompatibility {
+			return nil, fmt.Errorf("database_policy must declare %q", ExpandFirstCompatibility)
+		}
+		if len(contract.Sources) != 0 {
+			return nil, fmt.Errorf("v2 complete-manifest contract must not carry historical source inventories")
+		}
+		if requireDirect {
+			if strings.TrimSpace(contract.MinimumSourceVersion) == "" {
+				return nil, fmt.Errorf("minimum_source_version is required")
+			}
+			if !sameVersion(contract.MinimumSourceVersion, DirectUpdateBaselineVersion) {
+				return nil, fmt.Errorf("minimum_source_version must declare %q", DirectUpdateBaselineVersion)
+			}
+			if comparePackageVersions(currentVersion, contract.MinimumSourceVersion) < 0 {
+				return nil, fmt.Errorf("current version %q is below minimum source %q", currentVersion, contract.MinimumSourceVersion)
+			}
+			if !contract.DirectUpdateSupported {
+				return nil, fmt.Errorf("direct_update_supported must be true")
+			}
+			if contract.MigrationInventory != CumulativeMigrationInventory {
+				return nil, fmt.Errorf("migration_inventory must declare %q", CumulativeMigrationInventory)
+			}
+			if err := validateCumulativeMigrationInventory(currentInventory, nextInventory); err != nil {
+				return nil, err
+			}
+		}
+		schemaTool := "bin/mariadb-schema"
+		if runtime.GOOS == "windows" {
+			schemaTool += ".exe"
+		}
+		if _, present := contractTarget[schemaTool]; !present {
+			return nil, fmt.Errorf("target migration inventory must include %q", schemaTool)
+		}
+		return removedManaged, nil
+	}
+
+	removedManagedComparison, err := normalizeRemovedManagedPaths(removedManaged)
+	if err != nil {
+		return nil, fmt.Errorf("computed removals: %w", err)
 	}
 	matchedSource := false
 	for _, source := range contract.Sources {
@@ -887,7 +1116,7 @@ func validateDatabaseMigrationUpdate(
 			return nil, fmt.Errorf("source %q removals: %w", source.Version, sourceErr)
 		}
 		if migrationInventoriesEqual(sourceInventory, currentInventory) &&
-			stringSlicesEqual(sourceRemovals, removedManaged) {
+			stringSlicesEqual(sourceRemovals, removedManagedComparison) {
 			matchedSource = true
 			break
 		}
@@ -904,9 +1133,9 @@ func hasManagedFileRemoval(current, next map[string]manifestFile) bool {
 
 func managedFileRemovals(current, next map[string]manifestFile) []string {
 	removed := make([]string, 0)
-	for rel := range current {
-		if _, present := next[rel]; !present {
-			removed = append(removed, rel)
+	for key, file := range current {
+		if _, present := next[key]; !present {
+			removed = append(removed, canonicalRelativePath(file.Path))
 		}
 	}
 	sort.Strings(removed)
@@ -947,7 +1176,7 @@ func migrationInventory(files map[string]manifestFile) map[string]migrationManif
 	out := map[string]migrationManifestFile{}
 	for rel, file := range files {
 		rel = strings.ToLower(canonicalRelativePath(rel))
-		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
+		if !isMigrationInventoryPath(rel) {
 			continue
 		}
 		out[rel] = migrationManifestFile{Path: rel, SizeBytes: file.SizeBytes, SHA256: normalizeSHA(file.SHA256)}
@@ -959,7 +1188,7 @@ func normalizeMigrationManifestFiles(files []migrationManifestFile) (map[string]
 	out := make(map[string]migrationManifestFile, len(files))
 	for _, file := range files {
 		rel := strings.ToLower(canonicalRelativePath(file.Path))
-		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
+		if !isMigrationInventoryPath(rel) {
 			return nil, fmt.Errorf("unsupported migration path %q", file.Path)
 		}
 		if err := validateManagedPath(rel); err != nil {
@@ -981,6 +1210,12 @@ func normalizeMigrationManifestFiles(files []migrationManifestFile) (map[string]
 	return out, nil
 }
 
+func isMigrationInventoryPath(rel string) bool {
+	rel = strings.ToLower(canonicalRelativePath(rel))
+	return (strings.HasPrefix(rel, "migrations/") && strings.HasSuffix(rel, ".sql")) ||
+		rel == "bin/mariadb-schema" || rel == "bin/mariadb-schema.exe"
+}
+
 func migrationInventoriesEqual(left, right map[string]migrationManifestFile) bool {
 	if len(left) != len(right) {
 		return false
@@ -994,11 +1229,128 @@ func migrationInventoriesEqual(left, right map[string]migrationManifestFile) boo
 	return true
 }
 
+func validateCumulativeMigrationInventory(current, next map[string]migrationManifestFile) error {
+	for rel, existing := range current {
+		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
+			continue
+		}
+		candidate, present := next[rel]
+		if !present {
+			return fmt.Errorf("cumulative migration inventory omitted existing migration %q", rel)
+		}
+		if candidate.SizeBytes != existing.SizeBytes || normalizeSHA(candidate.SHA256) != normalizeSHA(existing.SHA256) {
+			return fmt.Errorf("cumulative migration inventory changed existing migration %q", rel)
+		}
+	}
+	return validateSequentialMigrationInventory(next)
+}
+
+func validateSequentialMigrationInventory(inventory map[string]migrationManifestFile) error {
+	revisions := map[int]string{}
+	maxRevision := 0
+	for rel := range inventory {
+		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
+			continue
+		}
+		name := strings.TrimPrefix(rel, "migrations/")
+		parts := strings.SplitN(name, "_", 2)
+		if len(parts) != 2 || len(parts[0]) != 3 {
+			return fmt.Errorf("migration %q must start with a three-digit sequential revision", rel)
+		}
+		revision, err := strconv.Atoi(parts[0])
+		if err != nil || revision < 1 {
+			return fmt.Errorf("migration %q has an invalid revision", rel)
+		}
+		if existing, duplicate := revisions[revision]; duplicate {
+			return fmt.Errorf("migration revision %03d is duplicated by %q and %q", revision, existing, rel)
+		}
+		revisions[revision] = rel
+		if revision > maxRevision {
+			maxRevision = revision
+		}
+	}
+	if maxRevision == 0 {
+		return fmt.Errorf("cumulative migration inventory contains no SQL migrations")
+	}
+	for revision := 1; revision <= maxRevision; revision++ {
+		if _, present := revisions[revision]; !present {
+			return fmt.Errorf("cumulative migration inventory is missing revision %03d", revision)
+		}
+	}
+	return nil
+}
+
+func validatePackageReleaseReadiness(packageRoot, targetVersion string, managed map[string]manifestFile) error {
+	if _, ok := managed[strings.ToLower(PackageReleaseStatusName)]; !ok {
+		return fmt.Errorf("candidate does not manage %s", PackageReleaseStatusName)
+	}
+	var release packageReleaseManifest
+	ok, err := readJSON(filepath.Join(packageRoot, PackageReleaseStatusName), &release)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", PackageReleaseStatusName, err)
+	}
+	if !ok || !release.ReleaseReady {
+		return fmt.Errorf("%s does not certify release_ready=true", PackageReleaseStatusName)
+	}
+	if release.ContractVersion != PackageReleaseStatusContract || !sameVersion(release.TargetVersion, targetVersion) {
+		return fmt.Errorf("%s does not certify target version %q", PackageReleaseStatusName, targetVersion)
+	}
+	if release.AutomaticUpdateApply != nil && !*release.AutomaticUpdateApply {
+		return fmt.Errorf("%s disables automatic_update_apply", PackageReleaseStatusName)
+	}
+	return nil
+}
+
 func sameVersion(left, right string) bool {
 	normalize := func(value string) string {
 		return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), "v")
 	}
 	return normalize(left) != "" && normalize(left) == normalize(right)
+}
+
+func comparePackageVersions(left, right string) int {
+	lv, lp := parsePackageVersion(left)
+	rv, rp := parsePackageVersion(right)
+	for i := range lv {
+		if lv[i] > rv[i] {
+			return 1
+		}
+		if lv[i] < rv[i] {
+			return -1
+		}
+	}
+	if lp == rp {
+		return 0
+	}
+	if lp == "" {
+		return 1
+	}
+	if rp == "" {
+		return -1
+	}
+	if lp > rp {
+		return 1
+	}
+	return -1
+}
+
+func parsePackageVersion(value string) ([3]int, string) {
+	clean := strings.TrimSpace(value)
+	clean = strings.TrimPrefix(strings.TrimPrefix(clean, "v"), "V")
+	if plus := strings.Index(clean, "+"); plus >= 0 {
+		clean = clean[:plus]
+	}
+	pre := ""
+	if dash := strings.Index(clean, "-"); dash >= 0 {
+		pre = strings.ToLower(strings.TrimSpace(clean[dash+1:]))
+		clean = clean[:dash]
+	}
+	parts := strings.Split(clean, ".")
+	var parsed [3]int
+	for i := 0; i < len(parts) && i < len(parsed); i++ {
+		parsed[i], _ = strconv.Atoi(strings.TrimSpace(parts[i]))
+	}
+	return parsed, pre
 }
 
 func managedInstallMode(rel string, archived fs.FileMode, goos string) fs.FileMode {

@@ -11,14 +11,16 @@ const (
 	EntityIdentityLinkStateReviewed            = "reviewed"
 	EntityIdentityReviewStateReviewed          = "reviewed"
 	EntityIdentityReviewStateSourceObserved    = "source_observed"
+	EntityIdentitySurfaceScope39               = "source_turn"
+	EntityIdentitySurfaceScopeCurrent          = "source_turn_current"
 )
 
 var ErrReviewedEntityIdentityAmbiguous = errors.New("reviewed entity identity has multiple canonical targets")
 
-// EntityIdentity is an immutable, namespace-scoped identity occurrence.
-// Display labels and aliases are stored separately and never act as identity
-// keys. Separate occurrences may later be connected by reviewed links without
-// rewriting their source-bound IDs.
+// EntityIdentity is a namespace-scoped canonical identity. An exact repeated
+// canonical label with the same namespace and entity kind may reuse its stable
+// ID; turn-specific provenance remains on surfaces and artifact bindings.
+// Aliases and non-exact labels never act as automatic identity keys.
 type EntityIdentity struct {
 	StableEntityID      string    `json:"stable_entity_id"`
 	ChatSessionID       string    `json:"chat_session_id"`
@@ -47,7 +49,7 @@ type EntityIdentity struct {
 
 // EntityIdentitySurface records one source-linked display name or alias.
 // normalized_surface is indexed for candidate discovery only; it is not unique
-// and must never be used as an automatic merge key.
+// and is insufficient without an exact canonical label, namespace, and kind.
 type EntityIdentitySurface struct {
 	SurfaceID         string    `json:"surface_id"`
 	StableEntityID    string    `json:"stable_entity_id"`
@@ -164,9 +166,10 @@ type ReviewedEntityIdentityResolver interface {
 	ResolveReviewedCanonicalEntityID(ctx context.Context, chatSessionID, sourceEntityID string) (string, error)
 }
 
-// UniqueActiveEntitySurfaceResolver resolves a source-observed surface only
-// when all active occurrences converge on one stable or reviewed canonical
-// identity. Display text is discovery input, never an identity key.
+// UniqueActiveEntitySurfaceResolver resolves a source-observed surface when all
+// active occurrences converge on one canonical identity. Multiple exact
+// display-name rows may resolve to the earliest ID only when canonical label,
+// namespace, and entity kind are identical.
 type UniqueActiveEntitySurfaceResolver interface {
 	ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error)
 }
@@ -178,6 +181,7 @@ type UniqueActiveEntitySurfaceResolver interface {
 type ResolvedEntityIdentity struct {
 	StableEntityID    string `json:"stable_entity_id"`
 	IdentityNamespace string `json:"identity_namespace"`
+	EntityKind        string `json:"entity_kind"`
 	CanonicalLabel    string `json:"canonical_label"`
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,9 @@ func TestGoBackendEnvCarriesReferenceEmbeddingModel(t *testing.T) {
 }
 
 func TestCopy08ToTemp(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("robocopy fixture copy is Windows-only")
+	}
 	src := t.TempDir()
 	for rel, content := range map[string]string{
 		filepath.Join("backend", "main.py"):              "print('fixture')\n",
@@ -92,6 +96,9 @@ func TestCopy08ToTemp(t *testing.T) {
 }
 
 func TestMakeJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("directory junctions are Windows-only")
+	}
 	src, err := os.MkdirTemp("", "junction-src-*")
 	if err != nil {
 		t.Fatal(err)

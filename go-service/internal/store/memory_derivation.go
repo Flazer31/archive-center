@@ -51,6 +51,8 @@ type MemorySourceRevision struct {
 	DerivedResultHash            string
 	DerivedResultJSON            string
 	DerivedAdmittedAt            time.Time
+	CriticInputSnapshotJSON      string
+	CriticInputSnapshotHash      string
 	CreatedAt                    time.Time
 	UpdatedAt                    time.Time
 }
@@ -67,6 +69,20 @@ type SourceRevisionStore interface {
 	GetSourceRevision(ctx context.Context, chatSessionID, sourceRevision string) (*MemorySourceRevision, error)
 	IsSourceRevisionActive(ctx context.Context, chatSessionID, sourceRevision string) (bool, error)
 	InvalidateSourceRevisions(ctx context.Context, chatSessionID string, fromTurn int, lifecycleState, reason string, invalidatedAt time.Time) error
+}
+
+// CriticInputSnapshotStore preserves the exact bounded dynamic input selected
+// for an accepted source revision. Reprocessing reads this snapshot instead of
+// rebuilding context from mutable session state.
+type CriticInputSnapshotStore interface {
+	SaveCriticInputSnapshot(
+		context.Context,
+		string,
+		string,
+		string,
+		string,
+		time.Time,
+	) error
 }
 
 type MemoryDerivationLifecycleAvailability interface {

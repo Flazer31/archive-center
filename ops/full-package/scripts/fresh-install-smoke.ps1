@@ -87,7 +87,7 @@ if (Test-Path -LiteralPath $managedManifestPath -PathType Leaf) {
             [void]$failures.Add("managed_manifest_build_descriptor_invalid")
         }
         $managedPaths = @($managedManifest.files | ForEach-Object { ([string]$_.path).Replace('\', '/') })
-        foreach ($requiredManagedPath in @("bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js")) {
+        foreach ($requiredManagedPath in @("bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", "scripts/start-full-windows.ps1", "01_start_archive_center_windows.bat", "tools/install-windows.ps1", "PACKAGE_MIGRATION_UPDATE.json", "PACKAGE_RELEASE_STATUS.json", "Archive Center.js")) {
             if ($managedPaths -notcontains $requiredManagedPath) {
                 [void]$failures.Add("managed_manifest_missing:$requiredManagedPath")
             }
@@ -153,7 +153,7 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     if ($launcherScriptText.Contains($unstampedVersionToken)) {
         [void]$failures.Add("launcher_package_version_not_stamped")
     }
-    foreach ($marker in @("archive-center-updater.exe", "apply-pending", "applied_pending_health", "Wait-BackendMainReady", "/version", "statePreviousMarker", "Using preserved updater recovery runner", 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "status"', 'safety.Status -in @("no_state", "rolled_back", "nothing_to_rollback")', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "commit"', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback"', 'Warning: Archive Center updater is not installed. No pending state exists, so normal startup will continue.')) {
+    foreach ($marker in @("archive-center-updater.exe", "apply-pending", "applied_pending_health", "Wait-BackendMainReady", "/version", "statePreviousMarker", "Using preserved updater recovery runner", 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "status"', 'safety.Status -in @("no_state", "rolled_back", "nothing_to_rollback")', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "commit"', 'Invoke-ArchiveUpdater -RunnerPath $updaterRunner -Command "rollback"', 'No pending Archive Center update exists. Normal startup will continue.', 'Warning: Archive Center updater is not installed. No pending state exists, so normal startup will continue.', 'AC_UPDATE_APPLY_MODE = "managed_launcher_exit_75"', 'AC_UPDATE_STAGING_DIR = Join-Path $packRoot ".updates"', 'AC_UPDATE_LAUNCHER_TOKEN', 'launcher-session.json', 'Start-ArchiveBackendProcess', '$backendExitCode -eq 75', '& $PSCommandPath @launcherParameters', '-schema (Join-Path $packRoot "migrations")')) {
         if (-not $launcherScriptText.Contains($marker)) {
             [void]$failures.Add("launcher_update_marker_missing:$marker")
         }
@@ -193,8 +193,20 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     if ($launcherScriptText -notmatch '(?s)\$chromaRuntimeReady\s*=\s*Test-ChromaRuntimeVersion.*?if\s*\(-not\s+\$chromaRuntimeReady\).*?-InstallChromaDBRuntime.*?\$chromaRuntimeReady\s*=\s*Test-ChromaRuntimeVersion') {
         [void]$failures.Add("launcher_chromadb_health_repair_recheck_flow_missing")
     }
-    if ($launcherScriptText -notmatch '(?s)if \(\$pendingApplyStatus -eq "applied_pending_health"\).*?\}\s*else\s*\{\s*& \$backendExe\s*\}') {
-        [void]$failures.Add("launcher_no_pending_direct_backend_path_missing")
+    if ($launcherScriptText -notmatch '(?s)if \(\$pendingApplyStatus -eq "applied_pending_health"\).*?\}\s*else\s*\{\s*\$backendProcess\s*=\s*Start-ArchiveBackendProcess.*?Wait-ArchiveBackendLifetime') {
+        [void]$failures.Add("launcher_no_pending_managed_backend_path_missing")
+    }
+    if ($launcherScriptText -notmatch '(?s)function Stop-ArchiveChildProcess\(\[System\.Diagnostics\.Process\[\]\]\$Process\).*?\$shutdownDeadline\s*=\s*\[DateTime\]::UtcNow\.AddSeconds\(10\).*?\$target\.Kill\(\)') {
+        [void]$failures.Add("launcher_group_shutdown_deadline_missing")
+    }
+    if ($launcherScriptText -notmatch '(?s)JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.*?AssignProcessToJobObject.*?ExitWhenProcessEnds.*?\$script:archiveProcessJob\.AddProcess\(\$proc\.Handle\).*?\$archiveProcessJob\.ExitWhenProcessEnds\(\[ArchiveCenter\.ManagedProcessJob\]::GetCurrentParentProcessId\(\)\)') {
+        [void]$failures.Add("launcher_job_object_lifetime_binding_missing")
+    }
+    if ($launcherScriptText -notmatch '(?s)Wait-Process -InputObject \$Process.*?finally \{.*?Stop-ArchiveChildProcess -Process @\(\s*\$backendProcess,\s*\$candidateBackend,\s*\$restoredBackend,\s*\$startedChroma,\s*\$startedMariaDB\s*\).*?\$archiveProcessJob\.Dispose\(\)') {
+        [void]$failures.Add("launcher_ctrl_c_full_process_cleanup_missing")
+    }
+    if ($launcherScriptText.Contains('KeepServices')) {
+        [void]$failures.Add("launcher_keep_services_option_must_not_exist")
     }
 }
 

@@ -205,15 +205,20 @@ func narrativeStateValuePayload(claim narrativeStateClaim, previousValue string,
 	}
 }
 
-func narrativeStateEvidencePayload(claim narrativeStateClaim, evidenceIDs []int64, turnIndex int) map[string]any {
-	return map[string]any{
+func narrativeStateEvidencePayload(claim narrativeStateClaim, evidenceIDs []int64, turnIndex int, sourceRevision string) map[string]any {
+	payload := map[string]any{
 		"contract_version":    narrativeStateContractVersion,
 		"source":              "critic." + claim.SourceKind,
 		"source_index":        claim.SourceIndex,
 		"source_turn":         turnIndex,
 		"evidence_excerpt":    claim.EvidenceExcerpt,
 		"direct_evidence_ids": evidenceIDs,
+		"current_projection":  true,
 	}
+	if sourceRevision = strings.TrimSpace(sourceRevision); sourceRevision != "" {
+		payload["source_revision"] = sourceRevision
+	}
+	return payload
 }
 
 func (s *Server) ensureNarrativeStateDefinition(ctx context.Context, sid string, now time.Time, result *artifactSaveResult) (store.StatusSchemaDefinition, bool) {
@@ -268,6 +273,10 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 	events := sliceFromAny(extraction["narrative_events"])
 	if len(claims) == 0 && len(events) == 0 {
 		return
+	}
+	sourceRevision := ""
+	if sourceContext, ok := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext); ok {
+		sourceRevision = strings.TrimSpace(sourceContext.Revision)
 	}
 	currentStore, currentOK := s.Store.(store.StatusCurrentValueStore)
 	lifecycle, lifecycleOK := s.Store.(store.StatusLifecycleStore)
@@ -356,7 +365,7 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 		}
 		evidenceIDs := narrativeStateMatchingEvidenceIDs(evidence, turnIndex, claim.EvidenceExcerpt)
 		valuePayload := narrativeStateValuePayload(claim, previousValue, turnIndex)
-		evidencePayload := narrativeStateEvidencePayload(claim, evidenceIDs, turnIndex)
+		evidencePayload := narrativeStateEvidencePayload(claim, evidenceIDs, turnIndex, sourceRevision)
 		result.Attempted++
 		saved, err := currentStore.SaveStatusCurrentValue(ctx, store.StatusCurrentValue{
 			ChatSessionID: sid,
@@ -417,6 +426,9 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 		ownerID := fmt.Sprintf("event:%d:%d", turnIndex, index)
 		payload := map[string]any{"contract_version": narrativeStateContractVersion, "summary": summary, "event_type": stringFromMap(item, "event_type"), "participants": item["participants"], "source_turn": turnIndex}
 		evidencePayload := map[string]any{"contract_version": narrativeStateContractVersion, "source": "critic.narrative_events", "source_index": index, "source_turn": turnIndex, "evidence_excerpt": evidenceExcerpt, "direct_evidence_ids": narrativeStateMatchingEvidenceIDs(evidence, turnIndex, evidenceExcerpt)}
+		if sourceRevision != "" {
+			evidencePayload["source_revision"] = sourceRevision
+		}
 		duplicate := false
 		for _, existing := range existingEvents {
 			if existing.OwnerID == ownerID && existing.SourceTurn == turnIndex && normalizeArtifactDedupeText(existing.NewValueJSON) == normalizeArtifactDedupeText(mustCompactJSON(payload)) {
@@ -462,10 +474,10 @@ func narrativeStateMatchingEvidenceIDs(evidence []store.DirectEvidence, turnInde
 	return ids
 }
 
-func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.Store, sid string) (int, error) {
+func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.Store, sid string, maxSourceTurn int) (int, error) {
 	currentStore, currentOK := st.(store.StatusCurrentValueStore)
 	lifecycle, lifecycleOK := st.(store.StatusLifecycleStore)
-	if !currentOK || !lifecycleOK {
+	if !currentOK || !lifecycleOK || maxSourceTurn <= 0 {
 		return 0, nil
 	}
 	events, err := lifecycle.ListStatusChangeEvents(ctx, sid, "", "", narrativeStateStatusKey, 1000)
@@ -474,7 +486,7 @@ func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.St
 	}
 	latest := map[string]store.StatusChangeEvent{}
 	for _, event := range events {
-		if event.StatusKey != narrativeStateStatusKey || event.EventKind == "event_observed" || strings.TrimSpace(event.NewValueJSON) == "" {
+		if event.StatusKey != narrativeStateStatusKey || event.EventKind == "event_observed" || strings.TrimSpace(event.NewValueJSON) == "" || event.SourceTurn <= 0 || event.SourceTurn > maxSourceTurn {
 			continue
 		}
 		current, exists := latest[event.OwnerID]

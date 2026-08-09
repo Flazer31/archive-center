@@ -83,7 +83,7 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 			shadow["search_skipped_reason"] = "missing_query_text_for_embedding"
 			return shadow
 		}
-		embeddingJSON, model, err := callEmbedding(ctx, embeddingCfg, queryText)
+		embeddingJSON, model, err := callQueryEmbedding(ctx, embeddingCfg, queryText)
 		if err != nil {
 			shadow["status"] = "degraded"
 			shadow["query_embedding_status"] = "error"

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -67,6 +68,7 @@ type rollbackDecisionResponse struct {
 	BaselineApplied     bool   `json:"baseline_applied"`
 	DecisionToken       string `json:"decision_token,omitempty"`
 	LifecycleAction     string `json:"lifecycle_action"`
+	TurnWorkflowHUD     any    `json:"turn_workflow_hud,omitempty"`
 }
 
 type rollbackDecisionRecord struct {
@@ -198,6 +200,20 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 	if resp.Allowed {
 		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, req.RequestSource, resp.LifecycleAction)
 		resp.DecisionToken = record.Token
+		requestSource := strings.TrimSpace(req.RequestSource)
+		if requestSource == "" {
+			requestSource = "auto"
+		}
+		resp.TurnWorkflowHUD = s.turnWorkflowHUDOperationNotice(
+			fmt.Sprintf("rollback:%s:%d:%s", resp.ChatSessionID, resp.FromTurn, requestSource),
+			resp.ChatSessionID,
+			resp.FromTurn,
+			"running",
+			"notice",
+			"turn_hud.notice.delete_detected",
+			"turn_hud.notice.delete_detected_detail",
+			"ASSISTANT_OUTPUT_DELETE_DETECTED",
+		)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

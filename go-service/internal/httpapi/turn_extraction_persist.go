@@ -152,7 +152,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	if perspectiveScopedSearch {
 		embeddingModel = "perspective_scoped_typed_delivery"
 		result.EmbeddingStatus = "skipped_perspective_scoped"
-	} else if embCfg.hasConfig() && searchText != "" {
+	} else if embCfg.hasConfig() && searchText != "" && !usesVoyageContextualizedEmbedding(embCfg) {
 		embeddingStartedAt := time.Now()
 		emb, model, err := callEmbedding(ctx, embCfg, searchText)
 		result.addTiming("embedding", embeddingStartedAt)
@@ -174,7 +174,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	admissionErrorsBefore := result.Errors
 	admissionHandled, admittedEvidence, admittedPreciseUnits := s.commitAcceptedMemoryAdmission(
 		ctx, sid, turnIndex, extraction, content, summary, searchText,
-		memorySearchText, embedding, embeddingModel, embeddingVector,
+		memorySearchText, embCfg, embedding, embeddingModel, embeddingVector,
 		languageContext, existingEvidence, identityProjection, now, &result,
 	)
 	if admissionHandled {

@@ -296,7 +296,7 @@ func prepareTurnInteractionEndpointRelevant(rawUserInput string, currentSceneEnt
 }
 
 func renderPrepareTurnInteractionCandidate(candidate prepareTurnInteractionCandidate) string {
-	source := fmt.Sprintf("source_turn=%d; source_ref=precise_memory:%s", candidate.sourceTurn, candidate.unit.UnitID)
+	source := fmt.Sprintf("source_turn=%d", candidate.sourceTurn)
 	prefix := "[Directional Interaction Evidence]"
 	if candidate.guardedWriter {
 		prefix = "[Guarded Interaction Context]"

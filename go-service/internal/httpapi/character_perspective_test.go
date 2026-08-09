@@ -381,6 +381,7 @@ func TestMemoryAdmissionOmitsGeneralVectorsForPerspectiveScopedTurn(t *testing.T
 			extractionStringFromAny(extraction["turn_summary"]),
 			"search text",
 			memorySearchTextBuild{},
+			completeTurnEmbeddingConfig{},
 			"[]",
 			"test-embedding",
 			[]float32{0.1, 0.2},

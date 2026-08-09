@@ -15,7 +15,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-func TestCompleteTurnCriticProviderFailureRetriesWithRedactedInput(t *testing.T) {
+func TestCompleteTurnCriticProviderFailureRetriesWithUnchangedCurrentTurn(t *testing.T) {
 	fake := &turnRecordingStore{}
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -94,19 +94,14 @@ func TestCompleteTurnCriticProviderFailureRetriesWithRedactedInput(t *testing.T)
 	if callCount != 2 {
 		t.Fatalf("critic call count = %d, want 2", callCount)
 	}
-	if strings.Contains(strings.ToLower(secondPrompt), "penetration") || !strings.Contains(secondPrompt, "redacted for critic retry") {
-		t.Fatalf("second critic prompt was not redacted as expected: %s", secondPrompt)
+	if !strings.Contains(strings.ToLower(secondPrompt), "penetration") || strings.Contains(secondPrompt, "redacted for critic retry") {
+		t.Fatalf("second critic prompt changed the completed current turn: %s", secondPrompt)
 	}
 	if resp["critic_triggered"] != true {
-		t.Fatalf("critic_triggered = %v, want true after redacted retry: %+v", resp["critic_triggered"], resp)
+		t.Fatalf("critic_triggered = %v, want true after unchanged retry: %+v", resp["critic_triggered"], resp)
 	}
 	if resp["derived_artifacts_saved"].(float64) < 3 {
 		t.Fatalf("derived_artifacts_saved = %v, want memory/evidence/KG after retry: %+v", resp["derived_artifacts_saved"], resp)
-	}
-	trace, _ := resp["trace_handoff"].(map[string]any)
-	criticTrace, _ := trace["critic_trace"].(map[string]any)
-	if _, ok := criticTrace["provider_retry"].(map[string]any); !ok {
-		t.Fatalf("provider_retry trace missing: %+v", criticTrace)
 	}
 }
 

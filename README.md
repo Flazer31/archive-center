@@ -1,4 +1,4 @@
-# Archive Center 3.5
+# Archive Center 3.9.9
 
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
@@ -33,25 +33,24 @@ matching GitHub release tag. User `.env` files, databases, vector collections,
 original-work documents, secrets, and other user-provided data are not part of
 the project license or source release.
 
-## GitHub Install/Update
+## GitHub Fresh Install
 
-For normal installs and updates, use the GitHub Release package helpers instead
-of running a raw source checkout as the backend.
+For a new installation, use the one-line entry point for your platform.
 
 POSIX:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/scripts/install-github-release.sh |
-  AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=<seconds> sh
+curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/Flazer31/archive-center/main/scripts/install-github-release.ps1 -OutFile install-github-release.ps1
-powershell -ExecutionPolicy Bypass -File .\install-github-release.ps1 `
-  -ExternalOperationTimeoutSeconds <seconds>
+irm https://raw.githubusercontent.com/Flazer31/archive-center/main/install-windows.ps1 | iex
 ```
+
+Updates use a separate path; these entry points never update or overwrite an
+existing install. See [`docs/simple-fresh-install.md`](docs/simple-fresh-install.md).
 
 Raw `git clone` is a source/operator path. It does not by itself configure
 MariaDB, ChromaDB, package launchers, or live service env. See

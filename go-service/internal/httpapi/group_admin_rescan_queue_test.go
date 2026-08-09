@@ -24,6 +24,21 @@ type adminDuplicateReprocessingStore struct {
 	enqueueNew   bool
 }
 
+func (f *adminDuplicateReprocessingStore) SaveCriticInputSnapshot(
+	_ context.Context,
+	_ string,
+	revision string,
+	snapshotJSON string,
+	snapshotHash string,
+	_ time.Time,
+) error {
+	if f.source.SourceRevision == revision {
+		f.source.CriticInputSnapshotJSON = snapshotJSON
+		f.source.CriticInputSnapshotHash = snapshotHash
+	}
+	return nil
+}
+
 func newAdminDuplicateReprocessingStore() *adminDuplicateReprocessingStore {
 	source := store.MemorySourceRevision{
 		SourceRevision:          "revision",
@@ -159,6 +174,24 @@ type adminCanonicalRawReprocessingStore struct {
 	*adminDuplicateReprocessingStore
 	registered []store.MemorySourceRevision
 	admissions []*store.MemoryAdmission
+}
+
+func (f *adminCanonicalRawReprocessingStore) SaveCriticInputSnapshot(
+	_ context.Context,
+	_ string,
+	revision string,
+	snapshotJSON string,
+	snapshotHash string,
+	_ time.Time,
+) error {
+	for index := range f.registered {
+		if f.registered[index].SourceRevision == revision {
+			f.registered[index].CriticInputSnapshotJSON = snapshotJSON
+			f.registered[index].CriticInputSnapshotHash = snapshotHash
+			return nil
+		}
+	}
+	return store.ErrNotFound
 }
 
 func (f *adminCanonicalRawReprocessingStore) ListActiveSourceRevisions(

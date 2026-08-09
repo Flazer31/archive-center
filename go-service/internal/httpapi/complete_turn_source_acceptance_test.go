@@ -824,10 +824,10 @@ func TestCompleteTurnSourceAcceptanceAdoptsLegacyTailWithMatchingUserAnchor(t *t
 	}
 }
 
-func TestCompleteTurnSourceAcceptanceRejectsLowerObservedTurnInsteadOfAppendingAfterWrongTail(t *testing.T) {
+func TestCompleteTurnSourceAcceptanceAppendsLowerObservedIndexAfterCanonicalTail(t *testing.T) {
 	storage := &turnRecordingStore{returnChatLogs: []store.ChatLog{
-		{ChatSessionID: "session-1", TurnIndex: 51, Role: "user", Content: "wrong old user"},
-		{ChatSessionID: "session-1", TurnIndex: 51, Role: "assistant", Content: "wrong old assistant"},
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "user", Content: "persisted user"},
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "assistant", Content: "persisted assistant"},
 	}}
 	server := &Server{
 		Cfg:               config.Config{StoreMode: config.StoreModeMariaDBAuthority},
@@ -836,11 +836,64 @@ func TestCompleteTurnSourceAcceptanceRejectsLowerObservedTurnInsteadOfAppendingA
 	}
 	req := completeTurnAnchoredAcceptanceTestRequest("session-1", 35, "actual user", "actual assistant", 2000, "generation-35", "not_streaming", 68, 69, 70)
 	decision := server.beginCompleteTurnSourceAcceptance(context.Background(), req)
-	if decision.Accepted || decision.Reason != "source_acceptance_session_tail_conflict" || !decision.Retryable {
-		t.Fatalf("lower active-chat turn must force rerouting, not become turn 52: %+v", decision)
+	if !decision.Accepted || decision.BoundTurn != 52 || decision.ReplaceExisting {
+		t.Fatalf("lower Host index must remain an observation while the new DB turn appends after the canonical tail: %+v", decision)
 	}
-	if decision.BoundTurn != 35 {
-		t.Fatalf("observed turn was rewritten: %+v", decision)
+}
+
+func TestCompleteTurnPersistsLowerHostIndexAtCanonicalDBNextTurn(t *testing.T) {
+	storage := &turnRecordingStore{returnChatLogs: []store.ChatLog{
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "user", Content: "persisted user"},
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "assistant", Content: "persisted assistant"},
+	}}
+	server := &Server{
+		Cfg:               config.Config{StoreMode: config.StoreModeMariaDBAuthority},
+		Store:             storage,
+		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(),
+		CompleteTurns:     newCompleteTurnRequestLedger(),
+	}
+	req := completeTurnAnchoredAcceptanceTestRequest("session-1", 35, "actual user", "actual assistant", 2000, "generation-35", "not_streaming", 68, 69, 70)
+	req.ClientMeta["idempotency_key"] = "session-1-lower-host-index"
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.handleCompleteTurn(recorder, httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(storage.savedChatLogs) != 2 || storage.savedChatLogs[0].TurnIndex != 52 || storage.savedChatLogs[1].TurnIndex != 52 {
+		t.Fatalf("canonical raw turn was not persisted at DB tail + 1: %+v", storage.savedChatLogs)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["turn_index"] != float64(52) || response["save_ok"] != true {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceKeepsExistingLogicalTurnWhenDBTailIsAhead(t *testing.T) {
+	storage := &turnRecordingStore{}
+	server := &Server{
+		Cfg:               config.Config{StoreMode: config.StoreModeMariaDBAuthority},
+		Store:             storage,
+		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(),
+	}
+	original := completeTurnAnchoredAcceptanceTestRequest("session-1", 35, "same user", "first answer", 1000, "generation-1", "not_streaming", 68, 69, 70)
+	if decision := server.beginCompleteTurnSourceAcceptance(context.Background(), original); !decision.Accepted || decision.BoundTurn != 35 {
+		t.Fatalf("original decision=%+v", decision)
+	}
+	storage.returnChatLogs = []store.ChatLog{
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "user", Content: "persisted user"},
+		{ChatSessionID: "session-1", TurnIndex: 51, Role: "assistant", Content: "persisted assistant"},
+	}
+	reroll := completeTurnAnchoredAcceptanceTestRequest("session-1", 35, "same user", "rerolled answer", 2000, "generation-2", "not_streaming", 68, 69, 70)
+	decision := server.beginCompleteTurnSourceAcceptance(context.Background(), reroll)
+	if !decision.Accepted || decision.BoundTurn != 35 || !decision.ReplaceExisting {
+		t.Fatalf("existing logical turn must keep its canonical DB turn while rerolling: %+v", decision)
 	}
 }
 

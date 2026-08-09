@@ -200,9 +200,9 @@ func Test39BHabitAdmissionRequiresExactExpressionsAndBlocksLegacyTraitWrites(t *
 }
 
 func Test39BHabitCriticContractIsTypedAndDoesNotClaimSpeechStyle(t *testing.T) {
-	prompt := buildCompleteTurnCriticPrompt("session-prompt", 1, "Mira checks the door.", "Rook waits.", nil, nil, nil)
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session-prompt", 1, "Mira checks the door.", "Rook waits.", nil, nil, nil))
 	for _, needle := range []string{
-		`"habit_observations":[{"subject_entity":""`,
+		`"habit_observations"`,
 		"habit_observations collect behavior occurrences, patterns, counterexamples, and exceptions",
 		"Do not use a fixed count to decide that a habit exists",
 		"character_profile_observations collect personality, values, desires, fears, contradictions",

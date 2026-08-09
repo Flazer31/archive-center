@@ -12,6 +12,7 @@ import (
 )
 
 var _ SourceRevisionStore = (*mariadbStore)(nil)
+var _ CriticInputSnapshotStore = (*mariadbStore)(nil)
 var _ MemoryDerivationLifecycleAvailability = (*mariadbStore)(nil)
 var _ MemoryReprocessingJobStore = (*mariadbStore)(nil)
 var _ MemoryReprocessingJobReopener = (*mariadbStore)(nil)
@@ -29,6 +30,8 @@ func (m *mariadbStore) RegisterAcceptedSourceRevision(ctx context.Context, sourc
 	if err := validateMemorySourceRevision(source); err != nil {
 		return result, err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
@@ -234,6 +237,8 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 	var userObservedContentHash, assistantObservedContentHash sql.NullString
 	var derivedResultHash sql.NullString
 	var derivedResultJSON sql.NullString
+	var criticInputSnapshotJSON sql.NullString
+	var criticInputSnapshotHash sql.NullString
 	var derivedAdmittedAt sql.NullTime
 	err := m.db.QueryRowContext(ctx, `
 		SELECT id, contract_version, source_revision, chat_session_id,
@@ -246,6 +251,7 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 		       derived_admission_state, derived_admission_version,
 		       derived_extractor_version, derived_index_version,
 		       derived_result_hash, derived_result_json, derived_admitted_at,
+		       critic_input_snapshot_json, critic_input_snapshot_hash,
 		       created_at, updated_at
 		FROM memory_source_revisions
 		WHERE chat_session_id = ? AND source_revision = ?
@@ -261,6 +267,7 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 		&source.DerivedAdmissionState, &source.DerivedAdmissionVersion,
 		&source.DerivedExtractorVersion, &source.DerivedIndexVersion,
 		&derivedResultHash, &derivedResultJSON, &derivedAdmittedAt,
+		&criticInputSnapshotJSON, &criticInputSnapshotHash,
 		&source.CreatedAt, &source.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -279,7 +286,77 @@ func (m *mariadbStore) GetSourceRevision(ctx context.Context, chatSessionID, sou
 	source.DerivedResultHash = derivedResultHash.String
 	source.DerivedResultJSON = derivedResultJSON.String
 	source.DerivedAdmittedAt = derivedAdmittedAt.Time
+	source.CriticInputSnapshotJSON = criticInputSnapshotJSON.String
+	source.CriticInputSnapshotHash = criticInputSnapshotHash.String
 	return source, nil
+}
+
+func (m *mariadbStore) SaveCriticInputSnapshot(
+	ctx context.Context,
+	chatSessionID string,
+	sourceRevision string,
+	snapshotJSON string,
+	snapshotHash string,
+	updatedAt time.Time,
+) error {
+	if err := m.ensureDB(); err != nil {
+		return err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	sourceRevision = strings.TrimSpace(sourceRevision)
+	snapshotJSON = strings.TrimSpace(snapshotJSON)
+	snapshotHash = strings.ToLower(strings.TrimSpace(snapshotHash))
+	if chatSessionID == "" || sourceRevision == "" || snapshotJSON == "" || len(snapshotHash) != sha256.Size*2 {
+		return fmt.Errorf("invalid critic input snapshot")
+	}
+	var decoded any
+	if json.Unmarshal([]byte(snapshotJSON), &decoded) != nil {
+		return fmt.Errorf("invalid critic input snapshot json")
+	}
+	actualHash := sha256.Sum256([]byte(snapshotJSON))
+	if hex.EncodeToString(actualHash[:]) != snapshotHash {
+		return fmt.Errorf("critic input snapshot hash mismatch")
+	}
+
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
+	updatedAt = nonZeroTime(updatedAt)
+	result, err := m.db.ExecContext(ctx, `
+		UPDATE memory_source_revisions
+		SET critic_input_snapshot_json = ?,
+		    critic_input_snapshot_hash = ?,
+		    updated_at = ?
+		WHERE chat_session_id = ?
+		  AND source_revision = ?
+		  AND lifecycle_state = 'active'
+		  AND critic_input_snapshot_hash IS NULL
+	`, snapshotJSON, snapshotHash, updatedAt, chatSessionID, sourceRevision)
+	if err != nil {
+		return err
+	}
+	if affected, rowsErr := result.RowsAffected(); rowsErr != nil {
+		return rowsErr
+	} else if affected == 1 {
+		return nil
+	}
+
+	var lifecycleState string
+	var existingHash sql.NullString
+	err = m.db.QueryRowContext(ctx, `
+		SELECT lifecycle_state, critic_input_snapshot_hash
+		FROM memory_source_revisions
+		WHERE chat_session_id = ? AND source_revision = ?
+	`, chatSessionID, sourceRevision).Scan(&lifecycleState, &existingHash)
+	if err == sql.ErrNoRows || lifecycleState != "active" {
+		return ErrSourceRevisionStale
+	}
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(existingHash.String), snapshotHash) {
+		return nil
+	}
+	return ErrSourceRevisionConflict
 }
 
 func (m *mariadbStore) IsSourceRevisionActive(ctx context.Context, chatSessionID, sourceRevision string) (bool, error) {
@@ -361,6 +438,8 @@ func (m *mariadbStore) InvalidateSourceRevisions(ctx context.Context, chatSessio
 	default:
 		return fmt.Errorf("invalid source lifecycle %q", lifecycleState)
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -488,10 +567,13 @@ func invalidateMemorySourcesTx(
 			    , source_message_id = CASE WHEN ? = 'deleted' THEN NULL ELSE source_message_id END
 			    , source_generation_id = CASE WHEN ? = 'deleted' THEN NULL ELSE source_generation_id END
 			    , derived_result_json = CASE WHEN ? = 'deleted' THEN NULL ELSE derived_result_json END
+			    , critic_input_snapshot_json = CASE WHEN ? = 'deleted' THEN NULL ELSE critic_input_snapshot_json END
+			    , critic_input_snapshot_hash = CASE WHEN ? = 'deleted' THEN NULL ELSE critic_input_snapshot_hash END
 			WHERE chat_session_id = ? AND source_revision = ? AND `+sourceStatePredicate+`
 		`, lifecycleState, nullableString(supersededByRevision), nullableString(reason),
 			now, now, lifecycleState, lifecycleState, lifecycleState,
-			lifecycleState, lifecycleState, chatSessionID, revision); err != nil {
+			lifecycleState, lifecycleState, lifecycleState, lifecycleState,
+			chatSessionID, revision); err != nil {
 			return err
 		}
 	}
@@ -598,6 +680,8 @@ func (m *mariadbStore) EnqueueMemoryReprocessingJob(ctx context.Context, job *Me
 	if job == nil || strings.TrimSpace(job.IdempotencyKey) == "" || strings.TrimSpace(job.ChatSessionID) == "" || strings.TrimSpace(job.SourceRevision) == "" {
 		return false, fmt.Errorf("invalid memory reprocessing job")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	if strings.TrimSpace(job.ContractVersion) == "" {
 		job.ContractVersion = MemoryReprocessingJobContract
 	}
@@ -659,6 +743,8 @@ func (m *mariadbStore) ReopenMemoryReprocessingJob(
 	if idempotencyKey == "" || chatSessionID == "" || sourceRevision == "" {
 		return false, fmt.Errorf("invalid memory reprocessing reopen request")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -763,6 +849,8 @@ func (m *mariadbStore) ClaimMemoryReprocessingJob(ctx context.Context, leaseOwne
 	if strings.TrimSpace(leaseOwner) == "" || leaseDuration <= 0 {
 		return nil, fmt.Errorf("invalid memory reprocessing lease")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -858,6 +946,8 @@ func (m *mariadbStore) finishMemoryReprocessingJob(ctx context.Context, jobID in
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -927,6 +1017,8 @@ func (m *mariadbStore) EnqueueMemoryVectorOperation(ctx context.Context, item *M
 	if err := m.ensureDB(); err != nil {
 		return false, err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	return enqueueMemoryVectorOperation(ctx, m.db, item)
 }
 
@@ -1008,6 +1100,8 @@ func (m *mariadbStore) ClaimMemoryVectorOperation(ctx context.Context, leaseOwne
 	if strings.TrimSpace(leaseOwner) == "" || leaseDuration <= 0 {
 		return nil, fmt.Errorf("invalid vector outbox lease")
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1126,6 +1220,8 @@ func (m *mariadbStore) finishMemoryVectorOperation(ctx context.Context, outboxID
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

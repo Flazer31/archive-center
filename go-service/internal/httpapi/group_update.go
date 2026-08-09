@@ -18,9 +18,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/risulongmemory/archive-center-go/internal/packageupdate"
 )
 
 var updateHTTPClient = http.DefaultClient
+
+var (
+	errUpdatePlatformUnsupported = errors.New("update platform is unsupported")
+	errUpdatePlatformMismatch    = errors.New("requested update platform does not match the running backend")
+)
 
 type githubReleaseResponse struct {
 	TagName     string              `json:"tag_name"`
@@ -55,6 +62,9 @@ type updateCheckResult struct {
 	LatestVersion       string           `json:"latest_version"`
 	UpdateAvailable     bool             `json:"update_available"`
 	Platform            string           `json:"platform"`
+	RuntimeOS           string           `json:"runtime_os"`
+	RuntimeArch         string           `json:"runtime_arch"`
+	Distribution        string           `json:"distribution,omitempty"`
 	SelectedAsset       *updateAssetInfo `json:"selected_asset,omitempty"`
 	SHA256Source        string           `json:"sha256_source,omitempty"`
 	ApplySupported      bool             `json:"apply_supported"`
@@ -65,6 +75,8 @@ type updateCheckResult struct {
 	ReleasePrerelease   bool             `json:"release_prerelease"`
 	ReleasePublishedAt  string           `json:"release_published_at"`
 	CompatibleAssetNote string           `json:"compatible_asset_note,omitempty"`
+	CompatibilityStatus string           `json:"compatibility_status"`
+	CompatibilityReason string           `json:"compatibility_reason,omitempty"`
 }
 
 type updateDownloadRequest struct {
@@ -72,6 +84,11 @@ type updateDownloadRequest struct {
 	Platform       string `json:"platform"`
 	AssetName      string `json:"asset_name"`
 	ExpectedSHA256 string `json:"expected_sha256"`
+}
+
+type updateApplyRequest struct {
+	CurrentVersion string `json:"current_version"`
+	Platform       string `json:"platform"`
 }
 
 type pendingPackageUpdate struct {
@@ -87,6 +104,7 @@ type pendingPackageUpdate struct {
 func (s *Server) registerUpdateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /update/check", s.handleUpdateCheck)
 	mux.HandleFunc("POST /update/download", s.handleUpdateDownload)
+	mux.HandleFunc("POST /update/apply", s.handleUpdateApply)
 	mux.HandleFunc("GET /update/status", s.handleUpdateStatus)
 }
 
@@ -99,7 +117,7 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, _ *http.Request) {
 	out := map[string]any{
 		"status":          "idle",
 		"policy_version":  "update-status.v1",
-		"apply_supported": updateApplyHelperAvailable(root),
+		"apply_supported": s.updateApplySupported(),
 	}
 	pendingExists := false
 	stateStatus := ""
@@ -167,6 +185,9 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	platform := strings.TrimSpace(r.URL.Query().Get("platform"))
 	result, err := s.resolveLatestUpdate(r.Context(), current, platform)
 	if err != nil {
+		if writeUpdatePlatformError(w, err) {
+			return
+		}
 		writeError(w, http.StatusBadGateway, "update_check_failed", err.Error())
 		return
 	}
@@ -191,11 +212,14 @@ func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.resolveLatestUpdate(r.Context(), current, strings.TrimSpace(req.Platform))
 	if err != nil {
+		if writeUpdatePlatformError(w, err) {
+			return
+		}
 		writeError(w, http.StatusBadGateway, "update_check_failed", err.Error())
 		return
 	}
 	if !result.UpdateAvailable {
-		writeError(w, http.StatusConflict, "update_not_newer", "the selected release is not newer than the current version")
+		writeUpdateUnavailable(w, result)
 		return
 	}
 	asset := result.SelectedAsset
@@ -237,15 +261,96 @@ func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, staged)
 }
 
+func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	if !s.Cfg.UpdateEnabled {
+		writeError(w, http.StatusServiceUnavailable, "update_disabled", "updates are disabled")
+		return
+	}
+	requestShutdown := s.RequestShutdown
+	if requestShutdown == nil {
+		writeError(w, http.StatusServiceUnavailable, "update_apply_unmanaged", "the backend was not started by an update-aware managed launcher")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "update_ack_flush_unsupported", "the HTTP transport cannot flush the update acknowledgement")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var req updateApplyRequest
+	if err := decoder.Decode(&req); err != nil && err != io.EOF {
+		writeBadRequest(w, "invalid update apply request: "+err.Error())
+		return
+	}
+	current := strings.TrimSpace(s.Cfg.BuildVersion)
+	if supplied := strings.TrimSpace(req.CurrentVersion); supplied != "" && !strings.EqualFold(supplied, current) {
+		writeBadRequest(w, "current_version must match the running backend version")
+		return
+	}
+	root, err := s.updateStagingRoot()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update_staging_invalid", err.Error())
+		return
+	}
+	if err := validateUpdateApplyHelper(root); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "update_apply_helper_invalid", err.Error())
+		return
+	}
+	result, err := s.resolveLatestUpdate(r.Context(), current, strings.TrimSpace(req.Platform))
+	if err != nil {
+		if writeUpdatePlatformError(w, err) {
+			return
+		}
+		writeError(w, http.StatusBadGateway, "update_check_failed", err.Error())
+		return
+	}
+	if !result.UpdateAvailable {
+		writeUpdateUnavailable(w, result)
+		return
+	}
+	asset := result.SelectedAsset
+	if asset == nil || strings.TrimSpace(asset.DownloadURL) == "" {
+		writeError(w, http.StatusNotFound, "update_asset_not_found", "no compatible update asset was found")
+		return
+	}
+	expected := normalizeSHA256(asset.SHA256)
+	if expected == "" {
+		writeError(w, http.StatusBadGateway, "update_sha256_missing", "selected update asset has no SHA256 entry")
+		return
+	}
+	staged, err := s.downloadAndStageUpdateAsset(r.Context(), current, result.LatestVersion, *asset, expected)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "update_download_failed", err.Error())
+		return
+	}
+	staged["status"] = "accepted"
+	staged["policy_version"] = "update-apply.v1"
+	staged["runtime_os"] = result.RuntimeOS
+	staged["runtime_arch"] = result.RuntimeArch
+	if result.Distribution != "" {
+		staged["distribution"] = result.Distribution
+	}
+	staged["platform"] = result.Platform
+	staged["apply_timing"] = "after_backend_exit"
+	staged["shutdown_requested"] = true
+	staged["exit_code"] = UpdateApplyExitCode
+	staged["next_step"] = "managed_launcher_apply_pending_update"
+	writeJSON(w, http.StatusOK, staged)
+	flusher.Flush()
+	requestShutdown(UpdateApplyExitCode)
+}
+
 func (s *Server) resolveLatestUpdate(ctx context.Context, currentVersion, platform string) (*updateCheckResult, error) {
 	repo := strings.TrimSpace(s.Cfg.UpdateGitHubRepo)
 	if !isSafeGitHubRepo(repo) {
 		return nil, fmt.Errorf("invalid update repository %q", repo)
 	}
-	if strings.TrimSpace(platform) == "" {
-		platform = detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
-	} else {
-		platform = normalizeUpdatePlatform(platform)
+	var err error
+	platform, err = authoritativeUpdatePlatform(platform, runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return nil, err
 	}
 	release, err := fetchGitHubLatestRelease(ctx, repo)
 	if err != nil {
@@ -254,30 +359,95 @@ func (s *Server) resolveLatestUpdate(ctx context.Context, currentVersion, platfo
 	latest := versionFromTag(release.TagName)
 	shaMap, shaSource := fetchReleaseSHA256Map(ctx, release.Assets)
 	selected := selectUpdateAsset(platform, release.Assets, shaMap)
-	updateAvailable := compareVersions(latest, currentVersion) > 0
 	result := &updateCheckResult{
-		Status:             "ok",
-		PolicyVersion:      "update-check.v1",
-		Repository:         repo,
-		Channel:            strings.TrimSpace(s.Cfg.UpdateChannel),
-		CurrentVersion:     strings.TrimSpace(currentVersion),
-		LatestVersion:      latest,
-		UpdateAvailable:    updateAvailable,
-		Platform:           platform,
-		SelectedAsset:      selected,
-		SHA256Source:       shaSource,
-		ApplySupported:     s.updateApplySupported(),
-		DownloadSupported:  selected != nil && selected.SHA256 != "",
-		ReleaseTag:         release.TagName,
-		ReleaseName:        release.Name,
-		ReleaseURL:         release.HTMLURL,
-		ReleasePrerelease:  release.Prerelease,
-		ReleasePublishedAt: release.PublishedAt,
+		Status:              "ok",
+		PolicyVersion:       "update-check.v2",
+		Repository:          repo,
+		Channel:             strings.TrimSpace(s.Cfg.UpdateChannel),
+		CurrentVersion:      strings.TrimSpace(currentVersion),
+		LatestVersion:       latest,
+		UpdateAvailable:     false,
+		Platform:            platform,
+		RuntimeOS:           runtime.GOOS,
+		RuntimeArch:         runtime.GOARCH,
+		Distribution:        detectRuntimeDistribution(runtime.GOOS),
+		SelectedAsset:       selected,
+		SHA256Source:        shaSource,
+		ApplySupported:      s.updateApplySupported(),
+		DownloadSupported:   selected != nil && selected.SHA256 != "",
+		ReleaseTag:          release.TagName,
+		ReleaseName:         release.Name,
+		ReleaseURL:          release.HTMLURL,
+		ReleasePrerelease:   release.Prerelease,
+		ReleasePublishedAt:  release.PublishedAt,
+		CompatibilityStatus: "not_newer",
+	}
+	if compareVersions(latest, currentVersion) <= 0 {
+		result.CompatibilityReason = "the latest release is not newer than the running backend"
+		return result, nil
+	}
+	if s.RequestShutdown == nil {
+		result.CompatibilityStatus = "managed_launcher_unavailable"
+		result.CompatibilityReason = "the backend was not started by an update-aware managed launcher"
+		return result, nil
 	}
 	if selected == nil {
 		result.CompatibleAssetNote = "no asset name matched the requested platform"
+		result.CompatibilityStatus = "platform_asset_missing"
+		result.CompatibilityReason = "the release does not contain a package for the running OS and CPU"
+		return result, nil
 	}
+	if normalizeSHA256(selected.SHA256) == "" {
+		result.CompatibilityStatus = "sha256_missing"
+		result.CompatibilityReason = "the selected platform package is not covered by the release SHA256SUMS"
+		return result, nil
+	}
+	root, err := s.updateStagingRoot()
+	if err != nil {
+		result.CompatibilityStatus = "installed_package_invalid"
+		result.CompatibilityReason = err.Error()
+		return result, nil
+	}
+	if err := validateUpdateApplyHelper(root); err != nil {
+		result.CompatibilityStatus = "apply_helper_unavailable"
+		result.CompatibilityReason = err.Error()
+		return result, nil
+	}
+	if err := s.preflightUpdateAsset(ctx, filepath.Dir(root), strings.TrimSpace(currentVersion), latest, *selected); err != nil {
+		result.CompatibilityStatus = updateCompatibilityStatus(err)
+		result.CompatibilityReason = err.Error()
+		return result, nil
+	}
+	result.UpdateAvailable = true
+	result.CompatibilityStatus = "compatible"
+	result.CompatibilityReason = "candidate package passed direct-update preflight"
 	return result, nil
+}
+
+func writeUpdateUnavailable(w http.ResponseWriter, result *updateCheckResult) {
+	if result != nil && result.CompatibilityStatus == "not_newer" {
+		writeError(w, http.StatusConflict, "update_not_newer", result.CompatibilityReason)
+		return
+	}
+	status := "update_incompatible"
+	message := "the latest release cannot be applied directly to this installation"
+	if result != nil {
+		if strings.TrimSpace(result.CompatibilityStatus) != "" {
+			status = result.CompatibilityStatus
+		}
+		if strings.TrimSpace(result.CompatibilityReason) != "" {
+			message = result.CompatibilityReason
+		}
+	}
+	writeError(w, http.StatusConflict, status, message)
+}
+
+func updateCompatibilityStatus(err error) string {
+	var updateErr *packageupdate.UpdateError
+	if errors.As(err, &updateErr) && strings.TrimSpace(updateErr.Code) != "" {
+		return "preflight_" + strings.TrimSpace(updateErr.Code)
+	}
+	return "preflight_failed"
 }
 
 func (r *updateCheckResult) assetsForInternalUse() []updateAssetInfo {
@@ -403,7 +573,10 @@ func assetMatchesPlatform(name, platform string) bool {
 	comparable := comparableAssetName(name)
 	switch normalizeUpdatePlatform(platform) {
 	case "windows-x64":
-		return strings.Contains(comparable, "windows") && strings.Contains(comparable, "package zip")
+		return strings.Contains(comparable, "windows") &&
+			!strings.Contains(comparable, "windows arm64") &&
+			!strings.Contains(comparable, "windows aarch64") &&
+			strings.Contains(comparable, "package zip")
 	case "windows-arm64":
 		return strings.Contains(comparable, "windows arm64") && strings.Contains(comparable, "package zip")
 	case "linux-x64":
@@ -441,27 +614,6 @@ func comparableAssetName(name string) string {
 }
 
 func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion, latestVersion string, asset updateAssetInfo, expectedSHA256 string) (map[string]any, error) {
-	if err := validateUpdateDownloadURL(asset.DownloadURL); err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.DownloadURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Archive-Center-Updater")
-	resp, err := updateHTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("asset download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	maxBytes := s.Cfg.UpdateMaxDownloadBytes
-	if maxBytes <= 0 {
-		maxBytes = 1024 * 1024 * 1024
-	}
 	root, err := s.updateStagingRoot()
 	if err != nil {
 		return nil, err
@@ -482,34 +634,8 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 	if !pathInside(target, root) {
 		return nil, fmt.Errorf("refusing to stage update outside staging directory")
 	}
-	tmp := target + ".tmp"
-	out, err := os.Create(tmp)
+	n, actual, err := s.downloadVerifiedUpdateAsset(ctx, asset, expectedSHA256, target)
 	if err != nil {
-		return nil, err
-	}
-	h := sha256.New()
-	n, copyErr := io.Copy(out, io.TeeReader(io.LimitReader(resp.Body, maxBytes+1), h))
-	closeErr := out.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmp)
-		return nil, copyErr
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmp)
-		return nil, closeErr
-	}
-	if n > maxBytes {
-		_ = os.Remove(tmp)
-		return nil, fmt.Errorf("download exceeded configured limit")
-	}
-	actual := hex.EncodeToString(h.Sum(nil))
-	if !strings.EqualFold(actual, expectedSHA256) {
-		_ = os.Remove(tmp)
-		return nil, fmt.Errorf("sha256 mismatch for %s", asset.Name)
-	}
-	_ = os.Remove(target)
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
 		return nil, err
 	}
 	applySupported := updateApplyHelperAvailable(root)
@@ -545,11 +671,135 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 	}, nil
 }
 
-func requiredUpdatePackageFiles(goos string) []string {
-	if strings.EqualFold(strings.TrimSpace(goos), "windows") {
-		return []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "Archive Center.js"}
+func (s *Server) preflightUpdateAsset(ctx context.Context, packageRoot, currentVersion, targetVersion string, asset updateAssetInfo) error {
+	tempRoot, err := os.MkdirTemp("", "archive-center-update-check-")
+	if err != nil {
+		return err
 	}
-	return []string{"bin/archive-center-go", "bin/archive-center-updater", "Archive Center.js"}
+	defer os.RemoveAll(tempRoot)
+	fileName := sanitizeAssetFileName(asset.Name)
+	if fileName == "" {
+		return fmt.Errorf("invalid update asset filename")
+	}
+	target := filepath.Join(tempRoot, fileName)
+	_, actual, err := s.downloadVerifiedUpdateAsset(ctx, asset, asset.SHA256, target)
+	if err != nil {
+		return err
+	}
+	return packageupdate.PreflightCandidate(packageRoot, packageupdate.Candidate{
+		CurrentVersion: currentVersion,
+		TargetVersion:  targetVersion,
+		AssetPath:      target,
+		SHA256:         actual,
+		RequiredFiles:  requiredUpdatePackageFiles(runtime.GOOS),
+	})
+}
+
+func (s *Server) downloadVerifiedUpdateAsset(ctx context.Context, asset updateAssetInfo, expectedSHA256, target string) (int64, string, error) {
+	if err := validateUpdateDownloadURL(asset.DownloadURL); err != nil {
+		return 0, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.DownloadURL, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("User-Agent", "Archive-Center-Updater")
+	resp, err := updateHTTPClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return 0, "", fmt.Errorf("asset download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	maxBytes := s.Cfg.UpdateMaxDownloadBytes
+	if maxBytes <= 0 {
+		maxBytes = 1024 * 1024 * 1024
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return 0, "", err
+	}
+	tmp := target + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return 0, "", err
+	}
+	h := sha256.New()
+	n, copyErr := io.Copy(out, io.TeeReader(io.LimitReader(resp.Body, maxBytes+1), h))
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return 0, "", copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return 0, "", closeErr
+	}
+	if n > maxBytes {
+		_ = os.Remove(tmp)
+		return 0, "", fmt.Errorf("download exceeded configured limit")
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(actual, normalizeSHA256(expectedSHA256)) {
+		_ = os.Remove(tmp)
+		return 0, "", fmt.Errorf("sha256 mismatch for %s", asset.Name)
+	}
+	_ = os.Remove(target)
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return 0, "", err
+	}
+	return n, actual, nil
+}
+
+func requiredUpdatePackageFiles(goos string) []string {
+	switch strings.ToLower(strings.TrimSpace(goos)) {
+	case "windows":
+		return []string{
+			"bin/archive-center-go.exe",
+			"bin/archive-center-updater.exe",
+			"bin/mariadb-schema.exe",
+			packageupdate.PackageReleaseStatusName,
+			"scripts/start-full-windows.ps1",
+			"01_start_archive_center_windows.bat",
+			"PACKAGE_MIGRATION_UPDATE.json",
+			"Archive Center.js",
+		}
+	case "darwin":
+		return []string{
+			"bin/archive-center-go",
+			"bin/archive-center-updater",
+			"bin/mariadb-schema",
+			packageupdate.PackageReleaseStatusName,
+			"scripts/start-full-posix.sh",
+			"scripts/start-full-macos.sh",
+			"PACKAGE_MIGRATION_UPDATE.json",
+			"Archive Center.js",
+		}
+	case "android":
+		return []string{
+			"bin/archive-center-go",
+			"bin/archive-center-updater",
+			"bin/mariadb-schema",
+			packageupdate.PackageReleaseStatusName,
+			"scripts/start-full-posix.sh",
+			"scripts/install-and-start-termux.sh",
+			"PACKAGE_MIGRATION_UPDATE.json",
+			"Archive Center.js",
+		}
+	default:
+		return []string{
+			"bin/archive-center-go",
+			"bin/archive-center-updater",
+			"bin/mariadb-schema",
+			packageupdate.PackageReleaseStatusName,
+			"scripts/start-full-posix.sh",
+			"scripts/start-full-linux.sh",
+			"PACKAGE_MIGRATION_UPDATE.json",
+			"Archive Center.js",
+		}
+	}
 }
 
 func (s *Server) updateStagingRoot() (string, error) {
@@ -561,22 +811,27 @@ func (s *Server) updateStagingRoot() (string, error) {
 }
 
 func (s *Server) updateApplySupported() bool {
+	if s.RequestShutdown == nil {
+		return false
+	}
 	root, err := s.updateStagingRoot()
 	return err == nil && updateApplyHelperAvailable(root)
 }
 
 func updateApplyHelperAvailable(stagingRoot string) bool {
-	root := filepath.Dir(filepath.Clean(stagingRoot))
-	if !strings.EqualFold(filepath.Base(filepath.Clean(stagingRoot)), ".updates") {
-		return false
+	return validateUpdateApplyHelper(stagingRoot) == nil
+}
+
+func validateUpdateApplyHelper(stagingRoot string) error {
+	cleanStagingRoot := filepath.Clean(stagingRoot)
+	root := filepath.Dir(cleanStagingRoot)
+	if !strings.EqualFold(filepath.Base(cleanStagingRoot), ".updates") {
+		return fmt.Errorf("update staging directory must be the package .updates directory")
 	}
-	for _, name := range []string{"archive-center-updater.exe", "archive-center-updater"} {
-		info, err := os.Stat(filepath.Join(root, "bin", name))
-		if err == nil && info.Mode().IsRegular() {
-			return true
-		}
+	if err := packageupdate.ValidateInstalledApplyHelper(root); err != nil {
+		return fmt.Errorf("installed update helper validation failed: %w", err)
 	}
-	return false
+	return nil
 }
 
 func writePendingPackageUpdate(path string, pending pendingPackageUpdate) error {
@@ -632,6 +887,72 @@ func detectUpdatePlatform(goos, goarch string) string {
 	default:
 		return goos + "-" + goarch
 	}
+}
+
+func authoritativeUpdatePlatform(supplied, goos, goarch string) (string, error) {
+	detected := detectUpdatePlatform(strings.ToLower(strings.TrimSpace(goos)), strings.ToLower(strings.TrimSpace(goarch)))
+	if !isSupportedUpdatePlatform(detected) {
+		return "", fmt.Errorf("%w: runtime %s/%s", errUpdatePlatformUnsupported, goos, goarch)
+	}
+	if strings.TrimSpace(supplied) == "" {
+		return detected, nil
+	}
+	requested := normalizeUpdatePlatform(supplied)
+	if !isSupportedUpdatePlatform(requested) {
+		return "", fmt.Errorf("%w: %s", errUpdatePlatformUnsupported, supplied)
+	}
+	if requested != detected {
+		return "", fmt.Errorf("%w: requested %s, runtime %s", errUpdatePlatformMismatch, requested, detected)
+	}
+	return detected, nil
+}
+
+func isSupportedUpdatePlatform(platform string) bool {
+	switch normalizeUpdatePlatform(platform) {
+	case "windows-x64", "windows-arm64", "linux-x64", "linux-arm64", "macos-intel", "macos-apple-silicon", "termux-arm64":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeUpdatePlatformError(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, errUpdatePlatformMismatch):
+		writeError(w, http.StatusBadRequest, "update_platform_mismatch", err.Error())
+		return true
+	case errors.Is(err, errUpdatePlatformUnsupported):
+		writeError(w, http.StatusBadRequest, "update_platform_unsupported", err.Error())
+		return true
+	default:
+		return false
+	}
+}
+
+func detectRuntimeDistribution(goos string) string {
+	if !strings.EqualFold(strings.TrimSpace(goos), "linux") {
+		return ""
+	}
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	return parseOSReleaseDistribution(string(data))
+}
+
+func parseOSReleaseDistribution(data string) string {
+	for _, line := range strings.Split(data, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || key != "ID" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if unquoted, unquoteErr := strconv.Unquote(value); unquoteErr == nil {
+			value = unquoted
+		}
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	return ""
 }
 
 func normalizeUpdatePlatform(platform string) string {

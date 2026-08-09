@@ -210,6 +210,7 @@ func (s *Server) processMemoryReprocessingOnce(
 		ctx,
 		source,
 		s.completeTurnExtractionConfig(nil),
+		false,
 	)
 	result.State = derivation.State
 	result.Failure = derivation.Failure
@@ -258,6 +259,7 @@ func (s *Server) processAcceptedSourceRevision(
 	ctx context.Context,
 	source *store.MemorySourceRevision,
 	extractionCfg completeTurnExtractionConfig,
+	createCriticInputSnapshot bool,
 ) acceptedSourceDerivationResult {
 	var result acceptedSourceDerivationResult
 	if s == nil || s.Store == nil || source == nil {
@@ -290,7 +292,8 @@ func (s *Server) processAcceptedSourceRevision(
 	defer releaseSourceWorker()
 
 	extraction := map[string]any(nil)
-	if source.DerivedAdmissionState == "committed" &&
+	if (source.DerivedAdmissionState == "committed" ||
+		source.DerivedAdmissionState == "staged") &&
 		source.DerivedAdmissionVersion == store.MemoryAdmissionContract &&
 		source.DerivedExtractorVersion == completeTurnCriticPipelineVersion &&
 		source.DerivedIndexVersion == memoryAdmissionIndexVersion &&
@@ -313,7 +316,7 @@ func (s *Server) processAcceptedSourceRevision(
 			return result
 		}
 		result.CriticTrace = map[string]any{
-			"stage":           "committed_result_replay",
+			"stage":           source.DerivedAdmissionState + "_result_replay",
 			"source_revision": source.SourceRevision,
 		}
 	} else {
@@ -332,6 +335,13 @@ func (s *Server) processAcceptedSourceRevision(
 			nil,
 			extractionCfg.Critic,
 			true,
+			s.completeTurnCriticInputPolicy(nil),
+			completeTurnCriticInputReplay{
+				SourceRevision: source.SourceRevision,
+				SnapshotJSON:   source.CriticInputSnapshotJSON,
+				SnapshotHash:   source.CriticInputSnapshotHash,
+				Required:       !createCriticInputSnapshot,
+			},
 		)
 		result.CriticTrace = criticTrace
 		if err != nil {
@@ -350,7 +360,8 @@ func (s *Server) processAcceptedSourceRevision(
 			}
 			failure := criticPipelineErrorDetails(err)
 			result.CriticFailure = failure
-			result.Failure = strings.TrimSpace(stringFromMap(failure, "code"))
+			failureCode := strings.TrimSpace(stringFromMap(failure, "code"))
+			result.Failure = failureCode
 			if result.Failure == "" {
 				result.Failure = "CRITIC_UNKNOWN_FAILED"
 			}
@@ -360,7 +371,7 @@ func (s *Server) processAcceptedSourceRevision(
 			if sourceStateErr == nil && sourceStillActive {
 				result.AuditCriticFailure = true
 			}
-			if !boolFromAny(failure["retryable"]) {
+			if failureCode == "CRITIC_SCHEMA_INVALID" || !boolFromAny(failure["retryable"]) {
 				result.State = "terminal"
 				return result
 			}

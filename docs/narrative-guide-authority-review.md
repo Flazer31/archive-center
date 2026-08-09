@@ -9,6 +9,16 @@ RisuAI lifecycle·HUD 고정 빌드 확인, 3.7-G 전체 환경 행렬과 3.8 lo
 
 구조 정리: 2026-07-31
 
+버전 배정 정정: 2026-08-09
+
+- 3.9는 현재 bounded Publisher의 provider-neutral 오류 안정화에서 끝낸다.
+- 1.0의 단일 호출 `book_author + director` 역할과 coherent narrative-plan block은 4.0으로 이관한다.
+- 4.0은 `none/weak/medium/strong/extreme/maximum` 서사 강도와
+  `compact/standard/explicit` 모델 입력 표현을 독립된 축으로 정의한다.
+- 4.9는 4.0 계약을 교체하지 않고 `directed/reviewed/deep` 다단계 검토와 검증된 capability 기반
+  format 자동 선택만 확장한다.
+- 본문의 과거 3.9/4.9 배정 제안이 이 결정과 충돌하면 4.0 정본 로드맵과 이 정정을 우선한다.
+
 범위: Archive Center 1.0(fix), 역사적 3.6 조사 기준선, 현재 3.8,
 3.9~4.1 기억·기본 출판사 packet, 4.6~5.0 모델 적응형 RP 출판·시뮬레이션,
 독립형 원작 DB·Recomposer의 버전 미배정 연동 경계, RisuAI 로어북 항목의 4.0 참조 검색
@@ -43,8 +53,8 @@ RisuAI lifecycle·HUD 고정 빌드 확인, 3.7-G 전체 환경 행렬과 3.8 lo
 | 역사적 1.0·3.6 기준선 | 1.0 체감 검증, 3.6 당시 약화·이상 동작, 보존할 안전 하한선 | 2~4장 |
 | 3.7 기준선 | 3.6 이월 항목의 재검증, 기억 품질·관찰성·오류 분류 안정화 | 4장, 10장의 3.7 packet |
 | 3.8 | 시간·현재/과거 상태·주관 지식과 인물별 관점 | 7장, 8.6의 시간·인식 계약, 10장의 3.8 packet |
-| 3.9 | 관계·습관·프로필과 1회 bounded Basic Publisher | 5장, 8.6, 10장의 3.9 packet |
-| 4.0 | 3.7-F 핵심 기억 K를 소비하는 복합 회상·최종 전달 증명, 로어북 참조 검색 색인 후보 | 6장, 8.6의 회상 계약, 10장, 12장 |
+| 3.9 | 관계·습관·프로필과 bounded Publisher 오류 안정화 | 5장, 8.6, 10장의 3.9 packet |
+| 4.0 | 3.7-F 핵심 기억 K를 소비하는 복합 회상·최종 전달 증명, `book_author + director` 출판사 복구, 로어북 참조 검색 색인 후보 | 5~6장, 8.6의 회상 계약, 10장, 12장 |
 | 4.1 | 수정·삭제·리롤·분기·재색인·복구·실환경 lifecycle gate | 8.6, 10장, 13~14장 |
 | 4.6 | 실행 지원 기반 계약과 source-linked 관계·개체 graph·UI | 8.6, 10장 |
 | 4.7 | 인물·관계 실행 카드, 말투·지식·agency 투영 | 8장, 10장 |

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,32 @@ type memoryAdmissionWorkerStore struct {
 	legacyMemories  int
 	legacyEvidence  int
 	nextEvidenceID  int64
+}
+
+func attachCriticInputSnapshotForTest(source *store.MemorySourceRevision) {
+	if source == nil {
+		return
+	}
+	systemPrompt, _ := readCriticSystemPrompt(config.Default().PromptDir)
+	snapshot := completeTurnCriticInputSnapshot{
+		ContractVersion:    completeTurnCriticInputSnapshotContract,
+		SourceRevision:     source.SourceRevision,
+		ChatSessionID:      source.ChatSessionID,
+		TurnIndex:          source.TurnIndex,
+		UserInput:          sanitizeCriticStorageText(source.UserContent),
+		AssistantContent:   sanitizeCriticStorageText(source.AssistantContent),
+		ContextMessages:    []map[string]any{},
+		ActiveWorldRules:   []map[string]any{},
+		PreviewPass:        map[string]any{},
+		PipelineVersion:    completeTurnCriticPipelineVersion,
+		SystemPromptSHA256: criticSystemPromptHash(systemPrompt),
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		panic(err)
+	}
+	source.CriticInputSnapshotJSON = string(encoded)
+	source.CriticInputSnapshotHash = fmt.Sprintf("%x", sha256.Sum256(encoded))
 }
 
 type memoryWorkerEventStore struct {
@@ -274,6 +301,139 @@ func (f *memoryAdmissionWorkerStore) CommitMemoryAdmission(_ context.Context, it
 		VectorOperations:    len(item.Vectors),
 		CommittedResultHash: item.ResultHash,
 	}, nil
+}
+
+func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	capturedChunks := []any(nil)
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if !strings.HasSuffix(r.URL.Path, "/v1/contextualizedembeddings") {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("groups=%d, want one source-revision group", len(groups))
+		}
+		capturedChunks = sliceFromAny(groups[0])
+		rows := make([]map[string]any, len(capturedChunks))
+		for i := range capturedChunks {
+			rows[i] = map[string]any{"index": i, "embedding": []float64{float64(i + 1), 0.5}}
+		}
+		body, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "data": rows}}, "model": "voyage-context-4"})
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	fake := &memoryAdmissionWorkerStore{}
+	srv := &Server{Store: fake}
+	srv.Cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "revision-context-group",
+		LogicalTurnID:   "logical-context-group",
+	})
+	extraction := map[string]any{
+		"turn_summary":     "A bell rang and the gate opened.",
+		"importance_score": 6,
+		"evidence_excerpts": []any{
+			"A bell rang.",
+			"The gate opened.",
+		},
+		"narrative_events": []any{map[string]any{
+			"summary":          "The bell rang.",
+			"evidence_excerpt": "A bell rang.",
+			"confidence":       0.9,
+		}},
+	}
+	content := "A bell rang. The gate opened."
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-group", 8, extraction, content,
+		"A bell rang and the gate opened.", "A bell rang and the gate opened.",
+		memorySearchTextBuild{Text: "A bell rang and the gate opened."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: "https://api.voyageai.com/v1/embeddings", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(800, 0), &result,
+	)
+	if !handled || result.Errors != 0 || len(fake.admissions) != 1 {
+		t.Fatalf("handled=%t result=%+v admissions=%d", handled, result, len(fake.admissions))
+	}
+	if calls != 1 {
+		t.Fatalf("embedding calls=%d, want one", calls)
+	}
+	admission := fake.admissions[0]
+	if len(capturedChunks) < 4 || len(admission.Vectors) != 3 || len(admission.PreciseUnits) != 1 {
+		t.Fatalf("chunks=%d vectors=%d precise=%d", len(capturedChunks), len(admission.Vectors), len(admission.PreciseUnits))
+	}
+	for i, item := range admission.Vectors {
+		if len(item.Embedding) == 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != len(capturedChunks) {
+			t.Fatalf("vector[%d] not materialized with stable group: %+v", i, item)
+		}
+	}
+	precise := admission.PreciseUnits[0]
+	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != len(capturedChunks) {
+		t.Fatalf("precise vector not materialized in source group: %+v", precise)
+	}
+	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
+		t.Fatalf("memory provenance/embedding missing: %+v", admission.Memory)
+	}
+}
+
+func TestCurrentTurnVoyageContextStillStoresMemoryEmbeddingWithoutChroma(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	chunkCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("groups=%d, want one source-revision group", len(groups))
+		}
+		chunkCount = len(sliceFromAny(groups[0]))
+		rows := make([]map[string]any, chunkCount)
+		for i := range rows {
+			rows[i] = map[string]any{"index": i, "embedding": []float64{float64(i + 1), 0.25}}
+		}
+		body, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "data": rows}}, "model": "voyage-context-4"})
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	fake := &memoryAdmissionWorkerStore{}
+	srv := &Server{Store: fake}
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "revision-context-no-chroma",
+		LogicalTurnID:   "logical-context-no-chroma",
+	})
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-no-chroma", 9,
+		map[string]any{"turn_summary": "The bell rang.", "importance_score": 5, "evidence_excerpts": []any{"The gate opened."}},
+		"The bell rang. The gate opened.", "The bell rang.", "The bell rang.",
+		memorySearchTextBuild{Text: "The bell rang."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: "https://api.voyageai.com/v1", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(900, 0), &result,
+	)
+	if !handled || result.Errors != 0 || calls != 1 || chunkCount < 2 || len(fake.admissions) != 1 {
+		t.Fatalf("handled=%t result=%+v calls=%d chunks=%d admissions=%d", handled, result, calls, chunkCount, len(fake.admissions))
+	}
+	admission := fake.admissions[0]
+	if len(admission.Vectors) != 0 {
+		t.Fatalf("vectors=%d, want no Chroma outbox vectors", len(admission.Vectors))
+	}
+	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
+		t.Fatalf("memory embedding was not stored without Chroma: %+v", admission.Memory)
+	}
 }
 
 func (f *memoryAdmissionWorkerStore) SaveMemory(context.Context, *store.Memory) error {
@@ -524,6 +684,7 @@ func TestAcceptedSourceReplaysCommittedExtractionWithoutCriticConfiguration(t *t
 		context.Background(),
 		source,
 		completeTurnExtractionConfig{},
+		false,
 	)
 	if result.State != "completed" || result.Failure != "" ||
 		len(st.admissions) != 1 {
@@ -549,6 +710,57 @@ func TestAcceptedSourceReplaysCommittedExtractionWithoutCriticConfiguration(t *t
 	if !boolFromAny(completion["pipeline_complete"]) ||
 		stringFromMap(completion, "source_revision") != source.SourceRevision {
 		t.Fatalf("completion=%#v", completion)
+	}
+}
+
+func TestAcceptedSourceReplaysStagedExtractionWithoutCriticConfiguration(t *testing.T) {
+	extraction := map[string]any{
+		"turn_summary":      "Mina found the brass key.",
+		"importance_score":  7,
+		"evidence_excerpts": []any{"Mina found the brass key."},
+	}
+	source := &store.MemorySourceRevision{
+		SourceRevision:          "staged-revision",
+		ChatSessionID:           "session",
+		LogicalTurnID:           "turn:3",
+		TurnIndex:               3,
+		UserContent:             "Mina looked under the desk.",
+		AssistantContent:        "Mina found the brass key.",
+		LifecycleState:          "active",
+		DerivedAdmissionState:   "staged",
+		DerivedAdmissionVersion: store.MemoryAdmissionContract,
+		DerivedExtractorVersion: completeTurnCriticPipelineVersion,
+		DerivedIndexVersion:     memoryAdmissionIndexVersion,
+		DerivedResultJSON:       mustCompactJSON(normalizePreciseMemoryValue(extraction)),
+	}
+	source.DerivedResultHash = memoryAdmissionResultHash(
+		source.SourceRevision,
+		extraction,
+		store.MemoryAdmissionContract,
+		completeTurnCriticPipelineVersion,
+		memoryAdmissionIndexVersion,
+	)
+	st := &memoryAdmissionWorkerStore{
+		Store:          store.NewNoopStore(),
+		source:         source,
+		nextEvidenceID: 100,
+	}
+	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+
+	result := srv.processAcceptedSourceRevision(
+		context.Background(),
+		source,
+		completeTurnExtractionConfig{},
+		false,
+	)
+	if result.State != "completed" || result.Failure != "" || len(st.admissions) != 1 {
+		t.Fatalf("result=%+v admissions=%d", result, len(st.admissions))
+	}
+	if result.CriticTrace["stage"] != "staged_result_replay" {
+		t.Fatalf("critic trace=%#v", result.CriticTrace)
+	}
+	if st.admissions[0].ResultJSON != source.DerivedResultJSON {
+		t.Fatalf("admission result=%q want=%q", st.admissions[0].ResultJSON, source.DerivedResultJSON)
 	}
 }
 
@@ -915,6 +1127,8 @@ func TestMemoryReprocessingRetryDoesNotBlockOtherJobsInSameWake(t *testing.T) {
 		CombinedContentHash: strings.Repeat("b", 64),
 		LifecycleState:      "active",
 	}
+	attachCriticInputSnapshotForTest(firstSource)
+	attachCriticInputSnapshotForTest(secondSource)
 	base := &memoryAdmissionWorkerStore{
 		Store: store.NewNoopStore(), nextEvidenceID: 200,
 	}
@@ -1140,6 +1354,7 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 	now := time.Now().UTC()
 	st := newMemoryReprocessingWorkerStore(now)
 	st.source.AssistantContent = "The intimate scene involved penetration."
+	attachCriticInputSnapshotForTest(st.source)
 	oldClient := proxyHTTPClient
 	callCount := 0
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -1183,6 +1398,48 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 	preview := stringFromMap(trace, "raw_preview")
 	if !strings.Contains(preview, "second failure marker") {
 		t.Fatalf("redacted retry failure preview was lost: %+v", details)
+	}
+}
+
+func TestMemoryReprocessingWorkerStopsRepeatedSchemaInvalidAfterOneCall(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryReprocessingWorkerStore(now)
+	oldClient := proxyHTTPClient
+	providerCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"broken schema\",\"importance_score\":5,\"evidence_excerpts\":[{\"quote\":\"not a string\"}]}"}}]}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, FailedQueueMaxAttempts: 4,
+		},
+	}
+	result, err := srv.processMemoryReprocessingOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls != 1 || result.State != "terminal" ||
+		!strings.HasPrefix(result.Failure, "CRITIC_SCHEMA_INVALID") ||
+		len(st.failedJobs) != 1 || len(st.failedPermanent) != 1 || !st.failedPermanent[0] ||
+		len(st.completedJobs) != 0 || len(st.admissions) != 0 {
+		t.Fatalf(
+			"calls=%d result=%+v failed=%v permanent=%v completed=%v admissions=%d",
+			providerCalls, result, st.failedJobs, st.failedPermanent, st.completedJobs, len(st.admissions),
+		)
 	}
 }
 
@@ -1266,7 +1523,7 @@ func TestMemoryReprocessingWorkerDiscardsProviderResultAfterSourceInvalidation(t
 }
 
 func newMemoryReprocessingWorkerStore(now time.Time) *memoryAdmissionWorkerStore {
-	return &memoryAdmissionWorkerStore{
+	workerStore := &memoryAdmissionWorkerStore{
 		Store:          store.NewNoopStore(),
 		nextEvidenceID: 200,
 		source: &store.MemorySourceRevision{
@@ -1286,4 +1543,6 @@ func newMemoryReprocessingWorkerStore(now time.Time) *memoryAdmissionWorkerStore
 			Attempts:          0, CreatedAt: now,
 		},
 	}
+	attachCriticInputSnapshotForTest(workerStore.source)
+	return workerStore
 }

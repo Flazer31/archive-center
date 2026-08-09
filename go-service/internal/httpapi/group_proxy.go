@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -141,9 +142,10 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 		trace["llm_call"] = "executed"
 		trace["llm_trace"] = llmTrace
 		if err != nil {
+			failureCode := extractionFirstNonEmpty(extractionStringFromAny(llmTrace["failure_code"]), "publisher_llm_failed_open")
 			trace["llm_call"] = "failed"
 			trace["fail_open"] = true
-			trace["reason_code"] = "supervisor_provider_failed_open"
+			trace["reason_code"] = failureCode
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":                "partial",
 				"source":                "runtime_llm_error",
@@ -155,7 +157,7 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 				"upstream_write":        "disabled",
 				"supervisor_result":     nil,
 				"fail_open":             true,
-				"reason_code":           "supervisor_provider_failed_open",
+				"reason_code":           failureCode,
 				"trace_summary":         trace,
 			})
 			return
@@ -223,21 +225,62 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	if maxTokens <= 0 {
 		maxTokens = 1200
 	}
+	maxCompletionTokens := cfg.MaxCompletionTokens
+	if maxCompletionTokens <= 0 {
+		maxCompletionTokens = maxTokens
+	}
 	temp := cfg.Temperature
 	reqBody := dto.ProxyPluginMainRequest{
-		APIKey:      &cfg.APIKey,
-		Endpoint:    &cfg.Endpoint,
-		Model:       &cfg.Model,
-		Provider:    &cfg.Provider,
-		Messages:    []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": string(userPromptBytes)}},
-		MaxTokens:   &maxTokens,
-		Temperature: &temp,
-		TimeoutMs:   &cfg.TimeoutMs,
+		APIKey:              &cfg.APIKey,
+		Endpoint:            &cfg.Endpoint,
+		Model:               &cfg.Model,
+		Provider:            &cfg.Provider,
+		Messages:            []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": string(userPromptBytes)}},
+		MaxTokens:           &maxTokens,
+		MaxCompletionTokens: &maxCompletionTokens,
+		Temperature:         &temp,
+		TimeoutMs:           &cfg.TimeoutMs,
+	}
+	if strings.TrimSpace(cfg.ReasoningEffort) != "" {
+		reqBody.ReasoningEffort = &cfg.ReasoningEffort
+	}
+	if strings.TrimSpace(cfg.ReasoningPreset) != "" {
+		reqBody.ReasoningPreset = &cfg.ReasoningPreset
+	}
+	if cfg.ReasoningBudgetTokens > 0 {
+		reqBody.ReasoningBudgetTokens = &cfg.ReasoningBudgetTokens
+		reqBody.BudgetTokens = &cfg.ReasoningBudgetTokens
+	}
+	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
+		reqBody.GlmThinkingType = &cfg.GlmThinkingType
 	}
 	applyProxyOverridesFromLLMConfig(&reqBody, cfg)
-	upstream, _, err := performProxyPluginMainWithRetryBudget(ctx, reqBody, cfg.RetryBudget)
+	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudget(ctx, reqBody, cfg.RetryBudget)
 	if err != nil {
-		return nil, map[string]any{"prompt_source": promptSource, "model": cfg.Model}, err
+		failureCode := "publisher_llm_provider_error"
+		var emptyContentErr *proxyEmptyContentError
+		var localRequestErr *proxyLocalRequestError
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			failureCode = "publisher_llm_timeout"
+		case errors.Is(err, context.Canceled):
+			failureCode = "publisher_llm_request_canceled"
+		case errors.As(err, &emptyContentErr):
+			failureCode = "publisher_llm_empty_content"
+		case errors.As(err, &localRequestErr):
+			failureCode = "publisher_llm_request_invalid"
+		case upstreamStatus >= http.StatusBadRequest && upstreamStatus < http.StatusInternalServerError:
+			failureCode = "publisher_llm_upstream_rejected"
+		case upstreamStatus >= http.StatusInternalServerError:
+			failureCode = "publisher_llm_upstream_unavailable"
+		}
+		return nil, map[string]any{
+			"prompt_source":   promptSource,
+			"model":           cfg.Model,
+			"failure_code":    failureCode,
+			"failure_detail":  scrubProxySecret(err.Error(), cfg.APIKey),
+			"upstream_status": upstreamStatus,
+		}, err
 	}
 	content := chatCompletionText(upstream)
 	parsed, err := parseJSONFromLLMContent(content)

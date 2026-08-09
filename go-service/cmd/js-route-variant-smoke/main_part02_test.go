@@ -125,7 +125,7 @@ lastTurnTrace = {
   critic: { memorySaved: false, kgSaved: false }
 };
 html = renderTurnTraceRows();
-assert(html.includes("Supervisor") && html.includes("fail"), "backend-off supervisor fallback missing");
+assert(html.includes("Publisher LLM") && html.includes("fail"), "backend-off publisher status missing");
 assert(html.includes("Storylines") && html.includes("no storylines"), "backend-off storyline fallback missing");
 assert(html.includes("World Rules") && html.includes("no rules"), "backend-off world-rule fallback missing");
 console.log(JSON.stringify({ storylineText, worldRulesText, ok: true }));
@@ -685,8 +685,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.9.0",
-		`const VERSION = "3.9.0";`,
+		"//@version 3.9.9",
+		`const VERSION = "3.9.9";`,
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 설정`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} Settings`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 設定`",
@@ -765,16 +765,16 @@ func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
 		`function turnWorkflowHUDIsEnabled()`,
 		`if (!turnWorkflowHUDIsEnabled())`,
 		`function consumeTurnWorkflowHUDNotice(view)`,
-		`"turn_hud.stage.publisher_llm": "감독관 호출"`,
+		`"turn_hud.stage.publisher_llm": "출판사 LLM 호출"`,
 		`"turn_hud.stage.raw_persist": "입력 저장"`,
 		`"turn_hud.stage.critic_llm": "평론가 호출"`,
 		`"turn_hud.count.knowledge_graph": "관계 지식"`,
 		`"turn_hud.count.relationship_state": "관계 상태"`,
 		`"explorer.tabs.kg_triples.label": "관계 지식"`,
-		`"turn_hud.stage.publisher_llm": "Supervisor call"`,
+		`"turn_hud.stage.publisher_llm": "Publisher LLM call"`,
 		`"turn_hud.stage.raw_persist": "Saving input"`,
 		`"turn_hud.stage.critic_llm": "Critic call"`,
-		`"turn_hud.stage.publisher_llm": "監督を呼び出し"`,
+		`"turn_hud.stage.publisher_llm": "Publisher LLM 呼び出し"`,
 		`"turn_hud.stage.raw_persist": "入力を保存"`,
 		`"turn_hud.stage.critic_llm": "批評家を呼び出し"`,
 	}
@@ -1022,7 +1022,7 @@ func TestBackendOwnedLongOperationsDoNotUsePluginRequestTimeout(t *testing.T) {
 		{`referenceCanonLifecycle`, `/lifecycle/v1`},
 		{`referenceDiscoveryRunFromUI`, `/source-discovery/jobs/v1`},
 		{`referenceDiscoveryAdmitFromUI`, `/admit/v1`},
-		{`downloadArchiveCenterUpdate`, `/update/download`},
+		{`applyArchiveCenterUpdate`, `/update/apply`},
 		{`tryPrepareTurn`, `/prepare-turn`},
 		{`drainOneFailedQueueItem`, `bridgeFetchWithRetry("/complete-turn"`},
 		{`queuePendingCompleteTurnPayload`, `result = await bridgeFetchWithRetry(`},
@@ -1062,7 +1062,39 @@ func TestBackendOwnedLongOperationsDoNotUsePluginRequestTimeout(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t *testing.T) {
+func TestArchiveCenterJSImmediateUpdateUsesOneServerAuthoritativeApplyCall(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	check := extractArchiveCenterJSAsyncFunction(t, src, "checkArchiveCenterUpdate")
+	if strings.Count(check, `bridgeFetch("/update/check"`) != 1 || !strings.Contains(check, `timeoutMs: 0`) {
+		t.Fatal("checkArchiveCenterUpdate must allow the backend to finish verified package preflight")
+	}
+	apply := extractArchiveCenterJSAsyncFunction(t, src, "applyArchiveCenterUpdate")
+	if strings.Count(apply, `bridgeFetch("/update/apply"`) != 1 {
+		t.Fatal("applyArchiveCenterUpdate must issue exactly one POST /update/apply request")
+	}
+	for _, forbidden := range []string{"checkArchiveCenterUpdate", "/update/check", "/update/download", "asset_name", "expected_sha256", "current_version", "platform"} {
+		if strings.Contains(apply, forbidden) {
+			t.Fatalf("applyArchiveCenterUpdate retains client-side update selection %q", forbidden)
+		}
+	}
+	start := strings.Index(src, `const updateDownloadBtn = $("mo-update-download");`)
+	if start < 0 {
+		t.Fatal("immediate update button binding is missing")
+	}
+	endOffset := strings.Index(src[start:], "void refreshArchiveCenterUpdateStatus();")
+	if endOffset < 0 {
+		t.Fatal("update button binding end marker is missing")
+	}
+	binding := src[start : start+endOffset]
+	if strings.Contains(binding, "showConfirmModal") {
+		t.Fatal("Update Now still requires a second confirmation click")
+	}
+	if strings.Count(binding, "applyArchiveCenterUpdate()") != 1 {
+		t.Fatal("Update Now click must invoke applyArchiveCenterUpdate exactly once")
+	}
+}
+
+func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"const _pendingFinalConfirmations = new Map();",
@@ -1074,8 +1106,9 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 		`contract_version: "source_acceptance_observation.v3"`,
 		`finality_source: "risu_afterRequest"`,
 		`finality_state: "received_final_response"`,
+		`host_signal_source: "afterRequest"`,
 		`prompt_memory_availability: "same_turn"`,
-		"persistOfficialAfterRequestFinalWithoutBlockingResponse",
+		"function persistAfterRequestContent()",
 		`contract_version: "source_acceptance_observation.v2"`,
 		`host_lifecycle_contract_version: "risu_host_lifecycle_observation.v1"`,
 		`finality_source: "risu_next_host_signal_active_chat"`,
@@ -1132,11 +1165,14 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 		`drainPendingFinalConfirmations("risu_display")`,
 		"waiting for RisuAI active assistant tail",
 		"registerFinalConfirmationObserver",
-		"R.createMutationObserver",
 		"acceptRisuAfterRequestFinality",
-		"addRisuChatListener",
-		"removeRisuChatListener",
 		"persistAcceptedAfterRequestWithoutBlockingDisplay",
+		"acceptRisuOutputFinal",
+		"onRisuOutput",
+		"persistOfficialRisuOutputWithoutBlockingHost",
+		`recordRisuHookLifecycle("output", "callback_observed");`,
+		`addRisuChatListener("output"`,
+		`removeRisuChatListener("output"`,
 	} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("Archive Center.js retains forbidden timer/synthetic finality marker %q", forbidden)
@@ -1154,23 +1190,21 @@ func TestArchiveCenterJSFinalConfirmationUsesRisuHostSignalsWithoutTimerPolicy(t
 	}
 }
 
-func TestArchiveCenterJSAfterRequestSchedulesSameTurnPersistenceOnceWithoutBlockingResponse(t *testing.T) {
+func TestArchiveCenterJSAfterRequestStartsPersistenceWithoutBlockingVisibleOutput(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	afterRequestAt := strings.Index(src, "function onAfterRequest")
-	if afterRequestAt < 0 {
-		t.Fatal("Archive Center.js missing onAfterRequest")
-	}
-	afterRequest := src[afterRequestAt:]
+	afterRequest := extractArchiveCenterJSFunction(t, src, "onAfterRequest")
 	acceptAt := strings.Index(afterRequest, "const finalObservation = acceptRisuAfterRequestFinal(")
-	scheduleMarker := "function persistOfficialAfterRequestFinalWithoutBlockingResponse()"
-	scheduleAt := strings.Index(afterRequest, scheduleMarker)
-	persistAt := strings.Index(afterRequest, "return continueAcceptedFinalPersistence(")
-	returnAt := strings.Index(afterRequest, "return responseReturnContent;")
-	if acceptAt < 0 || scheduleAt < 0 || persistAt < 0 || returnAt < 0 {
-		t.Fatal("afterRequest same-turn acceptance, persistence schedule, or response return is missing")
+	scheduleAt := strings.Index(afterRequest, "Promise.resolve().then(function persistAfterRequestContent()")
+	returnRelativeAt := -1
+	if scheduleAt >= 0 {
+		returnRelativeAt = strings.Index(afterRequest[scheduleAt:], "return responseReturnContent;")
 	}
-	if !(acceptAt < scheduleAt && scheduleAt < persistAt && persistAt < returnAt) {
-		t.Fatal("afterRequest must accept, schedule persistence, and return the host response in that order")
+	if acceptAt < 0 || scheduleAt < 0 || returnRelativeAt < 0 {
+		t.Fatal("afterRequest final acceptance, persistence scheduling, or response return is missing")
+	}
+	returnAt := scheduleAt + returnRelativeAt
+	if !(acceptAt < scheduleAt && scheduleAt < returnAt) {
+		t.Fatal("afterRequest must accept the final response, schedule persistence, and return in order")
 	}
 	if strings.Contains(src, "async function onAfterRequest") {
 		t.Fatal("afterRequest remains async and can withhold the replacement response")
@@ -1181,23 +1215,13 @@ func TestArchiveCenterJSAfterRequestSchedulesSameTurnPersistenceOnceWithoutBlock
 	if strings.Contains(afterRequest[:returnAt], "resolveAfterRequestWriteSessionId") {
 		t.Fatal("afterRequest performs session routing before returning the visible response")
 	}
-	if strings.Count(afterRequest, scheduleMarker) != 1 {
+	if strings.Count(afterRequest, "function persistAfterRequestContent()") != 1 {
 		t.Fatal("afterRequest persistence schedule must have exactly one entry point")
 	}
-	if strings.Contains(afterRequest[acceptAt:returnAt], "await continueAcceptedFinalPersistence(") {
-		t.Fatal("afterRequest blocks visible output on persistence")
-	}
-	duplicateAt := strings.Index(afterRequest, "finalObservation.duplicate === true")
-	if duplicateAt < 0 {
-		t.Fatal("afterRequest duplicate acceptance guard is missing")
-	}
-	duplicateReturnAt := strings.Index(afterRequest[duplicateAt:], "return responseReturnContent;")
-	if duplicateReturnAt < 0 {
-		t.Fatal("duplicate afterRequest final does not return without a second persistence schedule")
-	}
-	duplicateBranch := afterRequest[duplicateAt : duplicateAt+duplicateReturnAt]
-	if strings.Contains(duplicateBranch, scheduleMarker) || strings.Contains(duplicateBranch, "continueAcceptedFinalPersistence(") {
-		t.Fatal("duplicate afterRequest final schedules persistence again")
+	for _, forbidden := range []string{"acceptRisuOutputFinal(", "onRisuOutput", `addRisuChatListener("output"`} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("removed output-listener finality path returned: %q", forbidden)
+		}
 	}
 }
 

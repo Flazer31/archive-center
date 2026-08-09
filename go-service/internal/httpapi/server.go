@@ -19,6 +19,17 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
+const (
+	// UpdateApplyExitCode is the process exit code emitted after POST
+	// /update/apply has staged a verified package and requested a graceful
+	// shutdown. Managed launchers use this documented code to distinguish an
+	// update handoff from an ordinary service stop.
+	UpdateApplyExitCode = 75
+	// UpdateApplyManagedLauncherMode is the explicit launcher capability token
+	// required before the backend exposes the update shutdown callback.
+	UpdateApplyManagedLauncherMode = "managed_launcher_exit_75"
+)
+
 // Server holds the HTTP handler dependencies.
 type Server struct {
 	Cfg                      config.Config
@@ -40,6 +51,7 @@ type Server struct {
 	TurnWorkflows            *turnWorkflowHUDLedger
 	SourceAcceptances        *completeTurnSourceAcceptanceLedger
 	RollbackDecisions        *rollbackDecisionLedger
+	RequestShutdown          func(exitCode int)
 }
 
 // ValidateRuntimeDependencies verifies live dependencies before the HTTP

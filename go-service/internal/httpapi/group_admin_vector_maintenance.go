@@ -151,6 +151,25 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 	if dryRun {
 		return result
 	}
+	contextualizedReady := usesVoyageContextualizedEmbedding(cfg.Embedder) &&
+		cfg.Embedder.hasConfig() && s.Vector != nil && strings.TrimSpace(s.Cfg.ChromaEndpoint) != ""
+	contextEmbeddings := map[string]string(nil)
+	if contextualizedReady {
+		items := make([]contextualizedEmbeddingItem, 0, len(evidenceCandidates)+len(worldRuleCandidates))
+		for _, item := range evidenceCandidates {
+			items = append(items, contextualizedEmbeddingItem{Key: "evidence:" + strconv.FormatInt(item.ID, 10), Text: directEvidenceVectorDocumentText(item)})
+		}
+		for _, item := range worldRuleCandidates {
+			items = append(items, contextualizedEmbeddingItem{Key: "world_rule:" + strconv.FormatInt(item.ID, 10), Text: worldRuleVectorDocumentText(item)})
+		}
+		var err error
+		contextEmbeddings, _, err = callContextualizedEmbeddingItems(ctx, cfg.Embedder, items)
+		if err != nil {
+			result.Errors = append(result.Errors, "derived contextualized embedding: "+err.Error())
+			result.Skipped = len(evidenceCandidates) + len(worldRuleCandidates)
+			return result
+		}
+	}
 	progress.emit("evidence", "tier_start", result, 0)
 	for _, item := range evidenceCandidates {
 		select {
@@ -163,7 +182,11 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 		result.Processed++
 		result.ProcessedByTier["evidence"]++
 		saveResult := artifactSaveResult{VectorStatus: "not_requested"}
-		s.upsertDerivedArtifactVector(ctx, sid, maxInt(item.TurnAnchor, item.SourceTurnEnd), "evidence", "direct_evidence_records", item.ID, "direct_evidence.v1", directEvidenceVectorDocumentText(item), cfg.Embedder, &saveResult)
+		if contextualizedReady {
+			s.upsertDerivedArtifactVectorEmbedding(ctx, sid, maxInt(item.TurnAnchor, item.SourceTurnEnd), "evidence", "direct_evidence_records", item.ID, "direct_evidence.v1", directEvidenceVectorDocumentText(item), parseFloat32JSONList(contextEmbeddings["evidence:"+strconv.FormatInt(item.ID, 10)]), &saveResult)
+		} else {
+			s.upsertDerivedArtifactVector(ctx, sid, maxInt(item.TurnAnchor, item.SourceTurnEnd), "evidence", "direct_evidence_records", item.ID, "direct_evidence.v1", directEvidenceVectorDocumentText(item), cfg.Embedder, &saveResult)
+		}
 		if saveResult.VectorsEvidenceUpserted > 0 {
 			result.Upserted += saveResult.VectorsEvidenceUpserted
 			result.UpsertedByTier["evidence"] += saveResult.VectorsEvidenceUpserted
@@ -200,7 +223,11 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 		result.Processed++
 		result.ProcessedByTier["world_rule"]++
 		saveResult := artifactSaveResult{VectorStatus: "not_requested"}
-		s.upsertDerivedArtifactVector(ctx, sid, item.SourceTurn, "world_rule", "world_rules", item.ID, "world_rule.v1", worldRuleVectorDocumentText(item), cfg.Embedder, &saveResult)
+		if contextualizedReady {
+			s.upsertDerivedArtifactVectorEmbedding(ctx, sid, item.SourceTurn, "world_rule", "world_rules", item.ID, "world_rule.v1", worldRuleVectorDocumentText(item), parseFloat32JSONList(contextEmbeddings["world_rule:"+strconv.FormatInt(item.ID, 10)]), &saveResult)
+		} else {
+			s.upsertDerivedArtifactVector(ctx, sid, item.SourceTurn, "world_rule", "world_rules", item.ID, "world_rule.v1", worldRuleVectorDocumentText(item), cfg.Embedder, &saveResult)
+		}
 		if saveResult.VectorsWorldRuleUpserted > 0 {
 			result.Upserted += saveResult.VectorsWorldRuleUpserted
 			result.UpsertedByTier["world_rule"] += saveResult.VectorsWorldRuleUpserted

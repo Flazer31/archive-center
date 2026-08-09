@@ -345,9 +345,9 @@ func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID st
 		Kind       string
 		State      string
 		ReasonCode string
-		TerminalAt string
 	}
 	historicalCounts := map[historicalQueueKey]int{}
+	historicalLatestTimes := map[historicalQueueKey]string{}
 	observedTransportCount := 0
 	for _, observation := range req.QueueObservations {
 		kind := normalizeDashboardQueueKind(observation.QueueKind)
@@ -381,9 +381,12 @@ func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID st
 			Kind:       kind,
 			State:      state,
 			ReasonCode: strings.TrimSpace(observation.ReasonCode),
-			TerminalAt: strings.TrimSpace(observation.TerminalAt),
 		}
 		historicalCounts[key] += maxInt(1, observation.Count)
+		terminalAt := strings.TrimSpace(observation.TerminalAt)
+		if terminalAt != "" && terminalAt > historicalLatestTimes[key] {
+			historicalLatestTimes[key] = terminalAt
+		}
 	}
 	if req.FailedQueueDepth > observedTransportCount {
 		historicalCounts[historicalQueueKey{Scope: "unknown", Kind: "transport_retry", State: "unknown"}] += req.FailedQueueDepth - observedTransportCount
@@ -400,8 +403,8 @@ func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID st
 			keys = append(keys, key)
 		}
 		sort.Slice(keys, func(i, j int) bool {
-			left := strings.Join([]string{keys[i].Scope, keys[i].Kind, keys[i].State, keys[i].ReasonCode, keys[i].TerminalAt}, "\x00")
-			right := strings.Join([]string{keys[j].Scope, keys[j].Kind, keys[j].State, keys[j].ReasonCode, keys[j].TerminalAt}, "\x00")
+			left := strings.Join([]string{keys[i].Scope, keys[i].Kind, keys[i].State, keys[i].ReasonCode}, "\x00")
+			right := strings.Join([]string{keys[j].Scope, keys[j].Kind, keys[j].State, keys[j].ReasonCode}, "\x00")
 			return left < right
 		})
 		rows := make([]dashboardRow, 0, len(keys))
@@ -420,7 +423,7 @@ func buildDashboardQueueCards(req dashboardViewModelRequest, currentSessionID st
 				Status:     status,
 				DetailCode: detailCode,
 				Detail:     strconv.Itoa(historicalCounts[key]) + " " + key.State,
-				Time:       key.TerminalAt,
+				Time:       historicalLatestTimes[key],
 				ItemCount:  historicalCounts[key],
 				Scope:      key.Scope,
 				QueueKind:  key.Kind,

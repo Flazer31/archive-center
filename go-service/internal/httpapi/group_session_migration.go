@@ -613,7 +613,7 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	embeddingConfig := s.completeTurnExtractionConfig(map[string]any{}).Embedder
-	needsEmbedding := false
+	needsEmbedding := usesVoyageContextualizedEmbedding(embeddingConfig)
 	for _, candidate := range candidates {
 		if len(parseFloat32JSONList(candidate.EmbeddingJSON)) == 0 {
 			needsEmbedding = true
@@ -627,10 +627,42 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	contextualizedEmbeddings := map[string][]float32{}
+	if usesVoyageContextualizedEmbedding(embeddingConfig) && len(candidates) > 0 {
+		inputs := make([]string, 0, len(candidates))
+		ids := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			inputs = append(inputs, candidate.DocumentText)
+			ids = append(ids, candidate.ID)
+		}
+		resp.EmbeddingCallAttempted = true
+		grouped, _, err := callDocumentEmbeddings(r.Context(), embeddingConfig, inputs)
+		if err != nil {
+			resp.Blocked = true
+			resp.BlockedReasons = append(resp.BlockedReasons, "embedding_failed")
+			resp.Errors = append(resp.Errors, err.Error())
+			resp.VerificationStatus = "embedding_failed"
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		for i, id := range ids {
+			contextualizedEmbeddings[id] = parseFloat32JSONList(grouped[i])
+			if len(contextualizedEmbeddings[id]) == 0 {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "embedding_result_invalid")
+				resp.VerificationStatus = "embedding_failed"
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+		}
+	}
 	docs := make([]vector.VectorDocument, 0, len(candidates))
 	for _, candidate := range candidates {
-		embedding := parseFloat32JSONList(candidate.EmbeddingJSON)
-		if len(embedding) == 0 {
+		embedding := contextualizedEmbeddings[candidate.ID]
+		if !usesVoyageContextualizedEmbedding(embeddingConfig) {
+			embedding = parseFloat32JSONList(candidate.EmbeddingJSON)
+		}
+		if len(embedding) == 0 && !usesVoyageContextualizedEmbedding(embeddingConfig) {
 			resp.EmbeddingCallAttempted = true
 			embeddingJSON, _, err := callEmbedding(r.Context(), embeddingConfig, candidate.DocumentText)
 			if err != nil {

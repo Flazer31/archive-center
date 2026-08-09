@@ -94,6 +94,8 @@ func (m *mariadbStore) ReplaceLogicalTurn(ctx context.Context, replacement Logic
 			)
 		}
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return classifyLogicalTurnReplacementStoreError(err, "transaction_begin", false)
@@ -188,6 +190,7 @@ func canonicalTailDeleteCommands(sid string, t int, legacyPhysicalCleanup, delet
 		{`DELETE FROM speaker_attributions WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
 		{`DELETE FROM entity_identity_artifact_bindings WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
 		{`DELETE FROM entity_identity_surfaces WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
+		{`UPDATE entity_identities identity_row SET last_seen_turn = GREATEST(identity_row.first_seen_turn, COALESCE((SELECT MAX(surface.source_turn) FROM entity_identity_surfaces surface WHERE surface.chat_session_id = identity_row.chat_session_id AND surface.stable_entity_id = identity_row.stable_entity_id), identity_row.first_seen_turn)), updated_at = CURRENT_TIMESTAMP(3) WHERE identity_row.chat_session_id = ? AND identity_row.source_turn < ? AND identity_row.last_seen_turn >= ?`, []any{sid, t, t}},
 		{`DELETE FROM entity_identity_links WHERE chat_session_id = ? AND (source_entity_id IN (SELECT stable_entity_id FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?) OR target_entity_id IN (SELECT stable_entity_id FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?))`, []any{sid, sid, t, sid, t}},
 		{`DELETE FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
 		{`UPDATE entities SET last_seen_turn = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND (first_seen_turn IS NULL OR first_seen_turn < ?) AND last_seen_turn >= ?`, []any{t - 1, sid, t, t}},
@@ -211,6 +214,7 @@ func canonicalTailDeleteCommands(sid string, t int, legacyPhysicalCleanup, delet
 		{`DELETE FROM theme_offscreen_carries WHERE chat_session_id = ? AND source_turn_end >= ?`, []any{sid, t}},
 		{`DELETE FROM capture_verification_records WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
 		{`DELETE FROM status_current_values WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
+		{`DELETE FROM status_change_events WHERE chat_session_id = ? AND source_turn >= ? AND NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision'))), '') IS NULL`, []any{sid, t}},
 		{`UPDATE status_effects SET effect_state = 'active', cleared_evidence_json = NULL, cleared_turn = NULL, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND cleared_turn >= ?`, []any{sid, t}},
 		{`DELETE FROM status_effects WHERE chat_session_id = ? AND source_turn >= ?`, []any{sid, t}},
 	}...)
@@ -236,6 +240,8 @@ func (m *mariadbStore) RollbackCanonicalTail(ctx context.Context, rollback Logic
 	if sid == "" || rollback.TurnIndex <= 0 {
 		return typedLogicalTurnReplacementError("logical_turn_request_invalid", "preflight", false, "not_committed", fmt.Errorf("invalid logical turn rollback"))
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return classifyLogicalTurnReplacementStoreError(err, "transaction_begin", false)

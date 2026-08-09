@@ -31,7 +31,7 @@ func TestNormalizeNarrativeStateClaimsLeavesBeliefToPerspectiveMemory(t *testing
 }
 
 func TestSaveNarrativeStateKeepsOneCurrentValueAndLinksEvidence(t *testing.T) {
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{Revision: "source-revision-1"})
 	st := &turnRecordingStore{}
 	srv := &Server{Store: st}
 	now := time.Now().UTC()
@@ -51,6 +51,9 @@ func TestSaveNarrativeStateKeepsOneCurrentValueAndLinksEvidence(t *testing.T) {
 	ids, _ := evidencePayload["direct_evidence_ids"].([]any)
 	if len(ids) != 1 || int(ids[0].(float64)) != 77 {
 		t.Fatalf("evidence ids=%v, want [77]", evidencePayload["direct_evidence_ids"])
+	}
+	if evidencePayload["source_revision"] != "source-revision-1" || evidencePayload["current_projection"] != true {
+		t.Fatalf("narrative current value is not source-linked: %#v", evidencePayload)
 	}
 
 	evidence = append(evidence, store.DirectEvidence{ID: 88, ChatSessionID: "sess", TurnAnchor: 2, EvidenceText: "A returned alive."})
@@ -795,7 +798,7 @@ func TestPrepareTurnStateTransitionDoesNotSuppressUncertainOrReactivatedOpenArti
 	}
 }
 
-func TestRestoreNarrativeCurrentStateUsesLatestRemainingLedgerValue(t *testing.T) {
+func TestRestoreNarrativeCurrentStateExcludesDeletedTailLedgerValue(t *testing.T) {
 	st := &turnRecordingStore{}
 	claim := narrativeStateClaim{Subject: "A", SubjectType: "character", StateSlot: "life_status", ClaimScope: "objective"}
 	ownerID := narrativeStateOwnerID(claim)
@@ -807,7 +810,7 @@ func TestRestoreNarrativeCurrentStateUsesLatestRemainingLedgerValue(t *testing.T
 		{ID: 1, ChatSessionID: "sess", RegistryID: 9, StatusKey: narrativeStateStatusKey, OwnerScope: "entity", OwnerID: ownerID, EventKind: "set", NewValueJSON: mustCompactJSON(narrativeStateValuePayload(dead, "", 4)), EvidenceJSON: `{}`, SourceTurn: 4},
 		{ID: 2, ChatSessionID: "sess", RegistryID: 9, StatusKey: narrativeStateStatusKey, OwnerScope: "entity", OwnerID: ownerID, EventKind: "change", NewValueJSON: mustCompactJSON(narrativeStateValuePayload(alive, "dead", 8)), EvidenceJSON: `{}`, SourceTurn: 8},
 	}
-	restored, err := restoreNarrativeCurrentStatesAfterRollback(context.Background(), st, "sess")
+	restored, err := restoreNarrativeCurrentStatesAfterRollback(context.Background(), st, "sess", 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -818,8 +821,12 @@ func TestRestoreNarrativeCurrentStateUsesLatestRemainingLedgerValue(t *testing.T
 	if err := json.Unmarshal([]byte(st.returnStatusCurrent[0].ValueJSON), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["value"] != "alive" || st.returnStatusCurrent[0].SourceTurn != 8 {
+	if payload["value"] != "dead" || st.returnStatusCurrent[0].SourceTurn != 4 {
 		t.Fatalf("restored payload=%v turn=%d", payload, st.returnStatusCurrent[0].SourceTurn)
+	}
+	st.returnStatusCurrent = nil
+	if restored, err = restoreNarrativeCurrentStatesAfterRollback(context.Background(), st, "sess", 0); err != nil || restored != 0 || len(st.returnStatusCurrent) != 0 {
+		t.Fatalf("turn-one deletion restored orphan current state: restored=%d current=%d err=%v", restored, len(st.returnStatusCurrent), err)
 	}
 }
 

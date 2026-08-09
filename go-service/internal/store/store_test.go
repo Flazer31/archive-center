@@ -899,6 +899,114 @@ func TestMariaDBStoreListCharacterEventsQueriesRows(t *testing.T) {
 	}
 }
 
+func TestMariaDBSaveWorldRuleCreatesNewTurnVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 8, 8, 15, 0, 0, 0, time.UTC)
+	rule := &WorldRule{
+		ChatSessionID: "sess-world",
+		Scope:         "root",
+		Category:      "society",
+		Key:           "strict_status_society",
+		ValueJSON:     `{"statement":"status matters"}`,
+		Genre:         "historical",
+		SourceTurn:    2,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	mock.ExpectQuery("SELECT id FROM world_rules .*source_turn = \\?").
+		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.SourceTurn, rule.SourceTurn).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("INSERT INTO world_rules").
+		WithArgs(rule.ChatSessionID, rule.Scope, nil, rule.Category, rule.Key, rule.ValueJSON,
+			rule.Genre, rule.SourceTurn, false, false, false, now, now).
+		WillReturnResult(sqlmock.NewResult(44, 1))
+
+	if err := m.SaveWorldRule(context.Background(), rule); err != nil {
+		t.Fatalf("SaveWorldRule: %v", err)
+	}
+	if rule.ID != 44 {
+		t.Fatalf("rule ID = %d, want 44", rule.ID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBSaveWorldRuleUpdatesSameTurnWithoutDuplicate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 8, 8, 15, 5, 0, 0, time.UTC)
+	rule := &WorldRule{
+		ChatSessionID: "sess-world",
+		Scope:         "root",
+		Category:      "society",
+		Key:           "strict_status_society",
+		ValueJSON:     `{"statement":"status matters"}`,
+		SourceTurn:    2,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	mock.ExpectQuery("SELECT id FROM world_rules .*source_turn = \\?").
+		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.SourceTurn, rule.SourceTurn).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(33))
+	mock.ExpectExec("UPDATE world_rules .*WHERE id = \\?").
+		WithArgs(nil, rule.Category, rule.ValueJSON, nil, rule.SourceTurn, rule.SourceTurn,
+			false, false, false, now, int64(33)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	if err := m.SaveWorldRule(context.Background(), rule); err != nil {
+		t.Fatalf("SaveWorldRule: %v", err)
+	}
+	if rule.ID != 33 {
+		t.Fatalf("rule ID = %d, want 33", rule.ID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBListWorldRulesReadsOnlyLatestTurnVersion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 8, 8, 15, 10, 0, 0, time.UTC)
+	mock.ExpectQuery("FROM world_rules AS current_rule .*ORDER BY COALESCE\\(candidate.source_turn, 0\\) DESC, candidate.id DESC").
+		WithArgs("sess-world").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "chat_session_id", "scope", "scope_name", "category", "key", "value_json", "genre", "source_turn",
+			"pinned", "suppressed", "user_corrected", "created_at", "updated_at",
+		}).AddRow(44, "sess-world", "root", nil, "society", "strict_status_society",
+			`{"statement":"status matters"}`, nil, 2, false, false, false, now, now))
+
+	items, err := m.ListWorldRules(context.Background(), "sess-world")
+	if err != nil {
+		t.Fatalf("ListWorldRules: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != 44 || items[0].SourceTurn != 2 {
+		t.Fatalf("unexpected world rules: %+v", items)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBStoreReadSessionStateSnapshotUsesSingleReadOnlyTransaction(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

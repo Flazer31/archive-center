@@ -201,6 +201,60 @@ func TestSplitSQLStatementsStripsUTF8BOMBeforeComment(t *testing.T) {
 	}
 }
 
+func TestLoadMigrationStatementsUsesLexicalOrderAndLoadsEachFileOnce(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "migrations")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"010_last.sql":   "SELECT 'last';",
+		"001_first.sql":  "SELECT 'first';",
+		"002_middle.sql": "SELECT 'middle-one'; SELECT 'middle-two';",
+		"README.txt":     "ignored",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statements, paths, err := loadMigrationStatements(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{
+		filepath.Join(dir, "001_first.sql"),
+		filepath.Join(dir, "002_middle.sql"),
+		filepath.Join(dir, "010_last.sql"),
+	}
+	if strings.Join(paths, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("migration paths = %v, want %v", paths, wantPaths)
+	}
+	wantStatements := []string{"SELECT 'first'", "SELECT 'middle-one'", "SELECT 'middle-two'", "SELECT 'last'"}
+	if strings.Join(statements, "\n") != strings.Join(wantStatements, "\n") {
+		t.Fatalf("statements = %v, want %v", statements, wantStatements)
+	}
+}
+
+func TestLoadMigrationStatementsExpandsLegacy001FileArgumentToDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "migrations")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(dir, "001_schema.sql")
+	if err := os.WriteFile(first, []byte("SELECT 1;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "002_expand.sql"), []byte("SELECT 2;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	statements, paths, err := loadMigrationStatements(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 || len(statements) != 2 || statements[0] != "SELECT 1" || statements[1] != "SELECT 2" {
+		t.Fatalf("legacy file expansion paths=%v statements=%v", paths, statements)
+	}
+}
+
 func TestRunGuardedWithoutExecuteDoesNotRequireDSN(t *testing.T) {
 	dir := t.TempDir()
 	schemaPath := filepath.Join(dir, "schema.sql")

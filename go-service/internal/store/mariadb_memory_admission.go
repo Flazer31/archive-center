@@ -5,13 +5,19 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 var _ MemoryAdmissionWriter = (*mariadbStore)(nil)
 var _ MemoryAdmissionWriteAvailability = (*mariadbStore)(nil)
+
+const memoryAdmissionTransactionMaxAttempts = 3
 
 func (m *mariadbStore) MemoryAdmissionWritesEnabled() bool {
 	return m != nil && m.db != nil
@@ -25,7 +31,91 @@ func (m *mariadbStore) CommitMemoryAdmission(ctx context.Context, admission *Mem
 	if err := validateMemoryAdmission(admission); err != nil {
 		return result, err
 	}
-	tx, err := m.db.BeginTx(ctx, nil)
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
+	for attempt := 1; attempt <= memoryAdmissionTransactionMaxAttempts; attempt++ {
+		result, err := m.commitMemoryAdmissionOnce(ctx, admission)
+		if err == nil {
+			return result, nil
+		}
+		if !isRetryableMemoryAdmissionTransactionError(err) || attempt == memoryAdmissionTransactionMaxAttempts {
+			if !errors.Is(err, ErrSourceRevisionStale) && ctx.Err() == nil {
+				if stageErr := m.stageFailedMemoryAdmissionResult(ctx, admission); stageErr != nil {
+					return result, fmt.Errorf("%w; stage successful critic result: %v", err, stageErr)
+				}
+			}
+			return result, err
+		}
+		if err := waitMemoryAdmissionTransactionRetry(ctx, attempt); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+// stageFailedMemoryAdmissionResult preserves the already successful Critic
+// result only after its projection transaction failed. The normal admission
+// path does not execute this write. A later worker can retry the same result
+// without calling the Critic provider again.
+func (m *mariadbStore) stageFailedMemoryAdmissionResult(ctx context.Context, admission *MemoryAdmission) error {
+	updatedAt := nonZeroTime(admission.CreatedAt)
+	res, err := m.db.ExecContext(ctx, `
+		UPDATE memory_source_revisions
+		SET derived_admission_state = 'staged',
+		    derived_admission_version = ?,
+		    derived_extractor_version = ?,
+		    derived_index_version = ?,
+		    derived_result_hash = ?,
+		    derived_result_json = ?,
+		    derived_admitted_at = NULL,
+		    updated_at = ?
+		WHERE chat_session_id = ? AND source_revision = ? AND turn_index = ?
+		  AND lifecycle_state = 'active'
+		  AND derived_admission_state <> 'committed'
+	`, admission.DerivationVersion, admission.ExtractorVersion,
+		admission.IndexVersion, admission.ResultHash, admission.ResultJSON,
+		updatedAt, admission.ChatSessionID, admission.SourceRevision,
+		admission.TurnIndex)
+	if err != nil {
+		return err
+	}
+	if affected, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return rowsErr
+	} else if affected == 1 {
+		return nil
+	}
+
+	var lifecycleState, admissionState, derivationVersion, extractorVersion, indexVersion string
+	var resultHash sql.NullString
+	err = m.db.QueryRowContext(ctx, `
+		SELECT lifecycle_state, derived_admission_state,
+		       derived_admission_version, derived_extractor_version,
+		       derived_index_version, derived_result_hash
+		FROM memory_source_revisions
+		WHERE chat_session_id = ? AND source_revision = ? AND turn_index = ?
+	`, admission.ChatSessionID, admission.SourceRevision, admission.TurnIndex).Scan(
+		&lifecycleState, &admissionState, &derivationVersion,
+		&extractorVersion, &indexVersion, &resultHash,
+	)
+	if err == sql.ErrNoRows || lifecycleState != "active" {
+		return ErrSourceRevisionStale
+	}
+	if err != nil {
+		return err
+	}
+	if (admissionState == "staged" || admissionState == "committed") &&
+		derivationVersion == admission.DerivationVersion &&
+		extractorVersion == admission.ExtractorVersion &&
+		indexVersion == admission.IndexVersion &&
+		resultHash.String == admission.ResultHash {
+		return nil
+	}
+	return fmt.Errorf("memory admission result staging conflict")
+}
+
+func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission *MemoryAdmission) (MemoryAdmissionResult, error) {
+	var result MemoryAdmissionResult
+	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return result, err
 	}
@@ -141,6 +231,26 @@ func (m *mariadbStore) CommitMemoryAdmission(ctx context.Context, admission *Mem
 	result.CommittedResultHash = admission.ResultHash
 	result.CommittedAt = admittedAt
 	return result, nil
+}
+
+func isRetryableMemoryAdmissionTransactionError(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) {
+		return false
+	}
+	return mysqlErr.Number == 1213
+}
+
+func waitMemoryAdmissionTransactionRetry(ctx context.Context, failedAttempt int) error {
+	delay := time.Duration(failedAttempt) * 25 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func validateMemoryAdmission(admission *MemoryAdmission) error {
@@ -625,9 +735,10 @@ func enqueueAdmissionVectorsTx(
 			"SummaryLanguage":       item.SummaryLanguage,
 			"SessionOutputLanguage": item.SessionOutputLanguage,
 			"AliasCount":            item.AliasCount,
-			"Metadata": memoryVectorVerificationMetadata(
+			"Metadata": memoryVectorDocumentMetadata(
 				admission.SourceRevision, MemorySourceRevisionContract,
-				admission.IndexVersion, documentText,
+				admission.IndexVersion, documentText, item.EmbeddingModel,
+				item.ContextChunks, item.ContextChunkIndex,
 			),
 		})
 		if err != nil {
@@ -671,6 +782,18 @@ func memoryVectorVerificationMetadata(sourceRevision, sourceContract, indexIdent
 		"index_identity":      strings.TrimSpace(indexIdentity),
 		"content_fingerprint": contentFingerprint,
 	}
+}
+
+func memoryVectorDocumentMetadata(sourceRevision, sourceContract, indexIdentity, documentText, embeddingModel string, contextChunks []string, contextChunkIndex int) map[string]any {
+	metadata := memoryVectorVerificationMetadata(sourceRevision, sourceContract, indexIdentity, documentText)
+	if model := strings.TrimSpace(embeddingModel); model != "" {
+		metadata["embedding_model"] = model
+	}
+	if len(contextChunks) > 0 {
+		metadata["contextualized_embedding_inputs"] = append([]string(nil), contextChunks...)
+		metadata["contextualized_embedding_index"] = contextChunkIndex
+	}
+	return metadata
 }
 
 func enqueueAdmissionVectorDeleteTx(

@@ -230,7 +230,7 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 		result.Status = "failed"
 		return result
 	}
-	embeddingJSON, model, err := callEmbedding(ctx, embedder, result.Query)
+	embeddingJSON, model, err := callQueryEmbedding(ctx, embedder, result.Query)
 	if err != nil {
 		result.Warnings = append(result.Warnings, "reference_query_embedding_failed: "+err.Error())
 		result.Status = "failed"

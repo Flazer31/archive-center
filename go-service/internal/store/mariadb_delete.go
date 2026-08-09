@@ -119,6 +119,24 @@ func (m *mariadbStore) DeleteEntities(ctx context.Context, chatSessionID string,
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
+		UPDATE entity_identities identity_row
+		SET last_seen_turn = GREATEST(
+			identity_row.first_seen_turn,
+			COALESCE((
+				SELECT MAX(surface.source_turn)
+				FROM entity_identity_surfaces surface
+				WHERE surface.chat_session_id = identity_row.chat_session_id
+				  AND surface.stable_entity_id = identity_row.stable_entity_id
+			), identity_row.first_seen_turn)
+		),
+		updated_at = CURRENT_TIMESTAMP(3)
+		WHERE identity_row.chat_session_id = ?
+		  AND identity_row.source_turn < ?
+		  AND identity_row.last_seen_turn >= ?
+	`, chatSessionID, fromTurn, fromTurn); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM entity_identity_links
 		WHERE chat_session_id = ?
 		  AND (

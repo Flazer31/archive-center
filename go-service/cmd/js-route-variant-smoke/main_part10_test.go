@@ -91,3 +91,35 @@ func TestArchiveCenterJSGLM52ReasoningEffortMarkers(t *testing.T) {
 		}
 	}
 }
+
+func TestArchiveCenterJSReasoningEffortInitialSelectPreservesStoredMax(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	tests := []struct {
+		selectID string
+		setting  string
+	}{
+		{selectID: "mo-pluginMainReasoningEffort", setting: "pluginMainReasoningEffort"},
+		{selectID: "mo-subLlmReasoningEffort", setting: "subLlmReasoningEffort"},
+	}
+	for _, tt := range tests {
+		startMarker := `<select id="` + tt.selectID + `">`
+		start := strings.Index(src, startMarker)
+		if start < 0 {
+			t.Fatalf("Archive Center.js missing reasoning effort select %q", tt.selectID)
+		}
+		endRelative := strings.Index(src[start:], `</select>`)
+		if endRelative < 0 {
+			t.Fatalf("Archive Center.js reasoning effort select %q has no closing tag", tt.selectID)
+		}
+		selectHTML := src[start : start+endRelative]
+		for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "enable", "disable"} {
+			if !strings.Contains(selectHTML, `<option value="`+effort+`"`) {
+				t.Errorf("reasoning effort select %q missing initial option %q", tt.selectID, effort)
+			}
+		}
+		maxBinding := `<option value="max"${s.` + tt.setting + ` === "max" ? " selected" : ""}>max</option>`
+		if !strings.Contains(selectHTML, maxBinding) {
+			t.Errorf("reasoning effort select %q does not restore stored max on initial render", tt.selectID)
+		}
+	}
+}

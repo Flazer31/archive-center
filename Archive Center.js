@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 3.9.0
+//@display-name Archive Center 3.9.9
 //@author memory-scaffold
 //@api 3.0
-//@version 3.9.0
+//@version 3.9.9
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -10,7 +10,7 @@
 // 독립 오케스트레이션형 멀티-LLM 메모리 시스템의 프론트엔드이다.
 //
 // 핵심 전제:
-//   이 프로젝트의 출판사(감독관/편집자) / 평론가 / Embedding 모델 호출은
+//   이 프로젝트의 출판사 LLM / 평론가 / Embedding 모델 호출은
 //   RisuAI 기본 모델 호출과 완전히 별개다.
 //   프로젝트 전용 설정으로 독립 관리된다.
 //   Project Main LLM은 출판사/편집자 기본값과 입력 개선,
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "3.9.0";
-  const BUILD_ID = "3.9.0";
+  const VERSION = "3.9.9";
+  const BUILD_ID = "3.9.9";
   const BUILD_CHANNEL = "release";
   const BUILD_TIME = "2026-08-03 KST";
-  const BUILD_NOTES = "Archive Center 3.9.0";
+  const BUILD_NOTES = "Archive Center 3.9.9";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -170,7 +170,7 @@
     pluginMainApiKey: "",
     pluginMainEndpoint: "",
     pluginMainModel: "",
-    pluginMainTimeoutMs: 60000,   // 감독관 LLM 호출 타임아웃 (ms)
+    pluginMainTimeoutMs: 60000,   // 출판사 LLM 호출 타임아웃 (ms)
     pluginMainTemperature: 0.7,
     pluginMainReasoningPreset: "auto",
     pluginMainReasoningEffort: "none",
@@ -279,7 +279,7 @@
       "settings.section.update": "업데이트",
       "settings.section.pluginMainLlm": "출판사 LLM (1차 편집)",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "출판사 LLM(감독관/편집자) 기본값이며 입력 개선과 감독관 호출에 함께 사용됩니다.\n\n저장 시 backend/.env 및 런타임 설정과 동기화됩니다.",
+      "settings.section.pluginMainLlm.desc": "출판사 LLM 기본값이며 입력 개선과 출판사 LLM 호출에 함께 사용됩니다.\n\n저장 시 backend/.env 및 런타임 설정과 동기화됩니다.",
       "settings.pluginMainLlm.showFields": "▸ 필드 보기",
       "settings.section.subLlm": "편집 검토·평론가 LLM (2차 검토/정리)",
       "settings.section.subLlm.desc": "1차 편집 결과의 2차 검토와 응답 후 평론가 정리(요약/구조화)에 사용하는 모델입니다.\n\n비어 있으면 해당 호출은 미설정으로 처리되며 출판사 LLM 값을 자동으로 사용하지 않습니다.",
@@ -383,18 +383,18 @@
       "settings.takeoverMode.shadow_compare": "Shadow Compare (비교 기록, 채팅 미적용)",
       "settings.takeoverMode.partial_takeover": "Partial Takeover (guidance metadata만 적용)",
       "settings.takeoverMode.default_takeover": "Default Takeover (전체 패킷 적용)",
-      "settings.model.supervisorLlm": "출판사 LLM (감독관)",
-      "settings.model.directorLlm": "출판사 LLM (편집자)",
+      "settings.model.supervisorLlm": "출판사 LLM",
+      "settings.model.directorLlm": "출판사 LLM (입력 편집)",
       "settings.model.criticLlm": "평론가 LLM",
       "settings.model.embeddingLlm": "기억 색인 LLM",
-      "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup 테스트",
+      "settings.btn.testPublisherLlm": "🧠 출판사 LLM 상태 테스트",
       "settings.btn.testCriticLlm": "✍ 평론가 LLM 테스트",
       "settings.btn.testPublisherCall": "📝 출판사 LLM 테스트",
       "settings.btn.testCriticCall": "✍ 평론가 LLM 테스트",
       "settings.btn.updateCheck": "업데이트 확인",
-      "settings.btn.updateDownload": "다운로드 후 다음 시작에 적용",
+      "settings.btn.updateDownload": "지금 업데이트",
       "settings.update.confirmTitle": "Archive Center 업데이트",
-      "settings.update.confirmBody": "검증된 패키지를 지금 다운로드하고, 다음 실행에서 Archive Center 서비스가 시작되기 전에 적용합니다. 런타임 데이터, 데이터베이스, 로컬 환경 파일은 업데이트 대상이 아닙니다. 계속할까요?",
+      "settings.update.confirmBody": "검증된 최신 패키지를 지금 준비한 뒤 Archive Center를 재시작하여 즉시 적용합니다. 런타임 데이터, 데이터베이스, 로컬 환경 파일은 업데이트 대상이 아닙니다.",
       "settings.update.statusLabel": "업데이트 상태",
       "settings.update.status.idle": "대기 중",
       "settings.update.status.pending_next_start": "다음 시작에 적용 대기",
@@ -429,7 +429,7 @@
       "settings.prompts.size": "크기",
       "settings.prompts.emptyReject": "빈 프롬프트는 저장할 수 없습니다.",
       "settings.prompts.reloadConfirm": "저장하지 않은 변경이 사라집니다. 파일 내용을 다시 불러올까요?",
-      "settings.prompts.supervisor.desc": "Supervisor 시스템 프롬프트입니다. 감독관/편집 기준을 조정합니다.",
+      "settings.prompts.supervisor.desc": "출판사 LLM 시스템 프롬프트입니다. 서사 조율과 편집 기준을 조정합니다.",
       "settings.prompts.critic.desc": "Critic 시스템 프롬프트입니다. 기억 추출/정리 기준을 조정합니다.",
 
       // ── Persona Capsule ──
@@ -570,7 +570,7 @@
       "dash.section.failedQueueDebug": "실패 큐 상세 (디버그)",
       "dash.section.failedQueueDebug.desc": "현재 영속 큐에 보관된 항목의 요약입니다. debug 모드에서만 표시됩니다.",
       "dash.queue.storageRecovered": "(storage 복구)",
-      "dash.queue.clearBtn": "큐 비우기",
+      "dash.queue.clearBtn": "과거 오류 기록만 지우기",
       "dash.queue.empty": "큐 비어 있음",
       "dash.queue.moreItems": "... 외 {n}건",
       "dash.queue.corruptTestBtn": "🧪 파손 테스트 (storage에 깨진 데이터 기록)",
@@ -593,9 +593,9 @@
       "dash.status.plugin": "플러그인",
       "dash.status.sessionId": "세션 ID",
       "dash.status.bridgeHealth": "브리지 상태",
-      "dash.status.supervisorHealthTest": "감독관 상태 테스트",
+      "dash.status.supervisorHealthTest": "출판사 LLM 상태 테스트",
       "dash.status.search": "검색",
-      "dash.status.supervisorCall": "감독관 호출",
+      "dash.status.supervisorCall": "출판사 LLM 호출",
       "dash.status.guideMode": "서사 가이드",
       "dash.status.injection": "주입",
       "dash.status.save": "저장",
@@ -933,7 +933,7 @@
       "hypaImport.noHypaData": "이 챗에 HypaMemory 데이터가 없습니다.",
       "hypaImport.readFailed": "HypaMemory 읽기 실패",
       "hypaImport.requestFailed": "가져오기 요청 실패",
-      "queue.clearConfirm": "실패 큐를 모두 비우시겠습니까?\n보관 중인 미전송 항목이 전부 삭제됩니다.",
+      "queue.clearConfirm": "과거 오류 기록만 지우시겠습니까?\n재시도 가능한 항목과 현재 확인 대기 항목은 유지됩니다.",
       "queue.corruptTestConfirm": "pluginStorage의 큐 데이터를 의도적으로 파손합니다.\n다음 재시작 시 복구 안전성을 테스트합니다.",
       "queue.corruptTestDone": "✅ 파손 완료 — 플러그인 reload 후 확인",
 
@@ -942,9 +942,9 @@
       "test.health.ok": "✅ Bridge 정상",
       "test.health.fail": "❌ Bridge 연결 실패 (서버가 꺼져 있거나 URL이 잘못됨)",
       "test.error": "❌ 테스트 오류",
-      "test.wakeup.loading": "⏳ Supervisor 서비스(/wakeup) 호출 중...",
-      "test.wakeup.ok": "✅ Supervisor 서비스 응답 정상",
-      "test.wakeup.fail": "❌ Supervisor 서비스 응답 실패",
+      "test.wakeup.loading": "⏳ 출판사 LLM 서비스(/wakeup) 호출 중...",
+      "test.wakeup.ok": "✅ 출판사 LLM 서비스 응답 정상",
+      "test.wakeup.fail": "❌ 출판사 LLM 서비스 응답 실패",
       "test.stats.loading": "⏳ /stats 호출 중...",
       "test.stats.fail": "❌ Stats 조회 실패",
 
@@ -962,7 +962,7 @@
       "explorer.edit.confirmSave": "이 항목을 수정하시겠습니까?",
       "explorer.episodes.regenConfirm": "턴 {from}-{to} 구간을 재생성하시겠습니까?\n기존 에피소드는 유지되며, 새로 생성됩니다.",
       "explorer.episodes.mergeConfirm": "{n}개 에피소드를 병합하시겠습니까?\n기존 에피소드는 유지되며, 새 병합 에피소드가 생성됩니다.",
-      "settings.queue.clearConfirm": "실패 큐를 모두 비우시겠습니까?\n보관 중인 미전송 항목이 전부 삭제됩니다.",
+      "settings.queue.clearConfirm": "과거 오류 기록만 지우시겠습니까?\n재시도 가능한 항목과 현재 확인 대기 항목은 유지됩니다.",
       "settings.queue.corruptConfirm": "pluginStorage의 큐 데이터를 의도적으로 파손합니다.\n다음 재시작 시 복구 안전성을 테스트합니다.",
       "settings.queue.corruptDone": "✅ 파손 완료 — 플러그인 reload 후 확인",
       "explorer.edit.noSession": "세션이 선택되지 않았습니다.",
@@ -991,7 +991,7 @@
       "common.error": "오류",
       "alert.llmFailure": "⚠ {model} 응답 실패\n사유: {reason}",
       "warning.output.llmFailureTitle": "⚠ 보조 LLM 경고: 일부 호출이 실패했습니다.",
-      "warning.llmReason.supervisorUnavailable": "응답 없음 또는 timeout (감독관 지시 미수신)",
+      "warning.llmReason.supervisorUnavailable": "응답 없음 또는 timeout (출판사 LLM 지시 미수신)",
       "warning.llmReason.reviewSkipped": "2차 검토 응답 없음 (리뷰 단계 건너뜀)",
       "export.confirmTarget": "대상 세션:",
       "export.confirmDesc": "이 세션의 chat_logs, memories, kg_triples를\nJSON으로 내보냅니다.",
@@ -1064,15 +1064,15 @@
       "settings.label.narrativeGuideMode": "서사 가이드 모드",
       "settings.label.narrativeGuideMode.help": "Auto는 본문 키워드로 장르를 추정하지 않고 Standard로 동작합니다. 특정 장르 모드는 사용자가 직접 선택할 때만 적용됩니다.",
       "settings.label.narrativeGuideStrength": "서사 가이드 강도",
-      "settings.label.narrativeGuideStrength.help": "없음은 감독관 호출만 끄고 기억·비밀 보호는 유지합니다. 약함은 응답 초점, 보통은 진행 또는 유지 제안, 강함은 arc 기준과 우선 frontier까지 제안합니다. 어떤 강도도 진행이나 사용자 행동·새 사실·관계 변화·사건 종결을 강제하지 않습니다.",
+      "settings.label.narrativeGuideStrength.help": "없음은 출판사 LLM 호출만 끄고 기억·비밀 보호는 유지합니다. 약함은 응답 초점, 보통은 진행 또는 유지 제안, 강함은 arc 기준과 우선 frontier까지 제안합니다. 어떤 강도도 진행이나 사용자 행동·새 사실·관계 변화·사건 종결을 강제하지 않습니다.",
       "settings.label.narrativeSupportMaxChars": "서사 안내 예산 (chars)",
-      "settings.hint.narrativeSupportMaxChars": "감독관 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
+      "settings.hint.narrativeSupportMaxChars": "출판사 LLM 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
       "settings.label.publisherMaxCompletionTokens": "출판사 Max Completion Tokens",
       "settings.label.publisherProvider": "출판사 Provider",
       "settings.label.publisherReasoningEffort": "출판사 Reasoning Effort",
       "settings.label.publisherReasoningPreset": "출판사 Reasoning Preset",
       "settings.label.publisherTemp": "출판사 Temperature",
-      "settings.label.supervisorTimeout": "감독관 Timeout (초)",
+      "settings.label.supervisorTimeout": "출판사 LLM Timeout (초)",
       "settings.label.topK": "ChromaDB 의미 기억 검색 수",
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
       "settings.label.coreObjectiveMemoryMaxItems": "핵심 연관 기억 최대 수",
@@ -1224,7 +1224,7 @@
       "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
       "turn_hud.stage.recall_materialization": "기억·근거 불러오기",
       "turn_hud.stage.context_assembly": "입력 맥락 조립",
-      "turn_hud.stage.publisher_llm": "감독관 호출",
+      "turn_hud.stage.publisher_llm": "출판사 LLM 호출",
       "turn_hud.stage.payload_ready": "본문 요청 준비",
       "turn_hud.stage.awaiting_final_output": "본문 응답 기다리는 중",
       "turn_hud.stage.final_output_accepted": "최종 출력 확인",
@@ -1253,8 +1253,8 @@
       "turn_hud.count.episode_summary": "구간 요약",
       "turn_hud.count.vector_index": "Vector 색인",
       "turn_hud.warning.publisher_llm_not_configured": "출판사 LLM이 설정되지 않아 건너뜀",
-      "turn_hud.warning.publisher_llm_failed_open": "감독관 호출 실패 후 본문 요청은 계속됨",
-      "turn_hud.warning.publisher_llm_malformed_failed_open": "감독관 응답 형식이 잘못되어 제안을 버렸으며 본문 요청은 계속됨",
+      "turn_hud.warning.publisher_llm_failed_open": "출판사 LLM 호출 실패 후 본문 요청은 계속됨",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "출판사 LLM 응답 형식이 잘못되어 제안을 버렸으며 본문 요청은 계속됨",
       "turn_hud.memory.title": "기억 전달",
       "turn_hud.memory.vector_limit": "Vector 후보",
       "turn_hud.memory.core_requested": "핵심 상한",
@@ -1277,6 +1277,8 @@
       "turn_hud.warning.duplicate_pair_replay": "다른 턴에 동일한 입력·응답이 있어 중복 저장을 차단함",
       "turn_hud.notice.delete_confirmed": "삭제 확인",
       "turn_hud.notice.delete_confirmed_detail": "작성자가 지운 출력과 연결된 저장값을 정리했습니다.",
+      "turn_hud.notice.delete_detected": "삭제 감지",
+      "turn_hud.notice.delete_detected_detail": "작성자가 지운 출력을 확인했습니다. 연결된 저장값을 정리하고 있습니다.",
       "turn_hud.notice.reroll_confirmed": "리롤 확인",
       "turn_hud.notice.reroll_confirmed_detail": "새 최종 출력으로 기존 턴의 저장값을 교체했습니다.",
       "turn_hud.notice.delete_sync_failed": "삭제 동기화 오류",
@@ -1367,7 +1369,7 @@
       "settings.section.update": "Update",
       "settings.section.pluginMainLlm": "Publisher LLM (Editor First-pass)",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "Default settings for Publisher LLM (Supervisor/Editor).\n\nUsed by input-improvement first pass and supervisor calls.\n\nSaved values sync to backend/.env and runtime settings.",
+      "settings.section.pluginMainLlm.desc": "Default Publisher LLM settings.\n\nUsed by input-improvement first pass and Publisher LLM calls.\n\nSaved values sync to backend/.env and runtime settings.",
       "settings.pluginMainLlm.showFields": "▸ Show Fields",
       "settings.section.subLlm": "Review/Critic LLM (Second-pass/Post-process)",
       "settings.section.subLlm.desc": "Used for second-pass review of first-pass edits and post-response critic structuring.\n\nIf left empty, this lane is treated as not configured and does not automatically use Publisher LLM values.",
@@ -1389,7 +1391,7 @@
       "settings.debug.forceIdleArmed": "armed: next normal input",
       "settings.debug.forceIdleHint": "Debug only. Forces idle_reentry for the next non-empty, non-resume input once.",
       "settings.debug.tab.disabled": "Debug mode is off. Turn it on with the top-right debug button to view details in this tab.",
-      "settings.label.supervisorTimeout": "Director Timeout (sec)",
+      "settings.label.supervisorTimeout": "Publisher LLM Timeout (sec)",
       "settings.label.criticTimeout": "Critic/Reviewer Timeout (sec)",
       "settings.label.embeddingTimeout": "Embedding Timeout (sec)",
       "settings.label.publisherTemp": "Publisher Temperature",
@@ -1419,7 +1421,7 @@
       "settings.label.narrativeGuideMode": "Narrative Guide Mode",
       "settings.label.narrativeGuideMode.help": "Auto does not infer genre from story keywords; it uses Standard. Genre-specific modes apply only when selected explicitly.",
       "settings.label.narrativeGuideStrength": "Narrative Guide Strength",
-      "settings.label.narrativeGuideStrength.help": "None skips the Supervisor call while memory and secret guards remain active. Weak proposes response focus, Medium may suggest advance or hold, and Strong adds an arc anchor and preferred frontier. No strength may force progress, user actions, new truth, relationship changes, or event closure.",
+      "settings.label.narrativeGuideStrength.help": "None skips the Publisher LLM call while memory and secret guards remain active. Weak proposes response focus, Medium may suggest advance or hold, and Strong adds an arc anchor and preferred frontier. No strength may force progress, user actions, new truth, relationship changes, or event closure.",
       "settings.label.narrativeSupportMaxChars": "Narrative guidance budget (chars)",
       "settings.hint.narrativeSupportMaxChars": "Independent budget for supervisor proposals and response execution guidance. It does not borrow from memory, original-work, or user-input budgets.",
       "settings.label.auxiliaryInjectionPlacement": "Memory Injection Placement",
@@ -1622,18 +1624,18 @@
       "settings.takeoverMode.shadow_compare": "Shadow Compare (log only, no chat change)",
       "settings.takeoverMode.partial_takeover": "Partial Takeover (guidance metadata only)",
       "settings.takeoverMode.default_takeover": "Default Takeover (full packet apply)",
-      "settings.model.supervisorLlm": "Publisher LLM (Supervisor)",
-      "settings.model.directorLlm": "Publisher LLM (Editor)",
+      "settings.model.supervisorLlm": "Publisher LLM",
+      "settings.model.directorLlm": "Publisher LLM (Input Editing)",
       "settings.model.criticLlm": "Critic LLM",
       "settings.model.embeddingLlm": "Embedding LLM",
-      "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup Test",
+      "settings.btn.testPublisherLlm": "🧠 Publisher LLM Health Test",
       "settings.btn.testCriticLlm": "✍ Critic LLM Test",
       "settings.btn.testPublisherCall": "📝 Publisher LLM Test",
       "settings.btn.testCriticCall": "✍ Critic LLM Test",
       "settings.btn.updateCheck": "Check Update",
-      "settings.btn.updateDownload": "Download and Apply on Next Start",
+      "settings.btn.updateDownload": "Update Now",
       "settings.update.confirmTitle": "Archive Center Update",
-      "settings.update.confirmBody": "The verified package will be downloaded now and applied before Archive Center services start the next time you launch the package. Runtime data, databases, and local environment files are not update targets. Continue?",
+      "settings.update.confirmBody": "The latest verified package will be prepared now and applied immediately by restarting Archive Center. Runtime data, databases, and local environment files are not update targets.",
       "settings.update.statusLabel": "Update status",
       "settings.update.status.idle": "Idle",
       "settings.update.status.pending_next_start": "Pending next start",
@@ -1668,7 +1670,7 @@
       "settings.prompts.size": "Size",
       "settings.prompts.emptyReject": "Prompt content cannot be empty.",
       "settings.prompts.reloadConfirm": "Unsaved changes will be discarded. Reload from file?",
-      "settings.prompts.supervisor.desc": "Supervisor system prompt. Adjusts supervisor/editor decision rules.",
+      "settings.prompts.supervisor.desc": "Publisher LLM system prompt. Adjusts narrative direction and editing rules.",
       "settings.prompts.critic.desc": "Critic system prompt. Adjusts memory extraction and cleanup rules.",
 
       // ── Persona Capsule ──
@@ -1806,7 +1808,7 @@
       "dash.section.failedQueueDebug": "失敗キュー詳細（デバッグ）",
       "dash.section.failedQueueDebug.desc": "Summary of items currently held in the persistent queue. Shown in debug mode only.",
       "dash.queue.storageRecovered": "(storage recovered)",
-      "dash.queue.clearBtn": "Clear Queue",
+      "dash.queue.clearBtn": "Clear Past Error History Only",
       "dash.queue.empty": "Queue is empty",
       "dash.queue.moreItems": "... and {n} more",
       "dash.queue.corruptTestBtn": "🧪 Corruption Test (write broken data to storage)",
@@ -1829,9 +1831,9 @@
       "dash.status.plugin": "Plugin",
       "dash.status.sessionId": "Session ID",
       "dash.status.bridgeHealth": "Bridge Health",
-      "dash.status.supervisorHealthTest": "Supervisor Health Test",
+      "dash.status.supervisorHealthTest": "Publisher LLM Health Test",
       "dash.status.search": "Search",
-      "dash.status.supervisorCall": "Supervisor Call",
+      "dash.status.supervisorCall": "Publisher LLM Call",
       "dash.status.guideMode": "Narrative Guide",
       "dash.status.injection": "Injection",
       "dash.status.save": "Save",
@@ -2169,7 +2171,7 @@
       "hypaImport.noHypaData": "No HypaMemory data in this chat.",
       "hypaImport.readFailed": "HypaMemory read failed",
       "hypaImport.requestFailed": "Import request failed",
-      "queue.clearConfirm": "Clear all items from the failed queue?\nAll pending unsent items will be permanently deleted.",
+      "queue.clearConfirm": "Clear past error history only?\nRetryable items and current pending confirmations will be preserved.",
       "queue.corruptTestConfirm": "This will intentionally corrupt queue data in pluginStorage.\nUse to test recovery safety on next restart.",
       "queue.corruptTestDone": "✅ Corruption complete — check after plugin reload",
 
@@ -2178,9 +2180,9 @@
       "test.health.ok": "✅ Bridge OK",
       "test.health.fail": "❌ Bridge connection failed (server may be down or URL incorrect)",
       "test.error": "❌ Test Error",
-      "test.wakeup.loading": "⏳ Calling Supervisor service (/wakeup)...",
-      "test.wakeup.ok": "✅ Supervisor service responded",
-      "test.wakeup.fail": "❌ Supervisor service not reachable",
+      "test.wakeup.loading": "⏳ Calling Publisher LLM service (/wakeup)...",
+      "test.wakeup.ok": "✅ Publisher LLM service responded",
+      "test.wakeup.fail": "❌ Publisher LLM service not reachable",
       "test.stats.loading": "⏳ Calling /stats...",
       "test.stats.fail": "❌ Stats query failed",
 
@@ -2198,7 +2200,7 @@
       "explorer.edit.confirmSave": "Save changes to this item?",
       "explorer.episodes.regenConfirm": "Regenerate turns {from}-{to}?\nExisting episodes are kept; a new one will be created.",
       "explorer.episodes.mergeConfirm": "Merge {n} episodes?\nExisting episodes are kept; a new merged episode will be created.",
-      "settings.queue.clearConfirm": "Clear all failed queue items?\nAll unsent items will be permanently deleted.",
+      "settings.queue.clearConfirm": "Clear past error history only?\nRetryable items and current pending confirmations will be preserved.",
       "settings.queue.corruptConfirm": "Intentionally corrupt pluginStorage queue data.\nTests recovery safety on next restart.",
       "settings.queue.corruptDone": "✅ Corruption done — reload plugin to verify",
       "explorer.edit.noSession": "No session selected.",
@@ -2227,7 +2229,7 @@
       "common.error": "Error",
       "alert.llmFailure": "⚠ {model} response failed\nReason: {reason}",
       "warning.output.llmFailureTitle": "⚠ Auxiliary LLM warning: one or more calls failed.",
-      "warning.llmReason.supervisorUnavailable": "No response or timeout (no supervisor directive)",
+      "warning.llmReason.supervisorUnavailable": "No response or timeout (no Publisher LLM guidance)",
       "warning.llmReason.reviewSkipped": "Second-pass review response missing (review step skipped)",
       "export.confirmTarget": "Target session:",
       "export.confirmDesc": "Export chat_logs, memories, kg_triples\nof this session as JSON.",
@@ -2312,7 +2314,7 @@
       "turn_hud.stage.prepare_source": "Confirming current input and request",
       "turn_hud.stage.recall_materialization": "Loading memory and evidence",
       "turn_hud.stage.context_assembly": "Assembling input context",
-      "turn_hud.stage.publisher_llm": "Supervisor call",
+      "turn_hud.stage.publisher_llm": "Publisher LLM call",
       "turn_hud.stage.payload_ready": "Preparing story request",
       "turn_hud.stage.awaiting_final_output": "Waiting for story response",
       "turn_hud.stage.final_output_accepted": "Confirming final output",
@@ -2342,7 +2344,7 @@
       "turn_hud.count.vector_index": "Vector index",
       "turn_hud.warning.publisher_llm_not_configured": "Publisher LLM is not configured and was skipped",
       "turn_hud.warning.publisher_llm_failed_open": "Publisher LLM failed; the story request continued",
-      "turn_hud.warning.publisher_llm_malformed_failed_open": "The Supervisor response was malformed, so its proposal was discarded and the story request continued",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "The Publisher LLM response was malformed, so its proposal was discarded and the story request continued",
       "turn_hud.memory.title": "Memory delivery",
       "turn_hud.memory.vector_limit": "Vector candidates",
       "turn_hud.memory.core_requested": "Core limit",
@@ -2365,6 +2367,8 @@
       "turn_hud.warning.duplicate_pair_replay": "The same input and response exist on another turn; duplicate storage was blocked",
       "turn_hud.notice.delete_confirmed": "Deletion confirmed",
       "turn_hud.notice.delete_confirmed_detail": "Stored values linked to the author's deleted output were cleaned up.",
+      "turn_hud.notice.delete_detected": "Deletion detected",
+      "turn_hud.notice.delete_detected_detail": "The author's deleted output was detected. Linked stored values are being cleaned up.",
       "turn_hud.notice.reroll_confirmed": "Reroll confirmed",
       "turn_hud.notice.reroll_confirmed_detail": "The existing turn was replaced with the new final output.",
       "turn_hud.notice.delete_sync_failed": "Deletion sync error",
@@ -2455,7 +2459,7 @@
       "settings.section.update": "アップデート",
       "settings.section.pluginMainLlm": "出版社 LLM（一次編集）",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "出版社 LLM（監督官/編集者）の既定値です。\n\n入力改善 first-pass と監督官呼び出しに使用されます。\n\n保存時に backend/.env とランタイム設定へ同期されます。",
+      "settings.section.pluginMainLlm.desc": "Publisher LLM の既定値です。\n\n入力改善 first-pass と Publisher LLM 呼び出しに使用されます。\n\n保存時に backend/.env とランタイム設定へ同期されます。",
       "settings.pluginMainLlm.showFields": "▸ フィールド表示",
       "settings.section.subLlm": "編集レビュー・評論家 LLM（二次レビュー/整理）",
       "settings.section.subLlm.desc": "一次編集結果の二次レビューと、応答後の評論家整理（要約/構造化）に使用するモデルです。\n\n空の場合は出版社 LLM の値を自動使用します。",
@@ -2477,7 +2481,7 @@
       "settings.debug.forceIdleArmed": "armed: 次の通常入力1回",
       "settings.debug.forceIdleHint": "デバッグ専用。空入力とresume系を除く次の入力1回だけ idle_reentry として処理します。",
       "settings.debug.tab.disabled": "デバッグモードはオフです。右上のデバッグボタンで有効にすると、このタブの詳細情報が表示されます。",
-      "settings.label.supervisorTimeout": "監督官タイムアウト（秒）",
+      "settings.label.supervisorTimeout": "Publisher LLM タイムアウト（秒）",
       "settings.label.criticTimeout": "評論家タイムアウト（秒）",
       "settings.label.embeddingTimeout": "Embeddingタイムアウト（秒）",
       "settings.label.publisherTemp": "出版社 Temperature",
@@ -2507,7 +2511,7 @@
       "settings.label.narrativeGuideMode": "ナラティブガイドモード",
       "settings.label.narrativeGuideMode.help": "Autoは本文キーワードからジャンルを推定せずStandardとして動作します。ジャンル別モードはユーザーが明示的に選んだ場合のみ適用されます。",
       "settings.label.narrativeGuideStrength": "ナラティブガイド強度",
-      "settings.label.narrativeGuideStrength.help": "なしはSupervisor呼び出しだけを停止し、記憶と秘密保護は維持します。弱は応答の焦点、中は進行または保持、強はarc anchorと優先frontierまで提案します。どの強度も進行、ユーザー行動、新事実、関係変化、事件終結を強制しません。",
+      "settings.label.narrativeGuideStrength.help": "なしはPublisher LLM呼び出しだけを停止し、記憶と秘密保護は維持します。弱は応答の焦点、中は進行または保持、強はarc anchorと優先frontierまで提案します。どの強度も進行、ユーザー行動、新事実、関係変化、事件終結を強制しません。",
       "settings.label.narrativeSupportMaxChars": "ナラティブ案内予算（chars）",
       "settings.hint.narrativeSupportMaxChars": "監督提案と応答実行ガイド専用の独立予算です。長期記憶・原作資料・ユーザー入力の予算は使用しません。",
       "settings.label.auxiliaryInjectionPlacement": "記憶の注入位置",
@@ -2675,16 +2679,16 @@
       "settings.takeoverMode.shadow_compare": "Shadow Compare（比較記録、チャット未適用）",
       "settings.takeoverMode.partial_takeover": "Partial Takeover（guidance metadataのみ適用）",
       "settings.takeoverMode.default_takeover": "Default Takeover（全パケット適用）",
-      "settings.model.supervisorLlm": "出版社 LLM（監督官）",
-      "settings.model.directorLlm": "出版社 LLM（編集者）",
+      "settings.model.supervisorLlm": "Publisher LLM",
+      "settings.model.directorLlm": "Publisher LLM（入力編集）",
       "settings.model.criticLlm": "クリティック LLM",
       "settings.model.embeddingLlm": "記憶インデックス LLM",
-      "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup テスト",
+      "settings.btn.testPublisherLlm": "🧠 Publisher LLM 状態テスト",
       "settings.btn.testCriticLlm": "✍ クリティック LLM テスト",
       "settings.btn.testPublisherCall": "📝 出版社 LLM テスト",
       "settings.btn.testCriticCall": "✍ クリティック LLM テスト",
       "settings.btn.updateCheck": "アップデート確認",
-      "settings.btn.updateDownload": "アップデート取得",
+      "settings.btn.updateDownload": "今すぐアップデート",
       "settings.update.statusLabel": "アップデート状態",
       "settings.update.status.idle": "待機中",
       "settings.update.status.pending_next_start": "次回起動時の適用待ち",
@@ -2719,7 +2723,7 @@
       "settings.prompts.size": "サイズ",
       "settings.prompts.emptyReject": "空のプロンプトは保存できません。",
       "settings.prompts.reloadConfirm": "未保存の変更が失われます。ファイル内容を再読込しますか？",
-      "settings.prompts.supervisor.desc": "Supervisor system prompt。監督官/編集者の判断基準を調整します。",
+      "settings.prompts.supervisor.desc": "Publisher LLM system prompt。物語調整と編集の判断基準を調整します。",
       "settings.prompts.critic.desc": "Critic system prompt。記憶抽出/整理の基準を調整します。",
 
       // ── Persona Capsule ──
@@ -2860,7 +2864,7 @@
       "dash.section.failedQueueDebug": "失敗キュー詳細（デバッグ）",
       "dash.section.failedQueueDebug.desc": "永続キューに保管されている項目の要約です。debugモードでのみ表示されます。",
       "dash.queue.storageRecovered": "(storage復旧)",
-      "dash.queue.clearBtn": "キューをクリア",
+      "dash.queue.clearBtn": "過去のエラー履歴のみ消去",
       "dash.queue.empty": "キューは空です",
       "dash.queue.moreItems": "... 他 {n}件",
       "dash.queue.corruptTestBtn": "🧪 破損テスト（storageに壊れたデータを書き込み）",
@@ -2883,9 +2887,9 @@
       "dash.status.plugin": "プラグイン",
       "dash.status.sessionId": "セッション ID",
       "dash.status.bridgeHealth": "ブリッジ状態",
-      "dash.status.supervisorHealthTest": "監督官ヘルステスト",
+      "dash.status.supervisorHealthTest": "Publisher LLM ヘルステスト",
       "dash.status.search": "検索",
-      "dash.status.supervisorCall": "監督官呼び出し",
+      "dash.status.supervisorCall": "Publisher LLM 呼び出し",
       "dash.status.guideMode": "ナラティブガイド",
       "dash.status.injection": "注入",
       "dash.status.save": "保存",
@@ -3223,7 +3227,7 @@
       "hypaImport.noHypaData": "このチャットにHypaMemoryデータがありません。",
       "hypaImport.readFailed": "HypaMemory読み取り失敗",
       "hypaImport.requestFailed": "インポートリクエスト失敗",
-      "queue.clearConfirm": "失敗キューを全てクリアしますか？\n保管中の未送信項目が全て削除されます。",
+      "queue.clearConfirm": "過去のエラー履歴のみ消去しますか？\n再試行可能な項目と現在の確認待ち項目は保持されます。",
       "queue.corruptTestConfirm": "pluginStorageのキューデータを意図的に破損します。\n次回再起動時の復旧安全性をテストします。",
       "queue.corruptTestDone": "✅ 破損完了 — プラグインリロード後に確認",
 
@@ -3232,9 +3236,9 @@
       "test.health.ok": "✅ Bridge正常",
       "test.health.fail": "❌ Bridge接続失敗（サーバーが停止中またはURL不正）",
       "test.error": "❌ テストエラー",
-      "test.wakeup.loading": "⏳ Supervisor サービス (/wakeup) 呼出中...",
-      "test.wakeup.ok": "✅ Supervisor サービス応答OK",
-      "test.wakeup.fail": "❌ Supervisor サービス応答失敗",
+      "test.wakeup.loading": "⏳ Publisher LLM サービス (/wakeup) 呼出中...",
+      "test.wakeup.ok": "✅ Publisher LLM サービス応答OK",
+      "test.wakeup.fail": "❌ Publisher LLM サービス応答失敗",
       "test.stats.loading": "⏳ /stats 呼出中...",
       "test.stats.fail": "❌ Stats取得失敗",
 
@@ -3252,7 +3256,7 @@
       "explorer.edit.confirmSave": "この項目を修正しますか？",
       "explorer.episodes.regenConfirm": "ターン{from}-{to}を再生成しますか？\n既存エピソードは保持され、新しく生成されます。",
       "explorer.episodes.mergeConfirm": "{n}件のエピソードをマージしますか？\n既存エピソードは保持され、新しいマージエピソードが生成されます。",
-      "settings.queue.clearConfirm": "失敗キューをすべてクリアしますか？\n保管中の未送信項目がすべて削除されます。",
+      "settings.queue.clearConfirm": "過去のエラー履歴のみ消去しますか？\n再試行可能な項目と現在の確認待ち項目は保持されます。",
       "settings.queue.corruptConfirm": "pluginStorageのキューデータを意図的に破損します。\n次回再起動時の復旧安全性をテストします。",
       "settings.queue.corruptDone": "✅ 破損完了 — プラグインをreloadして確認",
       "explorer.edit.noSession": "セッションが選択されていません。",
@@ -3281,7 +3285,7 @@
       "common.error": "エラー",
       "alert.llmFailure": "⚠ {model} の応答に失敗しました\n理由: {reason}",
       "warning.output.llmFailureTitle": "⚠ 補助LLM警告: 一部の呼び出しに失敗しました。",
-      "warning.llmReason.supervisorUnavailable": "応答なし または timeout（監督官 directive 未取得）",
+      "warning.llmReason.supervisorUnavailable": "応答なし または timeout（Publisher LLM guidance 未取得）",
       "warning.llmReason.reviewSkipped": "2次レビュー応答なし（レビュー段階をスキップ）",
       "export.confirmTarget": "対象セッション:",
       "export.confirmDesc": "このセッションのchat_logs、memories、kg_triplesを\nJSONでエクスポートします。",
@@ -3398,7 +3402,7 @@
       "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
       "turn_hud.stage.recall_materialization": "記憶と根拠を読み込み",
       "turn_hud.stage.context_assembly": "入力コンテキストを組み立て",
-      "turn_hud.stage.publisher_llm": "監督を呼び出し",
+      "turn_hud.stage.publisher_llm": "Publisher LLM 呼び出し",
       "turn_hud.stage.payload_ready": "本文リクエストを準備",
       "turn_hud.stage.awaiting_final_output": "本文応答を待機中",
       "turn_hud.stage.final_output_accepted": "最終出力を確認",
@@ -3428,7 +3432,7 @@
       "turn_hud.count.vector_index": "Vector索引",
       "turn_hud.warning.publisher_llm_not_configured": "出版社LLMが未設定のためスキップ",
       "turn_hud.warning.publisher_llm_failed_open": "出版社LLM失敗後も本文リクエストは継続",
-      "turn_hud.warning.publisher_llm_malformed_failed_open": "Supervisor応答の形式が不正なため提案を破棄し、本文リクエストは継続しました",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "Publisher LLM応答の形式が不正なため提案を破棄し、本文リクエストは継続しました",
       "turn_hud.memory.title": "記憶の伝達",
       "turn_hud.memory.vector_limit": "Vector候補",
       "turn_hud.memory.core_requested": "核心上限",
@@ -3451,6 +3455,8 @@
       "turn_hud.warning.duplicate_pair_replay": "別ターンに同じ入力・応答があるため、重複保存を防止しました",
       "turn_hud.notice.delete_confirmed": "削除確認",
       "turn_hud.notice.delete_confirmed_detail": "作成者が削除した出力に関連する保存値を整理しました。",
+      "turn_hud.notice.delete_detected": "削除を検出",
+      "turn_hud.notice.delete_detected_detail": "作成者が削除した出力を検出しました。関連する保存値を整理しています。",
       "turn_hud.notice.reroll_confirmed": "再生成を確認",
       "turn_hud.notice.reroll_confirmed_detail": "新しい最終出力で既存ターンの保存内容を置き換えました。",
       "turn_hud.notice.delete_sync_failed": "削除同期エラー",
@@ -13919,9 +13925,10 @@
     const actionId = String(action && action.id || "").trim();
     if (!requestId || !actionId || requestId !== _turnWorkflowHUDActiveRequestId) return;
     const turn = Math.max(0, Number(view && view.logical_turn || 0));
-    const confirmed = await showConfirmModal(
-      t(String(action.confirm_title_key || "turn_hud.recovery.confirm_title")),
-      tf(String(action.confirm_message_key || "turn_hud.recovery.confirm_retry_derived_turn"), { turn })
+    const confirmed = confirm(
+      t(String(action.confirm_title_key || "turn_hud.recovery.confirm_title"))
+      + "\n\n"
+      + tf(String(action.confirm_message_key || "turn_hud.recovery.confirm_retry_derived_turn"), { turn })
     );
     if (!confirmed || requestId !== _turnWorkflowHUDActiveRequestId) return;
     try {
@@ -14578,28 +14585,28 @@
 
   const archiveUpdateState = {
     lastCheck: null,
-    lastDownload: null,
+    lastApply: null,
     lastStatus: null,
   };
 
   function formatArchiveUpdateResult(data, mode) {
     if (!data) {
       return '<div class="mo-status mo-status-fail">Update failed: '
-        + escapeAttr(formatBridgeFailureForDisplay(mode === "download" ? "/update/download" : "/update/check", "no response"))
+        + escapeAttr(formatBridgeFailureForDisplay(mode === "apply" ? "/update/apply" : "/update/check", "no response"))
         + '</div>';
     }
-    if (mode === "download") {
-      const ok = String(data.status || "") === "ok";
+    if (mode === "apply") {
+      const ok = String(data.status || "") === "accepted";
       const lines = [
-        "status: " + (ok ? "downloaded and verified" : String(data.status || "unknown")),
+        "status: " + (ok ? "verified update staged; restarting Archive Center" : String(data.status || "unknown")),
         "version: " + String(data.latest_version || ""),
+        "platform: " + String(data.platform || "backend-detected"),
         "asset: " + String(data.asset_name || ""),
         "bytes: " + String(data.bytes || 0),
         "sha256: " + String(data.sha256 || ""),
         "staged: " + String(data.staged_path || ""),
-        "apply: " + (data.apply_supported ? "scheduled for next start" : "manual package apply required"),
+        "apply: " + (data.shutdown_requested ? "backend shutdown acknowledged; managed launcher will apply" : "shutdown handoff unavailable"),
         data.pending_path ? "pending: " + String(data.pending_path) : "",
-        data.next_step ? "next: " + String(data.next_step) : "",
       ];
       return '<div class="mo-status ' + (ok ? "mo-status-ok" : "mo-status-fail") + '">'
         + lines.filter(Boolean).map((line) => escapeAttr(line)).join('<br>')
@@ -14607,10 +14614,16 @@
     }
     const selected = data.selected_asset || {};
     const updateAvailable = !!data.update_available;
+    const compatibilityStatus = String(data.compatibility_status || "").trim();
+    const updateState = updateAvailable
+      ? "available"
+      : (compatibilityStatus === "not_newer" ? "not needed" : "not available");
     const lines = [
       "current: " + String(data.current_version || VERSION),
       "latest: " + String(data.latest_version || ""),
-      "update: " + (updateAvailable ? "available" : "not needed"),
+      "update: " + updateState,
+      compatibilityStatus ? "compatibility: " + compatibilityStatus : "",
+      data.compatibility_reason ? "reason: " + String(data.compatibility_reason) : "",
       "platform: " + String(data.platform || "backend-detected"),
       "asset: " + String(selected.name || data.compatible_asset_note || "none"),
       "sha256: " + String(selected.sha256 || data.sha256_source || "missing"),
@@ -14618,14 +14631,14 @@
       "apply: " + (data.apply_supported ? "supported" : "manual package apply required"),
     ];
     return '<div class="mo-status ' + (updateAvailable ? "mo-status-ok" : "mo-status-wait") + '">'
-      + lines.map((line) => escapeAttr(line)).join('<br>')
+      + lines.filter(Boolean).map((line) => escapeAttr(line)).join('<br>')
       + '</div>';
   }
 
   async function checkArchiveCenterUpdate() {
     const data = await bridgeFetch("/update/check", {
       method: "GET",
-      timeoutMs: getRequestTimeoutSettingMs(),
+      timeoutMs: 0,
     });
     archiveUpdateState.lastCheck = data || null;
     return data;
@@ -14684,22 +14697,13 @@
     }
   }
 
-  async function downloadArchiveCenterUpdate() {
-    let check = archiveUpdateState.lastCheck;
-    if (!check || !check.selected_asset || !check.download_supported) {
-      check = await checkArchiveCenterUpdate();
-    }
-    const body = {};
-    if (check && check.selected_asset) {
-      body.asset_name = String(check.selected_asset.name || "");
-      body.expected_sha256 = String(check.selected_asset.sha256 || "");
-    }
-    const data = await bridgeFetch("/update/download", {
+  async function applyArchiveCenterUpdate() {
+    const data = await bridgeFetch("/update/apply", {
       method: "POST",
-      body,
+      body: {},
       timeoutMs: 0,
     });
-    archiveUpdateState.lastDownload = data || null;
+    archiveUpdateState.lastApply = data || null;
     return data;
   }
 
@@ -15587,13 +15591,34 @@
     const key = pendingFinalConfirmationRecoveryKey(safePayload);
     if (!safePayload || !key) return false;
     const oldKey = String(previousKey || "").trim();
+    const discardedHistory = [];
     if (
       !_pendingFinalConfirmationRecoveryEntries.has(key)
       && (!oldKey || !_pendingFinalConfirmationRecoveryEntries.has(oldKey))
-      && _pendingFinalConfirmationRecoveryEntries.size >= Number(settings.failedQueueMaxSize || 50)
     ) {
-      warnLog("persistPendingFinalConfirmationRecovery refused: visible queue capacity reached");
-      return false;
+      const configuredMax = Number(settings.failedQueueMaxSize);
+      const maxSize = Number.isFinite(configuredMax) && configuredMax > 0 ? Math.trunc(configuredMax) : 50;
+      while (_pendingFinalConfirmationRecoveryEntries.size >= maxSize) {
+        let oldestKey = "";
+        let oldestTime = Infinity;
+        for (const [candidateKey, candidate] of _pendingFinalConfirmationRecoveryEntries.entries()) {
+          const state = String(candidate && candidate.state || "pending");
+          if (state !== "terminal" && state !== "superseded") continue;
+          const parsedTime = new Date(candidate && (candidate.terminalAt || candidate.addedAt)).getTime();
+          const candidateTime = Number.isFinite(parsedTime) ? parsedTime : 0;
+          if (!oldestKey || candidateTime < oldestTime) {
+            oldestKey = candidateKey;
+            oldestTime = candidateTime;
+          }
+        }
+        if (!oldestKey) break;
+        discardedHistory.push([oldestKey, _pendingFinalConfirmationRecoveryEntries.get(oldestKey)]);
+        _pendingFinalConfirmationRecoveryEntries.delete(oldestKey);
+      }
+      if (_pendingFinalConfirmationRecoveryEntries.size >= maxSize) {
+        warnLog("persistPendingFinalConfirmationRecovery refused: visible queue capacity reached");
+        return false;
+      }
     }
     const previousOldEntry = oldKey ? _pendingFinalConfirmationRecoveryEntries.get(oldKey) : null;
     const previousNewEntry = _pendingFinalConfirmationRecoveryEntries.get(key);
@@ -15619,6 +15644,9 @@
       else _pendingFinalConfirmationRecoveryEntries.delete(key);
       if (oldKey && oldKey !== key && previousOldEntry) {
         _pendingFinalConfirmationRecoveryEntries.set(oldKey, previousOldEntry);
+      }
+      for (const [discardedKey, discardedEntry] of discardedHistory) {
+        _pendingFinalConfirmationRecoveryEntries.set(discardedKey, discardedEntry);
       }
       warnLog("persistPendingFinalConfirmationRecovery failed:", err && err.message);
       return false;
@@ -15759,6 +15787,9 @@
     }
     let restored = 0;
     let failedQueueChanged = false;
+    let pendingRecoveryChanged = false;
+    const now = Date.now();
+    const maxAge = (settings.failedQueueMaxAgeDays || 7) * 24 * 60 * 60 * 1000;
     for (const stored of data.items) {
       const safePayload = serializeCompleteTurnRecoveryPayload(stored && stored.payload);
       const key = pendingFinalConfirmationRecoveryKey(safePayload);
@@ -15775,7 +15806,21 @@
         || stored.terminalCode
         || (recoveryState === "terminal" ? "terminal_pending_final_incident" : "")
       );
+      if (recoveryState === "terminal" || recoveryState === "superseded") {
+        const terminalTime = transitionIntent && transitionIntent.transitionAt
+          || stored.terminalAt
+          || stored.addedAt;
+        const ageMs = now - new Date(terminalTime).getTime();
+        if (isNaN(ageMs) || ageMs >= maxAge) {
+          pendingRecoveryChanged = true;
+          if (recoveryState === "superseded" && removeFailedCompleteTurnByIdempotencyKey(key.slice("complete|".length))) {
+            failedQueueChanged = true;
+          }
+          continue;
+        }
+      }
       if (recoveryState === "superseded") {
+        pendingRecoveryChanged = true;
         if (removeFailedCompleteTurnByIdempotencyKey(key.slice("complete|".length))) {
           failedQueueChanged = true;
         }
@@ -15812,6 +15857,7 @@
       if (queued) restored++;
     }
     if (failedQueueChanged) await flushQueueSave();
+    if (pendingRecoveryChanged) await savePendingFinalConfirmationRecoveryToStorage();
     return restored;
   }
 
@@ -15876,8 +15922,11 @@
       const now = Date.now();
       const maxAge = (settings.failedQueueMaxAgeDays || 7) * 24 * 60 * 60 * 1000;
       const fresh = restored.filter(item => {
-        if (String(item && item.state || "") === "terminal") return true;
-        const ageMs = now - new Date(item.addedAt).getTime();
+        const state = String(item && item.state || "");
+        const ageFrom = state === "terminal" || state === "superseded"
+          ? item.terminalAt || item.addedAt
+          : item.addedAt;
+        const ageMs = now - new Date(ageFrom).getTime();
         return !isNaN(ageMs) && ageMs < maxAge;
       });
 
@@ -15905,6 +15954,7 @@
       runtimeState.queuePersistence.loadedCount = addedCount;
       runtimeState.queuePersistence.fromStorage = addedCount > 0;
       debugLog(`loadFailedQueueFromStorage: ${addedCount} items restored (${dupes} dupes, ${expired} expired)`);
+      if (expired > 0) scheduleQueueSave();
     } catch (err) {
       warnLog("loadFailedQueueFromStorage failed:", err.message);
       runtimeState.queuePersistence.lastLoad = { status: "error", time: new Date().toISOString(), detail: err.message };
@@ -15921,8 +15971,11 @@
       const before = _failedQueue.length;
       let i = _failedQueue.length;
       while (i--) {
-        if (String(_failedQueue[i] && _failedQueue[i].state || "") === "terminal") continue;
-        const ageMs = now - new Date(_failedQueue[i].addedAt).getTime();
+        const state = String(_failedQueue[i] && _failedQueue[i].state || "");
+        const ageFrom = state === "terminal" || state === "superseded"
+          ? _failedQueue[i].terminalAt || _failedQueue[i].addedAt
+          : _failedQueue[i].addedAt;
+        const ageMs = now - new Date(ageFrom).getTime();
         if (isNaN(ageMs) || ageMs >= maxAge) {
           _failedQueue.splice(i, 1);
         }
@@ -15937,13 +15990,23 @@
     }
   }
 
-  /** 큐 전체 비우기 — 수동 정리용 */
+  /** 종료된 과거 오류 기록만 비우기 — 수동 정리용 */
   async function clearFailedQueue() {
     try {
-      _failedQueue.length = 0;
+      for (let index = _failedQueue.length - 1; index >= 0; index--) {
+        const state = String(_failedQueue[index] && _failedQueue[index].state || "");
+        if (state === "terminal" || state === "superseded") _failedQueue.splice(index, 1);
+      }
+      for (const [key, entry] of _pendingFinalConfirmationRecoveryEntries.entries()) {
+        const state = String(entry && entry.state || "pending");
+        if (state === "terminal" || state === "superseded") {
+          _pendingFinalConfirmationRecoveryEntries.delete(key);
+        }
+      }
       await saveFailedQueueToStorage();
-      runtimeState.queuePersistence.fromStorage = false;
-      debugLog("clearFailedQueue: queue cleared");
+      await savePendingFinalConfirmationRecoveryToStorage();
+      if (_failedQueue.length === 0) runtimeState.queuePersistence.fromStorage = false;
+      debugLog("clearFailedQueue: terminal history cleared");
     } catch (err) {
       warnLog("clearFailedQueue failed:", err.message);
     }
@@ -16028,6 +16091,23 @@
       }
       const configuredMax = Number(settings.failedQueueMaxSize);
       const maxSize = Number.isFinite(configuredMax) && configuredMax > 0 ? Math.trunc(configuredMax) : 50;
+      while (_failedQueue.length >= maxSize) {
+        let oldestIndex = -1;
+        let oldestTime = Infinity;
+        for (let index = 0; index < _failedQueue.length; index++) {
+          const queuedItem = _failedQueue[index];
+          const state = String(queuedItem && queuedItem.state || "retryable");
+          if (state !== "terminal" && state !== "superseded") continue;
+          const parsedTime = new Date(queuedItem.terminalAt || queuedItem.addedAt).getTime();
+          const candidateTime = Number.isFinite(parsedTime) ? parsedTime : 0;
+          if (oldestIndex < 0 || candidateTime < oldestTime) {
+            oldestIndex = index;
+            oldestTime = candidateTime;
+          }
+        }
+        if (oldestIndex < 0) break;
+        _failedQueue.splice(oldestIndex, 1);
+      }
       if (_failedQueue.length >= maxSize) {
         warnLog(`enqueue: admission rejected at capacity (${_failedQueue.length}/${maxSize})`);
         return {
@@ -19499,6 +19579,9 @@
         return false;
       }
       const decidedTurnIndex = Number(decision.from_turn);
+      if (decision.turn_workflow_hud) {
+        consumeTurnWorkflowHUDNotice(decision.turn_workflow_hud);
+      }
 
       const rollbackParams = new URLSearchParams();
       rollbackParams.set("chat_session_id", String(sessionId || ""));
@@ -20851,7 +20934,7 @@
           lines.push("  " + t('dash.transparency.sectionWorld.confidence') + ": " + (it.sectionWorld.confidence || "?"));
         }
       } else {
-        lines.push("\n━━ Supervisor Directive ━━");
+        lines.push("\n━━ Publisher LLM Guidance ━━");
         if (it.supervisorDirective && typeof it.supervisorDirective === "object") {
           for (const [k, v] of Object.entries(it.supervisorDirective)) {
             lines.push("  " + k + ": " + v);
@@ -21091,7 +21174,7 @@
         rows.push(r("Active States", as.status, asDetail));
       }
       rows.push(
-        r("Supervisor", tr.supervisor.status, tr.supervisor.hasDirective ? "directive ✓" + (tr.supervisor.hasAuthor ? " author✓" : " author✗") + (tr.supervisor.hasDirector ? " director✓" : " director✗") + (tr.supervisor.hasSectionWorld ? " sw✓" : "") : tr.supervisor.status),
+        r("Publisher LLM", tr.supervisor.status, tr.supervisor.hasDirective ? "directive ✓" + (tr.supervisor.hasAuthor ? " author✓" : " author✗") + (tr.supervisor.hasDirector ? " director✓" : " director✗") + (tr.supervisor.hasSectionWorld ? " sw✓" : "") : tr.supervisor.status),
       );
       const init = tr.supervisor && tr.supervisor.initiative;
       if (init && init.mode) {
@@ -21543,7 +21626,7 @@
         } else {
           text = Object.entries(dp).map(([k,v]) => k + ": " + v).join(" | ");
         }
-        parts.push('<div class="mo-preview-block"><div class="mo-preview-title">Supervisor Directive</div><div class="mo-preview-text">' + escapeAttr(truncPreview(text, 300)) + '</div></div>');
+        parts.push('<div class="mo-preview-block"><div class="mo-preview-title">Publisher LLM Guidance</div><div class="mo-preview-text">' + escapeAttr(truncPreview(text, 300)) + '</div></div>');
       }
 
       // L-4d: auto-advance reentry preview — trigger != none 일 때만
@@ -21591,7 +21674,7 @@
         if (rp.searchPayload) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Search Payload</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.searchPayload, 400)) + '</div></div>');
         if (rp.searchResult) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Search Result</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.searchResult, 400)) + '</div></div>');
         if (rp.wakeUpContextFull) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Wake-Up Context (full)</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.wakeUpContextFull, 500)) + '</div></div>');
-        if (rp.supervisorRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Supervisor Raw</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.supervisorRaw, 500)) + '</div></div>');
+        if (rp.supervisorRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Publisher LLM Raw</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.supervisorRaw, 500)) + '</div></div>');
         if (rp.completeResult) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Complete Result</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.completeResult, 400)) + '</div></div>');
         // Sprint 3-B: injection debug
         if (rp.injectionPreview) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Injection Block</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.injectionPreview, 800)) + '</div></div>');
@@ -22564,16 +22647,16 @@
           }
           svHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">' + t('dash.transparency.sectionWorld.confidence') + '</span><span class="mo-it-dir-val">' + escapeAttr(it.sectionWorld.confidence || "low") + '</span></div>';
         }
-        parts.push(renderItBlockRaw("6. Supervisor (Author + Director" + (it.sectionWorld && it.sectionWorld.applies ? " + World" : "") + ")", svHtml, false));
+        parts.push(renderItBlockRaw("6. Publisher LLM (Author + Director" + (it.sectionWorld && it.sectionWorld.applies ? " + World" : "") + ")", svHtml, false));
       } else if (it.supervisorDirective && typeof it.supervisorDirective === "object") {
         const dirHtml = Object.entries(it.supervisorDirective).map(([k, v]) =>
           '<div class="mo-it-dir-row"><span class="mo-it-dir-key">' + escapeAttr(k) + '</span><span class="mo-it-dir-val">' + escapeAttr(String(v)) + '</span></div>'
         ).join("");
-        parts.push(renderItBlockRaw("6. Supervisor Directive", dirHtml, false));
+        parts.push(renderItBlockRaw("6. Publisher LLM Guidance", dirHtml, false));
       } else if (it.supervisorDirective) {
-        parts.push(renderItBlock("6. Supervisor Directive", String(it.supervisorDirective), false));
+        parts.push(renderItBlock("6. Publisher LLM Guidance", String(it.supervisorDirective), false));
       } else {
-        parts.push(renderItBlock("6. Supervisor Directive", t('dash.transparency.supervisor.inactive'), false));
+        parts.push(renderItBlock("6. Publisher LLM Guidance", t('dash.transparency.supervisor.inactive'), false));
       }
 
       // 7. Assembled Input Preview — 핵심 섹션
@@ -24779,8 +24862,8 @@
       : "(no wake-up context available)";
 
     const supervisorBlock = supervisorDirective
-      ? "--- Supervisor Directive ---\n" + supervisorDirective + "\n---"
-      : "(no supervisor directive available)";
+      ? "--- Publisher LLM Guidance ---\n" + supervisorDirective + "\n---"
+      : "(no Publisher LLM guidance available)";
 
     const guidanceBlock = (typeof persistentGuidanceHints === "string" && persistentGuidanceHints.trim())
       ? "--- Persistent Story Guidance ---\n" + persistentGuidanceHints.trim() + "\n---"
@@ -27862,6 +27945,10 @@
           user_input_kind: actualEmptyUserInput ? "auto_continue" : "normal",
           source_acceptance_required: true,
           source_acceptance_observation: sourceAcceptanceObservation,
+          critic_input_budget_observation: {
+            contract_version: "critic_input_budget_observation.v1",
+            max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars))),
+          },
           archive_center_request_correlation_id: sourceAcceptanceObservation.archive_center_request_correlation_id || null,
           turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || "",
           risu_persona_observation: risuPersonaObservation,
@@ -27929,6 +28016,9 @@
       if (meta.source_acceptance_required === true) safeClientMeta.source_acceptance_required = true;
       if (meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object") {
         safeClientMeta.source_acceptance_observation = Object.assign({}, meta.source_acceptance_observation);
+      }
+      if (meta.critic_input_budget_observation && typeof meta.critic_input_budget_observation === "object") {
+        safeClientMeta.critic_input_budget_observation = Object.assign({}, meta.critic_input_budget_observation);
       }
       if (meta.effective_input_observation && typeof meta.effective_input_observation === "object") {
         const observation = meta.effective_input_observation;
@@ -28945,7 +29035,7 @@
       if (_autoAdvanceHint) {
         debugLog("L-4b: auto-advance hint injected (trigger:", _autoAdvanceTrigger, ")");
       }
-      // 3.4-D: 감독관은 같은 /prepare-turn 안에서 Go가 한 번만 호출한다.
+      // 3.4-D: 출판사 LLM은 같은 /prepare-turn 안에서 Go가 한 번만 호출한다.
       // JavaScript는 이미 제한된 결과를 관찰·전달할 뿐 별도 /supervisor 호출을 만들지 않는다.
       const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)
         ? preparedBundle.supervisorResult
@@ -37219,6 +37309,27 @@
       await captureAssistantPrefillSeedForSession(orchSessionId, messages);
       await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
+      const postOutputReplacement = buildPostOutputSecondaryRequestContext(mainRequestActiveMessages);
+      if (postOutputReplacement && !rawInputObservation) {
+        const payloadUserText = getLastPayloadUserText(messages);
+        const payloadUser = normalizeMainTurnCompareText(payloadUserText);
+        const previousUser = normalizeMainTurnCompareText(postOutputReplacement.userContent);
+        const payloadIsPreviousUser = payloadUser && previousUser && (
+          mainTurnTextMatchesOriginal(payloadUser, previousUser)
+          || mainTurnTextMatchesOriginal(previousUser, payloadUser)
+        );
+        if (payloadUser && !payloadIsPreviousUser) {
+          const postOutputDecision = {
+            allowed: false,
+            reason: "post_output_secondary_request",
+            requestType: String(type || "model"),
+            postOutputReplacement,
+          };
+          rememberNonMainRequestSkip(orchSessionId, postOutputDecision, "beforeRequest");
+          markNonMainRequestHookSkipped("beforeRequest", orchSessionId, postOutputDecision);
+          return payload;
+        }
+      }
       const observedChatId = _sessionCache && _sessionCache.sessionId === orchSessionId
         ? String(_sessionCache.observedChatUniqueId || "").trim()
         : "";
@@ -38225,36 +38336,6 @@
           requestContext,
           finalContent
         );
-        if (finalObservation.accepted === true && finalObservation.observation && finalObservation.duplicate !== true) {
-          updateRuntimeState("lastStreamingAfterRequest", "ok", {
-            detail: "official afterRequest final accepted; persistence scheduled",
-            reason_code: "after_request_final_accepted",
-            sessionId: chatSessionId,
-            requestType: String(type || "model"),
-            promptMemoryAvailability: "same_turn",
-          });
-          Promise.resolve().then(function persistOfficialAfterRequestFinalWithoutBlockingResponse() {
-            return continueAcceptedFinalPersistence(
-              persistenceOrchResult,
-              finalObservation.observation
-            );
-          }).catch(function(err) {
-            if (
-              requestContext
-              && requestContext.state === "accepted"
-              && requestContext.acceptedObservationKey === finalObservation.observationKey
-            ) {
-              requestContext.state = "candidate_observed";
-              requestContext.acceptedObservationKey = "";
-              requestContext.acceptedObservation = null;
-            }
-            warnLog("[final-confirmation] afterRequest final persistence failed:", err && err.message);
-            updateRuntimeState("lastError", "error", {
-              detail: "afterRequest persistence: " + String(err && err.message || "unknown"),
-            });
-          });
-          return responseReturnContent;
-        }
         if (finalObservation.accepted === true && finalObservation.duplicate === true) {
           updateRuntimeState("lastStreamingAfterRequest", "ok", {
             detail: "duplicate official afterRequest ignored",
@@ -38265,20 +38346,23 @@
           });
           return responseReturnContent;
         }
-        updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          detail: String(finalObservation.reason || "after_request_final_not_accepted"),
-          reason_code: "after_request_final_not_accepted",
+        const sourceAcceptanceFinality = finalObservation.accepted === true
+          ? finalObservation.observation
+          : null;
+        updateRuntimeState("lastStreamingAfterRequest", "ok", {
+          detail: "afterRequest content accepted; persistence scheduled",
+          reason_code: "after_request_content_accepted",
           sessionId: chatSessionId,
           requestType: String(type || "model"),
-          promptMemoryAvailability: "recovery_on_next_host_signal",
+          promptMemoryAvailability: "same_turn",
         });
-        updateRuntimeState("lastSaveStatus", "skipped", {
-          detail: "after_request_final_not_accepted",
-        });
-        updateRuntimeState("lastCompleteTurnStatus", "skipped", {
-          source: "local",
-          detail: String(finalObservation.reason || "after_request_final_not_accepted"),
-          failReasons: [],
+        Promise.resolve().then(function persistAfterRequestContent() {
+          return continueAcceptedFinalPersistence(persistenceOrchResult, sourceAcceptanceFinality);
+        }).catch(function(err) {
+          warnLog("afterRequest persistence failed:", err && err.message);
+          updateRuntimeState("lastError", "error", {
+            detail: "afterRequest persistence: " + String(err && err.message || "unknown"),
+          });
         });
         return responseReturnContent;
       }
@@ -38831,7 +38915,7 @@
           lastOrchResult._trace,
           typeof criticUserInput === "string" && typeof safeUser === "string"
             ? buildSanitizeTrace("critic_user_input", criticUserInput, safeUser)
-            : null
+          : null
         );
       }
       const safeContent = String(persistedAssistantContent || "");
@@ -38859,7 +38943,7 @@
               {
                 orchestrationResult: lastOrchResult,
                 sourceAcceptanceFinality,
-                risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
+              risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
               }
             ),
             null, "buildCompleteTurnRequestBody"
@@ -51438,11 +51522,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         return '<span class="mo-dash-chip mo-dash-chip-' + tone + '">' + escapeAttr(dashboardViewModelText(chip && chip.label)) + '</span>';
       }).join("") : "";
       const rows = Array.isArray(card && card.rows) ? card.rows.map(renderRow).join("") : "";
+      const actions = String(card && card.id || "") === "historical_queue"
+        ? '<div class="mo-dash-row"><button class="mo-btn" id="mo-queue-clear-btn">' + escapeAttr(t('dash.queue.clearBtn')) + '</button></div>'
+        : "";
       return '<div class="' + cls + '"><div class="mo-dash-card-head">'
         + '<span class="mo-dash-card-icon">' + escapeAttr(card && card.icon || "") + '</span>'
         + '<span class="mo-dash-card-title">' + escapeAttr(card && card.title || "Dashboard") + '</span>'
         + '<div class="mo-dash-card-summary">' + (chips || summaryHtml(card && card.summary)) + '</div>'
-        + '</div>' + rows + '</div>';
+        + '</div>' + rows + actions + '</div>';
     }).join("");
   }
 
@@ -53190,7 +53277,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <label>Timeout (ms)</label>
         <input type="number" id="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? DEFAULT_SETTINGS.pluginMainTimeoutMs}" min="5000" max="300000" step="5000">
         <input class="mo-range" type="range" id="mo-pluginMainTimeoutMsRange" data-sync-input="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? DEFAULT_SETTINGS.pluginMainTimeoutMs}" min="5000" max="300000" step="5000">
-        <small style="color:#888;font-size:11px;">감독관 LLM 타임아웃.<br><br>느린 모델은 60000 이상 권장.</small>
+        <small style="color:#888;font-size:11px;">출판사 LLM 타임아웃.<br><br>느린 모델은 60000 이상 권장.</small>
       </div>
       <div class="mo-row mo-range-row">
         <label>${t('settings.label.publisherTemp')}</label>
@@ -53217,9 +53304,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <label id="mo-pluginMainReasoningEffortLabel">${t('settings.label.publisherReasoningEffort')}</label>
         <select id="mo-pluginMainReasoningEffort">
           <option value="none"${(s.pluginMainReasoningEffort || "none") === "none" ? " selected" : ""}>none</option>
+          <option value="minimal"${s.pluginMainReasoningEffort === "minimal" ? " selected" : ""}>minimal</option>
           <option value="low"${s.pluginMainReasoningEffort === "low" ? " selected" : ""}>low</option>
           <option value="medium"${s.pluginMainReasoningEffort === "medium" ? " selected" : ""}>medium</option>
           <option value="high"${s.pluginMainReasoningEffort === "high" ? " selected" : ""}>high</option>
+          <option value="xhigh"${s.pluginMainReasoningEffort === "xhigh" ? " selected" : ""}>xhigh</option>
+          <option value="max"${s.pluginMainReasoningEffort === "max" ? " selected" : ""}>max</option>
           <option value="enable"${s.pluginMainReasoningEffort === "enable" ? " selected" : ""}>enable</option>
           <option value="disable"${s.pluginMainReasoningEffort === "disable" ? " selected" : ""}>disable</option>
         </select>
@@ -53336,9 +53426,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <label id="mo-subLlmReasoningEffortLabel">${t('settings.label.criticReasoningEffort')}</label>
         <select id="mo-subLlmReasoningEffort">
           <option value="none"${(s.subLlmReasoningEffort || "none") === "none" ? " selected" : ""}>none</option>
+          <option value="minimal"${s.subLlmReasoningEffort === "minimal" ? " selected" : ""}>minimal</option>
           <option value="low"${s.subLlmReasoningEffort === "low" ? " selected" : ""}>low</option>
           <option value="medium"${s.subLlmReasoningEffort === "medium" ? " selected" : ""}>medium</option>
           <option value="high"${s.subLlmReasoningEffort === "high" ? " selected" : ""}>high</option>
+          <option value="xhigh"${s.subLlmReasoningEffort === "xhigh" ? " selected" : ""}>xhigh</option>
+          <option value="max"${s.subLlmReasoningEffort === "max" ? " selected" : ""}>max</option>
           <option value="enable"${s.subLlmReasoningEffort === "enable" ? " selected" : ""}>enable</option>
           <option value="disable"${s.subLlmReasoningEffort === "disable" ? " selected" : ""}>disable</option>
         </select>
@@ -53424,7 +53517,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <input type="number" id="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
           <input class="mo-range" type="range" id="mo-embeddingTimeoutRange" data-sync-input="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
         </div>
-        <div class="mo-note">여기는 backend 감독관·평론가·임베딩 호출 시간입니다. 아래 출판사/평론가 LLM 간의 Timeout (ms)와는 별개입니다.</div>
+        <div class="mo-note">여기는 backend 출판사 LLM·평론가·임베딩 호출 시간입니다. 아래 출판사/평론가 LLM 간의 Timeout (ms)와는 별개입니다.</div>
       </div>
       <div class="mo-settings-card mo-common-card-memory">
         <div class="mo-row mo-range-row">
@@ -54750,12 +54843,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             && testEndpoint === String(settings.pluginMainEndpoint || "").trim()
             && testModel === String(settings.pluginMainModel || "").trim();
           if (!savedPublisherConfigMatches) {
-            resultEl.textContent = "감독관 설정을 먼저 저장한 뒤 호출 테스트를 실행해 주세요.";
+            resultEl.textContent = "출판사 LLM 설정을 먼저 저장한 뒤 호출 테스트를 실행해 주세요.";
             return;
           }
           const runtimeSync = await syncConfigToBackend(settings);
           if (!runtimeConfigSyncRoleReady(runtimeSync, "supervisor")) {
-            resultEl.textContent = "감독관 런타임 설정 동기화 실패: " + runtimeSync.code;
+            resultEl.textContent = "출판사 LLM 런타임 설정 동기화 실패: " + runtimeSync.code;
             return;
           }
           const testTimeoutMs = getPluginMainTimeoutSettingMs((($("mo-pluginMainTimeoutMs") || {}).value));
@@ -54771,8 +54864,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const testExtraBodyJson = sanitizeProviderOverrideJsonSetting((($("mo-pluginMainExtraBodyJson") || {}).value || ""));
           const testBody = {
             model: testModel,
-            messages: [{ role: "user", content: "ping" }],
-            max_tokens: 5,
+            messages: [{ role: "user", content: "Reply with exactly: ARCHIVE_CENTER_PUBLISHER_OK" }],
+            temperature: 0,
+            max_tokens: 1024,
             endpoint: testEndpoint,
             api_key: testApiKey,
             provider: testProvider,
@@ -54780,6 +54874,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             max_completion_tokens: testMaxCompletionTokens,
           };
           applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
+          if (testProvider === "ollama" && testReasoningEffort === "none") testBody.reasoning_effort = "none";
           if (testProvider === "vertex") {
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
           }
@@ -54801,8 +54896,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           } else if (data.error) {
             resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 프록시 오류: ' + escapeAttr(data.error) + '</div>';
           } else {
-            const reply = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "(응답 없음)";
-            resultEl.innerHTML = '<div class="mo-status mo-status-ok">✅ 출판사 호출 성공 — 모델: ' + escapeAttr(testModel) + ' / 응답: ' + escapeAttr(truncPreview(reply, 60)) + '</div>';
+            const reply = String((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim();
+            if (!reply) {
+              resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 출판사 호출 실패 — 모델이 확인 응답을 반환하지 않았습니다.</div>';
+            } else {
+              resultEl.innerHTML = '<div class="mo-status mo-status-ok">✅ 출판사 호출 성공 — 모델: ' + escapeAttr(testModel) + ' / 응답: ' + escapeAttr(truncPreview(reply, 60)) + '</div>';
+            }
           }
         } catch (err) {
           const reason = (err && err.message) ? err.message : "unknown";
@@ -54949,21 +55048,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         updateDownloadBtn.addEventListener("click", async () => {
           const resultEl = $("mo-test-result");
           if (!resultEl) return;
-          const confirmed = await showConfirmModal(
-            t("settings.update.confirmTitle"),
-            t("settings.update.confirmBody")
-          );
-          if (!confirmed) return;
           updateDownloadBtn.disabled = true;
-          resultEl.innerHTML = '<div class="mo-status mo-status-wait">Downloading update package through backend...</div>';
+          resultEl.innerHTML = '<div class="mo-status mo-status-wait">Preparing verified update and restarting Archive Center...</div>';
           try {
-            const data = await withUiBridgeSettings(() => downloadArchiveCenterUpdate());
-            resultEl.innerHTML = formatArchiveUpdateResult(data, "download");
+            const data = await withUiBridgeSettings(() => applyArchiveCenterUpdate());
+            resultEl.innerHTML = formatArchiveUpdateResult(data, "apply");
           } catch (err) {
-            resultEl.innerHTML = '<div class="mo-status mo-status-fail">Update download failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
-          } finally {
+            resultEl.innerHTML = '<div class="mo-status mo-status-fail">Immediate update failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
             updateDownloadBtn.disabled = false;
-            void refreshArchiveCenterUpdateStatus();
           }
         });
       }

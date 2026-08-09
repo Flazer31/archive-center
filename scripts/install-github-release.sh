@@ -9,6 +9,9 @@ SYSTEMD=false
 SERVICE_NAME="archive-center"
 RUN_USER="${SUDO_USER:-$(id -un 2>/dev/null || printf archive-center)}"
 EXTERNAL_OPERATION_TIMEOUT_SECONDS="${AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS:-}"
+REQUEST_TIMEOUT_SECONDS="${AC_REQUEST_TIMEOUT_SECONDS:-30}"
+READINESS_TIMEOUT_SECONDS="${AC_READINESS_TIMEOUT_SECONDS:-180}"
+READINESS_POLL_INTERVAL_SECONDS="${AC_READINESS_POLL_INTERVAL_SECONDS:-1}"
 SERVICE_RESTART_SECONDS="${AC_SERVICE_RESTART_SECONDS:-}"
 
 usage() {
@@ -166,6 +169,13 @@ if [ "$SYSTEMD" = "true" ] && [ -z "$SERVICE_RESTART_SECONDS" ]; then
 	die "--systemd requires --service-restart-seconds or AC_SERVICE_RESTART_SECONDS; no hidden restart delay is used"
 fi
 
+AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=$EXTERNAL_OPERATION_TIMEOUT_SECONDS
+AC_REQUEST_TIMEOUT_SECONDS=$REQUEST_TIMEOUT_SECONDS
+AC_READINESS_TIMEOUT_SECONDS=$READINESS_TIMEOUT_SECONDS
+AC_READINESS_POLL_INTERVAL_SECONDS=$READINESS_POLL_INTERVAL_SECONDS
+export AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS AC_REQUEST_TIMEOUT_SECONDS
+export AC_READINESS_TIMEOUT_SECONDS AC_READINESS_POLL_INTERVAL_SECONDS
+
 need_cmd curl
 need_cmd python3
 need_cmd unzip
@@ -318,6 +328,27 @@ if [ ! -d "$PERSISTENT_DATA_DIR/mariadb-data" ] && [ -n "$previous_current" ] &&
 fi
 
 safe_link_current "$package_root" "$INSTALL_DIR/current"
+data_root_pointer="$INSTALL_DIR/data-root.txt"
+stable_launcher="$INSTALL_DIR/start-archive-center.sh"
+case "$PLATFORM" in
+	linux-*) current_launcher="start-archive-center-linux.sh" ;;
+	macos-*) current_launcher="Start Archive Center macOS.command" ;;
+	termux-*) current_launcher="install-and-start-termux.sh" ;;
+	*) die "installed package launcher could not be selected for $PLATFORM" ;;
+esac
+printf '%s\n' "$PERSISTENT_DATA_DIR" > "$data_root_pointer"
+{
+	printf '%s\n' '#!/usr/bin/env sh'
+	printf '%s\n' 'set -eu'
+	printf '%s\n' 'INSTALL_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)'
+	printf '%s\n' 'DATA_ROOT_POINTER="$INSTALL_ROOT/data-root.txt"'
+	printf '%s\n' '[ -f "$DATA_ROOT_POINTER" ] || { printf '\''ERROR: installed data-root pointer is missing: %s\n'\'' "$DATA_ROOT_POINTER" >&2; exit 1; }'
+	printf '%s\n' 'IFS= read -r ARCHIVE_CENTER_DATA_DIR < "$DATA_ROOT_POINTER"'
+	printf '%s\n' '[ -n "$ARCHIVE_CENTER_DATA_DIR" ] || { printf '\''ERROR: installed data-root pointer is empty: %s\n'\'' "$DATA_ROOT_POINTER" >&2; exit 1; }'
+	printf '%s\n' 'export ARCHIVE_CENTER_DATA_DIR'
+	printf 'exec sh "$INSTALL_ROOT/current/%s" "$@"\n' "$current_launcher"
+} > "$stable_launcher"
+chmod 755 "$stable_launcher"
 printf '%s\n' "$release_tag" > "$INSTALL_DIR/current-version.txt"
 
 printf 'Installed Archive Center %s\n' "$release_tag"
@@ -346,7 +377,11 @@ User=$RUN_USER
 Group=$RUN_USER
 WorkingDirectory=$INSTALL_DIR/current
 Environment="ARCHIVE_CENTER_DATA_DIR=$data_dir_escaped"
-ExecStart=/bin/sh $INSTALL_DIR/current/start-archive-center-linux.sh --no-install
+Environment="AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=$EXTERNAL_OPERATION_TIMEOUT_SECONDS"
+Environment="AC_REQUEST_TIMEOUT_SECONDS=$REQUEST_TIMEOUT_SECONDS"
+Environment="AC_READINESS_TIMEOUT_SECONDS=$READINESS_TIMEOUT_SECONDS"
+Environment="AC_READINESS_POLL_INTERVAL_SECONDS=$READINESS_POLL_INTERVAL_SECONDS"
+ExecStart=/bin/sh $INSTALL_DIR/start-archive-center.sh --no-install
 Restart=on-failure
 RestartSec=$SERVICE_RESTART_SECONDS
 NoNewPrivileges=true
@@ -362,10 +397,5 @@ EOF
 fi
 
 if [ "$START_AFTER" = "true" ]; then
-	export ARCHIVE_CENTER_DATA_DIR="$PERSISTENT_DATA_DIR"
-	case "$PLATFORM" in
-		linux-*) exec sh "$INSTALL_DIR/current/start-archive-center-linux.sh" ;;
-		macos-*) exec sh "$INSTALL_DIR/current/scripts/start-full-macos.sh" ;;
-		termux-*) exec sh "$INSTALL_DIR/current/install-and-start-termux.sh" ;;
-	esac
+	exec sh "$stable_launcher"
 fi
