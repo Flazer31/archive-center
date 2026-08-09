@@ -125,7 +125,7 @@ lastTurnTrace = {
   critic: { memorySaved: false, kgSaved: false }
 };
 html = renderTurnTraceRows();
-assert(html.includes("Supervisor") && html.includes("fail"), "backend-off supervisor fallback missing");
+assert(html.includes("Publisher LLM") && html.includes("fail"), "backend-off publisher status missing");
 assert(html.includes("Storylines") && html.includes("no storylines"), "backend-off storyline fallback missing");
 assert(html.includes("World Rules") && html.includes("no rules"), "backend-off world-rule fallback missing");
 console.log(JSON.stringify({ storylineText, worldRulesText, ok: true }));
