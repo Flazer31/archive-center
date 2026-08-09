@@ -455,6 +455,20 @@ func TestUpdateApplyResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *t
 	if _, err := os.Stat(filepath.Join(packageRoot, ".updates", "pending-update.json")); err != nil {
 		t.Fatalf("one-call apply did not stage pending update: %v", err)
 	}
+	pendingFile, err := os.Open(filepath.Join(packageRoot, ".updates", "pending-update.json"))
+	if err != nil {
+		t.Fatalf("open staged pending update: %v", err)
+	}
+	defer pendingFile.Close()
+	decoder := json.NewDecoder(pendingFile)
+	decoder.DisallowUnknownFields()
+	var pending packageupdate.Pending
+	if err := decoder.Decode(&pending); err != nil {
+		t.Fatalf("staged pending update is not accepted by the updater contract: %v", err)
+	}
+	if pending.ContractVersion != packageupdate.PendingContract || pending.CurrentVersion != "3.9.9" || pending.TargetVersion != "4.2.0" {
+		t.Fatalf("staged pending update contract drifted: %+v", pending)
+	}
 }
 
 func TestUpdateApplyRejectsIncompatibleDirectJumpBeforePendingOrShutdown(t *testing.T) {

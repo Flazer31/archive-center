@@ -17,7 +17,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/packageupdate"
 )
@@ -98,7 +97,6 @@ type pendingPackageUpdate struct {
 	AssetPath       string   `json:"asset_path"`
 	SHA256          string   `json:"sha256"`
 	RequiredFiles   []string `json:"required_files,omitempty"`
-	PreparedAt      string   `json:"prepared_at"`
 }
 
 func (s *Server) registerUpdateRoutes(mux *http.ServeMux) {
@@ -648,7 +646,6 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 			AssetPath:       target,
 			SHA256:          actual,
 			RequiredFiles:   requiredUpdatePackageFiles(runtime.GOOS),
-			PreparedAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		}
 		pendingPath = filepath.Join(root, "pending-update.json")
 		if err := writePendingPackageUpdate(pendingPath, pending); err != nil {
