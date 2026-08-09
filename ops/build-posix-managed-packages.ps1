@@ -46,6 +46,20 @@ function Write-TextFile([string]$Path, [string]$Value) {
     [System.IO.File]::WriteAllText($Path, $Value, $utf8NoBom)
 }
 
+function Normalize-POSIXPackageLineEndings([string]$Root) {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    foreach ($pattern in @("*.sh", "*.command")) {
+        Get-ChildItem -LiteralPath $Root -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            $text = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+            $normalized = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+            [System.IO.File]::WriteAllText($_.FullName, $normalized, $utf8NoBom)
+            if ([System.Array]::IndexOf([System.IO.File]::ReadAllBytes($_.FullName), [byte]13) -ge 0) {
+                throw "POSIX package text still contains CR after LF normalization: $($_.FullName)"
+            }
+        }
+    }
+}
+
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
     $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.9" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
@@ -444,6 +458,7 @@ foreach ($target in $targets) {
     ) -join "`n") + "`n"
     Write-TextFile $launcherPath $launcherBody
     Set-CopiedPackageVersionText $targetRoot $packageVersionLabel
+    Normalize-POSIXPackageLineEndings $targetRoot
 
     $sizeBytes = (Get-ChildItem -LiteralPath $targetRoot -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
     $releaseReady = $verifiedReleaseTargets.ContainsKey(([string]$target.Target).ToLowerInvariant())

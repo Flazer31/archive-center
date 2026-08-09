@@ -100,6 +100,14 @@ try {
         -PackageVersion 3.9.0-timeout-contract
     Assert-True ($LASTEXITCODE -eq 0) "macOS launcher contract package build failed"
 
+    $posixTextFiles = @(Get-ChildItem -LiteralPath $posixOutputRoot -Recurse -File |
+        Where-Object { $_.Extension -in @(".sh", ".command") })
+    Assert-True ($posixTextFiles.Count -gt 0) "generated POSIX package had no shell entrypoints"
+    foreach ($posixTextFile in $posixTextFiles) {
+        $bytes = [System.IO.File]::ReadAllBytes($posixTextFile.FullName)
+        Assert-True ([System.Array]::IndexOf($bytes, [byte]13) -lt 0) "generated POSIX package contains CRLF/CR: $($posixTextFile.FullName)"
+    }
+
     $macLauncher = Get-ChildItem -LiteralPath $posixOutputRoot -Recurse -File -Filter "Start Archive Center macOS.command" |
         Select-Object -First 1
     Assert-True ($null -ne $macLauncher) "generated macOS public launcher was not found"
