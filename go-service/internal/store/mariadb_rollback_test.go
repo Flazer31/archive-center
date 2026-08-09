@@ -34,6 +34,7 @@ func TestMariaDBRollbackStoreDeleteFromTurn(t *testing.T) {
 	mock.ExpectExec("DELETE FROM speaker_attributions").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM entity_identity_artifact_bindings").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM entity_identity_surfaces").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("UPDATE entity_identities").WithArgs(sid, fromTurn, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM entity_identity_links").WithArgs(sid, sid, fromTurn, sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM entity_identities").WithArgs(sid, fromTurn).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec("UPDATE entities").WithArgs(fromTurn-1, sid, fromTurn, fromTurn).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -209,6 +210,7 @@ func TestMariaDBDeleteSession(t *testing.T) {
 	mock.ExpectExec("UPDATE memory_source_revisions").
 		WithArgs("deleted", nil, "session_deleted", sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"deleted", "deleted", "deleted", "deleted", "deleted",
+			"deleted", "deleted",
 			sid, "revision-delete").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

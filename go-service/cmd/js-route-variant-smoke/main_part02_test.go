@@ -685,8 +685,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.9.0",
-		`const VERSION = "3.9.0";`,
+		"//@version 3.9.9",
+		`const VERSION = "3.9.9";`,
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 설정`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} Settings`",
 		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 設定`",
@@ -765,16 +765,16 @@ func TestArchiveCenterJSTurnWorkflowHUDSettingMarkers(t *testing.T) {
 		`function turnWorkflowHUDIsEnabled()`,
 		`if (!turnWorkflowHUDIsEnabled())`,
 		`function consumeTurnWorkflowHUDNotice(view)`,
-		`"turn_hud.stage.publisher_llm": "감독관 호출"`,
+		`"turn_hud.stage.publisher_llm": "출판사 LLM 호출"`,
 		`"turn_hud.stage.raw_persist": "입력 저장"`,
 		`"turn_hud.stage.critic_llm": "평론가 호출"`,
 		`"turn_hud.count.knowledge_graph": "관계 지식"`,
 		`"turn_hud.count.relationship_state": "관계 상태"`,
 		`"explorer.tabs.kg_triples.label": "관계 지식"`,
-		`"turn_hud.stage.publisher_llm": "Supervisor call"`,
+		`"turn_hud.stage.publisher_llm": "Publisher LLM call"`,
 		`"turn_hud.stage.raw_persist": "Saving input"`,
 		`"turn_hud.stage.critic_llm": "Critic call"`,
-		`"turn_hud.stage.publisher_llm": "監督を呼び出し"`,
+		`"turn_hud.stage.publisher_llm": "Publisher LLM 呼び出し"`,
 		`"turn_hud.stage.raw_persist": "入力を保存"`,
 		`"turn_hud.stage.critic_llm": "批評家を呼び出し"`,
 	}
@@ -1064,6 +1064,10 @@ func TestBackendOwnedLongOperationsDoNotUsePluginRequestTimeout(t *testing.T) {
 
 func TestArchiveCenterJSImmediateUpdateUsesOneServerAuthoritativeApplyCall(t *testing.T) {
 	src := readArchiveCenterJS(t)
+	check := extractArchiveCenterJSAsyncFunction(t, src, "checkArchiveCenterUpdate")
+	if strings.Count(check, `bridgeFetch("/update/check"`) != 1 || !strings.Contains(check, `timeoutMs: 0`) {
+		t.Fatal("checkArchiveCenterUpdate must allow the backend to finish verified package preflight")
+	}
 	apply := extractArchiveCenterJSAsyncFunction(t, src, "applyArchiveCenterUpdate")
 	if strings.Count(apply, `bridgeFetch("/update/apply"`) != 1 {
 		t.Fatal("applyArchiveCenterUpdate must issue exactly one POST /update/apply request")

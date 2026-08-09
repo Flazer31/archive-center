@@ -351,6 +351,128 @@ func TestRunSupervisorLLMMalformedFailsOpenWithoutRawProviderText(t *testing.T) 
 	}
 }
 
+func TestRunPublisherLLMForwardsOllamaReasoningNoneOnFirstCall(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode publisher request: %v", err)
+		}
+		if body["reasoning_effort"] != "none" {
+			t.Fatalf("publisher reasoning_effort = %#v, want none", body["reasoning_effort"])
+		}
+		if intFromAny(body["max_tokens"], 0) != 2048 {
+			t.Fatalf("publisher max_tokens = %#v, want 2048", body["max_tokens"])
+		}
+		if _, exists := body["max_completion_tokens"]; exists {
+			t.Fatalf("reasoning-disabled Ollama request must keep max_tokens without max_completion_tokens: %#v", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"publisher-test","choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[]}}"}}]}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	pack := supervisorBoundaryTestPack("strong")
+	pack["guide_mode"] = "standard"
+	_, trace, err := setupTestServer().runSupervisorLLM(
+		context.Background(),
+		"sess-publisher-ollama-no-thinking",
+		pack,
+		completeTurnLLMConfig{
+			APIKey:          "sk-test",
+			Endpoint:        "https://ollama.example/v1",
+			Model:           "publisher-test",
+			Provider:        "ollama",
+			TimeoutMs:       1000,
+			MaxTokens:       2048,
+			ReasoningPreset: "auto",
+			ReasoningEffort: "none",
+		},
+	)
+	if err != nil {
+		t.Fatalf("publisher call failed: %v; trace=%#v", err, trace)
+	}
+	if calls != 1 {
+		t.Fatalf("publisher calls = %d, want exactly one", calls)
+	}
+	if trace["parse_status"] != "parsed" {
+		t.Fatalf("publisher parse trace = %#v", trace)
+	}
+}
+
+func TestRunSupervisorLLMClassifiesEmptyProviderContent(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"supervisor-test","choices":[{"message":{"content":""}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	pack := supervisorBoundaryTestPack("strong")
+	pack["guide_mode"] = "standard"
+	_, trace, err := setupTestServer().runSupervisorLLM(
+		context.Background(),
+		"sess-supervisor-empty",
+		pack,
+		completeTurnLLMConfig{
+			APIKey:    "sk-test",
+			Endpoint:  "https://api.example.com/v1",
+			Model:     "supervisor-test",
+			Provider:  "ollama",
+			TimeoutMs: 1000,
+		},
+	)
+	if err == nil {
+		t.Fatal("empty provider content must return an error")
+	}
+	if trace["failure_code"] != "publisher_llm_empty_content" || intFromAny(trace["upstream_status"], 0) != http.StatusBadGateway {
+		t.Fatalf("empty-content failure trace = %#v", trace)
+	}
+	if !strings.Contains(extractionStringFromAny(trace["failure_detail"]), "returned no text content") {
+		t.Fatalf("empty-content detail missing: %#v", trace)
+	}
+}
+
+func TestRunSupervisorLLMClassifiesTimeout(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	pack := supervisorBoundaryTestPack("strong")
+	pack["guide_mode"] = "standard"
+	_, trace, err := setupTestServer().runSupervisorLLM(
+		context.Background(),
+		"sess-supervisor-timeout",
+		pack,
+		completeTurnLLMConfig{
+			APIKey:    "sk-test",
+			Endpoint:  "https://api.example.com/v1",
+			Model:     "supervisor-test",
+			Provider:  "openai",
+			TimeoutMs: 5,
+		},
+	)
+	if err == nil {
+		t.Fatal("timed-out provider call must return an error")
+	}
+	if trace["failure_code"] != "publisher_llm_timeout" {
+		t.Fatalf("timeout failure trace = %#v", trace)
+	}
+}
+
 func TestBuildBoundedSupervisorResultRequiresExecutionContract(t *testing.T) {
 	result, trace := buildBoundedSupervisorResult(
 		map[string]any{"supervisor_scene_proposal": map[string]any{

@@ -291,7 +291,7 @@ func prepareTurnCharacterProfileItem(
 	if counterpartLabel != "" {
 		parts = append(parts, "counterpart="+counterpartLabel)
 	}
-	line := prepareTurnCharacterMemoryLine(ref, guard, strings.Join(parts, "; "))
+	line := prepareTurnCharacterMemoryLine(guard, strings.Join(parts, "; "))
 	class := "character_objective"
 	if section == "relationship_specific" {
 		class = "subjective_relationship"
@@ -372,7 +372,7 @@ func prepareTurnVoiceBehaviorItems(
 			"visibility": extractionStringFromAny(supportRefs[0]["visibility"]), "privacy_guard": nilIfEmpty(guard),
 			"direct_entity_relevance": prepareTurnCharacterMemoryEntityInList(subjectID, subjectLabel, scope.Direct),
 			"counterevidence_present": len(counterRefs) > 0, "exception_present": len(exceptionRefs) > 0,
-			"text": prepareTurnCharacterMemoryLine(ref, guard, strings.Join(parts, "; ")), "delivered": false,
+			"text": prepareTurnCharacterMemoryLine(guard, strings.Join(parts, "; ")), "delivered": false,
 		})
 	}
 	return items
@@ -495,7 +495,7 @@ func prepareTurnRelationshipStateItems(
 			"counterpart_entity_id": targetID, "counterpart_label": targetLabel,
 			"visibility": visibility, "privacy_guard": nilIfEmpty(guard),
 			"direct_entity_relevance": prepareTurnCharacterMemoryEntityInList(sourceID, sourceLabel, scope.Direct) || prepareTurnCharacterMemoryEntityInList(targetID, targetLabel, scope.Direct),
-			"text":                    prepareTurnCharacterMemoryLine(ref, guard, strings.Join(parts, "; ")), "delivered": false,
+			"text":                    prepareTurnCharacterMemoryLine(guard, strings.Join(parts, "; ")), "delivered": false,
 		})
 	}
 	return items
@@ -555,8 +555,8 @@ func prepareTurnCharacterMemoryEntityInList(id, label string, values []string) b
 	return false
 }
 
-func prepareTurnCharacterMemoryLine(ref, guard, body string) string {
-	parts := []string{"- [" + ref + "]"}
+func prepareTurnCharacterMemoryLine(guard, body string) string {
+	parts := []string{"-"}
 	if strings.TrimSpace(guard) != "" {
 		parts = append(parts, "[guard="+strings.TrimSpace(guard)+"]")
 	}
@@ -608,10 +608,16 @@ func finalizePrepareTurnCharacterMemorySupport(support, plan map[string]any) map
 	if len(support) == 0 || extractionStringFromAny(support["status"]) == "fail_closed" {
 		return support
 	}
-	deliveredClassText := map[string]string{}
+	deliveredClassItems := map[string]map[string]bool{}
 	for _, raw := range outputFidelityLineageSlice(plan["classes"]) {
 		class := mapFromAny(raw)
-		deliveredClassText[extractionStringFromAny(class["key"])] = extractionStringFromAny(class["text"])
+		classKey := extractionStringFromAny(class["key"])
+		deliveredClassItems[classKey] = map[string]bool{}
+		for _, item := range prepareTurnDeliveryItems(extractionStringFromAny(class["text"])) {
+			if itemKey := collapseTextKey(item); itemKey != "" {
+				deliveredClassItems[classKey][itemKey] = true
+			}
+		}
 	}
 	items := []map[string]any{}
 	delivered := []map[string]any{}
@@ -622,7 +628,7 @@ func finalizePrepareTurnCharacterMemorySupport(support, plan map[string]any) map
 		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
 		class := extractionStringFromAny(item["class"])
 		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-		wasDelivered := ref != "" && text != "" && strings.Contains(deliveredClassText[class], "["+ref+"]")
+		wasDelivered := ref != "" && text != "" && deliveredClassItems[class][collapseTextKey(text)]
 		item["delivered"] = wasDelivered
 		items = append(items, item)
 		if wasDelivered {

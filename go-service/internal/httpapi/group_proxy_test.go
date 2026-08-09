@@ -2569,7 +2569,7 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			!strings.Contains(userPrompt, "guide_focus") {
 			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
 		}
-		if !strings.Contains(systemPrompt, "Archive Center's Basic Publisher") ||
+		if !strings.Contains(systemPrompt, "Archive Center's Publisher LLM") ||
 			!strings.Contains(systemPrompt, "The current user input is the only command") ||
 			!strings.Contains(systemPrompt, "Accepted recent context has continuity authority only") {
 			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)

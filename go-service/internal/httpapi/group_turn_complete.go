@@ -697,7 +697,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 					s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageCriticLLM)
 				}
 				criticStartedAt := time.Now()
-				result, trace, err := s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic, true, languageContext)
+				result, trace, err := s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic, true, s.completeTurnCriticInputPolicy(req.ClientMeta), completeTurnCriticInputReplay{SourceRevision: sourceAcceptance.Revision}, languageContext)
 				timing.addElapsed("critic_llm", criticStartedAt)
 				if err != nil {
 					criticFailure = criticPipelineErrorDetails(err)

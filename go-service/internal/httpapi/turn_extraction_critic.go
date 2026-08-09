@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
@@ -31,6 +33,52 @@ type criticPipelineError struct {
 	Retryable  bool
 	HTTPStatus int
 	Cause      error
+}
+
+const completeTurnCriticInputBudgetObservationContract = "critic_input_budget_observation.v1"
+const completeTurnCriticInputSnapshotContract = "critic_reprocessing_input.v1"
+
+type completeTurnCriticInputPolicy struct {
+	AuxiliaryMaxChars int    `json:"auxiliary_max_chars"`
+	ConfiguredChars   int    `json:"configured_chars"`
+	LedgerChars       int    `json:"ledger_chars"`
+	Source            string `json:"source"`
+}
+
+type completeTurnCriticInputSnapshot struct {
+	ContractVersion    string                        `json:"contract_version"`
+	SourceRevision     string                        `json:"source_revision"`
+	ChatSessionID      string                        `json:"chat_session_id"`
+	TurnIndex          int                           `json:"turn_index"`
+	UserInput          string                        `json:"user_input"`
+	AssistantContent   string                        `json:"assistant_content"`
+	ContextMessages    []map[string]any              `json:"context_messages"`
+	ArchiveLedger      map[string]any                `json:"archive_ledger"`
+	ActiveWorldRules   []map[string]any              `json:"active_world_rules"`
+	OutputLanguage     map[string]any                `json:"output_language_override"`
+	LanguageContext    map[string]any                `json:"language_context"`
+	PreviewPass        map[string]any                `json:"preview_pass"`
+	InputPolicy        completeTurnCriticInputPolicy `json:"input_policy"`
+	PipelineVersion    string                        `json:"pipeline_version"`
+	SystemPromptSHA256 string                        `json:"system_prompt_sha256"`
+}
+
+type completeTurnCriticInputReplay struct {
+	SourceRevision string
+	SnapshotJSON   string
+	SnapshotHash   string
+	Required       bool
+}
+
+type completeTurnCriticAuxiliaryCandidate struct {
+	Kind       string
+	ID         string
+	Order      int
+	Relevance  float64
+	Persistent bool
+	TurnIndex  int
+	Value      map[string]any
+	Messages   []map[string]any
 }
 
 func (e *criticPipelineError) Error() string {
@@ -154,15 +202,114 @@ func scrubCriticFailureText(text, apiKey string) string {
 	return out
 }
 
+func (s *Server) completeTurnCriticInputPolicy(clientMeta map[string]any) completeTurnCriticInputPolicy {
+	defaults := dto.PrepareTurnSettings{}
+	defaults.ApplyDefaults()
+	configuredChars := intPtrValue(defaults.MaxInputContextChars, 0)
+	source := "prepare_turn_default"
+	observation := mapFromAny(clientMeta["critic_input_budget_observation"])
+	if stringFromMap(observation, "contract_version") == completeTurnCriticInputBudgetObservationContract {
+		if observed, ok := observation["max_input_context_chars"]; ok {
+			configuredChars = intFromAny(observed, configuredChars)
+			source = "risu_host_setting_observation"
+		}
+	}
+	if configuredChars < 0 {
+		configuredChars = 0
+	}
+	ledgerChars := 0
+	if s != nil && s.Cfg.CriticLedgerEnabled {
+		ledgerChars = criticArchiveLedgerDefaultLimits(s.Cfg.RuntimeProfile).MaxCharsTotal
+	}
+	return completeTurnCriticInputPolicy{
+		AuxiliaryMaxChars: configuredChars + ledgerChars,
+		ConfiguredChars:   configuredChars,
+		LedgerChars:       ledgerChars,
+		Source:            source,
+	}
+}
+
+func criticSystemPromptHash(prompt string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(prompt)))
+}
+
+func mapFromOptionalMap(value *map[string]any) map[string]any {
+	if value == nil || *value == nil {
+		return nil
+	}
+	return cloneMapAny(*value)
+}
+
+func (s *Server) persistCompleteTurnCriticInputSnapshot(
+	ctx context.Context,
+	snapshot completeTurnCriticInputSnapshot,
+) (string, error) {
+	if s == nil || s.Store == nil {
+		return "", store.ErrNotEnabled
+	}
+	writer, ok := s.Store.(store.CriticInputSnapshotStore)
+	if !ok {
+		return "", store.ErrNotEnabled
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", err
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(encoded))
+	if err := writer.SaveCriticInputSnapshot(
+		ctx,
+		snapshot.ChatSessionID,
+		snapshot.SourceRevision,
+		string(encoded),
+		hash,
+		time.Now().UTC(),
+	); err != nil {
+		return "", err
+	}
+	return hash, nil
+}
+
+func decodeCompleteTurnCriticInputSnapshot(
+	replay completeTurnCriticInputReplay,
+	sid string,
+	turnIndex int,
+	currentUserInput string,
+	currentAssistantContent string,
+) (*completeTurnCriticInputSnapshot, string, error) {
+	raw := strings.TrimSpace(replay.SnapshotJSON)
+	expectedHash := strings.ToLower(strings.TrimSpace(replay.SnapshotHash))
+	if raw == "" || expectedHash == "" {
+		return nil, "", errors.New("critic_input_snapshot_missing")
+	}
+	actualHash := fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))
+	if actualHash != expectedHash {
+		return nil, "", errors.New("critic_input_snapshot_hash_mismatch")
+	}
+	var snapshot completeTurnCriticInputSnapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return nil, "", fmt.Errorf("critic_input_snapshot_invalid_json: %w", err)
+	}
+	if snapshot.ContractVersion != completeTurnCriticInputSnapshotContract ||
+		strings.TrimSpace(snapshot.SourceRevision) != strings.TrimSpace(replay.SourceRevision) ||
+		strings.TrimSpace(snapshot.ChatSessionID) != strings.TrimSpace(sid) ||
+		snapshot.TurnIndex != turnIndex {
+		return nil, "", errors.New("critic_input_snapshot_identity_mismatch")
+	}
+	if snapshot.UserInput != currentUserInput || snapshot.AssistantContent != currentAssistantContent {
+		return nil, "", errors.New("critic_input_snapshot_source_mismatch")
+	}
+	return &snapshot, actualHash, nil
+}
+
 func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
-	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, contextMessages, outputLanguageOverride, cfg, false, languageContextArg...)
+	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, contextMessages, outputLanguageOverride, cfg, false, s.completeTurnCriticInputPolicy(nil), completeTurnCriticInputReplay{}, languageContextArg...)
 }
 
 func (s *Server) runCompleteTurnCriticFromCanonicalLogs(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, cfg completeTurnLLMConfig) (map[string]any, map[string]any, error) {
-	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, nil, nil, cfg, true)
+	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, nil, nil, cfg, true, s.completeTurnCriticInputPolicy(nil), completeTurnCriticInputReplay{})
 }
 
-func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, canonicalChatLogs bool, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
+func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, canonicalChatLogs bool, inputPolicy completeTurnCriticInputPolicy, replay completeTurnCriticInputReplay, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
 	if !cfg.hasConfig() {
 		err := newCriticPipelineError("CRITIC_CONFIG_MISSING", "configuration", false, 0, errors.New("critic_config_missing"))
 		return nil, criticFailureTrace("", cfg, 0, err, ""), err
@@ -190,28 +337,185 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["canonical_chat_logs"] = canonicalChatLogs
 		return nil, trace, err
 	}
-	criticContextMessages := sanitizeContextMessagesForCriticInput(contextMessages)
-	contextSelectionTrace := map[string]any{"mode": "host_context", "host_messages_used": len(criticContextMessages)}
-	relevantMemoryContext := []map[string]any{}
-	if canonicalChatLogs {
-		criticContextMessages, relevantMemoryContext, contextSelectionTrace = s.buildCompleteTurnCriticCanonicalContext(ctx, sid, turnIndex, criticUserInput+"\n"+criticAssistantContent, len(criticContextMessages))
-	}
-	previewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, criticContextMessages, criticUserInput, criticAssistantContent)
-	criticArchiveLedgerPromptInput, criticArchiveLedgerTrace := s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, criticAssistantContent, outputLanguageOverride)
-	if len(relevantMemoryContext) > 0 {
-		if criticArchiveLedgerPromptInput == nil {
-			criticArchiveLedgerPromptInput = map[string]any{}
+	criticContextMessages := []map[string]any{}
+	criticArchiveLedgerPromptInput := map[string]any(nil)
+	selectedActiveWorldRules := []map[string]any{}
+	previewPass := map[string]any(nil)
+	contextSelectionTrace := map[string]any{}
+	criticArchiveLedgerTrace := map[string]any{}
+	activeWorldRuleTrace := map[string]any{}
+	snapshotTrace := map[string]any{"status": "not_required"}
+
+	if replay.Required {
+		snapshot, snapshotHash, err := decodeCompleteTurnCriticInputSnapshot(replay, sid, turnIndex, criticUserInput, criticAssistantContent)
+		if err != nil {
+			snapshotErr := newCriticPipelineError("CRITIC_INPUT_SNAPSHOT_INVALID", "input_snapshot", false, 0, err)
+			trace := criticFailureTrace(promptSource, cfg, 0, snapshotErr, "")
+			trace["input_snapshot"] = map[string]any{"status": "invalid", "source_revision": replay.SourceRevision}
+			return nil, trace, snapshotErr
 		}
-		criticArchiveLedgerPromptInput["relevant_turn_memories"] = relevantMemoryContext
-	}
-	activeWorldRules, activeWorldRuleTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
-	if len(activeWorldRules) > 0 {
-		if criticArchiveLedgerPromptInput == nil {
-			criticArchiveLedgerPromptInput = map[string]any{}
+		currentSystemPromptHash := criticSystemPromptHash(systemPrompt)
+		if snapshot.PipelineVersion != completeTurnCriticPipelineVersion ||
+			snapshot.SystemPromptSHA256 != currentSystemPromptHash {
+			snapshotErr := newCriticPipelineError(
+				"CRITIC_INPUT_SNAPSHOT_INVALID",
+				"input_snapshot",
+				false,
+				0,
+				errors.New("critic_input_snapshot_prompt_contract_mismatch"),
+			)
+			trace := criticFailureTrace(promptSource, cfg, 0, snapshotErr, "")
+			trace["input_snapshot"] = map[string]any{
+				"status":           "invalid",
+				"source_revision":  replay.SourceRevision,
+				"pipeline_version": snapshot.PipelineVersion,
+			}
+			return nil, trace, snapshotErr
 		}
-		criticArchiveLedgerPromptInput["active_world_rules"] = activeWorldRules
+		criticUserInput = snapshot.UserInput
+		criticAssistantContent = snapshot.AssistantContent
+		criticContextMessages = snapshot.ContextMessages
+		criticArchiveLedgerPromptInput = snapshot.ArchiveLedger
+		selectedActiveWorldRules = snapshot.ActiveWorldRules
+		previewPass = snapshot.PreviewPass
+		languageContext = snapshot.LanguageContext
+		inputPolicy = snapshot.InputPolicy
+		if snapshot.OutputLanguage == nil {
+			outputLanguageOverride = nil
+		} else {
+			restoredOutputLanguage := cloneMapAny(snapshot.OutputLanguage)
+			outputLanguageOverride = &restoredOutputLanguage
+		}
+		contextSelectionTrace = map[string]any{
+			"mode":                  "durable_critic_input_snapshot",
+			"snapshot_contract":     snapshot.ContractVersion,
+			"context_message_count": len(criticContextMessages),
+		}
+		criticArchiveLedgerTrace = map[string]any{
+			"status":              "snapshot_replay",
+			"selected_item_count": len(sliceFromAny(mapFromAny(criticArchiveLedgerPromptInput)["items"])),
+		}
+		activeWorldRuleTrace = map[string]any{
+			"status":         "snapshot_replay",
+			"selected_count": len(selectedActiveWorldRules),
+		}
+		snapshotTrace = map[string]any{
+			"status":            "replayed",
+			"contract_version":  snapshot.ContractVersion,
+			"source_revision":   snapshot.SourceRevision,
+			"snapshot_hash":     snapshotHash,
+			"prompt_hash_match": true,
+		}
+	} else {
+		criticContextMessages = sanitizeContextMessagesForCriticInput(contextMessages)
+		contextSelectionTrace = map[string]any{"mode": "host_context", "host_messages_used": len(criticContextMessages)}
+		relevantMemoryContext := []map[string]any{}
+		if canonicalChatLogs {
+			criticContextMessages, relevantMemoryContext, contextSelectionTrace = s.buildCompleteTurnCriticCanonicalContext(ctx, sid, turnIndex, criticUserInput+"\n"+criticAssistantContent, len(criticContextMessages))
+		}
+		criticArchiveLedgerPromptInput, criticArchiveLedgerTrace = s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, criticAssistantContent, outputLanguageOverride)
+		activeWorldRules, activeTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
+		activeWorldRuleTrace = activeTrace
+		selectedActiveWorldRules = activeWorldRules
+		if canonicalChatLogs {
+			var auxiliaryTrace map[string]any
+			criticContextMessages, criticArchiveLedgerPromptInput, auxiliaryTrace = applyCompleteTurnCriticAuxiliaryBudget(
+				criticContextMessages,
+				relevantMemoryContext,
+				criticArchiveLedgerPromptInput,
+				activeWorldRules,
+				criticUserInput+"\n"+criticAssistantContent,
+				inputPolicy,
+			)
+			contextSelectionTrace["auxiliary_input"] = auxiliaryTrace
+			criticArchiveLedgerTrace["selected_item_count"] = len(sliceFromAny(mapFromAny(criticArchiveLedgerPromptInput)["items"]))
+			selectedActiveWorldRules = []map[string]any{}
+			for _, raw := range sliceFromAny(mapFromAny(criticArchiveLedgerPromptInput)["active_world_rules"]) {
+				if item := mapFromAny(raw); len(item) > 0 {
+					selectedActiveWorldRules = append(selectedActiveWorldRules, item)
+				}
+			}
+			activeWorldRuleTrace["selected_count"] = len(selectedActiveWorldRules)
+		} else {
+			if len(relevantMemoryContext) > 0 {
+				if criticArchiveLedgerPromptInput == nil {
+					criticArchiveLedgerPromptInput = map[string]any{}
+				}
+				criticArchiveLedgerPromptInput["relevant_turn_memories"] = relevantMemoryContext
+			}
+			if len(activeWorldRules) > 0 {
+				if criticArchiveLedgerPromptInput == nil {
+					criticArchiveLedgerPromptInput = map[string]any{}
+				}
+				criticArchiveLedgerPromptInput["active_world_rules"] = activeWorldRules
+			}
+		}
+		previewPass = s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, criticContextMessages, criticUserInput, criticAssistantContent)
+		if strings.TrimSpace(replay.SourceRevision) != "" {
+			snapshotHash, err := s.persistCompleteTurnCriticInputSnapshot(ctx, completeTurnCriticInputSnapshot{
+				ContractVersion:    completeTurnCriticInputSnapshotContract,
+				SourceRevision:     strings.TrimSpace(replay.SourceRevision),
+				ChatSessionID:      strings.TrimSpace(sid),
+				TurnIndex:          turnIndex,
+				UserInput:          criticUserInput,
+				AssistantContent:   criticAssistantContent,
+				ContextMessages:    criticContextMessages,
+				ArchiveLedger:      criticArchiveLedgerPromptInput,
+				ActiveWorldRules:   selectedActiveWorldRules,
+				OutputLanguage:     mapFromOptionalMap(outputLanguageOverride),
+				LanguageContext:    languageContext,
+				PreviewPass:        previewPass,
+				InputPolicy:        inputPolicy,
+				PipelineVersion:    completeTurnCriticPipelineVersion,
+				SystemPromptSHA256: criticSystemPromptHash(systemPrompt),
+			})
+			if err != nil {
+				snapshotTrace = map[string]any{
+					"status":          "persist_failed",
+					"source_revision": replay.SourceRevision,
+					"reason":          "critic_input_snapshot_persist_failed",
+				}
+			} else {
+				snapshotTrace = map[string]any{
+					"status":           "persisted",
+					"contract_version": completeTurnCriticInputSnapshotContract,
+					"source_revision":  replay.SourceRevision,
+					"snapshot_hash":    snapshotHash,
+				}
+			}
+		}
 	}
 	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, outputLanguageOverride, previewPass, languageContext, criticArchiveLedgerPromptInput)
+	contextMessagesJSON, _ := json.Marshal(criticContextMessages)
+	archiveLedgerJSON, _ := json.Marshal(criticArchiveLedgerPromptInput)
+	inputBudgetTrace := map[string]any{
+		"contract_version":             completeTurnCriticInputBudgetObservationContract,
+		"user_input_chars":             len([]rune(criticUserInput)),
+		"assistant_content_chars":      len([]rune(criticAssistantContent)),
+		"current_turn_chars":           len([]rune(criticUserInput)) + len([]rune(criticAssistantContent)),
+		"current_turn_bounded":         false,
+		"current_turn_content_changed": false,
+		"context_messages_chars":       len([]rune(string(contextMessagesJSON))),
+		"archive_ledger_chars":         len([]rune(string(archiveLedgerJSON))),
+		"system_prompt_chars":          len([]rune(systemPrompt)),
+		"user_prompt_chars":            len([]rune(userPrompt)),
+		"final_prompt_chars":           len([]rune(systemPrompt)) + len([]rune(userPrompt)),
+	}
+	providerRetryTrace := map[string]any{}
+	attachInputBudgetTrace := func(trace map[string]any) map[string]any {
+		if trace == nil {
+			trace = map[string]any{}
+		}
+		trace["input_budget"] = inputBudgetTrace
+		trace["context_selection"] = contextSelectionTrace
+		trace["critic_archive_ledger"] = criticArchiveLedgerTrace
+		trace["active_world_rule_contract"] = activeWorldRuleTrace
+		trace["input_snapshot"] = snapshotTrace
+		if len(providerRetryTrace) > 0 {
+			trace["provider_retry"] = providerRetryTrace
+		}
+		return trace
+	}
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 1600
@@ -249,48 +553,31 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	jsonPolicy := proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"}
 
 	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, cfg.RetryBudget, jsonPolicy)
-	providerRetryTrace := map[string]any{}
 	if err != nil {
 		providerErr := classifyCriticProviderError(err, upstreamStatus)
 		firstFailureTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, providerErr, "")
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			firstFailureTrace["request_overrides"] = requestOverrides
 		}
-		retryUserInput, userRedacted := redactSensitiveCriticRetryText(criticUserInput)
-		retryAssistantContent, assistantRedacted := redactSensitiveCriticRetryText(criticAssistantContent)
-		if !userRedacted && !assistantRedacted {
-			return nil, firstFailureTrace, providerErr
-		}
 		if !cfg.RetryBudget.take() {
-			return nil, firstFailureTrace, providerErr
+			return nil, attachInputBudgetTrace(firstFailureTrace), providerErr
 		}
-		retryPreviewPass := s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, criticContextMessages, retryUserInput, retryAssistantContent)
-		retryPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, retryUserInput, retryAssistantContent, criticContextMessages, outputLanguageOverride, retryPreviewPass, languageContext, criticArchiveLedgerPromptInput)
-		retryReq := req
-		retryReq.Messages = []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": retryPrompt}}
-		retryUpstream, retryStatus, retryErr := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, retryReq, cfg.RetryBudget, jsonPolicy)
+		retryUpstream, retryStatus, retryErr := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, cfg.RetryBudget, jsonPolicy)
 		providerRetryTrace = map[string]any{
-			"mode":                "sensitive_input_redacted_retry",
-			"user_input_redacted": userRedacted,
-			"assistant_redacted":  assistantRedacted,
-			"first_failure":       firstFailureTrace,
-			"retry_preview_pass":  retryPreviewPass,
+			"mode":                         "unchanged_input_retry",
+			"current_turn_content_changed": false,
+			"first_failure":                firstFailureTrace,
 		}
 		if retryErr != nil {
 			retryPipelineErr := classifyCriticProviderError(retryErr, retryStatus)
 			retryFailureTrace := criticFailureTrace(promptSource, cfg, retryStatus, retryPipelineErr, "")
 			if requestOverrides := mapFromAny(retryUpstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
-				providerRetryTrace["request_overrides"] = requestOverrides
+				retryFailureTrace["request_overrides"] = requestOverrides
 			}
-			providerRetryTrace["retry_failure_recorded"] = "top_level"
-			retryFailureTrace["provider_retry"] = providerRetryTrace
-			return nil, retryFailureTrace, retryPipelineErr
+			return nil, attachInputBudgetTrace(retryFailureTrace), retryPipelineErr
 		}
 		upstream = retryUpstream
 		upstreamStatus = retryStatus
-		previewPass = retryPreviewPass
-		criticUserInput = retryUserInput
-		criticAssistantContent = retryAssistantContent
 	}
 	content := chatCompletionText(upstream)
 	if strings.TrimSpace(content) == "" {
@@ -299,10 +586,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			trace["request_overrides"] = requestOverrides
 		}
-		if len(providerRetryTrace) > 0 {
-			trace["provider_retry"] = providerRetryTrace
-		}
-		return nil, trace, emptyErr
+		return nil, attachInputBudgetTrace(trace), emptyErr
 	}
 	parsed, err := parseJSONFromLLMContent(content)
 	if err != nil {
@@ -315,7 +599,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			parseTrace["request_overrides"] = requestOverrides
 		}
-		return nil, parseTrace, parseErr
+		return nil, attachInputBudgetTrace(parseTrace), parseErr
 	}
 	if err := validateCriticExtractionSchema(parsed); err != nil {
 		schemaErr := newCriticPipelineError("CRITIC_SCHEMA_INVALID", "schema_validation", true, upstreamStatus, err)
@@ -323,7 +607,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			schemaTrace["request_overrides"] = requestOverrides
 		}
-		return nil, schemaTrace, schemaErr
+		return nil, attachInputBudgetTrace(schemaTrace), schemaErr
 	}
 	parsed, quarantineTrace := quarantineCriticProtectedCandidates(parsed, criticUserInput, criticAssistantContent)
 	trustedRPIdentities := s.resolveTrustedRPCharacterIdentities(ctx, sid, parsed)
@@ -334,12 +618,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		"provider":      strings.TrimSpace(cfg.Provider),
 		"http_status":   upstreamStatus,
 		"usage":         upstream["usage"],
-		"input_budget": map[string]any{
-			"user_input_chars":        len([]rune(criticUserInput)),
-			"assistant_content_chars": len([]rune(criticAssistantContent)),
-			"user_input_bounded":      len([]rune(sanitizedUserInput)) > len([]rune(criticUserInput)),
-			"assistant_bounded":       len([]rune(sanitizedAssistantContent)) > len([]rune(criticAssistantContent)),
-		},
+		"input_budget":  inputBudgetTrace,
 		"pipeline": map[string]any{
 			"policy_version": completeTurnCriticPipelineVersion,
 			"stages": map[string]any{
@@ -377,17 +656,23 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	trace["critic_archive_ledger"] = criticArchiveLedgerTrace
 	trace["context_selection"] = contextSelectionTrace
 	trace["active_world_rule_contract"] = activeWorldRuleTrace
+	trace["input_snapshot"] = snapshotTrace
+	if len(providerRetryTrace) > 0 {
+		trace["provider_retry"] = providerRetryTrace
+	}
 	if len(languageContext) > 0 {
 		trace["language_context"] = languageContext
 		trace["memory_write_contract"] = completeTurnMemoryWriteContract(languageContext)
 	}
-	if len(providerRetryTrace) > 0 {
-		trace["provider_retry"] = providerRetryTrace
-	}
 	normalized := normalizeCriticExtraction(parsed)
 	if len(worldRuleItemsForSave(normalized)) == 0 && (cfg.ForceWorldRuleAudit || shouldRunFocusedWorldRuleAudit(normalized)) {
-		auditedRules, auditTrace := s.runCompleteTurnWorldRuleAudit(ctx, sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, previewPass, normalized, cfg)
+		auditedRules, auditTrace := s.runCompleteTurnWorldRuleAudit(ctx, sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, previewPass, normalized, cfg, selectedActiveWorldRules)
 		trace["world_rule_audit"] = auditTrace
+		if stringFromMap(auditTrace, "status") == "error" {
+			cause := extractionFirstNonEmpty(stringFromMap(auditTrace, "error"), "focused_world_rule_audit_failed")
+			auditErr := newCriticPipelineError("CRITIC_WORLD_RULE_AUDIT_FAILED", "world_rule_audit", true, 0, errors.New(cause))
+			return nil, trace, auditErr
+		}
 		if len(worldRuleItemsForSave(auditedRules)) > 0 {
 			var mergedCount int
 			normalized, mergedCount = mergeWorldRuleAuditIntoExtraction(normalized, auditedRules)
@@ -463,7 +748,7 @@ func shouldRunFocusedWorldRuleAudit(extraction map[string]any) bool {
 	return status == "positive" || status == "found" || status == "needs_world_rule"
 }
 
-func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, previewPass map[string]any, initialExtraction map[string]any, cfg completeTurnLLMConfig) (map[string]any, map[string]any) {
+func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, previewPass map[string]any, initialExtraction map[string]any, cfg completeTurnLLMConfig, selectedActiveWorldRuleInput ...[]map[string]any) (map[string]any, map[string]any) {
 	trace := map[string]any{
 		"status":           "skipped",
 		"policy_version":   "world_rule_audit.v1",
@@ -477,7 +762,17 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 		trace["reason"] = "empty_turn"
 		return nil, trace
 	}
-	activeWorldRules, activeWorldRuleTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
+	activeWorldRules := []map[string]any{}
+	activeWorldRuleTrace := map[string]any{}
+	if len(selectedActiveWorldRuleInput) > 0 {
+		activeWorldRules = selectedActiveWorldRuleInput[0]
+		activeWorldRuleTrace = map[string]any{
+			"status":         "selected_primary_critic_input",
+			"included_count": len(activeWorldRules),
+		}
+	} else {
+		activeWorldRules, activeWorldRuleTrace = s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
+	}
 	trace["active_world_rule_contract"] = activeWorldRuleTrace
 	prompt := buildCompleteTurnWorldRuleAuditPrompt(sid, turnIndex, userInput, assistantContent, contextMessages, previewPass, initialExtraction, activeWorldRules)
 	maxTokens := cfg.MaxTokens
@@ -664,7 +959,8 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 	relevantMemories := []map[string]any{}
 	warnings := []string{}
 	selectedTurns := map[int]bool{}
-	readPair := func(sourceTurn int, kind string, maxChars int) ([]map[string]any, bool) {
+	previousTurnChars := 0
+	readPair := func(sourceTurn int, kind string) ([]map[string]any, bool) {
 		rows, err := s.Store.ListChatLogs(ctx, sid, sourceTurn, sourceTurn)
 		if err != nil {
 			warnings = append(warnings, err.Error())
@@ -690,10 +986,6 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 		if userText == "" || assistantText == "" {
 			return nil, false
 		}
-		if maxChars > 0 {
-			userText = truncateLedgerText(userText, maxChars)
-			assistantText = truncateLedgerText(assistantText, maxChars)
-		}
 		return []map[string]any{
 			{"role": "user", "content": userText, "turn_index": sourceTurn, "source": kind, "support_only": true},
 			{"role": "assistant", "content": assistantText, "turn_index": sourceTurn, "source": kind, "support_only": true},
@@ -702,9 +994,13 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 
 	previousTurn := turnIndex - 1
 	if previousTurn > 0 {
-		if pair, ok := readPair(previousTurn, "previous_canonical_turn", 0); ok {
+		if pair, ok := readPair(previousTurn, "previous_canonical_turn"); ok {
 			contextMessages = append(contextMessages, pair...)
 			selectedTurns[previousTurn] = true
+			for _, message := range pair {
+				previousTurnChars += len([]rune(stringFromMap(message, "content")))
+				query = strings.TrimSpace(query + "\n" + stringFromMap(message, "content"))
+			}
 		}
 	}
 	rows, err := s.Store.ListMemories(ctx, sid, 0, maxInt(turnIndex-1, 0))
@@ -720,16 +1016,13 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 		}
 		eligible, protectedTrace := prefilterPrepareTurnProtectedAggregateMemories(eligible)
 		eligible, holderTrace := prefilterPrepareTurnHolderScopedPerspectiveMemories(eligible)
-		selection := collapsePrepareTurnMemoryLaneSelection(selectPrepareTurnMemoryLanes(eligible, query, 3))
+		selection := collapsePrepareTurnMemoryLaneSelection(selectPrepareTurnMemoryLanes(eligible, query, len(eligible)))
 		selectionTrace = selection.Trace
 		selectionTrace["protected_prefilter"] = protectedTrace
 		selectionTrace["holder_prefilter"] = holderTrace
 		for _, memory := range selection.Relevant {
-			if len(relevantMemories) >= 3 {
-				break
-			}
 			if !selectedTurns[memory.TurnIndex] {
-				pair, ok := readPair(memory.TurnIndex, "relevant_memory_source_turn", 1200)
+				pair, ok := readPair(memory.TurnIndex, "relevant_memory_source_turn")
 				if !ok {
 					continue
 				}
@@ -738,21 +1031,281 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 			}
 			relevantMemories = append(relevantMemories, map[string]any{
 				"source": "mariadb_memory", "id": memory.ID, "turn_index": memory.TurnIndex,
-				"summary": truncateLedgerText(prepareTurnMemorySummary(memory), 600), "support_only": true,
+				"summary": prepareTurnMemorySummary(memory), "support_only": true,
 			})
 		}
 	}
 	trace := map[string]any{
-		"mode":                   "canonical_previous_plus_relevant_memory_sources",
-		"host_messages_received": hostMessageCount,
-		"host_messages_used":     0,
-		"previous_turn":          previousTurn,
-		"context_message_count":  len(contextMessages),
-		"relevant_memory_count":  len(relevantMemories),
-		"memory_selection":       selectionTrace,
-		"warnings":               warnings,
+		"mode":                    "canonical_previous_plus_relevant_memory_sources",
+		"host_messages_received":  hostMessageCount,
+		"host_messages_used":      0,
+		"previous_turn":           previousTurn,
+		"previous_turn_chars":     previousTurnChars,
+		"query_chars":             len([]rune(query)),
+		"query_includes_previous": previousTurnChars > 0,
+		"context_message_count":   len(contextMessages),
+		"relevant_memory_count":   len(relevantMemories),
+		"memory_selection":        selectionTrace,
+		"warnings":                warnings,
 	}
 	return contextMessages, relevantMemories, trace
+}
+
+func applyCompleteTurnCriticAuxiliaryBudget(
+	contextMessages []map[string]any,
+	relevantMemories []map[string]any,
+	archiveLedger map[string]any,
+	activeWorldRules []map[string]any,
+	query string,
+	policy completeTurnCriticInputPolicy,
+) ([]map[string]any, map[string]any, map[string]any) {
+	mandatoryContext := []map[string]any{}
+	sourcePairs := map[int][]map[string]any{}
+	selectionQuery := strings.TrimSpace(query)
+	for _, message := range contextMessages {
+		source := stringFromMap(message, "source")
+		if source == "previous_canonical_turn" {
+			mandatoryContext = append(mandatoryContext, message)
+			selectionQuery = strings.TrimSpace(selectionQuery + "\n" + stringFromMap(message, "content"))
+			continue
+		}
+		if source == "relevant_memory_source_turn" {
+			turn := intFromAny(message["turn_index"], 0)
+			if turn > 0 {
+				sourcePairs[turn] = append(sourcePairs[turn], message)
+			}
+		}
+	}
+
+	ledgerBase := cloneMapAny(archiveLedger)
+	if ledgerBase == nil {
+		ledgerBase = map[string]any{}
+	}
+	ledgerItems := []map[string]any{}
+	if typedItems, ok := ledgerBase["items"].([]map[string]any); ok {
+		ledgerItems = append(ledgerItems, typedItems...)
+	} else {
+		for _, raw := range sliceFromAny(ledgerBase["items"]) {
+			if item := mapFromAny(raw); len(item) > 0 {
+				ledgerItems = append(ledgerItems, item)
+			}
+		}
+	}
+	delete(ledgerBase, "items")
+	delete(ledgerBase, "relevant_turn_memories")
+	delete(ledgerBase, "active_world_rules")
+
+	candidates := []completeTurnCriticAuxiliaryCandidate{}
+	excluded := []map[string]any{}
+	order := 0
+	pairAdded := map[int]bool{}
+	for _, memory := range relevantMemories {
+		turn := intFromAny(memory["turn_index"], 0)
+		summary := stringFromMap(memory, "summary")
+		relevance := simpleTokenSimilarity(selectionQuery, summary)
+		memoryID := fmt.Sprint(memory["id"])
+		candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
+			Kind: "relevant_memory", ID: memoryID, Order: order,
+			Relevance: relevance, TurnIndex: turn, Value: memory,
+		})
+		order++
+		if !pairAdded[turn] && len(sourcePairs[turn]) > 0 {
+			candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
+				Kind: "relevant_memory_source_turn", ID: fmt.Sprint(turn), Order: order,
+				Relevance: relevance, TurnIndex: turn, Messages: sourcePairs[turn],
+			})
+			order++
+			pairAdded[turn] = true
+		}
+	}
+	for _, item := range ledgerItems {
+		summary := stringFromMap(item, "summary")
+		lane := stringFromMap(item, "lane")
+		id := extractionFirstNonEmpty(stringFromMap(item, "id"), fmt.Sprint(order))
+		related := prepareTurnRequestFirstRelevant(selectionQuery, selectionQuery, summary, lane)
+		if !related {
+			excluded = append(excluded, map[string]any{
+				"kind": "critic_archive_ledger", "id": id, "reason": "not_related_to_current_or_previous_turn",
+			})
+			continue
+		}
+		candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
+			Kind: "critic_archive_ledger", ID: id, Order: order,
+			Relevance: simpleTokenSimilarity(selectionQuery, summary), Value: item,
+		})
+		order++
+	}
+	for _, rule := range activeWorldRules {
+		scope := strings.ToLower(strings.TrimSpace(stringFromMap(rule, "scope")))
+		persistent := scope == "root" || scope == "global"
+		encoded, _ := json.Marshal(rule)
+		text := string(encoded)
+		id := extractionFirstNonEmpty(stringFromMap(rule, "key"), fmt.Sprint(order))
+		related := persistent || prepareTurnRequestFirstRelevant(
+			selectionQuery, selectionQuery, text, stringFromMap(rule, "scope_name"), stringFromMap(rule, "key"),
+		)
+		if !related {
+			excluded = append(excluded, map[string]any{
+				"kind": "active_world_rule", "id": id, "reason": "not_related_to_current_or_previous_turn",
+			})
+			continue
+		}
+		candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
+			Kind: "active_world_rule", ID: id, Order: order,
+			Relevance: simpleTokenSimilarity(selectionQuery, text), Persistent: persistent, Value: rule,
+		})
+		order++
+	}
+
+	slices.SortStableFunc(candidates, func(a, b completeTurnCriticAuxiliaryCandidate) int {
+		aRelevant := a.Relevance > 0
+		bRelevant := b.Relevance > 0
+		if aRelevant != bRelevant {
+			if aRelevant {
+				return -1
+			}
+			return 1
+		}
+		if a.Relevance != b.Relevance {
+			if a.Relevance > b.Relevance {
+				return -1
+			}
+			return 1
+		}
+		if a.Persistent != b.Persistent {
+			if a.Persistent {
+				return -1
+			}
+			return 1
+		}
+		if a.Order < b.Order {
+			return -1
+		}
+		if a.Order > b.Order {
+			return 1
+		}
+		return 0
+	})
+
+	selectedContext := append([]map[string]any(nil), mandatoryContext...)
+	selectedAuxiliaryContext := []map[string]any{}
+	selectedMemories := []map[string]any{}
+	selectedLedgerItems := []any{}
+	selectedWorldRules := []map[string]any{}
+	selectedMemoryTurns := map[int]bool{}
+	selected := []map[string]any{}
+	truncated := []map[string]any{}
+	buildLedger := func() map[string]any {
+		if len(selectedLedgerItems) == 0 && len(selectedMemories) == 0 && len(selectedWorldRules) == 0 {
+			return nil
+		}
+		out := cloneMapAny(ledgerBase)
+		if out == nil {
+			out = map[string]any{}
+		}
+		out["items"] = append([]any(nil), selectedLedgerItems...)
+		if len(selectedMemories) > 0 {
+			items := make([]any, 0, len(selectedMemories))
+			for _, item := range selectedMemories {
+				items = append(items, item)
+			}
+			out["relevant_turn_memories"] = items
+		}
+		if len(selectedWorldRules) > 0 {
+			items := make([]any, 0, len(selectedWorldRules))
+			for _, item := range selectedWorldRules {
+				items = append(items, item)
+			}
+			out["active_world_rules"] = items
+		}
+		return out
+	}
+	measure := func() int {
+		empty, _ := json.Marshal(map[string]any{"context_messages": []map[string]any{}, "archive_ledger": nil})
+		payload, _ := json.Marshal(map[string]any{
+			"context_messages": selectedAuxiliaryContext,
+			"archive_ledger":   buildLedger(),
+		})
+		chars := len([]rune(string(payload))) - len([]rune(string(empty)))
+		if chars < 0 {
+			return 0
+		}
+		return chars
+	}
+	budget := policy.AuxiliaryMaxChars
+	if budget < 0 {
+		budget = 0
+	}
+	used := measure()
+	baseChars := used
+	for _, candidate := range candidates {
+		if candidate.Kind == "relevant_memory_source_turn" && !selectedMemoryTurns[candidate.TurnIndex] {
+			excluded = append(excluded, map[string]any{
+				"kind": candidate.Kind, "id": candidate.ID, "reason": "related_memory_not_selected",
+			})
+			continue
+		}
+		before := used
+		switch candidate.Kind {
+		case "relevant_memory":
+			selectedMemories = append(selectedMemories, candidate.Value)
+		case "relevant_memory_source_turn":
+			selectedAuxiliaryContext = append(selectedAuxiliaryContext, candidate.Messages...)
+		case "critic_archive_ledger":
+			selectedLedgerItems = append(selectedLedgerItems, candidate.Value)
+		case "active_world_rule":
+			selectedWorldRules = append(selectedWorldRules, candidate.Value)
+		}
+		used = measure()
+		if used > budget {
+			attemptedChars := used - before
+			switch candidate.Kind {
+			case "relevant_memory":
+				selectedMemories = selectedMemories[:len(selectedMemories)-1]
+			case "relevant_memory_source_turn":
+				selectedAuxiliaryContext = selectedAuxiliaryContext[:len(selectedAuxiliaryContext)-len(candidate.Messages)]
+			case "critic_archive_ledger":
+				selectedLedgerItems = selectedLedgerItems[:len(selectedLedgerItems)-1]
+			case "active_world_rule":
+				selectedWorldRules = selectedWorldRules[:len(selectedWorldRules)-1]
+			}
+			used = before
+			excluded = append(excluded, map[string]any{
+				"kind": candidate.Kind, "id": candidate.ID, "reason": "auxiliary_input_budget_exhausted",
+				"candidate_chars": maxInt(attemptedChars, 0),
+			})
+			continue
+		}
+		if candidate.Kind == "relevant_memory" {
+			selectedMemoryTurns[candidate.TurnIndex] = true
+		}
+		selected = append(selected, map[string]any{
+			"kind": candidate.Kind, "id": candidate.ID, "chars": used - before,
+			"relevance": candidate.Relevance,
+		})
+	}
+	selectedContext = append(selectedContext, selectedAuxiliaryContext...)
+	trace := map[string]any{
+		"contract_version":                       "critic_input_selection.v1",
+		"budget_source":                          policy.Source,
+		"configured_context_chars":               policy.ConfiguredChars,
+		"ledger_budget_chars":                    policy.LedgerChars,
+		"auxiliary_budget_chars":                 budget,
+		"auxiliary_base_chars":                   baseChars,
+		"auxiliary_selected_chars":               used,
+		"auxiliary_remaining_chars":              maxInt(budget-used, 0),
+		"selected":                               selected,
+		"excluded":                               excluded,
+		"truncated":                              truncated,
+		"selected_count":                         len(selected),
+		"excluded_count":                         len(excluded),
+		"truncated_count":                        len(truncated),
+		"partial_item_truncation":                false,
+		"current_turn_bounded":                   false,
+		"previous_turn_bounded":                  false,
+		"selection_query_includes_previous_turn": len(mandatoryContext) > 0,
+	}
+	return selectedContext, buildLedger(), trace
 }
 
 func (s *Server) buildCompleteTurnActiveWorldRuleInput(ctx context.Context, sid string) ([]map[string]any, map[string]any) {
@@ -895,50 +1448,6 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 	}
 	ledger, _ := json.Marshal(ledgerInput)
 	return strings.Join([]string{
-		"Extract durable Archive Center memory data from the completed turn.",
-		"Return ONLY JSON. Do not use markdown fences.",
-		"Use this JSON shape. Omit unknown facts instead of inventing placeholders:",
-		`{"turn_summary":"","importance_score":5,"evidence_excerpts":[],"story_clock":{},"kg_triples":[{"subject":"","predicate":"","object":""}],"entities":{"characters":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"locations":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"items":[{"name":"","aliases":[],"identity_evidence_excerpt":""}],"groups":[{"name":"","aliases":[],"identity_evidence_excerpt":""}]},"speaker_attributions":[{"speaker_name":"","evidence_excerpt":""}],"relationship_memory":{},"interaction_events":[{"actor":"","counterpart":"","action":"","evidence_excerpt":""}],"relationship_observations":[{"source_entity":"","target_entity":"","domain":"","observation":"","evidence_excerpt":""}],"interaction_boundaries":[{"actor":"","counterpart":"","action_scope":"","decision":"","evidence_excerpt":""}],"habit_observations":[{"subject_entity":"","behavior_key":"","evidence_excerpt":""}],"character_profile_observations":[{"subject_entity":"","trait_key":"","supported_expression":"","evidence_excerpt":""}],"voice_observations":[{"subject_entity":"","principle_key":"","utterance_expression":"","evidence_excerpt":""}],"user_interaction_profile":[],"rp_character_profile":[],"state_deltas":{},"character_deltas":[],"physical_conditions":[],"entity_conditions":[],"reversible_states":[],"pending_threads":[],"world_rule_audit":{},"world_rules":[{"key":"","value":""}],"world_state":{},"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":""}],"protected_secrets":[],"character_identity_accuracy":[],"persona_capsule_candidates":[],"narrative_events":[],"state_claims":[],"belief_updates":[],"archive_hint":{}}`,
-		"Rules:",
-		"- Sensitivity policy: if the latest turn contains concrete in-story action, decision, relationship shift, promise, threat, injury, plan/resource, location movement, authority change, world constraint, or unresolved tension, extract it. Empty arrays are valid only for pure OOC/meta, repetition, or no new in-story information.",
-		"- Prefer several small focused records over one vague memory. Aim to cover the user's intent, the assistant's visible outcome, affected named actors, and durable consequences without inventing anything beyond the latest turn and retained context.",
-		"- evidence_excerpts are durable citations, not transcript samples. Include only short exact excerpts from the latest user/assistant turn that independently support a fact, state, relationship, event, promise, constraint, or continuity claim worth verifying later.",
-		"- reversible_states.value.text and body subtype/affected_area are source-bound fields, not generated display prose. Copy them exactly from evidence_excerpt even when the source language differs from session_output_language.",
-		"- If the latest user input language differs from session_output_language, do not follow the user input language for generated summaries or support records. Follow session_output_language and preserve user text only inside exact raw evidence excerpts.",
-		"- Do not copy isolated names, greetings, reactions, or context-dependent fragments into evidence_excerpts merely because they occurred. Speech-style examples belong in voice_observations and are not duplicated as general direct evidence unless the same excerpt also proves a separate durable claim. Do not cap valid direct evidence by a fixed count.",
-		"- For an ordinary name variant, nickname, title, or alias, keep one character entity with the story's canonical/full name and aliases. When the canonical identity was uniquely established in retained story context and the latest turn uses an alias for that same entity, identity_evidence_excerpt may be the short exact latest-turn excerpt that observes the alias. Apply the same evidence rule when the latest turn repeats the canonical name of a uniquely established recurring character, location, item, or group. Otherwise add identity_evidence_excerpt only when one short exact latest-turn excerpt establishes the identity link. Omit it for homonyms or uncertain equivalence; spelling, suffix, similarity, or a character-card name alone is not identity evidence.",
-		"- For entities and character_deltas, preserve the name or description supplied by the story and all useful observed attributes. Do not require auxiliary expression fields merely to keep the candidate.",
-		"- speaker_attributions is optional and source-bound. Each item needs speaker_name when known, optional listener_names/listeners when directly observed, attribution_kind=dialogue|quoted_speech|thought|narration|unknown, attribution_state=linked|tentative|ambiguous|unknown, confidence, and a short exact evidence_excerpt from the latest turn. Never guess a speaker or listener from style alone; use ambiguous or unknown when multiple characters fit.",
-		"- Location and time typed lanes do not suppress compatible kg_triples; keep all emitted facts consistent with exact turn evidence.",
-		"- Do not treat 'X lives in London' as 'the current scene is London'. Do not treat a temporary visit as a durable residence unless the latest turn says it directly.",
-		"- Story calendar facts such as 'summer vacation has started' belong in world_state/time_state or state_deltas.scene_state.time_state when they anchor the current scene. Do not infer an immediate return to school, a season change, or a day jump without direct evidence.",
-		"- story_clock may record any source-grounded story-time, ordering, duration, correction, plan, or flashback observation. Preserve uncertainty instead of forcing an exact date or a fixed vocabulary.",
-		"- interaction_events collect useful actor/counterpart/action observations broadly. relationship_observations collect directional relationship knowledge without a fixed domain list. Preserve direction and uncertainty.",
-		"- interaction_boundaries collect stated or narrated boundaries broadly. Saving a candidate does not grant consent or make it current; current-turn application remains a later precision decision.",
-		"- habit_observations collect behavior occurrences, patterns, counterexamples, and exceptions with their situation and counterpart when useful. Do not use a fixed count to decide that a habit exists.",
-		"- character_profile_observations collect personality, values, desires, fears, contradictions, current traits, contextual tendencies, and relationship-specific characterization broadly. Preserve context and uncertainty.",
-		"- voice_observations collect conditional speech and nonverbal style principles broadly. When an attributable spoken line or delivery demonstrates a describable speaking behavior, emit that occurrence; a first observation is valid contextual evidence and does not need a fixed repetition count. Store traits or principles rather than forcing future dialogue to repeat an example sentence.",
-		"- user_interaction_profile is only the real user's explicit out-of-story setting namespace and uses exact evidence expressions before it can affect behavior. rp_character_profile collects in-story player/NPC characterization broadly; character plus profile content is enough to retain a candidate. Matching source evidence and backend identity can mark it source-observed for current profile projection, while other candidates remain review material instead of being deleted. Never copy either namespace into the other, and never copy user_interaction_profile into narrative_events, KG, world rules, character_deltas, or relationship observations.",
-		"- reversible_states, physical_conditions, entity_conditions, state_deltas, and character_deltas may all preserve source-grounded continuity observations. Saving broad observations is separate from deciding which value is current or injectable.",
-		"- Preserve uncertainty, negation, flashback, plans, private visibility, and sensitive context in the record instead of dropping the record or forcing it into a fixed category.",
-		"- In system/progression stories, judge durable mechanics as world_rules when confirmed: randomized or conditional acquisition, base/home/environment constraints, challenge entry/clear/reward loops, exchange/cost economy, upgrade or unlock rules, item acquisition/crafting rules, stat growth, group/party limits, cooldowns, ranks, quests, or other recurring progression mechanics.",
-		"- Extract the abstract invariant behind the session's surface nouns. Do not copy these instruction examples as setting facts; use the session's own evidence and names.",
-		"- Do not leave world_rules empty for confirmed public facts, institutional rules, class/company policies, social obligations, access permissions, hierarchy/authority rules, special-world mechanics, supernatural/technology rules, recurring resource constraints, or implicit norms that remain true beyond this single exchange.",
-		"- Each world rule must include key and value; prefer scope, scope_name, category, confidence, and verification/evidence when available. Use world_state.rules for the same durable rules when they shape the current world state.",
-		"- Critic_Archive_Ledger_JSON.active_world_rules contains current unsuppressed stored rules when available. For a changed or explicitly reaffirmed existing rule, reuse its exact scope, scope_name, category, and key even when the output language differs. Never translate an existing key into a new key. If the latest turn supplies no new evidence or change for an existing rule, omit that unchanged repeat.",
-		"- Relationship-related subjective memories may remain in this lane while directional relationship observations record the same turn from another useful angle.",
-		"- Use owner_entity_role=protagonist for the player/persona and owner_entity_role=npc with owner_visibility=owner_private for private NPC recollections. Keep NPC-only memories out of persona_capsule_candidates.",
-		"- subjective_entity_memories must remain support-only: never use it to overwrite current-world truth, canonical memory, direct evidence, KG triples, character state, or world rules.",
-		"- Each protected_secrets item may include secret_kind, owner, subject, summary, sensitivity, evidence_strength, disclosure_policy, knowledge_scope, transition, and evidence_excerpt. Use transition=reveal only for a directly evidenced targeted reveal in the latest turn. Keep the text evidence-bound and do not invent secrets.",
-		"- character_identity_accuracy is for evidence-bound identity/role/allegiance mappings such as cover identity, disguise, hidden role, hidden allegiance, secret successor, hidden lineage, or protected power inheritance. Include same_entity, surface_identity_name, true_identity_name, identity_kind, reveal_policy, and knowledge_scope when supported.",
-		"- persona_capsule_candidates must never be used to write current-world truth, canonical memory, direct evidence, KG triples, character state, or world rules. It is support_only_persona_recollection and requires later user/operator approval.",
-		"- Each persona_capsule_candidates item may include memory_text, source_turn_index, importance_10, emotional_weight, portability, mode, secret_guard, tags, evidence_excerpt, and injection_policy.",
-		"- Mark secret_guard true when the recollection reveals regression, loop, reincarnation, possession/rebirth, isekai transfer, or identity-carryover that should remain protagonist-private until explicitly revealed by current user input.",
-		"- Critic_Archive_Ledger_JSON is a bounded read-only support ledger. Use it to avoid duplicate memories, stale residue, and contradiction drift.",
-		"- Never copy Critic_Archive_Ledger_JSON item summaries as new evidence unless the latest user/assistant turn also supports the fact.",
-		"- Recent_Context_JSON is support-only. Never treat the previous turn or a selected memory source turn as a new event, reveal, or evidence excerpt unless Latest_Turn directly supports it.",
-		"- If Critic_Archive_Ledger_JSON is null, empty, or degraded, continue extracting only from the latest turn and retained context.",
-		"",
 		fmt.Sprintf("chat_session_id: %s", sid),
 		fmt.Sprintf("turn_index: %d", turnIndex),
 		"",

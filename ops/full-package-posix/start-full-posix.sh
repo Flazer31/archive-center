@@ -398,11 +398,26 @@ wait_candidate_backend_ready() {
 	done
 }
 
+prepare_update_launcher_session() {
+	[ -n "${PYTHON_BIN:-}" ] || die "managed update launcher session requires Python"
+	launcher_token=$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_hex(32))')
+	[ "${#launcher_token}" -ge 32 ] || die "managed update launcher token generation failed"
+	launcher_dir="$PACKAGE_ROOT/.updates"
+	launcher_path="$launcher_dir/launcher-session.json"
+	launcher_temp="$launcher_path.tmp.$$"
+	mkdir -p "$launcher_dir"
+	(umask 077 && printf '{"contract_version":"archive-center.update-launcher-session.v1","token":"%s"}\n' "$launcher_token" >"$launcher_temp")
+	mv -f "$launcher_temp" "$launcher_path"
+	AC_UPDATE_LAUNCHER_TOKEN=$launcher_token
+	export AC_UPDATE_LAUNCHER_TOKEN
+}
+
 finalize_pending_update() {
 	if [ "${PENDING_UPDATE_APPLIED:-false}" != "true" ]; then
 		return
 	fi
 	mkdir -p "$LOG_DIR"
+	prepare_update_launcher_session
 	"$ARCHIVE_CENTER_GO_RUN" >"$LOG_DIR/update-candidate.out.log" 2>"$LOG_DIR/update-candidate.err.log" &
 	candidate_pid=$!
 	if wait_candidate_backend_ready "$candidate_pid" "$PENDING_TARGET_VERSION"; then
@@ -496,7 +511,37 @@ detect_arch() {
 	esac
 }
 
+runtime_dependencies_ready() {
+	find_executable \
+		"$PACKAGE_ROOT/runtime/MariaDB/bin/mariadbd" \
+		"$PACKAGE_ROOT/runtime/mariadb/bin/mariadbd" \
+		"$(command_path mariadbd 2>/dev/null || true)" \
+		"$(command_path mysqld 2>/dev/null || true)" >/dev/null 2>&1 || return 1
+	find_executable \
+		"$PACKAGE_ROOT/runtime/MariaDB/bin/mariadb" \
+		"$PACKAGE_ROOT/runtime/mariadb/bin/mariadb" \
+		"$(command_path mariadb 2>/dev/null || true)" \
+		"$(command_path mysql 2>/dev/null || true)" >/dev/null 2>&1 || return 1
+	if ! has_cmd python3 && ! has_cmd python; then
+		return 1
+	fi
+	if ! local_chromadb_requested; then
+		return 0
+	fi
+	if [ "$PLATFORM" = "termux" ]; then
+		has_cmd proot-distro
+		return
+	fi
+	managed_chroma_python="$RUNTIME_DIR/chromadb-venv/bin/python"
+	[ -x "$managed_chroma_python" ] || return 1
+	"$managed_chroma_python" -c 'from importlib.metadata import version; import chromadb; assert version("chromadb") == "1.5.9"' >/dev/null 2>&1
+}
+
 install_linux_deps() {
+	if runtime_dependencies_ready; then
+		log "Required Linux runtime dependencies are already available; skipping package manager."
+		return
+	fi
 	if [ "$NO_INSTALL" = "true" ]; then
 		return
 	fi
@@ -566,6 +611,11 @@ ensure_homebrew() {
 }
 
 install_macos_deps() {
+	load_homebrew_env || true
+	if runtime_dependencies_ready; then
+		log "Required macOS runtime dependencies are already available; skipping Homebrew."
+		return
+	fi
 	if [ "$NO_INSTALL" = "true" ]; then
 		return
 	fi
@@ -575,6 +625,10 @@ install_macos_deps() {
 }
 
 install_termux_deps() {
+	if runtime_dependencies_ready; then
+		log "Required Termux runtime dependencies are already available; skipping pkg."
+		return
+	fi
 	if [ "$NO_INSTALL" = "true" ]; then
 		return
 	fi
@@ -675,11 +729,16 @@ ensure_chromadb() {
 		return
 	fi
 	venv_dir="$RUNTIME_DIR/chromadb-venv"
+	venv_python="$venv_dir/bin/python"
+	if [ -x "$venv_python" ] && "$venv_python" -c 'from importlib.metadata import version; import chromadb; assert version("chromadb") == "1.5.9"' >/dev/null 2>&1; then
+		CHROMA_PYTHON=$venv_python
+		export CHROMA_PYTHON
+		return
+	fi
 	if [ ! -x "$venv_dir/bin/python" ]; then
 		log "Creating ChromaDB Python runtime"
 		run_external "$PYTHON_BIN" -m venv "$venv_dir" 2>/dev/null || run_external "$PYTHON_BIN" -m virtualenv "$venv_dir"
 	fi
-	venv_python="$venv_dir/bin/python"
 	run_external "$venv_python" -m pip install --upgrade pip wheel setuptools
 	if ! "$venv_python" -c 'from importlib.metadata import version; assert version("chromadb") == "1.5.9"' >/dev/null 2>&1; then
 		log "Installing pinned ChromaDB 1.5.9 into managed runtime"
@@ -1184,6 +1243,7 @@ while :; do
 
 	cleanup_updater_runner
 	UPDATER_RUNNER=
+	prepare_update_launcher_session
 	start_managed_process "$ARCHIVE_CENTER_GO_RUN"
 	BACKEND_PID=$MANAGED_PROCESS_PID
 	export BACKEND_PID

@@ -28,7 +28,7 @@ func TestMariaDBReplaceLogicalTurnAtomicallyReplacesCanonicalTail(t *testing.T) 
 	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memories").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
-	for i := 0; i < 34; i++ {
+	for i := 0; i < 35; i++ {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec("INSERT INTO status_current_values").
@@ -134,7 +134,7 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedImmediateTail(t *testing.T) {
 	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memories").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
-	for i := 0; i < 34; i++ {
+	for i := 0; i < 35; i++ {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec("INSERT INTO status_current_values").
@@ -175,7 +175,7 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedFirstTurnInEmptySession(t *tes
 	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-empty", 1).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM memories").WithArgs("session-empty", 1).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-empty", 1).WillReturnResult(sqlmock.NewResult(0, 0))
-	for i := 0; i < 34; i++ {
+	for i := 0; i < 35; i++ {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	mock.ExpectExec("INSERT INTO status_current_values").

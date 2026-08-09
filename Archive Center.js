@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 3.9.0
+//@display-name Archive Center 3.9.9
 //@author memory-scaffold
 //@api 3.0
-//@version 3.9.0
+//@version 3.9.9
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -10,7 +10,7 @@
 // 독립 오케스트레이션형 멀티-LLM 메모리 시스템의 프론트엔드이다.
 //
 // 핵심 전제:
-//   이 프로젝트의 출판사(감독관/편집자) / 평론가 / Embedding 모델 호출은
+//   이 프로젝트의 출판사 LLM / 평론가 / Embedding 모델 호출은
 //   RisuAI 기본 모델 호출과 완전히 별개다.
 //   프로젝트 전용 설정으로 독립 관리된다.
 //   Project Main LLM은 출판사/편집자 기본값과 입력 개선,
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "3.9.0";
-  const BUILD_ID = "3.9.0";
+  const VERSION = "3.9.9";
+  const BUILD_ID = "3.9.9";
   const BUILD_CHANNEL = "release";
   const BUILD_TIME = "2026-08-03 KST";
-  const BUILD_NOTES = "Archive Center 3.9.0";
+  const BUILD_NOTES = "Archive Center 3.9.9";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -170,7 +170,7 @@
     pluginMainApiKey: "",
     pluginMainEndpoint: "",
     pluginMainModel: "",
-    pluginMainTimeoutMs: 60000,   // 감독관 LLM 호출 타임아웃 (ms)
+    pluginMainTimeoutMs: 60000,   // 출판사 LLM 호출 타임아웃 (ms)
     pluginMainTemperature: 0.7,
     pluginMainReasoningPreset: "auto",
     pluginMainReasoningEffort: "none",
@@ -279,7 +279,7 @@
       "settings.section.update": "업데이트",
       "settings.section.pluginMainLlm": "출판사 LLM (1차 편집)",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "출판사 LLM(감독관/편집자) 기본값이며 입력 개선과 감독관 호출에 함께 사용됩니다.\n\n저장 시 backend/.env 및 런타임 설정과 동기화됩니다.",
+      "settings.section.pluginMainLlm.desc": "출판사 LLM 기본값이며 입력 개선과 출판사 LLM 호출에 함께 사용됩니다.\n\n저장 시 backend/.env 및 런타임 설정과 동기화됩니다.",
       "settings.pluginMainLlm.showFields": "▸ 필드 보기",
       "settings.section.subLlm": "편집 검토·평론가 LLM (2차 검토/정리)",
       "settings.section.subLlm.desc": "1차 편집 결과의 2차 검토와 응답 후 평론가 정리(요약/구조화)에 사용하는 모델입니다.\n\n비어 있으면 해당 호출은 미설정으로 처리되며 출판사 LLM 값을 자동으로 사용하지 않습니다.",
@@ -383,11 +383,11 @@
       "settings.takeoverMode.shadow_compare": "Shadow Compare (비교 기록, 채팅 미적용)",
       "settings.takeoverMode.partial_takeover": "Partial Takeover (guidance metadata만 적용)",
       "settings.takeoverMode.default_takeover": "Default Takeover (전체 패킷 적용)",
-      "settings.model.supervisorLlm": "출판사 LLM (감독관)",
-      "settings.model.directorLlm": "출판사 LLM (편집자)",
+      "settings.model.supervisorLlm": "출판사 LLM",
+      "settings.model.directorLlm": "출판사 LLM (입력 편집)",
       "settings.model.criticLlm": "평론가 LLM",
       "settings.model.embeddingLlm": "기억 색인 LLM",
-      "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup 테스트",
+      "settings.btn.testPublisherLlm": "🧠 출판사 LLM 상태 테스트",
       "settings.btn.testCriticLlm": "✍ 평론가 LLM 테스트",
       "settings.btn.testPublisherCall": "📝 출판사 LLM 테스트",
       "settings.btn.testCriticCall": "✍ 평론가 LLM 테스트",
@@ -429,7 +429,7 @@
       "settings.prompts.size": "크기",
       "settings.prompts.emptyReject": "빈 프롬프트는 저장할 수 없습니다.",
       "settings.prompts.reloadConfirm": "저장하지 않은 변경이 사라집니다. 파일 내용을 다시 불러올까요?",
-      "settings.prompts.supervisor.desc": "Supervisor 시스템 프롬프트입니다. 감독관/편집 기준을 조정합니다.",
+      "settings.prompts.supervisor.desc": "출판사 LLM 시스템 프롬프트입니다. 서사 조율과 편집 기준을 조정합니다.",
       "settings.prompts.critic.desc": "Critic 시스템 프롬프트입니다. 기억 추출/정리 기준을 조정합니다.",
 
       // ── Persona Capsule ──
@@ -593,9 +593,9 @@
       "dash.status.plugin": "플러그인",
       "dash.status.sessionId": "세션 ID",
       "dash.status.bridgeHealth": "브리지 상태",
-      "dash.status.supervisorHealthTest": "감독관 상태 테스트",
+      "dash.status.supervisorHealthTest": "출판사 LLM 상태 테스트",
       "dash.status.search": "검색",
-      "dash.status.supervisorCall": "감독관 호출",
+      "dash.status.supervisorCall": "출판사 LLM 호출",
       "dash.status.guideMode": "서사 가이드",
       "dash.status.injection": "주입",
       "dash.status.save": "저장",
@@ -942,9 +942,9 @@
       "test.health.ok": "✅ Bridge 정상",
       "test.health.fail": "❌ Bridge 연결 실패 (서버가 꺼져 있거나 URL이 잘못됨)",
       "test.error": "❌ 테스트 오류",
-      "test.wakeup.loading": "⏳ Supervisor 서비스(/wakeup) 호출 중...",
-      "test.wakeup.ok": "✅ Supervisor 서비스 응답 정상",
-      "test.wakeup.fail": "❌ Supervisor 서비스 응답 실패",
+      "test.wakeup.loading": "⏳ 출판사 LLM 서비스(/wakeup) 호출 중...",
+      "test.wakeup.ok": "✅ 출판사 LLM 서비스 응답 정상",
+      "test.wakeup.fail": "❌ 출판사 LLM 서비스 응답 실패",
       "test.stats.loading": "⏳ /stats 호출 중...",
       "test.stats.fail": "❌ Stats 조회 실패",
 
@@ -991,7 +991,7 @@
       "common.error": "오류",
       "alert.llmFailure": "⚠ {model} 응답 실패\n사유: {reason}",
       "warning.output.llmFailureTitle": "⚠ 보조 LLM 경고: 일부 호출이 실패했습니다.",
-      "warning.llmReason.supervisorUnavailable": "응답 없음 또는 timeout (감독관 지시 미수신)",
+      "warning.llmReason.supervisorUnavailable": "응답 없음 또는 timeout (출판사 LLM 지시 미수신)",
       "warning.llmReason.reviewSkipped": "2차 검토 응답 없음 (리뷰 단계 건너뜀)",
       "export.confirmTarget": "대상 세션:",
       "export.confirmDesc": "이 세션의 chat_logs, memories, kg_triples를\nJSON으로 내보냅니다.",
@@ -1064,15 +1064,15 @@
       "settings.label.narrativeGuideMode": "서사 가이드 모드",
       "settings.label.narrativeGuideMode.help": "Auto는 본문 키워드로 장르를 추정하지 않고 Standard로 동작합니다. 특정 장르 모드는 사용자가 직접 선택할 때만 적용됩니다.",
       "settings.label.narrativeGuideStrength": "서사 가이드 강도",
-      "settings.label.narrativeGuideStrength.help": "없음은 감독관 호출만 끄고 기억·비밀 보호는 유지합니다. 약함은 응답 초점, 보통은 진행 또는 유지 제안, 강함은 arc 기준과 우선 frontier까지 제안합니다. 어떤 강도도 진행이나 사용자 행동·새 사실·관계 변화·사건 종결을 강제하지 않습니다.",
+      "settings.label.narrativeGuideStrength.help": "없음은 출판사 LLM 호출만 끄고 기억·비밀 보호는 유지합니다. 약함은 응답 초점, 보통은 진행 또는 유지 제안, 강함은 arc 기준과 우선 frontier까지 제안합니다. 어떤 강도도 진행이나 사용자 행동·새 사실·관계 변화·사건 종결을 강제하지 않습니다.",
       "settings.label.narrativeSupportMaxChars": "서사 안내 예산 (chars)",
-      "settings.hint.narrativeSupportMaxChars": "감독관 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
+      "settings.hint.narrativeSupportMaxChars": "출판사 LLM 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
       "settings.label.publisherMaxCompletionTokens": "출판사 Max Completion Tokens",
       "settings.label.publisherProvider": "출판사 Provider",
       "settings.label.publisherReasoningEffort": "출판사 Reasoning Effort",
       "settings.label.publisherReasoningPreset": "출판사 Reasoning Preset",
       "settings.label.publisherTemp": "출판사 Temperature",
-      "settings.label.supervisorTimeout": "감독관 Timeout (초)",
+      "settings.label.supervisorTimeout": "출판사 LLM Timeout (초)",
       "settings.label.topK": "ChromaDB 의미 기억 검색 수",
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
       "settings.label.coreObjectiveMemoryMaxItems": "핵심 연관 기억 최대 수",
@@ -1224,7 +1224,7 @@
       "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
       "turn_hud.stage.recall_materialization": "기억·근거 불러오기",
       "turn_hud.stage.context_assembly": "입력 맥락 조립",
-      "turn_hud.stage.publisher_llm": "감독관 호출",
+      "turn_hud.stage.publisher_llm": "출판사 LLM 호출",
       "turn_hud.stage.payload_ready": "본문 요청 준비",
       "turn_hud.stage.awaiting_final_output": "본문 응답 기다리는 중",
       "turn_hud.stage.final_output_accepted": "최종 출력 확인",
@@ -1253,8 +1253,8 @@
       "turn_hud.count.episode_summary": "구간 요약",
       "turn_hud.count.vector_index": "Vector 색인",
       "turn_hud.warning.publisher_llm_not_configured": "출판사 LLM이 설정되지 않아 건너뜀",
-      "turn_hud.warning.publisher_llm_failed_open": "감독관 호출 실패 후 본문 요청은 계속됨",
-      "turn_hud.warning.publisher_llm_malformed_failed_open": "감독관 응답 형식이 잘못되어 제안을 버렸으며 본문 요청은 계속됨",
+      "turn_hud.warning.publisher_llm_failed_open": "출판사 LLM 호출 실패 후 본문 요청은 계속됨",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "출판사 LLM 응답 형식이 잘못되어 제안을 버렸으며 본문 요청은 계속됨",
       "turn_hud.memory.title": "기억 전달",
       "turn_hud.memory.vector_limit": "Vector 후보",
       "turn_hud.memory.core_requested": "핵심 상한",
@@ -1369,7 +1369,7 @@
       "settings.section.update": "Update",
       "settings.section.pluginMainLlm": "Publisher LLM (Editor First-pass)",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "Default settings for Publisher LLM (Supervisor/Editor).\n\nUsed by input-improvement first pass and supervisor calls.\n\nSaved values sync to backend/.env and runtime settings.",
+      "settings.section.pluginMainLlm.desc": "Default Publisher LLM settings.\n\nUsed by input-improvement first pass and Publisher LLM calls.\n\nSaved values sync to backend/.env and runtime settings.",
       "settings.pluginMainLlm.showFields": "▸ Show Fields",
       "settings.section.subLlm": "Review/Critic LLM (Second-pass/Post-process)",
       "settings.section.subLlm.desc": "Used for second-pass review of first-pass edits and post-response critic structuring.\n\nIf left empty, this lane is treated as not configured and does not automatically use Publisher LLM values.",
@@ -1391,7 +1391,7 @@
       "settings.debug.forceIdleArmed": "armed: next normal input",
       "settings.debug.forceIdleHint": "Debug only. Forces idle_reentry for the next non-empty, non-resume input once.",
       "settings.debug.tab.disabled": "Debug mode is off. Turn it on with the top-right debug button to view details in this tab.",
-      "settings.label.supervisorTimeout": "Director Timeout (sec)",
+      "settings.label.supervisorTimeout": "Publisher LLM Timeout (sec)",
       "settings.label.criticTimeout": "Critic/Reviewer Timeout (sec)",
       "settings.label.embeddingTimeout": "Embedding Timeout (sec)",
       "settings.label.publisherTemp": "Publisher Temperature",
@@ -1421,7 +1421,7 @@
       "settings.label.narrativeGuideMode": "Narrative Guide Mode",
       "settings.label.narrativeGuideMode.help": "Auto does not infer genre from story keywords; it uses Standard. Genre-specific modes apply only when selected explicitly.",
       "settings.label.narrativeGuideStrength": "Narrative Guide Strength",
-      "settings.label.narrativeGuideStrength.help": "None skips the Supervisor call while memory and secret guards remain active. Weak proposes response focus, Medium may suggest advance or hold, and Strong adds an arc anchor and preferred frontier. No strength may force progress, user actions, new truth, relationship changes, or event closure.",
+      "settings.label.narrativeGuideStrength.help": "None skips the Publisher LLM call while memory and secret guards remain active. Weak proposes response focus, Medium may suggest advance or hold, and Strong adds an arc anchor and preferred frontier. No strength may force progress, user actions, new truth, relationship changes, or event closure.",
       "settings.label.narrativeSupportMaxChars": "Narrative guidance budget (chars)",
       "settings.hint.narrativeSupportMaxChars": "Independent budget for supervisor proposals and response execution guidance. It does not borrow from memory, original-work, or user-input budgets.",
       "settings.label.auxiliaryInjectionPlacement": "Memory Injection Placement",
@@ -1624,11 +1624,11 @@
       "settings.takeoverMode.shadow_compare": "Shadow Compare (log only, no chat change)",
       "settings.takeoverMode.partial_takeover": "Partial Takeover (guidance metadata only)",
       "settings.takeoverMode.default_takeover": "Default Takeover (full packet apply)",
-      "settings.model.supervisorLlm": "Publisher LLM (Supervisor)",
-      "settings.model.directorLlm": "Publisher LLM (Editor)",
+      "settings.model.supervisorLlm": "Publisher LLM",
+      "settings.model.directorLlm": "Publisher LLM (Input Editing)",
       "settings.model.criticLlm": "Critic LLM",
       "settings.model.embeddingLlm": "Embedding LLM",
-      "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup Test",
+      "settings.btn.testPublisherLlm": "🧠 Publisher LLM Health Test",
       "settings.btn.testCriticLlm": "✍ Critic LLM Test",
       "settings.btn.testPublisherCall": "📝 Publisher LLM Test",
       "settings.btn.testCriticCall": "✍ Critic LLM Test",
@@ -1670,7 +1670,7 @@
       "settings.prompts.size": "Size",
       "settings.prompts.emptyReject": "Prompt content cannot be empty.",
       "settings.prompts.reloadConfirm": "Unsaved changes will be discarded. Reload from file?",
-      "settings.prompts.supervisor.desc": "Supervisor system prompt. Adjusts supervisor/editor decision rules.",
+      "settings.prompts.supervisor.desc": "Publisher LLM system prompt. Adjusts narrative direction and editing rules.",
       "settings.prompts.critic.desc": "Critic system prompt. Adjusts memory extraction and cleanup rules.",
 
       // ── Persona Capsule ──
@@ -1831,9 +1831,9 @@
       "dash.status.plugin": "Plugin",
       "dash.status.sessionId": "Session ID",
       "dash.status.bridgeHealth": "Bridge Health",
-      "dash.status.supervisorHealthTest": "Supervisor Health Test",
+      "dash.status.supervisorHealthTest": "Publisher LLM Health Test",
       "dash.status.search": "Search",
-      "dash.status.supervisorCall": "Supervisor Call",
+      "dash.status.supervisorCall": "Publisher LLM Call",
       "dash.status.guideMode": "Narrative Guide",
       "dash.status.injection": "Injection",
       "dash.status.save": "Save",
@@ -2180,9 +2180,9 @@
       "test.health.ok": "✅ Bridge OK",
       "test.health.fail": "❌ Bridge connection failed (server may be down or URL incorrect)",
       "test.error": "❌ Test Error",
-      "test.wakeup.loading": "⏳ Calling Supervisor service (/wakeup)...",
-      "test.wakeup.ok": "✅ Supervisor service responded",
-      "test.wakeup.fail": "❌ Supervisor service not reachable",
+      "test.wakeup.loading": "⏳ Calling Publisher LLM service (/wakeup)...",
+      "test.wakeup.ok": "✅ Publisher LLM service responded",
+      "test.wakeup.fail": "❌ Publisher LLM service not reachable",
       "test.stats.loading": "⏳ Calling /stats...",
       "test.stats.fail": "❌ Stats query failed",
 
@@ -2229,7 +2229,7 @@
       "common.error": "Error",
       "alert.llmFailure": "⚠ {model} response failed\nReason: {reason}",
       "warning.output.llmFailureTitle": "⚠ Auxiliary LLM warning: one or more calls failed.",
-      "warning.llmReason.supervisorUnavailable": "No response or timeout (no supervisor directive)",
+      "warning.llmReason.supervisorUnavailable": "No response or timeout (no Publisher LLM guidance)",
       "warning.llmReason.reviewSkipped": "Second-pass review response missing (review step skipped)",
       "export.confirmTarget": "Target session:",
       "export.confirmDesc": "Export chat_logs, memories, kg_triples\nof this session as JSON.",
@@ -2314,7 +2314,7 @@
       "turn_hud.stage.prepare_source": "Confirming current input and request",
       "turn_hud.stage.recall_materialization": "Loading memory and evidence",
       "turn_hud.stage.context_assembly": "Assembling input context",
-      "turn_hud.stage.publisher_llm": "Supervisor call",
+      "turn_hud.stage.publisher_llm": "Publisher LLM call",
       "turn_hud.stage.payload_ready": "Preparing story request",
       "turn_hud.stage.awaiting_final_output": "Waiting for story response",
       "turn_hud.stage.final_output_accepted": "Confirming final output",
@@ -2344,7 +2344,7 @@
       "turn_hud.count.vector_index": "Vector index",
       "turn_hud.warning.publisher_llm_not_configured": "Publisher LLM is not configured and was skipped",
       "turn_hud.warning.publisher_llm_failed_open": "Publisher LLM failed; the story request continued",
-      "turn_hud.warning.publisher_llm_malformed_failed_open": "The Supervisor response was malformed, so its proposal was discarded and the story request continued",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "The Publisher LLM response was malformed, so its proposal was discarded and the story request continued",
       "turn_hud.memory.title": "Memory delivery",
       "turn_hud.memory.vector_limit": "Vector candidates",
       "turn_hud.memory.core_requested": "Core limit",
@@ -2459,7 +2459,7 @@
       "settings.section.update": "アップデート",
       "settings.section.pluginMainLlm": "出版社 LLM（一次編集）",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "出版社 LLM（監督官/編集者）の既定値です。\n\n入力改善 first-pass と監督官呼び出しに使用されます。\n\n保存時に backend/.env とランタイム設定へ同期されます。",
+      "settings.section.pluginMainLlm.desc": "Publisher LLM の既定値です。\n\n入力改善 first-pass と Publisher LLM 呼び出しに使用されます。\n\n保存時に backend/.env とランタイム設定へ同期されます。",
       "settings.pluginMainLlm.showFields": "▸ フィールド表示",
       "settings.section.subLlm": "編集レビュー・評論家 LLM（二次レビュー/整理）",
       "settings.section.subLlm.desc": "一次編集結果の二次レビューと、応答後の評論家整理（要約/構造化）に使用するモデルです。\n\n空の場合は出版社 LLM の値を自動使用します。",
@@ -2481,7 +2481,7 @@
       "settings.debug.forceIdleArmed": "armed: 次の通常入力1回",
       "settings.debug.forceIdleHint": "デバッグ専用。空入力とresume系を除く次の入力1回だけ idle_reentry として処理します。",
       "settings.debug.tab.disabled": "デバッグモードはオフです。右上のデバッグボタンで有効にすると、このタブの詳細情報が表示されます。",
-      "settings.label.supervisorTimeout": "監督官タイムアウト（秒）",
+      "settings.label.supervisorTimeout": "Publisher LLM タイムアウト（秒）",
       "settings.label.criticTimeout": "評論家タイムアウト（秒）",
       "settings.label.embeddingTimeout": "Embeddingタイムアウト（秒）",
       "settings.label.publisherTemp": "出版社 Temperature",
@@ -2511,7 +2511,7 @@
       "settings.label.narrativeGuideMode": "ナラティブガイドモード",
       "settings.label.narrativeGuideMode.help": "Autoは本文キーワードからジャンルを推定せずStandardとして動作します。ジャンル別モードはユーザーが明示的に選んだ場合のみ適用されます。",
       "settings.label.narrativeGuideStrength": "ナラティブガイド強度",
-      "settings.label.narrativeGuideStrength.help": "なしはSupervisor呼び出しだけを停止し、記憶と秘密保護は維持します。弱は応答の焦点、中は進行または保持、強はarc anchorと優先frontierまで提案します。どの強度も進行、ユーザー行動、新事実、関係変化、事件終結を強制しません。",
+      "settings.label.narrativeGuideStrength.help": "なしはPublisher LLM呼び出しだけを停止し、記憶と秘密保護は維持します。弱は応答の焦点、中は進行または保持、強はarc anchorと優先frontierまで提案します。どの強度も進行、ユーザー行動、新事実、関係変化、事件終結を強制しません。",
       "settings.label.narrativeSupportMaxChars": "ナラティブ案内予算（chars）",
       "settings.hint.narrativeSupportMaxChars": "監督提案と応答実行ガイド専用の独立予算です。長期記憶・原作資料・ユーザー入力の予算は使用しません。",
       "settings.label.auxiliaryInjectionPlacement": "記憶の注入位置",
@@ -2679,11 +2679,11 @@
       "settings.takeoverMode.shadow_compare": "Shadow Compare（比較記録、チャット未適用）",
       "settings.takeoverMode.partial_takeover": "Partial Takeover（guidance metadataのみ適用）",
       "settings.takeoverMode.default_takeover": "Default Takeover（全パケット適用）",
-      "settings.model.supervisorLlm": "出版社 LLM（監督官）",
-      "settings.model.directorLlm": "出版社 LLM（編集者）",
+      "settings.model.supervisorLlm": "Publisher LLM",
+      "settings.model.directorLlm": "Publisher LLM（入力編集）",
       "settings.model.criticLlm": "クリティック LLM",
       "settings.model.embeddingLlm": "記憶インデックス LLM",
-      "settings.btn.testPublisherLlm": "🧠 Supervisor Wakeup テスト",
+      "settings.btn.testPublisherLlm": "🧠 Publisher LLM 状態テスト",
       "settings.btn.testCriticLlm": "✍ クリティック LLM テスト",
       "settings.btn.testPublisherCall": "📝 出版社 LLM テスト",
       "settings.btn.testCriticCall": "✍ クリティック LLM テスト",
@@ -2723,7 +2723,7 @@
       "settings.prompts.size": "サイズ",
       "settings.prompts.emptyReject": "空のプロンプトは保存できません。",
       "settings.prompts.reloadConfirm": "未保存の変更が失われます。ファイル内容を再読込しますか？",
-      "settings.prompts.supervisor.desc": "Supervisor system prompt。監督官/編集者の判断基準を調整します。",
+      "settings.prompts.supervisor.desc": "Publisher LLM system prompt。物語調整と編集の判断基準を調整します。",
       "settings.prompts.critic.desc": "Critic system prompt。記憶抽出/整理の基準を調整します。",
 
       // ── Persona Capsule ──
@@ -2887,9 +2887,9 @@
       "dash.status.plugin": "プラグイン",
       "dash.status.sessionId": "セッション ID",
       "dash.status.bridgeHealth": "ブリッジ状態",
-      "dash.status.supervisorHealthTest": "監督官ヘルステスト",
+      "dash.status.supervisorHealthTest": "Publisher LLM ヘルステスト",
       "dash.status.search": "検索",
-      "dash.status.supervisorCall": "監督官呼び出し",
+      "dash.status.supervisorCall": "Publisher LLM 呼び出し",
       "dash.status.guideMode": "ナラティブガイド",
       "dash.status.injection": "注入",
       "dash.status.save": "保存",
@@ -3236,9 +3236,9 @@
       "test.health.ok": "✅ Bridge正常",
       "test.health.fail": "❌ Bridge接続失敗（サーバーが停止中またはURL不正）",
       "test.error": "❌ テストエラー",
-      "test.wakeup.loading": "⏳ Supervisor サービス (/wakeup) 呼出中...",
-      "test.wakeup.ok": "✅ Supervisor サービス応答OK",
-      "test.wakeup.fail": "❌ Supervisor サービス応答失敗",
+      "test.wakeup.loading": "⏳ Publisher LLM サービス (/wakeup) 呼出中...",
+      "test.wakeup.ok": "✅ Publisher LLM サービス応答OK",
+      "test.wakeup.fail": "❌ Publisher LLM サービス応答失敗",
       "test.stats.loading": "⏳ /stats 呼出中...",
       "test.stats.fail": "❌ Stats取得失敗",
 
@@ -3285,7 +3285,7 @@
       "common.error": "エラー",
       "alert.llmFailure": "⚠ {model} の応答に失敗しました\n理由: {reason}",
       "warning.output.llmFailureTitle": "⚠ 補助LLM警告: 一部の呼び出しに失敗しました。",
-      "warning.llmReason.supervisorUnavailable": "応答なし または timeout（監督官 directive 未取得）",
+      "warning.llmReason.supervisorUnavailable": "応答なし または timeout（Publisher LLM guidance 未取得）",
       "warning.llmReason.reviewSkipped": "2次レビュー応答なし（レビュー段階をスキップ）",
       "export.confirmTarget": "対象セッション:",
       "export.confirmDesc": "このセッションのchat_logs、memories、kg_triplesを\nJSONでエクスポートします。",
@@ -3402,7 +3402,7 @@
       "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
       "turn_hud.stage.recall_materialization": "記憶と根拠を読み込み",
       "turn_hud.stage.context_assembly": "入力コンテキストを組み立て",
-      "turn_hud.stage.publisher_llm": "監督を呼び出し",
+      "turn_hud.stage.publisher_llm": "Publisher LLM 呼び出し",
       "turn_hud.stage.payload_ready": "本文リクエストを準備",
       "turn_hud.stage.awaiting_final_output": "本文応答を待機中",
       "turn_hud.stage.final_output_accepted": "最終出力を確認",
@@ -3432,7 +3432,7 @@
       "turn_hud.count.vector_index": "Vector索引",
       "turn_hud.warning.publisher_llm_not_configured": "出版社LLMが未設定のためスキップ",
       "turn_hud.warning.publisher_llm_failed_open": "出版社LLM失敗後も本文リクエストは継続",
-      "turn_hud.warning.publisher_llm_malformed_failed_open": "Supervisor応答の形式が不正なため提案を破棄し、本文リクエストは継続しました",
+      "turn_hud.warning.publisher_llm_malformed_failed_open": "Publisher LLM応答の形式が不正なため提案を破棄し、本文リクエストは継続しました",
       "turn_hud.memory.title": "記憶の伝達",
       "turn_hud.memory.vector_limit": "Vector候補",
       "turn_hud.memory.core_requested": "核心上限",
@@ -4064,9 +4064,6 @@
   let _lastAutoRollbackSkipSignature = null;
   let _rollbackHostSignalReconcileInFlight = false;
   const _rollbackHostSignalLastSignatureBySession = new Map();
-  let _rollbackHostMutationObserver = null;
-  let _rollbackHostMutationCheckInFlight = false;
-  let _rollbackHostMutationCheckPending = false;
   let _rollbackTailReconcileInFlight = false;
   const _rollbackHistoryTrimGuardBySession = new Map();
   const ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS = 1;
@@ -4500,41 +4497,6 @@
     return rawInput;
   }
 
-  // Official RisuAI 4ac6e4e (inspected 2026-08-07) exposes no deletion listener
-  // or removed nodes. SafeMutationObserver supplies the host child-list signal;
-  // the existing backend reconciliation path decides whether deletion occurred.
-  async function onRisuChatMessageListMutation(mutations) {
-    if (!R || typeof R.unwarpSafeArray !== "function") return false;
-    let records = [];
-    try {
-      records = await R.unwarpSafeArray(mutations);
-    } catch (err) {
-      debugLog("Risu chat mutation unwrap failed:", err && err.message);
-      return false;
-    }
-    let childListChanged = false;
-    for (const record of Array.isArray(records) ? records : []) {
-      if (!record || typeof record.getType !== "function" || await record.getType() !== "childList") continue;
-      childListChanged = true;
-      break;
-    }
-    if (!childListChanged) return false;
-    if (_rollbackHostMutationCheckInFlight) {
-      _rollbackHostMutationCheckPending = true;
-      return false;
-    }
-    _rollbackHostMutationCheckInFlight = true;
-    try {
-      do {
-        _rollbackHostMutationCheckPending = false;
-        await reconcileRollbackFromHostSignal();
-      } while (_rollbackHostMutationCheckPending);
-      return true;
-    } finally {
-      _rollbackHostMutationCheckInFlight = false;
-    }
-  }
-
   async function removeRegisteredRisuHooksOnUnload() {
     cancelTurnWorkflowHUDStream();
     cancelAllAdminBackgroundJobStreams();
@@ -4562,15 +4524,6 @@
       }
     }
     _finalConfirmationRequestBySession.clear();
-    _rollbackHostMutationCheckPending = false;
-    if (_rollbackHostMutationObserver && typeof _rollbackHostMutationObserver.disconnect === "function") {
-      try {
-        await _rollbackHostMutationObserver.disconnect();
-      } catch (err) {
-        debugLog("Risu chat deletion observer cleanup failed:", err && err.message);
-      }
-    }
-    _rollbackHostMutationObserver = null;
     try {
       await unloadTurnWorkflowHUD();
     } catch (err) {
@@ -4631,37 +4584,6 @@
     } catch (regErr) {
       recordRisuHookLifecycle("afterRequest", "registration_failed");
       warnLog("addRisuReplacer afterRequest failed:", regErr && regErr.message);
-    }
-    try {
-      if (
-        !_rollbackHostMutationObserver
-        && typeof R.createMutationObserver === "function"
-        && typeof R.getRootDocument === "function"
-        && typeof R.unwarpSafeArray === "function"
-      ) {
-        if (
-          typeof R.requestPluginPermission === "function"
-          && await R.requestPluginPermission("mainDom") !== true
-        ) {
-          throw new Error("RisuAI main DOM permission was not granted");
-        }
-        const rootDocument = await R.getRootDocument();
-        const observationRoot = rootDocument && typeof rootDocument.querySelector === "function"
-          ? await rootDocument.querySelector("body")
-          : null;
-        const observer = await R.createMutationObserver(function(mutations) {
-          return onRisuChatMessageListMutation(mutations).catch(function(err) {
-            debugLog("Risu chat deletion observation failed:", err && err.message);
-          });
-        });
-        if (observationRoot && observer && typeof observer.observe === "function") {
-          await observer.observe(observationRoot, { childList: true, subtree: true });
-          _rollbackHostMutationObserver = observer;
-          console.log(LOG_PREFIX, "Risu chat deletion observer registered");
-        }
-      }
-    } catch (regErr) {
-      warnLog("Risu chat deletion observer registration failed:", regErr && regErr.message);
     }
     try {
       if (typeof R.onUnload === "function") {
@@ -14003,9 +13925,10 @@
     const actionId = String(action && action.id || "").trim();
     if (!requestId || !actionId || requestId !== _turnWorkflowHUDActiveRequestId) return;
     const turn = Math.max(0, Number(view && view.logical_turn || 0));
-    const confirmed = await showConfirmModal(
-      t(String(action.confirm_title_key || "turn_hud.recovery.confirm_title")),
-      tf(String(action.confirm_message_key || "turn_hud.recovery.confirm_retry_derived_turn"), { turn })
+    const confirmed = confirm(
+      t(String(action.confirm_title_key || "turn_hud.recovery.confirm_title"))
+      + "\n\n"
+      + tf(String(action.confirm_message_key || "turn_hud.recovery.confirm_retry_derived_turn"), { turn })
     );
     if (!confirmed || requestId !== _turnWorkflowHUDActiveRequestId) return;
     try {
@@ -14691,10 +14614,16 @@
     }
     const selected = data.selected_asset || {};
     const updateAvailable = !!data.update_available;
+    const compatibilityStatus = String(data.compatibility_status || "").trim();
+    const updateState = updateAvailable
+      ? "available"
+      : (compatibilityStatus === "not_newer" ? "not needed" : "not available");
     const lines = [
       "current: " + String(data.current_version || VERSION),
       "latest: " + String(data.latest_version || ""),
-      "update: " + (updateAvailable ? "available" : "not needed"),
+      "update: " + updateState,
+      compatibilityStatus ? "compatibility: " + compatibilityStatus : "",
+      data.compatibility_reason ? "reason: " + String(data.compatibility_reason) : "",
       "platform: " + String(data.platform || "backend-detected"),
       "asset: " + String(selected.name || data.compatible_asset_note || "none"),
       "sha256: " + String(selected.sha256 || data.sha256_source || "missing"),
@@ -14702,14 +14631,14 @@
       "apply: " + (data.apply_supported ? "supported" : "manual package apply required"),
     ];
     return '<div class="mo-status ' + (updateAvailable ? "mo-status-ok" : "mo-status-wait") + '">'
-      + lines.map((line) => escapeAttr(line)).join('<br>')
+      + lines.filter(Boolean).map((line) => escapeAttr(line)).join('<br>')
       + '</div>';
   }
 
   async function checkArchiveCenterUpdate() {
     const data = await bridgeFetch("/update/check", {
       method: "GET",
-      timeoutMs: getRequestTimeoutSettingMs(),
+      timeoutMs: 0,
     });
     archiveUpdateState.lastCheck = data || null;
     return data;
@@ -21005,7 +20934,7 @@
           lines.push("  " + t('dash.transparency.sectionWorld.confidence') + ": " + (it.sectionWorld.confidence || "?"));
         }
       } else {
-        lines.push("\n━━ Supervisor Directive ━━");
+        lines.push("\n━━ Publisher LLM Guidance ━━");
         if (it.supervisorDirective && typeof it.supervisorDirective === "object") {
           for (const [k, v] of Object.entries(it.supervisorDirective)) {
             lines.push("  " + k + ": " + v);
@@ -21245,7 +21174,7 @@
         rows.push(r("Active States", as.status, asDetail));
       }
       rows.push(
-        r("Supervisor", tr.supervisor.status, tr.supervisor.hasDirective ? "directive ✓" + (tr.supervisor.hasAuthor ? " author✓" : " author✗") + (tr.supervisor.hasDirector ? " director✓" : " director✗") + (tr.supervisor.hasSectionWorld ? " sw✓" : "") : tr.supervisor.status),
+        r("Publisher LLM", tr.supervisor.status, tr.supervisor.hasDirective ? "directive ✓" + (tr.supervisor.hasAuthor ? " author✓" : " author✗") + (tr.supervisor.hasDirector ? " director✓" : " director✗") + (tr.supervisor.hasSectionWorld ? " sw✓" : "") : tr.supervisor.status),
       );
       const init = tr.supervisor && tr.supervisor.initiative;
       if (init && init.mode) {
@@ -21697,7 +21626,7 @@
         } else {
           text = Object.entries(dp).map(([k,v]) => k + ": " + v).join(" | ");
         }
-        parts.push('<div class="mo-preview-block"><div class="mo-preview-title">Supervisor Directive</div><div class="mo-preview-text">' + escapeAttr(truncPreview(text, 300)) + '</div></div>');
+        parts.push('<div class="mo-preview-block"><div class="mo-preview-title">Publisher LLM Guidance</div><div class="mo-preview-text">' + escapeAttr(truncPreview(text, 300)) + '</div></div>');
       }
 
       // L-4d: auto-advance reentry preview — trigger != none 일 때만
@@ -21745,7 +21674,7 @@
         if (rp.searchPayload) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Search Payload</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.searchPayload, 400)) + '</div></div>');
         if (rp.searchResult) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Search Result</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.searchResult, 400)) + '</div></div>');
         if (rp.wakeUpContextFull) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Wake-Up Context (full)</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.wakeUpContextFull, 500)) + '</div></div>');
-        if (rp.supervisorRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Supervisor Raw</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.supervisorRaw, 500)) + '</div></div>');
+        if (rp.supervisorRaw) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Publisher LLM Raw</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.supervisorRaw, 500)) + '</div></div>');
         if (rp.completeResult) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Complete Result</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.completeResult, 400)) + '</div></div>');
         // Sprint 3-B: injection debug
         if (rp.injectionPreview) parts.push('<div class="mo-preview-block mo-preview-debug"><div class="mo-preview-title">[DEBUG] Injection Block</div><div class="mo-preview-text">' + escapeAttr(truncPreview(rp.injectionPreview, 800)) + '</div></div>');
@@ -22718,16 +22647,16 @@
           }
           svHtml += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">' + t('dash.transparency.sectionWorld.confidence') + '</span><span class="mo-it-dir-val">' + escapeAttr(it.sectionWorld.confidence || "low") + '</span></div>';
         }
-        parts.push(renderItBlockRaw("6. Supervisor (Author + Director" + (it.sectionWorld && it.sectionWorld.applies ? " + World" : "") + ")", svHtml, false));
+        parts.push(renderItBlockRaw("6. Publisher LLM (Author + Director" + (it.sectionWorld && it.sectionWorld.applies ? " + World" : "") + ")", svHtml, false));
       } else if (it.supervisorDirective && typeof it.supervisorDirective === "object") {
         const dirHtml = Object.entries(it.supervisorDirective).map(([k, v]) =>
           '<div class="mo-it-dir-row"><span class="mo-it-dir-key">' + escapeAttr(k) + '</span><span class="mo-it-dir-val">' + escapeAttr(String(v)) + '</span></div>'
         ).join("");
-        parts.push(renderItBlockRaw("6. Supervisor Directive", dirHtml, false));
+        parts.push(renderItBlockRaw("6. Publisher LLM Guidance", dirHtml, false));
       } else if (it.supervisorDirective) {
-        parts.push(renderItBlock("6. Supervisor Directive", String(it.supervisorDirective), false));
+        parts.push(renderItBlock("6. Publisher LLM Guidance", String(it.supervisorDirective), false));
       } else {
-        parts.push(renderItBlock("6. Supervisor Directive", t('dash.transparency.supervisor.inactive'), false));
+        parts.push(renderItBlock("6. Publisher LLM Guidance", t('dash.transparency.supervisor.inactive'), false));
       }
 
       // 7. Assembled Input Preview — 핵심 섹션
@@ -24933,8 +24862,8 @@
       : "(no wake-up context available)";
 
     const supervisorBlock = supervisorDirective
-      ? "--- Supervisor Directive ---\n" + supervisorDirective + "\n---"
-      : "(no supervisor directive available)";
+      ? "--- Publisher LLM Guidance ---\n" + supervisorDirective + "\n---"
+      : "(no Publisher LLM guidance available)";
 
     const guidanceBlock = (typeof persistentGuidanceHints === "string" && persistentGuidanceHints.trim())
       ? "--- Persistent Story Guidance ---\n" + persistentGuidanceHints.trim() + "\n---"
@@ -28016,6 +27945,10 @@
           user_input_kind: actualEmptyUserInput ? "auto_continue" : "normal",
           source_acceptance_required: true,
           source_acceptance_observation: sourceAcceptanceObservation,
+          critic_input_budget_observation: {
+            contract_version: "critic_input_budget_observation.v1",
+            max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars))),
+          },
           archive_center_request_correlation_id: sourceAcceptanceObservation.archive_center_request_correlation_id || null,
           turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || "",
           risu_persona_observation: risuPersonaObservation,
@@ -28083,6 +28016,9 @@
       if (meta.source_acceptance_required === true) safeClientMeta.source_acceptance_required = true;
       if (meta.source_acceptance_observation && typeof meta.source_acceptance_observation === "object") {
         safeClientMeta.source_acceptance_observation = Object.assign({}, meta.source_acceptance_observation);
+      }
+      if (meta.critic_input_budget_observation && typeof meta.critic_input_budget_observation === "object") {
+        safeClientMeta.critic_input_budget_observation = Object.assign({}, meta.critic_input_budget_observation);
       }
       if (meta.effective_input_observation && typeof meta.effective_input_observation === "object") {
         const observation = meta.effective_input_observation;
@@ -29099,7 +29035,7 @@
       if (_autoAdvanceHint) {
         debugLog("L-4b: auto-advance hint injected (trigger:", _autoAdvanceTrigger, ")");
       }
-      // 3.4-D: 감독관은 같은 /prepare-turn 안에서 Go가 한 번만 호출한다.
+      // 3.4-D: 출판사 LLM은 같은 /prepare-turn 안에서 Go가 한 번만 호출한다.
       // JavaScript는 이미 제한된 결과를 관찰·전달할 뿐 별도 /supervisor 호출을 만들지 않는다.
       const supervisorResult = (preparedBundle && preparedBundle.supervisorResult)
         ? preparedBundle.supervisorResult
@@ -53341,7 +53277,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         <label>Timeout (ms)</label>
         <input type="number" id="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? DEFAULT_SETTINGS.pluginMainTimeoutMs}" min="5000" max="300000" step="5000">
         <input class="mo-range" type="range" id="mo-pluginMainTimeoutMsRange" data-sync-input="mo-pluginMainTimeoutMs" value="${s.pluginMainTimeoutMs ?? DEFAULT_SETTINGS.pluginMainTimeoutMs}" min="5000" max="300000" step="5000">
-        <small style="color:#888;font-size:11px;">감독관 LLM 타임아웃.<br><br>느린 모델은 60000 이상 권장.</small>
+        <small style="color:#888;font-size:11px;">출판사 LLM 타임아웃.<br><br>느린 모델은 60000 이상 권장.</small>
       </div>
       <div class="mo-row mo-range-row">
         <label>${t('settings.label.publisherTemp')}</label>
@@ -53581,7 +53517,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           <input type="number" id="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
           <input class="mo-range" type="range" id="mo-embeddingTimeoutRange" data-sync-input="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
         </div>
-        <div class="mo-note">여기는 backend 감독관·평론가·임베딩 호출 시간입니다. 아래 출판사/평론가 LLM 간의 Timeout (ms)와는 별개입니다.</div>
+        <div class="mo-note">여기는 backend 출판사 LLM·평론가·임베딩 호출 시간입니다. 아래 출판사/평론가 LLM 간의 Timeout (ms)와는 별개입니다.</div>
       </div>
       <div class="mo-settings-card mo-common-card-memory">
         <div class="mo-row mo-range-row">
@@ -54907,12 +54843,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             && testEndpoint === String(settings.pluginMainEndpoint || "").trim()
             && testModel === String(settings.pluginMainModel || "").trim();
           if (!savedPublisherConfigMatches) {
-            resultEl.textContent = "감독관 설정을 먼저 저장한 뒤 호출 테스트를 실행해 주세요.";
+            resultEl.textContent = "출판사 LLM 설정을 먼저 저장한 뒤 호출 테스트를 실행해 주세요.";
             return;
           }
           const runtimeSync = await syncConfigToBackend(settings);
           if (!runtimeConfigSyncRoleReady(runtimeSync, "supervisor")) {
-            resultEl.textContent = "감독관 런타임 설정 동기화 실패: " + runtimeSync.code;
+            resultEl.textContent = "출판사 LLM 런타임 설정 동기화 실패: " + runtimeSync.code;
             return;
           }
           const testTimeoutMs = getPluginMainTimeoutSettingMs((($("mo-pluginMainTimeoutMs") || {}).value));
@@ -54938,6 +54874,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             max_completion_tokens: testMaxCompletionTokens,
           };
           applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
+          if (testProvider === "ollama" && testReasoningEffort === "none") testBody.reasoning_effort = "none";
           if (testProvider === "vertex") {
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
           }

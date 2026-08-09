@@ -332,7 +332,7 @@ data_root_pointer="$INSTALL_DIR/data-root.txt"
 stable_launcher="$INSTALL_DIR/start-archive-center.sh"
 case "$PLATFORM" in
 	linux-*) current_launcher="start-archive-center-linux.sh" ;;
-	macos-*) current_launcher="scripts/start-full-macos.sh" ;;
+	macos-*) current_launcher="Start Archive Center macOS.command" ;;
 	termux-*) current_launcher="install-and-start-termux.sh" ;;
 	*) die "installed package launcher could not be selected for $PLATFORM" ;;
 esac

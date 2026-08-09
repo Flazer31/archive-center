@@ -244,12 +244,17 @@ done
 [ -n "$destination" ] || exit 93
 package_root="$destination/package"
 mkdir -p "$package_root/scripts"
-: > "$package_root/Start Archive Center macOS.command"
+cat > "$package_root/Start Archive Center macOS.command" <<'LAUNCHER'
+#!/usr/bin/env sh
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+exec sh "$SCRIPT_DIR/scripts/start-full-macos.sh" --profile "full_local" --vector-mode "local_native" "$@"
+LAUNCHER
 cat > "$package_root/scripts/start-full-macos.sh" <<'LAUNCHER'
 #!/usr/bin/env sh
-printf 'version=first\ndata_root=%s\n' "${ARCHIVE_CENTER_DATA_DIR:-}" > "$AC_TEST_PRODUCTION_START_LOG"
+printf 'version=first\ndata_root=%s\nargs=%s\n' "${ARCHIVE_CENTER_DATA_DIR:-}" "$*" > "$AC_TEST_PRODUCTION_START_LOG"
 LAUNCHER
-chmod +x "$package_root/scripts/start-full-macos.sh"
+chmod +x "$package_root/Start Archive Center macOS.command" "$package_root/scripts/start-full-macos.sh"
 EOF
 chmod +x "$PRODUCTION_BIN/python3" "$PRODUCTION_BIN/uname" "$PRODUCTION_BIN/curl" "$PRODUCTION_BIN/sha256sum" "$PRODUCTION_BIN/unzip"
 
@@ -258,18 +263,114 @@ PATH="$PRODUCTION_BIN:$PATH" \
 	AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=1800 \
 	sh "$REPO_ROOT/scripts/install-github-release.sh" --install-dir "$PRODUCTION_INSTALL" --start
 grep -Fxq "data_root=$PRODUCTION_INSTALL/data" "$PRODUCTION_START_LOG" || fail "production helper first start used a drifting data root"
+grep -Fxq 'args=--profile full_local --vector-mode local_native' "$PRODUCTION_START_LOG" || fail "production helper bypassed the public macOS full_local launcher"
 [ -x "$PRODUCTION_INSTALL/start-archive-center.sh" ] || fail "production helper did not create the stable installed launcher"
 grep -Fxq "$PRODUCTION_INSTALL/data" "$PRODUCTION_INSTALL/data-root.txt" || fail "production helper did not persist the install-level data root"
 
 cat > "$PRODUCTION_INSTALL/current/scripts/start-full-macos.sh" <<'EOF'
 #!/usr/bin/env sh
-printf 'version=updated\ndata_root=%s\n' "${ARCHIVE_CENTER_DATA_DIR:-}" > "$AC_TEST_PRODUCTION_START_LOG"
+printf 'version=updated\ndata_root=%s\nargs=%s\n' "${ARCHIVE_CENTER_DATA_DIR:-}" "$*" > "$AC_TEST_PRODUCTION_START_LOG"
 EOF
 chmod +x "$PRODUCTION_INSTALL/current/scripts/start-full-macos.sh"
 unset ARCHIVE_CENTER_DATA_DIR
 AC_TEST_PRODUCTION_START_LOG="$PRODUCTION_START_LOG" sh "$PRODUCTION_INSTALL/start-archive-center.sh"
 grep -Fxq 'version=updated' "$PRODUCTION_START_LOG" || fail "stable installed launcher did not enter the updated package"
 grep -Fxq "data_root=$PRODUCTION_INSTALL/data" "$PRODUCTION_START_LOG" || fail "updated package restart changed the database root"
+grep -Fxq 'args=--profile full_local --vector-mode local_native' "$PRODUCTION_START_LOG" || fail "updated stable launcher bypassed the public macOS full_local launcher"
+
+# Once MariaDB, Python, and the managed ChromaDB runtime are ready, every
+# supported POSIX launcher must skip its OS package manager and pip bootstrap.
+LAUNCHER_FIXTURE="$TEST_ROOT/launcher-fixture"
+LAUNCHER_PACKAGE="$LAUNCHER_FIXTURE/package"
+LAUNCHER_BIN="$LAUNCHER_FIXTURE/bin"
+LAUNCHER_CALLS="$LAUNCHER_FIXTURE/package-manager-calls.log"
+mkdir -p "$LAUNCHER_PACKAGE/bin" "$LAUNCHER_PACKAGE/migrations" "$LAUNCHER_BIN"
+: > "$LAUNCHER_PACKAGE/bin/archive-center-go"
+: > "$LAUNCHER_PACKAGE/bin/mariadb-schema"
+: > "$LAUNCHER_PACKAGE/migrations/001_schema.sql"
+chmod +x "$LAUNCHER_PACKAGE/bin/archive-center-go" "$LAUNCHER_PACKAGE/bin/mariadb-schema"
+
+for name in mariadbd mariadb python3; do
+	cat > "$LAUNCHER_BIN/$name" <<'EOF'
+#!/usr/bin/env sh
+exit 0
+EOF
+	chmod +x "$LAUNCHER_BIN/$name"
+done
+cat > "$LAUNCHER_BIN/id" <<'EOF'
+#!/usr/bin/env sh
+if [ "${1:-}" = "-u" ]; then
+	printf '0\n'
+	exit 0
+fi
+exit 1
+EOF
+cat > "$LAUNCHER_BIN/apt-get" <<'EOF'
+#!/usr/bin/env sh
+printf 'apt-get %s\n' "$*" >> "$AC_TEST_PACKAGE_MANAGER_CALLS"
+exit 91
+EOF
+cat > "$LAUNCHER_BIN/brew" <<'EOF'
+#!/usr/bin/env sh
+if [ "${1:-}" = "shellenv" ]; then
+	exit 0
+fi
+printf 'brew %s\n' "$*" >> "$AC_TEST_PACKAGE_MANAGER_CALLS"
+exit 92
+EOF
+cat > "$LAUNCHER_BIN/pkg" <<'EOF'
+#!/usr/bin/env sh
+printf 'pkg %s\n' "$*" >> "$AC_TEST_PACKAGE_MANAGER_CALLS"
+exit 93
+EOF
+cat > "$LAUNCHER_BIN/proot-distro" <<'EOF'
+#!/usr/bin/env sh
+exit 0
+EOF
+chmod +x "$LAUNCHER_BIN/id" "$LAUNCHER_BIN/apt-get" "$LAUNCHER_BIN/brew" "$LAUNCHER_BIN/pkg" "$LAUNCHER_BIN/proot-distro"
+
+for platform in linux macos termux; do
+	data_root="$LAUNCHER_FIXTURE/data-$platform"
+	vector_mode=local_native
+	if [ "$platform" = "termux" ]; then
+		vector_mode=local_proot
+	else
+		mkdir -p "$data_root/chromadb-venv/bin"
+		cat > "$data_root/chromadb-venv/bin/python" <<'EOF'
+#!/usr/bin/env sh
+if [ "${1:-}" = "-c" ]; then
+	exit 0
+fi
+exit 94
+EOF
+		chmod +x "$data_root/chromadb-venv/bin/python"
+	fi
+	ARCHIVE_CENTER_PACKAGE_ROOT="$LAUNCHER_PACKAGE" \
+		ARCHIVE_CENTER_DATA_DIR="$data_root" \
+		AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=5 \
+		AC_TEST_PACKAGE_MANAGER_CALLS="$LAUNCHER_CALLS" \
+		PATH="$LAUNCHER_BIN:$PATH" \
+		sh "$REPO_ROOT/ops/full-package-posix/start-full-posix.sh" \
+			--platform "$platform" --profile full_local --vector-mode "$vector_mode" --install-only \
+			> "$LAUNCHER_FIXTURE/$platform.out"
+	grep -q 'runtime dependencies are already available' "$LAUNCHER_FIXTURE/$platform.out" || fail "$platform ready-runtime fast path was not reported"
+done
+[ ! -e "$LAUNCHER_CALLS" ] || fail "ready POSIX runtime called an OS package manager"
+
+# The same production branch must still enter installation when a required
+# managed ChromaDB runtime is absent.
+missing_data="$LAUNCHER_FIXTURE/data-linux-missing"
+if ARCHIVE_CENTER_PACKAGE_ROOT="$LAUNCHER_PACKAGE" \
+	ARCHIVE_CENTER_DATA_DIR="$missing_data" \
+	AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=5 \
+	AC_TEST_PACKAGE_MANAGER_CALLS="$LAUNCHER_CALLS" \
+	PATH="$LAUNCHER_BIN:$PATH" \
+	sh "$REPO_ROOT/ops/full-package-posix/start-full-posix.sh" \
+		--platform linux --profile full_local --vector-mode local_native --install-only \
+		> "$LAUNCHER_FIXTURE/linux-missing.out" 2> "$LAUNCHER_FIXTURE/linux-missing.err"; then
+	fail "missing Linux runtime skipped dependency installation"
+fi
+grep -q '^apt-get update$' "$LAUNCHER_CALLS" || fail "missing Linux runtime did not enter the existing package-manager install path"
 
 grep -Fxq 'curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/install.sh | sh' "$REPO_ROOT/README.md" || fail "README POSIX command drifted"
 grep -Fxq 'irm https://raw.githubusercontent.com/Flazer31/archive-center/main/install-windows.ps1 | iex' "$REPO_ROOT/README.md" || fail "README Windows command drifted"

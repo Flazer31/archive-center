@@ -223,6 +223,9 @@ func TestPrepareTurnCharacterMemoryVoiceAndDirectionalRelationshipDelivery(t *te
 	if strings.Contains(objective, "example dialogue") || strings.Contains(objective, "utterance") {
 		t.Fatalf("raw/sample dialogue leaked into voice projection: %s", objective)
 	}
+	if strings.Contains(objective, "character-memory:") || strings.Contains(objective, "voice-unit") {
+		t.Fatalf("opaque backend identity leaked into model-facing character memory: %s", objective)
+	}
 	relationshipText := strings.Join(prepareTurnCharacterMemoryLines(support, "subjective_relationship"), "\n")
 	if !strings.Contains(relationshipText, "Mira -> Noah") || !strings.Contains(relationshipText, "reciprocity=not_inferred") || strings.Contains(relationshipText, "Noah -> Mira") {
 		t.Fatalf("directional relationship was reversed or reciprocity inferred: %s", relationshipText)
@@ -308,15 +311,15 @@ func TestPrepareTurnCharacterMemoryFailsClosedWithoutActiveRevisionList(t *testi
 
 func TestPrepareTurnCharacterMemoryPublisherReceivesDeliveredOnly(t *testing.T) {
 	eligible := []map[string]any{
-		{"source_ref": "character-memory:delivered", "class": "character_objective", "kind": "voice_behavior", "text": "- [character-memory:delivered] Mira voice principle; principle=brief_direct_requests", "delivered": false, "source_metadata": map[string]any{"private_original": "must-not-copy"}},
-		{"source_ref": "character-memory:deferred", "class": "character_objective", "kind": "character_profile", "text": "- [character-memory:deferred] Mira profile support; trait_key=patient", "delivered": false},
+		{"source_ref": "character-memory:delivered", "class": "character_objective", "kind": "voice_behavior", "text": "- Mira voice principle; principle=brief_direct_requests", "delivered": false, "source_metadata": map[string]any{"private_original": "must-not-copy"}},
+		{"source_ref": "character-memory:deferred", "class": "character_objective", "kind": "character_profile", "text": "- Mira profile support; trait_key=patient", "delivered": false},
 	}
 	support := map[string]any{
 		"contract_version": prepareTurnCharacterMemoryContractVersion, "status": "eligible", "eligible_items": eligible,
 		"eligible_count": 2, "delivered_items": []map[string]any{}, "raw_private_originals_included": false,
 	}
 	plan := map[string]any{"classes": []map[string]any{
-		{"key": "character_objective", "text": "[Character Objective States]\n- [character-memory:delivered] Mira voice principle; principle=brief_direct_requests"},
+		{"key": "character_objective", "text": "[Character Objective States]\n- Mira voice principle; principle=brief_direct_requests"},
 	}}
 	support = finalizePrepareTurnCharacterMemorySupport(support, plan)
 	rules := buildResponseExecutionSourceRulesWithMemory(dto.PrepareTurnCurrentInputDecisionV1{}, dto.PrepareTurnHostContextReferenceEvidenceV1{}, "session", nil, "", support)

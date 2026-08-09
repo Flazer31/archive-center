@@ -212,11 +212,16 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT
 			surface.stable_entity_id,
+			surface.surface_kind,
 			source_identity.identity_namespace,
+			source_identity.entity_kind,
 			source_identity.canonical_label,
+			source_identity.source_turn,
 			COALESCE(identity_link.target_entity_id, ''),
 			COALESCE(canonical_target.identity_namespace, ''),
-			COALESCE(canonical_target.canonical_label, '')
+			COALESCE(canonical_target.entity_kind, ''),
+			COALESCE(canonical_target.canonical_label, ''),
+			COALESCE(canonical_target.source_turn, 0)
 		FROM entity_identity_surfaces surface
 		JOIN entity_identities source_identity
 		  ON source_identity.chat_session_id = surface.chat_session_id
@@ -255,23 +260,53 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 		return ResolvedEntityIdentity{}, err
 	}
 	defer rows.Close()
-	resolved := map[string]ResolvedEntityIdentity{}
+	type candidate struct {
+		identity   ResolvedEntityIdentity
+		sourceTurn int
+	}
+	resolved := map[string]candidate{}
+	exactDisplayTuple := ""
+	exactDisplayOnly := true
 	for rows.Next() {
-		var sourceEntityID, sourceNamespace, sourceLabel, targetEntityID, targetNamespace, targetLabel string
-		if err := rows.Scan(&sourceEntityID, &sourceNamespace, &sourceLabel, &targetEntityID, &targetNamespace, &targetLabel); err != nil {
+		var sourceEntityID, surfaceKind, sourceNamespace, sourceKind, sourceLabel string
+		var targetEntityID, targetNamespace, targetKind, targetLabel string
+		var sourceTurn, targetTurn int
+		if err := rows.Scan(
+			&sourceEntityID, &surfaceKind, &sourceNamespace, &sourceKind, &sourceLabel, &sourceTurn,
+			&targetEntityID, &targetNamespace, &targetKind, &targetLabel, &targetTurn,
+		); err != nil {
 			return ResolvedEntityIdentity{}, err
 		}
 		entityID := strings.TrimSpace(targetEntityID)
 		namespace := strings.TrimSpace(targetNamespace)
+		entityKind := strings.TrimSpace(targetKind)
 		label := strings.TrimSpace(targetLabel)
+		identityTurn := targetTurn
 		if entityID == "" {
 			entityID = strings.TrimSpace(sourceEntityID)
 			namespace = strings.TrimSpace(sourceNamespace)
+			entityKind = strings.TrimSpace(sourceKind)
 			label = strings.TrimSpace(sourceLabel)
+			identityTurn = sourceTurn
 		}
-		if entityID != "" && namespace != "" {
-			identity := ResolvedEntityIdentity{StableEntityID: entityID, IdentityNamespace: namespace, CanonicalLabel: label}
-			resolved[entityID+"\x1f"+namespace] = identity
+		if entityID != "" && namespace != "" && entityKind != "" {
+			identity := ResolvedEntityIdentity{
+				StableEntityID: entityID, IdentityNamespace: namespace,
+				EntityKind: entityKind, CanonicalLabel: label,
+			}
+			key := entityID + "\x1f" + namespace
+			current, exists := resolved[key]
+			if !exists || identityTurn < current.sourceTurn || (identityTurn == current.sourceTurn && entityID < current.identity.StableEntityID) {
+				resolved[key] = candidate{identity: identity, sourceTurn: identityTurn}
+			}
+			tuple := namespace + "\x1f" + entityKind + "\x1f" + label
+			if strings.TrimSpace(surfaceKind) != "display_name" {
+				exactDisplayOnly = false
+			} else if exactDisplayTuple == "" {
+				exactDisplayTuple = tuple
+			} else if exactDisplayTuple != tuple {
+				exactDisplayOnly = false
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -280,13 +315,24 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 	if len(resolved) == 0 {
 		return ResolvedEntityIdentity{}, ErrNotFound
 	}
-	if len(resolved) != 1 {
-		return ResolvedEntityIdentity{}, ErrReviewedEntityIdentityAmbiguous
+	if len(resolved) == 1 {
+		for _, item := range resolved {
+			return item.identity, nil
+		}
 	}
-	for _, identity := range resolved {
-		return identity, nil
+	if exactDisplayOnly && exactDisplayTuple != "" {
+		var selected candidate
+		for _, item := range resolved {
+			if selected.identity.StableEntityID == "" || item.sourceTurn < selected.sourceTurn ||
+				(item.sourceTurn == selected.sourceTurn && item.identity.StableEntityID < selected.identity.StableEntityID) {
+				selected = item
+			}
+		}
+		if selected.identity.StableEntityID != "" {
+			return selected.identity, nil
+		}
 	}
-	return ResolvedEntityIdentity{}, ErrNotFound
+	return ResolvedEntityIdentity{}, ErrReviewedEntityIdentityAmbiguous
 }
 
 func (m *mariadbStore) withActiveEntitySourceWrite(

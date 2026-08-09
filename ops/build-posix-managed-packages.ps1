@@ -1,7 +1,8 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string]$PackageVersion = "3.9.0",
+    [string[]]$VerifiedReleaseTarget = @(),
+    [string]$PackageVersion = "3.9.9",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -46,7 +47,7 @@ function Write-TextFile([string]$Path, [string]$Value) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.0" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.9" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -125,7 +126,13 @@ function Write-PackageMigrationUpdateManifest([string]$Root, [string]$TargetVers
         throw "PackageVersion is required for the migration update contract."
     }
     $target = @()
-    foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $Root "migrations") -File -Filter "*.sql" | Sort-Object Name)) {
+    $migrationFiles = @(Get-ChildItem -LiteralPath (Join-Path $Root "migrations") -File -Filter "*.sql" | Sort-Object Name)
+    $expectedRevision = 1
+    foreach ($file in $migrationFiles) {
+        if ($file.Name -notmatch '^(\d{3})_.+\.sql$' -or [int]$Matches[1] -ne $expectedRevision) {
+            throw ("Cumulative migration inventory must contain every sequential revision from 001; expected {0:D3}, found {1}." -f $expectedRevision, $file.Name)
+        }
+        $expectedRevision++
         $target += [ordered]@{
             path = "migrations/$($file.Name)"
             size_bytes = [int64]$file.Length
@@ -147,10 +154,29 @@ function Write-PackageMigrationUpdateManifest([string]$Root, [string]$TargetVers
         target = @($target)
         managed_files = "complete_manifest"
         database_policy = "expand_first_old_backend_compatible"
+        minimum_source_version = "3.9.9"
+        direct_update_supported = $true
+        migration_inventory = "cumulative_complete"
     }
     [System.IO.File]::WriteAllText(
         (Join-Path $Root "PACKAGE_MIGRATION_UPDATE.json"),
         ($contract | ConvertTo-Json -Depth 8) + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+}
+
+function Write-PackageReleaseStatus([string]$Root, [string]$TargetVersion, [string]$Target, [bool]$ReleaseReady) {
+    $status = [ordered]@{
+        contract_version = "archive-center.package-release-status.v1"
+        target_version = $TargetVersion.Trim()
+        target = $Target
+        release_ready = $ReleaseReady
+        automatic_update_apply = $true
+        verification_basis = if ($ReleaseReady) { "operator_confirmed_real_target_update_proof" } else { "cross_build_only" }
+    }
+    [System.IO.File]::WriteAllText(
+        (Join-Path $Root "PACKAGE_RELEASE_STATUS.json"),
+        ($status | ConvertTo-Json -Depth 4) + [Environment]::NewLine,
         (New-Object System.Text.UTF8Encoding($false))
     )
 }
@@ -314,7 +340,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.0" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.9" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }
@@ -323,6 +349,19 @@ foreach ($target in $targets) {
 # core_lite remain available inside it, but separate Lite ZIPs are no longer
 # built.
 $targets = @($targets | Where-Object { ([string]$_.PackageKind).ToLowerInvariant() -eq "full" })
+
+$verifiedReleaseTargets = @{}
+foreach ($item in $VerifiedReleaseTarget) {
+    $value = ([string]$item).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $verifiedReleaseTargets[$value] = $true
+    }
+}
+foreach ($value in @($verifiedReleaseTargets.Keys)) {
+    if (-not @($targets | Where-Object { ([string]$_.Target).ToLowerInvariant() -eq $value }).Count) {
+        throw "VerifiedReleaseTarget does not match a supported POSIX target: $value"
+    }
+}
 
 if ($TargetFilter.Count -gt 0) {
     $wanted = @{}
@@ -407,6 +446,16 @@ foreach ($target in $targets) {
     Set-CopiedPackageVersionText $targetRoot $packageVersionLabel
 
     $sizeBytes = (Get-ChildItem -LiteralPath $targetRoot -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+    $releaseReady = $verifiedReleaseTargets.ContainsKey(([string]$target.Target).ToLowerInvariant())
+    $limitations = @(
+        "Built on Windows by cross-compilation.",
+        "POSIX MariaDB is installer-managed when not bundled.",
+        "This distribution has one standard package line; core_lite and vector_external remain runtime profile options, not separate package artifacts.",
+        "Termux proot/local ChromaDB is full_local/local_proot by default for the standard package."
+    )
+    if (-not $releaseReady) {
+        $limitations = @("Real target OS runtime proof is still required.") + $limitations
+    }
     $manifest = [ordered]@{
         package_name = $target.PackageName
         package_kind = $target.PackageKind
@@ -414,8 +463,8 @@ foreach ($target in $targets) {
         goos = $target.Goos
         goarch = $target.Goarch
         package_profile = $target.PackageProfile
-        status = $target.Status
-        release_ready = $false
+        status = if ($releaseReady) { "green" } else { $target.Status }
+        release_ready = $releaseReady
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
         source_root = "release-source"
         target_root = "."
@@ -428,7 +477,8 @@ foreach ($target in $targets) {
         runtime_mode = $target.RuntimeMode
         normal_user_manual_mariadb_required = $false
         normal_user_manual_chromadb_required = $false
-        real_device_proof_required = $true
+        real_device_proof_required = -not $releaseReady
+        release_verification_basis = if ($releaseReady) { "operator_confirmed_real_target_update_proof" } else { "cross_build_only" }
         automatic_update_apply = $true
         automatic_update_timing = "backend_exit_75_immediate"
         one_click_entry = $target.Launcher
@@ -461,21 +511,17 @@ foreach ($target in $targets) {
             "user database files",
             "ChromaDB persist data"
         )
-        limitations = @(
-            "Built on Windows by cross-compilation.",
-            "Real target OS runtime proof is still required.",
-            "POSIX MariaDB is installer-managed when not bundled.",
-            "This distribution has one standard package line; core_lite and vector_external remain runtime profile options, not separate package artifacts.",
-            "Termux proot/local ChromaDB is full_local/local_proot by default for the standard package."
-        )
+        limitations = $limitations
     }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $targetRoot "PLATFORM_PACKAGE_MANIFEST.json") -Encoding UTF8
+    Write-PackageReleaseStatus $targetRoot $packageVersionLabel $target.Target $releaseReady
     Write-PackageMigrationUpdateManifest $targetRoot $packageVersionLabel
     $requiredManagedEntries = @(
         "bin/archive-center-go",
         "bin/archive-center-updater",
         "bin/mariadb-schema",
         "PACKAGE_MIGRATION_UPDATE.json",
+        "PACKAGE_RELEASE_STATUS.json",
         "Archive Center.js",
         "scripts/start-full-posix.sh",
         "scripts/process-lifetime.py",
@@ -492,6 +538,9 @@ foreach ($target in $targets) {
     foreach ($requiredMarker in @(
         'AC_UPDATE_STAGING_DIR="$PACKAGE_ROOT/.updates"',
         'AC_UPDATE_APPLY_MODE=managed_launcher_exit_75',
+        'prepare_update_launcher_session',
+        'launcher-session.json',
+        'AC_UPDATE_LAUNCHER_TOKEN',
         'if [ "$backend_exit" -ne 75 ]',
         'Backend requested immediate pending-update apply (exit 75).',
         '-schema "$PACKAGE_ROOT/migrations"',

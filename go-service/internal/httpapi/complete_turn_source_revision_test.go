@@ -232,6 +232,63 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	}
 }
 
+func TestCompleteTurnSchemaInvalidJobWaitsForManualRecovery(t *testing.T) {
+	recording := &completeTurnReprocessingStore{turnRecordingStore: &turnRecordingStore{}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = recording
+	srv.StoreOpenError = nil
+
+	oldClient := proxyHTTPClient
+	providerCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"choices":[{"message":{"content":"{\"turn_summary\":\"broken schema\",\"importance_score\":5,\"evidence_excerpts\":[{\"quote\":\"not a string\"}]}"}}],"model":"critic"}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	reqBody := completeTurnAnchoredAcceptanceTestRequest(
+		"session-schema-invalid", 1, "user source", "assistant source",
+		1000, "generation-1", "not_streaming", 0, 1, 2,
+	)
+	reqBody.ClientMeta["critic"] = map[string]any{
+		"api_key": "test-key", "endpoint": "https://api.example.com/v1",
+		"model": "critic", "provider": "openai", "timeout_ms": 45000,
+	}
+	raw, _ := json.Marshal(reqBody)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(raw))
+	request.Header.Set("Content-Type", "application/json")
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if providerCalls != 1 || len(recording.jobs) != 1 {
+		t.Fatalf("provider calls=%d jobs=%d", providerCalls, len(recording.jobs))
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if stringFromMap(mapFromAny(response["critic_failure"]), "code") != "CRITIC_SCHEMA_INVALID" {
+		t.Fatalf("critic failure=%#v", response["critic_failure"])
+	}
+	for _, job := range recording.jobs {
+		if job.Status != "permanent" || !strings.Contains(job.LastError, "CRITIC_SCHEMA_INVALID") {
+			t.Fatalf("schema-invalid job must remain durable without automatic retry: %+v", job)
+		}
+	}
+}
+
 func TestCompleteTurnSuccessfulCriticDerivedWriteFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	recording := &completeTurnReprocessingStore{
 		turnRecordingStore: &turnRecordingStore{},

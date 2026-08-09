@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -653,6 +654,209 @@ func TestApplyPendingV2RequiresExplicitExpandFirstCompatibility(t *testing.T) {
 	assertUpdateCode(t, err, "database_migration_update_unsupported")
 }
 
+func TestDirectUpdatePreflightAndApplyAllows399To42WithCumulativeMigrations(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"bin/app.exe":               "old-app",
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
+		"Legacy/Removed.TXT":        "remove-me",
+		schemaTool:                  "old-schema-tool",
+	}
+	next := map[string]string{
+		"bin/app.exe":                    "new-app",
+		"migrations/001_schema.sql":      current["migrations/001_schema.sql"],
+		"migrations/002_expand_only.sql": "ALTER TABLE existing_table ADD COLUMN IF NOT EXISTS title TEXT;",
+		schemaTool:                       "new-schema-tool",
+	}
+	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+
+	root := t.TempDir()
+	for rel, body := range current {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
+	asset := filepath.Join(t.TempDir(), "archive-center-4.2.zip")
+	writePackageZipWithManifestPrefix(t, asset, "4.2.0", next, nil, nil)
+	required := make([]string, 0, len(next))
+	for rel := range next {
+		required = append(required, rel)
+	}
+	sort.Strings(required)
+	candidate := Candidate{CurrentVersion: "3.9.9", TargetVersion: "4.2.0", AssetPath: asset, SHA256: fileSHA(t, asset), RequiredFiles: required}
+	if err := PreflightCandidate(root, candidate); err != nil {
+		t.Fatalf("direct preflight failed: %v", err)
+	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "old-app")
+	if _, err := os.Stat(filepath.Join(root, ".updates")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preflight mutated package update state: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(root, ".updates"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(root, ".updates", "archive-center-4.2.zip")
+	data, err := os.ReadFile(asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(root, ".updates", "pending-update.json"), Pending{
+		ContractVersion: PendingContract,
+		CurrentVersion:  "3.9.9",
+		TargetVersion:   "4.2.0",
+		AssetPath:       filepath.ToSlash(filepath.Join(".updates", "archive-center-4.2.zip")),
+		SHA256:          fileSHA(t, staged),
+		RequiredFiles:   required,
+	})
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("direct apply result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "new-app")
+	if _, err := os.Stat(filepath.Join(root, "Legacy", "Removed.TXT")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed managed file remains after direct update: %v", err)
+	}
+}
+
+func TestManagedFileRemovalsPreserveManifestPathCase(t *testing.T) {
+	current := map[string]manifestFile{
+		"archive center.js":  {Path: "Archive Center.js"},
+		"legacy/removed.txt": {Path: "Legacy/Removed.TXT"},
+	}
+	next := map[string]manifestFile{
+		"archive center.js": {Path: "Archive Center.js"},
+	}
+	removed := managedFileRemovals(current, next)
+	if len(removed) != 1 || removed[0] != "Legacy/Removed.TXT" {
+		t.Fatalf("removed paths = %v", removed)
+	}
+}
+
+func TestDirectUpdatePreflightRejectsCumulativeMigrationRevisionGap(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
+		schemaTool:                  "old-schema-tool",
+	}
+	next := map[string]string{
+		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
+		"migrations/003_later.sql":  "CREATE TABLE later_table (id BIGINT PRIMARY KEY);",
+		schemaTool:                  "new-schema-tool",
+	}
+	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+	root := t.TempDir()
+	for rel, body := range current {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
+	stagePending(t, root, "3.9.9", "4.2.0", next)
+	_, err := ApplyPending(root)
+	assertUpdateCode(t, err, "database_migration_update_unsupported")
+}
+
+func TestDirectUpdatePreflightRejectsUnverifiedReleasePackage(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
+		schemaTool:                  "old-schema-tool",
+	}
+	next := map[string]string{
+		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
+		schemaTool:                  "new-schema-tool",
+	}
+	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+	next[PackageReleaseStatusName] = fmt.Sprintf(`{"contract_version":%q,"target_version":"4.2.0","release_ready":false,"automatic_update_apply":true}`, PackageReleaseStatusContract)
+	root := t.TempDir()
+	for rel, body := range current {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
+	asset := filepath.Join(t.TempDir(), "candidate.zip")
+	writePackageZipWithManifestPrefix(t, asset, "4.2.0", next, nil, nil)
+	err := PreflightCandidate(root, Candidate{
+		CurrentVersion: "3.9.9",
+		TargetVersion:  "4.2.0",
+		AssetPath:      asset,
+		SHA256:         fileSHA(t, asset),
+		RequiredFiles:  []string{MigrationUpdateManifestName, PackageReleaseStatusName, schemaTool},
+	})
+	assertUpdateCode(t, err, "package_release_unverified")
+}
+
+func TestDirectUpdatePreflightRejectsIncompatibleContractBeforeMutation(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
+		schemaTool:                  "old-schema-tool",
+	}
+	root := t.TempDir()
+	for rel, body := range current {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*migrationUpdateManifest, map[string]string)
+	}{
+		{name: "minimum source 4.0", mutate: func(contract *migrationUpdateManifest, _ map[string]string) { contract.MinimumSourceVersion = "4.0.0" }},
+		{name: "direct jump disabled", mutate: func(contract *migrationUpdateManifest, _ map[string]string) { contract.DirectUpdateSupported = false }},
+		{name: "legacy source inventory contract", mutate: func(contract *migrationUpdateManifest, _ map[string]string) {
+			contract.ContractVersion = MigrationUpdateContract
+		}},
+		{name: "historical migration changed", mutate: func(_ *migrationUpdateManifest, next map[string]string) {
+			next["migrations/001_schema.sql"] = "CREATE TABLE changed_table (id BIGINT PRIMARY KEY);"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := map[string]string{
+				"migrations/001_schema.sql": current["migrations/001_schema.sql"],
+				schemaTool:                  "new-schema-tool",
+			}
+			addCompleteMigrationUpdateContract(t, next, "4.2.0")
+			var contract migrationUpdateManifest
+			if err := json.Unmarshal([]byte(next[MigrationUpdateManifestName]), &contract); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(&contract, next)
+			contract.Target = migrationFilesFromBodies(next)
+			data, err := json.Marshal(contract)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next[MigrationUpdateManifestName] = string(data)
+			asset := filepath.Join(t.TempDir(), "candidate.zip")
+			writePackageZipWithManifestPrefix(t, asset, "4.2.0", next, nil, nil)
+			err = PreflightCandidate(root, Candidate{CurrentVersion: "3.9.9", TargetVersion: "4.2.0", AssetPath: asset, SHA256: fileSHA(t, asset), RequiredFiles: []string{MigrationUpdateManifestName, schemaTool}})
+			assertUpdateCode(t, err, "database_migration_update_unsupported")
+			if _, statErr := os.Stat(filepath.Join(root, ".updates")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("rejected preflight mutated update state: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestDirectUpdatePreflightDoesNotOfferPreBaseline390Source(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{schemaTool: "old-schema-tool"}
+	next := map[string]string{schemaTool: "new-schema-tool"}
+	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+	root := t.TempDir()
+	for rel, body := range current {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "3.9.0", current)
+	asset := filepath.Join(t.TempDir(), "candidate.zip")
+	writePackageZipWithManifestPrefix(t, asset, "4.2.0", next, nil, nil)
+	err := PreflightCandidate(root, Candidate{CurrentVersion: "3.9.0", TargetVersion: "4.2.0", AssetPath: asset, SHA256: fileSHA(t, asset), RequiredFiles: []string{MigrationUpdateManifestName, schemaTool}})
+	assertUpdateCode(t, err, "source_version_unsupported")
+	if _, statErr := os.Stat(filepath.Join(root, ".updates")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("pre-baseline rejection mutated update state: %v", statErr)
+	}
+}
+
 func platformSchemaToolPath() string {
 	if runtime.GOOS == "windows" {
 		return "bin/mariadb-schema.exe"
@@ -705,7 +909,7 @@ func TestNewUpdaterContractRecognizesPublished300301And35MigrationFingerprints(t
 	}
 	for _, source := range sourceFixtures {
 		current := manifestMapFromMigrationFiles(source.Files)
-		if _, err := validateDatabaseMigrationUpdate(packageRoot, source.Version, "3.7.0", current, next); err != nil {
+		if _, err := validateDatabaseMigrationUpdate(packageRoot, source.Version, "3.7.0", current, next, false); err != nil {
 			t.Fatalf("%s -> 3.7 inventory contract rejected: %v", source.Version, err)
 		}
 	}
@@ -797,12 +1001,16 @@ func addMigrationUpdateContractWithRemovals(t *testing.T, current, next map[stri
 
 func addCompleteMigrationUpdateContract(t *testing.T, next map[string]string, targetVersion string) {
 	t.Helper()
+	next[PackageReleaseStatusName] = fmt.Sprintf(`{"contract_version":%q,"target_version":%q,"release_ready":true,"automatic_update_apply":true}`, PackageReleaseStatusContract, targetVersion)
 	contract := migrationUpdateManifest{
-		ContractVersion: MigrationUpdateContractV2,
-		TargetVersion:   targetVersion,
-		Target:          migrationFilesFromBodies(next),
-		ManagedFiles:    CompleteManagedPackage,
-		DatabasePolicy:  ExpandFirstCompatibility,
+		ContractVersion:       MigrationUpdateContractV2,
+		TargetVersion:         targetVersion,
+		Target:                migrationFilesFromBodies(next),
+		ManagedFiles:          CompleteManagedPackage,
+		DatabasePolicy:        ExpandFirstCompatibility,
+		MinimumSourceVersion:  DirectUpdateBaselineVersion,
+		DirectUpdateSupported: true,
+		MigrationInventory:    CumulativeMigrationInventory,
 	}
 	data, err := json.Marshal(contract)
 	if err != nil {

@@ -464,9 +464,19 @@ func mariaListWorldRules(ctx context.Context, q mariaQueryer, chatSessionID stri
 	rows, err := q.QueryContext(ctx, `
 		SELECT id, chat_session_id, scope, scope_name, category, `+"`key`"+`, value_json, genre, source_turn,
 			   pinned, suppressed, user_corrected, created_at, updated_at
-		FROM world_rules
-		WHERE chat_session_id = ?
-		ORDER BY scope, category, `+"`key`"+`
+		FROM world_rules AS current_rule
+		WHERE current_rule.chat_session_id = ?
+		  AND current_rule.id = (
+			SELECT candidate.id
+			FROM world_rules AS candidate
+			WHERE candidate.chat_session_id = current_rule.chat_session_id
+			  AND candidate.scope = current_rule.scope
+			  AND candidate.`+"`key`"+` = current_rule.`+"`key`"+`
+			  AND candidate.scope_name <=> current_rule.scope_name
+			ORDER BY COALESCE(candidate.source_turn, 0) DESC, candidate.id DESC
+			LIMIT 1
+		  )
+		ORDER BY current_rule.scope, current_rule.category, current_rule.`+"`key`"+`
 	`, chatSessionID)
 	if err != nil {
 		return nil, err

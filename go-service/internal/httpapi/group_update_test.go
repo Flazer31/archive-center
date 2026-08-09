@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,83 +29,22 @@ func (f updateRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) 
 }
 
 func TestUpdateCheckSelectsPlatformAssetAndSHA256(t *testing.T) {
-	zipBytes := []byte("archive-center-2.3-windows-package")
+	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
 	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
-	assetName := updateTestAssetName("2.3", platform)
+	assetName := updateTestAssetName("4.2", platform)
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
 		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
 			return textResponse(http.StatusOK, `{
-				"tag_name":"v2.3.0",
-				"name":"Archive Center 2.3",
-				"html_url":"https://github.com/Flazer31/archive-center/releases/tag/v2.3.0",
+				"tag_name":"v4.2.0",
+				"name":"Archive Center 4.2",
+				"html_url":"https://github.com/Flazer31/archive-center/releases/tag/v4.2.0",
 				"assets":[
 					{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip","size":33},
-					{"name":"SHA256SUMS-2.3.txt","browser_download_url":"https://example.test/sums.txt","size":90}
-				]
-			}`)
-		case "https://example.test/sums.txt":
-			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
-		default:
-			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
-			return nil, nil
-		}
-	})}
-	defer func() { updateHTTPClient = restore }()
-
-	cfg := config.Default()
-	cfg.BuildVersion = "2.2.0"
-	srv := NewServer(cfg)
-	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
-
-	req := httptest.NewRequest(http.MethodGet, "/update/check?platform="+platform, nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp["latest_version"] != "2.3.0" || resp["update_available"] != true {
-		t.Fatalf("unexpected update response: %+v", resp)
-	}
-	asset, ok := resp["selected_asset"].(map[string]any)
-	if !ok {
-		t.Fatalf("selected_asset missing: %+v", resp)
-	}
-	if asset["name"] != assetName || asset["sha256"] != sha {
-		t.Fatalf("selected_asset = %+v, want runtime asset with sha", asset)
-	}
-	if resp["runtime_os"] != runtime.GOOS || resp["runtime_arch"] != runtime.GOARCH || resp["platform"] != platform {
-		t.Fatalf("runtime identity missing from check response: %+v", resp)
-	}
-	if resp["apply_supported"] != false || resp["download_supported"] != true {
-		t.Fatalf("support flags unexpected: %+v", resp)
-	}
-}
-
-func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
-	zipBytes := []byte("archive-center-2.3-windows-package")
-	sum := sha256.Sum256(zipBytes)
-	sha := hex.EncodeToString(sum[:])
-	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
-	assetName := updateTestAssetName("2.3", platform)
-	restore := updateHTTPClient
-	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		switch r.URL.String() {
-		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
-			return textResponse(http.StatusOK, `{
-				"tag_name":"v2.3.0",
-				"name":"Archive Center 2.3",
-				"assets":[
-					{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip","size":33},
-					{"name":"SHA256SUMS-2.3.txt","browser_download_url":"https://example.test/sums.txt","size":90}
+					{"name":"SHA256SUMS-4.2.txt","browser_download_url":"https://example.test/sums.txt","size":90}
 				]
 			}`)
 		case "https://example.test/sums.txt":
@@ -118,15 +59,167 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	defer func() { updateHTTPClient = restore }()
 
 	cfg := config.Default()
-	cfg.BuildVersion = "2.2.0"
+	packageRoot := t.TempDir()
+	installVerifiedUpdateHelper(t, packageRoot)
+	cfg.BuildVersion = "3.9.9"
+	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
+	srv := NewServer(cfg)
+	srv.RequestShutdown = func(int) {}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/update/check?platform="+platform, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["latest_version"] != "4.2.0" || resp["update_available"] != true || resp["compatibility_status"] != "compatible" {
+		t.Fatalf("unexpected update response: %+v", resp)
+	}
+	asset, ok := resp["selected_asset"].(map[string]any)
+	if !ok {
+		t.Fatalf("selected_asset missing: %+v", resp)
+	}
+	if asset["name"] != assetName || asset["sha256"] != sha {
+		t.Fatalf("selected_asset = %+v, want runtime asset with sha", asset)
+	}
+	if resp["runtime_os"] != runtime.GOOS || resp["runtime_arch"] != runtime.GOARCH || resp["platform"] != platform {
+		t.Fatalf("runtime identity missing from check response: %+v", resp)
+	}
+	if resp["apply_supported"] != true || resp["download_supported"] != true {
+		t.Fatalf("support flags unexpected: %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(packageRoot, ".updates")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("update check created package update state: %v", err)
+	}
+}
+
+func TestUpdateCheckReportsLatestOnlyWhenDirectPreflightPasses(t *testing.T) {
+	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
+	assetName := updateTestAssetName("4.2", platform)
+	for _, tc := range []struct {
+		name            string
+		zipBytes        []byte
+		withAsset       bool
+		withSHA         bool
+		withoutLauncher bool
+		sourceVersion   string
+		wantStatus      string
+	}{
+		{name: "managed launcher unavailable", withAsset: true, withSHA: true, withoutLauncher: true, zipBytes: compatibleUpdateTestZip(t, "4.2.0"), wantStatus: "managed_launcher_unavailable"},
+		{name: "missing platform asset", withSHA: true, wantStatus: "platform_asset_missing"},
+		{name: "missing sha", withAsset: true, zipBytes: compatibleUpdateTestZip(t, "4.2.0"), wantStatus: "sha256_missing"},
+		{name: "missing compatibility contract", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", nil, false), wantStatus: "preflight_package_verification_failed"},
+		{name: "source floor above current", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"minimum_source_version": "4.0.0"}, true), wantStatus: "preflight_database_migration_update_unsupported"},
+		{name: "direct jump disabled", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"direct_update_supported": false}, true), wantStatus: "preflight_database_migration_update_unsupported"},
+		{name: "release package not certified", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"__release_ready": false}, true), wantStatus: "preflight_package_release_unverified"},
+		{name: "pre baseline source", withAsset: true, withSHA: true, sourceVersion: "3.9.0", zipBytes: compatibleUpdateTestZip(t, "4.2.0"), wantStatus: "preflight_source_version_unsupported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			packageRoot := t.TempDir()
+			sourceVersion := tc.sourceVersion
+			if sourceVersion == "" {
+				sourceVersion = "3.9.9"
+			}
+			installVerifiedUpdateHelperVersion(t, packageRoot, sourceVersion)
+			sum := sha256.Sum256(tc.zipBytes)
+			sha := hex.EncodeToString(sum[:])
+			restore := updateHTTPClient
+			updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				switch r.URL.String() {
+				case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
+					assets := []string{`{"name":"SHA256SUMS-4.2.txt","browser_download_url":"https://example.test/sums.txt"}`}
+					if tc.withAsset {
+						assets = append([]string{`{"name":` + strconv.Quote(assetName) + `,"browser_download_url":"https://example.test/package.zip"}`}, assets...)
+					}
+					return textResponse(http.StatusOK, `{"tag_name":"v4.2.0","assets":[`+strings.Join(assets, ",")+`]}`)
+				case "https://example.test/sums.txt":
+					if tc.withSHA {
+						return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
+					}
+					return textResponse(http.StatusOK, "")
+				case "https://example.test/package.zip":
+					return bytesResponse(http.StatusOK, tc.zipBytes)
+				default:
+					t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
+					return nil, nil
+				}
+			})}
+			defer func() { updateHTTPClient = restore }()
+
+			cfg := config.Default()
+			cfg.BuildVersion = sourceVersion
+			cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
+			srv := NewServer(cfg)
+			if !tc.withoutLauncher {
+				srv.RequestShutdown = func(int) {}
+			}
+			mux := http.NewServeMux()
+			srv.RegisterRoutes(mux)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/update/check?platform="+platform, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if resp["update_available"] != false || resp["compatibility_status"] != tc.wantStatus {
+				t.Fatalf("incompatible check response=%+v", resp)
+			}
+			if _, err := os.Stat(filepath.Join(packageRoot, ".updates")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("incompatible check mutated package update state: %v", err)
+			}
+		})
+	}
+}
+
+func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
+	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
+	sum := sha256.Sum256(zipBytes)
+	sha := hex.EncodeToString(sum[:])
+	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
+	assetName := updateTestAssetName("4.2", platform)
+	restore := updateHTTPClient
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
+			return textResponse(http.StatusOK, `{
+				"tag_name":"v4.2.0",
+				"name":"Archive Center 4.2",
+				"assets":[
+					{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip","size":33},
+					{"name":"SHA256SUMS-4.2.txt","browser_download_url":"https://example.test/sums.txt","size":90}
+				]
+			}`)
+		case "https://example.test/sums.txt":
+			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
+		case "https://example.test/package.zip":
+			return bytesResponse(http.StatusOK, zipBytes)
+		default:
+			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+	defer func() { updateHTTPClient = restore }()
+
+	cfg := config.Default()
+	cfg.BuildVersion = "3.9.9"
 	packageRoot := t.TempDir()
 	installVerifiedUpdateHelper(t, packageRoot)
 	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
 	srv := NewServer(cfg)
+	srv.RequestShutdown = func(int) {}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	body := `{"platform":"` + platform + `","current_version":"2.2.0"}`
+	body := `{"platform":"` + platform + `","current_version":"3.9.9"}`
 	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -159,7 +252,7 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if err := json.Unmarshal(pendingBytes, &pending); err != nil {
 		t.Fatalf("decode pending update: %v", err)
 	}
-	if pending.ContractVersion != "archive-center.pending-update.v1" || pending.CurrentVersion != "2.2.0" || pending.TargetVersion != "2.3.0" || pending.AssetPath != stagedPath || pending.SHA256 != sha {
+	if pending.ContractVersion != "archive-center.pending-update.v1" || pending.CurrentVersion != "3.9.9" || pending.TargetVersion != "4.2.0" || pending.AssetPath != stagedPath || pending.SHA256 != sha {
 		t.Fatalf("pending update mismatch: %+v", pending)
 	}
 	wantRequired := requiredUpdatePackageFiles(runtime.GOOS)
@@ -181,7 +274,7 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &statusResp); err != nil {
 		t.Fatalf("decode update status: %v", err)
 	}
-	if statusRec.Code != http.StatusOK || statusResp["status"] != "pending_next_start" || statusResp["current_version"] != "2.2.0" || statusResp["target_version"] != "2.3.0" {
+	if statusRec.Code != http.StatusOK || statusResp["status"] != "pending_next_start" || statusResp["current_version"] != "3.9.9" || statusResp["target_version"] != "4.2.0" {
 		t.Fatalf("pending must override old committed state: status=%d body=%s", statusRec.Code, statusRec.Body.String())
 	}
 	if err := os.WriteFile(filepath.Join(packageRoot, ".updates", "update-state.json"), []byte(`{"status":"applied_pending_health","current_version":"2.3.0","target_version":"2.4.0"}`), 0o600); err != nil {
@@ -203,10 +296,10 @@ func TestRequiredUpdatePackageFilesArePlatformSpecific(t *testing.T) {
 		goos string
 		want []string
 	}{
-		{goos: "windows", want: []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", "scripts/start-full-windows.ps1", "01_start_archive_center_windows.bat", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
-		{goos: "linux", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", "scripts/start-full-posix.sh", "scripts/start-full-linux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
-		{goos: "darwin", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", "scripts/start-full-posix.sh", "scripts/start-full-macos.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
-		{goos: "android", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", "scripts/start-full-posix.sh", "scripts/install-and-start-termux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "windows", want: []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", packageupdate.PackageReleaseStatusName, "scripts/start-full-windows.ps1", "01_start_archive_center_windows.bat", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "linux", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/start-full-linux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "darwin", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/start-full-macos.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "android", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/install-and-start-termux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.goos, func(t *testing.T) {
@@ -219,17 +312,19 @@ func TestRequiredUpdatePackageFilesArePlatformSpecific(t *testing.T) {
 }
 
 func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
-	zipBytes := []byte("verified release asset")
+	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
-	assetName := updateTestAssetName("3.1", detectUpdatePlatform(runtime.GOOS, runtime.GOARCH))
+	assetName := updateTestAssetName("4.2", detectUpdatePlatform(runtime.GOOS, runtime.GOARCH))
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
 		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
-			return textResponse(http.StatusOK, `{"tag_name":"v3.1.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-3.1.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
+			return textResponse(http.StatusOK, `{"tag_name":"v4.2.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-4.2.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
 		case "https://example.test/sums.txt":
 			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
+		case "https://example.test/package.zip":
+			return bytesResponse(http.StatusOK, zipBytes)
 		default:
 			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
 			return nil, nil
@@ -238,11 +333,15 @@ func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
 	defer func() { updateHTTPClient = restore }()
 
 	cfg := config.Default()
-	cfg.BuildVersion = "3.0.0"
+	packageRoot := t.TempDir()
+	installVerifiedUpdateHelper(t, packageRoot)
+	cfg.BuildVersion = "3.9.9"
+	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
 	srv := NewServer(cfg)
+	srv.RequestShutdown = func(int) {}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.0.0","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.9.9","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "must match") {
@@ -295,18 +394,18 @@ func TestUpdateRejectsClientCurrentVersionOverride(t *testing.T) {
 }
 
 func TestUpdateApplyResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *testing.T) {
-	zipBytes := []byte("archive-center-immediate-update")
+	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
 	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
-	assetName := updateTestAssetName("3.1", platform)
-	requests := make([]string, 0, 3)
+	assetName := updateTestAssetName("4.2", platform)
+	requests := make([]string, 0, 4)
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests = append(requests, r.URL.String())
 		switch r.URL.String() {
 		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
-			return textResponse(http.StatusOK, `{"tag_name":"v3.1.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-3.1.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
+			return textResponse(http.StatusOK, `{"tag_name":"v4.2.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-4.2.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
 		case "https://example.test/sums.txt":
 			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
 		case "https://example.test/package.zip":
@@ -321,7 +420,7 @@ func TestUpdateApplyResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *t
 	packageRoot := t.TempDir()
 	installVerifiedUpdateHelper(t, packageRoot)
 	cfg := config.Default()
-	cfg.BuildVersion = "3.0.0"
+	cfg.BuildVersion = "3.9.9"
 	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
 	srv := NewServer(cfg)
 	rec := httptest.NewRecorder()
@@ -349,11 +448,57 @@ func TestUpdateApplyResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *t
 		"https://api.github.com/repos/Flazer31/archive-center/releases/latest",
 		"https://example.test/sums.txt",
 		"https://example.test/package.zip",
+		"https://example.test/package.zip",
 	}, "\n") {
 		t.Fatalf("one-call apply request sequence = %v", requests)
 	}
 	if _, err := os.Stat(filepath.Join(packageRoot, ".updates", "pending-update.json")); err != nil {
 		t.Fatalf("one-call apply did not stage pending update: %v", err)
+	}
+}
+
+func TestUpdateApplyRejectsIncompatibleDirectJumpBeforePendingOrShutdown(t *testing.T) {
+	zipBytes := updateTestZip(t, "4.2.0", map[string]any{"minimum_source_version": "4.0.0"}, true)
+	sum := sha256.Sum256(zipBytes)
+	sha := hex.EncodeToString(sum[:])
+	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
+	assetName := updateTestAssetName("4.2", platform)
+	restore := updateHTTPClient
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
+			return textResponse(http.StatusOK, `{"tag_name":"v4.2.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-4.2.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
+		case "https://example.test/sums.txt":
+			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
+		case "https://example.test/package.zip":
+			return bytesResponse(http.StatusOK, zipBytes)
+		default:
+			t.Fatalf("unexpected update HTTP request: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+	defer func() { updateHTTPClient = restore }()
+
+	packageRoot := t.TempDir()
+	installVerifiedUpdateHelper(t, packageRoot)
+	cfg := config.Default()
+	cfg.BuildVersion = "3.9.9"
+	cfg.UpdateStagingDir = filepath.Join(packageRoot, ".updates")
+	srv := NewServer(cfg)
+	shutdownCalls := 0
+	srv.RequestShutdown = func(int) { shutdownCalls++ }
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/update/apply", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "preflight_database_migration_update_unsupported") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if shutdownCalls != 0 {
+		t.Fatalf("incompatible apply requested shutdown %d times", shutdownCalls)
+	}
+	if _, err := os.Stat(filepath.Join(packageRoot, ".updates")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("incompatible apply created pending or update state: %v", err)
 	}
 }
 
@@ -554,6 +699,10 @@ func updateTestHelperRelativePath() string {
 }
 
 func installVerifiedUpdateHelper(t *testing.T, root string) {
+	installVerifiedUpdateHelperVersion(t, root, "3.9.9")
+}
+
+func installVerifiedUpdateHelperVersion(t *testing.T, root, version string) {
 	t.Helper()
 	rel := updateTestHelperRelativePath()
 	body := []byte("verified update helper")
@@ -572,7 +721,7 @@ func installVerifiedUpdateHelper(t *testing.T, root string) {
 	sum := sha256.Sum256(body)
 	manifest := map[string]any{
 		"schema_version":  "archive-center.package-file-manifest.v1",
-		"package_version": "3.0.0",
+		"package_version": version,
 		"files": []map[string]any{{
 			"path":       rel,
 			"size_bytes": len(body),
@@ -586,4 +735,109 @@ func installVerifiedUpdateHelper(t *testing.T, root string) {
 	if err := os.WriteFile(filepath.Join(root, packageupdate.ManifestName), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func compatibleUpdateTestZip(t *testing.T, targetVersion string) []byte {
+	return updateTestZip(t, targetVersion, nil, true)
+}
+
+func updateTestZip(t *testing.T, targetVersion string, contractOverrides map[string]any, includeContract bool) []byte {
+	t.Helper()
+	files := map[string][]byte{}
+	releaseReady := true
+	if value, present := contractOverrides["__release_ready"]; present {
+		if parsed, ok := value.(bool); ok {
+			releaseReady = parsed
+		}
+	}
+	for _, rel := range requiredUpdatePackageFiles(runtime.GOOS) {
+		if rel == packageupdate.MigrationUpdateManifestName {
+			continue
+		}
+		files[rel] = []byte("candidate:" + rel)
+	}
+	readiness, err := json.Marshal(map[string]any{
+		"contract_version":       packageupdate.PackageReleaseStatusContract,
+		"target_version":         targetVersion,
+		"release_ready":          releaseReady,
+		"automatic_update_apply": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files[packageupdate.PackageReleaseStatusName] = readiness
+	migrationPath := "migrations/001_schema.sql"
+	files[migrationPath] = []byte("CREATE TABLE IF NOT EXISTS archive_center_update_test (id BIGINT PRIMARY KEY);")
+	schemaTool := "bin/mariadb-schema"
+	if runtime.GOOS == "windows" {
+		schemaTool += ".exe"
+	}
+	targetInventory := make([]map[string]any, 0, 2)
+	for _, rel := range []string{migrationPath, schemaTool} {
+		body := files[rel]
+		sum := sha256.Sum256(body)
+		targetInventory = append(targetInventory, map[string]any{"path": rel, "size_bytes": len(body), "sha256": hex.EncodeToString(sum[:])})
+	}
+	contractFields := map[string]any{
+		"contract_version":        packageupdate.MigrationUpdateContractV2,
+		"target_version":          targetVersion,
+		"target":                  targetInventory,
+		"managed_files":           packageupdate.CompleteManagedPackage,
+		"database_policy":         packageupdate.ExpandFirstCompatibility,
+		"minimum_source_version":  packageupdate.DirectUpdateBaselineVersion,
+		"direct_update_supported": true,
+		"migration_inventory":     packageupdate.CumulativeMigrationInventory,
+	}
+	for key, value := range contractOverrides {
+		if key == "__release_ready" {
+			continue
+		}
+		contractFields[key] = value
+	}
+	contract, err := json.Marshal(contractFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if includeContract {
+		files[packageupdate.MigrationUpdateManifestName] = contract
+	}
+	manifestFiles := make([]map[string]any, 0, len(files))
+	keys := make([]string, 0, len(files))
+	for rel := range files {
+		keys = append(keys, rel)
+	}
+	sort.Strings(keys)
+	for _, rel := range keys {
+		body := files[rel]
+		sum := sha256.Sum256(body)
+		manifestFiles = append(manifestFiles, map[string]any{"path": rel, "size_bytes": len(body), "sha256": hex.EncodeToString(sum[:])})
+	}
+	manifest, err := json.Marshal(map[string]any{
+		"schema_version":  "archive-center.package-file-manifest.v1",
+		"package_version": targetVersion,
+		"files":           manifestFiles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	entries := append([]string{packageupdate.ManifestName}, keys...)
+	for _, rel := range entries {
+		body := files[rel]
+		if rel == packageupdate.ManifestName {
+			body = manifest
+		}
+		w, err := zw.Create("release/" + filepath.ToSlash(rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }

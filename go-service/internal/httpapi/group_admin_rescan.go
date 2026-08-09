@@ -443,6 +443,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 					ctx,
 					&candidates[0],
 					extractionCfg,
+					true,
 				)
 				switch derivation.State {
 				case "completed":

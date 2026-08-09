@@ -122,7 +122,8 @@ func (f *identityAliasLinkRecordingStore) ResolveUniqueActiveEntityIdentityBySur
 			identity := f.identities[index]
 			if identity.StableEntityID == canonicalID {
 				return store.ResolvedEntityIdentity{
-					StableEntityID: canonicalID, IdentityNamespace: identity.IdentityNamespace, CanonicalLabel: identity.CanonicalLabel,
+					StableEntityID: canonicalID, IdentityNamespace: identity.IdentityNamespace,
+					EntityKind: identity.EntityKind, CanonicalLabel: identity.CanonicalLabel,
 				}, nil
 			}
 		}
@@ -149,26 +150,24 @@ func TestFutureSameCanonicalEntityLinksOnlyWithCurrentSourceEvidence(t *testing.
 	if result.Errors != 0 {
 		t.Fatalf("second identity projection errors: %#v", result.ErrorDetails)
 	}
-	if len(fake.identities) != 2 || fake.identities[0].StableEntityID == fake.identities[1].StableEntityID {
-		t.Fatalf("source occurrences must remain distinct: %#v", fake.identities)
+	if len(fake.identities) != 2 || fake.identities[0].StableEntityID != fake.identities[1].StableEntityID {
+		t.Fatalf("exact canonical tuple did not reuse the existing ID: %#v", fake.identities)
 	}
-	if result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
-		t.Fatalf("evidence-backed future continuity link missing: result=%#v links=%#v", result, fake.links)
-	}
-	if fake.links[0].SourceEntityID != fake.identities[1].StableEntityID ||
-		fake.links[0].TargetEntityID != fake.identities[0].StableEntityID {
-		t.Fatalf("future continuity link direction is wrong: identities=%#v link=%#v", fake.identities, fake.links[0])
+	if result.EntityIdentityLinks != 0 || len(fake.links) != 0 {
+		t.Fatalf("exact canonical tuple should not create an identity link: result=%#v links=%#v", result, fake.links)
 	}
 }
 
 func TestExisting39EntityIDRemainsTheCanonicalContinuityTarget(t *testing.T) {
 	fake := newIdentityAliasLinkRecordingStore()
 	fake.identities = append(fake.identities, &store.EntityIdentity{
-		StableEntityID: "existing-39-id", ChatSessionID: "sess-39-continuity", IdentityNamespace: "session_npc", CanonicalLabel: "Mina",
+		StableEntityID: "existing-39-id", ChatSessionID: "sess-39-continuity", IdentityNamespace: "session_npc",
+		EntityKind: "character", CanonicalLabel: "Mina",
 	})
 	fake.surfaces = append(fake.surfaces, &store.EntityIdentitySurface{
 		StableEntityID: "existing-39-id", ChatSessionID: "sess-39-continuity", IdentityNamespace: "session_npc",
-		NormalizedSurface: comparableEntityKey("Mina"), ReviewState: "source_observed", Scope: store.EntityIdentitySurfaceScope39,
+		SurfaceKind: "display_name", NormalizedSurface: comparableEntityKey("Mina"),
+		ReviewState: "source_observed", Scope: store.EntityIdentitySurfaceScope39,
 	})
 	srv := NewServer(config.Default())
 	srv.Store = fake
@@ -181,15 +180,45 @@ func TestExisting39EntityIDRemainsTheCanonicalContinuityTarget(t *testing.T) {
 	if result.Errors != 0 {
 		t.Fatalf("identity projection errors: %#v", result.ErrorDetails)
 	}
-	if result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
-		t.Fatalf("existing 3.9.0 identity continuity link missing: result=%#v links=%#v", result, fake.links)
+	if len(fake.identities) != 2 || fake.identities[1].StableEntityID != "existing-39-id" {
+		t.Fatalf("existing 3.9.0 ID was not reused: identities=%#v", fake.identities)
 	}
-	if fake.links[0].TargetEntityID != "existing-39-id" || fake.links[0].MappingRevision != 1 {
-		t.Fatalf("existing 3.9.0 ID was not preserved as canonical target: %#v", fake.links[0])
+	if result.EntityIdentityLinks != 0 || len(fake.links) != 0 {
+		t.Fatalf("existing 3.9.0 ID reuse should not create a mapping link: result=%#v links=%#v", result, fake.links)
 	}
 	resolved, err := fake.ResolveUniqueActiveEntityIdentityBySurface(context.Background(), "sess-39-continuity", comparableEntityKey("Mina"))
 	if err != nil || resolved.StableEntityID != "existing-39-id" {
 		t.Fatalf("updated read did not resolve back to the existing 3.9.0 ID: resolved=%#v err=%v", resolved, err)
+	}
+}
+
+func TestExactCurrentNamePreservesCanonicalIdentityWhenCriticEvidenceTextDiffers(t *testing.T) {
+	fake := newIdentityAliasLinkRecordingStore()
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	firstSource := "Mina entered the workshop."
+	first := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{
+		"name": "Mina", "identity_evidence_excerpt": firstSource,
+	}}}}
+	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-evidence-drift", 1, first, firstSource, completeTurnEmbeddingConfig{}, time.Unix(100, 0))
+	if result.Errors != 0 {
+		t.Fatalf("first identity projection errors: %#v", result.ErrorDetails)
+	}
+
+	secondSource := "Mina returned to the workshop."
+	second := map[string]any{"entities": map[string]any{"characters": []any{map[string]any{
+		"name": "Mina", "identity_evidence_excerpt": "Mina has returned to the workshop.",
+	}}}}
+	result = srv.saveCriticExtractionArtifacts(context.Background(), "sess-evidence-drift", 2, second, secondSource, completeTurnEmbeddingConfig{}, time.Unix(200, 0))
+	if result.Errors != 0 {
+		t.Fatalf("second identity projection errors: %#v", result.ErrorDetails)
+	}
+	if len(fake.identities) != 2 || fake.identities[0].StableEntityID != fake.identities[1].StableEntityID {
+		t.Fatalf("exact current name did not reuse the canonical ID: identities=%#v", fake.identities)
+	}
+	if result.EntityIdentityLinks != 0 || len(fake.links) != 0 {
+		t.Fatalf("exact current name should not create an identity link: result=%#v links=%#v", result, fake.links)
 	}
 }
 
@@ -206,12 +235,12 @@ func TestFutureNonCharacterEntityUsesTheSameEvidenceBackedContinuityPath(t *test
 	}}}}
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-future-item", 2, second, evidence, completeTurnEmbeddingConfig{}, time.Unix(200, 0))
 
-	if result.Errors != 0 || result.EntityIdentityLinks != 1 || len(fake.links) != 1 {
-		t.Fatalf("item continuity did not use the shared identity path: result=%#v links=%#v", result, fake.links)
+	if result.Errors != 0 || result.EntityIdentityLinks != 0 || len(fake.links) != 0 {
+		t.Fatalf("item continuity should reuse the existing ID without a link: result=%#v links=%#v", result, fake.links)
 	}
 	if len(fake.identities) != 2 || fake.identities[0].IdentityNamespace != "session_item" ||
-		fake.links[0].TargetEntityID != fake.identities[0].StableEntityID {
-		t.Fatalf("item continuity linked the wrong namespace or target: identities=%#v links=%#v", fake.identities, fake.links)
+		fake.identities[1].StableEntityID != fake.identities[0].StableEntityID {
+		t.Fatalf("item continuity reused the wrong namespace or ID: identities=%#v", fake.identities)
 	}
 }
 

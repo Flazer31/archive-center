@@ -202,37 +202,35 @@ func (m *mariadbStore) SaveWorldRule(ctx context.Context, w *WorldRule) error {
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
-	res, err := m.db.ExecContext(ctx, `
-		UPDATE world_rules
-		SET scope_name = ?,
-			category = ?,
-			value_json = COALESCE(?, value_json),
-			genre = COALESCE(?, genre),
-			source_turn = CASE WHEN ? > 0 THEN ? ELSE source_turn END,
-			pinned = ?,
-			suppressed = ?,
-			user_corrected = ?,
-			updated_at = ?
+	lookupErr := m.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM world_rules
 		WHERE chat_session_id = ? AND scope = ? AND `+"`key`"+` = ? AND scope_name <=> ?
+		  AND (? <= 0 OR source_turn = ?)
 		ORDER BY id DESC
 		LIMIT 1
-	`, scopeName, category, nullableString(w.ValueJSON), nullableString(w.Genre),
-		w.SourceTurn, w.SourceTurn, w.Pinned, w.Suppressed, w.UserCorrected, updatedAt,
-		w.ChatSessionID, scope, w.Key, scopeName)
-	if err != nil {
+	`, w.ChatSessionID, scope, w.Key, scopeName, w.SourceTurn, w.SourceTurn).Scan(&w.ID)
+	if lookupErr == nil {
+		_, err := m.db.ExecContext(ctx, `
+			UPDATE world_rules
+			SET scope_name = ?,
+				category = ?,
+				value_json = COALESCE(?, value_json),
+				genre = COALESCE(?, genre),
+				source_turn = CASE WHEN ? > 0 THEN ? ELSE source_turn END,
+				pinned = ?,
+				suppressed = ?,
+				user_corrected = ?,
+				updated_at = ?
+			WHERE id = ?
+		`, scopeName, category, nullableString(w.ValueJSON), nullableString(w.Genre),
+			w.SourceTurn, w.SourceTurn, w.Pinned, w.Suppressed, w.UserCorrected, updatedAt, w.ID)
 		return err
 	}
-	if rows, rowErr := res.RowsAffected(); rowErr == nil && rows > 0 {
-		_ = m.db.QueryRowContext(ctx, `
-			SELECT id
-			FROM world_rules
-			WHERE chat_session_id = ? AND scope = ? AND `+"`key`"+` = ? AND scope_name <=> ?
-			ORDER BY id DESC
-			LIMIT 1
-		`, w.ChatSessionID, scope, w.Key, scopeName).Scan(&w.ID)
-		return nil
+	if !errors.Is(lookupErr, sql.ErrNoRows) {
+		return lookupErr
 	}
-	res, err = m.db.ExecContext(ctx, `
+	res, err := m.db.ExecContext(ctx, `
 		INSERT INTO world_rules (
 			chat_session_id, scope, scope_name, category, `+"`key`"+`, value_json,
 			genre, source_turn, pinned, suppressed, user_corrected, created_at, updated_at
@@ -337,9 +335,19 @@ func (m *mariadbStore) ListWorldRules(ctx context.Context, chatSessionID string)
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT id, chat_session_id, scope, scope_name, category, `+"`key`"+`, value_json, genre, source_turn,
 			   pinned, suppressed, user_corrected, created_at, updated_at
-		FROM world_rules
-		WHERE chat_session_id = ?
-		ORDER BY scope, category, `+"`key`"+`
+		FROM world_rules AS current_rule
+		WHERE current_rule.chat_session_id = ?
+		  AND current_rule.id = (
+			SELECT candidate.id
+			FROM world_rules AS candidate
+			WHERE candidate.chat_session_id = current_rule.chat_session_id
+			  AND candidate.scope = current_rule.scope
+			  AND candidate.`+"`key`"+` = current_rule.`+"`key`"+`
+			  AND candidate.scope_name <=> current_rule.scope_name
+			ORDER BY COALESCE(candidate.source_turn, 0) DESC, candidate.id DESC
+			LIMIT 1
+		  )
+		ORDER BY current_rule.scope, current_rule.category, current_rule.`+"`key`"+`
 	`, chatSessionID)
 	if err != nil {
 		return nil, err
@@ -394,9 +402,20 @@ func (m *mariadbStore) ListInheritedWorldRules(ctx context.Context, chatSessionI
 	query := `
 		SELECT id, chat_session_id, scope, scope_name, category, ` + "`key`" + `, value_json, genre, source_turn,
 			   pinned, suppressed, user_corrected, created_at, updated_at
-		FROM world_rules
-		WHERE chat_session_id = ? AND suppressed = FALSE
-		ORDER BY scope, category, ` + "`key`" + `
+		FROM world_rules AS current_rule
+		WHERE current_rule.chat_session_id = ?
+		  AND current_rule.id = (
+			SELECT candidate.id
+			FROM world_rules AS candidate
+			WHERE candidate.chat_session_id = current_rule.chat_session_id
+			  AND candidate.scope = current_rule.scope
+			  AND candidate.` + "`key`" + ` = current_rule.` + "`key`" + `
+			  AND candidate.scope_name <=> current_rule.scope_name
+			ORDER BY COALESCE(candidate.source_turn, 0) DESC, candidate.id DESC
+			LIMIT 1
+		  )
+		  AND current_rule.suppressed = FALSE
+		ORDER BY current_rule.scope, current_rule.category, current_rule.` + "`key`" + `
 	`
 	rows, err := m.db.QueryContext(ctx, query, chatSessionID)
 	if err != nil {

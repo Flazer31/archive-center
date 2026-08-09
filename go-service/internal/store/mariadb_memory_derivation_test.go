@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"regexp"
 	"strings"
@@ -172,6 +174,7 @@ func TestMariaDBSourceRevisionReadsCommittedAdmissionSnapshot(t *testing.T) {
 			"derived_admission_state", "derived_admission_version",
 			"derived_extractor_version", "derived_index_version",
 			"derived_result_hash", "derived_result_json", "derived_admitted_at",
+			"critic_input_snapshot_json", "critic_input_snapshot_hash",
 			"created_at", "updated_at",
 		}).AddRow(
 			11, MemorySourceRevisionContract, "revision", "session",
@@ -180,7 +183,8 @@ func TestMariaDBSourceRevisionReadsCommittedAdmissionSnapshot(t *testing.T) {
 			nil, nil, "sha256", int64(1234), "active",
 			nil, nil, "committed", MemoryAdmissionContract,
 			"critic.v1", MemoryVectorOutboxContract, strings.Repeat("b", 64),
-			resultJSON, now, now, now,
+			resultJSON, now, `{"contract_version":"critic_reprocessing_input.v1"}`,
+			strings.Repeat("c", 64), now, now,
 		))
 	got, err := m.GetSourceRevision(context.Background(), "session", "revision")
 	if err != nil {
@@ -188,8 +192,55 @@ func TestMariaDBSourceRevisionReadsCommittedAdmissionSnapshot(t *testing.T) {
 	}
 	if got.DerivedAdmissionState != "committed" ||
 		got.DerivedResultJSON != resultJSON ||
-		got.DerivedAdmittedAt != now {
+		got.DerivedAdmittedAt != now ||
+		got.CriticInputSnapshotHash != strings.Repeat("c", 64) {
 		t.Fatalf("source=%+v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBCriticInputSnapshotIsImmutableAndIdempotent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	snapshotJSON := `{"contract_version":"critic_reprocessing_input.v1","source_revision":"revision"}`
+	snapshotDigest := sha256.Sum256([]byte(snapshotJSON))
+	snapshotHash := hex.EncodeToString(snapshotDigest[:])
+
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WithArgs(snapshotJSON, snapshotHash, now, "session", "revision").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := m.SaveCriticInputSnapshot(context.Background(), "session", "revision", snapshotJSON, snapshotHash, now); err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WithArgs(snapshotJSON, snapshotHash, now, "session", "revision").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT lifecycle_state, critic_input_snapshot_hash").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{"lifecycle_state", "critic_input_snapshot_hash"}).AddRow("active", snapshotHash))
+	if err := m.SaveCriticInputSnapshot(context.Background(), "session", "revision", snapshotJSON, snapshotHash, now); err != nil {
+		t.Fatalf("same snapshot must be idempotent: %v", err)
+	}
+
+	conflictingJSON := `{"contract_version":"critic_reprocessing_input.v1","source_revision":"revision","changed":true}`
+	conflictingDigest := sha256.Sum256([]byte(conflictingJSON))
+	conflictingHash := hex.EncodeToString(conflictingDigest[:])
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WithArgs(conflictingJSON, conflictingHash, now, "session", "revision").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT lifecycle_state, critic_input_snapshot_hash").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{"lifecycle_state", "critic_input_snapshot_hash"}).AddRow("active", snapshotHash))
+	if err := m.SaveCriticInputSnapshot(context.Background(), "session", "revision", conflictingJSON, conflictingHash, now); !errors.Is(err, ErrSourceRevisionConflict) {
+		t.Fatalf("conflicting snapshot error=%v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -606,6 +657,7 @@ func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t
 	mock.ExpectExec("UPDATE memory_source_revisions").
 		WithArgs("superseded", source.SourceRevision, "logical_turn_replaced", now, now,
 			"superseded", "superseded", "superseded", "superseded", "superseded",
+			"superseded", "superseded",
 			source.ChatSessionID, "sar_old").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE memory_source_revisions").
@@ -615,7 +667,7 @@ func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t
 	mock.ExpectExec("DELETE FROM effective_input_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memories").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM direct_evidence_records").WillReturnResult(sqlmock.NewResult(0, 1))
-	for range 33 {
+	for range 34 {
 		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	mock.ExpectExec("INSERT INTO status_current_values").

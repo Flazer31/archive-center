@@ -200,16 +200,58 @@ func TestMariaDBResolveUniqueActiveEntityIdentityBySurfaceReturnsDatabaseNamespa
 	}{
 		{
 			name: "unique",
-			rows: sqlmock.NewRows([]string{"stable_entity_id", "source_namespace", "source_label", "target_entity_id", "target_namespace", "target_label"}).
-				AddRow("occurrence-1", "session_unknown", "Alex", "canonical-1", "session_npc", "Alexander").
-				AddRow("occurrence-2", "session_unknown", "Alex", "canonical-1", "session_npc", "Alexander"),
-			want: ResolvedEntityIdentity{StableEntityID: "canonical-1", IdentityNamespace: "session_npc", CanonicalLabel: "Alexander"},
+			rows: sqlmock.NewRows([]string{
+				"stable_entity_id", "surface_kind", "source_namespace", "source_kind", "source_label", "source_turn",
+				"target_entity_id", "target_namespace", "target_kind", "target_label", "target_turn",
+			}).
+				AddRow("occurrence-1", "alias_0", "session_unknown", "speaker", "Alex", 2, "canonical-1", "session_npc", "character", "Alexander", 1).
+				AddRow("occurrence-2", "alias_0", "session_unknown", "speaker", "Alex", 3, "canonical-1", "session_npc", "character", "Alexander", 1),
+			want: ResolvedEntityIdentity{
+				StableEntityID: "canonical-1", IdentityNamespace: "session_npc",
+				EntityKind: "character", CanonicalLabel: "Alexander",
+			},
+		},
+		{
+			name: "duplicate exact canonical tuple keeps earliest ID",
+			rows: sqlmock.NewRows([]string{
+				"stable_entity_id", "surface_kind", "source_namespace", "source_kind", "source_label", "source_turn",
+				"target_entity_id", "target_namespace", "target_kind", "target_label", "target_turn",
+			}).
+				AddRow("canonical-later", "display_name", "session_npc", "character", "Alex", 4, "", "", "", "", 0).
+				AddRow("canonical-first", "display_name", "session_npc", "character", "Alex", 1, "", "", "", "", 0),
+			want: ResolvedEntityIdentity{
+				StableEntityID: "canonical-first", IdentityNamespace: "session_npc",
+				EntityKind: "character", CanonicalLabel: "Alex",
+			},
 		},
 		{
 			name: "ambiguous",
-			rows: sqlmock.NewRows([]string{"stable_entity_id", "source_namespace", "source_label", "target_entity_id", "target_namespace", "target_label"}).
-				AddRow("occurrence-1", "session_npc", "Alex One", "", "", "").
-				AddRow("occurrence-2", "session_player", "Alex Two", "", "", ""),
+			rows: sqlmock.NewRows([]string{
+				"stable_entity_id", "surface_kind", "source_namespace", "source_kind", "source_label", "source_turn",
+				"target_entity_id", "target_namespace", "target_kind", "target_label", "target_turn",
+			}).
+				AddRow("occurrence-1", "display_name", "session_npc", "character", "Alex", 1, "", "", "", "", 0).
+				AddRow("occurrence-2", "display_name", "session_player", "character", "Alex", 2, "", "", "", "", 0),
+			wantErr: ErrReviewedEntityIdentityAmbiguous,
+		},
+		{
+			name: "different entity kinds never collapse",
+			rows: sqlmock.NewRows([]string{
+				"stable_entity_id", "surface_kind", "source_namespace", "source_kind", "source_label", "source_turn",
+				"target_entity_id", "target_namespace", "target_kind", "target_label", "target_turn",
+			}).
+				AddRow("occurrence-1", "display_name", "session_unknown", "character", "Alex", 1, "", "", "", "", 0).
+				AddRow("occurrence-2", "display_name", "session_unknown", "item", "Alex", 2, "", "", "", "", 0),
+			wantErr: ErrReviewedEntityIdentityAmbiguous,
+		},
+		{
+			name: "aliases never collapse duplicate IDs",
+			rows: sqlmock.NewRows([]string{
+				"stable_entity_id", "surface_kind", "source_namespace", "source_kind", "source_label", "source_turn",
+				"target_entity_id", "target_namespace", "target_kind", "target_label", "target_turn",
+			}).
+				AddRow("occurrence-1", "alias_0", "session_npc", "character", "Alexander", 1, "", "", "", "", 0).
+				AddRow("occurrence-2", "alias_0", "session_npc", "character", "Alexander", 2, "", "", "", "", 0),
 			wantErr: ErrReviewedEntityIdentityAmbiguous,
 		},
 	} {

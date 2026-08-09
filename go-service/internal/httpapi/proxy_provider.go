@@ -161,10 +161,14 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["reasoning_effort"] = normalizedEffort
 			}
 		}
-	} else if effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, ""))); effort != "" && effort != "none" {
-		body["reasoning_effort"] = effort
-		body["max_completion_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
-		delete(body, "max_tokens")
+	} else if effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, ""))); effort != "" {
+		if effort != "none" || provider == "ollama" {
+			body["reasoning_effort"] = effort
+		}
+		if effort != "none" {
+			body["max_completion_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
+			delete(body, "max_tokens")
+		}
 	}
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
 	if overrideErr != nil {

@@ -4,11 +4,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -45,12 +47,14 @@ func main() {
 	mux := http.NewServeMux()
 	server := httpapi.NewServer(cfg)
 	var requestedExitCode atomic.Int32
-	if strings.TrimSpace(os.Getenv("AC_UPDATE_APPLY_MODE")) == httpapi.UpdateApplyManagedLauncherMode {
+	if managedUpdateLauncherAuthorized(cfg) {
 		server.RequestShutdown = func(exitCode int) {
 			if exitCode == httpapi.UpdateApplyExitCode && requestedExitCode.CompareAndSwap(0, int32(exitCode)) {
 				cancelApp()
 			}
 		}
+	} else if strings.TrimSpace(os.Getenv("AC_UPDATE_APPLY_MODE")) == httpapi.UpdateApplyManagedLauncherMode {
+		logger.Warn("managed update mode ignored because launcher session authorization was not present")
 	}
 	if err := server.ValidateRuntimeDependencies(appCtx); err != nil {
 		logger.Error("runtime dependency preflight failed", "error", err)
@@ -79,4 +83,35 @@ func main() {
 	if exitCode := requestedExitCode.Load(); exitCode != 0 {
 		os.Exit(int(exitCode))
 	}
+}
+
+const updateLauncherSessionContract = "archive-center.update-launcher-session.v1"
+
+type updateLauncherSession struct {
+	ContractVersion string `json:"contract_version"`
+	Token           string `json:"token"`
+}
+
+func managedUpdateLauncherAuthorized(cfg config.Config) bool {
+	if strings.TrimSpace(os.Getenv("AC_UPDATE_APPLY_MODE")) != httpapi.UpdateApplyManagedLauncherMode {
+		return false
+	}
+	token := strings.TrimSpace(os.Getenv("AC_UPDATE_LAUNCHER_TOKEN"))
+	if len(token) < 32 || strings.TrimSpace(cfg.UpdateStagingDir) == "" {
+		return false
+	}
+	path := filepath.Join(cfg.UpdateStagingDir, "launcher-session.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var session updateLauncherSession
+	if json.Unmarshal(data, &session) != nil || session.ContractVersion != updateLauncherSessionContract || session.Token != token {
+		return false
+	}
+	if err := os.Remove(path); err != nil {
+		return false
+	}
+	_ = os.Unsetenv("AC_UPDATE_LAUNCHER_TOKEN")
+	return true
 }

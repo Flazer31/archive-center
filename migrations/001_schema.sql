@@ -1723,6 +1723,8 @@ CREATE TABLE IF NOT EXISTS memory_source_revisions (
     derived_result_hash CHAR(64) NULL,
     derived_result_json JSON NULL,
     derived_admitted_at DATETIME(3) NULL,
+    critic_input_snapshot_json JSON NULL,
+    critic_input_snapshot_hash CHAR(64) NULL,
     active_logical_turn_slot VARCHAR(160)
         GENERATED ALWAYS AS (CASE WHEN lifecycle_state = 'active' THEN logical_turn_id ELSE NULL END) PERSISTENT,
     superseded_by_revision VARCHAR(160) NULL,

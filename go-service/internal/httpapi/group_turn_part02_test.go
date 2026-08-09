@@ -903,12 +903,12 @@ func TestCompleteTurnCriticGuardsEvidenceKGAndEntityTypes(t *testing.T) {
 
 func TestCompleteTurnLocationTimeGroundingSeparatesSceneResidenceAndSeason(t *testing.T) {
 	t.Run("critic_prompt_names_location_time_lanes", func(t *testing.T) {
-		prompt := buildCompleteTurnCriticPrompt(
+		prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt(
 			"sess-loc-time", 8,
 			"Rowan lives in London.",
 			"The current scene stays on the school rooftop as summer vacation begins.",
 			nil, nil, nil,
-		)
+		))
 		for _, needle := range []string{
 			"Location and time typed lanes do not suppress compatible kg_triples",
 			"Do not treat 'X lives in London' as 'the current scene is London'",

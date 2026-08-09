@@ -678,6 +678,58 @@ func TestRunCompleteTurnCriticForceWorldRuleAuditWhenInitialAuditMissing(t *test
 	}
 }
 
+func TestRunCompleteTurnCriticKeepsWholeDerivationRetryableWhenWorldRuleAuditFails(t *testing.T) {
+	firstExtraction, _ := json.Marshal(map[string]any{
+		"turn_summary":      "The turn establishes a recurring progression rule.",
+		"importance_score":  8,
+		"evidence_excerpts": []any{},
+		"world_rule_audit":  map[string]any{"durable_rule_found": true},
+		"world_rules":       []any{},
+	})
+	providerCalls := 0
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
+		if providerCalls == 1 {
+			payload, _ := json.Marshal(map[string]any{
+				"model":   "critic-test",
+				"choices": []any{map[string]any{"message": map[string]any{"content": string(firstExtraction)}}},
+			})
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(string(payload))),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"audit unavailable"}}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := NewServer(config.Default())
+	_, trace, err := srv.runCompleteTurnCritic(
+		context.Background(), "sess-world-audit-failure", 5,
+		"The same rule is explained again.", "The recurring rule is confirmed.",
+		nil, nil,
+		completeTurnLLMConfig{
+			APIKey: "test-key", Endpoint: "https://api.example.com/v1", Model: "critic-test",
+			Provider: "openai", TimeoutMs: 60_000, RetryBudget: newLLMRetryBudget(0),
+		},
+	)
+	if err == nil || providerCalls != 2 {
+		t.Fatalf("err=%v provider calls=%d", err, providerCalls)
+	}
+	details := criticPipelineErrorDetails(err)
+	if stringFromMap(details, "code") != "CRITIC_WORLD_RULE_AUDIT_FAILED" ||
+		!boolFromAny(details["retryable"]) ||
+		stringFromMap(mapFromAny(trace["world_rule_audit"]), "status") != "error" {
+		t.Fatalf("details=%#v trace=%#v", details, trace)
+	}
+}
+
 func TestSeq123P84MemorySummaryNormalizationMinimumFields(t *testing.T) {
 	t.Run("normalize_trims_summary_and_clamps_importance", func(t *testing.T) {
 		raw := map[string]any{

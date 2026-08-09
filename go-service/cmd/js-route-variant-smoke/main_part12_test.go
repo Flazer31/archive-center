@@ -61,8 +61,17 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 	if !strings.Contains(bodySource, `turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || ""`) {
 		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
 	}
-	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.0"`) {
-		t.Fatal("3.9.0 plugin build identity is not visible in the HUD")
+	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.9"`) {
+		t.Fatal("3.9.9 plugin build identity is not visible in the HUD")
+	}
+	for _, expected := range []string{
+		`critic_input_budget_observation: {`,
+		`contract_version: "critic_input_budget_observation.v1"`,
+		`max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars)))`,
+	} {
+		if !strings.Contains(bodySource, expected) {
+			t.Fatalf("complete-turn does not forward the Critic input budget observation %q", expected)
+		}
 	}
 }
 
@@ -614,35 +623,11 @@ func TestRisuLifecycleRegistrationAndRemovalAreIndependent(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	register := extractJSFunctionBlockForTest(t, src, "async function registerRisuLifecycleHooks()")
 	remove := extractJSFunctionBlockForTest(t, src, "async function removeRegisteredRisuHooksOnUnload()")
-	observeDeletion := extractJSFunctionBlockForTest(t, src, "async function onRisuChatMessageListMutation(mutations)")
 	script := `
 const calls = [];
-let mutationCallback = null;
-let mutationObserved = false;
-let mutationDisconnected = false;
-let mainDOMGranted = false;
-const rootBody = {kind:"body"};
-let deletionReconcileCalls = 0;
-let deletionReconcileOptions = null;
 const R = {
   async addRisuScriptHandler(name){ calls.push("add:"+name); },
   async addRisuReplacer(name){ calls.push("add:"+name); if(name === "beforeRequest") throw new Error("before unavailable"); },
-  async requestPluginPermission(name){ calls.push("permission:"+name); mainDOMGranted = name === "mainDom"; return mainDOMGranted; },
-  async getRootDocument(){
-    if (!mainDOMGranted) throw new Error("mainDom permission required");
-    return {async querySelector(selector){ return selector === "body" ? rootBody : null; }};
-  },
-  async unwarpSafeArray(value){ return value; },
-  async createMutationObserver(callback){
-    mutationCallback = callback;
-    return {
-      async observe(root, options){
-        if (root !== rootBody || options.childList !== true || options.subtree !== true) throw new Error("mutation observer scope mismatch");
-        mutationObserved = true;
-      },
-      async disconnect(){ mutationDisconnected = true; },
-    };
-  },
   async onUnload(){ calls.push("add:unload"); },
   async removeRisuScriptHandler(name){ calls.push("remove:"+name); },
   async removeRisuReplacer(name){ calls.push("remove:"+name); if(name === "beforeRequest") throw new Error("before removal unavailable"); },
@@ -654,19 +639,15 @@ const onAfterRequest = ()=>{};
 const _pendingFinalConfirmations = new Map();
 const _finalConfirmationRequestBySession = new Map();
 let _pendingFinalConfirmationDrainRequested = false;
-let _rollbackHostMutationObserver = null;
-let _rollbackHostMutationCheckInFlight = false;
-let _rollbackHostMutationCheckPending = false;
 const lifecycleStates = {};
 function recordRisuHookLifecycle(name,state){ lifecycleStates[name]=state; }
 function warnLog(){}
 function debugLog(){}
-async function reconcileRollbackFromHostSignal(options){ deletionReconcileCalls++; deletionReconcileOptions = options; return true; }
 function cancelTurnWorkflowHUDStream(){}
 function cancelAllAdminBackgroundJobStreams(){}
 function clearArchiveCenterRecomposerBridge(){ calls.push("clear:recomposer"); }
 async function unloadTurnWorkflowHUD(){}
-` + observeDeletion + "\n" + register + "\n" + remove + `
+` + register + "\n" + remove + `
 (async()=>{
   await registerRisuLifecycleHooks();
   if (!calls.includes("add:afterRequest") || !calls.includes("add:unload")) {
@@ -675,30 +656,10 @@ async function unloadTurnWorkflowHUD(){}
   if (lifecycleStates.beforeRequest !== "registration_failed") {
     throw new Error("registration failure was not exposed: "+JSON.stringify(lifecycleStates));
   }
-  if (!calls.includes("permission:mainDom")) {
-    throw new Error("deletion observer did not request official mainDom permission");
-  }
-  if (!mutationObserved || typeof mutationCallback !== "function") {
-    throw new Error("official RisuAI deletion observer was not registered");
-  }
-  await mutationCallback([{
-    async getType(){ return "childList"; },
-    async getTarget(){ return {async matches(){ return false; }}; },
-  }]);
-  if (deletionReconcileCalls !== 1 || deletionReconcileOptions !== undefined) {
-    throw new Error("child-list mutation did not request immediate standard reconciliation");
-  }
-  await mutationCallback([{
-    async getType(){ return "attributes"; },
-  }]);
-  if (deletionReconcileCalls !== 1) {
-    throw new Error("non-child-list DOM mutation triggered deletion reconciliation");
-  }
   await removeRegisteredRisuHooksOnUnload();
   if (!calls.includes("remove:afterRequest")) {
     throw new Error("beforeRequest removal failure skipped afterRequest removal: "+calls.join(","));
   }
-  if (!mutationDisconnected) throw new Error("deletion observer remained connected after unload");
   if (!calls.includes("clear:recomposer")) throw new Error("unload left Recomposer bridge live");
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `

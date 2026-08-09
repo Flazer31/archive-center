@@ -1074,6 +1074,8 @@ if ($profileBeforeApply -eq "client_only") {
         }
     } elseif ($updateStatePresent) {
         throw "Archive Center updater is missing while pending update state exists. No bound recovery runner is available; startup stopped to avoid a mixed package."
+    } elseif (Test-Path -LiteralPath $updaterExe -PathType Leaf) {
+        Write-Host "No pending Archive Center update exists. Normal startup will continue."
     } else {
         Write-Host "Warning: Archive Center updater is not installed. No pending state exists, so normal startup will continue."
     }
@@ -1114,6 +1116,26 @@ if ($profileBeforeApply -eq "client_only") {
             Write-Host "Updater reported '$pendingApplyStatus'; continuing with the verified baseline package."
         }
     }
+}
+
+function Start-ArchiveBackendProcess([string]$BackendPath, [string]$PackageRoot) {
+    $updates = Join-Path $PackageRoot ".updates"
+    New-Item -ItemType Directory -Force -Path $updates | Out-Null
+    $token = [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+    $env:AC_UPDATE_LAUNCHER_TOKEN = $token
+    $session = [ordered]@{
+        contract_version = "archive-center.update-launcher-session.v1"
+        token = $token
+    }
+    $path = Join-Path $updates "launcher-session.json"
+    $temporary = "$path.tmp"
+    [System.IO.File]::WriteAllText(
+        $temporary,
+        ($session | ConvertTo-Json -Compress) + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Move-Item -LiteralPath $temporary -Destination $path -Force
+    return Start-ArchiveChildProcess -FilePath $BackendPath -WorkingDirectory $PackageRoot
 }
 
 Import-DotEnv $EnvFile
@@ -1377,7 +1399,7 @@ Write-Host "Starting Archive Center 2.1 full package"
     Write-Host ""
     Write-Host "Stop with Ctrl+C."
     if ($pendingApplyStatus -eq "applied_pending_health") {
-        $candidateBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+        $candidateBackend = Start-ArchiveBackendProcess -BackendPath $backendExe -PackageRoot $packRoot
         $health = Wait-BackendMainReady -Process $candidateBackend -Port $backendPort -ExpectedVersion $pendingTargetVersion -TimeoutSeconds 60
         if ($health.Ready) {
             $commitFailure = ""
@@ -1417,7 +1439,7 @@ Write-Host "Starting Archive Center 2.1 full package"
                     Wait-Port $chromaPort 60
                 }
                 Write-Host "Update commit did not return a clean acknowledgement ($commitFailure). Recovery is safe; starting the verified current backend."
-                $restoredBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+                $restoredBackend = Start-ArchiveBackendProcess -BackendPath $backendExe -PackageRoot $packRoot
                 $backendExitCode = Wait-ArchiveBackendLifetime -Process $restoredBackend -Port $backendPort -ExpectedVersion $pendingCurrentVersion
             }
         } else {
@@ -1444,11 +1466,11 @@ Write-Host "Starting Archive Center 2.1 full package"
                 Wait-Port $chromaPort 60
             }
             Write-Host "Updated backend failed main readiness ($($health.Detail)). The verified baseline was restored; starting the old backend."
-            $restoredBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+            $restoredBackend = Start-ArchiveBackendProcess -BackendPath $backendExe -PackageRoot $packRoot
             $backendExitCode = Wait-ArchiveBackendLifetime -Process $restoredBackend -Port $backendPort -ExpectedVersion $pendingCurrentVersion
         }
     } else {
-        $backendProcess = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+        $backendProcess = Start-ArchiveBackendProcess -BackendPath $backendExe -PackageRoot $packRoot
         $backendExitCode = Wait-ArchiveBackendLifetime -Process $backendProcess
     }
     if ($backendExitCode -eq 75) {
@@ -1490,7 +1512,7 @@ Write-Host "Starting Archive Center 2.1 full package"
                 throw "restored MariaDB schema apply failed"
             }
             Write-Host "Updated package preparation failed before main readiness. Managed package files were rolled back; database files were preserved."
-            $restoredBackend = Start-ArchiveChildProcess -FilePath $backendExe -WorkingDirectory $packRoot
+            $restoredBackend = Start-ArchiveBackendProcess -BackendPath $backendExe -PackageRoot $packRoot
             $backendExitCode = Wait-ArchiveBackendLifetime -Process $restoredBackend -Port $backendPort -ExpectedVersion $pendingCurrentVersion
             if ($backendExitCode -eq 75) {
                 $restartLauncherForUpdate = $true

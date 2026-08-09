@@ -993,7 +993,7 @@ const BUILD_ID = "20260802-4";
 let recoveryConfirmCalls = 0;
 const recoveryBridgeCalls = [];
 let recoveryResponseView = null;
-async function showConfirmModal() {
+function confirm() {
   recoveryConfirmCalls++;
   return true;
 }
@@ -3415,12 +3415,16 @@ const saved = serializeCompleteTurnRecoveryPayload({
   chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:exactContext,
   client_meta:{source_acceptance_required:true,source_acceptance_observation:sourceObservation,
     source_to_final_lineage_observation:sourceLineage,idempotency_key:"key-1",source_revision:"source-revision-7",
+    critic_input_budget_observation:{contract_version:"critic_input_budget_observation.v1",max_input_context_chars:975},
     critic:{api_key:"secret"},authorization:"Bearer secret"}
 });
 if (!saved || saved.client_meta.source_acceptance_required !== true) throw new Error("source fence requirement was lost");
 if (!saved.client_meta.source_acceptance_observation || saved.client_meta.source_acceptance_observation.message_index !== 4) throw new Error("source observation was lost");
 if (saved.client_meta.idempotency_key !== "key-1") throw new Error("idempotency key was lost");
 if (saved.client_meta.source_revision !== "source-revision-7") throw new Error("source revision was lost");
+if (!saved.client_meta.critic_input_budget_observation ||
+    saved.client_meta.critic_input_budget_observation.contract_version!=="critic_input_budget_observation.v1" ||
+    saved.client_meta.critic_input_budget_observation.max_input_context_chars!==975) throw new Error("critic input budget observation was lost");
 const savedLineage=saved.client_meta.source_to_final_lineage_observation;
 if (!savedLineage || savedLineage.archive_center_request_correlation_id!=="correlation-1" ||
   savedLineage.prepare_lineage_id!=="stl_1" || savedLineage.payload_plan_id!=="stp_1" ||

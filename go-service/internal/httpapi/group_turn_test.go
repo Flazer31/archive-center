@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -20,57 +21,86 @@ import (
 // turnRecordingStore implements store.Store and records all save/read calls.
 type turnRecordingStore struct {
 	memoryFakeStore
-	savedChatLogs            []*store.ChatLog
-	savedEffectiveInputs     []*store.EffectiveInput
-	savedAuditLogs           []*store.AuditLog
-	savedCriticFeedback      []*store.CriticFeedback
-	returnMemories           []store.Memory
-	savedMemories            []*store.Memory
-	updatedImportance        map[int64]float64
-	savedEvidence            []*store.DirectEvidence
-	savedKGTriples           []*store.KGTriple
-	savedStorylines          []*store.Storyline
-	savedWorldRules          []*store.WorldRule
-	savedEntities            []*store.Entity
-	savedTrusts              []*store.Trust
-	savedCharacterEvents     []*store.CharacterEvent
-	savedCharacterStates     []*store.CharacterState
-	returnStatusDefinitions  []store.StatusSchemaDefinition
-	savedStatusDefinitions   []store.StatusSchemaDefinition
-	returnStatusCurrent      []store.StatusCurrentValue
-	savedStatusCurrent       []store.StatusCurrentValue
-	savedStatusEvents        []store.StatusChangeEvent
-	savedStatusEffects       []store.StatusEffect
-	savedPendingThreads      []*store.PendingThread
-	savedActiveStates        []*store.ActiveState
-	savedCanonicalLayers     []*store.CanonicalStateLayer
-	returnKGTriples          []store.KGTriple
-	returnEvidence           []store.DirectEvidence
-	returnChatLogs           []store.ChatLog
-	returnResumePack         *store.ResumePack
-	returnStorylines         []store.Storyline
-	returnWorldRules         []store.WorldRule
-	returnCharStates         []store.CharacterState
-	returnPendingThreads     []store.PendingThread
-	returnActiveStates       []store.ActiveState
-	returnCanonicalLayers    []store.CanonicalStateLayer
-	returnEpisodeSums        []store.EpisodeSummary
-	returnPersonaEntries     []store.PersonaMemoryEntry
-	returnEntityMemories     []store.ProtagonistEntityMemory
-	returnEntityOwners       []store.ProtagonistEntityMemoryOwner
-	returnActiveInteractions []store.PreciseMemoryUnit
-	lastEpisodeLimit         int
-	lastPersonaLimit         int
-	lastEntityMemoryLimit    int
-	entityMemoryReadCount    int
-	entityMemoryFilters      []store.ProtagonistEntityMemoryFilter
-	savedEntityMemories      []*store.ProtagonistEntityMemory
-	createdPersonaCapsules   []*store.PersonaMemoryCapsule
-	createdPersonaEntries    []store.PersonaMemoryEntry
-	deletedStorylineIDs      []int64
-	deletedWorldRuleIDs      []int64
-	logicalTurnReplacements  []store.LogicalTurnReplacement
-	logicalTurnRollbacks     []store.LogicalTurnRollback
+	savedChatLogs             []*store.ChatLog
+	savedEffectiveInputs      []*store.EffectiveInput
+	savedAuditLogs            []*store.AuditLog
+	savedCriticFeedback       []*store.CriticFeedback
+	returnMemories            []store.Memory
+	savedMemories             []*store.Memory
+	updatedImportance         map[int64]float64
+	savedEvidence             []*store.DirectEvidence
+	savedKGTriples            []*store.KGTriple
+	savedStorylines           []*store.Storyline
+	savedWorldRules           []*store.WorldRule
+	savedEntities             []*store.Entity
+	savedTrusts               []*store.Trust
+	savedCharacterEvents      []*store.CharacterEvent
+	savedCharacterStates      []*store.CharacterState
+	returnStatusDefinitions   []store.StatusSchemaDefinition
+	savedStatusDefinitions    []store.StatusSchemaDefinition
+	returnStatusCurrent       []store.StatusCurrentValue
+	savedStatusCurrent        []store.StatusCurrentValue
+	savedStatusEvents         []store.StatusChangeEvent
+	savedStatusEffects        []store.StatusEffect
+	savedPendingThreads       []*store.PendingThread
+	savedActiveStates         []*store.ActiveState
+	savedCanonicalLayers      []*store.CanonicalStateLayer
+	returnKGTriples           []store.KGTriple
+	returnEvidence            []store.DirectEvidence
+	returnChatLogs            []store.ChatLog
+	returnResumePack          *store.ResumePack
+	returnStorylines          []store.Storyline
+	returnWorldRules          []store.WorldRule
+	returnCharStates          []store.CharacterState
+	returnPendingThreads      []store.PendingThread
+	returnActiveStates        []store.ActiveState
+	returnCanonicalLayers     []store.CanonicalStateLayer
+	returnEpisodeSums         []store.EpisodeSummary
+	returnPersonaEntries      []store.PersonaMemoryEntry
+	returnEntityMemories      []store.ProtagonistEntityMemory
+	returnEntityOwners        []store.ProtagonistEntityMemoryOwner
+	returnActiveInteractions  []store.PreciseMemoryUnit
+	lastEpisodeLimit          int
+	lastPersonaLimit          int
+	lastEntityMemoryLimit     int
+	entityMemoryReadCount     int
+	entityMemoryFilters       []store.ProtagonistEntityMemoryFilter
+	savedEntityMemories       []*store.ProtagonistEntityMemory
+	createdPersonaCapsules    []*store.PersonaMemoryCapsule
+	createdPersonaEntries     []store.PersonaMemoryEntry
+	deletedStorylineIDs       []int64
+	deletedWorldRuleIDs       []int64
+	logicalTurnReplacements   []store.LogicalTurnReplacement
+	logicalTurnRollbacks      []store.LogicalTurnRollback
+	savedCriticInputSnapshots map[string]struct {
+		JSON string
+		Hash string
+	}
+	criticInputSnapshotErr error
+}
+
+func (f *turnRecordingStore) SaveCriticInputSnapshot(
+	_ context.Context,
+	_ string,
+	revision string,
+	snapshotJSON string,
+	snapshotHash string,
+	_ time.Time,
+) error {
+	if f.criticInputSnapshotErr != nil {
+		return f.criticInputSnapshotErr
+	}
+	if f.savedCriticInputSnapshots == nil {
+		f.savedCriticInputSnapshots = map[string]struct {
+			JSON string
+			Hash string
+		}{}
+	}
+	f.savedCriticInputSnapshots[revision] = struct {
+		JSON string
+		Hash string
+	}{JSON: snapshotJSON, Hash: snapshotHash}
+	return nil
 }
 
 func (f *turnRecordingStore) ListActiveInteractionMemoryUnits(_ context.Context, chatSessionID string) ([]store.PreciseMemoryUnit, error) {

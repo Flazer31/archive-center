@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,32 @@ type memoryAdmissionWorkerStore struct {
 	legacyMemories  int
 	legacyEvidence  int
 	nextEvidenceID  int64
+}
+
+func attachCriticInputSnapshotForTest(source *store.MemorySourceRevision) {
+	if source == nil {
+		return
+	}
+	systemPrompt, _ := readCriticSystemPrompt(config.Default().PromptDir)
+	snapshot := completeTurnCriticInputSnapshot{
+		ContractVersion:    completeTurnCriticInputSnapshotContract,
+		SourceRevision:     source.SourceRevision,
+		ChatSessionID:      source.ChatSessionID,
+		TurnIndex:          source.TurnIndex,
+		UserInput:          sanitizeCriticStorageText(source.UserContent),
+		AssistantContent:   sanitizeCriticStorageText(source.AssistantContent),
+		ContextMessages:    []map[string]any{},
+		ActiveWorldRules:   []map[string]any{},
+		PreviewPass:        map[string]any{},
+		PipelineVersion:    completeTurnCriticPipelineVersion,
+		SystemPromptSHA256: criticSystemPromptHash(systemPrompt),
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		panic(err)
+	}
+	source.CriticInputSnapshotJSON = string(encoded)
+	source.CriticInputSnapshotHash = fmt.Sprintf("%x", sha256.Sum256(encoded))
 }
 
 type memoryWorkerEventStore struct {
@@ -657,6 +684,7 @@ func TestAcceptedSourceReplaysCommittedExtractionWithoutCriticConfiguration(t *t
 		context.Background(),
 		source,
 		completeTurnExtractionConfig{},
+		false,
 	)
 	if result.State != "completed" || result.Failure != "" ||
 		len(st.admissions) != 1 {
@@ -682,6 +710,57 @@ func TestAcceptedSourceReplaysCommittedExtractionWithoutCriticConfiguration(t *t
 	if !boolFromAny(completion["pipeline_complete"]) ||
 		stringFromMap(completion, "source_revision") != source.SourceRevision {
 		t.Fatalf("completion=%#v", completion)
+	}
+}
+
+func TestAcceptedSourceReplaysStagedExtractionWithoutCriticConfiguration(t *testing.T) {
+	extraction := map[string]any{
+		"turn_summary":      "Mina found the brass key.",
+		"importance_score":  7,
+		"evidence_excerpts": []any{"Mina found the brass key."},
+	}
+	source := &store.MemorySourceRevision{
+		SourceRevision:          "staged-revision",
+		ChatSessionID:           "session",
+		LogicalTurnID:           "turn:3",
+		TurnIndex:               3,
+		UserContent:             "Mina looked under the desk.",
+		AssistantContent:        "Mina found the brass key.",
+		LifecycleState:          "active",
+		DerivedAdmissionState:   "staged",
+		DerivedAdmissionVersion: store.MemoryAdmissionContract,
+		DerivedExtractorVersion: completeTurnCriticPipelineVersion,
+		DerivedIndexVersion:     memoryAdmissionIndexVersion,
+		DerivedResultJSON:       mustCompactJSON(normalizePreciseMemoryValue(extraction)),
+	}
+	source.DerivedResultHash = memoryAdmissionResultHash(
+		source.SourceRevision,
+		extraction,
+		store.MemoryAdmissionContract,
+		completeTurnCriticPipelineVersion,
+		memoryAdmissionIndexVersion,
+	)
+	st := &memoryAdmissionWorkerStore{
+		Store:          store.NewNoopStore(),
+		source:         source,
+		nextEvidenceID: 100,
+	}
+	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+
+	result := srv.processAcceptedSourceRevision(
+		context.Background(),
+		source,
+		completeTurnExtractionConfig{},
+		false,
+	)
+	if result.State != "completed" || result.Failure != "" || len(st.admissions) != 1 {
+		t.Fatalf("result=%+v admissions=%d", result, len(st.admissions))
+	}
+	if result.CriticTrace["stage"] != "staged_result_replay" {
+		t.Fatalf("critic trace=%#v", result.CriticTrace)
+	}
+	if st.admissions[0].ResultJSON != source.DerivedResultJSON {
+		t.Fatalf("admission result=%q want=%q", st.admissions[0].ResultJSON, source.DerivedResultJSON)
 	}
 }
 
@@ -1048,6 +1127,8 @@ func TestMemoryReprocessingRetryDoesNotBlockOtherJobsInSameWake(t *testing.T) {
 		CombinedContentHash: strings.Repeat("b", 64),
 		LifecycleState:      "active",
 	}
+	attachCriticInputSnapshotForTest(firstSource)
+	attachCriticInputSnapshotForTest(secondSource)
 	base := &memoryAdmissionWorkerStore{
 		Store: store.NewNoopStore(), nextEvidenceID: 200,
 	}
@@ -1273,6 +1354,7 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 	now := time.Now().UTC()
 	st := newMemoryReprocessingWorkerStore(now)
 	st.source.AssistantContent = "The intimate scene involved penetration."
+	attachCriticInputSnapshotForTest(st.source)
 	oldClient := proxyHTTPClient
 	callCount := 0
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -1316,6 +1398,48 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 	preview := stringFromMap(trace, "raw_preview")
 	if !strings.Contains(preview, "second failure marker") {
 		t.Fatalf("redacted retry failure preview was lost: %+v", details)
+	}
+}
+
+func TestMemoryReprocessingWorkerStopsRepeatedSchemaInvalidAfterOneCall(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryReprocessingWorkerStore(now)
+	oldClient := proxyHTTPClient
+	providerCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"broken schema\",\"importance_score\":5,\"evidence_excerpts\":[{\"quote\":\"not a string\"}]}"}}]}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{
+		Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, FailedQueueMaxAttempts: 4,
+		},
+	}
+	result, err := srv.processMemoryReprocessingOnce(
+		context.Background(), "worker", now, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls != 1 || result.State != "terminal" ||
+		!strings.HasPrefix(result.Failure, "CRITIC_SCHEMA_INVALID") ||
+		len(st.failedJobs) != 1 || len(st.failedPermanent) != 1 || !st.failedPermanent[0] ||
+		len(st.completedJobs) != 0 || len(st.admissions) != 0 {
+		t.Fatalf(
+			"calls=%d result=%+v failed=%v permanent=%v completed=%v admissions=%d",
+			providerCalls, result, st.failedJobs, st.failedPermanent, st.completedJobs, len(st.admissions),
+		)
 	}
 }
 
@@ -1399,7 +1523,7 @@ func TestMemoryReprocessingWorkerDiscardsProviderResultAfterSourceInvalidation(t
 }
 
 func newMemoryReprocessingWorkerStore(now time.Time) *memoryAdmissionWorkerStore {
-	return &memoryAdmissionWorkerStore{
+	workerStore := &memoryAdmissionWorkerStore{
 		Store:          store.NewNoopStore(),
 		nextEvidenceID: 200,
 		source: &store.MemorySourceRevision{
@@ -1419,4 +1543,6 @@ func newMemoryReprocessingWorkerStore(now time.Time) *memoryAdmissionWorkerStore
 			Attempts:          0, CreatedAt: now,
 		},
 	}
+	attachCriticInputSnapshotForTest(workerStore.source)
+	return workerStore
 }

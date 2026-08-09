@@ -527,6 +527,23 @@ type canonicalRawReplaySessionNormalizeStore struct {
 	sources map[string]*store.MemorySourceRevision
 }
 
+func (f *canonicalRawReplaySessionNormalizeStore) SaveCriticInputSnapshot(
+	_ context.Context,
+	_ string,
+	revision string,
+	snapshotJSON string,
+	snapshotHash string,
+	_ time.Time,
+) error {
+	source := f.sources[revision]
+	if source == nil {
+		return store.ErrNotFound
+	}
+	source.CriticInputSnapshotJSON = snapshotJSON
+	source.CriticInputSnapshotHash = snapshotHash
+	return nil
+}
+
 func (f *canonicalRawReplaySessionNormalizeStore) RegisterAcceptedSourceRevision(
 	_ context.Context,
 	source *store.MemorySourceRevision,

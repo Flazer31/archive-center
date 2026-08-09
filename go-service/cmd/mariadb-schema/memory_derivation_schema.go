@@ -28,6 +28,8 @@ func memoryDerivationSchemaStatements() []string {
     derived_result_hash CHAR(64) NULL,
     derived_result_json JSON NULL,
     derived_admitted_at DATETIME(3) NULL,
+    critic_input_snapshot_json JSON NULL,
+    critic_input_snapshot_hash CHAR(64) NULL,
     active_logical_turn_slot VARCHAR(160)
         GENERATED ALWAYS AS (CASE WHEN lifecycle_state = 'active' THEN logical_turn_id ELSE NULL END) PERSISTENT,
     superseded_by_revision VARCHAR(160) NULL,
@@ -55,6 +57,8 @@ func memoryDerivationSchemaStatements() []string {
 		`ALTER TABLE memory_source_revisions ADD COLUMN IF NOT EXISTS derived_result_hash CHAR(64) NULL`,
 		`ALTER TABLE memory_source_revisions ADD COLUMN IF NOT EXISTS derived_result_json JSON NULL`,
 		`ALTER TABLE memory_source_revisions ADD COLUMN IF NOT EXISTS derived_admitted_at DATETIME(3) NULL`,
+		`ALTER TABLE memory_source_revisions ADD COLUMN IF NOT EXISTS critic_input_snapshot_json JSON NULL`,
+		`ALTER TABLE memory_source_revisions ADD COLUMN IF NOT EXISTS critic_input_snapshot_hash CHAR(64) NULL`,
 		`CREATE TABLE IF NOT EXISTS memory_derivation_dependencies (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     contract_version VARCHAR(80) NOT NULL DEFAULT 'memory_derivation_dependency.v1',

@@ -39,6 +39,11 @@ func (m *mariadbStore) CommitMemoryAdmission(ctx context.Context, admission *Mem
 			return result, nil
 		}
 		if !isRetryableMemoryAdmissionTransactionError(err) || attempt == memoryAdmissionTransactionMaxAttempts {
+			if !errors.Is(err, ErrSourceRevisionStale) && ctx.Err() == nil {
+				if stageErr := m.stageFailedMemoryAdmissionResult(ctx, admission); stageErr != nil {
+					return result, fmt.Errorf("%w; stage successful critic result: %v", err, stageErr)
+				}
+			}
 			return result, err
 		}
 		if err := waitMemoryAdmissionTransactionRetry(ctx, attempt); err != nil {
@@ -46,6 +51,66 @@ func (m *mariadbStore) CommitMemoryAdmission(ctx context.Context, admission *Mem
 		}
 	}
 	return result, nil
+}
+
+// stageFailedMemoryAdmissionResult preserves the already successful Critic
+// result only after its projection transaction failed. The normal admission
+// path does not execute this write. A later worker can retry the same result
+// without calling the Critic provider again.
+func (m *mariadbStore) stageFailedMemoryAdmissionResult(ctx context.Context, admission *MemoryAdmission) error {
+	updatedAt := nonZeroTime(admission.CreatedAt)
+	res, err := m.db.ExecContext(ctx, `
+		UPDATE memory_source_revisions
+		SET derived_admission_state = 'staged',
+		    derived_admission_version = ?,
+		    derived_extractor_version = ?,
+		    derived_index_version = ?,
+		    derived_result_hash = ?,
+		    derived_result_json = ?,
+		    derived_admitted_at = NULL,
+		    updated_at = ?
+		WHERE chat_session_id = ? AND source_revision = ? AND turn_index = ?
+		  AND lifecycle_state = 'active'
+		  AND derived_admission_state <> 'committed'
+	`, admission.DerivationVersion, admission.ExtractorVersion,
+		admission.IndexVersion, admission.ResultHash, admission.ResultJSON,
+		updatedAt, admission.ChatSessionID, admission.SourceRevision,
+		admission.TurnIndex)
+	if err != nil {
+		return err
+	}
+	if affected, rowsErr := res.RowsAffected(); rowsErr != nil {
+		return rowsErr
+	} else if affected == 1 {
+		return nil
+	}
+
+	var lifecycleState, admissionState, derivationVersion, extractorVersion, indexVersion string
+	var resultHash sql.NullString
+	err = m.db.QueryRowContext(ctx, `
+		SELECT lifecycle_state, derived_admission_state,
+		       derived_admission_version, derived_extractor_version,
+		       derived_index_version, derived_result_hash
+		FROM memory_source_revisions
+		WHERE chat_session_id = ? AND source_revision = ? AND turn_index = ?
+	`, admission.ChatSessionID, admission.SourceRevision, admission.TurnIndex).Scan(
+		&lifecycleState, &admissionState, &derivationVersion,
+		&extractorVersion, &indexVersion, &resultHash,
+	)
+	if err == sql.ErrNoRows || lifecycleState != "active" {
+		return ErrSourceRevisionStale
+	}
+	if err != nil {
+		return err
+	}
+	if (admissionState == "staged" || admissionState == "committed") &&
+		derivationVersion == admission.DerivationVersion &&
+		extractorVersion == admission.ExtractorVersion &&
+		indexVersion == admission.IndexVersion &&
+		resultHash.String == admission.ResultHash {
+		return nil
+	}
+	return fmt.Errorf("memory admission result staging conflict")
 }
 
 func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission *MemoryAdmission) (MemoryAdmissionResult, error) {

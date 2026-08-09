@@ -689,6 +689,36 @@ func (d *dualWriteStore) GetSourceRevision(ctx context.Context, sid, revision st
 	return nil, ErrNotEnabled
 }
 
+func (d *dualWriteStore) SaveCriticInputSnapshot(
+	ctx context.Context,
+	sid string,
+	revision string,
+	snapshotJSON string,
+	snapshotHash string,
+	updatedAt time.Time,
+) error {
+	primary, primaryOK := d.primary.(CriticInputSnapshotStore)
+	shadow, shadowOK := d.shadow.(CriticInputSnapshotStore)
+	if !primaryOK && !shadowOK {
+		return ErrNotEnabled
+	}
+	if primaryOK {
+		if err := primary.SaveCriticInputSnapshot(ctx, sid, revision, snapshotJSON, snapshotHash, updatedAt); err != nil {
+			return err
+		}
+		if shadowOK {
+			if err := shadow.SaveCriticInputSnapshot(ctx, sid, revision, snapshotJSON, snapshotHash, updatedAt); err != nil {
+				d.recordShadowErr(err)
+			}
+		}
+		return nil
+	}
+	if err := shadow.SaveCriticInputSnapshot(ctx, sid, revision, snapshotJSON, snapshotHash, updatedAt); err != nil {
+		d.recordShadowErr(err)
+	}
+	return nil
+}
+
 func (d *dualWriteStore) ListActiveSourceRevisions(
 	ctx context.Context,
 	sid string,

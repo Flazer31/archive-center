@@ -84,6 +84,7 @@ func TestMariaDBMemoryAdmissionStopsAfterDeadlockRetryLimit(t *testing.T) {
 		ExtractorVersion:  "critic.v1",
 		IndexVersion:      MemoryVectorOutboxContract,
 		ResultJSON:        `{}`,
+		CreatedAt:         time.Date(2026, 8, 7, 6, 0, 0, 0, time.UTC),
 	}
 	admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
 	for attempt := 0; attempt < memoryAdmissionTransactionMaxAttempts; attempt++ {
@@ -93,11 +94,59 @@ func TestMariaDBMemoryAdmissionStopsAfterDeadlockRetryLimit(t *testing.T) {
 			WillReturnError(&mysql.MySQLError{Number: 1213, Message: "deadlock"})
 		mock.ExpectRollback()
 	}
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WithArgs(admission.DerivationVersion, admission.ExtractorVersion,
+			admission.IndexVersion, admission.ResultHash, admission.ResultJSON,
+			admission.CreatedAt, admission.ChatSessionID, admission.SourceRevision,
+			admission.TurnIndex).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	_, err = st.CommitMemoryAdmission(context.Background(), admission)
 	var mysqlErr *mysql.MySQLError
 	if !errors.As(err, &mysqlErr) || mysqlErr.Number != 1213 {
 		t.Fatalf("err=%v, want MySQL 1213 after bounded retries", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBMemoryAdmissionDoesNotStageSuccessfulCommit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	admission := &MemoryAdmission{
+		ContractVersion: MemoryAdmissionContract, ChatSessionID: "session",
+		SourceRevision: "revision", TurnIndex: 2,
+		DerivationVersion: MemoryAdmissionContract, ExtractorVersion: "critic.v1",
+		IndexVersion: MemoryVectorOutboxContract, ResultJSON: `{}`,
+		CreatedAt: time.Date(2026, 8, 7, 6, 30, 0, 0, time.UTC),
+	}
+	admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").
+		WithArgs("session", "revision", 2).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"lifecycle_state", "derived_admission_state",
+			"derived_admission_version", "derived_extractor_version",
+			"derived_index_version", "derived_result_hash", "derived_result_json",
+		}).AddRow("active", "pending", "", "", "", nil, nil))
+	mock.ExpectQuery("SELECT id, evidence_text, tombstoned").
+		WithArgs("session", 2, 2).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
+	mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").
+		WithArgs("session", "revision").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
+	mock.ExpectExec("UPDATE memory_source_revisions").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if _, err := st.CommitMemoryAdmission(context.Background(), admission); err != nil {
+		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
