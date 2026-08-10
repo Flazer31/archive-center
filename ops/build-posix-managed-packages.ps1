@@ -2,7 +2,7 @@ param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
     [string[]]$VerifiedReleaseTarget = @(),
-    [string]$PackageVersion = "3.9.9",
+    [string]$PackageVersion = "3.9.10",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -61,7 +61,7 @@ function Normalize-POSIXPackageLineEndings([string]$Root) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.9" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.10" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -354,7 +354,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.9" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.10" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }

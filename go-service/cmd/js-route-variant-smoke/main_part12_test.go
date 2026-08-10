@@ -61,8 +61,8 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 	if !strings.Contains(bodySource, `turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || ""`) {
 		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
 	}
-	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.9"`) {
-		t.Fatal("3.9.9 plugin build identity is not visible in the HUD")
+	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.10"`) {
+		t.Fatal("3.9.10 plugin build identity is not visible in the HUD")
 	}
 	for _, expected := range []string{
 		`critic_input_budget_observation: {`,

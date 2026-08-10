@@ -720,6 +720,44 @@ func TestDirectUpdatePreflightAndApplyAllows399To42WithCumulativeMigrations(t *t
 	}
 }
 
+func TestDirectUpdateApplyAllows399To3910AndPreservesRuntimeData(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"Archive Center.js":         "plugin-3.9.9",
+		"bin/archive-center-go.exe": "backend-3.9.9",
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
+		schemaTool:                  "schema-tool-3.9.9",
+	}
+	next := map[string]string{
+		"Archive Center.js":         "plugin-3.9.10",
+		"bin/archive-center-go.exe": "backend-3.9.10",
+		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
+		schemaTool:                  "schema-tool-3.9.10",
+	}
+	addCompleteMigrationUpdateContract(t, next, "3.9.10")
+
+	root := t.TempDir()
+	for rel, body := range current {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
+	mustWrite(t, filepath.Join(root, ".runtime", "mariadb-data", "sentinel.txt"), "database-kept")
+	mustWrite(t, filepath.Join(root, ".runtime", "chromadb-data", "sentinel.txt"), "vectors-kept")
+	if err := os.MkdirAll(filepath.Join(root, ".updates"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stagePending(t, root, "3.9.9", "3.9.10", next)
+
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("3.9.9 -> 3.9.10 apply result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "Archive Center.js"), "plugin-3.9.10")
+	assertFile(t, filepath.Join(root, "bin", "archive-center-go.exe"), "backend-3.9.10")
+	assertFile(t, filepath.Join(root, ".runtime", "mariadb-data", "sentinel.txt"), "database-kept")
+	assertFile(t, filepath.Join(root, ".runtime", "chromadb-data", "sentinel.txt"), "vectors-kept")
+}
+
 func TestManagedFileRemovalsPreserveManifestPathCase(t *testing.T) {
 	current := map[string]manifestFile{
 		"archive center.js":  {Path: "Archive Center.js"},

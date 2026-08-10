@@ -393,19 +393,19 @@ func TestUpdateRejectsClientCurrentVersionOverride(t *testing.T) {
 	}
 }
 
-func TestUpdateApplyResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *testing.T) {
-	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
+func TestUpdateApplyFrom399To3910ResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *testing.T) {
+	zipBytes := compatibleUpdateTestZip(t, "3.9.10")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
 	platform := detectUpdatePlatform(runtime.GOOS, runtime.GOARCH)
-	assetName := updateTestAssetName("4.2", platform)
+	assetName := updateTestAssetName("3.9.10", platform)
 	requests := make([]string, 0, 4)
 	restore := updateHTTPClient
 	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests = append(requests, r.URL.String())
 		switch r.URL.String() {
 		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
-			return textResponse(http.StatusOK, `{"tag_name":"v4.2.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-4.2.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
+			return textResponse(http.StatusOK, `{"tag_name":"v3.9.10","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://example.test/package.zip"},{"name":"SHA256SUMS-3.9.10.txt","browser_download_url":"https://example.test/sums.txt"}]}`)
 		case "https://example.test/sums.txt":
 			return textResponse(http.StatusOK, sha+"  "+assetName+"\n")
 		case "https://example.test/package.zip":
@@ -466,7 +466,7 @@ func TestUpdateApplyResolvesDownloadsStagesAcknowledgesThenRequestsShutdown(t *t
 	if err := decoder.Decode(&pending); err != nil {
 		t.Fatalf("staged pending update is not accepted by the updater contract: %v", err)
 	}
-	if pending.ContractVersion != packageupdate.PendingContract || pending.CurrentVersion != "3.9.9" || pending.TargetVersion != "4.2.0" {
+	if pending.ContractVersion != packageupdate.PendingContract || pending.CurrentVersion != "3.9.9" || pending.TargetVersion != "3.9.10" {
 		t.Fatalf("staged pending update contract drifted: %+v", pending)
 	}
 }
@@ -632,6 +632,7 @@ func TestUpdateVersionComparisonDistinguishesPrereleaseFromFinal(t *testing.T) {
 		{left: "3.0.0-rc10", right: "3.0.0-rc2", want: 1},
 		{left: "3.0.0-rc2", right: "3.0.0", want: -1},
 		{left: "v3.1.0", right: "3.0.9", want: 1},
+		{left: "3.9.10", right: "3.9.9", want: 1},
 	} {
 		if got := compareVersions(tc.left, tc.right); got != tc.want {
 			t.Fatalf("compareVersions(%q, %q)=%d want %d", tc.left, tc.right, got, tc.want)
