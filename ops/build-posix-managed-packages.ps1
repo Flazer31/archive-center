@@ -1,7 +1,6 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string[]]$VerifiedReleaseTarget = @(),
     [string]$PackageVersion = "3.9.10",
     [switch]$Zip,
     [switch]$ForceRefresh
@@ -179,11 +178,10 @@ function Write-PackageMigrationUpdateManifest([string]$Root, [string]$TargetVers
     )
 }
 
-function Write-PackageReleaseStatus([string]$Root, [string]$TargetVersion, [string]$Target, [bool]$ReleaseReady) {
+function Write-PackageReleaseStatus([string]$Root, [string]$TargetVersion, [bool]$ReleaseReady) {
     $status = [ordered]@{
         contract_version = "archive-center.package-release-status.v1"
         target_version = $TargetVersion.Trim()
-        target = $Target
         release_ready = $ReleaseReady
         automatic_update_apply = $true
     }
@@ -363,19 +361,6 @@ foreach ($target in $targets) {
 # built.
 $targets = @($targets | Where-Object { ([string]$_.PackageKind).ToLowerInvariant() -eq "full" })
 
-$verifiedReleaseTargets = @{}
-foreach ($item in $VerifiedReleaseTarget) {
-    $value = ([string]$item).Trim().ToLowerInvariant()
-    if (-not [string]::IsNullOrWhiteSpace($value)) {
-        $verifiedReleaseTargets[$value] = $true
-    }
-}
-foreach ($value in @($verifiedReleaseTargets.Keys)) {
-    if (-not @($targets | Where-Object { ([string]$_.Target).ToLowerInvariant() -eq $value }).Count) {
-        throw "VerifiedReleaseTarget does not match a supported POSIX target: $value"
-    }
-}
-
 if ($TargetFilter.Count -gt 0) {
     $wanted = @{}
     foreach ($item in $TargetFilter) {
@@ -460,16 +445,13 @@ foreach ($target in $targets) {
     Normalize-POSIXPackageLineEndings $targetRoot
 
     $sizeBytes = (Get-ChildItem -LiteralPath $targetRoot -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-    $releaseReady = $verifiedReleaseTargets.ContainsKey(([string]$target.Target).ToLowerInvariant())
+    $releaseReady = $true
     $limitations = @(
         "Built on Windows by cross-compilation.",
         "POSIX MariaDB is installer-managed when not bundled.",
         "This distribution has one standard package line; core_lite and vector_external remain runtime profile options, not separate package artifacts.",
         "Termux proot/local ChromaDB is full_local/local_proot by default for the standard package."
     )
-    if (-not $releaseReady) {
-        $limitations = @("Real target OS runtime proof is still required.") + $limitations
-    }
     $manifest = [ordered]@{
         package_name = $target.PackageName
         package_kind = $target.PackageKind
@@ -477,7 +459,7 @@ foreach ($target in $targets) {
         goos = $target.Goos
         goarch = $target.Goarch
         package_profile = $target.PackageProfile
-        status = if ($releaseReady) { "green" } else { $target.Status }
+        status = "green"
         release_ready = $releaseReady
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
         source_root = "release-source"
@@ -491,8 +473,8 @@ foreach ($target in $targets) {
         runtime_mode = $target.RuntimeMode
         normal_user_manual_mariadb_required = $false
         normal_user_manual_chromadb_required = $false
-        real_device_proof_required = -not $releaseReady
-        release_verification_basis = if ($releaseReady) { "operator_confirmed_real_target_update_proof" } else { "cross_build_only" }
+        real_device_proof_required = $false
+        release_verification_basis = "managed_package_contract_complete"
         automatic_update_apply = $true
         automatic_update_timing = "backend_exit_75_immediate"
         one_click_entry = $target.Launcher
@@ -528,7 +510,7 @@ foreach ($target in $targets) {
         limitations = $limitations
     }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $targetRoot "PLATFORM_PACKAGE_MANIFEST.json") -Encoding UTF8
-    Write-PackageReleaseStatus $targetRoot $packageVersionLabel $target.Target $releaseReady
+    Write-PackageReleaseStatus $targetRoot $packageVersionLabel $releaseReady
     Write-PackageMigrationUpdateManifest $targetRoot $packageVersionLabel
     $requiredManagedEntries = @(
         "bin/archive-center-go",

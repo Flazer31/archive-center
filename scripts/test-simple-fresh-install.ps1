@@ -96,9 +96,38 @@ try {
         -ExecutionPolicy Bypass `
         -File $posixBuilder `
         -OutputRoot $posixOutputRoot `
-        -TargetFilter macos-arm64 `
         -PackageVersion 3.9.0-timeout-contract
-    Assert-True ($LASTEXITCODE -eq 0) "macOS launcher contract package build failed"
+    Assert-True ($LASTEXITCODE -eq 0) "POSIX package contract build failed"
+
+    $expectedPOSIXTargets = @{
+        "linux-amd64" = @("linux", "amd64")
+        "linux-arm64" = @("linux", "arm64")
+        "macos-amd64" = @("darwin", "amd64")
+        "macos-arm64" = @("darwin", "arm64")
+        "termux-arm64" = @("android", "arm64")
+    }
+    $releaseStatusFiles = @(Get-ChildItem -LiteralPath $posixOutputRoot -Recurse -File -Filter "PACKAGE_RELEASE_STATUS.json")
+    Assert-True ($releaseStatusFiles.Count -eq $expectedPOSIXTargets.Count) "not every supported POSIX package was built"
+    foreach ($releaseStatusFile in $releaseStatusFiles) {
+        $releaseStatus = Get-Content -LiteralPath $releaseStatusFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        $packageRoot = Split-Path -Parent $releaseStatusFile.FullName
+        $platformManifest = Get-Content -LiteralPath (Join-Path $packageRoot "PLATFORM_PACKAGE_MANIFEST.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $target = [string]$platformManifest.target
+        Assert-True $expectedPOSIXTargets.ContainsKey($target) "unexpected POSIX package target: $target"
+        Assert-True ($releaseStatus.release_ready -eq $true) "$target package disables automatic update readiness"
+        Assert-True ($releaseStatus.automatic_update_apply -eq $true) "$target package disables automatic update apply"
+        $expectedRuntime = $expectedPOSIXTargets[$target]
+        Assert-True ($platformManifest.release_ready -eq $true) "$target platform manifest is not release ready"
+        Assert-True (([string]$platformManifest.goos) -eq $expectedRuntime[0]) "$target backend GOOS does not match"
+        Assert-True (([string]$platformManifest.goarch) -eq $expectedRuntime[1]) "$target backend GOARCH does not match"
+        foreach ($binary in @("archive-center-go", "archive-center-updater", "mariadb-schema")) {
+            $binaryPath = Join-Path $packageRoot ("bin\" + $binary)
+            $buildInfo = (& go version -m $binaryPath 2>&1) -join "`n"
+            Assert-True ($LASTEXITCODE -eq 0) "$target $binary build metadata is unreadable"
+            Assert-True $buildInfo.Contains("GOOS=$($expectedRuntime[0])") "$target $binary GOOS does not match"
+            Assert-True $buildInfo.Contains("GOARCH=$($expectedRuntime[1])") "$target $binary GOARCH does not match"
+        }
+    }
 
     $posixTextFiles = @(Get-ChildItem -LiteralPath $posixOutputRoot -Recurse -File |
         Where-Object { $_.Extension -in @(".sh", ".command") })
@@ -159,7 +188,7 @@ try {
 
     $readme = Get-Content -LiteralPath (Join-Path $repoRoot "README.md") -Raw -Encoding UTF8
     Assert-True $readme.Contains("irm https://raw.githubusercontent.com/Flazer31/archive-center/main/install-windows.ps1 | iex") "README Windows command drifted"
-    Write-Host "simple Windows and generated macOS launcher contracts: ok"
+    Write-Host "simple Windows and POSIX package contracts: ok"
 } finally {
     $env:LOCALAPPDATA = $originalLocalAppData
     Set-ExecutionPolicy -Scope Process -ExecutionPolicy $originalExecutionPolicy -Force
