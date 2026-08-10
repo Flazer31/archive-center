@@ -67,31 +67,6 @@ function Find-ReleaseAsset($Release, [string]$Needle) {
     return $null
 }
 
-function Find-SHA256Asset($Release) {
-    foreach ($asset in $Release.assets) {
-        $name = [string]$asset.name
-        $lower = $name.ToLowerInvariant()
-        if ($lower.StartsWith("sha256sums") -and $lower.EndsWith(".txt")) {
-            return $asset
-        }
-    }
-    return $null
-}
-
-function Get-ExpectedSHA256([string]$SumsPath, [string]$AssetName) {
-    $wantComparable = ConvertTo-ComparableAssetName $AssetName
-    foreach ($line in Get-Content -LiteralPath $SumsPath) {
-        $parts = $line.Trim() -split "\s+"
-        if ($parts.Count -ge 2) {
-            $sumName = (($parts | Select-Object -Skip 1) -join " ").TrimStart("*")
-            if ((ConvertTo-ComparableAssetName $sumName) -eq $wantComparable) {
-            return $parts[0].ToLowerInvariant()
-            }
-        }
-    }
-    return ""
-}
-
 function Test-LocalPortOpen([int]$Port, [string]$ConnectHost = "127.0.0.1") {
     try {
         $addresses = [System.Net.Dns]::GetHostAddresses($ConnectHost)
@@ -326,27 +301,11 @@ $asset = Find-ReleaseAsset $release $needle
 if ($null -eq $asset) {
     throw "No release package asset matched platform $platform."
 }
-$sumsAsset = Find-SHA256Asset $release
-if ($null -eq $sumsAsset) {
-    throw "Release has no SHA256SUMS asset."
-}
-
 $workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("archive-center-update-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 try {
     $zipPath = Join-Path $workDir ([string]$asset.name)
-    $sumsPath = Join-Path $workDir ([string]$sumsAsset.name)
-    Invoke-WebRequest -Uri ([string]$sumsAsset.browser_download_url) -Headers $headers -OutFile $sumsPath -TimeoutSec $ExternalOperationTimeoutSeconds
     Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -Headers $headers -OutFile $zipPath -TimeoutSec $ExternalOperationTimeoutSeconds
-
-    $expected = Get-ExpectedSHA256 $sumsPath ([string]$asset.name)
-    if ([string]::IsNullOrWhiteSpace($expected)) {
-        throw "SHA256SUMS did not contain $($asset.name)."
-    }
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
-    if ($actual -ne $expected) {
-        throw "SHA256 mismatch for $($asset.name)."
-    }
 
     $versionDirName = ([string]$release.tag_name) -replace '[^A-Za-z0-9_.-]', '_'
     if ([string]::IsNullOrWhiteSpace($versionDirName)) {

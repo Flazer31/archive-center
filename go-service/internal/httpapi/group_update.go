@@ -1,10 +1,7 @@
 package httpapi
 
 import (
-	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,7 +45,6 @@ type githubAssetRecord struct {
 type updateAssetInfo struct {
 	Name        string `json:"name"`
 	Size        int64  `json:"size"`
-	SHA256      string `json:"sha256,omitempty"`
 	DownloadURL string `json:"download_url,omitempty"`
 }
 
@@ -65,7 +61,6 @@ type updateCheckResult struct {
 	RuntimeArch         string           `json:"runtime_arch"`
 	Distribution        string           `json:"distribution,omitempty"`
 	SelectedAsset       *updateAssetInfo `json:"selected_asset,omitempty"`
-	SHA256Source        string           `json:"sha256_source,omitempty"`
 	ApplySupported      bool             `json:"apply_supported"`
 	DownloadSupported   bool             `json:"download_supported"`
 	ReleaseTag          string           `json:"release_tag"`
@@ -82,7 +77,6 @@ type updateDownloadRequest struct {
 	CurrentVersion string `json:"current_version"`
 	Platform       string `json:"platform"`
 	AssetName      string `json:"asset_name"`
-	ExpectedSHA256 string `json:"expected_sha256"`
 }
 
 type updateApplyRequest struct {
@@ -95,7 +89,6 @@ type pendingPackageUpdate struct {
 	CurrentVersion  string   `json:"current_version"`
 	TargetVersion   string   `json:"target_version"`
 	AssetPath       string   `json:"asset_path"`
-	SHA256          string   `json:"sha256"`
 	RequiredFiles   []string `json:"required_files,omitempty"`
 }
 
@@ -239,19 +232,7 @@ func (s *Server) handleUpdateDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "update_asset_not_found", "no compatible update asset was found")
 		return
 	}
-	expected := normalizeSHA256(asset.SHA256)
-	if expected == "" {
-		writeError(w, http.StatusBadGateway, "update_sha256_missing", "selected update asset has no SHA256 entry")
-		return
-	}
-	if supplied := strings.TrimSpace(req.ExpectedSHA256); supplied != "" {
-		clientExpected := normalizeSHA256(supplied)
-		if clientExpected == "" || !strings.EqualFold(clientExpected, expected) {
-			writeBadRequest(w, "expected_sha256 must match the selected release SHA256SUMS entry")
-			return
-		}
-	}
-	staged, err := s.downloadAndStageUpdateAsset(r.Context(), current, result.LatestVersion, *asset, expected)
+	staged, err := s.downloadAndStageUpdateAsset(r.Context(), current, result.LatestVersion, *asset)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "update_download_failed", err.Error())
 		return
@@ -276,7 +257,6 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
 	var req updateApplyRequest
 	if err := decoder.Decode(&req); err != nil && err != io.EOF {
 		writeBadRequest(w, "invalid update apply request: "+err.Error())
@@ -313,12 +293,7 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "update_asset_not_found", "no compatible update asset was found")
 		return
 	}
-	expected := normalizeSHA256(asset.SHA256)
-	if expected == "" {
-		writeError(w, http.StatusBadGateway, "update_sha256_missing", "selected update asset has no SHA256 entry")
-		return
-	}
-	staged, err := s.downloadAndStageUpdateAsset(r.Context(), current, result.LatestVersion, *asset, expected)
+	staged, err := s.downloadAndStageUpdateAsset(r.Context(), current, result.LatestVersion, *asset)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "update_download_failed", err.Error())
 		return
@@ -355,8 +330,7 @@ func (s *Server) resolveLatestUpdate(ctx context.Context, currentVersion, platfo
 		return nil, err
 	}
 	latest := versionFromTag(release.TagName)
-	shaMap, shaSource := fetchReleaseSHA256Map(ctx, release.Assets)
-	selected := selectUpdateAsset(platform, release.Assets, shaMap)
+	selected := selectUpdateAsset(platform, release.Assets)
 	result := &updateCheckResult{
 		Status:              "ok",
 		PolicyVersion:       "update-check.v2",
@@ -370,9 +344,8 @@ func (s *Server) resolveLatestUpdate(ctx context.Context, currentVersion, platfo
 		RuntimeArch:         runtime.GOARCH,
 		Distribution:        detectRuntimeDistribution(runtime.GOOS),
 		SelectedAsset:       selected,
-		SHA256Source:        shaSource,
 		ApplySupported:      s.updateApplySupported(),
-		DownloadSupported:   selected != nil && selected.SHA256 != "",
+		DownloadSupported:   selected != nil,
 		ReleaseTag:          release.TagName,
 		ReleaseName:         release.Name,
 		ReleaseURL:          release.HTMLURL,
@@ -393,11 +366,6 @@ func (s *Server) resolveLatestUpdate(ctx context.Context, currentVersion, platfo
 		result.CompatibleAssetNote = "no asset name matched the requested platform"
 		result.CompatibilityStatus = "platform_asset_missing"
 		result.CompatibilityReason = "the release does not contain a package for the running OS and CPU"
-		return result, nil
-	}
-	if normalizeSHA256(selected.SHA256) == "" {
-		result.CompatibilityStatus = "sha256_missing"
-		result.CompatibilityReason = "the selected platform package is not covered by the release SHA256SUMS"
 		return result, nil
 	}
 	root, err := s.updateStagingRoot()
@@ -482,67 +450,7 @@ func fetchGitHubLatestRelease(ctx context.Context, repo string) (*githubReleaseR
 	return &release, nil
 }
 
-func fetchReleaseSHA256Map(ctx context.Context, assets []githubAssetRecord) (map[string]string, string) {
-	var sumsAsset *githubAssetRecord
-	for i := range assets {
-		name := strings.ToLower(strings.TrimSpace(assets[i].Name))
-		if strings.HasPrefix(name, "sha256sums") && strings.HasSuffix(name, ".txt") {
-			sumsAsset = &assets[i]
-			break
-		}
-	}
-	if sumsAsset == nil || strings.TrimSpace(sumsAsset.BrowserDownloadURL) == "" {
-		return map[string]string{}, ""
-	}
-	if validateUpdateDownloadURL(sumsAsset.BrowserDownloadURL) != nil {
-		return map[string]string{}, ""
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumsAsset.BrowserDownloadURL, nil)
-	if err != nil {
-		return map[string]string{}, ""
-	}
-	req.Header.Set("User-Agent", "Archive-Center-Updater")
-	resp, err := updateHTTPClient.Do(req)
-	if err != nil {
-		return map[string]string{}, ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return map[string]string{}, ""
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return map[string]string{}, ""
-	}
-	return parseSHA256SUMS(string(body)), sumsAsset.Name
-}
-
-func parseSHA256SUMS(text string) map[string]string {
-	out := map[string]string{}
-	scanner := bufio.NewScanner(strings.NewReader(text))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		sum := normalizeSHA256(fields[0])
-		if sum == "" {
-			continue
-		}
-		name := strings.TrimPrefix(strings.Join(fields[1:], " "), "*")
-		name = strings.TrimSpace(name)
-		if name != "" {
-			out[name] = sum
-		}
-	}
-	return out
-}
-
-func selectUpdateAsset(platform string, assets []githubAssetRecord, shaMap map[string]string) *updateAssetInfo {
+func selectUpdateAsset(platform string, assets []githubAssetRecord) *updateAssetInfo {
 	platform = normalizeUpdatePlatform(platform)
 	for _, preferUpdatePayload := range []bool{true, false} {
 		for _, asset := range assets {
@@ -559,7 +467,6 @@ func selectUpdateAsset(platform string, assets []githubAssetRecord, shaMap map[s
 			return &updateAssetInfo{
 				Name:        asset.Name,
 				Size:        asset.Size,
-				SHA256:      lookupSHA256ForAsset(shaMap, asset.Name),
 				DownloadURL: asset.BrowserDownloadURL,
 			}
 		}
@@ -592,26 +499,13 @@ func assetMatchesPlatform(name, platform string) bool {
 	}
 }
 
-func lookupSHA256ForAsset(shaMap map[string]string, assetName string) string {
-	if sha := shaMap[assetName]; sha != "" {
-		return sha
-	}
-	want := comparableAssetName(assetName)
-	for name, sha := range shaMap {
-		if comparableAssetName(name) == want {
-			return sha
-		}
-	}
-	return ""
-}
-
 func comparableAssetName(name string) string {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	normalized := regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(lower, " ")
 	return strings.Join(strings.Fields(normalized), " ")
 }
 
-func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion, latestVersion string, asset updateAssetInfo, expectedSHA256 string) (map[string]any, error) {
+func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion, latestVersion string, asset updateAssetInfo) (map[string]any, error) {
 	root, err := s.updateStagingRoot()
 	if err != nil {
 		return nil, err
@@ -632,7 +526,7 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 	if !pathInside(target, root) {
 		return nil, fmt.Errorf("refusing to stage update outside staging directory")
 	}
-	n, actual, err := s.downloadVerifiedUpdateAsset(ctx, asset, expectedSHA256, target)
+	n, err := s.downloadUpdateAsset(ctx, asset, target)
 	if err != nil {
 		return nil, err
 	}
@@ -644,7 +538,6 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 			CurrentVersion:  strings.TrimSpace(currentVersion),
 			TargetVersion:   strings.TrimSpace(latestVersion),
 			AssetPath:       target,
-			SHA256:          actual,
 			RequiredFiles:   requiredUpdatePackageFiles(runtime.GOOS),
 		}
 		pendingPath = filepath.Join(root, "pending-update.json")
@@ -658,7 +551,6 @@ func (s *Server) downloadAndStageUpdateAsset(ctx context.Context, currentVersion
 		"latest_version":    latestVersion,
 		"asset_name":        asset.Name,
 		"bytes":             n,
-		"sha256":            actual,
 		"staged_path":       target,
 		"apply_supported":   applySupported,
 		"apply_timing":      "next_start",
@@ -679,7 +571,7 @@ func (s *Server) preflightUpdateAsset(ctx context.Context, packageRoot, currentV
 		return fmt.Errorf("invalid update asset filename")
 	}
 	target := filepath.Join(tempRoot, fileName)
-	_, actual, err := s.downloadVerifiedUpdateAsset(ctx, asset, asset.SHA256, target)
+	_, err = s.downloadUpdateAsset(ctx, asset, target)
 	if err != nil {
 		return err
 	}
@@ -687,67 +579,60 @@ func (s *Server) preflightUpdateAsset(ctx context.Context, packageRoot, currentV
 		CurrentVersion: currentVersion,
 		TargetVersion:  targetVersion,
 		AssetPath:      target,
-		SHA256:         actual,
 		RequiredFiles:  requiredUpdatePackageFiles(runtime.GOOS),
 	})
 }
 
-func (s *Server) downloadVerifiedUpdateAsset(ctx context.Context, asset updateAssetInfo, expectedSHA256, target string) (int64, string, error) {
+func (s *Server) downloadUpdateAsset(ctx context.Context, asset updateAssetInfo, target string) (int64, error) {
 	if err := validateUpdateDownloadURL(asset.DownloadURL); err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.DownloadURL, nil)
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	req.Header.Set("User-Agent", "Archive-Center-Updater")
 	resp, err := updateHTTPClient.Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return 0, "", fmt.Errorf("asset download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return 0, fmt.Errorf("asset download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	maxBytes := s.Cfg.UpdateMaxDownloadBytes
 	if maxBytes <= 0 {
 		maxBytes = 1024 * 1024 * 1024
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return 0, "", err
+		return 0, err
 	}
 	tmp := target + ".tmp"
 	out, err := os.Create(tmp)
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
-	h := sha256.New()
-	n, copyErr := io.Copy(out, io.TeeReader(io.LimitReader(resp.Body, maxBytes+1), h))
+	n, copyErr := io.Copy(out, io.LimitReader(resp.Body, maxBytes+1))
 	closeErr := out.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmp)
-		return 0, "", copyErr
+		return 0, copyErr
 	}
 	if closeErr != nil {
 		_ = os.Remove(tmp)
-		return 0, "", closeErr
+		return 0, closeErr
 	}
 	if n > maxBytes {
 		_ = os.Remove(tmp)
-		return 0, "", fmt.Errorf("download exceeded configured limit")
-	}
-	actual := hex.EncodeToString(h.Sum(nil))
-	if !strings.EqualFold(actual, normalizeSHA256(expectedSHA256)) {
-		_ = os.Remove(tmp)
-		return 0, "", fmt.Errorf("sha256 mismatch for %s", asset.Name)
+		return 0, fmt.Errorf("download exceeded configured limit")
 	}
 	_ = os.Remove(target)
 	if err := os.Rename(tmp, target); err != nil {
 		_ = os.Remove(tmp)
-		return 0, "", err
+		return 0, err
 	}
-	return n, actual, nil
+	return n, nil
 }
 
 func requiredUpdatePackageFiles(goos string) []string {
@@ -760,7 +645,6 @@ func requiredUpdatePackageFiles(goos string) []string {
 			packageupdate.PackageReleaseStatusName,
 			"scripts/start-full-windows.ps1",
 			"01_start_archive_center_windows.bat",
-			"PACKAGE_MIGRATION_UPDATE.json",
 			"Archive Center.js",
 		}
 	case "darwin":
@@ -771,7 +655,6 @@ func requiredUpdatePackageFiles(goos string) []string {
 			packageupdate.PackageReleaseStatusName,
 			"scripts/start-full-posix.sh",
 			"scripts/start-full-macos.sh",
-			"PACKAGE_MIGRATION_UPDATE.json",
 			"Archive Center.js",
 		}
 	case "android":
@@ -782,7 +665,6 @@ func requiredUpdatePackageFiles(goos string) []string {
 			packageupdate.PackageReleaseStatusName,
 			"scripts/start-full-posix.sh",
 			"scripts/install-and-start-termux.sh",
-			"PACKAGE_MIGRATION_UPDATE.json",
 			"Archive Center.js",
 		}
 	default:
@@ -793,7 +675,6 @@ func requiredUpdatePackageFiles(goos string) []string {
 			packageupdate.PackageReleaseStatusName,
 			"scripts/start-full-posix.sh",
 			"scripts/start-full-linux.sh",
-			"PACKAGE_MIGRATION_UPDATE.json",
 			"Archive Center.js",
 		}
 	}
@@ -1068,14 +949,6 @@ func validateUpdateDownloadURL(raw string) error {
 		return fmt.Errorf("update download URL must use HTTPS")
 	}
 	return nil
-}
-
-func normalizeSHA256(value string) string {
-	s := strings.ToLower(strings.TrimSpace(value))
-	if regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(s) {
-		return s
-	}
-	return ""
 }
 
 func sanitizeAssetFileName(name string) string {

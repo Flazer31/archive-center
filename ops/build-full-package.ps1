@@ -542,8 +542,7 @@ Copy-File "ops/full-package/04_protect_env_windows.bat" "04_protect_env_windows.
 Copy-File "ops/full-package/05_unprotect_env_windows.bat" "05_unprotect_env_windows.bat"
 Copy-File "ops/full-package/.env.full.example" ".env.full.example"
 Copy-Directory "ops/full-package/scripts" "scripts" @(
-    "migrate-legacy-1.0-windows.ps1",
-    "apply-update-compatibility-bridge.ps1"
+    "migrate-legacy-1.0-windows.ps1"
 )
 Copy-File "ops/install-windows.ps1" "tools/install-windows.ps1"
 Copy-File "LICENSE" "LICENSE"

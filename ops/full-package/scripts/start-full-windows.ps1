@@ -530,7 +530,6 @@ function Invoke-ArchiveUpdater {
     if (-not (Test-Path -LiteralPath $RunnerPath -PathType Leaf)) {
         throw "Archive Center updater runner is missing: $RunnerPath"
     }
-    $runnerSHA256 = Get-LowerSHA256 $RunnerPath
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $RunnerPath
     $startInfo.Arguments = Join-Args @($Command, "--root", $PackageRoot)
@@ -546,7 +545,7 @@ function Invoke-ArchiveUpdater {
             throw "Process.Start returned false."
         }
     } catch {
-        throw "Archive Center updater failed to start for '$Command' (runner_sha256=$runnerSHA256): $(ConvertTo-UpdaterDiagnostic $_.Exception.Message)"
+        throw "Archive Center updater failed to start for '$Command': $(ConvertTo-UpdaterDiagnostic $_.Exception.Message)"
     }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
@@ -554,7 +553,7 @@ function Invoke-ArchiveUpdater {
     $stdout = ([string]$stdoutTask.GetAwaiter().GetResult()).Trim()
     $stderr = ([string]$stderrTask.GetAwaiter().GetResult()).Trim()
     $exitCode = $process.ExitCode
-    $diagnostic = "exit=$exitCode runner_sha256=$runnerSHA256 stdout=$(ConvertTo-UpdaterDiagnostic $stdout) stderr=$(ConvertTo-UpdaterDiagnostic $stderr)"
+    $diagnostic = "exit=$exitCode stdout=$(ConvertTo-UpdaterDiagnostic $stdout) stderr=$(ConvertTo-UpdaterDiagnostic $stderr)"
 
     if ($exitCode -eq 0) {
         if ([string]::IsNullOrWhiteSpace($stdout) -or -not [string]::IsNullOrWhiteSpace($stderr)) {
@@ -592,7 +591,6 @@ function Invoke-ArchiveUpdater {
         ExitCode = $exitCode
         Status = $status
         Result = $result
-        RunnerSHA256 = $runnerSHA256
         Diagnostic = $diagnostic
     }
 }
@@ -616,7 +614,6 @@ function Write-UpdaterRunnerIdentity {
         contract_version = "archive-center.updater-runner-identity.v1"
         target_version = $TargetVersion.Trim()
         runner_path = $relative
-        runner_sha256 = Get-LowerSHA256 $runnerFull
         written_at = [DateTimeOffset]::UtcNow.ToString("o")
     }
     $identityPath = Join-Path $PackageRoot ".updates\runner-identity.json"
@@ -639,17 +636,10 @@ function New-BoundUpdaterRunner {
     if (-not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
         throw "Archive Center updater is missing: $UpdaterPath"
     }
-    $runnerSHA256 = Get-LowerSHA256 $UpdaterPath
     $runnerRoot = Join-Path $PackageRoot ".updates\runner"
     New-Item -ItemType Directory -Force -Path $runnerRoot | Out-Null
-    $runner = Join-Path $runnerRoot ("archive-center-updater-$runnerSHA256.exe")
-    if (Test-Path -LiteralPath $runner -PathType Leaf) {
-        if ((Get-LowerSHA256 $runner) -cne $runnerSHA256) {
-            throw "Existing updater runner hash mismatched its bound filename."
-        }
-    } else {
-        Copy-Item -LiteralPath $UpdaterPath -Destination $runner
-    }
+    $runner = Join-Path $runnerRoot "updater.exe"
+    Copy-Item -LiteralPath $UpdaterPath -Destination $runner -Force
     if (-not [string]::IsNullOrWhiteSpace($TargetVersion)) {
         Write-UpdaterRunnerIdentity -PackageRoot $PackageRoot -RunnerPath $runner -TargetVersion $TargetVersion
     }
@@ -684,18 +674,10 @@ function Resolve-BoundUpdaterRunner {
         -not (Test-Path -LiteralPath $runner -PathType Leaf)) {
         throw "Updater runner identity path is missing or unsafe."
     }
-    $identitySHA256 = ([string]$identity.runner_sha256).Trim().ToLowerInvariant()
-    if ($identitySHA256 -notmatch '^[0-9a-f]{64}$' -or (Get-LowerSHA256 $runner) -cne $identitySHA256) {
-        throw "Updater runner identity SHA256 mismatch."
-    }
     $stateRunnerPath = ([string]$State.runner_path).Replace('/', '\')
-    $stateRunnerSHA256 = ([string]$State.runner_sha256).Trim().ToLowerInvariant()
-    if (-not [string]::IsNullOrWhiteSpace($stateRunnerPath) -or -not [string]::IsNullOrWhiteSpace($stateRunnerSHA256)) {
-        if ([string]::IsNullOrWhiteSpace($stateRunnerPath) -or [string]::IsNullOrWhiteSpace($stateRunnerSHA256)) {
-            throw "Active update state has an incomplete runner identity."
-        }
+    if (-not [string]::IsNullOrWhiteSpace($stateRunnerPath)) {
         $stateRunner = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot $stateRunnerPath))
-        if ($stateRunner -cne $runner -or $stateRunnerSHA256 -cne $identitySHA256) {
+        if ($stateRunner -cne $runner) {
             throw "Updater runner identity does not match the durable update state."
         }
     }

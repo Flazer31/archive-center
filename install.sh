@@ -64,7 +64,7 @@ run_as_root() {
 }
 
 dependencies_ready() {
-	has_cmd curl && has_cmd python3 && has_cmd unzip && { has_cmd sha256sum || has_cmd shasum; }
+	has_cmd curl && has_cmd python3 && has_cmd unzip
 }
 
 prepare_linux_dependencies() {
@@ -82,7 +82,7 @@ prepare_linux_dependencies() {
 	elif has_cmd pacman; then
 		run_as_root pacman -S --needed --noconfirm curl python unzip coreutils
 	else
-		die "cannot prepare curl, python3, unzip, and checksum tools: no supported Linux package manager was found"
+		die "cannot prepare curl, python3, and unzip: no supported Linux package manager was found"
 	fi
 }
 
@@ -101,7 +101,7 @@ ensure_homebrew() {
 }
 
 prepare_macos_dependencies() {
-	if ! has_cmd python3 || ! has_cmd unzip || { ! has_cmd sha256sum && ! has_cmd shasum; }; then
+	if ! has_cmd python3 || ! has_cmd unzip; then
 		ensure_homebrew
 	fi
 	if ! has_cmd python3; then
@@ -109,12 +109,6 @@ prepare_macos_dependencies() {
 	fi
 	if ! has_cmd unzip; then
 		brew install unzip
-	fi
-	if ! has_cmd sha256sum && ! has_cmd shasum; then
-		brew install coreutils
-		coreutils_prefix=$(brew --prefix coreutils)
-		PATH="$coreutils_prefix/libexec/gnubin:$PATH"
-		export PATH
 	fi
 }
 
@@ -193,7 +187,7 @@ if ! dependencies_ready; then
 		prepare_macos_dependencies
 	fi
 fi
-dependencies_ready || die "curl, python3, unzip, and sha256sum or shasum are required after dependency preparation"
+dependencies_ready || die "curl, python3, and unzip are required after dependency preparation"
 
 helper_path="$BOOTSTRAP_DIR/install-github-release.sh"
 curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" \

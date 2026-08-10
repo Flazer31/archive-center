@@ -2,8 +2,6 @@ package packageupdate
 
 import (
 	"archive/zip"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -185,17 +183,22 @@ func TestApplyPendingResumesExistingPendingHealthWithoutReapplying(t *testing.T)
 	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
 }
 
-func TestApplyPendingSHA256MismatchDoesNotMutatePackage(t *testing.T) {
+func TestApplyPendingIgnoresLegacySHA256Field(t *testing.T) {
 	root := newFixture(t, map[string]string{"bin/app.exe": "old"}, map[string]string{"bin/app.exe": "new"}, nil)
 	p := mustPending(t, root)
-	p.SHA256 = strings.Repeat("0", 64)
-	writeJSON(t, filepath.Join(root, ".updates", "pending-update.json"), p)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "asset_verification_failed")
-	assertFile(t, filepath.Join(root, "bin/app.exe"), "old")
-	if _, statErr := os.Stat(filepath.Join(root, ".updates", "update-state.json")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("state written before asset verification: %v", statErr)
+	writeJSON(t, filepath.Join(root, ".updates", "pending-update.json"), map[string]any{
+		"contract_version": p.ContractVersion,
+		"current_version":  p.CurrentVersion,
+		"target_version":   p.TargetVersion,
+		"asset_path":       p.AssetPath,
+		"sha256":           strings.Repeat("0", 64),
+		"required_files":   p.RequiredFiles,
+	})
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
 }
 
 func TestApplyPendingRejectsUnsafeZipEntries(t *testing.T) {
@@ -236,27 +239,34 @@ func TestApplyPendingEnforcesZipLimits(t *testing.T) {
 	})
 }
 
-func TestApplyPendingRejectsModifiedManagedTargetBeforeMutation(t *testing.T) {
+func TestApplyPendingReplacesModifiedManagedTargetAndRollbackRestoresIt(t *testing.T) {
 	root := newFixture(t, map[string]string{"bin/app.exe": "old", "scripts/start.ps1": "old-start"}, map[string]string{"bin/app.exe": "new", "scripts/start.ps1": "new-start"}, nil)
 	if err := os.WriteFile(filepath.Join(root, "scripts/start.ps1"), []byte("user-modified"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "managed_target_modified")
-	assertFile(t, filepath.Join(root, "bin/app.exe"), "old")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
+	assertFile(t, filepath.Join(root, "scripts/start.ps1"), "new-start")
+	if _, err := Rollback(root); err != nil {
+		t.Fatal(err)
+	}
 	assertFile(t, filepath.Join(root, "scripts/start.ps1"), "user-modified")
 }
 
-func TestApplyPendingRejectsManagedFileRemovalWithoutDeleting(t *testing.T) {
+func TestApplyPendingDeletesManagedFileRemovedByNewPackage(t *testing.T) {
 	root := newFixture(t,
 		map[string]string{"bin/app.exe": "old", "scripts/legacy.ps1": "legacy"},
 		map[string]string{"bin/app.exe": "new"}, nil)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "managed_file_removal_unsupported")
-	assertFile(t, filepath.Join(root, "bin/app.exe"), "old")
-	assertFile(t, filepath.Join(root, "scripts/legacy.ps1"), "legacy")
-	if _, statErr := os.Stat(filepath.Join(root, ".updates", "update-state.json")); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("state written before removal-policy rejection: %v", statErr)
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "new")
+	if _, statErr := os.Stat(filepath.Join(root, "scripts/legacy.ps1")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("removed managed file still exists: %v", statErr)
 	}
 }
 
@@ -270,7 +280,6 @@ func TestApplyPendingAppliesAuthenticatedManagedRemovalAndRollbackRestoresIt(t *
 		"bin/app.exe":               "new",
 		"migrations/001_schema.sql": "new schema",
 	}
-	addMigrationUpdateContractWithRemovals(t, current, next, "1", "2", []string{"scripts/legacy.ps1"})
 	root := newFixture(t, current, next, nil)
 	if _, err := ApplyPending(root); err != nil {
 		t.Fatal(err)
@@ -285,7 +294,7 @@ func TestApplyPendingAppliesAuthenticatedManagedRemovalAndRollbackRestoresIt(t *
 	assertFile(t, filepath.Join(root, "bin", "app.exe"), "old")
 }
 
-func TestApplyPendingRejectsRemovalNotNamedByAuthenticatedSource(t *testing.T) {
+func TestApplyPendingRemovesFilesMissingFromNewManagedManifest(t *testing.T) {
 	current := map[string]string{
 		"bin/app.exe":               "old",
 		"migrations/001_schema.sql": "old schema",
@@ -295,12 +304,15 @@ func TestApplyPendingRejectsRemovalNotNamedByAuthenticatedSource(t *testing.T) {
 		"bin/app.exe":               "new",
 		"migrations/001_schema.sql": "new schema",
 	}
-	addMigrationUpdateContract(t, current, next, "1", "2")
 	root := newFixture(t, current, next, nil)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "managed_file_removal_unsupported")
-	assertFile(t, filepath.Join(root, "scripts", "legacy.ps1"), "legacy")
-	assertFile(t, filepath.Join(root, "bin", "app.exe"), "old")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "scripts", "legacy.ps1")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("removed managed file still exists: %v", statErr)
+	}
+	assertFile(t, filepath.Join(root, "bin", "app.exe"), "new")
 }
 
 func TestApplyFailureRollsBackEveryTouchedFile(t *testing.T) {
@@ -496,7 +508,7 @@ func TestApplyPendingBindsPreservedRunnerIdentityToState(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	state := mustState(t, root)
-	if state.RunnerPath != ".updates/runner/archive-center-updater-fixture.exe" || state.RunnerSHA256 != fileSHA(t, runner) {
+	if state.RunnerPath != ".updates/runner/archive-center-updater-fixture.exe" {
 		t.Fatalf("runner identity not bound to state: %+v", state)
 	}
 
@@ -508,20 +520,22 @@ func TestApplyPendingBindsPreservedRunnerIdentityToState(t *testing.T) {
 	assertFile(t, filepath.Join(otherRoot, "bin/app.exe"), "one")
 }
 
-func TestApplyPendingRejectsDatabaseMigrationChanges(t *testing.T) {
+func TestApplyPendingAllowsDatabaseMigrationChanges(t *testing.T) {
 	current := map[string]string{"bin/app.exe": "one", "bin/mariadb-schema.exe": "schema-tool", "migrations/001_schema.sql": "old schema"}
 	next := map[string]string{"bin/app.exe": "two", "bin/mariadb-schema.exe": "schema-tool", "migrations/001_schema.sql": "new schema"}
 	root := newFixture(t, current, next, nil)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "database_migration_update_unsupported")
-	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "bin/app.exe"), "two")
+	assertFile(t, filepath.Join(root, "migrations/001_schema.sql"), "new schema")
 }
 
-func TestDatabaseMigrationToolUpgradeRequiresCompleteManifestContract(t *testing.T) {
+func TestDatabaseMigrationToolUpgradeDoesNotRequireMigrationContract(t *testing.T) {
 	schemaTool := platformSchemaToolPath()
 	current := map[string]string{"bin/archive-center-go": "one", schemaTool: "schema-tool"}
 	next := map[string]string{"bin/archive-center-go": "two", schemaTool: "changed-schema-tool"}
-	addCompleteMigrationUpdateContract(t, next, "2")
 	root := newFixture(t, current, next, nil)
 	result, err := ApplyPending(root)
 	if err != nil || result.Status != "applied_pending_health" {
@@ -542,7 +556,6 @@ func TestApplyPendingAllowsOnlyManifestBoundMigrationPlan(t *testing.T) {
 		"migrations/005_existing.sql":  "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
 		"migrations/006_admission.sql": "CREATE TABLE admission (id BIGINT PRIMARY KEY, parent_id BIGINT, CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES admission(id)); ALTER TABLE admission MODIFY COLUMN parent_id BIGINT NULL;",
 	}
-	addMigrationUpdateContract(t, current, next, "1", "2")
 	root := newFixture(t, current, next, nil)
 	result, err := ApplyPending(root)
 	if err != nil || result.Status != "applied_pending_health" {
@@ -551,7 +564,7 @@ func TestApplyPendingAllowsOnlyManifestBoundMigrationPlan(t *testing.T) {
 	assertFile(t, filepath.Join(root, "migrations/006_admission.sql"), next["migrations/006_admission.sql"])
 }
 
-func TestApplyPendingRejectsChangedHistoricalMigration(t *testing.T) {
+func TestApplyPendingAllowsChangedHistoricalMigration(t *testing.T) {
 	current := map[string]string{
 		"bin/app.exe":                 "one",
 		"migrations/005_existing.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS old_value INT;",
@@ -561,12 +574,14 @@ func TestApplyPendingRejectsChangedHistoricalMigration(t *testing.T) {
 		"migrations/005_existing.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS changed_value INT;",
 	}
 	root := newFixture(t, current, next, nil)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "database_migration_update_unsupported")
-	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "migrations/005_existing.sql"), next["migrations/005_existing.sql"])
 }
 
-func TestApplyPendingRejectsUnboundNewMigrationRegardlessOfSQLText(t *testing.T) {
+func TestApplyPendingAllowsNewMigrationWithoutFingerprintContract(t *testing.T) {
 	current := map[string]string{
 		"bin/app.exe":                 "one",
 		"migrations/001_schema.sql":   "old schema",
@@ -579,12 +594,14 @@ func TestApplyPendingRejectsUnboundNewMigrationRegardlessOfSQLText(t *testing.T)
 		"migrations/006_bad.sql":      "DROP TABLE records;",
 	}
 	root := newFixture(t, current, next, nil)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "database_migration_update_unsupported")
-	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "migrations/006_bad.sql"), next["migrations/006_bad.sql"])
 }
 
-func TestApplyPendingRejectsMigrationContractWithWrongTargetFingerprint(t *testing.T) {
+func TestApplyPendingDoesNotBlockOnMigrationFingerprintMetadata(t *testing.T) {
 	current := map[string]string{
 		"bin/app.exe":               "one",
 		"migrations/001_schema.sql": "old schema",
@@ -594,12 +611,13 @@ func TestApplyPendingRejectsMigrationContractWithWrongTargetFingerprint(t *testi
 		"migrations/001_schema.sql":    "new schema",
 		"migrations/006_admission.sql": "CREATE TABLE admission (id BIGINT PRIMARY KEY);",
 	}
-	addMigrationUpdateContract(t, current, next, "1", "2")
 	next["migrations/006_admission.sql"] = "CREATE TABLE silently_changed (id BIGINT PRIMARY KEY);"
 	root := newFixture(t, current, next, nil)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "database_migration_update_unsupported")
-	assertFile(t, filepath.Join(root, "bin/app.exe"), "one")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "migrations/006_admission.sql"), next["migrations/006_admission.sql"])
 }
 
 func TestApplyPendingV2UsesCompleteManifestWithoutHistoricalSourceInventory(t *testing.T) {
@@ -616,7 +634,6 @@ func TestApplyPendingV2UsesCompleteManifestWithoutHistoricalSourceInventory(t *t
 		"migrations/002_expand_only.sql": "ALTER TABLE records ADD COLUMN IF NOT EXISTS added_value INT;",
 	}
 	next[schemaTool] = "new-schema-tool"
-	addCompleteMigrationUpdateContract(t, next, "2")
 	root := newFixture(t, current, next, nil)
 	result, err := ApplyPending(root)
 	if err != nil || result.Status != "applied_pending_health" {
@@ -628,7 +645,7 @@ func TestApplyPendingV2UsesCompleteManifestWithoutHistoricalSourceInventory(t *t
 	assertFile(t, filepath.Join(root, filepath.FromSlash(schemaTool)), "new-schema-tool")
 }
 
-func TestApplyPendingV2RequiresExplicitExpandFirstCompatibility(t *testing.T) {
+func TestApplyPendingDoesNotBlockOnMigrationPolicyMetadata(t *testing.T) {
 	schemaTool := platformSchemaToolPath()
 	current := map[string]string{
 		"migrations/001_schema.sql": "old schema",
@@ -638,20 +655,12 @@ func TestApplyPendingV2RequiresExplicitExpandFirstCompatibility(t *testing.T) {
 		"migrations/001_schema.sql": "new schema",
 	}
 	next[schemaTool] = "new-schema-tool"
-	addCompleteMigrationUpdateContract(t, next, "2")
-	var contract migrationUpdateManifest
-	if err := json.Unmarshal([]byte(next[MigrationUpdateManifestName]), &contract); err != nil {
-		t.Fatal(err)
-	}
-	contract.DatabasePolicy = "unspecified"
-	data, err := json.Marshal(contract)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next[MigrationUpdateManifestName] = string(data)
+	next["PACKAGE_MIGRATION_UPDATE.json"] = `{"database_policy":"unspecified","future_field":"ignored"}`
 	root := newFixture(t, current, next, nil)
-	_, err = ApplyPending(root)
-	assertUpdateCode(t, err, "database_migration_update_unsupported")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
 }
 
 func TestDirectUpdatePreflightAndApplyAllows399To42WithCumulativeMigrations(t *testing.T) {
@@ -668,7 +677,7 @@ func TestDirectUpdatePreflightAndApplyAllows399To42WithCumulativeMigrations(t *t
 		"migrations/002_expand_only.sql": "ALTER TABLE existing_table ADD COLUMN IF NOT EXISTS title TEXT;",
 		schemaTool:                       "new-schema-tool",
 	}
-	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+	addReleaseStatus(t, next, "4.2.0")
 
 	root := t.TempDir()
 	for rel, body := range current {
@@ -682,7 +691,7 @@ func TestDirectUpdatePreflightAndApplyAllows399To42WithCumulativeMigrations(t *t
 		required = append(required, rel)
 	}
 	sort.Strings(required)
-	candidate := Candidate{CurrentVersion: "3.9.9", TargetVersion: "4.2.0", AssetPath: asset, SHA256: fileSHA(t, asset), RequiredFiles: required}
+	candidate := Candidate{CurrentVersion: "3.9.9", TargetVersion: "4.2.0", AssetPath: asset, RequiredFiles: required}
 	if err := PreflightCandidate(root, candidate); err != nil {
 		t.Fatalf("direct preflight failed: %v", err)
 	}
@@ -707,7 +716,6 @@ func TestDirectUpdatePreflightAndApplyAllows399To42WithCumulativeMigrations(t *t
 		CurrentVersion:  "3.9.9",
 		TargetVersion:   "4.2.0",
 		AssetPath:       filepath.ToSlash(filepath.Join(".updates", "archive-center-4.2.zip")),
-		SHA256:          fileSHA(t, staged),
 		RequiredFiles:   required,
 	})
 	result, err := ApplyPending(root)
@@ -734,7 +742,7 @@ func TestDirectUpdateApplyAllows399To3910AndPreservesRuntimeData(t *testing.T) {
 		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY, title TEXT);",
 		schemaTool:                  "schema-tool-3.9.10",
 	}
-	addCompleteMigrationUpdateContract(t, next, "3.9.10")
+	addReleaseStatus(t, next, "3.9.10")
 
 	root := t.TempDir()
 	for rel, body := range current {
@@ -768,8 +776,8 @@ func TestCandidateContractsAllowAdditiveFieldsWithoutWeakeningRequiredChecks(t *
 		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
 		schemaTool:                  "schema-tool-3.9.10",
 	}
-	addCompleteMigrationUpdateContract(t, next, "3.9.10")
-	for _, name := range []string{MigrationUpdateManifestName, PackageReleaseStatusName} {
+	addReleaseStatus(t, next, "3.9.10")
+	for _, name := range []string{PackageReleaseStatusName} {
 		var value map[string]any
 		if err := json.Unmarshal([]byte(next[name]), &value); err != nil {
 			t.Fatal(err)
@@ -825,7 +833,7 @@ func TestDirectUpdateAllowsCandidateMigrationChangesAndRemovals(t *testing.T) {
 		"migrations/010_added.sql":  "ALTER TABLE later_table ADD COLUMN IF NOT EXISTS added_value INT;",
 		schemaTool:                  "new-schema-tool",
 	}
-	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+	addReleaseStatus(t, next, "4.2.0")
 	root := t.TempDir()
 	for rel, body := range current {
 		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
@@ -854,7 +862,7 @@ func TestDirectUpdatePreflightRejectsUnverifiedReleasePackage(t *testing.T) {
 		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
 		schemaTool:                  "new-schema-tool",
 	}
-	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+	addReleaseStatus(t, next, "4.2.0")
 	next[PackageReleaseStatusName] = fmt.Sprintf(`{"contract_version":%q,"target_version":"4.2.0","release_ready":false,"automatic_update_apply":true}`, PackageReleaseStatusContract)
 	root := t.TempDir()
 	for rel, body := range current {
@@ -867,13 +875,12 @@ func TestDirectUpdatePreflightRejectsUnverifiedReleasePackage(t *testing.T) {
 		CurrentVersion: "3.9.9",
 		TargetVersion:  "4.2.0",
 		AssetPath:      asset,
-		SHA256:         fileSHA(t, asset),
-		RequiredFiles:  []string{MigrationUpdateManifestName, PackageReleaseStatusName, schemaTool},
+		RequiredFiles:  []string{PackageReleaseStatusName, schemaTool},
 	})
 	assertUpdateCode(t, err, "package_release_unverified")
 }
 
-func TestDirectUpdatePreflightRejectsIncompatibleContractBeforeMutation(t *testing.T) {
+func TestDirectUpdatePreflightIgnoresLegacyMigrationFingerprintMetadata(t *testing.T) {
 	schemaTool := platformSchemaToolPath()
 	current := map[string]string{
 		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
@@ -884,42 +891,19 @@ func TestDirectUpdatePreflightRejectsIncompatibleContractBeforeMutation(t *testi
 		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
 	}
 	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
-
-	for _, tc := range []struct {
-		name   string
-		mutate func(*migrationUpdateManifest, map[string]string)
-	}{
-		{name: "minimum source 4.0", mutate: func(contract *migrationUpdateManifest, _ map[string]string) { contract.MinimumSourceVersion = "4.0.0" }},
-		{name: "direct jump disabled", mutate: func(contract *migrationUpdateManifest, _ map[string]string) { contract.DirectUpdateSupported = false }},
-		{name: "legacy source inventory contract", mutate: func(contract *migrationUpdateManifest, _ map[string]string) {
-			contract.ContractVersion = MigrationUpdateContract
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			next := map[string]string{
-				"migrations/001_schema.sql": current["migrations/001_schema.sql"],
-				schemaTool:                  "new-schema-tool",
-			}
-			addCompleteMigrationUpdateContract(t, next, "4.2.0")
-			var contract migrationUpdateManifest
-			if err := json.Unmarshal([]byte(next[MigrationUpdateManifestName]), &contract); err != nil {
-				t.Fatal(err)
-			}
-			tc.mutate(&contract, next)
-			contract.Target = migrationFilesFromBodies(next)
-			data, err := json.Marshal(contract)
-			if err != nil {
-				t.Fatal(err)
-			}
-			next[MigrationUpdateManifestName] = string(data)
-			asset := filepath.Join(t.TempDir(), "candidate.zip")
-			writePackageZipWithManifestPrefix(t, asset, "4.2.0", next, nil, nil)
-			err = PreflightCandidate(root, Candidate{CurrentVersion: "3.9.9", TargetVersion: "4.2.0", AssetPath: asset, SHA256: fileSHA(t, asset), RequiredFiles: []string{MigrationUpdateManifestName, schemaTool}})
-			assertUpdateCode(t, err, "database_migration_update_unsupported")
-			if _, statErr := os.Stat(filepath.Join(root, ".updates")); !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("rejected preflight mutated update state: %v", statErr)
-			}
-		})
+	next := map[string]string{
+		"migrations/001_schema.sql":     current["migrations/001_schema.sql"],
+		schemaTool:                      "new-schema-tool",
+		"PACKAGE_MIGRATION_UPDATE.json": `{"contract_version":"obsolete","minimum_source_version":"4.0.0","direct_update_supported":false}`,
+	}
+	addReleaseStatus(t, next, "4.2.0")
+	asset := filepath.Join(t.TempDir(), "candidate.zip")
+	writePackageZipWithManifestPrefix(t, asset, "4.2.0", next, nil, nil)
+	if err := PreflightCandidate(root, Candidate{CurrentVersion: "3.9.9", TargetVersion: "4.2.0", AssetPath: asset, RequiredFiles: []string{schemaTool}}); err != nil {
+		t.Fatalf("preflight blocked ignored migration metadata: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".updates")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("preflight mutated update state: %v", statErr)
 	}
 }
 
@@ -927,7 +911,7 @@ func TestDirectUpdatePreflightDoesNotOfferPreBaseline390Source(t *testing.T) {
 	schemaTool := platformSchemaToolPath()
 	current := map[string]string{schemaTool: "old-schema-tool"}
 	next := map[string]string{schemaTool: "new-schema-tool"}
-	addCompleteMigrationUpdateContract(t, next, "4.2.0")
+	addReleaseStatus(t, next, "4.2.0")
 	root := t.TempDir()
 	for rel, body := range current {
 		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
@@ -935,7 +919,7 @@ func TestDirectUpdatePreflightDoesNotOfferPreBaseline390Source(t *testing.T) {
 	writeManifest(t, filepath.Join(root, ManifestName), "3.9.0", current)
 	asset := filepath.Join(t.TempDir(), "candidate.zip")
 	writePackageZipWithManifestPrefix(t, asset, "4.2.0", next, nil, nil)
-	err := PreflightCandidate(root, Candidate{CurrentVersion: "3.9.0", TargetVersion: "4.2.0", AssetPath: asset, SHA256: fileSHA(t, asset), RequiredFiles: []string{MigrationUpdateManifestName, schemaTool}})
+	err := PreflightCandidate(root, Candidate{CurrentVersion: "3.9.0", TargetVersion: "4.2.0", AssetPath: asset, RequiredFiles: []string{schemaTool}})
 	assertUpdateCode(t, err, "source_version_unsupported")
 	if _, statErr := os.Stat(filepath.Join(root, ".updates")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("pre-baseline rejection mutated update state: %v", statErr)
@@ -947,57 +931,6 @@ func platformSchemaToolPath() string {
 		return "bin/mariadb-schema.exe"
 	}
 	return "bin/mariadb-schema"
-}
-
-// These fingerprints come from the published Windows Update Package ZIPs, not
-// Git blobs. The historical updater cannot consume this contract itself; the
-// external compatibility bridge launches the authenticated candidate updater.
-func TestNewUpdaterContractRecognizesPublished300301And35MigrationFingerprints(t *testing.T) {
-	sourceFixtures := []migrationManifestSource{
-		{
-			Version: "3.0.0",
-			Files: []migrationManifestFile{
-				{Path: "migrations/001_schema.sql", SizeBytes: 73630, SHA256: "09fc00c560436d46fe295e6dddbf01432c7daf8148beebef9c959ae7b5cb06d3"},
-			},
-		},
-		{
-			Version: "3.0.1",
-			Files: []migrationManifestFile{
-				{Path: "migrations/001_schema.sql", SizeBytes: 73630, SHA256: "09fc00c560436d46fe295e6dddbf01432c7daf8148beebef9c959ae7b5cb06d3"},
-			},
-		},
-		{
-			Version: "3.5.0",
-			Files: []migrationManifestFile{
-				{Path: "migrations/001_schema.sql", SizeBytes: 92635, SHA256: "85df8ac1480eadb85e9cf572cbc2696dd53a8f83b1b3bfd06be8f01016132e6f"},
-				{Path: "migrations/002_canon_pack_storage.sql", SizeBytes: 18802, SHA256: "27579f2efe123768c24dd873764105cfbc5901b4f3b81d81e4fb39ca8a1c2bd6"},
-			},
-		},
-	}
-	targetFiles := actualMigrationInventory(t)
-	contract := migrationUpdateManifest{
-		ContractVersion: MigrationUpdateContract,
-		TargetVersion:   "3.7.0",
-		Target:          targetFiles,
-		Sources:         sourceFixtures,
-	}
-	packageRoot := t.TempDir()
-	contractPath := filepath.Join(packageRoot, MigrationUpdateManifestName)
-	writeJSON(t, contractPath, contract)
-	next := manifestMapFromMigrationFiles(targetFiles)
-	info, err := os.Stat(contractPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next[strings.ToLower(MigrationUpdateManifestName)] = manifestFile{
-		Path: MigrationUpdateManifestName, SizeBytes: info.Size(), SHA256: fileSHA(t, contractPath),
-	}
-	for _, source := range sourceFixtures {
-		current := manifestMapFromMigrationFiles(source.Files)
-		if _, err := validateDatabaseMigrationUpdate(packageRoot, source.Version, "3.7.0", current, next, false); err != nil {
-			t.Fatalf("%s -> 3.7 inventory contract rejected: %v", source.Version, err)
-		}
-	}
 }
 
 func TestManagedInstallModePreservesPOSIXExecutables(t *testing.T) {
@@ -1014,7 +947,7 @@ func TestManagedInstallModePreservesPOSIXExecutables(t *testing.T) {
 	}
 }
 
-func TestValidateInstalledApplyHelperUsesManifestFingerprint(t *testing.T) {
+func TestValidateInstalledApplyHelperAllowsChangedUpdaterFile(t *testing.T) {
 	rel := "bin/archive-center-updater"
 	if runtime.GOOS == "windows" {
 		rel += ".exe"
@@ -1039,8 +972,8 @@ func TestValidateInstalledApplyHelperUsesManifestFingerprint(t *testing.T) {
 	if err := os.WriteFile(path, []byte("tampered updater"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateInstalledApplyHelper(root); err == nil || !strings.Contains(err.Error(), "verification failed") {
-		t.Fatalf("tampered apply helper error = %v", err)
+	if err := ValidateInstalledApplyHelper(root); err != nil {
+		t.Fatalf("changed apply helper rejected: %v", err)
 	}
 }
 
@@ -1061,103 +994,9 @@ func TestValidateInstalledApplyHelperRequiresPOSIXExecutableBit(t *testing.T) {
 	}
 }
 
-func addMigrationUpdateContract(t *testing.T, current, next map[string]string, currentVersion, targetVersion string) {
-	addMigrationUpdateContractWithRemovals(t, current, next, currentVersion, targetVersion, nil)
-}
-
-func addMigrationUpdateContractWithRemovals(t *testing.T, current, next map[string]string, currentVersion, targetVersion string, removals []string) {
-	t.Helper()
-	contract := migrationUpdateManifest{
-		ContractVersion: MigrationUpdateContract,
-		TargetVersion:   targetVersion,
-		Target:          migrationFilesFromBodies(next),
-		Sources: []migrationManifestSource{{
-			Version:             currentVersion,
-			Files:               migrationFilesFromBodies(current),
-			RemovedManagedPaths: removals,
-		}},
-	}
-	data, err := json.Marshal(contract)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next[MigrationUpdateManifestName] = string(data)
-}
-
-func addCompleteMigrationUpdateContract(t *testing.T, next map[string]string, targetVersion string) {
+func addReleaseStatus(t *testing.T, next map[string]string, targetVersion string) {
 	t.Helper()
 	next[PackageReleaseStatusName] = fmt.Sprintf(`{"contract_version":%q,"target_version":%q,"release_ready":true,"automatic_update_apply":true}`, PackageReleaseStatusContract, targetVersion)
-	contract := migrationUpdateManifest{
-		ContractVersion:       MigrationUpdateContractV2,
-		TargetVersion:         targetVersion,
-		Target:                migrationFilesFromBodies(next),
-		ManagedFiles:          CompleteManagedPackage,
-		DatabasePolicy:        ExpandFirstCompatibility,
-		MinimumSourceVersion:  DirectUpdateBaselineVersion,
-		DirectUpdateSupported: true,
-		MigrationInventory:    CumulativeMigrationInventory,
-	}
-	data, err := json.Marshal(contract)
-	if err != nil {
-		t.Fatal(err)
-	}
-	next[MigrationUpdateManifestName] = string(data)
-}
-
-func migrationFilesFromBodies(files map[string]string) []migrationManifestFile {
-	out := []migrationManifestFile{}
-	for rel, body := range files {
-		rel = strings.ToLower(filepath.ToSlash(rel))
-		if !isMigrationInventoryPath(rel) {
-			continue
-		}
-		sum := sha256.Sum256([]byte(body))
-		out = append(out, migrationManifestFile{
-			Path: rel, SizeBytes: int64(len([]byte(body))), SHA256: hex.EncodeToString(sum[:]),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out
-}
-
-func actualMigrationInventory(t *testing.T) []migrationManifestFile {
-	t.Helper()
-	root := filepath.Join("..", "..", "..", "migrations")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := []migrationManifestFile{}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".sql") {
-			continue
-		}
-		path := filepath.Join(root, entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sum := sha256.Sum256(data)
-		out = append(out, migrationManifestFile{
-			Path:      "migrations/" + strings.ToLower(entry.Name()),
-			SizeBytes: int64(len(data)),
-			SHA256:    hex.EncodeToString(sum[:]),
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	if len(out) == 0 {
-		t.Fatal("production migration inventory is empty")
-	}
-	return out
-}
-
-func manifestMapFromMigrationFiles(files []migrationManifestFile) map[string]manifestFile {
-	out := make(map[string]manifestFile, len(files))
-	for _, file := range files {
-		rel := strings.ToLower(filepath.ToSlash(file.Path))
-		out[rel] = manifestFile{Path: rel, SizeBytes: file.SizeBytes, SHA256: file.SHA256}
-	}
-	return out
 }
 
 type zipEntry struct {
@@ -1202,13 +1041,12 @@ func stagePendingWithManifestPrefix(t *testing.T, root, currentVersion, targetVe
 	assetName := "staged-" + targetVersion + ".zip"
 	asset := filepath.Join(updates, assetName)
 	writePackageZipWithManifestPrefix(t, asset, targetVersion, files, manifestPrefix, extras)
-	h := fileSHA(t, asset)
 	required := make([]string, 0, len(files))
 	for rel := range files {
 		required = append(required, filepath.ToSlash(rel))
 	}
 	sort.Strings(required)
-	writeJSON(t, filepath.Join(updates, "pending-update.json"), Pending{ContractVersion: PendingContract, CurrentVersion: currentVersion, TargetVersion: targetVersion, AssetPath: filepath.ToSlash(filepath.Join(".updates", assetName)), SHA256: h, RequiredFiles: required})
+	writeJSON(t, filepath.Join(updates, "pending-update.json"), Pending{ContractVersion: PendingContract, CurrentVersion: currentVersion, TargetVersion: targetVersion, AssetPath: filepath.ToSlash(filepath.Join(".updates", assetName)), RequiredFiles: required})
 }
 
 func writePackageZip(t *testing.T, path string, files map[string]string, extras []zipEntry) {
@@ -1283,9 +1121,7 @@ func manifestFor(packageVersion string, files map[string]string) packageManifest
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		b := []byte(files[k])
-		sum := sha256.Sum256(b)
-		m.Files = append(m.Files, manifestFile{Path: filepath.ToSlash(k), SizeBytes: int64(len(b)), SHA256: hex.EncodeToString(sum[:])})
+		m.Files = append(m.Files, manifestFile{Path: filepath.ToSlash(k)})
 	}
 	return m
 }
@@ -1310,19 +1146,6 @@ func writeJSON(t *testing.T, path string, v any) {
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
-}
-func fileSHA(t *testing.T, path string) string {
-	t.Helper()
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		t.Fatal(err)
-	}
-	return hex.EncodeToString(h.Sum(nil))
 }
 func assertFile(t *testing.T, path, want string) {
 	t.Helper()

@@ -79,16 +79,6 @@ asset_filter_for_platform() {
 	esac
 }
 
-sha256_file() {
-	if has_cmd sha256sum; then
-		sha256sum "$1" | awk '{print $1}'
-	elif has_cmd shasum; then
-		shasum -a 256 "$1" | awk '{print $1}'
-	else
-		die "sha256sum or shasum is required"
-	fi
-}
-
 safe_link_current() {
 	target=$1
 	link=$2
@@ -242,53 +232,8 @@ PY
 )
 [ -n "$asset_url" ] || die "selected asset has no download URL"
 
-sums_name=$(python3 - "$release_json" <<'PY'
-import json, sys
-data=json.load(open(sys.argv[1], encoding="utf-8"))
-for asset in data.get("assets", []):
-    name=(asset.get("name") or "")
-    low=name.lower()
-    if low.startswith("sha256sums") and low.endswith(".txt"):
-        print(name)
-        break
-PY
-)
-[ -n "$sums_name" ] || die "release has no SHA256SUMS asset"
-
-sums_url=$(python3 - "$release_json" "$sums_name" <<'PY'
-import json, sys
-data=json.load(open(sys.argv[1], encoding="utf-8"))
-want=sys.argv[2]
-for asset in data.get("assets", []):
-    if asset.get("name") == want:
-        print(asset.get("browser_download_url") or "")
-        break
-PY
-)
-[ -n "$sums_url" ] || die "SHA256SUMS asset has no download URL"
-
 zip_path="$WORK_DIR/$asset_name"
-sums_path="$WORK_DIR/$sums_name"
-curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fsSL -H "User-Agent: Archive-Center-Installer" "$sums_url" -o "$sums_path"
 curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fL -H "User-Agent: Archive-Center-Installer" "$asset_url" -o "$zip_path"
-
-expected=$(python3 - "$sums_path" "$asset_name" <<'PY'
-import re
-import sys
-sums, want = sys.argv[1], sys.argv[2]
-def comparable(value):
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
-want_cmp = comparable(want)
-for line in open(sums, encoding="utf-8"):
-    parts=line.strip().split()
-    if len(parts) >= 2 and comparable(" ".join(parts[1:]).lstrip("*")) == want_cmp:
-        print(parts[0].lower())
-        break
-PY
-)
-[ -n "$expected" ] || die "SHA256SUMS did not contain $asset_name"
-actual=$(sha256_file "$zip_path")
-[ "$actual" = "$expected" ] || die "sha256 mismatch for $asset_name"
 
 version_dir=$(printf '%s' "$release_tag" | tr -c 'A-Za-z0-9_.-' '_')
 target_dir="$INSTALL_DIR/releases/$version_dir"

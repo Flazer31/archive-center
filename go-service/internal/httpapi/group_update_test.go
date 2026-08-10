@@ -28,7 +28,7 @@ func (f updateRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) 
 	return f(r)
 }
 
-func TestUpdateCheckSelectsPlatformAssetAndSHA256(t *testing.T) {
+func TestUpdateCheckSelectsPlatformAsset(t *testing.T) {
 	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
@@ -85,8 +85,8 @@ func TestUpdateCheckSelectsPlatformAssetAndSHA256(t *testing.T) {
 	if !ok {
 		t.Fatalf("selected_asset missing: %+v", resp)
 	}
-	if asset["name"] != assetName || asset["sha256"] != sha {
-		t.Fatalf("selected_asset = %+v, want runtime asset with sha", asset)
+	if asset["name"] != assetName {
+		t.Fatalf("selected_asset = %+v, want runtime asset", asset)
 	}
 	if resp["runtime_os"] != runtime.GOOS || resp["runtime_arch"] != runtime.GOARCH || resp["platform"] != platform {
 		t.Fatalf("runtime identity missing from check response: %+v", resp)
@@ -109,14 +109,15 @@ func TestUpdateCheckReportsLatestOnlyWhenDirectPreflightPasses(t *testing.T) {
 		withSHA         bool
 		withoutLauncher bool
 		sourceVersion   string
+		wantAvailable   bool
 		wantStatus      string
 	}{
 		{name: "managed launcher unavailable", withAsset: true, withSHA: true, withoutLauncher: true, zipBytes: compatibleUpdateTestZip(t, "4.2.0"), wantStatus: "managed_launcher_unavailable"},
 		{name: "missing platform asset", withSHA: true, wantStatus: "platform_asset_missing"},
-		{name: "missing sha", withAsset: true, zipBytes: compatibleUpdateTestZip(t, "4.2.0"), wantStatus: "sha256_missing"},
-		{name: "missing compatibility contract", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", nil, false), wantStatus: "preflight_package_verification_failed"},
-		{name: "source floor above current", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"minimum_source_version": "4.0.0"}, true), wantStatus: "preflight_database_migration_update_unsupported"},
-		{name: "direct jump disabled", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"direct_update_supported": false}, true), wantStatus: "preflight_database_migration_update_unsupported"},
+		{name: "missing sha", withAsset: true, zipBytes: compatibleUpdateTestZip(t, "4.2.0"), wantAvailable: true, wantStatus: "compatible"},
+		{name: "missing compatibility contract", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", nil, false), wantAvailable: true, wantStatus: "compatible"},
+		{name: "source floor metadata above current", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"minimum_source_version": "4.0.0"}, true), wantAvailable: true, wantStatus: "compatible"},
+		{name: "direct jump metadata disabled", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"direct_update_supported": false}, true), wantAvailable: true, wantStatus: "compatible"},
 		{name: "release package not certified", withAsset: true, withSHA: true, zipBytes: updateTestZip(t, "4.2.0", map[string]any{"__release_ready": false}, true), wantStatus: "preflight_package_release_unverified"},
 		{name: "pre baseline source", withAsset: true, withSHA: true, sourceVersion: "3.9.0", zipBytes: compatibleUpdateTestZip(t, "4.2.0"), wantStatus: "preflight_source_version_unsupported"},
 	} {
@@ -170,7 +171,7 @@ func TestUpdateCheckReportsLatestOnlyWhenDirectPreflightPasses(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 				t.Fatal(err)
 			}
-			if resp["update_available"] != false || resp["compatibility_status"] != tc.wantStatus {
+			if resp["update_available"] != tc.wantAvailable || resp["compatibility_status"] != tc.wantStatus {
 				t.Fatalf("incompatible check response=%+v", resp)
 			}
 			if _, err := os.Stat(filepath.Join(packageRoot, ".updates")); !errors.Is(err, os.ErrNotExist) {
@@ -180,7 +181,7 @@ func TestUpdateCheckReportsLatestOnlyWhenDirectPreflightPasses(t *testing.T) {
 	}
 }
 
-func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
+func TestUpdateDownloadStagesSelectedReleaseAsset(t *testing.T) {
 	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
@@ -230,7 +231,7 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp["status"] != "ok" || resp["sha256"] != sha || resp["apply_supported"] != true || resp["next_step"] != "restart_archive_center_to_apply" {
+	if resp["status"] != "ok" || resp["apply_supported"] != true || resp["next_step"] != "restart_archive_center_to_apply" {
 		t.Fatalf("unexpected download response: %+v", resp)
 	}
 	stagedPath, _ := resp["staged_path"].(string)
@@ -252,7 +253,7 @@ func TestUpdateDownloadStagesVerifiedAsset(t *testing.T) {
 	if err := json.Unmarshal(pendingBytes, &pending); err != nil {
 		t.Fatalf("decode pending update: %v", err)
 	}
-	if pending.ContractVersion != "archive-center.pending-update.v1" || pending.CurrentVersion != "3.9.9" || pending.TargetVersion != "4.2.0" || pending.AssetPath != stagedPath || pending.SHA256 != sha {
+	if pending.ContractVersion != "archive-center.pending-update.v1" || pending.CurrentVersion != "3.9.9" || pending.TargetVersion != "4.2.0" || pending.AssetPath != stagedPath {
 		t.Fatalf("pending update mismatch: %+v", pending)
 	}
 	wantRequired := requiredUpdatePackageFiles(runtime.GOOS)
@@ -296,10 +297,10 @@ func TestRequiredUpdatePackageFilesArePlatformSpecific(t *testing.T) {
 		goos string
 		want []string
 	}{
-		{goos: "windows", want: []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", packageupdate.PackageReleaseStatusName, "scripts/start-full-windows.ps1", "01_start_archive_center_windows.bat", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
-		{goos: "linux", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/start-full-linux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
-		{goos: "darwin", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/start-full-macos.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
-		{goos: "android", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/install-and-start-termux.sh", "PACKAGE_MIGRATION_UPDATE.json", "Archive Center.js"}},
+		{goos: "windows", want: []string{"bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", packageupdate.PackageReleaseStatusName, "scripts/start-full-windows.ps1", "01_start_archive_center_windows.bat", "Archive Center.js"}},
+		{goos: "linux", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/start-full-linux.sh", "Archive Center.js"}},
+		{goos: "darwin", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/start-full-macos.sh", "Archive Center.js"}},
+		{goos: "android", want: []string{"bin/archive-center-go", "bin/archive-center-updater", "bin/mariadb-schema", packageupdate.PackageReleaseStatusName, "scripts/start-full-posix.sh", "scripts/install-and-start-termux.sh", "Archive Center.js"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.goos, func(t *testing.T) {
@@ -311,7 +312,7 @@ func TestRequiredUpdatePackageFilesArePlatformSpecific(t *testing.T) {
 	}
 }
 
-func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
+func TestUpdateDownloadIgnoresLegacyClientSHAField(t *testing.T) {
 	zipBytes := compatibleUpdateTestZip(t, "4.2.0")
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
@@ -344,7 +345,7 @@ func TestUpdateDownloadRejectsClientSHAOverride(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/update/download", strings.NewReader(`{"current_version":"3.9.9","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "must match") {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("override status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
@@ -446,7 +447,6 @@ func TestUpdateApplyFrom399To3910ResolvesDownloadsStagesAcknowledgesThenRequests
 	}
 	if strings.Join(requests, "\n") != strings.Join([]string{
 		"https://api.github.com/repos/Flazer31/archive-center/releases/latest",
-		"https://example.test/sums.txt",
 		"https://example.test/package.zip",
 		"https://example.test/package.zip",
 	}, "\n") {
@@ -471,7 +471,7 @@ func TestUpdateApplyFrom399To3910ResolvesDownloadsStagesAcknowledgesThenRequests
 	}
 }
 
-func TestUpdateApplyRejectsIncompatibleDirectJumpBeforePendingOrShutdown(t *testing.T) {
+func TestUpdateApplyAllowsDirectJumpDespiteLegacyMigrationMetadata(t *testing.T) {
 	zipBytes := updateTestZip(t, "4.2.0", map[string]any{"minimum_source_version": "4.0.0"}, true)
 	sum := sha256.Sum256(zipBytes)
 	sha := hex.EncodeToString(sum[:])
@@ -505,14 +505,14 @@ func TestUpdateApplyRejectsIncompatibleDirectJumpBeforePendingOrShutdown(t *test
 	srv.RegisterRoutes(mux)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/update/apply", strings.NewReader(`{}`)))
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "preflight_database_migration_update_unsupported") {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if shutdownCalls != 0 {
-		t.Fatalf("incompatible apply requested shutdown %d times", shutdownCalls)
+	if shutdownCalls != 1 {
+		t.Fatalf("apply requested shutdown %d times", shutdownCalls)
 	}
-	if _, err := os.Stat(filepath.Join(packageRoot, ".updates")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("incompatible apply created pending or update state: %v", err)
+	if _, err := os.Stat(filepath.Join(packageRoot, ".updates", "pending-update.json")); err != nil {
+		t.Fatalf("direct update did not stage pending package: %v", err)
 	}
 }
 
@@ -608,17 +608,14 @@ func TestParseOSReleaseDistributionObservesUbuntuID(t *testing.T) {
 	}
 }
 
-func TestSelectUpdateAssetMatchesDottedGitHubAssetNameAndSpacedSHAName(t *testing.T) {
-	zipBytes := []byte("archive-center-2.3-linux-arm64-package")
-	sum := sha256.Sum256(zipBytes)
-	sha := hex.EncodeToString(sum[:])
+func TestSelectUpdateAssetMatchesDottedGitHubAssetName(t *testing.T) {
 	asset := selectUpdateAsset("linux-arm64", []githubAssetRecord{{
 		Name:               "Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip",
 		BrowserDownloadURL: "https://example.test/linux-arm64.zip",
 		Size:               33,
-	}}, map[string]string{"Archive Center 2.3 Linux arm64 Auto Install Package.zip": sha})
-	if asset == nil || asset.Name != "Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip" || asset.SHA256 != sha {
-		t.Fatalf("selected asset = %+v, want dotted linux arm64 asset with spaced SHA lookup", asset)
+	}})
+	if asset == nil || asset.Name != "Archive.Center.2.3.Linux.arm64.Auto.Install.Package.zip" {
+		t.Fatalf("selected asset = %+v, want dotted linux arm64 asset", asset)
 	}
 }
 
@@ -645,20 +642,12 @@ func TestSelectUpdateAssetPrefersManagedUpdatePackageOverFullInstallPackage(t *t
 		{Name: "Archive Center 3.0.1 Windows Package.zip", BrowserDownloadURL: "https://example.test/full.zip", Size: 1000},
 		{Name: "Archive Center 3.0.1 Windows Update Package.zip", BrowserDownloadURL: "https://example.test/update.zip", Size: 100},
 	}
-	shaMap := map[string]string{
-		"Archive Center 3.0.1 Windows Package.zip":        strings.Repeat("a", 64),
-		"Archive Center 3.0.1 Windows Update Package.zip": strings.Repeat("b", 64),
-	}
-
-	asset := selectUpdateAsset("windows-x64", assets, shaMap)
+	asset := selectUpdateAsset("windows-x64", assets)
 	if asset == nil {
 		t.Fatal("expected a Windows update asset")
 	}
 	if asset.Name != "Archive Center 3.0.1 Windows Update Package.zip" || asset.DownloadURL != "https://example.test/update.zip" {
 		t.Fatalf("selected asset = %+v, want managed update package", asset)
-	}
-	if asset.SHA256 != strings.Repeat("b", 64) {
-		t.Fatalf("selected asset sha256 = %q", asset.SHA256)
 	}
 }
 
@@ -758,6 +747,7 @@ func compatibleUpdateTestZip(t *testing.T, targetVersion string) []byte {
 
 func updateTestZip(t *testing.T, targetVersion string, contractOverrides map[string]any, includeContract bool) []byte {
 	t.Helper()
+	const ignoredMigrationMetadataName = "PACKAGE_MIGRATION_UPDATE.json"
 	files := map[string][]byte{}
 	releaseReady := true
 	if value, present := contractOverrides["__release_ready"]; present {
@@ -766,9 +756,6 @@ func updateTestZip(t *testing.T, targetVersion string, contractOverrides map[str
 		}
 	}
 	for _, rel := range requiredUpdatePackageFiles(runtime.GOOS) {
-		if rel == packageupdate.MigrationUpdateManifestName {
-			continue
-		}
 		files[rel] = []byte("candidate:" + rel)
 	}
 	readiness, err := json.Marshal(map[string]any{
@@ -794,14 +781,14 @@ func updateTestZip(t *testing.T, targetVersion string, contractOverrides map[str
 		targetInventory = append(targetInventory, map[string]any{"path": rel, "size_bytes": len(body), "sha256": hex.EncodeToString(sum[:])})
 	}
 	contractFields := map[string]any{
-		"contract_version":        packageupdate.MigrationUpdateContractV2,
+		"contract_version":        "ignored-migration-metadata",
 		"target_version":          targetVersion,
 		"target":                  targetInventory,
-		"managed_files":           packageupdate.CompleteManagedPackage,
-		"database_policy":         packageupdate.ExpandFirstCompatibility,
+		"managed_files":           "ignored",
+		"database_policy":         "ignored",
 		"minimum_source_version":  packageupdate.DirectUpdateBaselineVersion,
 		"direct_update_supported": true,
-		"migration_inventory":     packageupdate.CumulativeMigrationInventory,
+		"migration_inventory":     "ignored",
 	}
 	for key, value := range contractOverrides {
 		if key == "__release_ready" {
@@ -814,7 +801,7 @@ func updateTestZip(t *testing.T, targetVersion string, contractOverrides map[str
 		t.Fatal(err)
 	}
 	if includeContract {
-		files[packageupdate.MigrationUpdateManifestName] = contract
+		files[ignoredMigrationMetadataName] = contract
 	}
 	manifestFiles := make([]map[string]any, 0, len(files))
 	keys := make([]string, 0, len(files))
