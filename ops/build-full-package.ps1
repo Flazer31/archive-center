@@ -581,7 +581,6 @@ function Write-PackageReleaseStatus([string]$Root, [string]$TargetVersion, [bool
         target_version = $TargetVersion.Trim()
         release_ready = $ReleaseReady
         automatic_update_apply = $true
-        verification_basis = if ($ReleaseReady) { "windows_managed_package_build_green" } else { "build_not_release_ready" }
     }
     [System.IO.File]::WriteAllText(
         (Join-Path $Root "PACKAGE_RELEASE_STATUS.json"),

@@ -758,6 +758,45 @@ func TestDirectUpdateApplyAllows399To3910AndPreservesRuntimeData(t *testing.T) {
 	assertFile(t, filepath.Join(root, ".runtime", "chromadb-data", "sentinel.txt"), "vectors-kept")
 }
 
+func TestCandidateContractsAllowAdditiveFieldsWithoutWeakeningRequiredChecks(t *testing.T) {
+	schemaTool := platformSchemaToolPath()
+	current := map[string]string{
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
+		schemaTool:                  "schema-tool-3.9.9",
+	}
+	next := map[string]string{
+		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
+		schemaTool:                  "schema-tool-3.9.10",
+	}
+	addCompleteMigrationUpdateContract(t, next, "3.9.10")
+	for _, name := range []string{MigrationUpdateManifestName, PackageReleaseStatusName} {
+		var value map[string]any
+		if err := json.Unmarshal([]byte(next[name]), &value); err != nil {
+			t.Fatal(err)
+		}
+		value["future_additive_metadata"] = "accepted"
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next[name] = string(data)
+	}
+
+	root := t.TempDir()
+	for rel, body := range current {
+		mustWrite(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
+	if err := os.MkdirAll(filepath.Join(root, ".updates"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stagePending(t, root, "3.9.9", "3.9.10", next)
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("additive candidate fields blocked update: result=%+v err=%v", result, err)
+	}
+}
+
 func TestManagedFileRemovalsPreserveManifestPathCase(t *testing.T) {
 	current := map[string]manifestFile{
 		"archive center.js":  {Path: "Archive Center.js"},

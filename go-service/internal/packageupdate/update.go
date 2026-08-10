@@ -648,6 +648,14 @@ func validateState(s State, updatesRoot string) error {
 }
 
 func readJSON(path string, dst any) (bool, error) {
+	return readJSONFile(path, dst, true)
+}
+
+func readPackageJSON(path string, dst any) (bool, error) {
+	return readJSONFile(path, dst, false)
+}
+
+func readJSONFile(path string, dst any, rejectUnknownFields bool) (bool, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -657,7 +665,9 @@ func readJSON(path string, dst any) (bool, error) {
 	}
 	defer f.Close()
 	dec := json.NewDecoder(io.LimitReader(f, 4*1024*1024))
-	dec.DisallowUnknownFields()
+	if rejectUnknownFields {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(dst); err != nil {
 		return true, err
 	}
@@ -1035,7 +1045,7 @@ func validateDatabaseMigrationUpdate(
 		return nil, fmt.Errorf("migration update contract verification failed: %w", err)
 	}
 	var contract migrationUpdateManifest
-	ok, err := readJSON(contractPath, &contract)
+	ok, err := readPackageJSON(contractPath, &contract)
 	if err != nil {
 		return nil, err
 	}
@@ -1285,7 +1295,7 @@ func validatePackageReleaseReadiness(packageRoot, targetVersion string, managed 
 		return fmt.Errorf("candidate does not manage %s", PackageReleaseStatusName)
 	}
 	var release packageReleaseManifest
-	ok, err := readJSON(filepath.Join(packageRoot, PackageReleaseStatusName), &release)
+	ok, err := readPackageJSON(filepath.Join(packageRoot, PackageReleaseStatusName), &release)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", PackageReleaseStatusName, err)
 	}

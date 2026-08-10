@@ -186,7 +186,6 @@ function Write-PackageReleaseStatus([string]$Root, [string]$TargetVersion, [stri
         target = $Target
         release_ready = $ReleaseReady
         automatic_update_apply = $true
-        verification_basis = if ($ReleaseReady) { "operator_confirmed_real_target_update_proof" } else { "cross_build_only" }
     }
     [System.IO.File]::WriteAllText(
         (Join-Path $Root "PACKAGE_RELEASE_STATUS.json"),
