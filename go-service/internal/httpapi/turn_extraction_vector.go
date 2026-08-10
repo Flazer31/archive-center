@@ -210,52 +210,11 @@ func callQueryEmbedding(ctx context.Context, cfg completeTurnEmbeddingConfig, in
 	return embeddings[0], model, nil
 }
 
-const (
-	voyageContextMaxChunksPerRequest = 512
-	voyageContextMaxInputBytes       = 96 << 10
-)
-
 // callDocumentEmbeddings preserves input order. voyage-context models receive
-// sibling chunks together up to the upstream request limit. Larger logical
-// documents are sent as consecutive multi-chunk groups instead of one
-// unbounded request or one request per chunk.
+// every sibling chunk in one inner inputs group, so the returned vector for a
+// chunk is conditioned on the other chunks in the same logical document.
 func callDocumentEmbeddings(ctx context.Context, cfg completeTurnEmbeddingConfig, inputs []string) ([]string, string, error) {
-	if !usesVoyageContextualizedEmbedding(cfg) || len(inputs) == 0 {
-		return callEmbeddingInputs(ctx, cfg, inputs, "document")
-	}
-	batches := voyageContextDocumentBatches(inputs)
-	results := make([]string, 0, len(inputs))
-	model := strings.TrimSpace(cfg.Model)
-	for i, batch := range batches {
-		grouped, resolvedModel, err := callEmbeddingInputs(ctx, cfg, batch, "document")
-		if err != nil {
-			return nil, "", fmt.Errorf("contextualized embedding batch %d/%d: %w", i+1, len(batches), err)
-		}
-		results = append(results, grouped...)
-		if strings.TrimSpace(resolvedModel) != "" {
-			model = resolvedModel
-		}
-	}
-	return results, model, nil
-}
-
-func voyageContextDocumentBatches(inputs []string) [][]string {
-	batches := make([][]string, 0, 1)
-	for start := 0; start < len(inputs); {
-		end := start
-		inputBytes := 0
-		for end < len(inputs) && end-start < voyageContextMaxChunksPerRequest {
-			nextBytes := len([]byte(inputs[end]))
-			if end > start && inputBytes+nextBytes > voyageContextMaxInputBytes {
-				break
-			}
-			inputBytes += nextBytes
-			end++
-		}
-		batches = append(batches, inputs[start:end])
-		start = end
-	}
-	return batches
+	return callEmbeddingInputs(ctx, cfg, inputs, "document")
 }
 
 func callEmbeddingInputs(ctx context.Context, cfg completeTurnEmbeddingConfig, inputs []string, inputType string) ([]string, string, error) {

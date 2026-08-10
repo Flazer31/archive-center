@@ -664,7 +664,7 @@ func TestDirectUpdatePreflightAndApplyAllows399To42WithCumulativeMigrations(t *t
 	}
 	next := map[string]string{
 		"bin/app.exe":                    "new-app",
-		"migrations/001_schema.sql":      current["migrations/001_schema.sql"],
+		"migrations/001_schema.sql":      "CREATE TABLE existing_table (id BIGINT PRIMARY KEY, title TEXT);",
 		"migrations/002_expand_only.sql": "ALTER TABLE existing_table ADD COLUMN IF NOT EXISTS title TEXT;",
 		schemaTool:                       "new-schema-tool",
 	}
@@ -731,7 +731,7 @@ func TestDirectUpdateApplyAllows399To3910AndPreservesRuntimeData(t *testing.T) {
 	next := map[string]string{
 		"Archive Center.js":         "plugin-3.9.10",
 		"bin/archive-center-go.exe": "backend-3.9.10",
-		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY, title TEXT);",
 		schemaTool:                  "schema-tool-3.9.10",
 	}
 	addCompleteMigrationUpdateContract(t, next, "3.9.10")
@@ -811,15 +811,18 @@ func TestManagedFileRemovalsPreserveManifestPathCase(t *testing.T) {
 	}
 }
 
-func TestDirectUpdatePreflightRejectsCumulativeMigrationRevisionGap(t *testing.T) {
+func TestDirectUpdateAllowsCandidateMigrationChangesAndRemovals(t *testing.T) {
 	schemaTool := platformSchemaToolPath()
 	current := map[string]string{
-		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
-		schemaTool:                  "old-schema-tool",
+		"migrations/001_schema.sql":   "CREATE TABLE existing_table (id BIGINT PRIMARY KEY);",
+		"migrations/002_obsolete.sql": "ALTER TABLE existing_table ADD COLUMN IF NOT EXISTS obsolete_value INT;",
+		"migrations/003_later.sql":    "CREATE TABLE IF NOT EXISTS later_table (id BIGINT PRIMARY KEY);",
+		schemaTool:                    "old-schema-tool",
 	}
 	next := map[string]string{
-		"migrations/001_schema.sql": current["migrations/001_schema.sql"],
-		"migrations/003_later.sql":  "CREATE TABLE later_table (id BIGINT PRIMARY KEY);",
+		"migrations/001_schema.sql": "CREATE TABLE existing_table (id BIGINT PRIMARY KEY, title TEXT);",
+		"migrations/003_later.sql":  "CREATE TABLE IF NOT EXISTS later_table (id BIGINT PRIMARY KEY, label TEXT);",
+		"migrations/010_added.sql":  "ALTER TABLE later_table ADD COLUMN IF NOT EXISTS added_value INT;",
 		schemaTool:                  "new-schema-tool",
 	}
 	addCompleteMigrationUpdateContract(t, next, "4.2.0")
@@ -829,8 +832,16 @@ func TestDirectUpdatePreflightRejectsCumulativeMigrationRevisionGap(t *testing.T
 	}
 	writeManifest(t, filepath.Join(root, ManifestName), "3.9.9", current)
 	stagePending(t, root, "3.9.9", "4.2.0", next)
-	_, err := ApplyPending(root)
-	assertUpdateCode(t, err, "database_migration_update_unsupported")
+	result, err := ApplyPending(root)
+	if err != nil || result.Status != "applied_pending_health" {
+		t.Fatalf("direct apply result=%+v err=%v", result, err)
+	}
+	assertFile(t, filepath.Join(root, "migrations", "001_schema.sql"), next["migrations/001_schema.sql"])
+	assertFile(t, filepath.Join(root, "migrations", "003_later.sql"), next["migrations/003_later.sql"])
+	assertFile(t, filepath.Join(root, "migrations", "010_added.sql"), next["migrations/010_added.sql"])
+	if _, statErr := os.Stat(filepath.Join(root, "migrations", "002_obsolete.sql")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("removed migration remains after direct update: %v", statErr)
+	}
 }
 
 func TestDirectUpdatePreflightRejectsUnverifiedReleasePackage(t *testing.T) {
@@ -882,9 +893,6 @@ func TestDirectUpdatePreflightRejectsIncompatibleContractBeforeMutation(t *testi
 		{name: "direct jump disabled", mutate: func(contract *migrationUpdateManifest, _ map[string]string) { contract.DirectUpdateSupported = false }},
 		{name: "legacy source inventory contract", mutate: func(contract *migrationUpdateManifest, _ map[string]string) {
 			contract.ContractVersion = MigrationUpdateContract
-		}},
-		{name: "historical migration changed", mutate: func(_ *migrationUpdateManifest, next map[string]string) {
-			next["migrations/001_schema.sql"] = "CREATE TABLE changed_table (id BIGINT PRIMARY KEY);"
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

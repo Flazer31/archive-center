@@ -1094,9 +1094,6 @@ func validateDatabaseMigrationUpdate(
 			if contract.MigrationInventory != CumulativeMigrationInventory {
 				return nil, fmt.Errorf("migration_inventory must declare %q", CumulativeMigrationInventory)
 			}
-			if err := validateCumulativeMigrationInventory(currentInventory, nextInventory); err != nil {
-				return nil, err
-			}
 		}
 		schemaTool := "bin/mariadb-schema"
 		if runtime.GOOS == "windows" {
@@ -1237,57 +1234,6 @@ func migrationInventoriesEqual(left, right map[string]migrationManifestFile) boo
 		}
 	}
 	return true
-}
-
-func validateCumulativeMigrationInventory(current, next map[string]migrationManifestFile) error {
-	for rel, existing := range current {
-		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
-			continue
-		}
-		candidate, present := next[rel]
-		if !present {
-			return fmt.Errorf("cumulative migration inventory omitted existing migration %q", rel)
-		}
-		if candidate.SizeBytes != existing.SizeBytes || normalizeSHA(candidate.SHA256) != normalizeSHA(existing.SHA256) {
-			return fmt.Errorf("cumulative migration inventory changed existing migration %q", rel)
-		}
-	}
-	return validateSequentialMigrationInventory(next)
-}
-
-func validateSequentialMigrationInventory(inventory map[string]migrationManifestFile) error {
-	revisions := map[int]string{}
-	maxRevision := 0
-	for rel := range inventory {
-		if !strings.HasPrefix(rel, "migrations/") || !strings.HasSuffix(rel, ".sql") {
-			continue
-		}
-		name := strings.TrimPrefix(rel, "migrations/")
-		parts := strings.SplitN(name, "_", 2)
-		if len(parts) != 2 || len(parts[0]) != 3 {
-			return fmt.Errorf("migration %q must start with a three-digit sequential revision", rel)
-		}
-		revision, err := strconv.Atoi(parts[0])
-		if err != nil || revision < 1 {
-			return fmt.Errorf("migration %q has an invalid revision", rel)
-		}
-		if existing, duplicate := revisions[revision]; duplicate {
-			return fmt.Errorf("migration revision %03d is duplicated by %q and %q", revision, existing, rel)
-		}
-		revisions[revision] = rel
-		if revision > maxRevision {
-			maxRevision = revision
-		}
-	}
-	if maxRevision == 0 {
-		return fmt.Errorf("cumulative migration inventory contains no SQL migrations")
-	}
-	for revision := 1; revision <= maxRevision; revision++ {
-		if _, present := revisions[revision]; !present {
-			return fmt.Errorf("cumulative migration inventory is missing revision %03d", revision)
-		}
-	}
-	return nil
 }
 
 func validatePackageReleaseReadiness(packageRoot, targetVersion string, managed map[string]manifestFile) error {
