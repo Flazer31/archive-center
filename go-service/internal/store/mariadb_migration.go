@@ -1125,11 +1125,14 @@ func sessionMigrationExpectedVectorDocument(
 	if !vectorKey.Valid || strings.TrimSpace(vectorKey.Text) == "" {
 		return SessionMigrationVectorDocument{}, false
 	}
+	contextTurnIndex, contextTurnKnown := sessionMigrationVectorContextTurn(plan.Vector, targetRow)
 	return SessionMigrationVectorDocument{
 		ID:                    plan.Vector.Tier + ":" + targetSessionID + ":" + vectorKey.Text,
 		MigrationID:           migrationID,
 		Tier:                  plan.Vector.Tier,
 		ChatSessionID:         targetSessionID,
+		ContextTurnIndex:      contextTurnIndex,
+		ContextTurnKnown:      contextTurnKnown,
 		SourceTable:           table,
 		SourceRowID:           vectorKey.Text,
 		SchemaVersion:         plan.Vector.SchemaVersion,
@@ -1137,6 +1140,29 @@ func sessionMigrationExpectedVectorDocument(
 		EmbeddingJSON:         embeddingJSON,
 		MigratedFromSessionID: sourceSessionID,
 	}, true
+}
+
+func sessionMigrationVectorContextTurn(plan *SessionMigrationVectorPlan, row sessionMigrationRow) (int, bool) {
+	if plan == nil || len(plan.ContextTurnColumns) == 0 {
+		return 0, false
+	}
+	turn := 0
+	known := false
+	for _, column := range plan.ContextTurnColumns {
+		cell := row.Values[column]
+		if !cell.Valid {
+			continue
+		}
+		candidate := sessionMigrationCellInt(cell)
+		if candidate < 0 || (candidate == 0 && !plan.ContextTurnZeroValid) {
+			continue
+		}
+		if !known || candidate > turn {
+			turn = candidate
+		}
+		known = true
+	}
+	return turn, known
 }
 
 func sessionMigrationVectorRowEligible(plan *SessionMigrationVectorPlan, row sessionMigrationRow) bool {
@@ -1760,6 +1786,10 @@ func sessionMigrationListVectorDocumentsForPlan(
 	for index, column := range vectorPlan.TextColumns {
 		selectText[index] = "t." + sessionMigrationQuoteIdentifier(column)
 	}
+	selectContextTurns := make([]string, len(vectorPlan.ContextTurnColumns))
+	for index, column := range vectorPlan.ContextTurnColumns {
+		selectContextTurns[index] = "t." + sessionMigrationQuoteIdentifier(column)
+	}
 	embeddingSelect := "''"
 	if vectorPlan.EmbeddingColumn != "" {
 		embeddingSelect = "t." + sessionMigrationQuoteIdentifier(vectorPlan.EmbeddingColumn)
@@ -1769,6 +1799,9 @@ func sessionMigrationListVectorDocumentsForPlan(
 		       arm.target_key, ` + embeddingSelect
 	if len(selectText) > 0 {
 		query += "," + strings.Join(selectText, ",")
+	}
+	if len(selectContextTurns) > 0 {
+		query += "," + strings.Join(selectContextTurns, ",")
 	}
 	query += `
 		FROM session_migration_vector_expected_ids ve
@@ -1792,9 +1825,13 @@ func sessionMigrationListVectorDocumentsForPlan(
 	for rows.Next() {
 		var id, sourceSessionID, targetSessionID, targetKey, embedding string
 		textValues := make([]sql.NullString, len(vectorPlan.TextColumns))
+		contextTurnValues := make([]sql.NullString, len(vectorPlan.ContextTurnColumns))
 		dest := []any{&id, &sourceSessionID, &targetSessionID, &targetKey, &embedding}
 		for index := range textValues {
 			dest = append(dest, &textValues[index])
+		}
+		for index := range contextTurnValues {
+			dest = append(dest, &contextTurnValues[index])
 		}
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
@@ -1803,11 +1840,17 @@ func sessionMigrationListVectorDocumentsForPlan(
 		for index, value := range textValues {
 			vectorRow.Values[vectorPlan.TextColumns[index]] = sessionMigrationCell{Valid: value.Valid, Text: value.String}
 		}
+		for index, value := range contextTurnValues {
+			vectorRow.Values[vectorPlan.ContextTurnColumns[index]] = sessionMigrationCell{Valid: value.Valid, Text: value.String}
+		}
+		contextTurnIndex, contextTurnKnown := sessionMigrationVectorContextTurn(vectorPlan, vectorRow)
 		docs = append(docs, SessionMigrationVectorDocument{
 			ID:                    id,
 			MigrationID:           migrationID,
 			Tier:                  vectorPlan.Tier,
 			ChatSessionID:         targetSessionID,
+			ContextTurnIndex:      contextTurnIndex,
+			ContextTurnKnown:      contextTurnKnown,
 			SourceTable:           table,
 			SourceRowID:           targetKey,
 			SchemaVersion:         vectorPlan.SchemaVersion,

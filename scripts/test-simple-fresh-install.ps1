@@ -96,7 +96,8 @@ try {
         -ExecutionPolicy Bypass `
         -File $posixBuilder `
         -OutputRoot $posixOutputRoot `
-        -PackageVersion 3.9.0-timeout-contract
+        -PackageVersion 3.9.0-timeout-contract `
+        -Zip
     Assert-True ($LASTEXITCODE -eq 0) "POSIX package contract build failed"
 
     $expectedPOSIXTargets = @{
@@ -135,6 +136,35 @@ try {
     foreach ($posixTextFile in $posixTextFiles) {
         $bytes = [System.IO.File]::ReadAllBytes($posixTextFile.FullName)
         Assert-True ([System.Array]::IndexOf($bytes, [byte]13) -lt 0) "generated POSIX package contains CRLF/CR: $($posixTextFile.FullName)"
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $posixZipFiles = @(Get-ChildItem -LiteralPath $posixOutputRoot -File -Filter "*.zip")
+    Assert-True ($posixZipFiles.Count -eq $expectedPOSIXTargets.Count) "not every supported POSIX package ZIP was built"
+    foreach ($posixZipFile in $posixZipFiles) {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($posixZipFile.FullName)
+        try {
+            $executableEntries = @($archive.Entries | Where-Object {
+                $_.FullName.StartsWith("bin/", [System.StringComparison]::Ordinal) -or
+                $_.FullName.EndsWith(".sh", [System.StringComparison]::OrdinalIgnoreCase) -or
+                $_.FullName.EndsWith(".command", [System.StringComparison]::OrdinalIgnoreCase)
+            })
+            Assert-True ($executableEntries.Count -gt 0) "generated POSIX ZIP had no executable entries: $($posixZipFile.Name)"
+            foreach ($entry in $executableEntries) {
+                $unixMode = (($entry.ExternalAttributes -shr 16) -band 0xFFFF)
+                Assert-True (($unixMode -band 0x49) -ne 0) "generated POSIX ZIP lost executable mode: $($posixZipFile.Name) / $($entry.FullName)"
+            }
+        } finally {
+            $archive.Dispose()
+        }
+
+        $tarListing = @(& tar.exe -tvf $posixZipFile.FullName 2>&1)
+        Assert-True ($LASTEXITCODE -eq 0) "system extractor could not read generated POSIX ZIP: $($posixZipFile.Name)"
+        foreach ($entryName in @("bin/archive-center-go", "bin/archive-center-updater")) {
+            $entryLine = @($tarListing | Where-Object { $_ -match ([regex]::Escape($entryName) + '$') }) | Select-Object -First 1
+            Assert-True ($null -ne $entryLine) "system extractor listing omitted $entryName`: $($posixZipFile.Name)"
+            Assert-True ([string]$entryLine -match '^-rwx') "system extractor lost executable mode for $entryName`: $($posixZipFile.Name) / $entryLine"
+        }
     }
 
     $macLauncher = Get-ChildItem -LiteralPath $posixOutputRoot -Recurse -File -Filter "Start Archive Center macOS.command" |

@@ -341,6 +341,34 @@ func TestSessionMigrationVectorPlansCoverCanonicalManagedTiers(t *testing.T) {
 	}
 }
 
+func TestSessionMigrationVectorPlansExposeOnlyExactTurnAnchors(t *testing.T) {
+	want := map[string][]string{
+		"memories":                {"turn_index"},
+		"direct_evidence_records": {"turn_anchor", "source_turn_end"},
+		"world_rules":             {"source_turn"},
+		"kg_triples":              {"source_turn"},
+		"precise_memory_units":    {"source_turn_end"},
+	}
+	for _, plan := range SessionMigrationExecutionPlans() {
+		if plan.Vector == nil {
+			continue
+		}
+		if got, ok := want[plan.Table]; ok {
+			if strings.Join(plan.Vector.ContextTurnColumns, ",") != strings.Join(got, ",") {
+				t.Errorf("%s context turn columns = %v, want %v", plan.Table, plan.Vector.ContextTurnColumns, got)
+			}
+			delete(want, plan.Table)
+			continue
+		}
+		if len(plan.Vector.ContextTurnColumns) != 0 {
+			t.Errorf("hierarchy/unanchored vector plan %s unexpectedly has turn context %v", plan.Table, plan.Vector.ContextTurnColumns)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("turn-anchored vector plans missing: %v", sortedManifestKeys(want))
+	}
+}
+
 func sortedManifestKeys[V any](in map[string]V) []string {
 	out := make([]string, 0, len(in))
 	for key := range in {

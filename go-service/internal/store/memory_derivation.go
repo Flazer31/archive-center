@@ -180,7 +180,7 @@ type MemoryVectorOutboxItem struct {
 
 type MemoryVectorOutboxStore interface {
 	EnqueueMemoryVectorOperation(context.Context, *MemoryVectorOutboxItem) (inserted bool, err error)
-	ClaimMemoryVectorOperation(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration) (*MemoryVectorOutboxItem, error)
+	ClaimMemoryVectorOperations(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration) ([]*MemoryVectorOutboxItem, error)
 	CompleteMemoryVectorOperation(ctx context.Context, outboxID int64, leaseOwner string, now time.Time) error
 	FailMemoryVectorOperation(ctx context.Context, outboxID int64, leaseOwner string, now, retryAfter time.Time, permanent bool, failure string) error
 }

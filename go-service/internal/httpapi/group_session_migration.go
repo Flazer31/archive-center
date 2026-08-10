@@ -629,25 +629,58 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 	}
 	contextualizedEmbeddings := map[string][]float32{}
 	if usesVoyageContextualizedEmbedding(embeddingConfig) && len(candidates) > 0 {
-		inputs := make([]string, 0, len(candidates))
-		ids := make([]string, 0, len(candidates))
-		for _, candidate := range candidates {
-			inputs = append(inputs, candidate.DocumentText)
-			ids = append(ids, candidate.ID)
-		}
-		resp.EmbeddingCallAttempted = true
-		grouped, _, err := callDocumentEmbeddings(r.Context(), embeddingConfig, inputs)
+		logs, err := s.Store.ListChatLogs(r.Context(), targetSessionID, 0, 0)
 		if err != nil {
-			resp.Blocked = true
-			resp.BlockedReasons = append(resp.BlockedReasons, "embedding_failed")
-			resp.Errors = append(resp.Errors, err.Error())
-			resp.VerificationStatus = "embedding_failed"
-			writeJSON(w, http.StatusOK, resp)
+			writeInternalError(w, err.Error())
 			return
 		}
-		for i, id := range ids {
-			contextualizedEmbeddings[id] = parseFloat32JSONList(grouped[i])
-			if len(contextualizedEmbeddings[id]) == 0 {
+		turnItems := make([]contextualizedEmbeddingItem, 0, len(candidates))
+		standalone := make([]store.SessionMigrationVectorDocument, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidate.ContextTurnKnown {
+				turnItems = append(turnItems, contextualizedEmbeddingItem{
+					Key: candidate.ID, Text: candidate.DocumentText,
+					TurnIndex: candidate.ContextTurnIndex, ContextTurnKnown: true, NeedsEmbedding: true,
+				})
+			} else {
+				standalone = append(standalone, candidate)
+			}
+		}
+		if len(turnItems) > 0 {
+			resp.EmbeddingCallAttempted = true
+			grouped, _, err := callContextualizedEmbeddingItems(r.Context(), embeddingConfig, logs, turnItems)
+			if err != nil {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "embedding_failed")
+				resp.Errors = append(resp.Errors, err.Error())
+				resp.VerificationStatus = "embedding_failed"
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			for _, item := range turnItems {
+				contextualizedEmbeddings[item.Key] = parseFloat32JSONList(grouped[item.Key])
+				if len(contextualizedEmbeddings[item.Key]) == 0 {
+					resp.Blocked = true
+					resp.BlockedReasons = append(resp.BlockedReasons, "embedding_result_invalid")
+					resp.VerificationStatus = "embedding_failed"
+					writeJSON(w, http.StatusOK, resp)
+					return
+				}
+			}
+		}
+		for _, candidate := range standalone {
+			resp.EmbeddingCallAttempted = true
+			grouped, _, err := callDocumentEmbeddings(r.Context(), embeddingConfig, []string{candidate.DocumentText})
+			if err != nil {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "embedding_failed")
+				resp.Errors = append(resp.Errors, err.Error())
+				resp.VerificationStatus = "embedding_failed"
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			contextualizedEmbeddings[candidate.ID] = parseFloat32JSONList(grouped[0])
+			if len(contextualizedEmbeddings[candidate.ID]) == 0 {
 				resp.Blocked = true
 				resp.BlockedReasons = append(resp.BlockedReasons, "embedding_result_invalid")
 				resp.VerificationStatus = "embedding_failed"

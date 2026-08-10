@@ -188,6 +188,79 @@ func TestReferenceVectorReindexIndexesOnlyApprovedMaterialAndDeletesStaleAfterUp
 	}
 }
 
+func TestReferenceVoyageContextKeepsIndependentMaterialsSeparateAndGroupsSharedSourceDocument(t *testing.T) {
+	fake := referenceVectorFixtureStore()
+	fake.timeline[0].MetadataJSON = `{"document_id":"document-one","evidence_excerpt":"The hero reached the city."}`
+	fake.entities[0].MetadataJSON = `{"document_id":"document-one"}`
+	fake.claims[0].DocumentID = "document-one"
+	fake.claims = append(fake.claims, store.ReferenceClaim{
+		ClaimID: "claim-approved-sibling", WorkID: "work-1", ContinuityID: "continuity-1",
+		DocumentID: "document-one", ClaimType: "event", ClaimText: "The marked gate opened at midnight.",
+		EvidenceExcerpt: "At midnight the mark flashed.", BranchKey: "main", ReviewStatus: "approved", Confidence: 0.9,
+	})
+	fake.entities = append(fake.entities, store.ReferenceEntity{
+		EntityID: "entity-independent", WorkID: "work-1", ContinuityID: "continuity-1",
+		EntityType: "location", CanonicalName: "Unprovenanced Annex", DescriptionText: "A separately entered place.", ReviewStatus: "approved",
+	})
+	documents := [][]string{}
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode contextualized request: %v", err)
+		}
+		groups := sliceFromAny(payload["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("request documents=%d, want exactly one source document", len(groups))
+		}
+		chunksAny := sliceFromAny(groups[0])
+		chunks := make([]string, len(chunksAny))
+		rows := make([]map[string]any, len(chunksAny))
+		for index, chunk := range chunksAny {
+			chunks[index] = fmt.Sprint(chunk)
+			rows[index] = map[string]any{"index": index, "embedding": []float64{float64(index + 1), 0.5}}
+		}
+		documents = append(documents, chunks)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data":  []any{map[string]any{"index": 0, "data": rows}},
+			"model": "voyage-context-4",
+		})
+	}))
+	defer embeddingServer.Close()
+
+	vectorStore := &referenceVectorTestStore{}
+	srv := &Server{Cfg: config.Config{ReferenceChromaCollection: "archive_center_reference_vectors"}, Store: fake, ReferenceVector: vectorStore}
+	embedder := completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: embeddingServer.URL, Model: "voyage-context-4", TimeoutMs: 5000}
+	if _, err := srv.runReferenceVectorReindex(context.Background(), fake, "work-1", "continuity-1", embedder, func(map[string]any) {}); err != nil {
+		t.Fatalf("runReferenceVectorReindex: %v", err)
+	}
+	if len(documents) != 2 {
+		t.Fatalf("Voyage calls=%d, want one shared source document and one independent material: %#v", len(documents), documents)
+	}
+	sharedDocument := 0
+	for _, chunks := range documents {
+		joined := strings.Join(chunks, "\n")
+		if strings.Contains(joined, "Only marked gates open at night.") || strings.Contains(joined, "The marked gate opened at midnight.") {
+			sharedDocument++
+			if len(chunks) != 4 ||
+				!strings.Contains(joined, "Only marked gates open at night.") ||
+				!strings.Contains(joined, "The marked gate opened at midnight.") ||
+				!strings.Contains(joined, "Hero arrives") ||
+				!strings.Contains(joined, "Mina") {
+				t.Fatalf("materials from one source document were not contextualized together: %#v", chunks)
+			}
+			if strings.Contains(joined, "Unprovenanced Annex") {
+				t.Fatalf("independent material leaked into source document: %#v", chunks)
+			}
+		} else if len(chunks) != 1 || !strings.Contains(joined, "Unprovenanced Annex") {
+			t.Fatalf("independent reference material was combined without source-document provenance: %#v", chunks)
+		}
+	}
+	if sharedDocument != 1 || len(vectorStore.upserted) != 5 {
+		t.Fatalf("shared source documents=%d upserted=%d, want 1 and 5", sharedDocument, len(vectorStore.upserted))
+	}
+}
+
 func TestReferenceVectorReindexDoesNotDeleteExistingIndexWhenUpsertFails(t *testing.T) {
 	fake := referenceVectorFixtureStore()
 	embeddingServer, _ := referenceVectorEmbeddingServer(t)

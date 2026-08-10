@@ -24,8 +24,8 @@ func TestDefault(t *testing.T) {
 	if cfg.VectorMode != VectorModeFallback {
 		t.Errorf("VectorMode = %q, want %q", cfg.VectorMode, VectorModeFallback)
 	}
-	if cfg.BuildVersion != "3.9.10-dev" {
-		t.Errorf("BuildVersion = %q, want %q", cfg.BuildVersion, "3.9.10-dev")
+	if cfg.BuildVersion != "3.9.11-dev" {
+		t.Errorf("BuildVersion = %q, want %q", cfg.BuildVersion, "3.9.11-dev")
 	}
 	if cfg.Readiness.MariaDBConfigured {
 		t.Error("MariaDBConfigured should be false by default")

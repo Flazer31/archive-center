@@ -832,12 +832,12 @@ func dualEnqueueMemoryWork(d *dualWriteStore, enqueue func(Store) (bool, error))
 	return inserted, nil
 }
 
-func (d *dualWriteStore) ClaimMemoryVectorOperation(ctx context.Context, owner string, now time.Time, lease time.Duration) (*MemoryVectorOutboxItem, error) {
+func (d *dualWriteStore) ClaimMemoryVectorOperations(ctx context.Context, owner string, now time.Time, lease time.Duration) ([]*MemoryVectorOutboxItem, error) {
 	if primary, ok := d.primary.(MemoryVectorOutboxStore); ok {
-		return primary.ClaimMemoryVectorOperation(ctx, owner, now, lease)
+		return primary.ClaimMemoryVectorOperations(ctx, owner, now, lease)
 	}
 	if shadow, ok := d.shadow.(MemoryVectorOutboxStore); ok {
-		return shadow.ClaimMemoryVectorOperation(ctx, owner, now, lease)
+		return shadow.ClaimMemoryVectorOperations(ctx, owner, now, lease)
 	}
 	return nil, ErrNotEnabled
 }

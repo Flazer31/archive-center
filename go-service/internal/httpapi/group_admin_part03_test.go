@@ -63,6 +63,8 @@ func TestAdminReindexDerivedArtifactsEmitsTierProgress(t *testing.T) {
 		100,
 		[]store.DirectEvidence{{ID: 10, ChatSessionID: "sess-derived-progress", EvidenceText: "The brass key opens the cellar.", SourceTurnEnd: 1}},
 		[]store.WorldRule{{ID: 20, ChatSessionID: "sess-derived-progress", Scope: "location", ScopeName: "cellar", Category: "access", Key: "brass_key", ValueJSON: `{"value":"The cellar opens with a brass key."}`, SourceTurn: 1}},
+		nil,
+		nil,
 		progress,
 	)
 	if result.Processed != 2 || result.Skipped != 2 {
@@ -86,6 +88,174 @@ func TestAdminReindexDerivedArtifactsEmitsTierProgress(t *testing.T) {
 	}
 	if !seenEvidence || !seenWorldRule {
 		t.Fatalf("missing tier progress: evidence=%v world_rule=%v events=%#v", seenEvidence, seenWorldRule, events)
+	}
+}
+
+func TestAdminReindexVoyageContextKeepsLogicalTurnsInSeparateDocuments(t *testing.T) {
+	oldClient := proxyHTTPClient
+	documents := [][]string{}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(r.URL.Path, "/v1/contextualizedembeddings") {
+			t.Fatalf("embedding path = %q", r.URL.Path)
+		}
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode embedding request: %v", err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("Voyage request documents = %d, want one logical turn", len(groups))
+		}
+		chunksAny := sliceFromAny(groups[0])
+		chunks := make([]string, 0, len(chunksAny))
+		rows := make([]map[string]any, 0, len(chunksAny))
+		for i, chunk := range chunksAny {
+			chunks = append(chunks, fmt.Sprint(chunk))
+			rows = append(rows, map[string]any{"index": i, "embedding": []float64{float64(i + 1), 0.5}})
+		}
+		documents = append(documents, chunks)
+		body, _ := json.Marshal(map[string]any{
+			"data":  []any{map[string]any{"index": 0, "data": rows}},
+			"model": "voyage-context-4",
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(string(body))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	const sid = "sess-voyage-turn-boundary"
+	srv := NewServer(func() config.Config {
+		cfg := config.Default()
+		cfg.StoreMode = config.StoreModeMariaDBShadow
+		cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+		return cfg
+	}())
+	srv.Store = &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: sid, TurnIndex: 1, Role: "user", Content: "turn one user input"},
+			{ID: 2, ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "turn one assistant output"},
+			{ID: 3, ChatSessionID: sid, TurnIndex: 2, Role: "user", Content: "turn two user input"},
+			{ID: 4, ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "turn two assistant output"},
+		},
+		returnMemories: []store.Memory{
+			{ID: 11, ChatSessionID: sid, TurnIndex: 1, SummaryJSON: `{"summary":"turn one memory"}`},
+			{ID: 12, ChatSessionID: sid, TurnIndex: 2, SummaryJSON: `{"summary":"turn two memory"}`},
+		},
+		returnEvidence: []store.DirectEvidence{
+			{ID: 21, ChatSessionID: sid, EvidenceText: "turn one evidence", SourceTurnEnd: 1},
+			{ID: 22, ChatSessionID: sid, EvidenceText: "turn two evidence", SourceTurnEnd: 2},
+		},
+		returnWorldRules: []store.WorldRule{
+			{ID: 31, ChatSessionID: sid, Scope: "world", Category: "rule", Key: "turn_one", ValueJSON: `{"value":"turn one world rule"}`, SourceTurn: 1},
+			{ID: 32, ChatSessionID: sid, Scope: "world", Category: "rule", Key: "turn_two", ValueJSON: `{"value":"turn two world rule"}`, SourceTurn: 2},
+		},
+	}
+	srv.StoreOpenError = nil
+	srv.Vector = &turnRecordingVectorStore{}
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/admin/reindex", strings.NewReader(`{
+		"chat_session_id":"sess-voyage-turn-boundary",
+		"force":true,
+		"client_meta":{"embedding":{
+			"provider":"voyageai",
+			"api_key":"test-key",
+			"endpoint":"https://api.voyageai.com/v1/embeddings",
+			"model":"voyage-context-4",
+			"timeout_ms":5000
+		}}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if len(documents) != 2 {
+		t.Fatalf("Voyage calls = %d, want one call for each of two logical turns: %#v response=%s", len(documents), documents, rec.Body.String())
+	}
+	for turnIndex, chunks := range documents {
+		turn := turnIndex + 1
+		joined := strings.Join(chunks, "\n")
+		for _, want := range []string{
+			fmt.Sprintf("turn %s user input", []string{"one", "two"}[turnIndex]),
+			fmt.Sprintf("turn %s assistant output", []string{"one", "two"}[turnIndex]),
+			fmt.Sprintf("turn %s memory", []string{"one", "two"}[turnIndex]),
+			fmt.Sprintf("turn %s evidence", []string{"one", "two"}[turnIndex]),
+			fmt.Sprintf("turn %s world rule", []string{"one", "two"}[turnIndex]),
+		} {
+			if !strings.Contains(joined, want) {
+				t.Fatalf("turn %d document missing %q: %#v", turn, want, chunks)
+			}
+		}
+		other := []string{"two", "one"}[turnIndex]
+		if strings.Contains(joined, "turn "+other+" user input") ||
+			strings.Contains(joined, "turn "+other+" assistant output") ||
+			strings.Contains(joined, "turn "+other+" memory") ||
+			strings.Contains(joined, "turn "+other+" evidence") ||
+			strings.Contains(joined, "turn "+other+" world rule") {
+			t.Fatalf("turn %d document combined a different logical turn: %#v", turn, chunks)
+		}
+	}
+}
+
+func TestAdminReindexVoyageContextKeepsUnanchoredArtifactsIndependent(t *testing.T) {
+	documents := [][]string{}
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("Voyage request documents=%d, want one independent document", len(groups))
+		}
+		chunksAny := sliceFromAny(groups[0])
+		chunks := make([]string, len(chunksAny))
+		rows := make([]map[string]any, len(chunksAny))
+		for index, chunk := range chunksAny {
+			chunks[index] = fmt.Sprint(chunk)
+			rows[index] = map[string]any{"index": index, "embedding": []float64{float64(index + 1), 0.5}}
+		}
+		documents = append(documents, chunks)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []any{map[string]any{"index": 0, "data": rows}}, "model": "voyage-context-4",
+		})
+	}))
+	defer embeddingServer.Close()
+
+	items := adminReindexContextualizedEmbeddingItems(
+		nil,
+		[]store.DirectEvidence{
+			{ID: 1, EvidenceText: "unanchored evidence one"},
+			{ID: 2, EvidenceText: "unanchored evidence two"},
+		},
+		[]store.WorldRule{
+			{ID: 3, Scope: "world", Category: "rule", Key: "one", ValueJSON: `{"value":"unanchored rule one"}`},
+			{ID: 4, Scope: "world", Category: "rule", Key: "two", ValueJSON: `{"value":"unanchored rule two"}`},
+		},
+		0,
+		completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: embeddingServer.URL, Model: "voyage-context-4", TimeoutMs: 5000},
+		true,
+		true,
+	)
+	if _, _, err := callContextualizedEmbeddingItems(context.Background(), completeTurnEmbeddingConfig{
+		Provider: "voyageai", APIKey: "key", Endpoint: embeddingServer.URL, Model: "voyage-context-4", TimeoutMs: 5000,
+	}, nil, items); err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 4 {
+		t.Fatalf("Voyage calls=%d, want one call per unanchored artifact: %#v", len(documents), documents)
+	}
+	for _, chunks := range documents {
+		if len(chunks) != 1 {
+			t.Fatalf("unanchored artifacts were combined: %#v", chunks)
+		}
 	}
 }
 

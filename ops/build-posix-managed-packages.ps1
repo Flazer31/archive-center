@@ -1,7 +1,7 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string]$PackageVersion = "3.9.10",
+    [string]$PackageVersion = "3.9.11",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -60,7 +60,7 @@ function Normalize-POSIXPackageLineEndings([string]$Root) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.10" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.11" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -222,6 +222,11 @@ function Compress-DirectoryPortable([string]$SourceDir, [string]$DestinationZip)
                 $relative = $_.FullName.Substring($sourceFull.Length).TrimStart([char[]]@('\', '/'))
                 $entryName = $relative.Replace('\', '/')
                 $entry = $archive.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Optimal)
+                $isExecutable = $entryName.StartsWith("bin/", [System.StringComparison]::Ordinal) -or
+                    $entryName.EndsWith(".sh", [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $entryName.EndsWith(".command", [System.StringComparison]::OrdinalIgnoreCase)
+                $unixMode = if ($isExecutable) { 0x81ED } else { 0x81A4 }
+                $entry.ExternalAttributes = $unixMode -shl 16
                 $inputStream = [System.IO.File]::OpenRead($_.FullName)
                 try {
                     $entryStream = $entry.Open()
@@ -240,6 +245,40 @@ function Compress-DirectoryPortable([string]$SourceDir, [string]$DestinationZip)
     } finally {
         $zipStream.Dispose()
     }
+
+    # ZipArchive writes archives as DOS-hosted on Windows. POSIX extractors then
+    # ignore the Unix mode stored in ExternalAttributes. Rewrite only the
+    # central-directory host byte so those already-recorded 0755/0644 modes are
+    # interpreted as Unix permissions after extraction.
+    $zipBytes = [System.IO.File]::ReadAllBytes($DestinationZip)
+    $eocdOffset = -1
+    $searchStart = [Math]::Max(0, $zipBytes.Length - 65557)
+    for ($offset = $zipBytes.Length - 22; $offset -ge $searchStart; $offset--) {
+        if ($zipBytes[$offset] -eq 0x50 -and $zipBytes[$offset + 1] -eq 0x4b -and
+            $zipBytes[$offset + 2] -eq 0x05 -and $zipBytes[$offset + 3] -eq 0x06) {
+            $eocdOffset = $offset
+            break
+        }
+    }
+    if ($eocdOffset -lt 0) {
+        throw "Generated ZIP has no end-of-central-directory record: $DestinationZip"
+    }
+    $entryCount = [System.BitConverter]::ToUInt16($zipBytes, $eocdOffset + 10)
+    $centralOffset = [int][System.BitConverter]::ToUInt32($zipBytes, $eocdOffset + 16)
+    $cursor = $centralOffset
+    for ($entryIndex = 0; $entryIndex -lt $entryCount; $entryIndex++) {
+        if ($cursor + 46 -gt $zipBytes.Length -or
+            $zipBytes[$cursor] -ne 0x50 -or $zipBytes[$cursor + 1] -ne 0x4b -or
+            $zipBytes[$cursor + 2] -ne 0x01 -or $zipBytes[$cursor + 3] -ne 0x02) {
+            throw "Generated ZIP central directory is invalid at entry $entryIndex`: $DestinationZip"
+        }
+        $zipBytes[$cursor + 5] = 3
+        $nameLength = [System.BitConverter]::ToUInt16($zipBytes, $cursor + 28)
+        $extraLength = [System.BitConverter]::ToUInt16($zipBytes, $cursor + 30)
+        $commentLength = [System.BitConverter]::ToUInt16($zipBytes, $cursor + 32)
+        $cursor += 46 + $nameLength + $extraLength + $commentLength
+    }
+    [System.IO.File]::WriteAllBytes($DestinationZip, $zipBytes)
 }
 
 function Build-GoBinary([string]$GoServiceRoot, [string]$Goos, [string]$Goarch, [string]$Package, [string]$Output) {
@@ -351,7 +390,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.10" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "3.9.11" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }

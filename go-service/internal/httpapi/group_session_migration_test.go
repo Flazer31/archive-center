@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -835,6 +836,118 @@ func TestSessionMigrateReindexRejectsCandidateParityBeforeVectorWrite(t *testing
 	}
 	if resp.Candidates != 3 || resp.Upserted != 0 || resp.Skipped != 0 {
 		t.Fatalf("candidate parity did not materialize exact expected set: %+v", resp)
+	}
+}
+
+func TestSessionMigrateReindexVoyageSeparatesLogicalTurnsAndHierarchyDocuments(t *testing.T) {
+	oldClient := proxyHTTPClient
+	documents := [][]string{}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode embedding request: %v", err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		if len(groups) != 1 {
+			t.Fatalf("Voyage documents per call = %d, want one", len(groups))
+		}
+		chunksAny := sliceFromAny(groups[0])
+		chunks := make([]string, 0, len(chunksAny))
+		rows := make([]map[string]any, 0, len(chunksAny))
+		for i, chunk := range chunksAny {
+			chunks = append(chunks, extractionStringFromAny(chunk))
+			rows = append(rows, map[string]any{"index": i, "embedding": []float64{float64(i + 1), 0.5}})
+		}
+		documents = append(documents, chunks)
+		body, _ := json.Marshal(map[string]any{
+			"data":  []any{map[string]any{"index": 0, "data": rows}},
+			"model": "voyage-context-4",
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(string(body))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	const targetID = "char_59_cid_voyage_target"
+	const sourceID = "char_59_cid_voyage_source"
+	candidates := []store.SessionMigrationVectorDocument{
+		{ID: "memory:" + targetID + ":11", MigrationID: 72, Tier: "memory", ChatSessionID: targetID, ContextTurnIndex: 1, ContextTurnKnown: true, SourceTable: "memories", SourceRowID: "11", SchemaVersion: "memory.v2", DocumentText: "turn one memory", MigratedFromSessionID: sourceID},
+		{ID: "evidence:" + targetID + ":21", MigrationID: 72, Tier: "evidence", ChatSessionID: targetID, ContextTurnIndex: 1, ContextTurnKnown: true, SourceTable: "direct_evidence_records", SourceRowID: "21", SchemaVersion: "direct_evidence.v1", DocumentText: "turn one evidence", MigratedFromSessionID: sourceID},
+		{ID: "memory:" + targetID + ":12", MigrationID: 72, Tier: "memory", ChatSessionID: targetID, ContextTurnIndex: 2, ContextTurnKnown: true, SourceTable: "memories", SourceRowID: "12", SchemaVersion: "memory.v2", DocumentText: "turn two memory", MigratedFromSessionID: sourceID},
+		{ID: "episode:" + targetID + ":31", MigrationID: 72, Tier: "episode", ChatSessionID: targetID, SourceTable: "episode_summaries", SourceRowID: "31", SchemaVersion: "episode.v1", DocumentText: "hierarchy episode summary", MigratedFromSessionID: sourceID},
+	}
+	expectedIDs := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		expectedIDs = append(expectedIDs, candidate.ID)
+	}
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: targetID, TurnIndex: 1, Role: "user", Content: "turn one user input"},
+			{ID: 2, ChatSessionID: targetID, TurnIndex: 1, Role: "assistant", Content: "turn one assistant output"},
+			{ID: 3, ChatSessionID: targetID, TurnIndex: 2, Role: "user", Content: "turn two user input"},
+			{ID: 4, ChatSessionID: targetID, TurnIndex: 2, Role: "assistant", Content: "turn two assistant output"},
+		},
+		vectorDocs: candidates,
+		parityContext: &store.SessionMigrationVectorParityContext{
+			MigrationID: 72, TargetSessionID: targetID, ExpectedIDs: expectedIDs,
+		},
+	}
+	vec := &sessionMigrationPreviewVector{counts: map[string]int{targetID: 0}}
+	srv := &Server{
+		Cfg:    config.Config{ChromaEndpoint: "http://127.0.0.1:8000"},
+		Store:  st,
+		Vector: vector.NewMutationFencedStore(vec),
+		RuntimeConfig: RuntimeConfig{
+			EmbeddingProvider: "voyageai", EmbeddingAPIKey: "key",
+			EmbeddingEndpoint: "https://api.voyageai.com/v1/embeddings",
+			EmbeddingModel:    "voyage-context-4", EmbeddingTimeoutSec: 30,
+		},
+	}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body, _ := json.Marshal(map[string]any{"migration_id": 72})
+	req := httptest.NewRequest(http.MethodPost, "/sessions/migrate-reindex", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp sessionMigrationReindexResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Blocked || !resp.EmbeddingCallAttempted || !resp.ManifestParityVerified || resp.Upserted != len(candidates) {
+		t.Fatalf("reindex response = %+v", resp)
+	}
+	if len(documents) != 3 {
+		t.Fatalf("Voyage calls = %d, want two logical turns plus one hierarchy document: %#v", len(documents), documents)
+	}
+	wants := [][]string{
+		{"turn one user input", "turn one assistant output", "turn one memory", "turn one evidence"},
+		{"turn two user input", "turn two assistant output", "turn two memory"},
+		{"hierarchy episode summary"},
+	}
+	for i, chunks := range documents {
+		joined := strings.Join(chunks, "\n")
+		for _, want := range wants[i] {
+			if !strings.Contains(joined, want) {
+				t.Fatalf("document %d missing %q: %#v", i, want, chunks)
+			}
+		}
+		for other, otherWants := range wants {
+			if other == i {
+				continue
+			}
+			for _, forbidden := range otherWants {
+				if strings.Contains(joined, forbidden) {
+					t.Fatalf("document %d contains content from group %d: %#v", i, other, chunks)
+				}
+			}
+		}
 	}
 }
 

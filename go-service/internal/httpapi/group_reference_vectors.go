@@ -23,10 +23,11 @@ type referenceVectorRequest struct {
 }
 
 type referenceVectorMaterial struct {
-	Kind     string
-	ID       string
-	Text     string
-	Metadata map[string]any
+	Kind       string
+	ID         string
+	DocumentID string
+	Text       string
+	Metadata   map[string]any
 }
 
 type referenceVectorSearchResult struct {
@@ -373,16 +374,32 @@ func (s *Server) runReferenceVectorReindex(ctx context.Context, ref store.Refere
 		return nil, err
 	}
 	docs := make([]vector.VectorDocument, 0, len(materials))
-	contextualizedEmbeddings := []string(nil)
+	contextualizedEmbeddings := make([]string, len(materials))
 	contextualizedModel := ""
 	if usesVoyageContextualizedEmbedding(embedder) && len(materials) > 0 {
-		inputs := make([]string, 0, len(materials))
-		for _, material := range materials {
-			inputs = append(inputs, material.Text)
+		groups := map[string][]int{}
+		groupOrder := []string{}
+		for index, material := range materials {
+			key := referenceContextualizedDocumentKey(material)
+			if _, exists := groups[key]; !exists {
+				groupOrder = append(groupOrder, key)
+			}
+			groups[key] = append(groups[key], index)
 		}
-		contextualizedEmbeddings, contextualizedModel, err = callDocumentEmbeddings(ctx, embedder, inputs)
-		if err != nil {
-			return nil, fmt.Errorf("reference contextualized embedding failed: %w", err)
+		for _, key := range groupOrder {
+			indices := groups[key]
+			inputs := make([]string, 0, len(indices))
+			for _, index := range indices {
+				inputs = append(inputs, materials[index].Text)
+			}
+			grouped, model, embedErr := callDocumentEmbeddings(ctx, embedder, inputs)
+			if embedErr != nil {
+				return nil, fmt.Errorf("reference contextualized embedding failed for %s: %w", key, embedErr)
+			}
+			contextualizedModel = model
+			for position, index := range indices {
+				contextualizedEmbeddings[index] = grouped[position]
+			}
 		}
 	}
 	for i, material := range materials {
@@ -392,7 +409,7 @@ func (s *Server) runReferenceVectorReindex(ctx context.Context, ref store.Refere
 		progress(map[string]any{"stage": "embed_approved_material", "processed": i, "candidate_count": len(materials), "progress_percent": adminJobProgressPercent(i, len(materials)), "reference_kind": material.Kind, "source_id": material.ID})
 		embeddingJSON := ""
 		model := contextualizedModel
-		if len(contextualizedEmbeddings) > 0 {
+		if strings.TrimSpace(contextualizedEmbeddings[i]) != "" {
 			embeddingJSON = contextualizedEmbeddings[i]
 		} else {
 			var embedErr error
@@ -537,10 +554,11 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 	materials := make([]referenceVectorMaterial, 0, len(timeline)+len(entities)+len(claims))
 	entityNames := map[string][]string{}
 	for _, item := range timeline {
-		metadata := map[string]any{"branch_key": item.BranchKey, "node_kind": item.NodeKind, "ordinal": item.Ordinal}
+		documentID := referenceMetadataString(item.MetadataJSON, "document_id")
+		metadata := map[string]any{"document_id": documentID, "branch_key": item.BranchKey, "node_kind": item.NodeKind, "ordinal": item.Ordinal}
 		text := referenceVectorText("Timeline", item.Label, referenceMetadataText(item.MetadataJSON, "evidence_excerpt", "description", "summary"))
 		if text != "" {
-			materials = append(materials, referenceVectorMaterial{Kind: "timeline", ID: item.NodeID, Text: text, Metadata: metadata})
+			materials = append(materials, referenceVectorMaterial{Kind: "timeline", ID: item.NodeID, DocumentID: documentID, Text: text, Metadata: metadata})
 		}
 	}
 	for _, item := range entities {
@@ -559,9 +577,11 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 			detail = strings.TrimSpace(detail + "\nAliases: " + strings.Join(aliasTexts, ", "))
 		}
 		entityNames[item.EntityID] = append([]string{item.CanonicalName}, aliasTexts...)
+		documentID := referenceMetadataString(item.MetadataJSON, "document_id")
+		metadata := map[string]any{"document_id": documentID, "entity_type": item.EntityType, "canonical_name": item.CanonicalName, "aliases": aliasTexts}
 		text := referenceVectorText(item.EntityType, item.CanonicalName, detail)
 		if text != "" {
-			materials = append(materials, referenceVectorMaterial{Kind: "entity", ID: item.EntityID, Text: text, Metadata: map[string]any{"entity_type": item.EntityType, "canonical_name": item.CanonicalName, "aliases": aliasTexts}})
+			materials = append(materials, referenceVectorMaterial{Kind: "entity", ID: item.EntityID, DocumentID: documentID, Text: text, Metadata: metadata})
 		}
 	}
 	for _, item := range claims {
@@ -570,6 +590,7 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 			detail += "\nEvidence: " + evidence
 		}
 		metadata := map[string]any{
+			"document_id":         item.DocumentID,
 			"claim_type":          item.ClaimType,
 			"subject_entity_id":   item.SubjectEntityID,
 			"temporal_scope":      item.TemporalScope,
@@ -585,7 +606,7 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 		}
 		text := referenceVectorText("Claim", item.ClaimType, detail)
 		if text != "" {
-			materials = append(materials, referenceVectorMaterial{Kind: "claim", ID: item.ClaimID, Text: text, Metadata: metadata})
+			materials = append(materials, referenceVectorMaterial{Kind: "claim", ID: item.ClaimID, DocumentID: item.DocumentID, Text: text, Metadata: metadata})
 		}
 	}
 	sort.Slice(materials, func(i, j int) bool {
@@ -595,6 +616,13 @@ func loadReferenceVectorMaterials(ctx context.Context, ref store.ReferenceLibrar
 		return materials[i].ID < materials[j].ID
 	})
 	return materials, nil
+}
+
+func referenceContextualizedDocumentKey(material referenceVectorMaterial) string {
+	if documentID := strings.TrimSpace(material.DocumentID); documentID != "" {
+		return "document:" + documentID
+	}
+	return "material:" + strings.TrimSpace(material.Kind) + ":" + strings.TrimSpace(material.ID)
 }
 
 func referenceVectorText(kind, title, detail string) string {

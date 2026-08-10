@@ -377,6 +377,8 @@ type SessionMigrationVectorDocument struct {
 	MigrationID           int64
 	Tier                  string
 	ChatSessionID         string
+	ContextTurnIndex      int
+	ContextTurnKnown      bool
 	SourceTable           string
 	SourceRowID           string
 	SchemaVersion         string

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +29,11 @@ type memoryVectorProcessResult struct {
 	Failure        string
 }
 
+type memoryVectorPreparationFailure struct {
+	Permanent bool
+	Failure   string
+}
+
 // processMemoryVectorOutboxOnce is the production MariaDB-to-vector
 // orchestrator. MariaDB completion is authoritative: a provider success is
 // compensated or left behind a queued delete if the source fence changes
@@ -38,41 +44,156 @@ func (s *Server) processMemoryVectorOutboxOnce(
 	now time.Time,
 	leaseDuration time.Duration,
 ) (memoryVectorProcessResult, error) {
+	results, err := s.processMemoryVectorOutboxGroup(ctx, leaseOwner, now, leaseDuration)
+	if len(results) == 0 {
+		return memoryVectorProcessResult{}, err
+	}
+	return results[0], err
+}
+
+func (s *Server) processMemoryVectorOutboxGroup(
+	ctx context.Context,
+	leaseOwner string,
+	now time.Time,
+	leaseDuration time.Duration,
+) ([]memoryVectorProcessResult, error) {
 	var result memoryVectorProcessResult
 	if s == nil || s.Store == nil {
-		return result, store.ErrNotEnabled
+		return nil, store.ErrNotEnabled
 	}
 	if !s.runtimeConfigSnapshot().Synced {
 		result.CanonicalState = "deferred_config_sync"
 		result.Failure = memoryWorkerConfigDeferred
-		return result, nil
+		return []memoryVectorProcessResult{result}, nil
 	}
 	outbox, ok := s.Store.(store.MemoryVectorOutboxStore)
 	if !ok {
-		return result, store.ErrNotEnabled
+		return nil, store.ErrNotEnabled
 	}
-	item, err := outbox.ClaimMemoryVectorOperation(ctx, leaseOwner, now, leaseDuration)
+	items, err := outbox.ClaimMemoryVectorOperations(ctx, leaseOwner, now, leaseDuration)
 	if errors.Is(err, store.ErrNotFound) {
-		return result, nil
+		return nil, nil
 	}
 	if err != nil {
-		return result, err
+		return nil, err
 	}
-	result.Processed = true
-	result.OutboxID = item.ID
-	result.Operation = item.Operation
-	result.DocumentID = item.DocumentID
+	if len(items) == 0 {
+		return nil, store.ErrNotFound
+	}
 	if leaseDuration <= 0 {
-		result.CanonicalState = "retryable"
-		result.Failure = "vector operation timeout is not configured"
-		return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
+		return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{
+			Failure: "vector operation timeout is not configured",
+		})
 	}
 	vectorCtx, cancelVector := context.WithTimeout(ctx, leaseDuration)
 	defer cancelVector()
 	if s.Vector == nil {
-		result.CanonicalState = "retryable"
-		result.Failure = "vector store is not configured"
-		return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, "vector store is not configured")
+		return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{
+			Failure: "vector store is not configured",
+		})
+	}
+	prepared := map[int64]vector.VectorDocument{}
+	preparationFailures := map[int64]memoryVectorPreparationFailure{}
+	embeddingCfg := s.completeTurnExtractionConfig(nil).Embedder
+	if usesVoyageContextualizedEmbedding(embeddingCfg) {
+		prepared, preparationFailures = prepareVoyageMemoryVectorOperations(vectorCtx, embeddingCfg, items)
+	}
+	results := make([]memoryVectorProcessResult, 0, len(items))
+	var firstErr error
+	for _, item := range items {
+		var itemResult memoryVectorProcessResult
+		var itemErr error
+		if failure, failed := preparationFailures[item.ID]; failed {
+			itemResult, itemErr = s.failClaimedMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, failure)
+		} else {
+			var preparedDocument *vector.VectorDocument
+			if document, ok := prepared[item.ID]; ok {
+				copy := document
+				preparedDocument = &copy
+			}
+			itemResult, itemErr = s.processClaimedMemoryVectorOperation(ctx, vectorCtx, outbox, item, preparedDocument, leaseOwner, now)
+		}
+		results = append(results, itemResult)
+		if itemErr != nil && firstErr == nil {
+			firstErr = itemErr
+		}
+	}
+	return results, firstErr
+}
+
+func prepareVoyageMemoryVectorOperations(ctx context.Context, embeddingCfg completeTurnEmbeddingConfig, items []*store.MemoryVectorOutboxItem) (map[int64]vector.VectorDocument, map[int64]memoryVectorPreparationFailure) {
+	prepared := map[int64]vector.VectorDocument{}
+	failures := map[int64]memoryVectorPreparationFailure{}
+	type candidate struct {
+		item     *store.MemoryVectorOutboxItem
+		document vector.VectorDocument
+		index    int
+	}
+	candidates := []candidate{}
+	var contextChunks []string
+	for _, item := range items {
+		if item == nil || item.Operation != "upsert" {
+			continue
+		}
+		var document vector.VectorDocument
+		if err := json.Unmarshal([]byte(item.DocumentJSON), &document); err != nil {
+			failures[item.ID] = memoryVectorPreparationFailure{Permanent: true, Failure: "materialized vector document is invalid: " + err.Error()}
+			continue
+		}
+		if len(document.Embedding) > 0 {
+			prepared[item.ID] = document
+			continue
+		}
+		if strings.TrimSpace(document.DocumentText) == "" {
+			failures[item.ID] = memoryVectorPreparationFailure{Permanent: true, Failure: "materialized vector document has no searchable text"}
+			continue
+		}
+		chunks := stringsFromAny(document.Metadata["contextualized_embedding_inputs"])
+		chunkIndex := intFromAny(document.Metadata["contextualized_embedding_index"], -1)
+		if len(chunks) == 0 || chunkIndex < 0 || chunkIndex >= len(chunks) ||
+			(contextChunks != nil && !slices.Equal(contextChunks, chunks)) {
+			failures[item.ID] = memoryVectorPreparationFailure{Permanent: true, Failure: "contextualized embedding group metadata is invalid"}
+			continue
+		}
+		if contextChunks == nil {
+			contextChunks = chunks
+		}
+		candidates = append(candidates, candidate{item: item, document: document, index: chunkIndex})
+	}
+	if len(candidates) == 0 {
+		return prepared, failures
+	}
+	grouped, _, err := callDocumentEmbeddings(ctx, embeddingCfg, contextChunks)
+	if err != nil {
+		for _, candidate := range candidates {
+			failures[candidate.item.ID] = memoryVectorPreparationFailure{Failure: "embedding materialization failed"}
+		}
+		return prepared, failures
+	}
+	for _, candidate := range candidates {
+		candidate.document.Embedding = parseFloat32JSONList(grouped[candidate.index])
+		if len(candidate.document.Embedding) == 0 {
+			failures[candidate.item.ID] = memoryVectorPreparationFailure{Failure: "embedding materialization returned no vector"}
+			continue
+		}
+		delete(candidate.document.Metadata, "contextualized_embedding_inputs")
+		delete(candidate.document.Metadata, "contextualized_embedding_index")
+		prepared[candidate.item.ID] = candidate.document
+	}
+	return prepared, failures
+}
+
+func (s *Server) processClaimedMemoryVectorOperation(
+	ctx context.Context,
+	vectorCtx context.Context,
+	outbox store.MemoryVectorOutboxStore,
+	item *store.MemoryVectorOutboxItem,
+	preparedDocument *vector.VectorDocument,
+	leaseOwner string,
+	now time.Time,
+) (memoryVectorProcessResult, error) {
+	result := memoryVectorProcessResult{
+		Processed: true, OutboxID: item.ID, Operation: item.Operation, DocumentID: item.DocumentID,
 	}
 	switch item.Operation {
 	case "delete":
@@ -108,7 +229,9 @@ func (s *Server) processMemoryVectorOutboxOnce(
 		}
 	case "upsert":
 		var document vector.VectorDocument
-		if err := json.Unmarshal([]byte(item.DocumentJSON), &document); err != nil {
+		if preparedDocument != nil {
+			document = *preparedDocument
+		} else if err := json.Unmarshal([]byte(item.DocumentJSON), &document); err != nil {
 			result.CanonicalState = "permanent"
 			result.Failure = err.Error()
 			return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, "materialized vector document is invalid: "+err.Error())
@@ -132,23 +255,7 @@ func (s *Server) processMemoryVectorOutboxOnce(
 				return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, result.Failure)
 			}
 			embeddingJSON := ""
-			var embedErr error
-			if usesVoyageContextualizedEmbedding(embeddingCfg) {
-				contextChunks := stringsFromAny(document.Metadata["contextualized_embedding_inputs"])
-				contextIndex := intFromAny(document.Metadata["contextualized_embedding_index"], -1)
-				if len(contextChunks) == 0 || contextIndex < 0 || contextIndex >= len(contextChunks) {
-					result.CanonicalState = "permanent"
-					result.Failure = "contextualized embedding group metadata is invalid"
-					return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, result.Failure)
-				}
-				var grouped []string
-				grouped, _, embedErr = callDocumentEmbeddings(vectorCtx, embeddingCfg, contextChunks)
-				if embedErr == nil {
-					embeddingJSON = grouped[contextIndex]
-				}
-			} else {
-				embeddingJSON, _, embedErr = callEmbedding(vectorCtx, embeddingCfg, document.DocumentText)
-			}
+			embeddingJSON, _, embedErr := callEmbedding(vectorCtx, embeddingCfg, document.DocumentText)
 			if embedErr != nil {
 				result.CanonicalState = "retryable"
 				result.Failure = "embedding materialization failed"
@@ -205,6 +312,45 @@ func (s *Server) processMemoryVectorOutboxOnce(
 	return result, nil
 }
 
+func (s *Server) failClaimedMemoryVectorOperationGroup(
+	ctx context.Context,
+	outbox store.MemoryVectorOutboxStore,
+	items []*store.MemoryVectorOutboxItem,
+	leaseOwner string,
+	now time.Time,
+	failure memoryVectorPreparationFailure,
+) ([]memoryVectorProcessResult, error) {
+	results := make([]memoryVectorProcessResult, 0, len(items))
+	var firstErr error
+	for _, item := range items {
+		itemResult, err := s.failClaimedMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, failure)
+		results = append(results, itemResult)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return results, firstErr
+}
+
+func (s *Server) failClaimedMemoryVectorOperation(
+	ctx context.Context,
+	outbox store.MemoryVectorOutboxStore,
+	item *store.MemoryVectorOutboxItem,
+	leaseOwner string,
+	now time.Time,
+	failure memoryVectorPreparationFailure,
+) (memoryVectorProcessResult, error) {
+	result := memoryVectorProcessResult{
+		Processed: true, OutboxID: item.ID, Operation: item.Operation, DocumentID: item.DocumentID,
+		CanonicalState: "retryable", Failure: failure.Failure,
+	}
+	if failure.Permanent {
+		result.CanonicalState = "permanent"
+		return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, failure.Failure)
+	}
+	return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, failure.Failure)
+}
+
 func verifyMemoryVectorUpsertReadback(item *store.MemoryVectorOutboxItem, expected vector.VectorDocument, readback []vector.VectorDocument) error {
 	if item == nil {
 		return fmt.Errorf("vector upsert readback item is missing")
@@ -255,19 +401,26 @@ func (s *Server) processMemoryVectorOutboxBatch(
 	results := make([]memoryVectorProcessResult, 0, capacity)
 	seen := map[int64]struct{}{}
 	for limit <= 0 || len(results) < limit {
-		result, err := s.processMemoryVectorOutboxOnce(ctx, leaseOwner, now, leaseDuration)
-		if err != nil || !result.Processed {
+		groupResults, err := s.processMemoryVectorOutboxGroup(ctx, leaseOwner, now, leaseDuration)
+		if err != nil || len(groupResults) == 0 {
 			break
 		}
-		if result.OutboxID > 0 {
-			if _, duplicate := seen[result.OutboxID]; duplicate {
-				break
+		appended := 0
+		for _, result := range groupResults {
+			if !result.Processed {
+				continue
 			}
-			seen[result.OutboxID] = struct{}{}
+			if result.OutboxID > 0 {
+				if _, duplicate := seen[result.OutboxID]; duplicate {
+					continue
+				}
+				seen[result.OutboxID] = struct{}{}
+			}
+			results = append(results, result)
+			appended++
 		}
-		results = append(results, result)
-		if result.CanonicalState == "retryable" {
-			continue
+		if appended == 0 {
+			break
 		}
 	}
 	return results

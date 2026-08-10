@@ -309,7 +309,7 @@ func (r *rollbackLifecycleStore) EnqueueMemoryVectorOperation(_ context.Context,
 	return true, nil
 }
 
-func (r *rollbackLifecycleStore) ClaimMemoryVectorOperation(_ context.Context, owner string, now time.Time, lease time.Duration) (*store.MemoryVectorOutboxItem, error) {
+func (r *rollbackLifecycleStore) ClaimMemoryVectorOperations(_ context.Context, owner string, now time.Time, lease time.Duration) ([]*store.MemoryVectorOutboxItem, error) {
 	if r.outbox == nil || (r.outbox.Status != "pending" && r.outbox.Status != "retryable") {
 		return nil, store.ErrNotFound
 	}
@@ -321,7 +321,7 @@ func (r *rollbackLifecycleStore) ClaimMemoryVectorOperation(_ context.Context, o
 	copy.LeaseOwner = owner
 	copy.LeaseUntil = now.Add(lease)
 	r.outbox = &copy
-	return &copy, nil
+	return []*store.MemoryVectorOutboxItem{&copy}, nil
 }
 
 func (r *rollbackLifecycleStore) CompleteMemoryVectorOperation(_ context.Context, _ int64, owner string, now time.Time) error {

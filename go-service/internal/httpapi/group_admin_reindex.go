@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,32 +14,149 @@ import (
 )
 
 type contextualizedEmbeddingItem struct {
-	Key  string
-	Text string
+	Key              string
+	Text             string
+	TurnIndex        int
+	ContextTurnKnown bool
+	NeedsEmbedding   bool
 }
 
-func callContextualizedEmbeddingItems(ctx context.Context, cfg completeTurnEmbeddingConfig, items []contextualizedEmbeddingItem) (map[string]string, string, error) {
+func callContextualizedEmbeddingItems(ctx context.Context, cfg completeTurnEmbeddingConfig, logs []store.ChatLog, items []contextualizedEmbeddingItem) (map[string]string, string, error) {
 	if !usesVoyageContextualizedEmbedding(cfg) || len(items) == 0 {
 		return nil, "", nil
 	}
-	inputs := make([]string, 0, len(items))
+	turnLogs := map[int]map[string]string{}
+	for _, log := range logs {
+		role := strings.ToLower(strings.TrimSpace(log.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		if turnLogs[log.TurnIndex] == nil {
+			turnLogs[log.TurnIndex] = map[string]string{}
+		}
+		turnLogs[log.TurnIndex][role] = appendUniqueTurnRoleText(turnLogs[log.TurnIndex][role], log.Content)
+	}
+	itemsByTurn := map[int][]contextualizedEmbeddingItem{}
+	standalone := []contextualizedEmbeddingItem{}
 	seen := map[string]bool{}
 	for _, item := range items {
 		if strings.TrimSpace(item.Key) == "" || seen[item.Key] {
 			return nil, "", fmt.Errorf("contextualized embedding item key is empty or duplicated")
 		}
 		seen[item.Key] = true
-		inputs = append(inputs, item.Text)
+		if !item.ContextTurnKnown {
+			standalone = append(standalone, item)
+			continue
+		}
+		itemsByTurn[item.TurnIndex] = append(itemsByTurn[item.TurnIndex], item)
 	}
-	grouped, model, err := callDocumentEmbeddings(ctx, cfg, inputs)
-	if err != nil {
-		return nil, "", err
+	turns := make([]int, 0, len(itemsByTurn))
+	for turn := range itemsByTurn {
+		turns = append(turns, turn)
 	}
+	sort.Ints(turns)
 	out := make(map[string]string, len(items))
-	for i, item := range items {
-		out[item.Key] = grouped[i]
+	model := ""
+	for _, turn := range turns {
+		turnItems := itemsByTurn[turn]
+		needsEmbedding := false
+		for _, item := range turnItems {
+			if item.NeedsEmbedding {
+				needsEmbedding = true
+				break
+			}
+		}
+		if !needsEmbedding {
+			continue
+		}
+		inputs := make([]string, 0, len(turnItems)+2)
+		for _, role := range []string{"user", "assistant"} {
+			if text := strings.TrimSpace(turnLogs[turn][role]); text != "" {
+				inputs = append(inputs, text)
+			}
+		}
+		itemOffset := len(inputs)
+		for _, item := range turnItems {
+			inputs = append(inputs, item.Text)
+		}
+		grouped, resolvedModel, err := callDocumentEmbeddings(ctx, cfg, inputs)
+		if err != nil {
+			return nil, "", err
+		}
+		if strings.TrimSpace(resolvedModel) != "" {
+			model = resolvedModel
+		}
+		for i, item := range turnItems {
+			out[item.Key] = grouped[itemOffset+i]
+		}
+	}
+	for _, item := range standalone {
+		if !item.NeedsEmbedding {
+			continue
+		}
+		grouped, resolvedModel, err := callDocumentEmbeddings(ctx, cfg, []string{item.Text})
+		if err != nil {
+			return nil, "", err
+		}
+		if strings.TrimSpace(resolvedModel) != "" {
+			model = resolvedModel
+		}
+		out[item.Key] = grouped[0]
 	}
 	return out, model, nil
+}
+
+func adminReindexContextualizedEmbeddingItems(memories []store.Memory, evidence []store.DirectEvidence, worldRules []store.WorldRule, maxItems int, cfg completeTurnEmbeddingConfig, force, derivedNeedsEmbedding bool) []contextualizedEmbeddingItem {
+	items := make([]contextualizedEmbeddingItem, 0, len(memories)+len(evidence)+len(worldRules))
+	for _, mem := range memories {
+		if text := reindexMemoryDocumentText(mem); text != "" {
+			items = append(items, contextualizedEmbeddingItem{
+				Key:              "memory:" + strconv.FormatInt(mem.ID, 10),
+				Text:             text,
+				TurnIndex:        mem.TurnIndex,
+				ContextTurnKnown: true,
+				NeedsEmbedding:   memoryNeedsEmbeddingForModel(mem, cfg, force),
+			})
+		}
+	}
+	evidenceCount, worldRuleCount := adminReindexDerivedArtifactCandidateCounts(maxItems, evidence, worldRules)
+	for _, item := range evidence {
+		if !adminEvidenceVectorEligible(item) || evidenceCount == 0 {
+			continue
+		}
+		turnIndex := maxInt(item.TurnAnchor, item.SourceTurnEnd)
+		items = append(items, contextualizedEmbeddingItem{
+			Key:              "evidence:" + strconv.FormatInt(item.ID, 10),
+			Text:             directEvidenceVectorDocumentText(item),
+			TurnIndex:        turnIndex,
+			ContextTurnKnown: turnIndex > 0,
+			NeedsEmbedding:   derivedNeedsEmbedding,
+		})
+		evidenceCount--
+	}
+	for _, item := range worldRules {
+		if !adminWorldRuleVectorEligible(item) || worldRuleCount == 0 {
+			continue
+		}
+		items = append(items, contextualizedEmbeddingItem{
+			Key:              "world_rule:" + strconv.FormatInt(item.ID, 10),
+			Text:             worldRuleVectorDocumentText(item),
+			TurnIndex:        item.SourceTurn,
+			ContextTurnKnown: item.SourceTurn > 0,
+			NeedsEmbedding:   derivedNeedsEmbedding,
+		})
+		worldRuleCount--
+	}
+	return items
+}
+
+func contextualizedEmbeddingItemsNeedEmbedding(items []contextualizedEmbeddingItem) bool {
+	for _, item := range items {
+		if item.NeedsEmbedding {
+			return true
+		}
+	}
+	return false
 }
 
 func memoryNeedsEmbeddingForModel(mem store.Memory, cfg completeTurnEmbeddingConfig, force bool) bool {
@@ -134,16 +252,16 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 	contextMemoryModel := ""
 	contextMemoryErr := error(nil)
 	if !dryRun && cfg.Embedder.hasConfig() && usesVoyageContextualizedEmbedding(cfg.Embedder) {
-		items := make([]contextualizedEmbeddingItem, 0, len(memories))
-		for _, mem := range memories {
-			if !memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) {
-				continue
+		derivedNeedsEmbedding := s.Vector != nil && strings.TrimSpace(s.Cfg.ChromaEndpoint) != ""
+		items := adminReindexContextualizedEmbeddingItems(memories, allEvidence, allWorldRules, maxItems, cfg.Embedder, force, derivedNeedsEmbedding)
+		if contextualizedEmbeddingItemsNeedEmbedding(items) {
+			chatLogs, err := s.Store.ListChatLogs(r.Context(), sid, 0, 0)
+			if err != nil {
+				writeInternalError(w, err.Error())
+				return
 			}
-			if text := reindexMemoryDocumentText(mem); text != "" {
-				items = append(items, contextualizedEmbeddingItem{Key: strconv.FormatInt(mem.ID, 10), Text: text})
-			}
+			contextMemoryEmbeddings, contextMemoryModel, contextMemoryErr = callContextualizedEmbeddingItems(r.Context(), cfg.Embedder, chatLogs, items)
 		}
-		contextMemoryEmbeddings, contextMemoryModel, contextMemoryErr = callContextualizedEmbeddingItems(r.Context(), cfg.Embedder, items)
 	}
 	if !dryRun {
 		for i := range memories {
@@ -160,7 +278,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 			if memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) && cfg.Embedder.hasConfig() {
 				emb, model, err := "", "", contextMemoryErr
 				if usesVoyageContextualizedEmbedding(cfg.Embedder) && err == nil {
-					emb = contextMemoryEmbeddings[strconv.FormatInt(mem.ID, 10)]
+					emb = contextMemoryEmbeddings["memory:"+strconv.FormatInt(mem.ID, 10)]
 					model = contextMemoryModel
 				} else if !usesVoyageContextualizedEmbedding(cfg.Embedder) {
 					emb, model, err = callEmbedding(r.Context(), cfg.Embedder, summary)
@@ -197,7 +315,7 @@ func (s *Server) handleAdminReindex(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	artifactResult := s.adminReindexDerivedArtifacts(r.Context(), sid, cfg, dryRun, maxItems, allEvidence, allWorldRules, adminReindexDerivedArtifactProgress{})
+	artifactResult := s.adminReindexDerivedArtifacts(r.Context(), sid, cfg, dryRun, maxItems, allEvidence, allWorldRules, contextMemoryEmbeddings, contextMemoryErr, adminReindexDerivedArtifactProgress{})
 	if !dryRun {
 		processed += artifactResult.Processed
 		upserted += artifactResult.Upserted
@@ -421,16 +539,15 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 	contextMemoryModel := ""
 	contextMemoryErr := error(nil)
 	if !dryRun && cfg.Embedder.hasConfig() && usesVoyageContextualizedEmbedding(cfg.Embedder) {
-		items := make([]contextualizedEmbeddingItem, 0, len(memories))
-		for _, mem := range memories {
-			if !memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) {
-				continue
+		derivedNeedsEmbedding := s.Vector != nil && strings.TrimSpace(s.Cfg.ChromaEndpoint) != ""
+		items := adminReindexContextualizedEmbeddingItems(memories, allEvidence, allWorldRules, maxItems, cfg.Embedder, force, derivedNeedsEmbedding)
+		if contextualizedEmbeddingItemsNeedEmbedding(items) {
+			chatLogs, err := s.Store.ListChatLogs(ctx, sid, 0, 0)
+			if err != nil {
+				return nil, err
 			}
-			if text := reindexMemoryDocumentText(mem); text != "" {
-				items = append(items, contextualizedEmbeddingItem{Key: strconv.FormatInt(mem.ID, 10), Text: text})
-			}
+			contextMemoryEmbeddings, contextMemoryModel, contextMemoryErr = callContextualizedEmbeddingItems(ctx, cfg.Embedder, chatLogs, items)
 		}
-		contextMemoryEmbeddings, contextMemoryModel, contextMemoryErr = callContextualizedEmbeddingItems(ctx, cfg.Embedder, items)
 	}
 	if !dryRun {
 		for i := range memories {
@@ -451,7 +568,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 				if memoryNeedsEmbeddingForModel(mem, cfg.Embedder, force) && cfg.Embedder.hasConfig() {
 					emb, model, err := "", "", contextMemoryErr
 					if usesVoyageContextualizedEmbedding(cfg.Embedder) && err == nil {
-						emb = contextMemoryEmbeddings[strconv.FormatInt(mem.ID, 10)]
+						emb = contextMemoryEmbeddings["memory:"+strconv.FormatInt(mem.ID, 10)]
 						model = contextMemoryModel
 					} else if !usesVoyageContextualizedEmbedding(cfg.Embedder) {
 						emb, model, err = callEmbedding(ctx, cfg.Embedder, summary)
@@ -524,7 +641,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 		SkippedIDs:    append([]int64{}, skippedIDs...),
 		Errors:        append([]string{}, errorsOut...),
 	}
-	artifactResult := s.adminReindexDerivedArtifacts(ctx, sid, cfg, dryRun, maxItems, allEvidence, allWorldRules, artifactProgress)
+	artifactResult := s.adminReindexDerivedArtifacts(ctx, sid, cfg, dryRun, maxItems, allEvidence, allWorldRules, contextMemoryEmbeddings, contextMemoryErr, artifactProgress)
 	if !dryRun {
 		processed += artifactResult.Processed
 		upserted += artifactResult.Upserted

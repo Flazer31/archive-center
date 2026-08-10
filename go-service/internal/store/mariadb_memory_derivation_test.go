@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"regexp"
@@ -465,8 +466,8 @@ func TestMariaDBVectorOutboxReplayLeaseRecoveryAndSourceFence(t *testing.T) {
 		WithArgs("worker", now.Add(time.Minute), now, int64(9)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	claimed, err := m.ClaimMemoryVectorOperation(context.Background(), "worker", now, time.Minute)
-	if err != nil || claimed.ID != 9 || claimed.Attempts != 2 {
+	claimed, err := m.ClaimMemoryVectorOperations(context.Background(), "worker", now, time.Minute)
+	if err != nil || len(claimed) != 1 || claimed[0].ID != 9 || claimed[0].Attempts != 2 {
 		t.Fatalf("claimed=%+v err=%v", claimed, err)
 	}
 
@@ -544,12 +545,74 @@ func TestMariaDBVectorOutboxClaimPreservesPerDocumentCausalOrder(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	claimed, err := m.ClaimMemoryVectorOperation(context.Background(), "worker", now, time.Minute)
+	claimed, err := m.ClaimMemoryVectorOperations(context.Background(), "worker", now, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed.ID != 41 || claimed.DocumentID != documentID || claimed.Operation != "delete" {
+	if len(claimed) != 1 || claimed[0].ID != 41 || claimed[0].DocumentID != documentID || claimed[0].Operation != "delete" {
 		t.Fatalf("claim did not preserve oldest document operation: %#v", claimed)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBVectorOutboxClaimsDeferredRevisionSiblingsAsOneLeaseGroup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 8, 10, 3, 30, 0, 0, time.UTC)
+	leaseUntil := now.Add(time.Minute)
+	columns := []string{
+		"id", "contract_version", "operation_key", "operation",
+		"chat_session_id", "source_revision", "document_id", "document_json",
+		"embedding_ready", "required_source_state", "status", "attempts",
+		"retry_after", "lease_owner", "lease_until", "last_error",
+		"created_at", "updated_at",
+	}
+	row := func(id int64, documentID string) []driver.Value {
+		return []driver.Value{
+			id, MemoryVectorOutboxContract, strings.Repeat("e", 64), "upsert",
+			"session", "revision-turn", documentID, `{"ID":"` + documentID + `"}`,
+			false, "active", "needs_embedding", 0, nil, nil, nil, nil,
+			now.Add(-time.Minute), now.Add(-time.Minute),
+		}
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE memory_vector_outbox o").WillReturnResult(sqlmock.NewResult(0, 0))
+	seedRows := sqlmock.NewRows(columns)
+	seedRows.AddRow(row(51, "memory:session:one")...)
+	mock.ExpectQuery("SELECT o.id, o.contract_version").
+		WithArgs(now, now, now).
+		WillReturnRows(seedRows)
+	siblingRows := sqlmock.NewRows(columns)
+	siblingRows.AddRow(row(52, "memory:session:two")...)
+	siblingRows.AddRow(row(53, "memory:session:three")...)
+	mock.ExpectQuery(`(?s)WHERE o.source_revision = \?.*o.chat_session_id = \?.*o.operation = 'upsert'.*o.embedding_ready = FALSE.*ORDER BY o.created_at, o.id`).
+		WithArgs("revision-turn", "session", int64(51), now, now).
+		WillReturnRows(siblingRows)
+	for _, id := range []int64{51, 52, 53} {
+		mock.ExpectExec("UPDATE memory_vector_outbox").
+			WithArgs("worker", leaseUntil, now, id).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectCommit()
+
+	claimed, err := m.ClaimMemoryVectorOperations(context.Background(), "worker", now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 3 {
+		t.Fatalf("claimed=%#v", claimed)
+	}
+	for index, item := range claimed {
+		if item.ID != int64(51+index) || item.SourceRevision != "revision-turn" || item.EmbeddingReady || item.Attempts != 1 {
+			t.Fatalf("claimed item %d=%#v", index, item)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

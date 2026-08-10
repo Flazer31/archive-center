@@ -301,16 +301,20 @@ func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *
 		wantID     string
 		wantText   string
 		wantSchema string
+		wantTurn   int
+		turnKnown  bool
 	}{
 		{
 			table: "memories",
 			target: map[string]string{
 				"id": "101", "summary_json": `{"turn_summary":"Mina found the gate.","characters":["Mina"],"archive_hint":{"room":"Gate Room"}}`,
-				"evidence": `{"evidence_excerpts":["The gate opened."]}`, "place_wing": "East Wing", "place_room": "Gate Room",
+				"evidence": `{"evidence_excerpts":["The gate opened."]}`, "place_wing": "East Wing", "place_room": "Gate Room", "turn_index": "3",
 			},
 			wantID:     "memory:target:101",
 			wantText:   "[Canonical Summary]\nMina found the gate.\n\n[Raw Evidence]\nThe gate opened.\n\n[Aliases]\nMina\nGate Room\nEast Wing",
 			wantSchema: "memory.v2",
+			wantTurn:   3,
+			turnKnown:  true,
 		},
 		{
 			table: "direct_evidence_records",
@@ -322,25 +326,31 @@ func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *
 			wantID:     "evidence:target:102",
 			wantText:   "kind: fact_event\nThe gate opened.\nturns: 4-5 anchor:5",
 			wantSchema: "direct_evidence.v1",
+			wantTurn:   5,
+			turnKnown:  true,
 		},
 		{
 			table: "world_rules",
 			target: map[string]string{
 				"id": "103", "scope": "world", "scope_name": "Archive", "category": "physics",
-				"key": "gate", "value_json": `{"opens":true}`, "suppressed": "0",
+				"key": "gate", "value_json": `{"opens":true}`, "suppressed": "0", "source_turn": "6",
 			},
 			wantID:     "world_rule:target:103",
 			wantText:   "world\nArchive\nphysics\ngate\n{\"opens\":true}",
 			wantSchema: "world_rule.v1",
+			wantTurn:   6,
+			turnKnown:  true,
 		},
 		{
 			table: "kg_triples",
 			target: map[string]string{
-				"id": "104", "subject": "Mina", "predicate": "opened", "object": "Gate",
+				"id": "104", "subject": "Mina", "predicate": "opened", "object": "Gate", "source_turn": "7",
 			},
 			wantID:     "kg_triple:target:104",
 			wantText:   "Mina\nopened\nGate",
 			wantSchema: "kg_triple.v1",
+			wantTurn:   7,
+			turnKnown:  true,
 		},
 		{table: "episode_summaries", target: map[string]string{"id": "105", "summary_text": "Episode summary"}, wantID: "episode:target:105", wantText: "Episode summary", wantSchema: "episode.v1"},
 		{table: "chapter_summaries", target: map[string]string{"id": "106", "summary_text": "Chapter summary", "resume_text": "Resume chapter"}, wantID: "chapter:target:106", wantText: "Chapter summary\nResume chapter", wantSchema: "chapter.v1"},
@@ -349,11 +359,13 @@ func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *
 		{
 			table: "precise_memory_units",
 			target: map[string]string{
-				"id": "109", "unit_id": "target-unit", "evidence_excerpt": "Exact accepted evidence.", "lifecycle_state": "active",
+				"id": "109", "unit_id": "target-unit", "evidence_excerpt": "Exact accepted evidence.", "lifecycle_state": "active", "source_turn_end": "8",
 			},
 			wantID:     "precise_memory:target:target-unit",
 			wantText:   "Exact accepted evidence.",
 			wantSchema: "precise_memory_unit.v1",
+			wantTurn:   8,
+			turnKnown:  true,
 		},
 	}
 	for _, tc := range tests {
@@ -375,7 +387,41 @@ func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *
 			if doc.DocumentText != tc.wantText || doc.SchemaVersion != tc.wantSchema {
 				t.Errorf("document text/schema = %q/%q, want %q/%q", doc.DocumentText, doc.SchemaVersion, tc.wantText, tc.wantSchema)
 			}
+			if doc.ContextTurnKnown != tc.turnKnown || doc.ContextTurnIndex != tc.wantTurn {
+				t.Errorf("context turn = %d/%t, want %d/%t", doc.ContextTurnIndex, doc.ContextTurnKnown, tc.wantTurn, tc.turnKnown)
+			}
 		})
+	}
+}
+
+func TestSessionMigrationListVectorDocumentsReadsTransientTurnContext(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	plan, ok := SessionMigrationExecutionPlanFor("memories")
+	if !ok || plan.Vector == nil {
+		t.Fatal("memories vector plan missing")
+	}
+	mock.ExpectQuery("(?s)SELECT ve.document_id.*t\\.`turn_index`.*FROM session_migration_vector_expected_ids").
+		WithArgs("id", int64(7), "memories").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"document_id", "source_session_id", "target_session_id", "target_key", "embedding",
+			"summary_json", "evidence", "place_wing", "place_room", "turn_index",
+		}).AddRow(
+			"memory:target:101", "source", "target", "101", "[0.1]",
+			`{"turn_summary":"Mina found the gate."}`, `{}`, "", "", "4",
+		))
+	docs, err := sessionMigrationListVectorDocumentsForPlan(context.Background(), db, 7, "memories", plan)
+	if err != nil {
+		t.Fatalf("list vector documents: %v", err)
+	}
+	if len(docs) != 1 || !docs[0].ContextTurnKnown || docs[0].ContextTurnIndex != 4 {
+		t.Fatalf("vector documents missing transient turn context: %#v", docs)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

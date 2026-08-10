@@ -169,12 +169,12 @@ func (f *memoryWorkerEventStore) EnqueueMemoryVectorOperation(_ context.Context,
 	return true, nil
 }
 
-func (f *memoryWorkerEventStore) ClaimMemoryVectorOperation(
+func (f *memoryWorkerEventStore) ClaimMemoryVectorOperations(
 	_ context.Context,
 	owner string,
 	now time.Time,
 	lease time.Duration,
-) (*store.MemoryVectorOutboxItem, error) {
+) ([]*store.MemoryVectorOutboxItem, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.vectorClaims++
@@ -196,16 +196,33 @@ func (f *memoryWorkerEventStore) ClaimMemoryVectorOperation(
 	}
 	item := f.vectorItems[itemIndex]
 	f.vectorItems = append(f.vectorItems[:itemIndex], f.vectorItems[itemIndex+1:]...)
-	item.Attempts++
-	item.Status = "leased"
-	item.LeaseOwner = owner
-	item.LeaseUntil = now.Add(lease)
+	items := []*store.MemoryVectorOutboxItem{item}
+	if item.Operation == "upsert" && !item.EmbeddingReady {
+		remaining := f.vectorItems[:0]
+		for _, candidate := range f.vectorItems {
+			if candidate.Operation == "upsert" && !candidate.EmbeddingReady && candidate.SourceRevision == item.SourceRevision &&
+				(candidate.RetryAfter.IsZero() || candidate.RetryAfter.Before(now)) {
+				items = append(items, candidate)
+				continue
+			}
+			remaining = append(remaining, candidate)
+		}
+		f.vectorItems = remaining
+	}
 	if f.vectorClaimed == nil {
 		f.vectorClaimed = map[int64]*store.MemoryVectorOutboxItem{}
 	}
-	f.vectorClaimed[item.ID] = item
-	copy := *item
-	return &copy, nil
+	claimed := make([]*store.MemoryVectorOutboxItem, 0, len(items))
+	for _, item := range items {
+		item.Attempts++
+		item.Status = "leased"
+		item.LeaseOwner = owner
+		item.LeaseUntil = now.Add(lease)
+		f.vectorClaimed[item.ID] = item
+		copy := *item
+		claimed = append(claimed, &copy)
+	}
+	return claimed, nil
 }
 
 func (f *memoryWorkerEventStore) CompleteMemoryVectorOperation(
@@ -330,7 +347,11 @@ func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
 
-	fake := &memoryAdmissionWorkerStore{}
+	fake := &memoryAdmissionWorkerStore{source: &store.MemorySourceRevision{
+		SourceRevision:   "revision-context-group",
+		UserContent:      "A bell rang.",
+		AssistantContent: "The gate opened.",
+	}}
 	srv := &Server{Store: fake}
 	srv.Cfg.ChromaEndpoint = "http://127.0.0.1:8000"
 	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
@@ -366,17 +387,20 @@ func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(
 	if calls != 1 {
 		t.Fatalf("embedding calls=%d, want one", calls)
 	}
+	if len(capturedChunks) < 2 || strings.TrimSpace(fmt.Sprint(capturedChunks[0])) != fake.source.UserContent || strings.TrimSpace(fmt.Sprint(capturedChunks[1])) != fake.source.AssistantContent {
+		t.Fatalf("first contextual chunks = %#v, want canonical current-turn user/assistant raw pair", capturedChunks)
+	}
 	admission := fake.admissions[0]
 	if len(capturedChunks) < 4 || len(admission.Vectors) != 3 || len(admission.PreciseUnits) != 1 {
 		t.Fatalf("chunks=%d vectors=%d precise=%d", len(capturedChunks), len(admission.Vectors), len(admission.PreciseUnits))
 	}
 	for i, item := range admission.Vectors {
-		if len(item.Embedding) == 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != len(capturedChunks) {
+		if len(item.Embedding) == 0 || item.ContextChunkIndex != i+2 || len(item.ContextChunks) != len(capturedChunks) {
 			t.Fatalf("vector[%d] not materialized with stable group: %+v", i, item)
 		}
 	}
 	precise := admission.PreciseUnits[0]
-	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != len(capturedChunks) {
+	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors)+2 || len(precise.VectorContextChunks) != len(capturedChunks) {
 		t.Fatalf("precise vector not materialized in source group: %+v", precise)
 	}
 	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
@@ -408,7 +432,11 @@ func TestCurrentTurnVoyageContextStillStoresMemoryEmbeddingWithoutChroma(t *test
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
 
-	fake := &memoryAdmissionWorkerStore{}
+	fake := &memoryAdmissionWorkerStore{source: &store.MemorySourceRevision{
+		SourceRevision:   "revision-context-no-chroma",
+		UserContent:      "The bell rang.",
+		AssistantContent: "The gate opened.",
+	}}
 	srv := &Server{Store: fake}
 	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
 		ContractVersion: completeTurnSourceAcceptanceContract,

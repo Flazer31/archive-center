@@ -219,7 +219,27 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		}
 	}
 	if usesVoyageContextualizedEmbedding(embCfg) {
-		contextChunks := make([]string, 0, len(vectors)+len(preciseUnits))
+		sourceStore, ok := s.Store.(store.SourceRevisionStore)
+		if !ok {
+			result.Errors++
+			result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: source revision store is unavailable for contextualized embedding")
+			return true, existingEvidence, preciseUnits
+		}
+		canonicalSource, err := sourceStore.GetSourceRevision(ctx, sid, source.Revision)
+		if err != nil || canonicalSource == nil {
+			result.Errors++
+			if err == nil {
+				err = store.ErrNotFound
+			}
+			result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: canonical source revision is unavailable for contextualized embedding: "+err.Error())
+			return true, existingEvidence, preciseUnits
+		}
+		contextChunks := make([]string, 0, len(vectors)+len(preciseUnits)+2)
+		for _, rawTurnPart := range []string{canonicalSource.UserContent, canonicalSource.AssistantContent} {
+			if rawTurnPart = strings.TrimSpace(rawTurnPart); rawTurnPart != "" {
+				contextChunks = append(contextChunks, rawTurnPart)
+			}
+		}
 		vectorContextPositions := make([]int, len(vectors))
 		for i := range vectorContextPositions {
 			vectorContextPositions[i] = -1

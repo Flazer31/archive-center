@@ -99,13 +99,15 @@ type SessionMigrationArtifactReference struct {
 }
 
 type SessionMigrationVectorPlan struct {
-	Tier            string
-	IDColumn        string
-	EmbeddingColumn string
-	TextColumns     []string
-	TextFormat      string
-	Eligibility     string
-	SchemaVersion   string
+	Tier                 string
+	IDColumn             string
+	EmbeddingColumn      string
+	TextColumns          []string
+	ContextTurnColumns   []string
+	ContextTurnZeroValid bool
+	TextFormat           string
+	Eligibility          string
+	SchemaVersion        string
 }
 
 type SessionMigrationVectorParityContext struct {
@@ -459,29 +461,34 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 	setPlan("memories", func(plan *SessionMigrationExecutionPlan) {
 		plan.Vector = &SessionMigrationVectorPlan{
 			Tier: "memory", IDColumn: "id", EmbeddingColumn: "embedding",
-			TextColumns: []string{"summary_json", "evidence", "place_wing", "place_room"},
-			TextFormat:  "memory", SchemaVersion: "memory.v2",
+			TextColumns:          []string{"summary_json", "evidence", "place_wing", "place_room"},
+			ContextTurnColumns:   []string{"turn_index"},
+			ContextTurnZeroValid: true,
+			TextFormat:           "memory", SchemaVersion: "memory.v2",
 		}
 	})
 	setPlan("direct_evidence_records", func(plan *SessionMigrationExecutionPlan) {
 		plan.Vector = &SessionMigrationVectorPlan{
 			Tier: "evidence", IDColumn: "id",
-			TextColumns: []string{"evidence_kind", "evidence_text", "source_turn_start", "source_turn_end", "turn_anchor"},
-			TextFormat:  "direct_evidence", Eligibility: "active_direct_evidence", SchemaVersion: "direct_evidence.v1",
+			TextColumns:        []string{"evidence_kind", "evidence_text", "source_turn_start", "source_turn_end", "turn_anchor"},
+			ContextTurnColumns: []string{"turn_anchor", "source_turn_end"},
+			TextFormat:         "direct_evidence", Eligibility: "active_direct_evidence", SchemaVersion: "direct_evidence.v1",
 		}
 	})
 	setPlan("world_rules", func(plan *SessionMigrationExecutionPlan) {
 		plan.Vector = &SessionMigrationVectorPlan{
 			Tier: "world_rule", IDColumn: "id",
-			TextColumns: []string{"scope", "scope_name", "category", "key", "value_json"},
-			TextFormat:  "world_rule", Eligibility: "active_world_rule", SchemaVersion: "world_rule.v1",
+			TextColumns:        []string{"scope", "scope_name", "category", "key", "value_json"},
+			ContextTurnColumns: []string{"source_turn"},
+			TextFormat:         "world_rule", Eligibility: "active_world_rule", SchemaVersion: "world_rule.v1",
 		}
 	})
 	setPlan("kg_triples", func(plan *SessionMigrationExecutionPlan) {
 		plan.Vector = &SessionMigrationVectorPlan{
 			Tier: "kg_triple", IDColumn: "id",
-			TextColumns: []string{"subject", "predicate", "object"},
-			TextFormat:  "kg_triple", SchemaVersion: "kg_triple.v1",
+			TextColumns:        []string{"subject", "predicate", "object"},
+			ContextTurnColumns: []string{"source_turn"},
+			TextFormat:         "kg_triple", SchemaVersion: "kg_triple.v1",
 		}
 	})
 	setPlan("episode_summaries", func(plan *SessionMigrationExecutionPlan) {
@@ -499,8 +506,9 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 	setPlan("precise_memory_units", func(plan *SessionMigrationExecutionPlan) {
 		plan.Vector = &SessionMigrationVectorPlan{
 			Tier: "precise_memory", IDColumn: "unit_id",
-			TextColumns: []string{"evidence_excerpt"}, TextFormat: "plain",
-			Eligibility: "active_precise_memory", SchemaVersion: "precise_memory_unit.v1",
+			TextColumns:        []string{"evidence_excerpt"},
+			ContextTurnColumns: []string{"source_turn_end"},
+			TextFormat:         "plain", Eligibility: "active_precise_memory", SchemaVersion: "precise_memory_unit.v1",
 		}
 	})
 	return plans

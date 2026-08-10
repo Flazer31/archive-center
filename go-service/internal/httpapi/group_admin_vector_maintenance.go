@@ -122,7 +122,7 @@ func adminReindexDerivedArtifactCandidateCounts(maxItems int, evidence []store.D
 	return evidenceCount, worldRuleCount
 }
 
-func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, cfg completeTurnExtractionConfig, dryRun bool, maxItems int, evidence []store.DirectEvidence, worldRules []store.WorldRule, progress adminReindexDerivedArtifactProgress) adminReindexDerivedArtifactResult {
+func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, cfg completeTurnExtractionConfig, dryRun bool, maxItems int, evidence []store.DirectEvidence, worldRules []store.WorldRule, contextEmbeddings map[string]string, contextErr error, progress adminReindexDerivedArtifactProgress) adminReindexDerivedArtifactResult {
 	result := newAdminReindexDerivedArtifactResult()
 	evidenceCandidates := []store.DirectEvidence{}
 	for _, item := range evidence {
@@ -153,22 +153,10 @@ func (s *Server) adminReindexDerivedArtifacts(ctx context.Context, sid string, c
 	}
 	contextualizedReady := usesVoyageContextualizedEmbedding(cfg.Embedder) &&
 		cfg.Embedder.hasConfig() && s.Vector != nil && strings.TrimSpace(s.Cfg.ChromaEndpoint) != ""
-	contextEmbeddings := map[string]string(nil)
-	if contextualizedReady {
-		items := make([]contextualizedEmbeddingItem, 0, len(evidenceCandidates)+len(worldRuleCandidates))
-		for _, item := range evidenceCandidates {
-			items = append(items, contextualizedEmbeddingItem{Key: "evidence:" + strconv.FormatInt(item.ID, 10), Text: directEvidenceVectorDocumentText(item)})
-		}
-		for _, item := range worldRuleCandidates {
-			items = append(items, contextualizedEmbeddingItem{Key: "world_rule:" + strconv.FormatInt(item.ID, 10), Text: worldRuleVectorDocumentText(item)})
-		}
-		var err error
-		contextEmbeddings, _, err = callContextualizedEmbeddingItems(ctx, cfg.Embedder, items)
-		if err != nil {
-			result.Errors = append(result.Errors, "derived contextualized embedding: "+err.Error())
-			result.Skipped = len(evidenceCandidates) + len(worldRuleCandidates)
-			return result
-		}
+	if contextualizedReady && contextErr != nil {
+		result.Errors = append(result.Errors, "derived contextualized embedding: "+contextErr.Error())
+		result.Skipped = len(evidenceCandidates) + len(worldRuleCandidates)
+		return result
 	}
 	progress.emit("evidence", "tier_start", result, 0)
 	for _, item := range evidenceCandidates {

@@ -33,17 +33,31 @@ func (f *memoryVectorProcessorStore) EnqueueMemoryVectorOperation(context.Contex
 	return false, errors.New("unexpected enqueue")
 }
 
-func (f *memoryVectorProcessorStore) ClaimMemoryVectorOperation(_ context.Context, owner string, now time.Time, lease time.Duration) (*store.MemoryVectorOutboxItem, error) {
+func (f *memoryVectorProcessorStore) ClaimMemoryVectorOperations(_ context.Context, owner string, now time.Time, lease time.Duration) ([]*store.MemoryVectorOutboxItem, error) {
 	if len(f.items) == 0 {
 		return nil, store.ErrNotFound
 	}
 	item := f.items[0]
 	f.items = f.items[1:]
-	item.LeaseOwner = owner
-	item.LeaseUntil = now.Add(lease)
-	item.Status = "leased"
-	item.Attempts++
-	return item, nil
+	items := []*store.MemoryVectorOutboxItem{item}
+	if item.Operation == "upsert" && !item.EmbeddingReady {
+		remaining := f.items[:0]
+		for _, candidate := range f.items {
+			if candidate.Operation == "upsert" && !candidate.EmbeddingReady && candidate.SourceRevision == item.SourceRevision {
+				items = append(items, candidate)
+				continue
+			}
+			remaining = append(remaining, candidate)
+		}
+		f.items = remaining
+	}
+	for _, claimed := range items {
+		claimed.LeaseOwner = owner
+		claimed.LeaseUntil = now.Add(lease)
+		claimed.Status = "leased"
+		claimed.Attempts++
+	}
+	return items, nil
 }
 
 func (f *memoryVectorProcessorStore) CompleteMemoryVectorOperation(_ context.Context, id int64, _ string, _ time.Time) error {
@@ -154,6 +168,26 @@ func verifiedMemoryVectorProcessorDocument(document vector.VectorDocument, sourc
 	return document
 }
 
+func deferredVoyageMemoryVectorOutboxItem(t *testing.T, id int64, sourceRevision, documentID, documentText string, inputs []string, index int) *store.MemoryVectorOutboxItem {
+	t.Helper()
+	document := verifiedMemoryVectorProcessorDocument(vector.VectorDocument{
+		ID: documentID, ChatSessionID: "session", SourceTable: "precise_memory_units",
+		SourceRowID: fmt.Sprint(id), SchemaVersion: store.PreciseMemoryUnitContract,
+		DocumentText: documentText,
+	}, sourceRevision)
+	document.Metadata["contextualized_embedding_inputs"] = append([]string(nil), inputs...)
+	document.Metadata["contextualized_embedding_index"] = index
+	documentJSON, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &store.MemoryVectorOutboxItem{
+		ID: id, Operation: "upsert", ChatSessionID: "session", SourceRevision: sourceRevision,
+		DocumentID: documentID, DocumentJSON: string(documentJSON), EmbeddingReady: false,
+		RequiredSourceState: "active", Status: "needs_embedding",
+	}
+}
+
 func TestMemoryVectorProcessorRecordsRetryAfterVectorFailure(t *testing.T) {
 	now := time.Date(2026, 7, 28, 4, 0, 0, 0, time.UTC)
 	document := vector.VectorDocument{
@@ -242,6 +276,148 @@ func TestMemoryVectorOutboxRetryReusesFullVoyageContextGroupAndStableIndex(t *te
 	}
 	if _, leaked := vec.upserts[0][0].Metadata["contextualized_embedding_inputs"]; leaked {
 		t.Fatalf("retry-only sibling payload leaked into Chroma metadata")
+	}
+}
+
+func TestMemoryVectorOutboxVoyageClaimsTurnSiblingsForOneContextualizedCall(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		chunks := sliceFromAny(groups[0])
+		if len(groups) != 1 || len(chunks) != 5 {
+			t.Fatalf("Voyage request groups=%#v", groups)
+		}
+		rows := make([]map[string]any, 0, len(chunks))
+		for index := range chunks {
+			rows = append(rows, map[string]any{"index": index, "embedding": []float64{float64(index + 1), 0}})
+		}
+		body, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "data": rows}}, "model": "voyage-context-4"})
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	inputs := []string{"raw user", "raw assistant", "artifact one", "artifact two", "artifact three"}
+	st := &memoryVectorProcessorStore{Store: store.NewNoopStore(), items: []*store.MemoryVectorOutboxItem{
+		deferredVoyageMemoryVectorOutboxItem(t, 101, "revision-turn", "precise_memory:session:one", "artifact one", inputs, 2),
+		deferredVoyageMemoryVectorOutboxItem(t, 102, "revision-turn", "precise_memory:session:two", "artifact two", inputs, 3),
+		deferredVoyageMemoryVectorOutboxItem(t, 103, "revision-turn", "precise_memory:session:three", "artifact three", inputs, 4),
+	}}
+	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
+	server := &Server{Store: st, Vector: vec, RuntimeConfig: RuntimeConfig{
+		Synced: true, FailedQueueMaxAttempts: 4, EmbeddingProvider: "voyageai",
+		EmbeddingAPIKey: "key", EmbeddingEndpoint: "https://api.voyageai.com/v1/embeddings",
+		EmbeddingModel: "voyage-context-4", EmbeddingTimeoutSec: 30,
+	}}
+	results := server.processMemoryVectorOutboxBatch(context.Background(), "worker", time.Now().UTC(), time.Minute, 0)
+	if len(results) != 3 || calls != 1 {
+		t.Fatalf("results=%+v calls=%d", results, calls)
+	}
+	for _, result := range results {
+		if result.CanonicalState != "completed" {
+			t.Fatalf("results=%+v", results)
+		}
+	}
+	if len(st.completed) != 3 || len(st.failed) != 0 || len(vec.upserts) != 3 {
+		t.Fatalf("completed=%v failed=%v upserts=%#v", st.completed, st.failed, vec.upserts)
+	}
+	for index, upsert := range vec.upserts {
+		if len(upsert) != 1 || len(upsert[0].Embedding) != 2 || upsert[0].Embedding[0] != float32(index+3) {
+			t.Fatalf("upsert %d did not receive stable contextualized index: %#v", index, upsert)
+		}
+	}
+}
+
+func TestMemoryVectorOutboxVoyageSeparatesRevisionDeleteAndEmbeddingReady(t *testing.T) {
+	oldClient := proxyHTTPClient
+	documents := [][]string{}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		chunksAny := sliceFromAny(sliceFromAny(request["inputs"])[0])
+		chunks := make([]string, 0, len(chunksAny))
+		rows := make([]map[string]any, 0, len(chunksAny))
+		for index, chunk := range chunksAny {
+			chunks = append(chunks, extractionStringFromAny(chunk))
+			rows = append(rows, map[string]any{"index": index, "embedding": []float64{float64(index + 1), 0}})
+		}
+		documents = append(documents, chunks)
+		body, _ := json.Marshal(map[string]any{"data": []any{map[string]any{"index": 0, "data": rows}}, "model": "voyage-context-4"})
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	ready := verifiedMemoryVectorProcessorDocument(vector.VectorDocument{
+		ID: "memory:session:ready", ChatSessionID: "session", DocumentText: "already ready", Embedding: []float32{9, 0},
+	}, "revision-a")
+	readyJSON, err := materializedMemoryVectorDocumentJSON(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &memoryVectorProcessorStore{Store: store.NewNoopStore(), items: []*store.MemoryVectorOutboxItem{
+		deferredVoyageMemoryVectorOutboxItem(t, 111, "revision-a", "memory:session:a", "artifact a", []string{"user a", "assistant a", "artifact a"}, 2),
+		deferredVoyageMemoryVectorOutboxItem(t, 112, "revision-b", "memory:session:b", "artifact b", []string{"user b", "assistant b", "artifact b"}, 2),
+		{ID: 113, Operation: "delete", ChatSessionID: "session", SourceRevision: "revision-a", DocumentID: "memory:session:old", EmbeddingReady: true, RequiredSourceState: "inactive", Status: "pending"},
+		{ID: 114, Operation: "upsert", ChatSessionID: "session", SourceRevision: "revision-a", DocumentID: ready.ID, DocumentJSON: readyJSON, EmbeddingReady: true, RequiredSourceState: "active", Status: "pending"},
+	}}
+	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
+	server := &Server{Store: st, Vector: vec, RuntimeConfig: RuntimeConfig{
+		Synced: true, FailedQueueMaxAttempts: 4, EmbeddingProvider: "voyageai",
+		EmbeddingAPIKey: "key", EmbeddingEndpoint: "https://api.voyageai.com/v1/embeddings",
+		EmbeddingModel: "voyage-context-4", EmbeddingTimeoutSec: 30,
+	}}
+	for range 4 {
+		result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", time.Now().UTC(), time.Minute)
+		if err != nil || result.CanonicalState != "completed" {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	}
+	if len(documents) != 2 || strings.Join(documents[0], "\n") == strings.Join(documents[1], "\n") ||
+		len(st.completed) != 4 || len(vec.deletes) != 1 || len(vec.upserts) != 3 {
+		t.Fatalf("documents=%#v completed=%v deletes=%v upserts=%#v", documents, st.completed, vec.deletes, vec.upserts)
+	}
+}
+
+func TestMemoryVectorOutboxVoyageGroupEmbeddingFailureRetriesEverySibling(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"unavailable"}`))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	inputs := []string{"raw user", "raw assistant", "artifact one", "artifact two", "artifact three"}
+	st := &memoryVectorProcessorStore{Store: store.NewNoopStore(), items: []*store.MemoryVectorOutboxItem{
+		deferredVoyageMemoryVectorOutboxItem(t, 121, "revision-failure", "memory:session:one", "artifact one", inputs, 2),
+		deferredVoyageMemoryVectorOutboxItem(t, 122, "revision-failure", "memory:session:two", "artifact two", inputs, 3),
+		deferredVoyageMemoryVectorOutboxItem(t, 123, "revision-failure", "memory:session:three", "artifact three", inputs, 4),
+	}}
+	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
+	now := time.Now().UTC()
+	server := &Server{Store: st, Vector: vec, RuntimeConfig: RuntimeConfig{
+		Synced: true, FailedQueueMaxAttempts: 4, EmbeddingProvider: "voyageai",
+		EmbeddingAPIKey: "key", EmbeddingEndpoint: "https://api.voyageai.com/v1/embeddings",
+		EmbeddingModel: "voyage-context-4", EmbeddingTimeoutSec: 30,
+	}}
+	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
+	if err != nil || result.CanonicalState != "retryable" || calls != 1 {
+		t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+	}
+	if len(st.failed) != 3 || len(st.completed) != 0 || len(st.failurePermanent) != 3 || len(vec.upserts) != 0 {
+		t.Fatalf("failed=%v completed=%v permanent=%v upserts=%#v", st.failed, st.completed, st.failurePermanent, vec.upserts)
+	}
+	for index := range st.failed {
+		if st.failurePermanent[index] || !st.failureRetryAt[index].Equal(now) {
+			t.Fatalf("failure %d permanent=%v retry=%v", index, st.failurePermanent[index], st.failureRetryAt[index])
+		}
 	}
 }
 

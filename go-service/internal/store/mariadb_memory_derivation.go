@@ -1093,7 +1093,7 @@ func enqueueMemoryVectorOperation(ctx context.Context, exec memoryDerivationSQLE
 	return true, nil
 }
 
-func (m *mariadbStore) ClaimMemoryVectorOperation(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration) (*MemoryVectorOutboxItem, error) {
+func (m *mariadbStore) ClaimMemoryVectorOperations(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration) ([]*MemoryVectorOutboxItem, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
@@ -1130,30 +1130,38 @@ func (m *mariadbStore) ClaimMemoryVectorOperation(ctx context.Context, leaseOwne
 	if err != nil {
 		return nil, err
 	}
-	item.LeaseOwner = leaseOwner
-	item.LeaseUntil = now.Add(leaseDuration)
-	item.Status = "leased"
-	item.Attempts++
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE memory_vector_outbox
-		SET status = 'leased', attempts = attempts + 1, lease_owner = ?,
-		    lease_until = ?, updated_at = ?
-		WHERE id = ?
-	`, leaseOwner, item.LeaseUntil, now, item.ID); err != nil {
-		return nil, err
+	items := []*MemoryVectorOutboxItem{item}
+	if item.Operation == "upsert" && !item.EmbeddingReady {
+		siblings, err := selectMemoryVectorOperationSiblingsForLease(ctx, tx, item, now)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, siblings...)
+	}
+	leaseUntil := now.Add(leaseDuration)
+	for _, claimed := range items {
+		claimed.LeaseOwner = leaseOwner
+		claimed.LeaseUntil = leaseUntil
+		claimed.Status = "leased"
+		claimed.Attempts++
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE memory_vector_outbox
+			SET status = 'leased', attempts = attempts + 1, lease_owner = ?,
+			    lease_until = ?, updated_at = ?
+			WHERE id = ?
+		`, leaseOwner, claimed.LeaseUntil, now, claimed.ID); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	committed = true
-	return item, nil
+	return items, nil
 }
 
 func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now time.Time) (*MemoryVectorOutboxItem, error) {
-	item := &MemoryVectorOutboxItem{}
-	var documentJSON, leaseOwner, lastError sql.NullString
-	var retryAfter, leaseUntil sql.NullTime
-	err := tx.QueryRowContext(ctx, `
+	row := tx.QueryRowContext(ctx, `
 		SELECT o.id, o.contract_version, o.operation_key, o.operation,
 		       o.chat_session_id, o.source_revision, o.document_id,
 		       o.document_json, o.embedding_ready, o.required_source_state,
@@ -1188,16 +1196,82 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 		  )
 		ORDER BY o.created_at, o.id
 		LIMIT 1 FOR UPDATE
-	`, now, now, now).Scan(&item.ID, &item.ContractVersion, &item.OperationKey,
-		&item.Operation, &item.ChatSessionID, &item.SourceRevision,
-		&item.DocumentID, &documentJSON, &item.EmbeddingReady,
-		&item.RequiredSourceState, &item.Status, &item.Attempts,
-		&retryAfter, &leaseOwner, &leaseUntil, &lastError,
-		&item.CreatedAt, &item.UpdatedAt)
+	`, now, now, now)
+	item, err := scanMemoryVectorOutboxItem(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	if err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func selectMemoryVectorOperationSiblingsForLease(ctx context.Context, tx *sql.Tx, seed *MemoryVectorOutboxItem, now time.Time) ([]*MemoryVectorOutboxItem, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT o.id, o.contract_version, o.operation_key, o.operation,
+		       o.chat_session_id, o.source_revision, o.document_id,
+		       o.document_json, o.embedding_ready, o.required_source_state,
+		       o.status, o.attempts, o.retry_after, o.lease_owner,
+		       o.lease_until, o.last_error, o.created_at, o.updated_at
+		FROM memory_vector_outbox o
+		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
+		WHERE o.source_revision = ?
+		  AND o.chat_session_id = ?
+		  AND o.id <> ?
+		  AND o.operation = 'upsert'
+		  AND o.embedding_ready = FALSE
+		  AND (
+		    (
+		      o.status IN ('needs_embedding', 'retryable')
+		      AND (o.retry_after IS NULL OR o.retry_after < ?)
+		    )
+		    OR (o.status = 'leased' AND o.lease_until < ?)
+		  )
+		  AND o.required_source_state = 'active'
+		  AND s.lifecycle_state = 'active'
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM memory_vector_outbox prior
+		    WHERE prior.document_id = o.document_id
+		      AND prior.id < o.id
+		      AND prior.status IN ('pending', 'leased', 'retryable', 'needs_embedding')
+		  )
+		ORDER BY o.created_at, o.id
+		FOR UPDATE
+	`, seed.SourceRevision, seed.ChatSessionID, seed.ID, now, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*MemoryVectorOutboxItem{}
+	for rows.Next() {
+		item, err := scanMemoryVectorOutboxItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+type memoryVectorOutboxScanner interface {
+	Scan(...any) error
+}
+
+func scanMemoryVectorOutboxItem(scanner memoryVectorOutboxScanner) (*MemoryVectorOutboxItem, error) {
+	item := &MemoryVectorOutboxItem{}
+	var documentJSON, leaseOwner, lastError sql.NullString
+	var retryAfter, leaseUntil sql.NullTime
+	if err := scanner.Scan(&item.ID, &item.ContractVersion, &item.OperationKey,
+		&item.Operation, &item.ChatSessionID, &item.SourceRevision,
+		&item.DocumentID, &documentJSON, &item.EmbeddingReady,
+		&item.RequiredSourceState, &item.Status, &item.Attempts,
+		&retryAfter, &leaseOwner, &leaseUntil, &lastError,
+		&item.CreatedAt, &item.UpdatedAt); err != nil {
 		return nil, err
 	}
 	item.DocumentJSON = documentJSON.String
