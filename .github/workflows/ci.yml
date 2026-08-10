@@ -36,8 +36,8 @@ jobs:
           test -f "go-service/go.mod"
           test -f "prompts/supervisor_system.txt"
           test -f "prompts/critic_system.txt"
-          grep -q '^//@version 3\.9\.9$' "Archive Center.js"
-          grep -q '^  const VERSION = "3\.9\.9";' "Archive Center.js"
+          grep -q '^//@version 3\.9\.10$' "Archive Center.js"
+          grep -q '^  const VERSION = "3\.9\.10";' "Archive Center.js"
           grep -q '^AC_CHROMA_API_PATH=/api/v2$' .env.example
           grep -q 'chromadb==1.5.9' ops/full-package-posix/start-full-posix.sh
           if grep -R 'AC_CHROMA_API_PATH=/api/v1' .env.example ops/live-test-pack/.env.live.example; then exit 1; fi

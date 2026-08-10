@@ -1,4 +1,4 @@
-# Archive Center 3.9.9 설치 안내
+# Archive Center 3.9.10 설치 안내
 
 Archive Center 백엔드는 운영체제에 맞는 명령어 한 줄로 설치합니다. 설치기가
 운영체제와 CPU를 확인하고, GitHub Release에서 맞는 패키지를 내려받아 SHA-256을
